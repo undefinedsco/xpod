@@ -101,5 +101,3 @@ Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) to
 ## License
 
 Xpod is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
-
-
