@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Community Solid Server</title>
+  <link rel="stylesheet" href="/.well-known/css/styles/main.css" type="text/css">
+</head>
+<body>
+  <header>
+    <a href=".."><img src="/.well-known/css/images/solid.svg" alt="[Solid logo]" /></a>
+    <h1>Community Solid Server</h1>
+  </header>
+  <main>
+    <h1>欢迎使用 Solid</h1>
+    <p>
+      本服务器实现了<a href="https://solid.github.io/specification/protocol">Solid 协议</a>，
+      可以帮助你创建自己的<a href="https://solidproject.org/about">Solid Pod</a> 与身份。
+    </p>
+
+    <h2 id="users">面向<em>用户</em>的快速入门</h2>
+    <p id="registration-enabled">
+      <a id="registration-link" href="./.account/login/password/register/">注册账号</a>
+      即可获取属于你的 Pod 和 WebID。
+    </p>
+    <p id="registration-disabled" class="hidden">
+      本服务器已禁用注册功能。
+      若计划对外开放，请务必更新根容器权限以防其他人修改你的数据。
+    </p>
+    <p>
+      想了解如何使用本服务器，
+      建议阅读
+      <a href="https://github.com/CommunitySolidServer/tutorials/blob/main/getting-started.md">快速入门教程</a>
+      以及<a href="https://communitysolidserver.github.io/CommunitySolidServer/">官方文档</a>。
+    </p>
+
+    <h2 id="developers">面向<em>开发者</em>的快速入门</h2>
+    <p>
+      你可以使用 <code>config</code> 目录中的任意配置
+      来部署具备不同特性的服务器实例。
+      除了预置配置，还可以通过
+      <a href="https://communitysolidserver.github.io/configuration-generator/">配置生成器</a>
+      自定义所需组件。
+    </p>
+    <p>
+      服务器支持将磁盘上的任意文件夹
+      暴露为根 Pod。
+      <br>
+      使用 <code>--help</code> 参数可查看更多命令行选项。
+    </p>
+
+    <h2>祝你拥有出色的 Solid 体验</h2>
+    <p>
+      <strong>欢迎访问 <a href="https://solidproject.org/">solidproject.org</a> 了解 Solid。</strong>
+    </p>
+    <p>
+      我们诚挚邀请你
+      <a href="https://github.com/CommunitySolidServer/CommunitySolidServer/discussions">分享使用体验</a>
+      ，或在遇到问题时
+      <a href="https://github.com/CommunitySolidServer/CommunitySolidServer/issues">提交 Issue</a>。
+    </p>
+
+    <h2>如何替换此页面</h2>
+    <p>
+      目前的首页是通过静态页面配置呈现的。
+      如需自定义，只需在 server 配置中加入如下条目：
+    <pre>{
+  "@type": "Override",
+  "overrideInstance": { "@id": "urn:solid-server:default:RootStaticAsset" },
+  "overrideParameters": {
+    "@type": "StaticAssetEntry",
+    "filePath": "/path/to/my/index.html"
+  }
+}</pre>
+    </p>
+  </main>
+  <footer>
+    <p>
+      ©2019–2024 <a href="https://inrupt.com/">Inrupt Inc.</a>
+      与 <a href="https://www.imec-int.com/">imec</a>
+    </p>
+  </footer>
+</body>
+<script>
+  (async() => {
+    // 由于该页面位于服务器根目录，可使用相对路径推断其它端点。
+    const res = await fetch('.account/');
+    const registrationUrl = (await res.json())?.controls?.html?.password?.register;
+    // 仅在目标 HTML 存在时展示注册入口
+    const resRegistrationPage = await fetch(registrationUrl, { headers: { accept: 'text/html' } });
+    const registrationEnabled = registrationUrl && resRegistrationPage.status === 200;
+
+    document.getElementById('registration-enabled').classList[registrationEnabled ? 'remove' : 'add']('hidden');
+    document.getElementById('registration-disabled').classList[registrationEnabled ? 'add' : 'remove']('hidden');
+    document.getElementById('registration-link').href = registrationUrl;
+  })();
+</script>
+</html>

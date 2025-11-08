@@ -1,0 +1,344 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+  ],
+  "@graph": [
+    {
+      "comment": "Persist CSS identity accounts and logins in the SQL identity database.",
+      "@id": "urn:undefineds:xpod:DrizzleAccountStorage",
+      "@type": "DrizzleAccountLoginStorage",
+      "identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "tablePrefix": "identity_"
+    },
+    {
+      "comment": "Persist /.internal key/value records in PostgreSQL for clustered deployments.",
+      "@id": "urn:undefineds:xpod:PostgresInternalKeyValueStorage",
+      "@type": "PostgresKeyValueStorage",
+      "connectionString": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "tableName": "internal_kv",
+      "namespace": "/.internal/"
+    },
+    {
+      "comment": "Maintain key hashing semantics while using the PostgreSQL backend.",
+      "@id": "urn:undefineds:xpod:InternalKeyValueStorage",
+      "@type": "MaxKeyLengthStorage",
+      "source": {
+        "@id": "urn:undefineds:xpod:PostgresInternalKeyValueStorage"
+      }
+    },
+    {
+      "comment": "Route core key/value storage through PostgreSQL.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:KeyValueStorage"
+      },
+      "overrideParameters": {
+        "@id": "urn:undefineds:xpod:InternalKeyValueStorage"
+      }
+    },
+    {
+      "comment": "Redis-backed adapter storage for OIDC tokens.",
+      "@id": "urn:undefineds:xpod:RedisInternalKeyValueStorage",
+      "@type": "RedisKeyValueStorage",
+      "client": {
+        "@id": "urn:solid-server:default:variable:redisClient",
+        "@type": "Variable"
+      },
+      "username": {
+        "@id": "urn:solid-server:default:variable:redisUsername",
+        "@type": "Variable"
+      },
+      "password": {
+        "@id": "urn:solid-server:default:variable:redisPassword",
+        "@type": "Variable"
+      },
+      "namespace": "/.internal/",
+      "scanCount": 500
+    },
+    {
+      "comment": "Expose the Redis key/value storage under the expected /.internal/idp/adapter/ path.",
+      "@id": "urn:undefineds:xpod:IdpAdapterContainerStorage",
+      "@type": "ContainerPathStorage",
+      "relativePath": "/idp/adapter/",
+      "source": {
+        "@id": "urn:undefineds:xpod:RedisInternalKeyValueStorage"
+      }
+    },
+    {
+      "comment": "Redis-backed container for forgot password tokens.",
+      "@id": "urn:undefineds:xpod:ForgotPasswordRedisStorage",
+      "@type": "ContainerPathStorage",
+      "relativePath": "/accounts/forgot-password/",
+      "source": {
+        "@id": "urn:undefineds:xpod:RedisInternalKeyValueStorage"
+      }
+    },
+    {
+      "comment": "Redis-backed container for account cookies.",
+      "@id": "urn:undefineds:xpod:CookieRedisContainerStorage",
+      "@type": "ContainerPathStorage",
+      "relativePath": "/accounts/cookies/",
+      "source": {
+        "@id": "urn:undefineds:xpod:RedisInternalKeyValueStorage"
+      }
+    },
+    {
+      "comment": "Store forgot password tokens in Redis with TTL cleanup.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ForgotPasswordStorage"
+      },
+      "overrideParameters": {
+        "@type": "WrappedExpiringStorage",
+        "source": {
+          "@id": "urn:undefineds:xpod:ForgotPasswordRedisStorage"
+        }
+      }
+    },
+    {
+      "comment": "Store account cookies in Redis with TTL cleanup.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:CookieStorage"
+      },
+      "overrideParameters": {
+        "@type": "WrappedExpiringStorage",
+        "source": {
+          "@id": "urn:undefineds:xpod:CookieRedisContainerStorage"
+        }
+      }
+    },
+    {
+      "comment": "Store OIDC adapter state in Redis while keeping the default wrapping behaviour.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IdpAdapterFactory"
+      },
+      "overrideParameters": {
+        "@type": "ClientCredentialsAdapterFactory",
+        "webIdStore": {
+          "@id": "urn:solid-server:default:WebIdStore"
+        },
+        "clientCredentialsStore": {
+          "@id": "urn:solid-server:default:ClientCredentialsStore"
+        },
+        "source": {
+          "@type": "ClientIdAdapterFactory",
+          "@id": "urn:undefineds:xpod:ClientIdAdapterFactory",
+          "converter": {
+            "@id": "urn:solid-server:default:RepresentationConverter"
+          },
+          "source": {
+            "@type": "ExpiringAdapterFactory",
+            "@id": "urn:undefineds:xpod:ExpiringAdapterFactory",
+            "storage": {
+              "@type": "WrappedExpiringStorage",
+              "@id": "urn:undefineds:xpod:WrappedExpiringAdapterStorage",
+              "source": {
+                "@id": "urn:undefineds:xpod:IdpAdapterContainerStorage"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "comment": "Tencent DNS provider for edge node automation",
+      "@id": "urn:undefineds:xpod:TencentDnsProvider",
+      "@type": "TencentDnsProvider",
+      "tokenId": {
+        "@id": "urn:solid-server:default:variable:xpodTencentDnsTokenId",
+        "@type": "Variable"
+      },
+      "token": {
+        "@id": "urn:solid-server:default:variable:xpodTencentDnsToken",
+        "@type": "Variable"
+      },
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:xpodTencentDnsBaseUrl",
+        "@type": "Variable"
+      },
+      "defaultLineId": {
+        "@id": "urn:solid-server:default:variable:xpodTencentDnsDefaultLineId",
+        "@type": "Variable"
+      },
+      "userAgent": {
+        "@value": "Xpod-Cluster"
+      }
+    },
+    {
+      "comment": "Coordinates DNS records for edge nodes",
+      "@id": "urn:undefineds:xpod:EdgeNodeDnsCoordinator",
+      "@type": "EdgeNodeDnsCoordinator",
+      "provider": {
+        "@id": "urn:undefineds:xpod:TencentDnsProvider"
+      },
+      "rootDomain": {
+        "@id": "urn:solid-server:default:variable:xpodDnsRootDomain",
+        "@type": "Variable"
+      },
+      "ttl": {
+        "@id": "urn:solid-server:default:variable:xpodDnsRecordTtl",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Writes DNS-01 TXT records for certificate challenges",
+      "@id": "urn:undefineds:xpod:Dns01CertificateProvisioner",
+      "@type": "Dns01CertificateProvisioner",
+      "provider": {
+        "@id": "urn:undefineds:xpod:TencentDnsProvider"
+      },
+      "rootDomain": {
+        "@id": "urn:solid-server:default:variable:xpodDnsRootDomain",
+        "@type": "Variable"
+      },
+      "ttl": {
+        "@id": "urn:solid-server:default:variable:xpodDnsRecordTtl",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "FRP-based tunnel manager for edge nodes",
+      "@id": "urn:undefineds:xpod:EdgeNodeTunnelManager",
+      "@type": "FrpTunnelManager",
+      "serverHost": {
+        "@id": "urn:solid-server:default:variable:xpodFrpServerHost",
+        "@type": "Variable"
+      },
+      "serverPort": {
+        "@id": "urn:solid-server:default:variable:xpodFrpServerPort",
+        "@type": "Variable"
+      },
+      "token": {
+        "@id": "urn:solid-server:default:variable:xpodFrpToken",
+        "@type": "Variable"
+      },
+      "protocol": {
+        "@id": "urn:solid-server:default:variable:xpodFrpProtocol",
+        "@type": "Variable"
+      },
+      "customDomainSuffix": {
+        "@id": "urn:solid-server:default:variable:xpodFrpCustomDomainSuffix",
+        "@type": "Variable"
+      },
+      "publicScheme": {
+        "@id": "urn:solid-server:default:variable:xpodFrpPublicScheme",
+        "@type": "Variable"
+      },
+      "remotePortBase": {
+        "@id": "urn:solid-server:default:variable:xpodFrpRemotePortBase",
+        "@type": "Variable"
+      },
+      "remotePortStep": {
+        "@id": "urn:solid-server:default:variable:xpodFrpRemotePortStep",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Health probe service for edge nodes",
+      "@id": "urn:undefineds:xpod:EdgeNodeHealthProbeService",
+      "@type": "EdgeNodeHealthProbeService",
+      "identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "enabled": {
+        "@id": "urn:solid-server:default:variable:xpodEdgeHealthProbesEnabled",
+        "@type": "Variable"
+      },
+      "timeoutMs": {
+        "@id": "urn:solid-server:default:variable:xpodEdgeHealthProbeTimeout",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "HTTP endpoint for edge node heartbeats",
+      "@type": "EdgeNodeSignalHttpHandler",
+      "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler",
+      "identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "edgeNodesEnabled": {
+        "@id": "urn:solid-server:default:variable:xpodEdgeNodesEnabled",
+        "@type": "Variable"
+      },
+      "dnsCoordinator": {
+        "@id": "urn:undefineds:xpod:EdgeNodeDnsCoordinator"
+      },
+      "certificateProvisioner": {
+        "@id": "urn:undefineds:xpod:Dns01CertificateProvisioner"
+      },
+      "tunnelManager": {
+        "@id": "urn:undefineds:xpod:EdgeNodeTunnelManager"
+      },
+      "healthProbeService": {
+        "@id": "urn:undefineds:xpod:EdgeNodeHealthProbeService"
+      }
+    },
+    {
+      "comment": "Redirects pod traffic to registered edge nodes",
+      "@type": "EdgeNodeRedirectHttpHandler",
+      "@id": "urn:undefineds:xpod:EdgeNodeRedirectHttpHandler",
+      "identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "edgeNodesEnabled": {
+        "@id": "urn:solid-server:default:variable:xpodEdgeNodesEnabled",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Inject edge-node aware handlers into the HTTP pipeline",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:BaseHttpHandler"
+      },
+      "overrideParameters": {
+        "@id": "urn:undefineds:xpod:EdgeWaterfallHandler",
+        "@type": "WaterfallHandler",
+        "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler"
+          },
+          {
+            "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:StaticAssetHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:OidcHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:NotificationHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:StorageDescriptionHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:AuthResourceHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:IdentityProviderHandler"
+          },
+          {
+            "@id": "urn:undefineds:xpod:EdgeNodeRedirectHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:LdpHandler"
+          }
+        ]
+      }
+    }
+  ]
+}

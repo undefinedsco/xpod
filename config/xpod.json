@@ -1,5 +1,13 @@
 {
-  "@context": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    {
+      "PerAccountQuotaStrategy": "urn:undefineds:xpod:PerAccountQuotaStrategy#",
+      "AcmeCertificateManager": "urn:undefineds:xpod:AcmeCertificateManager#",
+      "FrpcProcessManager": "urn:undefineds:xpod:FrpcProcessManager#"
+    }
+  ],
   "import": [
     "./cli.json",
     "./resolver.json"
@@ -8,7 +16,14 @@
     {
       "comment": "An accessor for a Quadstore",
       "@type": "QuadstoreSparqlDataAccessor",
-      "@id": "urn:undefineds:xpod:QuadstoreSparqlDataAccessor"
+      "@id": "urn:undefineds:xpod:QuadstoreSparqlDataAccessor",
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      }
     },
     {
       "comment": "An accessor for a Minio",
@@ -16,14 +31,178 @@
       "@id": "urn:undefineds:xpod:MinioDataAccessor"
     },
     {
-      "comment": "Uses the configurable logger for logging",
+      "comment": "Replace default landing page with a modern static experience.",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:LoggerFactory"
+        "@id": "urn:solid-server:default:RootStaticAsset"
       },
       "overrideParameters": {
-        "@type": "ConfigurableLoggerFactory",
-        "level": { "@id": "urn:solid-server:default:variable:loggingLevel" }
+        "@type": "StaticAssetEntry",
+        "relativeUrl": "/",
+        "filePath": "./static/landing/index.html",
+        "@id": "urn:undefineds:xpod:RootStaticAsset"
+      }
+    },
+    {
+      "comment": "Modernized identity landing view with bilingual support.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IndexHtml"
+      },
+      "overrideParameters": {
+        "@type": "HtmlViewEntry",
+        "filePath": "./templates/identity/index.html.ejs",
+        "route": {
+          "@id": "urn:solid-server:default:IndexRoute"
+        }
+      }
+    },
+    {
+      "comment": "Reserve admin routes for control plane and prevent conflicting pod IDs.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IdentifierGenerator"
+      },
+      "overrideParameters": {
+        "@type": "ReservedSuffixIdentifierGenerator",
+        "baseUrl": {
+          "@id": "urn:solid-server:default:variable:baseUrl",
+          "@type": "Variable"
+        },
+        "reserved": [
+          "admin"
+        ]
+      }
+    },
+    {
+      "comment": "Enhanced login method selector UI.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:LoginHtml"
+      },
+      "overrideParameters": {
+        "@type": "HtmlViewEntry",
+        "filePath": "./templates/identity/login.html.ejs",
+        "route": {
+          "@id": "urn:solid-server:default:LoginRoute"
+        }
+      }
+    },
+    {
+      "comment": "\u672c\u5730\u5316 OIDC \u6388\u6743\u9875\u9762\u3002",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:OidcConsentHtml"
+      },
+      "overrideParameters": {
+        "@type": "HtmlViewEntry",
+        "filePath": "./templates/identity/oidc/consent.html.ejs",
+        "route": {
+          "@id": "urn:solid-server:default:OidcConsentRoute"
+        }
+      }
+    },
+    {
+      "comment": "Updated password login form with Chinese/English copy.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PasswordLoginHtml"
+      },
+      "overrideParameters": {
+        "@type": "HtmlViewEntry",
+        "filePath": "./templates/identity/password/login.html.ejs",
+        "route": {
+          "@id": "urn:solid-server:default:LoginPasswordRoute"
+        }
+      }
+    },
+    {
+      "comment": "Updated password registration form with bilingual layout.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:RegisterPasswordAccountHtml"
+      },
+      "overrideParameters": {
+        "@type": "HtmlViewEntry",
+        "filePath": "./templates/identity/password/register.html.ejs",
+        "route": {
+          "@id": "urn:solid-server:default:RegisterPasswordRoute"
+        }
+      }
+    },
+    {
+      "comment": "Forgot password flow with bilingual UI.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ForgotPasswordHtml"
+      },
+      "overrideParameters": {
+        "@type": "HtmlViewEntry",
+        "filePath": "./templates/identity/password/forgot.html.ejs",
+        "route": {
+          "@id": "urn:solid-server:default:ForgotPasswordRoute"
+        }
+      }
+    },
+    {
+      "comment": "Quadstore-backed SPARQL subgraph engine",
+      "@type": "SubgraphQueryEngine",
+      "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Serves subgraph-scoped SPARQL endpoints",
+      "@type": "SubgraphSparqlHttpHandler",
+      "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler",
+      "queryEngine": {
+        "@id": "urn:undefineds:xpod:SubgraphQueryEngine"
+      },
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "options_identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "options_defaultAccountBandwidthLimitBps": {
+        "@type": "Literal",
+        "value": 0
+      }
+    },
+    {
+      "comment": "Ensure seeded accounts receive role assignments after seeding completes.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PrimarySequenceInitializer"
+      },
+      "overrideParameters": {
+        "@type": "SequenceHandler",
+        "handlers": [
+          {
+            "@id": "urn:solid-server:default:CleanupInitializer"
+          },
+          {
+            "@id": "urn:solid-server:default:MigrationInitializer"
+          },
+          {
+            "@id": "urn:solid-server:default:BaseUrlVerifier"
+          },
+          {
+            "@id": "urn:solid-server:default:PrimaryParallelInitializer"
+          },
+          {
+            "@id": "urn:solid-server:default:ModuleVersionVerifier"
+          },
+          {
+            "@id": "urn:solid-server:default:WorkerManager"
+          },
+          {
+            "@id": "urn:solid-server:default:SeededAccountInitializer"
+          }
+        ]
       }
     }
   ]

@@ -67,13 +67,12 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Get the public endpoint from the given endpoint.
    */
   private getPublicEndpoint(endpoint: string): string {
-    const url = new URL(endpoint);
-    if (url.protocol === 'sqlite:') {
+    if (endpoint.startsWith('sqlite:')) {
       return endpoint;
-    } else {
-      const host = url.host.split(':')[0];
-      return `${url.protocol}//${host}`;
     }
+    const url = new URL(endpoint);
+    const host = url.host.split(':')[0];
+    return `${url.protocol}//${host}`;
   }
 
   /**

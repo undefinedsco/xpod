@@ -1,0 +1,317 @@
+# Xpod Components Guide
+
+This document provides a comprehensive overview of all custom components developed for Xpod, extending the Community Solid Server (CSS) framework.
+
+## Table of Contents
+
+- [Storage Components](#storage-components)
+- [Identity & Authentication](#identity--authentication)
+- [Quota & Usage Management](#quota--usage-management)
+- [Edge & Cloud Coordination](#edge--cloud-coordination)
+- [HTTP Handlers](#http-handlers)
+- [Utility Components](#utility-components)
+
+## Storage Components
+
+### MixDataAccessor
+- **Path**: `src/storage/accessors/MixDataAccessor.ts`
+- **Purpose**: Unified storage interface combining structured and unstructured data access
+- **Functionality**: Routes structured resources (RDF, JSON-LD) to Quadstore, unstructured files to MinIO/FileSystem
+- **Configuration**: Uses `sparqlEndpoint` for structured data, `unstructuredDataAccessor` for files
+- **Deployment**: All modes (local uses FileDataAccessor, server uses MinioDataAccessor)
+
+### MinioDataAccessor
+- **Path**: `src/storage/accessors/MinioDataAccessor.ts`
+- **Purpose**: S3-compatible object storage backend
+- **Environment Variables**: 
+  - `CSS_MINIO_ENDPOINT` - MinIO server endpoint
+  - `CSS_MINIO_ACCESS_KEY` - Access key for authentication
+  - `CSS_MINIO_SECRET_KEY` - Secret key for authentication
+  - `CSS_MINIO_BUCKET_NAME` - Bucket name for storage
+- **Functionality**: Handles file upload, download, deletion with S3 API
+- **Deployment**: Server mode only
+
+### QuadstoreSparqlDataAccessor
+- **Path**: `src/storage/accessors/QuadstoreSparqlDataAccessor.ts`
+- **Purpose**: SPARQL query capabilities over RDF data stored in relational databases
+- **Environment Variables**: `CSS_SPARQL_ENDPOINT` (supports SQLite, PostgreSQL, MySQL)
+- **Functionality**: Converts RDF resources to quads for database storage, supports SPARQL queries
+- **Deployment**: All modes (SQLite locally, PostgreSQL in server)
+
+### RepresentationPartialConvertingStore
+- **Path**: `src/storage/RepresentationPartialConvertingStore.ts`
+- **Purpose**: Content-type conversion for storage compatibility
+- **Functionality**: Converts incoming representations to quads for quadstore-backed resources
+- **Integration**: Used in ResourceStore chains for both local and server modes
+
+### UsageTrackingStore
+- **Path**: `src/storage/quota/UsageTrackingStore.ts`
+- **Purpose**: Bandwidth and storage usage monitoring wrapper
+- **Functionality**: 
+  - Tracks ingress/egress bytes for all resource operations
+  - Records usage in `identity_account_usage` and `identity_pod_usage` tables
+  - Applies bandwidth throttling via `BandwidthThrottleTransform`
+- **Deployment**: Server mode only
+
+## Identity & Authentication
+
+### DrizzleAccountLoginStorage
+- **Path**: `src/identity/drizzle/DrizzleAccountLoginStorage.ts`
+- **Purpose**: Database-backed account authentication and management
+- **Schema**: `src/identity/drizzle/schema.ts`
+- **Tables**:
+  - `identity_account` - User accounts with login credentials
+  - `identity_account_role` - Role-based access control (admin, user, etc.)
+  - `identity_pod` - Pod metadata and ownership mapping
+- **Functionality**: Account creation, authentication, role management
+- **Deployment**: Server mode (PostgreSQL), also available for local testing
+
+### DrizzleAccountStorage
+- **Path**: `src/identity/drizzle/DrizzleAccountStorage.ts`
+- **Purpose**: Account data persistence layer for clustered deployments
+- **Integration**: Replaces CSS file-based account storage in server mode
+- **Functionality**: CRUD operations for accounts, pods, and roles
+
+## Quota & Usage Management
+
+### PerAccountQuotaStrategy
+- **Path**: `src/storage/quota/PerAccountQuotaStrategy.ts`
+- **Purpose**: Per-account storage quota enforcement
+- **Configuration**: 
+  - `defaultAccountQuotaBytes` - Default quota (10GB in server mode)
+  - `quotaService` - Service for custom quota logic
+- **Functionality**: Checks available quota before writes, rejects over-quota operations
+- **Deployment**: Server mode only
+
+### DefaultQuotaService / DrizzleQuotaService / NoopQuotaService
+- **Path**: `src/quota/`
+- **Purpose**: Different quota enforcement strategies
+- **DefaultQuotaService**: In-memory quota tracking with configurable defaults
+- **DrizzleQuotaService**: Database-backed quota with per-account overrides
+- **NoopQuotaService**: Disabled quota checking (local mode)
+
+### BandwidthThrottleTransform
+- **Path**: `src/util/stream/BandwidthThrottleTransform.ts`
+- **Purpose**: Network bandwidth limiting for resource streams
+- **Configuration**: `defaultAccountBandwidthLimitBps` (10 MiB/s default)
+- **Functionality**: Rate-limits read/write streams based on account quotas
+
+## Edge & Cloud Coordination
+
+### EdgeNodeAgent
+- **Path**: `src/edge/EdgeNodeAgent.ts`
+- **Purpose**: Coordinates local nodes with server instances
+- **Functionality**: 
+  - Heartbeat reporting to server
+  - Certificate management integration
+  - Tunnel configuration synchronization
+- **Deployment**: Local mode with edge coordination enabled
+
+### EdgeNodeDnsCoordinator
+- **Path**: `src/edge/EdgeNodeDnsCoordinator.ts`
+- **Purpose**: Dynamic DNS management for edge nodes
+- **Integration**: Works with DNS providers (Tencent, Cloudflare, etc.)
+- **Functionality**: Automatic A/AAAA record updates for node IP changes
+
+### Dns01CertificateProvisioner
+- **Path**: `src/edge/Dns01CertificateProvisioner.ts`
+- **Purpose**: Automatic ACME certificate management with DNS-01 challenge
+- **Functionality**: 
+  - Certificate issuance and renewal
+  - DNS challenge automation
+  - Certificate distribution to edge nodes
+
+### FrpTunnelManager
+- **Path**: `src/edge/FrpTunnelManager.ts`
+- **Purpose**: FRP tunnel management for nodes behind NAT
+- **Functionality**: 
+  - Automatic frpc configuration generation
+  - Tunnel health monitoring
+  - Fallback routing for unreachable nodes
+
+## HTTP Handlers
+
+### AdminConsoleHttpHandler
+- **Path**: `src/http/admin/AdminConsoleHttpHandler.ts`
+- **Purpose**: Web-based administration interface
+- **Endpoints**: `/admin/*` routes for account/pod management
+- **Authentication**: Requires admin role in `identity_account_role` table
+- **Deployment**: Can be enabled in any mode, disabled by default
+
+### QuotaAdminHttpHandler
+- **Path**: `src/http/quota/QuotaAdminHttpHandler.ts`
+- **Purpose**: RESTful quota management API
+- **Endpoints**: `/api/quota/*` for quota CRUD operations
+- **Authentication**: Admin Bearer token required for write operations
+- **Deployment**: Server mode only
+
+### EdgeNodeSignalHttpHandler
+- **Path**: `src/http/admin/EdgeNodeSignalHttpHandler.ts`
+- **Purpose**: Edge node coordination API
+- **Endpoints**: `/signal/*` for node registration and configuration
+- **Functionality**: 
+  - Node heartbeat handling
+  - Configuration distribution
+  - Status monitoring
+- **Deployment**: Server mode with edge coordination
+
+### SubgraphSparqlHttpHandler
+- **Path**: `src/http/SubgraphSparqlHttpHandler.ts`
+- **Purpose**: Per-account SPARQL endpoints with usage tracking
+- **Endpoints**: `/.sparql` for SPARQL queries
+- **Functionality**: 
+  - Account-scoped RDF data access
+  - Bandwidth usage recording
+  - Query result streaming with throttling
+- **Deployment**: All modes (bandwidth tracking in server mode only)
+
+## Utility Components
+
+### ConfigurableLoggerFactory
+- **Path**: `src/logging/ConfigurableLoggerFactory.ts`
+- **Purpose**: Enhanced logging with configurable output formats
+- **Configuration**: `config/logging/configurable.json`
+- **Features**: JSON structured logging, custom formatters, log level control
+
+### PostgresKeyValueStorage
+- **Path**: `src/storage/keyvalue/PostgresKeyValueStorage.ts`
+- **Purpose**: PostgreSQL-backed key-value store for clustering
+- **Design**: Uses TEXT columns with JSON strings for cross-database compatibility
+- **Deployment**: Server mode for session storage and caching
+
+## Configuration Architecture
+
+### Component Loading
+All components follow CSS's Components.js dependency injection pattern:
+
+1. **Component Discovery**: TypeScript decorators define injectable components
+2. **Context Registration**: `dist/components/context.jsonld` maps simplified names
+3. **Configuration**: JSON-LD files in `config/` wire dependencies
+4. **Environment Variables**: `urn:solid-server:default:variable:*` pattern maps to `CSS_*` env vars
+
+### Deployment Mode Differences
+
+| Component | Local Mode | Server Mode |
+|-----------|------------|-------------|
+| Storage | SQLite + FileSystem | PostgreSQL + MinIO |
+| Authentication | File-based accounts | Database accounts |
+| Quota | NoopQuotaService | PerAccountQuotaStrategy |
+| Usage Tracking | Disabled | Full bandwidth/storage monitoring |
+| Edge Features | Optional via Agent | Built-in coordination |
+
+### Key Configuration Files
+
+- `config/main.*.json` - Core CSS imports and overrides
+- `config/extensions.*.json` - Xpod component configurations
+- `config/xpod.json` - Common component definitions
+- `config/xpod.cluster.json` - Cluster-specific components
+
+## Data Layer Architecture
+
+### Database Technology Strategy
+
+Xpod uses a **layered database approach** that combines different ORMs for optimal performance and maintainability:
+
+#### Bottom Layer: Knex.js (Infrastructure)
+**Purpose**: High-performance, cross-database infrastructure components
+**Use Cases**:
+- **SQLUp**: Universal key-value storage supporting SQLite/PostgreSQL/MySQL
+- **Quadstore Backend**: RDF data storage with binary/streaming requirements
+- **Performance-critical paths**: Large data processing, streaming operations
+- **Cross-database compatibility**: Components that need to work across different databases
+
+**Characteristics**:
+- Direct SQL control for maximum performance
+- Mature cross-database abstraction layer
+- Handles complex data types (binary, RDF quads)
+- Minimal abstraction overhead
+
+```typescript
+// Example: SQLUp infrastructure component
+class SQLUp<T extends TFormat> extends AbstractLevel<T> {
+  private db: Knex; // Direct SQL for performance
+  
+  async _put(key: T, value: T) {
+    await this.db.insert({key, value}).into(this.tableName);
+  }
+}
+```
+
+#### Top Layer: Drizzle ORM (Business Logic)
+**Purpose**: Type-safe business entity management with rich relationships
+**Use Cases**:
+- **Account Management**: Users, roles, permissions
+- **Pod Management**: Pod metadata, ownership mapping
+- **Admin Operations**: Complex business queries with joins
+- **API Endpoints**: HTTP handler data operations
+
+**Characteristics**:
+- Full TypeScript type safety
+- Automatic relationship handling
+- Schema migrations and validation
+- Developer-friendly APIs
+
+```typescript
+// Example: Business logic component
+class AccountRepository {
+  constructor(private db: DrizzleDatabase) {}
+  
+  async createAccountWithRole(data: CreateAccountData, role: string) {
+    return this.db.transaction(async (tx) => {
+      const account = await tx.insert(identityAccount).values(data);
+      await tx.insert(identityAccountRole).values({accountId: account.id, role});
+      return account;
+    });
+  }
+}
+```
+
+### Technology Selection Guidelines
+
+| Criteria | Use Knex.js | Use Drizzle ORM |
+|----------|-------------|-----------------|
+| **Data Complexity** | Simple key-value, binary data | Structured business objects |
+| **Performance Needs** | High-throughput, streaming | Standard CRUD operations |
+| **Type Safety** | Infrastructure (stable APIs) | Business logic (frequent changes) |
+| **Cross-DB Support** | Must work on SQLite+PostgreSQL | PostgreSQL primary, SQLite optional |
+| **Development Team** | Framework maintainers | Business feature developers |
+| **Query Complexity** | Custom SQL, optimized queries | Standard relationships, joins |
+
+### Migration Strategy
+
+**Bottom-up approach**: Infrastructure components can gradually adopt Drizzle without breaking existing functionality:
+
+1. **Keep stable infrastructure on Knex**: SQLUp, Quadstore backends
+2. **New business features use Drizzle**: Account management, admin APIs
+3. **Gradual migration**: Move business logic from Knex to Drizzle as needed
+4. **No forced unification**: Mixed approach is acceptable long-term
+
+This strategy provides **performance where needed** and **developer experience where it matters most**.
+
+## Development Guidelines
+
+### Adding New Components
+
+1. **Choose appropriate data layer**:
+   - Infrastructure/performance-critical → Knex.js
+   - Business logic/type-safety critical → Drizzle ORM
+2. **Create TypeScript class** with appropriate CSS decorators
+3. **Add to context** by running `yarn build:components`
+4. **Configure in JSON-LD** using simplified component names
+5. **Add environment variables** following CSS variable naming pattern
+6. **Update documentation** in this file and CLAUDE.md
+
+### Testing Components
+
+- **Unit tests**: Test individual component logic
+- **Integration tests**: Test component interactions with CSS framework
+- **Deployment tests**: Verify components work in target deployment modes
+- **Database tests**: Test both Knex and Drizzle components with appropriate databases
+
+### Common Patterns
+
+- **Store Wrappers**: Extend CSS store interfaces for additional functionality
+- **Handler Chains**: Use WaterfallHandler pattern for request processing
+- **Override Pattern**: Replace default CSS components with Xpod implementations
+- **Environment Integration**: Use Variable types for configuration flexibility
+- **Layered Data Access**: Infrastructure uses Knex, business logic uses Drizzle

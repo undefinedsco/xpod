@@ -96,6 +96,174 @@
             "type": "string",
             "describe": "The auth pass for the email server."
           }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "identityDbUrl",
+          "options": {
+            "type": "string",
+            "describe": "Connection string for the identity metadata database."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodEdition",
+          "options": {
+            "type": "string",
+            "describe": "Admin console edition (local or server)."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodSignalEndpoint",
+          "options": {
+            "type": "string",
+            "describe": "WebSocket endpoint for edge node signaling."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodEdgeNodesEnabled",
+          "options": {
+            "type": "boolean",
+            "describe": "Enable edge node registry and routing."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodTencentDnsTokenId",
+          "options": {
+            "type": "string",
+            "describe": "Tencent DNSPod API token ID."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodTencentDnsToken",
+          "options": {
+            "type": "string",
+            "describe": "Tencent DNSPod API token secret."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodTencentDnsBaseUrl",
+          "options": {
+            "type": "string",
+            "describe": "Tencent DNSPod API base URL."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodTencentDnsDefaultLineId",
+          "options": {
+            "type": "string",
+            "describe": "Tencent DNSPod record line ID."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodDnsRootDomain",
+          "options": {
+            "type": "string",
+            "describe": "Root domain managed by the DNS coordinator."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodDnsRecordTtl",
+          "options": {
+            "type": "number",
+            "describe": "Default TTL (seconds) for managed DNS records."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodTunnelEntrypoints",
+          "options": {
+            "type": "string",
+            "describe": "Comma separated list of tunnel entrypoints."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodEdgeHealthProbesEnabled",
+          "options": {
+            "type": "boolean",
+            "describe": "Enable periodic edge node reachability probes."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodEdgeHealthProbeTimeout",
+          "options": {
+            "type": "number",
+            "describe": "Timeout (ms) for edge node reachability probes."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodFrpServerHost",
+          "options": {
+            "type": "string",
+            "describe": "frps server host for tunnel fallback."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodFrpServerPort",
+          "options": {
+            "type": "number",
+            "describe": "frps server port for tunnel fallback."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodFrpToken",
+          "options": {
+            "type": "string",
+            "describe": "frps authentication token."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodFrpProtocol",
+          "options": {
+            "type": "string",
+            "describe": "frp proxy protocol (tcp/http/etc)."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodFrpCustomDomainSuffix",
+          "options": {
+            "type": "string",
+            "describe": "Domain suffix for frp HTTP custom domains."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodFrpPublicScheme",
+          "options": {
+            "type": "string",
+            "describe": "Public scheme advertised for frp custom domains."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodFrpRemotePortBase",
+          "options": {
+            "type": "number",
+            "describe": "Base remote port for frp tcp proxies when custom domain unavailable."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodFrpRemotePortStep",
+          "options": {
+            "type": "number",
+            "describe": "Step size for allocating frp remote ports."
+          }
         }
       ]
     }

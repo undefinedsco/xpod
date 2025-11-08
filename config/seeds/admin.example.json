@@ -1,0 +1,11 @@
+[
+  {
+    "email": "admin@undefineds.co",
+    "password": "ChangeMe123!",
+    "pods": [
+      {
+        "name": "admin"
+      }
+    ]
+  }
+]

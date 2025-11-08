@@ -1,0 +1,11 @@
+[
+  {
+    "email": "test-integration@example.com",
+    "password": "TestIntegration123!",
+    "pods": [
+      {
+        "name": "test-pod"
+      }
+    ]
+  }
+]

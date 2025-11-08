@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*",
+    "ui/admin/src/**/*",
+    "tests/**/*"
+  ]
+}

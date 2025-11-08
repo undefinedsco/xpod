@@ -1,0 +1,95 @@
+{
+  "brand": "Xpod 控制台",
+  "navigation": {
+    "dashboard": "总览",
+    "accounts": "账户",
+    "pods": "Pod 列表",
+    "nodes": "我的节点",
+    "quota": "额度与计费",
+    "security": "安全与配置",
+    "logs": "日志概览"
+  },
+  "actions": {
+    "changeLanguage": "语言",
+    "toggleTheme": "切换主题",
+    "copy": "复制"
+  },
+  "layout": {
+    "edition": {
+      "cluster": "集群版",
+      "local": "本地版"
+    },
+    "beta": "预览"
+  },
+  "dashboard": {
+    "title": "系统总览",
+    "comingSoon": "配置完成后将在此展示更详细的指标。"
+  },
+  "nodes": {
+    "title": "我的节点",
+    "summary": "为本地部署的 CSS 节点颁发身份，并接入统一的信令与网关。",
+    "noticeDomain": "本地实例必须使用集群统一维护的 baseUrl（通常与 CSS baseUrl 相同），禁止直接暴露临时 IP。",
+    "noticeToken": "注册令牌只显示一次，请立即复制并保存至安全位置，在本地启动参数中引用。",
+    "baseUrlUnset": "尚未配置公共 baseUrl。",
+    "signalEndpointUnset": "尚未配置信令服务地址。",
+    "disabled": "边缘节点功能未启用。请联系运维开启 XPOD_EDGE_NODES_ENABLED 或配置信令服务。",
+    "connection": {
+      "title": "连接参数",
+      "domain": "CSS baseUrl",
+      "signal": "信令服务地址"
+    },
+    "create": {
+      "title": "创建边缘节点",
+      "subtitle": "为每台本地 CSS 生成一个长期节点身份，系统会返回一次性注册令牌。",
+      "displayName": "显示名称（可选）",
+      "placeholder": "如：上海机房 A 节点",
+      "creating": "生成中…",
+      "action": "生成注册令牌",
+      "tokenGenerated": "已生成注册令牌",
+      "tokenHint": "请妥善保存，下次无法再次查看。",
+      "nodeId": "节点 ID",
+      "token": "注册令牌"
+    },
+    "errorUnauthorized": "未授权，请使用管理员账户登录后重试。",
+    "errorFetch": "获取节点列表失败（状态 {{status}}）。",
+    "errorCreate": "创建节点失败（状态 {{status}}）。",
+    "loading": "正在加载节点列表…",
+    "empty": "当前尚未注册任何边缘节点。",
+    "table": {
+      "node": "节点名称",
+      "identifier": "节点 ID",
+      "endpoint": "访问入口",
+      "pods": "托管 Pod 数",
+      "createdAt": "创建时间",
+      "lastSeen": "最后心跳",
+      "unnamed": "未命名节点",
+      "endpointUnset": "尚未上报访问地址"
+    }
+  },
+  "accounts": {
+    "title": "账户管理",
+    "summary": "统一管理账户、额度与 Pod 归属。",
+    "empty": "尚未检测到账户。"
+  },
+  "pods": {
+    "title": "Pod 管理",
+    "summary": "跟踪 Pod 使用量、额度来源与挂载资源。",
+    "empty": "尚未注册 Pod。"
+  },
+  "quota": {
+    "title": "额度与计费",
+    "summary": "连接计费系统，并调整账户或 Pod 的额度。"
+  },
+  "security": {
+    "title": "安全与配置",
+    "summary": "管理 API Token、导出审计日志、执行运维操作。"
+  },
+  "logs": {
+    "title": "日志概览",
+    "summary": "近期的运行活动会展示在此。"
+  },
+  "edition": {
+    "clusterOnly": "仅在集群模式可用",
+    "localHint": "该能力在本地配置中已禁用。"
+  }
+}

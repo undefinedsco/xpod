@@ -1,0 +1,103 @@
+<h1>应用请求访问权限</h1>
+<p class="error" id="error"></p>
+<p>
+  检查下列信息，确认该应用是否可信并允许其以你的身份读写数据。
+</p>
+<dl id="client"></dl>
+<form method="post" id="mainForm">
+  <fieldset>
+    <legend>选择要授权的 WebID</legend>
+    <ol id="webIdList">
+    </ol>
+  </fieldset>
+
+  <fieldset>
+    <ol>
+      <li class="checkbox">
+        <label><input type="checkbox" name="remember" value="true" checked>记住该应用的授权决定</label>
+      </li>
+    </ol>
+  </fieldset>
+
+  <p class="actions">
+    <button id="authorize" type="submit" disabled autofocus>允许访问</button>
+    <button id="cancel" type="button">拒绝</button>
+    <button id="edit-account" type="button" class="alternate">管理账号</button>
+    <button id="switch-account" type="button" class="alternate">切换其他账号</button>
+  </p>
+</form>
+
+<script>
+  const elements = getElements();
+
+  (async() => {
+    const controls = await fetchControls('<%= idpIndex %>');
+
+    wireButtons(controls);
+
+    const { webIds } = await fetchJson(controls.oidc.webId);
+    if (webIds.length === 0) {
+      setError('当前账号尚未绑定任何 WebID，请先在账号设置中添加。');
+    }
+    setVisibility('authorize', webIds.length > 0);
+
+    for (const webId of webIds) {
+      webIdList.insertAdjacentHTML('beforeend', `
+        <li class="radio">
+          <label for="${webId}">
+            <input id="${webId}" type="radio" name="webId" value="${webId}" ${webIds.length === 1 ? 'checked' : ''}>
+            ${webId}
+          </label>
+        </li>`);
+    }
+
+    const { client } = await fetchJson(controls.oidc.consent);
+    showClientInfo('应用名称', client.client_name);
+    showClientInfo('客户端 ID', client.client_id);
+
+    addPostListener(() => consent(controls));
+  })();
+
+  function wireButtons(controls) {
+    elements.cancel.addEventListener('click', async() => {
+      const res = await fetch(controls.oidc.cancel, { method: 'POST' });
+      location.href = (await res.json()).location;
+    });
+    setRedirectClick('edit-account', controls.html.account.account);
+    elements['switch-account'].addEventListener('click', async() => {
+      await fetch(controls.account.logout, { method: 'POST' });
+      location.href = controls.html.main.login;
+    });
+  }
+
+  function showClientInfo(label, value) {
+    if (value) {
+      elements.client.insertAdjacentHTML('beforeend', `<dt>${label}</dt><dd>${value}</dd>`);
+    }
+  }
+
+  async function consent(controls) {
+    const formData = new FormData(elements.mainForm);
+    let res = await postJson(controls.oidc.webId, { webId: formData.get('webId') });
+    let json = await res.json();
+    if (res.status !== 200) {
+      elements.error.innerText = json.message;
+      return;
+    }
+
+    res = await fetch(json.location);
+    if (res.status !== 200) {
+      json = await res.json();
+      elements.error.innerText = json.message;
+      return;
+    }
+
+    res = await postJson(controls.oidc.consent, { remember: Boolean(formData.get('remember')) });
+    json = await res.json();
+    if (res.status !== 200) {
+      elements.error.innerText = json.message;
+      return;
+    }
+    location.href = json.location;
+  }
+</script>

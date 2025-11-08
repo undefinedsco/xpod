@@ -85,7 +85,8 @@ export class SQLUp<T extends TFormat, K = string, V = string> extends AbstractLe
           client: 'sqlite3',
           connection: {
             filename: filename
-          }
+          },
+          useNullAsDefault: true
         });
       } else if (parsedUrl.protocol === 'postgresql:') {
         this.db = knex({

@@ -16,34 +16,72 @@
       "overrideParameters": {
         "@type": "BaseEmailSender",
         "senderName": "Undefineds Support Team <support@undefineds.co>",
-        "emailConfig_host": {"@id": "urn:solid-server:default:variable:emailConfigHost", "@type": "Variable"},
-        "emailConfig_port": {"@id": "urn:solid-server:default:variable:emailConfigPort", "@type": "Variable"},
-        "emailConfig_auth_user": {"@id": "urn:solid-server:default:variable:emailConfigAuthUser", "@type": "Variable"},
-        "emailConfig_auth_pass": {"@id": "urn:solid-server:default:variable:emailConfigAuthPass", "@type": "Variable"}
+        "emailConfig_host": {
+          "@id": "urn:solid-server:default:variable:emailConfigHost",
+          "@type": "Variable"
+        },
+        "emailConfig_port": {
+          "@id": "urn:solid-server:default:variable:emailConfigPort",
+          "@type": "Variable"
+        },
+        "emailConfig_auth_user": {
+          "@id": "urn:solid-server:default:variable:emailConfigAuthUser",
+          "@type": "Variable"
+        },
+        "emailConfig_auth_pass": {
+          "@id": "urn:solid-server:default:variable:emailConfigAuthPass",
+          "@type": "Variable"
+        }
       }
     },
     {
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
-      "endpoint": { "@id": "urn:solid-server:default:variable:sparqlEndpoint" },
-      "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-      "unstructuredDataAccessor": { "@id": "urn:undefineds:xpod:RemoteDataAccessor" }
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      },
+      "unstructuredDataAccessor": {
+        "@id": "urn:undefineds:xpod:RemoteDataAccessor"
+      }
     },
     {
       "@id": "urn:undefineds:xpod:RemoteDataAccessor",
       "@type": "MinioDataAccessor",
-      "resourceMapper": { "@id": "urn:solid-server:default:FileIdentifierMapper" },
-      "accessKey": { "@id": "urn:solid-server:default:variable:minioAccessKey", "@type": "Variable" },
-      "secretKey": { "@id": "urn:solid-server:default:variable:minioSecretKey", "@type": "Variable" },
-      "endpoint": { "@id": "urn:solid-server:default:variable:minioEndpoint", "@type": "Variable" },
-      "bucketName": { "@id": "urn:solid-server:default:variable:minioBucketName", "@type": "Variable" }
+      "resourceMapper": {
+        "@id": "urn:solid-server:default:FileIdentifierMapper"
+      },
+      "accessKey": {
+        "@id": "urn:solid-server:default:variable:minioAccessKey",
+        "@type": "Variable"
+      },
+      "secretKey": {
+        "@id": "urn:solid-server:default:variable:minioSecretKey",
+        "@type": "Variable"
+      },
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:minioEndpoint",
+        "@type": "Variable"
+      },
+      "bucketName": {
+        "@id": "urn:solid-server:default:variable:minioBucketName",
+        "@type": "Variable"
+      }
     },
     {
       "@id": "urn:undefineds:xpod:ResourceStore_Locking",
       "@type": "LockingResourceStore",
-      "source": { "@id": "urn:solid-server:default:ResourceStore_Patching" },
-      "locks": { "@id": "urn:solid-server:default:ResourceLocker" },
-      "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" }
+      "source": {
+        "@id": "urn:solid-server:default:ResourceStore_Patching"
+      },
+      "locks": {
+        "@id": "urn:solid-server:default:ResourceLocker"
+      },
+      "auxiliaryStrategy": {
+        "@id": "urn:solid-server:default:AuxiliaryStrategy"
+      }
     },
     {
       "comment": "Change the default locking resource store to ours",
@@ -53,7 +91,9 @@
       },
       "overrideParameters": {
         "@type": "IndexRepresentationStore",
-        "source": { "@id": "urn:undefineds:xpod:ResourceStore_Locking" }
+        "source": {
+          "@id": "urn:undefineds:xpod:ResourceStore_Locking"
+        }
       }
     },
     {
@@ -63,18 +103,30 @@
       },
       "overrideParameters": {
         "@type": "RepresentationPartialConvertingStore",
-        "metadataStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-        "options_inConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
+        "metadataStrategy": {
+          "@id": "urn:solid-server:default:AuxiliaryStrategy"
+        },
+        "options_inConverter": {
+          "@id": "urn:solid-server:default:RepresentationConverter"
+        },
         "options_inPreferences_type": {
           "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
           "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
         },
         "source": {
           "@type": "DataAccessorBasedStore",
-          "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-          "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-          "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-          "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+          "identifierStrategy": {
+            "@id": "urn:solid-server:default:IdentifierStrategy"
+          },
+          "auxiliaryStrategy": {
+            "@id": "urn:solid-server:default:AuxiliaryStrategy"
+          },
+          "metadataStrategy": {
+            "@id": "urn:solid-server:default:MetadataStrategy"
+          },
+          "accessor": {
+            "@id": "urn:undefineds:xpod:MixDataAccessor"
+          }
         }
       }
     }

@@ -1,12 +1,28 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    {
+      "UsageTrackingStore": "urn:undefineds:xpod:UsageTrackingStore#",
+      "PerAccountQuotaStrategy": "urn:undefineds:xpod:PerAccountQuotaStrategy#",
+      "DrizzleQuotaService": "urn:undefineds:xpod:DrizzleQuotaService#",
+      "DefaultQuotaService": "urn:undefineds:xpod:DefaultQuotaService#"
+    }
   ],
   "import": [
-    "./xpod.json"
+    "./xpod.json",
+    "./xpod.cluster.json"
   ],
   "@graph": [
+    {
+      "comment": "Default quota limits (in-memory overrides)",
+      "@id": "urn:undefineds:xpod:QuotaService",
+      "@type": "DefaultQuotaService",
+      "DefaultQuotaService:_options_defaultAccountQuotaBytes": {
+        "@type": "Literal",
+        "value": 10737418240
+      }
+    },
     {
       "comment": "The settings of your email server.",
       "@type": "Override",
@@ -16,27 +32,59 @@
       "overrideParameters": {
         "@type": "BaseEmailSender",
         "senderName": "Undefineds Support Team <support@undefineds.co>",
-        "emailConfig_host": {"@id": "urn:solid-server:default:variable:emailConfigHost", "@type": "Variable"},
-        "emailConfig_port": {"@id": "urn:solid-server:default:variable:emailConfigPort", "@type": "Variable"},
-        "emailConfig_auth_user": {"@id": "urn:solid-server:default:variable:emailConfigAuthUser", "@type": "Variable"},
-        "emailConfig_auth_pass": {"@id": "urn:solid-server:default:variable:emailConfigAuthPass", "@type": "Variable"}
+        "emailConfig_host": {
+          "@id": "urn:solid-server:default:variable:emailConfigHost",
+          "@type": "Variable"
+        },
+        "emailConfig_port": {
+          "@id": "urn:solid-server:default:variable:emailConfigPort",
+          "@type": "Variable"
+        },
+        "emailConfig_auth_user": {
+          "@id": "urn:solid-server:default:variable:emailConfigAuthUser",
+          "@type": "Variable"
+        },
+        "emailConfig_auth_pass": {
+          "@id": "urn:solid-server:default:variable:emailConfigAuthPass",
+          "@type": "Variable"
+        }
       }
     },
     {
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
-      "endpoint": { "@id": "urn:solid-server:default:variable:sparqlEndpoint" },
-      "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-      "unstructuredDataAccessor": { "@id": "urn:undefineds:xpod:RemoteDataAccessor" }
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      },
+      "unstructuredDataAccessor": {
+        "@id": "urn:undefineds:xpod:RemoteDataAccessor"
+      }
     },
     {
       "@id": "urn:undefineds:xpod:RemoteDataAccessor",
       "@type": "MinioDataAccessor",
-      "resourceMapper": { "@id": "urn:solid-server:default:FileIdentifierMapper" },
-      "accessKey": { "@id": "urn:solid-server:default:variable:minioAccessKey", "@type": "Variable" },
-      "secretKey": { "@id": "urn:solid-server:default:variable:minioSecretKey", "@type": "Variable" },
-      "endpoint": { "@id": "urn:solid-server:default:variable:minioEndpoint", "@type": "Variable" },
-      "bucketName": { "@id": "urn:solid-server:default:variable:minioBucketName", "@type": "Variable" }
+      "resourceMapper": {
+        "@id": "urn:solid-server:default:FileIdentifierMapper"
+      },
+      "accessKey": {
+        "@id": "urn:solid-server:default:variable:minioAccessKey",
+        "@type": "Variable"
+      },
+      "secretKey": {
+        "@id": "urn:solid-server:default:variable:minioSecretKey",
+        "@type": "Variable"
+      },
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:minioEndpoint",
+        "@type": "Variable"
+      },
+      "bucketName": {
+        "@id": "urn:solid-server:default:variable:minioBucketName",
+        "@type": "Variable"
+      }
     },
     {
       "comment": "The setting of your locker expiration",
@@ -57,9 +105,18 @@
       },
       "overrideParameters": {
         "@type": "RedisLocker",
-        "redisClient": { "@id": "urn:solid-server:default:variable:redisClient", "@type": "Variable" },
-        "redisSettings_username": { "@id": "urn:solid-server:default:variable:redisUsername", "@type": "Variable" },
-        "redisSettings_password": { "@id": "urn:solid-server:default:variable:redisPassword", "@type": "Variable" }
+        "redisClient": {
+          "@id": "urn:solid-server:default:variable:redisClient",
+          "@type": "Variable"
+        },
+        "redisSettings_username": {
+          "@id": "urn:solid-server:default:variable:redisUsername",
+          "@type": "Variable"
+        },
+        "redisSettings_password": {
+          "@id": "urn:solid-server:default:variable:redisPassword",
+          "@type": "Variable"
+        }
       }
     },
     {
@@ -69,19 +126,177 @@
       },
       "overrideParameters": {
         "@type": "RepresentationPartialConvertingStore",
-        "metadataStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-        "options_inConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
+        "metadataStrategy": {
+          "@id": "urn:solid-server:default:AuxiliaryStrategy"
+        },
+        "options_inConverter": {
+          "@id": "urn:solid-server:default:RepresentationConverter"
+        },
         "options_inPreferences_type": {
           "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
           "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
         },
         "source": {
-          "@type": "DataAccessorBasedStore",
-          "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-          "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-          "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-          "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+          "@type": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore",
+          "UsageTrackingStore:source": {
+            "@type": "DataAccessorBasedStore",
+            "identifierStrategy": {
+              "@id": "urn:solid-server:default:IdentifierStrategy"
+            },
+            "auxiliaryStrategy": {
+              "@id": "urn:solid-server:default:AuxiliaryStrategy"
+            },
+            "metadataStrategy": {
+              "@id": "urn:solid-server:default:MetadataStrategy"
+            },
+            "accessor": {
+              "@id": "urn:undefineds:xpod:MixDataAccessor"
+            }
+          },
+          "UsageTrackingStore:options_identityDbUrl": {
+            "@id": "urn:solid-server:default:variable:identityDbUrl",
+            "@type": "Variable"
+          },
+          "UsageTrackingStore:options_defaultAccountBandwidthLimitBps": {
+            "@type": "Literal",
+            "value": 10485760
+          }
         }
+      }
+    },
+    {
+      "comment": "Override default ResourceStore for Pod creation - keep MonitoringStore wrapper",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ResourceStore"
+      },
+      "overrideParameters": {
+        "@type": "MonitoringStore",
+        "source": {
+          "@type": "BinarySliceResourceStore",
+          "defaultSliceSize": 10000000,
+          "source": {
+            "@type": "IndexRepresentationStore",
+            "source": {
+              "@type": "LockingResourceStore",
+              "source": {
+                "@type": "PatchingStore",
+                "source": {
+                  "@type": "RepresentationConvertingStore",
+                  "source": {
+                    "@type": "RepresentationPartialConvertingStore",
+                    "metadataStrategy": {
+                      "@id": "urn:solid-server:default:AuxiliaryStrategy"
+                    },
+                    "options_inConverter": {
+                      "@id": "urn:solid-server:default:RepresentationConverter"
+                    },
+                    "options_inPreferences_type": {
+                      "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
+                      "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
+                    },
+                    "source": {
+                      "@type": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore",
+                      "UsageTrackingStore:source": {
+                        "@type": "DataAccessorBasedStore",
+                        "identifierStrategy": {
+                          "@id": "urn:solid-server:default:IdentifierStrategy"
+                        },
+                        "auxiliaryStrategy": {
+                          "@id": "urn:solid-server:default:AuxiliaryStrategy"
+                        },
+                        "metadataStrategy": {
+                          "@id": "urn:solid-server:default:MetadataStrategy"
+                        },
+                        "accessor": {
+                          "@id": "urn:undefineds:xpod:MixDataAccessor"
+                        }
+                      },
+                      "UsageTrackingStore:options_identityDbUrl": {
+                        "@id": "urn:solid-server:default:variable:identityDbUrl",
+                        "@type": "Variable"
+                      },
+                      "UsageTrackingStore:options_defaultAccountBandwidthLimitBps": {
+                        "@type": "Literal",
+                        "value": 10485760
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "comment": "Apply bandwidth limits to SPARQL responses in server profile",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+      },
+      "overrideParameters": {
+        "@type": "SubgraphSparqlHttpHandler",
+        "options_defaultAccountBandwidthLimitBps": {
+          "@type": "Literal",
+          "value": 10485760
+        }
+      }
+    },
+    {
+      "comment": "Drizzle-backed account storage for clustered deployments.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:AccountStorage"
+      },
+      "overrideParameters": {
+        "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
+      }
+    },
+    {
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:AccountStore"
+      },
+      "overrideParameters": {
+        "@type": "BaseAccountStore",
+        "storage": {
+          "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
+        }
+      }
+    },
+    {
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PodStore"
+      },
+      "overrideParameters": {
+        "@type": "BasePodStore",
+        "storage": {
+          "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
+        },
+        "manager": {
+          "@id": "urn:solid-server:default:PodManager"
+        }
+      }
+    },
+    {
+      "comment": "Enforce per-account quota via default quota service",
+      "@id": "urn:solid-server:default:QuotaStrategy",
+      "@type": "PerAccountQuotaStrategy",
+      "PerAccountQuotaStrategy:_options_identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "PerAccountQuotaStrategy:_options_defaultAccountQuotaBytes": {
+        "@type": "Literal",
+        "value": 10737418240
+      },
+      "PerAccountQuotaStrategy:_options_quotaService": {
+        "@id": "urn:undefineds:xpod:QuotaService"
+      },
+      "PerAccountQuotaStrategy:_reporter": {
+        "@id": "urn:solid-server:default:SizeReporter"
       }
     }
   ]

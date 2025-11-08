@@ -2,18 +2,32 @@ import { Client, BucketItemStat } from 'minio';
 import type { DataAccessor } from '@solid/community-server';
 import type { Readable } from 'node:stream';
 import { DataFactory } from 'n3';
-import { RepresentationMetadata } from '@solid/community-server/dist/http/representation/RepresentationMetadata';
-import { getLoggerFor } from '@solid/community-server/dist/logging/LogUtil';
-import { NotFoundHttpError } from '@solid/community-server/dist/util/errors/NotFoundHttpError';
-import { guardStream } from '@solid/community-server/dist/util/GuardedStream';
-import type { Guarded } from '@solid/community-server/dist/util/GuardedStream';
-import { isContainerIdentifier, isContainerPath, joinFilePath } from '@solid/community-server/dist/util/PathUtil';
-import { UnsupportedMediaTypeHttpError } from '@solid/community-server/dist/util/errors/UnsupportedMediaTypeHttpError';
+import {
+  RepresentationMetadata,
+  getLoggerFor,
+  NotFoundHttpError,
+  guardStream,
+  isContainerIdentifier,
+  isContainerPath,
+  joinFilePath,
+  UnsupportedMediaTypeHttpError,
+  CONTENT_TYPE_TERM,
+  DC,
+  IANA,
+  LDP,
+  POSIX,
+  RDF,
+  SOLID_META,
+  XSD,
+  parseQuads,
+  serializeQuads,
+  addResourceMetadata,
+  updateModifiedDate,
+  toLiteral,
+  toNamedTerm,
+} from '@solid/community-server';
+import type { Guarded } from '@solid/community-server';
 import type { FileIdentifierMapper, ResourceLink } from '@solid/community-server';
-import { CONTENT_TYPE_TERM, DC, IANA, LDP, POSIX, RDF, SOLID_META, XSD } from '@solid/community-server/dist/util/Vocabularies';
-import { parseQuads, serializeQuads } from '@solid/community-server/dist/util/QuadUtil';
-import { addResourceMetadata, updateModifiedDate } from '@solid/community-server/dist/util/ResourceUtil';
-import { toLiteral, toNamedTerm } from '@solid/community-server/dist/util/TermUtil';
 import type { 
   ResourceIdentifier,
   Representation,

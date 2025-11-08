@@ -1,0 +1,18 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+  ],
+  "@graph": [
+    {
+      "comment": "Use configurable logger across all profiles.",
+      "@id": "urn:solid-server:default:LoggerFactory",
+      "@type": "ConfigurableLoggerFactory",
+      "level": { "@id": "urn:solid-server:default:variable:loggingLevel" },
+      "options_showLocation": true,
+      "options_fileName": "./logs/xpod-%DATE%.log",
+      "options_maxSize": "20m",
+      "options_maxFiles": "30d"
+    }
+  ]
+}

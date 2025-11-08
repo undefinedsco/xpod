@@ -1,4 +1,34 @@
 node_modules
 .internal
 .db.quadstore
+
+# Environment files (contain sensitive information)
 .env
+.env.local
+.env.server  
+.env.cluster
+.env.dev
+.env.*
+
+# Database files
+*.sqlite
+*.db
+
+# Build output
+dist/
+coverage/
+
+# Logs
+logs/
+*.log
+
+# IDE and editor files
+.vscode/
+.idea/
+.claude/
+.codex/
+.specify/
+
+# Temporary files
+local/
+main.json
