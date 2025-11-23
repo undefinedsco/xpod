@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
-import { sql } from 'drizzle-orm';
+import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
+import { edgeNodes } from './schema';
 
 export interface EdgeNodeSummary {
   nodeId: string;
@@ -105,6 +106,64 @@ export class EdgeNodeRepository {
     `);
   }
 
+  public async updateNodeMode(nodeId: string, options: {
+    accessMode: 'redirect' | 'proxy';
+    publicIp?: string;
+    publicPort?: number;
+    subdomain?: string;
+    connectivityStatus?: 'unknown' | 'reachable' | 'unreachable';
+    capabilities?: Record<string, unknown>;
+  }): Promise<void> {
+    const capabilitiesPayload = options.capabilities ? JSON.stringify(options.capabilities) : null;
+    const now = new Date();
+    
+    await this.db.execute(sql`
+      UPDATE identity_edge_node
+      SET access_mode = ${options.accessMode},
+          public_ip = ${options.publicIp ?? null},
+          public_port = ${options.publicPort ?? null},
+          subdomain = ${options.subdomain ?? null},
+          connectivity_status = ${options.connectivityStatus ?? 'unknown'},
+          capabilities = ${capabilitiesPayload}::jsonb,
+          last_connectivity_check = ${now},
+          updated_at = ${now}
+      WHERE id = ${nodeId}
+    `);
+  }
+
+  public async getNodeConnectivityInfo(nodeId: string): Promise<{
+    nodeId: string;
+    accessMode?: string;
+    publicIp?: string;
+    publicPort?: number;
+    subdomain?: string;
+    connectivityStatus?: string;
+    lastConnectivityCheck?: Date;
+  } | undefined> {
+    const result = await this.db.execute(sql`
+      SELECT id, access_mode, public_ip, public_port, subdomain, 
+             connectivity_status, last_connectivity_check
+      FROM identity_edge_node
+      WHERE id = ${nodeId}
+      LIMIT 1
+    `);
+    
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+    
+    const row = result.rows[0];
+    return {
+      nodeId: String(row.id),
+      accessMode: row.access_mode ? String(row.access_mode) : undefined,
+      publicIp: row.public_ip ? String(row.public_ip) : undefined,
+      publicPort: row.public_port ? Number(row.public_port) : undefined,
+      subdomain: row.subdomain ? String(row.subdomain) : undefined,
+      connectivityStatus: row.connectivity_status ? String(row.connectivity_status) : undefined,
+      lastConnectivityCheck: row.last_connectivity_check instanceof Date ? row.last_connectivity_check : undefined,
+    };
+  }
+
   public async mergeNodeMetadata(nodeId: string, patch: Record<string, unknown>): Promise<void> {
     const payload = JSON.stringify(patch);
     await this.db.execute(sql`
@@ -147,9 +206,10 @@ export class EdgeNodeRepository {
     });
   }
 
-  public async findNodeByResourcePath(path: string): Promise<{ nodeId: string; baseUrl: string; metadata?: Record<string, unknown> | null } | undefined> {
+  public async findNodeByResourcePath(path: string): Promise<{ nodeId: string; baseUrl: string; accessMode?: string; metadata?: Record<string, unknown> | null } | undefined> {
     const result = await this.db.execute(sql`
       SELECT en.id,
+             en.access_mode,
              en.metadata,
              pods.base_url
       FROM identity_edge_node_pod pods
@@ -165,7 +225,31 @@ export class EdgeNodeRepository {
     return {
       nodeId: String(row.id),
       baseUrl: String(row.base_url),
+      accessMode: row.access_mode ? String(row.access_mode) : undefined,
       metadata: row.metadata ?? null,
+    };
+  }
+
+  public async findNodeBySubdomain(hostname: string): Promise<{ nodeId: string; accessMode?: string; metadata?: Record<string, unknown> | null; subdomain?: string } | undefined> {
+    const normalized = hostname.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return undefined;
+    }
+    const result = await this.db.execute(sql`
+      SELECT id, access_mode, metadata, subdomain
+      FROM identity_edge_node
+      WHERE subdomain = ${normalized}
+      LIMIT 1
+    `);
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+    const row = result.rows[0];
+    return {
+      nodeId: String(row.id),
+      accessMode: row.access_mode ? String(row.access_mode) : undefined,
+      metadata: row.metadata ?? null,
+      subdomain: row.subdomain ? String(row.subdomain) : undefined,
     };
   }
 
@@ -183,5 +267,83 @@ export class EdgeNodeRepository {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Get node capabilities and related information for admin queries
+   */
+  public async getNodeCapabilities(nodeId: string): Promise<{
+    nodeId: string;
+    capabilities: Record<string, unknown> | null;
+    stringCapabilities: string[] | null;
+    accessMode: string | null;
+    lastSeen: Date | null;
+    connectivityStatus: string | null;
+  } | undefined> {
+    const row = await this.db
+      .select({
+        id: edgeNodes.id,
+        capabilities: edgeNodes.capabilities,
+        metadata: edgeNodes.metadata,
+        accessMode: edgeNodes.accessMode,
+        lastSeen: edgeNodes.lastSeen,
+        connectivityStatus: edgeNodes.connectivityStatus,
+      })
+      .from(edgeNodes)
+      .where(eq(edgeNodes.id, nodeId))
+      .limit(1);
+
+    if (row.length === 0) {
+      return undefined;
+    }
+
+    const node = row[0];
+    const metadata = node.metadata as Record<string, unknown> | null;
+    
+    return {
+      nodeId: node.id,
+      capabilities: node.capabilities as Record<string, unknown> | null,
+      stringCapabilities: metadata?.capabilities as string[] ?? null,
+      accessMode: node.accessMode,
+      lastSeen: node.lastSeen,
+      connectivityStatus: node.connectivityStatus,
+    };
+  }
+
+  /**
+   * List all nodes with their capability information
+   */
+  public async listNodeCapabilities(): Promise<Array<{
+    nodeId: string;
+    capabilities: Record<string, unknown> | null;
+    stringCapabilities: string[] | null;
+    accessMode: string | null;
+    lastSeen: Date | null;
+    connectivityStatus: string | null;
+  }>> {
+    const rows = await this.db
+      .select({
+        id: edgeNodes.id,
+        capabilities: edgeNodes.capabilities,
+        metadata: edgeNodes.metadata,
+        accessMode: edgeNodes.accessMode,
+        lastSeen: edgeNodes.lastSeen,
+        connectivityStatus: edgeNodes.connectivityStatus,
+      })
+      .from(edgeNodes)
+      .orderBy(edgeNodes.lastSeen);
+
+    return rows.map((row: typeof rows[0]) => {
+      const metadata = row.metadata as Record<string, unknown> | null;
+      
+      return {
+        nodeId: row.id,
+        capabilities: row.capabilities as Record<string, unknown> | null,
+        stringCapabilities: metadata?.capabilities as string[] ?? null,
+        accessMode: row.accessMode,
+        lastSeen: row.lastSeen,
+        connectivityStatus: row.connectivityStatus,
+      };
+    });
   }
 }

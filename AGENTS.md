@@ -1,3 +1,22 @@
+<!-- OPENSPEC:START -->
+# OpenSpec Instructions
+
+These instructions are for AI assistants working in this project.
+
+Always open `@/openspec/AGENTS.md` when the request:
+- Mentions planning or proposals (words like proposal, spec, change, plan)
+- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
+- Sounds ambiguous and you need the authoritative spec before coding
+
+Use `@/openspec/AGENTS.md` to learn:
+- How to create and apply change proposals
+- Spec format and conventions
+- Project structure and guidelines
+
+Keep this managed block so 'openspec update' can refresh the instructions.
+
+<!-- OPENSPEC:END -->
+
 # Repository Guidelines
 
 ## Project Structure & Module Organization
@@ -26,11 +45,11 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 
 ### ACME 与隧道（frp）集成备忘
 - cluster 侧已支持通过 `Dns01CertificateProvisioner` 写入/移除 `_acme-challenge` 记录；节点配合 `EdgeNodeAgent` 的 `acme` 配置即可自动申请/续签证书。
-  - 环境变量：`XPOD_TENCENT_DNS_TOKEN_ID`/`XPOD_TENCENT_DNS_TOKEN`、`XPOD_DNS_ROOT_DOMAIN`、`XPOD_DNS_RECORD_TTL` 等需在 cluster 配好。
+- 环境变量：`XPOD_TENCENT_DNS_TOKEN_ID`/`XPOD_TENCENT_DNS_TOKEN`、`XPOD_DNS_RECORD_TTL` 等需在 cluster 配好；DNS 根域名默认取自 CSS `baseUrl`。
   - Agent 需提供 `acme.email`、`acme.domains`、证书/账号私钥存放路径；成功后可直接把 PEM 文件交给 CSS 或本地反代。
 - FRP 兜底通过 `FrpTunnelManager` 实现，配置项位于 `XPOD_FRP_*` 系列（server host/port/token、自定义域后缀、remote port 计算等）。未配置时默认禁用，保持纯直连。
 - 心跳响应含 `metadata.tunnel.config`，Agent 可据此生成 `frpc.ini` 或调用自定义脚本；如果不想让数据流量经过 cluster，请勿启用 frp 相关变量。
-- 管理端策略：cluster 端的运维管理更倾向于独立的外部系统（不在现有 Admin Console 内扩展 ACME/FRP 面板）；local 端若推出桌面版，可在桌面客户端整合这些配置与状态展示。
+- 管理端策略：cluster 侧运维入口完全依赖外部系统/门户（旧 Admin Console 已退场，不会在仓库内扩展 UI）；local 端若推出桌面版，可在桌面客户端整合这些配置与状态展示。
 
 ### 带宽配额与限速
 - Server / Mix 配置默认启用带宽统计：`UsageTrackingStore` 负责资源读写、`SubgraphSparqlHttpHandler` 负责 `.sparql` 入口，均会更新 `identity_account_usage` / `identity_pod_usage` 表中的 `ingress_bytes`、`egress_bytes`。

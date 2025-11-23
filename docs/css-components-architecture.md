@@ -185,10 +185,10 @@ Tips：想知道 “某个 `@id` 对应哪个文件/类”，可以在 `node_mod
 
 | 症状 | 可能原因 | 定位方式 |
 | --- | --- | --- |
-| “Undefined variable …” | resolver 未覆盖变量 / CLI 未传参 | 检查 `config/resolver.json` 是否有该变量 + 默认值 |
+| “Undefined variable …” | resolver 未覆盖变量 / CLI 未传参 | 检查 `config/resolver.json` 是否有该变量 + 默认值，注意同时支持大小写（如 `XPOD_TENCENT_DNS_TOKEN_ID` / `xpodTencentDnsTokenId`） |
 | “Could not find (valid) component types …” | 变量被写成 `Literal`、jsonld 未生成、`@type` 错误 | 确认 config 中引用的是 `@type: Variable`；运行 `yarn build:components` |
 | Handler 未生效 | Override 顺序错误、文件未被 import | 从主配置开始检查 `import` 链，确认 `./xpod.json` 在最后被合并 |
-| UI 未更新 | 未执行 `yarn build:ui` 或静态目录路径错误 | 确认 `dist/ui/admin/index.html` 存在，`AdminConsoleHttpHandler.staticDirectory` 指向构建产物 |
+| UI 未更新 | —— | Admin Console 已移除，若需要新的前端入口请在自定义工程中自行托管 |
 | CLI 参数不生效 | `KeyExtractor.key` 拼写错误或者环境变量未被导入 | `console.log(process.env)` 检查值是否存在；查看 CLI 启动日志 |
 
 ---

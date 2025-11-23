@@ -110,7 +110,7 @@
           "name": "xpodEdition",
           "options": {
             "type": "string",
-            "describe": "Admin console edition (local or server)."
+            "describe": "Edge cluster edition (local or server)."
           }
         },
         {
@@ -127,6 +127,14 @@
           "options": {
             "type": "boolean",
             "describe": "Enable edge node registry and routing."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "xpodClusterIngressDomain",
+          "options": {
+            "type": "string",
+            "describe": "Cluster ingress domain for node routing."
           }
         },
         {
@@ -231,38 +239,6 @@
           "options": {
             "type": "string",
             "describe": "frp proxy protocol (tcp/http/etc)."
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "xpodFrpCustomDomainSuffix",
-          "options": {
-            "type": "string",
-            "describe": "Domain suffix for frp HTTP custom domains."
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "xpodFrpPublicScheme",
-          "options": {
-            "type": "string",
-            "describe": "Public scheme advertised for frp custom domains."
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "xpodFrpRemotePortBase",
-          "options": {
-            "type": "number",
-            "describe": "Base remote port for frp tcp proxies when custom domain unavailable."
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "xpodFrpRemotePortStep",
-          "options": {
-            "type": "number",
-            "describe": "Step size for allocating frp remote ports."
           }
         }
       ]

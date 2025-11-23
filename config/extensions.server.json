@@ -10,8 +10,7 @@
     }
   ],
   "import": [
-    "./xpod.json",
-    "./xpod.cluster.json"
+    "./xpod.json"
   ],
   "@graph": [
     {
@@ -138,7 +137,7 @@
         },
         "source": {
           "@type": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore",
-          "UsageTrackingStore:source": {
+          "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_source": {
             "@type": "DataAccessorBasedStore",
             "identifierStrategy": {
               "@id": "urn:solid-server:default:IdentifierStrategy"
@@ -153,78 +152,13 @@
               "@id": "urn:undefineds:xpod:MixDataAccessor"
             }
           },
-          "UsageTrackingStore:options_identityDbUrl": {
+          "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_options_identityDbUrl": {
             "@id": "urn:solid-server:default:variable:identityDbUrl",
             "@type": "Variable"
           },
-          "UsageTrackingStore:options_defaultAccountBandwidthLimitBps": {
+          "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_options_defaultAccountBandwidthLimitBps": {
             "@type": "Literal",
             "value": 10485760
-          }
-        }
-      }
-    },
-    {
-      "comment": "Override default ResourceStore for Pod creation - keep MonitoringStore wrapper",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:ResourceStore"
-      },
-      "overrideParameters": {
-        "@type": "MonitoringStore",
-        "source": {
-          "@type": "BinarySliceResourceStore",
-          "defaultSliceSize": 10000000,
-          "source": {
-            "@type": "IndexRepresentationStore",
-            "source": {
-              "@type": "LockingResourceStore",
-              "source": {
-                "@type": "PatchingStore",
-                "source": {
-                  "@type": "RepresentationConvertingStore",
-                  "source": {
-                    "@type": "RepresentationPartialConvertingStore",
-                    "metadataStrategy": {
-                      "@id": "urn:solid-server:default:AuxiliaryStrategy"
-                    },
-                    "options_inConverter": {
-                      "@id": "urn:solid-server:default:RepresentationConverter"
-                    },
-                    "options_inPreferences_type": {
-                      "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
-                      "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
-                    },
-                    "source": {
-                      "@type": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore",
-                      "UsageTrackingStore:source": {
-                        "@type": "DataAccessorBasedStore",
-                        "identifierStrategy": {
-                          "@id": "urn:solid-server:default:IdentifierStrategy"
-                        },
-                        "auxiliaryStrategy": {
-                          "@id": "urn:solid-server:default:AuxiliaryStrategy"
-                        },
-                        "metadataStrategy": {
-                          "@id": "urn:solid-server:default:MetadataStrategy"
-                        },
-                        "accessor": {
-                          "@id": "urn:undefineds:xpod:MixDataAccessor"
-                        }
-                      },
-                      "UsageTrackingStore:options_identityDbUrl": {
-                        "@id": "urn:solid-server:default:variable:identityDbUrl",
-                        "@type": "Variable"
-                      },
-                      "UsageTrackingStore:options_defaultAccountBandwidthLimitBps": {
-                        "@type": "Literal",
-                        "value": 10485760
-                      }
-                    }
-                  }
-                }
-              }
-            }
           }
         }
       }

@@ -1,11 +1,5 @@
 import { getLoggerFor } from '@solid/community-server';
-
-export interface EdgeNodeTunnelManager {
-  /**
-   * 根据当前 metadata 判断是否需要建立/更新隧道，当返回对象时表示需要写回 metadata。
-   */
-  ensureConnectivity(nodeId: string, metadata: Record<string, unknown>): Promise<Record<string, unknown> | undefined>;
-}
+import type { EdgeNodeTunnelManager } from './interfaces/EdgeNodeTunnelManager';
 
 interface SimpleEdgeNodeTunnelManagerOptions {
   /** 当直连失败时兜底的入口地址列表。 */
@@ -32,10 +26,10 @@ export class SimpleEdgeNodeTunnelManager implements EdgeNodeTunnelManager {
     const reachability = this.extractRecord((metadata as any).reachability);
     const tunnel = this.extractRecord((metadata as any).tunnel);
 
-    const directStatus = typeof reachability?.status === 'string' ? reachability.status : undefined;
-    const directHealthy = this.isDirectHealthy(directStatus, reachability);
+    const redirectStatus = typeof reachability?.status === 'string' ? reachability.status : undefined;
+    const redirectHealthy = this.isRedirectHealthy(redirectStatus, reachability);
 
-    if (directHealthy) {
+    if (redirectHealthy) {
       if (tunnel?.status === 'active') {
         const next = { ...metadata, tunnel: { ...tunnel, status: 'standby', updatedAt: new Date().toISOString() } };
         this.logger.debug(`节点 ${nodeId} 直连恢复，将隧道标记为 standby。`);
@@ -90,12 +84,12 @@ export class SimpleEdgeNodeTunnelManager implements EdgeNodeTunnelManager {
     return value as Record<string, any>;
   }
 
-  private isDirectHealthy(status?: string, reachability?: Record<string, unknown>): boolean {
+  private isRedirectHealthy(status?: string, reachability?: Record<string, unknown>): boolean {
     if (!status) {
       return false;
     }
     const normalized = status.trim().toLowerCase();
-    if (normalized === 'direct' || normalized === 'healthy') {
+    if (normalized === 'redirect' || normalized === 'healthy') {
       return true;
     }
     if (normalized === 'degraded' && typeof reachability?.lastSuccessAt === 'string') {

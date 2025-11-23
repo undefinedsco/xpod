@@ -13,6 +13,12 @@ const getNodeSecretMock = vi.fn();
 const updateNodeHeartbeatMock = vi.fn();
 const matchesTokenMock = vi.fn();
 const replaceNodePodsMock = vi.fn();
+const getNodeConnectivityInfoMock = vi.fn();
+const updateNodeModeMock = vi.fn();
+const modeDetectorMock = {
+  detectMode: vi.fn(),
+  recheckMode: vi.fn(),
+};
 
 class MockResponse extends EventEmitter {
   public statusCode = 200;
@@ -79,7 +85,7 @@ function createRequest(method: string, path: string, body?: string): HttpRequest
   return request;
 }
 
-function buildHandler(enabled = true): EdgeNodeSignalHttpHandler {
+function buildHandler(enabled = true, withModeDetector = false): EdgeNodeSignalHttpHandler {
   return new EdgeNodeSignalHttpHandler({
     identityDbUrl: 'postgres://test',
     edgeNodesEnabled: enabled ? 'true' : 'false',
@@ -89,7 +95,11 @@ function buildHandler(enabled = true): EdgeNodeSignalHttpHandler {
       updateNodeHeartbeat: updateNodeHeartbeatMock,
       matchesToken: matchesTokenMock,
       replaceNodePods: replaceNodePodsMock,
+      getNodeConnectivityInfo: getNodeConnectivityInfoMock,
+      updateNodeMode: updateNodeModeMock,
     } as any,
+    modeDetector: withModeDetector ? modeDetectorMock as any : undefined,
+    clusterBaseDomain: withModeDetector ? 'cluster.example.com' : undefined,
   });
 }
 
@@ -99,6 +109,10 @@ describe('EdgeNodeSignalHttpHandler', () => {
     updateNodeHeartbeatMock.mockReset();
     matchesTokenMock.mockReset();
     replaceNodePodsMock.mockReset();
+    getNodeConnectivityInfoMock.mockReset();
+    updateNodeModeMock.mockReset();
+    modeDetectorMock.detectMode.mockReset();
+    modeDetectorMock.recheckMode.mockReset();
     matchesTokenMock.mockReturnValue(true);
   });
 
@@ -221,5 +235,208 @@ describe('EdgeNodeSignalHttpHandler', () => {
     expect(metadataArg.baseUrl).toBeUndefined();
     expect(metadataArg.capabilities).toEqual([ 'sparql' ]);
     expect(replaceNodePodsMock).not.toHaveBeenCalled();
+  });
+
+  it('performs mode detection for new node with public IP', async () => {
+    const handler = buildHandler(true, true);
+    getNodeSecretMock.mockResolvedValueOnce({ nodeId: 'node-1', tokenHash: 'hash', metadata: {} });
+    updateNodeHeartbeatMock.mockResolvedValueOnce(undefined);
+    getNodeConnectivityInfoMock.mockResolvedValueOnce(undefined); // No existing connectivity info
+    updateNodeModeMock.mockResolvedValueOnce(undefined);
+    
+    modeDetectorMock.detectMode.mockResolvedValueOnce({
+      accessMode: 'redirect',
+      reason: 'Redirect connectivity test passed',
+      subdomain: 'node-1.cluster.example.com',
+      connectivityTest: { success: true, latency: 50 },
+    });
+
+    const request = createRequest('POST', '/api/signal', JSON.stringify({
+      nodeId: 'node-1',
+      token: 'secret',
+      ipv4: '192.168.1.100',
+      publicAddress: 'https://node.example.com:3000',
+      version: '1.0.0',
+    }));
+    const response = new MockResponse() as unknown as HttpResponse;
+
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    expect(modeDetectorMock.detectMode).toHaveBeenCalledWith({
+      nodeId: 'node-1',
+      publicIp: '192.168.1.100',
+      publicPort: 3000,
+      capabilities: {
+        solidProtocolVersion: '1.0.0',
+        storageBackends: ['filesystem'],
+        authMethods: ['webid', 'client-credentials'],
+        maxBandwidth: undefined,
+        location: undefined,
+      },
+    });
+
+    const lastCall = updateNodeModeMock.mock.calls.at(-1);
+    expect(lastCall[0]).toBe('node-1');
+    expect(lastCall[1]).toMatchObject({
+      accessMode: 'redirect',
+      publicIp: '192.168.1.100',
+      publicPort: 3000,
+      subdomain: 'node-1.cluster.example.com',
+      connectivityStatus: 'reachable',
+      capabilities: {
+        solidProtocolVersion: '1.0.0',
+        storageBackends: ['filesystem'],
+        authMethods: ['webid', 'client-credentials'],
+        maxBandwidth: undefined,
+        location: undefined,
+      },
+    });
+
+    const metadataArg = updateNodeHeartbeatMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(metadataArg.accessMode).toBe('redirect');
+    expect(metadataArg.publicIp).toBe('192.168.1.100');
+    expect(metadataArg.publicPort).toBe(3000);
+    expect(metadataArg.subdomain).toBe('node-1.cluster.example.com');
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('performs mode recheck for existing proxy node', async () => {
+    const handler = buildHandler(true, true);
+    getNodeSecretMock.mockResolvedValueOnce({ nodeId: 'node-2', tokenHash: 'hash', metadata: {} });
+    updateNodeHeartbeatMock.mockResolvedValueOnce(undefined);
+    getNodeConnectivityInfoMock.mockResolvedValueOnce({
+      nodeId: 'node-2',
+      accessMode: 'proxy',
+      publicIp: '10.0.0.1',
+      connectivityStatus: 'unreachable',
+    });
+    updateNodeModeMock.mockResolvedValueOnce(undefined);
+    
+    modeDetectorMock.recheckMode.mockResolvedValueOnce({
+      accessMode: 'redirect',
+      reason: 'Redirect connectivity restored',
+      subdomain: 'node-2.cluster.example.com',
+      connectivityTest: { success: true, latency: 75 },
+    });
+
+    const request = createRequest('POST', '/api/signal', JSON.stringify({
+      nodeId: 'node-2',
+      token: 'secret',
+      ipv4: '10.0.0.1',
+      publicAddress: 'https://node2.example.com:443',
+    }));
+    const response = new MockResponse() as unknown as HttpResponse;
+
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    expect(modeDetectorMock.recheckMode).toHaveBeenCalledWith('proxy', {
+      nodeId: 'node-2',
+      publicIp: '10.0.0.1',
+      publicPort: 443,
+      capabilities: {
+        solidProtocolVersion: '1.0.0',
+        storageBackends: ['filesystem'],
+        authMethods: ['webid', 'client-credentials'],
+        maxBandwidth: undefined,
+        location: undefined,
+      },
+    });
+
+    const lastCall = updateNodeModeMock.mock.calls.at(-1);
+    expect(lastCall[0]).toBe('node-2');
+    expect(lastCall[1]).toMatchObject({
+      accessMode: 'redirect',
+      publicIp: '10.0.0.1',
+      publicPort: 443,
+      subdomain: 'node-2.cluster.example.com',
+      connectivityStatus: 'reachable',
+      capabilities: {
+        solidProtocolVersion: '1.0.0',
+        storageBackends: ['filesystem'],
+        authMethods: ['webid', 'client-credentials'],
+        maxBandwidth: undefined,
+        location: undefined,
+      },
+    });
+
+    const metadataArg = updateNodeHeartbeatMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(metadataArg.accessMode).toBe('redirect');
+    expect(metadataArg.publicIp).toBe('10.0.0.1');
+    expect(metadataArg.publicPort).toBe(443);
+    expect(metadataArg.subdomain).toBe('node-2.cluster.example.com');
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('skips mode detection when no public IP provided', async () => {
+    const handler = buildHandler(true, true);
+    getNodeSecretMock.mockResolvedValueOnce({ nodeId: 'node-3', tokenHash: 'hash', metadata: {} });
+    updateNodeHeartbeatMock.mockResolvedValueOnce(undefined);
+
+    const request = createRequest('POST', '/api/signal', JSON.stringify({
+      nodeId: 'node-3',
+      token: 'secret',
+      hostname: 'node-local',
+    }));
+    const response = new MockResponse() as unknown as HttpResponse;
+
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    expect(modeDetectorMock.detectMode).not.toHaveBeenCalled();
+    expect(modeDetectorMock.recheckMode).not.toHaveBeenCalled();
+    expect(updateNodeModeMock).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('uses reachability status to keep direct mode without detector', async () => {
+    const handler = buildHandler(true, false);
+    getNodeSecretMock.mockResolvedValueOnce({ nodeId: 'node-5', tokenHash: 'hash', metadata: {} });
+    getNodeConnectivityInfoMock.mockResolvedValueOnce({
+      nodeId: 'node-5',
+      accessMode: 'proxy',
+    });
+
+    const request = createRequest('POST', '/api/signal', JSON.stringify({
+      nodeId: 'node-5',
+      token: 'secret',
+      reachability: { status: 'redirect' },
+      publicAddress: 'https://node5.example',
+    }));
+    const response = new MockResponse() as unknown as HttpResponse;
+
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    const call = updateNodeModeMock.mock.calls.at(-1);
+    expect(call[1].accessMode).toBe('redirect');
+    expect(call[1].connectivityStatus).toBe('reachable');
+  });
+
+  it('switches to proxy mode when tunnel active and reachability fails', async () => {
+    const handler = buildHandler(true, false);
+    getNodeSecretMock.mockResolvedValueOnce({ nodeId: 'node-6', tokenHash: 'hash', metadata: {} });
+    getNodeConnectivityInfoMock.mockResolvedValueOnce({
+      nodeId: 'node-6',
+      accessMode: 'redirect',
+    });
+
+    const request = createRequest('POST', '/api/signal', JSON.stringify({
+      nodeId: 'node-6',
+      token: 'secret',
+      reachability: { status: 'unreachable' },
+      tunnel: { status: 'active', entrypoint: 'https://proxy.example' },
+    }));
+    const response = new MockResponse() as unknown as HttpResponse;
+
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    const call = updateNodeModeMock.mock.calls.at(-1);
+    expect(call[1].accessMode).toBe('proxy');
+    expect(call[1].connectivityStatus).toBe('reachable');
   });
 });

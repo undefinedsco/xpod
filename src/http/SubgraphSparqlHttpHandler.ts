@@ -33,7 +33,7 @@ import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
-import { BandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
+import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
 
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
 
@@ -226,7 +226,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const normalized = this.normalizeLimit(limit);
     let stream: NodeJS.ReadableStream = Readable.from([ buffer ]);
     if (normalized) {
-      stream = stream.pipe(new BandwidthThrottleTransform({ bytesPerSecond: normalized }));
+      stream = stream.pipe(createBandwidthThrottleTransform({ bytesPerSecond: normalized }));
     }
     await pipeline(stream, response);
   }

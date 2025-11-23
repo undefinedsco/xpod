@@ -22,6 +22,15 @@ interface FrpcProcessManagerOptions {
   workingDirectory?: string;
   logPrefix?: string;
   autoRestart?: boolean;
+  processFactory?: typeof spawn;
+}
+
+export interface FrpcRuntimeStatus {
+  state: 'inactive' | 'starting' | 'running' | 'error';
+  lastUpdated?: string;
+  error?: string;
+  entrypoint?: string;
+  pid?: number;
 }
 
 export class FrpcProcessManager {
@@ -31,9 +40,12 @@ export class FrpcProcessManager {
   private readonly workingDirectory?: string;
   private readonly logPrefix: string;
   private readonly autoRestart: boolean;
+  private readonly processFactory: typeof spawn;
   private process?: ChildProcessWithoutNullStreams;
   private currentSignature?: string;
   private restarting = false;
+  private status: FrpcRuntimeStatus = { state: 'inactive' };
+  private desiredRunning = false;
 
   public constructor(options: FrpcProcessManagerOptions) {
     this.binaryPath = options.binaryPath;
@@ -41,22 +53,27 @@ export class FrpcProcessManager {
     this.workingDirectory = options.workingDirectory;
     this.logPrefix = options.logPrefix ?? '[frpc]';
     this.autoRestart = options.autoRestart ?? true;
+    this.processFactory = options.processFactory ?? spawn;
   }
 
-  public async applyConfig(config?: FrpTunnelRuntimeConfig, status?: string): Promise<void> {
-    if (!config || !config.serverHost) {
+  public async applyConfig(config?: FrpTunnelRuntimeConfig, status?: string, entrypoint?: string): Promise<void> {
+    if (!config || !config.serverHost || status !== 'active') {
+      this.desiredRunning = false;
+      this.setStatus({ state: 'inactive', entrypoint, lastUpdated: new Date().toISOString() });
       await this.stop();
       this.currentSignature = undefined;
       return;
     }
-    // Keep tunnel active also in standby; only decide logging based on status
-    const signature = JSON.stringify({ config, status });
+    this.desiredRunning = true;
+    const signature = JSON.stringify({ config });
     if (signature === this.currentSignature && this.process) {
+      this.status.entrypoint = entrypoint ?? config.entrypoint;
       return;
     }
     await this.writeConfigFile(config);
     this.currentSignature = signature;
-    await this.restart();
+    this.setStatus({ state: 'starting', entrypoint: entrypoint ?? config.entrypoint, lastUpdated: new Date().toISOString() });
+    await this.restart(entrypoint ?? config.entrypoint);
   }
 
   public async stop(): Promise<void> {
@@ -77,7 +94,7 @@ export class FrpcProcessManager {
     });
   }
 
-  private async restart(): Promise<void> {
+  private async restart(entrypoint?: string): Promise<void> {
     if (this.restarting) {
       return;
     }
@@ -87,11 +104,17 @@ export class FrpcProcessManager {
       await this.ensureDirectory(dirname(this.configPath));
       this.logger.info(`${this.logPrefix} 启动 frpc 进程`);
       const args = [ '-c', this.configPath ];
-      const proc = spawn(this.binaryPath, args, {
+      const proc = this.processFactory(this.binaryPath, args, {
         cwd: this.workingDirectory,
         stdio: 'pipe',
       });
       this.process = proc;
+      this.setStatus({
+        state: 'running',
+        entrypoint,
+        lastUpdated: new Date().toISOString(),
+        pid: proc.pid ?? undefined,
+      });
       proc.stdout.on('data', (data) => {
         this.logger.debug(`${this.logPrefix} ${data.toString().trim()}`);
       });
@@ -101,9 +124,22 @@ export class FrpcProcessManager {
       proc.once('exit', (code, signal) => {
         this.logger.info(`${this.logPrefix} 退出，code=${code ?? ''} signal=${signal ?? ''}`);
         this.process = undefined;
-        if (this.autoRestart && this.currentSignature) {
+        if (this.desiredRunning) {
+          this.setStatus({
+            state: 'error',
+            error: `exit:${code ?? 'unknown'}`,
+            lastUpdated: new Date().toISOString(),
+            entrypoint,
+          });
+        } else {
+          this.setStatus({
+            state: 'inactive',
+            lastUpdated: new Date().toISOString(),
+          });
+        }
+        if (this.autoRestart && this.currentSignature && this.desiredRunning) {
           setTimeout(() => {
-            void this.restart().catch((error) => {
+            void this.restart(entrypoint).catch((error) => {
               this.logger.error(`${this.logPrefix} 重启失败: ${error instanceof Error ? error.message : String(error)}`);
             });
           }, 1_000);
@@ -112,6 +148,12 @@ export class FrpcProcessManager {
       proc.once('error', (error) => {
         this.logger.error(`${this.logPrefix} 启动失败: ${(error as Error).message}`);
         this.process = undefined;
+        this.setStatus({
+          state: 'error',
+          error: (error as Error).message,
+          lastUpdated: new Date().toISOString(),
+          entrypoint,
+        });
       });
     } finally {
       this.restarting = false;
@@ -156,5 +198,19 @@ export class FrpcProcessManager {
 
     await this.ensureDirectory(dirname(this.configPath));
     await fs.writeFile(this.configPath, `${lines.join('\n')}\n`, 'utf8');
+  }
+
+  public getStatus(): FrpcRuntimeStatus {
+    return { ...this.status };
+  }
+
+  private setStatus(update: FrpcRuntimeStatus): void {
+    this.status = {
+      state: update.state,
+      lastUpdated: update.lastUpdated,
+      error: update.error,
+      entrypoint: update.entrypoint,
+      pid: update.pid,
+    };
   }
 }

@@ -15,7 +15,7 @@ import type { Quad, Term, Literal } from '@rdfjs/types';
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from './UsageRepository';
-import { BandwidthThrottleTransform } from '../../util/stream/BandwidthThrottleTransform';
+import { createBandwidthThrottleTransform } from '../../util/stream/BandwidthThrottleTransform';
 
 interface UsageTrackingStoreOptions {
   identityDbUrl?: string;
@@ -121,7 +121,7 @@ export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends
     const transforms: Transform[] = [];
     const normalizedLimit = this.normalizeLimit(limit);
     if (normalizedLimit) {
-      transforms.push(new BandwidthThrottleTransform({
+      transforms.push(createBandwidthThrottleTransform({
         bytesPerSecond: normalizedLimit,
         objectMode: !binary,
         measure: binary ?

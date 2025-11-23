@@ -8,11 +8,15 @@ import { DebugRedisLocker } from './util/locking/DebugRedisLocker';
 import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
-import { AdminConsoleHttpHandler } from './http/admin/AdminConsoleHttpHandler';
 import { EdgeNodeSignalHttpHandler } from './http/admin/EdgeNodeSignalHttpHandler';
+import { ClusterIngressRouter } from './http/ClusterIngressRouter';
 import { EdgeNodeRedirectHttpHandler } from './http/EdgeNodeRedirectHttpHandler';
+import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
+import { SignalInterceptHttpHandler } from './http/SignalInterceptHttpHandler';
+import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
 import { DrizzleAccountLoginStorage } from './identity/drizzle/DrizzleAccountLoginStorage';
+import { DrizzleAccountStorage } from './identity/drizzle/DrizzleAccountStorage';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { DefaultQuotaService } from './quota/DefaultQuotaService';
@@ -27,8 +31,12 @@ import { FrpTunnelManager } from './edge/FrpTunnelManager';
 import { AcmeCertificateManager } from './edge/acme/AcmeCertificateManager';
 import { EdgeNodeHealthProbeService } from './edge/EdgeNodeHealthProbeService';
 import { EdgeNodeAgent } from './edge/EdgeNodeAgent';
-import { BandwidthThrottleTransform } from './util/stream/BandwidthThrottleTransform';
+import { EdgeNodeCertificateService } from './service/EdgeNodeCertificateService';
+import { createBandwidthThrottleTransform } from './util/stream/BandwidthThrottleTransform';
 import { UsageTrackingStore } from './storage/quota/UsageTrackingStore';
+import { EdgeNodeModeDetector } from './edge/EdgeNodeModeDetector';
+import { ClusterIdentifierStrategy } from './util/identifiers/ClusterIdentifierStrategy';
+import { MultiKeyExtractor } from './util/variables/MultiKeyExtractor';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type {
   DnsProvider,
@@ -36,10 +44,10 @@ export type {
   ListableDnsProvider,
   DeleteDnsRecordInput,
   DnsRecordSummary,
-  DnsRecordType,
   UpsertDnsRecordInput,
 } from './dns/DnsProvider';
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
+export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService } from './quota/QuotaService';
 export { 
     RepresentationPartialConvertingStore,
@@ -52,11 +60,15 @@ export {
     SubgraphQueryEngine,
     SubgraphSparqlHttpHandler,
     QuotaAdminHttpHandler,
-    AdminConsoleHttpHandler,
     EdgeNodeSignalHttpHandler,
+    ClusterIngressRouter,
     EdgeNodeRedirectHttpHandler,
+    EdgeNodeProxyHttpHandler,
+    SignalInterceptHttpHandler,
+    EdgeNodeCertificateHttpHandler,
     ReservedSuffixIdentifierGenerator,
     DrizzleAccountLoginStorage,
+    DrizzleAccountStorage,
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
   DefaultQuotaService,
@@ -71,7 +83,10 @@ export {
     FrpTunnelManager,
     EdgeNodeHealthProbeService,
     EdgeNodeAgent,
+    EdgeNodeCertificateService,
     AcmeCertificateManager,
-  BandwidthThrottleTransform,
+    EdgeNodeModeDetector,
+    ClusterIdentifierStrategy,
+    MultiKeyExtractor,
   UsageTrackingStore,
 };

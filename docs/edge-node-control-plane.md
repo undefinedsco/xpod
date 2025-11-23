@@ -57,7 +57,7 @@
   - `dns`: 包含 `subdomain`、`target` 等字段，为 DNS 编排提供强提示。
   - `certificate.dns01`: 携带 `subdomain`/`host`/`value` 用于 DNS-01 TXT 记录。
     - `action`: 默认为 `set`，值为 `remove` 时 cluster 会删除对应 TXT 记录。
-  - `tunnel.config`: 控制面返回给 Agent 的隧道配置（frp server、token、自定义域名/remotePort），Agent 可据此生成 `frpc.ini`。
+- `tunnel.config`: 控制面返回给 Agent 的隧道配置（frp server、token、remotePort），Agent 可据此生成 `frpc.ini`。
 - cluster 将这些字段存入 `identity_edge_node.metadata`，为控制面 UI、路由决策与告警提供数据支撑。
 
 ## 安全性策略
@@ -92,11 +92,10 @@
 - 通过 `XPOD_EDGE_NODES_ENABLED=true` 开启信令与路由组件；本地模式保持 `false` 可避免误注册。
 - 若需自动编排二级域名与证书，请设置：
   - `XPOD_TENCENT_DNS_TOKEN_ID` / `XPOD_TENCENT_DNS_TOKEN`：DNSPod API 凭证，缺失时模块自动退化为只读并跳过同步。
-  - `XPOD_DNS_ROOT_DOMAIN`：托管的根域名，例如 `xpod.example`；`XPOD_DNS_RECORD_TTL` 可控制记录 TTL（秒）。
+- DNS 根域名默认取自 CSS `baseUrl`，只需配置 `XPOD_TENCENT_DNS_*` 和 `XPOD_DNS_RECORD_TTL`（秒）即可。
 - FRP 隧道：
   - `XPOD_FRP_SERVER_HOST` / `XPOD_FRP_SERVER_PORT` / `XPOD_FRP_TOKEN`：frps 基础信息，缺失时隧道管理自动关闭。
-  - `XPOD_FRP_CUSTOM_DOMAIN_SUFFIX`：为 HTTP/HTTPS 代理生成自定义域名（例如 `nodes.xpod.example`），配合 `XPOD_FRP_PUBLIC_SCHEME` 决定对外地址；若未设置则退回基于端口的访问。
-  - `XPOD_FRP_REMOTE_PORT_BASE`（可选）：当没有自定义域名时，根据节点哈希分配唯一 remotePort。
+  - `XPOD_FRP_PROTOCOL`：默认为 `tcp`，仅当自定义 frps 行为时需要调整。
 - `XPOD_TUNNEL_ENTRYPOINTS` 仍可作为手工兜底列表；若提供且同时启用 FRP，可作为前端入口映射或监控参考。
 - `XPOD_EDGE_HEALTH_PROBES_ENABLED=true` 可启用外向健康探测，配合 `XPOD_EDGE_HEALTH_PROBE_TIMEOUT`（毫秒）调整超时；默认关闭以避免额外链路压力。
 - 节点端需运行 `frpc` 并与 Agent 协同：`EdgeNodeAgent.frp` 选项会根据心跳返回的配置自动生成 `frpc.ini`、启动/重启进程，确保隧道一直连向 cluster 的 frps；若不需要隧道，请勿配置相关变量。

@@ -57,6 +57,13 @@ export class Dns01CertificateProvisioner implements EdgeNodeCertificateProvision
       return;
     }
 
+    await this.publishChallenge(host, value, nodeId);
+  }
+
+  public async publishChallenge(host: string, value: string, nodeId?: string): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
     const { domain, subdomain } = this.splitHost(host);
 
     try {
@@ -67,10 +74,27 @@ export class Dns01CertificateProvisioner implements EdgeNodeCertificateProvision
         value,
         ttl: this.ttl,
       });
-      this.logger.debug(`已写入 DNS-01 challenge 记录 ${subdomain}.${domain}`);
+      this.logger.debug(`已写入 DNS-01 challenge 记录 ${subdomain}.${domain}${nodeId ? `（节点 ${nodeId}）` : ''}`);
     } catch (error: unknown) {
-      this.logger.error(`节点 ${nodeId} DNS-01 编排失败: ${(error as Error).message}`);
+      this.logger.error(`DNS-01 编排失败${nodeId ? `（节点 ${nodeId}）` : ''}: ${(error as Error).message}`);
       throw error;
+    }
+  }
+
+  public async removeChallenge(host: string, nodeId?: string): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+    const { domain, subdomain } = this.splitHost(host);
+    try {
+      await this.provider.deleteRecord({
+        domain,
+        subdomain,
+        type: 'TXT',
+      });
+      this.logger.debug(`已移除 DNS-01 记录 ${subdomain}.${domain}${nodeId ? `（节点 ${nodeId}）` : ''}`);
+    } catch (error: unknown) {
+      this.logger.warn(`删除 DNS-01 记录失败${nodeId ? `（节点 ${nodeId}）` : ''}：${(error as Error).message}`);
     }
   }
 
@@ -135,7 +159,15 @@ export class Dns01CertificateProvisioner implements EdgeNodeCertificateProvision
     if (typeof value !== 'string') {
       return undefined;
     }
-    const trimmed = value.trim().replace(/\.$/, '');
+    let trimmed = value.trim();
+    if (trimmed.includes('://')) {
+      try {
+        trimmed = new URL(trimmed).hostname;
+      } catch {
+        // ignore
+      }
+    }
+    trimmed = trimmed.replace(/\.$/, '');
     return trimmed.length > 0 ? trimmed : undefined;
   }
 
@@ -153,16 +185,6 @@ export class Dns01CertificateProvisioner implements EdgeNodeCertificateProvision
   }
 
   private async removeRecord(nodeId: string, host: string): Promise<void> {
-    const { domain, subdomain } = this.splitHost(host);
-    try {
-      await this.provider.deleteRecord({
-        domain,
-        subdomain,
-        type: 'TXT',
-      });
-      this.logger.debug(`已移除 DNS-01 记录 ${subdomain}.${domain}（节点 ${nodeId}）`);
-    } catch (error: unknown) {
-      this.logger.warn(`删除 DNS-01 记录失败：${(error as Error).message}`);
-    }
+    await this.removeChallenge(host, nodeId);
   }
 }

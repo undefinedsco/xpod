@@ -3,8 +3,9 @@ import { spawn } from 'node:child_process';
 import { getLoggerFor } from '@solid/community-server';
 import type { EdgeNodeHeartbeatServiceOptions } from '../service/EdgeNodeHeartbeatService';
 import { EdgeNodeHeartbeatService } from '../service/EdgeNodeHeartbeatService';
+import { FrpcProcessManager, type FrpcRuntimeStatus } from './frp/FrpcProcessManager';
 import { AcmeCertificateManager } from './acme/AcmeCertificateManager';
-import { FrpcProcessManager } from './frp/FrpcProcessManager';
+import { ClusterCertificateManager } from './acme/ClusterCertificateManager';
 
 export interface EdgeNodeAgentOptions {
   signalEndpoint: string;
@@ -18,10 +19,11 @@ export interface EdgeNodeAgentOptions {
   intervalMs?: number;
   onHeartbeatResponse?: (data: unknown) => void;
   acme?: {
-    email: string;
-    domains: string[];
+    mode?: 'local' | 'cluster';
+    email?: string;
+    domains?: string[];
     directoryUrl?: string;
-    accountKeyPath: string;
+    accountKeyPath?: string;
     certificateKeyPath: string;
     certificatePath: string;
     fullChainPath?: string;
@@ -42,10 +44,16 @@ export class EdgeNodeAgent {
   private readonly logger = getLoggerFor(this);
   private heartbeat?: EdgeNodeHeartbeatService;
   private frpManager?: FrpcProcessManager;
+  private clusterCertificate?: ClusterCertificateManager;
 
   public async start(options: EdgeNodeAgentOptions): Promise<void> {
     if (options.acme) {
-      await this.issueCertificateIfNeeded(options);
+      const mode = options.acme.mode ?? 'local';
+      if (mode === 'cluster') {
+        await this.ensureClusterCertificate(options);
+      } else {
+        await this.issueCertificateLocally(options);
+      }
     }
     if (options.frp) {
       this.frpManager = new FrpcProcessManager({
@@ -62,6 +70,7 @@ export class EdgeNodeAgent {
       system: systemMetrics,
     } as Record<string, unknown>;
 
+    const certificatePayload = this.clusterCertificate?.getHeartbeatPayload();
     const heartbeatOptions: EdgeNodeHeartbeatServiceOptions = {
       edgeNodesEnabled: true,
       signalEndpoint: options.signalEndpoint,
@@ -73,11 +82,15 @@ export class EdgeNodeAgent {
       intervalMs: options.intervalMs,
       metadata: this.stringifyIfContent(metadataPayload),
       metrics: systemMetrics ? JSON.stringify(systemMetrics) : undefined,
+      certificate: certificatePayload ? JSON.stringify(certificatePayload) : undefined,
       onHeartbeatResponse: (data: unknown): void => {
         this.handleHeartbeatResponse(data);
         options.onHeartbeatResponse?.(data);
       },
     };
+    if (this.frpManager) {
+      heartbeatOptions.tunnelSupplier = () => this.buildTunnelHeartbeatPayload();
+    }
 
     this.heartbeat = new EdgeNodeHeartbeatService(heartbeatOptions);
   }
@@ -88,6 +101,7 @@ export class EdgeNodeAgent {
     }
     this.heartbeat = undefined;
     void this.frpManager?.stop();
+    this.clusterCertificate?.stop();
   }
 
   private stringifyIfContent(data: Record<string, unknown>): string | undefined {
@@ -122,24 +136,33 @@ export class EdgeNodeAgent {
     }
     const body = data as Record<string, any>;
     const metadata = body.metadata as Record<string, any> | undefined;
+    this.clusterCertificate?.handleHeartbeatMetadata(metadata);
     const tunnel = metadata?.tunnel as Record<string, any> | undefined;
     const config = tunnel?.config as Record<string, any> | undefined;
     if (config) {
       this.logger.debug(`接收到隧道配置: ${JSON.stringify({ entrypoint: tunnel?.entrypoint, proxyName: config.proxyName })}`);
     }
-    void this.frpManager?.applyConfig(config as any, tunnel?.status);
+    const entrypoint = typeof tunnel?.entrypoint === 'string' ? tunnel.entrypoint :
+      typeof config?.publicUrl === 'string' ? config.publicUrl : undefined;
+    void this.frpManager?.applyConfig(config as any, tunnel?.status as string | undefined, entrypoint);
   }
 
-  private async issueCertificateIfNeeded(options: EdgeNodeAgentOptions): Promise<void> {
+  private async issueCertificateLocally(options: EdgeNodeAgentOptions): Promise<void> {
     const acmeOptions = options.acme!;
+    if (!acmeOptions.email || !acmeOptions.domains || acmeOptions.domains.length === 0) {
+      throw new Error('本地 ACME 模式需要提供 email 与 domains。');
+    }
+    if (!acmeOptions.accountKeyPath) {
+      throw new Error('本地 ACME 模式需要提供 accountKeyPath。');
+    }
     const manager = new AcmeCertificateManager({
       signalEndpoint: options.signalEndpoint,
       nodeId: options.nodeId,
       nodeToken: options.nodeToken,
-      email: acmeOptions.email,
-      domains: acmeOptions.domains,
+      email: acmeOptions.email!,
+      domains: acmeOptions.domains!,
       directoryUrl: acmeOptions.directoryUrl,
-      accountKeyPath: acmeOptions.accountKeyPath,
+      accountKeyPath: acmeOptions.accountKeyPath!,
       certificateKeyPath: acmeOptions.certificateKeyPath,
       certificatePath: acmeOptions.certificatePath,
       fullChainPath: acmeOptions.fullChainPath,
@@ -155,6 +178,25 @@ export class EdgeNodeAgent {
       this.logger.error(`自动签发证书失败：${(error as Error).message}`);
       throw error;
     }
+  }
+
+  private async ensureClusterCertificate(options: EdgeNodeAgentOptions): Promise<void> {
+    const acmeOptions = options.acme!;
+    if (!acmeOptions.certificateKeyPath || !acmeOptions.certificatePath) {
+      throw new Error('Cluster 模式需要提供 certificateKeyPath 与 certificatePath。');
+    }
+    const manager = new ClusterCertificateManager({
+      signalEndpoint: options.signalEndpoint,
+      nodeId: options.nodeId,
+      nodeToken: options.nodeToken,
+      certificateKeyPath: acmeOptions.certificateKeyPath,
+      certificatePath: acmeOptions.certificatePath,
+      fullChainPath: acmeOptions.fullChainPath,
+      renewBeforeDays: acmeOptions.renewBeforeDays,
+      onCertificateInstalled: acmeOptions.postDeployCommand ? () => this.runPostDeploy(acmeOptions.postDeployCommand!) : undefined,
+    });
+    this.clusterCertificate = manager;
+    await manager.start();
   }
 
   private async runPostDeploy(command: string[]): Promise<void> {
@@ -173,5 +215,13 @@ export class EdgeNodeAgent {
         }
       });
     });
+  }
+
+  private buildTunnelHeartbeatPayload(): Record<string, unknown> | undefined {
+    const status: FrpcRuntimeStatus | undefined = this.frpManager?.getStatus();
+    if (!status) {
+      return undefined;
+    }
+    return { client: status };
   }
 }

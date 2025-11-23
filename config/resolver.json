@@ -121,23 +121,54 @@
         {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodEdgeNodesEnabled",
           "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "npmd:@undefineds/xpod/^0.0.0/dist/util/variables/MultiKeyExtractor.jsonld#MultiKeyExtractor",
+            "npmd:@undefineds/xpod/^0.0.0/dist/util/variables/MultiKeyExtractor.jsonld#MultiKeyExtractor_options_keys": {
+              "@list": [
+                "xpodEdgeNodesEnabled",
+                "XPOD_EDGE_NODES_ENABLED"
+              ]
+            },
+            "npmd:@undefineds/xpod/^0.0.0/dist/util/variables/MultiKeyExtractor.jsonld#MultiKeyExtractor_options_defaultValue": "false"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodClusterIngressDomain",
+          "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodEdgeNodesEnabled",
-            "defaultValue": "false"
+            "key": "xpodClusterIngressDomain",
+            "defaultValue": "localhost"
           }
         },
         {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsTokenId",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodTencentDnsTokenId"
+            "key": "xpodTencentDnsTokenId",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsTokenId",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "XPOD_TENCENT_DNS_TOKEN_ID",
+            "defaultValue": ""
           }
         },
         {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsToken",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodTencentDnsToken"
+            "key": "xpodTencentDnsToken",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsToken",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "XPOD_TENCENT_DNS_TOKEN",
+            "defaultValue": ""
           }
         },
         {
@@ -168,7 +199,15 @@
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
             "key": "xpodDnsRecordTtl",
-            "defaultValue": "300"
+            "defaultValue": "60"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodClusterIngressIp",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "xpodClusterIngressIp",
+            "defaultValue": ""
           }
         },
         {
@@ -199,7 +238,8 @@
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpServerHost",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodFrpServerHost"
+            "key": "xpodFrpServerHost",
+            "defaultValue": ""
           }
         },
         {
@@ -214,7 +254,8 @@
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpToken",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodFrpToken"
+            "key": "xpodFrpToken",
+            "defaultValue": ""
           }
         },
         {
@@ -223,36 +264,6 @@
             "@type": "KeyExtractor",
             "key": "xpodFrpProtocol",
             "defaultValue": "tcp"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpCustomDomainSuffix",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodFrpCustomDomainSuffix"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpPublicScheme",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodFrpPublicScheme",
-            "defaultValue": "https"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpRemotePortBase",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodFrpRemotePortBase"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpRemotePortStep",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodFrpRemotePortStep",
-            "defaultValue": "1"
           }
         }
       ]

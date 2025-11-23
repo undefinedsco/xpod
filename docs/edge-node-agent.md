@@ -81,10 +81,15 @@ await agent.start({
 - 建议与进程守护工具（systemd、supervisord、PM2 等）结合，确保节点重启时自动恢复心跳。
 - Heartbeat 默认 30 秒发送一次，可通过 `intervalMs` 调整频率。
 - 若节点拥有多个 Pod，`pods` 数组可列出多个 baseUrl；缺失时仍可通过控制面 API 感知 Pod 实际列表。
-- `metadata.dns` 与 `metadata.certificate.dns01` 字段可以在心跳期间动态更新，以便控制面及时刷新 DNS/TXT 记录。
-- 启用控制面自动化需在 cluster 端设置 `XPOD_EDGE_NODES_ENABLED=true`，并按需提供 `XPOD_TENCENT_DNS_TOKEN_ID`/`XPOD_TENCENT_DNS_TOKEN`、`XPOD_DNS_ROOT_DOMAIN` 等变量（详见《edge-node-control-plane》）。
-- FRP 隧道信息会在心跳响应的 `metadata.tunnel.config` 中返回（包含 `serverHost`、`serverPort`、`token`、`proxyName`、`customDomains`/`remotePort`）。若在 Agent 中启用 `frp` 配置，将自动生成 `frpc.ini` 并守护 `frpc` 进程；未配置时可自行处理或保持直连。
-- 若提供 `acme` 配置，Agent 会自动调用 Let’s Encrypt（或自定义目录）申请/续签证书：
+- `metadata.dns` 与 `metadata.certificate.dns01` 字段可以在心跳期间动态更新，以便控制面及时刷新 DNS/TXT 记录（当 `acme.mode=local` 时仍旧适用）。
+- 启用控制面自动化需在 cluster 端设置 `XPOD_EDGE_NODES_ENABLED=true`，并按需提供 `XPOD_TENCENT_DNS_TOKEN_ID`/`XPOD_TENCENT_DNS_TOKEN` 等变量（详见《edge-node-control-plane》）；DNS 根域名自动复用 CSS `baseUrl`。
+- FRP 隧道信息会在心跳响应的 `metadata.tunnel.config` 中返回（包含 `serverHost`、`serverPort`、`token`、`proxyName`、`remotePort`）。若在 Agent 中启用 `frp` 配置，将自动生成 `frpc.ini` 并守护 `frpc` 进程；未配置时可自行处理或保持直连。
+- Agent 会在心跳的 `tunnel.client` 字段中汇报 frpc 运行状态（`running/inactive/error`、进程 PID、最近更新及故障信息），Cluster 侧可据此监控隧道健康。
+- TODO：后续将在该字段补充更细的带宽/延迟指标，方便观察隧道性能。
+- 若提供 `acme` 配置，Agent 会自动申请/续签证书：
+- `mode=cluster`（默认推荐）：节点本地仅负责生成私钥与 CSR，调用 `/api/signal/certificate` 让 cluster 完成 ACME DNS-01、证书签发与分发。Cluster 会在心跳响应的 `metadata.certificate` 中回传有效期、域名等信息，Agent 根据这些指令调度下一次续签。
+- `mode=local`：兼容旧实现，由节点本地直接调用 ACME CA，cluster 只负责写入 TXT 记录。仅在需要完全离线或自定义 CA 时使用。
+  - 两种模式都遵循“私钥只在节点本地存储”原则；cluster 模式下 CSR 与证书的 HTTP 交互均走 `/api/signal/certificate`。
   - `accountKeyPath`、`certificateKeyPath`、`certificatePath` 等路径需可写；不存在的目录会自动创建。
   - 证书到期前 `renewBeforeDays`（默认 15 天）会触发续签，DNS challenge 会通过心跳调用 cluster 自动写入。提供 `postDeployCommand` 可在证书更新后自动执行服务重载脚本。
 

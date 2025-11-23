@@ -1,18 +1,40 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    {
+      "clusterIp": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/dist/edge/EdgeNodeDnsCoordinator.jsonld#EdgeNodeDnsCoordinator_options_clusterIp"
+    }
   ],
   "@graph": [
     {
-      "comment": "Persist CSS identity accounts and logins in the SQL identity database.",
-      "@id": "urn:undefineds:xpod:DrizzleAccountStorage",
-      "@type": "DrizzleAccountLoginStorage",
-      "identityDbUrl": {
-        "@id": "urn:solid-server:default:variable:identityDbUrl",
+      "comment": "Optional ingress IP for proxy edge nodes.",
+      "@id": "urn:solid-server:default:variable:xpodClusterIngressIp",
+      "@type": "Variable"
+    },
+    {
+      "comment": "Identifier strategy that allows cluster root host and node subdomains.",
+      "@id": "urn:undefineds:xpod:ClusterIdentifierStrategy",
+      "@type": "npmd:@undefineds/xpod/^0.0.0/dist/util/identifiers/ClusterIdentifierStrategy.jsonld#ClusterIdentifierStrategy",
+      "npmd:@undefineds/xpod/^0.0.0/dist/util/identifiers/ClusterIdentifierStrategy.jsonld#ClusterIdentifierStrategy_options_baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl",
         "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Allow requests for cluster domain and any node subdomain.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
       },
-      "tablePrefix": "identity_"
+      "overrideParameters": {
+        "@id": "urn:undefineds:xpod:ClusterIdentifierStrategy"
+      }
+    },
+    {
+      "comment": "Cluster ingress domain for node routing.",
+      "@id": "urn:solid-server:default:variable:xpodClusterIngressDomain",
+      "@type": "Variable"
     },
     {
       "comment": "Persist /.internal key/value records in PostgreSQL for clustered deployments.",
@@ -181,11 +203,15 @@
         "@id": "urn:undefineds:xpod:TencentDnsProvider"
       },
       "rootDomain": {
-        "@id": "urn:solid-server:default:variable:xpodDnsRootDomain",
+        "@id": "urn:solid-server:default:variable:baseUrl",
         "@type": "Variable"
       },
       "ttl": {
         "@id": "urn:solid-server:default:variable:xpodDnsRecordTtl",
+        "@type": "Variable"
+      },
+      "clusterIp": {
+        "@id": "urn:solid-server:default:variable:xpodClusterIngressIp",
         "@type": "Variable"
       }
     },
@@ -197,7 +223,7 @@
         "@id": "urn:undefineds:xpod:TencentDnsProvider"
       },
       "rootDomain": {
-        "@id": "urn:solid-server:default:variable:xpodDnsRootDomain",
+        "@id": "urn:solid-server:default:variable:baseUrl",
         "@type": "Variable"
       },
       "ttl": {
@@ -224,22 +250,6 @@
       "protocol": {
         "@id": "urn:solid-server:default:variable:xpodFrpProtocol",
         "@type": "Variable"
-      },
-      "customDomainSuffix": {
-        "@id": "urn:solid-server:default:variable:xpodFrpCustomDomainSuffix",
-        "@type": "Variable"
-      },
-      "publicScheme": {
-        "@id": "urn:solid-server:default:variable:xpodFrpPublicScheme",
-        "@type": "Variable"
-      },
-      "remotePortBase": {
-        "@id": "urn:solid-server:default:variable:xpodFrpRemotePortBase",
-        "@type": "Variable"
-      },
-      "remotePortStep": {
-        "@id": "urn:solid-server:default:variable:xpodFrpRemotePortStep",
-        "@type": "Variable"
       }
     },
     {
@@ -260,7 +270,24 @@
       }
     },
     {
-      "comment": "HTTP endpoint for edge node heartbeats",
+      "comment": "Cluster ingress router for unified entry point",
+      "@type": "ClusterIngressRouter", 
+      "@id": "urn:undefineds:xpod:ClusterIngressRouter",
+      "identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "edgeNodesEnabled": {
+        "@id": "urn:solid-server:default:variable:xpodEdgeNodesEnabled", 
+        "@type": "Variable"
+      },
+      "clusterIngressDomain": {
+        "@id": "urn:solid-server:default:variable:baseUrl",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Edge node signal handler",
       "@type": "EdgeNodeSignalHttpHandler",
       "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler",
       "identityDbUrl": {
@@ -308,7 +335,7 @@
         "@type": "WaterfallHandler",
         "handlers": [
           {
-            "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler"
+            "@id": "urn:undefineds:xpod:ClusterIngressRouter"
           },
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
@@ -338,6 +365,35 @@
             "@id": "urn:solid-server:default:LdpHandler"
           }
         ]
+      }
+    },
+    {
+      "comment": "Composite handler that intercepts /api/signal and forwards other traffic to CSS defaults.",
+      "@id": "urn:undefineds:xpod:SignalAwareHttpHandler",
+      "@type": "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler",
+      "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_signalHandler": {
+        "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler"
+      },
+      "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_fallback": {
+        "@id": "urn:solid-server:default:HttpHandler"
+      },
+      "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_basePath": "/api/signal"
+    },
+    {
+      "comment": "Use the signal-aware handler for incoming HTTP requests.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:HandlerServerConfigurator"
+      },
+      "overrideParameters": {
+        "@type": "HandlerServerConfigurator",
+        "handler": {
+          "@id": "urn:undefineds:xpod:SignalAwareHttpHandler"
+        },
+        "showStackTrace": {
+          "@id": "urn:solid-server:default:variable:showStackTrace",
+          "@type": "Variable"
+        }
       }
     }
   ]

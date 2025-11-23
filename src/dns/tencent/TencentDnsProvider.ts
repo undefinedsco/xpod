@@ -5,7 +5,7 @@ import type {
   DeleteDnsRecordInput,
   DnsProvider,
   DnsRecordSummary,
-  DnsRecordType,
+  DnsRecordTypeValue,
   ListDnsRecordsInput,
   ListableDnsProvider,
   UpsertDnsRecordInput,
@@ -149,7 +149,7 @@ export class TencentDnsProvider implements ListableDnsProvider {
       id: String(record.id),
       domain,
       subdomain: record.name,
-      type: record.type as DnsRecordType,
+      type: record.type as DnsRecordTypeValue,
       value: record.value,
       ttl: typeof record.ttl === 'number' ? record.ttl : Number.parseInt(record.ttl, 10),
       line: record.line,
@@ -157,7 +157,7 @@ export class TencentDnsProvider implements ListableDnsProvider {
     };
   }
 
-  private async findRecord(domain: string, subdomain: string, type: DnsRecordType, value?: string): Promise<TencentRecordInfo | undefined> {
+  private async findRecord(domain: string, subdomain: string, type: DnsRecordTypeValue, value?: string): Promise<TencentRecordInfo | undefined> {
     if (!this.enabled) {
       return undefined;
     }

@@ -11,8 +11,9 @@ export class LockingResourceStore extends BaseLockingResourceStore {
   protected override logger = getLoggerFor(this);
 
   override getLockIdentifier(identifier: ResourceIdentifier): ResourceIdentifier {
-    const lockIdentifier = super.getLockIdentifier(identifier);
-    // const lockIdentifier = identifier;
+    // Guard against missing auxiliary strategy in custom wiring
+    const hasAuxiliary = (this as any).auxiliaryStrategy?.isAuxiliaryIdentifier;
+    const lockIdentifier = hasAuxiliary ? super.getLockIdentifier(identifier) : identifier;
     this.logger.debug(`getLockIdentifier: ${identifier.path} -> ${lockIdentifier.path}`);
     return lockIdentifier;
   }

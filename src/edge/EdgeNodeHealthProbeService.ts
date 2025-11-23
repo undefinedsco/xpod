@@ -7,13 +7,21 @@ interface EdgeNodeHealthProbeServiceOptions {
   identityDbUrl?: string;
   enabled?: boolean | string;
   timeoutMs?: number | string;
+  locations?: string | string[];
 }
 
 interface ProbeResult {
+  location: string;
   candidate: string;
   success: boolean;
   latencyMs?: number;
   error?: string;
+  checkedAt: string;
+}
+
+interface ProbeLocation {
+  name: string;
+  endpoint?: string;
 }
 
 export class EdgeNodeHealthProbeService {
@@ -21,11 +29,13 @@ export class EdgeNodeHealthProbeService {
   private readonly repository?: EdgeNodeRepository;
   private readonly enabled: boolean;
   private readonly timeoutMs: number;
+  private readonly locations: ProbeLocation[];
 
   public constructor(options: EdgeNodeHealthProbeServiceOptions) {
     this.repository = options.repository ?? this.createRepository(options.identityDbUrl);
     this.enabled = this.normalizeBoolean(options.enabled) && Boolean(this.repository);
     this.timeoutMs = this.normalizeTimeout(options.timeoutMs) ?? 3_000;
+    this.locations = this.normalizeLocations(options.locations);
   }
 
   public async probeNode(nodeId: string): Promise<void> {
@@ -46,17 +56,21 @@ export class EdgeNodeHealthProbeService {
 
     const results: ProbeResult[] = [];
     for (const candidate of candidates) {
-      const result = await this.ping(candidate);
-      results.push(result);
+      for (const location of this.locations) {
+        const result = await this.ping(candidate, location);
+        results.push(result);
+      }
     }
 
     const successful = results.find((item) => item.success);
+    const clusterSuccess = results.some((item) => item.location === 'cluster' && item.success);
+    const status = clusterSuccess ? 'redirect' : successful ? 'degraded' : 'unreachable';
     const now = new Date();
     const reachability = {
-      status: successful ? 'direct' : 'unreachable',
+      status,
       lastProbeAt: now.toISOString(),
-      lastSuccessAt: successful ? now.toISOString() : undefined,
-      candidates: results,
+      lastSuccessAt: successful ? successful.checkedAt : undefined,
+      samples: results,
     };
 
     await this.repository!.mergeNodeMetadata(nodeId, { reachability });
@@ -79,16 +93,57 @@ export class EdgeNodeHealthProbeService {
     return Array.from(candidates);
   }
 
-  private async ping(candidate: string): Promise<ProbeResult> {
+  private async ping(candidate: string, location: ProbeLocation): Promise<ProbeResult> {
     const url = this.toUrl(candidate);
     if (!url) {
-      return { candidate, success: false, error: 'invalid-url' };
+      return { candidate, success: false, error: 'invalid-url', location: location.name, checkedAt: new Date().toISOString() };
     }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const started = Date.now();
     try {
+      if (location.endpoint) {
+        const probeUrl = new URL(location.endpoint);
+        probeUrl.searchParams.set('target', url.toString());
+        const response = await fetch(probeUrl.toString(), {
+          method: 'GET',
+          signal: controller.signal,
+          headers: { 'accept': 'application/json' },
+        });
+        clearTimeout(timer);
+        const latencyMs = Date.now() - started;
+        if (!response.ok) {
+          return {
+            candidate,
+            location: location.name,
+            success: false,
+            latencyMs,
+            error: `status:${response.status}`,
+            checkedAt: new Date().toISOString(),
+          };
+        }
+        try {
+          const data = await response.json() as Partial<ProbeResult>;
+          return {
+            candidate,
+            location: location.name,
+            success: Boolean(data.success),
+            latencyMs: typeof data.latencyMs === 'number' ? data.latencyMs : latencyMs,
+            error: data.error,
+            checkedAt: data.checkedAt ?? new Date().toISOString(),
+          };
+        } catch (error: unknown) {
+          return {
+            candidate,
+            location: location.name,
+            success: false,
+            latencyMs,
+            error: `invalid-json:${(error as Error).message}`,
+            checkedAt: new Date().toISOString(),
+          };
+        }
+      }
       const response = await fetch(url.toString(), {
         method: 'HEAD',
         signal: controller.signal,
@@ -97,16 +152,20 @@ export class EdgeNodeHealthProbeService {
       const latencyMs = Date.now() - started;
       return {
         candidate,
+        location: location.name,
         success: response.ok,
         latencyMs,
         error: response.ok ? undefined : `status:${response.status}`,
+        checkedAt: new Date().toISOString(),
       };
     } catch (error: unknown) {
       clearTimeout(timer);
       return {
         candidate,
+        location: location.name,
         success: false,
         error: (error as Error).message,
+        checkedAt: new Date().toISOString(),
       };
     }
   }
@@ -153,5 +212,28 @@ export class EdgeNodeHealthProbeService {
       }
     }
     return undefined;
+  }
+
+  private normalizeLocations(value?: string | string[]): ProbeLocation[] {
+    const defaultLocation: ProbeLocation = { name: 'cluster' };
+    if (value === undefined) {
+      return [ defaultLocation ];
+    }
+    const input = Array.isArray(value) ? value : value.split(/[,;\n]+/u);
+    const result: ProbeLocation[] = [];
+    for (const entry of input) {
+      const trimmed = entry.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      const [ namePart, endpointPart ] = trimmed.split('@', 2);
+      const name = namePart.trim() || 'cluster';
+      const endpoint = endpointPart?.trim();
+      result.push({
+        name,
+        endpoint: endpoint?.length ? endpoint : undefined,
+      });
+    }
+    return result.length > 0 ? result : [ defaultLocation ];
   }
 }

@@ -13,8 +13,10 @@ import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
 import type { EdgeNodeCertificateProvisioner } from '../../edge/EdgeNodeCertificateProvisioner';
-import type { EdgeNodeTunnelManager } from '../../edge/EdgeNodeTunnelManager';
+import type { EdgeNodeTunnelManager } from '../../edge/interfaces/EdgeNodeTunnelManager';
 import type { EdgeNodeHealthProbeService } from '../../edge/EdgeNodeHealthProbeService';
+import { EdgeNodeModeDetector, type NodeRegistrationInfo, type NodeCapabilities } from '../../edge/EdgeNodeModeDetector';
+import { EdgeNodeCapabilityDetector } from '../../edge/EdgeNodeCapabilityDetector';
 
 interface EdgeNodeSignalHttpHandlerOptions {
   identityDbUrl: string;
@@ -25,6 +27,9 @@ interface EdgeNodeSignalHttpHandlerOptions {
   certificateProvisioner?: EdgeNodeCertificateProvisioner;
   tunnelManager?: EdgeNodeTunnelManager;
   healthProbeService?: EdgeNodeHealthProbeService;
+  modeDetector?: EdgeNodeModeDetector;
+  capabilityDetector?: EdgeNodeCapabilityDetector;
+  clusterBaseDomain?: string;
 }
 
 interface EdgeNodeSignalPayload {
@@ -59,6 +64,8 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
   private readonly certificateProvisioner?: EdgeNodeCertificateProvisioner;
   private readonly tunnelManager?: EdgeNodeTunnelManager;
   private readonly healthProbeService?: EdgeNodeHealthProbeService;
+  private readonly modeDetector?: EdgeNodeModeDetector;
+  private readonly capabilityDetector?: EdgeNodeCapabilityDetector;
 
   public constructor(options: EdgeNodeSignalHttpHandlerOptions) {
     super();
@@ -70,6 +77,10 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
     this.certificateProvisioner = options.certificateProvisioner;
     this.tunnelManager = options.tunnelManager;
     this.healthProbeService = options.healthProbeService;
+    this.modeDetector = options.modeDetector ?? (options.clusterBaseDomain ? 
+      new EdgeNodeModeDetector({ baseDomain: options.clusterBaseDomain }) : 
+      undefined);
+    this.capabilityDetector = options.capabilityDetector;
   }
 
   public override async canHandle({ request }: HttpHandlerInput): Promise<void> {
@@ -105,13 +116,72 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
       throw new UnauthorizedHttpError('Edge node authentication failed.');
     }
 
-    let merged = this.mergeMetadata((secret.metadata ?? {}) as EdgeNodeMetadata, payload, now);
+    let merged = await this.mergeMetadata((secret.metadata ?? {}) as EdgeNodeMetadata, payload, now);
     if (this.tunnelManager) {
       const enriched = await this.tunnelManager.ensureConnectivity(secret.nodeId, merged);
       if (enriched) {
         merged = enriched;
       }
     }
+
+    // Perform mode detection and update if necessary
+    const fallbackPublicIp = this.optionalString(payload.ipv4) ??
+      this.optionalString(merged.ipv4) ??
+      this.optionalString(merged.publicIp);
+
+    const connectivityInfo = await this.repo.getNodeConnectivityInfo(payload.nodeId);
+
+    if (this.modeDetector && fallbackPublicIp) {
+      const nodeRegistrationInfo: NodeRegistrationInfo = {
+        nodeId: payload.nodeId,
+        publicIp: fallbackPublicIp,
+        publicPort: this.extractPortNumber(payload.publicAddress || merged.publicAddress),
+        capabilities: this.buildNodeCapabilities(payload, merged),
+      };
+
+      const currentConnectivity = connectivityInfo;
+      
+      // Perform initial mode detection or recheck if in proxy mode
+      let modeResult;
+      const normalizedCurrentMode = this.normalizeAccessMode(currentConnectivity?.accessMode);
+      if (!normalizedCurrentMode) {
+        // Initial registration - perform full mode detection
+        modeResult = await this.modeDetector.detectMode(nodeRegistrationInfo);
+        this.logger.info(`Initial mode detection for node ${payload.nodeId}: ${modeResult.accessMode} (${modeResult.reason})`);
+      } else if (normalizedCurrentMode === 'proxy') {
+        // Periodic recheck for proxy nodes to see if they can switch to redirect mode
+        modeResult = await this.modeDetector.recheckMode(normalizedCurrentMode, nodeRegistrationInfo);
+        if (modeResult) {
+          this.logger.info(`Mode transition for node ${payload.nodeId}: ${normalizedCurrentMode} -> ${modeResult.accessMode} (${modeResult.reason})`);
+        }
+      }
+
+      // Update database with mode information if detection was performed
+      if (modeResult) {
+        await this.repo.updateNodeMode(payload.nodeId, {
+          accessMode: modeResult.accessMode,
+          publicIp: nodeRegistrationInfo.publicIp,
+          publicPort: nodeRegistrationInfo.publicPort,
+          subdomain: modeResult.subdomain,
+          connectivityStatus: modeResult.connectivityTest?.success === true ? 'reachable' : 
+                             modeResult.connectivityTest?.success === false ? 'unreachable' : 'unknown',
+          capabilities: nodeRegistrationInfo.capabilities as Record<string, unknown>,
+        });
+
+        // Store mode information in merged metadata for coordinator services
+        merged.accessMode = modeResult.accessMode;
+        merged.subdomain = modeResult.subdomain;
+        merged.connectivityTest = modeResult.connectivityTest;
+        if (nodeRegistrationInfo.publicIp) {
+          merged.publicIp = nodeRegistrationInfo.publicIp;
+        }
+        if (nodeRegistrationInfo.publicPort) {
+          merged.publicPort = nodeRegistrationInfo.publicPort;
+        }
+      }
+    }
+
+    await this.applyRoutingDecision(payload.nodeId, merged, connectivityInfo);
 
     try {
       await this.repo.updateNodeHeartbeat(secret.nodeId, merged, now);
@@ -200,7 +270,7 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
     return normalized.length > 0 ? normalized : undefined;
   }
 
-  private mergeMetadata(previous: EdgeNodeMetadata, payload: EdgeNodeSignalPayload, now: Date): EdgeNodeMetadata {
+  private async mergeMetadata(previous: EdgeNodeMetadata, payload: EdgeNodeSignalPayload, now: Date): Promise<EdgeNodeMetadata> {
     const next: EdgeNodeMetadata = { ...previous };
     next.lastHeartbeatAt = now.toISOString();
     if (payload.baseUrl) {
@@ -226,6 +296,35 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
     }
     if (payload.capabilities) {
       next.capabilities = payload.capabilities;
+    }
+
+    // Enhanced capability reporting using EdgeNodeCapabilityDetector
+    if (this.capabilityDetector) {
+      try {
+        // Get structured capabilities from the detector
+        const detectedCapabilities = await this.capabilityDetector.detectCapabilities();
+        
+        // Merge detected capabilities with existing metadata
+        next.detectedCapabilities = detectedCapabilities;
+        
+        // Convert to string array format for backward compatibility
+        const capabilityStrings = EdgeNodeCapabilityDetector.capabilitiesToStringArray(detectedCapabilities);
+        
+        // Merge with user-provided capabilities if any
+        const existingCapabilities = (payload.capabilities ?? []);
+        const mergedCapabilities = [...new Set([...existingCapabilities, ...capabilityStrings])];
+        
+        next.capabilities = mergedCapabilities;
+        
+        this.logger.debug(`Enhanced node capabilities for ${payload.nodeId}: ${JSON.stringify({ 
+          original: existingCapabilities,
+          detected: detectedCapabilities,
+          merged: mergedCapabilities 
+        })}`);
+      } catch (error: unknown) {
+        this.logger.warn(`Failed to detect capabilities for node ${payload.nodeId}: ${(error as Error).message}`);
+        // Continue with user-provided capabilities if detection fails
+      }
     }
     if (payload.pods) {
       next.pods = payload.pods;
@@ -263,9 +362,11 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
   private readBody(request: IncomingMessage): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       let data = '';
-      request.setEncoding('utf8');
-      request.on('data', (chunk: string) => {
-        data += chunk;
+      if (typeof request.setEncoding === 'function') {
+        request.setEncoding('utf8');
+      }
+      request.on('data', (chunk: Buffer | string) => {
+        data += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
       });
       request.on('end', () => resolve(data));
       request.on('error', reject);
@@ -439,5 +540,200 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
       return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
     }
     return false;
+  }
+
+  private extractPortNumber(address: unknown): number | undefined {
+    if (typeof address !== 'string') {
+      return undefined;
+    }
+    try {
+      const url = new URL(address);
+      const port = url.port;
+      if (port) {
+        const parsed = parseInt(port, 10);
+        return isNaN(parsed) ? undefined : parsed;
+      }
+      // Return default port based on protocol
+      return url.protocol === 'https:' ? 443 : url.protocol === 'http:' ? 80 : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private buildNodeCapabilities(payload: EdgeNodeSignalPayload, merged: EdgeNodeMetadata): NodeCapabilities {
+    // Start with basic capability information from payload and metadata
+    const capabilityStrings = Array.isArray(payload.capabilities) ?
+      payload.capabilities :
+      Array.isArray(merged.capabilities) ? merged.capabilities as string[] : undefined;
+    let capabilities: NodeCapabilities = {
+      solidProtocolVersion: payload.version || merged.version as string || '1.0.0',
+      storageBackends: this.parseStorageBackends(capabilityStrings),
+      authMethods: this.parseAuthMethods(capabilityStrings),
+      maxBandwidth: merged.maxBandwidth as number,
+      location: merged.location as NodeCapabilities['location'],
+      supportedModes: this.parseSupportedModes(capabilityStrings) ?? [ 'redirect', 'proxy' ],
+    };
+
+    // If we have structured capabilities from the detector, use them to enhance the information
+    if (merged.detectedCapabilities) {
+      try {
+        const detected = merged.detectedCapabilities as NodeCapabilities;
+        capabilities = {
+          solidProtocolVersion: detected.solidProtocolVersion || capabilities.solidProtocolVersion,
+          storageBackends: detected.storageBackends || capabilities.storageBackends,
+          authMethods: detected.authMethods || capabilities.authMethods,
+          maxBandwidth: detected.maxBandwidth || capabilities.maxBandwidth,
+          location: detected.location || capabilities.location,
+        };
+      } catch (error: unknown) {
+        this.logger.warn(`Failed to use detected capabilities: ${(error as Error).message}`);
+      }
+    }
+
+    return capabilities;
+  }
+
+  private parseStorageBackends(capabilityStrings?: string[]): string[] | undefined {
+    if (!capabilityStrings || capabilityStrings.length === 0) {
+      return ['filesystem']; // default
+    }
+
+    const storageBackends = capabilityStrings
+      .filter(cap => cap.startsWith('storage:'))
+      .map(cap => cap.substring(8)); // remove 'storage:' prefix
+
+    return storageBackends.length > 0 ? storageBackends : ['filesystem'];
+  }
+
+  private parseAuthMethods(capabilityStrings?: string[]): string[] | undefined {
+    if (!capabilityStrings || capabilityStrings.length === 0) {
+      return ['webid', 'client-credentials']; // defaults
+    }
+
+    const authMethods = capabilityStrings
+      .filter(cap => cap.startsWith('auth:'))
+      .map(cap => cap.substring(5)); // remove 'auth:' prefix
+
+    return authMethods.length > 0 ? authMethods : ['webid', 'client-credentials'];
+  }
+
+  private parseSupportedModes(capabilityStrings?: string[]): ('redirect' | 'proxy')[] | undefined {
+    if (!capabilityStrings || capabilityStrings.length === 0) {
+      return undefined;
+    }
+    const modes = new Set<'redirect' | 'proxy'>();
+    for (const entry of capabilityStrings) {
+      if (typeof entry !== 'string' || !entry.startsWith('mode:')) {
+        continue;
+      }
+      const mode = entry.slice(5).trim().toLowerCase();
+      if (mode === 'redirect' || mode === 'proxy') {
+        modes.add(mode);
+      }
+    }
+    return modes.size > 0 ? [ ...modes ] : undefined;
+  }
+
+  private getSupportedModeFlags(metadata: EdgeNodeMetadata): { supportsRedirect: boolean; supportsProxy: boolean } {
+    const capabilityStrings = Array.isArray(metadata.capabilities) ?
+      (metadata.capabilities as string[]).filter((entry) => typeof entry === 'string') as string[] :
+      undefined;
+    const parsed = this.parseSupportedModes(capabilityStrings) ?? [ 'redirect', 'proxy' ];
+    const set = new Set(parsed);
+    return {
+      supportsRedirect: set.has('redirect'),
+      supportsProxy: set.has('proxy'),
+    };
+  }
+
+  private async applyRoutingDecision(nodeId: string, metadata: EdgeNodeMetadata, currentConnectivity?: ReturnType<EdgeNodeRepository['getNodeConnectivityInfo']> extends Promise<infer T> ? T : never): Promise<void> {
+    const desiredMode = this.determineAccessMode(metadata);
+    if (!desiredMode) {
+      return;
+    }
+
+    const currentMode = this.normalizeAccessMode(currentConnectivity?.accessMode);
+    if (currentMode === desiredMode.accessMode &&
+      currentConnectivity?.publicIp === desiredMode.publicIp &&
+      currentConnectivity?.subdomain === desiredMode.subdomain) {
+      metadata.accessMode = desiredMode.accessMode;
+      return;
+    }
+    await this.repo.updateNodeMode(nodeId, {
+      accessMode: desiredMode.accessMode,
+      publicIp: desiredMode.publicIp,
+      publicPort: desiredMode.publicPort,
+      subdomain: desiredMode.subdomain,
+      connectivityStatus: desiredMode.connectivityStatus,
+      capabilities: metadata.capabilities as Record<string, unknown>,
+    });
+    metadata.accessMode = desiredMode.accessMode;
+    metadata.subdomain = desiredMode.subdomain ?? metadata.subdomain;
+  }
+
+  private determineAccessMode(metadata: EdgeNodeMetadata): { accessMode: 'redirect' | 'proxy'; publicIp?: string; publicPort?: number; subdomain?: string; connectivityStatus: 'reachable' | 'unreachable' | 'unknown'; } | undefined {
+    const { supportsRedirect, supportsProxy } = this.getSupportedModeFlags(metadata);
+    const reachability = this.asRecord(metadata.reachability);
+    const status = typeof reachability.status === 'string' ? reachability.status.trim().toLowerCase() : undefined;
+    const tunnel = this.asRecord(metadata.tunnel);
+
+    // Prefer redirect if it is healthy and supported
+    const redirectHealthy = status === 'redirect' || status === 'direct' || status === 'reachable';
+    if (redirectHealthy && supportsRedirect) {
+      return {
+        accessMode: 'redirect',
+        publicIp: typeof metadata.publicIp === 'string' ? metadata.publicIp : undefined,
+        publicPort: typeof metadata.publicPort === 'number' ? metadata.publicPort : undefined,
+        subdomain: typeof metadata.subdomain === 'string' ? metadata.subdomain : undefined,
+        connectivityStatus: 'reachable',
+      };
+    }
+
+    // Fallback to proxy if supported and tunnel is active
+    if (supportsProxy && tunnel?.status === 'active') {
+      return {
+        accessMode: 'proxy',
+        publicIp: typeof metadata.publicIp === 'string' ? metadata.publicIp : undefined,
+        publicPort: typeof metadata.publicPort === 'number' ? metadata.publicPort : undefined,
+        subdomain: typeof metadata.subdomain === 'string' ? metadata.subdomain : undefined,
+        connectivityStatus: 'reachable',
+      };
+    }
+
+    // Proxy supported but inactive
+    if (supportsProxy && !supportsRedirect) {
+      return {
+        accessMode: 'proxy',
+        connectivityStatus: 'unreachable',
+        subdomain: typeof metadata.subdomain === 'string' ? metadata.subdomain : undefined,
+      };
+    }
+
+    // Redirect supported but currently unreachable
+    if (supportsRedirect && status === 'unreachable') {
+      return {
+        accessMode: 'redirect',
+        publicIp: typeof metadata.publicIp === 'string' ? metadata.publicIp : undefined,
+        publicPort: typeof metadata.publicPort === 'number' ? metadata.publicPort : undefined,
+        subdomain: typeof metadata.subdomain === 'string' ? metadata.subdomain : undefined,
+        connectivityStatus: 'unreachable',
+      };
+    }
+
+      return undefined;
+  }
+
+  private normalizeAccessMode(mode: string | undefined): 'redirect' | 'proxy' | undefined {
+    if (!mode) {
+      return undefined;
+    }
+    const normalized = mode.trim().toLowerCase();
+    if (normalized === 'redirect') {
+      return 'redirect';
+    }
+    if (normalized === 'proxy') {
+      return 'proxy';
+    }
+    return undefined;
   }
 }

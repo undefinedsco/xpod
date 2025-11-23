@@ -1,11 +1,12 @@
-export type DnsRecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT';
+export type DnsRecordTypeValue = 'A' | 'AAAA' | 'CNAME' | 'TXT';
+export type DnsRecordType = DnsRecordTypeValue;
 
 export interface UpsertDnsRecordInput {
   /** 根域名，例如 `example.com`。 */
   domain: string;
   /** 子域名（相对形式），根域使用 `@`。 */
   subdomain: string;
-  type: DnsRecordType;
+  type: DnsRecordTypeValue;
   value: string;
   /** TTL 秒数，供应商若不支持将退回默认值。 */
   ttl?: number;
@@ -16,7 +17,7 @@ export interface UpsertDnsRecordInput {
 export interface DeleteDnsRecordInput {
   domain: string;
   subdomain: string;
-  type: DnsRecordType;
+  type: DnsRecordTypeValue;
   /**
    * 若提供 value，仅当记录值匹配时才删除；
    * 否则会删除第一条匹配类型的记录。
@@ -33,7 +34,7 @@ export interface DnsRecordSummary {
   id: string;
   domain: string;
   subdomain: string;
-  type: DnsRecordType;
+  type: DnsRecordTypeValue;
   value: string;
   ttl: number;
   line: string;
@@ -43,7 +44,7 @@ export interface DnsRecordSummary {
 export interface ListDnsRecordsInput {
   domain: string;
   subdomain?: string;
-  type?: DnsRecordType;
+  type?: DnsRecordTypeValue;
 }
 
 export interface ListableDnsProvider extends DnsProvider {

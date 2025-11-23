@@ -1,0 +1,18 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    {
+      "UsageTrackingStore": "urn:undefineds:xpod:UsageTrackingStore#",
+      "PerAccountQuotaStrategy": "urn:undefineds:xpod:PerAccountQuotaStrategy#",
+      "DrizzleQuotaService": "urn:undefineds:xpod:DrizzleQuotaService#",
+      "DefaultQuotaService": "urn:undefineds:xpod:DefaultQuotaService#"
+    }
+  ],
+  "import": [
+    "./extensions.server.json",
+    "./xpod.cluster.json"
+  ],
+  "@graph": [
+  ]
+}

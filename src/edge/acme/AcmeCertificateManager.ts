@@ -1,11 +1,12 @@
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { X509Certificate, createHash } from 'node:crypto';
+import { X509Certificate } from 'node:crypto';
 import acme from 'acme-client';
 import type { Authorization } from 'acme-client';
-import { DnsChallengeClient } from './DnsChallengeClient';
 import { getLoggerFor } from '@solid/community-server';
+import { DnsChallengeClient } from './DnsChallengeClient';
+import { toDns01Value } from './utils';
 
 export interface AcmeCertificateManagerOptions {
   signalEndpoint: string;
@@ -14,6 +15,7 @@ export interface AcmeCertificateManagerOptions {
   email: string;
   domains: string[];
   directoryUrl?: string;
+  fallbackDirectoryUrls?: string[]; // CA failover support
   accountKeyPath: string;
   certificateKeyPath: string;
   certificatePath: string;
@@ -23,6 +25,10 @@ export interface AcmeCertificateManagerOptions {
 }
 
 const DEFAULT_DIRECTORY_URL = acme.directory.letsencrypt.production;
+const DEFAULT_FALLBACK_URLS = [
+  acme.directory.letsencrypt.staging, // Staging as fallback for testing
+  'https://acme.zerossl.com/v2/DV90', // ZeroSSL as alternative CA
+];
 
 export class AcmeCertificateManager {
   private readonly logger = getLoggerFor(this);
@@ -30,6 +36,7 @@ export class AcmeCertificateManager {
   private readonly email: string;
   private readonly domains: string[];
   private readonly directoryUrl: string;
+  private readonly fallbackDirectoryUrls: string[];
   private readonly accountKeyPath: string;
   private readonly certificateKeyPath: string;
   private readonly certificatePath: string;
@@ -46,6 +53,7 @@ export class AcmeCertificateManager {
     this.email = options.email;
     this.domains = options.domains;
     this.directoryUrl = options.directoryUrl ?? DEFAULT_DIRECTORY_URL;
+    this.fallbackDirectoryUrls = options.fallbackDirectoryUrls ?? DEFAULT_FALLBACK_URLS;
     this.accountKeyPath = options.accountKeyPath;
     this.certificateKeyPath = options.certificateKeyPath;
     this.certificatePath = options.certificatePath;
@@ -89,9 +97,33 @@ export class AcmeCertificateManager {
       await this.ensureDirectory(dirname(this.fullChainPath));
     }
 
+    // Try primary CA first, then fallback CAs
+    const directoryUrls = [this.directoryUrl, ...this.fallbackDirectoryUrls];
+    let lastError: Error | undefined;
+
+    for (const directoryUrl of directoryUrls) {
+      try {
+        await this.issueCertificateFromCA(directoryUrl);
+        return; // Success!
+      } catch (error: unknown) {
+        lastError = error as Error;
+        this.logger.warn(`ACME CA ${directoryUrl} 失败: ${lastError.message}`);
+        if (directoryUrl !== directoryUrls[directoryUrls.length - 1]) {
+          this.logger.info('尝试下一个 ACME CA...');
+        }
+      }
+    }
+
+    // All CAs failed
+    throw new Error(`所有 ACME CA 都失败。最后错误: ${lastError?.message}`);
+  }
+
+  private async issueCertificateFromCA(directoryUrl: string): Promise<void> {
+    this.logger.info(`使用 ACME CA: ${directoryUrl}`);
+    
     const accountKey = await this.loadOrCreateAccountKey(this.accountKeyPath);
     const client = new acme.Client({
-      directoryUrl: this.directoryUrl,
+      directoryUrl,
       accountKey,
     });
 
@@ -110,7 +142,7 @@ export class AcmeCertificateManager {
       challengePriority: [ 'dns-01' ],
       challengeCreateFn: async (authz: Authorization, _challenge: unknown, keyAuthorization: string): Promise<void> => {
         const recordName = `_acme-challenge.${authz.identifier.value}`;
-        const value = this.computeDnsValue(keyAuthorization);
+        const value = toDns01Value(keyAuthorization);
         await this.dnsClient.setChallenge(recordName, value);
         await this.delay(this.propagationDelayMs);
       },
@@ -125,7 +157,7 @@ export class AcmeCertificateManager {
     if (this.fullChainPath) {
       await fs.writeFile(this.fullChainPath, certificate);
     }
-    this.logger.info('ACME 证书申请成功。');
+    this.logger.info(`ACME 证书申请成功 (CA: ${directoryUrl})`);
   }
 
   private async ensureAccount(client: acme.Client): Promise<void> {
@@ -175,14 +207,6 @@ export class AcmeCertificateManager {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private computeDnsValue(keyAuthorization: string): string {
-    const hash = createHash('sha256').update(keyAuthorization).digest('base64');
-    return hash
-      .replace(/=+$/u, '')
-      .replace(/\+/gu, '-')
-      .replace(/\//gu, '_');
   }
 
   private isConflictError(error: unknown): boolean {

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Readable } from 'node:stream';
-import { BandwidthThrottleTransform } from '../../../src/util/stream/BandwidthThrottleTransform';
+import { createBandwidthThrottleTransform } from '../../../src/util/stream/BandwidthThrottleTransform';
 
-describe('BandwidthThrottleTransform', () => {
+describe('createBandwidthThrottleTransform', () => {
   it('在限速下延迟输出数据', async () => {
     vi.useFakeTimers();
     try {
-      const throttle = new BandwidthThrottleTransform({ bytesPerSecond: 1 });
+      const throttle = createBandwidthThrottleTransform({ bytesPerSecond: 1 });
       const chunks: Buffer[] = [];
       const completion = new Promise<void>((resolve, reject) => {
         throttle.on('data', (chunk) => {
@@ -28,7 +28,7 @@ describe('BandwidthThrottleTransform', () => {
   });
 
   it('限速为 0 时直通', async () => {
-    const throttle = new BandwidthThrottleTransform({ bytesPerSecond: 0 });
+    const throttle = createBandwidthThrottleTransform({ bytesPerSecond: 0 });
     const chunks: Buffer[] = [];
     const completion = new Promise<void>((resolve, reject) => {
       throttle.on('data', (chunk) => {

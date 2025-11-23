@@ -1,15 +1,11 @@
 import { getLoggerFor } from '@solid/community-server';
-import type { EdgeNodeTunnelManager } from './EdgeNodeTunnelManager';
+import type { EdgeNodeTunnelManager } from './interfaces/EdgeNodeTunnelManager';
 
 interface FrpTunnelManagerOptions {
   serverHost?: string | null;
   serverPort?: number | string | null;
   protocol?: string | null;
   token?: string | null;
-  customDomainSuffix?: string | null;
-  publicScheme?: string | null;
-  remotePortBase?: number | string | null;
-  remotePortStep?: number | string | null;
 }
 
 interface TunnelMetadata {
@@ -25,6 +21,7 @@ interface TunnelMetadata {
   token?: string;
   updatedAt?: string;
   config?: Record<string, unknown>;
+  reason?: string;
 }
 
 export class FrpTunnelManager implements EdgeNodeTunnelManager {
@@ -34,21 +31,15 @@ export class FrpTunnelManager implements EdgeNodeTunnelManager {
   private readonly serverPort?: number;
   private readonly protocol: string;
   private readonly token?: string;
-  private readonly customDomainSuffix?: string;
-  private readonly publicScheme: string;
-  private readonly remotePortBase?: number;
-  private readonly remotePortStep: number;
+  private readonly remotePortBase = 20000;
+  private readonly remotePortStep = 17;
 
   public constructor(options: FrpTunnelManagerOptions) {
     this.serverHost = this.normalizeString(options.serverHost);
     this.serverPort = this.normalizeNumber(options.serverPort);
     this.protocol = this.normalizeString(options.protocol)?.toLowerCase() ?? 'tcp';
     this.token = this.normalizeString(options.token);
-    this.customDomainSuffix = this.normalizeString(options.customDomainSuffix);
-    this.publicScheme = this.normalizeString(options.publicScheme)?.toLowerCase() ?? 'https';
-    this.remotePortBase = this.normalizeNumber(options.remotePortBase);
-    this.remotePortStep = this.normalizeNumber(options.remotePortStep) ?? 1;
-    this.enabled = Boolean(this.serverHost && this.token && (this.customDomainSuffix || this.remotePortBase));
+    this.enabled = Boolean(this.serverHost && this.token);
     if (!this.enabled) {
       this.logger.info('FrpTunnelManager disabled：缺少 serverHost/token 或 domain/port 配置。');
     }
@@ -60,9 +51,14 @@ export class FrpTunnelManager implements EdgeNodeTunnelManager {
     }
     const reachability = this.extractRecord(metadata.reachability);
     const existing = this.extractTunnel(metadata.tunnel);
-    const directHealthy = this.isDirectHealthy(reachability);
+    const directHealthy = this.isRedirectHealthy(reachability);
 
     const prepared = this.prepareTunnel(nodeId, metadata, existing);
+
+    if (prepared.status === 'unreachable') {
+      this.logger.warn(`节点 ${nodeId} 隧道不可用：${prepared.reason ?? '未知原因'}`);
+      return { ...metadata, tunnel: prepared };
+    }
 
     if (directHealthy) {
       if (prepared.status !== 'standby') {
@@ -87,46 +83,28 @@ export class FrpTunnelManager implements EdgeNodeTunnelManager {
     next.protocol = this.protocol;
     next.token = this.token;
     next.proxyName = existing?.proxyName ?? nodeId;
-    next.customDomain = this.resolveCustomDomain(nodeId, metadata, existing);
+    if (!this.serverHost || !this.serverPort || !this.token) {
+      next.status = 'unreachable';
+      next.reason = 'FRP server config missing';
+      return next;
+    }
     next.remotePort = this.resolveRemotePort(nodeId, metadata, existing);
     next.entrypoint = this.resolveEntrypoint(next);
     next.config = this.buildConfig(next);
     return next;
   }
 
-  private resolveCustomDomain(nodeId: string, metadata: Record<string, unknown>, existing?: TunnelMetadata): string | undefined {
-    if (!this.customDomainSuffix) {
-      return existing?.customDomain;
-    }
-    const dnsSubdomain = this.extractRecord(metadata.dns)?.subdomain;
-    const subdomain = this.normalizeSubdomain(dnsSubdomain) ?? this.normalizeSubdomain(existing?.customDomain?.split('.')?.[0]) ?? this.normalizeSubdomain(nodeId);
-    if (!subdomain) {
-      return existing?.customDomain;
-    }
-    return `${subdomain}.${this.customDomainSuffix}`;
-  }
-
   private resolveRemotePort(nodeId: string, metadata: Record<string, unknown>, existing?: TunnelMetadata): number | undefined {
-    if (this.customDomainSuffix) {
-      // 使用自定义域名时无需 remotePort
-      return existing?.remotePort;
-    }
     if (existing?.remotePort) {
       return existing.remotePort;
     }
-    if (this.remotePortBase == null) {
-      return undefined;
-    }
     const hash = this.hashString(nodeId);
-    return this.remotePortBase + (hash * this.remotePortStep);
+    return this.remotePortBase + ((hash % 1000) * this.remotePortStep);
   }
 
   private resolveEntrypoint(tunnel: TunnelMetadata): string | undefined {
-    if (tunnel.customDomain) {
-      return `${this.publicScheme}://${tunnel.customDomain}`;
-    }
     if (tunnel.serverHost && tunnel.remotePort) {
-      return `${this.publicScheme}://${tunnel.serverHost}:${tunnel.remotePort}`;
+      return `https://${tunnel.serverHost}:${tunnel.remotePort}`;
     }
     return undefined;
   }
@@ -139,9 +117,8 @@ export class FrpTunnelManager implements EdgeNodeTunnelManager {
       token: this.token,
       proxyName: tunnel.proxyName,
     };
-    if (tunnel.customDomain) {
-      config.customDomains = [ tunnel.customDomain ];
-      config.type = 'http';
+    if (!tunnel.entrypoint) {
+      config.error = 'FRP entrypoint not resolved';
     }
     if (tunnel.remotePort) {
       config.remotePort = tunnel.remotePort;
@@ -166,12 +143,12 @@ export class FrpTunnelManager implements EdgeNodeTunnelManager {
     return { ...record } as TunnelMetadata;
   }
 
-  private isDirectHealthy(reachability?: Record<string, unknown>): boolean {
+  private isRedirectHealthy(reachability?: Record<string, unknown>): boolean {
     if (!reachability) {
       return false;
     }
     const status = typeof reachability.status === 'string' ? reachability.status.trim().toLowerCase() : undefined;
-    if (status === 'direct' || status === 'healthy') {
+    if (status === 'redirect' || status === 'healthy') {
       return true;
     }
     if (status === 'degraded' && typeof reachability.lastSuccessAt === 'string') {
@@ -201,14 +178,6 @@ export class FrpTunnelManager implements EdgeNodeTunnelManager {
       }
     }
     return undefined;
-  }
-
-  private normalizeSubdomain(value?: string): string | undefined {
-    if (!value) {
-      return undefined;
-    }
-    const sanitized = value.trim().toLowerCase().replace(/[^a-z0-9-]/gu, '-').replace(/^-+|-+$/gu, '');
-    return sanitized.length > 0 ? sanitized : undefined;
   }
 
   private hashString(input: string): number {

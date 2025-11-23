@@ -58,16 +58,12 @@
 
 ## 当前社区版实现快照（截至此仓库最新提交）
 
-- **控制台入口**：`AdminConsoleHttpHandler` 将 `/admin` 路径接管，静态资源来自 `dist/ui/admin`（参见 `docs/admin-console-architecture.md`）。
-- **配置接口**：`/admin/config` 返回部署模式与特性开关；UI 通过 `AdminConfigContext` 加载。
-- **账号/Pod 列表**：`AdminConsoleRepository.fetchOverview` 汇总账户与 Pod 元数据，前端 `AccountsPage`、`PodsPage` 仅提供只读表格。
-- **节点管理**：`NodesPage` 支持列出并创建边缘节点，后端 `EdgeNodeRepository` 实现 `GET/POST /admin/nodes`。
-- **配额信息**：后端聚合账户与 Pod 用量，但前端仅显示静态说明，尚无限额编辑或历史曲线。
-- **安全/日志/Tokens**：`SecurityPage`、`LogsPage` 仍是占位卡片，无凭证 CRUD、日志流或告警设置。
-- **数据管理**：尚未提供文件/版本/分享 UI，仍需依赖其他 Solid App 或底层接口。
-- **审计与通知**：不存在统一的日志面板或告警配置。
+- **门户现状**：旧 `/admin` 控制台已退场，目前仅保留 API/CLI。各环境需要自建门户或在既有产品中嵌入“边缘节点”入口。
+- **节点管理**：`EdgeNodeRepository` 与 `/api/signal` 完整保留，Portal 可直接调用这些接口实现节点创建、token 重置、健康度展示。
+- **配额信息**：Quota API 仍可用（`QuotaAdminHttpHandler`），但没有官方 UI。建议在业务系统中做轻量封装，或通过 CLI/脚本维护。
+- **安全/日志/数据管理**：均处于路线图阶段，暂无前端实现，需要结合 Phase 2+ 的迭代逐步补齐。
 
-整体来看，当前实现覆盖了路线图的 **Phase 0 部分能力**（登录后控制台、核心资源只读总览、节点注册 API），其余阶段均待建设。
+因此当前社区版只覆盖路线图的 **Phase 0/1 API 能力**。若要提供完整的运营体验，需要基于上述 API 自建门户或集成到既有系统中。
 
 ---
 

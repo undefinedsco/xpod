@@ -1,3 +1,22 @@
+<!-- OPENSPEC:START -->
+# OpenSpec Instructions
+
+These instructions are for AI assistants working in this project.
+
+Always open `@/openspec/AGENTS.md` when the request:
+- Mentions planning or proposals (words like proposal, spec, change, plan)
+- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
+- Sounds ambiguous and you need the authoritative spec before coding
+
+Use `@/openspec/AGENTS.md` to learn:
+- How to create and apply change proposals
+- Spec format and conventions
+- Project structure and guidelines
+
+Keep this managed block so 'openspec update' can refresh the instructions.
+
+<!-- OPENSPEC:END -->
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -71,8 +90,8 @@ class MyHandler extends HttpHandler {
 - Role-based access control via `identity_account_role` table
 - Pod-level resource isolation and quota enforcement
 
-**Admin & Monitoring:**
-- `AdminConsoleHttpHandler`: Web-based administration interface
+**Management & Monitoring:**
+- Legacy Admin Console 已移除；所有管理操作需通过公开 API/Portal
 - `QuotaAdminHttpHandler`: Quota management API
 - `SubgraphSparqlHttpHandler`: Per-account SPARQL endpoints with usage tracking
 
@@ -97,7 +116,7 @@ async canHandle(input: HttpHandlerInput): Promise<void> {
 
 ### Build Commands
 ```bash
-yarn build           # Full build (TypeScript + UI + Components)
+yarn build           # Full backend build (TypeScript + Components)
 yarn build:ts        # TypeScript compilation only
 yarn build:ui        # UI build using Vite
 yarn build:components # Generate Components.js files
@@ -177,7 +196,7 @@ cp example.env .env.server  # For server/production mode
 - `DefaultQuotaService` / `DrizzleQuotaService` / `NoopQuotaService` - Different quota enforcement strategies (src/quota/)
 - `PerAccountQuotaStrategy` - Per-account quota limits (src/storage/quota/PerAccountQuotaStrategy.ts)
 - `UsageTrackingStore` - Tracks bandwidth usage with ingress/egress metrics (src/storage/quota/UsageTrackingStore.ts)
-- `BandwidthThrottleTransform` - Network bandwidth limiting (src/util/stream/BandwidthThrottleTransform.ts)
+- `createBandwidthThrottleTransform` - Network bandwidth limiting helper (src/util/stream/BandwidthThrottleTransform.ts)
 
 **Edge & Cloud Coordination:**
 - `EdgeNodeAgent` - Coordinates local nodes with server instances (src/edge/EdgeNodeAgent.ts)
@@ -186,9 +205,9 @@ cp example.env .env.server  # For server/production mode
 - `FrpTunnelManager` - FRP tunnel management for nodes behind NAT (src/edge/FrpTunnelManager.ts)
 
 **HTTP Handlers:**
-- `AdminConsoleHttpHandler` - Admin interface endpoints (src/http/admin/AdminConsoleHttpHandler.ts)
 - `QuotaAdminHttpHandler` - Quota management API (src/http/quota/QuotaAdminHttpHandler.ts)
 - `EdgeNodeSignalHttpHandler` - Edge node coordination API (src/http/admin/EdgeNodeSignalHttpHandler.ts)
+- `EdgeNodeProxyHttpHandler` / `EdgeNodeRedirectHttpHandler` - Pod proxy & debugging redirect (src/http/**)
 - `SubgraphSparqlHttpHandler` - SPARQL query endpoint with usage tracking (src/http/SubgraphSparqlHttpHandler.ts)
 
 ### Configuration Architecture
@@ -327,6 +346,57 @@ When adding new environment variables, ensure the variable names match exactly:
 3. **Missing Variable type**: Forgot `"@type": "Variable"` for environment variables
 4. **Full vs simplified type names**: Using complete jsonld path instead of context-defined name
 5. **Incorrect @id format**: Environment variables must follow `urn:solid-server:default:variable:` pattern
+
+## 新组件导出步骤 (Components.js)
+
+当添加新的组件类时，必须按以下步骤确保 Components.js 能够自动发现：
+
+### 1. 创建组件类
+```typescript
+// src/http/MyNewHandler.ts
+export class MyNewHandler extends HttpHandler {
+  // 组件实现
+}
+```
+
+### 2. 【关键】添加到主导出文件
+```typescript
+// src/index.ts
+import { MyNewHandler } from './http/MyNewHandler';
+
+export { 
+    // ... 其他导出
+    MyNewHandler,  // 必须添加到导出列表
+    // ... 其他导出
+};
+```
+
+### 3. 重新构建
+```bash
+yarn build:ts          # TypeScript编译
+yarn build:components   # 生成Components.js配置
+```
+
+### 4. 配置中使用简化名称
+```json
+{
+  "@type": "MyNewHandler", 
+  "identityDbUrl": {
+    "@id": "urn:solid-server:default:variable:identityDbUrl",
+    "@type": "Variable"
+  }
+}
+```
+
+### 常见错误
+- **忘记添加到 `src/index.ts`** → 组件不会被发现，配置时出现 "Invalid predicate IRI" 错误
+- **手动修改 `dist/` 下文件** → 构建时被覆盖
+- **使用 `options_` 前缀** → 应使用简化参数名（如 `identityDbUrl` 而不是 `options_identityDbUrl`）
+
+### 验证成功
+- `dist/components/components.jsonld` 包含组件导入
+- `dist/components/context.jsonld` 包含参数映射  
+- 服务器启动无 "Invalid predicate IRI" 错误
 
 ### Seed Account Management
 - Seed accounts are controlled by `SeededAccountInitializer` in the initialization sequence

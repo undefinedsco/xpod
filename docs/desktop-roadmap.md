@@ -38,7 +38,7 @@
 - `src/edge/acme/AcmeCertificateManager`：在桌面端触发申请、展示状态、处理 post-deploy。
 - `src/edge/frp/FrpcProcessManager`：桌面端守护 frpc，提供可视化配置与日志查看。
 - 心跳返回的 `metadata.tunnel.config`/`metadata.certificate` 数据：桌面端解析并呈现。
-- 任何 admin console 相关的 UI 逻辑（未来会在桌面/外部系统中重建）。
+- 任何旧 admin console 相关的 UI 逻辑（后续会在桌面/外部系统中重建）。
 
 ## 交付形态建议
 

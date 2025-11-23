@@ -1,5 +1,5 @@
 import { getLoggerFor } from '@solid/community-server';
-import type { DnsProvider, DnsRecordType } from '../dns/DnsProvider';
+import type { DnsProvider, DnsRecordTypeValue } from '../dns/DnsProvider';
 
 export interface EdgeNodeDnsCoordinatorOptions {
   provider: DnsProvider;
@@ -9,17 +9,23 @@ export interface EdgeNodeDnsCoordinatorOptions {
    * 默认记录类型，当目标地址无法识别时回退使用。
    * 一般为 `A`（IPv4）或 `AAAA`（IPv6）。
    */
-  defaultRecordType?: DnsRecordType;
+  defaultRecordType?: DnsRecordTypeValue;
   /** TTL 秒数，缺省按供应商默认。 */
   ttl?: number | string | null;
+  /**
+   * Cluster 的公网 IP 地址，用于 proxy 模式的 DNS 指向。
+   * 如果未设置，proxy 模式节点将跳过 DNS 同步。
+   */
+  clusterIp?: string | null;
 }
 
 export class EdgeNodeDnsCoordinator {
   private readonly logger = getLoggerFor(this);
   private readonly provider: DnsProvider;
   private readonly rootDomain?: string;
-  private readonly defaultRecordType: DnsRecordType;
+  private readonly defaultRecordType: DnsRecordTypeValue;
   private readonly ttl?: number;
+  private readonly clusterIp?: string;
   private readonly enabled: boolean;
 
   public constructor(options: EdgeNodeDnsCoordinatorOptions) {
@@ -27,6 +33,7 @@ export class EdgeNodeDnsCoordinator {
     this.rootDomain = this.normalizeRootDomain(options.rootDomain);
     this.defaultRecordType = options.defaultRecordType ?? 'A';
     this.ttl = this.normalizeTtl(options.ttl);
+    this.clusterIp = this.extractString(options.clusterIp);
     this.enabled = Boolean(this.rootDomain);
   }
 
@@ -34,16 +41,55 @@ export class EdgeNodeDnsCoordinator {
     if (!this.enabled) {
       return;
     }
+    
     const hints = this.extractDnsHints(metadata);
-    if (!hints) {
+
+    // Extract subdomain and access mode
+    const subdomain = this.extractString(metadata.subdomain) ?? hints?.subdomain;
+    if (!subdomain) {
+      this.logger.debug(`Node ${nodeId} 未提供 subdomain，跳过 DNS 同步。`);
       return;
     }
-    const { subdomain, target } = hints;
+    
+    const accessMode = this.extractString(metadata.accessMode);
+    const normalizedAccessMode = accessMode?.trim().toLowerCase();
+    
+    // Determine DNS target based on access mode
+    let target: string | undefined;
+    if (normalizedAccessMode === 'redirect') {
+      // Redirect mode: DNS 指向节点公网 IP
+      target = this.extractString(metadata.publicIp) 
+        ?? this.extractString(metadata.ipv4)
+        ?? this.extractString(metadata.publicAddress);
+      
+      if (!target && hints?.target) {
+        target = hints.target;
+      }
+
+      if (!target) {
+        this.logger.warn(`Node ${nodeId} (redirect mode) 未提供公网 IP，跳过 DNS 同步。`);
+        return;
+      }
+    } else if (normalizedAccessMode === 'proxy') {
+      // Proxy mode: DNS 指向 Cluster IP
+      if (!this.clusterIp) {
+        this.logger.debug(`Cluster IP 未配置，跳过 proxy 模式节点 ${nodeId} 的 DNS 同步。`);
+        return;
+      }
+      target = this.clusterIp;
+    } else if (hints?.target) {
+      // Fallback: 使用旧的逻辑从 metadata 提取
+      target = hints.target;
+    } else {
+      this.logger.debug(`Node ${nodeId} 未提供 accessMode/dns hints，跳过同步。`);
+      return;
+    }
+    
     const type = this.detectRecordType(target) ?? this.defaultRecordType;
     const value = this.normalizeRecordValue(target, type);
 
     if (!value) {
-      this.logger.warn(`Edge node ${nodeId} 未提供有效的 DNS 目标，跳过同步。`);
+      this.logger.warn(`Edge node ${nodeId} DNS 目标解析失败，跳过同步。`);
       return;
     }
 
@@ -55,7 +101,8 @@ export class EdgeNodeDnsCoordinator {
         value,
         ttl: this.ttl,
       });
-      this.logger.debug(`已同步节点 ${nodeId} 的 DNS 记录 ${subdomain}.${this.rootDomain} -> ${value}`);
+      const loggedMode = normalizedAccessMode ?? 'unknown';
+      this.logger.info(`已同步节点 ${nodeId} (${loggedMode}) 的 DNS: ${subdomain}.${this.rootDomain} -> ${value}`);
     } catch (error: unknown) {
       this.logger.error(`同步节点 ${nodeId} DNS 记录失败: ${(error as Error).message}`);
       throw error;
@@ -90,7 +137,7 @@ export class EdgeNodeDnsCoordinator {
     return trimmed.length > 0 ? trimmed : undefined;
   }
 
-  private detectRecordType(target: string): DnsRecordType | undefined {
+  private detectRecordType(target: string): DnsRecordTypeValue | undefined {
     const host = this.extractHost(target) ?? target;
     if (this.isIpv4(host)) {
       return 'A';
@@ -104,7 +151,7 @@ export class EdgeNodeDnsCoordinator {
     return undefined;
   }
 
-  private normalizeRecordValue(target: string, type: DnsRecordType): string | undefined {
+  private normalizeRecordValue(target: string, type: DnsRecordTypeValue): string | undefined {
     const host = this.extractHost(target) ?? target;
     if (type === 'A' && this.isIpv4(host)) {
       return host;
@@ -152,7 +199,15 @@ export class EdgeNodeDnsCoordinator {
     if (typeof value !== 'string') {
       return undefined;
     }
-    const trimmed = value.trim().replace(/\.$/, '');
+    let trimmed = value.trim();
+    if (trimmed.includes('://')) {
+      try {
+        trimmed = new URL(trimmed).hostname;
+      } catch {
+        // ignore
+      }
+    }
+    trimmed = trimmed.replace(/\.$/, '');
     return trimmed.length > 0 ? trimmed : undefined;
   }
 

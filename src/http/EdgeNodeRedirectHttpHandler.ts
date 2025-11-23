@@ -71,6 +71,13 @@ export class EdgeNodeRedirectHttpHandler extends HttpHandler {
     if (!record) {
       return undefined;
     }
+    
+    // Only handle redirect mode nodes - proxy mode traffic should go through L4 SNI proxy
+    if (record.accessMode === 'proxy') {
+      this.logger.warn(`Request reached cluster for proxy-mode node ${record.nodeId}, should be handled by L4 SNI proxy`);
+      return undefined;
+    }
+    
     const target = this.resolveTarget(record.metadata ?? {}, original, record.baseUrl);
     if (!target) {
       return undefined;

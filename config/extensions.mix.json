@@ -22,7 +22,7 @@
       "DefaultQuotaService:_options_defaultAccountQuotaBytes": { "@type": "Literal", "value": 10737418240 }
     },
     {
-      "comment": "Controls whether the admin console runs in cluster or local mode.",
+      "comment": "Controls whether edge-specific features follow cluster or local defaults.",
       "@id": "urn:solid-server:default:variable:xpodEdition",
       "@type": "Variable"
     },

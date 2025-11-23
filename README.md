@@ -46,6 +46,16 @@ yarn build
   yarn server
   ```
 
+- **Cluster server（控制面）**：复用 server profile，但读取 `.env.cluster`，便于拆分出云边集群的控制面；`yarn cluster` 仍保持为该命令的别名。
+  ```bash
+  yarn cluster:server    # or: yarn cluster
+  ```
+
+- **Cluster local（边缘节点）**：读取 `.env.cluster.local`（已写入示例 `XPOD_NODE_ID`/`XPOD_NODE_TOKEN`/`XPOD_SIGNAL_ENDPOINT`），用来启动本地节点以接入控制面。
+  ```bash
+  yarn cluster:local
+  ```
+
 - **Dev mode**：无鉴权的开发模式（SQLite + MinIO），用于调试 API/前端。
   ```bash
   yarn dev
@@ -100,7 +110,7 @@ For modes that require environment variables, you need to configure them as foll
 - **种子文件**：复制 `config/seeds/admin.example.json`，根据环境调整邮箱、密码、Pod 名称与 `webId`，并通过 `CSS_SEED_CONFIG` 或 `--seedConfig` 传入。首次启动会自动创建管理员账号及其 Pod；若条目中包含 `roles`（例如 `["admin"]`），系统会同步写入 `identity_account_role` 表。
 - **角色字段**：管理员角色现在存储在 `identity_account_role(account_id, role)`，可通过 SQL 或脚本直接维护；`payload` 中的旧字段（`roles` / `isAdmin` 等）不再参与授权判定，仅用于兼容历史数据。
 - **存储实现**：`yarn local`、`yarn dev` 等本地配置仍使用 `.internal/accounts` 文件存储账号；`yarn server`（集群/生产）在 `config/extensions.server.json` 中覆盖为 PostgreSQL。两种模式都会使用数据库中的 `identity_account_role` 表保存管理员角色。
-- **写操作校验**：`AdminConsoleHttpHandler`、`QuotaAdminHttpHandler` 等写接口会读取访问令牌中的 WebID → 查表确认是否含有 `admin` 角色，仅管理员可执行修改（默认配置已关闭这两项 Handler）。
+- **写操作校验**：`QuotaAdminHttpHandler` 等写接口会读取访问令牌中的 WebID → 查表确认是否含有 `admin` 角色，仅具备相应角色的账号才能执行修改。历史的 Admin Console 已被移除，所有管理动作需通过 API / CLI / 门户来完成。
 - **配额接口**：`/api/quota/...` 现在必须携带管理员 Bearer Token；所有 `PUT/DELETE` 调用会拒绝非管理员身份。
 - **网络用量统计**：Server 模式会在 `identity_account_usage` / `identity_pod_usage` 的 `ingress_bytes`、`egress_bytes` 字段累计上下行流量，并对资源写入、读取（含 `.sparql` 查询）统一采集。默认限速 10 MiB/s，可在 `config/extensions.server.json` 或 `config/extensions.mix.json` 中覆盖 `options_defaultAccountBandwidthLimitBps`；将该字段设为 0 或删除表项即可关闭限速。
 - **数据归档**：如需离线审计，可将管理员脚本输出写入 `.internal/accounts/` 目录，保留快照而不影响主数据库。

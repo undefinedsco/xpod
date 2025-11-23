@@ -50,7 +50,7 @@ This document provides a comprehensive overview of all custom components develop
 - **Functionality**: 
   - Tracks ingress/egress bytes for all resource operations
   - Records usage in `identity_account_usage` and `identity_pod_usage` tables
-  - Applies bandwidth throttling via `BandwidthThrottleTransform`
+  - Applies bandwidth throttling via `createBandwidthThrottleTransform`
 - **Deployment**: Server mode only
 
 ## Identity & Authentication
@@ -90,11 +90,11 @@ This document provides a comprehensive overview of all custom components develop
 - **DrizzleQuotaService**: Database-backed quota with per-account overrides
 - **NoopQuotaService**: Disabled quota checking (local mode)
 
-### BandwidthThrottleTransform
+### createBandwidthThrottleTransform
 - **Path**: `src/util/stream/BandwidthThrottleTransform.ts`
-- **Purpose**: Network bandwidth limiting for resource streams
-- **Configuration**: `defaultAccountBandwidthLimitBps` (10 MiB/s default)
-- **Functionality**: Rate-limits read/write streams based on account quotas
+- **Purpose**: Factory returning一个用于限速的 `Transform`
+- **Parameters**: `bytesPerSecond`、`measure`、`objectMode`
+- **Functionality**: 根据传入配置延迟 `Transform` 输出，常用于 Service/Handler 里的限速逻辑
 
 ## Edge & Cloud Coordination
 
@@ -131,12 +131,7 @@ This document provides a comprehensive overview of all custom components develop
 
 ## HTTP Handlers
 
-### AdminConsoleHttpHandler
-- **Path**: `src/http/admin/AdminConsoleHttpHandler.ts`
-- **Purpose**: Web-based administration interface
-- **Endpoints**: `/admin/*` routes for account/pod management
-- **Authentication**: Requires admin role in `identity_account_role` table
-- **Deployment**: Can be enabled in any mode, disabled by default
+> **注**：旧版 Admin Console Handler 已移除，如需后台 UI 请基于现有 API 自行实现。
 
 ### QuotaAdminHttpHandler
 - **Path**: `src/http/quota/QuotaAdminHttpHandler.ts`
@@ -164,6 +159,19 @@ This document provides a comprehensive overview of all custom components develop
   - Bandwidth usage recording
   - Query result streaming with throttling
 - **Deployment**: All modes (bandwidth tracking in server mode only)
+
+### EdgeNodeProxyHttpHandler
+- **Path**: `src/http/EdgeNodeProxyHttpHandler.ts`
+- **Purpose**: 反向代理 proxy 模式下的 Pod 流量
+- **Functionality**:
+  - 根据节点 metadata 选择直连或隧道入口
+  - 在响应头中暴露 `X-Xpod-*` 诊断信息
+- **Deployment**: Server / mix 模式
+
+### EdgeNodeRedirectHttpHandler
+- **Path**: `src/http/EdgeNodeRedirectHttpHandler.ts`
+- **Purpose**: 调试阶段的 307 跳转
+- **Notes**: 默认关闭；仅在需要手动验证节点入口时启用
 
 ## Utility Components
 
