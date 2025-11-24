@@ -1,102 +1,41 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    {
+      "NoopQuotaService": "urn:undefineds:xpod:NoopQuotaService#"
+    }
   ],
   "import": [
     "./xpod.json"
   ],
   "@graph": [
     {
-      "comment": "The settings of your email server.",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:EmailSender"
-      },
-      "overrideParameters": {
-        "@type": "BaseEmailSender",
-        "senderName": "Undefineds Support Team <support@undefineds.co>",
-        "emailConfig_host": {
-          "@id": "urn:solid-server:default:variable:emailConfigHost",
-          "@type": "Variable"
-        },
-        "emailConfig_port": {
-          "@id": "urn:solid-server:default:variable:emailConfigPort",
-          "@type": "Variable"
-        },
-        "emailConfig_auth_user": {
-          "@id": "urn:solid-server:default:variable:emailConfigAuthUser",
-          "@type": "Variable"
-        },
-        "emailConfig_auth_pass": {
-          "@id": "urn:solid-server:default:variable:emailConfigAuthPass",
-          "@type": "Variable"
-        }
-      }
+      "comment": "Disable quota for local profile",
+      "@id": "urn:undefineds:xpod:QuotaService",
+      "@type": "NoopQuotaService"
     },
     {
+      "@id": "urn:solid-server:default:variable:rootFilePath",
+      "@value": "./data"
+    },
+    {
+      "comment": "Use quadstore for RDF data and local filesystem for other content in the local profile.",
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
       "endpoint": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint"
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
       },
       "identifierStrategy": {
         "@id": "urn:solid-server:default:IdentifierStrategy"
       },
       "unstructuredDataAccessor": {
-        "@id": "urn:undefineds:xpod:RemoteDataAccessor"
+        "@id": "urn:solid-server:default:FileDataAccessor"
       }
     },
     {
-      "@id": "urn:undefineds:xpod:RemoteDataAccessor",
-      "@type": "MinioDataAccessor",
-      "resourceMapper": {
-        "@id": "urn:solid-server:default:FileIdentifierMapper"
-      },
-      "accessKey": {
-        "@id": "urn:solid-server:default:variable:minioAccessKey",
-        "@type": "Variable"
-      },
-      "secretKey": {
-        "@id": "urn:solid-server:default:variable:minioSecretKey",
-        "@type": "Variable"
-      },
-      "endpoint": {
-        "@id": "urn:solid-server:default:variable:minioEndpoint",
-        "@type": "Variable"
-      },
-      "bucketName": {
-        "@id": "urn:solid-server:default:variable:minioBucketName",
-        "@type": "Variable"
-      }
-    },
-    {
-      "@id": "urn:undefineds:xpod:ResourceStore_Locking",
-      "@type": "LockingResourceStore",
-      "source": {
-        "@id": "urn:solid-server:default:ResourceStore_Patching"
-      },
-      "locks": {
-        "@id": "urn:solid-server:default:ResourceLocker"
-      },
-      "auxiliaryStrategy": {
-        "@id": "urn:solid-server:default:AuxiliaryStrategy"
-      }
-    },
-    {
-      "comment": "Change the default locking resource store to ours",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:ResourceStore_Index"
-      },
-      "overrideParameters": {
-        "@type": "IndexRepresentationStore",
-        "source": {
-          "@id": "urn:undefineds:xpod:ResourceStore_Locking"
-        }
-      }
-    },
-    {
+      "comment": "Convert incoming representations to quads for quadstore-backed resources while keeping filesystem fallback.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:SparqlResourceStore"
@@ -128,6 +67,42 @@
             "@id": "urn:undefineds:xpod:MixDataAccessor"
           }
         }
+      }
+    },
+    {
+      "comment": "Compose local HTTP pipeline without edge handlers",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:BaseHttpHandler"
+      },
+      "overrideParameters": {
+        "@type": "WaterfallHandler",
+        "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:StaticAssetHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:OidcHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:NotificationHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:StorageDescriptionHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:AuthResourceHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:IdentityProviderHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:LdpHandler"
+          }
+        ]
       }
     }
   ]
