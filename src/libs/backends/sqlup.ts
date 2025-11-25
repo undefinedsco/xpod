@@ -106,16 +106,23 @@ export class SQLUp<T extends TFormat, K = string, V = string> extends AbstractLe
       // this.setupQueryLog();
       const exists = await this.db.schema.hasTable(this.tableName);
       if (!exists) {
-        await this.db.schema.createTable(this.tableName, (table) => {
-          table.increments('id').primary();
-          if (this.format === 'utf8') {
-            table.text('key').index();
-            table.text('value');
-          } else {
-            table.binary('key').index();
-            table.binary('value');
+        try {
+          await this.db.schema.createTable(this.tableName, (table) => {
+            table.increments('id').primary();
+            if (this.format === 'utf8') {
+              table.text('key').index();
+              table.text('value');
+            } else {
+              table.binary('key').index();
+              table.binary('value');
+            }
+          });
+        } catch (error: any) {
+          // Avoid race-condition failure when multiple connections try to create the same table concurrently.
+          if (!/already exists/i.test(String(error?.message))) {
+            throw error;
           }
-        });
+        }
       }
       this.logger.info(`Database ${this.tableName} opened`);
       callback(null);

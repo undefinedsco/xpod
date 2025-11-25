@@ -3,10 +3,13 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
     {
-      "UsageTrackingStore": "urn:undefineds:xpod:UsageTrackingStore#",
+      "UsageTrackingStore": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore",
       "PerAccountQuotaStrategy": "urn:undefineds:xpod:PerAccountQuotaStrategy#",
       "DrizzleQuotaService": "urn:undefineds:xpod:DrizzleQuotaService#",
-      "DefaultQuotaService": "urn:undefineds:xpod:DefaultQuotaService#"
+      "DefaultQuotaService": "urn:undefineds:xpod:DefaultQuotaService#",
+      "UsageTrackingStore_source": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_source",
+      "UsageTrackingStore_options_identityDbUrl": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_options_identityDbUrl",
+      "UsageTrackingStore_options_defaultAccountBandwidthLimitBps": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_options_defaultAccountBandwidthLimitBps"
     }
   ],
   "import": [
@@ -136,8 +139,8 @@
           "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
         },
         "source": {
-          "@type": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore",
-          "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_source": {
+          "@type": "UsageTrackingStore",
+          "UsageTrackingStore_source": {
             "@type": "DataAccessorBasedStore",
             "identifierStrategy": {
               "@id": "urn:solid-server:default:IdentifierStrategy"
@@ -152,11 +155,11 @@
               "@id": "urn:undefineds:xpod:MixDataAccessor"
             }
           },
-          "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_options_identityDbUrl": {
+          "UsageTrackingStore_options_identityDbUrl": {
             "@id": "urn:solid-server:default:variable:identityDbUrl",
             "@type": "Variable"
           },
-          "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_options_defaultAccountBandwidthLimitBps": {
+          "UsageTrackingStore_options_defaultAccountBandwidthLimitBps": {
             "@type": "Literal",
             "value": 10485760
           }

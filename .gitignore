@@ -17,6 +17,7 @@ node_modules
 # Build output
 dist/
 coverage/
+data/
 
 # Logs
 logs/
@@ -33,4 +34,3 @@ logs/
 # Temporary files
 local/
 main.json
-

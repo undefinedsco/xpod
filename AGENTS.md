@@ -33,6 +33,7 @@ Core TypeScript modules live in `src/`: `storage/` contains data accessors, `log
 
 ## Coding Style & Naming Conventions
 Strict TypeScript is enforced; keep code ES2021-compatible and prefer async/await. Use PascalCase for classes (`ConfigurableLoggerFactory`), camelCase for functions and variables, and mirror existing JSON key casing. Default to single quotes in imports, follow the prevailing two-space indentation, and expose shared symbols via `src/index.ts`. When instrumenting behavior, rely on CSS logging helpers (`getLoggerFor`) instead of raw `console` calls.
+- JSON-LD 配置里引用自研组件参数时，先在 `@context` 里声明短别名，再用短名键（如 `UsageTrackingStore_source`），不要直接写长 IRI。
 
 ## Testing Guidelines
 There is no dedicated test runner yet: use `yarn build:ts` for a fast type-only safety net, and add focused Node scripts under `scripts/` when validating storage or database logic. For end-to-end checks, start the relevant profile (`yarn dev` is the quickest loop) and exercise endpoints at `http://localhost:3000`. Capture manual verification steps, sample payloads, or curl commands in your PR notes.

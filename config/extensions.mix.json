@@ -3,11 +3,14 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
     {
-      "UsageTrackingStore": "urn:undefineds:xpod:UsageTrackingStore#",
+      "UsageTrackingStore": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore",
       "PerAccountQuotaStrategy": "urn:undefineds:xpod:PerAccountQuotaStrategy#",
       "DrizzleQuotaService": "urn:undefineds:xpod:DrizzleQuotaService#",
       "DefaultQuotaService": "urn:undefineds:xpod:DefaultQuotaService#",
-      "NoopQuotaService": "urn:undefineds:xpod:NoopQuotaService#"
+      "NoopQuotaService": "urn:undefineds:xpod:NoopQuotaService#",
+      "UsageTrackingStore_source": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_source",
+      "UsageTrackingStore_options_identityDbUrl": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_options_identityDbUrl",
+      "UsageTrackingStore_options_defaultAccountBandwidthLimitBps": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore_options_defaultAccountBandwidthLimitBps"
     }
   ],
   "import": [
@@ -19,7 +22,10 @@
       "comment": "Default quota limits (in-memory overrides)",
       "@id": "urn:undefineds:xpod:QuotaService",
       "@type": "DefaultQuotaService",
-      "DefaultQuotaService:_options_defaultAccountQuotaBytes": { "@type": "Literal", "value": 10737418240 }
+      "DefaultQuotaService:_options_defaultAccountQuotaBytes": {
+        "@type": "Literal",
+        "value": 10737418240
+      }
     },
     {
       "comment": "Controls whether edge-specific features follow cluster or local defaults.",
@@ -45,13 +51,19 @@
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
       "endpoint": "sqlite:./.data/quadstore.sqlite",
-      "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-      "unstructuredDataAccessor": { "@id": "urn:undefineds:xpod:RemoteDataAccessor" }
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      },
+      "unstructuredDataAccessor": {
+        "@id": "urn:undefineds:xpod:RemoteDataAccessor"
+      }
     },
     {
       "@id": "urn:undefineds:xpod:RemoteDataAccessor",
       "@type": "MinioDataAccessor",
-      "resourceMapper": { "@id": "urn:solid-server:default:FileIdentifierMapper" },
+      "resourceMapper": {
+        "@id": "urn:solid-server:default:FileIdentifierMapper"
+      },
       "accessKey": "iknkxtc8",
       "secretKey": "wrx4rt7wg2xzvb7s",
       "endpoint": "objectstorageapi.gzg.sealos.run",
@@ -64,7 +76,9 @@
       },
       "overrideParameters": {
         "@type": "DataAccessorBasedStore",
-        "accessor": { "@id": "urn:undefineds:xpod:RemoteDataAccessor" }
+        "accessor": {
+          "@id": "urn:undefineds:xpod:RemoteDataAccessor"
+        }
       }
     },
     {
@@ -74,33 +88,56 @@
       },
       "overrideParameters": {
         "@type": "RepresentationPartialConvertingStore",
-        "metadataStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-        "options_inConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
+        "metadataStrategy": {
+          "@id": "urn:solid-server:default:AuxiliaryStrategy"
+        },
+        "options_inConverter": {
+          "@id": "urn:solid-server:default:RepresentationConverter"
+        },
         "options_inPreferences_type": {
           "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
           "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
         },
-        "RepresentationPartialConvertingStore:_source": {
-          "@type": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quota/UsageTrackingStore.jsonld#UsageTrackingStore",
+        "source": {
+          "@type": "UsageTrackingStore",
           "UsageTrackingStore:source": {
             "@type": "DataAccessorBasedStore",
-            "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-            "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-            "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-            "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+            "identifierStrategy": {
+              "@id": "urn:solid-server:default:IdentifierStrategy"
+            },
+            "auxiliaryStrategy": {
+              "@id": "urn:solid-server:default:AuxiliaryStrategy"
+            },
+            "metadataStrategy": {
+              "@id": "urn:solid-server:default:MetadataStrategy"
+            },
+            "accessor": {
+              "@id": "urn:undefineds:xpod:MixDataAccessor"
+            }
           },
-          "UsageTrackingStore:options_identityDbUrl": { "@id": "urn:solid-server:default:variable:identityDbUrl", "@type": "Variable" },
-          "UsageTrackingStore:options_defaultAccountBandwidthLimitBps": { "@type": "Literal", "value": 10485760 }
+          "UsageTrackingStore:options_identityDbUrl": {
+            "@id": "urn:solid-server:default:variable:identityDbUrl",
+            "@type": "Variable"
+          },
+          "UsageTrackingStore:options_defaultAccountBandwidthLimitBps": {
+            "@type": "Literal",
+            "value": 10485760
+          }
         }
       }
     },
     {
       "comment": "Apply bandwidth limits to SPARQL responses",
       "@type": "Override",
-      "overrideInstance": { "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler" },
+      "overrideInstance": {
+        "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+      },
       "overrideParameters": {
         "@type": "SubgraphSparqlHttpHandler",
-        "options_defaultAccountBandwidthLimitBps": { "@type": "Literal", "value": 10485760 }
+        "options_defaultAccountBandwidthLimitBps": {
+          "@type": "Literal",
+          "value": 10485760
+        }
       }
     },
     {
@@ -129,7 +166,9 @@
       },
       "overrideParameters": {
         "@type": "BaseAccountStore",
-        "storage": { "@id": "urn:undefineds:xpod:DrizzleAccountStorage" }
+        "storage": {
+          "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
+        }
       }
     },
     {
@@ -139,8 +178,12 @@
       },
       "overrideParameters": {
         "@type": "BasePodStore",
-        "storage": { "@id": "urn:undefineds:xpod:DrizzleAccountStorage" },
-        "manager": { "@id": "urn:solid-server:default:PodManager" }
+        "storage": {
+          "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
+        },
+        "manager": {
+          "@id": "urn:solid-server:default:PodManager"
+        }
       }
     },
     {
@@ -151,10 +194,20 @@
       },
       "overrideParameters": {
         "@type": "PerAccountQuotaStrategy",
-        "PerAccountQuotaStrategy:_options_identityDbUrl": { "@id": "urn:solid-server:default:variable:identityDbUrl", "@type": "Variable" },
-        "PerAccountQuotaStrategy:_options_defaultAccountQuotaBytes": { "@type": "Literal", "value": 10737418240 },
-        "PerAccountQuotaStrategy:_options_quotaService": { "@id": "urn:undefineds:xpod:QuotaService" },
-        "PerAccountQuotaStrategy:_reporter": { "@id": "urn:solid-server:default:SizeReporter" }
+        "PerAccountQuotaStrategy:_options_identityDbUrl": {
+          "@id": "urn:solid-server:default:variable:identityDbUrl",
+          "@type": "Variable"
+        },
+        "PerAccountQuotaStrategy:_options_defaultAccountQuotaBytes": {
+          "@type": "Literal",
+          "value": 10737418240
+        },
+        "PerAccountQuotaStrategy:_options_quotaService": {
+          "@id": "urn:undefineds:xpod:QuotaService"
+        },
+        "PerAccountQuotaStrategy:_reporter": {
+          "@id": "urn:solid-server:default:SizeReporter"
+        }
       }
     }
   ]

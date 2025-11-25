@@ -141,6 +141,31 @@ Tips：想知道 “某个 `@id` 对应哪个文件/类”，可以在 `node_mod
    - 在自定义配置里对 `urn:solid-server:default:BaseHttpHandler` 做 Override。
    - 若想重用原始 handler 列表，可以先查看 `node_modules/@solid/community-server/config/http/handler/default.json`，按需照搬顺序。
 
+2. **自定义组件的短名字 (@context 别名)**
+   - 自己生成的 jsonld（例如 `UsageTrackingStore.jsonld`）里的参数 ID 往往很长。建议在引用的配置文件 `@context` 里给这些 ID 声明短别名，然后在参数键上使用短名，如：
+     ```json
+     {
+       "@context": [
+         ".../components/context.jsonld",
+         { "UsageTrackingStore": "urn:undefineds:xpod:UsageTrackingStore#" }
+       ],
+       "@graph": [
+         {
+           "@type": "Override",
+           "overrideInstance": { "@id": "urn:solid-server:default:SparqlResourceStore" },
+           "overrideParameters": {
+             "@type": "PatchingStore",
+             "source": {
+               "@type": "UsageTrackingStore",
+               "UsageTrackingStore_source": { "@id": "..." }
+             }
+           }
+         }
+       ]
+     }
+     ```
+   - 没有别名时只能写完整 IRI（`npmd:@undefineds/...#UsageTrackingStore_source`），易读性差。先加别名再用短名，可以保持配置清晰。
+
 2. **更换日志实现**
    - 在 `config/main*.json` 替换 `css:config/util/logging/winston.json`，改为自定义的 `./logging/*.json`。
    - 自定义 json 中 `@id` 仍使用 `urn:solid-server:default:LoggerFactory`，`@type` 指向自己的类（需生成 jsonld 描述）。

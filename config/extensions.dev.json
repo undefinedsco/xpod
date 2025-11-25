@@ -11,7 +11,7 @@
   ],
   "@graph": [
     {
-      "comment": "Disable quota for local profile",
+      "comment": "Disable quota for dev profile",
       "@id": "urn:undefineds:xpod:QuotaService",
       "@type": "NoopQuotaService"
     },
@@ -20,7 +20,7 @@
       "@value": "./data"
     },
     {
-      "comment": "Use quadstore for RDF data and local filesystem for other content in the local profile.",
+      "comment": "Use quadstore for RDF data and local filesystem for other content in the dev profile.",
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
       "endpoint": {
@@ -35,42 +35,48 @@
       }
     },
     {
-      "comment": "Convert incoming representations to quads for quadstore-backed resources while keeping filesystem fallback.",
+      "comment": "Wrap quadstore with PatchingStore so PATCH requests apply in dev profile.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:SparqlResourceStore"
       },
       "overrideParameters": {
-        "@type": "RepresentationPartialConvertingStore",
-        "metadataStrategy": {
-          "@id": "urn:solid-server:default:AuxiliaryStrategy"
-        },
-        "options_inConverter": {
-          "@id": "urn:solid-server:default:RepresentationConverter"
-        },
-        "options_inPreferences_type": {
-          "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
-          "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
+        "@type": "PatchingStore",
+        "patchHandler": {
+          "@id": "urn:solid-server:default:PatchHandler"
         },
         "source": {
-          "@type": "DataAccessorBasedStore",
-          "identifierStrategy": {
-            "@id": "urn:solid-server:default:IdentifierStrategy"
-          },
-          "auxiliaryStrategy": {
+          "@type": "RepresentationPartialConvertingStore",
+          "metadataStrategy": {
             "@id": "urn:solid-server:default:AuxiliaryStrategy"
           },
-          "metadataStrategy": {
-            "@id": "urn:solid-server:default:MetadataStrategy"
+          "options_inConverter": {
+            "@id": "urn:solid-server:default:RepresentationConverter"
           },
-          "accessor": {
-            "@id": "urn:undefineds:xpod:MixDataAccessor"
+          "options_inPreferences_type": {
+            "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
+            "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
+          },
+          "source": {
+            "@type": "DataAccessorBasedStore",
+            "identifierStrategy": {
+              "@id": "urn:solid-server:default:IdentifierStrategy"
+            },
+            "auxiliaryStrategy": {
+              "@id": "urn:solid-server:default:AuxiliaryStrategy"
+            },
+            "metadataStrategy": {
+              "@id": "urn:solid-server:default:MetadataStrategy"
+            },
+            "accessor": {
+              "@id": "urn:undefineds:xpod:MixDataAccessor"
+            }
           }
         }
       }
     },
     {
-      "comment": "Compose local HTTP pipeline without edge handlers",
+      "comment": "Compose dev HTTP pipeline without edge handlers",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:BaseHttpHandler"
