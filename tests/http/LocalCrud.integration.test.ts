@@ -25,7 +25,7 @@ async function assertSuccess(response: Response, step: string): Promise<void> {
   }
 }
 
-const shouldRunIntegration = process.env.XPOD_RUN_LOCAL_CRUD === 'true' && clientId && clientSecret && oidcIssuer;
+const shouldRunIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret && oidcIssuer;
 const suite = shouldRunIntegration ? describe : describe.skip;
 
 suite('Local CSS CRUD integration', () => {

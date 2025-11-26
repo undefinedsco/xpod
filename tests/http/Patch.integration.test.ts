@@ -10,7 +10,7 @@ const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
 const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
 const tokenType = process.env.SOLID_TOKEN_TYPE === 'Bearer' ? 'Bearer' : 'DPoP';
-const shouldRun = process.env.XPOD_RUN_PATCH_TESTS === 'true' && clientId && clientSecret && oidcIssuer;
+const shouldRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret && oidcIssuer;
 const suite = shouldRun ? describe : describe.skip;
 
 const SUCCESS = new Set([ 200, 201, 202, 204, 205, 207 ]);
@@ -133,5 +133,48 @@ INSERT DATA { <${resourceUrl}> <https://schema.org/url> <https://example.com/hom
     const urls = await getObjectUrls(resourceUrl);
     expect(urls).toContain('https://example.com/home-3');
     expect(urls).not.toContain('https://example.com/home-2');
+  });
+
+  it('applies SPARQL UPDATE with WHERE (non-BGP-only)', async () => {
+    const sparql = `
+PREFIX schema: <https://schema.org/>
+DELETE { <${resourceUrl}> schema:url ?o }
+INSERT { <${resourceUrl}> schema:url <https://example.com/home-4> }
+WHERE  { <${resourceUrl}> schema:url ?o }
+`.trim();
+
+    const res = await doFetch(resourceUrl, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/sparql-update' },
+      body: sparql,
+    });
+    await assertSuccess(res, 'sparql patch with where');
+
+    const urls = await getObjectUrls(resourceUrl);
+    expect(urls).toContain('https://example.com/home-4');
+    expect(urls).not.toContain('https://example.com/home-3');
+  });
+
+  it('applies SPARQL UPDATE with OPTIONAL', async () => {
+    const sparql = `
+PREFIX schema: <https://schema.org/>
+DELETE { <${resourceUrl}> schema:url ?o }
+INSERT { <${resourceUrl}> schema:url <https://example.com/home-5> }
+WHERE  {
+  <${resourceUrl}> schema:url ?o .
+  OPTIONAL { <${resourceUrl}> schema:alternateName ?alt }
+}
+`.trim();
+
+    const res = await doFetch(resourceUrl, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/sparql-update' },
+      body: sparql,
+    });
+    await assertSuccess(res, 'sparql patch with optional');
+
+    const urls = await getObjectUrls(resourceUrl);
+    expect(urls).toContain('https://example.com/home-5');
+    expect(urls).not.toContain('https://example.com/home-4');
   });
 });
