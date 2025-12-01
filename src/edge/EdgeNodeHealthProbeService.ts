@@ -64,7 +64,7 @@ export class EdgeNodeHealthProbeService {
 
     const successful = results.find((item) => item.success);
     const clusterSuccess = results.some((item) => item.location === 'cluster' && item.success);
-    const status = clusterSuccess ? 'redirect' : successful ? 'degraded' : 'unreachable';
+    const status = clusterSuccess ? 'direct' : successful ? 'degraded' : 'unreachable';
     const now = new Date();
     const reachability = {
       status,

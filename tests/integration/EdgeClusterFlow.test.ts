@@ -72,8 +72,8 @@ describe('EdgeClusterFlow integration', () => {
       publicAddress: 'https://node.direct/',
       reachability: { status: 'redirect' },
     });
-    expect(connectivity.accessMode).toBe('redirect');
-    expect(dnsCoordinator.synchronize).toHaveBeenCalledWith('node-1', expect.objectContaining({ accessMode: 'redirect' }));
+    expect(connectivity.accessMode).toBe('direct');
+    expect(dnsCoordinator.synchronize).toHaveBeenCalledWith('node-1', expect.objectContaining({ accessMode: 'direct' }));
 
     await sendHeartbeat({
       nodeId: 'node-1',

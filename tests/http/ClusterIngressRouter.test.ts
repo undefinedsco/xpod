@@ -134,10 +134,10 @@ describe('ClusterIngressRouter', () => {
       mockRequest.url = '/data/test';
     });
 
-    it('should redirect redirect-mode nodes to their public IP', async () => {
+    it('should redirect direct-mode nodes to their public IP', async () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'node1',
-        accessMode: 'redirect',
+        accessMode: 'direct',
         publicIp: '203.0.113.10',
         publicPort: 443,
       });
@@ -147,21 +147,19 @@ describe('ClusterIngressRouter', () => {
       await router.handle(input);
       
       expect(mockResponse.statusCode).toBe(307);
-      expect(mockResponse.setHeader).toHaveBeenCalledWith(
-        'Location', 
-        'https://203.0.113.10/data/test'
-      );
-      expect(mockResponse.setHeader).toHaveBeenCalledWith(
-        'X-Xpod-Redirect-Node', 
-        'node1'
-      );
-      expect(mockResponse.end).toHaveBeenCalled();
+                  expect(mockResponse.statusCode).toBe(307);
+                  expect(mockResponse.setHeader).toHaveBeenCalledWith('Location',
+                    'https://203.0.113.10/data/test');
+                  expect(mockResponse.setHeader).toHaveBeenCalledWith(
+                    'X-Xpod-Direct-Node',
+                    'node1'
+                  );      expect(mockResponse.end).toHaveBeenCalled();
     });
 
-    it('should handle custom port in redirect mode', async () => {
+    it('should handle custom port in direct mode', async () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'node1',
-        accessMode: 'redirect',
+        accessMode: 'direct',
         publicIp: '203.0.113.10',
         publicPort: 8443,
       });
@@ -253,7 +251,7 @@ describe('ClusterIngressRouter', () => {
       mockRequest.url = '/data/test?param=value&other=123';
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'node1',
-        accessMode: 'redirect',
+        accessMode: 'direct',
         publicIp: '203.0.113.10',
         publicPort: 443,
       });
@@ -276,7 +274,7 @@ describe('ClusterIngressRouter', () => {
       });
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'myapp',
-        accessMode: 'redirect',
+        accessMode: 'direct',
         publicIp: '198.51.100.20',
         publicPort: 443,
       });
@@ -286,8 +284,11 @@ describe('ClusterIngressRouter', () => {
       await router.handle(input);
       
       expect(mockRepository.getNodeConnectivityInfo).toHaveBeenCalledWith('myapp');
+      expect(mockResponse.statusCode).toBe(307);
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('Location',
+        'https://198.51.100.20/data/test');
       expect(mockResponse.setHeader).toHaveBeenCalledWith(
-        'X-Xpod-Redirect-Node', 
+        'X-Xpod-Direct-Node',
         'myapp'
       );
     });

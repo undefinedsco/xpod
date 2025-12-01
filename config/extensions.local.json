@@ -1,10 +1,7 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
-    {
-      "NoopQuotaService": "urn:undefineds:xpod:NoopQuotaService#"
-    }
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
   ],
   "import": [
     "./xpod.json"
@@ -35,37 +32,35 @@
       }
     },
     {
-      "comment": "Convert incoming representations to quads for quadstore-backed resources while keeping filesystem fallback.",
+      "comment": "SPARQL-capable store for quadstore-backed resources.",
+      "@id": "urn:undefineds:xpod:SparqlQuadstoreResourceStore",
+      "@type": "SparqlUpdateResourceStore",
+      "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
+      "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
+      "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
+      "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+    },
+    {
+      "comment": "Let locking/index/binary wrappers call directly into our SPARQL-aware store (skip default PatchingStore).",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:SparqlResourceStore"
+        "@id": "urn:solid-server:default:ResourceStore_Patching"
       },
       "overrideParameters": {
         "@type": "RepresentationPartialConvertingStore",
-        "metadataStrategy": {
-          "@id": "urn:solid-server:default:AuxiliaryStrategy"
-        },
-        "options_inConverter": {
-          "@id": "urn:solid-server:default:RepresentationConverter"
-        },
+        "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
+        "options_inConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
         "options_inPreferences_type": {
           "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
           "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
         },
+        "options_outConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
         "source": {
-          "@type": "DataAccessorBasedStore",
-          "identifierStrategy": {
-            "@id": "urn:solid-server:default:IdentifierStrategy"
-          },
-          "auxiliaryStrategy": {
-            "@id": "urn:solid-server:default:AuxiliaryStrategy"
-          },
-          "metadataStrategy": {
-            "@id": "urn:solid-server:default:MetadataStrategy"
-          },
-          "accessor": {
-            "@id": "urn:undefineds:xpod:MixDataAccessor"
-          }
+          "@type": "SparqlUpdateResourceStore",
+          "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
+          "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
+          "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
+          "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
         }
       }
     },

@@ -18,6 +18,11 @@ export interface PodUsageRecord extends AccountUsageRecord {
   podId: string;
 }
 
+/**
+ * Repository for tracking pod and account usage metrics.
+ * NOTE: This repository only supports PostgreSQL. SQLite is not supported.
+ * For local/dev modes, usage tracking should be disabled.
+ */
 export class UsageRepository {
   public constructor(private readonly db: IdentityDatabase) {}
 
@@ -55,15 +60,10 @@ export class UsageRepository {
 
   public async setAccountStorage(accountId: string, storageBytes: number): Promise<void> {
     const normalized = this.normalizeValue(storageBytes);
-    const current = await this.getAccountUsage(accountId);
-    const previous = current?.storageBytes ?? 0;
-    const delta = normalized - previous;
     await this.db.transaction(async (tx: IdentityDatabase) => {
       await this.upsertAccountUsage(tx, accountId, normalized);
-      if (delta !== 0) {
-        // Adjust pod rows proportionally is undefined behaviour here, so only account-level storage is updated.
-        // Pods should be updated independently by their respective setters.
-      }
+      // Adjust pod rows proportionally is undefined behaviour here, so only account-level storage is updated.
+      // Pods should be updated independently by their respective setters.
     });
   }
 

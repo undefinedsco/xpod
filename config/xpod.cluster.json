@@ -1,15 +1,12 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
-    {
-      "clusterIp": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/dist/edge/EdgeNodeDnsCoordinator.jsonld#EdgeNodeDnsCoordinator_options_clusterIp"
-    }
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
   ],
   "@graph": [
     {
       "comment": "Optional ingress IP for proxy edge nodes.",
-      "@id": "urn:solid-server:default:variable:xpodClusterIngressIp",
+      "@id": "urn:solid-server:default:variable:clusterIngressIp",
       "@type": "Variable"
     },
     {
@@ -33,7 +30,7 @@
     },
     {
       "comment": "Cluster ingress domain for node routing.",
-      "@id": "urn:solid-server:default:variable:xpodClusterIngressDomain",
+      "@id": "urn:solid-server:default:variable:clusterIngressDomain",
       "@type": "Variable"
     },
     {
@@ -176,19 +173,19 @@
       "@id": "urn:undefineds:xpod:TencentDnsProvider",
       "@type": "TencentDnsProvider",
       "tokenId": {
-        "@id": "urn:solid-server:default:variable:xpodTencentDnsTokenId",
+        "@id": "urn:solid-server:default:variable:tencentDnsTokenId",
         "@type": "Variable"
       },
       "token": {
-        "@id": "urn:solid-server:default:variable:xpodTencentDnsToken",
+        "@id": "urn:solid-server:default:variable:tencentDnsToken",
         "@type": "Variable"
       },
       "baseUrl": {
-        "@id": "urn:solid-server:default:variable:xpodTencentDnsBaseUrl",
+        "@id": "urn:solid-server:default:variable:tencentDnsBaseUrl",
         "@type": "Variable"
       },
       "defaultLineId": {
-        "@id": "urn:solid-server:default:variable:xpodTencentDnsDefaultLineId",
+        "@id": "urn:solid-server:default:variable:tencentDnsDefaultLineId",
         "@type": "Variable"
       },
       "userAgent": {
@@ -207,11 +204,11 @@
         "@type": "Variable"
       },
       "ttl": {
-        "@id": "urn:solid-server:default:variable:xpodDnsRecordTtl",
+        "@id": "urn:solid-server:default:variable:dnsRecordTtl",
         "@type": "Variable"
       },
       "clusterIp": {
-        "@id": "urn:solid-server:default:variable:xpodClusterIngressIp",
+        "@id": "urn:solid-server:default:variable:clusterIngressIp",
         "@type": "Variable"
       }
     },
@@ -227,7 +224,7 @@
         "@type": "Variable"
       },
       "ttl": {
-        "@id": "urn:solid-server:default:variable:xpodDnsRecordTtl",
+        "@id": "urn:solid-server:default:variable:dnsRecordTtl",
         "@type": "Variable"
       }
     },
@@ -236,19 +233,19 @@
       "@id": "urn:undefineds:xpod:EdgeNodeTunnelManager",
       "@type": "FrpTunnelManager",
       "serverHost": {
-        "@id": "urn:solid-server:default:variable:xpodFrpServerHost",
+        "@id": "urn:solid-server:default:variable:frpServerHost",
         "@type": "Variable"
       },
       "serverPort": {
-        "@id": "urn:solid-server:default:variable:xpodFrpServerPort",
+        "@id": "urn:solid-server:default:variable:frpServerPort",
         "@type": "Variable"
       },
       "token": {
-        "@id": "urn:solid-server:default:variable:xpodFrpToken",
+        "@id": "urn:solid-server:default:variable:frpToken",
         "@type": "Variable"
       },
       "protocol": {
-        "@id": "urn:solid-server:default:variable:xpodFrpProtocol",
+        "@id": "urn:solid-server:default:variable:frpProtocol",
         "@type": "Variable"
       }
     },
@@ -261,11 +258,11 @@
         "@type": "Variable"
       },
       "enabled": {
-        "@id": "urn:solid-server:default:variable:xpodEdgeHealthProbesEnabled",
+        "@id": "urn:solid-server:default:variable:edgeHealthProbesEnabled",
         "@type": "Variable"
       },
       "timeoutMs": {
-        "@id": "urn:solid-server:default:variable:xpodEdgeHealthProbeTimeout",
+        "@id": "urn:solid-server:default:variable:edgeHealthProbeTimeout",
         "@type": "Variable"
       }
     },
@@ -278,7 +275,7 @@
         "@type": "Variable"
       },
       "edgeNodesEnabled": {
-        "@id": "urn:solid-server:default:variable:xpodEdgeNodesEnabled", 
+        "@id": "urn:solid-server:default:variable:edgeNodesEnabled", 
         "@type": "Variable"
       },
       "clusterIngressDomain": {
@@ -295,7 +292,7 @@
         "@type": "Variable"
       },
       "edgeNodesEnabled": {
-        "@id": "urn:solid-server:default:variable:xpodEdgeNodesEnabled",
+        "@id": "urn:solid-server:default:variable:edgeNodesEnabled",
         "@type": "Variable"
       },
       "dnsCoordinator": {
@@ -312,15 +309,15 @@
       }
     },
     {
-      "comment": "Redirects pod traffic to registered edge nodes",
-      "@type": "EdgeNodeRedirectHttpHandler",
-      "@id": "urn:undefineds:xpod:EdgeNodeRedirectHttpHandler",
+      "comment": "Redirects pod traffic to registered edge nodes (Debug Only)",
+      "@type": "EdgeNodeDirectDebugHttpHandler",
+      "@id": "urn:undefineds:xpod:EdgeNodeDirectDebugHttpHandler",
       "identityDbUrl": {
         "@id": "urn:solid-server:default:variable:identityDbUrl",
         "@type": "Variable"
       },
       "edgeNodesEnabled": {
-        "@id": "urn:solid-server:default:variable:xpodEdgeNodesEnabled",
+        "@id": "urn:solid-server:default:variable:edgeNodesEnabled",
         "@type": "Variable"
       }
     },
@@ -359,7 +356,7 @@
             "@id": "urn:solid-server:default:IdentityProviderHandler"
           },
           {
-            "@id": "urn:undefineds:xpod:EdgeNodeRedirectHttpHandler"
+            "@id": "urn:undefineds:xpod:EdgeNodeDirectDebugHttpHandler"
           },
           {
             "@id": "urn:solid-server:default:LdpHandler"

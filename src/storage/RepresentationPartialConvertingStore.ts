@@ -71,7 +71,7 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     }
 
     const availableTypes = await rdfParser.getContentTypes();
-    if (!availableTypes.includes(contentType)) {
+    if (contentType !== INTERNAL_QUADS && !availableTypes.includes(contentType)) {
       this.logger.debug(`Not converting ${identifier.path}: ${contentType} to ${preferencesType}`);
       return false;
     }

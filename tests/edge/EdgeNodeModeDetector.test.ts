@@ -34,7 +34,7 @@ describe('EdgeNodeModeDetector', () => {
         capabilities: {
           solidProtocolVersion: '1.0.0',
           storageBackends: ['file'],
-          supportedModes: [ 'redirect', 'proxy' ],
+          supportedModes: [ 'direct', 'proxy' ],
         },
       };
 
@@ -42,12 +42,12 @@ describe('EdgeNodeModeDetector', () => {
 
       expect(result).toEqual({
         accessMode: 'proxy',
-        reason: 'Redirect not available, using proxy',
+        reason: 'Direct not available, using proxy',
         subdomain: 'test-node-123.cluster.example.com',
       });
     });
 
-    it('should return redirect mode when connectivity test passes', async () => {
+    it('should return direct mode when connectivity test passes', async () => {
       const nodeInfo: NodeRegistrationInfo = {
         nodeId: 'test-node-456',
         publicIp: '192.168.1.100',
@@ -55,7 +55,7 @@ describe('EdgeNodeModeDetector', () => {
         capabilities: {
           solidProtocolVersion: '1.0.0',
           storageBackends: ['file'],
-          supportedModes: [ 'redirect', 'proxy' ],
+          supportedModes: [ 'direct', 'proxy' ],
         },
       };
 
@@ -68,8 +68,8 @@ describe('EdgeNodeModeDetector', () => {
 
       const result = await detector.detectMode(nodeInfo);
 
-      expect(result.accessMode).toBe('redirect');
-      expect(result.reason).toBe('Redirect connectivity test passed');
+      expect(result.accessMode).toBe('direct');
+      expect(result.reason).toBe('Direct connectivity test passed');
       expect(result.subdomain).toBe('test-node-456.cluster.example.com');
       expect(result.connectivityTest?.success).toBe(true);
       expect(result.connectivityTest?.latency).toBeGreaterThan(0);
@@ -83,7 +83,7 @@ describe('EdgeNodeModeDetector', () => {
         capabilities: {
           solidProtocolVersion: '1.0.0',
           storageBackends: ['file'],
-          supportedModes: [ 'redirect', 'proxy' ],
+          supportedModes: [ 'direct', 'proxy' ],
         },
       };
 
@@ -97,7 +97,7 @@ describe('EdgeNodeModeDetector', () => {
       const result = await detector.detectMode(nodeInfo);
 
       expect(result.accessMode).toBe('proxy');
-      expect(result.reason).toContain('Redirect connectivity failed');
+      expect(result.reason).toContain('Direct connectivity failed');
       expect(result.subdomain).toBe('test-node-789.cluster.example.com');
       expect(result.connectivityTest?.success).toBe(false);
       expect(result.connectivityTest?.error).toBe('Connection refused');
@@ -110,7 +110,7 @@ describe('EdgeNodeModeDetector', () => {
         capabilities: {
           solidProtocolVersion: '1.0.0',
           storageBackends: ['file'],
-          supportedModes: [ 'redirect', 'proxy' ],
+          supportedModes: [ 'direct', 'proxy' ],
         },
       };
 
@@ -134,7 +134,7 @@ describe('EdgeNodeModeDetector', () => {
         capabilities: {
           solidProtocolVersion: '1.0.0',
           storageBackends: ['file'],
-          supportedModes: [ 'redirect', 'proxy' ],
+          supportedModes: [ 'direct', 'proxy' ],
         },
       };
 
@@ -144,7 +144,7 @@ describe('EdgeNodeModeDetector', () => {
       const result = await detector.detectMode(nodeInfo);
 
       expect(result.accessMode).toBe('proxy');
-      expect(result.reason).toContain('Redirect connectivity failed');
+      expect(result.reason).toContain('Direct connectivity failed');
       expect(result.connectivityTest?.success).toBe(false);
       expect(result.connectivityTest?.error).toBe('Connection timeout after 1000ms');
     });
@@ -154,7 +154,7 @@ describe('EdgeNodeModeDetector', () => {
         nodeId: 'test@node#123!',
         capabilities: {
           solidProtocolVersion: '1.0.0',
-          supportedModes: [ 'redirect', 'proxy' ],
+          supportedModes: [ 'direct', 'proxy' ],
         },
       };
 
@@ -163,7 +163,7 @@ describe('EdgeNodeModeDetector', () => {
       expect(result.subdomain).toBe('testnode123.cluster.example.com');
     });
 
-    it('should skip redirect detection when node only supports proxy mode', async () => {
+    it('should skip direct detection when node only supports proxy mode', async () => {
       const nodeInfo: NodeRegistrationInfo = {
         nodeId: 'proxied-only',
         publicIp: '192.0.2.1',
@@ -178,12 +178,12 @@ describe('EdgeNodeModeDetector', () => {
       expect(mockSocket.connect).not.toHaveBeenCalled();
     });
 
-    it('should remain in redirect mode when proxy mode is unsupported', async () => {
+    it('should remain in direct mode when proxy mode is unsupported', async () => {
       const nodeInfo: NodeRegistrationInfo = {
         nodeId: 'direct-only',
         publicIp: '198.51.100.2',
         capabilities: {
-          supportedModes: [ 'redirect' ],
+          supportedModes: [ 'direct' ],
         },
       };
 
@@ -195,20 +195,20 @@ describe('EdgeNodeModeDetector', () => {
 
       const result = await detector.detectMode(nodeInfo);
 
-      expect(result.accessMode).toBe('redirect');
-      expect(result.reason).toContain('Redirect connectivity failed and proxy not supported');
+      expect(result.accessMode).toBe('direct');
+      expect(result.reason).toContain('Direct connectivity failed and proxy not supported');
     });
   });
 
   describe('recheckMode', () => {
-    it('should return null when current mode is redirect', async () => {
+    it('should return null when current mode is direct', async () => {
       const nodeInfo: NodeRegistrationInfo = {
         nodeId: 'test-node',
         publicIp: '192.168.1.1',
-        capabilities: { supportedModes: [ 'redirect', 'proxy' ] },
+        capabilities: { supportedModes: [ 'direct', 'proxy' ] },
       };
 
-      const result = await detector.recheckMode('redirect', nodeInfo);
+      const result = await detector.recheckMode('direct', nodeInfo);
 
       expect(result).toBeNull();
     });
@@ -216,7 +216,7 @@ describe('EdgeNodeModeDetector', () => {
     it('should return null when no public IP is available', async () => {
       const nodeInfo: NodeRegistrationInfo = {
         nodeId: 'test-node',
-        capabilities: { supportedModes: [ 'redirect', 'proxy' ] },
+        capabilities: { supportedModes: [ 'direct', 'proxy' ] },
       };
 
       const result = await detector.recheckMode('proxy', nodeInfo);
@@ -224,12 +224,12 @@ describe('EdgeNodeModeDetector', () => {
       expect(result).toBeNull();
     });
 
-    it('should return redirect mode when connectivity is restored', async () => {
+    it('should return direct mode when connectivity is restored', async () => {
       const nodeInfo: NodeRegistrationInfo = {
         nodeId: 'test-node-restored',
         publicIp: '10.1.1.1',
         publicPort: 3000,
-        capabilities: { supportedModes: [ 'redirect', 'proxy' ] },
+        capabilities: { supportedModes: [ 'direct', 'proxy' ] },
       };
 
       // Mock successful connection
@@ -241,8 +241,8 @@ describe('EdgeNodeModeDetector', () => {
 
       const result = await detector.recheckMode('proxy', nodeInfo);
 
-      expect(result?.accessMode).toBe('redirect');
-      expect(result?.reason).toBe('Redirect connectivity restored');
+      expect(result?.accessMode).toBe('direct');
+      expect(result?.reason).toBe('Direct connectivity restored');
       expect(result?.connectivityTest?.success).toBe(true);
     });
 
@@ -250,7 +250,7 @@ describe('EdgeNodeModeDetector', () => {
       const nodeInfo: NodeRegistrationInfo = {
         nodeId: 'test-node-still-failed',
         publicIp: '172.16.0.1',
-        capabilities: { supportedModes: [ 'redirect', 'proxy' ] },
+        capabilities: { supportedModes: [ 'direct', 'proxy' ] },
       };
 
       // Mock failed connection
@@ -265,7 +265,7 @@ describe('EdgeNodeModeDetector', () => {
       expect(result).toBeNull();
     });
 
-    it('should skip recheck entirely when redirect mode is not supported', async () => {
+    it('should skip recheck entirely when direct mode is not supported', async () => {
       const nodeInfo: NodeRegistrationInfo = {
         nodeId: 'proxied-only',
         publicIp: '203.0.113.5',

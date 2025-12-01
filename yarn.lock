@@ -2950,6 +2950,13 @@
   resolved "https://registry.npmmirror.com/@types/bcryptjs/-/bcryptjs-2.4.6.tgz"
   integrity sha512-9xlo6R2qDs5uixm0bcIqCeMCE6HiQsIyel9KQySStiyqNl2tnj2mP3DX1Nf56MD6KMenNNlBBsy3LJ7gUEQPXQ==
 
+"@types/better-sqlite3@^7.6.13":
+  version "7.6.13"
+  resolved "https://registry.yarnpkg.com/@types/better-sqlite3/-/better-sqlite3-7.6.13.tgz#a72387f00d2f53cab699e63f2e2c05453cf953f0"
+  integrity sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA==
+  dependencies:
+    "@types/node" "*"
+
 "@types/body-parser@*":
   version "1.19.5"
   resolved "https://registry.npmmirror.com/@types/body-parser/-/body-parser-1.19.5.tgz"
@@ -3662,6 +3669,14 @@ bcryptjs@^2.4.3:
   version "2.4.3"
   resolved "https://registry.npmmirror.com/bcryptjs/-/bcryptjs-2.4.3.tgz"
   integrity sha512-V/Hy/X9Vt7f3BbPJEi8BdVFMByHi+jNXrYkW3huaybV/kQ0KJg0Y6PkEMbn+zeT+i+SiKZ/HMqJGIIt4LZDqNQ==
+
+better-sqlite3@^12.4.6:
+  version "12.4.6"
+  resolved "https://registry.yarnpkg.com/better-sqlite3/-/better-sqlite3-12.4.6.tgz#a6cff3be1411fb7a06eadc4449647f3561d3d805"
+  integrity sha512-gaYt9yqTbQ1iOxLpJA8FPR5PiaHP+jlg8I5EX0Rs2KFwNzhBsF40KzMZS5FwelY7RG0wzaucWdqSAJM3uNCPCg==
+  dependencies:
+    bindings "^1.5.0"
+    prebuild-install "^7.1.1"
 
 bignumber.js@^9.0.1:
   version "9.1.2"

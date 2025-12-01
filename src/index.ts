@@ -9,8 +9,9 @@ import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { EdgeNodeSignalHttpHandler } from './http/admin/EdgeNodeSignalHttpHandler';
+import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
-import { EdgeNodeRedirectHttpHandler } from './http/EdgeNodeRedirectHttpHandler';
+import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
 import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
 import { SignalInterceptHttpHandler } from './http/SignalInterceptHttpHandler';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
@@ -36,7 +37,6 @@ import { createBandwidthThrottleTransform } from './util/stream/BandwidthThrottl
 import { UsageTrackingStore } from './storage/quota/UsageTrackingStore';
 import { EdgeNodeModeDetector } from './edge/EdgeNodeModeDetector';
 import { ClusterIdentifierStrategy } from './util/identifiers/ClusterIdentifierStrategy';
-import { MultiKeyExtractor } from './util/variables/MultiKeyExtractor';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type {
   DnsProvider,
@@ -57,12 +57,13 @@ export {
     ConfigurableLoggerFactory,
     LockingResourceStore,
     DebugRedisLocker,
+    SparqlUpdateResourceStore,
     SubgraphQueryEngine,
     SubgraphSparqlHttpHandler,
     QuotaAdminHttpHandler,
     EdgeNodeSignalHttpHandler,
     ClusterIngressRouter,
-    EdgeNodeRedirectHttpHandler,
+    EdgeNodeDirectDebugHttpHandler,
     EdgeNodeProxyHttpHandler,
     SignalInterceptHttpHandler,
     EdgeNodeCertificateHttpHandler,
@@ -87,6 +88,5 @@ export {
     AcmeCertificateManager,
     EdgeNodeModeDetector,
     ClusterIdentifierStrategy,
-    MultiKeyExtractor,
   UsageTrackingStore,
 };

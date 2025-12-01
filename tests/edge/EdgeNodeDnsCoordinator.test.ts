@@ -11,7 +11,7 @@ describe('EdgeNodeDnsCoordinator', () => {
     upsertRecord.mockReset();
   });
 
-  it('synchronizes redirect mode nodes to their public IP', async () => {
+  it('synchronizes direct mode nodes to their public IP', async () => {
     const coordinator = new EdgeNodeDnsCoordinator({
       provider: mockProvider as any,
       rootDomain: 'cluster.example',
@@ -21,7 +21,7 @@ describe('EdgeNodeDnsCoordinator', () => {
 
     await coordinator.synchronize('node-1', {
       subdomain: 'node-1',
-      accessMode: 'redirect',
+      accessMode: 'direct',
       publicIp: '198.51.100.5',
     });
 
@@ -44,7 +44,7 @@ describe('EdgeNodeDnsCoordinator', () => {
 
     await coordinator.synchronize('node-2', {
       subdomain: 'node-2',
-      accessMode: 'redirect',
+      accessMode: 'direct',
       ipv4: '203.0.113.42',
     });
 

@@ -56,8 +56,8 @@ export class EdgeNodeDnsCoordinator {
     
     // Determine DNS target based on access mode
     let target: string | undefined;
-    if (normalizedAccessMode === 'redirect') {
-      // Redirect mode: DNS 指向节点公网 IP
+    if (normalizedAccessMode === 'direct') {
+      // Direct mode: DNS 指向节点公网 IP
       target = this.extractString(metadata.publicIp) 
         ?? this.extractString(metadata.ipv4)
         ?? this.extractString(metadata.publicAddress);
@@ -67,7 +67,7 @@ export class EdgeNodeDnsCoordinator {
       }
 
       if (!target) {
-        this.logger.warn(`Node ${nodeId} (redirect mode) 未提供公网 IP，跳过 DNS 同步。`);
+        this.logger.warn(`Node ${nodeId} (direct mode) 未提供公网 IP，跳过 DNS 同步。`);
         return;
       }
     } else if (normalizedAccessMode === 'proxy') {

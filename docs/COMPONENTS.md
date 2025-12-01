@@ -153,12 +153,14 @@ This document provides a comprehensive overview of all custom components develop
 ### SubgraphSparqlHttpHandler
 - **Path**: `src/http/SubgraphSparqlHttpHandler.ts`
 - **Purpose**: Per-account SPARQL endpoints with usage tracking
-- **Endpoints**: `/.sparql` for SPARQL queries
-- **Functionality**: 
-  - Account-scoped RDF data access
-  - Bandwidth usage recording
-  - Query result streaming with throttling
-- **Deployment**: All modes (bandwidth tracking in server mode only)
+- **Endpoints**: `/{pod}/sparql` (container), `/{resource}.sparql` (resource)
+- **Functionality**:
+  - SELECT, ASK, CONSTRUCT, DESCRIBE queries (GET/POST)
+  - SPARQL UPDATE (POST only)
+  - WAC-based authorization (read/append/delete)
+  - Graph scope validation
+- **Deployment**: All modes
+- **Documentation**: See [docs/sparql-support.md](sparql-support.md) for full details
 
 ### EdgeNodeProxyHttpHandler
 - **Path**: `src/http/EdgeNodeProxyHttpHandler.ts`

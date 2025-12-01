@@ -46,8 +46,10 @@ interface QueryRequest {
 }
 
 interface SubgraphSparqlHttpHandlerOptions {
-  suffix?: string;
+  resourceSuffix?: string;
+  containerSuffix?: string;
   identityDbUrl?: string;
+  usageDbUrl?: string;
   defaultAccountBandwidthLimitBps?: number | null;
 }
 
@@ -62,7 +64,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   private readonly credentialsExtractor: CredentialsExtractor;
   private readonly permissionReader: PermissionReader;
   private readonly authorizer: Authorizer;
-  private readonly suffix: string;
+  private readonly resourceSuffix: string;
+  private readonly containerSuffix: string;
   private readonly podLookup?: PodLookupRepository;
   private readonly usageRepo?: UsageRepository;
   private readonly defaultBandwidthLimit?: number | null;
@@ -81,19 +84,29 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     this.credentialsExtractor = credentialsExtractor;
     this.permissionReader = permissionReader;
     this.authorizer = authorizer;
-    this.suffix = options.suffix ?? '.sparql';
+    this.resourceSuffix = options.resourceSuffix ?? '.sparql';
+    this.containerSuffix = options.containerSuffix ?? '/sparql';
     this.defaultBandwidthLimit = this.normalizeLimit(options.defaultAccountBandwidthLimitBps);
 
+    // Identity DB is used for pod lookup (to resolve accountId/podId from URL)
     if (options.identityDbUrl) {
       const db = getIdentityDatabase(options.identityDbUrl);
       this.podLookup = new PodLookupRepository(db);
-      this.usageRepo = new UsageRepository(db);
+    }
+
+    // Usage DB can be separate from identity DB (decoupled usage tracking)
+    const usageDbUrl = options.usageDbUrl ?? options.identityDbUrl;
+    if (usageDbUrl) {
+      const usageDb = getIdentityDatabase(usageDbUrl);
+      this.usageRepo = new UsageRepository(usageDb);
     }
   }
 
   public override async canHandle({ request }: HttpHandlerInput): Promise<void> {
     const path = this.parseUrl(request).pathname;
-    if (!path.endsWith(this.suffix)) {
+    const isResource = path.endsWith(this.resourceSuffix);
+    const isContainer = path.endsWith(this.containerSuffix);
+    if (!isResource && !isContainer) {
       throw new NotImplementedHttpError('Request is not targeting a subgraph SPARQL endpoint.');
     }
   }
@@ -199,8 +212,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       throw new MethodNotAllowedHttpError([ 'POST' ]);
     }
 
-    const requiresDelete = this.inspectUpdateGraphs(parsed, queryRequest.basePath);
-    const modes = requiresDelete ? [ AccessMode.write, AccessMode.delete ] : [ AccessMode.write ];
+    const { hasInsert, hasDelete } = this.inspectUpdateGraphs(parsed, queryRequest.basePath);
+    const modes: AccessMode[] = [];
+    if (hasInsert) {
+      modes.push(AccessMode.append);
+    }
+    if (hasDelete) {
+      modes.push(AccessMode.delete);
+    }
     await this.authorizeFor(queryRequest.basePath, request, modes);
 
     await this.engine.queryVoid(queryRequest.query, queryRequest.basePath);
@@ -232,17 +251,44 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async resolveUsageContext(basePath: string): Promise<UsageContext | undefined> {
-    if (!this.podLookup) {
-      return undefined;
+    // Try to look up pod from identity database first
+    if (this.podLookup) {
+      try {
+        const pod = await this.podLookup.findByResourceIdentifier(basePath);
+        if (pod) {
+          return {
+            accountId: pod.accountId,
+            podId: pod.podId,
+          };
+        }
+      } catch (error) {
+        // Gracefully handle missing tables (e.g., dev mode without identity DB setup)
+        this.logger.debug(`Failed to lookup pod for usage context: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
-    const pod = await this.podLookup.findByResourceIdentifier(basePath);
-    if (!pod) {
-      return undefined;
+
+    // Fallback: infer pod from URL path (e.g., /alice/foo → podId=alice)
+    // This allows usage tracking without identity database
+    if (this.usageRepo) {
+      const podId = this.inferPodIdFromPath(basePath);
+      if (podId) {
+        return {
+          accountId: podId, // Use podId as accountId when identity DB not available
+          podId,
+        };
+      }
     }
-    return {
-      accountId: pod.accountId,
-      podId: pod.podId,
-    };
+
+    return undefined;
+  }
+
+  private inferPodIdFromPath(basePath: string): string | undefined {
+    // Extract first path segment as pod ID: /alice/foo/bar → alice
+    const match = basePath.match(/^\/([^/]+)\//);
+    if (match && match[1] && !match[1].startsWith('.')) {
+      return match[1];
+    }
+    return undefined;
   }
 
   private async resolveBandwidthLimit(context: UsageContext): Promise<number | null | undefined> {
@@ -304,16 +350,22 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
   }
 
-  private inspectUpdateGraphs(update: SparqlUpdate, basePath: string): boolean {
-    let requiresDelete = false;
+  private inspectUpdateGraphs(update: SparqlUpdate, basePath: string): { hasInsert: boolean; hasDelete: boolean } {
+    let hasInsert = false;
+    let hasDelete = false;
     for (const operation of update.updates ?? []) {
       if (!this.isInsertDeleteOperation(operation)) {
         throw new BadRequestHttpError('SPARQL update management operations are not supported.');
       }
 
+      if (operation.updateType === 'insert' ||
+        (operation.updateType === 'insertdelete' && (operation.insert?.length ?? 0) > 0)) {
+        hasInsert = true;
+      }
+
       if (operation.updateType === 'delete' || operation.updateType === 'deletewhere' ||
         (operation.updateType === 'insertdelete' && (operation.delete?.length ?? 0) > 0)) {
-        requiresDelete = true;
+        hasDelete = true;
       }
 
       if (operation.graph) {
@@ -340,7 +392,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         }
       }
     }
-    return requiresDelete;
+    return { hasInsert, hasDelete };
   }
 
   private inspectQuads(quads: SparqlQuads[], basePath: string): void {
@@ -439,11 +491,20 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const url = this.parseUrl(request);
     const path = decodeURIComponent(url.pathname);
 
-    if (!path.endsWith(this.suffix)) {
+    let basePath: string;
+    if (path.endsWith(this.containerSuffix)) {
+      // Container endpoint: /alice/sparql → /alice/
+      basePath = path.slice(0, -this.containerSuffix.length + 1);
+      if (!basePath.endsWith('/')) {
+        basePath += '/';
+      }
+    } else if (path.endsWith(this.resourceSuffix)) {
+      // Resource endpoint: /alice/profile.ttl.sparql → /alice/profile.ttl
+      basePath = path.slice(0, -this.resourceSuffix.length);
+    } else {
       throw new NotImplementedHttpError('Request is not targeting a subgraph SPARQL endpoint.');
     }
 
-    const basePath = path.slice(0, -this.suffix.length) || '/';
     let query: string | null = null;
     let ingressBytes = 0;
 

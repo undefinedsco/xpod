@@ -4,7 +4,7 @@ import type { HttpResponse } from '@solid/community-server/dist/server/HttpRespo
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { NotImplementedHttpError } from '@solid/community-server/dist/util/errors/NotImplementedHttpError';
-import { EdgeNodeRedirectHttpHandler } from '../../src/http/EdgeNodeRedirectHttpHandler';
+import { EdgeNodeDirectDebugHttpHandler } from '../../src/http/EdgeNodeDirectDebugHttpHandler';
 
 const findNodeMock = vi.fn();
 
@@ -34,15 +34,15 @@ function createRequest(method: string, path: string): HttpRequest {
   return request;
 }
 
-function buildHandler(enabled = true): EdgeNodeRedirectHttpHandler {
-  return new EdgeNodeRedirectHttpHandler({
+function buildHandler(enabled = true): EdgeNodeDirectDebugHttpHandler {
+  return new EdgeNodeDirectDebugHttpHandler({
     identityDbUrl: 'postgres://test',
     edgeNodesEnabled: enabled ? 'true' : 'false',
     nodeRepository: { findNodeByResourcePath: findNodeMock } as any,
   });
 }
 
-describe('EdgeNodeRedirectHttpHandler', () => {
+describe('EdgeNodeDirectDebugHttpHandler', () => {
   beforeEach(() => {
     findNodeMock.mockReset();
   });

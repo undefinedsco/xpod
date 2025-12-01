@@ -12,8 +12,8 @@ Xpod 在 `config/xpod.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自研 H
    负责边缘节点注册、心跳、模式判定、证书协商等。
 2. **`EdgeNodeProxyHttpHandler`**（默认开启，`/pods/*` 请求在 proxy 模式下落到该 Handler）  
    当节点处于隧道/代理模式时执行反向代理，并追加 `X-Xpod-Edge-Node` 等诊断头。
-3. **`EdgeNodeRedirectHttpHandler`**（默认关闭，仅调试用途）  
-   提供显式 307 跳转，方便验证节点自定义入口。
+3. **`EdgeNodeDirectDebugHttpHandler`**（前身为 `EdgeNodeRedirectHttpHandler`，默认关闭，仅调试用途）  
+   提供显式 307 跳转，方便开发人员验证节点直连入口（绕过 DNS 缓存）。
 4. **`QuotaAdminHttpHandler`**（默认关闭）  
    仍保留配额 API 能力，启用后需管理员 Bearer Token。
 5. **`SubgraphSparqlHttpHandler`**  
@@ -86,11 +86,45 @@ Xpod 在 `config/xpod.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自研 H
 
 ---
 
-## 7. 调试与部署建议
+## 7. 运行模式与测试
 
-1. **启动**：使用 `yarn cluster:server`（读取 `.env.cluster`，兼容 `yarn cluster`）或 `yarn server` 启动控制面，再观察日志确认 `EdgeNodeSignalHttpHandler`、`FrpTunnelManager` 是否注册成功；本地节点可用 `yarn cluster:local` 读取 `.env.local` 并连接到控制面进行调试。
-2. **节点验证**：通过门户或 API 注册测试节点，观察 `/api/signal` 返回的 metadata 中 `accessMode`、`dns`、`tunnel` 字段是否符合预期。
-3. **DNS / 证书**：借助 `dig`、`nslookup`、`openssl s_client` 验证 DNS 记录与证书链；若失败，重点排查 `XPOD_TENCENT_DNS_*` 与 `XPOD_ACME_*`。
-4. **隧道**：查看 `EdgeNodeSignalHttpHandler` 心跳日志中的 `tunnel.client` 字段和值班 `frpc` 日志，确保直连/隧道切换时可以快速恢复。
+Xpod 支持 6 种运行模式，适用于不同场景：
 
-以上流程覆盖了当前云边架构的主要模块。后续若扩展新的 Handler 或前端入口，请以本文件为基准同步更新，保持“配置 ⇄ 代码 ⇄ 文档”一致。完成定制后，也欢迎在仓库中继续追加经验，以便团队共享。 
+| 模式 | 命令 | 端口 | 正确访问 URL | 配置文件 | 用途 |
+| --- | --- | --- | --- | --- | --- |
+| **start** | `yarn start` | 3000 | `http://localhost:3000/` | `extensions.json` | 快速体验，SQLite + 本地文件 |
+| **local** | `yarn local` | 3000 | `http://localhost:3000/` | `.env.local` + `extensions.local.json` | 桌面/单机部署，配额禁用 |
+| **dev** | `yarn dev` | 3000 | `http://localhost:3000/` | `.env.local` + `extensions.dev.json` | 开发调试，无认证 |
+| **server** | `yarn server` | 3000 | `http://localhost:3000/` | `.env.server` + `extensions.server.json` | 生产部署，PostgreSQL + MinIO |
+| **cluster:server** | `yarn cluster:server` | 3100 | `http://localhost:3100/` | `.env.cluster` + `extensions.cluster.json` | 集群控制面 |
+| **cluster:local** | `yarn cluster:local` | 3101 | `http://node-local.localhost:3101/` | `.env.cluster.local` + `extensions.local.json` | 边缘节点本地测试 |
+
+**重要说明**：
+- `cluster:local` 必须通过 `http://node-local.localhost:3101/` 访问（带 subdomain），因为 `CSS_BASE_URL` 配置为该地址
+- 若使用 `http://localhost:3101/` 访问会返回 500 错误（Host header 不匹配 baseUrl）
+- 集群模式下，边缘节点流量通过 `ClusterIngressRouter` 从 cluster:server 代理到 cluster:local
+
+### 快速验证所有模式
+
+```bash
+# 验证单个模式
+yarn start &
+sleep 8 && curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/
+pkill -f "community-solid-server"
+
+# cluster:local 需要使用 subdomain
+yarn cluster:local &
+sleep 8 && curl -s -o /dev/null -w "%{http_code}" http://node-local.localhost:3101/
+pkill -f "community-solid-server"
+```
+
+---
+
+## 8. 调试与部署建议
+
+1. **启动**：使用 `yarn cluster:server`（读取 `.env.cluster`）启动控制面，观察日志确认 `EdgeNodeSignalHttpHandler`、`ClusterIngressRouter` 是否注册成功；本地节点用 `yarn cluster:local` 读取 `.env.cluster.local` 并连接到控制面。
+2. **节点验证**：通过 API 注册测试节点，观察 `/api/signal` 返回的 metadata 中 `accessMode`、`dns`、`tunnel` 字段是否符合预期。
+3. **DNS / 证书**：借助 `dig`、`nslookup`、`openssl s_client` 验证 DNS 记录与证书链；若失败，重点排查 `CSS_TENCENT_DNS_*` 与 `CSS_ACME_*`。
+4. **隧道**：查看 `EdgeNodeSignalHttpHandler` 心跳日志中的 `tunnel.client` 字段和 `frpc` 日志，确保直连/隧道切换时可以快速恢复。
+
+以上流程覆盖了当前云边架构的主要模块。后续若扩展新的 Handler 或前端入口，请以本文件为基准同步更新，保持"配置 ⇄ 代码 ⇄ 文档"一致。 

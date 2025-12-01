@@ -12,7 +12,7 @@ export interface NodeCapabilities {
   storageBackends?: string[];
   authMethods?: string[];
   maxBandwidth?: number;
-  supportedModes?: ('redirect' | 'proxy')[];
+  supportedModes?: ('direct' | 'proxy')[];
   location?: {
     country?: string;
     region?: string;
@@ -21,7 +21,7 @@ export interface NodeCapabilities {
 }
 
 export interface ModeDetectionResult {
-  accessMode: 'redirect' | 'proxy';
+  accessMode: 'direct' | 'proxy';
   reason: string;
   subdomain: string;
   connectivityTest?: {
@@ -52,13 +52,15 @@ export class EdgeNodeModeDetector {
   public async detectMode(nodeInfo: NodeRegistrationInfo): Promise<ModeDetectionResult> {
     const subdomain = this.generateSubdomain(nodeInfo.nodeId);
     const supportedModes = this.extractSupportedModes(nodeInfo.capabilities);
-    const supportsRedirect = supportedModes.has('redirect');
+    const supportsDirect = supportedModes.has('direct');
     const supportsProxy = supportedModes.has('proxy');
-    
-    // Prefer redirect if supported and publicIp is present
+
+    // Prefer direct if supported and publicIp is present
     const hasPublicIp = Boolean(nodeInfo.publicIp);
-    if (supportsRedirect && hasPublicIp) {
-      const connectivityTest = await this.testDirectConnectivity(
+    let connectivityTest: { success: boolean; latencyMs?: number; error?: string } | undefined;
+
+    if (supportsDirect && hasPublicIp) {
+      connectivityTest = await this.testDirectConnectivity(
         nodeInfo.publicIp!,
         nodeInfo.publicPort ?? 443
       );
@@ -66,8 +68,8 @@ export class EdgeNodeModeDetector {
       if (connectivityTest.success) {
         this.logger.info(`Node ${nodeInfo.nodeId} is directly reachable at ${nodeInfo.publicIp}:${nodeInfo.publicPort ?? 443}`);
         return {
-          accessMode: 'redirect',
-          reason: 'Redirect connectivity test passed',
+          accessMode: 'direct',
+          reason: 'Direct connectivity test passed',
           subdomain,
           connectivityTest,
         };
@@ -76,27 +78,28 @@ export class EdgeNodeModeDetector {
       this.logger.info(`Node ${nodeInfo.nodeId} is not directly reachable, will fall back to proxy if available: ${connectivityTest.error}`);
       if (!supportsProxy) {
         return {
-          accessMode: 'redirect',
-          reason: `Redirect connectivity failed and proxy not supported: ${connectivityTest.error}`,
+          accessMode: 'direct',
+          reason: `Direct connectivity failed and proxy not supported: ${connectivityTest.error}`,
           subdomain,
           connectivityTest,
         };
       }
     }
 
-    // Redirect not available or failed; if proxy supported, use proxy mode
+    // Direct not available or failed; if proxy supported, use proxy mode
     if (supportsProxy) {
       return {
         accessMode: 'proxy',
-        reason: supportsRedirect && hasPublicIp ? 'Redirect connectivity failed, using proxy' : 'Redirect not available, using proxy',
+        reason: supportsDirect && hasPublicIp ? 'Direct connectivity failed, using proxy' : 'Direct not available, using proxy',
         subdomain,
+        connectivityTest,
       };
     }
 
-    // Neither redirect nor proxy viable
+    // Neither direct nor proxy viable
     return {
-      accessMode: supportsRedirect ? 'redirect' : 'proxy',
-      reason: supportsRedirect ? 'Redirect mode only; no proxy configured' : 'Proxy only; no redirect available',
+      accessMode: supportsDirect ? 'direct' : 'proxy',
+      reason: supportsDirect ? 'Direct mode only; no proxy configured' : 'Proxy only; no direct available',
       subdomain,
     };
   }
@@ -185,7 +188,7 @@ export class EdgeNodeModeDetector {
   public async recheckMode(currentMode: string, nodeInfo: NodeRegistrationInfo): Promise<ModeDetectionResult | null> {
     // Only recheck if currently in proxy mode and public IP is available
     const supportedModes = this.extractSupportedModes(nodeInfo.capabilities);
-    if (currentMode !== 'proxy' || !nodeInfo.publicIp || !supportedModes.has('redirect')) {
+    if (currentMode !== 'proxy' || !nodeInfo.publicIp || !supportedModes.has('direct')) {
       return null;
     }
 
@@ -196,10 +199,10 @@ export class EdgeNodeModeDetector {
 
     if (connectivityTest.success) {
       const subdomain = this.generateSubdomain(nodeInfo.nodeId);
-      this.logger.info(`Node ${nodeInfo.nodeId} connectivity restored, switching to redirect mode`);
+      this.logger.info(`Node ${nodeInfo.nodeId} connectivity restored, switching to direct mode`);
       return {
-        accessMode: 'redirect',
-        reason: 'Redirect connectivity restored',
+        accessMode: 'direct',
+        reason: 'Direct connectivity restored',
         subdomain,
         connectivityTest,
       };
@@ -208,10 +211,16 @@ export class EdgeNodeModeDetector {
     return null;
   }
 
-  private extractSupportedModes(capabilities: NodeCapabilities): Set<'redirect' | 'proxy'> {
-    const modes = new Set<'redirect' | 'proxy'>(capabilities.supportedModes ?? [ 'redirect', 'proxy' ]);
+  private extractSupportedModes(capabilities: NodeCapabilities): Set<string> {
+    const modes = new Set<string>();
+    const rawModes = capabilities.supportedModes ?? ['direct', 'proxy'];
+    
+    for (const mode of rawModes) {
+      modes.add(mode);
+    }
+    
     if (modes.size === 0) {
-      modes.add('redirect');
+      modes.add('direct');
       modes.add('proxy');
     }
     return modes;

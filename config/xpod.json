@@ -1,18 +1,23 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
-    {
-      "PerAccountQuotaStrategy": "urn:undefineds:xpod:PerAccountQuotaStrategy#",
-      "AcmeCertificateManager": "urn:undefineds:xpod:AcmeCertificateManager#",
-      "FrpcProcessManager": "urn:undefineds:xpod:FrpcProcessManager#"
-    }
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
   ],
   "import": [
     "./cli.json",
     "./resolver.json"
   ],
   "@graph": [
+    {
+      "comment": "Core mode: server or local",
+      "@id": "urn:solid-server:default:variable:edition",
+      "@type": "Variable"
+    },
+    {
+      "comment": "Whether edge node registry is enabled.",
+      "@id": "urn:solid-server:default:variable:edgeNodesEnabled",
+      "@type": "Variable"
+    },
     {
       "comment": "An accessor for a Quadstore",
       "@type": "QuadstoreSparqlDataAccessor",
@@ -173,8 +178,18 @@
       "credentialsExtractor": {
         "@id": "urn:solid-server:default:CredentialsExtractor"
       },
+      "permissionReader": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "authorizer": {
+        "@id": "urn:solid-server:default:Authorizer"
+      },
       "options_identityDbUrl": {
         "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "options_usageDbUrl": {
+        "@id": "urn:solid-server:default:variable:usageDbUrl",
         "@type": "Variable"
       },
       "options_defaultAccountBandwidthLimitBps": {

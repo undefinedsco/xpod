@@ -56,7 +56,7 @@
             "@type": "RegexRule",
             "regex": ".*",
             "store": {
-              "@id": "urn:solid-server:default:SparqlResourceStore"
+              "@id": "urn:undefineds:xpod:SparqlQuadstoreResourceStore"
             }
           }
         ]

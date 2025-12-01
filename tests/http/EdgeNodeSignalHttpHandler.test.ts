@@ -245,8 +245,8 @@ describe('EdgeNodeSignalHttpHandler', () => {
     updateNodeModeMock.mockResolvedValueOnce(undefined);
     
     modeDetectorMock.detectMode.mockResolvedValueOnce({
-      accessMode: 'redirect',
-      reason: 'Redirect connectivity test passed',
+      accessMode: 'direct',
+      reason: 'Direct connectivity test passed',
       subdomain: 'node-1.cluster.example.com',
       connectivityTest: { success: true, latency: 50 },
     });
@@ -271,6 +271,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
         solidProtocolVersion: '1.0.0',
         storageBackends: ['filesystem'],
         authMethods: ['webid', 'client-credentials'],
+        supportedModes: ['direct', 'proxy'],
         maxBandwidth: undefined,
         location: undefined,
       },
@@ -279,7 +280,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
     const lastCall = updateNodeModeMock.mock.calls.at(-1);
     expect(lastCall[0]).toBe('node-1');
     expect(lastCall[1]).toMatchObject({
-      accessMode: 'redirect',
+      accessMode: 'direct',
       publicIp: '192.168.1.100',
       publicPort: 3000,
       subdomain: 'node-1.cluster.example.com',
@@ -294,7 +295,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
     });
 
     const metadataArg = updateNodeHeartbeatMock.mock.calls[0][1] as Record<string, unknown>;
-    expect(metadataArg.accessMode).toBe('redirect');
+    expect(metadataArg.accessMode).toBe('direct');
     expect(metadataArg.publicIp).toBe('192.168.1.100');
     expect(metadataArg.publicPort).toBe(3000);
     expect(metadataArg.subdomain).toBe('node-1.cluster.example.com');
@@ -315,8 +316,8 @@ describe('EdgeNodeSignalHttpHandler', () => {
     updateNodeModeMock.mockResolvedValueOnce(undefined);
     
     modeDetectorMock.recheckMode.mockResolvedValueOnce({
-      accessMode: 'redirect',
-      reason: 'Redirect connectivity restored',
+      accessMode: 'direct',
+      reason: 'Direct connectivity restored',
       subdomain: 'node-2.cluster.example.com',
       connectivityTest: { success: true, latency: 75 },
     });
@@ -340,6 +341,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
         solidProtocolVersion: '1.0.0',
         storageBackends: ['filesystem'],
         authMethods: ['webid', 'client-credentials'],
+        supportedModes: ['direct', 'proxy'],
         maxBandwidth: undefined,
         location: undefined,
       },
@@ -348,7 +350,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
     const lastCall = updateNodeModeMock.mock.calls.at(-1);
     expect(lastCall[0]).toBe('node-2');
     expect(lastCall[1]).toMatchObject({
-      accessMode: 'redirect',
+      accessMode: 'direct',
       publicIp: '10.0.0.1',
       publicPort: 443,
       subdomain: 'node-2.cluster.example.com',
@@ -363,7 +365,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
     });
 
     const metadataArg = updateNodeHeartbeatMock.mock.calls[0][1] as Record<string, unknown>;
-    expect(metadataArg.accessMode).toBe('redirect');
+    expect(metadataArg.accessMode).toBe('direct');
     expect(metadataArg.publicIp).toBe('10.0.0.1');
     expect(metadataArg.publicPort).toBe(443);
     expect(metadataArg.subdomain).toBe('node-2.cluster.example.com');
@@ -403,7 +405,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
     const request = createRequest('POST', '/api/signal', JSON.stringify({
       nodeId: 'node-5',
       token: 'secret',
-      reachability: { status: 'redirect' },
+      reachability: { status: 'direct' },
       publicAddress: 'https://node5.example',
     }));
     const response = new MockResponse() as unknown as HttpResponse;
@@ -412,7 +414,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
     await (response as unknown as MockResponse).done;
 
     const call = updateNodeModeMock.mock.calls.at(-1);
-    expect(call[1].accessMode).toBe('redirect');
+    expect(call[1].accessMode).toBe('direct');
     expect(call[1].connectivityStatus).toBe('reachable');
   });
 
@@ -421,7 +423,7 @@ describe('EdgeNodeSignalHttpHandler', () => {
     getNodeSecretMock.mockResolvedValueOnce({ nodeId: 'node-6', tokenHash: 'hash', metadata: {} });
     getNodeConnectivityInfoMock.mockResolvedValueOnce({
       nodeId: 'node-6',
-      accessMode: 'redirect',
+      accessMode: 'direct',
     });
 
     const request = createRequest('POST', '/api/signal', JSON.stringify({

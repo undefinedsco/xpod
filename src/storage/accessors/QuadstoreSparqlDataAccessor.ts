@@ -444,6 +444,66 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
   }
 
   /**
+   * Execute an arbitrary SPARQL UPDATE string.
+   */
+  public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
+    this.logger.verbose(`Executing SPARQL UPDATE on ${this.publicEndpoint}: ${query}`);
+    await this.waitForStoreReady();
+    await this.engine.queryVoid(query, { baseIRI: baseIri });
+  }
+
+  /**
+   * Execute a SPARQL SELECT query and return bindings as plain objects.
+   */
+  public async executeSparqlSelect(query: string): Promise<Record<string, string>[]> {
+    this.logger.verbose(`Executing SPARQL SELECT on ${this.publicEndpoint}: ${query}`);
+    await this.waitForStoreReady();
+    const bindingsStream = await this.engine.queryBindings(query);
+    const results: Record<string, string>[] = [];
+    const iterable = bindingsStream as unknown as AsyncIterable<Map<string, unknown>>;
+    for await (const binding of iterable) {
+      const row: Record<string, string> = {};
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore Comunica bindings expose Map-like iteration
+      for (const [ key, value ] of binding) {
+        row[key] = (value as { value: string }).value;
+      }
+      results.push(row);
+    }
+    return results;
+  }
+
+  /**
+   * Execute a SPARQL ASK query.
+   */
+  public async executeSparqlAsk(query: string): Promise<boolean> {
+    this.logger.verbose(`Executing SPARQL ASK on ${this.publicEndpoint}: ${query}`);
+    await this.waitForStoreReady();
+    return this.engine.queryBoolean(query);
+  }
+
+  /**
+   * Execute a raw CONSTRUCT query string.
+   */
+  public async executeSparqlConstruct(query: string): Promise<Guarded<Readable>> {
+    this.logger.verbose(`Executing SPARQL CONSTRUCT on ${this.publicEndpoint}: ${query}`);
+    await this.waitForStoreReady();
+    const result = await this.engine.queryQuads(query);
+    const readable = new Readable({
+      objectMode: true,
+      read() {
+        result.on('data', (quad): void => {
+          this.push(quad);
+        });
+        result.on('end', (): void => {
+          this.push(null);
+        });
+      },
+    });
+    return guardStream(readable);
+  }
+
+  /**
    * Wait for the store to be ready.
    */
   private async waitForStoreReady(): Promise<void> {

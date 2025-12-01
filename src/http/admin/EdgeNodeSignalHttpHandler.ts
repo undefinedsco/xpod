@@ -571,7 +571,7 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
       authMethods: this.parseAuthMethods(capabilityStrings),
       maxBandwidth: merged.maxBandwidth as number,
       location: merged.location as NodeCapabilities['location'],
-      supportedModes: this.parseSupportedModes(capabilityStrings) ?? [ 'redirect', 'proxy' ],
+      supportedModes: this.parseSupportedModes(capabilityStrings) ?? [ 'direct', 'proxy' ],
     };
 
     // If we have structured capabilities from the detector, use them to enhance the information
@@ -617,31 +617,34 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
     return authMethods.length > 0 ? authMethods : ['webid', 'client-credentials'];
   }
 
-  private parseSupportedModes(capabilityStrings?: string[]): ('redirect' | 'proxy')[] | undefined {
+  private parseSupportedModes(capabilityStrings?: string[]): ('direct' | 'proxy')[] | undefined {
     if (!capabilityStrings || capabilityStrings.length === 0) {
       return undefined;
     }
-    const modes = new Set<'redirect' | 'proxy'>();
+    const modes = new Set<'direct' | 'proxy'>();
     for (const entry of capabilityStrings) {
       if (typeof entry !== 'string' || !entry.startsWith('mode:')) {
         continue;
       }
       const mode = entry.slice(5).trim().toLowerCase();
-      if (mode === 'redirect' || mode === 'proxy') {
-        modes.add(mode);
+      if (mode === 'redirect' || mode === 'direct') {
+        modes.add('direct');
+      }
+      if (mode === 'proxy') {
+        modes.add('proxy');
       }
     }
     return modes.size > 0 ? [ ...modes ] : undefined;
   }
 
-  private getSupportedModeFlags(metadata: EdgeNodeMetadata): { supportsRedirect: boolean; supportsProxy: boolean } {
+  private getSupportedModeFlags(metadata: EdgeNodeMetadata): { supportsDirect: boolean; supportsProxy: boolean } {
     const capabilityStrings = Array.isArray(metadata.capabilities) ?
       (metadata.capabilities as string[]).filter((entry) => typeof entry === 'string') as string[] :
       undefined;
-    const parsed = this.parseSupportedModes(capabilityStrings) ?? [ 'redirect', 'proxy' ];
+    const parsed = this.parseSupportedModes(capabilityStrings) ?? [ 'direct', 'proxy' ];
     const set = new Set(parsed);
     return {
-      supportsRedirect: set.has('redirect'),
+      supportsDirect: set.has('direct'),
       supportsProxy: set.has('proxy'),
     };
   }
@@ -671,17 +674,17 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
     metadata.subdomain = desiredMode.subdomain ?? metadata.subdomain;
   }
 
-  private determineAccessMode(metadata: EdgeNodeMetadata): { accessMode: 'redirect' | 'proxy'; publicIp?: string; publicPort?: number; subdomain?: string; connectivityStatus: 'reachable' | 'unreachable' | 'unknown'; } | undefined {
-    const { supportsRedirect, supportsProxy } = this.getSupportedModeFlags(metadata);
+  private determineAccessMode(metadata: EdgeNodeMetadata): { accessMode: 'direct' | 'proxy'; publicIp?: string; publicPort?: number; subdomain?: string; connectivityStatus: 'reachable' | 'unreachable' | 'unknown'; } | undefined {
+    const { supportsDirect, supportsProxy } = this.getSupportedModeFlags(metadata);
     const reachability = this.asRecord(metadata.reachability);
     const status = typeof reachability.status === 'string' ? reachability.status.trim().toLowerCase() : undefined;
     const tunnel = this.asRecord(metadata.tunnel);
 
-    // Prefer redirect if it is healthy and supported
-    const redirectHealthy = status === 'redirect' || status === 'direct' || status === 'reachable';
-    if (redirectHealthy && supportsRedirect) {
+    // Prefer direct if it is healthy and supported
+    const directHealthy = status === 'direct' || status === 'reachable' || status === 'redirect';
+    if (directHealthy && supportsDirect) {
       return {
-        accessMode: 'redirect',
+        accessMode: 'direct',
         publicIp: typeof metadata.publicIp === 'string' ? metadata.publicIp : undefined,
         publicPort: typeof metadata.publicPort === 'number' ? metadata.publicPort : undefined,
         subdomain: typeof metadata.subdomain === 'string' ? metadata.subdomain : undefined,
@@ -701,7 +704,7 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
     }
 
     // Proxy supported but inactive
-    if (supportsProxy && !supportsRedirect) {
+    if (supportsProxy && !supportsDirect) {
       return {
         accessMode: 'proxy',
         connectivityStatus: 'unreachable',
@@ -709,10 +712,10 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
       };
     }
 
-    // Redirect supported but currently unreachable
-    if (supportsRedirect && status === 'unreachable') {
+    // Direct supported but currently unreachable
+    if (supportsDirect && status === 'unreachable') {
       return {
-        accessMode: 'redirect',
+        accessMode: 'direct',
         publicIp: typeof metadata.publicIp === 'string' ? metadata.publicIp : undefined,
         publicPort: typeof metadata.publicPort === 'number' ? metadata.publicPort : undefined,
         subdomain: typeof metadata.subdomain === 'string' ? metadata.subdomain : undefined,
@@ -723,13 +726,13 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
       return undefined;
   }
 
-  private normalizeAccessMode(mode: string | undefined): 'redirect' | 'proxy' | undefined {
+  private normalizeAccessMode(mode: string | undefined): 'direct' | 'proxy' | undefined {
     if (!mode) {
       return undefined;
     }
     const normalized = mode.trim().toLowerCase();
-    if (normalized === 'redirect') {
-      return 'redirect';
+    if (normalized === 'redirect' || normalized === 'direct') {
+      return 'direct';
     }
     if (normalized === 'proxy') {
       return 'proxy';

@@ -9,20 +9,20 @@ import {
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
 
-interface EdgeNodeRedirectHttpHandlerOptions {
+interface EdgeNodeDirectDebugHttpHandlerOptions {
   identityDbUrl: string;
   edgeNodesEnabled?: string | boolean;
   skipPrefixes?: string[];
   nodeRepository?: EdgeNodeRepository;
 }
 
-export class EdgeNodeRedirectHttpHandler extends HttpHandler {
+export class EdgeNodeDirectDebugHttpHandler extends HttpHandler {
   protected readonly logger = getLoggerFor(this);
   private readonly nodeRepo: EdgeNodeRepository;
   private readonly enabled: boolean;
   private readonly skipPrefixes: string[];
 
-  public constructor(options: EdgeNodeRedirectHttpHandlerOptions) {
+  public constructor(options: EdgeNodeDirectDebugHttpHandlerOptions) {
     super();
     const db = getIdentityDatabase(options.identityDbUrl);
     this.nodeRepo = options.nodeRepository ?? new EdgeNodeRepository(db as any);
@@ -72,7 +72,7 @@ export class EdgeNodeRedirectHttpHandler extends HttpHandler {
       return undefined;
     }
     
-    // Only handle redirect mode nodes - proxy mode traffic should go through L4 SNI proxy
+    // Only handle direct mode nodes - proxy mode traffic should go through L4 SNI proxy
     if (record.accessMode === 'proxy') {
       this.logger.warn(`Request reached cluster for proxy-mode node ${record.nodeId}, should be handled by L4 SNI proxy`);
       return undefined;

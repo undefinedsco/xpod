@@ -56,6 +56,7 @@ interface DbSharedState {
   refCount: number;
   pendingBatches: PendingBatchItem[];
   batchScheduled: boolean;
+  txActive?: boolean;
 }
 
 const dbSharedStates = new Map<string, DbSharedState>();
@@ -148,19 +149,44 @@ async function flushSharedBatches(url: string): Promise<void> {
   }
 
   try {
-    await state.knex.transaction(async (trx) => {
+    const applyOps = async (runner: Knex | Knex.Transaction): Promise<void> => {
       for (const [tableName, ops] of opsByTable) {
-        const puts = ops.filter((o) => o.type === 'put').map((o) => ({ key: o.key, value: o.value }));
-        const dels = ops.filter((o) => o.type === 'del').map((o) => o.key);
+        const finalState = new Map<string, { key: any; value?: any; type: 'put' | 'del' }>();
+        const allKeys = new Set<any>();
 
-        if (puts.length > 0) {
-          await trx.insert(puts).into(tableName);
+        for (const op of ops) {
+          const mapKey = Buffer.isBuffer(op.key) ? op.key.toString('hex') : String(op.key);
+          finalState.set(mapKey, op);
+          allKeys.add(op.key);
         }
-        if (dels.length > 0) {
-          await trx.delete().from(tableName).whereIn('key', dels);
+
+        const keysToDelete = Array.from(allKeys);
+        if (keysToDelete.length > 0) {
+          await runner.delete().from(tableName).whereIn('key', keysToDelete);
+        }
+
+        const putsToInsert = Array.from(finalState.values())
+          .filter((op) => op.type === 'put')
+          .map((op) => ({ key: op.key, value: op.value }));
+
+        if (putsToInsert.length > 0) {
+          await runner.insert(putsToInsert).into(tableName).onConflict('key').merge();
         }
       }
-    });
+    };
+
+    if (state.isSqlite || state.txActive) {
+      // SQLite rejects nested transactions; if a higher layer already owns a transaction (txActive),
+      // also skip opening a nested one and execute sequentially on the shared connection.
+      await applyOps(state.knex);
+    } else {
+      state.txActive = true;
+      try {
+        await state.knex.transaction(async (trx) => applyOps(trx));
+      } finally {
+        state.txActive = false;
+      }
+    }
     for (const batch of batches) {
       batch.resolve();
     }
@@ -208,11 +234,11 @@ export class SQLUp<T extends TFormat, K = string, V = string> extends AbstractLe
           await state.knex.schema.createTable(this.tableName, (table) => {
             table.increments('id').primary();
             if (this.format === 'utf8') {
-              table.text('key').index();
+              table.text('key').unique();
               table.text('value');
             } else {
-              table.binary('key').index();
-              table.binary('value');
+              table.specificType('key', 'BLOB').unique();
+              table.specificType('value', 'BLOB');
             }
           });
         } catch (error: any) {
@@ -257,6 +283,7 @@ export class SQLUp<T extends TFormat, K = string, V = string> extends AbstractLe
 
   async _put(key: T, value: T, options: AbstractPutOptions<K, V>, callback: NodeCallback<void>) {
     try {
+      await this.db.delete().from(this.tableName).where('key', key);
       await this.db.insert({ key, value }).into(this.tableName);
       callback(null);
     } catch (err: any) {

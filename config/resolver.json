@@ -10,11 +10,38 @@
       "@type": "CombinedShorthandResolver",
       "resolvers": [
         {
+          "comment": "=== CLI Parameters (KeyExtractor, from Yargs args dict) ===",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edition",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "edition",
+            "defaultValue": "server"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edgeNodesEnabled",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "edgeNodesEnabled",
+            "defaultValue": "false"
+          }
+        },
+
+        {
+          "comment": "=== Data Layer (KeyExtractor, hidden CLI params with CSS_ prefix) ===",
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:identityDbUrl",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
             "key": "identityDbUrl",
-            "defaultValue": "sqlite:./identity.sqlite"
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:usageDbUrl",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "usageDbUrl",
+            "defaultValue": ""
           }
         },
         {
@@ -102,167 +129,132 @@
             "key": "emailConfigAuthPass"
           }
         },
+
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodEdition",
+          "comment": "=== Xpod Business Features (KeyExtractor, CSS_ prefix via Yargs) ===",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:signalEndpoint",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodEdition",
-            "defaultValue": "server"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodSignalEndpoint",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodSignalEndpoint",
+            "key": "signalEndpoint",
             "defaultValue": ""
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodEdgeNodesEnabled",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "npmd:@undefineds/xpod/^0.0.0/dist/util/variables/MultiKeyExtractor.jsonld#MultiKeyExtractor",
-            "npmd:@undefineds/xpod/^0.0.0/dist/util/variables/MultiKeyExtractor.jsonld#MultiKeyExtractor_options_keys": {
-              "@list": [
-                "xpodEdgeNodesEnabled",
-                "XPOD_EDGE_NODES_ENABLED"
-              ]
-            },
-            "npmd:@undefineds/xpod/^0.0.0/dist/util/variables/MultiKeyExtractor.jsonld#MultiKeyExtractor_options_defaultValue": "false"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodClusterIngressDomain",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:clusterIngressDomain",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodClusterIngressDomain",
+            "key": "clusterIngressDomain",
             "defaultValue": "localhost"
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsTokenId",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:clusterIngressIp",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodTencentDnsTokenId",
+            "key": "clusterIngressIp",
             "defaultValue": ""
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsTokenId",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:dnsRootDomain",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "XPOD_TENCENT_DNS_TOKEN_ID",
-            "defaultValue": ""
+            "key": "dnsRootDomain"
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsToken",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:dnsRecordTtl",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodTencentDnsToken",
-            "defaultValue": ""
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsToken",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "XPOD_TENCENT_DNS_TOKEN",
-            "defaultValue": ""
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsBaseUrl",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodTencentDnsBaseUrl",
-            "defaultValue": "https://dnsapi.cn"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTencentDnsDefaultLineId",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodTencentDnsDefaultLineId",
-            "defaultValue": "0"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodDnsRootDomain",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodDnsRootDomain"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodDnsRecordTtl",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "xpodDnsRecordTtl",
+            "key": "dnsRecordTtl",
             "defaultValue": "60"
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodClusterIngressIp",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:tencentDnsTokenId",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodClusterIngressIp",
+            "key": "tencentDnsTokenId",
             "defaultValue": ""
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodTunnelEntrypoints",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:tencentDnsToken",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodTunnelEntrypoints",
+            "key": "tencentDnsToken",
             "defaultValue": ""
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodEdgeHealthProbesEnabled",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:tencentDnsBaseUrl",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodEdgeHealthProbesEnabled",
+            "key": "tencentDnsBaseUrl",
+            "defaultValue": "https://dnsapi.cn"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:tencentDnsDefaultLineId",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "tencentDnsDefaultLineId",
+            "defaultValue": "0"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:tunnelEntrypoints",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "tunnelEntrypoints",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edgeHealthProbesEnabled",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "edgeHealthProbesEnabled",
             "defaultValue": "false"
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodEdgeHealthProbeTimeout",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edgeHealthProbeTimeout",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodEdgeHealthProbeTimeout",
+            "key": "edgeHealthProbeTimeout",
             "defaultValue": "3000"
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpServerHost",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:frpServerHost",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodFrpServerHost",
+            "key": "frpServerHost",
             "defaultValue": ""
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpServerPort",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:frpServerPort",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodFrpServerPort",
+            "key": "frpServerPort",
             "defaultValue": "7000"
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpToken",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:frpToken",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodFrpToken",
+            "key": "frpToken",
             "defaultValue": ""
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:xpodFrpProtocol",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:frpProtocol",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "xpodFrpProtocol",
+            "key": "frpProtocol",
             "defaultValue": "tcp"
           }
         }

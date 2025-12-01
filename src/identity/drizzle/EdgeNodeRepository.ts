@@ -107,7 +107,7 @@ export class EdgeNodeRepository {
   }
 
   public async updateNodeMode(nodeId: string, options: {
-    accessMode: 'redirect' | 'proxy';
+    accessMode: 'direct' | 'proxy';
     publicIp?: string;
     publicPort?: number;
     subdomain?: string;

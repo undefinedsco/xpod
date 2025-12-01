@@ -9,7 +9,7 @@ const baseUrl = process.env.XPOD_LOCAL_BASE_URL ?? 'http://localhost:3000/';
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
 const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
-const webId = process.env.WEBID;
+const webId = process.env.SOLID_WEBID;
 const baseContainer = deriveBaseContainer();
 
 function joinUrl(base: string, path: string): string {
@@ -42,6 +42,19 @@ suite('Local CSS CRUD integration', () => {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Unable to reach CSS instance at ${baseUrl}. Start it with "yarn local" first. Details: ${message}`);
     }
+
+    // --- DEBUG LOGS ---
+    console.log(`[DEBUG] ENV LOADING CHECK:`);
+    console.log(`[DEBUG] SOLID_ENV_FILE: ${process.env.SOLID_ENV_FILE}`);
+    console.log(`[DEBUG] CWD: ${process.cwd()}`);
+    console.log(`[DEBUG] WEBID: ${process.env.WEBID}`);
+    console.log(`[DEBUG] SOLID_WEBID: ${process.env.SOLID_WEBID}`);
+    console.log(`[DEBUG] SOLID_EMAIL: ${process.env.SOLID_EMAIL}`);
+    console.log(`[DEBUG] SOLID_CLIENT_ID: ${process.env.SOLID_CLIENT_ID ? 'EXISTS' : 'UNDEFINED'}`);
+    // --- END DEBUG LOGS ---
+
+    console.log(`LocalCrud Test: Using WebID: ${webId}`);
+    console.log(`LocalCrud Test: Using Base Container: ${baseContainer}`);
 
     session = new Session();
     await session.login({

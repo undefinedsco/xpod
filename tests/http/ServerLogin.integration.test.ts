@@ -7,8 +7,8 @@ loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.server' });
 const baseUrl = process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:3000/';
 const testEmail = `test-${Date.now()}@example.com`;
 const testPassword = 'TestServerLogin123!';
-const seedEmail = 'test-integration@example.com';
-const seedPassword = 'TestIntegration123!';
+const seedEmail = process.env.SOLID_EMAIL ?? 'test-integration@example.com';
+const seedPassword = process.env.SOLID_PASSWORD ?? 'TestIntegration123!';
 
 function joinUrl(base: string, path: string): string {
   return new URL(path, base).toString();

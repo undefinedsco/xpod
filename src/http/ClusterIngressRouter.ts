@@ -150,7 +150,7 @@ export class ClusterIngressRouter extends HttpHandler {
       }
 
       const mode = this.normalizeMode(nodeInfo.accessMode);
-      if (mode === 'redirect' && nodeInfo.publicIp) {
+      if (mode === 'direct' && nodeInfo.publicIp) {
         await this.handleDirectModeRedirect(response, nodeInfo, url);
       } else if (mode === 'proxy') {
         await this.handleProxyModeRequest(request, response, nodeId, nodeInfo, nodeMetadata?.metadata || null, url);
@@ -166,8 +166,8 @@ export class ClusterIngressRouter extends HttpHandler {
   }
 
   /**
-   * Handle redirect mode - redirect to node's public IP
-  */
+   * Handle direct mode - redirect to node's public IP
+   */
   private async handleDirectModeRedirect(
     response: HttpResponse,
     nodeInfo: NonNullable<Awaited<ReturnType<EdgeNodeRepository['getNodeConnectivityInfo']>>>,
@@ -176,12 +176,12 @@ export class ClusterIngressRouter extends HttpHandler {
     const port = nodeInfo.publicPort && nodeInfo.publicPort !== 443 ? `:${nodeInfo.publicPort}` : '';
     const nodeDirectUrl = `https://${nodeInfo.publicIp}${port}${url.pathname}${url.search}${url.hash}`;
     
-    this.logger.debug(`Redirecting to edge node (redirect mode): ${nodeDirectUrl}`);
+    this.logger.debug(`Redirecting to edge node (direct mode): ${nodeDirectUrl}`);
     
     response.statusCode = 307;
     response.setHeader('Location', nodeDirectUrl);
     response.setHeader('Cache-Control', 'no-cache');
-    response.setHeader('X-Xpod-Redirect-Node', nodeInfo.nodeId);
+    response.setHeader('X-Xpod-Direct-Node', nodeInfo.nodeId);
     response.setHeader('X-Xpod-Target-IP', nodeInfo.publicIp!);
     response.end();
   }
@@ -421,13 +421,14 @@ export class ClusterIngressRouter extends HttpHandler {
     return false;
   }
 
-  private normalizeMode(mode: string | undefined): 'redirect' | 'proxy' | undefined {
+  private normalizeMode(mode: string | undefined): 'direct' | 'proxy' | undefined {
     if (!mode) {
       return undefined;
     }
     const normalized = mode.trim().toLowerCase();
-    if (normalized === 'redirect') {
-      return 'redirect';
+    // Backward compatibility for 'redirect' -> 'direct'
+    if (normalized === 'redirect' || normalized === 'direct') {
+      return 'direct';
     }
     if (normalized === 'proxy') {
       return 'proxy';
