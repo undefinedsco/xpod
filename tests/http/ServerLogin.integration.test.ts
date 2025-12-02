@@ -142,8 +142,8 @@ suite('Server Mode Login Integration', () => {
 
     it('authenticates with correct credentials via JSON API', async () => {
       const loginData = {
-        email: seedEmail,
-        password: seedPassword,
+        email: testEmail,
+        password: testPassword,
       };
 
       const response = await fetch(joinUrl(baseUrl, '.account/login/password/'), {

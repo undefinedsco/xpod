@@ -70,10 +70,19 @@ suite('N3 Patch delete literal equivalence', () => {
     const body = await res.text();
     const quads = new Parser().parse(body);
     const storage = quads.find((q) => q.subject.value === webId && q.predicate.value === 'http://www.w3.org/ns/pim/space#storage');
-    if (!storage) {
-      throw new Error('WebID profile has no pim:storage. Please provide XPOD_PATCH_POD_ID.');
+    if (storage) {
+      return storage.object.value.endsWith('/') ? storage.object.value : `${storage.object.value}/`;
     }
-    return storage.object.value.endsWith('/') ? storage.object.value : `${storage.object.value}/`;
+    
+    // Fallback: derive from WebID if pim:storage is missing
+    const webIdUrl = new URL(webId!);
+    const pathParts = webIdUrl.pathname.split('/');
+    // Assuming standard structure: /<pod>/profile/card#me -> /<pod>/
+    if (pathParts.length >= 2) {
+       return `${webIdUrl.origin}/${pathParts[1]}/`;
+    }
+    
+    throw new Error('WebID profile has no pim:storage and cannot derive pod base.');
   }
 
   beforeAll(async () => {
@@ -121,7 +130,7 @@ suite('N3 Patch delete literal equivalence', () => {
     const n3Patch = `@prefix solid: <http://www.w3.org/ns/solid/terms#>.
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
 
-_:patch a solid:InsertDeletePatch;
+<> a solid:InsertDeletePatch;
   solid:delete { <> <https://schema.org/age> "20"^^xsd:integer . };
   solid:insert { <> <https://schema.org/age> 99 . };
   solid:where { }.

@@ -234,10 +234,10 @@ export class SQLUp<T extends TFormat, K = string, V = string> extends AbstractLe
           await state.knex.schema.createTable(this.tableName, (table) => {
             table.increments('id').primary();
             if (this.format === 'utf8') {
-              table.text('key').unique();
+              table.text('key').unique().index();
               table.text('value');
             } else {
-              table.specificType('key', 'BLOB').unique();
+              table.specificType('key', 'BLOB').unique().index();
               table.specificType('value', 'BLOB');
             }
           });

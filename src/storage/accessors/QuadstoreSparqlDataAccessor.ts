@@ -397,25 +397,26 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
       const result = await this.engine.queryQuads(query);
       const end = Date.now();
       logger.verbose(`SPARQL CONSTRUCT query success. cost time: ${end - start}ms`);
-      const readable = new Readable({
-        objectMode: true,
-        read() {
-          result.on('start', () => {
-            logger.debug(`SPARQL CONSTRUCT query start. cost time: ${Date.now() - start}ms`);
-          });
-          result.on(
-            'data',
-            (chunk) => {
-              this.push(chunk);
-              logger.debug(`SPO: ${chunk.subject.value} ${chunk.predicate.value} ${chunk.object.value}`);
-            }
-          );
-          result.on('end', () => {
-            logger.debug(`SPARQL CONSTRUCT query end. cost time: ${Date.now() - start}ms`);
-            this.push(null);
-          });
-        },
+      const readable = new Readable({ objectMode: true, read() {} });
+
+      result.on('start', () => {
+        logger.debug(`SPARQL CONSTRUCT query start. cost time: ${Date.now() - start}ms`);
       });
+      result.on(
+        'data',
+        (chunk) => {
+          readable.push(chunk);
+        }
+      );
+      result.on('end', () => {
+        logger.debug(`SPARQL CONSTRUCT query end. cost time: ${Date.now() - start}ms`);
+        readable.push(null);
+      });
+      result.on('error', (error) => {
+        logger.error(`SPARQL CONSTRUCT stream error: ${error}`);
+        readable.emit('error', error);
+      });
+
       return guardStream(readable);
     } catch (error: unknown) {
       logger.error(`SPARQL ${query} endpoint ${this.publicEndpoint} error: ${createErrorMessage(error)}`);

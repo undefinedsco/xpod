@@ -78,6 +78,7 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
   }
 
   private async toSparqlUpdate(patch: Patch, identifier: ResourceIdentifier): Promise<string | undefined> {
+    this.logger.info(`toSparqlUpdate received patch with contentType: ${patch.metadata.contentType}`);
     if (this.isSparqlUpdatePatch(patch)) {
       const updateText = await readableToString(patch.data);
       return this.normalizeGraphs(updateText, identifier);
@@ -194,7 +195,7 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
         if (insertTriples.length > 0) {
           parts.push(`INSERT DATA { GRAPH <${graph.value}> { ${toTripleStr(insertTriples)} } }`);
         }
-        const normalizedSimple = parts.join('\n');
+        const normalizedSimple = parts.join(';\n');
         this.logger.info(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalizedSimple}`);
         return normalizedSimple;
       }

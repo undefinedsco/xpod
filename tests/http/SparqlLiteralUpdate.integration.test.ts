@@ -10,7 +10,7 @@ const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
 const oidcIssuer = process.env.SOLID_OIDC_ISSUER;
 const tokenType = process.env.SOLID_TOKEN_TYPE === 'Bearer' ? 'Bearer' : 'DPoP';
-const shouldRun = process.env.XPOD_RUN_PATCH_TESTS === 'true' && clientId && clientSecret && oidcIssuer && webId;
+const shouldRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret && oidcIssuer && webId;
 const suite = shouldRun ? describe : describe.skip;
 
 const SUCCESS = new Set([ 200, 201, 202, 204, 205, 207 ]);
@@ -63,10 +63,19 @@ suite('SPARQL UPDATE literal delete/insert', () => {
     const body = await res.text();
     const quads = new Parser().parse(body);
     const storage = quads.find((q) => q.subject.value === webId && q.predicate.value === 'http://www.w3.org/ns/pim/space#storage');
-    if (!storage) {
-      throw new Error('WebID profile has no pim:storage. Please provide XPOD_PATCH_POD_ID.');
+    if (storage) {
+      return storage.object.value.endsWith('/') ? storage.object.value : `${storage.object.value}/`;
     }
-    return storage.object.value.endsWith('/') ? storage.object.value : `${storage.object.value}/`;
+
+    // Fallback: derive from WebID if pim:storage is missing
+    const webIdUrl = new URL(webId!);
+    const pathParts = webIdUrl.pathname.split('/');
+    // Assuming standard structure: /<pod>/profile/card#me -> /<pod>/
+    if (pathParts.length >= 2) {
+       return `${webIdUrl.origin}/${pathParts[1]}/`;
+    }
+
+    throw new Error('WebID profile has no pim:storage. Please provide XPOD_PATCH_POD_ID.');
   }
 
   beforeAll(async () => {
