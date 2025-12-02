@@ -117,10 +117,11 @@ suite('N3 PATCH String Literal Duplication Bug', () => {
         const webIdUrl = new URL(webId!);
         const pathParts = webIdUrl.pathname.split('/');
         // Assuming standard structure: /<pod>/profile/card#me -> /<pod>/
+        // pathParts[0] is empty, pathParts[1] is pod name
         if (pathParts.length >= 2) {
            podBase = `${webIdUrl.origin}/${pathParts[1]}/`;
         } else {
-           throw new Error('WebID profile has no pim:storage and cannot derive pod base.');
+           throw new Error('WebID profile has no pim:storage and cannot derive pod base from URL structure.');
         }
       }
     }

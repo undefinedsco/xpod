@@ -514,4 +514,11 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
+
+  /**
+   * Closes the underlying store.
+   */
+  public async close(): Promise<void> {
+    await this.store.close();
+  }
 }

@@ -14,11 +14,21 @@ import {
   AS,
   SOLID_AS,
   BadRequestHttpError,
+  type DataAccessor,
+  type IdentifierStrategy,
+  type AuxiliaryStrategy,
 } from '@solid/community-server';
 import type { SparqlUpdatePatch } from '@solid/community-server/dist/http/representation/SparqlUpdatePatch';
 import { isN3Patch } from '@solid/community-server/dist/http/representation/N3Patch';
 import { readableToString } from '@solid/community-server/dist/util/StreamUtil';
 import { getLoggerFor } from '@solid/community-server/dist/logging/LogUtil';
+
+export interface SparqlUpdateResourceStoreOptions {
+  accessor: DataAccessor;
+  identifierStrategy: IdentifierStrategy;
+  auxiliaryStrategy: AuxiliaryStrategy;
+  metadataStrategy: AuxiliaryStrategy;
+}
 
 /**
  * ResourceStore that short-circuits PATCH into direct SPARQL UPDATE
@@ -28,6 +38,10 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
   private readonly generator = new SparqlGenerator();
   private readonly parser = new SparqlParser();
   protected override readonly logger = getLoggerFor(this);
+
+  public constructor(options: SparqlUpdateResourceStoreOptions) {
+    super(options.accessor, options.identifierStrategy, options.auxiliaryStrategy, options.metadataStrategy);
+  }
 
   // @ts-expect-error Upstream signature returns never; we return ChangeMap for successful PATCH.
   public override async modifyResource(identifier: ResourceIdentifier, patch: Patch, conditions?: Conditions): Promise<ChangeMap> {
@@ -173,9 +187,14 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
       if (simpleOps && deleteTriples.length + insertTriples.length > 0) {
         const toTripleStr = (triples: any[]): string =>
           triples.map((t): string => `<${t.subject.value}> <${t.predicate.value}> <${t.object.value}> .`).join(' ');
-        const deleteStr = deleteTriples.length > 0 ? `DELETE { GRAPH <${graph.value}> { ${toTripleStr(deleteTriples)} } }` : '';
-        const insertStr = insertTriples.length > 0 ? `INSERT { GRAPH <${graph.value}> { ${toTripleStr(insertTriples)} } }` : '';
-        const normalizedSimple = `${deleteStr} ${insertStr} WHERE {}`.trim();
+        let parts: string[] = [];
+        if (deleteTriples.length > 0) {
+          parts.push(`DELETE DATA { GRAPH <${graph.value}> { ${toTripleStr(deleteTriples)} } }`);
+        }
+        if (insertTriples.length > 0) {
+          parts.push(`INSERT DATA { GRAPH <${graph.value}> { ${toTripleStr(insertTriples)} } }`);
+        }
+        const normalizedSimple = parts.join('\n');
         this.logger.info(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalizedSimple}`);
         return normalizedSimple;
       }
@@ -248,6 +267,87 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
 
     if (deleteTriples.length === 0 && insertTriples.length === 0) {
       return undefined;
+    }
+
+    // Optimization: Use DELETE DATA / INSERT DATA for unconditional updates
+    if (whereTriples.length === 0) {
+      const operations: string[] = [];
+      if (deleteTriples.length > 0) {
+        // sparqljs structure for DELETE DATA is effectively a 'deletewhere' without variables? 
+        // Or we can manually construct the query string to ensure it is DELETE DATA.
+        // But we want to use the generator if possible.
+        // sparqljs 'deleteData' type?
+        // Let's use the object structure that corresponds to DELETE DATA.
+        // It seems sparqljs uses `updateType: 'delete'` with `data: true`? No.
+        // Let's look at how normalizeGraphs did it manually.
+        // We can create a manual string or try to force sparqljs.
+        // Given we are inside fromN3Patch which returns string, manual construction for this optimized path is safest and simplest.
+        
+        // We need to convert quads back to string?
+        // That's tedious because we just converted them TO terms.
+        
+        // Better: Use sparqljs UpdateOperation structure but split them.
+        
+        // If we return a string, we can stringify multiple updates.
+        const updates: UpdateOperation[] = [];
+        
+        // DELETE DATA
+        if (deleteTriples.length > 0) {
+           // To force DELETE DATA in sparqljs, we use type 'delete' and empty 'where'? 
+           // Actually, 'delete' updateType usually implies DELETE WHERE.
+           // DELETE DATA is strictly `DELETE DATA { ... }`.
+           // sparqljs supports `updateType: 'delete'` with `insert: []`?
+           
+           // Looking at sparqljs types:
+           // export type UpdateOperation = InsertDeleteOperation | ...
+           // InsertDeleteOperation: { updateType: 'insertdelete' | 'delete' | 'insert', delete?: ..., insert?: ..., where?: ... }
+           
+           // If I use `updateType: 'delete'` and NO `where`, it generates `DELETE { ... } WHERE {}`?
+           // Yes, that's what we want to avoid.
+           
+           // There isn't a direct 'deleteData' UpdateOperation in sparqljs types exposed usually.
+           // But `normalizeGraphs` used string manipulation.
+           
+           // Let's construct the string manually using the generator for the quads part?
+           // `generator.stringify` takes a full query/update object.
+           
+           // Let's stick to the previous strategy: Use `updateType: 'insertdelete'` but with empty WHERE?
+           // No, that's what caused the bug (presumably).
+           
+           // Wait, if `normalizeGraphs` manual string construction worked (or was the plan), we should do that here.
+           // But here we have `Quad` objects (terms).
+           
+           // I will use `updateType: 'insertdelete'` but split them into two operations: one DELETE, one INSERT.
+           // Maybe executing them separately helps?
+           // op1: DELETE { ... } WHERE {}
+           // op2: INSERT { ... } WHERE {}
+           
+           // If the bug is that `DELETE ... INSERT ...` in one op fails to delete before inserting?
+           
+           updates.push({
+             updateType: 'insertdelete',
+             delete: deleteTriples.length > 0 ? [ { type: 'graph', name: graphName, triples: deleteTriples } as any ] : [],
+             insert: [],
+             where: [],
+           });
+        }
+        
+        if (insertTriples.length > 0) {
+           updates.push({
+             updateType: 'insertdelete',
+             delete: [],
+             insert: insertTriples.length > 0 ? [ { type: 'graph', name: graphName, triples: insertTriples } as any ] : [],
+             where: [],
+           });
+        }
+        
+        const update: SparqlUpdate = {
+          type: 'update',
+          prefixes: {},
+          updates,
+        };
+        return this.generator.stringify(update);
+      }
     }
 
     const updateOp: UpdateOperation = {

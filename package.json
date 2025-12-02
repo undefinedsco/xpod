@@ -26,6 +26,7 @@
     "build:components": "componentsjs-generator -s src -c dist/components -r undefineds",
     "prepare.": "yarn run build",
     "clean": "rm -rf data/*",
+    "vanilla": "npx community-solid-server -c config/main.vanilla.json -f ./data_vanilla -p 3000",
     "dev": "dotenv -e .env.local -- community-solid-server -c config/main.dev.json config/extensions.dev.json -m .",
     "local": "dotenv -e .env.local -- community-solid-server -c config/main.local.json config/extensions.local.json -m .",
     "server": "dotenv -e .env.server -- community-solid-server -c config/main.server.json config/extensions.server.json -m .",
@@ -62,11 +63,11 @@
     "tailwindcss": "^3.4.3",
     "typescript": "5.1.6",
     "vite": "^5.1.6",
-    "vitest": "^1.4.0"
+    "vitest": "^1.4.0",
+    "@vitest/coverage-v8": "^1.4.0"
   },
   "dependencies": {
     "@inrupt/solid-client-authn-node": "^3.1.0",
-    "@solid/community-server": "^7.1.3",
     "abstract-level": "^1.0.4",
     "acme-client": "^5.1.3",
     "better-sqlite3": "^12.4.6",

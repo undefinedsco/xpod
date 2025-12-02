@@ -111,7 +111,13 @@ export class MixDataAccessor extends QuadstoreSparqlDataAccessor {
   public override async deleteResource(identifier: ResourceIdentifier): Promise<void> {
     const metadata = await this.getMetadata(identifier);
     if (this.isUnstructured(identifier, metadata)) {
-      await this.unstructuredDataAccessor.deleteResource(identifier);
+      try {
+        await this.unstructuredDataAccessor.deleteResource(identifier);
+      } catch (error: any) {
+        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') {
+          throw error;
+        }
+      }
     }
     return super.deleteResource(identifier);
   }
