@@ -3,16 +3,24 @@ import type { Bindings } from '@comunica/types';
 import type { AsyncIterator } from 'asynciterator';
 import { QueryEngine } from '@comunica/query-sparql';
 import { Quadstore } from 'quadstore';
+import { Engine as QuadstoreEngine } from 'quadstore-comunica';
 import { DataFactory } from 'n3';
+import { getLoggerFor } from '@solid/community-server';
 import { getBackend } from '../../libs/backends';
 
 interface QueryContext {
   sources: [{ type: 'rdfjsSource'; value: { match: (subject?: Quad_Subject | null, predicate?: Quad_Predicate | null, object?: Quad_Object | null, graph?: Quad_Graph | null) => AsyncIterator<Quad> }}];
+  // Treat all named graphs as part of the default graph for queries without GRAPH pattern
+  unionDefaultGraph: boolean;
+  // Base IRI for resolving relative IRIs in queries
+  baseIRI: string;
 }
 
 export class SubgraphQueryEngine {
+  private readonly logger = getLoggerFor(this);
   private readonly store: Quadstore;
   private readonly engine: QueryEngine;
+  private readonly updateEngine: QuadstoreEngine;
   private readonly ready: Promise<void>;
 
   public constructor(endpoint: string) {
@@ -22,6 +30,7 @@ export class SubgraphQueryEngine {
       dataFactory: DataFactory,
     });
     this.engine = new QueryEngine();
+    this.updateEngine = new QuadstoreEngine(this.store);
     this.ready = this.store.open();
   }
 
@@ -42,7 +51,9 @@ export class SubgraphQueryEngine {
 
   public async queryVoid(query: string, basePath: string): Promise<void> {
     await this.ensureReady();
-    await this.engine.queryVoid(query, this.createContext(basePath) as unknown as any);
+    // Use quadstore-comunica engine for updates (supports direct quadstore access)
+    // Scope validation is done before calling this method in SubgraphSparqlHttpHandler
+    await this.updateEngine.queryVoid(query, { baseIRI: basePath });
   }
 
   public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
@@ -83,6 +94,10 @@ export class SubgraphQueryEngine {
 
   private createContext(basePath: string): QueryContext {
     return {
+      // Treat all named graphs as part of the default graph for queries without GRAPH pattern
+      unionDefaultGraph: true,
+      // Base IRI for resolving relative IRIs (e.g., <#charlie> → <basePath#charlie>)
+      baseIRI: basePath,
       sources: [
         {
           type: 'rdfjsSource',
@@ -94,7 +109,9 @@ export class SubgraphQueryEngine {
                 object ?? undefined,
                 graph ?? undefined,
               );
-              const filtered = (iterator as unknown as AsyncIterator<Quad>).filter((quad): boolean => this.isInScope(basePath, quad.graph));
+              const filtered = (iterator as unknown as AsyncIterator<Quad>).filter((quad): boolean =>
+                this.isInScope(basePath, quad.graph)
+              );
               return filtered;
             },
           },
@@ -108,12 +125,38 @@ export class SubgraphQueryEngine {
       return false;
     }
 
-    if (graph.value === basePath || graph.value === `${basePath}.metadata`) {
+    const graphValue = graph.value;
+
+    // Direct match with full URL
+    if (graphValue === basePath || graphValue === `${basePath}.metadata`) {
       return true;
     }
 
+    // Extract path from baseUrl for path-only graph matching
+    // basePath might be full URL like "http://localhost:3000/test/" or path like "/test/"
+    let pathOnly = basePath;
+    try {
+      const url = new URL(basePath);
+      pathOnly = url.pathname;
+    } catch {
+      // basePath is already a path, not a URL
+    }
+
+    // Match path-only graphs (stored without host)
+    if (graphValue === pathOnly || graphValue === `${pathOnly}.metadata`) {
+      return true;
+    }
+
+    // Container-scoped match
     if (basePath.endsWith('/')) {
-      return graph.value.startsWith(basePath);
+      // Check if graph starts with full URL
+      if (graphValue.startsWith(basePath)) {
+        return true;
+      }
+      // Check if graph starts with path only
+      if (pathOnly.endsWith('/') && graphValue.startsWith(pathOnly)) {
+        return true;
+      }
     }
 
     return false;

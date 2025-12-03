@@ -22,6 +22,12 @@ export interface PodUsageRecord extends AccountUsageRecord {
  * Repository for tracking pod and account usage metrics.
  * NOTE: This repository only supports PostgreSQL. SQLite is not supported.
  * For local/dev modes, usage tracking should be disabled.
+ *
+ * TODO: Make UsageRepository database-agnostic to support SQLite in local mode.
+ * Required changes:
+ * - Replace `sql\`now()\`` with cross-database compatible timestamp (e.g., new Date())
+ * - Use Drizzle's database-agnostic transaction API or raw SQL compatible with both
+ * - Test with both SQLite and PostgreSQL backends
  */
 export class UsageRepository {
   public constructor(private readonly db: IdentityDatabase) {}

@@ -10,7 +10,7 @@ const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
 const oidcIssuer = process.env.SOLID_OIDC_ISSUER;
 const tokenType = process.env.SOLID_TOKEN_TYPE === 'Bearer' ? 'Bearer' : 'DPoP';
-const shouldRun = process.env.XPOD_RUN_PATCH_TESTS === 'true' && clientId && clientSecret && oidcIssuer && webId;
+const shouldRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret && oidcIssuer && webId;
 const suite = shouldRun ? describe : describe.skip;
 
 const SUCCESS = new Set([ 200, 201, 202, 204, 205, 207 ]);
@@ -127,13 +127,14 @@ suite('N3 Patch delete literal equivalence', () => {
     console.log('Seeded N-Quads:', seededBody.trim());
 
     // patch delete using canonical form and insert new value
+    // Note: Do NOT include solid:where if no conditions are needed.
+    // An empty solid:where { } will cause CSS N3Patcher to fail with 409.
     const n3Patch = `@prefix solid: <http://www.w3.org/ns/solid/terms#>.
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
 
 <> a solid:InsertDeletePatch;
-  solid:delete { <> <https://schema.org/age> "20"^^xsd:integer . };
-  solid:insert { <> <https://schema.org/age> 99 . };
-  solid:where { }.
+  solid:deletes { <> <https://schema.org/age> "20"^^xsd:integer . };
+  solid:inserts { <> <https://schema.org/age> 99 . }.
 `;
 
     await assertSuccess(await doFetch(resourceUrl, {

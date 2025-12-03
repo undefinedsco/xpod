@@ -9,13 +9,13 @@
  * 3. cluster:local running (port 3101) with frpc connected
  *
  * Environment (reuse existing CSS variables):
- *   XPOD_RUN_FRP_E2E=true
+ *   XPOD_RUN_FRP_TESTS=true
  *   CSS_FRP_SERVER_HOST=your-frps-server
  *   CSS_FRP_SERVER_PORT=7000
  *   CSS_FRP_TOKEN=your-token
  *
  * Run:
- *   XPOD_RUN_FRP_E2E=true yarn test tests/integration/FrpTunnel.integration.test.ts --run
+ *   XPOD_RUN_FRP_TESTS=true yarn test tests/integration/FrpTunnel.integration.test.ts --run
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -33,7 +33,8 @@ const clusterServerUrl = 'http://localhost:3100';
 const edgeLocalUrl = 'http://localhost:3101';
 const edgeNodeSubdomain = 'node-local';
 
-const shouldRun = process.env.XPOD_RUN_FRP_E2E === 'true';
+// FRP tests require special infrastructure (cluster servers + FRP)
+const shouldRun = process.env.XPOD_RUN_FRP_TESTS === 'true' && frpServerHost && frpToken;
 const suite = shouldRun ? describe : describe.skip;
 
 suite('FRP Tunnel E2E', () => {

@@ -6,7 +6,6 @@ import {
   type ChangeMap,
   type ResourceIdentifier,
   type Patch,
-  type Representation,
   NotImplementedHttpError,
   type Conditions,
   NotFoundHttpError,
@@ -19,7 +18,6 @@ import {
   type AuxiliaryStrategy,
 } from '@solid/community-server';
 import type { SparqlUpdatePatch } from '@solid/community-server/dist/http/representation/SparqlUpdatePatch';
-import { isN3Patch } from '@solid/community-server/dist/http/representation/N3Patch';
 import { readableToString } from '@solid/community-server/dist/util/StreamUtil';
 import { getLoggerFor } from '@solid/community-server/dist/logging/LogUtil';
 
@@ -77,18 +75,21 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
     return changes;
   }
 
+  /**
+   * 只处理 SPARQL UPDATE (application/sparql-update)。
+   * N3 Patch 和其他类型返回 undefined，让 CSS PatchingStore 回退到 get-patch-set 逻辑。
+   */
   private async toSparqlUpdate(patch: Patch, identifier: ResourceIdentifier): Promise<string | undefined> {
     this.logger.info(`toSparqlUpdate received patch with contentType: ${patch.metadata.contentType}`);
-    if (this.isSparqlUpdatePatch(patch)) {
-      const updateText = await readableToString(patch.data);
-      return this.normalizeGraphs(updateText, identifier);
+
+    // 只处理 SPARQL UPDATE，其他类型（包括 N3 Patch）回退到 CSS 默认处理
+    if (!this.isSparqlUpdatePatch(patch)) {
+      this.logger.info(`Not a SPARQL UPDATE patch, falling back to CSS default handler`);
+      return undefined;
     }
 
-    if (isN3Patch(patch)) {
-      return this.fromN3Patch(patch, identifier);
-    }
-
-    return undefined;
+    const updateText = await readableToString(patch.data);
+    return this.normalizeGraphs(updateText, identifier);
   }
 
   /**
@@ -236,137 +237,6 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
 
   private isSparqlUpdatePatch(patch: Patch): patch is SparqlUpdatePatch {
     return typeof (patch as SparqlUpdatePatch).algebra === 'object';
-  }
-
-  /**
-   * Convert N3 InsertDeletePatch into SPARQL UPDATE against the resource graph.
-   */
-  private fromN3Patch(patch: any, identifier: ResourceIdentifier): string | undefined {
-    const graphName = DataFactory.namedNode(identifier.path);
-    const normalizeTerm = (term: any) => {
-      if (term?.termType === 'Variable') {
-        return DataFactory.variable(term.value);
-      }
-      if (term?.termType === 'Literal') {
-        if (term.datatype.value === 'http://www.w3.org/2001/XMLSchema#string') {
-          return DataFactory.literal(term.value);
-        }
-      }
-      return term;
-    };
-    const toTriples = (quads?: any[]): any[] =>
-      (quads ?? []).map((quad: any) => DataFactory.quad(
-        normalizeTerm(quad.subject),
-        normalizeTerm(quad.predicate),
-        normalizeTerm(quad.object),
-        graphName,
-      ));
-
-    const deleteTriples = toTriples(patch.deletes);
-    const insertTriples = toTriples(patch.inserts);
-    const whereTriples = toTriples(patch.conditions);
-
-    if (deleteTriples.length === 0 && insertTriples.length === 0) {
-      return undefined;
-    }
-
-    // Optimization: Use DELETE DATA / INSERT DATA for unconditional updates
-    if (whereTriples.length === 0) {
-      const operations: string[] = [];
-      if (deleteTriples.length > 0) {
-        // sparqljs structure for DELETE DATA is effectively a 'deletewhere' without variables? 
-        // Or we can manually construct the query string to ensure it is DELETE DATA.
-        // But we want to use the generator if possible.
-        // sparqljs 'deleteData' type?
-        // Let's use the object structure that corresponds to DELETE DATA.
-        // It seems sparqljs uses `updateType: 'delete'` with `data: true`? No.
-        // Let's look at how normalizeGraphs did it manually.
-        // We can create a manual string or try to force sparqljs.
-        // Given we are inside fromN3Patch which returns string, manual construction for this optimized path is safest and simplest.
-        
-        // We need to convert quads back to string?
-        // That's tedious because we just converted them TO terms.
-        
-        // Better: Use sparqljs UpdateOperation structure but split them.
-        
-        // If we return a string, we can stringify multiple updates.
-        const updates: UpdateOperation[] = [];
-        
-        // DELETE DATA
-        if (deleteTriples.length > 0) {
-           // To force DELETE DATA in sparqljs, we use type 'delete' and empty 'where'? 
-           // Actually, 'delete' updateType usually implies DELETE WHERE.
-           // DELETE DATA is strictly `DELETE DATA { ... }`.
-           // sparqljs supports `updateType: 'delete'` with `insert: []`?
-           
-           // Looking at sparqljs types:
-           // export type UpdateOperation = InsertDeleteOperation | ...
-           // InsertDeleteOperation: { updateType: 'insertdelete' | 'delete' | 'insert', delete?: ..., insert?: ..., where?: ... }
-           
-           // If I use `updateType: 'delete'` and NO `where`, it generates `DELETE { ... } WHERE {}`?
-           // Yes, that's what we want to avoid.
-           
-           // There isn't a direct 'deleteData' UpdateOperation in sparqljs types exposed usually.
-           // But `normalizeGraphs` used string manipulation.
-           
-           // Let's construct the string manually using the generator for the quads part?
-           // `generator.stringify` takes a full query/update object.
-           
-           // Let's stick to the previous strategy: Use `updateType: 'insertdelete'` but with empty WHERE?
-           // No, that's what caused the bug (presumably).
-           
-           // Wait, if `normalizeGraphs` manual string construction worked (or was the plan), we should do that here.
-           // But here we have `Quad` objects (terms).
-           
-           // I will use `updateType: 'insertdelete'` but split them into two operations: one DELETE, one INSERT.
-           // Maybe executing them separately helps?
-           // op1: DELETE { ... } WHERE {}
-           // op2: INSERT { ... } WHERE {}
-           
-           // If the bug is that `DELETE ... INSERT ...` in one op fails to delete before inserting?
-           
-           updates.push({
-             updateType: 'insertdelete',
-             delete: deleteTriples.length > 0 ? [ { type: 'graph', name: graphName, triples: deleteTriples } as any ] : [],
-             insert: [],
-             where: [],
-           });
-        }
-        
-        if (insertTriples.length > 0) {
-           updates.push({
-             updateType: 'insertdelete',
-             delete: [],
-             insert: insertTriples.length > 0 ? [ { type: 'graph', name: graphName, triples: insertTriples } as any ] : [],
-             where: [],
-           });
-        }
-        
-        const update: SparqlUpdate = {
-          type: 'update',
-          prefixes: {},
-          updates,
-        };
-        return this.generator.stringify(update);
-      }
-    }
-
-    const updateOp: UpdateOperation = {
-      updateType: 'insertdelete',
-      delete: deleteTriples.length > 0 ? [ { type: 'graph', name: graphName, triples: deleteTriples } as any ] : [],
-      insert: insertTriples.length > 0 ? [ { type: 'graph', name: graphName, triples: insertTriples } as any ] : [],
-      where: whereTriples.length > 0
-        ? [ { type: 'graph', name: graphName, patterns: [ { type: 'bgp', triples: whereTriples } ] } ]
-        : [ { type: 'bgp', triples: [] } ],
-    };
-
-    const update: SparqlUpdate = {
-      type: 'update',
-      prefixes: {},
-      updates: [ updateOp ],
-    };
-
-    return this.generator.stringify(update);
   }
 
   private isSparqlCapable(accessor: unknown): accessor is {

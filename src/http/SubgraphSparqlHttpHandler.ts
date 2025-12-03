@@ -10,6 +10,7 @@ import {
   UnsupportedMediaTypeHttpError,
   IdentifierSetMultiMap,
   AccessMode,
+  HttpError,
 } from '@solid/community-server';
 import type {
   CredentialsExtractor,
@@ -39,6 +40,7 @@ const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
 
 interface QueryRequest {
   basePath: string;
+  baseUrl: string;  // Full URL for authorization (origin + basePath)
   query: string;
   origin: string;
   method: string;
@@ -46,8 +48,12 @@ interface QueryRequest {
 }
 
 interface SubgraphSparqlHttpHandlerOptions {
+  /** @deprecated Use sidecarPath instead */
   resourceSuffix?: string;
+  /** @deprecated Use sidecarPath instead */
   containerSuffix?: string;
+  /** Sidecar API path segment, default: '/-/sparql' */
+  sidecarPath?: string;
   identityDbUrl?: string;
   usageDbUrl?: string;
   defaultAccountBandwidthLimitBps?: number | null;
@@ -64,8 +70,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   private readonly credentialsExtractor: CredentialsExtractor;
   private readonly permissionReader: PermissionReader;
   private readonly authorizer: Authorizer;
-  private readonly resourceSuffix: string;
-  private readonly containerSuffix: string;
+  private readonly sidecarPath: string;
   private readonly podLookup?: PodLookupRepository;
   private readonly usageRepo?: UsageRepository;
   private readonly defaultBandwidthLimit?: number | null;
@@ -84,8 +89,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     this.credentialsExtractor = credentialsExtractor;
     this.permissionReader = permissionReader;
     this.authorizer = authorizer;
-    this.resourceSuffix = options.resourceSuffix ?? '.sparql';
-    this.containerSuffix = options.containerSuffix ?? '/sparql';
+    this.sidecarPath = options.sidecarPath ?? '/-/sparql';
     this.defaultBandwidthLimit = this.normalizeLimit(options.defaultAccountBandwidthLimitBps);
 
     // Identity DB is used for pod lookup (to resolve accountId/podId from URL)
@@ -95,8 +99,9 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
 
     // Usage DB can be separate from identity DB (decoupled usage tracking)
+    // NOTE: UsageRepository only supports PostgreSQL. SQLite is skipped.
     const usageDbUrl = options.usageDbUrl ?? options.identityDbUrl;
-    if (usageDbUrl) {
+    if (usageDbUrl && !this.isSqliteUrl(usageDbUrl)) {
       const usageDb = getIdentityDatabase(usageDbUrl);
       this.usageRepo = new UsageRepository(usageDb);
     }
@@ -104,9 +109,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   public override async canHandle({ request }: HttpHandlerInput): Promise<void> {
     const path = this.parseUrl(request).pathname;
-    const isResource = path.endsWith(this.resourceSuffix);
-    const isContainer = path.endsWith(this.containerSuffix);
-    if (!isResource && !isContainer) {
+    // Match /-/sparql pattern: /alice/-/sparql or /alice/photos/-/sparql
+    if (!path.includes(this.sidecarPath)) {
       throw new NotImplementedHttpError('Request is not targeting a subgraph SPARQL endpoint.');
     }
   }
@@ -123,48 +127,92 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       throw new MethodNotAllowedHttpError(ALLOWED_METHODS);
     }
 
-    const queryRequest = await this.extractQuery(request, method);
-    const context = await this.resolveUsageContext(queryRequest.basePath);
-    await this.recordBandwidth(context, queryRequest.ingressBytes, 0);
-    const parser = new Parser({ baseIRI: `${queryRequest.origin}${queryRequest.basePath}` });
-    const parsed = parser.parse(queryRequest.query);
+    try {
+      const queryRequest = await this.extractQuery(request, method);
+      const context = await this.resolveUsageContext(queryRequest.basePath);
+      await this.recordBandwidth(context, queryRequest.ingressBytes, 0);
+      const parser = new Parser({ baseIRI: queryRequest.baseUrl });
+      const parsed = parser.parse(queryRequest.query);
 
-    if (parsed.type === 'update') {
-      await this.executeUpdate(queryRequest, parsed, request, response, context);
-      return;
-    }
+      if (parsed.type === 'update') {
+        await this.executeUpdate(queryRequest, parsed, request, response, context);
+        return;
+      }
 
-    const queryType = parsed.queryType ?? 'SELECT';
+      const queryType = parsed.queryType ?? 'SELECT';
 
-    switch (queryType) {
-      case 'SELECT':
-        await this.executeSelect(request, queryRequest, response, context);
-        break;
-      case 'ASK':
-        await this.executeAsk(request, queryRequest, response, context);
-        break;
-      case 'CONSTRUCT':
-      case 'DESCRIBE':
-        await this.executeConstruct(request, queryRequest, response, context);
-        break;
-      default:
-        throw new BadRequestHttpError(`Unsupported SPARQL query type: ${queryType}`);
+      switch (queryType) {
+        case 'SELECT':
+          await this.executeSelect(request, queryRequest, response, context);
+          break;
+        case 'ASK':
+          await this.executeAsk(request, queryRequest, response, context);
+          break;
+        case 'CONSTRUCT':
+        case 'DESCRIBE':
+          await this.executeConstruct(request, queryRequest, response, context);
+          break;
+        default:
+          throw new BadRequestHttpError(`Unsupported SPARQL query type: ${queryType}`);
+      }
+    } catch (error: unknown) {
+      // Handle HttpErrors with proper status codes
+      if (error instanceof HttpError) {
+        this.sendErrorResponse(response, error.statusCode, error.message);
+        return;
+      }
+      // Re-throw unknown errors for CSS error handling
+      throw error;
     }
   }
 
-  private async executeSelect(request: HttpRequest, { query, basePath }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(basePath, request, [ AccessMode.read ]);
-    const bindingsStream: any = await this.engine.queryBindings(query, basePath);
-    const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
-    const vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
-    const results: Record<string, unknown>[] = [];
+  private sendErrorResponse(response: HttpResponse, statusCode: number, message: string): void {
+    response.statusCode = statusCode;
+    response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    response.end(message);
+  }
 
-    for await (const binding of bindingsStream as AsyncIterable<any>) {
-      const row: Record<string, unknown> = {};
-      for (const [ name, term ] of binding) {
-        row[name] = this.termToJson(term);
+  private async executeSelect(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+    await this.authorizeFor(baseUrl, request, [ AccessMode.read ]);
+
+    let vars: string[] = [];
+    const results: Record<string, unknown>[] = [];
+    const seenVars = new Set<string>();
+
+    try {
+      const bindingsStream: any = await this.engine.queryBindings(query, baseUrl);
+      const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
+      vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
+
+      for await (const binding of bindingsStream as AsyncIterable<any>) {
+        const row: Record<string, unknown> = {};
+        for (const [ variable, term ] of binding) {
+          // variable is a Variable object; use .value to get the string name
+          const name = typeof variable === 'string' ? variable : variable.value;
+          row[name] = this.termToJson(term);
+          seenVars.add(name);
+        }
+        results.push(row);
       }
-      results.push(row);
+
+      // Fallback: if metadata didn't provide vars, extract from bindings
+      if (vars.length === 0 && seenVars.size > 0) {
+        vars = Array.from(seenVars);
+      }
+    } catch (error: unknown) {
+      // Comunica throws when projected variables are not assigned (i.e., no results)
+      // Return empty results instead of erroring
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('are used in the projection result, but are not assigned')) {
+        this.logger.debug(`Query returned no results: ${message}`);
+        // Extract variable names from the error message or query
+        const varMatch = message.match(/Variables '([^']+)'/);
+        if (varMatch) {
+          vars = varMatch[1].split(',').map((v) => v.trim().replace(/^\?/, ''));
+        }
+      } else {
+        throw error;
+      }
     }
 
     const payload = {
@@ -175,9 +223,9 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
   }
 
-  private async executeAsk(request: HttpRequest, { query, basePath }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(basePath, request, [ AccessMode.read ]);
-    const result = await this.engine.queryBoolean(query, basePath);
+  private async executeAsk(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+    await this.authorizeFor(baseUrl, request, [ AccessMode.read ]);
+    const result = await this.engine.queryBoolean(query, baseUrl);
     const payload = {
       head: {},
       boolean: result,
@@ -185,9 +233,9 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
   }
 
-  private async executeConstruct(request: HttpRequest, { query, basePath }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(basePath, request, [ AccessMode.read ]);
-    const quadStream = await this.engine.queryQuads(query, basePath);
+  private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
+    await this.authorizeFor(baseUrl, request, [ AccessMode.read ]);
+    const quadStream = await this.engine.queryQuads(query, baseUrl);
     const writer = new Writer({ format: 'N-Quads' });
 
     for await (const quad of quadStream) {
@@ -212,7 +260,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       throw new MethodNotAllowedHttpError([ 'POST' ]);
     }
 
-    const { hasInsert, hasDelete } = this.inspectUpdateGraphs(parsed, queryRequest.basePath);
+    const { hasInsert, hasDelete } = this.inspectUpdateGraphs(parsed, queryRequest.baseUrl);
     const modes: AccessMode[] = [];
     if (hasInsert) {
       modes.push(AccessMode.append);
@@ -220,10 +268,10 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     if (hasDelete) {
       modes.push(AccessMode.delete);
     }
-    await this.authorizeFor(queryRequest.basePath, request, modes);
+    await this.authorizeFor(queryRequest.baseUrl, request, modes);
 
-    await this.engine.queryVoid(queryRequest.query, queryRequest.basePath);
-    await this.refreshUsage(queryRequest.basePath);
+    await this.engine.queryVoid(queryRequest.query, queryRequest.baseUrl);
+    await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;
     response.setHeader('Cache-Control', 'no-store');
@@ -434,7 +482,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       return;
     }
     if (term.termType === 'Variable') {
-      throw new BadRequestHttpError('Graph IRIs must be explicit when using the .sparql update endpoint.');
+      throw new BadRequestHttpError('Graph IRIs must be explicit when using the /-/sparql update endpoint.');
     }
     if (term.termType === 'NamedNode') {
       if (!term.value.startsWith(basePath)) {
@@ -491,18 +539,16 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const url = this.parseUrl(request);
     const path = decodeURIComponent(url.pathname);
 
-    let basePath: string;
-    if (path.endsWith(this.containerSuffix)) {
-      // Container endpoint: /alice/sparql → /alice/
-      basePath = path.slice(0, -this.containerSuffix.length + 1);
-      if (!basePath.endsWith('/')) {
-        basePath += '/';
-      }
-    } else if (path.endsWith(this.resourceSuffix)) {
-      // Resource endpoint: /alice/profile.ttl.sparql → /alice/profile.ttl
-      basePath = path.slice(0, -this.resourceSuffix.length);
-    } else {
+    // Sidecar pattern: /alice/-/sparql → basePath = /alice/
+    // Or: /alice/photos/-/sparql → basePath = /alice/photos/
+    const sidecarIndex = path.indexOf(this.sidecarPath);
+    if (sidecarIndex === -1) {
       throw new NotImplementedHttpError('Request is not targeting a subgraph SPARQL endpoint.');
+    }
+
+    let basePath = path.slice(0, sidecarIndex);
+    if (!basePath.endsWith('/')) {
+      basePath += '/';
     }
 
     let query: string | null = null;
@@ -536,10 +582,12 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       throw new BadRequestHttpError('A SPARQL query must be supplied through the "query" parameter or request body.');
     }
 
+    const origin = `${url.protocol}//${url.host}`;
     return {
       basePath,
+      baseUrl: `${origin}${basePath}`,
       query: query.trim(),
-      origin: `${url.protocol}//${url.host}`,
+      origin,
       method,
       ingressBytes,
     };
@@ -644,5 +692,10 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   private isInsertDeleteOperation(operation: SparqlUpdate['updates'][number]): operation is SparqlInsertDeleteOperation {
     return typeof (operation as SparqlInsertDeleteOperation).updateType === 'string';
+  }
+
+  private isSqliteUrl(url: string): boolean {
+    const lower = url.toLowerCase();
+    return lower.startsWith('sqlite:') || lower.endsWith('.sqlite') || lower.endsWith('.db');
   }
 }

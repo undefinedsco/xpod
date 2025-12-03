@@ -86,6 +86,7 @@ async function initSharedState(url: string, format: 'buffer' | 'view' | 'utf8'):
       client: 'sqlite3',
       connection: { filename },
       useNullAsDefault: true,
+      pool: { min: 1, max: 5 },
     });
   } else if (parsedUrl.protocol === 'postgresql:') {
     db = knex({
@@ -363,6 +364,7 @@ class SQLUpIterator<T extends TFormat, K, V> extends AbstractIterator<SQLUp<T, K
   private knex: Knex;
   private tableName: string;
   private stream: AsyncGenerator<[T, T]>;
+  private rawStream?: NodeJS.ReadableStream;
   private done: boolean = false;
 
   constructor(db: SQLUp<T, K, V>, options: AbstractIteratorOptions<K, V>) {
@@ -400,8 +402,9 @@ class SQLUpIterator<T extends TFormat, K, V> extends AbstractIterator<SQLUp<T, K
 
     const start = Date.now();
     let cnt = 0;
+    const stream = query.stream();
+    this.rawStream = stream;
     try {
-      const stream = query.stream();
       for await (const row of stream) {
         yield [row.key, row.value];
         cnt++;
@@ -409,8 +412,26 @@ class SQLUpIterator<T extends TFormat, K, V> extends AbstractIterator<SQLUp<T, K
     } catch (err: any) {
       this.logger.error(`error: ${this.tableName}, ${err}`);
     } finally {
+      this.rawStream = undefined;
       const end = Date.now();
       this.logger.debug(`done: ${this.tableName}, time: ${end - start}ms, count: ${cnt}`);
+    }
+  }
+
+  async _close(callback: (err: Error | null) => void): Promise<void> {
+    try {
+      // Destroy the raw stream to release the connection back to pool
+      if (this.rawStream) {
+        const stream = this.rawStream as any;
+        if (typeof stream.destroy === 'function') {
+          stream.destroy();
+        }
+        this.rawStream = undefined;
+      }
+      this.done = true;
+      callback(null);
+    } catch (err: any) {
+      callback(err);
     }
   }
 
@@ -430,6 +451,15 @@ class SQLUpIterator<T extends TFormat, K, V> extends AbstractIterator<SQLUp<T, K
   }
 
   _seek(target: K, options: AbstractSeekOptions<K>) {
+    // Destroy old stream before creating a new one
+    if (this.rawStream) {
+      const stream = this.rawStream as any;
+      if (typeof stream.destroy === 'function') {
+        stream.destroy();
+      }
+      this.rawStream = undefined;
+    }
+
     if (this.options.reverse) {
       if (this.options.lt && target < this.options.lt) {
         this.options.lt = target;

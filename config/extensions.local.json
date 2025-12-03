@@ -41,26 +41,34 @@
       "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
     },
     {
-      "comment": "Let locking/index/binary wrappers call directly into our SPARQL-aware store (skip default PatchingStore).",
+      "comment": "等位替换: 用 SparqlUpdateResourceStore 替换默认的 DataAccessorBasedStore",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:ResourceStore_Patching"
+        "@id": "urn:solid-server:default:ResourceStore_Backend"
+      },
+      "overrideParameters": {
+        "@type": "SparqlUpdateResourceStore",
+        "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
+        "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
+        "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
+        "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+      }
+    },
+    {
+      "comment": "等位替换: 用 RepresentationPartialConvertingStore 替换 Converting 层，只转换 RDF 类型",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ResourceStore_Converting"
       },
       "overrideParameters": {
         "@type": "RepresentationPartialConvertingStore",
+        "source": { "@id": "urn:solid-server:default:ResourceStore_Backend" },
         "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
         "options_inConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
+        "options_outConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
         "options_inPreferences_type": {
           "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
           "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
-        },
-        "options_outConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
-        "source": {
-          "@type": "SparqlUpdateResourceStore",
-          "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-          "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-          "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-          "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
         }
       }
     },

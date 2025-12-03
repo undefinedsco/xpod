@@ -38,11 +38,12 @@ function buildCookieHeader(cookies: Record<string, string>): string {
 }
 
 // Use CSS Identity Provider API endpoints discovered from /.account/ controls
-const shouldRunIntegration = process.env.XPOD_RUN_SERVER_INTEGRATION === 'true';
+const shouldRunIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const suite = shouldRunIntegration ? describe : describe.skip;
 
 suite('Server Mode Login Integration', () => {
   let sessionCookies: Record<string, string> = {};
+  let accountToken: string | undefined;
 
   beforeAll(async () => {
     // Check if server is running
@@ -74,27 +75,46 @@ suite('Server Mode Login Integration', () => {
     });
 
     it('creates a new account via JSON API', async () => {
-      const accountData = {
-        email: testEmail,
-        password: testPassword,
-      };
-
-      const response = await fetch(joinUrl(baseUrl, '.account/account/'), {
+      // Step 1: Create account (no credentials yet)
+      const createResponse = await fetch(joinUrl(baseUrl, '.account/account/'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-        body: JSON.stringify(accountData),
+        body: JSON.stringify({}),
       });
 
-      // Should succeed or redirect
-      expect([200, 201, 302, 303]).toContain(response.status);
-      
-      if (response.headers.get('location')) {
-        const location = response.headers.get('location');
-        expect(location).toBeTruthy();
-      }
+      expect([200, 201]).toContain(createResponse.status);
+      const createResult = await createResponse.json();
+      expect(createResult).toHaveProperty('authorization');
+      accountToken = createResult.authorization;
+
+      // Step 2: Get authenticated controls to find password create endpoint
+      const controlsResponse = await fetch(joinUrl(baseUrl, '.account/'), {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `CSS-Account-Token ${accountToken}`,
+        },
+      });
+      expect(controlsResponse.status).toBe(200);
+      const controls = await controlsResponse.json();
+      const passwordCreateUrl = controls.controls?.password?.create;
+      expect(passwordCreateUrl).toBeTruthy();
+
+      // Step 3: Register password credentials using the dynamic endpoint
+      const registerResponse = await fetch(passwordCreateUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `CSS-Account-Token ${accountToken}`,
+        },
+        body: JSON.stringify({ email: testEmail, password: testPassword }),
+      });
+
+      expect([200, 201]).toContain(registerResponse.status);
     });
 
     it('rejects duplicate email registration', async () => {

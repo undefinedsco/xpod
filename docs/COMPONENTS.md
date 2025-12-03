@@ -2,6 +2,35 @@
 
 This document provides a comprehensive overview of all custom components developed for Xpod, extending the Community Solid Server (CSS) framework.
 
+## 等位替换对照表
+
+Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默认组件，保持接口兼容，不破坏 CSS 调用链。
+
+| CSS 默认组件 | Xpod 替换组件 | 功能区别 |
+|-------------|--------------|----------|
+| `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
+| `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
+| `FileDataAccessor` | `MixDataAccessor` | 混合存储：RDF 结构化数据走 Quadstore，非结构化文件走 FileSystem/MinIO |
+| `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
+| `BaseAccountStore` | `DrizzleAccountLoginStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
+| `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
+
+### Store 调用链对照
+
+```
+CSS 默认链:
+MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
+  → LockingResourceStore → PatchingStore → RepresentationConvertingStore
+    → DataAccessorBasedStore → FileDataAccessor
+
+Xpod 等位替换后:
+MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
+  → LockingResourceStore → PatchingStore → RepresentationPartialConvertingStore [替换]
+    → SparqlUpdateResourceStore [替换] → MixDataAccessor [替换]
+                                           ├─ QuadstoreSparqlDataAccessor (RDF)
+                                           └─ FileDataAccessor/MinioDataAccessor (非RDF)
+```
+
 ## Table of Contents
 
 - [Storage Components](#storage-components)

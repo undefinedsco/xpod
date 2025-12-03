@@ -82,23 +82,23 @@ describe('SubgraphSparqlHttpHandler', () => {
     );
   });
 
-  describe('URL routing (canHandle)', () => {
-    it('should accept container endpoint /alice/sparql', async () => {
-      const request = createMockRequest('/alice/sparql');
+  describe('URL routing (canHandle) - sidecar /-/sparql pattern', () => {
+    it('should accept container sidecar endpoint /alice/-/sparql', async () => {
+      const request = createMockRequest('/alice/-/sparql');
       await expect(handler.canHandle({ request, response: createMockResponse() })).resolves.toBeUndefined();
     });
 
-    it('should accept resource endpoint /alice/profile.ttl.sparql', async () => {
-      const request = createMockRequest('/alice/profile.ttl.sparql');
+    it('should accept nested path sidecar endpoint /alice/photos/-/sparql', async () => {
+      const request = createMockRequest('/alice/photos/-/sparql');
       await expect(handler.canHandle({ request, response: createMockResponse() })).resolves.toBeUndefined();
     });
 
-    it('should accept root container endpoint /sparql', async () => {
-      const request = createMockRequest('/sparql');
+    it('should accept root sidecar endpoint /-/sparql', async () => {
+      const request = createMockRequest('/-/sparql');
       await expect(handler.canHandle({ request, response: createMockResponse() })).resolves.toBeUndefined();
     });
 
-    it('should reject non-sparql endpoints', async () => {
+    it('should reject non-sidecar endpoints', async () => {
       const request = createMockRequest('/alice/profile.ttl');
       await expect(handler.canHandle({ request, response: createMockResponse() })).rejects.toThrow(NotImplementedHttpError);
     });
@@ -107,12 +107,22 @@ describe('SubgraphSparqlHttpHandler', () => {
       const request = createMockRequest('/alice/foo/bar');
       await expect(handler.canHandle({ request, response: createMockResponse() })).rejects.toThrow(NotImplementedHttpError);
     });
+
+    it('should reject old .sparql suffix', async () => {
+      const request = createMockRequest('/alice/profile.ttl.sparql');
+      await expect(handler.canHandle({ request, response: createMockResponse() })).rejects.toThrow(NotImplementedHttpError);
+    });
+
+    it('should reject old /sparql container suffix', async () => {
+      const request = createMockRequest('/alice/sparql');
+      await expect(handler.canHandle({ request, response: createMockResponse() })).rejects.toThrow(NotImplementedHttpError);
+    });
   });
 
   describe('basePath extraction', () => {
-    it('should extract container basePath with trailing slash', async () => {
+    it('should extract basePath with trailing slash from /-/sparql', async () => {
       // We test this indirectly via authorization calls
-      const request = createMockRequest('/alice/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
+      const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
       const response = createMockResponse();
 
       // Setup mock to return empty bindings
@@ -129,11 +139,11 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockAuthorizer.handleSafe).toHaveBeenCalled();
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
-      expect(identifiers[0].path).toBe('/alice/');
+      expect(identifiers[0].path).toBe('http://localhost:3000/alice/');
     });
 
-    it('should extract resource basePath without trailing slash', async () => {
-      const request = createMockRequest('/alice/profile.ttl.sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
+    it('should extract nested basePath correctly', async () => {
+      const request = createMockRequest('/alice/photos/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
       const response = createMockResponse();
 
       mockQueryEngine.queryBindings.mockResolvedValue({
@@ -148,13 +158,13 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockAuthorizer.handleSafe).toHaveBeenCalled();
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
-      expect(identifiers[0].path).toBe('/alice/profile.ttl');
+      expect(identifiers[0].path).toBe('http://localhost:3000/alice/photos/');
     });
   });
 
   describe('permission mapping', () => {
     it('should require append for INSERT only', async () => {
-      const request = createMockRequest('/alice/sparql', 'POST', {
+      const request = createMockRequest('/alice/-/sparql', 'POST', {
         'content-type': 'application/sparql-update',
       });
       const response = createMockResponse();
@@ -187,7 +197,7 @@ describe('SubgraphSparqlHttpHandler', () => {
     });
 
     it('should require delete for DELETE only', async () => {
-      const request = createMockRequest('/alice/sparql', 'POST', {
+      const request = createMockRequest('/alice/-/sparql', 'POST', {
         'content-type': 'application/sparql-update',
       });
       const response = createMockResponse();
@@ -218,7 +228,7 @@ describe('SubgraphSparqlHttpHandler', () => {
     });
 
     it('should require both append and delete for INSERT + DELETE', async () => {
-      const request = createMockRequest('/alice/sparql', 'POST', {
+      const request = createMockRequest('/alice/-/sparql', 'POST', {
         'content-type': 'application/sparql-update',
       });
       const response = createMockResponse();
@@ -249,7 +259,7 @@ describe('SubgraphSparqlHttpHandler', () => {
     });
 
     it('should require read for SELECT', async () => {
-      const request = createMockRequest('/alice/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
+      const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
       const response = createMockResponse();
 
       mockQueryEngine.queryBindings.mockResolvedValue({
@@ -268,31 +278,31 @@ describe('SubgraphSparqlHttpHandler', () => {
     });
   });
 
-  describe('custom suffixes', () => {
-    it('should support custom resourceSuffix', async () => {
+  describe('custom sidecarPath', () => {
+    it('should support custom sidecarPath', async () => {
       const customHandler = new SubgraphSparqlHttpHandler(
         mockQueryEngine as any,
         mockCredentialsExtractor as any,
         mockPermissionReader as any,
         mockAuthorizer as any,
-        { resourceSuffix: '.query' },
+        { sidecarPath: '/-/query' },
       );
 
-      const request = createMockRequest('/alice/profile.ttl.query');
+      const request = createMockRequest('/alice/-/query');
       await expect(customHandler.canHandle({ request, response: createMockResponse() })).resolves.toBeUndefined();
     });
 
-    it('should support custom containerSuffix', async () => {
+    it('should reject default path when custom sidecarPath is set', async () => {
       const customHandler = new SubgraphSparqlHttpHandler(
         mockQueryEngine as any,
         mockCredentialsExtractor as any,
         mockPermissionReader as any,
         mockAuthorizer as any,
-        { containerSuffix: '/query' },
+        { sidecarPath: '/-/query' },
       );
 
-      const request = createMockRequest('/alice/query');
-      await expect(customHandler.canHandle({ request, response: createMockResponse() })).resolves.toBeUndefined();
+      const request = createMockRequest('/alice/-/sparql');
+      await expect(customHandler.canHandle({ request, response: createMockResponse() })).rejects.toThrow(NotImplementedHttpError);
     });
   });
 });

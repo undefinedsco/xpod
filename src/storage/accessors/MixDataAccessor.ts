@@ -28,7 +28,6 @@ import { QuadstoreSparqlDataAccessor } from './QuadstoreSparqlDataAccessor';
 
 const { namedNode } = DataFactory;
 
-
 export class MixDataAccessor extends QuadstoreSparqlDataAccessor {
   private readonly unstructuredDataAccessor: DataAccessor;
 
@@ -44,7 +43,7 @@ export class MixDataAccessor extends QuadstoreSparqlDataAccessor {
   /**
    * This accessor does support all types of data.
    */
-  public override async canHandle(identifier: Representation): Promise<void> {
+  public override async canHandle(representation: Representation): Promise<void> {
     return void 0;
   }
 

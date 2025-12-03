@@ -77,6 +77,45 @@ class MyHandler extends HttpHandler {
 - **Initializers**: Startup/teardown procedures
 - **Authentication**: Custom auth mechanisms
 
+### ⚠️ Xpod 扩展原则：等位替换
+
+**核心原则**：不修改 CSS 原始架构，采用**等位替换**方式扩展功能。
+
+- **等位替换**：用自定义组件替换 CSS 同层级的默认组件，保持接口兼容
+- **好处**：大部分 CSS 配置无需修改，降低维护成本，便于升级
+- **详细文档**：参见 `docs/COMPONENTS.md` 的"等位替换对照表"
+- **示例**：
+  - `SparqlUpdateResourceStore` 替换 `DataAccessorBasedStore`（拦截 PATCH）
+  - `RepresentationPartialConvertingStore` 替换 `RepresentationConvertingStore`（能转尽量转，不能转保留原始）
+  - `MixDataAccessor` 替换 `FileDataAccessor`（混合存储）
+
+```
+CSS 调用链（保持不变）:
+MonitoringStore → IndexRepresentationStore → LockingResourceStore
+    → PatchingStore → RepresentationConvertingStore → [我们替换这里]
+
+Xpod 替换点:
+- DataAccessorBasedStore → SparqlUpdateResourceStore（拦截 PATCH）
+- FileDataAccessor → MixDataAccessor / QuadstoreSparqlDataAccessor
+```
+
+**PATCH 处理策略**：
+```
+PatchingStore.modifyResource(patch):
+  1. 先问 Store: "你能处理这个 patch 吗？" (store.modifyResource)
+  2. 如果 Store 能处理 → 直接让 Store 执行
+  3. 如果 Store 不能处理 → 回落到通用逻辑 (get → patch → set)
+```
+
+这就是为什么 `SparqlUpdateResourceStore.modifyResource()` 可以拦截 PATCH：
+- 能处理的（SPARQL UPDATE）→ 直接执行 SPARQL
+- 不能处理的 → 抛出 `NotImplementedHttpError`，CSS 自动回落到 read-modify-write
+
+**禁止**：
+- ❌ 修改 CSS 中间层逻辑
+- ❌ 在非标准位置插入处理逻辑
+- ❌ 破坏 CSS 的 Handler 链顺序
+
 ### Xpod's Community Solid Server Extensions
 
 **Storage Enhancements:**
