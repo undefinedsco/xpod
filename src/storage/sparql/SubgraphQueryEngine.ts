@@ -125,15 +125,28 @@ export class SubgraphQueryEngine {
       return false;
     }
 
-    const graphValue = graph.value;
+    let graphValue = graph.value;
 
-    // Direct match with full URL
-    if (graphValue === basePath || graphValue === `${basePath}.metadata`) {
+    // Support CSS standard "meta:" prefix for metadata graphs
+    // e.g. meta:http://pod/doc.ttl -> http://pod/doc.ttl
+    if (graphValue.startsWith('meta:')) {
+      graphValue = graphValue.slice(5);
+    }
+
+    // 1. Direct match with full URL
+    if (graphValue === basePath) {
       return true;
     }
 
-    // Extract path from baseUrl for path-only graph matching
-    // basePath might be full URL like "http://localhost:3000/test/" or path like "/test/"
+    // 2. Safe prefix matching (Container scope or Fragment) for full URL
+    const childPrefix = basePath.endsWith('/') ? basePath : `${basePath}/`;
+    const fragmentPrefix = `${basePath}#`;
+
+    if (graphValue.startsWith(childPrefix) || graphValue.startsWith(fragmentPrefix)) {
+      return true;
+    }
+
+    // 3. Path-only matching (legacy support or relative graphs)
     let pathOnly = basePath;
     try {
       const url = new URL(basePath);
@@ -142,23 +155,31 @@ export class SubgraphQueryEngine {
       // basePath is already a path, not a URL
     }
 
-    // Match path-only graphs (stored without host)
-    if (graphValue === pathOnly || graphValue === `${pathOnly}.metadata`) {
+    // Avoid re-checking if pathOnly is same as basePath (e.g. if basePath was already relative)
+    if (pathOnly === basePath) {
+      return false;
+    }
+
+    // Handle meta: in path-only mode too (though unlikely for named nodes)
+    if (graphValue.startsWith('meta:')) {
+       graphValue = graphValue.slice(5);
+    }
+
+    if (graphValue === pathOnly) {
       return true;
     }
 
-    // Container-scoped match
-    if (basePath.endsWith('/')) {
-      // Check if graph starts with full URL
-      if (graphValue.startsWith(basePath)) {
-        return true;
-      }
-      // Check if graph starts with path only
-      if (pathOnly.endsWith('/') && graphValue.startsWith(pathOnly)) {
-        return true;
-      }
+    const pathChildPrefix = pathOnly.endsWith('/') ? pathOnly : `${pathOnly}/`;
+    const pathFragmentPrefix = `${pathOnly}#`;
+
+    if (graphValue.startsWith(pathChildPrefix) || graphValue.startsWith(pathFragmentPrefix)) {
+      return true;
     }
 
     return false;
+  }
+
+  public async close(): Promise<void> {
+    await this.store.close();
   }
 }

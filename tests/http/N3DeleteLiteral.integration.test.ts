@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Session } from '@inrupt/solid-client-authn-node';
 import { config as loadEnv } from 'dotenv';
-import { Parser } from 'n3';
+import { resolvePodBase } from './utils/pod';
 
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
@@ -29,68 +29,12 @@ suite('N3 Patch delete literal equivalence', () => {
   let containerUrl: string;
   let resourceUrl: string;
 
-  const parseStorageFromLink = (linkValue: string | null): string | undefined => {
-    if (!linkValue) return undefined;
-    // naive parse: look for rel="...storage"
-    const parts = linkValue.split(',');
-    for (const part of parts) {
-      const match = part.match(/<([^>]+)>;\s*rel="http:\/\/www\.w3\.org\/ns\/pim\/space#storage"/);
-      if (match?.[1]) {
-        return match[1];
-      }
-    }
-    return undefined;
-  };
-
-  async function resolvePodBase(): Promise<string> {
-    // Try Link header from HEAD first
-    const headRes = await session.fetch(webId!, { method: 'HEAD' }).catch(() => undefined);
-    if (headRes && headRes.ok) {
-      const linkStorage = parseStorageFromLink(headRes.headers.get('link'));
-      if (linkStorage) {
-        return linkStorage.endsWith('/') ? linkStorage : `${linkStorage}/`;
-      }
-    }
-
-    // Fallback to GET with explicit type negotiation; also try text/html for solid-oidc profiles
-    const profileUrl = new URL(webId!);
-    profileUrl.searchParams.set('_type', 'text/turtle');
-    const res = await session.fetch(profileUrl.toString(), {
-      headers: { accept: 'text/turtle,application/ld+json;q=0.9,text/n3;q=0.8,application/n-triples;q=0.7,text/html;q=0.5' },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`fetch webid failed with status ${res.status}: ${text}`);
-    }
-    const contentType = res.headers.get('content-type') ?? '';
-    if (contentType.includes('text/html')) {
-      // Cannot parse HTML; bail out with clearer error
-      throw new Error('WebID profile returned HTML; cannot extract pim:storage. Please provide XPOD_PATCH_POD_ID.');
-    }
-    const body = await res.text();
-    const quads = new Parser().parse(body);
-    const storage = quads.find((q) => q.subject.value === webId && q.predicate.value === 'http://www.w3.org/ns/pim/space#storage');
-    if (storage) {
-      return storage.object.value.endsWith('/') ? storage.object.value : `${storage.object.value}/`;
-    }
-    
-    // Fallback: derive from WebID if pim:storage is missing
-    const webIdUrl = new URL(webId!);
-    const pathParts = webIdUrl.pathname.split('/');
-    // Assuming standard structure: /<pod>/profile/card#me -> /<pod>/
-    if (pathParts.length >= 2) {
-       return `${webIdUrl.origin}/${pathParts[1]}/`;
-    }
-    
-    throw new Error('WebID profile has no pim:storage and cannot derive pod base.');
-  }
-
   beforeAll(async () => {
     session = new Session();
     await session.login({ clientId: clientId!, clientSecret: clientSecret!, oidcIssuer, tokenType });
     doFetch = session.fetch.bind(session);
 
-    podBase = await resolvePodBase();
+    podBase = await resolvePodBase(doFetch, webId!, assertSuccess, oidcIssuer);
     containerUrl = new URL('drizzle-tests/', podBase).toString();
     resourceUrl = new URL('literal-delete.ttl', containerUrl).toString();
 

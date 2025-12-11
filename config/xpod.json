@@ -80,14 +80,17 @@
       }
     },
     {
-      "comment": "Persist CSS identity accounts and logins in the SQL identity database.",
+      "comment": "Persist CSS identity accounts and logins in the SQL identity database using Drizzle.",
       "@id": "urn:undefineds:xpod:DrizzleAccountStorage",
-      "@type": "DrizzleAccountLoginStorage",
-      "identityDbUrl": {
-        "@id": "urn:solid-server:default:variable:identityDbUrl",
-        "@type": "Variable"
-      },
-      "tablePrefix": "identity_"
+      "@type": "BaseLoginAccountStorage",
+      "storage": {
+        "@type": "DrizzleIndexedStorage",
+        "connectionString": {
+          "@id": "urn:solid-server:default:variable:identityDbUrl",
+          "@type": "Variable"
+        },
+        "tablePrefix": "identity_"
+      }
     },
     {
       "comment": "Enhanced login method selector UI.",

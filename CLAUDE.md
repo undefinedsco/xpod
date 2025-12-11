@@ -23,7 +23,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Xpod is an extended Community Solid Server (CSS) offering rich-feature, production-level Solid Pod and identity management. It supports multiple deployment modes: normal (experience only), local (desktop/single-machine), server (centralized deployment), and dev (development/debugging).
+**Xpod is the Agent OS.**
+It is a production-level runtime environment for AI Agents, built on the Solid Protocol. Xpod enables agents to own their **Identity** (WebID) and **Memory** (Pod data).
+
+While functionally based on the Community Solid Server (CSS), our architectural goal is to build the infrastructure for the "Internet of Agents". It supports multiple deployment modes: normal (experience), local (desktop/agent-native), server (multi-tenant agent hosting), and dev.
 
 ## Community Solid Server (CSS) Architecture
 
@@ -262,6 +265,13 @@ Uses Drizzle ORM with support for SQLite (local/dev) and PostgreSQL (server):
 - Account management in `src/identity/drizzle/schema.ts`
 - Usage tracking tables for bandwidth monitoring
 - Role-based access control via `identity_account_role` table
+
+### Logging & Resource Management
+
+**Singleton Pattern for File Transports**:
+- **Critical**: `ConfigurableLoggerFactory` MUST use a single instance of `DailyRotateFile` (or any file-based transport) shared across all created loggers.
+- **Reason**: CSS instantiates hundreds of components at startup. If each logger creates its own file stream, the process will exhaust OS file descriptors (`EMFILE: too many open files`).
+- **Implementation**: Initialize the transport in the factory constructor, not in `createTransports`.
 
 ### KeyValueStorage Design Decision
 

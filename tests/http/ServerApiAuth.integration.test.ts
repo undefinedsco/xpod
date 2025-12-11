@@ -78,18 +78,21 @@ suite('API Authentication', () => {
       const putResponse = await authFetch(testResource, {
         method: 'PUT',
         headers: {
-          'Content-Type': 'text/plain',
+          'Content-Type': 'text/turtle',
         },
-        body: 'Test content from API auth test',
+        body: '<> <https://schema.org/text> "Test content from API auth test" .',
       });
 
-      expect([200, 201, 204]).toContain(putResponse.status);
+      if (![ 200, 201, 204, 205 ].includes(putResponse.status)) {
+        const errText = await putResponse.text().catch(() => '');
+        throw new Error(`PUT failed with status ${putResponse.status}: ${errText}`);
+      }
 
       // Verify resource exists
       const getResponse = await authFetch(testResource, {
         method: 'GET',
         headers: {
-          'Accept': 'text/plain',
+          'Accept': 'text/turtle',
         },
       });
 

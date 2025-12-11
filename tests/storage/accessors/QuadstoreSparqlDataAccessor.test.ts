@@ -20,21 +20,22 @@ const { namedNode, quad, literal, variable } = DataFactory;
 
 describe('QuadstoreSparqlDataAccessor', () => {
   const testDir = path.join(__dirname, '../../../data/test/quadstore_accessor');
-  const dbPath = path.join(testDir, 'test_accessor.sqlite');
-  const endpoint = `sqlite:${dbPath}`;
-
+  
   const mockIdentifierStrategy = {
     isRootContainer: vi.fn(),
     getParentContainer: vi.fn(),
   } as unknown as IdentifierStrategy;
 
   let accessor: QuadstoreSparqlDataAccessor;
+  let dbPath: string;
 
   beforeEach(async () => {
-    if (fs.existsSync(testDir)) {
-      fs.rmSync(testDir, { recursive: true, force: true });
+    if (!fs.existsSync(testDir)) {
+      fs.mkdirSync(testDir, { recursive: true });
     }
-    fs.mkdirSync(testDir, { recursive: true });
+    // Use unique DB for each test to avoid locking and state pollution
+    dbPath = path.join(testDir, `test_accessor_${Math.random().toString(36).substring(7)}.sqlite`);
+    const endpoint = `sqlite:${dbPath}`;
 
     // Setup identifier strategy mocks
     (mockIdentifierStrategy.isRootContainer as any).mockImplementation((id: any) => id.path === '/');
@@ -50,6 +51,9 @@ describe('QuadstoreSparqlDataAccessor', () => {
 
   afterEach(async () => {
     await accessor.close();
+    if (fs.existsSync(dbPath)) {
+      fs.rmSync(dbPath, { force: true });
+    }
   });
 
   it('should support writing and reading a document', async () => {
@@ -115,17 +119,18 @@ describe('QuadstoreSparqlDataAccessor', () => {
 
 describe('Quadstore Engine Direct SPARQL Capability', () => {
     const testDir = path.join(__dirname, '../../../data/test/quadstore_engine');
-    const dbPath = path.join(testDir, 'test_engine.sqlite');
-    const endpoint = `sqlite:${dbPath}`;
-
+    
     let store: Quadstore;
     let engine: Engine;
+    let dbPath: string;
 
     beforeEach(async () => {
-        if (fs.existsSync(testDir)) {
-          fs.rmSync(testDir, { recursive: true, force: true });
+        if (!fs.existsSync(testDir)) {
+          fs.mkdirSync(testDir, { recursive: true });
         }
-        fs.mkdirSync(testDir, { recursive: true });
+        
+        dbPath = path.join(testDir, `test_engine_${Math.random().toString(36).substring(7)}.sqlite`);
+        const endpoint = `sqlite:${dbPath}`;
 
         const backend = getBackend(endpoint, { tableName: 'quadstore' });
         store = new Quadstore({
@@ -138,6 +143,9 @@ describe('Quadstore Engine Direct SPARQL Capability', () => {
 
     afterEach(async () => {
         await store.close();
+        if (fs.existsSync(dbPath)) {
+            fs.rmSync(dbPath, { force: true });
+        }
     });
 
     it('should execute SPARQL INSERT DATA', async () => {

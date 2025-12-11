@@ -516,6 +516,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
     }
   }
 
+
   /**
    * Closes the underlying store.
    */

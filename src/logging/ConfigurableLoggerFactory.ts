@@ -4,6 +4,7 @@ import type * as Transport from 'winston-transport';
 import type { TransformableInfo } from 'logform';
 import type { Logger, LogMetadata, LoggerFactory } from '@solid/community-server';
 import { WinstonLogger } from '@solid/community-server';
+import { logContext } from './LogContext';
 
 
 interface ConfigurableLoggerOptions {
@@ -20,6 +21,7 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
   private readonly maxSize: string;
   private readonly maxFiles: string;
   private readonly showLocation: boolean;
+  private readonly fileTransport: DailyRotateFile;
 
   public constructor(level: string, options: ConfigurableLoggerOptions = {}) {
     this.level = level;
@@ -27,6 +29,14 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
     this.maxSize = options.maxSize || '10m';
     this.maxFiles = options.maxFiles || '14d';
     this.showLocation = options.showLocation ?? false;
+    this.fileTransport = new DailyRotateFile({
+      filename: this.fileName,
+      datePattern: 'YYYY-MM-DD',
+      maxSize: this.maxSize,
+      maxFiles: this.maxFiles,
+    });
+    // Prevent MaxListenersExceededWarning as this transport is shared across all loggers
+    this.fileTransport.setMaxListeners(Infinity);
   }
 
   private readonly clusterInfo = (meta: LogMetadata): string => {
@@ -52,12 +62,7 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
           this.getFormat(label),
         ),
       }),
-      new DailyRotateFile({
-        filename: this.fileName,
-        datePattern: 'YYYY-MM-DD',
-        maxSize: this.maxSize,
-        maxFiles: this.maxFiles,
-      }),
+      this.fileTransport,
     ];
   }
 
@@ -65,10 +70,18 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
     return format.combine(
       format.label({ label }),
       format.timestamp(),
-      format.metadata({ fillExcept: [ 'level', 'timestamp', 'label', 'message' ]}),
+      format((info) => {
+        const store = logContext.getStore();
+        if (store?.requestId) {
+          info.requestId = store.requestId;
+        }
+        return info;
+      })(),
+      format.metadata({ fillExcept: [ 'level', 'timestamp', 'label', 'message', 'requestId' ]}),
       format.printf(
-        ({ level: levelInner, message, label: labelInner, timestamp, metadata: meta }: TransformableInfo): string => {
+        ({ level: levelInner, message, label: labelInner, timestamp, requestId, metadata: meta }: TransformableInfo): string => {
           const clusterInfo = this.clusterInfo(meta as LogMetadata);
+          const requestInfo = requestId ? ` [Req:${requestId}]` : '';
           
           // Use simplified class name when showLocation is enabled, otherwise use full label
           let displayLabel = labelInner;
@@ -81,7 +94,7 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
             }
           }
           
-          return `${timestamp} [${displayLabel}] {${clusterInfo}} ${levelInner}: ${message}`;
+          return `${timestamp}${requestInfo} [${displayLabel}] {${clusterInfo}} ${levelInner}: ${message}`;
         },
       ),
     );

@@ -14,10 +14,10 @@ import { ClusterIngressRouter } from './http/ClusterIngressRouter';
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
 import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
 import { SignalInterceptHttpHandler } from './http/SignalInterceptHttpHandler';
+import { RequestIdHttpHandler } from './http/RequestIdHttpHandler';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
-import { DrizzleAccountLoginStorage } from './identity/drizzle/DrizzleAccountLoginStorage';
-import { DrizzleAccountStorage } from './identity/drizzle/DrizzleAccountStorage';
+import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { DefaultQuotaService } from './quota/DefaultQuotaService';
@@ -68,8 +68,7 @@ export {
     SignalInterceptHttpHandler,
     EdgeNodeCertificateHttpHandler,
     ReservedSuffixIdentifierGenerator,
-    DrizzleAccountLoginStorage,
-    DrizzleAccountStorage,
+    DrizzleIndexedStorage,
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
   DefaultQuotaService,

@@ -65,20 +65,34 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     const contentType = representation.metadata.contentType;
     const preferencesType = Object.keys(preferences.type || {})[0];
 
-    if (contentType === APPLICATION_JSON) {
-      this.logger.debug(`Not converting ${identifier.path}: ${contentType} to ${preferencesType}`);
+    // Whitelist: Only allow conversion for known, pure RDF formats.
+    // Everything else (HTML, Markdown, Images, random XML/JSON) is treated as a file.
+    const SAFE_RDF_TYPES = new Set([
+      'text/turtle',
+      'application/ld+json',
+      'application/n-triples',
+      'application/n-quads',
+      'application/trig',
+      'text/n3',
+      'application/rdf+xml',
+      INTERNAL_QUADS // Necessary for GET requests to convert internal quads back to public formats
+    ]);
+
+    if (!SAFE_RDF_TYPES.has(contentType)) {
+      this.logger.debug(`Not converting ${identifier.path}: ${contentType} is not in RDF whitelist`);
       return false;
     }
 
-    const availableTypes = await rdfParser.getContentTypes();
-    if (contentType !== INTERNAL_QUADS && !availableTypes.includes(contentType)) {
-      this.logger.debug(`Not converting ${identifier.path}: ${contentType} to ${preferencesType}`);
+    try {
+      await this.inConverter.canHandle({ identifier, representation, preferences });
+      this.logger.info(
+        `Converting ${identifier.path}: ${contentType} to ${preferencesType}`,
+      );
+      return true;
+    } catch (error) {
+      this.logger.debug(`Not converting ${identifier.path}: ${contentType} to ${preferencesType}. Error: ${error}`);
       return false;
     }
-    this.logger.info(
-      `Converting ${identifier.path}: ${contentType} to ${preferencesType}`,
-    )
-    return true
   }
 
   public override async getRepresentation(
@@ -100,12 +114,16 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     conditions?: Conditions,
   ): Promise<ChangeMap> {
     // In case of containers, no content-type is required and the representation is not used.
-    if (await this.shouldConvert(identifier, representation, this.inPreferences)) {
-      // We can potentially run into problems here if we convert a turtle document where the base IRI is required,
-      // since we don't know the resource IRI yet at this point.
-      representation = await this.inConverter.handleSafe(
-        { identifier, representation, preferences: this.inPreferences },
-      );
+    try {
+      if (await this.shouldConvert(identifier, representation, this.inPreferences)) {
+        // We can potentially run into problems here if we convert a turtle document where the base IRI is required,
+        // since we don't know the resource IRI yet at this point.
+        representation = await this.inConverter.handleSafe(
+          { identifier, representation, preferences: this.inPreferences },
+        );
+      }
+    } catch (error) {
+      this.logger.warn(`Conversion skipped for ${identifier.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
     this.logger.info(`addResource: ${identifier.path} ${representation.metadata.contentType}`);
     return this.source.addResource(identifier, representation, conditions);
@@ -116,16 +134,20 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     representation: Representation,
     conditions?: Conditions,
   ): Promise<ChangeMap> {
-    // When it is a metadata resource, convert it to Quads as those are expected in the later stores
-    if (this.metadataStrategy.isAuxiliaryIdentifier(identifier)) {
-      this.logger.info(`Converting metadata resource ${identifier.path} to ${INTERNAL_QUADS}`);
-      representation = await this.inConverter.handleSafe(
-        { identifier, representation, preferences: { type: { [INTERNAL_QUADS]: 1 }}},
-      );
-    } else if (await this.shouldConvert(identifier, representation, this.inPreferences)) {
-      representation = await this.inConverter.handleSafe(
-        { identifier, representation, preferences: this.inPreferences },
-      );
+    try {
+      // When it is a metadata resource, convert it to Quads as those are expected in the later stores
+      if (this.metadataStrategy.isAuxiliaryIdentifier(identifier)) {
+        this.logger.info(`Converting metadata resource ${identifier.path} to ${INTERNAL_QUADS}`);
+        representation = await this.inConverter.handleSafe(
+          { identifier, representation, preferences: { type: { [INTERNAL_QUADS]: 1 }}},
+        );
+      } else if (await this.shouldConvert(identifier, representation, this.inPreferences)) {
+        representation = await this.inConverter.handleSafe(
+          { identifier, representation, preferences: this.inPreferences },
+        );
+      }
+    } catch (error) {
+      this.logger.warn(`Conversion skipped for ${identifier.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
     this.logger.info(`setRepresentation: ${identifier.path} ${representation.metadata.contentType}`);
     return this.source.setRepresentation(identifier, representation, conditions);

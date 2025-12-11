@@ -19,8 +19,8 @@ import type {
   ResourceIdentifier,
 } from '@solid/community-server';
 import type { Term, Literal, Variable, Quad as RdfQuad } from '@rdfjs/types';
-import { Writer } from 'n3';
-import { Parser } from 'sparqljs';
+import { Writer, DataFactory } from 'n3';
+import { Parser, Generator } from 'sparqljs';
 import type {
   Update as SparqlUpdate,
   InsertDeleteOperation as SparqlInsertDeleteOperation,
@@ -29,6 +29,8 @@ import type {
   GraphOrDefault as SparqlGraphOrDefault,
   IriTerm as SparqlIriTerm,
   Term as SparqlTerm,
+  GraphQuads,
+  UpdateOperation,
 } from 'sparqljs';
 import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
 import { getIdentityDatabase } from '../identity/drizzle/db';
@@ -74,6 +76,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   private readonly podLookup?: PodLookupRepository;
   private readonly usageRepo?: UsageRepository;
   private readonly defaultBandwidthLimit?: number | null;
+  private readonly generator = new Generator();
 
   private static readonly XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
 
@@ -139,6 +142,17 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         return;
       }
 
+      // WORKAROUND: Comunica crashes if ASK query has a LIMIT clause ("Expected bindings but got boolean").
+      // ASK results are boolean and cannot be sliced, so LIMIT is semantically redundant but syntactically valid.
+      // We strip it here to protect the engine.
+      // console.log('Parsed Query Type:', parsed.queryType, 'Limit:', (parsed as any).limit); 
+      if (parsed.queryType === 'ASK' && (parsed as any).limit !== undefined) {
+        this.logger.warn(`Stripping LIMIT from ASK query to prevent Comunica crash. Original limit: ${JSON.stringify((parsed as any).limit)}`);
+        delete (parsed as any).limit;
+        queryRequest.query = this.generator.stringify(parsed);
+        this.logger.warn(`Sanitized Query: ${queryRequest.query}`);
+      }
+
       const queryType = parsed.queryType ?? 'SELECT';
 
       switch (queryType) {
@@ -158,10 +172,12 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     } catch (error: unknown) {
       // Handle HttpErrors with proper status codes
       if (error instanceof HttpError) {
+        this.logger.error(`SPARQL sidecar error ${error.statusCode} (${this.getRequestId(request)}): ${error.message || 'HttpError'}`);
         this.sendErrorResponse(response, error.statusCode, error.message);
         return;
       }
       // Re-throw unknown errors for CSS error handling
+      this.logger.error(`SPARQL sidecar unexpected error (${this.getRequestId(request)}): ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   }
@@ -270,7 +286,10 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
     await this.authorizeFor(queryRequest.baseUrl, request, modes);
 
-    await this.engine.queryVoid(queryRequest.query, queryRequest.baseUrl);
+    const rewritten = this.rewriteDefaultGraphUpdates(parsed, queryRequest.baseUrl);
+    this.logger.info(`[SubgraphSPARQL] Rewritten Query: ${rewritten}`);
+
+    await this.engine.queryVoid(rewritten, queryRequest.baseUrl);
     await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;
@@ -280,16 +299,15 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   private async sendPayload(response: HttpResponse, payload: string | Buffer, contentType: string, context: UsageContext | undefined, statusCode = 200): Promise<void> {
     const buffer = typeof payload === 'string' ? Buffer.from(payload, 'utf8') : payload;
-    response.statusCode = statusCode;
-    response.setHeader('Content-Type', contentType);
-    response.setHeader('Cache-Control', 'no-store');
-    response.setHeader('Content-Length', buffer.length);
-    const limit = context ? await this.resolveBandwidthLimit(context) : this.defaultBandwidthLimit;
-    await this.streamWithLimit(response, buffer, limit);
-    await this.recordBandwidth(context, 0, buffer.length);
+    const limit = context ? await this.resolveBandwidthLimit(context) : undefined;
+    return this.streamWithLimit(response, buffer, limit, statusCode, contentType);
   }
 
-  private async streamWithLimit(response: HttpResponse, buffer: Buffer, limit?: number | null): Promise<void> {
+  private async streamWithLimit(response: HttpResponse, buffer: Buffer, limit?: number | null, statusCode = 200, contentType?: string): Promise<void> {
+    if (contentType) {
+      response.setHeader('content-type', contentType);
+    }
+    response.statusCode = statusCode;
     const normalized = this.normalizeLimit(limit);
     let stream: NodeJS.ReadableStream = Readable.from([ buffer ]);
     if (normalized) {
@@ -496,6 +514,40 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     throw new BadRequestHttpError('Unsupported graph target in SPARQL update.');
   }
 
+  /**
+   * Rewrites INSERT/DELETE/INSERT+DELETE that target the default graph (or BGP without GRAPH)
+   * so they write to the resource graph (graphIri).
+   */
+  private rewriteDefaultGraphUpdates(parsed: SparqlUpdate, graphIri: string): string {
+    const graphNode = DataFactory.namedNode(graphIri);
+
+    const rewritePatterns = (patterns?: SparqlQuads[]): SparqlQuads[] | undefined => {
+      if (!patterns) return patterns;
+      return patterns.map((pattern: any): SparqlQuads => {
+        if (pattern.type === 'bgp') {
+          return { type: 'graph', name: graphNode, triples: pattern.triples } as unknown as SparqlQuads;
+        }
+        if (pattern.type === 'graph' && pattern.name?.termType === 'DefaultGraph') {
+          return { ...pattern, name: graphNode };
+        }
+        return pattern;
+      });
+    };
+
+    parsed.updates = parsed.updates.map((op: any): UpdateOperation => {
+      if (op.updateType === 'insert' || op.updateType === 'delete' || op.updateType === 'insertdelete') {
+        return {
+          ...op,
+          insert: rewritePatterns(op.insert),
+          delete: rewritePatterns(op.delete),
+        };
+      }
+      return op;
+    });
+
+    return this.generator.stringify(parsed);
+  }
+
   private async refreshUsage(basePath: string): Promise<void> {
     if (!this.usageRepo || !this.podLookup) {
       return;
@@ -547,8 +599,10 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
 
     let basePath = path.slice(0, sidecarIndex);
-    if (!basePath.endsWith('/')) {
-      basePath += '/';
+    // If the base looks like a container (no file extension), normalize with trailing slash.
+    const hasExtension = /\.[^/]+$/.test(basePath);
+    if (!hasExtension && !basePath.endsWith('/')) {
+      basePath = `${basePath}/`;
     }
 
     let query: string | null = null;
@@ -692,6 +746,11 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   private isInsertDeleteOperation(operation: SparqlUpdate['updates'][number]): operation is SparqlInsertDeleteOperation {
     return typeof (operation as SparqlInsertDeleteOperation).updateType === 'string';
+  }
+
+  private getRequestId(request: HttpRequest): string {
+    const header = (request.headers['x-request-id'] ?? request.headers['X-Request-Id']) as string | undefined;
+    return header?.toString() ?? 'no-request-id';
   }
 
   private isSqliteUrl(url: string): boolean {

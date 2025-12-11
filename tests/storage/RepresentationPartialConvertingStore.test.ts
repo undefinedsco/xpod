@@ -41,6 +41,7 @@ describe('RepresentationPartialConvertingStore', () => {
     const outConverterCalls: MockConverterCallArgs[] = [];
 
     const inConverter = {
+      canHandle: vi.fn(async () => undefined),
       handleSafe: vi.fn(async (args: MockConverterCallArgs) => {
         inConverterCalls.push(args);
         const converted = createRepresentation('internal/quads');
@@ -51,6 +52,7 @@ describe('RepresentationPartialConvertingStore', () => {
     };
 
     const outConverter = {
+      canHandle: vi.fn(async () => undefined),
       handleSafe: vi.fn(async (args: MockConverterCallArgs) => {
         outConverterCalls.push(args);
         const converted = createRepresentation('text/turtle');

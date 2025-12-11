@@ -87,7 +87,8 @@
       },
       "overrideParameters": {
         "@type": "WrappedExpiringReadWriteLocker",
-        "expiration": 15000
+        "expiration": 15000,
+        "source": { "@id": "urn:solid-server:default:RedisLocker" }
       }
     },
     {
@@ -177,6 +178,19 @@
       },
       "overrideParameters": {
         "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
+      }
+    },
+    {
+      "comment": "Define the Drizzle Account Storage using composition: BaseLoginAccountStorage wrapping DrizzleIndexedStorage",
+      "@id": "urn:undefineds:xpod:DrizzleAccountStorage",
+      "@type": "BaseLoginAccountStorage",
+      "storage": {
+        "@type": "DrizzleIndexedStorage",
+        "connectionString": {
+          "@id": "urn:solid-server:default:variable:identityDbUrl",
+          "@type": "Variable"
+        },
+        "tablePrefix": "identity_account_"
       }
     },
     {

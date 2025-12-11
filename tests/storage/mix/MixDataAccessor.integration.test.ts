@@ -16,6 +16,7 @@ import {
 } from '@solid/community-server';
 import { DataFactory } from 'n3';
 import { MixDataAccessor } from '../../../src/storage/accessors/MixDataAccessor';
+import { SubgraphQueryEngine } from '../../../src/storage/sparql/SubgraphQueryEngine'; // Import SubgraphQueryEngine
 
 type ResourceIdentifier = { path: string };
 
@@ -50,6 +51,7 @@ describe('MixDataAccessor (local profile integration)', () => {
   let workDir: string;
   let dataDir: string;
   let accessor: MixDataAccessor;
+  let queryEngine: SubgraphQueryEngine; // Declare queryEngine
   let mapper: ExtensionBasedMapper;
 
   beforeEach(async () => {
@@ -62,10 +64,14 @@ describe('MixDataAccessor (local profile integration)', () => {
     const identifierStrategy = new SimpleIdentifierStrategy(baseUrl);
     const sqlitePath = path.join(workDir, 'quadstore.sqlite');
     accessor = new MixDataAccessor(`sqlite:${sqlitePath}`, identifierStrategy, fileAccessor);
+    queryEngine = new SubgraphQueryEngine(`sqlite:${sqlitePath}`); // Initialize queryEngine
   });
 
   afterEach(async () => {
-    await rm(workDir, { recursive: true, force: true });
+    // Do not close accessor/queryEngine here as they share a singleton backend.
+    // Closing it would break subsequent tests or cause SQLITE_BUSY if others are using it.
+    // The temp dir cleanup might fail if handles are open, but it's safer than crashing the app.
+    await rm(workDir, { recursive: true, force: true }).catch(() => {});
   });
 
   it('crud operations use quadstore for containers and filesystem for unstructured files', async () => {
@@ -118,4 +124,36 @@ describe('MixDataAccessor (local profile integration)', () => {
       await expect(accessor.getMetadata(containerId)).rejects.toBeInstanceOf(NotFoundHttpError);
     }
   });
+
+  it('should store RDF data via MixDataAccessor and retrieve it via SubgraphQueryEngine', async () => {
+    const resourceId = { path: `${baseUrl}alice/data.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads'; // Simulate upstream conversion
+    
+    // Manually parse Turtle to Quads
+    const { quad, namedNode } = DataFactory;
+    const quads = [
+      quad(
+        namedNode('http://example.org/s'),
+        namedNode('http://example.org/p'),
+        namedNode('http://example.org/o')
+      )
+    ];
+    const quadStream = guardStream(Readable.from(quads));
+
+    // 1. Write Quads data via MixDataAccessor (LDP PUT path)
+    await accessor.writeDocument(resourceId, quadStream, metadata);
+
+    // 2. Query the data via SubgraphQueryEngine (SPARQL endpoint path)
+    const sparqlQuery = `SELECT ?s ?p ?o WHERE { GRAPH <${resourceId.path}> { ?s ?p ?o } }`;
+    const results = await queryEngine.queryBindings(sparqlQuery, baseUrl);
+    const bindings = await arrayifyStream(results);
+
+    // 3. Assert the data is found
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0].get('s')?.value).toBe('http://example.org/s');
+    expect(bindings[0].get('p')?.value).toBe('http://example.org/p');
+    expect(bindings[0].get('o')?.value).toBe('http://example.org/o');
+  });
 });
+

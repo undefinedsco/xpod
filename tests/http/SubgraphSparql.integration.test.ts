@@ -199,7 +199,7 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
   });
 
   describe('ASK queries', () => {
-    it('should return boolean for ASK', async () => {
+    it('should return boolean for ASK via GET', async () => {
       const sparqlUrl = testContainer + '-/sparql';
       const query = `
         PREFIX foaf: <http://xmlns.com/foaf/0.1/>
@@ -207,6 +207,42 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
       `;
 
       const response = await authFetch(`${sparqlUrl}?query=${encodeURIComponent(query)}`);
+      expect(response.status).toBe(200);
+
+      const json = await response.json();
+      expect(json.boolean).toBe(true);
+    });
+
+    it('should return boolean for ASK via POST', async () => {
+      const sparqlUrl = testContainer + '-/sparql';
+      const query = `
+        PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+        ASK { ?s foaf:name "Alice" }
+      `;
+
+      const response = await authFetch(sparqlUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/sparql-query' },
+        body: query,
+      });
+      expect(response.status).toBe(200);
+
+      const json = await response.json();
+      expect(json.boolean).toBe(true);
+    });
+
+    it('should handle ASK with LIMIT (strip limit to avoid Comunica crash)', async () => {
+      const sparqlUrl = testContainer + '-/sparql';
+      const query = `
+        PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+        ASK { ?s foaf:name "Alice" } LIMIT 1
+      `;
+
+      const response = await authFetch(sparqlUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/sparql-query' },
+        body: query,
+      });
       expect(response.status).toBe(200);
 
       const json = await response.json();
@@ -247,11 +283,16 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
       });
       expect(response.status).toBe(204);
 
-      // Verify the insert
-      const verifyQuery = `PREFIX ex: <http://example.org/> ASK { GRAPH <${testResource}> { <#charlie> ex:name "Charlie" } }`;
-      const verifyResponse = await authFetch(`${sparqlUrl}?query=${encodeURIComponent(verifyQuery)}`);
-      const verifyJson = await verifyResponse.json();
-      expect(verifyJson.boolean).toBe(true);
+      // Verify the insert via ASK on Sidecar (can't verify via LDP GET as this goes to sidecar graph if not persisted to main LDP graph by rewrite logic)
+      // Actually, since we reverted rewrite logic, this INSERT goes to the Named Graph <testResource> which IS the LDP resource graph.
+      // So it SHOULD be visible via LDP GET if quadstore works correctly.
+      
+      const ldpResponse = await authFetch(testResource, {
+        method: 'GET',
+        headers: { 'accept': 'text/turtle' },
+      });
+      expect(ldpResponse.status).toBe(200);
+      expect(await ldpResponse.text()).toContain("Charlie");
     });
 
     it('should DELETE data via POST', async () => {
@@ -280,10 +321,12 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
       expect(response.status).toBe(204);
 
       // Verify deletion
-      const verifyQuery = `PREFIX ex: <http://example.org/> ASK { GRAPH <${testResource}> { <#toDelete> ex:temp "temp" } }`;
-      const verifyResponse = await authFetch(`${sparqlUrl}?query=${encodeURIComponent(verifyQuery)}`);
-      const verifyJson = await verifyResponse.json();
-      expect(verifyJson.boolean).toBe(false);
+      const ldpResponse = await authFetch(testResource, {
+        method: 'GET',
+        headers: { 'accept': 'text/turtle' },
+      });
+      expect(ldpResponse.status).toBe(200);
+      expect(await ldpResponse.text()).not.toContain("temp");
     });
   });
 
@@ -320,6 +363,37 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
 
       // Cleanup
       await authFetch(anotherResource, { method: 'DELETE' }).catch(() => {});
+    });
+
+    it('should include metadata graphs (meta:*) in container scope', async () => {
+      // Create a binary file (which generates metadata in meta: graph)
+      const binaryResource = joinUrl(testContainer, 'image.png');
+      await authFetch(binaryResource, {
+        method: 'PUT',
+        headers: { 'content-type': 'image/png' },
+        body: 'fake-image',
+      });
+
+      // Query the container sidecar to list graphs
+      const sparqlUrl = testContainer + '-/sparql';
+      const query = `
+        SELECT DISTINCT ?g WHERE {
+          GRAPH ?g { ?s ?p ?o }
+        }
+      `;
+
+      const response = await authFetch(`${sparqlUrl}?query=${encodeURIComponent(query)}`);
+      expect(response.status).toBe(200);
+
+      const json = await response.json();
+      const graphs = json.results.bindings.map((b: any) => b.g.value);
+
+      // Construct expected metadata graph URI
+      const expectedMeta = `meta:${binaryResource}`;
+      expect(graphs).toContain(expectedMeta);
+
+      // Cleanup
+      await authFetch(binaryResource, { method: 'DELETE' }).catch(() => {});
     });
   });
 

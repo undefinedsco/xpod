@@ -95,7 +95,7 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
   /**
    * Ensure SPARQL UPDATE targets the resource graph (CSS stores documents in named graphs).
    */
-  private normalizeGraphs(updateText: string, identifier: ResourceIdentifier): string {
+  private normalizeGraphs(updateText: string, identifier: ResourceIdentifier): string | undefined {
     const graph = DataFactory.namedNode(identifier.path);
     const identifierStrategy = (this as unknown as { identifierStrategy: { supportsIdentifier: (id: ResourceIdentifier) => boolean }}).identifierStrategy;
 
@@ -166,6 +166,13 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
 
     try {
       const parsed = this.parser.parse(updateText) as unknown as SparqlUpdate;
+
+      // Explicitly reject SPARQL Queries (SELECT, ASK, CONSTRUCT) in PATCH
+      if ((parsed as any).type === 'query') {
+        this.logger.warn(`Received SPARQL Query in PATCH request for ${identifier.path}. SPARQL PATCH only supports UPDATE operations.`);
+        return undefined;
+      }
+
       const collect = (ops: any[], key: 'delete' | 'insert'): any[] =>
         ops.flatMap((op): any[] => {
           const entries = op[key];
