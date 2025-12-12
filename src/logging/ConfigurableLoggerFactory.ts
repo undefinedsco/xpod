@@ -1,4 +1,5 @@
 import { createLogger, format, transports } from 'winston';
+import type { Format } from 'logform';
 import DailyRotateFile from 'winston-daily-rotate-file';
 import type * as Transport from 'winston-transport';
 import type { TransformableInfo } from 'logform';
@@ -66,7 +67,7 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
     ];
   }
 
-  protected getFormat(label: string) {
+  protected getFormat(label: string): Format {
     return format.combine(
       format.label({ label }),
       format.timestamp(),
