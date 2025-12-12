@@ -131,7 +131,7 @@ export class TerminalHttpHandler extends HttpHandler {
     response: HttpResponse,
   ): Promise<void> {
     // Authenticate
-    const credentials = await this.credentialsExtractor.handleSafe({ request } as any);
+    const credentials = await this.credentialsExtractor.handleSafe(request);
     if (!credentials.agent?.webId) {
       this.sendError(response, 401, 'Unauthorized');
       return;
@@ -156,8 +156,13 @@ export class TerminalHttpHandler extends HttpHandler {
     try {
       const session = await this.sessionManager.createSession(userId, sessionRequest);
       
+      // Preserve the base path before sidecarPath (e.g., /alice from /alice/-/terminal/sessions)
+      const requestUrl = new URL(request.url ?? '', `http://${request.headers.host}`);
+      const sidecarIndex = requestUrl.pathname.indexOf(this.sidecarPath);
+      const basePath = sidecarIndex > 0 ? requestUrl.pathname.slice(0, sidecarIndex) : '';
+      
       const wsUrl = new URL(request.url ?? '', `ws://${request.headers.host}`);
-      wsUrl.pathname = `${this.sidecarPath}/sessions/${session.sessionId}/ws`;
+      wsUrl.pathname = `${basePath}${this.sidecarPath}/sessions/${session.sessionId}/ws`;
 
       const responseBody: CreateSessionResponse = {
         sessionId: session.sessionId,
@@ -184,7 +189,7 @@ export class TerminalHttpHandler extends HttpHandler {
     request: HttpRequest,
     response: HttpResponse,
   ): Promise<void> {
-    const credentials = await this.credentialsExtractor.handleSafe({ request } as any);
+    const credentials = await this.credentialsExtractor.handleSafe(request);
     if (!credentials.agent?.webId) {
       this.sendError(response, 401, 'Unauthorized');
       return;
@@ -210,7 +215,7 @@ export class TerminalHttpHandler extends HttpHandler {
     request: HttpRequest,
     response: HttpResponse,
   ): Promise<void> {
-    const credentials = await this.credentialsExtractor.handleSafe({ request } as any);
+    const credentials = await this.credentialsExtractor.handleSafe(request);
     if (!credentials.agent?.webId) {
       this.sendError(response, 401, 'Unauthorized');
       return;
