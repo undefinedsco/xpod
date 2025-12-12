@@ -194,8 +194,28 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
         !hasVariables);
 
       if (simpleOps && deleteTriples.length + insertTriples.length > 0) {
+        const termToString = (term: any): string => {
+          if (term.termType === 'NamedNode') {
+            return `<${term.value}>`;
+          }
+          if (term.termType === 'Literal') {
+            // Handle language tags and datatypes
+            if (term.language) {
+              return `"${term.value}"@${term.language}`;
+            }
+            if (term.datatype && term.datatype.value !== 'http://www.w3.org/2001/XMLSchema#string') {
+              return `"${term.value}"^^<${term.datatype.value}>`;
+            }
+            return `"${term.value}"`;
+          }
+          if (term.termType === 'BlankNode') {
+            return `_:${term.value}`;
+          }
+          // Fallback for unknown term types
+          return `<${term.value}>`;
+        };
         const toTripleStr = (triples: any[]): string =>
-          triples.map((t): string => `<${t.subject.value}> <${t.predicate.value}> <${t.object.value}> .`).join(' ');
+          triples.map((t): string => `${termToString(t.subject)} ${termToString(t.predicate)} ${termToString(t.object)} .`).join(' ');
         let parts: string[] = [];
         if (deleteTriples.length > 0) {
           parts.push(`DELETE DATA { GRAPH <${graph.value}> { ${toTripleStr(deleteTriples)} } }`);

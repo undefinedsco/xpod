@@ -82,4 +82,84 @@ WHERE  { GRAPH <${graph}> { <${resourceUrl}> schema:age ?o . } }`;
     expect(body).toMatch(/<https:\/\/schema\.org\/age>\s+"?99/);
     expect(body).not.toMatch(/<https:\/\/schema\.org\/age>\s+"?20/);
   });
+
+  it('DELETE DATA / INSERT DATA with string literals should not parse literals as IRIs', async () => {
+    // This is the exact bug scenario reported:
+    // String literals like "Alice Example" were being serialized as <Alice Example> (IRIs)
+    const testResource = new URL('literal-data-test.ttl', containerUrl).toString();
+    
+    // Seed with initial data
+    await assertSuccess(await doFetch(testResource, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/turtle' },
+      body: `
+        <${testResource}#profile> <https://schema.org/name> "Alice Example" .
+        <${testResource}#profile> <https://schema.org/age> 30 .
+      `,
+    }), 'seed resource');
+
+    // This is the exact SPARQL UPDATE from the bug report
+    const sparql = `
+DELETE DATA {
+  <${testResource}#profile> <https://schema.org/name> "Alice Example" .
+  <${testResource}#profile> <https://schema.org/age> 30 .
+};
+INSERT DATA {
+  <${testResource}#profile> <https://schema.org/name> "Alice Updated" .
+  <${testResource}#profile> <https://schema.org/age> 31 .
+}`;
+
+    const patchRes = await doFetch(testResource, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/sparql-update' },
+      body: sparql,
+    });
+    await assertSuccess(patchRes, 'sparql patch with DELETE DATA / INSERT DATA');
+
+    // Verify the update worked
+    const res = await doFetch(testResource, { method: 'GET', headers: { accept: 'application/n-quads' } });
+    await assertSuccess(res, 'get resource');
+    const body = await res.text();
+    
+    console.log('Result body:', body);
+    
+    // New values should exist
+    expect(body).toContain('"Alice Updated"');
+    expect(body).toMatch(/"31"/);
+    
+    // Old values should be gone
+    expect(body).not.toContain('"Alice Example"');
+    expect(body).not.toMatch(/"30"/);
+  });
+
+  it('DELETE DATA / INSERT DATA with language-tagged literals', async () => {
+    const testResource = new URL('literal-lang-test.ttl', containerUrl).toString();
+    
+    await assertSuccess(await doFetch(testResource, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/turtle' },
+      body: `<${testResource}#item> <http://www.w3.org/2000/01/rdf-schema#label> "Hello"@en .`,
+    }), 'seed resource');
+
+    const sparql = `
+DELETE DATA {
+  <${testResource}#item> <http://www.w3.org/2000/01/rdf-schema#label> "Hello"@en .
+};
+INSERT DATA {
+  <${testResource}#item> <http://www.w3.org/2000/01/rdf-schema#label> "Bonjour"@fr .
+}`;
+
+    await assertSuccess(await doFetch(testResource, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/sparql-update' },
+      body: sparql,
+    }), 'sparql patch');
+
+    const res = await doFetch(testResource, { method: 'GET', headers: { accept: 'application/n-quads' } });
+    await assertSuccess(res, 'get resource');
+    const body = await res.text();
+    
+    expect(body).toContain('"Bonjour"@fr');
+    expect(body).not.toContain('"Hello"@en');
+  });
 });
