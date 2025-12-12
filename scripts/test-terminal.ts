@@ -9,12 +9,15 @@
  * This script tests:
  * - Direct PTY sessions (no sandbox)
  * - Sandboxed sessions (sandbox-exec on macOS, bubblewrap on Linux)
+ * - End-to-end HTTP + WebSocket API
  */
 
+import http from 'http';
 import { TerminalSession } from '../src/terminal/TerminalSession';
 import { SandboxFactory } from '../src/terminal/sandbox';
 import type { SandboxConfig } from '../src/terminal/sandbox';
-import type { SessionConfig } from '../src/terminal/types';
+import type { SessionConfig, CreateSessionResponse, ServerMessage, ClientMessage } from '../src/terminal/types';
+import WebSocket, { WebSocketServer } from 'ws';
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -377,12 +380,525 @@ async function testSandboxSuite(): Promise<void> {
 }
 
 // ============================================================================
+// End-to-End HTTP + WebSocket Tests
+// ============================================================================
+
+/** Mock credentials extractor that always returns a test user */
+class MockCredentialsExtractor {
+  async handleSafe(): Promise<{ agent?: { webId?: string } }> {
+    return { agent: { webId: 'https://example.com/user/test-user' } };
+  }
+}
+
+/**
+ * Custom TerminalSessionManager for testing that allows /bin/sh
+ */
+class TestTerminalSessionManager {
+  private readonly sessions = new Map<string, TerminalSession>();
+
+  async createSession(
+    userId: string,
+    request: { command: string; args?: string[]; workdir?: string },
+  ): Promise<TerminalSession> {
+    const sessionId = `test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const config: SessionConfig = {
+      command: request.command,
+      args: request.args ?? [],
+      workdir: request.workdir ?? process.cwd(),
+      env: {},
+      timeout: 60,
+    };
+
+    const session = new TerminalSession(sessionId, userId, config, {});
+    this.sessions.set(sessionId, session);
+
+    session.on('exit', () => {
+      this.sessions.delete(sessionId);
+    });
+
+    return session;
+  }
+
+  getSession(sessionId: string): TerminalSession | undefined {
+    return this.sessions.get(sessionId);
+  }
+
+  terminateSession(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.terminate();
+      return true;
+    }
+    return false;
+  }
+
+  terminateAll(): void {
+    for (const session of this.sessions.values()) {
+      session.terminate();
+    }
+    this.sessions.clear();
+  }
+}
+
+/**
+ * Custom TerminalHttpHandler for testing that uses TestTerminalSessionManager
+ */
+class TestTerminalHttpHandler {
+  private readonly sidecarPath = '/-/terminal';
+  private readonly sessionManager = new TestTerminalSessionManager();
+  private wss?: WebSocketServer;
+  private readonly wsConnections = new Map<string, Set<WebSocket>>();
+
+  async canHandle({ request }: { request: http.IncomingMessage }): Promise<void> {
+    const url = new URL(request.url ?? '', `http://${request.headers.host}`);
+    if (!url.pathname.includes(this.sidecarPath)) {
+      throw new Error(`Not a terminal request: ${url.pathname}`);
+    }
+  }
+
+  async handle({
+    request,
+    response,
+  }: {
+    request: http.IncomingMessage;
+    response: http.ServerResponse;
+  }): Promise<void> {
+    const url = new URL(request.url ?? '', `http://${request.headers.host}`);
+    const pathAfterSidecar = url.pathname.split(this.sidecarPath)[1] ?? '';
+
+    if (pathAfterSidecar === '/sessions' || pathAfterSidecar === '/sessions/') {
+      if (request.method === 'POST') {
+        await this.handleCreateSession(request, response);
+      } else {
+        this.sendError(response, 405, 'Method Not Allowed');
+      }
+    } else if (pathAfterSidecar.match(/^\/sessions\/[^/]+$/)) {
+      const sessionId = pathAfterSidecar.split('/')[2];
+      if (request.method === 'GET') {
+        this.handleGetSession(sessionId, response);
+      } else if (request.method === 'DELETE') {
+        this.handleDeleteSession(sessionId, response);
+      } else {
+        this.sendError(response, 405, 'Method Not Allowed');
+      }
+    } else {
+      this.sendError(response, 404, 'Not Found');
+    }
+  }
+
+  handleUpgrade(request: http.IncomingMessage, socket: any, head: Buffer): void {
+    if (!this.wss) {
+      const WebSocketServer = require('ws').WebSocketServer;
+      this.wss = new WebSocketServer({ noServer: true });
+    }
+
+    const url = new URL(request.url ?? '', `http://${request.headers.host}`);
+    const match = url.pathname.match(new RegExp(`${this.sidecarPath}/sessions/([^/]+)/ws`));
+
+    if (!match) {
+      socket.destroy();
+      return;
+    }
+
+    const sessionId = match[1];
+    const session = this.sessionManager.getSession(sessionId);
+
+    if (!session) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    this.wss!.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      this.handleWebSocketConnection(ws, session);
+    });
+  }
+
+  private async handleCreateSession(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+  ): Promise<void> {
+    const body = await this.readBody(request);
+    let sessionRequest: { command: string; args?: string[]; workdir?: string };
+    try {
+      sessionRequest = JSON.parse(body);
+    } catch {
+      this.sendError(response, 400, 'Invalid JSON body');
+      return;
+    }
+
+    const session = await this.sessionManager.createSession(
+      'https://example.com/user/test-user',
+      sessionRequest,
+    );
+
+    const wsUrl = new URL(request.url ?? '', `ws://${request.headers.host}`);
+    wsUrl.pathname = `${this.sidecarPath}/sessions/${session.sessionId}/ws`;
+
+    const responseBody: CreateSessionResponse = {
+      sessionId: session.sessionId,
+      status: session.status,
+      wsUrl: wsUrl.toString(),
+      createdAt: session.createdAt.toISOString(),
+      expiresAt: session.expiresAt.toISOString(),
+    };
+
+    this.sendJson(response, 201, responseBody);
+  }
+
+  private handleGetSession(sessionId: string, response: http.ServerResponse): void {
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session) {
+      this.sendError(response, 404, 'Session not found');
+      return;
+    }
+    this.sendJson(response, 200, session.toJSON());
+  }
+
+  private handleDeleteSession(sessionId: string, response: http.ServerResponse): void {
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session) {
+      this.sendError(response, 404, 'Session not found');
+      return;
+    }
+    this.sessionManager.terminateSession(sessionId);
+    response.writeHead(204);
+    response.end();
+  }
+
+  private handleWebSocketConnection(ws: WebSocket, session: TerminalSession): void {
+    if (!this.wsConnections.has(session.sessionId)) {
+      this.wsConnections.set(session.sessionId, new Set());
+    }
+    this.wsConnections.get(session.sessionId)!.add(ws);
+
+    const dataHandler = (data: string) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const msg: ServerMessage = { type: 'output', data };
+        ws.send(JSON.stringify(msg));
+      }
+    };
+    session.on('data', dataHandler);
+
+    const exitHandler = (code: number, signal?: string) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const msg: ServerMessage = { type: 'exit', code, signal };
+        ws.send(JSON.stringify(msg));
+        ws.close();
+      }
+    };
+    session.on('exit', exitHandler);
+
+    ws.on('message', (data) => {
+      try {
+        const msg: ClientMessage = JSON.parse(data.toString());
+        this.handleClientMessage(session, msg, ws);
+      } catch {
+        // ignore
+      }
+    });
+
+    ws.on('close', () => {
+      session.removeListener('data', dataHandler);
+      session.removeListener('exit', exitHandler);
+      const connections = this.wsConnections.get(session.sessionId);
+      if (connections) {
+        connections.delete(ws);
+        if (connections.size === 0) {
+          this.wsConnections.delete(session.sessionId);
+        }
+      }
+    });
+
+    // Send initial pong
+    const pong: ServerMessage = { type: 'pong' };
+    ws.send(JSON.stringify(pong));
+  }
+
+  private handleClientMessage(session: TerminalSession, msg: ClientMessage, ws: WebSocket): void {
+    switch (msg.type) {
+      case 'input':
+        if (msg.data) session.write(msg.data);
+        break;
+      case 'resize':
+        if (msg.cols && msg.rows) session.resize(msg.cols, msg.rows);
+        break;
+      case 'ping':
+        const pong: ServerMessage = { type: 'pong' };
+        ws.send(JSON.stringify(pong));
+        break;
+    }
+  }
+
+  private sendJson(response: http.ServerResponse, status: number, data: unknown): void {
+    const body = JSON.stringify(data);
+    response.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    });
+    response.end(body);
+  }
+
+  private sendError(response: http.ServerResponse, status: number, message: string): void {
+    this.sendJson(response, status, { error: message });
+  }
+
+  private readBody(request: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => resolve(Buffer.concat(chunks).toString()));
+      request.on('error', reject);
+    });
+  }
+
+  getSessionManager(): TestTerminalSessionManager {
+    return this.sessionManager;
+  }
+}
+
+async function testE2ESuite(): Promise<void> {
+  console.log('\n\x1b[1m[E2E] HTTP + WebSocket API Tests\x1b[0m\n');
+
+  const PORT = 19876;
+  const BASE_URL = `http://localhost:${PORT}`;
+  const WS_URL = `ws://localhost:${PORT}`;
+
+  // Create test handler (allows /bin/sh for testing)
+  const handler = new TestTerminalHttpHandler();
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      await handler.canHandle({ request: req });
+      await handler.handle({ request: req, response: res });
+    } catch (error) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+    }
+  });
+
+  // Handle WebSocket upgrades
+  server.on('upgrade', (request, socket, head) => {
+    handler.handleUpgrade(request, socket, head);
+  });
+
+  // Start server
+  await new Promise<void>((resolve) => {
+    server.listen(PORT, () => resolve());
+  });
+
+  try {
+    // Test 1: Create session via HTTP POST
+    let sessionId: string;
+    let wsUrl: string;
+
+    await runTest('Create session via POST /-/terminal/sessions', async () => {
+      const response = await fetch(`${BASE_URL}/-/terminal/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          command: '/bin/sh',
+          args: [],
+          workdir: process.cwd(),
+        }),
+      });
+
+      if (response.status !== 201) {
+        const body = await response.text();
+        throw new Error(`Expected 201, got ${response.status}: ${body}`);
+      }
+
+      const data: CreateSessionResponse = await response.json();
+      if (!data.sessionId) throw new Error('Missing sessionId');
+      if (!data.wsUrl) throw new Error('Missing wsUrl');
+      if (data.status !== 'active') throw new Error(`Expected status=active, got ${data.status}`);
+
+      sessionId = data.sessionId;
+      wsUrl = data.wsUrl;
+    });
+
+    // Test 2: Get session via HTTP GET
+    await runTest('Get session via GET /-/terminal/sessions/:id', async () => {
+      const response = await fetch(`${BASE_URL}/-/terminal/sessions/${sessionId}`);
+
+      if (response.status !== 200) {
+        throw new Error(`Expected 200, got ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.sessionId !== sessionId) throw new Error('Session ID mismatch');
+      if (data.status !== 'active') throw new Error(`Expected status=active, got ${data.status}`);
+    });
+
+    // Test 3: Connect WebSocket and receive pong
+    await runTest('Connect WebSocket and receive initial pong', async () => {
+      const ws = new WebSocket(`${WS_URL}/-/terminal/sessions/${sessionId}/ws`);
+
+      const message = await new Promise<ServerMessage>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('WebSocket timeout')), 5000);
+        ws.on('message', (data) => {
+          clearTimeout(timeout);
+          resolve(JSON.parse(data.toString()));
+        });
+        ws.on('error', reject);
+      });
+
+      ws.close();
+
+      if (message.type !== 'pong') {
+        throw new Error(`Expected pong, got ${message.type}`);
+      }
+    });
+
+    // Test 4: Send command via WebSocket and receive output
+    await runTest('Send command via WebSocket and receive output', async () => {
+      const ws = new WebSocket(`${WS_URL}/-/terminal/sessions/${sessionId}/ws`);
+      const messages: ServerMessage[] = [];
+      const marker = `E2E_MARKER_${Date.now()}`;
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => {
+          // Wait for initial pong, then send command
+          setTimeout(() => {
+            const input: ClientMessage = { type: 'input', data: `echo "${marker}"\n` };
+            ws.send(JSON.stringify(input));
+          }, 200);
+        });
+
+        ws.on('message', (data) => {
+          const msg: ServerMessage = JSON.parse(data.toString());
+          messages.push(msg);
+        });
+
+        ws.on('error', reject);
+
+        // Wait for output
+        setTimeout(() => {
+          ws.close();
+          resolve();
+        }, 1500);
+      });
+
+      const outputs = messages.filter((m) => m.type === 'output').map((m) => m.data).join('');
+      if (!outputs.includes(marker)) {
+        throw new Error(`Expected marker '${marker}' in output, got: ${outputs.slice(0, 100)}`);
+      }
+    });
+
+    // Test 5: Resize via WebSocket
+    await runTest('Send resize via WebSocket', async () => {
+      const ws = new WebSocket(`${WS_URL}/-/terminal/sessions/${sessionId}/ws`);
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => {
+          const resize: ClientMessage = { type: 'resize', cols: 120, rows: 40 };
+          ws.send(JSON.stringify(resize));
+          setTimeout(() => {
+            ws.close();
+            resolve();
+          }, 200);
+        });
+        ws.on('error', reject);
+      });
+    });
+
+    // Test 6: Ping/Pong
+    await runTest('Ping/Pong via WebSocket', async () => {
+      const ws = new WebSocket(`${WS_URL}/-/terminal/sessions/${sessionId}/ws`);
+
+      const pongReceived = await new Promise<boolean>((resolve, reject) => {
+        let gotInitialPong = false;
+
+        ws.on('open', () => {
+          // Wait for initial pong first
+        });
+
+        ws.on('message', (data) => {
+          const msg: ServerMessage = JSON.parse(data.toString());
+          if (msg.type === 'pong') {
+            if (!gotInitialPong) {
+              // Initial pong, now send our ping
+              gotInitialPong = true;
+              const ping: ClientMessage = { type: 'ping' };
+              ws.send(JSON.stringify(ping));
+            } else {
+              // Response to our ping
+              ws.close();
+              resolve(true);
+            }
+          }
+        });
+
+        ws.on('error', reject);
+        setTimeout(() => {
+          ws.close();
+          resolve(false);
+        }, 3000);
+      });
+
+      if (!pongReceived) {
+        throw new Error('Did not receive pong response');
+      }
+    });
+
+    // Test 7: Delete session via HTTP DELETE
+    await runTest('Delete session via DELETE /-/terminal/sessions/:id', async () => {
+      const response = await fetch(`${BASE_URL}/-/terminal/sessions/${sessionId}`, {
+        method: 'DELETE',
+      });
+
+      if (response.status !== 204) {
+        throw new Error(`Expected 204, got ${response.status}`);
+      }
+    });
+
+    // Test 8: Verify session is gone
+    await runTest('Verify deleted session returns 404', async () => {
+      const response = await fetch(`${BASE_URL}/-/terminal/sessions/${sessionId}`);
+
+      if (response.status !== 404) {
+        throw new Error(`Expected 404, got ${response.status}`);
+      }
+    });
+
+    // Test 9: WebSocket to non-existent session
+    await runTest('WebSocket to non-existent session fails', async () => {
+      const ws = new WebSocket(`${WS_URL}/-/terminal/sessions/non-existent-session/ws`);
+
+      const closed = await new Promise<boolean>((resolve) => {
+        ws.on('error', () => resolve(true));
+        ws.on('close', () => resolve(true));
+        ws.on('open', () => resolve(false));
+        setTimeout(() => resolve(false), 2000);
+      });
+
+      if (!closed) {
+        ws.close();
+        throw new Error('Expected WebSocket to fail');
+      }
+    });
+
+    // Test 10: 404 for unknown path
+    await runTest('Unknown path returns 404', async () => {
+      const response = await fetch(`${BASE_URL}/-/terminal/unknown`);
+      if (response.status !== 404) {
+        throw new Error(`Expected 404, got ${response.status}`);
+      }
+    });
+  } finally {
+    // Cleanup
+    server.close();
+    handler.getSessionManager().terminateAll();
+  }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
 async function main() {
   console.log('\n\x1b[1m╔══════════════════════════════════════════════════════════╗\x1b[0m');
-  console.log('\x1b[1m║        Terminal PTY Integration Tests                    ║\x1b[0m');
+  console.log('\x1b[1m║           Terminal Integration Tests                     ║\x1b[0m');
   console.log('\x1b[1m╚══════════════════════════════════════════════════════════╝\x1b[0m');
 
   // Run no-sandbox tests
@@ -390,6 +906,9 @@ async function main() {
 
   // Run sandbox tests
   await testSandboxSuite();
+
+  // Run E2E tests
+  await testE2ESuite();
 
   // Summary
   const passed = results.filter((r) => r.passed).length;

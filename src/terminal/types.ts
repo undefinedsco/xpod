@@ -89,7 +89,10 @@ export interface ServerMessage {
 }
 
 // Trusted agents whitelist
-export const TRUSTED_AGENTS = ['claude', 'codex', 'aider'] as const;
+export const TRUSTED_AGENTS = [
+  'claude', 'codex', 'aider', 'codebuddy', 'gemini',
+  '/bin/sh', '/bin/bash', 'sh', 'bash',
+] as const;
 export type TrustedAgent = typeof TRUSTED_AGENTS[number];
 
 export function isTrustedAgent(command: string): command is TrustedAgent {

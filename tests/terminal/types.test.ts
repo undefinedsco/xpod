@@ -41,12 +41,20 @@ describe('Terminal Types', () => {
       expect(isTrustedAgent('aider')).toBe(true);
     });
 
-    it('returns false for bash', () => {
-      expect(isTrustedAgent('bash')).toBe(false);
+    it('returns true for bash', () => {
+      expect(isTrustedAgent('bash')).toBe(true);
     });
 
-    it('returns false for sh', () => {
-      expect(isTrustedAgent('sh')).toBe(false);
+    it('returns true for sh', () => {
+      expect(isTrustedAgent('sh')).toBe(true);
+    });
+
+    it('returns true for codebuddy', () => {
+      expect(isTrustedAgent('codebuddy')).toBe(true);
+    });
+
+    it('returns true for gemini', () => {
+      expect(isTrustedAgent('gemini')).toBe(true);
     });
 
     it('returns false for arbitrary command', () => {
