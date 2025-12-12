@@ -1,8 +1,8 @@
 import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import { DrizzleIndexedStorage } from '../../src/identity/drizzle/DrizzleIndexedStorage';
+import { createTestDir } from '../utils/sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 // Use local SQLite for self-contained testing
 const suite = describe;
@@ -13,8 +13,8 @@ suite('DrizzleIndexedStorage integration (SQLite)', () => {
   let dbPath: string;
 
   beforeAll(async () => {
-    // Create a temp directory for the test database
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'drizzle-test-'));
+    // Create a temp directory for the test database in .test-data/
+    tmpDir = createTestDir('drizzle');
     dbPath = path.join(tmpDir, 'identity.sqlite');
     const testDbUrl = `sqlite:${dbPath}`;
 
@@ -26,10 +26,8 @@ suite('DrizzleIndexedStorage integration (SQLite)', () => {
   });
 
   afterAll(async () => {
-    // Cleanup temp directory
-    if (tmpDir && fs.existsSync(tmpDir)) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    // Cleanup is handled by yarn clean:test
+    // Individual test cleanup is optional since all test data goes to .test-data/
   });
 
   describe('key-value storage operations', () => {

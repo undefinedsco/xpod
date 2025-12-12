@@ -9,6 +9,13 @@ export default defineConfig({
       [ 'tests/storage/**', 'node' ],
       [ 'tests/identity/**', 'node' ],
     ],
+    // Exclude PTY integration tests - they crash vitest due to node-pty + V8 threading issues
+    // Run them separately with: npx ts-node scripts/test-terminal-pty.ts
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'tests/terminal/*.integration.test.ts',
+    ],
     globals: true,
     coverage: {
       enabled: coverageEnabled,

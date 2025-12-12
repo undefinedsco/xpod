@@ -1,0 +1,22 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+  ],
+  "@graph": [
+    {
+      "comment": "Terminal Sidecar HTTP Handler - manages PTY sessions for trusted AI agents",
+      "@id": "urn:undefineds:xpod:TerminalHttpHandler",
+      "@type": "TerminalHttpHandler",
+      "sidecarPath": "/-/terminal",
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "maxSessionsPerUser": 5,
+      "maxTotalSessions": 100,
+      "defaultTimeout": 3600,
+      "maxTimeout": 86400,
+      "defaultWorkdir": "/workspace"
+    }
+  ]
+}

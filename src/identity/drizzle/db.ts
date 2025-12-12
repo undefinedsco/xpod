@@ -55,11 +55,24 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
 
   if (isSqliteUrl(connectionString)) {
     const filename = connectionString.replace('sqlite:', '');
-    const directory = path.dirname(filename);
-    if (directory && !fs.existsSync(directory)) {
-      fs.mkdirSync(directory, { recursive: true });
+    const isMemory = filename === ':memory:' || filename.startsWith(':memory:');
+    if (!isMemory) {
+      const directory = path.dirname(filename);
+      if (directory && !fs.existsSync(directory)) {
+        fs.mkdirSync(directory, { recursive: true });
+      }
     }
-    const sqlite = new Database(filename);
+    const sqlite = new Database(isMemory ? ':memory:' : filename);
+
+    // Apply pragmas for better concurrency (prevents SQLITE_BUSY errors)
+    // WAL mode allows concurrent reads during writes
+    // busy_timeout waits up to 5 seconds before throwing SQLITE_BUSY
+    if (!isMemory) {
+      sqlite.pragma('journal_mode = WAL');
+      sqlite.pragma('busy_timeout = 5000');
+      sqlite.pragma('synchronous = NORMAL');
+    }
+
     const db = drizzleSqlite(sqlite);
 
     // Create tables if they don't exist

@@ -1,15 +1,15 @@
-import path from 'path';
 import fs from 'fs';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Quadstore } from 'quadstore';
 import { DataFactory } from 'n3';
 import { getBackend } from '../../src/libs/backends';
+import { getTestDataPath } from '../utils/sqlite';
 
 const { namedNode, literal, quad } = DataFactory;
 
 describe('Quadstore + SQLUp Integration', () => {
-  const testDir = path.join(__dirname, '../../data/test/quadstore_sqlup');
-  const dbPath = path.join(testDir, 'test.sqlite');
+  const testDir = getTestDataPath('quadstore_sqlup');
+  const dbPath = getTestDataPath('quadstore_sqlup', 'test.sqlite');
   const endpoint = `sqlite:${dbPath}`;
 
   beforeEach(async () => {

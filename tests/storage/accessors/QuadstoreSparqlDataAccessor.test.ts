@@ -1,5 +1,5 @@
-import path from 'path';
 import fs from 'fs';
+import path from 'path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DataFactory } from 'n3';
 import { Readable } from 'stream';
@@ -15,11 +15,12 @@ import { Quadstore } from 'quadstore';
 import { Engine } from 'quadstore-comunica';
 import { getBackend } from '../../../src/libs/backends';
 import arrayifyStream from 'arrayify-stream';
+import { getTestDataPath } from '../../utils/sqlite';
 
 const { namedNode, quad, literal, variable } = DataFactory;
 
 describe('QuadstoreSparqlDataAccessor', () => {
-  const testDir = path.join(__dirname, '../../../data/test/quadstore_accessor');
+  const testDir = getTestDataPath('quadstore_accessor');
   
   const mockIdentifierStrategy = {
     isRootContainer: vi.fn(),
@@ -118,7 +119,7 @@ describe('QuadstoreSparqlDataAccessor', () => {
 });
 
 describe('Quadstore Engine Direct SPARQL Capability', () => {
-    const testDir = path.join(__dirname, '../../../data/test/quadstore_engine');
+    const testDir = getTestDataPath('quadstore_engine');
     
     let store: Quadstore;
     let engine: Engine;

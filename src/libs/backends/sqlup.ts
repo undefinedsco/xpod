@@ -78,15 +78,36 @@ async function initSharedState(url: string, format: 'buffer' | 'view' | 'utf8'):
 
   if (isSqlite) {
     const filename = url.replace('sqlite:', '');
-    const directory = path.dirname(filename);
-    if (!fs.existsSync(directory)) {
-      fs.mkdirSync(directory, { recursive: true });
+    const isMemory = filename === ':memory:' || filename.startsWith(':memory:');
+    if (!isMemory) {
+      const directory = path.dirname(filename);
+      if (directory && directory !== '.' && !fs.existsSync(directory)) {
+        fs.mkdirSync(directory, { recursive: true });
+      }
     }
     db = knex({
       client: 'sqlite3',
-      connection: { filename },
+      connection: { filename: isMemory ? ':memory:' : filename },
       useNullAsDefault: true,
-      pool: { min: 1, max: 5 },
+      pool: {
+        min: 1,
+        max: 5,
+        // Apply pragmas for better concurrency (prevents SQLITE_BUSY errors)
+        afterCreate: (conn: any, done: (err: Error | null, conn: any) => void) => {
+          // WAL mode allows concurrent reads during writes
+          conn.run('PRAGMA journal_mode = WAL', (err: Error | null) => {
+            if (err) return done(err, conn);
+            // Wait up to 5 seconds before throwing SQLITE_BUSY
+            conn.run('PRAGMA busy_timeout = 5000', (err2: Error | null) => {
+              if (err2) return done(err2, conn);
+              // NORMAL synchronous is safe with WAL and faster than FULL
+              conn.run('PRAGMA synchronous = NORMAL', (err3: Error | null) => {
+                done(err3, conn);
+              });
+            });
+          });
+        },
+      },
     });
   } else if (parsedUrl.protocol === 'postgresql:') {
     db = knex({
