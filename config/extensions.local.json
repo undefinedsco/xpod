@@ -4,7 +4,8 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
   ],
   "import": [
-    "./xpod.json"
+    "./xpod.json",
+    "./terminal.json"
   ],
   "@graph": [
     {
@@ -81,6 +82,9 @@
       "overrideParameters": {
         "@type": "WaterfallHandler",
         "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:TerminalHttpHandler"
+          },
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },

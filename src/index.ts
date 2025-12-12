@@ -15,6 +15,7 @@ import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHa
 import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
 import { SignalInterceptHttpHandler } from './http/SignalInterceptHttpHandler';
 import { RequestIdHttpHandler } from './http/RequestIdHttpHandler';
+import { TerminalHttpHandler } from './http/terminal/TerminalHttpHandler';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
@@ -67,6 +68,7 @@ export {
     EdgeNodeProxyHttpHandler,
     SignalInterceptHttpHandler,
     EdgeNodeCertificateHttpHandler,
+    TerminalHttpHandler,
     ReservedSuffixIdentifierGenerator,
     DrizzleIndexedStorage,
     PostgresKeyValueStorage,
