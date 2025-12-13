@@ -11,6 +11,7 @@ import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { EdgeNodeSignalHttpHandler } from './http/admin/EdgeNodeSignalHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
+import { ClusterWebSocketConfigurator } from './http/ClusterWebSocketConfigurator';
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
 import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
 import { SignalInterceptHttpHandler } from './http/SignalInterceptHttpHandler';
@@ -64,6 +65,7 @@ export {
     QuotaAdminHttpHandler,
     EdgeNodeSignalHttpHandler,
     ClusterIngressRouter,
+    ClusterWebSocketConfigurator,
     EdgeNodeDirectDebugHttpHandler,
     EdgeNodeProxyHttpHandler,
     SignalInterceptHttpHandler,

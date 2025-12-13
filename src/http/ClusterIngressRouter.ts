@@ -3,12 +3,10 @@ import { Readable } from 'node:stream';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpResponse } from '@solid/community-server';
 import {
-  BadRequestHttpError,
   NotImplementedHttpError,
   InternalServerError,
   getLoggerFor,
 } from '@solid/community-server';
-import type { ComponentsManagerBuilder } from 'componentsjs';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
 
@@ -28,6 +26,8 @@ interface ClusterIngressRouterOptions {
  * 1. 所有节点子域名DNS都指向集群入口
  * 2. 认证请求路由到集群IDP  
  * 3. 数据请求根据节点模式智能路由（307重定向 vs 代理）
+ * 
+ * Note: WebSocket 代理由 ClusterWebSocketConfigurator 处理
  */
 export class ClusterIngressRouter extends HttpHandler {
   protected readonly logger = getLoggerFor(this);
