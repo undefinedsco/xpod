@@ -59,6 +59,16 @@
         },
         {
           "@type": "YargsParameter",
+          "name": "cachePath",
+          "options": { "type": "string", "hidden": true }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "cacheMaxSize",
+          "options": { "type": "string", "hidden": true }
+        },
+        {
+          "@type": "YargsParameter",
           "name": "redisClient",
           "options": { "type": "string", "hidden": true }
         },
