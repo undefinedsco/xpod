@@ -490,17 +490,19 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
     this.logger.verbose(`Executing SPARQL CONSTRUCT on ${this.publicEndpoint}: ${query}`);
     await this.waitForStoreReady();
     const result = await this.engine.queryQuads(query);
-    const readable = new Readable({
-      objectMode: true,
-      read() {
-        result.on('data', (quad): void => {
-          this.push(quad);
-        });
-        result.on('end', (): void => {
-          this.push(null);
-        });
-      },
+    const readable = new Readable({ objectMode: true, read() {} });
+
+    // Register event listeners once, outside of read() to avoid memory leak
+    result.on('data', (quad): void => {
+      readable.push(quad);
     });
+    result.on('end', (): void => {
+      readable.push(null);
+    });
+    result.on('error', (error): void => {
+      readable.emit('error', error);
+    });
+
     return guardStream(readable);
   }
 

@@ -379,8 +379,10 @@ export class SQLUp<T extends TFormat, K = string, V = string> extends AbstractLe
   }
 }
 
+// Shared logger for all SQLUpIterator instances to avoid memory leak
+const iteratorLogger = getLoggerFor('SQLUpIterator');
+
 class SQLUpIterator<T extends TFormat, K, V> extends AbstractIterator<SQLUp<T, K, V>, K, V> {
-  private logger: Logger;
   private options: AbstractIteratorOptions<K, V>;
   private knex: Knex;
   private tableName: string;
@@ -390,16 +392,11 @@ class SQLUpIterator<T extends TFormat, K, V> extends AbstractIterator<SQLUp<T, K
 
   constructor(db: SQLUp<T, K, V>, options: AbstractIteratorOptions<K, V>) {
     super(db, options);
-    this.logger = getLoggerFor(`${this.constructor.name}-${this.getUniqueId()}`);
     this.options = options;
     this.knex = db.getKnex();
     this.tableName = db.getTableName();
-    this.logger.debug(`constructor: ${this.tableName}`);
+    iteratorLogger.debug(`constructor: ${this.tableName}`);
     this.stream = this.createStream();
-  }
-
-  private getUniqueId(): string {
-    return Math.random().toString(36).substr(2, 9);
   }
 
   private async *createStream(): AsyncGenerator<[T, T]> {
@@ -431,11 +428,11 @@ class SQLUpIterator<T extends TFormat, K, V> extends AbstractIterator<SQLUp<T, K
         cnt++;
       }
     } catch (err: any) {
-      this.logger.error(`error: ${this.tableName}, ${err}`);
+      iteratorLogger.error(`error: ${this.tableName}, ${err}`);
     } finally {
       this.rawStream = undefined;
       const end = Date.now();
-      this.logger.debug(`done: ${this.tableName}, time: ${end - start}ms, count: ${cnt}`);
+      iteratorLogger.debug(`done: ${this.tableName}, time: ${end - start}ms, count: ${cnt}`);
     }
   }
 
