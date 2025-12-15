@@ -2,7 +2,7 @@ import { createReadStream, createWriteStream, existsSync, mkdirSync, statSync, u
 import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { Client, BucketItemStat } from 'minio';
+import { Client, BucketItemStat, CopyConditions } from 'minio';
 import type { DataAccessor } from '@solid/community-server';
 import {
   RepresentationMetadata,
@@ -30,6 +30,7 @@ import type {
   Representation,
   MetadataRecord
 } from '@solid/community-server';
+import type { MigratableDataAccessor, MigrationProgress } from '../MigratableDataAccessor';
 
 interface CacheEntry {
   path: string;
@@ -45,6 +46,10 @@ interface TieredMinioDataAccessorConfig {
   bucketName: string;
   cachePath: string;
   cacheMaxSize: number; // bytes
+  /** Current region identifier (e.g., "bj", "gz", "sh") */
+  region?: string;
+  /** Map of region identifier to bucket name for cross-region migration */
+  regionBuckets?: Record<string, string>;
 }
 
 /**
@@ -54,18 +59,25 @@ interface TieredMinioDataAccessorConfig {
  * Write: Write to COS first (ensure durability), then cache locally.
  * 
  * Uses LRU eviction when cache exceeds maxSize.
+ * 
+ * Supports cross-region migration via MigratableDataAccessor interface.
  */
-export class TieredMinioDataAccessor implements DataAccessor {
+export class TieredMinioDataAccessor implements MigratableDataAccessor {
   protected readonly logger = getLoggerFor(this);
   protected readonly resourceMapper: FileIdentifierMapper;
   private readonly client: Client;
   private readonly bucketName: string;
   private readonly cachePath: string;
   private readonly cacheMaxSize: number;
+  private readonly region?: string;
+  private readonly regionBuckets: Record<string, string>;
   
   // LRU tracking: Map<cacheFilePath, lastAccessTime>
   private readonly cacheEntries: Map<string, CacheEntry> = new Map();
   private currentCacheSize = 0;
+  
+  // Active sync subscriptions for migration
+  private readonly activeSyncs = new Map<string, { prefix: string; targetBucket: string }>();
 
   public constructor(config: TieredMinioDataAccessorConfig) {
     this.resourceMapper = config.resourceMapper;
@@ -78,6 +90,8 @@ export class TieredMinioDataAccessor implements DataAccessor {
     this.bucketName = config.bucketName;
     this.cachePath = config.cachePath;
     this.cacheMaxSize = config.cacheMaxSize;
+    this.region = config.region;
+    this.regionBuckets = config.regionBuckets ?? {};
     
     // Ensure cache directory exists
     if (!existsSync(this.cachePath)) {
@@ -385,6 +399,26 @@ export class TieredMinioDataAccessor implements DataAccessor {
       this.logger.warn(`Failed to write cache ${identifier.path}: ${error}`);
       // Cache failure is non-fatal
     }
+
+    // Replicate to sync targets (for active migrations)
+    const syncTargets = this.getActiveSyncTargets(url.pathname);
+    for (const targetBucket of syncTargets) {
+      try {
+        const { Readable } = require('node:stream');
+        const syncStream = Readable.from(buffer);
+        await this.client.putObject(
+          targetBucket,
+          url.pathname,
+          syncStream,
+          buffer.length,
+          itemMetadata || undefined,
+        );
+        this.logger.debug(`Synced to ${targetBucket}: ${url.pathname}`);
+      } catch (error) {
+        this.logger.warn(`Failed to sync ${url.pathname} to ${targetBucket}: ${error}`);
+        // Sync failure is non-fatal, migration will catch up
+      }
+    }
   }
 
   public async writeContainer(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
@@ -421,6 +455,17 @@ export class TieredMinioDataAccessor implements DataAccessor {
         this.removeFromCacheTracking(cacheFilePath);
       } catch (error) {
         this.logger.warn(`Failed to delete cache ${identifier.path}: ${error}`);
+      }
+    }
+
+    // Sync delete to migration targets
+    const syncTargets = this.getActiveSyncTargets(url.pathname);
+    for (const targetBucket of syncTargets) {
+      try {
+        await this.client.removeObject(targetBucket, url.pathname);
+        this.logger.debug(`Synced delete to ${targetBucket}: ${url.pathname}`);
+      } catch (error) {
+        this.logger.warn(`Failed to sync delete ${url.pathname} to ${targetBucket}: ${error}`);
       }
     }
   }
@@ -491,5 +536,138 @@ export class TieredMinioDataAccessor implements DataAccessor {
       size: this.currentCacheSize,
       maxSize: this.cacheMaxSize,
     };
+  }
+
+  // ============== MigratableDataAccessor Implementation ==============
+
+  /**
+   * Check if migration is supported.
+   * Migration requires region configuration and region-to-bucket mapping.
+   */
+  public supportsMigration(): boolean {
+    return this.region !== undefined && Object.keys(this.regionBuckets).length > 0;
+  }
+
+  /**
+   * Migrate all objects under the given prefix to a target region's bucket.
+   * Uses Minio server-side copy for efficiency (data doesn't pass through this node).
+   */
+  public async migrateToRegion(
+    prefix: string,
+    targetRegion: string,
+    onProgress?: (progress: MigrationProgress) => void,
+  ): Promise<void> {
+    if (!this.supportsMigration()) {
+      throw new Error('Migration not supported: region configuration missing');
+    }
+
+    const targetBucket = this.regionBuckets[targetRegion];
+    if (!targetBucket) {
+      throw new Error(`Unknown target region: ${targetRegion}. Available regions: ${Object.keys(this.regionBuckets).join(', ')}`);
+    }
+
+    if (targetBucket === this.bucketName) {
+      this.logger.info(`Source and target bucket are the same (${this.bucketName}), skipping migration`);
+      onProgress?.({ copied: 0, total: 0, bytesTransferred: 0 });
+      return;
+    }
+
+    this.logger.info(`Starting migration: prefix=${prefix}, source=${this.bucketName}, target=${targetBucket}`);
+
+    // Normalize prefix (remove leading slash for Minio)
+    const objectPrefix = prefix.startsWith('/') ? prefix.slice(1) : prefix;
+
+    // 1. List all objects to migrate
+    const objects: Array<{ name: string; size: number }> = [];
+    const stream = this.client.listObjectsV2(this.bucketName, objectPrefix, true);
+    
+    for await (const obj of stream) {
+      if (obj.name) {
+        objects.push({ name: obj.name, size: obj.size ?? 0 });
+      }
+    }
+
+    this.logger.info(`Found ${objects.length} objects to migrate`);
+
+    if (objects.length === 0) {
+      onProgress?.({ copied: 0, total: 0, bytesTransferred: 0 });
+      return;
+    }
+
+    // 2. Copy each object using server-side copy
+    let copied = 0;
+    let bytesTransferred = 0;
+
+    for (const obj of objects) {
+      try {
+        // Minio copyObject uses server-side copy when source and target are on same cluster
+        const copySource = `/${this.bucketName}/${obj.name}`;
+        await this.client.copyObject(targetBucket, obj.name, copySource, new CopyConditions());
+        
+        copied++;
+        bytesTransferred += obj.size;
+        
+        onProgress?.({
+          copied,
+          total: objects.length,
+          bytesTransferred,
+        });
+
+        this.logger.debug(`Copied: ${obj.name} (${copied}/${objects.length})`);
+      } catch (error) {
+        this.logger.error(`Failed to copy object ${obj.name}: ${(error as Error).message}`);
+        throw error;
+      }
+    }
+
+    this.logger.info(`Migration completed: ${copied} objects, ${this.formatBytes(bytesTransferred)}`);
+  }
+
+  /**
+   * Set up real-time sync during migration.
+   * 
+   * Note: Full implementation would use Minio Bucket Notifications to replicate
+   * new writes to the target bucket. For now, we track active syncs and replicate
+   * writes in writeDocument().
+   */
+  public async setupRealtimeSync(prefix: string, targetRegion: string): Promise<void> {
+    if (!this.supportsMigration()) {
+      throw new Error('Migration not supported: region configuration missing');
+    }
+
+    const targetBucket = this.regionBuckets[targetRegion];
+    if (!targetBucket) {
+      throw new Error(`Unknown target region: ${targetRegion}`);
+    }
+
+    const syncKey = `${prefix}:${targetRegion}`;
+    this.activeSyncs.set(syncKey, { prefix, targetBucket });
+    
+    this.logger.info(`Real-time sync enabled: prefix=${prefix}, target=${targetBucket}`);
+  }
+
+  /**
+   * Stop real-time sync after migration completes.
+   */
+  public async stopRealtimeSync(prefix: string, targetRegion: string): Promise<void> {
+    const syncKey = `${prefix}:${targetRegion}`;
+    this.activeSyncs.delete(syncKey);
+    
+    this.logger.info(`Real-time sync disabled: prefix=${prefix}, targetRegion=${targetRegion}`);
+  }
+
+  /**
+   * Check if a write should be replicated to sync targets.
+   */
+  private getActiveSyncTargets(path: string): string[] {
+    const targets: string[] = [];
+    
+    for (const [, sync] of this.activeSyncs) {
+      if (path.startsWith(sync.prefix)) {
+        targets.push(sync.targetBucket);
+      }
+    }
+    
+    return targets;
   }
 }

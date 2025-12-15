@@ -45,6 +45,8 @@ import { TieredMinioDataAccessor } from './storage/accessors/TieredMinioDataAcce
 import { PodMigrationHttpHandler } from './http/cluster/PodMigrationHttpHandler';
 import { PodMigrationService } from './service/PodMigrationService';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
+export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
+export { isMigratableAccessor } from './storage/MigratableDataAccessor';
 export type {
   DnsProvider,
   ListDnsRecordsInput,
