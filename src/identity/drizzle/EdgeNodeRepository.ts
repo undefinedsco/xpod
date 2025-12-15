@@ -6,6 +6,7 @@ import { edgeNodes } from './schema';
 export interface EdgeNodeSummary {
   nodeId: string;
   displayName?: string;
+  nodeType: 'center' | 'edge';
   podCount: number;
   createdAt?: string;
   updatedAt?: string;
@@ -23,7 +24,17 @@ export interface EdgeNodeSecret {
   nodeId: string;
   displayName?: string;
   tokenHash: string;
+  nodeType: 'center' | 'edge';
   metadata?: Record<string, unknown> | null;
+}
+
+export interface CenterNodeInfo {
+  nodeId: string;
+  displayName?: string;
+  internalIp: string;
+  internalPort: number;
+  connectivityStatus: 'unknown' | 'reachable' | 'unreachable';
+  lastSeen?: Date;
 }
 
 export class EdgeNodeRepository {
@@ -33,6 +44,7 @@ export class EdgeNodeRepository {
     const result = await this.db.execute(sql`
       SELECT en.id,
              en.display_name,
+             en.node_type,
              en.created_at,
              en.updated_at,
              en.last_seen,
@@ -50,6 +62,7 @@ export class EdgeNodeRepository {
     return result.rows.map((row: any): EdgeNodeSummary => ({
       nodeId: String(row.id),
       displayName: row.display_name == null ? undefined : String(row.display_name),
+      nodeType: (row.node_type === 'center' ? 'center' : 'edge') as 'center' | 'edge',
       podCount: Number(row.pod_count ?? 0),
       createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : undefined,
       updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : undefined,
@@ -78,7 +91,7 @@ export class EdgeNodeRepository {
 
   public async getNodeSecret(nodeId: string): Promise<EdgeNodeSecret | undefined> {
     const result = await this.db.execute(sql`
-      SELECT id, display_name, token_hash, metadata
+      SELECT id, display_name, token_hash, node_type, metadata
       FROM identity_edge_node
       WHERE id = ${nodeId}
       LIMIT 1
@@ -91,6 +104,7 @@ export class EdgeNodeRepository {
       nodeId: String(row.id),
       displayName: row.display_name == null ? undefined : String(row.display_name),
       tokenHash: String(row.token_hash ?? ''),
+      nodeType: (row.node_type === 'center' ? 'center' : 'edge') as 'center' | 'edge',
       metadata: row.metadata ?? null,
     };
   }
@@ -345,5 +359,159 @@ export class EdgeNodeRepository {
         connectivityStatus: row.connectivityStatus,
       };
     });
+  }
+
+  // ============ Center Node Methods ============
+
+  /**
+   * Register or update a center node in the cluster.
+   * Center nodes use the same table as edge nodes but with nodeType='center'.
+   */
+  public async registerCenterNode(options: {
+    nodeId: string;
+    displayName?: string;
+    internalIp: string;
+    internalPort: number;
+  }): Promise<{ nodeId: string; token: string }> {
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const now = new Date();
+
+    // Use upsert pattern: INSERT ... ON CONFLICT UPDATE
+    await this.db.execute(sql`
+      INSERT INTO identity_edge_node (
+        id, display_name, token_hash, node_type, internal_ip, internal_port,
+        connectivity_status, created_at, updated_at, last_seen
+      )
+      VALUES (
+        ${options.nodeId}, ${options.displayName ?? null}, ${tokenHash}, 'center',
+        ${options.internalIp}, ${options.internalPort}, 'unknown', ${now}, ${now}, ${now}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        display_name = EXCLUDED.display_name,
+        internal_ip = EXCLUDED.internal_ip,
+        internal_port = EXCLUDED.internal_port,
+        updated_at = EXCLUDED.updated_at,
+        last_seen = EXCLUDED.last_seen
+    `);
+
+    return { nodeId: options.nodeId, token };
+  }
+
+  /**
+   * Update center node heartbeat with internal endpoint info.
+   */
+  public async updateCenterNodeHeartbeat(
+    nodeId: string,
+    internalIp: string,
+    internalPort: number,
+    timestamp: Date,
+  ): Promise<void> {
+    await this.db.execute(sql`
+      UPDATE identity_edge_node
+      SET internal_ip = ${internalIp},
+          internal_port = ${internalPort},
+          last_seen = ${timestamp},
+          updated_at = ${timestamp},
+          connectivity_status = 'reachable'
+      WHERE id = ${nodeId} AND node_type = 'center'
+    `);
+  }
+
+  /**
+   * List all center nodes in the cluster.
+   */
+  public async listCenterNodes(): Promise<CenterNodeInfo[]> {
+    const result = await this.db.execute(sql`
+      SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
+      FROM identity_edge_node
+      WHERE node_type = 'center'
+      ORDER BY created_at ASC
+    `);
+
+    return result.rows.map((row: any): CenterNodeInfo => ({
+      nodeId: String(row.id),
+      displayName: row.display_name == null ? undefined : String(row.display_name),
+      internalIp: String(row.internal_ip ?? ''),
+      internalPort: Number(row.internal_port ?? 0),
+      connectivityStatus: (row.connectivity_status ?? 'unknown') as 'unknown' | 'reachable' | 'unreachable',
+      lastSeen: row.last_seen instanceof Date ? row.last_seen : undefined,
+    }));
+  }
+
+  /**
+   * Get a specific center node by ID.
+   */
+  public async getCenterNode(nodeId: string): Promise<CenterNodeInfo | undefined> {
+    const result = await this.db.execute(sql`
+      SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
+      FROM identity_edge_node
+      WHERE id = ${nodeId} AND node_type = 'center'
+      LIMIT 1
+    `);
+
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+
+    const row = result.rows[0];
+    return {
+      nodeId: String(row.id),
+      displayName: row.display_name == null ? undefined : String(row.display_name),
+      internalIp: String(row.internal_ip ?? ''),
+      internalPort: Number(row.internal_port ?? 0),
+      connectivityStatus: (row.connectivity_status ?? 'unknown') as 'unknown' | 'reachable' | 'unreachable',
+      lastSeen: row.last_seen instanceof Date ? row.last_seen : undefined,
+    };
+  }
+
+  /**
+   * Find a center node by its internal endpoint (for routing).
+   */
+  public async findCenterNodeByEndpoint(internalIp: string, internalPort: number): Promise<CenterNodeInfo | undefined> {
+    const result = await this.db.execute(sql`
+      SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
+      FROM identity_edge_node
+      WHERE node_type = 'center' AND internal_ip = ${internalIp} AND internal_port = ${internalPort}
+      LIMIT 1
+    `);
+
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+
+    const row = result.rows[0];
+    return {
+      nodeId: String(row.id),
+      displayName: row.display_name == null ? undefined : String(row.display_name),
+      internalIp: String(row.internal_ip ?? ''),
+      internalPort: Number(row.internal_port ?? 0),
+      connectivityStatus: (row.connectivity_status ?? 'unknown') as 'unknown' | 'reachable' | 'unreachable',
+      lastSeen: row.last_seen instanceof Date ? row.last_seen : undefined,
+    };
+  }
+
+  /**
+   * Mark a center node as unreachable (for health checks).
+   */
+  public async markCenterNodeUnreachable(nodeId: string): Promise<void> {
+    const now = new Date();
+    await this.db.execute(sql`
+      UPDATE identity_edge_node
+      SET connectivity_status = 'unreachable',
+          updated_at = ${now}
+      WHERE id = ${nodeId} AND node_type = 'center'
+    `);
+  }
+
+  /**
+   * Remove a center node from the cluster.
+   */
+  public async removeCenterNode(nodeId: string): Promise<boolean> {
+    const result = await this.db.execute(sql`
+      DELETE FROM identity_edge_node
+      WHERE id = ${nodeId} AND node_type = 'center'
+    `);
+    return (result.rowCount ?? 0) > 0;
   }
 }

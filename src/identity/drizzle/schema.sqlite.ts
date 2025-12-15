@@ -25,10 +25,13 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
   id: text('id').primaryKey(),
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
+  nodeType: text('node_type').default('edge'),  // 'center' | 'edge'
   subdomain: text('subdomain').unique(),
   accessMode: text('access_mode'),
   publicIp: text('public_ip'),
   publicPort: integer('public_port'),
+  internalIp: text('internal_ip'),              // Internal network IP for center nodes
+  internalPort: integer('internal_port'),
   capabilities: text('capabilities', { mode: 'json' }),
   metadata: text('metadata', { mode: 'json' }),
   connectivityStatus: text('connectivity_status').default('unknown'),

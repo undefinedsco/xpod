@@ -154,8 +154,8 @@ export class PodLookupRepository {
   public async setMigrationStatus(
     podId: string,
     status: 'syncing' | 'done' | null,
-    targetNode?: string,
-    progress?: number,
+    targetNode?: string | null,
+    progress?: number | null,
   ): Promise<void> {
     if (isDatabaseSqlite(this.db)) {
       await executeStatement(this.db, sql`
@@ -182,5 +182,30 @@ export class PodLookupRepository {
         WHERE id = ${podId}
       `);
     }
+  }
+
+  /**
+   * List all pods with their node assignments.
+   */
+  public async listAllPods(): Promise<PodLookupResult[]> {
+    const result = await executeQuery<PodRow>(this.db, sql`
+      SELECT 
+        id, 
+        payload ->> 'accountId' AS account_id, 
+        payload ->> 'baseUrl' AS base_url, 
+        payload ->> 'nodeId' AS node_id, 
+        payload ->> 'edgeNodeId' AS edge_node_id
+      FROM identity_pod
+      WHERE payload ->> 'baseUrl' IS NOT NULL
+      ORDER BY payload ->> 'baseUrl' ASC
+    `);
+
+    return result.rows.map(row => ({
+      podId: row.id,
+      accountId: row.account_id,
+      baseUrl: row.base_url,
+      nodeId: row.node_id ?? undefined,
+      edgeNodeId: row.edge_node_id ?? undefined,
+    }));
   }
 }

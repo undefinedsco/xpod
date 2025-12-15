@@ -39,6 +39,11 @@ import { createBandwidthThrottleTransform } from './util/stream/BandwidthThrottl
 import { UsageTrackingStore } from './storage/quota/UsageTrackingStore';
 import { EdgeNodeModeDetector } from './edge/EdgeNodeModeDetector';
 import { ClusterIdentifierStrategy } from './util/identifiers/ClusterIdentifierStrategy';
+import { CenterNodeRegistrationService } from './identity/CenterNodeRegistrationService';
+import { PodRoutingHttpHandler } from './http/PodRoutingHttpHandler';
+import { TieredMinioDataAccessor } from './storage/accessors/TieredMinioDataAccessor';
+import { PodMigrationHttpHandler } from './http/cluster/PodMigrationHttpHandler';
+import { PodMigrationService } from './service/PodMigrationService';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type {
   DnsProvider,
@@ -92,4 +97,9 @@ export {
     EdgeNodeModeDetector,
     ClusterIdentifierStrategy,
   UsageTrackingStore,
+  CenterNodeRegistrationService,
+  PodRoutingHttpHandler,
+  TieredMinioDataAccessor,
+  PodMigrationHttpHandler,
+  PodMigrationService,
 };

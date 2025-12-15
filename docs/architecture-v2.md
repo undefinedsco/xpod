@@ -217,6 +217,7 @@ xpod 场景不同：
 ### 5.1 新增配置（cli.json，hidden）
 
 ```json
+// 本地缓存
 {
   "@type": "YargsParameter",
   "name": "cachePath",
@@ -226,12 +227,39 @@ xpod 场景不同：
   "@type": "YargsParameter",
   "name": "cacheMaxSize",
   "options": { "type": "string", "hidden": true }
+},
+// 多节点部署
+{
+  "@type": "YargsParameter",
+  "name": "internalIp",
+  "options": { "type": "string", "hidden": true }
+},
+{
+  "@type": "YargsParameter",
+  "name": "internalPort",
+  "options": { "type": "number", "hidden": true }
+},
+{
+  "@type": "YargsParameter",
+  "name": "podRoutingEnabled",
+  "options": { "type": "boolean", "hidden": true }
+},
+{
+  "@type": "YargsParameter",
+  "name": "nodeIdPath",
+  "options": { "type": "string", "hidden": true }
 }
 ```
 
 对应环境变量：
 - `CSS_CACHE_PATH` - 本地缓存目录，默认 `/data/cache`
 - `CSS_CACHE_MAX_SIZE` - 缓存大小上限，默认 `50GB`
+- `CSS_POD_ROUTING_ENABLED` - 是否启用 Pod 路由（默认 true）
+
+自动检测（无需配置）：
+- 内网 IP - 从网卡自动检测（K8s 环境使用 `POD_IP`）
+- 内网端口 - 使用 CSS 的 `--port` 参数
+- nodeId - 自动生成并持久化到 `{rootFilePath}/.node-id`
 
 ### 5.2 现有配置（不变）
 
@@ -255,31 +283,84 @@ CSS_DATABASE_URL
 
 ## 六、实现步骤
 
-### Phase 1：基础（1-2 周）
+### Phase 1：基础（已完成）
 
-- [ ] `TieredMinioDataAccessor` 实现
+- [x] `TieredMinioDataAccessor` 实现
   - 继承/包装 `MinioDataAccessor`
   - 加 LRU 缓存逻辑
-- [ ] `identity_pod` 表加 `node_id` 字段
-- [ ] Pod 路由中间件
-- [ ] cli.json 新增缓存配置
+  - 文件：`src/storage/accessors/TieredMinioDataAccessor.ts`
+- [x] `identity_pod` 表加 `node_id` 字段
+  - 扩展 `PodLookupRepository` 支持 nodeId、migrationStatus
+  - 文件：`src/identity/drizzle/PodLookupRepository.ts`
+- [x] Pod 路由中间件
+  - 文件：`src/http/PodRoutingHttpHandler.ts`
+- [x] cli.json 新增缓存配置
+  - `cachePath`, `cacheMaxSize`
 
-### Phase 2：多节点（1 周）
+### Phase 2：多节点（进行中）
 
-- [ ] Center 节点心跳上报（复用 Edge 机制）
-- [ ] 节点间发现
-- [ ] 请求代理
+- [x] Center 节点注册（复用 Edge 机制）
+  - 数据库 schema 扩展：`nodeType`, `internalIp`, `internalPort`
+  - 文件：`schema.pg.ts`, `schema.sqlite.ts`, `db.ts`
+- [x] `EdgeNodeRepository` 扩展
+  - 新增方法：`registerCenterNode`, `updateCenterNodeHeartbeat`, `listCenterNodes`, `getCenterNode`
+- [x] `CenterNodeRegistrationService`
+  - 节点启动时自动注册
+  - 自动检测内网 IP 和端口
+  - 周期性心跳
+  - 文件：`src/identity/CenterNodeRegistrationService.ts`
+- [x] `PodRoutingHttpHandler` 支持内网端点
+  - 优先使用 internalIp:internalPort 进行节点间通信
+- [x] Components.js 集成
+  - `CenterNodeRegistrationService` 加入初始化序列
+  - `PodRoutingHttpHandler` 加入 HTTP pipeline
 
-### Phase 3：迁移（1-2 周）
+### Phase 3：迁移（已完成）
 
-- [ ] `identity_pod` 表加迁移状态字段
-- [ ] 节点间订阅（复用 Notification/Webhook）
-- [ ] 迁移流程实现
-- [ ] 管理界面
+- [x] `PodLookupRepository` 扩展
+  - 迁移状态字段：`migrationStatus`, `migrationTargetNode`, `migrationProgress`
+  - 新增方法：`listAllPods`, `getMigrationStatus`, `setMigrationStatus`
+- [x] `PodMigrationHttpHandler` - 迁移 API
+  - `GET /.cluster/pods` - 列出所有 Pod
+  - `GET /.cluster/pods/{podId}` - 获取 Pod 信息
+  - `POST /.cluster/pods/{podId}/migrate` - 发起迁移
+  - `GET /.cluster/pods/{podId}/migration` - 获取迁移状态
+  - `DELETE /.cluster/pods/{podId}/migration` - 取消迁移
+  - 文件：`src/http/cluster/PodMigrationHttpHandler.ts`
+- [x] `PodMigrationService` - 迁移服务
+  - 异步执行迁移流程
+  - 文件：`src/service/PodMigrationService.ts`
+- [ ] 节点间数据同步（实际复制逻辑，待完善）
 
 ---
 
-## 七、待定
+## 七、API 路径规范
+
+```
+# CSS 原有（不动）
+/.account/             # 账户管理
+/.internal/            # CSS 内部数据
+/idp/                  # 认证
+/.well-known/          # 标准发现
+
+# xpod 对外（需要稳定）
+/api/v1/signal         # Edge 节点信令
+
+# xpod 集群管理
+/.cluster/
+├── pods/              # Pod 管理
+│   ├── {podId}/migrate
+│   └── {podId}/migration
+└── nodes/             # 节点管理（待实现）
+
+# Pod 级 sidecar
+/{pod}/-/sparql
+/{pod}/-/terminal
+```
+
+---
+
+## 八、待定
 
 1. **多地域数据库**：初期共享 PostgreSQL，后续 PolarDB GDN？
 2. **DNS 就近解析**：云商智能 DNS + L7 路由？

@@ -28,10 +28,13 @@ export const edgeNodes = pgTable('identity_edge_node', {
   id: text('id').primaryKey(),
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
+  nodeType: text('node_type').default('edge'),  // 'center' | 'edge'
   subdomain: text('subdomain').unique(),
   accessMode: text('access_mode'),
   publicIp: text('public_ip'),
   publicPort: pgBigint('public_port', { mode: 'number' }),
+  internalIp: text('internal_ip'),              // Internal network IP
+  internalPort: pgBigint('internal_port', { mode: 'number' }),
   capabilities: jsonb('capabilities'),
   metadata: jsonb('metadata'),
   connectivityStatus: text('connectivity_status').default('unknown'),

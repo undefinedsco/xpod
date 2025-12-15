@@ -17,7 +17,6 @@ interface PodRoutingHttpHandlerOptions {
   enabled?: boolean | string;
   podLookupRepository?: PodLookupRepository;
   edgeNodeRepository?: EdgeNodeRepository;
-  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -35,7 +34,6 @@ export class PodRoutingHttpHandler extends HttpHandler {
   private readonly edgeNodeRepository: EdgeNodeRepository;
   private readonly currentNodeId: string;
   private readonly enabled: boolean;
-  private readonly fetchImpl: typeof fetch;
 
   public constructor(options: PodRoutingHttpHandlerOptions) {
     super();
@@ -44,7 +42,6 @@ export class PodRoutingHttpHandler extends HttpHandler {
     this.edgeNodeRepository = options.edgeNodeRepository ?? new EdgeNodeRepository(db);
     this.currentNodeId = options.nodeId;
     this.enabled = this.normalizeBoolean(options.enabled);
-    this.fetchImpl = options.fetchImpl ?? fetch;
 
     this.logger.info(`PodRoutingHttpHandler initialized: nodeId=${this.currentNodeId}, enabled=${this.enabled}`);
   }
@@ -93,13 +90,8 @@ export class PodRoutingHttpHandler extends HttpHandler {
       throw new InternalServerError('Pod lookup failed in handle phase.');
     }
 
-    // Get target node endpoint
-    const targetNode = await this.edgeNodeRepository.getNodeConnectivityInfo(pod.nodeId);
-    if (!targetNode) {
-      throw new InternalServerError(`Target node ${pod.nodeId} not found.`);
-    }
-
-    const upstream = this.resolveUpstream(targetNode);
+    // Try to resolve upstream with internal endpoint support (for center-to-center)
+    const upstream = await this.resolveUpstreamWithInternal(pod.nodeId);
     if (!upstream) {
       throw new InternalServerError(`Target node ${pod.nodeId} has no reachable endpoint.`);
     }
@@ -127,7 +119,7 @@ export class PodRoutingHttpHandler extends HttpHandler {
 
     let upstreamResponse: Response;
     try {
-      upstreamResponse = await this.fetchImpl(target.toString(), {
+      upstreamResponse = await fetch(target.toString(), {
         method: (request.method ?? 'GET').toUpperCase(),
         headers,
         body: body?.length ? body : undefined,
@@ -163,22 +155,44 @@ export class PodRoutingHttpHandler extends HttpHandler {
 
   /**
    * Resolve upstream endpoint from node info.
+   * For center nodes, prefer internal endpoint for intra-cluster communication.
    */
   private resolveUpstream(nodeInfo: {
     publicIp?: string | null;
     publicPort?: number | null;
     nodeId: string;
   }): string | undefined {
-    // Try public IP first
+    // Try public IP first (for edge nodes or external access)
     if (nodeInfo.publicIp) {
       const port = nodeInfo.publicPort && nodeInfo.publicPort !== 443 ? `:${nodeInfo.publicPort}` : '';
       return `https://${nodeInfo.publicIp}${port}`;
     }
 
-    // TODO: Add internal network endpoint support
-    // TODO: Add tunnel endpoint support
+    // NOTE: Internal endpoint lookup is done via CenterNodeRegistrationService.getNodeInternalUrl()
+    // This method is kept simple - the handler should be injected with the registration service
+    // for full internal routing support.
 
     return undefined;
+  }
+
+  /**
+   * Resolve upstream for center node using internal endpoint.
+   */
+  public async resolveUpstreamWithInternal(nodeId: string): Promise<string | undefined> {
+    // First try to get center node internal endpoint
+    const centerNodes = await this.edgeNodeRepository.listCenterNodes();
+    const centerNode = centerNodes.find(n => n.nodeId === nodeId);
+    
+    if (centerNode && centerNode.internalIp && centerNode.internalPort) {
+      return `http://${centerNode.internalIp}:${centerNode.internalPort}`;
+    }
+
+    // Fall back to public endpoint
+    const nodeInfo = await this.edgeNodeRepository.getNodeConnectivityInfo(nodeId);
+    if (!nodeInfo) {
+      return undefined;
+    }
+    return this.resolveUpstream(nodeInfo);
   }
 
   /**

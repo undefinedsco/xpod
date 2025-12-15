@@ -33,6 +33,7 @@ describe('EdgeNodeRepository', () => {
       nodeId: 'node-1',
       displayName: 'Edge A',
       tokenHash: 'deadbeef',
+      nodeType: 'edge',
       metadata: { baseUrl: 'https://node.example/' },
     });
   });
