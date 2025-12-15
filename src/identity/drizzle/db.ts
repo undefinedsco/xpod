@@ -178,6 +178,34 @@ export async function executeStatement(
 }
 
 /**
+ * Convert a Date to a value suitable for the database.
+ * SQLite uses Unix timestamps (seconds), PostgreSQL uses Date objects.
+ */
+export function toDbTimestamp(db: IdentityDatabase, date: Date): number | Date {
+  return isDatabaseSqlite(db) ? Math.floor(date.getTime() / 1000) : date;
+}
+
+/**
+ * Parse a timestamp value from database result to Date.
+ * Handles both Unix timestamps (SQLite) and Date objects (PostgreSQL).
+ */
+export function fromDbTimestamp(value: unknown): Date | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return new Date(value * 1000);
+  }
+  if (typeof value === 'string') {
+    return new Date(value);
+  }
+  return undefined;
+}
+
+/**
  * Ensure SQLite tables exist (simple DDL for local/dev mode).
  */
 function ensureSqliteTables(sqlite: Database.Database): void {

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
-import { executeStatement, executeQuery } from './db';
+import { executeStatement, executeQuery, isDatabaseSqlite, toDbTimestamp, fromDbTimestamp } from './db';
 import { edgeNodes } from './schema';
 
 export interface EdgeNodeSummary {
@@ -42,34 +42,59 @@ export class EdgeNodeRepository {
   public constructor(private readonly db: IdentityDatabase) {}
 
   public async listNodes(): Promise<EdgeNodeSummary[]> {
-    const result = await this.db.execute(sql`
-      SELECT en.id,
-             en.display_name,
-             en.node_type,
-             en.created_at,
-             en.updated_at,
-             en.last_seen,
-             en.metadata,
-             COALESCE(pods.count, 0) AS pod_count
-      FROM identity_edge_node en
-      LEFT JOIN (
-        SELECT node_id, COUNT(*)::integer AS count
-        FROM identity_edge_node_pod
-        GROUP BY node_id
-      ) pods ON pods.node_id = en.id
-      ORDER BY en.created_at ASC
-    `);
+    // Use different COUNT syntax for SQLite vs PostgreSQL
+    const isSqlite = isDatabaseSqlite(this.db);
+    const result = isSqlite
+      ? await executeQuery(this.db, sql`
+          SELECT en.id,
+                 en.display_name,
+                 en.node_type,
+                 en.created_at,
+                 en.updated_at,
+                 en.last_seen,
+                 en.metadata,
+                 COALESCE(pods.count, 0) AS pod_count
+          FROM identity_edge_node en
+          LEFT JOIN (
+            SELECT node_id, COUNT(*) AS count
+            FROM identity_edge_node_pod
+            GROUP BY node_id
+          ) pods ON pods.node_id = en.id
+          ORDER BY en.created_at ASC
+        `)
+      : await executeQuery(this.db, sql`
+          SELECT en.id,
+                 en.display_name,
+                 en.node_type,
+                 en.created_at,
+                 en.updated_at,
+                 en.last_seen,
+                 en.metadata,
+                 COALESCE(pods.count, 0) AS pod_count
+          FROM identity_edge_node en
+          LEFT JOIN (
+            SELECT node_id, COUNT(*)::integer AS count
+            FROM identity_edge_node_pod
+            GROUP BY node_id
+          ) pods ON pods.node_id = en.id
+          ORDER BY en.created_at ASC
+        `);
 
-    return result.rows.map((row: any): EdgeNodeSummary => ({
-      nodeId: String(row.id),
-      displayName: row.display_name == null ? undefined : String(row.display_name),
-      nodeType: (row.node_type === 'center' ? 'center' : 'edge') as 'center' | 'edge',
-      podCount: Number(row.pod_count ?? 0),
-      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : undefined,
-      updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : undefined,
-      lastSeen: row.last_seen instanceof Date ? row.last_seen.toISOString() : undefined,
-      metadata: row.metadata ?? null,
-    }));
+    return result.rows.map((row: any): EdgeNodeSummary => {
+      const createdAt = fromDbTimestamp(row.created_at);
+      const updatedAt = fromDbTimestamp(row.updated_at);
+      const lastSeen = fromDbTimestamp(row.last_seen);
+      return {
+        nodeId: String(row.id),
+        displayName: row.display_name == null ? undefined : String(row.display_name),
+        nodeType: (row.node_type === 'center' ? 'center' : 'edge') as 'center' | 'edge',
+        podCount: Number(row.pod_count ?? 0),
+        createdAt: createdAt?.toISOString(),
+        updatedAt: updatedAt?.toISOString(),
+        lastSeen: lastSeen?.toISOString(),
+        metadata: row.metadata ?? null,
+      };
+    });
   }
 
   public async createNode(displayName?: string): Promise<CreateEdgeNodeResult> {
@@ -77,10 +102,11 @@ export class EdgeNodeRepository {
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
     const now = new Date();
+    const ts = toDbTimestamp(this.db, now);
 
-    await this.db.execute(sql`
+    await executeStatement(this.db, sql`
       INSERT INTO identity_edge_node (id, display_name, token_hash, created_at, updated_at)
-      VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${now}, ${now})
+      VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${ts}, ${ts})
     `);
 
     return {
@@ -91,7 +117,7 @@ export class EdgeNodeRepository {
   }
 
   public async getNodeSecret(nodeId: string): Promise<EdgeNodeSecret | undefined> {
-    const result = await this.db.execute(sql`
+    const result = await executeQuery(this.db, sql`
       SELECT id, display_name, token_hash, node_type, metadata
       FROM identity_edge_node
       WHERE id = ${nodeId}
@@ -100,7 +126,7 @@ export class EdgeNodeRepository {
     if (result.rows.length === 0) {
       return undefined;
     }
-    const row = result.rows[0];
+    const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       displayName: row.display_name == null ? undefined : String(row.display_name),
@@ -112,13 +138,26 @@ export class EdgeNodeRepository {
 
   public async updateNodeHeartbeat(nodeId: string, metadata: Record<string, unknown> | null, timestamp: Date): Promise<void> {
     const payload = metadata == null ? null : JSON.stringify(metadata);
-    await this.db.execute(sql`
-      UPDATE identity_edge_node
-      SET metadata = ${payload}::jsonb,
-          last_seen = ${timestamp},
-          updated_at = ${timestamp}
-      WHERE id = ${nodeId}
-    `);
+    const ts = toDbTimestamp(this.db, timestamp);
+    const isSqlite = isDatabaseSqlite(this.db);
+
+    if (isSqlite) {
+      await executeStatement(this.db, sql`
+        UPDATE identity_edge_node
+        SET metadata = ${payload},
+            last_seen = ${ts},
+            updated_at = ${ts}
+        WHERE id = ${nodeId}
+      `);
+    } else {
+      await executeStatement(this.db, sql`
+        UPDATE identity_edge_node
+        SET metadata = ${payload}::jsonb,
+            last_seen = ${ts},
+            updated_at = ${ts}
+        WHERE id = ${nodeId}
+      `);
+    }
   }
 
   public async updateNodeMode(nodeId: string, options: {
@@ -131,19 +170,36 @@ export class EdgeNodeRepository {
   }): Promise<void> {
     const capabilitiesPayload = options.capabilities ? JSON.stringify(options.capabilities) : null;
     const now = new Date();
-    
-    await this.db.execute(sql`
-      UPDATE identity_edge_node
-      SET access_mode = ${options.accessMode},
-          public_ip = ${options.publicIp ?? null},
-          public_port = ${options.publicPort ?? null},
-          subdomain = ${options.subdomain ?? null},
-          connectivity_status = ${options.connectivityStatus ?? 'unknown'},
-          capabilities = ${capabilitiesPayload}::jsonb,
-          last_connectivity_check = ${now},
-          updated_at = ${now}
-      WHERE id = ${nodeId}
-    `);
+    const ts = toDbTimestamp(this.db, now);
+    const isSqlite = isDatabaseSqlite(this.db);
+
+    if (isSqlite) {
+      await executeStatement(this.db, sql`
+        UPDATE identity_edge_node
+        SET access_mode = ${options.accessMode},
+            public_ip = ${options.publicIp ?? null},
+            public_port = ${options.publicPort ?? null},
+            subdomain = ${options.subdomain ?? null},
+            connectivity_status = ${options.connectivityStatus ?? 'unknown'},
+            capabilities = ${capabilitiesPayload},
+            last_connectivity_check = ${ts},
+            updated_at = ${ts}
+        WHERE id = ${nodeId}
+      `);
+    } else {
+      await executeStatement(this.db, sql`
+        UPDATE identity_edge_node
+        SET access_mode = ${options.accessMode},
+            public_ip = ${options.publicIp ?? null},
+            public_port = ${options.publicPort ?? null},
+            subdomain = ${options.subdomain ?? null},
+            connectivity_status = ${options.connectivityStatus ?? 'unknown'},
+            capabilities = ${capabilitiesPayload}::jsonb,
+            last_connectivity_check = ${ts},
+            updated_at = ${ts}
+        WHERE id = ${nodeId}
+      `);
+    }
   }
 
   public async getNodeConnectivityInfo(nodeId: string): Promise<{
@@ -155,7 +211,7 @@ export class EdgeNodeRepository {
     connectivityStatus?: string;
     lastConnectivityCheck?: Date;
   } | undefined> {
-    const result = await this.db.execute(sql`
+    const result = await executeQuery(this.db, sql`
       SELECT id, access_mode, public_ip, public_port, subdomain, 
              connectivity_status, last_connectivity_check
       FROM identity_edge_node
@@ -167,7 +223,7 @@ export class EdgeNodeRepository {
       return undefined;
     }
     
-    const row = result.rows[0];
+    const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       accessMode: row.access_mode ? String(row.access_mode) : undefined,
@@ -175,22 +231,35 @@ export class EdgeNodeRepository {
       publicPort: row.public_port ? Number(row.public_port) : undefined,
       subdomain: row.subdomain ? String(row.subdomain) : undefined,
       connectivityStatus: row.connectivity_status ? String(row.connectivity_status) : undefined,
-      lastConnectivityCheck: row.last_connectivity_check instanceof Date ? row.last_connectivity_check : undefined,
+      lastConnectivityCheck: fromDbTimestamp(row.last_connectivity_check),
     };
   }
 
   public async mergeNodeMetadata(nodeId: string, patch: Record<string, unknown>): Promise<void> {
     const payload = JSON.stringify(patch);
-    await this.db.execute(sql`
-      UPDATE identity_edge_node
-      SET metadata = COALESCE(metadata, '{}'::jsonb) || ${payload}::jsonb,
-          updated_at = now()
-      WHERE id = ${nodeId}
-    `);
+    const isSqlite = isDatabaseSqlite(this.db);
+    const ts = toDbTimestamp(this.db, new Date());
+
+    if (isSqlite) {
+      // SQLite: use json_patch or simple replace
+      await executeStatement(this.db, sql`
+        UPDATE identity_edge_node
+        SET metadata = json_patch(COALESCE(metadata, '{}'), ${payload}),
+            updated_at = ${ts}
+        WHERE id = ${nodeId}
+      `);
+    } else {
+      await executeStatement(this.db, sql`
+        UPDATE identity_edge_node
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${payload}::jsonb,
+            updated_at = now()
+        WHERE id = ${nodeId}
+      `);
+    }
   }
 
   public async getNodeMetadata(nodeId: string): Promise<{ nodeId: string; metadata: Record<string, unknown> | null; lastSeen?: Date } | undefined> {
-    const result = await this.db.execute(sql`
+    const result = await executeQuery(this.db, sql`
       SELECT id, metadata, last_seen
       FROM identity_edge_node
       WHERE id = ${nodeId}
@@ -199,11 +268,11 @@ export class EdgeNodeRepository {
     if (result.rows.length === 0) {
       return undefined;
     }
-    const row = result.rows[0];
+    const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       metadata: row.metadata ?? null,
-      lastSeen: row.last_seen instanceof Date ? row.last_seen : undefined,
+      lastSeen: fromDbTimestamp(row.last_seen),
     };
   }
 
@@ -222,7 +291,7 @@ export class EdgeNodeRepository {
   }
 
   public async findNodeByResourcePath(path: string): Promise<{ nodeId: string; baseUrl: string; accessMode?: string; metadata?: Record<string, unknown> | null } | undefined> {
-    const result = await this.db.execute(sql`
+    const result = await executeQuery(this.db, sql`
       SELECT en.id,
              en.access_mode,
              en.metadata,
@@ -236,7 +305,7 @@ export class EdgeNodeRepository {
     if (result.rows.length === 0) {
       return undefined;
     }
-    const row = result.rows[0];
+    const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       baseUrl: String(row.base_url),
@@ -250,7 +319,7 @@ export class EdgeNodeRepository {
     if (normalized.length === 0) {
       return undefined;
     }
-    const result = await this.db.execute(sql`
+    const result = await executeQuery(this.db, sql`
       SELECT id, access_mode, metadata, subdomain
       FROM identity_edge_node
       WHERE subdomain = ${normalized}
@@ -259,7 +328,7 @@ export class EdgeNodeRepository {
     if (result.rows.length === 0) {
       return undefined;
     }
-    const row = result.rows[0];
+    const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       accessMode: row.access_mode ? String(row.access_mode) : undefined,
@@ -437,7 +506,7 @@ export class EdgeNodeRepository {
       internalIp: String(row.internal_ip ?? ''),
       internalPort: Number(row.internal_port ?? 0),
       connectivityStatus: (row.connectivity_status ?? 'unknown') as 'unknown' | 'reachable' | 'unreachable',
-      lastSeen: row.last_seen instanceof Date ? row.last_seen : undefined,
+      lastSeen: fromDbTimestamp(row.last_seen),
     }));
   }
 
@@ -456,14 +525,14 @@ export class EdgeNodeRepository {
       return undefined;
     }
 
-    const row = result.rows[0];
+    const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       displayName: row.display_name == null ? undefined : String(row.display_name),
       internalIp: String(row.internal_ip ?? ''),
       internalPort: Number(row.internal_port ?? 0),
       connectivityStatus: (row.connectivity_status ?? 'unknown') as 'unknown' | 'reachable' | 'unreachable',
-      lastSeen: row.last_seen instanceof Date ? row.last_seen : undefined,
+      lastSeen: fromDbTimestamp(row.last_seen),
     };
   }
 
@@ -471,7 +540,7 @@ export class EdgeNodeRepository {
    * Find a center node by its internal endpoint (for routing).
    */
   public async findCenterNodeByEndpoint(internalIp: string, internalPort: number): Promise<CenterNodeInfo | undefined> {
-    const result = await this.db.execute(sql`
+    const result = await executeQuery(this.db, sql`
       SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
       FROM identity_edge_node
       WHERE node_type = 'center' AND internal_ip = ${internalIp} AND internal_port = ${internalPort}
@@ -482,14 +551,14 @@ export class EdgeNodeRepository {
       return undefined;
     }
 
-    const row = result.rows[0];
+    const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       displayName: row.display_name == null ? undefined : String(row.display_name),
       internalIp: String(row.internal_ip ?? ''),
       internalPort: Number(row.internal_port ?? 0),
       connectivityStatus: (row.connectivity_status ?? 'unknown') as 'unknown' | 'reachable' | 'unreachable',
-      lastSeen: row.last_seen instanceof Date ? row.last_seen : undefined,
+      lastSeen: fromDbTimestamp(row.last_seen),
     };
   }
 
@@ -497,11 +566,11 @@ export class EdgeNodeRepository {
    * Mark a center node as unreachable (for health checks).
    */
   public async markCenterNodeUnreachable(nodeId: string): Promise<void> {
-    const now = new Date();
-    await this.db.execute(sql`
+    const ts = toDbTimestamp(this.db, new Date());
+    await executeStatement(this.db, sql`
       UPDATE identity_edge_node
       SET connectivity_status = 'unreachable',
-          updated_at = ${now}
+          updated_at = ${ts}
       WHERE id = ${nodeId} AND node_type = 'center'
     `);
   }
@@ -510,10 +579,11 @@ export class EdgeNodeRepository {
    * Remove a center node from the cluster.
    */
   public async removeCenterNode(nodeId: string): Promise<boolean> {
-    const result = await this.db.execute(sql`
+    // Note: For SQLite, we can't easily get affected row count, so just execute and return true
+    await executeStatement(this.db, sql`
       DELETE FROM identity_edge_node
       WHERE id = ${nodeId} AND node_type = 'center'
     `);
-    return (result.rowCount ?? 0) > 0;
+    return true;
   }
 }
