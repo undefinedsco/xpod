@@ -329,8 +329,14 @@ CSS_DATABASE_URL
   - 文件：`src/http/cluster/PodMigrationHttpHandler.ts`
 - [x] `PodMigrationService` - 迁移服务
   - 异步执行迁移流程
+  - 共享存储检测（跳过数据复制）
+  - 容器遍历 + HTTP GET/PUT 复制资源
+  - 进度跟踪和取消支持
   - 文件：`src/service/PodMigrationService.ts`
-- [ ] 节点间数据同步（实际复制逻辑，待完善）
+- [x] 节点间数据同步
+  - 共享存储模式：直接切换 nodeId（无需复制）
+  - 非共享模式：遍历 LDP 容器，逐个资源 GET→PUT
+- [ ] 实时同步（Webhook）- 可选优化，减少迁移窗口期数据丢失风险
 
 ---
 
