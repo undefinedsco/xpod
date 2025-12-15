@@ -46,6 +46,7 @@
     "test:terminal": "npx ts-node scripts/test-terminal.ts",
     "test:coverage": "vitest --run --coverage",
     "test:integration": "XPOD_RUN_INTEGRATION_TESTS=true XPOD_RUN_SERVER_INTEGRATION=true CSS_SEED_CONFIG=$PWD/config/seeds/test.json dotenv -e .env.local -- vitest --run",
+    "test:cluster": "XPOD_RUN_CLUSTER_TESTS=true vitest --run tests/integration/MultiNodeCluster.integration.test.ts",
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true XPOD_RUN_SERVER_INTEGRATION=true vitest --run --coverage"
   },
   "devDependencies": {

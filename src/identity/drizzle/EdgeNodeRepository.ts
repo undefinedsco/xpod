@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
+import { executeStatement, executeQuery } from './db';
 import { edgeNodes } from './schema';
 
 export interface EdgeNodeSummary {
@@ -375,10 +376,10 @@ export class EdgeNodeRepository {
   }): Promise<{ nodeId: string; token: string }> {
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    const now = new Date();
+    const now = Math.floor(Date.now() / 1000); // Unix timestamp for SQLite compatibility
 
     // Use upsert pattern: INSERT ... ON CONFLICT UPDATE
-    await this.db.execute(sql`
+    await executeStatement(this.db, sql`
       INSERT INTO identity_edge_node (
         id, display_name, token_hash, node_type, internal_ip, internal_port,
         connectivity_status, created_at, updated_at, last_seen
@@ -407,12 +408,13 @@ export class EdgeNodeRepository {
     internalPort: number,
     timestamp: Date,
   ): Promise<void> {
-    await this.db.execute(sql`
+    const ts = Math.floor(timestamp.getTime() / 1000); // Unix timestamp for SQLite compatibility
+    await executeStatement(this.db, sql`
       UPDATE identity_edge_node
       SET internal_ip = ${internalIp},
           internal_port = ${internalPort},
-          last_seen = ${timestamp},
-          updated_at = ${timestamp},
+          last_seen = ${ts},
+          updated_at = ${ts},
           connectivity_status = 'reachable'
       WHERE id = ${nodeId} AND node_type = 'center'
     `);
@@ -422,7 +424,7 @@ export class EdgeNodeRepository {
    * List all center nodes in the cluster.
    */
   public async listCenterNodes(): Promise<CenterNodeInfo[]> {
-    const result = await this.db.execute(sql`
+    const result = await executeQuery(this.db, sql`
       SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
       FROM identity_edge_node
       WHERE node_type = 'center'
@@ -443,7 +445,7 @@ export class EdgeNodeRepository {
    * Get a specific center node by ID.
    */
   public async getCenterNode(nodeId: string): Promise<CenterNodeInfo | undefined> {
-    const result = await this.db.execute(sql`
+    const result = await executeQuery(this.db, sql`
       SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
       FROM identity_edge_node
       WHERE id = ${nodeId} AND node_type = 'center'
