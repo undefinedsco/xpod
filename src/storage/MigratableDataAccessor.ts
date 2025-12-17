@@ -14,24 +14,29 @@ export interface MigrationProgress {
 
 /**
  * Extended DataAccessor interface for storage backends that support
- * bulk data migration between regions/nodes.
+ * cross-region operations.
  * 
- * Not all storage backends support migration. Call `supportsMigration()`
- * to check before attempting migration operations.
+ * Primary use: Cross-region fallback reads for instant pod migration.
+ * - Reads check local bucket first, then fallback to other region buckets
+ * - Lazy copy: files are copied to local bucket on first access
+ * 
+ * Optional: Bulk migration for cleanup/cost optimization.
+ * - Not required for migration to work (fallback handles it)
+ * - Can be used to proactively move cold data and reduce cross-region costs
  */
 export interface MigratableDataAccessor extends DataAccessor {
   /**
-   * Check if this accessor supports migration operations.
+   * Check if this accessor supports cross-region operations.
    */
   supportsMigration(): boolean;
 
   /**
    * Bulk migrate all resources under the given prefix to a target region.
    * 
-   * This should use the most efficient method available for the storage backend:
-   * - Minio: server-side copyObject
-   * - COS: cross-region replication API  
-   * - Local files: cp -r or rsync
+   * This is OPTIONAL - migration works without it via fallback reads.
+   * Use this for:
+   * - Cleaning up source region to save storage costs
+   * - Proactively copying cold data to reduce latency
    * 
    * @param prefix - Resource path prefix (e.g., "/alice/")
    * @param targetRegion - Target region identifier
@@ -45,12 +50,11 @@ export interface MigratableDataAccessor extends DataAccessor {
   ): Promise<void>;
 
   /**
-   * Set up real-time synchronization during migration.
+   * Set up real-time synchronization during active migration.
    * New writes to the source region will be replicated to the target.
    * 
    * @param prefix - Resource path prefix
    * @param targetRegion - Target region identifier
-   * @throws Error if real-time sync is not supported
    */
   setupRealtimeSync(prefix: string, targetRegion: string): Promise<void>;
 
@@ -64,7 +68,7 @@ export interface MigratableDataAccessor extends DataAccessor {
 }
 
 /**
- * Type guard to check if a DataAccessor supports migration.
+ * Type guard to check if a DataAccessor supports cross-region operations.
  */
 export function isMigratableAccessor(accessor: DataAccessor): accessor is MigratableDataAccessor {
   return (

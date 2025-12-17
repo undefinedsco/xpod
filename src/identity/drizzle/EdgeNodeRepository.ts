@@ -277,17 +277,33 @@ export class EdgeNodeRepository {
   }
 
   public async replaceNodePods(nodeId: string, pods: string[]): Promise<void> {
-    await this.db.transaction(async (tx: IdentityDatabase) => {
-      await tx.execute(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
+    const isSqlite = isDatabaseSqlite(this.db);
+    
+    if (isSqlite) {
+      // SQLite: use synchronous transaction via db.run
+      this.db.run(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
       if (pods.length > 0) {
         const values = pods.map((baseUrl) => sql`(${nodeId}, ${baseUrl})`);
-        await tx.execute(sql`
+        this.db.run(sql`
           INSERT INTO identity_edge_node_pod (node_id, base_url)
           VALUES ${sql.join(values, sql`, `)}
           ON CONFLICT DO NOTHING
         `);
       }
-    });
+    } else {
+      // PostgreSQL: use async transaction
+      await this.db.transaction(async (tx: IdentityDatabase) => {
+        await tx.execute(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
+        if (pods.length > 0) {
+          const values = pods.map((baseUrl) => sql`(${nodeId}, ${baseUrl})`);
+          await tx.execute(sql`
+            INSERT INTO identity_edge_node_pod (node_id, base_url)
+            VALUES ${sql.join(values, sql`, `)}
+            ON CONFLICT DO NOTHING
+          `);
+        }
+      });
+    }
   }
 
   public async findNodeByResourcePath(path: string): Promise<{ nodeId: string; baseUrl: string; accessMode?: string; metadata?: Record<string, unknown> | null } | undefined> {

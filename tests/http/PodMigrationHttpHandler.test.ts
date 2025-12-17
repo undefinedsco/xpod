@@ -13,8 +13,7 @@ vi.mock('../../src/identity/drizzle/db', () => ({
 const mockPodLookupRepo = {
   findById: vi.fn(),
   listAllPods: vi.fn(),
-  getMigrationStatus: vi.fn(),
-  setMigrationStatus: vi.fn(),
+  setNodeId: vi.fn(),
 };
 
 const mockEdgeNodeRepo = {
@@ -63,6 +62,7 @@ describe('PodMigrationHttpHandler', () => {
     vi.clearAllMocks();
     handler = new PodMigrationHttpHandler({
       identityDbUrl: 'sqlite::memory:',
+      currentNodeId: 'node-1',
     });
   });
 
@@ -88,6 +88,7 @@ describe('PodMigrationHttpHandler', () => {
     it('rejects when disabled', async () => {
       const disabledHandler = new PodMigrationHttpHandler({
         identityDbUrl: 'sqlite::memory:',
+        currentNodeId: 'node-1',
         enabled: false,
       });
       const request = createMockRequest('GET', '/.cluster/pods');
@@ -136,7 +137,6 @@ describe('PodMigrationHttpHandler', () => {
         accountId: 'acc-1',
         nodeId: 'node-1',
       });
-      mockPodLookupRepo.getMigrationStatus.mockResolvedValueOnce(null);
 
       const request = createMockRequest('GET', '/.cluster/pods/pod-123');
       const response = createMockResponse();
@@ -146,6 +146,7 @@ describe('PodMigrationHttpHandler', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.getBody());
       expect(body.podId).toBe('pod-123');
+      expect(body.nodeId).toBe('node-1');
     });
 
     it('returns 404 for unknown pod', async () => {
@@ -159,8 +160,8 @@ describe('PodMigrationHttpHandler', () => {
   });
 
   describe('POST /.cluster/pods/{podId}/migrate', () => {
-    it('starts migration', async () => {
-      mockPodLookupRepo.findById.mockResolvedValueOnce({
+    it('migrates pod instantly', async () => {
+      mockPodLookupRepo.findById.mockResolvedValue({
         podId: 'pod-123',
         baseUrl: 'https://example.com/alice/',
         accountId: 'acc-1',
@@ -171,8 +172,7 @@ describe('PodMigrationHttpHandler', () => {
         internalIp: '10.0.0.2',
         internalPort: 3000,
       });
-      mockPodLookupRepo.getMigrationStatus.mockResolvedValueOnce(null);
-      mockPodLookupRepo.setMigrationStatus.mockResolvedValueOnce(undefined);
+      mockPodLookupRepo.setNodeId.mockResolvedValueOnce(undefined);
 
       const request = createMockRequest('POST', '/.cluster/pods/pod-123/migrate', {
         targetNode: 'node-2',
@@ -181,24 +181,31 @@ describe('PodMigrationHttpHandler', () => {
 
       await handler.handle({ request, response } as any);
 
-      expect(response.statusCode).toBe(202);
+      expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.getBody());
-      expect(body.status).toBe('syncing');
+      expect(body.message).toBe('Migration completed');
+      expect(body.sourceNode).toBe('node-1');
       expect(body.targetNode).toBe('node-2');
+      expect(body.migratedAt).toBeDefined();
+      expect(mockPodLookupRepo.setNodeId).toHaveBeenCalledWith('pod-123', 'node-2');
     });
 
     it('rejects missing targetNode', async () => {
-      mockPodLookupRepo.findById.mockResolvedValueOnce({
-        podId: 'pod-123',
-        baseUrl: 'https://example.com/alice/',
-        accountId: 'acc-1',
-        nodeId: 'node-1',
-      });
-
       const request = createMockRequest('POST', '/.cluster/pods/pod-123/migrate', {});
       const response = createMockResponse();
 
       await expect(handler.handle({ request, response } as any)).rejects.toThrow('targetNode');
+    });
+
+    it('rejects unknown pod', async () => {
+      mockPodLookupRepo.findById.mockResolvedValueOnce(undefined);
+
+      const request = createMockRequest('POST', '/.cluster/pods/pod-123/migrate', {
+        targetNode: 'node-2',
+      });
+      const response = createMockResponse();
+
+      await expect(handler.handle({ request, response } as any)).rejects.toThrow('not found');
     });
 
     it('rejects unknown target node', async () => {
@@ -218,21 +225,17 @@ describe('PodMigrationHttpHandler', () => {
       await expect(handler.handle({ request, response } as any)).rejects.toThrow('not found');
     });
 
-    it('rejects if already migrating', async () => {
+    it('rejects if already on target node', async () => {
       mockPodLookupRepo.findById.mockResolvedValueOnce({
         podId: 'pod-123',
         baseUrl: 'https://example.com/alice/',
         accountId: 'acc-1',
-        nodeId: 'node-1',
+        nodeId: 'node-2',
       });
       mockEdgeNodeRepo.getCenterNode.mockResolvedValueOnce({
         nodeId: 'node-2',
         internalIp: '10.0.0.2',
         internalPort: 3000,
-      });
-      mockPodLookupRepo.getMigrationStatus.mockResolvedValueOnce({
-        podId: 'pod-123',
-        migrationStatus: 'syncing',
       });
 
       const request = createMockRequest('POST', '/.cluster/pods/pod-123/migrate', {
@@ -240,92 +243,23 @@ describe('PodMigrationHttpHandler', () => {
       });
       const response = createMockResponse();
 
-      await expect(handler.handle({ request, response } as any)).rejects.toThrow('already being migrated');
+      await expect(handler.handle({ request, response } as any)).rejects.toThrow('already on node');
     });
   });
 
-  describe('GET /.cluster/pods/{podId}/migration', () => {
-    it('returns migration status', async () => {
-      mockPodLookupRepo.findById.mockResolvedValueOnce({
-        podId: 'pod-123',
-        baseUrl: 'https://example.com/alice/',
-        accountId: 'acc-1',
-        nodeId: 'node-1',
-      });
-      mockPodLookupRepo.getMigrationStatus.mockResolvedValueOnce({
-        podId: 'pod-123',
-        migrationStatus: 'syncing',
-        migrationTargetNode: 'node-2',
-        migrationProgress: 50,
-      });
-
+  describe('unsupported endpoints', () => {
+    it('rejects GET /migration (no longer supported)', async () => {
       const request = createMockRequest('GET', '/.cluster/pods/pod-123/migration');
       const response = createMockResponse();
 
-      await handler.handle({ request, response } as any);
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.getBody());
-      expect(body.migrating).toBe(true);
-      expect(body.progress).toBe(50);
+      await expect(handler.handle({ request, response } as any)).rejects.toThrow('not implemented');
     });
 
-    it('returns not migrating when no status', async () => {
-      mockPodLookupRepo.findById.mockResolvedValueOnce({
-        podId: 'pod-123',
-        baseUrl: 'https://example.com/alice/',
-        accountId: 'acc-1',
-        nodeId: 'node-1',
-      });
-      mockPodLookupRepo.getMigrationStatus.mockResolvedValueOnce(null);
-
-      const request = createMockRequest('GET', '/.cluster/pods/pod-123/migration');
-      const response = createMockResponse();
-
-      await handler.handle({ request, response } as any);
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.getBody());
-      expect(body.migrating).toBe(false);
-    });
-  });
-
-  describe('DELETE /.cluster/pods/{podId}/migration', () => {
-    it('cancels migration', async () => {
-      mockPodLookupRepo.findById.mockResolvedValueOnce({
-        podId: 'pod-123',
-        baseUrl: 'https://example.com/alice/',
-        accountId: 'acc-1',
-        nodeId: 'node-1',
-      });
-      mockPodLookupRepo.getMigrationStatus.mockResolvedValueOnce({
-        podId: 'pod-123',
-        migrationStatus: 'syncing',
-      });
-      mockPodLookupRepo.setMigrationStatus.mockResolvedValueOnce(undefined);
-
+    it('rejects DELETE /migration (no longer supported)', async () => {
       const request = createMockRequest('DELETE', '/.cluster/pods/pod-123/migration');
       const response = createMockResponse();
 
-      await handler.handle({ request, response } as any);
-
-      expect(response.statusCode).toBe(200);
-      expect(mockPodLookupRepo.setMigrationStatus).toHaveBeenCalledWith('pod-123', null, null, null);
-    });
-
-    it('rejects if not migrating', async () => {
-      mockPodLookupRepo.findById.mockResolvedValueOnce({
-        podId: 'pod-123',
-        baseUrl: 'https://example.com/alice/',
-        accountId: 'acc-1',
-        nodeId: 'node-1',
-      });
-      mockPodLookupRepo.getMigrationStatus.mockResolvedValueOnce(null);
-
-      const request = createMockRequest('DELETE', '/.cluster/pods/pod-123/migration');
-      const response = createMockResponse();
-
-      await expect(handler.handle({ request, response } as any)).rejects.toThrow('not being migrated');
+      await expect(handler.handle({ request, response } as any)).rejects.toThrow('not implemented');
     });
   });
 });

@@ -46,7 +46,7 @@ import { PodMigrationHttpHandler } from './http/cluster/PodMigrationHttpHandler'
 import { PodMigrationService } from './service/PodMigrationService';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
-export { isMigratableAccessor } from './storage/MigratableDataAccessor';
+// Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
 export type {
   DnsProvider,
   ListDnsRecordsInput,

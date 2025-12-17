@@ -442,7 +442,7 @@
       }
     },
     {
-      "comment": "Composite handler that intercepts /api/signal and forwards other traffic to CSS defaults.",
+      "comment": "Composite handler that intercepts /api/v1/signal and forwards other traffic to CSS defaults.",
       "@id": "urn:undefineds:xpod:SignalAwareHttpHandler",
       "@type": "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler",
       "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_signalHandler": {
@@ -451,7 +451,7 @@
       "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_fallback": {
         "@id": "urn:solid-server:default:HttpHandler"
       },
-      "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_basePath": "/api/signal"
+      "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_basePath": "/api/v1/signal"
     },
     {
       "comment": "Wrap the main handler with Request ID middleware for tracing.",

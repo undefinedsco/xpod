@@ -2,15 +2,15 @@
  * Multi-node Center cluster integration test.
  *
  * Test architecture:
- * - 2 Center nodes (Center A @ port 3001, Center B @ port 3002) sharing SQLite
- * - 1 Edge node (Edge X) connecting via /api/signal
+ * - 2 Center nodes (Center A @ port 3101, Center B @ port 3102) sharing SQLite
+ * - 1 Edge node (Edge X) connecting via heartbeat service
  *
  * Test scenarios:
  * 1. Both Center nodes register to identity_edge_node
  * 2. Pod created on Center A has nodeId = A
  * 3. Request to Center B for that Pod routes to A
- * 4. Edge X registers via /api/signal
- * 5. Pod migration from A to B
+ * 4. Edge X registers and sends heartbeat to Center A
+ * 5. Pod migration API works
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -102,6 +102,25 @@ suite('Multi-node Center Cluster', () => {
     // Wait for servers to be ready
     await waitForServer(`http://localhost:${CENTER_A_PORT}/`);
     await waitForServer(`http://localhost:${CENTER_B_PORT}/`);
+
+    // Wait for center nodes to register and create tables
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Pre-register edge node in database
+    // EdgeNodeRepository uses SHA256 hashing
+    const crypto = await import('node:crypto');
+    const edgeToken = 'test-edge-token';
+    const tokenHash = crypto.createHash('sha256').update(edgeToken).digest('hex');
+    
+    try {
+      db.prepare(`
+        INSERT OR REPLACE INTO identity_edge_node (id, display_name, token_hash, node_type, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run('edge-x', 'Test Edge Node', tokenHash, 'edge', Date.now(), Date.now());
+      console.log('Edge node pre-registered in database');
+    } catch (err) {
+      console.error('Failed to pre-register edge node:', err);
+    }
   }, 60000);
 
   afterAll(async () => {
@@ -221,36 +240,167 @@ suite('Multi-node Center Cluster', () => {
   });
 
   describe('Edge Node Registration', () => {
-    it('Edge node should register via /api/signal', async () => {
-      const nodeId = `edge-${Date.now()}`;
-      const token = 'test-edge-token';
+    it('Edge node can be pre-registered in database', async () => {
+      // Verify edge node was pre-registered in beforeAll
+      const node = db.prepare(`
+        SELECT id, node_type, display_name
+        FROM identity_edge_node 
+        WHERE id = ?
+      `).get('edge-x') as {
+        id: string;
+        node_type: string;
+        display_name: string;
+      } | undefined;
 
-      // Register edge node
-      const response = await fetch(`http://localhost:${CENTER_A_PORT}/api/signal`, {
+      expect(node).toBeDefined();
+      expect(node?.id).toBe('edge-x');
+      expect(node?.node_type).toBe('edge');
+      expect(node?.display_name).toBe('Test Edge Node');
+    });
+
+    it('Edge node can send heartbeat to Center A via signal endpoint', async () => {
+      // Send heartbeat to Center A's signal endpoint
+      const signalEndpoint = `http://localhost:${CENTER_A_PORT}/api/v1/signal`;
+      
+      const heartbeatPayload = {
+        nodeId: 'edge-x',
+        token: 'test-edge-token',
+        baseUrl: 'http://edge-x.local:8080/',
+        publicAddress: 'http://192.168.1.100:8080/',
+        hostname: 'edge-x.local',
+        ipv4: '192.168.1.100',
+        version: '1.0.0',
+        status: 'online',
+        capabilities: ['storage:filesystem', 'auth:webid', 'mode:direct'],
+        pods: ['http://edge-x.local:8080/alice/', 'http://edge-x.local:8080/bob/'],
+        metrics: {
+          cpuUsage: 0.45,
+          memoryUsage: 0.60,
+          diskUsage: 0.30,
+        },
+        metadata: {
+          region: 'test-region',
+          provider: 'test-provider',
+        },
+      };
+
+      const response = await fetch(signalEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(heartbeatPayload),
+      });
+
+      expect(response.status).toBe(200);
+      
+      const result = await response.json() as {
+        status: string;
+        nodeId: string;
+        lastSeen: string;
+        metadata: Record<string, unknown>;
+      };
+      
+      expect(result.status).toBe('ok');
+      expect(result.nodeId).toBe('edge-x');
+      expect(result.lastSeen).toBeDefined();
+      expect(result.metadata).toBeDefined();
+      expect(result.metadata.baseUrl).toBe('http://edge-x.local:8080/');
+      expect(result.metadata.hostname).toBe('edge-x.local');
+    });
+
+    it('Edge node can send heartbeat to Center B via signal endpoint', async () => {
+      // Verify heartbeat works on both center nodes
+      const signalEndpoint = `http://localhost:${CENTER_B_PORT}/api/v1/signal`;
+      
+      const heartbeatPayload = {
+        nodeId: 'edge-x',
+        token: 'test-edge-token',
+        status: 'online',
+      };
+
+      const response = await fetch(signalEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(heartbeatPayload),
+      });
+
+      expect(response.status).toBe(200);
+      
+      const result = await response.json() as { status: string; nodeId: string };
+      expect(result.status).toBe('ok');
+      expect(result.nodeId).toBe('edge-x');
+    });
+
+    it('Edge node heartbeat updates last_seen and metadata in database', async () => {
+      // First send a heartbeat
+      const signalEndpoint = `http://localhost:${CENTER_A_PORT}/api/v1/signal`;
+      
+      await fetch(signalEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'register',
-          nodeId,
-          token,
-          displayName: 'Test Edge Node',
-          capabilities: ['storage'],
+          nodeId: 'edge-x',
+          token: 'test-edge-token',
+          status: 'healthy',
+          metadata: { updatedField: 'test-value' },
         }),
       });
 
-      // Signal endpoint might return various status codes depending on implementation
-      // 200/201 for success, 401 for auth required, etc.
-      expect([200, 201, 401, 403]).toContain(response.status);
+      // Wait a bit for database update
+      await new Promise(resolve => setTimeout(resolve, 100));
 
-      if (response.status === 200 || response.status === 201) {
-        // Verify edge node is registered
-        const node = db.prepare(`
-          SELECT id, node_type FROM identity_edge_node WHERE id = ?
-        `).get(nodeId) as { id: string; node_type: string } | undefined;
+      // Query database to verify heartbeat was recorded
+      const node = db.prepare(`
+        SELECT id, last_seen, metadata
+        FROM identity_edge_node 
+        WHERE id = ?
+      `).get('edge-x') as {
+        id: string;
+        last_seen: number;
+        metadata: string;
+      } | undefined;
 
-        expect(node).toBeDefined();
-        expect(node?.node_type).toBe('edge');
-      }
+      expect(node).toBeDefined();
+      expect(node?.last_seen).toBeGreaterThan(0);
+      
+      // Verify metadata was updated
+      const metadata = JSON.parse(node?.metadata || '{}');
+      expect(metadata.status).toBe('healthy');
+    });
+
+    it('Edge node heartbeat with invalid token should be rejected', async () => {
+      const signalEndpoint = `http://localhost:${CENTER_A_PORT}/api/v1/signal`;
+      
+      const response = await fetch(signalEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nodeId: 'edge-x',
+          token: 'wrong-token',
+          status: 'online',
+        }),
+      });
+
+      expect(response.status).toBe(401);
+      const result = await response.json() as { error: string };
+      expect(result.error).toBe('Edge node authentication failed.');
+    });
+
+    it('Edge node heartbeat with unknown nodeId should be rejected', async () => {
+      const signalEndpoint = `http://localhost:${CENTER_A_PORT}/api/v1/signal`;
+      
+      const response = await fetch(signalEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nodeId: 'unknown-node',
+          token: 'some-token',
+          status: 'online',
+        }),
+      });
+
+      expect(response.status).toBe(401);
+      const result = await response.json() as { error: string };
+      expect(result.error).toBe('Edge node authentication failed.');
     });
   });
 });

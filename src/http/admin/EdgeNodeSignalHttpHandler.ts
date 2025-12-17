@@ -94,6 +94,14 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
   }
 
   public override async handle({ request, response }: HttpHandlerInput): Promise<void> {
+    try {
+      await this.handleRequest(request, response);
+    } catch (error: unknown) {
+      this.writeError(response, error);
+    }
+  }
+
+  private async handleRequest(request: HttpHandlerInput['request'], response: HttpResponse): Promise<void> {
     const method = (request.method ?? 'GET').toUpperCase();
     if (method === 'OPTIONS') {
       this.writeOptions(response);
@@ -211,6 +219,38 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
       lastSeen: now.toISOString(),
       metadata: merged,
     }));
+  }
+
+  private writeError(response: HttpResponse, error: unknown): void {
+    if (response.headersSent) {
+      return;
+    }
+
+    let statusCode = 500;
+    let message = 'Internal Server Error';
+
+    if (error instanceof UnauthorizedHttpError) {
+      statusCode = 401;
+      message = error.message;
+    } else if (error instanceof BadRequestHttpError) {
+      statusCode = 400;
+      message = error.message;
+    } else if (error instanceof MethodNotAllowedHttpError) {
+      statusCode = 405;
+      message = error.message;
+    } else if (error instanceof NotImplementedHttpError) {
+      statusCode = 501;
+      message = error.message;
+    } else if (error instanceof InternalServerError) {
+      statusCode = 500;
+      message = error.message;
+    } else if (error instanceof Error) {
+      message = error.message;
+    }
+
+    response.statusCode = statusCode;
+    response.setHeader('Content-Type', 'application/json; charset=utf-8');
+    response.end(JSON.stringify({ error: message }));
   }
 
   private async readPayload(request: IncomingMessage): Promise<EdgeNodeSignalPayload> {

@@ -10,9 +10,11 @@ import {
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import { PodMigrationService } from '../../service/PodMigrationService';
 
 interface PodMigrationHttpHandlerOptions {
   identityDbUrl: string;
+  currentNodeId: string;
   basePath?: string;
   enabled?: boolean | string;
 }
@@ -24,10 +26,12 @@ interface MigrateRequest {
 /**
  * HTTP Handler for Pod migration operations.
  * 
+ * Migration is now instant - it only updates the nodeId in the database.
+ * Binary files are read via cross-region fallback (TieredMinioDataAccessor).
+ * 
  * Endpoints:
- * - POST /.cluster/pods/{podId}/migrate - Start migration
- * - GET  /.cluster/pods/{podId}/migration - Get migration status
- * - DELETE /.cluster/pods/{podId}/migration - Cancel migration
+ * - POST /.cluster/pods/{podId}/migrate - Migrate pod to target node (instant)
+ * - GET  /.cluster/pods/{podId} - Get pod info
  * - GET  /.cluster/pods - List all pods with node info
  */
 export class PodMigrationHttpHandler extends HttpHandler {
@@ -35,6 +39,7 @@ export class PodMigrationHttpHandler extends HttpHandler {
   
   private readonly podLookupRepository: PodLookupRepository;
   private readonly edgeNodeRepository: EdgeNodeRepository;
+  private readonly migrationService: PodMigrationService;
   private readonly basePath: string;
   private readonly basePathWithSlash: string;
   private readonly enabled: boolean;
@@ -44,6 +49,10 @@ export class PodMigrationHttpHandler extends HttpHandler {
     const db = getIdentityDatabase(options.identityDbUrl);
     this.podLookupRepository = new PodLookupRepository(db);
     this.edgeNodeRepository = new EdgeNodeRepository(db);
+    this.migrationService = new PodMigrationService({
+      identityDbUrl: options.identityDbUrl,
+      currentNodeId: options.currentNodeId,
+    });
     this.basePath = this.normalizeBasePath(options.basePath ?? '/.cluster/pods');
     this.basePathWithSlash = `${this.basePath}/`;
     this.enabled = this.normalizeBoolean(options.enabled);
@@ -89,22 +98,10 @@ export class PodMigrationHttpHandler extends HttpHandler {
         return;
       }
 
-      // POST /.cluster/pods/{podId}/migrate - Start migration
+      // POST /.cluster/pods/{podId}/migrate - Migrate pod (instant)
       if (action === 'migrate' && method === 'POST') {
         const body = await this.parseJsonBody(request);
-        await this.handleStartMigration(podId, body, response);
-        return;
-      }
-
-      // GET /.cluster/pods/{podId}/migration - Get migration status
-      if (action === 'migration' && method === 'GET') {
-        await this.handleGetMigrationStatus(podId, response);
-        return;
-      }
-
-      // DELETE /.cluster/pods/{podId}/migration - Cancel migration
-      if (action === 'migration' && method === 'DELETE') {
-        await this.handleCancelMigration(podId, response);
+        await this.handleMigrate(podId, body, response);
         return;
       }
 
@@ -137,7 +134,7 @@ export class PodMigrationHttpHandler extends HttpHandler {
   }
 
   /**
-   * Get single pod info including migration status.
+   * Get single pod info.
    */
   private async handleGetPod(podId: string, response: HttpResponse): Promise<void> {
     const pod = await this.podLookupRepository.findById(podId);
@@ -145,25 +142,19 @@ export class PodMigrationHttpHandler extends HttpHandler {
       throw new NotFoundHttpError(`Pod ${podId} not found`);
     }
 
-    const migration = await this.podLookupRepository.getMigrationStatus(podId);
-
     this.sendJson(response, 200, {
       podId: pod.podId,
       baseUrl: pod.baseUrl,
       accountId: pod.accountId,
       nodeId: pod.nodeId,
-      migration: migration ? {
-        status: migration.migrationStatus,
-        targetNode: migration.migrationTargetNode,
-        progress: migration.migrationProgress,
-      } : null,
     });
   }
 
   /**
-   * Start pod migration to target node.
+   * Migrate pod to target node.
+   * This is instant - only updates nodeId. Binary files use cross-region fallback.
    */
-  private async handleStartMigration(
+  private async handleMigrate(
     podId: string,
     body: MigrateRequest,
     response: HttpResponse,
@@ -172,96 +163,30 @@ export class PodMigrationHttpHandler extends HttpHandler {
       throw new BadRequestHttpError('Missing required field: targetNode');
     }
 
-    // Verify pod exists
-    const pod = await this.podLookupRepository.findById(podId);
-    if (!pod) {
-      throw new NotFoundHttpError(`Pod ${podId} not found`);
-    }
+    try {
+      const result = await this.migrationService.migratePod(podId, body.targetNode);
 
-    // Verify target node exists
-    const targetNode = await this.edgeNodeRepository.getCenterNode(body.targetNode);
-    if (!targetNode) {
-      throw new BadRequestHttpError(`Target node ${body.targetNode} not found`);
-    }
+      this.logger.info(`Pod migrated: pod=${podId}, from=${result.sourceNodeId}, to=${result.targetNodeId}`);
 
-    // Check if already migrating
-    const currentStatus = await this.podLookupRepository.getMigrationStatus(podId);
-    if (currentStatus?.migrationStatus === 'syncing') {
-      throw new BadRequestHttpError(`Pod ${podId} is already being migrated`);
-    }
-
-    // Check if already on target node
-    if (pod.nodeId === body.targetNode) {
-      throw new BadRequestHttpError(`Pod ${podId} is already on node ${body.targetNode}`);
-    }
-
-    // Start migration
-    await this.podLookupRepository.setMigrationStatus(podId, 'syncing', body.targetNode, 0);
-
-    this.logger.info(`Migration started: pod=${podId}, target=${body.targetNode}`);
-
-    // TODO: Trigger actual migration process (Phase 3 full implementation)
-    // For now, just mark as started
-
-    this.sendJson(response, 202, {
-      message: 'Migration started',
-      podId,
-      targetNode: body.targetNode,
-      status: 'syncing',
-      progress: 0,
-    });
-  }
-
-  /**
-   * Get migration status for a pod.
-   */
-  private async handleGetMigrationStatus(podId: string, response: HttpResponse): Promise<void> {
-    const pod = await this.podLookupRepository.findById(podId);
-    if (!pod) {
-      throw new NotFoundHttpError(`Pod ${podId} not found`);
-    }
-
-    const status = await this.podLookupRepository.getMigrationStatus(podId);
-    if (!status || !status.migrationStatus) {
       this.sendJson(response, 200, {
-        podId,
-        migrating: false,
+        message: 'Migration completed',
+        podId: result.podId,
+        sourceNode: result.sourceNodeId,
+        targetNode: result.targetNodeId,
+        migratedAt: result.migratedAt.toISOString(),
       });
-      return;
+    } catch (error) {
+      const message = (error as Error).message;
+      
+      if (message.includes('not found')) {
+        throw new NotFoundHttpError(message);
+      }
+      if (message.includes('already on node')) {
+        throw new BadRequestHttpError(message);
+      }
+      
+      throw error;
     }
-
-    this.sendJson(response, 200, {
-      podId,
-      migrating: status.migrationStatus === 'syncing',
-      status: status.migrationStatus,
-      targetNode: status.migrationTargetNode,
-      progress: status.migrationProgress,
-    });
-  }
-
-  /**
-   * Cancel ongoing migration.
-   */
-  private async handleCancelMigration(podId: string, response: HttpResponse): Promise<void> {
-    const pod = await this.podLookupRepository.findById(podId);
-    if (!pod) {
-      throw new NotFoundHttpError(`Pod ${podId} not found`);
-    }
-
-    const status = await this.podLookupRepository.getMigrationStatus(podId);
-    if (!status || status.migrationStatus !== 'syncing') {
-      throw new BadRequestHttpError(`Pod ${podId} is not being migrated`);
-    }
-
-    // Clear migration status
-    await this.podLookupRepository.setMigrationStatus(podId, null, null, null);
-
-    this.logger.info(`Migration cancelled: pod=${podId}`);
-
-    this.sendJson(response, 200, {
-      message: 'Migration cancelled',
-      podId,
-    });
   }
 
   // ============ Utility methods ============

@@ -244,12 +244,20 @@ export class TieredMinioDataAccessor implements MigratableDataAccessor {
   }
 
   /**
-   * Get data with cache-first strategy.
+   * Get data with cache-first strategy and cross-region fallback.
+   * 
+   * Read order:
+   * 1. Local cache (fastest)
+   * 2. Local bucket (current region)
+   * 3. Fallback buckets (other regions) - enables instant migration
+   * 
+   * When reading from fallback bucket, optionally copy to local bucket (lazy migration).
    */
   public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
     const cacheFilePath = this.getCacheFilePath(identifier);
+    const url = new URL(identifier.path);
 
-    // Check local cache first
+    // 1. Check local cache first
     if (this.isCached(cacheFilePath)) {
       this.logger.debug(`Cache hit: ${identifier.path}`);
       this.touchCache(cacheFilePath);
@@ -257,28 +265,91 @@ export class TieredMinioDataAccessor implements MigratableDataAccessor {
       return guardStream(stream);
     }
 
-    // Cache miss: fetch from COS
+    // 2. Try local bucket first
     this.logger.debug(`Cache miss: ${identifier.path}`);
-    const url = new URL(identifier.path);
-    const cosStream = await this.client.getObject(this.bucketName, url.pathname);
+    let data: Buffer | null = null;
+    let sourceLocation = 'local';
 
-    // Write to cache while returning data
     try {
-      // Ensure parent directory exists
+      data = await this.fetchFromBucket(this.bucketName, url.pathname);
+    } catch (error) {
+      // Local bucket failed, try fallback buckets
+      if (this.supportsMigration()) {
+        const fallbackResult = await this.fetchFromFallbackBuckets(url.pathname);
+        if (fallbackResult) {
+          data = fallbackResult.data;
+          sourceLocation = fallbackResult.bucket;
+          this.logger.info(`Fallback read from ${sourceLocation}: ${identifier.path}`);
+        }
+      }
+    }
+
+    if (!data) {
+      throw new NotFoundHttpError(`Resource not found: ${identifier.path}`);
+    }
+
+    // 3. Write to local cache
+    await this.writeToCache(cacheFilePath, data, identifier.path);
+
+    // 4. Lazy copy to local bucket if read from fallback
+    if (sourceLocation !== 'local' && sourceLocation !== this.bucketName) {
+      this.lazyCopyToLocalBucket(url.pathname, data).catch(err => {
+        this.logger.warn(`Lazy copy failed for ${identifier.path}: ${err.message}`);
+      });
+    }
+
+    // Return data as stream
+    const { Readable } = require('node:stream');
+    const readable = Readable.from(data);
+    return guardStream(readable);
+  }
+
+  /**
+   * Fetch data from a specific bucket.
+   */
+  private async fetchFromBucket(bucket: string, path: string): Promise<Buffer> {
+    const stream = await this.client.getObject(bucket, path);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * Try to fetch data from fallback buckets (other regions).
+   * Returns the data and source bucket name, or null if not found.
+   */
+  private async fetchFromFallbackBuckets(path: string): Promise<{ data: Buffer; bucket: string } | null> {
+    // Try each region bucket except the current one
+    for (const [region, bucket] of Object.entries(this.regionBuckets)) {
+      if (bucket === this.bucketName) {
+        continue; // Skip local bucket
+      }
+
+      try {
+        this.logger.debug(`Trying fallback bucket: ${bucket} (region: ${region})`);
+        const data = await this.fetchFromBucket(bucket, path);
+        return { data, bucket };
+      } catch {
+        // Not found in this bucket, try next
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Write data to local cache.
+   */
+  private async writeToCache(cacheFilePath: string, data: Buffer, path: string): Promise<void> {
+    try {
       const cacheDir = dirname(cacheFilePath);
       if (!existsSync(cacheDir)) {
         mkdirSync(cacheDir, { recursive: true });
       }
 
-      // For simplicity, we fetch the entire file and cache it
-      // In production, consider streaming with PassThrough
-      const chunks: Buffer[] = [];
-      for await (const chunk of cosStream) {
-        chunks.push(chunk);
-      }
-      const data = Buffer.concat(chunks);
-
-      // Write to cache
       const writeStream = createWriteStream(cacheFilePath);
       await new Promise<void>((resolve, reject) => {
         writeStream.write(data, (err) => {
@@ -290,20 +361,28 @@ export class TieredMinioDataAccessor implements MigratableDataAccessor {
         });
       });
 
-      // Track cache entry
       this.addToCacheTracking(cacheFilePath, data.length);
-
-      // Return data as stream
-      const { Readable } = require('node:stream');
-      const readable = Readable.from(data);
-      return guardStream(readable);
     } catch (error) {
-      this.logger.warn(`Failed to cache ${identifier.path}: ${error}`);
-      // If caching fails, still try to return data from COS
-      const url = new URL(identifier.path);
-      const stream = await this.client.getObject(this.bucketName, url.pathname);
-      return guardStream(stream);
+      this.logger.warn(`Failed to cache ${path}: ${error}`);
     }
+  }
+
+  /**
+   * Lazily copy data to local bucket for future reads.
+   * This runs in the background and doesn't block the read.
+   */
+  private async lazyCopyToLocalBucket(path: string, data: Buffer): Promise<void> {
+    const { Readable } = require('node:stream');
+    const stream = Readable.from(data);
+    
+    await this.client.putObject(
+      this.bucketName,
+      path,
+      stream,
+      data.length,
+    );
+    
+    this.logger.debug(`Lazy copied to local bucket: ${path}`);
   }
 
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {

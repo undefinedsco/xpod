@@ -183,6 +183,19 @@
       }
     },
     {
+      "comment": "Edge node signal handler for heartbeat and registration",
+      "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler",
+      "@type": "EdgeNodeSignalHttpHandler",
+      "options_identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "options_basePath": "/api/v1/signal",
+      "options_edgeNodesEnabled": {
+        "@value": true
+      }
+    },
+    {
       "comment": "Compose cluster-enabled HTTP pipeline",
       "@type": "Override",
       "overrideInstance": {
@@ -191,6 +204,9 @@
       "overrideParameters": {
         "@type": "WaterfallHandler",
         "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler"
+          },
           {
             "@id": "urn:undefineds:xpod:PodMigrationHttpHandler"
           },
