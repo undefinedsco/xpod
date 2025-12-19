@@ -21,9 +21,10 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/templates/": "templates/"
   },
   "scripts": {
-    "build": "npm run build:ts && npm run build:components",
+    "build": "npm run build:ts && npm run build:components && npm run build:ui",
     "build:ts": "tsc",
     "build:components": "componentsjs-generator -s src -c dist/components -r undefineds",
+    "build:ui": "cd ui && npm run build",
     "prepare.": "yarn run build",
     "clean": "rm -rf data/*",
     "clean:test": "rm -rf .test-data && rm -f *.sqlite *.sqlite-wal *.sqlite-shm",
@@ -31,7 +32,6 @@
     "dev": "dotenv -e .env.local -- community-solid-server -c config/main.dev.json config/extensions.dev.json -m .",
     "local": "dotenv -e .env.local -- community-solid-server -c config/main.local.json config/extensions.local.json -m .",
     "server": "dotenv -e .env.server -- community-solid-server -c config/main.server.json config/extensions.server.json -m .",
-    "build:ui": "echo \"Admin console UI removed; skipping\"",
     "dev:css": "dotenv -e .env.local -- community-solid-server -c config/main.local.json config/extensions.local.json -m .",
     "watch:css": "nodemon --watch config --watch templates --watch static --watch src --ext json,ejs,html,ts,tsx --exec \"yarn build:ts && yarn build:components && yarn dev:css\"",
     "dev:css:dev": "dotenv -e .env.local -- community-solid-server -c config/main.dev.json config/extensions.dev.json -m .",
@@ -49,6 +49,7 @@
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true XPOD_RUN_SERVER_INTEGRATION=true vitest --run --coverage"
   },
   "devDependencies": {
+    "@playwright/test": "^1.57.0",
     "@solid/community-server": "^7.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/http-proxy": "^1.17.17",

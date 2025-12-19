@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Xpod</title>
+  <link rel="stylesheet" href="/app/assets/index.css">
+  <meta name="description" content="Your Personal Data Pod - Take control of your digital identity." />
+  <link rel="icon" href="/favicon.ico" />
+</head>
+<body class="bg-zinc-950 text-zinc-100 font-sans antialiased min-h-screen flex flex-col">
+  <div id="root"></div>
+  <script>
+    window.__XPOD__ = Object.freeze({
+      idpIndex: '{{IDP_INDEX}}',
+      authenticating: {{AUTHENTICATING}}
+    });
+  </script>
+  <script type="module" src="/app/assets/main.js"></script>
+</body>
+</html>

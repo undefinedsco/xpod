@@ -44,6 +44,7 @@ import { PodRoutingHttpHandler } from './http/PodRoutingHttpHandler';
 import { TieredMinioDataAccessor } from './storage/accessors/TieredMinioDataAccessor';
 import { PodMigrationHttpHandler } from './http/cluster/PodMigrationHttpHandler';
 import { PodMigrationService } from './service/PodMigrationService';
+import { ReactAppViewHandler } from './identity/ReactAppViewHandler';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
 // Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
@@ -58,6 +59,9 @@ export type {
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService } from './quota/QuotaService';
+// Export the new AppStaticAssetHandler
+export { AppStaticAssetHandler } from './http/AppStaticAssetHandler';
+
 export { 
     RepresentationPartialConvertingStore,
     MinioDataAccessor, 
@@ -104,4 +108,5 @@ export {
   TieredMinioDataAccessor,
   PodMigrationHttpHandler,
   PodMigrationService,
+  ReactAppViewHandler,
 };
