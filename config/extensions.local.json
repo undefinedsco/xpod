@@ -74,6 +74,10 @@
       }
     },
     {
+      "@id": "urn:solid-server:default:variable:registration",
+      "@value": true
+    },
+    {
       "comment": "Compose local HTTP pipeline without edge handlers",
       "@type": "Override",
       "overrideInstance": {
@@ -87,6 +91,9 @@
           },
           {
             "@id": "urn:undefineds:xpod:TerminalHttpHandler"
+          },
+          {
+            "@id": "urn:undefineds:xpod:AppStaticAssetHandler"
           },
           {
             "@id": "urn:solid-server:default:StaticAssetHandler"

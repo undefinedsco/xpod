@@ -177,6 +177,37 @@
           }
         ]
       }
+    },
+    {
+      "comment": "Tracing middleware for request ID and logging.",
+      "@id": "urn:undefineds:xpod:TracingMiddleware",
+      "@type": "RequestIdHttpHandler"
+    },
+    {
+      "comment": "Main HTTP handler using chained middleware pattern.",
+      "@id": "urn:undefineds:xpod:MainHttpHandler",
+      "@type": "ChainedHttpHandler",
+      "handlers": [
+        { "@id": "urn:undefineds:xpod:TracingMiddleware" },
+        { "@id": "urn:solid-server:default:HttpHandler" }
+      ]
+    },
+    {
+      "comment": "Use the chained main handler for incoming HTTP requests.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:HandlerServerConfigurator"
+      },
+      "overrideParameters": {
+        "@type": "HandlerServerConfigurator",
+        "handler": {
+          "@id": "urn:undefineds:xpod:MainHttpHandler"
+        },
+        "showStackTrace": {
+          "@id": "urn:solid-server:default:variable:showStackTrace",
+          "@type": "Variable"
+        }
+      }
     }
   ]
 }

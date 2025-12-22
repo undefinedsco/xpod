@@ -88,7 +88,7 @@
       "overrideParameters": {
         "@type": "WrappedExpiringReadWriteLocker",
         "expiration": 15000,
-        "source": { "@id": "urn:solid-server:default:RedisLocker" }
+        "locker": { "@id": "urn:solid-server:default:RedisLocker" }
       }
     },
     {
@@ -121,7 +121,7 @@
       },
       "overrideParameters": {
         "@type": "UsageTrackingStore",
-        "source": {
+        "UsageTrackingStore:_source": {
           "@type": "SparqlUpdateResourceStore",
           "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
           "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
@@ -171,6 +171,24 @@
       }
     },
     {
+      "comment": "Override Drizzle-backed account storage for server deployment, using account-specific table prefix.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
+      },
+      "overrideParameters": {
+        "@type": "BaseLoginAccountStorage",
+        "storage": {
+          "@type": "DrizzleIndexedStorage",
+          "connectionString": {
+            "@id": "urn:solid-server:default:variable:identityDbUrl",
+            "@type": "Variable"
+          },
+          "tablePrefix": "identity_account_"
+        }
+      }
+    },
+    {
       "comment": "Drizzle-backed account storage for clustered deployments.",
       "@type": "Override",
       "overrideInstance": {
@@ -178,19 +196,6 @@
       },
       "overrideParameters": {
         "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
-      }
-    },
-    {
-      "comment": "Define the Drizzle Account Storage using composition: BaseLoginAccountStorage wrapping DrizzleIndexedStorage",
-      "@id": "urn:undefineds:xpod:DrizzleAccountStorage",
-      "@type": "BaseLoginAccountStorage",
-      "storage": {
-        "@type": "DrizzleIndexedStorage",
-        "connectionString": {
-          "@id": "urn:solid-server:default:variable:identityDbUrl",
-          "@type": "Variable"
-        },
-        "tablePrefix": "identity_account_"
       }
     },
     {
@@ -237,6 +242,45 @@
       },
       "PerAccountQuotaStrategy:_reporter": {
         "@id": "urn:solid-server:default:SizeReporter"
+      }
+    },
+    {
+      "comment": "Compose server HTTP pipeline",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:BaseHttpHandler"
+      },
+      "overrideParameters": {
+        "@type": "WaterfallHandler",
+        "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+          },
+          {
+            "@id": "urn:undefineds:xpod:AppStaticAssetHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:StaticAssetHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:OidcHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:NotificationHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:StorageDescriptionHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:AuthResourceHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:IdentityProviderHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:LdpHandler"
+          }
+        ]
       }
     }
   ]

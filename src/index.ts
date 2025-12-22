@@ -16,6 +16,7 @@ import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHa
 import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
 import { SignalInterceptHttpHandler } from './http/SignalInterceptHttpHandler';
 import { RequestIdHttpHandler } from './http/RequestIdHttpHandler';
+import { ChainedHttpHandler } from './http/ChainedHttpHandler';
 import { TerminalHttpHandler } from './http/terminal/TerminalHttpHandler';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
@@ -59,6 +60,7 @@ export type {
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService } from './quota/QuotaService';
+export type { MiddlewareHttpHandler, MiddlewareContext } from './http/MiddlewareHttpHandler';
 // Export the new AppStaticAssetHandler
 export { AppStaticAssetHandler } from './http/AppStaticAssetHandler';
 
@@ -80,6 +82,8 @@ export {
     EdgeNodeDirectDebugHttpHandler,
     EdgeNodeProxyHttpHandler,
     SignalInterceptHttpHandler,
+    RequestIdHttpHandler,
+  ChainedHttpHandler,
     EdgeNodeCertificateHttpHandler,
     TerminalHttpHandler,
     ReservedSuffixIdentifierGenerator,

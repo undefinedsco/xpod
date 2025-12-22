@@ -76,6 +76,9 @@
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },
           {
+            "@id": "urn:undefineds:xpod:AppStaticAssetHandler"
+          },
+          {
             "@id": "urn:solid-server:default:StaticAssetHandler"
           },
           {

@@ -58,6 +58,35 @@ suite('Server Mode Login Integration', () => {
     }
   });
 
+  describe('Identity HTML Routes', () => {
+    const htmlRoutes = [
+      '.account/',
+      '.account/login/',
+      '.account/login/password/',
+      '.account/login/password/register/',
+      '.account/login/password/forgot/',
+      '.account/oidc/consent/',
+    ];
+
+    it('serves HTML for identity pages', async () => {
+      for (const route of htmlRoutes) {
+        const response = await fetch(joinUrl(baseUrl, route), {
+          method: 'GET',
+          headers: { 'Accept': 'text/html' },
+        });
+
+        expect([200, 302, 401, 403]).toContain(response.status);
+
+        if (response.status === 200) {
+          const contentType = response.headers.get('content-type') ?? '';
+          expect(contentType).toMatch(/text\/html/);
+          const html = await response.text();
+          expect(html).toMatch(/<div id=\"root\"><\/div>/);
+        }
+      }
+    });
+  });
+
   describe('Account Registration', () => {
     it('gets account creation controls', async () => {
       const response = await fetch(joinUrl(baseUrl, '.account/account/'), {

@@ -1,6 +1,12 @@
 import { HttpHandler, type HttpHandlerInput, getLoggerFor } from '@solid/community-server';
 import { logContext } from '../logging/LogContext';
+import type { MiddlewareHttpHandler, MiddlewareContext } from './MiddlewareHttpHandler';
 import crypto from 'node:crypto';
+
+// Context keys for RequestIdHttpHandler
+const REQUEST_ID_KEY = 'requestId';
+const START_TIME_KEY = 'startTime';
+const LOG_CONTEXT_CLEANUP_KEY = 'logContextCleanup';
 
 /**
  * Middleware that manages Request IDs for tracing.
@@ -9,47 +15,52 @@ import crypto from 'node:crypto';
  * 3. Sets the X-Request-ID in the response header.
  * 4. Stores the ID in AsyncLocalStorage for logging context.
  */
-export class RequestIdHttpHandler extends HttpHandler {
-  private readonly source: HttpHandler;
+export class RequestIdHttpHandler extends HttpHandler implements MiddlewareHttpHandler {
+  protected readonly logger = getLoggerFor(this);
 
-  public constructor(source: HttpHandler) {
+  public constructor() {
     super();
-    this.source = source;
   }
 
-  public override async canHandle(input: HttpHandlerInput): Promise<void> {
-    await this.source.canHandle(input);
+  public override async canHandle(_input: HttpHandlerInput): Promise<void> {
+    // Middleware always can handle - it's pass-through
   }
 
-  public override async handle(input: HttpHandlerInput): Promise<void> {
+  public override async handle(_input: HttpHandlerInput): Promise<void> {
+    // Not used in middleware mode - before/after are used instead
+    throw new Error('RequestIdHttpHandler should be used as middleware in ChainedHttpHandler');
+  }
+
+  public async before(input: HttpHandlerInput, context: MiddlewareContext): Promise<void> {
     const headerId = input.request.headers['x-request-id'];
     const requestId = Array.isArray(headerId) ? headerId[0] : headerId || crypto.randomUUID();
     
     input.response.setHeader('X-Request-ID', requestId);
-    const logger = this.loggerForRequest(input);
+    
+    // Store in context for after()
+    context[REQUEST_ID_KEY] = requestId;
+    context[START_TIME_KEY] = Date.now();
 
-    await logContext.run({ requestId }, async () => {
-      const started = Date.now();
-      let status = 500;
-      try {
-        await this.source.handle(input);
-        status = input.response.statusCode || 200;
-      } catch (error) {
-        status = error instanceof Error ? (error as any).statusCode ?? status : status;
-        logger.error(`${input.request.method} ${input.request.url} -> error ${status}: ${error instanceof Error ? error.message : String(error)}`);
-        throw error;
-      } finally {
-        const ms = Date.now() - started;
-        if (status < 400) {
-          logger.info(`${input.request.method} ${input.request.url} -> ${status} (${ms}ms)`);
-        } else {
-          logger.warn(`${input.request.method} ${input.request.url} -> ${status} (${ms}ms)`);
-        }
-      }
-    });
+    // Enter log context - we need to wrap the rest of execution in this context
+    // Store a reference so we can use it in logging
+    logContext.enterWith({ requestId });
   }
 
-  private loggerForRequest(input: HttpHandlerInput) {
-    return getLoggerFor(this);
+  public async after(input: HttpHandlerInput, context: MiddlewareContext, error?: Error): Promise<void> {
+    const requestId = context[REQUEST_ID_KEY] as string;
+    const startTime = context[START_TIME_KEY] as number;
+    const ms = Date.now() - startTime;
+    
+    let status = input.response.statusCode || 200;
+    if (error) {
+      status = (error as any).statusCode ?? 500;
+      this.logger.error(`${input.request.method} ${input.request.url} -> error ${status}: ${error.message}`);
+    }
+    
+    if (status < 400) {
+      this.logger.info(`${input.request.method} ${input.request.url} -> ${status} (${ms}ms)`);
+    } else {
+      this.logger.warn(`${input.request.method} ${input.request.url} -> ${status} (${ms}ms)`);
+    }
   }
 }

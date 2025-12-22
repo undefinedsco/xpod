@@ -145,7 +145,10 @@ describe('EdgeNodeSignalHttpHandler', () => {
     const request = createRequest('GET', '/api/signal');
     const response = new MockResponse() as unknown as HttpResponse;
 
-    await expect(handler.handle({ request, response })).rejects.toBeInstanceOf(MethodNotAllowedHttpError);
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    expect(response.statusCode).toBe(405);
   });
 
   it('缺少必要字段返回 400', async () => {
@@ -153,7 +156,10 @@ describe('EdgeNodeSignalHttpHandler', () => {
     const request = createRequest('POST', '/api/signal', JSON.stringify({ nodeId: 'node-1' }));
     const response = new MockResponse() as unknown as HttpResponse;
 
-    await expect(handler.handle({ request, response })).rejects.toBeInstanceOf(BadRequestHttpError);
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    expect(response.statusCode).toBe(400);
   });
 
   it('身份验证失败返回 401', async () => {
@@ -164,7 +170,10 @@ describe('EdgeNodeSignalHttpHandler', () => {
     const request = createRequest('POST', '/api/signal', JSON.stringify({ nodeId: 'node-1', token: 'wrong' }));
     const response = new MockResponse() as unknown as HttpResponse;
 
-    await expect(handler.handle({ request, response })).rejects.toBeInstanceOf(UnauthorizedHttpError);
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    expect(response.statusCode).toBe(401);
   });
 
   it('成功记录心跳并合并元数据', async () => {
@@ -212,7 +221,10 @@ describe('EdgeNodeSignalHttpHandler', () => {
     const request = createRequest('POST', '/api/signal', JSON.stringify({ nodeId: 'node-unknown', token: 'secret' }));
     const response = new MockResponse() as unknown as HttpResponse;
 
-    await expect(handler.handle({ request, response })).rejects.toBeInstanceOf(UnauthorizedHttpError);
+    await handler.handle({ request, response });
+    await (response as unknown as MockResponse).done;
+
+    expect(response.statusCode).toBe(401);
   });
 
   it('输入包含无效 URL 时忽略字段', async () => {

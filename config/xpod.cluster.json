@@ -454,28 +454,18 @@
       "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_basePath": "/api/v1/signal"
     },
     {
-      "comment": "Wrap the main handler with Request ID middleware for tracing.",
-      "@id": "urn:undefineds:xpod:RequestIdHandler",
-      "@type": "RequestIdHttpHandler",
-      "source": {
-        "@id": "urn:undefineds:xpod:SignalAwareHttpHandler"
-      }
-    },
-    {
-      "comment": "Use the request-id wrapped handler for incoming HTTP requests.",
+      "comment": "Override MainHttpHandler to include SignalAwareHttpHandler in the middleware chain.",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:HandlerServerConfigurator"
+        "@id": "urn:undefineds:xpod:MainHttpHandler"
       },
       "overrideParameters": {
-        "@type": "HandlerServerConfigurator",
-        "handler": {
-          "@id": "urn:undefineds:xpod:RequestIdHandler"
-        },
-        "showStackTrace": {
-          "@id": "urn:solid-server:default:variable:showStackTrace",
-          "@type": "Variable"
-        }
+        "@type": "ChainedHttpHandler",
+        "handlers": [
+          { "@id": "urn:undefineds:xpod:TracingMiddleware" },
+          { "@id": "urn:undefineds:xpod:SignalAwareHttpHandler" },
+          { "@id": "urn:solid-server:default:HttpHandler" }
+        ]
       }
     }
   ]

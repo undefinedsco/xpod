@@ -31,6 +31,33 @@ function useAuth() {
   return ctx;
 }
 
+const RETURN_TO_KEY = 'xpod:returnTo';
+
+function persistReturnTo(url: string): void {
+  try {
+    if (url) sessionStorage.setItem(RETURN_TO_KEY, url);
+  } catch {}
+}
+
+function consumeReturnTo(): string | null {
+  try {
+    const url = sessionStorage.getItem(RETURN_TO_KEY);
+    if (url) sessionStorage.removeItem(RETURN_TO_KEY);
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function getReturnToFromLocation(): string | null {
+  try {
+    const value = new URLSearchParams(window.location.search).get('returnTo');
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
 // === Auth Provider ===
 function AuthProvider({ children }: { children: React.ReactNode }) {
   const initialData = (window as any).__XPOD__ || (window as any).__INITIAL_DATA__ || { idpIndex: '/.account/', authenticating: false };
@@ -175,80 +202,269 @@ function ForgotPasswordPage() {
 }
 
 function ConsentPage() {
-  const { controls } = useAuth();
+  const { idpIndex, isLoggedIn } = useAuth();
+  const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [clientInfo, setClientInfo] = useState<any>(null);
+  const [currentWebId, setCurrentWebId] = useState<string | null>(null);
   const [webIds, setWebIds] = useState<string[]>([]);
   const [selectedWebId, setSelectedWebId] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<string | null>(null);
+
+  // CSS OIDC endpoints (standard paths from idpIndex)
+  const consentUrl = `${idpIndex}oidc/consent/`;
+  const pickWebIdUrl = `${idpIndex}oidc/pick-webid/`;
+  const cancelUrl = `${idpIndex}oidc/cancel`;
 
   useEffect(() => {
+    persistReturnTo(window.location.href);
     (async () => {
       try {
-        if (controls?.oidc?.webId) {
-          const res = await fetch(controls.oidc.webId, { headers: { Accept: 'application/json' }, credentials: 'include' });
-          const json = await res.json();
-          // webIdLinks is an object where keys are webIds
-          const links = json.webIdLinks || {};
-          const ids = Object.keys(links);
+        // Step 1: GET consent page to get client info and current webId
+        // CSS returns: { client: {...}, webId: "..." or null }
+        const consentRes = await fetch(consentUrl, { 
+          headers: { Accept: 'application/json' }, 
+          credentials: 'include' 
+        });
+        
+        if (consentRes.status === 401 || consentRes.status === 403) {
+          setError('Please sign in to continue authorization.');
+          setIsLoading(false);
+          return;
+        }
+        if (!consentRes.ok) {
+          const errJson = await consentRes.json().catch(() => ({}));
+          throw new Error(errJson.message || 'Failed to load consent info');
+        }
+        
+        const consentData = await consentRes.json();
+        setClientInfo(consentData.client || {});
+        setCurrentWebId(consentData.webId || null);
+
+        // Step 2: Fetch available WebIDs from pick-webid endpoint
+        // CSS returns: { webIds: [...], fields: {...} }
+        const pickRes = await fetch(pickWebIdUrl, { 
+          headers: { Accept: 'application/json' }, 
+          credentials: 'include' 
+        });
+        if (pickRes.ok) {
+          const pickData = await pickRes.json();
+          const ids = pickData.webIds || [];
           setWebIds(ids);
-          if (ids.length > 0) setSelectedWebId(ids[0]);
+          // Pre-select current webId if set, otherwise first available
+          if (consentData.webId && ids.includes(consentData.webId)) {
+            setSelectedWebId(consentData.webId);
+          } else if (ids.length > 0) {
+            setSelectedWebId(ids[0]);
+          }
         }
-        if (controls?.oidc?.consent) {
-          const res = await fetch(controls.oidc.consent, { headers: { Accept: 'application/json' }, credentials: 'include' });
-          setClientInfo(await res.json());
-        }
-      } catch {
-        setError('Failed to load consent info');
+      } catch (err: any) {
+        setError(err.message || 'Failed to load consent info');
       } finally {
         setIsLoading(false);
       }
     })();
-  }, [controls]);
+  }, [consentUrl, pickWebIdUrl]);
+
+  const parseWebIdInfo = (webId: string): { provider: string; podId: string; full: string } => {
+    try {
+      const url = new URL(webId);
+      const segments = url.pathname.split('/').filter(Boolean);
+      return {
+        provider: url.host,
+        podId: segments[0] ?? '-',
+        full: webId,
+      };
+    } catch {
+      return { provider: '-', podId: '-', full: webId };
+    }
+  };
+
+  const copyWebId = async (webId: string) => {
+    try {
+      await navigator.clipboard.writeText(webId);
+      setCopyState(webId);
+      setTimeout(() => setCopyState(null), 1200);
+    } catch {
+      setCopyState(null);
+    }
+  };
 
   const handleConsent = async (allow: boolean) => {
     try {
       setIsLoading(true);
+      setError(null);
+
       if (!allow) {
-        const res = await fetch(controls?.oidc?.cancel!, { method: 'POST', headers: { Accept: 'application/json' }, credentials: 'include' });
-        window.location.href = (await res.json()).location;
+        // Cancel the OIDC interaction
+        const res = await fetch(cancelUrl, { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, 
+          credentials: 'include',
+          body: JSON.stringify({})
+        });
+        const json = await res.json();
+        if (json.location) {
+          window.location.href = json.location;
+        }
         return;
       }
-      let res = await fetch(controls?.oidc?.webId!, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, credentials: 'include', body: JSON.stringify({ webId: selectedWebId }) });
-      let json = await res.json();
-      if (!res.ok) throw new Error(json.message);
-      await fetch(json.location, { credentials: 'include' });
-      res = await fetch(controls?.oidc?.consent!, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, credentials: 'include', body: JSON.stringify({ remember: true }) });
-      json = await res.json();
-      if (!res.ok) throw new Error(json.message);
-      window.location.href = json.location;
+
+      // Step 1: Select WebID if different from current or not yet selected
+      if (selectedWebId && selectedWebId !== currentWebId) {
+        const pickRes = await fetch(pickWebIdUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ webId: selectedWebId, remember: false })
+        });
+        const pickJson = await pickRes.json();
+        if (!pickRes.ok) {
+          throw new Error(pickJson.message || 'Failed to select WebID');
+        }
+        // Follow the redirect location to update the interaction session
+        if (pickJson.location) {
+          await fetch(pickJson.location, { credentials: 'include' });
+        }
+      }
+
+      // Step 2: Submit consent
+      const consentRes = await fetch(consentUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ remember: true })
+      });
+      const consentJson = await consentRes.json();
+      if (!consentRes.ok) {
+        throw new Error(consentJson.message || 'Consent failed');
+      }
+
+      // Redirect back to the app
+      if (consentJson.location) {
+        window.location.href = consentJson.location;
+      }
     } catch (err: any) {
       setError(err.message || 'Consent failed');
       setIsLoading(false);
     }
   };
 
+  const displayWebIds = webIds.length > 0 ? webIds : (currentWebId ? [currentWebId] : []);
+
   return (
-    <CardWrapper title="Authorize" subtitle={`${clientInfo?.client_name || 'App'} requests access.`} icon={Shield}>
-      {error && <div className="mb-4 bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-red-400 text-[11px]"><AlertCircle className="w-4 h-4 inline mr-2" />{error}</div>}
-      {isLoading ? <div className="flex justify-center py-6"><Loader2 className="w-6 h-6 animate-spin text-violet-500" /></div> : (
+    <CardWrapper title="Authorize" subtitle={`${clientInfo?.client_name || 'Application'} requests access`} icon={Shield}>
+      {!isLoggedIn && (
+        <div className="mb-4 bg-zinc-900/60 border border-zinc-800 rounded-xl p-3 text-zinc-300 text-[11px] space-y-3">
+          <p>Sign in to approve this request and choose which WebID to share.</p>
+          <button
+            onClick={() => {
+              persistReturnTo(window.location.href);
+              navigate('/.account/login/password/');
+            }}
+            className="w-full py-2.5 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-medium"
+          >
+            Go to Sign in
+          </button>
+        </div>
+      )}
+      
+      {error && (
+        <div className="mb-4 bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-red-400 text-[11px]">
+          <AlertCircle className="w-4 h-4 inline mr-2" />{error}
+        </div>
+      )}
+      
+      {isLoading ? (
+        <div className="flex justify-center py-6">
+          <Loader2 className="w-6 h-6 animate-spin text-violet-500" />
+        </div>
+      ) : (
         <div className="space-y-4">
+          {/* Client Info */}
+          {clientInfo?.client_uri && (
+            <div className="text-center text-[11px] text-zinc-500">
+              <a href={clientInfo.client_uri} target="_blank" rel="noopener" className="text-violet-400 hover:text-violet-300">
+                {clientInfo.client_uri}
+              </a>
+            </div>
+          )}
+
+          {/* WebID Selection */}
           <div className="space-y-2">
-            <label className="block text-[11px] font-medium text-zinc-500 uppercase tracking-wider">Identity</label>
-            {webIds.length === 0 ? <p className="text-red-400 text-[11px]">No identities found.</p> : (
+            <div className="flex items-center justify-between">
+              <label className="block text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
+                Sign in as
+              </label>
+              {displayWebIds.length > 0 && (
+                <div className="text-[10px] text-zinc-500">
+                  Provider: <span className="text-zinc-400">{parseWebIdInfo(displayWebIds[0]).provider}</span>
+                </div>
+              )}
+            </div>
+            {displayWebIds.length === 0 ? (
+              <p className="text-red-400 text-[11px]">No identities found. Please create a WebID first.</p>
+            ) : (
               <div className="space-y-1">
-                {webIds.map(id => (
-                  <label key={id} className={clsx("flex items-center p-3 rounded-xl border cursor-pointer", selectedWebId === id ? "border-violet-500/50 bg-violet-500/10" : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-700")}>
-                    <input type="radio" name="webId" value={id} checked={selectedWebId === id} onChange={e => setSelectedWebId(e.target.value)} className="text-violet-600" />
-                    <span className="ml-3 text-[11px] font-mono text-zinc-300 truncate">{id}</span>
-                  </label>
-                ))}
+                {displayWebIds.map(id => {
+                  const info = parseWebIdInfo(id);
+                  return (
+                    <label 
+                      key={id} 
+                      className={clsx(
+                        "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
+                        selectedWebId === id 
+                          ? "border-violet-500/50 bg-violet-500/10" 
+                          : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-700"
+                      )}
+                    >
+                      <input 
+                        type="radio" 
+                        name="webId" 
+                        value={id} 
+                        checked={selectedWebId === id} 
+                        onChange={e => setSelectedWebId(e.target.value)} 
+                        className="text-violet-600" 
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-zinc-200 truncate" title={info.full}>
+                          {info.podId}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          copyWebId(id);
+                        }}
+                        className="px-2 py-1 text-[10px] rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-violet-500/50 shrink-0"
+                      >
+                        {copyState === id ? 'Copied' : 'Copy'}
+                      </button>
+                    </label>
+                  );
+                })}
               </div>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <button onClick={() => handleConsent(false)} className="py-2.5 border border-zinc-800 rounded-xl text-xs text-zinc-400 hover:bg-zinc-800">Deny</button>
-            <button onClick={() => handleConsent(true)} disabled={webIds.length === 0} className="py-2.5 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs disabled:opacity-50">Authorize</button>
+
+          {/* Action Buttons */}
+          <div className="grid grid-cols-2 gap-3 pt-2">
+            <button 
+              onClick={() => handleConsent(false)} 
+              disabled={isLoading}
+              className="py-2.5 border border-zinc-800 rounded-xl text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-50 transition-colors"
+            >
+              Deny
+            </button>
+            <button 
+              onClick={() => handleConsent(true)} 
+              disabled={isLoading || displayWebIds.length === 0}
+              className="py-2.5 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs disabled:opacity-50 transition-colors"
+            >
+              {isLoading ? 'Authorizing...' : 'Authorize'}
+            </button>
           </div>
         </div>
       )}
@@ -298,12 +514,21 @@ function WelcomePage({ initialIsRegister = false }: { initialIsRegister?: boolea
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(initialIsRegister);
+  const [featureTab, setFeatureTab] = useState<'user' | 'developer'>('user');
 
-  const features = [
-    { icon: Globe, title: 'Decentralized Identity', desc: 'Own your data with WebID' },
-    { icon: Database, title: 'Personal Data Pod', desc: 'Store data in your own space' },
-    { icon: Users, title: 'Interoperable', desc: 'Works with any Solid app' },
-    { icon: Zap, title: 'Fast & Secure', desc: 'Built on modern standards' },
+  useEffect(() => {
+    const returnTo = getReturnToFromLocation();
+    if (returnTo) persistReturnTo(returnTo);
+  }, []);
+
+  const userFeatures = [
+    { icon: Globe, title: 'Your Data Space', desc: 'Keep your data in one place you control' },
+    { icon: Database, title: 'Permissioned Sharing', desc: 'Grant and revoke access any time' },
+  ];
+  const developerFeatures = [
+    { icon: Users, title: 'Solid All-in-One', desc: 'File system, database, notifications, and identity' },
+    { icon: Zap, title: 'Deploy & Connect', desc: 'Cloud/edge routing with built-in tunneling' },
+    { icon: Database, title: 'Operate at Scale', desc: 'Accounts, pods, and usage stored in databases' },
   ];
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -346,8 +571,9 @@ function WelcomePage({ initialIsRegister = false }: { initialIsRegister?: boolea
         });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to set password');
 
-        // Success - redirect to account
-        window.location.href = '/.account/account/';
+        // Success - redirect to returnTo if present
+        const returnTo = consumeReturnTo();
+        window.location.href = returnTo || '/.account/account/';
       } else {
         // Login flow
         const res = await fetch(controls?.password?.login || '/.account/login/password/', {
@@ -356,9 +582,11 @@ function WelcomePage({ initialIsRegister = false }: { initialIsRegister?: boolea
           credentials: 'include',
           body: JSON.stringify({ email, password }),
         });
-        const json = await res.json();
+        const json = await res.json().catch(() => ({}));
         if (res.ok) {
-          window.location.href = json.location || '/.account/account/';
+          const returnTo = consumeReturnTo();
+          const headerLocation = res.headers.get('Location');
+          window.location.href = json.location || headerLocation || returnTo || '/.account/account/';
         } else {
           alert(json.message || 'Login failed');
         }
@@ -397,26 +625,55 @@ function WelcomePage({ initialIsRegister = false }: { initialIsRegister?: boolea
 
             {/* Tagline */}
             <h1 className="text-3xl xl:text-4xl font-bold leading-tight mb-4">
-              Your Personal
-              <span className="bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent"> Data Pod</span>
+              Xpod Identity
+              <span className="bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent"> Control</span>
             </h1>
             <p className="text-zinc-400 text-sm leading-relaxed mb-10">
-              Take control of your digital identity. Store your data securely and share it on your terms with the power of Solid Protocol.
+              Run authentication, pod access, and app authorization in one secure control plane.
             </p>
 
             {/* Features */}
-            <div className="grid grid-cols-2 gap-4">
-              {features.map(({ icon: Icon, title, desc }) => (
-                <div key={title} className="flex gap-3">
-                  <div className="w-8 h-8 bg-zinc-800/80 rounded-lg flex items-center justify-center shrink-0">
-                    <Icon className="w-4 h-4 text-violet-400" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-medium text-white">{title}</h3>
-                    <p className="text-[10px] text-zinc-500">{desc}</p>
-                  </div>
+            <div className="space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 p-1">
+                <button
+                  type="button"
+                  onClick={() => setFeatureTab('user')}
+                  className={clsx(
+                    'px-3 py-1.5 text-[10px] font-medium rounded-full transition-colors',
+                    featureTab === 'user' ? 'bg-violet-600 text-white' : 'text-zinc-400 hover:text-white'
+                  )}
+                >
+                  For Users
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFeatureTab('developer')}
+                  className={clsx(
+                    'px-3 py-1.5 text-[10px] font-medium rounded-full transition-colors',
+                    featureTab === 'developer' ? 'bg-violet-600 text-white' : 'text-zinc-400 hover:text-white'
+                  )}
+                >
+                  For Developers
+                </button>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-violet-400 mb-2">
+                  {featureTab === 'user' ? 'For Users' : 'For Developers'}
+                </p>
+                <div className="grid grid-cols-2 gap-4">
+                  {(featureTab === 'user' ? userFeatures : developerFeatures).map(({ icon: Icon, title, desc }) => (
+                    <div key={title} className="flex gap-3">
+                      <div className="w-8 h-8 bg-zinc-800/80 rounded-lg flex items-center justify-center shrink-0">
+                        <Icon className="w-4 h-4 text-violet-400" />
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-medium text-white">{title}</h3>
+                        <p className="text-[10px] text-zinc-500">{desc}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
             </div>
             
             <div className="mt-12">
@@ -442,7 +699,7 @@ function WelcomePage({ initialIsRegister = false }: { initialIsRegister?: boolea
             <div className="mb-6">
               <h2 className="text-xl font-bold">{isRegister ? 'Create your Pod' : 'Welcome back'}</h2>
               <p className="text-zinc-500 text-xs mt-1">
-                {isRegister ? 'Start your journey with Xpod.' : 'Sign in to access your Pod.'}
+                {isRegister ? 'Create your Xpod account to get started.' : 'Sign in to continue your identity workspace.'}
               </p>
             </div>
 
@@ -921,7 +1178,10 @@ function AccountPage() {
 
 // === Index Page (decides between Welcome and Account) ===
 function IndexPage() {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, authenticating } = useAuth();
+  if (authenticating) {
+    return <Navigate to="/.account/oidc/consent/" replace />;
+  }
   // If logged in at index, redirect to account page.
   // If not logged in, render WelcomePage directly (no redirect)
   if (isLoggedIn) {
@@ -932,7 +1192,10 @@ function IndexPage() {
 
 // Protected route wrapper - redirects to login if not authenticated
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, authenticating } = useAuth();
+  if (authenticating) {
+    return <Navigate to="/.account/oidc/consent/" replace />;
+  }
   if (!isLoggedIn) {
     return <Navigate to="/.account/login/password/" replace />;
   }

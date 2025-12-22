@@ -6,4 +6,15 @@
   body {
     @apply bg-zinc-900 text-zinc-100 antialiased;
   }
+
+  /* Fix browser autofill background color for dark theme */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px rgb(39 39 42) inset !important; /* zinc-800 */
+    -webkit-text-fill-color: rgb(244 244 245) !important; /* zinc-100 */
+    caret-color: rgb(244 244 245) !important;
+    transition: background-color 5000s ease-in-out 0s;
+  }
 }
