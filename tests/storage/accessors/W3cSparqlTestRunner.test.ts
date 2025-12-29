@@ -21,6 +21,9 @@ const { namedNode, literal, quad } = DataFactory;
 // W3C 测试套件路径
 const W3C_TEST_SUITE = path.join(__dirname, '../../../third_party/w3c-rdf-tests/sparql/sparql11');
 
+// 检查 W3C 测试套件是否已下载
+const W3C_TESTS_AVAILABLE = fs.existsSync(W3C_TEST_SUITE);
+
 // 测试类别配置
 interface TestCategory {
   name: string;
@@ -255,7 +258,7 @@ function compareResults(
 // 测试套件
 // ============================================================
 
-describe('W3C SPARQL 1.1 Query Test Suite', () => {
+describe.skipIf(!W3C_TESTS_AVAILABLE)('W3C SPARQL 1.1 Query Test Suite', () => {
   const testDir = getTestDataPath('w3c_sparql');
   
   // 全局统计

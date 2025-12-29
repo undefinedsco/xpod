@@ -21,6 +21,10 @@ import type { Quad } from '@rdfjs/types';
 
 const { namedNode, literal, quad, defaultGraph } = DataFactory;
 
+// W3C 测试套件路径检查
+const W3C_TESTS_DIR = path.join(process.cwd(), 'third_party/w3c-rdf-tests/sparql/sparql11');
+const W3C_TESTS_AVAILABLE = fs.existsSync(W3C_TESTS_DIR);
+
 // ============================================================
 // Part 1: 基本功能对比
 // ============================================================
@@ -836,9 +840,8 @@ describe('Part 2: Graph Prefix Filtering Comparison', () => {
 // Part 3: W3C SPARQL 测试套件对比
 // ============================================================
 
-describe('Part 3: W3C SPARQL Test Suite Comparison', () => {
+describe.skipIf(!W3C_TESTS_AVAILABLE)('Part 3: W3C SPARQL Test Suite Comparison', () => {
   const testDir = getTestDataPath('quad_vs_quint_w3c');
-  const W3C_TESTS_DIR = path.join(process.cwd(), 'third_party/w3c-rdf-tests/sparql/sparql11');
 
   interface W3CStore {
     name: string;

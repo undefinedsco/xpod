@@ -18,6 +18,9 @@ import type { Quad } from '@rdfjs/types';
 const W3C_TESTS_DIR = path.join(process.cwd(), 'third_party/w3c-rdf-tests/sparql/sparql11');
 const testDir = getTestDataPath('w3c_full');
 
+// 检查 W3C 测试套件是否已下载
+const W3C_TESTS_AVAILABLE = fs.existsSync(W3C_TESTS_DIR);
+
 // W3C 测试类别
 const W3C_CATEGORIES = [
   'aggregates',
@@ -218,7 +221,7 @@ async function runTest(
   }
 }
 
-describe('W3C SPARQL 1.1 Full Test Suite', () => {
+describe.skipIf(!W3C_TESTS_AVAILABLE)('W3C SPARQL 1.1 Full Test Suite', () => {
   const allResults: Record<string, Record<string, { passed: number; failed: number; total: number }>> = {};
 
   beforeAll(() => {
@@ -278,14 +281,10 @@ describe('W3C SPARQL 1.1 Full Test Suite', () => {
 
   // 为每个类别创建测试
   describe.each(W3C_CATEGORIES)('Category: %s', (category) => {
-    it(`should run all ${category} tests for both stores`, async () => {
-      const categoryDir = path.join(W3C_TESTS_DIR, category);
-      
-      if (!fs.existsSync(categoryDir)) {
-        console.log(`  Skipping ${category}: directory not found`);
-        return;
-      }
-      
+    const categoryDir = path.join(W3C_TESTS_DIR, category);
+    const categoryExists = W3C_TESTS_AVAILABLE && fs.existsSync(categoryDir);
+    
+    it.skipIf(!categoryExists)(`should run all ${category} tests for both stores`, async () => {
       const files = fs.readdirSync(categoryDir);
       const queryFiles = files.filter(f => f.endsWith('.rq'));
       
