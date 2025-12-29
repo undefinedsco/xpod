@@ -1,8 +1,7 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
   ],
   "import": [
     "./xpod.json"
@@ -47,31 +46,14 @@
     {
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
-      "structuredDataAccessor": {
-        "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor"
-      },
-      "unstructuredDataAccessor": {
-        "@id": "urn:undefineds:xpod:RemoteDataAccessor"
-      }
-    },
-    {
-      "comment": "SqliteQuintStore instance for QuintStoreSparqlDataAccessor.",
-      "@id": "urn:undefineds:xpod:SqliteQuintStore",
-      "@type": "SqliteQuintStore",
-      "options_path": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
-        "@type": "Variable"
-      }
-    },
-    {
-      "comment": "QuintStore-based SPARQL data accessor for RDF storage.",
-      "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
-      "@type": "QuintStoreSparqlDataAccessor",
-      "store": {
-        "@id": "urn:undefineds:xpod:SqliteQuintStore"
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint"
       },
       "identifierStrategy": {
         "@id": "urn:solid-server:default:IdentifierStrategy"
+      },
+      "unstructuredDataAccessor": {
+        "@id": "urn:undefineds:xpod:RemoteDataAccessor"
       }
     },
     {
@@ -262,44 +244,5 @@
         "@id": "urn:solid-server:default:SizeReporter"
       }
     },
-    {
-      "comment": "Compose server HTTP pipeline",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:BaseHttpHandler"
-      },
-      "overrideParameters": {
-        "@type": "StatusWaterfallHandler",
-        "handlers": [
-          {
-            "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
-          },
-          {
-            "@id": "urn:undefineds:xpod:AppStaticAssetHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:StaticAssetHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:OidcHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:NotificationHttpHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:StorageDescriptionHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:AuthResourceHttpHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:IdentityProviderHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:LdpHandler"
-          }
-        ]
-      }
-    }
   ]
 }

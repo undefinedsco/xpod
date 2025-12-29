@@ -1,7 +1,8 @@
 {
   "@context": [
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
     "./xpod.json",
@@ -18,18 +19,55 @@
       "@value": "./data"
     },
     {
-      "comment": "Use quadstore for RDF data and local filesystem for other content in the local profile.",
-      "@id": "urn:undefineds:xpod:MixDataAccessor",
-      "@type": "MixDataAccessor",
-      "endpoint": {
+      "comment": "Shared QuintStore instance (SQLite for local)",
+      "@id": "urn:undefineds:xpod:QuintStore",
+      "@type": "SqliteQuintStore",
+      "path": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
+      }
+    },
+    {
+      "comment": "QuintStore-based SPARQL engine for local mode",
+      "@id": "urn:undefineds:xpod:QuintstoreSparqlEngine",
+      "@type": "QuintstoreSparqlEngine",
+      "store": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      }
+    },
+    {
+      "comment": "Override default SPARQL engine to use QuintstoreSparqlEngine",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:undefineds:xpod:DefaultSparqlEngine"
       },
-      "identifierStrategy": {
-        "@id": "urn:solid-server:default:IdentifierStrategy"
+      "overrideParameters": {
+        "@type": "QuintstoreSparqlEngine",
+        "store": {
+          "@id": "urn:undefineds:xpod:QuintStore"
+        }
+      }
+    },
+    {
+      "comment": "Use QuintStore for RDF data and local filesystem for other content.",
+      "@id": "urn:undefineds:xpod:MixDataAccessor",
+      "@type": "MixDataAccessor",
+      "structuredDataAccessor": {
+        "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor"
       },
       "unstructuredDataAccessor": {
         "@id": "urn:solid-server:default:FileDataAccessor"
+      }
+    },
+    {
+      "comment": "QuintStore-based SPARQL data accessor using shared QuintStore.",
+      "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
+      "@type": "QuintStoreSparqlDataAccessor",
+      "store": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
       }
     },
     {
@@ -74,6 +112,22 @@
       }
     },
     {
+      "comment": "等位替换: 用内存锁替换文件锁，避免高并发下的 ECOMPROMISED 错误",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ResourceLocker"
+      },
+      "overrideParameters": {
+        "@type": "WrappedExpiringReadWriteLocker",
+        "locker": {
+          "@type": "GreedyReadWriteLocker",
+          "locker": { "@type": "MemoryResourceLocker" },
+          "storage": { "@type": "MemoryMapStorage" }
+        },
+        "expiration": 6000
+      }
+    },
+    {
       "@id": "urn:solid-server:default:variable:registration",
       "@value": true
     },
@@ -84,7 +138,7 @@
         "@id": "urn:solid-server:default:BaseHttpHandler"
       },
       "overrideParameters": {
-        "@type": "WaterfallHandler",
+        "@type": "StatusWaterfallHandler",
         "handlers": [
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"

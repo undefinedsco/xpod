@@ -1,6 +1,6 @@
 {
   "@context": [
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
   ],
   "@graph": [
@@ -256,6 +256,48 @@
             "@type": "KeyExtractor",
             "key": "frpProtocol",
             "defaultValue": "tcp"
+          }
+        },
+
+        {
+          "comment": "=== Multi-Node Cluster Parameters ===",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodeId",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "nodeId",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodeToken",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "nodeToken",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodePublicAddress",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "nodePublicAddress",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodeHeartbeatInterval",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "nodeHeartbeatInterval",
+            "defaultValue": "30000"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:podRoutingEnabled",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "podRoutingEnabled",
+            "defaultValue": "false"
           }
         }
       ]

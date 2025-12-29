@@ -348,26 +348,6 @@
       }
     },
     {
-      "comment": "Add CenterNodeRegistrationService to initialization sequence",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:PrimarySequenceInitializer"
-      },
-      "overrideParameters": {
-        "@type": "SequenceHandler",
-        "handlers": [
-          { "@id": "urn:solid-server:default:CleanupInitializer" },
-          { "@id": "urn:solid-server:default:MigrationInitializer" },
-          { "@id": "urn:solid-server:default:BaseUrlVerifier" },
-          { "@id": "urn:solid-server:default:PrimaryParallelInitializer" },
-          { "@id": "urn:solid-server:default:ModuleVersionVerifier" },
-          { "@id": "urn:solid-server:default:WorkerManager" },
-          { "@id": "urn:solid-server:default:SeededAccountInitializer" },
-          { "@id": "urn:undefineds:xpod:CenterNodeRegistrationService" }
-        ]
-      }
-    },
-    {
       "comment": "Pod routing handler for cross-node request forwarding",
       "@id": "urn:undefineds:xpod:PodRoutingHttpHandler",
       "@type": "PodRoutingHttpHandler",

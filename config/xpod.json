@@ -1,7 +1,8 @@
 {
   "@context": [
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
     "./cli.json",
@@ -41,7 +42,7 @@
       "@id": "urn:undefineds:xpod:AppStaticAssetHandler"
     },
     {
-      "comment": "Replace default landing page with a modern static experience.",
+      "comment": "Override root static asset to serve xpod SPA shell page.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:RootStaticAsset"
@@ -49,8 +50,7 @@
       "overrideParameters": {
         "@type": "StaticAssetEntry",
         "relativeUrl": "/",
-        "filePath": "./static/landing/index.html",
-        "@id": "urn:undefineds:xpod:RootStaticAsset"
+        "filePath": "./static/app/index.html"
       }
     },
     {
@@ -108,12 +108,20 @@
       }
     },
     {
-      "comment": "Quadstore-backed SPARQL subgraph engine",
-      "@type": "SubgraphQueryEngine",
-      "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
+      "comment": "Default SPARQL engine (Quadstore-based)",
+      "@type": "QuadstoreSparqlEngine",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
       "endpoint": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Subgraph query engine wrapping default SPARQL engine",
+      "@type": "SubgraphQueryEngine",
+      "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
+      "engine": {
+        "@id": "urn:undefineds:xpod:DefaultSparqlEngine"
       }
     },
     {
@@ -179,34 +187,22 @@
       }
     },
     {
-      "comment": "Tracing middleware for request ID and logging.",
-      "@id": "urn:undefineds:xpod:TracingMiddleware",
-      "@type": "RequestIdHttpHandler"
+      "comment": "Tracing handler for request ID and logging. Added to CSS Middleware.",
+      "@id": "urn:undefineds:xpod:TracingHandler",
+      "@type": "TracingHandler"
     },
     {
-      "comment": "Main HTTP handler using chained middleware pattern.",
-      "@id": "urn:undefineds:xpod:MainHttpHandler",
-      "@type": "ChainedHttpHandler",
-      "handlers": [
-        { "@id": "urn:undefineds:xpod:TracingMiddleware" },
-        { "@id": "urn:solid-server:default:HttpHandler" }
-      ]
-    },
-    {
-      "comment": "Use the chained main handler for incoming HTTP requests.",
+      "comment": "Override CSS Middleware to add TracingHandler at the beginning.",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:HandlerServerConfigurator"
+        "@id": "urn:solid-server:default:Middleware"
       },
       "overrideParameters": {
-        "@type": "HandlerServerConfigurator",
-        "handler": {
-          "@id": "urn:undefineds:xpod:MainHttpHandler"
-        },
-        "showStackTrace": {
-          "@id": "urn:solid-server:default:variable:showStackTrace",
-          "@type": "Variable"
-        }
+        "@type": "SequenceHandler",
+        "handlers": [
+          { "@id": "urn:undefineds:xpod:TracingHandler" },
+          { "@id": "urn:solid-server:default:ParallelMiddleware" }
+        ]
       }
     }
   ]
