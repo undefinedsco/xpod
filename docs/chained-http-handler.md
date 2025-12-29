@@ -2,7 +2,7 @@
 
 ## 概述
 
-`ChainedHttpHandler` 是一个链式 HTTP 处理器，支持洋葱模型（Onion Model）的中间件执行方式。它解决了原有包装式（Wrapper）中间件设计的无限嵌套问题，提供了更清晰、可扩展的中间件组合方式。
+`ChainedHttpHandler` 是一个链式 HTTP 处理器，支持洋葱模型（Onion Model）的中间件执行方式。它解决了原有包装式（Wrapper）中间件设计的无限嵌套问题，提供了更清晰、可扩展的中间件组合方式。对于纯路径分发场景，推荐使用 `RouterHttpHandler` 来统一路由内部 handler。
 
 ## 核心组件
 
@@ -33,6 +33,14 @@ interface MiddlewareHttpHandler {
    - 调用 `canHandle()` 检查是否能处理
    - 能处理则执行 `handle()` 并终止链
    - 不能处理则跳过，尝试下一个
+
+### RouterHttpHandler
+
+路径路由处理器，位于 `src/http/RouterHttpHandler.ts`，用于单 baseUrl 模式下的路径分发：
+
+- 按 `routes` 顺序匹配路径前缀
+- 命中后转发给对应 handler
+- 未命中时交给 `fallback`
 
 ## 执行流程
 

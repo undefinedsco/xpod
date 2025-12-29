@@ -216,6 +216,15 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Deployment**: All modes
 - **Documentation**: See [docs/chained-http-handler.md](chained-http-handler.md) for full details
 
+### RouterHttpHandler
+- **Path**: `src/http/RouterHttpHandler.ts`
+- **Purpose**: 按路径前缀路由 HTTP 请求（单 baseUrl 模式）
+- **Functionality**:
+  - 依次匹配 `routes`，命中后转发给对应 handler
+  - 未命中时走 `fallback`
+- **Configuration**: `routes` + `fallback`
+- **Deployment**: All modes (when routing multiple internal handlers)
+
 ### RequestIdHttpHandler (TracingMiddleware)
 - **Path**: `src/http/RequestIdHttpHandler.ts`
 - **Purpose**: 请求追踪中间件，为每个请求分配唯一 ID
