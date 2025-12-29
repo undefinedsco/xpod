@@ -39,4 +39,5 @@ logs/
 
 # Temporary files
 local/
+third_party/
 main.json

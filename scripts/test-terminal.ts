@@ -708,7 +708,7 @@ async function testE2ESuite(): Promise<void> {
         throw new Error(`Expected 201, got ${response.status}: ${body}`);
       }
 
-      const data: CreateSessionResponse = await response.json();
+      const data = await response.json() as CreateSessionResponse;
       if (!data.sessionId) throw new Error('Missing sessionId');
       if (!data.wsUrl) throw new Error('Missing wsUrl');
       if (data.status !== 'active') throw new Error(`Expected status=active, got ${data.status}`);
@@ -725,7 +725,7 @@ async function testE2ESuite(): Promise<void> {
         throw new Error(`Expected 200, got ${response.status}`);
       }
 
-      const data = await response.json();
+      const data = await response.json() as { sessionId: string; status: string };
       if (data.sessionId !== sessionId) throw new Error('Session ID mismatch');
       if (data.status !== 'active') throw new Error(`Expected status=active, got ${data.status}`);
     });
