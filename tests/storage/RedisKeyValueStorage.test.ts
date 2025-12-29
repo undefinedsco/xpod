@@ -13,7 +13,7 @@ const commandMocks = {
 };
 
 vi.mock('ioredis', () => ({
-  default: class Redis {
+  Redis: class Redis {
     public static lastOptions: Record<string, unknown> | undefined;
 
     public constructor(options: Record<string, unknown>) {

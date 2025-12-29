@@ -3,19 +3,28 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 
-// Define the configurations to use (Server Mode which uses Drizzle)
+// Use local config instead of server config to avoid Redis dependency
 const configFiles = [
-  path.join(process.cwd(), 'config/main.server.json'),
-  path.join(process.cwd(), 'config/extensions.server.json'),
+  path.join(process.cwd(), 'config/main.local.json'),
+  path.join(process.cwd(), 'config/extensions.local.json'),
 ];
 
 describe('Server Mode Root Access (Drizzle)', () => {
   let app: App;
   let baseUrl: string;
+  
+  // Use unique paths for test isolation
+  const testDataDir = '.test-data/server-mode-root';
+  const sparqlDbPath = `${testDataDir}/quadstore.sqlite`;
+  const rootFilePath = `${testDataDir}/data`;
 
   beforeAll(async () => {
-    // Ensure we use a test database for this run
-    process.env.CSS_IDENTITY_DB_URL = 'sqlite:.test-data/server-mode-test.sqlite';
+    // Ensure test data directory exists
+    fs.mkdirSync(testDataDir, { recursive: true });
+    fs.mkdirSync(rootFilePath, { recursive: true });
+    
+    // Use isolated databases for this test
+    process.env.CSS_SPARQL_ENDPOINT = `sqlite:${sparqlDbPath}`;
     process.env.CSS_BASE_URL = 'http://localhost:4000/';
     
     // Create the app
@@ -30,52 +39,53 @@ describe('Server Mode Root Access (Drizzle)', () => {
         'urn:solid-server:default:variable:baseUrl': 'http://localhost:4000/',
         'urn:solid-server:default:variable:showStackTrace': true,
         'urn:solid-server:default:variable:loggingLevel': 'info',
+        'urn:solid-server:default:variable:sparqlEndpoint': `sqlite:${sparqlDbPath}`,
+        'urn:solid-server:default:variable:rootFilePath': rootFilePath,
       },
     });
 
     await app.start();
     baseUrl = 'http://localhost:4000/';
-  });
+  }, 30000);
 
   afterAll(async () => {
     if (app) {
       await app.stop();
     }
-    // Cleanup DB
-    if (fs.existsSync('.test-data/server-mode-test.sqlite')) {
-      fs.unlinkSync('.test-data/server-mode-test.sqlite');
+    // Cleanup test data directory
+    if (fs.existsSync(testDataDir)) {
+      fs.rmSync(testDataDir, { recursive: true, force: true });
     }
-    if (fs.existsSync('.test-data/server-mode-test.sqlite-shm')) {
-      fs.unlinkSync('.test-data/server-mode-test.sqlite-shm');
-    }
-    if (fs.existsSync('.test-data/server-mode-test.sqlite-wal')) {
-      fs.unlinkSync('.test-data/server-mode-test.sqlite-wal');
-    }
-  });
+  }, 15000);
 
-  it('should return 200 OK for GET / (HTML)', async () => {
+  it('should return 200 OK with SPA HTML for GET /', async () => {
     const response = await fetch(baseUrl);
     expect(response.status).toBe(200);
+    
+    const contentType = response.headers.get('content-type');
+    expect(contentType).toContain('text/html');
+    
     const text = await response.text();
-    expect(text).toContain('<!DOCTYPE html>');
+    // Should contain SPA markers
+    expect(text).toContain('<!doctype html>');
+    expect(text).toContain('<div id="root">');
   });
 
-  it('should return 200 OK for GET / (RDF) simulating drizzle-solid', async () => {
+  it('should return SPA HTML even with Accept: text/turtle (static-root mode)', async () => {
+    // In static-root mode, root path always returns the static HTML page
+    // regardless of Accept header. This is by design - Pods are at /{username}/
     const response = await fetch(baseUrl, {
       headers: {
         'Accept': 'text/turtle'
       }
     });
-    // If auth is required for root, it might be 401/403, but NOT 500
-    // If public read is allowed, 200.
-    // CSS default root is usually public read.
-    expect(response.status).not.toBe(500);
-    expect([200, 401, 403]).toContain(response.status);
     
-    if (response.status === 200) {
-      const text = await response.text();
-      // Should contain some turtle
-      expect(text).toContain('@prefix');
-    }
+    expect(response.status).toBe(200);
+    
+    const contentType = response.headers.get('content-type');
+    expect(contentType).toContain('text/html');
+    
+    const text = await response.text();
+    expect(text).toContain('<!doctype html>');
   });
 });
