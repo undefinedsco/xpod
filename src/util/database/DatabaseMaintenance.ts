@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 
 export interface DatabaseMaintenanceOptions {
   connectionString: string;

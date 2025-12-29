@@ -1,8 +1,9 @@
 import { createSolidTokenVerifier } from '@solid/access-token-verifier';
+import { getLoggerFor } from 'global-logger-factory';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpRequest, HttpResponse } from '@solid/community-server';
 import {
-  getLoggerFor,
+  
   BadRequestHttpError,
   ForbiddenHttpError,
   MethodNotAllowedHttpError,

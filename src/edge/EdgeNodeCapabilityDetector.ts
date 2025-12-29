@@ -1,4 +1,4 @@
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import { NodeCapabilities } from './EdgeNodeModeDetector';
 
 /**
@@ -200,12 +200,12 @@ export class EdgeNodeCapabilityDetector {
         return undefined;
       }
 
-      const data = await response.json();
+      const data = await response.json() as { country?: string; region?: string; regionName?: string; lat?: number; lon?: number };
       
       // 假设返回的数据格式类似 ipinfo.io 或 geoip 服务
       return {
         country: data.country,
-        region: data.region || data.regionName,
+        region: data.region ?? data.regionName,
         coordinates: data.lat && data.lon ? {
           lat: Number(data.lat),
           lon: Number(data.lon),

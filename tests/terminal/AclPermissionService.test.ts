@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock the SubgraphQueryEngine
+// Mock the SubgraphQueryEngine and QuadstoreSparqlEngine
 vi.mock('../../src/storage/sparql/SubgraphQueryEngine', () => ({
   SubgraphQueryEngine: vi.fn().mockImplementation(() => ({
     queryBoolean: vi.fn(),
     queryBindings: vi.fn(),
   })),
+  QuadstoreSparqlEngine: vi.fn().mockImplementation(() => ({})),
 }));
 
 // Mock the logger
-vi.mock('@solid/community-server', () => ({
+vi.mock('global-logger-factory', () => ({
   getLoggerFor: () => ({
     info: vi.fn(),
     warn: vi.fn(),

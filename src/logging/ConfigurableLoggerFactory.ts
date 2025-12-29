@@ -3,9 +3,15 @@ import type { Format } from 'logform';
 import DailyRotateFile from 'winston-daily-rotate-file';
 import type * as Transport from 'winston-transport';
 import type { TransformableInfo } from 'logform';
-import type { Logger, LogMetadata, LoggerFactory } from '@solid/community-server';
-import { WinstonLogger } from '@solid/community-server';
+import type { Logger, LoggerFactory } from 'global-logger-factory';
+import { WinstonLogger } from 'global-logger-factory';
 import { logContext } from './LogContext';
+
+// Custom metadata type to replace the old LogMetadata from CSS
+interface LogMetadata {
+  isPrimary?: boolean;
+  pid?: number;
+}
 
 
 interface ConfigurableLoggerOptions {
@@ -44,7 +50,8 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
     if (meta.isPrimary) {
       return 'Primary';
     }
-    return `W-${meta.pid ?? '???'}`;
+    // Use process.pid directly since CSS doesn't pass pid in metadata
+    return `W-${process.pid}`;
   };
 
   public createLogger(label: string): Logger {

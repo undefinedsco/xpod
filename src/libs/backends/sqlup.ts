@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { getLoggerFor, Logger } from '@solid/community-server';
+import { getLoggerFor, type Logger } from 'global-logger-factory';
 import { IManifest, supports } from 'level-supports';
 import {
   NodeCallback,

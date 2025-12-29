@@ -1,4 +1,4 @@
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import { Initializer } from '@solid/community-server';
 import { EdgeNodeRepository } from './drizzle/EdgeNodeRepository';
 import { getIdentityDatabase } from './drizzle/db';

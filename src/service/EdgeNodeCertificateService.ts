@@ -2,7 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { X509Certificate } from 'node:crypto';
 import acme from 'acme-client';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
 import type { Dns01CertificateProvisioner } from '../edge/Dns01CertificateProvisioner';

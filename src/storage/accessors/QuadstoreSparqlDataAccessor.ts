@@ -1,5 +1,7 @@
 import { Readable } from 'node:stream';
+import { getLoggerFor } from 'global-logger-factory';
 import arrayifyStream from 'arrayify-stream';
+
 import { DataFactory } from 'n3';
 import type { NamedNode, Quad } from '@rdfjs/types';
 import type {
@@ -18,7 +20,7 @@ import {
   IdentifierStrategy,
   addResourceMetadata,
   updateModifiedDate,
-  getLoggerFor,
+  
   type Representation,
   type ResourceIdentifier,
   INTERNAL_QUADS,
@@ -35,7 +37,7 @@ import {
 } from '@solid/community-server';
 import { Quadstore } from 'quadstore';
 import { Engine } from 'quadstore-comunica';
-import { getBackend } from '../../libs/backends';
+import { getBackend } from '../../libs/backends/index';
 
 
 const { defaultGraph, namedNode, quad, variable } = DataFactory;
@@ -57,8 +59,8 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
     this.generator = new Generator();
     const backend = getBackend(endpoint, { tableName: 'quadstore' });
     this.store = new Quadstore({
-      backend,
-      dataFactory: DataFactory,
+      backend: backend as any,
+      dataFactory: DataFactory as any,
     });
     this.engine = new Engine(this.store);
   }
@@ -89,7 +91,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Note that this will not throw a 404 if no results were found.
    */
   public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
-    this.logger.info(`Getting data for ${identifier.path}`);
     const name = namedNode(identifier.path);
     return this.sendSparqlConstruct(this.sparqlConstruct(name));
   }
@@ -99,7 +100,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Will throw 404 if no metadata was found.
    */
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
-    this.logger.info(`Getting metadata for ${identifier.path}`);
     const name = namedNode(identifier.path);
     const query = this.sparqlConstruct(this.getMetadataNode(name));
     const stream = await this.sendSparqlConstruct(query);
@@ -118,7 +118,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
   }
 
   public async* getChildren(identifier: ResourceIdentifier): AsyncIterableIterator<RepresentationMetadata> {
-    this.logger.verbose(`Getting children for ${identifier.path}`);
     // Only triples that have a container identifier as subject are the containment triples
     const name = namedNode(identifier.path);
     const stream = await this.sendSparqlConstruct(this.sparqlConstruct(name));
@@ -131,7 +130,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Writes the given metadata for the container.
    */
   public async writeContainer(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
-    this.logger.info(`Writing container ${identifier.path} ${JSON.stringify(metadata.contentTypeObject)}}`);
     addResourceMetadata(metadata, true);
     updateModifiedDate(metadata);
     const { name, parent } = this.getRelatedNames(identifier);
@@ -143,7 +141,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    */
   public async writeDocument(identifier: ResourceIdentifier, data: Guarded<Readable>, metadata: RepresentationMetadata):
   Promise<void> {
-    this.logger.info(`Writing document ${identifier.path} ${JSON.stringify(metadata.contentTypeObject)}}`);
     if (this.isMetadataIdentifier(identifier)) {
       throw new ConflictHttpError('Not allowed to create NamedNodes with the metadata extension.');
     }
@@ -165,7 +162,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Reads the metadata and stores it.
    */
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
-    this.logger.info(`Writing metadata for ${identifier.path} ${JSON.stringify(metadata.contentTypeObject)}`);
     const { name } = this.getRelatedNames(identifier);
     const metaName = this.getMetadataNode(name);
 
@@ -185,7 +181,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * In case of a root container only the name will be returned.
    */
   private getRelatedNames(identifier: ResourceIdentifier): { name: NamedNode; parent?: NamedNode } {
-    this.logger.info(`Getting related names for ${identifier.path}`);
     const name = namedNode(identifier.path);
 
     // Root containers don't have a parent
@@ -249,14 +244,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    */
   private sparqlInsert(name: NamedNode, metadata: RepresentationMetadata, parent?: NamedNode, triples?: Quad[]):
   Update {
-    this.logger.verbose(`Inserting ${name.value} with metadata:`);
-    for (const quad of metadata.quads()) {
-      this.logger.verbose(`  ${quad.subject.value} ${quad.predicate.value} ${quad.object.value}`);
-    }
-    this.logger.verbose(`parent: ${parent?.value} with triples:`);
-    for (const quad of triples || []) {
-      this.logger.verbose(`  ${quad.subject.value} ${quad.predicate.value} ${quad.object.value}`);
-    }
     const metaName = this.getMetadataNode(name);
 
     // Insert new metadata and containment triple
@@ -297,10 +284,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * @param metadata - New metadata of the resource.
    */
   private sparqlInsertMetadata(metaName: NamedNode, metadata: RepresentationMetadata): Update {
-    this.logger.verbose(`Inserting metadata NamedNode[${metaName}] with:`);
-    for (const quad of metadata.quads()) {
-      this.logger.verbose(`  ${quad.subject.value} ${quad.predicate.value} ${quad.object.value}`);
-    }
     // Insert new metadata and containment triple
     const insert: GraphQuads[] = [ this.sparqlUpdateGraph(metaName, metadata.quads()) ];
 
@@ -327,7 +310,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * @param parent - Parent of the resource to delete so the containment triple can be removed (unless root).
    */
   private sparqlDelete(name: NamedNode, parent?: NamedNode): Update {
-    this.logger.info(`Deleting ${name.value} with parent ${parent?.value}`);
     const update: Update = {
       updates: [
         this.sparqlUpdateDeleteAll(name),
@@ -356,7 +338,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * @param name - Name of the graph to delete.
    */
   private sparqlUpdateDeleteAll(name: NamedNode): InsertDeleteOperation {
-    this.logger.info(`Deleting all from ${name.value}`);
     return {
       updateType: 'deletewhere',
       delete: [
@@ -375,10 +356,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * @param triples - Triples/triple patterns to select.
    */
   private sparqlUpdateGraph(name: NamedNode, triples: Quad[]): GraphQuads {
-    this.logger.verbose(`Creating graph ${name.value} with:`);
-    for (const quad of triples) {
-      this.logger.verbose(`  ${quad.subject.value} ${quad.predicate.value} ${quad.object.value}`);
-    }
     return { type: 'graph', name, triples };
   }
 
@@ -400,7 +377,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
       const readable = new Readable({ objectMode: true, read() {} });
 
       result.on('start', () => {
-        logger.debug(`SPARQL CONSTRUCT query start. cost time: ${Date.now() - start}ms`);
       });
       result.on(
         'data',
@@ -409,7 +385,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
         }
       );
       result.on('end', () => {
-        logger.debug(`SPARQL CONSTRUCT query end. cost time: ${Date.now() - start}ms`);
         readable.push(null);
       });
       result.on('error', (error) => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import { TerminalSession } from './TerminalSession';
 import { AclPermissionService } from './AclPermissionService';
 import type { SessionConfig, Session, EnvRef, CreateSessionRequest } from './types';
@@ -229,7 +229,7 @@ export class TerminalSessionManager {
           this.userSessions.delete(session.userId);
         }
       }
-      this.logger.info(`Removed terminal session ${sessionId}`);
+      this.logger.debug(`Removed terminal session ${sessionId}`);
     }
   }
 

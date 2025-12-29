@@ -8,7 +8,7 @@ import { writeFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import type { Sandbox, SandboxConfig, SandboxResult } from './types';
 
 let sandboxExecAvailable: boolean | undefined;

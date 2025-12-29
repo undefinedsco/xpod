@@ -1,10 +1,10 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import type {
   Finalizable,
   Initializable,
   KeyValueStorage,
 } from '@solid/community-server';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 
 export interface RedisKeyValueStorageOptions {
   client: string;

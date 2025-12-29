@@ -1,10 +1,11 @@
 import { Client, BucketItemStat } from 'minio';
+import { getLoggerFor } from 'global-logger-factory';
 import type { DataAccessor } from '@solid/community-server';
 import type { Readable } from 'node:stream';
 import { DataFactory } from 'n3';
 import {
   RepresentationMetadata,
-  getLoggerFor,
+  
   NotFoundHttpError,
   guardStream,
   isContainerIdentifier,
@@ -144,7 +145,6 @@ export class MinioDataAccessor implements DataAccessor {
     const url = new URL(identifier.path);
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     const itemMetadata = this.encodeMetadata(link, metadata);
-    this.logger.info(`Write document: ${identifier.path} ${JSON.stringify(itemMetadata)}`)
     try {
       await this.client.putObject(
         this.bucketName,
@@ -169,7 +169,6 @@ export class MinioDataAccessor implements DataAccessor {
    */
   public async writeContainer(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
     const url = new URL(identifier.path)
-    this.logger.info(`Write container: ${identifier.path}.`)
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     await this.client.putObject(
       this.bucketName,
@@ -202,7 +201,6 @@ export class MinioDataAccessor implements DataAccessor {
    */
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
     const link = new URL(identifier.path)
-    this.logger.info(`Delete resource: ${identifier.path}`)
     await this.client.removeObject(this.bucketName, link.pathname);
   }
 
@@ -214,13 +212,11 @@ export class MinioDataAccessor implements DataAccessor {
    * @param stats - Stats object of the corresponding file.
    */
   private async getFileMetadata(link: ResourceLink, stats: BucketItemStat): Promise<RepresentationMetadata> {
-    this.logger.info(`getFileMetadata: ${link.filePath}`)
     const metadata = await this.getBaseMetadata(link, stats, false);
       // If the resource is using an unsupported contentType, the original contentType was written to the metadata file.
       // As a result, we should only set the contentType derived from the file path,
       // when no previous metadata entry for contentType is present.
     if (typeof metadata.contentType === 'undefined') {
-      this.logger.info(`Setting contentType for ${link.filePath} ${link.contentType}`)
       metadata.set(CONTENT_TYPE_TERM, link.contentType);
     }
     return metadata;
@@ -291,7 +287,6 @@ export class MinioDataAccessor implements DataAccessor {
     // A media type is supported if the FileIdentifierMapper can correctly store it.
     // This allows restoring the appropriate content-type on data read (see getFileMetadata).
     if (isContainerPath(link.filePath) || typeof metadata.contentType !== 'undefined') {
-      this.logger.info(`Removing content-type for ${link.filePath} ${metadata.contentType}`);
       metadata.removeAll(CONTENT_TYPE_TERM);
     }
     const contentTypeObject = metadata.contentTypeObject

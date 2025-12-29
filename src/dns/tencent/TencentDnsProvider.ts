@@ -1,6 +1,6 @@
 import { request as httpsRequest } from 'node:https';
 import { URL } from 'node:url';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import type {
   DeleteDnsRecordInput,
   DnsProvider,

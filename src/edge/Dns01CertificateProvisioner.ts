@@ -1,4 +1,4 @@
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import type { DnsProvider } from '../dns/DnsProvider';
 import type { EdgeNodeCertificateProvisioner } from './EdgeNodeCertificateProvisioner';
 

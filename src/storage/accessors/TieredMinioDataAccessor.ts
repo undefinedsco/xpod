@@ -1,4 +1,5 @@
 import { createReadStream, createWriteStream, existsSync, mkdirSync, statSync, unlinkSync, readdirSync } from 'node:fs';
+import { getLoggerFor } from 'global-logger-factory';
 import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -6,7 +7,7 @@ import { Client, BucketItemStat, CopyConditions } from 'minio';
 import type { DataAccessor } from '@solid/community-server';
 import {
   RepresentationMetadata,
-  getLoggerFor,
+  
   NotFoundHttpError,
   guardStream,
   isContainerIdentifier,
@@ -279,7 +280,7 @@ export class TieredMinioDataAccessor implements MigratableDataAccessor {
         if (fallbackResult) {
           data = fallbackResult.data;
           sourceLocation = fallbackResult.bucket;
-          this.logger.info(`Fallback read from ${sourceLocation}: ${identifier.path}`);
+          this.logger.debug(`Fallback read from ${sourceLocation}: ${identifier.path}`);
         }
       }
     }
@@ -423,8 +424,6 @@ export class TieredMinioDataAccessor implements MigratableDataAccessor {
     const url = new URL(identifier.path);
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     const itemMetadata = this.encodeMetadata(link, metadata);
-    
-    this.logger.info(`Write document: ${identifier.path}`);
 
     // Collect data for both COS and cache
     const chunks: Buffer[] = [];
@@ -504,8 +503,6 @@ export class TieredMinioDataAccessor implements MigratableDataAccessor {
     const url = new URL(identifier.path);
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     
-    this.logger.info(`Write container: ${identifier.path}`);
-    
     await this.client.putObject(
       this.bucketName,
       `${url.pathname}/.container`,
@@ -521,7 +518,6 @@ export class TieredMinioDataAccessor implements MigratableDataAccessor {
 
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
     const url = new URL(identifier.path);
-    this.logger.info(`Delete resource: ${identifier.path}`);
 
     // Delete from COS
     await this.client.removeObject(this.bucketName, url.pathname);

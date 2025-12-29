@@ -1,5 +1,6 @@
 import { IncomingMessage, ServerResponse } from 'http';
-import { HttpHandler, getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
+import { HttpHandler } from '@solid/community-server';
 import type {
   HttpHandlerInput,
   HttpRequest,
@@ -239,7 +240,7 @@ export class TerminalHttpHandler extends HttpHandler {
   }
 
   private handleWebSocketConnection(ws: WebSocket, session: TerminalSession): void {
-    this.logger.info(`WebSocket connected to session ${session.sessionId}`);
+    this.logger.debug(`WebSocket connected to session ${session.sessionId}`);
 
     // Track connection
     if (!this.wsConnections.has(session.sessionId)) {
@@ -278,7 +279,7 @@ export class TerminalHttpHandler extends HttpHandler {
 
     // Handle WebSocket close
     ws.on('close', () => {
-      this.logger.info(`WebSocket disconnected from session ${session.sessionId}`);
+      this.logger.debug(`WebSocket disconnected from session ${session.sessionId}`);
       session.removeListener('data', dataHandler);
       session.removeListener('exit', exitHandler);
       
@@ -332,7 +333,7 @@ export class TerminalHttpHandler extends HttpHandler {
 
       case 'permission_response':
         // TODO: Handle permission responses for interactive prompts
-        this.logger.info(`Permission response: ${msg.requestId} = ${msg.granted}`);
+        this.logger.debug(`Permission response: ${msg.requestId} = ${msg.granted}`);
         break;
 
       default:

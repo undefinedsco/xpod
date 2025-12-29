@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { sql } from 'drizzle-orm';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from './db';
 
 const ACCOUNT_DATA_DIR = path.resolve('.internal', 'accounts', 'data');
