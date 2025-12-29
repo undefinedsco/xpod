@@ -41,3 +41,4 @@ logs/
 local/
 third_party/
 main.json
+package-lock.json
