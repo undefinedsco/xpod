@@ -4,11 +4,17 @@ import { CardWrapper } from '../components/CardWrapper';
 import { LoadingScreen } from '../components/LoadingScreen';
 
 export function LoginSelectPage() {
-  const { controls } = useAuth();
+  const { controls, isLoggedIn } = useAuth();
   const [logins, setLogins] = useState<[string, string][]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // If already logged in, redirect to dashboard
+    if (isLoggedIn) {
+      window.location.href = '/.account/account/';
+      return;
+    }
+
     (async () => {
       try {
         if (controls?.main?.logins) {
@@ -19,7 +25,16 @@ export function LoginSelectPage() {
             window.location.href = entries[0][1];
             return;
           }
+          if (entries.length === 0) {
+            // No login methods configured, go to password login
+            window.location.href = '/.account/login/password/';
+            return;
+          }
           setLogins(entries);
+        } else {
+          // No logins endpoint, default to password login
+          window.location.href = '/.account/login/password/';
+          return;
         }
       } catch {
         window.location.href = controls?.html?.password?.login || '/.account/login/password/';
@@ -27,7 +42,7 @@ export function LoginSelectPage() {
         setIsLoading(false);
       }
     })();
-  }, [controls]);
+  }, [controls, isLoggedIn]);
 
   if (isLoading) return <LoadingScreen />;
 
@@ -35,7 +50,7 @@ export function LoginSelectPage() {
     <CardWrapper title="Select Login Method">
       <div className="space-y-2">
         {logins.map(([name, url]) => (
-          <a key={name} href={url} className="block w-full py-3 px-4 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl text-center text-white text-sm font-medium">
+          <a key={name} href={url} className="block w-full py-3 px-4 bg-zinc-100 hover:bg-zinc-200 border border-zinc-200 rounded-xl text-center text-zinc-700 text-sm font-medium">
             {name}
           </a>
         ))}

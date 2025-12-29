@@ -3,6 +3,7 @@ export default {
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
+    "!./src/external/**",
     "../static/landing/index.html",
     "../templates/**/*.ejs"
   ],

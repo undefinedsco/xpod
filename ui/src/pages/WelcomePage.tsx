@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Lock, Mail, ArrowRight, Loader2, Check, Globe, Database, Users, Zap } from 'lucide-react';
+import { useNavigate, Navigate } from 'react-router-dom';
+import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '../context/AuthContext';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
@@ -10,25 +10,30 @@ interface WelcomePageProps {
 }
 
 export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
-  const { controls, idpIndex } = useAuth();
+  const { controls, idpIndex, isLoggedIn, authenticating } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(initialIsRegister);
-  const [featureTab, setFeatureTab] = useState<'user' | 'developer'>('user');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  const passwordsMatch = password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
 
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
     if (returnTo) persistReturnTo(returnTo);
   }, []);
 
-  const userFeatures = [
-    { icon: Globe, title: 'Your Data Space', desc: 'Keep your data in one place you control' },
-    { icon: Database, title: 'Permissioned Sharing', desc: 'Grant and revoke access any time' },
-  ];
-  const developerFeatures = [
-    { icon: Users, title: 'Solid All-in-One', desc: 'File system, database, notifications, and identity' },
-    { icon: Zap, title: 'Deploy & Connect', desc: 'Cloud/edge routing with built-in tunneling' },
-    { icon: Database, title: 'Operate at Scale', desc: 'Accounts, pods, and usage stored in databases' },
+  // If already logged in, redirect to dashboard
+  if (isLoggedIn) {
+    return <Navigate to="/.account/account/" replace />;
+  }
+
+  const features = [
+    { icon: Clock, title: 'Your AI Never Stops', desc: 'Runs 24/7, even when you\'re not talking to it' },
+    { icon: Layers, title: 'One Place for Your Whole Life', desc: 'All your messages together in one place' },
+    { icon: Shield, title: 'One Secretary, A Thousand Agents', desc: 'Full power, full privacy' },
   ];
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -46,6 +51,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           setIsLoading(false);
           return;
         }
+        // Step 1: Create account
         let res = await fetch(controls?.account?.create || '/.account/account/', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -54,11 +60,13 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to create account');
 
+        // Step 2: Fetch controls to get password.create endpoint
         res = await fetch(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' });
         const data = await res.json();
         const addPasswordUrl = data.controls?.password?.create;
         if (!addPasswordUrl) throw new Error('Password endpoint not found');
 
+        // Step 3: Set password
         res = await fetch(addPasswordUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -67,8 +75,18 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to set password');
 
-        const returnTo = consumeReturnTo();
-        window.location.href = returnTo || '/.account/account/';
+        // Step 4: Auto-login after registration
+        const loginUrl = data.controls?.password?.login || controls?.password?.login || '/.account/login/password/';
+        res = await fetch(loginUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ email, password }),
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Auto-login failed');
+
+        // Registration complete, redirect to account page to create Pod
+        window.location.href = '/.account/account/';
       } else {
         const res = await fetch(controls?.password?.login || '/.account/login/password/', {
           method: 'POST',
@@ -92,13 +110,37 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     }
   };
 
-  const toggleMode = () => setIsRegister(!isRegister);
+  const toggleMode = () => {
+    setIsRegister(!isRegister);
+    setPassword('');
+    setConfirmPassword('');
+  };
+
+  // OIDC Cancel handler
+  const handleCancel = async () => {
+    if (!controls?.oidc?.cancel) return;
+    setIsCancelling(true);
+    try {
+      const res = await fetch(controls.oidc.cancel, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        credentials: 'include',
+      });
+      const json = await res.json();
+      if (json.location) {
+        window.location.href = json.location;
+      }
+    } catch {
+      alert('Failed to cancel');
+      setIsCancelling(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans flex items-center justify-center p-4 lg:p-8">
+    <div className="min-h-screen bg-zinc-50 text-zinc-900 font-sans flex items-center justify-center p-4 lg:p-8">
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-[800px] h-[600px] bg-violet-600/8 rounded-full blur-[150px]" />
-        <div className="absolute bottom-0 right-1/4 w-[600px] h-[400px] bg-indigo-600/5 rounded-full blur-[100px]" />
+        <div className="absolute top-0 left-1/4 w-[800px] h-[600px] bg-[#7C4DFF]/5 rounded-full blur-[150px]" />
+        <div className="absolute bottom-0 right-1/4 w-[600px] h-[400px] bg-[#7C4DFF]/3 rounded-full blur-[100px]" />
       </div>
 
       <div className="w-full max-w-6xl grid lg:grid-cols-2 gap-8 lg:gap-16 items-center relative z-10">
@@ -106,66 +148,41 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         <div className="hidden lg:block px-8">
           <div className="max-w-md ml-auto">
             <div className="flex items-center gap-3 mb-8">
-              <div className="w-12 h-12 bg-gradient-to-br from-violet-500 to-indigo-600 rounded-xl shadow-lg shadow-violet-500/30 flex items-center justify-center">
+              <div className="w-12 h-12 bg-[#7C4DFF] rounded-xl shadow-lg shadow-[#7C4DFF]/20 flex items-center justify-center">
                 <div className="w-6 h-6 border-2 border-white rounded opacity-90" />
               </div>
-              <span className="text-2xl font-bold">Xpod</span>
+              <div>
+                <div className="text-2xl font-bold leading-tight">Xpod</div>
+                <div className="text-[10px] text-zinc-500 leading-tight">Personal Messages Platform</div>
+              </div>
             </div>
 
-            <h1 className="text-3xl xl:text-4xl font-bold leading-tight mb-4">
-              Xpod Identity
-              <span className="bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent"> Control</span>
+            <h1 className="text-2xl xl:text-3xl font-bold leading-tight mb-4">
+              Simplify Life with <span className="text-[#7C4DFF]">Your AI Secretary</span>
             </h1>
-            <p className="text-zinc-400 text-sm leading-relaxed mb-10">
-              Run authentication, pod access, and app authorization in one secure control plane.
+            <p className="text-zinc-500 text-sm leading-relaxed mb-10">
+              An AI that never stops, knows your whole life, works for you—while guarding your privacy.
             </p>
 
             <div className="space-y-4">
-              <div className="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 p-1">
-                <button
-                  type="button"
-                  onClick={() => setFeatureTab('user')}
-                  className={clsx(
-                    'px-3 py-1.5 text-[10px] font-medium rounded-full transition-colors',
-                    featureTab === 'user' ? 'bg-violet-600 text-white' : 'text-zinc-400 hover:text-white'
-                  )}
-                >
-                  For Users
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFeatureTab('developer')}
-                  className={clsx(
-                    'px-3 py-1.5 text-[10px] font-medium rounded-full transition-colors',
-                    featureTab === 'developer' ? 'bg-violet-600 text-white' : 'text-zinc-400 hover:text-white'
-                  )}
-                >
-                  For Developers
-                </button>
-              </div>
-              <div>
-                <p className="text-[10px] uppercase tracking-wider text-violet-400 mb-2">
-                  {featureTab === 'user' ? 'For Users' : 'For Developers'}
-                </p>
-                <div className="grid grid-cols-2 gap-4">
-                  {(featureTab === 'user' ? userFeatures : developerFeatures).map(({ icon: Icon, title, desc }) => (
-                    <div key={title} className="flex gap-3">
-                      <div className="w-8 h-8 bg-zinc-800/80 rounded-lg flex items-center justify-center shrink-0">
-                        <Icon className="w-4 h-4 text-violet-400" />
-                      </div>
-                      <div>
-                        <h3 className="text-xs font-medium text-white">{title}</h3>
-                        <p className="text-[10px] text-zinc-500">{desc}</p>
-                      </div>
+              <div className="space-y-3">
+                {features.map(({ icon: Icon, title, desc }) => (
+                  <div key={title} className="flex gap-3">
+                    <div className="w-8 h-8 bg-white border border-zinc-200 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
+                      <Icon className="w-4 h-4 text-[#7C4DFF]" />
                     </div>
-                  ))}
-                </div>
+                    <div>
+                      <h3 className="text-xs font-medium text-zinc-900">{title}</h3>
+                      <p className="text-[10px] text-zinc-500">{desc}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
             
             <div className="mt-12">
-              <p className="text-[10px] text-zinc-600">
-                Powered by <a href="https://solidproject.org" target="_blank" rel="noopener" className="text-violet-500 hover:text-violet-400">Solid Protocol</a>
+              <p className="text-[10px] text-zinc-400">
+                Powered by <a href="https://solidproject.org" target="_blank" rel="noopener" className="text-[#7C4DFF] hover:text-[#6B3FE8]">Solid Protocol</a>
               </p>
             </div>
           </div>
@@ -173,16 +190,19 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
         {/* Right - Auth Form */}
         <div className="w-full max-w-sm mx-auto lg:mx-0">
-          <div className="bg-zinc-900/30 backdrop-blur-sm border border-zinc-800/50 rounded-3xl p-6 lg:p-8 shadow-xl">
+          <div className="bg-white border border-zinc-200 rounded-3xl p-6 lg:p-8 shadow-xl shadow-zinc-200/50">
             <div className="lg:hidden flex items-center gap-3 mb-8">
-              <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-indigo-600 rounded-xl flex items-center justify-center">
+              <div className="w-10 h-10 bg-[#7C4DFF] rounded-xl flex items-center justify-center">
                 <div className="w-5 h-5 border-2 border-white rounded opacity-90" />
               </div>
-              <span className="text-xl font-bold">Xpod</span>
+              <div>
+                <div className="text-xl font-bold leading-tight">Xpod</div>
+                <div className="text-[10px] text-zinc-500 leading-tight">Personal Messages Platform</div>
+              </div>
             </div>
 
             <div className="mb-6">
-              <h2 className="text-xl font-bold">{isRegister ? 'Create your Pod' : 'Welcome back'}</h2>
+              <h2 className="text-xl font-bold">{isRegister ? 'Create account' : 'Welcome back'}</h2>
               <p className="text-zinc-500 text-xs mt-1">
                 {isRegister ? 'Create your Xpod account to get started.' : 'Sign in to continue your identity workspace.'}
               </p>
@@ -191,33 +211,44 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
             <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-3">
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
                   <input
                     name="email"
                     type="email"
                     required
-                    className="block w-full pl-10 pr-4 py-2.5 bg-zinc-900/50 border border-zinc-800 rounded-xl text-sm placeholder:text-zinc-600 focus:border-violet-500 focus:outline-none transition-colors"
+                    className="block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm placeholder:text-zinc-400 focus:border-[#7C4DFF] focus:outline-none transition-colors"
                     placeholder="Email"
                   />
                 </div>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
                   <input
                     name="password"
                     type="password"
                     required
-                    className="block w-full pl-10 pr-4 py-2.5 bg-zinc-900/50 border border-zinc-800 rounded-xl text-sm placeholder:text-zinc-600 focus:border-violet-500 focus:outline-none transition-colors"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm placeholder:text-zinc-400 focus:border-[#7C4DFF] focus:outline-none transition-colors"
                     placeholder="Password"
                   />
                 </div>
                 {isRegister && (
                   <div className="relative">
-                    <Check className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
+                    {passwordsMatch ? (
+                      <Check className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-emerald-500" />
+                    ) : (
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
+                    )}
                     <input
                       name="confirmPassword"
                       type="password"
                       required
-                      className="block w-full pl-10 pr-4 py-2.5 bg-zinc-900/50 border border-zinc-800 rounded-xl text-sm placeholder:text-zinc-600 focus:border-violet-500 focus:outline-none transition-colors"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className={clsx(
+                        "block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors",
+                        passwordsMatch ? "border-emerald-300 focus:border-emerald-500" : "border-zinc-200 focus:border-[#7C4DFF]"
+                      )}
                       placeholder="Confirm password"
                     />
                   </div>
@@ -226,7 +257,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
               {!isRegister && (
                 <div className="flex justify-end">
-                  <button type="button" onClick={() => navigate('/.account/login/password/forgot/')} className="text-[11px] text-violet-500 hover:text-violet-400">
+                  <button type="button" onClick={() => navigate('/.account/login/password/forgot/')} className="text-[11px] text-[#7C4DFF] hover:text-[#6B3FE8]">
                     Forgot password?
                   </button>
                 </div>
@@ -234,25 +265,37 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
               <button
                 type="submit"
-                disabled={isLoading}
-                className="w-full py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+                disabled={isLoading || isCancelling}
+                className="w-full py-3 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
               >
                 {isLoading ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <>
-                    {isRegister ? 'Create Pod' : 'Sign in'}
+                    {isRegister ? 'Sign up' : 'Sign in'}
                     <ArrowRight className="h-4 w-4" />
                   </>
                 )}
               </button>
+
+              {/* OIDC Cancel button - only show during OIDC authentication flow */}
+              {authenticating && !isRegister && (
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  disabled={isCancelling || isLoading}
+                  className="w-full py-3 border border-zinc-200 hover:bg-zinc-100 text-zinc-600 rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+                >
+                  {isCancelling ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Cancel'}
+                </button>
+              )}
             </form>
 
-            <div className="mt-6 pt-6 border-t border-zinc-800/50 text-center">
+            <div className="mt-6 pt-6 border-t border-zinc-100 text-center">
               <p className="text-[11px] text-zinc-500">
                 {isRegister ? 'Already have an account? ' : "Don't have an account? "}
-                <button onClick={toggleMode} className="text-violet-500 font-medium hover:text-violet-400">
-                  {isRegister ? 'Sign in' : 'Create Pod'}
+                <button onClick={toggleMode} className="text-[#7C4DFF] font-medium hover:text-[#6B3FE8]">
+                  {isRegister ? 'Sign in' : 'Sign up'}
                 </button>
               </p>
             </div>

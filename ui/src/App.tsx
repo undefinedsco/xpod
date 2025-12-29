@@ -8,6 +8,7 @@ import { WelcomePage } from './pages/WelcomePage';
 import { AccountPage } from './pages/AccountPage';
 import { ConsentPage } from './pages/ConsentPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { LoginSelectPage } from './pages/LoginSelectPage';
 
 function AppRoutes() {
@@ -24,6 +25,7 @@ function AppRoutes() {
       <Route path="/.account/login/password/" element={<WelcomePage initialIsRegister={false} />} />
       <Route path="/.account/login/password/register/" element={<WelcomePage initialIsRegister={true} />} />
       <Route path="/.account/login/password/forgot/" element={<ForgotPasswordPage />} />
+      <Route path="/.account/login/password/reset/" element={<ResetPasswordPage />} />
       <Route path="/.account/oidc/consent/" element={<ConsentPage />} />
       <Route path="*" element={<Navigate to="/.account/" replace />} />
     </Routes>

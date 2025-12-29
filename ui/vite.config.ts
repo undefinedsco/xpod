@@ -6,8 +6,17 @@ import path from 'path'
 export default defineConfig({
   plugins: [react()],
   resolve: {
+    preserveSymlinks: true,
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@linx': path.resolve(__dirname, './src/external/linx/src'),
+    },
+  },
+  server: {
+    fs: {
+      allow: [
+        path.resolve(__dirname, '../../'),
+      ],
     },
   },
   build: {
