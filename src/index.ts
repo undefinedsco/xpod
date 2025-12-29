@@ -1,11 +1,11 @@
 import { RepresentationPartialConvertingStore } from './storage/RepresentationPartialConvertingStore';
-import { LockingResourceStore } from './storage/LockingResourceStore';
 import { MinioDataAccessor } from './storage/accessors/MinioDataAccessor';
 import { QuadstoreSparqlDataAccessor } from './storage/accessors/QuadstoreSparqlDataAccessor';
+import { QuintStoreSparqlDataAccessor } from './storage/accessors/QuintStoreSparqlDataAccessor';
 import { MixDataAccessor } from './storage/accessors/MixDataAccessor';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
-import { DebugRedisLocker } from './util/locking/DebugRedisLocker';
-import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
+import { SubgraphQueryEngine, QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/SubgraphQueryEngine';
+export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { EdgeNodeSignalHttpHandler } from './http/admin/EdgeNodeSignalHttpHandler';
@@ -15,8 +15,9 @@ import { ClusterWebSocketConfigurator } from './http/ClusterWebSocketConfigurato
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
 import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
 import { SignalInterceptHttpHandler } from './http/SignalInterceptHttpHandler';
-import { RequestIdHttpHandler } from './http/RequestIdHttpHandler';
-import { ChainedHttpHandler } from './http/ChainedHttpHandler';
+import { RouterHttpHandler } from './http/RouterHttpHandler';
+import { RouterHttpRoute } from './http/RouterHttpRoute';
+import { TracingHandler } from './http/TracingHandler';
 import { TerminalHttpHandler } from './http/terminal/TerminalHttpHandler';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
@@ -46,6 +47,8 @@ import { TieredMinioDataAccessor } from './storage/accessors/TieredMinioDataAcce
 import { PodMigrationHttpHandler } from './http/cluster/PodMigrationHttpHandler';
 import { PodMigrationService } from './service/PodMigrationService';
 import { ReactAppViewHandler } from './identity/ReactAppViewHandler';
+import { SqliteQuintStore } from './storage/quint/SqliteQuintStore';
+import { PgQuintStore } from './storage/quint/PgQuintStore';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
 // Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
@@ -60,20 +63,20 @@ export type {
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService } from './quota/QuotaService';
-export type { MiddlewareHttpHandler, MiddlewareContext } from './http/MiddlewareHttpHandler';
 // Export the new AppStaticAssetHandler
 export { AppStaticAssetHandler } from './http/AppStaticAssetHandler';
 
 export { 
     RepresentationPartialConvertingStore,
     MinioDataAccessor, 
-    QuadstoreSparqlDataAccessor, 
+    QuadstoreSparqlDataAccessor,
+    QuintStoreSparqlDataAccessor,
     MixDataAccessor,
     ConfigurableLoggerFactory,
-    LockingResourceStore,
-    DebugRedisLocker,
     SparqlUpdateResourceStore,
     SubgraphQueryEngine,
+    QuadstoreSparqlEngine,
+    QuintstoreSparqlEngine,
     SubgraphSparqlHttpHandler,
     QuotaAdminHttpHandler,
     EdgeNodeSignalHttpHandler,
@@ -82,8 +85,9 @@ export {
     EdgeNodeDirectDebugHttpHandler,
     EdgeNodeProxyHttpHandler,
     SignalInterceptHttpHandler,
-    RequestIdHttpHandler,
-  ChainedHttpHandler,
+    RouterHttpHandler,
+    RouterHttpRoute,
+    TracingHandler,
     EdgeNodeCertificateHttpHandler,
     TerminalHttpHandler,
     ReservedSuffixIdentifierGenerator,
@@ -113,4 +117,6 @@ export {
   PodMigrationHttpHandler,
   PodMigrationService,
   ReactAppViewHandler,
+  SqliteQuintStore,
+  PgQuintStore,
 };
