@@ -19,6 +19,8 @@ import {
   parseVector,
   termToId,
   serializeObject,
+  fpEncode,
+  SEP,
 } from './serialization';
 import type {
   Quint,
@@ -29,6 +31,9 @@ import type {
   StoreStats,
   TermMatch,
   TermOperators,
+  CompoundPattern,
+  CompoundResult,
+  OperatorValue,
 } from './types';
 import { isTerm } from './types';
 
@@ -164,6 +169,377 @@ export class SqliteQuintStore {
 
     const result = await query;
     return result[0]?.count ?? 0;
+  }
+
+  /**
+   * Compound query - multiple patterns JOINed by a common field
+   * This executes a single SQL query with JOINs, letting SQLite optimize the execution plan
+   */
+  async getCompound(compound: CompoundPattern, options?: QueryOptions): Promise<CompoundResult[]> {
+    this.ensureOpen();
+
+    const { patterns, joinOn, select } = compound;
+    
+    if (patterns.length === 0) {
+      return [];
+    }
+
+    if (patterns.length === 1) {
+      // Single pattern, fall back to regular get
+      const quads = await this.get(patterns[0], options);
+      return quads.map(q => ({
+        joinValue: termToId((q as any)[joinOn]),
+        bindings: {},
+        quads: [q],
+      }));
+    }
+
+    // Build JOIN SQL
+    const { sql: sqlQuery, params } = this.buildCompoundSQL(compound, options);
+    
+    if (this.options.debug) {
+      console.log('[SqliteQuintStore] Compound SQL:', sqlQuery);
+      console.log('[SqliteQuintStore] Params:', params);
+    }
+
+    // Execute raw SQL
+    const stmt = this.sqlite!.prepare(sqlQuery);
+    const rows = stmt.all(...params) as Record<string, string>[];
+
+    // Convert rows to CompoundResult
+    return rows.map(row => {
+      const bindings: Record<string, string> = {};
+      
+      // Extract bindings based on select config or default naming
+      if (select) {
+        for (const s of select) {
+          bindings[s.alias] = row[s.alias];
+        }
+      } else {
+        // Default: include all fields from all patterns
+        for (const key of Object.keys(row)) {
+          if (key !== 'join_value') {
+            bindings[key] = row[key];
+          }
+        }
+      }
+
+      return {
+        joinValue: row.join_value,
+        bindings,
+      };
+    });
+  }
+
+  /**
+   * 批量获取多个 subject 的多个属性
+   * 
+   * 用于优化 OPTIONAL 查询：避免每个 OPTIONAL 变成一次 LEFT JOIN
+   * 
+   * SQL: SELECT subject, predicate, object FROM quints 
+   *      WHERE subject IN (...) AND predicate IN (...)
+   */
+  async getAttributes(
+    subjects: string[],
+    predicates: string[],
+    graph?: Term
+  ): Promise<Map<string, Map<string, Term[]>>> {
+    this.ensureOpen();
+
+    if (subjects.length === 0 || predicates.length === 0) {
+      return new Map();
+    }
+
+    // Build SQL with IN clauses
+    const params: string[] = [];
+    let sql = `SELECT subject, predicate, object FROM quints WHERE subject IN (${
+      subjects.map(() => '?').join(', ')
+    }) AND predicate IN (${
+      predicates.map(() => '?').join(', ')
+    })`;
+    
+    params.push(...subjects);
+    params.push(...predicates);
+
+    // Add graph filter if specified
+    if (graph && graph.termType !== 'DefaultGraph') {
+      sql += ` AND graph = ?`;
+      params.push(termToId(graph as any));
+    }
+
+    if (this.options.debug) {
+      console.log('[SqliteQuintStore] getAttributes SQL:', sql);
+      console.log('[SqliteQuintStore] Params:', params.length, 'subjects:', subjects.length, 'predicates:', predicates.length);
+    }
+
+    const stmt = this.sqlite!.prepare(sql);
+    const rows = stmt.all(...params) as { subject: string; predicate: string; object: string }[];
+
+    // Build result map: subject -> predicate -> object[]
+    const result = new Map<string, Map<string, Term[]>>();
+
+    for (const row of rows) {
+      if (!result.has(row.subject)) {
+        result.set(row.subject, new Map());
+      }
+      const predicateMap = result.get(row.subject)!;
+      
+      if (!predicateMap.has(row.predicate)) {
+        predicateMap.set(row.predicate, []);
+      }
+      
+      // Deserialize object back to Term
+      const objectTerm = this.deserializeObject(row.object);
+      predicateMap.get(row.predicate)!.push(objectTerm);
+    }
+
+    if (this.options.debug) {
+      console.log('[SqliteQuintStore] getAttributes returned', result.size, 'subjects');
+    }
+
+    return result;
+  }
+
+  /**
+   * Deserialize stored object string back to RDF Term
+   */
+  private deserializeObject(value: string): Term {
+    // Check if it's a literal (starts with ")
+    if (value.startsWith('"')) {
+      // Parse n3 literal format: "value" or "value"@lang or "value"^^<datatype>
+      const match = value.match(/^"([^"]*)"(?:@([a-zA-Z-]+)|\^\^<([^>]+)>)?$/);
+      if (match) {
+        const [, lexical, lang, datatype] = match;
+        if (lang) {
+          return DataFactory.literal(lexical, lang);
+        }
+        if (datatype) {
+          return DataFactory.literal(lexical, DataFactory.namedNode(datatype));
+        }
+        return DataFactory.literal(lexical);
+      }
+    }
+    
+    // Check for fpstring encoded numeric (starts with N\0)
+    if (value.startsWith('N\u0000')) {
+      const parts = value.split('\u0000');
+      const datatype = parts[2];
+      const originalValue = parts[3];
+      return DataFactory.literal(originalValue, DataFactory.namedNode(datatype));
+    }
+    
+    // Check for datetime (starts with D\0)
+    if (value.startsWith('D\u0000')) {
+      const parts = value.split('\u0000');
+      const originalValue = parts[2];
+      return DataFactory.literal(originalValue, DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#dateTime'));
+    }
+    
+    // Default: named node
+    return DataFactory.namedNode(value);
+  }
+
+  /**
+   * Build SQL for compound query with JOINs
+   */
+  private buildCompoundSQL(
+    compound: CompoundPattern,
+    options?: QueryOptions
+  ): { sql: string; params: (string | number)[] } {
+    const { patterns, joinOn, select } = compound;
+    const params: (string | number)[] = [];
+    
+    // Map joinOn to column name
+    const joinColumn = joinOn; // 'subject' | 'predicate' | 'object' | 'graph'
+
+    // Build SELECT clause
+    let selectClause = `q0.${joinColumn} as join_value`;
+    
+    if (select) {
+      for (const s of select) {
+        selectClause += `, q${s.pattern}.${s.field} as ${s.alias}`;
+      }
+    } else {
+      // Default: select object from each pattern as p0_object, p1_object, etc.
+      for (let i = 0; i < patterns.length; i++) {
+        selectClause += `, q${i}.object as p${i}_object`;
+        selectClause += `, q${i}.predicate as p${i}_predicate`;
+      }
+    }
+
+    // Build FROM clause with JOINs
+    let fromClause = 'quints q0';
+    for (let i = 1; i < patterns.length; i++) {
+      fromClause += ` JOIN quints q${i} ON q0.${joinColumn} = q${i}.${joinColumn}`;
+      // Also join on graph to ensure same graph
+      fromClause += ` AND q0.graph = q${i}.graph`;
+    }
+
+    // Build WHERE clause
+    const whereParts: string[] = [];
+    
+    for (let i = 0; i < patterns.length; i++) {
+      const pattern = patterns[i];
+      const alias = `q${i}`;
+      
+      const conditions = this.buildConditionsForAlias(pattern, alias, params);
+      whereParts.push(...conditions);
+    }
+
+    let sql = `SELECT ${selectClause} FROM ${fromClause}`;
+    
+    if (whereParts.length > 0) {
+      sql += ` WHERE ${whereParts.join(' AND ')}`;
+    }
+
+    // Add LIMIT/OFFSET
+    if (options?.limit) {
+      sql += ` LIMIT ?`;
+      params.push(options.limit);
+    }
+    if (options?.offset) {
+      if (!options?.limit) {
+        sql += ` LIMIT -1`;
+      }
+      sql += ` OFFSET ?`;
+      params.push(options.offset);
+    }
+
+    return { sql, params };
+  }
+
+  /**
+   * Build WHERE conditions for a specific table alias
+   */
+  private buildConditionsForAlias(
+    pattern: QuintPattern,
+    alias: string,
+    params: (string | number)[]
+  ): string[] {
+    const conditions: string[] = [];
+
+    /**
+     * Serialize operator value for comparison
+     * - Term: use serializeObject/termToId
+     * - number: for exact match ($eq, $ne, $in, $notIn) use full serialization
+     *           for range comparison ($gt, $gte, $lt, $lte) use fpstring
+     * - string: assume already serialized or use as-is
+     */
+    const serializeOpValue = (value: OperatorValue, isObject: boolean, filterOp: string): string | number => {
+      if (typeof value === 'object' && 'termType' in value) {
+        // It's a Term - use full serialization
+        return isObject ? serializeObject(value as any) : termToId(value as any);
+      }
+      
+      if (typeof value === 'number') {
+        if (isObject) {
+          // For exact match operations, use full serialization (includes datatype and original value)
+          if (filterOp === '$eq' || filterOp === '$ne' || filterOp === '$in' || filterOp === '$notIn') {
+            const lit = DataFactory.literal(String(value), DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#integer'));
+            return serializeObject(lit);
+          }
+          // For range comparisons, use fpstring
+          const fpValue = `N${SEP}${fpEncode(value)}`;
+          // $gt and $lte need max suffix to compare correctly
+          if (filterOp === '$gt' || filterOp === '$lte') {
+            return fpValue + SEP + '\uffff';
+          }
+          // $lt and $gte use prefix only
+          return fpValue;
+        }
+        return value;
+      }
+      
+      // String value
+      if (isObject) {
+        // Already serialized (starts with N\0 or D\0 or ")
+        if (value.startsWith('N\u0000') || value.startsWith('D\u0000') || value.startsWith('"')) {
+          return value;
+        }
+        // Plain string - wrap as xsd:string literal
+        return `"${value}"`;
+      }
+      return value;
+    };
+
+    const addCondition = (
+      column: string,
+      match: TermMatch | undefined,
+      isObject: boolean = false
+    ) => {
+      if (!match) return;
+
+      const fullColumn = `${alias}.${column}`;
+
+      if (isTerm(match)) {
+        conditions.push(`${fullColumn} = ?`);
+        params.push(isObject ? serializeObject(match as any) : termToId(match as any));
+      } else {
+        const ops = match as TermOperators;
+
+        if (ops.$eq !== undefined) {
+          conditions.push(`${fullColumn} = ?`);
+          params.push(serializeOpValue(ops.$eq, isObject, '$eq'));
+        }
+        if (ops.$ne !== undefined) {
+          conditions.push(`${fullColumn} != ?`);
+          params.push(serializeOpValue(ops.$ne, isObject, '$ne'));
+        }
+        if (ops.$gt !== undefined) {
+          conditions.push(`${fullColumn} > ?`);
+          params.push(serializeOpValue(ops.$gt, isObject, '$gt'));
+        }
+        if (ops.$gte !== undefined) {
+          conditions.push(`${fullColumn} >= ?`);
+          params.push(serializeOpValue(ops.$gte, isObject, '$gte'));
+        }
+        if (ops.$lt !== undefined) {
+          conditions.push(`${fullColumn} < ?`);
+          params.push(serializeOpValue(ops.$lt, isObject, '$lt'));
+        }
+        if (ops.$lte !== undefined) {
+          conditions.push(`${fullColumn} <= ?`);
+          params.push(serializeOpValue(ops.$lte, isObject, '$lte'));
+        }
+        if (ops.$in !== undefined && ops.$in.length > 0) {
+          const placeholders = ops.$in.map(() => '?').join(', ');
+          conditions.push(`${fullColumn} IN (${placeholders})`);
+          params.push(...ops.$in.map(v => serializeOpValue(v, isObject, '$in')));
+        }
+        if (ops.$notIn !== undefined && ops.$notIn.length > 0) {
+          const placeholders = ops.$notIn.map(() => '?').join(', ');
+          conditions.push(`${fullColumn} NOT IN (${placeholders})`);
+          params.push(...ops.$notIn.map(v => serializeOpValue(v, isObject, '$notIn')));
+        }
+        if (ops.$startsWith !== undefined) {
+          conditions.push(`${fullColumn} >= ?`);
+          conditions.push(`${fullColumn} < ?`);
+          params.push(ops.$startsWith);
+          params.push(ops.$startsWith + '\uffff');
+        }
+        if (ops.$endsWith !== undefined) {
+          conditions.push(`${fullColumn} LIKE ?`);
+          params.push(`%${ops.$endsWith}`);
+        }
+        if (ops.$contains !== undefined) {
+          conditions.push(`${fullColumn} LIKE ?`);
+          params.push(`%${ops.$contains}%`);
+        }
+        if (ops.$isNull === true) {
+          conditions.push(`${fullColumn} IS NULL`);
+        }
+        if (ops.$isNull === false) {
+          conditions.push(`${fullColumn} IS NOT NULL`);
+        }
+      }
+    };
+
+    addCondition('graph', pattern.graph);
+    addCondition('subject', pattern.subject);
+    addCondition('predicate', pattern.predicate);
+    addCondition('object', pattern.object, true);
+
+    return conditions;
   }
 
   // ============================================
@@ -313,6 +689,43 @@ export class SqliteQuintStore {
   private buildConditions(pattern: QuintPattern): SQL[] {
     const conditions: SQL[] = [];
 
+    /**
+     * Serialize operator value for comparison
+     * - Term: use serializeObject/termToId
+     * - number: for exact match ($eq, $ne, $in, $notIn) use full serialization
+     *           for range comparison ($gt, $gte, $lt, $lte) use fpstring
+     * - string: assume already serialized or use as-is
+     */
+    const serializeOpValue = (value: OperatorValue, isObject: boolean, filterOp: string): any => {
+      if (typeof value === 'object' && 'termType' in value) {
+        return isObject ? serializeObject(value as any) : termToId(value as any);
+      }
+      
+      if (typeof value === 'number') {
+        if (isObject) {
+          // For exact match operations, use full serialization (includes datatype and original value)
+          if (filterOp === '$eq' || filterOp === '$ne' || filterOp === '$in' || filterOp === '$notIn') {
+            const lit = DataFactory.literal(String(value), DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#integer'));
+            return serializeObject(lit);
+          }
+          // For range comparisons, use fpstring
+          const fpValue = `N${SEP}${fpEncode(value)}`;
+          // $gt and $lte need max suffix
+          if (filterOp === '$gt' || filterOp === '$lte') {
+            return fpValue + SEP + '\uffff';
+          }
+          return fpValue;
+        }
+        return value;
+      }
+      
+      // String - already serialized or plain string
+      if (isObject && !value.startsWith('N\u0000') && !value.startsWith('D\u0000') && !value.startsWith('"')) {
+        return `"${value}"`;
+      }
+      return value;
+    };
+
     const addTermConditions = (
       column: typeof quints.graph | typeof quints.subject | typeof quints.predicate | typeof quints.object,
       match: TermMatch | undefined,
@@ -328,28 +741,30 @@ export class SqliteQuintStore {
         const ops = match as TermOperators;
 
         if (ops.$eq !== undefined) {
-          conditions.push(eq(column, ops.$eq));
+          conditions.push(eq(column, serializeOpValue(ops.$eq, isObject, '$eq')));
         }
         if (ops.$ne !== undefined) {
-          conditions.push(ne(column, ops.$ne));
+          conditions.push(ne(column, serializeOpValue(ops.$ne, isObject, '$ne')));
         }
         if (ops.$gt !== undefined) {
-          conditions.push(gt(column, ops.$gt));
+          conditions.push(gt(column, serializeOpValue(ops.$gt, isObject, '$gt')));
         }
         if (ops.$gte !== undefined) {
-          conditions.push(gte(column, ops.$gte));
+          conditions.push(gte(column, serializeOpValue(ops.$gte, isObject, '$gte')));
         }
         if (ops.$lt !== undefined) {
-          conditions.push(lt(column, ops.$lt));
+          conditions.push(lt(column, serializeOpValue(ops.$lt, isObject, '$lt')));
         }
         if (ops.$lte !== undefined) {
-          conditions.push(lte(column, ops.$lte));
+          conditions.push(lte(column, serializeOpValue(ops.$lte, isObject, '$lte')));
         }
         if (ops.$in !== undefined && ops.$in.length > 0) {
-          conditions.push(inArray(column, ops.$in));
+          const serializedValues = ops.$in.map(v => serializeOpValue(v, isObject, '$in'));
+          conditions.push(inArray(column, serializedValues));
         }
         if (ops.$notIn !== undefined && ops.$notIn.length > 0) {
-          conditions.push(notInArray(column, ops.$notIn));
+          const serializedValues = ops.$notIn.map(v => serializeOpValue(v, isObject, '$notIn'));
+          conditions.push(notInArray(column, serializedValues));
         }
         if (ops.$startsWith !== undefined) {
           // Use range query for prefix matching (index-friendly)

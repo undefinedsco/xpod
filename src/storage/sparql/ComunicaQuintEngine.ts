@@ -58,6 +58,35 @@ export interface QueryAnalysis {
   estimatedPushdownRate: number;
 }
 
+/**
+ * OPTIONAL 优化分析结果
+ * 
+ * 用于检测可优化的 OPTIONAL 模式：
+ * SELECT ?s ?prop1 ?prop2 ... WHERE {
+ *   ?s ... (core conditions)
+ *   OPTIONAL { ?s <pred1> ?prop1 }
+ *   OPTIONAL { ?s <pred2> ?prop2 }
+ * }
+ * 
+ * 如果 OPTIONAL 只是获取属性（不参与过滤），可以优化为：
+ * 1. 先执行核心条件获取所有 subjects
+ * 2. 批量获取这些 subjects 的所有属性
+ */
+interface OptionalOptimization {
+  /** 是否可优化 */
+  canOptimize: boolean;
+  /** 核心查询（不含 OPTIONAL） */
+  coreOperation?: Algebra.Operation;
+  /** subject 变量名 */
+  subjectVar?: string;
+  /** 要获取的属性 predicates */
+  optionalPredicates?: string[];
+  /** 各 OPTIONAL 的变量名 */
+  optionalVars?: Map<string, string>;  // predicate -> variable
+  /** 不能优化的原因 */
+  reason?: string;
+}
+
 interface OptimizeParams {
   limit?: number;
   offset?: number;
@@ -260,6 +289,8 @@ export class ComunicaQuintEngine {
   private currentOptimizeParams: OptimizeParams | null = null;
   // Current security filters (from upstream)
   private currentSecurityFilters: SecurityFilters | undefined;
+  // Current query's FILTER expressions for pushdown
+  private currentFilterExpressions: Map<string, Algebra.Expression> = new Map();
 
   constructor(store: QuintStore, options?: ComunicaQuintEngineOptions) {
     this.store = store;
@@ -281,6 +312,7 @@ export class ComunicaQuintEngine {
       bindingsFactory: this.bindingsFactory,
       getSecurityFilters: () => this.currentSecurityFilters,
       getOptimizeParams: () => this.currentOptimizeParams,
+      getFilterExpression: (varName: string) => this.currentFilterExpressions.get(varName),
     });
     
     this.engine = new QueryEngine();
@@ -390,35 +422,467 @@ export class ComunicaQuintEngine {
   /**
    * Execute SELECT query
    * Uses IQuerySource for proper FILTER pushdown
+   * 
+   * OPTIONAL 优化：
+   * 如果查询包含多个 OPTIONAL 且只是获取属性（不参与过滤），
+   * 则先执行核心条件获取 subjects，再批量获取属性
    */
   async queryBindings(query: string, context?: QueryContext): Promise<ResultStream<Bindings>> {
     const params = this.extractOptimizeParams(query);
     this.currentOptimizeParams = params;
     this.currentSecurityFilters = context?.filters;
     
+    // Extract FILTER expressions from the query for pushdown
+    // Note: We don't clear these in finally because the stream is lazy-evaluated
+    // and sub-queries may need access to filters after this function returns
+    this.extractAndStoreFilters(query);
+    
     if (this.debug) {
       console.log(`[ComunicaQuintEngine] Query optimization:`, this.currentOptimizeParams);
       console.log(`[ComunicaQuintEngine] Security filters:`, this.currentSecurityFilters);
+      console.log(`[ComunicaQuintEngine] Filter expressions for pushdown:`, this.currentFilterExpressions.size);
     }
 
-    try {
-      // Create context with pre-identified source to bypass source identification
-      // This allows us to use our IQuerySource directly
-      // IMPORTANT: Use plain object instead of ActionContext to avoid version mismatch
-      // between the root @comunica/core and the one bundled with @comunica/query-sparql-rdfjs
-      // The engine will convert it to ActionContext using its internal @comunica/core
-      const { sources: _ignored, filters: _filters, ...restContext } = context || {};
-      const queryContext = {
-        ...restContext,
-        // Set the identified sources directly - this skips ActorContextPreprocessQuerySourceIdentify
-        [CONTEXT_KEY_QUERY_SOURCES]: [{ source: this.querySource }],
+    // 尝试 OPTIONAL 优化
+    if (this.store.getAttributes) {
+      try {
+        const algebra = translate(query, { quads: true });
+        const optionalOpt = this.analyzeOptionalOptimization(algebra);
+        
+        if (optionalOpt.canOptimize && this.debug) {
+          console.log(`[ComunicaQuintEngine] OPTIONAL optimization available:`, {
+            subjectVar: optionalOpt.subjectVar,
+            predicates: optionalOpt.optionalPredicates?.length,
+          });
+        }
+        
+        if (optionalOpt.canOptimize) {
+          const optimizedResult = await this.executeOptionalOptimized(
+            algebra,
+            optionalOpt,
+            context
+          );
+          if (optimizedResult) {
+            return optimizedResult;
+          }
+        }
+      } catch (error) {
+        if (this.debug) {
+          console.log(`[ComunicaQuintEngine] OPTIONAL optimization failed, falling back:`, error);
+        }
+      }
+    }
+
+    // Create context with pre-identified source to bypass source identification
+    // This allows us to use our IQuerySource directly
+    // IMPORTANT: Use plain object instead of ActionContext to avoid version mismatch
+    // between the root @comunica/core and the one bundled with @comunica/query-sparql-rdfjs
+    // The engine will convert it to ActionContext using its internal @comunica/core
+    const { sources: _ignored, filters: _filters, ...restContext } = context || {};
+    const queryContext = {
+      ...restContext,
+      // Set the identified sources directly - this skips ActorContextPreprocessQuerySourceIdentify
+      [CONTEXT_KEY_QUERY_SOURCES]: [{ source: this.querySource }],
+    };
+
+    return await this.engine.queryBindings(query, queryContext as any);
+  }
+
+  /**
+   * 分析查询是否可以进行 OPTIONAL 优化
+   * 
+   * 可优化条件：
+   * 1. 有核心条件（BGP 或带 FILTER 的 BGP）
+   * 2. 有多个 OPTIONAL（>= 2 个才值得优化）
+   * 3. 所有 OPTIONAL 都是简单的属性获取：?s <pred> ?var
+   * 4. 所有 OPTIONAL 使用同一个 subject 变量
+   * 5. OPTIONAL 内部没有额外的 FILTER
+   */
+  private analyzeOptionalOptimization(algebra: Algebra.Operation): OptionalOptimization {
+    // 从 project -> slice -> ... 找到实际的查询结构
+    let current = algebra;
+    while (current.type === 'project' || current.type === 'slice' || 
+           current.type === 'distinct' || current.type === 'reduced') {
+      current = (current as any).input;
+    }
+
+    // 收集所有 leftjoin（OPTIONAL）和核心操作
+    const leftJoins: Algebra.LeftJoin[] = [];
+    let coreOp: Algebra.Operation | null = null;
+
+    // 递归收集 leftjoin
+    const collectLeftJoins = (op: Algebra.Operation): void => {
+      if (op.type === 'leftjoin') {
+        const lj = op as Algebra.LeftJoin;
+        leftJoins.push(lj);
+        // 继续检查左边是否还有 leftjoin
+        collectLeftJoins(lj.input[0]);
+      } else {
+        // 找到核心操作
+        coreOp = op;
+      }
+    };
+
+    collectLeftJoins(current);
+
+    if (leftJoins.length < 1) {
+      return { 
+        canOptimize: false, 
+        reason: 'No OPTIONAL found' 
       };
-
-      return await this.engine.queryBindings(query, queryContext as any);
-    } finally {
-      this.currentOptimizeParams = null;
-      this.currentSecurityFilters = undefined;
     }
+
+    if (!coreOp) {
+      return { canOptimize: false, reason: 'No core operation found' };
+    }
+
+    // 分析核心操作获取 subject 变量
+    const subjectVar = this.extractSubjectVariable(coreOp);
+    if (!subjectVar) {
+      return { canOptimize: false, reason: 'Cannot determine subject variable from core operation' };
+    }
+
+    // 分析所有 OPTIONAL，确保都是简单的属性获取
+    const optionalPredicates: string[] = [];
+    const optionalVars = new Map<string, string>();
+
+    for (const lj of leftJoins) {
+      // OPTIONAL 右边应该是一个简单的 pattern 或 BGP
+      const right = lj.input[1];
+      
+      // 检查是否有额外的 filter（expression 字段）
+      if ((lj as any).expression) {
+        return { 
+          canOptimize: false, 
+          reason: 'OPTIONAL contains FILTER expression, cannot optimize' 
+        };
+      }
+
+      const patternInfo = this.extractSimplePattern(right);
+      if (!patternInfo) {
+        return { 
+          canOptimize: false, 
+          reason: 'OPTIONAL is not a simple pattern' 
+        };
+      }
+
+      // 检查 subject 是否匹配
+      if (patternInfo.subjectVar !== subjectVar) {
+        return { 
+          canOptimize: false, 
+          reason: `OPTIONAL subject ?${patternInfo.subjectVar} doesn't match core subject ?${subjectVar}` 
+        };
+      }
+
+      // 检查 predicate 是否是常量
+      if (!patternInfo.predicate) {
+        return { 
+          canOptimize: false, 
+          reason: 'OPTIONAL predicate must be a constant' 
+        };
+      }
+
+      optionalPredicates.push(patternInfo.predicate);
+      if (patternInfo.objectVar) {
+        optionalVars.set(patternInfo.predicate, patternInfo.objectVar);
+      }
+    }
+
+    return {
+      canOptimize: true,
+      coreOperation: coreOp,
+      subjectVar,
+      optionalPredicates,
+      optionalVars,
+    };
+  }
+
+  /**
+   * 从核心操作提取 subject 变量
+   */
+  private extractSubjectVariable(op: Algebra.Operation): string | null {
+    if (op.type === 'pattern') {
+      const pattern = op as Algebra.Pattern;
+      if (pattern.subject?.termType === 'Variable') {
+        return pattern.subject.value;
+      }
+    } else if (op.type === 'bgp') {
+      const bgp = op as Algebra.Bgp;
+      if (bgp.patterns.length > 0) {
+        const firstPattern = bgp.patterns[0] as Algebra.Pattern;
+        if (firstPattern.subject?.termType === 'Variable') {
+          return firstPattern.subject.value;
+        }
+      }
+    } else if (op.type === 'filter') {
+      const filter = op as Algebra.Filter;
+      return this.extractSubjectVariable(filter.input);
+    } else if (op.type === 'join') {
+      const join = op as Algebra.Join;
+      if (join.input && join.input.length > 0) {
+        return this.extractSubjectVariable(join.input[0]);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 从 OPTIONAL 的右操作数提取简单 pattern 信息
+   */
+  private extractSimplePattern(op: Algebra.Operation): {
+    subjectVar: string;
+    predicate: string | null;
+    objectVar: string | null;
+  } | null {
+    if (op.type === 'pattern') {
+      const pattern = op as Algebra.Pattern;
+      if (pattern.subject?.termType !== 'Variable') {
+        return null;
+      }
+      return {
+        subjectVar: pattern.subject.value,
+        predicate: pattern.predicate?.termType === 'NamedNode' ? pattern.predicate.value : null,
+        objectVar: pattern.object?.termType === 'Variable' ? pattern.object.value : null,
+      };
+    } else if (op.type === 'bgp') {
+      const bgp = op as Algebra.Bgp;
+      if (bgp.patterns.length === 1) {
+        return this.extractSimplePattern(bgp.patterns[0] as Algebra.Operation);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 执行 OPTIONAL 优化的查询
+   * 
+   * 1. 先执行核心查询获取所有 subjects
+   * 2. 用 getAttributes 批量获取属性
+   * 3. 组装结果
+   */
+  private async executeOptionalOptimized(
+    _fullAlgebra: Algebra.Operation,
+    opt: OptionalOptimization,
+    context?: QueryContext
+  ): Promise<ResultStream<Bindings> | null> {
+    const { coreOperation, subjectVar, optionalPredicates, optionalVars } = opt;
+    
+    if (!coreOperation || !subjectVar || !optionalPredicates || !optionalVars) {
+      return null;
+    }
+
+    if (this.debug) {
+      console.log(`[ComunicaQuintEngine] Executing OPTIONAL optimized query`);
+      console.log(`  Subject var: ?${subjectVar}`);
+      console.log(`  Optional predicates: ${optionalPredicates.length}`);
+    }
+
+    // Step 1: 执行核心查询获取所有 subjects
+    // 构造一个只包含核心条件的 SPARQL 查询
+    const coreBindings = await this.executeCoreQuery(coreOperation, context);
+    
+    if (coreBindings.length === 0) {
+      // 没有匹配结果，返回空
+      const emptyArray: Bindings[] = [];
+      const resultStream = wrap(Promise.resolve(emptyArray));
+      return resultStream as ResultStream<Bindings>;
+    }
+
+    // 提取所有 subject 值
+    const subjects: string[] = [];
+    for (const binding of coreBindings) {
+      const subjectTerm = binding.get(dataFactory.variable(subjectVar));
+      if (subjectTerm && subjectTerm.termType === 'NamedNode') {
+        subjects.push(subjectTerm.value);
+      }
+    }
+
+    if (this.debug) {
+      console.log(`  Core query returned ${coreBindings.length} bindings, ${subjects.length} unique subjects`);
+    }
+
+    // Step 2: 批量获取属性
+    const attributeMap = await this.store.getAttributes!(
+      subjects,
+      optionalPredicates,
+      undefined  // TODO: 支持 graph 过滤
+    );
+
+    if (this.debug) {
+      console.log(`  getAttributes returned data for ${attributeMap.size} subjects`);
+    }
+
+    // Step 3: 组装结果
+    const results: Bindings[] = [];
+    
+    for (const coreBinding of coreBindings) {
+      const subjectTerm = coreBinding.get(dataFactory.variable(subjectVar));
+      if (!subjectTerm || subjectTerm.termType !== 'NamedNode') {
+        results.push(coreBinding);
+        continue;
+      }
+
+      const subjectAttrs = attributeMap.get(subjectTerm.value);
+      
+      // 创建包含所有 OPTIONAL 变量的新 binding
+      const entries: [any, Term][] = [];
+      
+      // 复制核心 binding 的所有变量
+      for (const v of coreBinding.keys()) {
+        const term = coreBinding.get(v);
+        if (term) {
+          entries.push([v, term]);
+        }
+      }
+
+      // 添加 OPTIONAL 变量
+      for (const [predicate, varName] of optionalVars) {
+        const values = subjectAttrs?.get(predicate);
+        if (values && values.length > 0) {
+          // 只取第一个值（标准 OPTIONAL 语义）
+          entries.push([dataFactory.variable(varName), values[0]]);
+        }
+        // 如果没有值，变量不绑定（OPTIONAL 语义）
+      }
+
+      results.push(this.bindingsFactory.bindings(entries));
+    }
+
+    if (this.debug) {
+      console.log(`  Final result: ${results.length} bindings`);
+    }
+
+    // 转换为 ResultStream
+    const resultStream = wrap(Promise.resolve(results));
+    return resultStream as ResultStream<Bindings>;
+  }
+
+  /**
+   * 执行核心查询（不含 OPTIONAL）
+   */
+  private async executeCoreQuery(
+    coreOperation: Algebra.Operation,
+    context?: QueryContext
+  ): Promise<Bindings[]> {
+    // 使用 QuintQuerySource 直接执行核心操作
+    // 这避免了通过 Comunica 的完整查询处理
+    const bindings: Bindings[] = [];
+    
+    const { sources: _ignored, filters: _filters, ...restContext } = context || {};
+    const queryContext = {
+      ...restContext,
+      [CONTEXT_KEY_QUERY_SOURCES]: [{ source: this.querySource }],
+    };
+
+    // 创建一个模拟的 context
+    const mockContext = {
+      get: <V>() => undefined as V | undefined,
+      getSafe: <V>() => { throw new Error('Not implemented'); },
+      has: () => false,
+    };
+
+    const stream = this.querySource.queryBindings(coreOperation, mockContext as any, undefined);
+    
+    for await (const binding of stream) {
+      bindings.push(binding);
+    }
+
+    return bindings;
+  }
+  
+  /**
+   * Extract FILTER expressions from query and store them for later pushdown
+   * Maps variable names to their filter expressions
+   */
+  private extractAndStoreFilters(query: string): void {
+    this.currentFilterExpressions.clear();
+    
+    try {
+      const algebra = translate(query, { quads: true });
+      this.collectFilterExpressions(algebra);
+    } catch (error) {
+      if (this.debug) {
+        console.log(`[ComunicaQuintEngine] Failed to extract filters:`, error);
+      }
+    }
+  }
+  
+  /**
+   * Recursively collect FILTER expressions and their variable bindings
+   */
+  private collectFilterExpressions(op: Algebra.Operation): void {
+    if (op.type === 'filter') {
+      const filterOp = op as Algebra.Filter;
+      const expression = filterOp.expression;
+      
+      // Extract variables from the expression
+      const variables = this.getExpressionVariables(expression);
+      
+      // Store the expression for each variable
+      for (const varName of variables) {
+        // Merge with existing expressions for this variable
+        const existing = this.currentFilterExpressions.get(varName);
+        if (existing) {
+          // Combine with AND
+          this.currentFilterExpressions.set(varName, {
+            type: 'expression',
+            expressionType: 'operator',
+            operator: '&&',
+            args: [existing, expression],
+          } as Algebra.OperatorExpression);
+        } else {
+          this.currentFilterExpressions.set(varName, expression);
+        }
+      }
+      
+      // Continue to nested operations
+      this.collectFilterExpressions(filterOp.input);
+    } else if ('input' in op && op.input) {
+      if (Array.isArray(op.input)) {
+        for (const child of op.input) {
+          this.collectFilterExpressions(child as Algebra.Operation);
+        }
+      } else {
+        this.collectFilterExpressions(op.input as Algebra.Operation);
+      }
+    }
+    if ('left' in op && op.left) {
+      this.collectFilterExpressions(op.left as Algebra.Operation);
+    }
+    if ('right' in op && op.right) {
+      this.collectFilterExpressions(op.right as Algebra.Operation);
+    }
+  }
+  
+  /**
+   * Get variable names from an expression
+   */
+  private getExpressionVariables(expr: Algebra.Expression): string[] {
+    const variables: string[] = [];
+    
+    const collectVars = (e: Algebra.Expression): void => {
+      if (e.expressionType === 'term') {
+        const term = (e as Algebra.TermExpression).term;
+        if (term.termType === 'Variable') {
+          variables.push(term.value);
+        }
+      } else if (e.expressionType === 'operator') {
+        const opExpr = e as Algebra.OperatorExpression;
+        for (const arg of opExpr.args) {
+          collectVars(arg);
+        }
+      }
+    };
+    
+    collectVars(expr);
+    return variables;
+  }
+  
+  /**
+   * Get the current filter expression for a variable (used by QuintQuerySource)
+   */
+  getFilterExpressionForVariable(varName: string): Algebra.Expression | undefined {
+    return this.currentFilterExpressions.get(varName);
   }
 
   /**
