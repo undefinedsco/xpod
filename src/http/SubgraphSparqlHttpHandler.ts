@@ -172,8 +172,10 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     } catch (error: unknown) {
       // Handle HttpErrors with proper status codes
       if (error instanceof HttpError) {
-        this.logger.error(`SPARQL sidecar error ${error.statusCode} (${this.getRequestId(request)}): ${error.message || 'HttpError'}`);
-        this.sendErrorResponse(response, error.statusCode, error.message);
+        const errorName = error.name || error.constructor.name || 'HttpError';
+        const errorMessage = error.message || 'No message';
+        this.logger.error(`SPARQL sidecar error ${error.statusCode} (${this.getRequestId(request)}): ${errorName} - ${errorMessage}`);
+        this.sendErrorResponse(response, error.statusCode, errorMessage);
         return;
       }
       // Re-throw unknown errors for CSS error handling
