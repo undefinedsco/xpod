@@ -55,10 +55,11 @@
       }
     },
     {
-      "comment": "SqliteQuintStore instance for QuintStoreSparqlDataAccessor.",
-      "@id": "urn:undefineds:xpod:SqliteQuintStore",
-      "@type": "SqliteQuintStore",
-      "options_path": {
+      "comment": "PgQuintStore instance for QuintStoreSparqlDataAccessor (PostgreSQL backend).",
+      "@id": "urn:undefineds:xpod:PgQuintStore",
+      "@type": "PgQuintStore",
+      "options_driver": "pg",
+      "options_connectionString": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }
@@ -68,7 +69,7 @@
       "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
       "@type": "QuintStoreSparqlDataAccessor",
       "store": {
-        "@id": "urn:undefineds:xpod:SqliteQuintStore"
+        "@id": "urn:undefineds:xpod:PgQuintStore"
       },
       "identifierStrategy": {
         "@id": "urn:solid-server:default:IdentifierStrategy"

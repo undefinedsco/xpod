@@ -1,405 +1,304 @@
 /**
  * PgQuintStore - PostgreSQL implementation of QuintStore
  * 
- * Features:
- * - Full ACID transactions
- * - Efficient graph prefix queries using btree index
- * - Connection pooling via pg Pool
- * - Vector embeddings stored as JSON
+ * 支持两种连接方式：
+ * - PGLite: 嵌入式 PostgreSQL，用于测试
+ * - pg (node-postgres): 真正的 PostgreSQL 连接，用于生产
+ * 
+ * PostgreSQL 不支持 TEXT 字段中的 \0 (null) 字符，
+ * 所以我们需要对序列化的字符串进行转换。
  */
 
-import { Pool, type PoolConfig } from 'pg';
-import { wrap, AsyncIterator } from 'asynciterator';
-import type { Term } from '@rdfjs/types';
+import { PGlite } from '@electric-sql/pglite';
 
-import { 
-  rowToQuad, 
-  parseVector,
-  termToId,
-  serializeObject,
-} from './serialization';
-import type {
-  Quint,
-  QuintPattern,
-  QuintStore,
-  QuintStoreOptions,
-  QueryOptions,
-  StoreStats,
-  TermMatch,
-  TermOperators,
-} from './types';
-import { isTerm } from './types';
+import { BaseQuintStore, type SqlExecutor } from './BaseQuintStore';
+import type { QuintStoreOptions, Quint } from './types';
 
+/**
+ * PostgreSQL 连接配置
+ */
 export interface PgQuintStoreOptions extends QuintStoreOptions {
-  /** PostgreSQL connection string */
+  /** 
+   * 连接方式：
+   * - 'pglite': 使用 PGLite 嵌入式数据库（测试用）
+   * - 'pg': 使用 node-postgres 连接真正的 PostgreSQL（生产用）
+   */
+  driver?: 'pglite' | 'pg';
+  
+  /** PGLite 数据目录，仅当 driver='pglite' 时使用 */
+  dataDir?: string;
+  
+  /** PostgreSQL 连接字符串，仅当 driver='pg' 时使用 */
   connectionString?: string;
-  /** Maximum number of connections in pool */
-  poolMax?: number;
-  /** Idle timeout in milliseconds */
-  poolIdleTimeoutMillis?: number;
-  /** Connection timeout in milliseconds */
-  poolConnectionTimeoutMillis?: number;
+  
+  /** PostgreSQL 连接配置，仅当 driver='pg' 时使用 */
+  host?: string;
+  port?: number;
+  database?: string;
+  user?: string;
+  password?: string;
 }
 
-interface DbRow {
-  graph: string;
-  subject: string;
-  predicate: string;
-  object: string;
-  embedding: string | null;
+/**
+ * PostgreSQL 兼容的分隔符
+ * 使用 Unicode 控制字符 U+001F (Unit Separator) 代替 \0
+ */
+const PG_SEP = '\u001f';
+
+/**
+ * 将使用 \0 分隔符的字符串转换为使用 PG_SEP 的字符串
+ */
+function toPgSafe(str: string): string {
+  return str.replace(/\u0000/g, PG_SEP);
 }
 
-export class PgQuintStore {
-  private pool: Pool | null = null;
-  private options: PgQuintStoreOptions;
+/**
+ * 将使用 PG_SEP 分隔符的字符串转换回使用 \0 的字符串
+ */
+function fromPgSafe(str: string): string {
+  return str.replace(new RegExp(PG_SEP, 'g'), '\u0000');
+}
 
-  constructor(options: PgQuintStoreOptions) {
-    this.options = options;
+/**
+ * PGLite 执行器
+ */
+class PgliteExecutor implements SqlExecutor {
+  constructor(private db: PGlite) {}
+
+  async query<T = any>(sql: string, params?: any[]): Promise<T[]> {
+    const pgSql = this.convertPlaceholders(sql);
+    const safeParams = params?.map(p => typeof p === 'string' ? toPgSafe(p) : p);
+    const result = await this.db.query<T>(pgSql, safeParams);
+    return result.rows.map(row => this.restoreRow(row));
   }
 
-  async open(): Promise<void> {
-    const poolConfig: PoolConfig = {
-      connectionString: this.options.connectionString,
-      max: this.options.poolMax ?? 20,
-      idleTimeoutMillis: this.options.poolIdleTimeoutMillis ?? 30000,
-      connectionTimeoutMillis: this.options.poolConnectionTimeoutMillis ?? 2000,
+  async execute(sql: string, params?: any[]): Promise<number> {
+    const pgSql = this.convertPlaceholders(sql);
+    const safeParams = params?.map(p => typeof p === 'string' ? toPgSafe(p) : p);
+    const result = await this.db.query(pgSql, safeParams);
+    return result.affectedRows ?? 0;
+  }
+
+  async executeInTransaction(statements: { sql: string; params?: any[] }[]): Promise<void> {
+    await this.db.query('BEGIN');
+    try {
+      for (const { sql, params } of statements) {
+        const pgSql = this.convertPlaceholders(sql);
+        const safeParams = params?.map(p => typeof p === 'string' ? toPgSafe(p) : p);
+        await this.db.query(pgSql, safeParams);
+      }
+      await this.db.query('COMMIT');
+    } catch (error) {
+      await this.db.query('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async exec(sql: string): Promise<void> {
+    await this.db.exec(sql);
+  }
+
+  private convertPlaceholders(sql: string): string {
+    let index = 0;
+    return sql.replace(/\?/g, () => `$${++index}`);
+  }
+
+  private restoreRow<T>(row: T): T {
+    if (!row || typeof row !== 'object') return row;
+    
+    const result: any = {};
+    for (const [key, value] of Object.entries(row as any)) {
+      result[key] = typeof value === 'string' ? fromPgSafe(value) : value;
+    }
+    return result as T;
+  }
+}
+
+/**
+ * node-postgres 执行器（需要安装 pg 包）
+ */
+class PgExecutor implements SqlExecutor {
+  private pool: any; // pg.Pool
+  
+  constructor(pool: any) {
+    this.pool = pool;
+  }
+
+  async query<T = any>(sql: string, params?: any[]): Promise<T[]> {
+    const pgSql = this.convertPlaceholders(sql);
+    const safeParams = params?.map(p => typeof p === 'string' ? toPgSafe(p) : p);
+    const result = await this.pool.query(pgSql, safeParams);
+    return result.rows.map((row: any) => this.restoreRow(row));
+  }
+
+  async execute(sql: string, params?: any[]): Promise<number> {
+    const pgSql = this.convertPlaceholders(sql);
+    const safeParams = params?.map(p => typeof p === 'string' ? toPgSafe(p) : p);
+    const result = await this.pool.query(pgSql, safeParams);
+    return result.rowCount ?? 0;
+  }
+
+  async executeInTransaction(statements: { sql: string; params?: any[] }[]): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const { sql, params } of statements) {
+        const pgSql = this.convertPlaceholders(sql);
+        const safeParams = params?.map(p => typeof p === 'string' ? toPgSafe(p) : p);
+        await client.query(pgSql, safeParams);
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async exec(sql: string): Promise<void> {
+    await this.pool.query(sql);
+  }
+
+  private convertPlaceholders(sql: string): string {
+    let index = 0;
+    return sql.replace(/\?/g, () => `$${++index}`);
+  }
+
+  private restoreRow<T>(row: T): T {
+    if (!row || typeof row !== 'object') return row;
+    
+    const result: any = {};
+    for (const [key, value] of Object.entries(row as any)) {
+      result[key] = typeof value === 'string' ? fromPgSafe(value) : value;
+    }
+    return result as T;
+  }
+}
+
+/**
+ * PostgreSQL QuintStore 实现
+ */
+export class PgQuintStore extends BaseQuintStore {
+  private pglite: PGlite | null = null;
+  private pgPool: any = null; // pg.Pool
+  private pgOptions: PgQuintStoreOptions;
+
+  constructor(options: PgQuintStoreOptions) {
+    super(options);
+    this.pgOptions = {
+      driver: 'pglite', // 默认使用 PGLite
+      ...options,
     };
+  }
 
-    this.pool = new Pool(poolConfig);
+  protected async createExecutor(): Promise<SqlExecutor> {
+    if (this.pgOptions.driver === 'pg') {
+      // 动态导入 pg 包（避免硬依赖）
+      const { Pool } = await import('pg');
+      this.pgPool = new Pool({
+        connectionString: this.pgOptions.connectionString,
+        host: this.pgOptions.host,
+        port: this.pgOptions.port,
+        database: this.pgOptions.database,
+        user: this.pgOptions.user,
+        password: this.pgOptions.password,
+      });
+      return new PgExecutor(this.pgPool);
+    } else {
+      // 使用 PGLite
+      this.pglite = new PGlite(this.pgOptions.dataDir);
+      await this.pglite.waitReady;
+      return new PgliteExecutor(this.pglite);
+    }
+  }
 
-    await this.pool.query(`
+  protected async closeExecutor(): Promise<void> {
+    if (this.pglite) {
+      await this.pglite.close();
+      this.pglite = null;
+    }
+    if (this.pgPool) {
+      await this.pgPool.end();
+      this.pgPool = null;
+    }
+  }
+
+  /**
+   * 重写 open 方法，处理 PostgreSQL 特定的语法
+   */
+  override async open(): Promise<void> {
+    if (this.executor) {
+      return;
+    }
+
+    this.executor = await this.createExecutor();
+
+    // PostgreSQL 建表语法
+    await this.executor.exec(`
       CREATE TABLE IF NOT EXISTS quints (
         graph TEXT NOT NULL,
         subject TEXT NOT NULL,
         predicate TEXT NOT NULL,
         object TEXT NOT NULL,
-        embedding TEXT,
+        vector TEXT,
         PRIMARY KEY (graph, subject, predicate, object)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_pg_spog ON quints (subject, predicate, object, graph);
-      CREATE INDEX IF NOT EXISTS idx_pg_ogsp ON quints (object, graph, subject, predicate);
-      CREATE INDEX IF NOT EXISTS idx_pg_gspo ON quints (graph, subject, predicate, object);
-      CREATE INDEX IF NOT EXISTS idx_pg_sopg ON quints (subject, object, predicate, graph);
-      CREATE INDEX IF NOT EXISTS idx_pg_pogs ON quints (predicate, object, graph, subject);
-      CREATE INDEX IF NOT EXISTS idx_pg_gpos ON quints (graph, predicate, object, subject);
-      CREATE INDEX IF NOT EXISTS idx_pg_graph_prefix ON quints (graph text_pattern_ops);
+      )
     `);
-  }
 
-  async close(): Promise<void> {
-    if (this.pool) {
-      await this.pool.end();
-      this.pool = null;
+    const indexes = [
+      'CREATE INDEX IF NOT EXISTS idx_spog ON quints (subject, predicate, object, graph)',
+      'CREATE INDEX IF NOT EXISTS idx_ogsp ON quints (object, graph, subject, predicate)',
+      'CREATE INDEX IF NOT EXISTS idx_gspo ON quints (graph, subject, predicate, object)',
+      'CREATE INDEX IF NOT EXISTS idx_sopg ON quints (subject, object, predicate, graph)',
+      'CREATE INDEX IF NOT EXISTS idx_pogs ON quints (predicate, object, graph, subject)',
+      'CREATE INDEX IF NOT EXISTS idx_gpos ON quints (graph, predicate, object, subject)',
+    ];
+
+    for (const indexSql of indexes) {
+      await this.executor.exec(indexSql);
     }
   }
 
-  async get(pattern: QuintPattern, options?: QueryOptions): Promise<Quint[]> {
-    this.ensureOpen();
-
-    const { whereClause, params } = this.buildWhereClause(pattern);
-    
-    let queryText = `SELECT graph, subject, predicate, object, embedding FROM quints`;
-    if (whereClause) {
-      queryText += ` WHERE ${whereClause}`;
-    }
-
-    if (options?.limit) {
-      queryText += ` LIMIT ${options.limit}`;
-    }
-    if (options?.offset) {
-      queryText += ` OFFSET ${options.offset}`;
-    }
-
-    const result = await this.pool!.query<DbRow>(queryText, params);
-    return result.rows.map(row => this.rowToQuint(row));
-  }
-
-  match(
-    subject?: Term | null,
-    predicate?: Term | null,
-    object?: Term | null,
-    graph?: Term | null,
-  ): AsyncIterator<Quint> {
-    const pattern: QuintPattern = {};
-    if (subject) pattern.subject = subject;
-    if (predicate) pattern.predicate = predicate;
-    if (object) pattern.object = object;
-    if (graph) pattern.graph = graph;
-
-    return wrap(this.get(pattern));
-  }
-
-  async getByGraphPrefix(prefix: string, options?: QueryOptions): Promise<Quint[]> {
-    return this.get({ graph: { $startsWith: prefix } }, options);
-  }
-
-  async count(pattern: QuintPattern): Promise<number> {
-    this.ensureOpen();
-
-    const { whereClause, params } = this.buildWhereClause(pattern);
-    
-    let queryText = `SELECT count(*)::int as count FROM quints`;
-    if (whereClause) {
-      queryText += ` WHERE ${whereClause}`;
-    }
-
-    const result = await this.pool!.query<{ count: number }>(queryText, params);
-    return result.rows[0]?.count ?? 0;
-  }
-
-  async put(quint: Quint): Promise<void> {
+  /**
+   * 重写 put 方法，使用 PostgreSQL 的 ON CONFLICT
+   */
+  override async put(quint: Quint): Promise<void> {
     this.ensureOpen();
 
     const row = this.quintToRow(quint);
-
-    await this.pool!.query(`
-      INSERT INTO quints (graph, subject, predicate, object, embedding)
+    
+    // PostgreSQL UPSERT 语法
+    const sql = `
+      INSERT INTO quints (graph, subject, predicate, object, vector) 
       VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (graph, subject, predicate, object)
-      DO UPDATE SET embedding = EXCLUDED.embedding
-    `, [row.graph, row.subject, row.predicate, row.object, row.embedding]);
+      ON CONFLICT (graph, subject, predicate, object) 
+      DO UPDATE SET vector = EXCLUDED.vector
+    `;
+    await this.executor!.execute(sql, [row.graph, row.subject, row.predicate, row.object, row.vector]);
   }
 
-  async multiPut(quints: Quint[]): Promise<void> {
+  /**
+   * 重写 multiPut 方法，使用 PostgreSQL 的 ON CONFLICT
+   */
+  override async multiPut(quintList: Quint[]): Promise<void> {
     this.ensureOpen();
 
-    if (quints.length === 0) return;
+    if (quintList.length === 0) return;
 
-    const client = await this.pool!.connect();
-    try {
-      await client.query('BEGIN');
-
-      for (const quint of quints) {
-        const row = this.quintToRow(quint);
-        await client.query(`
-          INSERT INTO quints (graph, subject, predicate, object, embedding)
+    const statements = quintList.map(quint => {
+      const row = this.quintToRow(quint);
+      return {
+        sql: `
+          INSERT INTO quints (graph, subject, predicate, object, vector) 
           VALUES ($1, $2, $3, $4, $5)
-          ON CONFLICT (graph, subject, predicate, object)
-          DO UPDATE SET embedding = EXCLUDED.embedding
-        `, [row.graph, row.subject, row.predicate, row.object, row.embedding]);
-      }
-
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  async updateEmbedding(pattern: QuintPattern, embedding: number[]): Promise<number> {
-    this.ensureOpen();
-
-    const { whereClause, params } = this.buildWhereClause(pattern);
-    const embeddingJson = JSON.stringify(embedding);
-
-    let queryText = `UPDATE quints SET embedding = $${params.length + 1}`;
-    if (whereClause) {
-      queryText += ` WHERE ${whereClause}`;
-    }
-
-    const result = await this.pool!.query(queryText, [...params, embeddingJson]);
-    return result.rowCount ?? 0;
-  }
-
-  async del(pattern: QuintPattern): Promise<number> {
-    this.ensureOpen();
-
-    const { whereClause, params } = this.buildWhereClause(pattern);
-
-    let queryText = `DELETE FROM quints`;
-    if (whereClause) {
-      queryText += ` WHERE ${whereClause}`;
-    }
-
-    const result = await this.pool!.query(queryText, params);
-    return result.rowCount ?? 0;
-  }
-
-  async multiDel(quints: Quint[]): Promise<void> {
-    this.ensureOpen();
-
-    if (quints.length === 0) return;
-
-    const client = await this.pool!.connect();
-    try {
-      await client.query('BEGIN');
-
-      for (const quint of quints) {
-        const g = termToId(quint.graph as any);
-        const s = termToId(quint.subject as any);
-        const p = termToId(quint.predicate as any);
-        const o = serializeObject(quint.object as any);
-
-        await client.query(`
-          DELETE FROM quints 
-          WHERE graph = $1 AND subject = $2 AND predicate = $3 AND object = $4
-        `, [g, s, p, o]);
-      }
-
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  async stats(): Promise<StoreStats> {
-    this.ensureOpen();
-
-    const totalResult = await this.pool!.query<{ count: number }>(
-      `SELECT count(*)::int as count FROM quints`
-    );
-
-    const vectorResult = await this.pool!.query<{ count: number }>(
-      `SELECT count(*)::int as count FROM quints WHERE embedding IS NOT NULL`
-    );
-
-    const graphResult = await this.pool!.query<{ count: number }>(
-      `SELECT COUNT(DISTINCT graph)::int as count FROM quints`
-    );
-
-    return {
-      totalCount: totalResult.rows[0]?.count ?? 0,
-      vectorCount: vectorResult.rows[0]?.count ?? 0,
-      graphCount: graphResult.rows[0]?.count ?? 0,
-    };
-  }
-
-  async clear(): Promise<void> {
-    this.ensureOpen();
-    await this.pool!.query('DELETE FROM quints');
-  }
-
-  async optimize(): Promise<void> {
-    this.ensureOpen();
-    await this.pool!.query('VACUUM ANALYZE quints');
-  }
-
-  private ensureOpen(): void {
-    if (!this.pool) {
-      throw new Error('Store not open. Call open() first.');
-    }
-  }
-
-  private buildWhereClause(pattern: QuintPattern): { whereClause: string; params: (string | string[])[] } {
-    const conditions: string[] = [];
-    const params: (string | string[])[] = [];
-
-    const addTermConditions = (column: string, match: TermMatch | undefined, isObject: boolean = false) => {
-      if (!match) return;
-
-      if (isTerm(match)) {
-        // Exact Term match
-        params.push(isObject ? serializeObject(match as any) : termToId(match as any));
-        conditions.push(`${column} = $${params.length}`);
-      } else {
-        // Operator match
-        const ops = match as TermOperators;
-
-        if (ops.$eq !== undefined) {
-          params.push(ops.$eq);
-          conditions.push(`${column} = $${params.length}`);
-        }
-        if (ops.$ne !== undefined) {
-          params.push(ops.$ne);
-          conditions.push(`${column} != $${params.length}`);
-        }
-        if (ops.$gt !== undefined) {
-          params.push(ops.$gt);
-          conditions.push(`${column} > $${params.length}`);
-        }
-        if (ops.$gte !== undefined) {
-          params.push(ops.$gte);
-          conditions.push(`${column} >= $${params.length}`);
-        }
-        if (ops.$lt !== undefined) {
-          params.push(ops.$lt);
-          conditions.push(`${column} < $${params.length}`);
-        }
-        if (ops.$lte !== undefined) {
-          params.push(ops.$lte);
-          conditions.push(`${column} <= $${params.length}`);
-        }
-        if (ops.$in !== undefined && ops.$in.length > 0) {
-          const startIdx = params.length;
-          for (const val of ops.$in) {
-            params.push(val);
-          }
-          const inPlaceholders = ops.$in.map((_, i) => `$${startIdx + i + 1}`).join(', ');
-          conditions.push(`${column} IN (${inPlaceholders})`);
-        }
-        if (ops.$notIn !== undefined && ops.$notIn.length > 0) {
-          const startIdx = params.length;
-          for (const val of ops.$notIn) {
-            params.push(val);
-          }
-          const notInPlaceholders = ops.$notIn.map((_, i) => `$${startIdx + i + 1}`).join(', ');
-          conditions.push(`${column} NOT IN (${notInPlaceholders})`);
-        }
-        if (ops.$startsWith !== undefined) {
-          // Use range query for prefix matching (index-friendly)
-          params.push(ops.$startsWith);
-          params.push(ops.$startsWith + '\uffff');
-          conditions.push(`${column} >= $${params.length - 1} AND ${column} < $${params.length}`);
-        }
-        if (ops.$endsWith !== undefined) {
-          params.push(`%${ops.$endsWith}`);
-          conditions.push(`${column} LIKE $${params.length}`);
-        }
-        if (ops.$contains !== undefined) {
-          params.push(`%${ops.$contains}%`);
-          conditions.push(`${column} LIKE $${params.length}`);
-        }
-        if (ops.$regex !== undefined) {
-          params.push(ops.$regex);
-          conditions.push(`${column} ~ $${params.length}`);
-        }
-        if (ops.$isNull === true) {
-          conditions.push(`${column} IS NULL`);
-        }
-        if (ops.$isNull === false) {
-          conditions.push(`${column} IS NOT NULL`);
-        }
-      }
-    };
-
-    addTermConditions('graph', pattern.graph);
-    addTermConditions('subject', pattern.subject);
-    addTermConditions('predicate', pattern.predicate);
-    addTermConditions('object', pattern.object, true);
-
-    return {
-      whereClause: conditions.length > 0 ? conditions.join(' AND ') : '',
-      params,
-    };
-  }
-
-  private quintToRow(quint: Quint): DbRow {
-    return {
-      graph: termToId(quint.graph as any),
-      subject: termToId(quint.subject as any),
-      predicate: termToId(quint.predicate as any),
-      object: serializeObject(quint.object as any),
-      embedding: quint.vector ? JSON.stringify(quint.vector) : null,
-    };
-  }
-
-  private rowToQuint(row: DbRow): Quint {
-    const quad = rowToQuad({
-      graph: row.graph,
-      subject: row.subject,
-      predicate: row.predicate,
-      object: row.object,
+          ON CONFLICT (graph, subject, predicate, object) 
+          DO UPDATE SET vector = EXCLUDED.vector
+        `,
+        params: [row.graph, row.subject, row.predicate, row.object, row.vector],
+      };
     });
-    const quint: Quint = quad as Quint;
-    if (row.embedding) {
-      quint.vector = parseVector(row.embedding);
-    }
-    return quint;
+
+    await this.executor!.executeInTransaction(statements);
   }
 }

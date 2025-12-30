@@ -1,0 +1,41 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+  ],
+  "@id": "npmd:@undefineds/xpod",
+  "components": [
+    {
+      "@id": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quint/BaseQuintStore.jsonld#BaseQuintStore",
+      "@type": "AbstractClass",
+      "requireElement": "BaseQuintStore",
+      "comment": "Abstract base class for QuintStore implementations",
+      "parameters": [
+        {
+          "@id": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quint/BaseQuintStore.jsonld#BaseQuintStore_options_debug",
+          "range": {
+            "@type": "ParameterRangeUnion",
+            "parameterRangeElements": [
+              "xsd:boolean",
+              {
+                "@type": "ParameterRangeUndefined"
+              }
+            ]
+          }
+        }
+      ],
+      "constructorArguments": [
+        {
+          "@id": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quint/BaseQuintStore.jsonld#BaseQuintStore_options__constructorArgument",
+          "fields": [
+            {
+              "keyRaw": "debug",
+              "value": {
+                "@id": "npmd:@undefineds/xpod/^0.0.0/dist/storage/quint/BaseQuintStore.jsonld#BaseQuintStore_options_debug"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

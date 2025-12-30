@@ -21,9 +21,10 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/templates/": "templates/"
   },
   "scripts": {
-    "build": "npm run build:ts && npm run build:components && npm run build:ui",
+    "build": "npm run build:ts && npm run build:components && npm run build:components:fix && npm run build:ui",
     "build:ts": "tsc",
     "build:components": "componentsjs-generator -s src -c dist/components -r undefineds",
+    "build:components:fix": "cp components/*.jsonld dist/storage/quint/ 2>/dev/null; node -e \"const fs=require('fs');const f='dist/components/components.jsonld';const c=JSON.parse(fs.readFileSync(f));if(!c.import.includes('npmd:@undefineds/xpod/^0.0.0/dist/storage/quint/BaseQuintStore.jsonld')){c.import.splice(-2,0,'npmd:@undefineds/xpod/^0.0.0/dist/storage/quint/BaseQuintStore.jsonld');fs.writeFileSync(f,JSON.stringify(c,null,2))}\"",
     "build:ui": "cd ui && npm run build",
     "prepare.": "yarn run build",
     "clean": "rm -rf data/*",
@@ -80,6 +81,7 @@
   },
   "dependencies": {
     "@comunica/query-sparql-rdfjs": "^4.5.0",
+    "@electric-sql/pglite": "^0.3.14",
     "@inrupt/solid-client-authn-node": "^3.1.0",
     "abstract-level": "^1.0.4",
     "acme-client": "^5.1.3",
