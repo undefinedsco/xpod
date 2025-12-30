@@ -117,10 +117,15 @@ export class QueryOptimizer {
 
   /**
    * 执行 OPTIONAL 优化查询
+   * 
+   * @param analysis OPTIONAL 分析结果
+   * @param coreBindings 核心查询的绑定结果
+   * @param orderOptions 排序选项（可选）
    */
   async executeOptionalOptimized(
     analysis: OptionalAnalysis,
-    coreBindings: Bindings[]
+    coreBindings: Bindings[],
+    orderOptions?: { varName: string; reverse?: boolean }
   ): Promise<Bindings[]> {
     const { subjectVar, optionalPredicates, optionalVars } = analysis;
     
@@ -157,7 +162,53 @@ export class QueryOptimizer {
     }
 
     // 组装结果
-    return this.assembleOptionalResults(coreBindings, attributeMap, subjectVar, optionalVars);
+    let results = this.assembleOptionalResults(coreBindings, attributeMap, subjectVar, optionalVars);
+
+    // 应用排序
+    if (orderOptions?.varName && results.length > 1) {
+      results = this.sortBindings(results, orderOptions.varName, orderOptions.reverse ?? false);
+      if (this.debug) {
+        console.log(`[QueryOptimizer] Applied ORDER BY ?${orderOptions.varName} ${orderOptions.reverse ? 'DESC' : 'ASC'}`);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * 对 Bindings 数组按指定变量排序
+   */
+  private sortBindings(bindings: Bindings[], varName: string, reverse: boolean): Bindings[] {
+    const orderVar = dataFactory.variable(varName);
+    
+    return [...bindings].sort((a, b) => {
+      const aVal = a.get(orderVar);
+      const bVal = b.get(orderVar);
+      
+      // null/undefined 值排在最后
+      if (!aVal && !bVal) return 0;
+      if (!aVal) return 1;
+      if (!bVal) return -1;
+      
+      // 比较值
+      let cmp: number;
+      if (aVal.termType === 'Literal' && bVal.termType === 'Literal') {
+        // 对于字面量，先尝试数值比较
+        const aNum = parseFloat(aVal.value);
+        const bNum = parseFloat(bVal.value);
+        if (!isNaN(aNum) && !isNaN(bNum)) {
+          cmp = aNum - bNum;
+        } else {
+          // 字符串比较
+          cmp = aVal.value.localeCompare(bVal.value);
+        }
+      } else {
+        // 其他类型用字符串比较
+        cmp = aVal.value.localeCompare(bVal.value);
+      }
+      
+      return reverse ? -cmp : cmp;
+    });
   }
 
   // ============================================================
@@ -175,10 +226,11 @@ export class QueryOptimizer {
    * 5. OPTIONAL 内部没有额外的 FILTER
    */
   analyzeOptional(algebra: Algebra.Operation): OptionalAnalysis {
-    // 从 project -> slice -> ... 找到实际的查询结构
+    // 从 project -> slice -> orderby -> ... 找到实际的查询结构
     let current = algebra;
     while (current.type === 'project' || current.type === 'slice' || 
-           current.type === 'distinct' || current.type === 'reduced') {
+           current.type === 'distinct' || current.type === 'reduced' ||
+           current.type === 'orderby') {
       current = (current as any).input;
     }
 

@@ -65,6 +65,8 @@ interface OptimizeParams {
   limit?: number;
   offset?: number;
   order?: TermName[];
+  /** 原始 ORDER BY 变量名，用于在 QuintQuerySource 中分析绑定位置 */
+  orderVarName?: string;
   reverse?: boolean;
 }
 
@@ -442,8 +444,22 @@ export class ComunicaQuintEngine {
         // 执行核心查询获取 subjects
         const coreBindings = await this.executeCoreQuery(optionalAnalysis.coreOperation!, context);
         
-        // 使用 QueryOptimizer 执行优化查询
-        const results = await this.queryOptimizer.executeOptionalOptimized(optionalAnalysis, coreBindings);
+        // 使用 QueryOptimizer 执行优化查询（排序也在 QueryOptimizer 中处理）
+        const orderOptions = params?.orderVarName 
+          ? { varName: params.orderVarName, reverse: params.reverse }
+          : undefined;
+        let results = await this.queryOptimizer.executeOptionalOptimized(
+          optionalAnalysis, 
+          coreBindings,
+          orderOptions
+        );
+        
+        // 应用 LIMIT 和 OFFSET
+        if (params?.offset || params?.limit) {
+          const start = params.offset ?? 0;
+          const end = params.limit ? start + params.limit : undefined;
+          results = results.slice(start, end);
+        }
         
         if (this.debug) {
           console.log(`[ComunicaQuintEngine] OPTIONAL optimized: ${results.length} results`);
@@ -496,7 +512,7 @@ export class ComunicaQuintEngine {
 
     return bindings;
   }
-  
+
   /**
    * Extract FILTER expressions from query and store them for later pushdown
    * Maps variable names to their filter expressions
@@ -682,6 +698,7 @@ export class ComunicaQuintEngine {
     let limit: number | undefined;
     let offset: number | undefined;
     let order: TermName[] | undefined;
+    let orderVarName: string | undefined;
     let reverse: boolean | undefined;
     let currentOp = algebra;
     let canPushLimit = true;
@@ -703,15 +720,50 @@ export class ComunicaQuintEngine {
         case 'orderby': {
           const orderBy = currentOp as Algebra.OrderBy;
           if (orderBy.expressions.length === 1) {
-            const expr = orderBy.expressions[0];
-            if (expr.expression.expressionType === 'term' && 
-                expr.expression.term.termType === 'Variable') {
-              const varName = expr.expression.term.value;
+            const expr = orderBy.expressions[0] as Algebra.Expression;
+            
+            // 提取变量名和排序方向
+            // ORDER BY ?name: { expressionType: "term", term: { value: "name" } }
+            // ORDER BY DESC(?name): { expressionType: "operator", operator: "desc", args: [{ expressionType: "term", term: {...} }] }
+            let varName: string | undefined;
+            reverse = false;
+            
+            if (expr.expressionType === 'term') {
+              const termExpr = expr as Algebra.TermExpression;
+              if (termExpr.term?.termType === 'Variable') {
+                varName = termExpr.term.value;
+              }
+            } else if (expr.expressionType === 'operator') {
+              const opExpr = expr as Algebra.OperatorExpression;
+              if (opExpr.operator === 'desc' && opExpr.args.length === 1) {
+                reverse = true;
+                const innerExpr = opExpr.args[0] as Algebra.Expression;
+                if (innerExpr.expressionType === 'term') {
+                  const termExpr = innerExpr as Algebra.TermExpression;
+                  if (termExpr.term?.termType === 'Variable') {
+                    varName = termExpr.term.value;
+                  }
+                }
+              } else if (opExpr.operator === 'asc' && opExpr.args.length === 1) {
+                const innerExpr = opExpr.args[0] as Algebra.Expression;
+                if (innerExpr.expressionType === 'term') {
+                  const termExpr = innerExpr as Algebra.TermExpression;
+                  if (termExpr.term?.termType === 'Variable') {
+                    varName = termExpr.term.value;
+                  }
+                }
+              }
+            }
+            
+            if (varName) {
+              orderVarName = varName;  // 保存原始变量名
+              
+              // 尝试直接映射（s/p/o/g）
               const termName = this.variableToTermName(varName);
               if (termName) {
                 order = [termName];
-                reverse = !expr.ascending;
               }
+              // 如果直接映射失败，QuintQuerySource 会通过 pattern 分析来确定
             }
           }
           currentOp = orderBy.input;
@@ -728,22 +780,31 @@ export class ComunicaQuintEngine {
         case 'bgp': {
           const bgp = currentOp as Algebra.Bgp;
           if (bgp.patterns.length === 1) {
-            return { limit, offset, order, reverse };
+            return { limit, offset, order, orderVarName, reverse };
           }
           canPushLimit = false;
-          return canPushLimit ? { limit, offset, order, reverse } : null;
+          return canPushLimit ? { limit, offset, order, orderVarName, reverse } : null;
         }
 
         case 'join':
         case 'leftjoin':
         case 'union':
         case 'minus':
+          // 虽然不能下推 LIMIT，但仍然返回 ORDER BY 参数
+          // 因为 OPTIONAL 优化路径会自己处理排序
           canPushLimit = false;
+          if (orderVarName) {
+            return { limit, offset, order, orderVarName, reverse };
+          }
           return null;
 
         case 'filter':
         case 'extend':
         case 'group':
+          // 同样，返回 ORDER BY 参数供 OPTIONAL 优化路径使用
+          if (orderVarName) {
+            return { limit, offset, order, orderVarName, reverse };
+          }
           return null;
 
         default:

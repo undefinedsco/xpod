@@ -122,6 +122,14 @@ export class SqliteQuintStore {
       query = query.where(and(...conditions)) as any;
     }
 
+    // ORDER BY 支持
+    if (options?.order && options.order.length > 0) {
+      // 使用 sql 模板构建 ORDER BY
+      const orderCol = options.order[0]; // 目前只支持单列排序
+      const direction = options.reverse ? 'DESC' : 'ASC';
+      query = query.orderBy(sql.raw(`${orderCol} ${direction}`)) as any;
+    }
+
     if (options?.limit) {
       query = query.limit(options.limit) as any;
     }
