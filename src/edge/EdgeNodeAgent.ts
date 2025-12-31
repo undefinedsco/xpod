@@ -1,6 +1,6 @@
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import type { EdgeNodeHeartbeatServiceOptions } from '../service/EdgeNodeHeartbeatService';
 import { EdgeNodeHeartbeatService } from '../service/EdgeNodeHeartbeatService';
 import { FrpcProcessManager, type FrpcRuntimeStatus } from './frp/FrpcProcessManager';

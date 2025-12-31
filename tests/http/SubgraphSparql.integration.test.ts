@@ -374,11 +374,12 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
         body: 'fake-image',
       });
 
-      // Query the container sidecar to list graphs
+      // Query the metadata graph directly
       const sparqlUrl = testContainer + '-/sparql';
+      const metaGraph = `meta:${binaryResource}`;
       const query = `
-        SELECT DISTINCT ?g WHERE {
-          GRAPH ?g { ?s ?p ?o }
+        SELECT ?p ?o WHERE {
+          GRAPH <${metaGraph}> { <${binaryResource}> ?p ?o }
         }
       `;
 
@@ -386,11 +387,11 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
       expect(response.status).toBe(200);
 
       const json = await response.json();
-      const graphs = json.results.bindings.map((b: any) => b.g.value);
+      const predicates = json.results.bindings.map((b: any) => b.p.value);
 
-      // Construct expected metadata graph URI
-      const expectedMeta = `meta:${binaryResource}`;
-      expect(graphs).toContain(expectedMeta);
+      // Should have metadata like content-type, modified date, etc.
+      expect(predicates.length).toBeGreaterThan(0);
+      expect(predicates).toContain('http://www.w3.org/ns/ma-ont#format');
 
       // Cleanup
       await authFetch(binaryResource, { method: 'DELETE' }).catch(() => {});

@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { X509Certificate } from 'node:crypto';
 import acme from 'acme-client';
 import type { Authorization } from 'acme-client';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import { DnsChallengeClient } from './DnsChallengeClient';
 import { toDns01Value } from './utils';
 

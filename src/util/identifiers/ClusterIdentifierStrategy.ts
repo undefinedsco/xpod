@@ -1,5 +1,6 @@
 import { URL } from 'node:url';
-import { getLoggerFor, BaseIdentifierStrategy } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
+import { BaseIdentifierStrategy } from '@solid/community-server';
 import type { ResourceIdentifier } from '@solid/community-server';
 import { ensureTrailingSlash } from '@solid/community-server/dist/util/PathUtil';
 
@@ -33,19 +34,14 @@ export class ClusterIdentifierStrategy extends BaseIdentifierStrategy {
       const hostMatches = host === this.baseHost || host.endsWith(`.${this.baseHost}`);
 
       if (!hostMatches) {
-        this.logger.debug(`Identifier ${identifier.path} rejected: host ${host} not within ${this.baseHost}`);
         return false;
       }
 
       if (host === this.baseHost) {
         const supported = identifier.path.startsWith(this.baseUrl);
-        this.logger.debug(supported ?
-          `Identifier ${identifier.path} accepted under base URL ${this.baseUrl}` :
-          `Identifier ${identifier.path} rejected: outside base URL ${this.baseUrl}`);
         return supported;
       }
 
-      this.logger.debug(`Identifier ${identifier.path} accepted as subdomain of ${this.baseHost}`);
       return true;
     } catch (error: unknown) {
       this.logger.warn(`Failed to parse identifier ${identifier.path}: ${(error as Error).message}`);

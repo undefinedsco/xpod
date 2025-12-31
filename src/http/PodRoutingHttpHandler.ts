@@ -1,11 +1,12 @@
 import type { IncomingMessage } from 'node:http';
+import { getLoggerFor } from 'global-logger-factory';
 import { Readable } from 'node:stream';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpResponse } from '@solid/community-server';
 import {
   NotImplementedHttpError,
   InternalServerError,
-  getLoggerFor,
+  
 } from '@solid/community-server';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';

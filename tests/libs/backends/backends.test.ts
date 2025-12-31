@@ -51,7 +51,7 @@ describe('getBackend', () => {
   });
 
   it('should handle different protocols correctly', async () => {
-    const fileEndpoint = 'file:./test_level_db_for_test'; // ClassicLevel still needs a file
+    const fileEndpoint = 'file:.test-data/test_level_db_for_test'; // ClassicLevel still needs a file
     const sqlEndpoint = 'sqlite::memory:test_sql_in_memory';
     const tableName = 'generic_table';
 

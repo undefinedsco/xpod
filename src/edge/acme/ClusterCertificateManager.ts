@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { X509Certificate } from 'node:crypto';
 import acme from 'acme-client';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 
 interface ClusterCertificateManagerOptions {
   signalEndpoint: string;

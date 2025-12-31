@@ -1,4 +1,5 @@
 import rdfParser from 'rdf-parse';
+import { getLoggerFor } from 'global-logger-factory';
 
 import {
   PassthroughStore,
@@ -11,7 +12,7 @@ import {
   Representation,
   RepresentationConverterArgs,
   Conditions,
-  getLoggerFor,
+  
   ChangeMap,
   INTERNAL_QUADS,
   APPLICATION_JSON,
@@ -85,7 +86,7 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
 
     try {
       await this.inConverter.canHandle({ identifier, representation, preferences });
-      this.logger.info(
+      this.logger.debug(
         `Converting ${identifier.path}: ${contentType} to ${preferencesType}`,
       );
       return true;
@@ -104,7 +105,6 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     if (await this.shouldConvert(identifier, representation, preferences)) {
       representation = await this.outConverter.handleSafe({ identifier, representation, preferences });
     }
-    this.logger.info(`getRepresentation: ${identifier.path} ${representation.metadata.contentType}`);
     return representation;
   }
 
@@ -125,7 +125,6 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     } catch (error) {
       this.logger.warn(`Conversion skipped for ${identifier.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    this.logger.info(`addResource: ${identifier.path} ${representation.metadata.contentType}`);
     return this.source.addResource(identifier, representation, conditions);
   }
 
@@ -137,7 +136,7 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     try {
       // When it is a metadata resource, convert it to Quads as those are expected in the later stores
       if (this.metadataStrategy.isAuxiliaryIdentifier(identifier)) {
-        this.logger.info(`Converting metadata resource ${identifier.path} to ${INTERNAL_QUADS}`);
+        this.logger.debug(`Converting metadata resource ${identifier.path} to ${INTERNAL_QUADS}`);
         representation = await this.inConverter.handleSafe(
           { identifier, representation, preferences: { type: { [INTERNAL_QUADS]: 1 }}},
         );
@@ -149,7 +148,6 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     } catch (error) {
       this.logger.warn(`Conversion skipped for ${identifier.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    this.logger.info(`setRepresentation: ${identifier.path} ${representation.metadata.contentType}`);
     return this.source.setRepresentation(identifier, representation, conditions);
   }
 }

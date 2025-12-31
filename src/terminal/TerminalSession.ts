@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import type { Session, SessionStatus, SessionConfig } from './types';
 
 // node-pty is optional - will be loaded dynamically
@@ -89,7 +89,7 @@ export class TerminalSession extends EventEmitter {
       });
 
       this.ptyProcess.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
-        this.logger.info(`Terminal session ${this.sessionId} exited: code=${exitCode}, signal=${signal}`);
+        this.logger.debug(`Terminal session ${this.sessionId} exited: code=${exitCode}, signal=${signal}`);
         this._status = 'terminated';
         this.cleanup();
         this.emit('exit', exitCode, signal !== undefined ? String(signal) : undefined);
@@ -97,7 +97,7 @@ export class TerminalSession extends EventEmitter {
 
       // Set session expiration timer
       this.sessionTimer = setTimeout(() => {
-        this.logger.info(`Terminal session ${this.sessionId} expired`);
+        this.logger.debug(`Terminal session ${this.sessionId} expired`);
         this.terminate();
       }, config.timeout * 1000);
 
@@ -120,7 +120,7 @@ export class TerminalSession extends EventEmitter {
     this._status = 'active';
     
     this.idleTimer = setTimeout(() => {
-      this.logger.info(`Terminal session ${this.sessionId} idle timeout`);
+      this.logger.debug(`Terminal session ${this.sessionId} idle timeout`);
       this._status = 'idle';
       // Don't terminate on idle, just mark as idle
       // Could add auto-terminate after extended idle if needed
@@ -173,7 +173,7 @@ export class TerminalSession extends EventEmitter {
       return;
     }
     
-    this.logger.info(`Terminating terminal session ${this.sessionId}`);
+    this.logger.debug(`Terminating terminal session ${this.sessionId}`);
     this._status = 'terminated';
     
     if (this.ptyProcess) {

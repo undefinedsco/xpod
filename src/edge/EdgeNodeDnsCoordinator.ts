@@ -1,4 +1,4 @@
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import type { DnsProvider, DnsRecordTypeValue } from '../dns/DnsProvider';
 
 export interface EdgeNodeDnsCoordinatorOptions {

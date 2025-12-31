@@ -1,7 +1,8 @@
 {
   "@context": [
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
     "./cli.json",
@@ -36,7 +37,12 @@
       "@id": "urn:undefineds:xpod:MinioDataAccessor"
     },
     {
-      "comment": "Replace default landing page with a modern static experience.",
+      "comment": "Static Asset Handler for the React UI.",
+      "@type": "AppStaticAssetHandler",
+      "@id": "urn:undefineds:xpod:AppStaticAssetHandler"
+    },
+    {
+      "comment": "Override root static asset to serve xpod SPA shell page.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:RootStaticAsset"
@@ -44,22 +50,7 @@
       "overrideParameters": {
         "@type": "StaticAssetEntry",
         "relativeUrl": "/",
-        "filePath": "./static/landing/index.html",
-        "@id": "urn:undefineds:xpod:RootStaticAsset"
-      }
-    },
-    {
-      "comment": "Modernized identity landing view with bilingual support.",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:IndexHtml"
-      },
-      "overrideParameters": {
-        "@type": "HtmlViewEntry",
-        "filePath": "./templates/identity/index.html.ejs",
-        "route": {
-          "@id": "urn:solid-server:default:IndexRoute"
-        }
+        "filePath": "./static/app/index.html"
       }
     },
     {
@@ -93,82 +84,44 @@
       }
     },
     {
-      "comment": "Enhanced login method selector UI.",
+      "comment": "Replace HtmlViewHandler with ReactAppViewHandler - serves single React app for all identity routes.",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:LoginHtml"
+        "@id": "urn:solid-server:default:HtmlViewHandler"
       },
       "overrideParameters": {
-        "@type": "HtmlViewEntry",
-        "filePath": "./templates/identity/login.html.ejs",
-        "route": {
-          "@id": "urn:solid-server:default:LoginRoute"
-        }
+        "@type": "ReactAppViewHandler",
+        "index": { "@id": "urn:solid-server:default:IndexRoute" },
+        "htmlFile": "./static/app/auth.html"
       }
     },
     {
-      "comment": "\u672c\u5730\u5316 OIDC \u6388\u6743\u9875\u9762\u3002",
+      "comment": "Override main HTML template to remove CSS default header/footer wrapper.",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:OidcConsentHtml"
+        "@id": "urn:solid-server:default:MainTemplateEngine"
       },
       "overrideParameters": {
-        "@type": "HtmlViewEntry",
-        "filePath": "./templates/identity/oidc/consent.html.ejs",
-        "route": {
-          "@id": "urn:solid-server:default:OidcConsentRoute"
-        }
+        "@type": "StaticTemplateEngine",
+        "templateEngine": { "@id": "urn:solid-server:default:TemplateEngine" },
+        "template": "./templates/main.html.ejs"
       }
     },
     {
-      "comment": "Updated password login form with Chinese/English copy.",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:PasswordLoginHtml"
-      },
-      "overrideParameters": {
-        "@type": "HtmlViewEntry",
-        "filePath": "./templates/identity/password/login.html.ejs",
-        "route": {
-          "@id": "urn:solid-server:default:LoginPasswordRoute"
-        }
-      }
-    },
-    {
-      "comment": "Updated password registration form with bilingual layout.",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:RegisterPasswordAccountHtml"
-      },
-      "overrideParameters": {
-        "@type": "HtmlViewEntry",
-        "filePath": "./templates/identity/password/register.html.ejs",
-        "route": {
-          "@id": "urn:solid-server:default:RegisterPasswordRoute"
-        }
-      }
-    },
-    {
-      "comment": "Forgot password flow with bilingual UI.",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:ForgotPasswordHtml"
-      },
-      "overrideParameters": {
-        "@type": "HtmlViewEntry",
-        "filePath": "./templates/identity/password/forgot.html.ejs",
-        "route": {
-          "@id": "urn:solid-server:default:ForgotPasswordRoute"
-        }
-      }
-    },
-    {
-      "comment": "Quadstore-backed SPARQL subgraph engine",
-      "@type": "SubgraphQueryEngine",
-      "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
+      "comment": "Default SPARQL engine (Quadstore-based)",
+      "@type": "QuadstoreSparqlEngine",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
       "endpoint": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Subgraph query engine wrapping default SPARQL engine",
+      "@type": "SubgraphQueryEngine",
+      "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
+      "engine": {
+        "@id": "urn:undefineds:xpod:DefaultSparqlEngine"
       }
     },
     {
@@ -230,6 +183,25 @@
           {
             "@id": "urn:solid-server:default:SeededAccountInitializer"
           }
+        ]
+      }
+    },
+    {
+      "comment": "Tracing handler for request ID and logging. Added to CSS Middleware.",
+      "@id": "urn:undefineds:xpod:TracingHandler",
+      "@type": "TracingHandler"
+    },
+    {
+      "comment": "Override CSS Middleware to add TracingHandler at the beginning.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:Middleware"
+      },
+      "overrideParameters": {
+        "@type": "SequenceHandler",
+        "handlers": [
+          { "@id": "urn:undefineds:xpod:TracingHandler" },
+          { "@id": "urn:solid-server:default:ParallelMiddleware" }
         ]
       }
     }

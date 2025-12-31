@@ -4,7 +4,7 @@ import type {
   Initializable,
   KeyValueStorage,
 } from '@solid/community-server';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 
 export interface PostgresKeyValueStorageOptions {
   connectionString: string;

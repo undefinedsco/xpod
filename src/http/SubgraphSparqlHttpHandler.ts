@@ -1,17 +1,17 @@
 import { Readable } from 'node:stream';
+import { getLoggerFor } from 'global-logger-factory';
 import { pipeline } from 'node:stream/promises';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpRequest, HttpResponse } from '@solid/community-server';
 import {
-  getLoggerFor,
   NotImplementedHttpError,
   MethodNotAllowedHttpError,
   BadRequestHttpError,
   UnsupportedMediaTypeHttpError,
   IdentifierSetMultiMap,
-  AccessMode,
   HttpError,
 } from '@solid/community-server';
+import { PERMISSIONS } from '@solidlab/policy-engine';
 import type {
   CredentialsExtractor,
   PermissionReader,
@@ -172,8 +172,10 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     } catch (error: unknown) {
       // Handle HttpErrors with proper status codes
       if (error instanceof HttpError) {
-        this.logger.error(`SPARQL sidecar error ${error.statusCode} (${this.getRequestId(request)}): ${error.message || 'HttpError'}`);
-        this.sendErrorResponse(response, error.statusCode, error.message);
+        const errorName = error.name || error.constructor.name || 'HttpError';
+        const errorMessage = error.message || 'No message';
+        this.logger.error(`SPARQL sidecar error ${error.statusCode} (${this.getRequestId(request)}): ${errorName} - ${errorMessage}`);
+        this.sendErrorResponse(response, error.statusCode, errorMessage);
         return;
       }
       // Re-throw unknown errors for CSS error handling
@@ -189,7 +191,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async executeSelect(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ AccessMode.read ]);
+    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
 
     let vars: string[] = [];
     const results: Record<string, unknown>[] = [];
@@ -240,7 +242,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async executeAsk(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ AccessMode.read ]);
+    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
     const result = await this.engine.queryBoolean(query, baseUrl);
     const payload = {
       head: {},
@@ -250,7 +252,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ AccessMode.read ]);
+    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
     const quadStream = await this.engine.queryQuads(query, baseUrl);
     const writer = new Writer({ format: 'N-Quads' });
 
@@ -277,17 +279,17 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
 
     const { hasInsert, hasDelete } = this.inspectUpdateGraphs(parsed, queryRequest.baseUrl);
-    const modes: AccessMode[] = [];
+    const modes: string[] = [];
     if (hasInsert) {
-      modes.push(AccessMode.append);
+      modes.push(PERMISSIONS.Append);
     }
     if (hasDelete) {
-      modes.push(AccessMode.delete);
+      modes.push(PERMISSIONS.Delete);
     }
     await this.authorizeFor(queryRequest.baseUrl, request, modes);
 
     const rewritten = this.rewriteDefaultGraphUpdates(parsed, queryRequest.baseUrl);
-    this.logger.info(`[SubgraphSPARQL] Rewritten Query: ${rewritten}`);
+    this.logger.verbose(`[SubgraphSPARQL] Rewritten Query: ${rewritten}`);
 
     await this.engine.queryVoid(rewritten, queryRequest.baseUrl);
     await this.refreshUsage(queryRequest.baseUrl);
@@ -402,12 +404,12 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     return Math.trunc(value);
   }
 
-  private async authorizeFor(basePath: string, request: HttpRequest, modes: AccessMode[]): Promise<void> {
+  private async authorizeFor(basePath: string, request: HttpRequest, modes: string[]): Promise<void> {
     if (modes.length === 0) {
       return;
     }
     const identifier = { path: basePath } satisfies ResourceIdentifier;
-    const requestedModes = new IdentifierSetMultiMap<AccessMode>();
+    const requestedModes = new IdentifierSetMultiMap<string>();
     for (const mode of modes) {
       requestedModes.add(identifier, mode);
     }
@@ -503,7 +505,18 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       throw new BadRequestHttpError('Graph IRIs must be explicit when using the /-/sparql update endpoint.');
     }
     if (term.termType === 'NamedNode') {
-      if (!term.value.startsWith(basePath)) {
+      // Graph can be either basePath or prefix:basePath (e.g., meta:http://...)
+      // Extract the path part after optional prefix (anything before first colon that's not part of http:)
+      const graphValue = term.value;
+      let pathPart = graphValue;
+      
+      // Check if it has a prefix like "meta:" or "acl:" (not "http:" or "https:")
+      const prefixMatch = graphValue.match(/^([a-z]+):(?!\/\/)/i);
+      if (prefixMatch) {
+        pathPart = graphValue.slice(prefixMatch[0].length);
+      }
+      
+      if (!pathPart.startsWith(basePath)) {
         throw new BadRequestHttpError(`Graph ${term.value} is outside of ${basePath}.`);
       }
       return;

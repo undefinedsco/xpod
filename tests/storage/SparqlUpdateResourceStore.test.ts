@@ -5,7 +5,7 @@ import {
   RepresentationMetadata,
   guardedStreamFrom,
 } from '@solid/community-server';
-import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore.js';
+import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore';
 
 const { namedNode, literal } = DataFactory;
 

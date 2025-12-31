@@ -1,23 +1,6 @@
-<!-- OPENSPEC:START -->
-# OpenSpec Instructions
-
-These instructions are for AI assistants working in this project.
-
-Always open `@/openspec/AGENTS.md` when the request:
-- Mentions planning or proposals (words like proposal, spec, change, plan)
-- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
-- Sounds ambiguous and you need the authoritative spec before coding
-
-Use `@/openspec/AGENTS.md` to learn:
-- How to create and apply change proposals
-- Spec format and conventions
-- Project structure and guidelines
-
-Keep this managed block so 'openspec update' can refresh the instructions.
-
-<!-- OPENSPEC:END -->
-
 # Repository Guidelines
+
+**AGENTS.md 编写原则**：本文件只放原则、流程指引和关键配置说明，具体细节（如代码示例、配置格式）放到 `docs/` 下的专题文档。
 
 ## Project Structure & Module Organization
 Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/`, paired by environment (for example `config/main.dev.json` with `extensions.dev.json`). Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` handle storage smoke tests such as `node scripts/testInsert.js`.
@@ -34,6 +17,37 @@ Core TypeScript modules live in `src/`: `storage/` contains data accessors, `log
 ## Coding Style & Naming Conventions
 Strict TypeScript is enforced; keep code ES2021-compatible and prefer async/await. Use PascalCase for classes (`ConfigurableLoggerFactory`), camelCase for functions and variables, and mirror existing JSON key casing. Default to single quotes in imports, follow the prevailing two-space indentation, and expose shared symbols via `src/index.ts`. When instrumenting behavior, rely on CSS logging helpers (`getLoggerFor`) instead of raw `console` calls.
 - JSON-LD 配置里引用自研组件参数时，先在 `@context` 里声明短别名，再用短名键（如 `UsageTrackingStore_source`），不要直接写长 IRI。
+
+## 等位替换原则 (Component Override Principle)
+Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同层级的默认组件，保持接口兼容，不破坏 CSS 调用链。
+
+### 核心原则
+1. **接口兼容**：替换组件必须实现与被替换组件相同的接口/基类
+2. **行为扩展**：只增强功能，不删减 CSS 原有能力
+3. **配置隔离**：通过 `config/xpod.json` 定义通用组件，各 `extensions.*.json` 按需 Override
+
+### 当前等位替换清单
+| CSS 默认组件 | Xpod 替换组件 | 功能区别 |
+|-------------|--------------|----------|
+| `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE |
+| `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | 能转尽量转，不能转保留原始 |
+| `FileDataAccessor` | `MixDataAccessor` | 混合存储：RDF 走 Quadstore，非结构化走 FileSystem/MinIO |
+| `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署 |
+| `PassthroughStore` | `UsageTrackingStore` | 添加带宽/存储用量追踪和限速功能 |
+| `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 链式中间件，支持洋葱模型 |
+
+### 新增组件开发流程
+1. **创建组件**：在 `src/` 下创建 TypeScript 类，继承/实现 CSS 对应接口
+2. **导出组件**：在 `src/index.ts` 中导出新组件
+3. **生成定义**：运行 `yarn build:components` 生成 `.jsonld` 定义文件
+4. **配置组件**：在 `config/xpod.json` 或相应 `extensions.*.json` 中配置
+5. **CLI 参数**（如需要）：在 `config/cli.json` 添加参数定义，在 `config/resolver.json` 添加变量映射
+6. **更新文档**：在 `docs/COMPONENTS.md` 等位替换表中添加记录
+7. **验证配置**：确保所有模式 (local/dev/server/cluster/edge) 配置可正常加载
+
+### 文档对位原则
+- **新增组件必须同步更新文档**：`docs/COMPONENTS.md` 的等位替换表和组件说明
+- **复杂组件单独文档**：如 `docs/chained-http-handler.md` 详细说明中间件系统
 
 ## Testing Guidelines
 There is no dedicated test runner yet: use `yarn build:ts` for a fast type-only safety net, and add focused Node scripts under `scripts/` when validating storage or database logic. For end-to-end checks, start the relevant profile (`yarn dev` is the quickest loop) and exercise endpoints at `http://localhost:3000`. Capture manual verification steps, sample payloads, or curl commands in your PR notes.
@@ -59,3 +73,4 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 
 ## Communication
 - 与用户互动时默认使用中文进行回复，除非用户另有明确要求。
+- Use `yarn` for all package management and script execution.

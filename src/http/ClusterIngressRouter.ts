@@ -1,11 +1,12 @@
 import type { IncomingMessage } from 'node:http';
+import { getLoggerFor } from 'global-logger-factory';
 import { Readable } from 'node:stream';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpResponse } from '@solid/community-server';
 import {
   NotImplementedHttpError,
   InternalServerError,
-  getLoggerFor,
+  
 } from '@solid/community-server';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
@@ -56,9 +57,9 @@ export class ClusterIngressRouter extends HttpHandler {
   }
 
   public override async canHandle({ request }: HttpHandlerInput): Promise<void> {
-    this.logger.info('ClusterIngressRouter.canHandle called');
+    this.logger.debug('ClusterIngressRouter.canHandle called');
     if (!this.enabled) {
-      this.logger.info('ClusterIngressRouter disabled');
+      this.logger.debug('ClusterIngressRouter disabled');
       throw new NotImplementedHttpError('Cluster ingress router disabled.');
     }
 

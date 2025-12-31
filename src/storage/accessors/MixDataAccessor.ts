@@ -1,144 +1,172 @@
 import type { Readable } from 'stream';
-import arrayifyStream from 'arrayify-stream';
-import type { Quad, NamedNode } from '@rdfjs/types';
-import { DataFactory } from 'n3';
+import { getLoggerFor } from 'global-logger-factory';
+
+import type { Quad } from '@rdfjs/types';
 import { 
   isContainerIdentifier,
   RepresentationMetadata,
   INTERNAL_QUADS,
-  NotFoundHttpError,
-  CONTENT_TYPE_TERM,
-  CONTENT_LENGTH_TERM,
-  DC,
-  POSIX,
-  SOLID_META,
-  XSD,
-  updateModifiedDate,
-  toLiteral
 } from '@solid/community-server';
 import type {
   Representation,
   ResourceIdentifier,
   Guarded,
   DataAccessor,
-  IdentifierStrategy,
 } from '@solid/community-server';
-import { QuadstoreSparqlDataAccessor } from './QuadstoreSparqlDataAccessor';
 
-
-const { namedNode } = DataFactory;
-
-export class MixDataAccessor extends QuadstoreSparqlDataAccessor {
+/**
+ * MixDataAccessor - Routes data to appropriate storage based on content type
+ * 
+ * - RDF data (internal/quads) -> structuredDataAccessor (Quadstore or QuintStore)
+ * - Other data (binary, text, etc.) -> unstructuredDataAccessor (FileSystem, Minio, etc.)
+ * 
+ * This uses composition instead of inheritance, allowing any DataAccessor
+ * to be used as the RDF storage backend.
+ */
+export class MixDataAccessor implements DataAccessor {
+  protected readonly logger = getLoggerFor(this);
+  
+  private readonly structuredDataAccessor: DataAccessor;
   private readonly unstructuredDataAccessor: DataAccessor;
 
   constructor(
-    endpoint: string,
-    identifierStrategy: IdentifierStrategy,
+    structuredDataAccessor: DataAccessor,
     unstructuredDataAccessor: DataAccessor,
   ) {
-    super(endpoint, identifierStrategy);
+    this.structuredDataAccessor = structuredDataAccessor;
     this.unstructuredDataAccessor = unstructuredDataAccessor;
   }
 
   /**
-   * This accessor does support all types of data.
+   * This accessor supports all types of data.
    */
-  public override async canHandle(representation: Representation): Promise<void> {
+  public async canHandle(representation: Representation): Promise<void> {
     return void 0;
   }
 
   /**
-   * Checks if the given representation is unstructured.
+   * Checks if the given representation is unstructured (non-RDF).
    */
-  private isUnstructured(identifier: ResourceIdentifier, metadata: RepresentationMetadata): boolean {
-    this.logger.info(`${identifier.path} internal content type: ${metadata.contentType}`)
+  private isUnstructured(metadata: RepresentationMetadata): boolean {
     return metadata.contentType !== INTERNAL_QUADS;
   }
 
-  public override async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
+  public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
     const metadata = await this.getMetadata(identifier);
-    if (this.isUnstructured(identifier, metadata)) {
+    if (this.isUnstructured(metadata)) {
       return await this.unstructuredDataAccessor.getData(identifier);
     }
-    return await super.getData(identifier);
+    return await this.structuredDataAccessor.getData(identifier);
   }
 
-    /**
-   * Returns the metadata for the corresponding identifier.
-   */
-  public override async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
-      this.logger.info(`Getting metadata for ${identifier.path}`);
-      const name = namedNode(identifier.path);
-      const query = this.sparqlConstruct(this.getMetadataNode(name));
-      const stream = await this.sendSparqlConstruct(query);
-      const quads: Quad[] = await arrayifyStream(stream);
-
-      if (quads.length === 0) {
-        throw new NotFoundHttpError();
-      }
-
-      const metadata = new RepresentationMetadata(identifier).addQuads(quads);
-      if (!isContainerIdentifier(identifier) && !metadata.contentType) {
-        metadata.contentType = INTERNAL_QUADS;
-      }
-  
-      return metadata;
+  public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
+    // Metadata is always stored in the structured accessor
+    const metadata = await this.structuredDataAccessor.getMetadata(identifier);
+    
+    // For non-container resources without explicit content type, default to RDF
+    if (!isContainerIdentifier(identifier) && !metadata.contentType) {
+      metadata.contentType = INTERNAL_QUADS;
     }
+    
+    return metadata;
+  }
 
-  public override async writeContainer(
+  public async* getChildren(identifier: ResourceIdentifier): AsyncIterableIterator<RepresentationMetadata> {
+    // Children metadata is stored in the structured accessor
+    yield* this.structuredDataAccessor.getChildren(identifier);
+  }
+
+  public async writeContainer(
     identifier: ResourceIdentifier,
     metadata: RepresentationMetadata,
   ): Promise<void> {
-    if (this.isUnstructured(identifier, metadata)) {
+    // Container metadata goes to structured storage
+    // Also create in unstructured if it needs to store files
+    if (this.isUnstructured(metadata)) {
       await this.unstructuredDataAccessor.writeContainer(identifier, metadata);
     }
-    await super.writeContainer(identifier, metadata);
+    await this.structuredDataAccessor.writeContainer(identifier, metadata);
   }
 
-  public override async writeDocument(
+  public async writeDocument(
     identifier: ResourceIdentifier,
     data: Guarded<Readable>,
     metadata: RepresentationMetadata,
   ): Promise<void> {
-    if (this.isUnstructured(identifier, metadata)) {
+    if (this.isUnstructured(metadata)) {
       return await this.writeUnstructuredDocument(identifier, data, metadata);
-    } else {
-      return await super.writeDocument(identifier, data, metadata);
     }
+    return await this.structuredDataAccessor.writeDocument(identifier, data, metadata);
   }
 
-  public override async deleteResource(identifier: ResourceIdentifier): Promise<void> {
+  public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
+    // Metadata always goes to structured storage
+    return await this.structuredDataAccessor.writeMetadata(identifier, metadata);
+  }
+
+  public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
     const metadata = await this.getMetadata(identifier);
-    if (this.isUnstructured(identifier, metadata)) {
+    
+    // Try to delete from unstructured storage if applicable
+    if (this.isUnstructured(metadata)) {
       try {
         await this.unstructuredDataAccessor.deleteResource(identifier);
       } catch (error: any) {
+        // Ignore file not found errors
         if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') {
           throw error;
         }
       }
     }
-    return super.deleteResource(identifier);
+    
+    // Always delete from structured storage (contains metadata)
+    return await this.structuredDataAccessor.deleteResource(identifier);
   }
 
-  private async writeUnstructuredDocument(identifier: ResourceIdentifier, data: Guarded<Readable>, metadata: RepresentationMetadata): Promise<void> {
+  /**
+   * Execute SPARQL UPDATE on structured data accessor.
+   * Delegates to the underlying structuredDataAccessor if it supports SPARQL.
+   */
+  public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
+    const accessor = this.structuredDataAccessor as { executeSparqlUpdate?: (query: string, baseIri?: string) => Promise<void> };
+    if (typeof accessor.executeSparqlUpdate !== 'function') {
+      throw new Error('Structured data accessor does not support SPARQL UPDATE');
+    }
+    return accessor.executeSparqlUpdate(query, baseIri);
+  }
+
+  /**
+   * Write unstructured document: store data in unstructured accessor,
+   * then save metadata in structured accessor.
+   */
+  private async writeUnstructuredDocument(
+    identifier: ResourceIdentifier,
+    data: Guarded<Readable>,
+    metadata: RepresentationMetadata,
+  ): Promise<void> {
+    // Write the actual data to unstructured storage
     await this.unstructuredDataAccessor.writeDocument(identifier, data, metadata);
-    metadata = await this.unstructuredDataAccessor.getMetadata(identifier);
-    const removing = [];
-    for (const quad of metadata.quads()) {
-      // ignore invalid quads
+    
+    // Get the metadata from unstructured storage (includes size, etc.)
+    let updatedMetadata = await this.unstructuredDataAccessor.getMetadata(identifier);
+    
+    // Filter out invalid quads
+    const removing: Quad[] = [];
+    for (const quad of updatedMetadata.quads()) {
       if (!/^http/.test(quad.predicate.value)) {
         removing.push(quad);
       }
     }
-    metadata.removeQuads(removing);
+    updatedMetadata.removeQuads(removing);
+    
+    // Save metadata to structured storage
     try {
-      await super.writeMetadata(identifier, metadata);
+      await this.structuredDataAccessor.writeMetadata(identifier, updatedMetadata);
     } catch (error) {
       this.logger.error(`Error writing metadata for ${identifier.path}: ${error}`);
+      // Rollback: delete the unstructured data
       await this.unstructuredDataAccessor.deleteResource(identifier);
       throw error;
     }
   }
 }
-

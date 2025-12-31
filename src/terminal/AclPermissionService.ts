@@ -4,8 +4,8 @@
  * Queries Quadstore to check if a user has acl:Control permission
  * on a resource, which is required for Terminal access.
  */
-import { getLoggerFor } from '@solid/community-server';
-import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
+import { getLoggerFor } from 'global-logger-factory';
+import { SubgraphQueryEngine, QuadstoreSparqlEngine } from '../storage/sparql/SubgraphQueryEngine';
 
 export class AclPermissionService {
   protected readonly logger = getLoggerFor(this);
@@ -21,7 +21,7 @@ export class AclPermissionService {
       if (!this.sparqlEndpoint) {
         throw new Error('SPARQL endpoint not configured');
       }
-      this.engine = new SubgraphQueryEngine(this.sparqlEndpoint);
+      this.engine = new SubgraphQueryEngine(new QuadstoreSparqlEngine(this.sparqlEndpoint));
     }
     return this.engine;
   }

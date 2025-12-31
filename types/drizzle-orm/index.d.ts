@@ -1,8 +1,20 @@
 declare module 'drizzle-orm' {
   export const sql: any;
   export function eq(a: any, b: any): any;
+  export function ne(a: any, b: any): any;
+  export function gt(a: any, b: any): any;
+  export function gte(a: any, b: any): any;
+  export function lt(a: any, b: any): any;
+  export function lte(a: any, b: any): any;
+  export function like(a: any, b: any): any;
+  export function inArray(a: any, b: any[]): any;
+  export function notInArray(a: any, b: any[]): any;
+  export function isNull(a: any): any;
+  export function isNotNull(a: any): any;
   export function and(...args: any[]): any;
   export function or(...args: any[]): any;
+  
+  export type SQL = any;
 }
 
 declare module 'drizzle-orm/node-postgres' {

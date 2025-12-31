@@ -1,6 +1,6 @@
 {
   "@context": [
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
   ],
   "import": [
@@ -79,7 +79,7 @@
       },
       "overrideParameters": {
         "@type": "UsageTrackingStore",
-        "source": {
+        "UsageTrackingStore:_source": {
           "@type": "SparqlUpdateResourceStore",
           "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
           "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },

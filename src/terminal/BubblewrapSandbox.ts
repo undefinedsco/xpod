@@ -10,7 +10,7 @@
  */
 import { spawn, ChildProcess } from 'child_process';
 import { existsSync } from 'fs';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 
 export interface SandboxConfig {
   /** Working directory to bind mount (user must have acl:Control) */

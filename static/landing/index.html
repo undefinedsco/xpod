@@ -1,98 +1,165 @@
 <!DOCTYPE html>
-<html lang="zh-Hans">
+<html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Community Solid Server</title>
-  <link rel="stylesheet" href="/.well-known/css/styles/main.css" type="text/css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Xpod - Personal Messages Platform</title>
+  <meta name="description" content="Xpod is your personal messages platform with an AI secretary that never stops, knows your whole life, works for you—while guarding your privacy. All your messages in one place, always organized, always yours." />
+  <link rel="stylesheet" href="/app/assets/index.css">
+  <link rel="icon" href="/favicon.ico" />
 </head>
-<body>
-  <header>
-    <a href=".."><img src="/.well-known/css/images/solid.svg" alt="[Solid logo]" /></a>
-    <h1>Community Solid Server</h1>
+<body class="bg-zinc-50 text-zinc-900 font-sans antialiased min-h-screen flex flex-col selection:bg-[#7C4DFF]/20">
+
+  <!-- Header / Nav -->
+  <header class="w-full border-b border-zinc-200/50 bg-white/70 backdrop-blur-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 bg-[#7C4DFF] rounded-lg flex items-center justify-center">
+          <div class="w-4 h-4 border-2 border-white rounded opacity-90"></div>
+        </div>
+        <div>
+          <div class="font-bold text-lg tracking-tight leading-tight">Xpod</div>
+          <div class="text-[10px] text-zinc-500 leading-tight">Personal Messages Platform</div>
+        </div>
+      </div>
+      
+      <nav class="hidden md:flex items-center gap-8 text-sm font-medium text-zinc-500">
+        <a href="#features" class="hover:text-zinc-900 transition-colors">Features</a>
+        <a href="#opensource" class="hover:text-zinc-900 transition-colors">Open Source</a>
+        <a href="https://undefineds.co" target="_blank" rel="noopener" class="hover:text-zinc-900 transition-colors">Official Site</a>
+        <a href="https://solidproject.org" target="_blank" class="hover:text-zinc-900 transition-colors">Solid Protocol</a>
+      </nav>
+
+      <div class="flex items-center gap-4">
+        <div id="auth-actions" class="flex items-center gap-4">
+          <a href="/.account/login/" class="text-sm font-medium text-zinc-600 hover:text-zinc-900 transition-colors">Sign in</a>
+          <a href="/.account/login/password/register/" class="text-sm font-medium bg-[#7C4DFF] text-white px-4 py-2 rounded-lg hover:bg-[#6B3FE8] transition-colors">Get Started</a>
+        </div>
+      </div>
+    </div>
   </header>
-  <main>
-    <h1>欢迎使用 Solid</h1>
-    <p>
-      本服务器实现了<a href="https://solid.github.io/specification/protocol">Solid 协议</a>，
-      可以帮助你创建自己的<a href="https://solidproject.org/about">Solid Pod</a> 与身份。
-    </p>
 
-    <h2 id="users">面向<em>用户</em>的快速入门</h2>
-    <p id="registration-enabled">
-      <a id="registration-link" href="./.account/login/password/register/">注册账号</a>
-      即可获取属于你的 Pod 和 WebID。
-    </p>
-    <p id="registration-disabled" class="hidden">
-      本服务器已禁用注册功能。
-      若计划对外开放，请务必更新根容器权限以防其他人修改你的数据。
-    </p>
-    <p>
-      想了解如何使用本服务器，
-      建议阅读
-      <a href="https://github.com/CommunitySolidServer/tutorials/blob/main/getting-started.md">快速入门教程</a>
-      以及<a href="https://communitysolidserver.github.io/CommunitySolidServer/">官方文档</a>。
-    </p>
+  <!-- Hero Section -->
+  <main class="flex-1 flex flex-col">
+    <section class="relative pt-32 pb-20 px-6 overflow-hidden bg-gradient-to-b from-[#7C4DFF]/10 via-[#7C4DFF]/5 to-zinc-50">
+      <!-- Background Effects -->
+      <div class="absolute top-0 left-1/2 -translate-x-1/2 w-[1200px] h-[600px] bg-[#7C4DFF]/10 rounded-full blur-[120px] -z-10"></div>
+      
+      <div class="max-w-7xl mx-auto text-center">
+        <h1 class="text-5xl md:text-7xl font-bold tracking-tight mb-8 leading-tight text-zinc-900">
+          Simplify Life with <br />
+          <span class="text-[#7C4DFF]">Your AI Secretary</span>
+        </h1>
+        
+        <p class="text-xl text-zinc-500 mb-12 max-w-2xl mx-auto leading-relaxed">
+          An AI that never stops, knows your whole life, works for you—while guarding your privacy.
+        </p>
+        
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+          <a href="/.account/login/password/register/" class="w-full sm:w-auto px-8 py-4 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl font-medium text-lg transition-all flex items-center justify-center gap-2">
+            Create your Pod
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"></path></svg>
+          </a>
+          <a href="/.account/login/" class="w-full sm:w-auto px-8 py-4 bg-zinc-100 hover:bg-zinc-200 text-zinc-900 rounded-xl font-medium text-lg transition-all flex items-center justify-center gap-2">
+            Sign in
+          </a>
+        </div>
+      </div>
+    </section>
 
-    <h2 id="developers">面向<em>开发者</em>的快速入门</h2>
-    <p>
-      你可以使用 <code>config</code> 目录中的任意配置
-      来部署具备不同特性的服务器实例。
-      除了预置配置，还可以通过
-      <a href="https://communitysolidserver.github.io/configuration-generator/">配置生成器</a>
-      自定义所需组件。
-    </p>
-    <p>
-      服务器支持将磁盘上的任意文件夹
-      暴露为根 Pod。
-      <br>
-      使用 <code>--help</code> 参数可查看更多命令行选项。
-    </p>
+    <!-- Features Grid -->
+    <section id="features" class="py-24 px-6 bg-white border-y border-zinc-200">
+      <div class="max-w-7xl mx-auto">
+        <div class="grid md:grid-cols-3 gap-6">
+          <div class="p-8 rounded-2xl bg-white border border-zinc-200">
+            <p class="text-xs text-[#7C4DFF] uppercase tracking-wider mb-4">Always On</p>
+            <h3 class="text-2xl font-bold mb-4 text-zinc-900">Your AI Never Stops</h3>
+            <p class="text-zinc-500 text-sm leading-relaxed">
+              Your AI secretary runs 24/7, even when you're not talking to it. It collects your data, distills information, organizes knowledge, and expresses wisdom on your behalf. You wake up to clearer thoughts and fewer things to worry about.
+            </p>
+          </div>
+          <div class="p-8 rounded-2xl bg-white border border-zinc-200">
+            <p class="text-xs text-[#7C4DFF] uppercase tracking-wider mb-4">All Together</p>
+            <h3 class="text-2xl font-bold mb-4 text-zinc-900">One Place for Your Whole Life</h3>
+            <p class="text-zinc-500 text-sm leading-relaxed">
+              Your messages are scattered everywhere. No AI truly knows you. Bring everything together—work, social, shopping, health—and your secretary finally sees the full picture.
+            </p>
+          </div>
+          <div class="p-8 rounded-2xl bg-white border border-zinc-200">
+            <p class="text-xs text-[#7C4DFF] uppercase tracking-wider mb-4">Full Control</p>
+            <h3 class="text-2xl font-bold mb-4 text-zinc-900">One Secretary, A Thousand Agents</h3>
+            <p class="text-zinc-500 text-sm leading-relaxed">
+              Your secretary stands between you and the world. It orchestrates a thousand agents to get things done, while guarding what they can see. Full power, full privacy.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
 
-    <h2>祝你拥有出色的 Solid 体验</h2>
-    <p>
-      <strong>欢迎访问 <a href="https://solidproject.org/">solidproject.org</a> 了解 Solid。</strong>
-    </p>
-    <p>
-      我们诚挚邀请你
-      <a href="https://github.com/CommunitySolidServer/CommunitySolidServer/discussions">分享使用体验</a>
-      ，或在遇到问题时
-      <a href="https://github.com/CommunitySolidServer/CommunitySolidServer/issues">提交 Issue</a>。
-    </p>
-
-    <h2>如何替换此页面</h2>
-    <p>
-      目前的首页是通过静态页面配置呈现的。
-      如需自定义，只需在 server 配置中加入如下条目：
-    <pre>{
-  "@type": "Override",
-  "overrideInstance": { "@id": "urn:solid-server:default:RootStaticAsset" },
-  "overrideParameters": {
-    "@type": "StaticAssetEntry",
-    "filePath": "/path/to/my/index.html"
-  }
-}</pre>
-    </p>
+    <!-- Open Source -->
+    <section id="opensource" class="py-24 px-6 bg-zinc-50">
+      <div class="max-w-7xl mx-auto">
+        <div class="flex items-center justify-between mb-10">
+          <div>
+            <h2 class="text-3xl font-bold text-zinc-900">Open Source</h2>
+            <p class="text-zinc-500 mt-2">Explore the core repositories powering Xpod.</p>
+          </div>
+          <a href="https://undefineds.co" target="_blank" rel="noopener" class="hidden md:inline-flex items-center gap-2 text-sm text-[#7C4DFF] hover:text-[#6B3FE8] transition-colors">
+            Visit official site
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 3h7v7m0-7L10 14"></path></svg>
+          </a>
+        </div>
+        <div class="grid md:grid-cols-3 gap-6">
+          <a href="https://github.com/undefinedsco/xpod" target="_blank" rel="noopener" class="group p-6 rounded-2xl border border-zinc-200 bg-white hover:border-[#7C4DFF]/50 transition-colors">
+            <p class="text-xs text-zinc-400 mb-2">Xpod</p>
+            <h3 class="text-lg font-semibold mb-2 text-zinc-900">Control Plane</h3>
+            <p class="text-sm text-zinc-500">Pod orchestration, identity, and edge coordination.</p>
+          </a>
+          <a href="https://github.com/undefinedsco/drizzle-solid" target="_blank" rel="noopener" class="group p-6 rounded-2xl border border-zinc-200 bg-white hover:border-[#7C4DFF]/50 transition-colors">
+            <p class="text-xs text-zinc-400 mb-2">drizzle-solid</p>
+            <h3 class="text-lg font-semibold mb-2 text-zinc-900">Data Access</h3>
+            <p class="text-sm text-zinc-500">Solid-aware data access with Drizzle integration.</p>
+          </a>
+          <a href="https://github.com/undefinedsco/linq" target="_blank" rel="noopener" class="group p-6 rounded-2xl border border-zinc-200 bg-white hover:border-[#7C4DFF]/50 transition-colors">
+            <p class="text-xs text-zinc-400 mb-2">linQ</p>
+            <h3 class="text-lg font-semibold mb-2 text-zinc-900">Product Layer</h3>
+            <p class="text-sm text-zinc-500">Agent-facing experiences built on top of Xpod.</p>
+          </a>
+        </div>
+      </div>
+    </section>
   </main>
-  <footer>
-    <p>
-      ©2019–2024 <a href="https://inrupt.com/">Inrupt Inc.</a>
-      与 <a href="https://www.imec-int.com/">imec</a>
-    </p>
-  </footer>
-</body>
-<script>
-  (async() => {
-    // 由于该页面位于服务器根目录，可使用相对路径推断其它端点。
-    const res = await fetch('.account/');
-    const registrationUrl = (await res.json())?.controls?.html?.password?.register;
-    // 仅在目标 HTML 存在时展示注册入口
-    const resRegistrationPage = await fetch(registrationUrl, { headers: { accept: 'text/html' } });
-    const registrationEnabled = registrationUrl && resRegistrationPage.status === 200;
 
-    document.getElementById('registration-enabled').classList[registrationEnabled ? 'remove' : 'add']('hidden');
-    document.getElementById('registration-disabled').classList[registrationEnabled ? 'add' : 'remove']('hidden');
-    document.getElementById('registration-link').href = registrationUrl;
-  })();
-</script>
+  <footer class="py-12 px-6 border-t border-zinc-200 text-center text-zinc-500 text-sm">
+    <p class="mb-3">&copy; 2025 Xpod. Built on the <a href="https://github.com/CommunitySolidServer/CommunitySolidServer" class="hover:text-[#7C4DFF] underline">Community Solid Server</a>.</p>
+    <div class="flex flex-wrap justify-center gap-4 text-xs text-zinc-400">
+      <a href="https://undefineds.co" target="_blank" rel="noopener" class="hover:text-[#7C4DFF]">Official Site</a>
+      <a href="https://github.com/undefinedsco/xpod" target="_blank" rel="noopener" class="hover:text-[#7C4DFF]">Xpod Source</a>
+      <a href="https://github.com/undefinedsco/drizzle-solid" target="_blank" rel="noopener" class="hover:text-[#7C4DFF]">drizzle-solid Source</a>
+      <a href="https://github.com/undefinedsco/linq" target="_blank" rel="noopener" class="hover:text-[#7C4DFF]">linQ Source</a>
+    </div>
+  </footer>
+
+  <script>
+    // Simple check to see if user is logged in (cookie based)
+    // and update the header. This is a best-effort check for the static landing page.
+    (async () => {
+      try {
+        const res = await fetch('/.account/', { method: 'HEAD' });
+        if (res.status === 200 || res.status === 304) {
+          // Logged in
+          const authDiv = document.getElementById('auth-actions');
+          authDiv.innerHTML = `
+            <a href="/.account/" class="text-sm font-medium text-zinc-900 hover:text-[#7C4DFF] transition-colors flex items-center gap-2">
+              <div class="w-2 h-2 rounded-full bg-emerald-500"></div>
+              Go to Dashboard
+            </a>
+          `;
+        }
+      } catch (e) {
+        // Not logged in or error
+      }
+    })();
+  </script>
+</body>
 </html>

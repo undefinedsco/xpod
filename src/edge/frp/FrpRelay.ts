@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 
 export interface FrpRelayOptions {
   bindPort: number;

@@ -7,7 +7,7 @@
  * - Windows: none (fallback)
  */
 import { spawn } from 'child_process';
-import { getLoggerFor } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import type { Sandbox, SandboxConfig, SandboxResult } from './types';
 import { BubblewrapSandbox } from './BubblewrapSandbox';
 import { MacOSSandbox } from './MacOSSandbox';

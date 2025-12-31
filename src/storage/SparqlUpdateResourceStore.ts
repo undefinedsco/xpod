@@ -17,9 +17,9 @@ import {
   type IdentifierStrategy,
   type AuxiliaryStrategy,
 } from '@solid/community-server';
-import type { SparqlUpdatePatch } from '@solid/community-server/dist/http/representation/SparqlUpdatePatch';
+import type { SparqlUpdatePatch } from '@solid/community-server';
 import { readableToString } from '@solid/community-server/dist/util/StreamUtil';
-import { getLoggerFor } from '@solid/community-server/dist/logging/LogUtil';
+import { getLoggerFor } from 'global-logger-factory';
 
 export interface SparqlUpdateResourceStoreOptions {
   accessor: DataAccessor;
@@ -43,8 +43,12 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
 
   // @ts-expect-error Upstream signature returns never; we return ChangeMap for successful PATCH.
   public override async modifyResource(identifier: ResourceIdentifier, patch: Patch, conditions?: Conditions): Promise<ChangeMap> {
+    this.logger.debug(`SparqlUpdateResourceStore.modifyResource called for ${identifier.path}`);
+    this.logger.debug(`Patch has algebra: ${typeof (patch as SparqlUpdatePatch).algebra === 'object'}, metadata.contentType: ${patch.metadata?.contentType}`);
+
     const accessor = (this as unknown as { accessor: unknown }).accessor as unknown;
     if (!this.isSparqlCapable(accessor)) {
+      this.logger.debug('Accessor is not SPARQL capable');
       throw new NotImplementedHttpError('SPARQL UPDATE not supported by this accessor');
     }
 
@@ -63,10 +67,11 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
 
     const sparqlUpdate = await this.toSparqlUpdate(patch, identifier);
     if (!sparqlUpdate) {
+      this.logger.debug(`toSparqlUpdate returned undefined for ${identifier.path}, falling back to CSS handler`);
       throw new NotImplementedHttpError('Unsupported PATCH payload for SPARQL conversion');
     }
 
-    this.logger.info(`Applying SPARQL PATCH to ${identifier.path}: ${sparqlUpdate}`);
+    this.logger.debug(`Applying SPARQL PATCH to ${identifier.path}: ${sparqlUpdate}`);
     await accessor.executeSparqlUpdate(sparqlUpdate, identifier.path);
 
     // PATCH does not affect containment; mark the target resource as updated.
@@ -80,11 +85,8 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
    * N3 Patch 和其他类型返回 undefined，让 CSS PatchingStore 回退到 get-patch-set 逻辑。
    */
   private async toSparqlUpdate(patch: Patch, identifier: ResourceIdentifier): Promise<string | undefined> {
-    this.logger.info(`toSparqlUpdate received patch with contentType: ${patch.metadata.contentType}`);
-
     // 只处理 SPARQL UPDATE，其他类型（包括 N3 Patch）回退到 CSS 默认处理
     if (!this.isSparqlUpdatePatch(patch)) {
-      this.logger.info(`Not a SPARQL UPDATE patch, falling back to CSS default handler`);
       return undefined;
     }
 
@@ -139,6 +141,27 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
         return { ...pattern, patterns: pattern.patterns?.map(rewritePattern) ?? [] };
       }
       if (pattern.type === 'group') {
+        return { ...pattern, patterns: pattern.patterns?.map(rewritePattern) ?? [] };
+      }
+      if (pattern.type === 'optional') {
+        return { ...pattern, patterns: pattern.patterns?.map(rewritePattern) ?? [] };
+      }
+      if (pattern.type === 'union') {
+        return { ...pattern, patterns: pattern.patterns?.map(rewritePattern) ?? [] };
+      }
+      if (pattern.type === 'minus') {
+        return { ...pattern, patterns: pattern.patterns?.map(rewritePattern) ?? [] };
+      }
+      if (pattern.type === 'filter') {
+        return pattern; // FILTER doesn't contain triples, pass through
+      }
+      if (pattern.type === 'bind') {
+        return pattern; // BIND doesn't contain triples, pass through
+      }
+      if (pattern.type === 'values') {
+        return pattern; // VALUES doesn't contain triples, pass through
+      }
+      if (pattern.type === 'service') {
         return { ...pattern, patterns: pattern.patterns?.map(rewritePattern) ?? [] };
       }
       return pattern;
@@ -224,7 +247,7 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
           parts.push(`INSERT DATA { GRAPH <${graph.value}> { ${toTripleStr(insertTriples)} } }`);
         }
         const normalizedSimple = parts.join(';\n');
-        this.logger.info(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalizedSimple}`);
+        this.logger.verbose(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalizedSimple}`);
         return normalizedSimple;
       }
 
@@ -254,7 +277,7 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
         }
       });
       const normalized = this.generator.stringify(parsed);
-      this.logger.info(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalized}`);
+      this.logger.verbose(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalized}`);
       return normalized;
     } catch (error: unknown) {
       this.logger.warn(`Failed to parse SPARQL UPDATE for ${identifier.path}, applying DATA rewrite fallback: ${error}`);

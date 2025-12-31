@@ -1,7 +1,8 @@
 {
   "@context": [
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
     "./xpod.json"
@@ -46,14 +47,32 @@
     {
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
-      "endpoint": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint"
-      },
-      "identifierStrategy": {
-        "@id": "urn:solid-server:default:IdentifierStrategy"
+      "structuredDataAccessor": {
+        "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor"
       },
       "unstructuredDataAccessor": {
         "@id": "urn:undefineds:xpod:RemoteDataAccessor"
+      }
+    },
+    {
+      "comment": "PgQuintStore instance for QuintStoreSparqlDataAccessor (PostgreSQL backend).",
+      "@id": "urn:undefineds:xpod:PgQuintStore",
+      "@type": "PgQuintStore",
+      "options_driver": "pg",
+      "options_connectionString": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "QuintStore-based SPARQL data accessor for RDF storage.",
+      "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
+      "@type": "QuintStoreSparqlDataAccessor",
+      "store": {
+        "@id": "urn:undefineds:xpod:PgQuintStore"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
       }
     },
     {
@@ -88,7 +107,7 @@
       "overrideParameters": {
         "@type": "WrappedExpiringReadWriteLocker",
         "expiration": 15000,
-        "source": { "@id": "urn:solid-server:default:RedisLocker" }
+        "locker": { "@id": "urn:solid-server:default:RedisLocker" }
       }
     },
     {
@@ -121,7 +140,7 @@
       },
       "overrideParameters": {
         "@type": "UsageTrackingStore",
-        "source": {
+        "UsageTrackingStore:_source": {
           "@type": "SparqlUpdateResourceStore",
           "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
           "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
@@ -171,6 +190,24 @@
       }
     },
     {
+      "comment": "Override Drizzle-backed account storage for server deployment, using account-specific table prefix.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
+      },
+      "overrideParameters": {
+        "@type": "BaseLoginAccountStorage",
+        "storage": {
+          "@type": "DrizzleIndexedStorage",
+          "connectionString": {
+            "@id": "urn:solid-server:default:variable:identityDbUrl",
+            "@type": "Variable"
+          },
+          "tablePrefix": "identity_account_"
+        }
+      }
+    },
+    {
       "comment": "Drizzle-backed account storage for clustered deployments.",
       "@type": "Override",
       "overrideInstance": {
@@ -178,19 +215,6 @@
       },
       "overrideParameters": {
         "@id": "urn:undefineds:xpod:DrizzleAccountStorage"
-      }
-    },
-    {
-      "comment": "Define the Drizzle Account Storage using composition: BaseLoginAccountStorage wrapping DrizzleIndexedStorage",
-      "@id": "urn:undefineds:xpod:DrizzleAccountStorage",
-      "@type": "BaseLoginAccountStorage",
-      "storage": {
-        "@type": "DrizzleIndexedStorage",
-        "connectionString": {
-          "@id": "urn:solid-server:default:variable:identityDbUrl",
-          "@type": "Variable"
-        },
-        "tablePrefix": "identity_account_"
       }
     },
     {
@@ -237,6 +261,45 @@
       },
       "PerAccountQuotaStrategy:_reporter": {
         "@id": "urn:solid-server:default:SizeReporter"
+      }
+    },
+    {
+      "comment": "Compose server HTTP pipeline",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:BaseHttpHandler"
+      },
+      "overrideParameters": {
+        "@type": "StatusWaterfallHandler",
+        "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+          },
+          {
+            "@id": "urn:undefineds:xpod:AppStaticAssetHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:StaticAssetHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:OidcHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:NotificationHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:StorageDescriptionHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:AuthResourceHttpHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:IdentityProviderHandler"
+          },
+          {
+            "@id": "urn:solid-server:default:LdpHandler"
+          }
+        ]
       }
     }
   ]

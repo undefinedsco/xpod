@@ -12,8 +12,9 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：RDF 结构化数据走 Quadstore，非结构化文件走 FileSystem/MinIO |
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
-| `BaseAccountStore` | `DrizzleAccountLoginStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
+| `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
+| `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
 
 ### Store 调用链对照
 
@@ -203,6 +204,38 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Path**: `src/http/EdgeNodeRedirectHttpHandler.ts`
 - **Purpose**: 调试阶段的 307 跳转
 - **Notes**: 默认关闭；仅在需要手动验证节点入口时启用
+
+### ChainedHttpHandler
+- **Path**: `src/http/ChainedHttpHandler.ts`
+- **Purpose**: 链式 HTTP 处理器，支持洋葱模型中间件
+- **Functionality**:
+  - 支持透传型中间件（实现 `MiddlewareHttpHandler` 接口，有 `before()`/`after()` 钩子）
+  - 支持拦截型 Handler（标准 `HttpHandler`，通过 `canHandle()` 决定是否处理）
+  - 洋葱模型执行：`before()` 顺序执行，`after()` 逆序执行
+- **Configuration**: 通过 `handlers` 数组配置链中的处理器
+- **Deployment**: All modes
+- **Documentation**: See [docs/chained-http-handler.md](chained-http-handler.md) for full details
+
+### RouterHttpHandler
+- **Path**: `src/http/RouterHttpHandler.ts`
+- **Purpose**: 按路径前缀路由 HTTP 请求（单 baseUrl 模式）
+- **Functionality**:
+  - 依次匹配 `routes`，命中后转发给对应 handler
+  - 未命中时走 `fallback`
+- **Configuration**: `routes` + `fallback`
+- **Deployment**: All modes (when routing multiple internal handlers)
+
+### RequestIdHttpHandler (TracingMiddleware)
+- **Path**: `src/http/RequestIdHttpHandler.ts`
+- **Purpose**: 请求追踪中间件，为每个请求分配唯一 ID
+- **Functionality**:
+  - 读取或生成 `X-Request-ID` 请求头
+  - 在响应头中返回 `X-Request-ID`
+  - 将 ID 注入 AsyncLocalStorage，供日志系统使用
+  - 记录请求耗时和状态码
+- **Interface**: 实现 `MiddlewareHttpHandler`，需配合 `ChainedHttpHandler` 使用
+- **Configuration ID**: `urn:undefineds:xpod:TracingMiddleware`
+- **Deployment**: All modes
 
 ## Utility Components
 

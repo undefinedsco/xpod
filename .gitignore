@@ -23,6 +23,7 @@ node_modules
 dist/
 coverage/
 data/
+static/app/assets/
 
 # Logs
 logs/
@@ -38,4 +39,6 @@ logs/
 
 # Temporary files
 local/
+third_party/
 main.json
+package-lock.json

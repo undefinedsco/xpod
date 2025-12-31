@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Writable } from 'node:stream';
 import { SubgraphSparqlHttpHandler } from '../../src/http/SubgraphSparqlHttpHandler';
 import type { HttpRequest, HttpResponse } from '@solid/community-server';
-import { NotImplementedHttpError, AccessMode, IdentifierSetMultiMap } from '@solid/community-server';
+import { NotImplementedHttpError, IdentifierSetMultiMap } from '@solid/community-server';
+import { PERMISSIONS } from '@solidlab/policy-engine';
 
 // Mock SubgraphQueryEngine
 const mockQueryEngine = {
@@ -192,8 +193,8 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockAuthorizer.handleSafe).toHaveBeenCalled();
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const modes = [...authCall.requestedModes.values()].flat();
-      expect(modes).toContain(AccessMode.append);
-      expect(modes).not.toContain(AccessMode.delete);
+      expect(modes).toContain(PERMISSIONS.Append);
+      expect(modes).not.toContain(PERMISSIONS.Modify);
     });
 
     it('should require delete for DELETE only', async () => {
@@ -223,8 +224,8 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockAuthorizer.handleSafe).toHaveBeenCalled();
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const modes = [...authCall.requestedModes.values()].flat();
-      expect(modes).toContain(AccessMode.delete);
-      expect(modes).not.toContain(AccessMode.append);
+      expect(modes).toContain(PERMISSIONS.Delete);
+      expect(modes).not.toContain(PERMISSIONS.Append);
     });
 
     it('should require both append and delete for INSERT + DELETE', async () => {
@@ -254,8 +255,8 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockAuthorizer.handleSafe).toHaveBeenCalled();
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const modes = [...authCall.requestedModes.values()].flat();
-      expect(modes).toContain(AccessMode.append);
-      expect(modes).toContain(AccessMode.delete);
+      expect(modes).toContain(PERMISSIONS.Append);
+      expect(modes).toContain(PERMISSIONS.Delete);
     });
 
     it('should require read for SELECT', async () => {
@@ -274,7 +275,7 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockAuthorizer.handleSafe).toHaveBeenCalled();
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const modes = [...authCall.requestedModes.values()].flat();
-      expect(modes).toContain(AccessMode.read);
+      expect(modes).toContain(PERMISSIONS.Read);
     });
   });
 

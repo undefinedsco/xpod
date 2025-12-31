@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http';
+import { getLoggerFor } from 'global-logger-factory';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput } from '@solid/community-server';
 import {
@@ -7,7 +8,7 @@ import {
   NotImplementedHttpError,
   UnauthorizedHttpError,
   InternalServerError,
-  getLoggerFor,
+  
 } from '@solid/community-server';
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';

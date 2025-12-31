@@ -4,6 +4,57 @@
 
 ---
 
+## 0. 根路径设计决策
+
+### CSS 的两种根路径模式
+
+CSS 提供两种根路径初始化方式：
+
+| 配置文件 | 根路径 `/` 行为 | 适用场景 |
+|---------|----------------|----------|
+| `static-root.json` | 静态 HTML 欢迎页 | 多用户服务器 |
+| `initialize-root.json` | LDP 容器（真正的 Pod） | 单用户场景 |
+
+### xpod 的设计选择
+
+**xpod 统一使用 `static-root.json` 模式**，原因：
+
+1. **一致性**：无论 local/edge/server 模式，Pod 都在 `/{username}/` 下
+2. **应用兼容**：ORM 和其他应用可以统一处理 Pod 路径，不需要区分模式
+3. **家庭场景**：即使 local 模式也可能有多个家庭成员使用
+
+| 模式 | 根路径 `/` | Pod 位置 |
+|------|-----------|----------|
+| local | SPA 欢迎页 | `/{username}/` |
+| edge | SPA 欢迎页 | `/{username}/` |
+| server | SPA 欢迎页 | `/{username}/` |
+
+### 内容协商行为
+
+**注意**：CSS 的 `StaticAssetHandler` **不检查 Accept 头**。
+
+即使客户端请求 `Accept: text/turtle`，根路径 `/` 也会返回 HTML（而非 406 Not Acceptable）。这是 CSS 的设计选择，xpod 保持此行为。
+
+如果客户端需要 RDF 数据，应该访问具体的 Pod 路径 `/{username}/`，而不是根路径。
+
+### 配置方式
+
+在 `config/xpod.json` 中 override `RootStaticAsset` 指向 SPA：
+
+```json
+{
+  "@type": "Override",
+  "overrideInstance": { "@id": "urn:solid-server:default:RootStaticAsset" },
+  "overrideParameters": {
+    "@type": "StaticAssetEntry",
+    "relativeUrl": "/",
+    "filePath": "./static/app/index.html"
+  }
+}
+```
+
+---
+
 ## 1. 默认 UI 路由
 
 CSS 自带一组静态页面和账户操作，主要路径如下：
