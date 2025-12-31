@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export function AccountPage() {
@@ -248,10 +248,16 @@ export function AccountPage() {
               <div className="text-[10px] text-zinc-500 leading-tight">Personal Messages Platform</div>
             </div>
           </div>
-          <button onClick={handleLogout} disabled={isLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors">
-            <LogOut className="w-3.5 h-3.5" />
-            Sign out
-          </button>
+          <div className="flex items-center gap-2">
+            <Link to="/.account/about/" className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors">
+              <Info className="w-3.5 h-3.5" />
+              About
+            </Link>
+            <button onClick={handleLogout} disabled={isLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors">
+              <LogOut className="w-3.5 h-3.5" />
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
       <main className="relative z-10 max-w-2xl mx-auto px-4 py-8 space-y-8">

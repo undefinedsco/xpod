@@ -5,6 +5,7 @@ import { ErrorScreen } from './components/ErrorScreen';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { IndexPage } from './pages/IndexPage';
 import { WelcomePage } from './pages/WelcomePage';
+import { AboutPage } from './pages/AboutPage';
 import { AccountPage } from './pages/AccountPage';
 import { ConsentPage } from './pages/ConsentPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
@@ -20,6 +21,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/.account/" element={<IndexPage />} />
+      <Route path="/.account/about/" element={<AboutPage />} />
       <Route path="/.account/account/" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
       <Route path="/.account/login/" element={<LoginSelectPage />} />
       <Route path="/.account/login/password/" element={<WelcomePage initialIsRegister={false} />} />
