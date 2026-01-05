@@ -2,6 +2,14 @@
 
 **AGENTS.md 编写原则**：本文件只放原则、流程指引和关键配置说明，具体细节（如代码示例、配置格式）放到 `docs/` 下的专题文档。
 
+## Pod 数据读写原则
+
+Pod 内数据的读写**第一优先级使用 drizzle-solid** 进行操作：
+1. **优先 drizzle-solid**：所有 RDF 数据的 CRUD 操作首选 drizzle-solid API
+2. **绕过前先报告**：如遇 drizzle-solid 无法解决的问题，**第一时间整理 issue 报告**，记录问题场景、复现步骤和根因分析
+3. **持续改进**：通过 issue 驱动 drizzle-solid 的迭代，持续提高其易用性和健壮性
+4. **临时绕过**：仅在 issue 已记录且确实阻塞开发时，才考虑使用原生 SPARQL 或其他方式绕过
+
 ## Project Structure & Module Organization
 Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/`, paired by environment (for example `config/main.dev.json` with `extensions.dev.json`). Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` handle storage smoke tests such as `node scripts/testInsert.js`.
 
