@@ -206,7 +206,112 @@ Tips：想知道 “某个 `@id` 对应哪个文件/类”，可以在 `node_mod
 
 ---
 
-## 6. 排错清单
+## 6. 隐藏内部实现（不暴露到 jsonld）
+
+Components.js Generator 会扫描类的构造函数参数生成依赖注入配置。如果不想让某些内部依赖（如数据库连接）暴露到 `components.jsonld`，有以下方法：
+
+### 6.1 推荐做法：内部初始化
+
+**最干净的方式**：私有字段不作为构造参数，而是在类内部初始化（如 `initialize()` 方法中）。
+
+```typescript
+// ✅ 推荐：db 不暴露到 jsonld
+export class MyStore {
+  private db: Database | null = null;  // 不是构造参数
+  
+  constructor(connectionString: string) {  // 只暴露必要的配置
+    this.connectionString = connectionString;
+  }
+  
+  async initialize() {
+    this.db = new Database(this.connectionString);  // 内部创建
+  }
+}
+```
+
+```typescript
+// ❌ 不推荐：db 会暴露到 jsonld 的 constructorArguments
+export class MyStore {
+  constructor(private db: Database) {}
+}
+```
+
+### 6.2 使用 `@ignored` 注解
+
+如果必须从构造函数传入，可以用 `/** @ignored */` 注解：
+
+```typescript
+export class MyStore {
+  /**
+   * @param config - 配置对象
+   * @param internalDep - @ignored
+   */
+  constructor(config: Config, internalDep: InternalService) {}
+}
+```
+
+### 6.3 隐藏整个类
+
+在项目根目录创建 `.componentsjs-generator-config.json`：
+
+```json
+{
+  "ignoreComponents": ["InternalHelper", "PrivateUtil"],
+  "ignorePackagePaths": ["src/internal"]
+}
+```
+
+### 6.4 关于 memberFields
+
+生成的 jsonld 中 `memberFields` 列出类的所有成员，这只是元数据，**不影响依赖注入**。真正影响注入的是 `parameters` 和 `constructorArguments`。
+
+### 6.5 为 TypeScript 接口创建 jsonld
+
+当类 `implements` 一个 TypeScript 接口时，Components.js Generator 会在 `extends` 中引用该接口的 jsonld（如 `types.jsonld#QuintStore`）。但接口不会自动生成 jsonld，需要**手写**。
+
+**问题示例**：
+```typescript
+// types.ts
+export interface QuintStore { ... }
+
+// BaseQuintStore.ts  
+export abstract class BaseQuintStore implements QuintStore { ... }
+```
+
+生成的 jsonld 会包含：
+```json
+"extends": ["npmd:.../types.jsonld#QuintStore"]
+```
+
+但 `types.jsonld` 不存在，导致启动报错：
+```
+Resource .../types.jsonld#QuintStore is not a valid component
+```
+
+**解决方案**：在 `components/` 目录手写接口的 jsonld：
+
+```json
+// components/types.jsonld
+{
+  "@context": ["...context.jsonld"],
+  "@id": "npmd:@undefineds/xpod",
+  "components": [{
+    "@id": "npmd:.../types.jsonld#QuintStore",
+    "@type": "AbstractClass",
+    "requireElement": "QuintStore",
+    "parameters": [],
+    "constructorArguments": []
+  }]
+}
+```
+
+然后在 `build:components:fix` 脚本中：
+1. 复制到正确的 dist 目录
+2. 在 `components.jsonld` 的 import 数组中添加引用
+
+---
+
+## 7. 排错清单
 
 | 症状 | 可能原因 | 定位方式 |
 | --- | --- | --- |
@@ -218,7 +323,7 @@ Tips：想知道 “某个 `@id` 对应哪个文件/类”，可以在 `node_mod
 
 ---
 
-## 7. 推荐阅读与工具
+## 8. 推荐阅读与工具
 
 - **Components.js 文档**：<https://componentsjs.readthedocs.io>
 - **CSS 仓库**：<https://github.com/CommunitySolidServer/CommunitySolidServer>  
@@ -228,7 +333,7 @@ Tips：想知道 “某个 `@id` 对应哪个文件/类”，可以在 `node_mod
 
 ---
 
-## 8. 自我检查清单（每次改动前后都对照）
+## 9. 自我检查清单（每次改动前后都对照）
 
 1. 是否理解要覆盖/拓展的 CSS 组件？对应 `@id`、`@type` 是什么？
 2. jsonld 描述是否已生成？（`yarn build:components`）

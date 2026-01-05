@@ -1,0 +1,12 @@
+<script>
+  // 若已登录则进入账号页，否则跳转到登录入口
+  (async() => {
+    const controls = await fetchControls('<%= idpIndex %>');
+    if (<%= authenticating %>) {
+      const body = await fetchJson(controls.oidc.prompt);
+      location.href = body.location;
+    } else {
+      location.href = controls.html?.account?.account ?? controls.html.main.login;
+    }
+  })();
+</script>

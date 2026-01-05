@@ -1,0 +1,58 @@
+<h1>使用账号登录</h1>
+<form method="post" id="mainForm">
+  <p class="error" id="error"></p>
+
+  <fieldset>
+    <legend>账号信息</legend>
+    <ol>
+      <li>
+        <label for="email">邮箱</label>
+        <input id="email" type="email" name="email" autofocus>
+      </li>
+      <li>
+        <label for="password">密码</label>
+        <input id="password" type="password" name="password">
+      </li>
+      <li class="checkbox">
+        <label><input type="checkbox" name="remember" value="true" checked>保持登录状态</label>
+      </li>
+    </ol>
+  </fieldset>
+
+  <p class="actions">
+    <button type="submit" name="submit" disabled>登录</button>
+    <button class="hidden" type="button" id="cancel">取消</button>
+  </p>
+
+  <ul class="actions">
+    <li><a id="register-link" href="" class="link">注册账号</a></li>
+    <li><a id="forgot-link"  href="" class="link">忘记密码</a></li>
+  </ul>
+</form>
+
+
+<script>
+  (async() => {
+    let controls = await fetchControls('<%= idpIndex %>');
+
+    // 仅在 OIDC 交互中展示“取消”按钮
+    setVisibility('cancel', <%= authenticating %>);
+    getElements('cancel').cancel.addEventListener('click', async() => {
+      const res = await fetch(controls.oidc.cancel, { method: 'POST' });
+      location.href = (await res.json()).location;
+    });
+
+    addPostListener(async() => {
+      const json = await postJsonForm(controls.password.login, false,
+        (json) => Object.assign(json, { remember: Boolean(json.remember) }));
+      // 若无强制 OIDC 跳转，登录成功后进入账户页面
+      if (json) {
+        controls = await fetchControls('<%= idpIndex %>');
+        location.href = controls.html.account.account;
+      }
+    });
+
+    updateElement('register-link', controls.html.password.register, { href: true });
+    updateElement('forgot-link', controls.html.password.forgot, { href: true });
+  })();
+</script>

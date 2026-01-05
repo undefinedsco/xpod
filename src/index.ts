@@ -49,7 +49,14 @@ import { PodMigrationService } from './service/PodMigrationService';
 import { ReactAppViewHandler } from './identity/ReactAppViewHandler';
 import { SqliteQuintStore } from './storage/quint/SqliteQuintStore';
 import { PgQuintStore } from './storage/quint/PgQuintStore';
+import { BaseQuintStore } from './storage/quint/BaseQuintStore';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
+// Vector components
+import { SqliteVectorStore, PostgresVectorStore } from './storage/vector/index';
+import { VectorHttpHandler } from './http/vector/VectorHttpHandler';
+import { ProviderRegistryImpl } from './embedding/ProviderRegistryImpl';
+import { EmbeddingServiceImpl } from './embedding/EmbeddingServiceImpl';
+import { CredentialReaderImpl } from './embedding/CredentialReaderImpl';
 export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
 // Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
 export type {
@@ -119,4 +126,12 @@ export {
   ReactAppViewHandler,
   SqliteQuintStore,
   PgQuintStore,
+  BaseQuintStore,
+  // Vector exports
+  SqliteVectorStore,
+  PostgresVectorStore,
+  VectorHttpHandler,
+  ProviderRegistryImpl,
+  EmbeddingServiceImpl,
+  CredentialReaderImpl,
 };
