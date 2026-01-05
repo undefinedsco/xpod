@@ -28,6 +28,24 @@
       }
     },
     {
+      "comment": "VectorStore using SQLite (same db as QuintStore for JOIN)",
+      "@id": "urn:undefineds:xpod:VectorStore",
+      "@type": "SqliteVectorStore",
+      "filename": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Vector HTTP Handler",
+      "@id": "urn:undefineds:xpod:VectorHttpHandler",
+      "@type": "VectorHttpHandler",
+      "vectorStore": { "@id": "urn:undefineds:xpod:VectorStore" },
+      "credentialsExtractor": { "@id": "urn:solid-server:default:CredentialsExtractor" },
+      "permissionReader": { "@id": "urn:solid-server:default:PermissionReader" },
+      "authorizer": { "@id": "urn:solid-server:default:Authorizer" }
+    },
+    {
       "comment": "QuintStore-based SPARQL engine for local mode",
       "@id": "urn:undefineds:xpod:QuintstoreSparqlEngine",
       "@type": "QuintstoreSparqlEngine",
@@ -142,6 +160,9 @@
         "handlers": [
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+          },
+          {
+            "@id": "urn:undefineds:xpod:VectorHttpHandler"
           },
           {
             "@id": "urn:undefineds:xpod:TerminalHttpHandler"

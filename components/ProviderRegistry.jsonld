@@ -1,0 +1,14 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+  ],
+  "@id": "npmd:@undefineds/xpod",
+  "components": [
+    {
+      "@id": "npmd:@undefineds/xpod/^0.0.0/dist/embedding/ProviderRegistry.jsonld#ProviderRegistry",
+      "@type": "AbstractClass",
+      "requireElement": "ProviderRegistry",
+      "comment": "Abstract base class for ProviderRegistry implementations"
+    }
+  ]
+}
