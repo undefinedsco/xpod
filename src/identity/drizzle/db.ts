@@ -235,6 +235,7 @@ function ensureSqliteTables(sqlite: Database.Database): void {
       id TEXT PRIMARY KEY,
       display_name TEXT,
       token_hash TEXT NOT NULL,
+      account_id TEXT,
       node_type TEXT DEFAULT 'edge',
       subdomain TEXT UNIQUE,
       access_mode TEXT,
@@ -254,6 +255,15 @@ function ensureSqliteTables(sqlite: Database.Database): void {
     CREATE TABLE IF NOT EXISTS identity_edge_node_pod (
       node_id TEXT NOT NULL REFERENCES identity_edge_node(id) ON DELETE CASCADE,
       base_url TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS api_client_credentials (
+      client_id TEXT PRIMARY KEY,
+      client_secret_encrypted TEXT NOT NULL,
+      web_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      display_name TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
   `);
 }

@@ -92,12 +92,12 @@ export class EdgeNodeRepository {
         createdAt: createdAt?.toISOString(),
         updatedAt: updatedAt?.toISOString(),
         lastSeen: lastSeen?.toISOString(),
-        metadata: row.metadata ?? null,
+        metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata ?? null),
       };
     });
   }
 
-  public async createNode(displayName?: string): Promise<CreateEdgeNodeResult> {
+  public async createNode(displayName?: string, accountId?: string): Promise<CreateEdgeNodeResult> {
     const nodeId = randomUUID();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -105,8 +105,8 @@ export class EdgeNodeRepository {
     const ts = toDbTimestamp(this.db, now);
 
     await executeStatement(this.db, sql`
-      INSERT INTO identity_edge_node (id, display_name, token_hash, created_at, updated_at)
-      VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${ts}, ${ts})
+      INSERT INTO identity_edge_node (id, display_name, token_hash, account_id, created_at, updated_at)
+      VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${accountId ?? null}, ${ts}, ${ts})
     `);
 
     return {
@@ -132,7 +132,7 @@ export class EdgeNodeRepository {
       displayName: row.display_name == null ? undefined : String(row.display_name),
       tokenHash: String(row.token_hash ?? ''),
       nodeType: (row.node_type === 'center' ? 'center' : 'edge') as 'center' | 'edge',
-      metadata: row.metadata ?? null,
+      metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata ?? null),
     };
   }
 
@@ -271,7 +271,7 @@ export class EdgeNodeRepository {
     const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
-      metadata: row.metadata ?? null,
+      metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata ?? null),
       lastSeen: fromDbTimestamp(row.last_seen),
     };
   }
@@ -601,5 +601,81 @@ export class EdgeNodeRepository {
       WHERE id = ${nodeId} AND node_type = 'center'
     `);
     return true;
+  }
+
+  // ============ Account-based Node Methods ============
+
+  /**
+   * List nodes owned by a specific account
+   */
+  public async listNodesByAccount(accountId: string): Promise<Array<{
+    nodeId: string;
+    displayName?: string;
+    capabilities: Record<string, unknown> | null;
+    stringCapabilities: string[] | null;
+    accessMode: string | null;
+    lastSeen: Date | null;
+    connectivityStatus: string | null;
+  }>> {
+    const result = await executeQuery(this.db, sql`
+      SELECT id, display_name, capabilities, metadata, access_mode, last_seen, connectivity_status
+      FROM identity_edge_node
+      WHERE account_id = ${accountId} AND node_type = 'edge'
+      ORDER BY created_at DESC
+    `);
+
+    return result.rows.map((row: any) => {
+      const metadata = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata as Record<string, unknown> | null);
+      const capabilities = typeof row.capabilities === 'string' ? JSON.parse(row.capabilities) : (row.capabilities as Record<string, unknown> | null);
+      return {
+        nodeId: String(row.id),
+        displayName: row.display_name ?? undefined,
+        capabilities: capabilities ?? null,
+        stringCapabilities: (metadata?.capabilities as string[] | undefined) ?? null,
+        accessMode: row.access_mode ?? null,
+        lastSeen: fromDbTimestamp(row.last_seen) ?? null,
+        connectivityStatus: row.connectivity_status ?? null,
+      };
+    });
+  }
+
+  /**
+   * Get the account ID that owns a node
+   */
+  public async getNodeOwner(nodeId: string): Promise<string | undefined> {
+    const result = await executeQuery(this.db, sql`
+      SELECT account_id
+      FROM identity_edge_node
+      WHERE id = ${nodeId}
+      LIMIT 1
+    `);
+
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+
+    const row = result.rows[0] as any;
+    return row.account_id ?? undefined;
+  }
+
+  /**
+   * Delete a node
+   */
+  public async deleteNode(nodeId: string): Promise<boolean> {
+    const isSqlite = isDatabaseSqlite(this.db);
+
+    // First delete associated pods
+    await executeStatement(this.db, sql`
+      DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}
+    `);
+
+    // Then delete the node
+    const result = await executeQuery(this.db, sql`
+      DELETE FROM identity_edge_node
+      WHERE id = ${nodeId}
+      RETURNING id
+    `);
+
+    return result.rows.length > 0;
   }
 }

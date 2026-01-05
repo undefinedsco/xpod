@@ -42,3 +42,9 @@ local/
 third_party/
 main.json
 package-lock.json
+
+# AI
+codebuddy.sh
+claude.sh
+gemini.sh
+codex.sh

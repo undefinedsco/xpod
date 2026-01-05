@@ -233,7 +233,8 @@ async function runTest(
   }
 }
 
-describe.skipIf(!W3C_TESTS_AVAILABLE)('W3C SPARQL 1.1 Full Test Suite', () => {
+// 跳过: 已迁移到 QuintStore，不再使用 Quadstore
+describe.skip('W3C SPARQL 1.1 Full Test Suite', () => {
   const allResults: Record<string, Record<string, { passed: number; failed: number; total: number }>> = {};
 
   beforeAll(() => {

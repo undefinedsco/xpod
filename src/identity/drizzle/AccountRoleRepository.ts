@@ -3,6 +3,7 @@ import path from 'node:path';
 import { sql } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from './db';
+import { executeQuery, executeStatement, isDatabaseSqlite } from './db';
 
 const ACCOUNT_DATA_DIR = path.resolve('.internal', 'accounts', 'data');
 
@@ -96,7 +97,7 @@ export class AccountRoleRepository {
       return;
     }
     for (const role of unique) {
-      await this.db.execute(sql`
+      await executeStatement(this.db, sql`
         INSERT INTO identity_account_role (account_id, role)
         VALUES (${accountId}, ${role})
         ON CONFLICT (account_id, role) DO NOTHING
@@ -106,14 +107,27 @@ export class AccountRoleRepository {
 
   private async ensureSchema(): Promise<void> {
     try {
-      await this.db.execute(sql`
-        CREATE TABLE IF NOT EXISTS identity_account_role (
-          account_id TEXT NOT NULL,
-          role TEXT NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-          PRIMARY KEY (account_id, role)
-        )
-      `);
+      if (isDatabaseSqlite(this.db)) {
+        // SQLite syntax
+        await executeStatement(this.db, sql`
+          CREATE TABLE IF NOT EXISTS identity_account_role (
+            account_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            PRIMARY KEY (account_id, role)
+          )
+        `);
+      } else {
+        // PostgreSQL syntax
+        await executeStatement(this.db, sql`
+          CREATE TABLE IF NOT EXISTS identity_account_role (
+            account_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (account_id, role)
+          )
+        `);
+      }
     } catch (error: unknown) {
       if (!this.isDuplicateDefinitionError(error)) {
         throw error;
@@ -123,12 +137,12 @@ export class AccountRoleRepository {
   }
 
   private async fetchRoles(accountId: string): Promise<string[]> {
-    const result = await this.db.execute(sql`
+    const result = await executeQuery<{ role?: unknown }>(this.db, sql`
       SELECT role
       FROM identity_account_role
       WHERE account_id = ${accountId}
     `);
-    return (result.rows as Array<{ role?: unknown }>).map((row) => {
+    return result.rows.map((row) => {
       const value = typeof row.role === 'string' ? row.role.trim() : '';
       return value;
     }).filter((value) => value.length > 0);
@@ -136,7 +150,7 @@ export class AccountRoleRepository {
 
   private async getAccountPayloadById(accountId: string): Promise<Record<string, unknown> | undefined> {
     try {
-      const accountResult = await this.db.execute(sql`
+      const accountResult = await executeQuery<{ payload?: unknown }>(this.db, sql`
         SELECT payload
         FROM identity_account
         WHERE id = ${accountId}
@@ -159,8 +173,8 @@ export class AccountRoleRepository {
 
   private async loadAllAccounts(): Promise<Array<{ id: string; payload: Record<string, unknown> }>> {
     try {
-      const result = await this.db.execute(sql`SELECT id, payload FROM identity_account`);
-      return (result.rows as Array<{ id: string; payload: unknown }>).map((row) => ({
+      const result = await executeQuery<{ id: string; payload: unknown }>(this.db, sql`SELECT id, payload FROM identity_account`);
+      return result.rows.map((row) => ({
         id: row.id,
         payload: (row.payload ?? {}) as Record<string, unknown>,
       }));

@@ -26,6 +26,7 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
   nodeType: text('node_type').default('edge'),  // 'center' | 'edge'
+  accountId: text('account_id'),                // Owner account ID (for user-created nodes)
   subdomain: text('subdomain').unique(),
   accessMode: text('access_mode'),
   publicIp: text('public_ip'),
@@ -44,4 +45,13 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
 export const edgeNodePods = sqliteTable('identity_edge_node_pod', {
   nodeId: text('node_id').notNull().references(() => edgeNodes.id, { onDelete: 'cascade' }),
   baseUrl: text('base_url').notNull(),
+});
+
+export const apiClientCredentials = sqliteTable('api_client_credentials', {
+  clientId: text('client_id').primaryKey(),
+  clientSecretEncrypted: text('client_secret_encrypted').notNull(),
+  webId: text('web_id').notNull(),
+  accountId: text('account_id').notNull(),
+  displayName: text('display_name'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 });
