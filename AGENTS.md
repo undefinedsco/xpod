@@ -50,7 +50,18 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 - **复杂组件单独文档**：如 `docs/chained-http-handler.md` 详细说明中间件系统
 
 ## Testing Guidelines
-There is no dedicated test runner yet: use `yarn build:ts` for a fast type-only safety net, and add focused Node scripts under `scripts/` when validating storage or database logic. For end-to-end checks, start the relevant profile (`yarn dev` is the quickest loop) and exercise endpoints at `http://localhost:3000`. Capture manual verification steps, sample payloads, or curl commands in your PR notes.
+- `yarn build:ts` — 快速类型检查。
+- `yarn test:integration --no-file-parallelism` — 完整集成测试。
+- 针对存储或数据库逻辑，可在 `scripts/` 下编写专项 Node 脚本验证。
+- 端到端检查：启动对应配置（`yarn dev` 最快），访问 `http://localhost:3000` 验证。
+
+### 必须执行的回归检查
+1. **修复后**：实现修复并通过单元/集成测试后，**必须**运行完整集成测试 `yarn test:integration --no-file-parallelism`，防止局部修复引入全局副作用（如 Auth、Quota、单例状态）。
+2. **提交前**：在完成任务或提交代码前，**必须**再次运行完整集成测试，确保代码库处于全部通过状态。
+
+### 常见问题
+- 如果集成测试出现 `invalid_client` (401)，通常是 `.env.local` 凭据与运行中的服务器不同步（数据库被清理/重启导致），需更新凭据。
+- PR 描述中应包含手动验证步骤、示例请求或 curl 命令。
 
 ## Commit & Pull Request Guidelines
 History favors emoji-prefixed, imperative commit titles such as `🐛 Fix quadstore writes`; follow that format and keep changes cohesive. PRs should summarise intent, call out config or environment updates, and link to tracking issues. Attach screenshots or log excerpts when altering runtime behavior, and confirm which build or run command you executed.
@@ -71,6 +82,10 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 - 默认限速 10 MiB/s（`config/extensions.server.json` 与 `config/extensions.mix.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
 - `identity_account_usage.storage_limit_bytes` / `bandwidth_limit_bps` 以及对应的 Pod 字段用于存储配额与带宽上限；未来 Admin/桌面端可直接更新这些列完成覆写。
 
+## Package Manager
+- **统一使用 yarn**：项目所有目录（根目录及 `ui/` 子目录）均使用 yarn 管理依赖。
+- **禁止 npm**：不要使用 `npm install`，避免生成 `package-lock.json`。
+- Lock 文件：只保留 `yarn.lock`，若意外生成 `package-lock.json` 应立即删除。
+
 ## Communication
 - 与用户互动时默认使用中文进行回复，除非用户另有明确要求。
-- Use `yarn` for all package management and script execution.
