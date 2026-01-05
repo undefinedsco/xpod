@@ -1,8 +1,8 @@
 import {
   RedisLocker,
   ResourceIdentifier,
-  getLoggerFor,
 } from "@solid/community-server";
+import { getLoggerFor } from 'global-logger-factory';
 
 export class DebugRedisLocker extends RedisLocker {
   protected override logger = getLoggerFor(this);

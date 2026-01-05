@@ -2,10 +2,10 @@ import {
   LockingResourceStore as BaseLockingResourceStore,
   ResourceIdentifier,
   Representation,
-  getLoggerFor,
   Conditions,
   ChangeMap,
 } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 
 export class LockingResourceStore extends BaseLockingResourceStore {
   protected override logger = getLoggerFor(this);

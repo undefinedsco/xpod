@@ -1,4 +1,5 @@
-import { HttpHandler, type HttpHandlerInput, getLoggerFor } from '@solid/community-server';
+import { HttpHandler, type HttpHandlerInput } from '@solid/community-server';
+import { getLoggerFor } from 'global-logger-factory';
 import { logContext } from '../logging/LogContext';
 import crypto from 'node:crypto';
 
