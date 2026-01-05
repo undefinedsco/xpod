@@ -1,0 +1,49 @@
+<h1>选择登录方式</h1>
+<form method="post" id="mainForm">
+  <p class="error" id="error"></p>
+
+  <fieldset>
+    <legend>登录方式</legend>
+    <ol id="loginList">
+    </ol>
+  </fieldset>
+
+  <p class="actions"><button id="submit" type="submit" name="submit" disabled>确认登录方式</button></p>
+</form>
+
+<script>
+  const { mainForm, loginList } = getElements('mainForm', 'loginList');
+
+  (async() => {
+    const controls = await fetchControls('<%= idpIndex %>');
+    const json = await fetchJson(controls.main.logins);
+
+    const entries = Object.entries(json.logins);
+
+    if (entries.length === 0) {
+      setError('服务器尚未配置任何登录方式');
+      setVisibility('submit', false);
+    } else if (entries.length === 1) {
+      // 仅有一个选项时直接跳转
+      location.href = entries[0][1];
+    }
+
+    for (const [ name, url ] of entries) {
+      loginList.insertAdjacentHTML('beforeend', `
+        <li class="radio">
+          <label>
+            <input type="radio" name="loginMethod" value=${url}>
+            ${name}
+          </label>
+        </li>`);
+    }
+
+    addPostListener(() => {
+      const formData = new FormData(mainForm);
+      const url = formData.get('loginMethod');
+      if (url) {
+        location.href = url;
+      }
+    });
+  })();
+</script>
