@@ -1,0 +1,35 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+  ],
+  "@graph": [
+    {
+      "comment": "Vector Store - 向量存储（与 QuintStore 共享同一数据库，支持 JOIN）",
+      "@id": "urn:undefineds:xpod:VectorStore",
+      "@type": "PostgresVectorStore",
+      "connectionString": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Vector HTTP Handler - 提供 /-/vector 端点（纯向量存储服务）",
+      "@id": "urn:undefineds:xpod:VectorHttpHandler",
+      "@type": "VectorHttpHandler",
+      "vectorStore": {
+        "@id": "urn:undefineds:xpod:VectorStore"
+      },
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "permissionReader": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "authorizer": {
+        "@id": "urn:solid-server:default:Authorizer"
+      },
+      "options_sidecarPath": "/-/vector"
+    }
+  ]
+}
