@@ -60,6 +60,13 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 ## Testing Guidelines
 There is no dedicated test runner yet: use `yarn build:ts` for a fast type-only safety net, and add focused Node scripts under `scripts/` when validating storage or database logic. For end-to-end checks, start the relevant profile (`yarn dev` is the quickest loop) and exercise endpoints at `http://localhost:3000`. Capture manual verification steps, sample payloads, or curl commands in your PR notes.
 
+### 测试数据存放规范
+测试产生的中间数据（如 SQLite 数据库、临时文件等）必须归类存放，**禁止直接放在项目根目录**。统一使用 `.test-data/` 目录，按测试套件分子目录存放，例如：
+- `.test-data/server-mode-root/`
+- `.test-data/vector-store/`
+
+测试结束后应在 `afterAll` 中清理这些临时数据。
+
 ## Commit & Pull Request Guidelines
 History favors emoji-prefixed, imperative commit titles such as `🐛 Fix quadstore writes`; follow that format and keep changes cohesive. PRs should summarise intent, call out config or environment updates, and link to tracking issues. Attach screenshots or log excerpts when altering runtime behavior, and confirm which build or run command you executed.
 
