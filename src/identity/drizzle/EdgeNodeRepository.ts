@@ -97,7 +97,7 @@ export class EdgeNodeRepository {
     });
   }
 
-  public async createNode(displayName?: string): Promise<CreateEdgeNodeResult> {
+  public async createNode(displayName?: string, _accountId?: string): Promise<CreateEdgeNodeResult> {
     const nodeId = randomUUID();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -599,6 +599,37 @@ export class EdgeNodeRepository {
     await executeStatement(this.db, sql`
       DELETE FROM identity_edge_node
       WHERE id = ${nodeId} AND node_type = 'center'
+    `);
+    return true;
+  }
+
+  // ============ Placeholder methods for API handlers ============
+
+  /**
+   * List nodes by account ID.
+   * TODO: Implement when account-node relationship is defined
+   */
+  public async listNodesByAccount(_accountId: string): Promise<EdgeNodeSummary[]> {
+    // Placeholder: return all nodes for now
+    return this.listNodes();
+  }
+
+  /**
+   * Get the owner account ID of a node.
+   * TODO: Implement when account-node relationship is defined
+   */
+  public async getNodeOwner(_nodeId: string): Promise<string | undefined> {
+    // Placeholder: return undefined (no owner check)
+    return undefined;
+  }
+
+  /**
+   * Delete a node by ID.
+   * TODO: Implement proper deletion logic
+   */
+  public async deleteNode(nodeId: string): Promise<boolean> {
+    await executeStatement(this.db, sql`
+      DELETE FROM identity_edge_node WHERE id = ${nodeId}
     `);
     return true;
   }
