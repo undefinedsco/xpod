@@ -5,6 +5,14 @@
  */
 
 /**
+ * VectorStore 配置选项
+ */
+export interface VectorStoreOptions {
+  /** 数据库连接字符串，如 sqlite:./data/xpod.db 或 postgresql://... */
+  connectionString: string;
+}
+
+/**
  * 向量记录
  */
 export interface VectorRecord {

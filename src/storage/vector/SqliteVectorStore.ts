@@ -12,24 +12,20 @@ import fs from 'fs';
 import path from 'path';
 import type { Finalizable, Initializable } from '@solid/community-server';
 import { VectorStore, hashModelId } from './VectorStore';
-import type { VectorRecord, VectorSearchOptions, VectorSearchResult } from './types';
-
-export interface SqliteVectorStoreOptions {
-  path: string;
-}
+import type { VectorRecord, VectorSearchOptions, VectorSearchResult, VectorStoreOptions } from './types';
 
 export class SqliteVectorStore extends VectorStore implements Initializable, Finalizable {
   /** @ignored */
   private db: Database.Database | null = null;
   private readonly filename: string;
 
-  public constructor(options: SqliteVectorStoreOptions) {
+  public constructor(options: VectorStoreOptions) {
     super();
-    let p = options.path;
-    if (p.startsWith('sqlite:')) {
-      p = p.slice(7);
+    let connStr = options.connectionString;
+    if (connStr.startsWith('sqlite:')) {
+      connStr = connStr.slice(7);
     }
-    this.filename = p;
+    this.filename = connStr;
   }
 
   // ============================================
