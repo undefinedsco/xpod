@@ -31,7 +31,7 @@
       "comment": "VectorStore using SQLite (same db as QuintStore for JOIN)",
       "@id": "urn:undefineds:xpod:VectorStore",
       "@type": "SqliteVectorStore",
-      "filename": {
+      "options_path": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }

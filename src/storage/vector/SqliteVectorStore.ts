@@ -14,14 +14,22 @@ import type { Finalizable, Initializable } from '@solid/community-server';
 import { VectorStore, hashModelId } from './VectorStore';
 import type { VectorRecord, VectorSearchOptions, VectorSearchResult } from './types';
 
+export interface SqliteVectorStoreOptions {
+  path: string;
+}
+
 export class SqliteVectorStore extends VectorStore implements Initializable, Finalizable {
   /** @ignored */
   private db: Database.Database | null = null;
   private readonly filename: string;
 
-  constructor(filename: string = ':memory:') {
+  public constructor(options: SqliteVectorStoreOptions) {
     super();
-    this.filename = filename;
+    let p = options.path;
+    if (p.startsWith('sqlite:')) {
+      p = p.slice(7);
+    }
+    this.filename = p;
   }
 
   // ============================================
