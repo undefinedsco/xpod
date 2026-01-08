@@ -54,3 +54,7 @@ package-lock.json
 # Debug and analysis files
 debug-*.ts
 debugging_report.md
+
+# Components.js generated files
+components/components.jsonld
+components/context.jsonld
