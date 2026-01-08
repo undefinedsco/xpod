@@ -83,7 +83,7 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 
 ### 带宽配额与限速
 - Server / Mix 配置默认启用带宽统计：`UsageTrackingStore` 负责资源读写、`SubgraphSparqlHttpHandler` 负责 `.sparql` 入口，均会更新 `identity_account_usage` / `identity_pod_usage` 表中的 `ingress_bytes`、`egress_bytes`。
-- 默认限速 10 MiB/s（`config/extensions.server.json` 与 `config/extensions.mix.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
+- 默认限速 10 MiB/s（`config/extensions.cloud.json` 与 `config/extensions.mix.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
 - `identity_account_usage.storage_limit_bytes` / `bandwidth_limit_bps` 以及对应的 Pod 字段用于存储配额与带宽上限；未来 Admin/桌面端可直接更新这些列完成覆写。
 
 ## Communication

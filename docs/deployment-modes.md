@@ -9,7 +9,7 @@
 | Cloud-Edge Coordination | Disabled, Agent can be customized | Built-in `EdgeNodeSignal`, DNS-01, usage tracking; enable via env |
 | Tunnel Fallback | Disabled | Configurable `XPOD_FRP_*` + Agent `frp` auto-manages `frpc` |
 | Certificate Automation | Manual config or desktop client trigger | ACME + DNS-01 auto-renewal, distributed to nodes |
-| Bandwidth Quota | No tracking, no throttling | `identity_account_usage` / `identity_pod_usage` tables track `ingress_bytes` / `egress_bytes`; `UsageTrackingStore` + `SubgraphSparqlHttpHandler` collect data; default 10 MiB/s (configurable in `config/extensions.server.json`) |
+| Bandwidth Quota | No tracking, no throttling | `identity_account_usage` / `identity_pod_usage` tables track `ingress_bytes` / `egress_bytes`; `UsageTrackingStore` + `SubgraphSparqlHttpHandler` collect data; default 10 MiB/s (configurable in `config/extensions.cloud.json`) |
 | Typical Scenarios | Personal dev, testing, desktop client | Production deployment, cloud-edge cluster with local nodes |
 
 > Cloud-edge coordination: Set Signal/DNS/ACME/FRP variables in server environment, run `EdgeNodeAgent` on local nodes (see [edge-node-agent.md](edge-node-agent.md)) for dynamic DNS, certificates, and tunnel orchestration.

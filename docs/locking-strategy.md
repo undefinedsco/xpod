@@ -74,7 +74,7 @@ VoidLocker
 |----------|--------|----------|
 | `extensions.local.json` | CSS 官方内存锁方案 | 本地开发 |
 | `extensions.dev.json` | CSS 官方内存锁方案 | 开发环境 |
-| `extensions.server.json` | Redis 锁 | 生产环境（单机/集群） |
+| `extensions.cloud.json` | Redis 锁 | 生产环境（单机/集群） |
 | `extensions.server.router.json` | Redis 锁 | 生产环境（带路由） |
 
 ## 4. 部署场景选择

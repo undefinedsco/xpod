@@ -95,7 +95,7 @@ Xpod 支持 6 种运行模式，适用于不同场景：
 | **start** | `yarn start` | 3000 | `http://localhost:3000/` | `extensions.json` | 快速体验，SQLite + 本地文件 |
 | **local** | `yarn local` | 3000 | `http://localhost:3000/` | `.env.local` + `extensions.local.json` | 桌面/单机部署，配额禁用 |
 | **dev** | `yarn dev` | 3000 | `http://localhost:3000/` | `.env.local` + `extensions.dev.json` | 开发调试，无认证 |
-| **server** | `yarn server` | 3000 | `http://localhost:3000/` | `.env.server` + `extensions.server.json` | 生产部署，PostgreSQL + MinIO |
+| **server** | `yarn server` | 3000 | `http://localhost:3000/` | `.env.server` + `extensions.cloud.json` | 生产部署，PostgreSQL + MinIO |
 | **cluster:server** | `yarn cluster:server` | 3100 | `http://localhost:3100/` | `.env.cluster` + `extensions.cluster.json` | 集群控制面 |
 | **cluster:local** | `yarn cluster:local` | 3101 | `http://node-local.localhost:3101/` | `.env.cluster.local` + `extensions.local.json` | 边缘节点本地测试 |
 

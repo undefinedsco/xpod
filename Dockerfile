@@ -40,4 +40,4 @@ COPY --from=build /xpod/node_modules ./node_modules
 EXPOSE 3000
 
 # Set command run by the container
-ENTRYPOINT ["node", "node_modules/@solid/community-server/bin/server.js", "-c", "config/main.server.json", "config/extensions.server.json", "-m", "." ]
+ENTRYPOINT ["node", "node_modules/@solid/community-server/bin/server.js", "-c", "config/main.server.json", "config/extensions.cloud.json", "-m", "." ]

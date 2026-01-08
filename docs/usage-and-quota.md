@@ -32,7 +32,7 @@ Xpod provides built-in usage tracking and quota enforcement. For advanced manage
 
 ### Configuration
 
-In `config/extensions.server.json`:
+In `config/extensions.cloud.json`:
 ```json
 {
   "options_defaultAccountStorageLimitBytes": 10737418240,
