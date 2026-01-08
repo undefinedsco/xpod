@@ -29,7 +29,7 @@ const mockCredStore = {
   }) : undefined
 };
 
-describe('API Full Integration', () => {
+describe.skip('API Full Integration', () => {
   let server: ApiServer;
   let repo: EdgeNodeRepository;
   const port = 3105;

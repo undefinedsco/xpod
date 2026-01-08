@@ -1,6 +1,7 @@
 -- Create edge node tables manually
 CREATE TABLE IF NOT EXISTS identity_edge_node (
     id TEXT PRIMARY KEY,
+    owner_account_id TEXT,
     display_name TEXT,
     token_hash TEXT NOT NULL,
     subdomain TEXT UNIQUE,

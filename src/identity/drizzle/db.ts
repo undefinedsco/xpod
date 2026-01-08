@@ -234,6 +234,7 @@ function ensureSqliteTables(sqlite: Database.Database): void {
     CREATE TABLE IF NOT EXISTS identity_edge_node (
       id TEXT PRIMARY KEY,
       display_name TEXT,
+      owner_account_id TEXT,
       token_hash TEXT NOT NULL,
       node_type TEXT DEFAULT 'edge',
       subdomain TEXT UNIQUE,

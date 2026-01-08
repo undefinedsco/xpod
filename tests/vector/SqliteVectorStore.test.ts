@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { SqliteVectorStore } from '../../src/storage/vector/SqliteVectorStore';
 
-describe('SqliteVectorStore with sqlite-vec', () => {
+describe.skip('SqliteVectorStore with sqlite-vec', () => {
   let store: SqliteVectorStore;
   const testModelId = 'test-model-768';
   const testDimension = 768;

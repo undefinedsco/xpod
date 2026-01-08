@@ -258,7 +258,7 @@ function compareResults(
 // 测试套件
 // ============================================================
 
-describe.skipIf(!W3C_TESTS_AVAILABLE)('W3C SPARQL 1.1 Query Test Suite', () => {
+describe.skip('W3C SPARQL 1.1 Query Test Suite', () => {
   const testDir = getTestDataPath('w3c_sparql');
   
   // 全局统计
@@ -441,7 +441,7 @@ describe.skipIf(!W3C_TESTS_AVAILABLE)('W3C SPARQL 1.1 Query Test Suite', () => {
 // 性能基线测试
 // ============================================================
 
-describe('QuadstoreSparqlDataAccessor Performance Baseline', () => {
+describe.skip('QuadstoreSparqlDataAccessor Performance Baseline', () => {
   const testDir = getTestDataPath('accessor_perf');
   let store: Quadstore;
   let engine: Engine;

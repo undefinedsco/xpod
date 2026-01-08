@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
 // Read from environment variable - must be set
-const baseUrl = process.env.CSS_BASE_URL;
+const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
 
 if (!baseUrl) {
   throw new Error('CSS_BASE_URL environment variable must be set');

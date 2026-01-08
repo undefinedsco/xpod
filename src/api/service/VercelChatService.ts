@@ -25,21 +25,14 @@ export class VercelChatService {
       config = await this.podService.getAiConfig(userId, auth);
       this.logger.info(`Pod config for ${userId}: ${JSON.stringify(config)}`);
     } catch (error) {
-      this.logger.warn(`Failed to get Pod config for ${userId}, falling back to env: ${error}`);
+      this.logger.warn(`Failed to get Pod config for ${userId}, falling back to defaults: ${error}`);
       config = undefined;
     }
 
-    // Priority: Pod Config > Environment Variable > Default (Ollama)
-    let baseURL = config?.baseUrl || process.env.XPOD_AI_BASE_URL;
-    let apiKey = config?.apiKey || process.env.XPOD_AI_API_KEY;
-    let proxy = config?.proxy || process.env.XPOD_AI_PROXY;
-
-    // Special handling for Google/Gemini if configured in env
-    if (!baseURL && !apiKey && process.env.GOOGLE_API_KEY) {
-      baseURL = 'https://generativelanguage.googleapis.com/v1beta/openai';
-      apiKey = process.env.GOOGLE_API_KEY;
-      proxy = proxy || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-    }
+    // Priority: Pod Config > Default (Ollama)
+    let baseURL = config?.baseUrl;
+    let apiKey = config?.apiKey;
+    let proxy = config?.proxy;
 
     // Default to local Ollama if nothing else found
     baseURL = baseURL || 'http://localhost:11434/v1';

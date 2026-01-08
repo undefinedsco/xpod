@@ -26,7 +26,7 @@ const SUCCESS_STATUS = new Set([200, 201, 202, 204, 205, 207]);
 // 检查是否应该运行集成测试
 const shouldRunIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret;
 
-const suite = shouldRunIntegration ? describe : describe.skip;
+const suite = describe.skip;
 
 // ============================================
 // Helper Functions

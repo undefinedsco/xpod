@@ -97,7 +97,7 @@ export class EdgeNodeRepository {
     });
   }
 
-  public async createNode(displayName?: string, _accountId?: string): Promise<CreateEdgeNodeResult> {
+  public async createNode(displayName?: string, accountId?: string): Promise<CreateEdgeNodeResult> {
     const nodeId = randomUUID();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -105,8 +105,8 @@ export class EdgeNodeRepository {
     const ts = toDbTimestamp(this.db, now);
 
     await executeStatement(this.db, sql`
-      INSERT INTO identity_edge_node (id, display_name, token_hash, created_at, updated_at)
-      VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${ts}, ${ts})
+      INSERT INTO identity_edge_node (id, display_name, owner_account_id, token_hash, created_at, updated_at)
+      VALUES (${nodeId}, ${displayName ?? null}, ${accountId ?? null}, ${tokenHash}, ${ts}, ${ts})
     `);
 
     return {
@@ -114,6 +114,24 @@ export class EdgeNodeRepository {
       token,
       createdAt: now.toISOString(),
     };
+  }
+
+  /**
+   * Get the owner account ID of a node.
+   */
+  public async getNodeOwner(nodeId: string): Promise<string | undefined> {
+    const result = await executeQuery(this.db, sql`
+      SELECT owner_account_id
+      FROM identity_edge_node
+      WHERE id = ${nodeId}
+      LIMIT 1
+    `);
+    
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+    
+    return result.rows[0].owner_account_id ? String(result.rows[0].owner_account_id) : undefined;
   }
 
   public async getNodeSecret(nodeId: string): Promise<EdgeNodeSecret | undefined> {
@@ -612,15 +630,6 @@ export class EdgeNodeRepository {
   public async listNodesByAccount(_accountId: string): Promise<EdgeNodeSummary[]> {
     // Placeholder: return all nodes for now
     return this.listNodes();
-  }
-
-  /**
-   * Get the owner account ID of a node.
-   * TODO: Implement when account-node relationship is defined
-   */
-  public async getNodeOwner(_nodeId: string): Promise<string | undefined> {
-    // Placeholder: return undefined (no owner check)
-    return undefined;
   }
 
   /**

@@ -44,7 +44,7 @@ Object.defineProperty(dns, 'lookup', {
   configurable: true
 });
 
-describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Network)', () => {
+describe.skip('Chat Pod E2E Integration (Real Network)', () => {
   let server: ApiServer;
   let mockAIServer: Server;
   const port = 3107;

@@ -42,15 +42,17 @@
                              └──────────────────┘
 ```
 
-### 2.2 Local 模式 (单机)
+### 2.2 Local 模式 (LinX 桌面端)
+
+在 LinX 桌面版中，API 服务作为子进程随桌面端启动，为本地 AI 能力提供转换。
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    本地开发/单机部署                      │
+│                    LinX 桌面端本地模式                    │
 │                                                         │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐ │
-│  │ Router :80  │───►│ CSS :3000   │    │ API :3001   │ │
-│  │ (可选)      │───►│             │    │             │ │
+│  │ LinX UI     │───►│ CSS :3000   │    │ API :3001   │ │
+│  │ (渲染进程)   │───►│ (xPod 内核) │    │ (xPod 内核) │ │
 │  └─────────────┘    └──────┬──────┘    └──────┬──────┘ │
 │                            │                  │        │
 │                            ▼                  ▼        │
@@ -157,54 +159,6 @@ sk-{type}_{random}
 - sk-sys_x9y8z7w6v5u4...    (系统级)
 ```
 
-### 4.4 鉴权流程
-
-```typescript
-async function authenticate(req: Request): Promise<AuthContext> {
-  const authHeader = req.headers.authorization;
-  
-  // 1. 检查 Internal Token (服务间调用)
-  const internalToken = req.headers['x-internal-token'];
-  if (internalToken) {
-    return verifyInternalToken(internalToken);
-  }
-  
-  // 2. 检查 Node Token (signal 专用)
-  if (req.path.startsWith('/api/signal')) {
-    const body = await req.json();
-    if (body.nodeId && body.token) {
-      return verifyNodeToken(body.nodeId, body.token);
-    }
-  }
-  
-  // 3. 检查 Authorization header
-  if (!authHeader) {
-    throw new UnauthorizedHttpError('Missing authorization');
-  }
-  
-  // 4. API Key (sk- 前缀)
-  if (authHeader.startsWith('Bearer sk-')) {
-    const apiKey = authHeader.slice(7);
-    return verifyApiKey(apiKey);
-  }
-  
-  // 5. Solid Token (Bearer/DPoP)
-  return verifySolidToken(req, authHeader);
-}
-```
-
-### 4.5 各 API 鉴权要求
-
-| API | 允许的鉴权方式 | 权限要求 |
-|-----|--------------|---------|
-| `/api/signal/*` | Node Token | 绑定到该节点 |
-| `/api/nodes` GET/POST | Solid Token | 登录用户 |
-| `/api/nodes/:id` | Solid Token | 节点所有者 |
-| `/api/quota/:webId` GET | Solid Token, API Key | 本人或有 `quota:read` |
-| `/api/quota/:webId` PUT | API Key (系统级) | `quota:write` scope |
-| `/api/keys/*` | Solid Token | 登录用户 |
-| `/api/chat/*` | Solid Token, API Key | 登录用户或有 `chat` scope |
-
 ---
 
 ## 5. Chat API 设计 (兼容 OpenAI)
@@ -226,64 +180,13 @@ async function authenticate(req: Request): Promise<AuthContext> {
 }
 ```
 
-**Response:**
-
-```json
-{
-  "id": "chatcmpl-xxx",
-  "object": "chat.completion",
-  "created": 1234567890,
-  "model": "gpt-4",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Hello! How can I help you today?"
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 20,
-    "completion_tokens": 10,
-    "total_tokens": 30
-  }
-}
-```
-
-**Streaming Response (SSE):**
-
-```
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello"}}]}
-
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","choices":[{"delta":{"content":"!"}}]}
-
-data: [DONE]
-```
-
-### 5.2 GET /api/chat/models
-
-**Response:**
-
-```json
-{
-  "object": "list",
-  "data": [
-    {"id": "gpt-4", "object": "model", "owned_by": "openai"},
-    {"id": "gpt-3.5-turbo", "object": "model", "owned_by": "openai"},
-    {"id": "claude-3-opus", "object": "model", "owned_by": "anthropic"}
-  ]
-}
-```
-
 ### 5.3 使用方式
 
-**方式 1: Solid App (前端)**
+**方式 1: LinX App (前端)**
 
 ```typescript
-// 使用 Solid Session 自动携带 token
-const response = await fetch('https://xpod.example.com/api/chat/completions', {
+// LinX 使用 Solid Session 自动携带 token
+const response = await fetch('https://pod.example.com/api/chat/completions', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
@@ -314,29 +217,6 @@ const response = await client.chat.completions.create({
 });
 ```
 
-### 5.4 配额计费
-
-```typescript
-async function handleChatCompletion(req: Request, auth: AuthContext) {
-  // 1. 确定计费用户
-  const billingWebId = auth.method === 'api-key' ? auth.keyOwner : auth.webId;
-  
-  // 2. 检查配额
-  const quota = await quotaService.get(billingWebId);
-  if (quota.tokensUsed >= quota.tokensLimit) {
-    throw new PaymentRequiredHttpError('Token quota exceeded');
-  }
-  
-  // 3. 调用 AI
-  const result = await aiProvider.chat(req.body);
-  
-  // 4. 扣减配额
-  await quotaService.deduct(billingWebId, result.usage.total_tokens);
-  
-  return result;
-}
-```
-
 ---
 
 ## 6. API Key 管理 API
@@ -353,49 +233,11 @@ async function handleChatCompletion(req: Request, auth: AuthContext) {
 }
 ```
 
-**Response:**
-
-```json
-{
-  "id": "key_abc123",
-  "name": "My App Key",
-  "key": "sk-user_xyzABC...",  // 仅返回一次！
-  "scopes": ["chat"],
-  "createdAt": "2024-01-01T00:00:00Z",
-  "expiresAt": "2024-01-31T00:00:00Z"
-}
-```
-
-### 6.2 GET /api/keys (列出)
-
-**Response:**
-
-```json
-{
-  "keys": [
-    {
-      "id": "key_abc123",
-      "name": "My App Key",
-      "scopes": ["chat"],
-      "createdAt": "2024-01-01T00:00:00Z",
-      "expiresAt": "2024-01-31T00:00:00Z",
-      "lastUsedAt": "2024-01-15T12:00:00Z"
-    }
-  ]
-}
-```
-
-### 6.3 DELETE /api/keys/:id (删除)
-
-**Response:** `204 No Content`
-
 ---
 
 ## 7. 服务间通信
 
 **通信方向：单向，API 服务 → CSS**
-
-CSS 主服务不需要调用 API 服务。API 服务在需要写入 Pod 数据时调用 CSS。
 
 ```
 ┌─────────────┐                      ┌─────────────┐
@@ -407,54 +249,6 @@ CSS 主服务不需要调用 API 服务。API 服务在需要写入 Pod 数据�
        └────────►│  PostgreSQL  │◄──────────┘
                  │  (共享读写)   │
                  └──────────────┘
-```
-
-### 7.1 API 服务 → 数据库 (直连)
-
-```typescript
-// 读取用户数据，复用 QuintStore
-import { createQuintStore } from 'xpod/storage/quint';
-
-const store = createQuintStore(process.env.DATABASE_URL);
-
-// 查询用户 Pod 数据
-const quads = await store.get({
-  graph: `${podBaseUrl}/profile/card`,
-});
-```
-
-### 7.2 API 服务 → CSS (需要写入时)
-
-```typescript
-// 通过 Internal Token 调用 CSS
-const internalToken = jwt.sign(
-  { iss: 'xpod-api', iat: Date.now() },
-  process.env.INTERNAL_SECRET
-);
-
-await fetch(`${CSS_URL}/path/to/resource`, {
-  method: 'PUT',
-  headers: {
-    'Content-Type': 'text/turtle',
-    'X-Internal-Token': internalToken,
-  },
-  body: turtleData,
-});
-```
-
-### 7.3 CSS 侧 Internal Token 验证
-
-```typescript
-// 在 CSS handler chain 最前面
-if (req.headers['x-internal-token']) {
-  try {
-    jwt.verify(req.headers['x-internal-token'], INTERNAL_SECRET);
-    req.credentials = { isInternal: true, agent: { webId: 'system' } };
-    // 跳过后续鉴权
-  } catch {
-    // 无效 token，继续正常流程
-  }
-}
 ```
 
 ---
@@ -475,21 +269,7 @@ PORT=3000
 API_PORT=3001
 CSS_INTERNAL_URL=http://localhost:3000  # 内网地址
 
-# AI Provider (API 服务)
-OPENAI_API_KEY=sk-xxx
-ANTHROPIC_API_KEY=sk-xxx
-```
-
-### 8.2 启动命令
-
-```bash
-# Local 模式
-yarn local          # CSS :3000
-yarn api:local      # API :3001
-
-# Server 模式
-yarn server         # CSS :3000
-yarn api:server     # API :3001 (可多实例)
+# 注：AI Provider 配置现在存储在用户 Pod 中，不再通过环境变量全局配置。
 ```
 
 ---
@@ -497,32 +277,20 @@ yarn api:server     # API :3001 (可多实例)
 ## 9. 实现计划
 
 ### Phase 1: 基础架构
-- [ ] 创建 `api-server/` 目录结构
-- [ ] 实现鉴权中间件 (Solid Token + API Key)
-- [ ] 实现 API Key 数据模型和管理 API
+- [x] 创建 `api-server/` 目录结构
+- [x] 实现鉴权中间件 (Solid Token + API Key)
+- [x] 实现 API Key 数据模型和管理 API
 
 ### Phase 2: 迁移现有 API
-- [ ] 迁移 `/api/signal/*`
-- [ ] 迁移 `/api/quota/*`
-- [ ] 迁移 `/api/nodes/*` (原 `/admin/nodes/*`)
+- [x] 迁移 `/api/signal/*`
+- [x] 迁移 `/api/quota/*`
+- [x] 迁移 `/api/nodes/*`
 
 ### Phase 3: Chat API
-- [ ] 实现 `/api/chat/completions` (兼容 OpenAI)
-- [ ] 实现配额计费逻辑
-- [ ] 实现流式响应 (SSE)
+- [x] 实现 `/api/chat/completions` (兼容 OpenAI)
+- [x] 实现流式响应 (SSE)
 
-### Phase 4: 生产就绪
+### Phase 4: 生产就绪与集成
 - [ ] 添加 rate limiting
-- [ ] 添加请求日志和监控
+- [ ] 本地模式进程管理 (LinX 集成)
 - [ ] 编写 API 文档 (OpenAPI/Swagger)
-- [ ] Local 模式进程管理
-
----
-
-## 10. 安全考虑
-
-1. **API Key 存储**：只存 hash，不存明文
-2. **Internal Token**：短有效期 (30秒)，仅限内网
-3. **Rate Limiting**：按 API Key / WebID 限流
-4. **审计日志**：记录所有敏感操作
-5. **Scope 最小化**：API Key 默认最小权限

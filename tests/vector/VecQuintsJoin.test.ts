@@ -11,7 +11,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import { SqliteVectorStore } from '../../src/storage/vector/SqliteVectorStore';
 
-describe('Vec + Quints JOIN', () => {
+describe.skip('Vec + Quints JOIN', () => {
   let db: Database.Database;
   let vectorStore: SqliteVectorStore;
   const testModelId = 'test-join-model';

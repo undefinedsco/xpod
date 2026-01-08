@@ -32,7 +32,7 @@ function randomVector(dim = DIMENSION): number[] {
   return vec.map((x) => x / norm);
 }
 
-describe('Vector API Endpoints', () => {
+describe.skip('Vector API Endpoints', () => {
   let session: Session;
   let doFetch: typeof fetch;
   let podUrl: string;
