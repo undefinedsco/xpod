@@ -5,9 +5,25 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
-    "./xpod.json"
+    "./xpod.base.json",
+    "./xpod.cluster.json"
   ],
   "@graph": [
+    {
+      "comment": "Redefine PrimarySequenceInitializer to include CenterNodeRegistrationService",
+      "@id": "urn:solid-server:default:PrimarySequenceInitializer",
+      "@type": "SequenceHandler",
+      "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/SequenceHandler.jsonld#SequenceHandler_handlers": [
+        { "@id": "urn:solid-server:default:CleanupInitializer" },
+        { "@id": "urn:solid-server:default:MigrationInitializer" },
+        { "@id": "urn:solid-server:default:BaseUrlVerifier" },
+        { "@id": "urn:solid-server:default:PrimaryParallelInitializer" },
+        { "@id": "urn:solid-server:default:ModuleVersionVerifier" },
+        { "@id": "urn:solid-server:default:WorkerManager" },
+        { "@id": "urn:solid-server:default:SeededAccountInitializer" },
+        { "@id": "urn:undefineds:xpod:CenterNodeRegistrationService" }
+      ]
+    },
     {
       "comment": "Default quota limits (in-memory overrides)",
       "@id": "urn:undefineds:xpod:QuotaService",
@@ -264,14 +280,24 @@
       }
     },
     {
-      "comment": "Compose server HTTP pipeline",
+      "comment": "Compose server HTTP pipeline with cluster-aware handlers",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:BaseHttpHandler"
       },
       "overrideParameters": {
-        "@type": "StatusWaterfallHandler",
+        "@id": "urn:undefineds:xpod:EdgeWaterfallHandler",
+        "@type": "WaterfallHandler",
         "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:PodMigrationHttpHandler"
+          },
+          {
+            "@id": "urn:undefineds:xpod:ClusterIngressRouter"
+          },
+          {
+            "@id": "urn:undefineds:xpod:PodRoutingHttpHandler"
+          },
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },

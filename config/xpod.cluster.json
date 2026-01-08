@@ -326,6 +326,10 @@
       "comment": "Center node registration service for multi-node deployment",
       "@id": "urn:undefineds:xpod:CenterNodeRegistrationService",
       "@type": "CenterNodeRegistrationService",
+      "npmd:@undefineds/xpod/^0.0.0/dist/identity/CenterNodeRegistrationService.jsonld#CenterNodeRegistrationService_config_enabled": {
+        "@id": "urn:solid-server:default:variable:centerRegistrationEnabled",
+        "@type": "Variable"
+      },
       "config_identityDbUrl": {
         "@id": "urn:solid-server:default:variable:identityDbUrl",
         "@type": "Variable"

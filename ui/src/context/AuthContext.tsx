@@ -14,6 +14,7 @@ export interface AuthContextType {
   initError: string | null;
   idpIndex: string;
   isLoggedIn: boolean;
+  authenticating: boolean;
   refetchControls: () => Promise<void>;
 }
 
@@ -35,6 +36,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [initError, setInitError] = useState<string | null>(null);
 
   const isLoggedIn = Boolean(controls?.account?.logout);
+  const authenticating = isInitializing;
 
   const fetchControls = async () => {
     try {
@@ -64,7 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ controls, isInitializing, initError, idpIndex, isLoggedIn, refetchControls }}>
+    <AuthContext.Provider value={{ controls, isInitializing, initError, idpIndex, isLoggedIn, authenticating, refetchControls }}>
       {children}
     </AuthContext.Provider>
   );

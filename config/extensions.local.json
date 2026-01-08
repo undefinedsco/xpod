@@ -5,8 +5,9 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
-    "./xpod.json",
-    "./terminal.json"
+    "./xpod.base.json",
+    "./terminal.json",
+    "./extensions.local.initializer.json"
   ],
   "@graph": [
     {

@@ -26,6 +26,22 @@
             "defaultValue": "false"
           }
         },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edgeAgentEnabled",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "edgeAgentEnabled",
+            "defaultValue": "false"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:centerRegistrationEnabled",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "centerRegistrationEnabled",
+            "defaultValue": "false"
+          }
+        },
 
         {
           "comment": "=== Data Layer (KeyExtractor, hidden CLI params with CSS_ prefix) ===",
