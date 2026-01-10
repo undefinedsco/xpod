@@ -3,7 +3,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ApiServer } from '../ApiServer';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
-import { getWebId, getAccountId, isSolidAuth } from '../auth/AuthContext';
+import { getWebId, isSolidAuth } from '../auth/AuthContext';
 
 export interface ApiKeyHandlerOptions {
   store: DrizzleClientCredentialsStore;
@@ -126,17 +126,17 @@ export function registerApiKeyRoutes(server: ApiServer, options: ApiKeyHandlerOp
       return;
     }
     const auth = request.auth!;
-    const accountId = getAccountId(auth);
+    const webId = getWebId(auth);
     const clientId = decodeURIComponent(params.clientId);
 
-    if (!accountId) {
-      sendJson(response, 400, { error: 'Cannot determine account' });
+    if (!webId) {
+      sendJson(response, 400, { error: 'Cannot determine user' });
       return;
     }
 
     try {
-      // Delete with account check to ensure ownership
-      const deleted = await store.delete(clientId, accountId);
+      // Delete with webId check to ensure ownership
+      const deleted = await store.delete(clientId, webId);
       if (!deleted) {
         sendJson(response, 404, { error: 'Key not found or access denied' });
         return;

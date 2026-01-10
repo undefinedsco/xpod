@@ -3,7 +3,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ApiServer } from '../ApiServer';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
-import { getAccountId, isSolidAuth } from '../auth/AuthContext';
+import { getWebId, isSolidAuth } from '../auth/AuthContext';
 
 export interface NodeHandlerOptions {
   repository: EdgeNodeRepository;
@@ -11,12 +11,12 @@ export interface NodeHandlerOptions {
 
 /**
  * Handler for edge node management API
- * 
+ *
  * GET  /v1/nodes - List user's nodes
  * POST /v1/nodes - Create a new node
  * GET  /v1/nodes/:nodeId - Get node info
  * DELETE /v1/nodes/:nodeId - Delete a node
- * 
+ *
  * All endpoints require Solid Token (user must have a Pod)
  */
 export function registerNodeRoutes(server: ApiServer, options: NodeHandlerOptions): void {
@@ -38,16 +38,16 @@ export function registerNodeRoutes(server: ApiServer, options: NodeHandlerOption
       return;
     }
     const auth = request.auth!;
-    const accountId = getAccountId(auth);
+    const webId = getWebId(auth);
 
-    if (!accountId) {
+    if (!webId) {
       sendJson(response, 400, { error: 'Cannot determine user' });
       return;
     }
 
     try {
-      // Use accountId as account identifier
-      const nodes = await repo.listNodesByAccount(accountId);
+      // Use webId as owner identifier
+      const nodes = await repo.listNodesByAccount(webId);
 
       sendJson(response, 200, {
         nodes: nodes.map(formatNodeInfo),
@@ -66,23 +66,25 @@ export function registerNodeRoutes(server: ApiServer, options: NodeHandlerOption
       return;
     }
     const auth = request.auth!;
-    const accountId = getAccountId(auth);
+    const webId = getWebId(auth);
 
-    if (!accountId) {
+    console.log(`[NodeHandler] POST /v1/nodes - auth: ${JSON.stringify(auth)}, webId: ${webId}`);
+
+    if (!webId) {
       sendJson(response, 400, { error: 'Cannot determine user' });
       return;
     }
 
     const body = await readJsonBody(request);
-    const displayName = body && typeof body === 'object' 
+    const displayName = body && typeof body === 'object'
       ? (body as Record<string, unknown>).displayName as string | undefined
       : undefined;
 
     try {
-      // Use accountId as account identifier
-      const result = await repo.createNode(displayName, accountId);
+      // Use webId as owner identifier
+      const result = await repo.createNode(displayName, webId);
 
-      logger.info(`Created node ${result.nodeId} for account ${accountId}`);
+      logger.info(`Created node ${result.nodeId} for user ${webId}`);
 
       sendJson(response, 201, {
         success: true,
@@ -104,10 +106,10 @@ export function registerNodeRoutes(server: ApiServer, options: NodeHandlerOption
       return;
     }
     const auth = request.auth!;
-    const accountId = getAccountId(auth);
+    const webId = getWebId(auth);
     const nodeId = decodeURIComponent(params.nodeId);
 
-    if (!accountId) {
+    if (!webId) {
       sendJson(response, 400, { error: 'Cannot determine user' });
       return;
     }
@@ -115,7 +117,7 @@ export function registerNodeRoutes(server: ApiServer, options: NodeHandlerOption
     try {
       // Check ownership
       const nodeOwner = await repo.getNodeOwner(nodeId);
-      if (nodeOwner !== accountId) {
+      if (nodeOwner !== webId) {
         sendJson(response, 403, { error: 'Access denied' });
         return;
       }
@@ -139,10 +141,10 @@ export function registerNodeRoutes(server: ApiServer, options: NodeHandlerOption
       return;
     }
     const auth = request.auth!;
-    const accountId = getAccountId(auth);
+    const webId = getWebId(auth);
     const nodeId = decodeURIComponent(params.nodeId);
 
-    if (!accountId) {
+    if (!webId) {
       sendJson(response, 400, { error: 'Cannot determine user' });
       return;
     }
@@ -150,7 +152,7 @@ export function registerNodeRoutes(server: ApiServer, options: NodeHandlerOption
     try {
       // Check ownership
       const nodeOwner = await repo.getNodeOwner(nodeId);
-      if (nodeOwner !== accountId) {
+      if (nodeOwner !== webId) {
         sendJson(response, 403, { error: 'Access denied' });
         return;
       }

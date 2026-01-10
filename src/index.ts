@@ -57,6 +57,9 @@ import { VectorHttpHandler } from './http/vector/VectorHttpHandler';
 import { ProviderRegistryImpl } from './embedding/ProviderRegistryImpl';
 import { EmbeddingServiceImpl } from './embedding/EmbeddingServiceImpl';
 import { CredentialReaderImpl } from './embedding/CredentialReaderImpl';
+// Tunnel and Subdomain components
+import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';
+import { SubdomainService } from './subdomain/SubdomainService';
 export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
 // Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
 export type {
@@ -70,6 +73,18 @@ export type {
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService } from './quota/QuotaService';
+// Tunnel and Subdomain types
+export type {
+  TunnelProvider,
+  TunnelConfig,
+  TunnelSetupOptions,
+  TunnelStatus,
+} from './tunnel/TunnelProvider';
+export type {
+  SubdomainRegistration,
+  ConnectivityResult,
+  SubdomainServiceOptions,
+} from './subdomain/SubdomainService';
 // Export the new AppStaticAssetHandler
 export { AppStaticAssetHandler } from './http/AppStaticAssetHandler';
 
@@ -134,4 +149,7 @@ export {
   ProviderRegistryImpl,
   EmbeddingServiceImpl,
   CredentialReaderImpl,
+  // Tunnel and Subdomain exports
+  CloudflareTunnelProvider,
+  SubdomainService,
 };

@@ -54,6 +54,8 @@ export class AuthMiddleware {
     // Attempt authentication
     const result = await this.authenticator.authenticate(request);
 
+    console.log(`[AuthMiddleware] ${request.method} ${request.url} - success: ${result.success}, error: ${result.error}, context: ${JSON.stringify(result.context)}`);
+
     if (!result.success) {
       this.sendUnauthorized(response, result.error ?? 'Authentication failed');
       return false;
