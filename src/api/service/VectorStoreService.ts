@@ -5,7 +5,6 @@ import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId, isSolidAuth } from '../auth/AuthContext';
 import type { EmbeddingService } from '../../embedding/EmbeddingService';
 import type { AiCredential } from '../../embedding/types';
-import type { ClientCredentialsStore } from '../auth/ClientCredentialsAuthenticator';
 import { Session } from '@inrupt/solid-client-authn-node';
 
 import {
@@ -123,8 +122,6 @@ export interface VectorStoreServiceOptions {
   cssBaseUrl: string;
   /** Token endpoint for login */
   tokenEndpoint: string;
-  /** API Key store */
-  apiKeyStore: ClientCredentialsStore;
   /** Embedding service */
   embeddingService: EmbeddingService;
   /** Webhook URL for receiving notifications (optional) */
@@ -140,14 +137,12 @@ export class VectorStoreService {
   private readonly logger = getLoggerFor(this);
   private readonly cssBaseUrl: string;
   private readonly tokenEndpoint: string;
-  private readonly apiKeyStore: ClientCredentialsStore;
   private readonly embeddingService: EmbeddingService;
   private readonly webhookUrl?: string;
 
   public constructor(options: VectorStoreServiceOptions) {
     this.cssBaseUrl = options.cssBaseUrl.replace(/\/$/, '');
     this.tokenEndpoint = options.tokenEndpoint;
-    this.apiKeyStore = options.apiKeyStore;
     this.embeddingService = options.embeddingService;
     this.webhookUrl = options.webhookUrl;
   }
@@ -775,14 +770,8 @@ export class VectorStoreService {
   }
 
   private async getPodDb(auth: AuthContext) {
-    if (!isSolidAuth(auth) || !auth.clientId) {
-      this.logger.debug('No clientId in auth context');
-      return null;
-    }
-
-    const creds = await this.apiKeyStore.findByClientId(auth.clientId);
-    if (!creds) {
-      this.logger.warn(`No credentials found for client ${auth.clientId}`);
+    if (!isSolidAuth(auth) || !auth.clientId || !auth.clientSecret) {
+      this.logger.debug('No clientId or clientSecret in auth context');
       return null;
     }
 
@@ -790,8 +779,8 @@ export class VectorStoreService {
     try {
       await session.login({
         oidcIssuer: new URL(this.tokenEndpoint).origin,
-        clientId: creds.clientId,
-        clientSecret: creds.clientSecret,
+        clientId: auth.clientId,
+        clientSecret: auth.clientSecret,
       });
 
       if (!session.info.isLoggedIn || !session.info.webId) {

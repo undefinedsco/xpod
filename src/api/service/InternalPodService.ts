@@ -1,7 +1,6 @@
 import { Session } from '@inrupt/solid-client-authn-node';
 import { drizzle, eq, and } from 'drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
-import type { ClientCredentialsStore } from '../auth/ClientCredentialsAuthenticator';
 import { isSolidAuth, type AuthContext } from '../auth/AuthContext';
 
 // 使用新的 schema
@@ -17,7 +16,6 @@ const schema = {
 
 export interface InternalPodServiceOptions {
   tokenEndpoint: string;
-  apiKeyStore: ClientCredentialsStore;
 }
 
 /**
@@ -60,22 +58,16 @@ export class InternalPodService {
    * Get authenticated fetcher for a user
    */
   private async getAuthenticatedFetcher(auth: AuthContext): Promise<{ fetcher: typeof fetch; webId: string } | null> {
-    if (isSolidAuth(auth) && auth.clientId) {
-      // API Key Mode: The caller provided a Client ID.
+    if (isSolidAuth(auth) && auth.clientId && auth.clientSecret) {
+      // API Key Mode: credentials provided in auth context
       this.logger.debug(`Resolving session for client ${auth.clientId}`);
-      
-      const creds = await this.options.apiKeyStore.findByClientId(auth.clientId);
-      if (!creds) {
-        this.logger.warn(`No credentials found for client ${auth.clientId}`);
-        return null;
-      }
 
       const session = new Session();
       try {
         await session.login({
           oidcIssuer: new URL(this.options.tokenEndpoint).origin,
-          clientId: creds.clientId,
-          clientSecret: creds.clientSecret,
+          clientId: auth.clientId,
+          clientSecret: auth.clientSecret,
         });
         
         if (!session.info.isLoggedIn || !session.info.webId) {

@@ -8,20 +8,19 @@ import { InternalPodService } from '../../src/api/service/InternalPodService';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { ClientCredentialsAuthenticator } from '../../src/api/auth/ClientCredentialsAuthenticator';
-import { DrizzleClientCredentialsStore } from '../../src/api/store/DrizzleClientCredentialsStore';
 import { getIdentityDatabase } from '../../src/identity/drizzle/db';
-import { providerTable } from '../../src/embedding/schema/tables';
-import { credentialTable } from '../../src/credential/schema/tables';
+import { Provider } from '../../src/embedding/schema/tables';
+import { Credential } from '../../src/credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../src/credential/schema/types';
 
 /**
  * Chat Pod E2E Integration Test
  * 
  * This test validates the full chat completion flow with REAL authentication:
- * 1. Register CSS client credentials in api_keys table
+ * 1. Login to CSS with client credentials
  * 2. Write AI provider config (with proxy) to Pod
  * 3. Write credential (API key) to Pod
- * 4. Call Chat API with Bearer client_id (real authentication)
+ * 4. Call Chat API with API Key (Bearer sk-xxx)
  * 5. Real AI request via proxy to Google Gemini
  * 
  * Requirements:
@@ -37,7 +36,6 @@ const proxyUrl = process.env.TEST_AI_PROXY_URL;
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
 const cssBaseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000';
-const encryptionKey = process.env.XPOD_ENCRYPTION_KEY || 'test-encryption-key-for-e2e';
 
 const hasRequiredConfig = !!(googleApiKey && proxyUrl && clientId && clientSecret);
 const shouldRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && hasRequiredConfig;
@@ -46,15 +44,15 @@ const shouldRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && hasRequir
 dns.setDefaultResultOrder('ipv4first');
 
 const schema = {
-  credential: credentialTable,
-  provider: providerTable,
+  credential: Credential,
+  provider: Provider,
 };
 
 describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)', () => {
   let server: ApiServer;
   let session: Session;
   let db: ReturnType<typeof drizzle>;
-  let apiKeyStore: DrizzleClientCredentialsStore;
+  let apiKey: string; // Generated API Key: sk-{base64(client_id:client_secret)}
   let proxyAvailable = false;
   const port = 3107;
   const baseUrl = `http://localhost:${port}`;
@@ -62,6 +60,10 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
   const testCredentialId = 'google-cred-e2e-test';
 
   beforeAll(async () => {
+    // Generate API Key from client credentials
+    apiKey = ClientCredentialsAuthenticator.generateApiKey(clientId!, clientSecret!);
+    console.log(`[E2E] Generated API Key: ${apiKey.slice(0, 20)}...`);
+
     // 0. Check if proxy is available
     if (proxyUrl) {
       try {
@@ -92,48 +94,33 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
     const webId = session.info.webId;
     console.log(`[E2E] Logged in as ${webId}`);
 
-    // 2. Setup identity database and api_keys store
-    const identityDbUrl = process.env.CSS_IDENTITY_DB_URL || 'sqlite:./data/identity.sqlite';
-    const identityDb = getIdentityDatabase(identityDbUrl);
-    apiKeyStore = new DrizzleClientCredentialsStore({ db: identityDb, encryptionKey });
-
-    // 3. Register CSS client credentials in api_keys table (THIS IS THE KEY STEP!)
-    await apiKeyStore.store({
-      clientId: clientId!,
-      clientSecret: clientSecret!,
-      webId: webId,
-      accountId: 'e2e-test-account',
-      displayName: 'E2E Test API Key',
-    });
-    console.log(`[E2E] Registered client credentials in api_keys table: ${clientId}`);
-
-    // 4. Create drizzle instance to write to Pod
+    // 2. Create drizzle instance to write to Pod
     db = drizzle(
       { fetch: session.fetch.bind(session), info: { webId, isLoggedIn: true } } as any,
       { schema }
     );
 
-    // 5. Clean up any existing test data first
+    // 3. Clean up any existing test data first
     try {
-      await db.delete(credentialTable).where(eq(credentialTable.id, testCredentialId));
-      await db.delete(providerTable).where(eq(providerTable.id, testProviderId));
+      await db.delete(Credential).where(eq(Credential.id, testCredentialId));
+      await db.delete(Provider).where(eq(Provider.id, testProviderId));
     } catch {
       // Ignore errors if data doesn't exist
     }
 
-    // 6. Write provider config with proxy to Pod
-    await db.insert(providerTable).values({
+    // 4. Write provider config with proxy to Pod
+    await db.insert(Provider).values({
       id: testProviderId,
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
       proxyUrl: proxyUrl!,
     });
     console.log(`[E2E] Written provider ${testProviderId} with proxy ${proxyUrl}`);
 
-    // 7. Write credential with API key to Pod
+    // 5. Write credential with API key to Pod
     const podBaseUrl = webId.replace(/\/profile\/card#me$/, '/');
     const providerUri = `${podBaseUrl}settings/ai/providers.ttl#${testProviderId}`;
     
-    await db.insert(credentialTable).values({
+    await db.insert(Credential).values({
       id: testCredentialId,
       provider: providerUri,
       service: ServiceType.AI,
@@ -143,21 +130,19 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
     });
     console.log(`[E2E] Written credential ${testCredentialId}`);
 
-    // 8. Setup API server with REAL authentication
+    // 6. Setup API server with stateless API Key auth
     const tokenEndpoint = `${cssBaseUrl}/.oidc/token`;
     
-    // Real ClientCredentialsAuthenticator using the api_keys store
+    // ClientCredentialsAuthenticator (stateless - no store needed)
     const authenticator = new ClientCredentialsAuthenticator({
-      store: apiKeyStore,
       tokenEndpoint,
     });
 
     const authMiddleware = new AuthMiddleware({ authenticator });
 
-    // Real InternalPodService
+    // InternalPodService (no store needed, credentials from auth context)
     const podService = new InternalPodService({
       tokenEndpoint,
-      apiKeyStore,
     });
 
     const chatService = new VercelChatService(podService);
@@ -166,25 +151,17 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
     registerChatRoutes(server, { chatService });
 
     await server.start();
-    console.log(`[E2E] API server started on ${baseUrl} with REAL authentication`);
+    console.log(`[E2E] API server started on ${baseUrl} with stateless API Key auth`);
   });
 
   afterAll(async () => {
     // Cleanup: remove test data from Pod
     try {
-      await db.delete(credentialTable).where(eq(credentialTable.id, testCredentialId));
-      await db.delete(providerTable).where(eq(providerTable.id, testProviderId));
+      await db.delete(Credential).where(eq(Credential.id, testCredentialId));
+      await db.delete(Provider).where(eq(Provider.id, testProviderId));
       console.log('[E2E] Cleaned up test data from Pod');
     } catch (e) {
       console.warn('[E2E] Failed to cleanup Pod data:', e);
-    }
-
-    // Cleanup: remove client credentials from api_keys table
-    try {
-      await apiKeyStore.delete(clientId!);
-      console.log('[E2E] Cleaned up api_keys table');
-    } catch (e) {
-      console.warn('[E2E] Failed to cleanup api_keys:', e);
     }
 
     await server?.stop();
@@ -195,12 +172,13 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
   // Authentication Tests (always run)
   // ============================================
 
-  it('should reject request with invalid client_id', async () => {
+  it('should reject request with invalid API Key', async () => {
+    const invalidKey = ClientCredentialsAuthenticator.generateApiKey('invalid-client', 'wrong-secret');
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json', 
-        'Authorization': 'Bearer invalid-client-id-12345' 
+        'Authorization': `Bearer ${invalidKey}`
       },
       body: JSON.stringify({ 
         model: 'gemini-2.0-flash', 
@@ -213,13 +191,13 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
     expect(data.error).toBe('Unauthorized');
   });
 
-  it('should authenticate successfully with valid client_id', async () => {
+  it('should authenticate successfully with valid API Key', async () => {
     // This test verifies authentication works, even if AI call fails due to proxy
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json', 
-        'Authorization': `Bearer ${clientId}` 
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({ 
         model: 'gemini-2.0-flash', 
@@ -238,7 +216,7 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
   // AI Call Tests (require proxy)
   // ============================================
 
-  it('should complete a chat request using Bearer client_id authentication', async () => {
+  it('should complete a chat request using API Key authentication', async () => {
     if (!proxyAvailable) {
       console.log('[E2E] Skipping AI call test - proxy not available');
       return;
@@ -248,7 +226,7 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json', 
-        'Authorization': `Bearer ${clientId}` 
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({ 
         model: 'gemini-2.0-flash', 
@@ -282,7 +260,7 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json', 
-        'Authorization': `Bearer ${clientId}` 
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({ 
         model: 'gemini-2.0-flash', 

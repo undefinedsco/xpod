@@ -3,6 +3,15 @@ import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
+/**
+ * Generate API Key from client credentials.
+ * Format: sk-{base64(client_id:client_secret)}
+ */
+function generateApiKey(clientId: string, clientSecret: string): string {
+  const encoded = btoa(`${clientId}:${clientSecret}`);
+  return `sk-${encoded}`;
+}
+
 export function AccountPage() {
   const { controls, refetchControls } = useAuth();
   const navigate = useNavigate();
@@ -354,7 +363,7 @@ export function AccountPage() {
               </button>
             )}
           </div>
-          <p className="text-[11px] text-zinc-500 mb-3">API keys (Client Credentials) allow external applications and scripts to access your Pod programmatically.</p>
+          <p className="text-[11px] text-zinc-500 mb-3">API Keys for programmatic access. Use with <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code></p>
           
           {!controls?.account?.clientCredentials ? (
             <div className="bg-white border border-zinc-200 rounded-xl shadow-sm p-4">
@@ -418,37 +427,40 @@ export function AccountPage() {
                   <div className="flex items-start gap-3">
                     <div className="p-2 bg-emerald-100 rounded-lg"><Key className="w-4 h-4 text-emerald-600" /></div>
                     <div className="flex-1">
-                      <p className="text-sm font-medium text-emerald-700 mb-1">New Key Created</p>
-                      <p className="text-xs text-zinc-500 mb-3">Please copy the secret now. It will not be shown again.</p>
+                      <p className="text-sm font-medium text-emerald-700 mb-1">New API Key Created</p>
+                      <p className="text-xs text-zinc-500 mb-3">Copy your API Key now. It will not be shown again.</p>
                       <div className="space-y-3 text-xs font-mono bg-white p-3 rounded-lg border border-zinc-200">
+                        {/* API Key - the main thing users need */}
+                        <div className="flex items-center justify-between gap-2 pb-3 border-b border-zinc-100">
+                          <div className="min-w-0">
+                            <span className="text-zinc-400 select-none">API Key</span>
+                            <p className="text-emerald-600 break-all font-medium">{generateApiKey(newCredential.id, newCredential.secret)}</p>
+                          </div>
+                          <button
+                            onClick={() => copyToClipboard(generateApiKey(newCredential.id, newCredential.secret), 'apikey')}
+                            className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0"
+                            title="Copy API Key"
+                          >
+                            {copiedField === 'apikey' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                        {/* Client ID - for reference */}
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
-                            <span className="text-zinc-400 select-none">ID</span>
-                            <p className="text-zinc-700 truncate">{newCredential.id}</p>
+                            <span className="text-zinc-400 select-none">Client ID</span>
+                            <p className="text-zinc-500 truncate text-[10px]">{newCredential.id}</p>
                           </div>
                           <button
                             onClick={() => copyToClipboard(newCredential.id, 'id')}
                             className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0"
-                            title="Copy ID"
+                            title="Copy Client ID"
                           >
                             {copiedField === 'id' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
                           </button>
                         </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <span className="text-zinc-400 select-none">Secret</span>
-                            <p className="text-emerald-600 break-all">{newCredential.secret}</p>
-                          </div>
-                          <button
-                            onClick={() => copyToClipboard(newCredential.secret, 'secret')}
-                            className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0"
-                            title="Copy Secret"
-                          >
-                            {copiedField === 'secret' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
                       </div>
-                      <button onClick={() => setNewCredential(null)} className="mt-3 text-xs text-zinc-500 hover:text-zinc-900 font-medium">I have copied it</button>
+                      <p className="mt-3 text-[10px] text-zinc-400">Use the API Key with: <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code></p>
+                      <button onClick={() => setNewCredential(null)} className="mt-2 text-xs text-zinc-500 hover:text-zinc-900 font-medium">Done</button>
                     </div>
                   </div>
                 </div>

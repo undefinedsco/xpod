@@ -12,6 +12,7 @@ export interface SolidAuthContext {
   webId: string;
   accountId?: string;
   clientId?: string;
+  clientSecret?: string;  // For client credentials auth
   displayName?: string;
   accessToken?: string;
   tokenType?: 'Bearer' | 'DPoP';

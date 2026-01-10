@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
 import { MultiAuthenticator } from '../../src/api/auth/MultiAuthenticator';
 import { ClientCredentialsAuthenticator } from '../../src/api/auth/ClientCredentialsAuthenticator';
@@ -18,16 +18,9 @@ const mockSolidAuth = {
   })
 };
 
-// Mock ClientCredentialsStore
-const mockCredStore = {
-  findByClientId: async (id: string) => id === 'valid-api-key' ? ({
-    clientId: id, 
-    clientSecret: 'secret', 
-    webId: 'https://bot#me', 
-    accountId: 'bot-1', 
-    createdAt: new Date()
-  }) : undefined
-};
+// Generate API Key for testing
+const validApiKey = ClientCredentialsAuthenticator.generateApiKey('valid-client-id', 'valid-secret');
+const invalidApiKey = ClientCredentialsAuthenticator.generateApiKey('invalid-client', 'wrong-secret');
 
 describe('API Full Integration', () => {
   let server: ApiServer;
@@ -41,17 +34,23 @@ describe('API Full Integration', () => {
     repo = new EdgeNodeRepository(db);
 
     const clientAuth = new ClientCredentialsAuthenticator({
-      store: mockCredStore,
       tokenEndpoint: 'http://localhost:9999/token'
     });
 
     // Mock the token exchange to bypass external HTTP
     // @ts-ignore
-    clientAuth.exchangeForToken = async () => ({ 
-      success: true, 
-      token: 'fake-token', 
-      expiresAt: new Date(Date.now() + 3600000) 
-    });
+    clientAuth.exchangeForToken = async (clientId: string, clientSecret: string) => {
+      // Only accept valid credentials
+      if (clientId === 'valid-client-id' && clientSecret === 'valid-secret') {
+        return { 
+          success: true, 
+          token: 'fake-token',
+          webId: 'https://bot#me',
+          expiresAt: new Date(Date.now() + 3600000) 
+        };
+      }
+      return { success: false, error: 'Invalid credentials' };
+    };
 
     const multiAuth = new MultiAuthenticator({
       authenticators: [mockSolidAuth as any, clientAuth]
@@ -114,7 +113,7 @@ describe('API Full Integration', () => {
 
   it('should reject API key for node endpoints', async () => {
     const response = await fetch(`${baseUrl}/v1/nodes`, {
-      headers: { 'Authorization': 'Bearer valid-api-key' }
+      headers: { 'Authorization': `Bearer ${validApiKey}` }
     });
     expect(response.status).toBe(403);
   });
@@ -136,13 +135,13 @@ describe('API Full Integration', () => {
     expect(data.token).toBeDefined();
   });
 
-  it('should handle signals via API key', async () => {
-    const node = await repo.createNode('Edge', 'bot-1');
+  it('should handle signals via API Key', async () => {
+    const node = await repo.createNode('Edge', 'https://bot#me');
     const res = await fetch(`${baseUrl}/v1/signal`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer valid-api-key',
+        'Authorization': `Bearer ${validApiKey}`,
       },
       body: JSON.stringify({ nodeId: node.nodeId, version: '1.0.0' })
     });
@@ -153,7 +152,7 @@ describe('API Full Integration', () => {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 
-        'Authorization': 'Bearer valid-api-key',
+        'Authorization': `Bearer ${validApiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ 
@@ -168,7 +167,7 @@ describe('API Full Integration', () => {
 
   it('should list available models', async () => {
     const response = await fetch(`${baseUrl}/v1/models`, {
-      headers: { 'Authorization': 'Bearer valid-api-key' }
+      headers: { 'Authorization': `Bearer ${validApiKey}` }
     });
     expect(response.status).toBe(200);
     const data = await response.json() as any;
@@ -176,9 +175,9 @@ describe('API Full Integration', () => {
     expect(data.data[0].id).toBe('xpod-default');
   });
 
-  it('should reject invalid auth', async () => {
+  it('should reject invalid API Key', async () => {
     const response = await fetch(`${baseUrl}/v1/nodes`, {
-      headers: { 'Authorization': 'Bearer invalid-api-key' }
+      headers: { 'Authorization': `Bearer ${invalidApiKey}` }
     });
     expect(response.status).toBe(401);
   });

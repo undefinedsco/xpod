@@ -6,7 +6,7 @@
  * 
  * Authentication:
  * - Solid DPoP Token: for browser/frontend users
- * - Client Credentials (client_id + client_secret): for edge nodes and third-party backends
+ * - Client Credentials (Basic Auth with client_id:client_secret): for edge nodes and third-party backends
  */
 
 import { getIdentityDatabase } from '../identity/drizzle/db';
@@ -19,10 +19,8 @@ import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
 import { registerSignalRoutes } from './handlers/SignalHandler';
 import { registerNodeRoutes } from './handlers/NodeHandler';
 import { registerChatRoutes } from './handlers/ChatHandler';
-import { registerApiKeyRoutes } from './handlers/ApiKeyHandler';
 import { registerVectorRoutes } from './handlers/VectorHandler';
 import { registerVectorStoreRoutes } from './handlers/VectorStoreHandler';
-import { DrizzleClientCredentialsStore } from './store/DrizzleClientCredentialsStore';
 import { ClientCredentialsAuthenticator } from './auth/ClientCredentialsAuthenticator';
 import { MultiAuthenticator } from './auth/MultiAuthenticator';
 import { InternalPodService } from './service/InternalPodService';
@@ -45,7 +43,6 @@ async function main(): Promise<void> {
   const host = process.env.API_HOST ?? '0.0.0.0';
   const databaseUrl = process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL;
   const corsOrigins = process.env.CORS_ORIGINS?.split(',').map((s) => s.trim()) ?? ['*'];
-  const encryptionKey = process.env.XPOD_ENCRYPTION_KEY ?? 'default-dev-key-change-me';
   const cssTokenEndpoint = process.env.CSS_TOKEN_ENDPOINT ?? 'http://localhost:3000/.oidc/token';
   const webhookUrl = process.env.VECTOR_STORE_WEBHOOK_URL; // e.g., https://api.example.com/v1/vector_stores/webhook
 
@@ -59,7 +56,6 @@ async function main(): Promise<void> {
   const db = getIdentityDatabase(databaseUrl);
 
   const nodeRepo = new EdgeNodeRepository(db);
-  const apiKeyStore = new DrizzleClientCredentialsStore({ db, encryptionKey });
 
   // Setup authenticators
   // 1. Solid DPoP Token - for browser/frontend
@@ -67,8 +63,8 @@ async function main(): Promise<void> {
   const solidAuthenticator = new SolidTokenAuthenticator({});
 
   // 2. Client Credentials - for edge nodes and third-party backends
+  // Uses Basic Auth: Authorization: Basic base64(client_id:client_secret)
   const clientCredAuthenticator = new ClientCredentialsAuthenticator({
-    store: apiKeyStore,
     tokenEndpoint: cssTokenEndpoint,
   });
 
@@ -83,7 +79,6 @@ async function main(): Promise<void> {
   // Setup AI services
   const podService = new InternalPodService({
     tokenEndpoint: cssTokenEndpoint,
-    apiKeyStore: apiKeyStore,
   });
   const chatService = new VercelChatService(podService);
 
@@ -101,7 +96,6 @@ async function main(): Promise<void> {
   const vectorStoreService = new VectorStoreService({
     cssBaseUrl,
     tokenEndpoint: cssTokenEndpoint,
-    apiKeyStore,
     embeddingService,
     webhookUrl,
   });
@@ -130,7 +124,6 @@ async function main(): Promise<void> {
   // Register API routes
   registerSignalRoutes(server, { repository: nodeRepo });
   registerNodeRoutes(server, { repository: nodeRepo });
-  registerApiKeyRoutes(server, { store: apiKeyStore });
   registerChatRoutes(server, { chatService });
   registerVectorRoutes(server, { vectorService });
   registerVectorStoreRoutes(server, { vectorStoreService });
