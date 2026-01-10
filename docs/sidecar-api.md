@@ -106,29 +106,38 @@ POST {path}/-/terminal/{sessionId}/input  # 上行输入 (stdin)
 
 ---
 
-### `/-/vector` - 向量检索服务
+### `/-/search` - 语义搜索服务
 
-为 AI 应用提供向量嵌入和语义搜索能力。
+为 AI 应用提供语义搜索能力，极简设计。
 
-**端点**（规划）：
+**端点**：
 ```
-POST {path}/-/vector/index    # 索引资源
-POST {path}/-/vector/search   # 语义搜索
-GET  {path}/-/vector/status   # 索引状态
+GET  {path}/-/search?q=...     # 语义搜索
+POST {path}/-/search           # 语义搜索（支持复杂查询）
 ```
+
+**设计原则**：
+- **极简 API**：只有 search 端点，状态通过 RDF 元数据查看
+- **自动索引**：通过 Store 层钩子自动触发，写文件即索引
+- **CSS 原生鉴权**：继承 `/-/` 之前路径的 ACL，无需额外鉴权
+
+**索引触发**：
+- 写入 `.ttl` 文件定义 `VectorStore`（指定索引范围、模型等）
+- 文件创建/修改/删除自动触发向量索引更新
+- 通过 `ObservableResourceStore` 的事件机制实现
+
+**状态查看**：
+- 直接 GET VectorStore 定义文件（如 `/settings/vector-stores.ttl`）
+- 索引状态、文件数量等作为 RDF 属性存储
 
 **架构**：
 - 在存储层 (Data Accessor) 原生集成向量支持
 - SQLite: 集成 `sqlite-vec`
 - PostgreSQL: 集成 `pgvector`
 
-**配置**：
-- 使用 RDF Metadata 定义资源级的索引策略
-- 参数：Embedding Model, Chunk Size, 索引范围
-
-**集成**：
-- 向量数据与 RDF 元数据共享底层数据库
-- 确保事务一致性与统一备份
+**AI 凭据**：
+- 从 Pod 的 `/settings/credentials.ttl` 读取
+- 使用 `SparqlEngine` 内部查询，无需 HTTP 往返
 
 ---
 
@@ -217,8 +226,8 @@ Terminal 服务需要配置允许运行的命令白名单：
 | 服务 | 状态 | 组件 |
 |------|------|------|
 | `/-/sparql` | ✅ 已实现 | `SubgraphSparqlHttpHandler` |
+| `/-/search` | 📋 规划中 | `SearchHttpHandler` |
 | `/-/terminal` | 📋 规划中 | - |
-| `/-/vector` | 📋 规划中 | - |
 | `/-/responses` | 📋 规划中 | - |
 | `/-/jobs` | 📋 规划中 | - |
 

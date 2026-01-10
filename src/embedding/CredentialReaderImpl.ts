@@ -2,13 +2,13 @@ import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq, and } from 'drizzle-solid';
 import { CredentialReader } from './CredentialReader';
 import type { AiCredential } from './types';
-import { credentialTable } from '../credential/schema/tables';
-import { providerTable } from './schema/tables';
+import { Credential } from '../credential/schema/tables';
+import { Provider } from './schema/tables';
 import { ServiceType, CredentialStatus } from '../credential/schema/types';
 
 const schema = {
-  credential: credentialTable,
-  provider: providerTable,
+  credential: Credential,
+  provider: Provider,
 };
 
 export class CredentialReaderImpl extends CredentialReader {
@@ -33,9 +33,9 @@ export class CredentialReaderImpl extends CredentialReader {
       // 查询 credential，直接通过 provider URI 过滤
       const credentials = await db.query.credential.findMany({
         where: and(
-          eq(credentialTable.service, ServiceType.AI),
-          eq(credentialTable.status, CredentialStatus.ACTIVE),
-          eq(credentialTable.provider, providerUri),
+          eq(Credential.service, ServiceType.AI),
+          eq(Credential.status, CredentialStatus.ACTIVE),
+          eq(Credential.provider, providerUri),
         ),
         with: {
           provider: true,

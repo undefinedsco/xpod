@@ -134,17 +134,19 @@ export interface CompoundResult {
 export type AttributeMap = Map<string, Map<string, Term[]>>;
 
 /**
- * QuintStore - 五元组存储接口
+ * QuintStore - 五元组存储抽象基类
+ * 
+ * @abstract
  */
-export interface QuintStore {
+export abstract class QuintStore {
   // 查询
-  get(pattern: QuintPattern, options?: QueryOptions): Promise<Quint[]>;
-  match(subject?: Term | null, predicate?: Term | null, object?: Term | null, graph?: Term | null): AsyncIterator<Quint>;
-  getByGraphPrefix(prefix: string, options?: QueryOptions): Promise<Quint[]>;
-  count(pattern: QuintPattern): Promise<number>;
+  public abstract get(pattern: QuintPattern, options?: QueryOptions): Promise<Quint[]>;
+  public abstract match(subject?: Term | null, predicate?: Term | null, object?: Term | null, graph?: Term | null): AsyncIterator<Quint>;
+  public abstract getByGraphPrefix(prefix: string, options?: QueryOptions): Promise<Quint[]>;
+  public abstract count(pattern: QuintPattern): Promise<number>;
   
   // 复合查询 - 多 pattern JOIN，由数据库内部执行
-  getCompound?(compound: CompoundPattern, options?: QueryOptions): Promise<CompoundResult[]>;
+  public getCompound?(compound: CompoundPattern, options?: QueryOptions): Promise<CompoundResult[]>;
   
   /**
    * 批量获取多个 subject 的多个属性
@@ -160,24 +162,24 @@ export interface QuintStore {
    * @param graph - 可选，限定图
    * @returns Map<subject, Map<predicate, object[]>>
    */
-  getAttributes?(
+  public getAttributes?(
     subjects: string[],
     predicates: string[],
     graph?: Term
   ): Promise<AttributeMap>;
 
   // 写入
-  put(quint: Quint): Promise<void>;
-  multiPut(quints: Quint[]): Promise<void>;
-  updateEmbedding(pattern: QuintPattern, embedding: number[]): Promise<number>;
+  public abstract put(quint: Quint): Promise<void>;
+  public abstract multiPut(quints: Quint[]): Promise<void>;
+  public abstract updateEmbedding(pattern: QuintPattern, embedding: number[]): Promise<number>;
 
   // 删除
-  del(pattern: QuintPattern): Promise<number>;
-  multiDel(quints: Quint[]): Promise<void>;
+  public abstract del(pattern: QuintPattern): Promise<number>;
+  public abstract multiDel(quints: Quint[]): Promise<void>;
 
   // 生命周期
-  open(): Promise<void>;
-  close(): Promise<void>;
-  stats(): Promise<StoreStats>;
-  clear(): Promise<void>;
+  public abstract open(): Promise<void>;
+  public abstract close(): Promise<void>;
+  public abstract stats(): Promise<StoreStats>;
+  public abstract clear(): Promise<void>;
 }

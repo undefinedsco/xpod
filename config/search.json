@@ -1,0 +1,66 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+  ],
+  "comment": "Search Sidecar 配置 - 提供 /-/search 语义搜索端点",
+  "@graph": [
+    {
+      "comment": "SearchHttpHandler - 处理 /-/search 请求",
+      "@id": "urn:xpod:SearchHttpHandler",
+      "@type": "SearchHttpHandler",
+      "SearchHttpHandler:_vectorStore": {
+        "@id": "urn:xpod:VectorStore"
+      },
+      "SearchHttpHandler:_embeddingService": {
+        "@id": "urn:xpod:EmbeddingService"
+      },
+      "SearchHttpHandler:_sparqlEngine": {
+        "@id": "urn:xpod:SparqlEngine"
+      },
+      "SearchHttpHandler:_credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "SearchHttpHandler:_permissionReader": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "SearchHttpHandler:_authorizer": {
+        "@id": "urn:solid-server:default:Authorizer"
+      },
+      "SearchHttpHandler:_options_sidecarPath": "/-/search",
+      "SearchHttpHandler:_options_defaultModel": "text-embedding-004",
+      "SearchHttpHandler:_options_defaultLimit": 10
+    },
+    {
+      "comment": "VectorIndexingListener - 监听资源变更，自动触发向量索引",
+      "@id": "urn:xpod:VectorIndexingListener",
+      "@type": "VectorIndexingListener",
+      "VectorIndexingListener:_options_sparqlEngine": {
+        "@id": "urn:xpod:SparqlEngine"
+      },
+      "VectorIndexingListener:_options_vectorStore": {
+        "@id": "urn:xpod:VectorStore"
+      },
+      "VectorIndexingListener:_options_embeddingService": {
+        "@id": "urn:xpod:EmbeddingService"
+      },
+      "VectorIndexingListener:_options_resourceStore": {
+        "@id": "urn:solid-server:default:ResourceStore"
+      },
+      "VectorIndexingListener:_options_defaultModel": "text-embedding-004"
+    },
+    {
+      "comment": "EmbeddingService - Embedding 生成服务",
+      "@id": "urn:xpod:EmbeddingService",
+      "@type": "EmbeddingServiceImpl",
+      "EmbeddingServiceImpl:_providerRegistry": {
+        "@id": "urn:xpod:ProviderRegistry"
+      }
+    },
+    {
+      "comment": "ProviderRegistry - AI Provider 注册表",
+      "@id": "urn:xpod:ProviderRegistry",
+      "@type": "ProviderRegistryImpl"
+    }
+  ]
+}

@@ -1,198 +1,260 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { createServer, type Server } from 'node:http';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import dns from 'node:dns';
+import { drizzle, eq } from 'drizzle-solid';
+import { Session } from '@inrupt/solid-client-authn-node';
 import { ApiServer } from '../../src/api/ApiServer';
-import { InternalPodService } from '../../src/api/service/InternalPodService';
 import { VercelChatService } from '../../src/api/service/VercelChatService';
+import { InternalPodService } from '../../src/api/service/InternalPodService';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
+import { ClientCredentialsAuthenticator } from '../../src/api/auth/ClientCredentialsAuthenticator';
+import { DrizzleClientCredentialsStore } from '../../src/api/store/DrizzleClientCredentialsStore';
+import { getIdentityDatabase } from '../../src/identity/drizzle/db';
+import { providerTable } from '../../src/embedding/schema/tables';
+import { credentialTable } from '../../src/credential/schema/tables';
+import { ServiceType, CredentialStatus } from '../../src/credential/schema/types';
 
-// This test requires a running CSS server on localhost:3000
-// Run with: XPOD_RUN_INTEGRATION_TESTS=true yarn test tests/integration/ChatPodE2E.test.ts
-const shouldRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
+/**
+ * Chat Pod E2E Integration Test
+ * 
+ * This test validates the full chat completion flow with REAL authentication:
+ * 1. Register CSS client credentials in api_keys table
+ * 2. Write AI provider config (with proxy) to Pod
+ * 3. Write credential (API key) to Pod
+ * 4. Call Chat API with Bearer client_id (real authentication)
+ * 5. Real AI request via proxy to Google Gemini
+ * 
+ * Requirements:
+ * - XPOD_RUN_INTEGRATION_TESTS=true
+ * - GOOGLE_API_KEY
+ * - TEST_AI_PROXY_URL (proxy to access Google API)
+ * - Running CSS server with valid SOLID_CLIENT_ID/SECRET
+ * - Proxy server running (for AI call tests)
+ */
 
-// HACK: Force localhost to IPv4 127.0.0.1 to avoid Node.js 18+ dual-stack timeouts
-// This fixes the 'outgoing request timed out' during OIDC discovery
-// Note: Node 22+ may use lookupService internally, so we patch more carefully
-const originalLookup = dns.lookup.bind(dns);
-Object.defineProperty(dns, 'lookup', {
-  value: function lookup(
-    hostname: string,
-    options?: any,
-    callback?: any
-  ) {
-    // Normalize: options might be callback in 2-arg form
-    let opts = options;
-    let cb = callback;
-    if (typeof options === 'function') {
-      cb = options;
-      opts = undefined;
-    }
-    
-    if (hostname === 'localhost') {
-      // For localhost, always return IPv4
-      if (cb) {
-        process.nextTick(() => cb(null, '127.0.0.1', 4));
-        return;
-      }
-    }
-    
-    // Pass through to original
-    return originalLookup(hostname, opts, cb);
-  },
-  writable: true,
-  configurable: true
-});
+const googleApiKey = process.env.GOOGLE_API_KEY;
+const proxyUrl = process.env.TEST_AI_PROXY_URL;
+const clientId = process.env.SOLID_CLIENT_ID;
+const clientSecret = process.env.SOLID_CLIENT_SECRET;
+const cssBaseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000';
+const encryptionKey = process.env.XPOD_ENCRYPTION_KEY || 'test-encryption-key-for-e2e';
 
-describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Network)', () => {
+const hasRequiredConfig = !!(googleApiKey && proxyUrl && clientId && clientSecret);
+const shouldRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && hasRequiredConfig;
+
+// Force IPv4 to avoid Node.js dual-stack timeouts
+dns.setDefaultResultOrder('ipv4first');
+
+const schema = {
+  credential: credentialTable,
+  provider: providerTable,
+};
+
+describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Google AI via Proxy)', () => {
   let server: ApiServer;
-  let mockAIServer: Server;
+  let session: Session;
+  let db: ReturnType<typeof drizzle>;
+  let apiKeyStore: DrizzleClientCredentialsStore;
+  let proxyAvailable = false;
   const port = 3107;
-  const aiPort = 4002;
   const baseUrl = `http://localhost:${port}`;
-  
-  let lastAIRequest: any = null;
+  const testProviderId = 'google-e2e-test';
+  const testCredentialId = 'google-cred-e2e-test';
 
   beforeAll(async () => {
-    // 1. Setup Mock AI Server (We mock the AI provider to save money/tokens)
-    mockAIServer = createServer((req, res) => {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        lastAIRequest = {
-          url: req.url,
-          headers: req.headers,
-          body: JSON.parse(body)
-        };
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          id: 'resp_e2e',
-          object: 'response',
-          created_at: Math.floor(Date.now() / 1000),
-          status: 'completed',
-          output: [
-            {
-              id: 'msg_e2e',
-              type: 'message',
-              role: 'assistant',
-              content: [{ type: 'output_text', text: 'Real E2E Response', annotations: [] }]
-            }
-          ],
-          usage: { input_tokens: 5, output_tokens: 5, total_tokens: 10 }
-        }));
-      });
-    }).listen(aiPort);
+    // 0. Check if proxy is available
+    if (proxyUrl) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2000);
+        await fetch(proxyUrl, { signal: controller.signal });
+        clearTimeout(timeout);
+        proxyAvailable = true;
+        console.log(`[E2E] Proxy ${proxyUrl} is available`);
+      } catch {
+        proxyAvailable = false;
+        console.log(`[E2E] Proxy ${proxyUrl} is NOT available - AI call tests will be skipped`);
+      }
+    }
 
-    // 2. Setup Services with REAL CSS login logic
-    // We expect CSS to be running on localhost:3000
-    const podService = new InternalPodService({
-      tokenEndpoint: 'http://localhost:3000/.account/oidc/token',
-      clientId: process.env.SOLID_CLIENT_ID || 'dummy',
-      clientSecret: process.env.SOLID_CLIENT_SECRET || 'dummy',
-      apiKeyStore: { findByClientId: async () => ({
-        clientId: 'test-client',
-        clientSecret: 'secret',
-        webId: 'http://localhost:3000/test/profile/card#me',
-        accountId: 'test-acc',
-        createdAt: new Date()
-      }) } as any
+    // 1. Login to CSS and get authenticated session
+    session = new Session();
+    await session.login({
+      oidcIssuer: cssBaseUrl,
+      clientId: clientId!,
+      clientSecret: clientSecret!,
     });
 
-    // We still mock the Pod DATA response because we don't want to rely on
-    // actually writing RDF files to the running CSS server.
-    // BUT, the LOGIN process (InternalPodService.getAiProviders -> login) will be REAL.
-    // We intercept fetch ONLY for the data read, not the login.
-    const originalFetch = global.fetch;
-    global.fetch = async (url, init) => {
-      const u = url.toString();
-      // Intercept Pod Data Read
-      if (u.includes('/.data/model-providers/')) {
-        if (u.includes('/-/sparql')) {
-          const method = init?.method?.toUpperCase() ?? 'GET';
-          const queryFromUrl = (() => {
-            try {
-              return new URL(u).searchParams.get('query') ?? '';
-            } catch {
-              return '';
-            }
-          })();
-          const body = (() => {
-            const raw = init?.body;
-            if (typeof raw === 'string') {
-              return raw;
-            }
-            if (raw instanceof URLSearchParams) {
-              return raw.toString();
-            }
-            if (raw instanceof Uint8Array) {
-              return Buffer.from(raw).toString('utf8');
-            }
-            return '';
-          })();
-          const combined = `${queryFromUrl} ${body}`.toUpperCase();
-          if (combined.includes('ASK') || method === 'HEAD') {
-            return new Response(JSON.stringify({ boolean: true }), {
-              status: 200,
-              headers: { 'Content-Type': 'application/sparql-results+json' }
-            });
-          }
-        }
-        console.log('[E2E] Intercepting Pod Data Read:', u);
-        return new Response(`
-            @prefix linx: <https://linx.ai/ns#> .
-            <http://localhost:3000/test/.data/model-providers/openai#it> a linx:ModelProvider ;
-              <https://linx.ai/ns#provider> "openai" ;
-              <https://linx.ai/ns#status> true ;
-              <https://linx.ai/ns#apiKey> "sk-real-e2e-key" ;
-              <https://linx.ai/ns#baseUrl> "http://localhost:${aiPort}/v1" .
-          `, {
-            status: 200,
-            headers: { 'Content-Type': 'text/turtle' }
-          });
-      }
-      return originalFetch(url, init);
-    };
+    if (!session.info.isLoggedIn || !session.info.webId) {
+      throw new Error('Failed to login to CSS');
+    }
+
+    const webId = session.info.webId;
+    console.log(`[E2E] Logged in as ${webId}`);
+
+    // 2. Setup identity database and api_keys store
+    const identityDbUrl = process.env.CSS_IDENTITY_DB_URL || 'sqlite:./data/identity.sqlite';
+    const identityDb = getIdentityDatabase(identityDbUrl);
+    apiKeyStore = new DrizzleClientCredentialsStore({ db: identityDb, encryptionKey });
+
+    // 3. Register CSS client credentials in api_keys table (THIS IS THE KEY STEP!)
+    await apiKeyStore.store({
+      clientId: clientId!,
+      clientSecret: clientSecret!,
+      webId: webId,
+      accountId: 'e2e-test-account',
+      displayName: 'E2E Test API Key',
+    });
+    console.log(`[E2E] Registered client credentials in api_keys table: ${clientId}`);
+
+    // 4. Create drizzle instance to write to Pod
+    db = drizzle(
+      { fetch: session.fetch.bind(session), info: { webId, isLoggedIn: true } } as any,
+      { schema }
+    );
+
+    // 5. Clean up any existing test data first
+    try {
+      await db.delete(credentialTable).where(eq(credentialTable.id, testCredentialId));
+      await db.delete(providerTable).where(eq(providerTable.id, testProviderId));
+    } catch {
+      // Ignore errors if data doesn't exist
+    }
+
+    // 6. Write provider config with proxy to Pod
+    await db.insert(providerTable).values({
+      id: testProviderId,
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      proxyUrl: proxyUrl!,
+    });
+    console.log(`[E2E] Written provider ${testProviderId} with proxy ${proxyUrl}`);
+
+    // 7. Write credential with API key to Pod
+    const podBaseUrl = webId.replace(/\/profile\/card#me$/, '/');
+    const providerUri = `${podBaseUrl}settings/ai/providers.ttl#${testProviderId}`;
+    
+    await db.insert(credentialTable).values({
+      id: testCredentialId,
+      provider: providerUri,
+      service: ServiceType.AI,
+      status: CredentialStatus.ACTIVE,
+      apiKey: googleApiKey!,
+      label: 'E2E Test Google Credential',
+    });
+    console.log(`[E2E] Written credential ${testCredentialId}`);
+
+    // 8. Setup API server with REAL authentication
+    const tokenEndpoint = `${cssBaseUrl}/.oidc/token`;
+    
+    // Real ClientCredentialsAuthenticator using the api_keys store
+    const authenticator = new ClientCredentialsAuthenticator({
+      store: apiKeyStore,
+      tokenEndpoint,
+    });
+
+    const authMiddleware = new AuthMiddleware({ authenticator });
+
+    // Real InternalPodService
+    const podService = new InternalPodService({
+      tokenEndpoint,
+      apiKeyStore,
+    });
 
     const chatService = new VercelChatService(podService);
-
-    // 3. Setup API Server
-    const authMiddleware = new AuthMiddleware({
-      authenticator: {
-        canAuthenticate: () => true,
-        authenticate: async () => ({
-          success: true,
-          // This context simulates a user calling the API with an API Key
-          // The InternalPodService will use THIS clientId ('test-client') to login
-          context: { type: 'solid', clientId: 'test-client', webId: 'http://localhost:3000/test/profile/card#me', viaApiKey: true }
-        })
-      } as any
-    });
 
     server = new ApiServer({ port, authMiddleware });
     registerChatRoutes(server, { chatService });
 
     await server.start();
+    console.log(`[E2E] API server started on ${baseUrl} with REAL authentication`);
   });
 
   afterAll(async () => {
-    await server.stop();
-    mockAIServer.close();
-    // Restore DNS (optional but good practice)
-    (dns as any).lookup = originalLookup;
+    // Cleanup: remove test data from Pod
+    try {
+      await db.delete(credentialTable).where(eq(credentialTable.id, testCredentialId));
+      await db.delete(providerTable).where(eq(providerTable.id, testProviderId));
+      console.log('[E2E] Cleaned up test data from Pod');
+    } catch (e) {
+      console.warn('[E2E] Failed to cleanup Pod data:', e);
+    }
+
+    // Cleanup: remove client credentials from api_keys table
+    try {
+      await apiKeyStore.delete(clientId!);
+      console.log('[E2E] Cleaned up api_keys table');
+    } catch (e) {
+      console.warn('[E2E] Failed to cleanup api_keys:', e);
+    }
+
+    await server?.stop();
+    await session?.logout();
   });
 
-  it('should perform real login and simulated data fetch', async () => {
-    // This request triggers:
-    // 1. ChatHandler -> VercelChatService -> InternalPodService.getAiProviders
-    // 2. InternalPodService -> apiKeyStore.findByClientId ('test-client') -> Gets Secret
-    // 3. InternalPodService -> session.login() -> REAL NETWORK to localhost:3000
-    // 4. InternalPodService -> drizzle -> fetch() -> INTERCEPTED (returns Turtle)
-    // 5. VercelChatService -> OpenAI -> REAL NETWORK to localhost:4002
-    
+  // ============================================
+  // Authentication Tests (always run)
+  // ============================================
+
+  it('should reject request with invalid client_id', async () => {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer any' },
-      body: JSON.stringify({ model: 'gpt-4', messages: [{ role: 'user', content: 'ping' }] })
+      headers: { 
+        'Content-Type': 'application/json', 
+        'Authorization': 'Bearer invalid-client-id-12345' 
+      },
+      body: JSON.stringify({ 
+        model: 'gemini-2.0-flash', 
+        messages: [{ role: 'user', content: 'Hello' }],
+      })
+    });
+
+    expect(response.status).toBe(401);
+    const data = await response.json() as any;
+    expect(data.error).toBe('Unauthorized');
+  });
+
+  it('should authenticate successfully with valid client_id', async () => {
+    // This test verifies authentication works, even if AI call fails due to proxy
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json', 
+        'Authorization': `Bearer ${clientId}` 
+      },
+      body: JSON.stringify({ 
+        model: 'gemini-2.0-flash', 
+        messages: [{ role: 'user', content: 'Hello' }],
+        max_tokens: 10
+      })
+    });
+
+    // Should NOT be 401 (authentication passed)
+    // May be 200 (success) or 500 (proxy error) depending on proxy availability
+    expect(response.status).not.toBe(401);
+    console.log(`[E2E] Authentication test: status=${response.status}`);
+  }, 30000);
+
+  // ============================================
+  // AI Call Tests (require proxy)
+  // ============================================
+
+  it('should complete a chat request using Bearer client_id authentication', async () => {
+    if (!proxyAvailable) {
+      console.log('[E2E] Skipping AI call test - proxy not available');
+      return;
+    }
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json', 
+        'Authorization': `Bearer ${clientId}` 
+      },
+      body: JSON.stringify({ 
+        model: 'gemini-2.0-flash', 
+        messages: [{ role: 'user', content: 'Reply with exactly one word: PONG' }],
+        max_tokens: 10
+      })
     });
 
     if (response.status !== 200) {
@@ -201,10 +263,57 @@ describe.skipIf(!shouldRun)('Chat Pod E2E Integration (Real Network)', () => {
     }
 
     expect(response.status).toBe(200);
-    const data = await response.json() as any;
-    expect(data.choices[0].message.content).toBe('Real E2E Response');
     
-    // Verify that the key from our INTERCEPTED turtle was used in the REAL request to mock AI
-    expect(lastAIRequest.headers.authorization).toBe('Bearer sk-real-e2e-key');
-  }, 10000); // 10s timeout for real network
+    const data = await response.json() as any;
+    expect(data.object).toBe('chat.completion');
+    expect(data.choices).toHaveLength(1);
+    expect(data.choices[0].message.role).toBe('assistant');
+    expect(data.choices[0].message.content).toBeTruthy();
+    expect(data.choices[0].message.content.toUpperCase()).toContain('PONG');
+  }, 60000);
+
+  it('should handle streaming chat request with real authentication', async () => {
+    if (!proxyAvailable) {
+      console.log('[E2E] Skipping streaming test - proxy not available');
+      return;
+    }
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json', 
+        'Authorization': `Bearer ${clientId}` 
+      },
+      body: JSON.stringify({ 
+        model: 'gemini-2.0-flash', 
+        messages: [{ role: 'user', content: 'Reply with exactly: STREAM OK' }],
+        stream: true,
+        max_tokens: 20
+      })
+    });
+
+    if (response.status !== 200) {
+      const err = await response.text();
+      console.error('[E2E Streaming Error]', err);
+    }
+
+    expect(response.status).toBe(200);
+    // AI SDK v6 toTextStreamResponse returns text/plain, not SSE
+    expect(response.headers.get('content-type')).toContain('text/plain');
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      const chunk = decoder.decode(value);
+      fullContent += chunk;
+    }
+
+    expect(fullContent.length).toBeGreaterThan(0);
+    console.log(`[E2E] Streaming response: ${fullContent}`);
+  }, 60000);
 });

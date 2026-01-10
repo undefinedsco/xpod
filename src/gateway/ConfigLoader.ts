@@ -26,9 +26,15 @@ export async function loadConfig(): Promise<GatewayConfig> {
     .help()
     .parse();
 
+  // Read from environment variables first
+  // CSS_PORT is the gateway's listening port (external facing)
+  // Internal CSS and API ports are auto-discovered
+  const envPort = process.env.CSS_PORT ? parseInt(process.env.CSS_PORT, 10) : undefined;
+  const envHost = process.env.CSS_HOST;
+
   const defaultConfig: GatewayConfig = {
-    port: 8080,
-    host: 'localhost',
+    port: envPort ?? 3000,
+    host: envHost ?? 'localhost',
     css: { enabled: true },
     api: { enabled: true },
   };

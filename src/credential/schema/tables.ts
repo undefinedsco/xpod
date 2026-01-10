@@ -3,27 +3,33 @@
  */
 
 import { podTable, string, int, datetime, uri } from 'drizzle-solid';
-
-// 命名空间配置
-const CRED_NAMESPACE = {
-  prefix: 'cred',
-  uri: 'https://vocab.xpod.dev/credential#',
-};
+import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 
 /**
- * Credential 表 - 凭据存储
+ * Credential - 凭据存储
  *
  * 存储位置: /settings/credentials.ttl
+ *
+ * RDF 示例:
+ * <#cred-001> a udfs:Credential ;
+ *     udfs:provider </settings/ai/providers.ttl#google> ;
+ *     udfs:service "ai" ;
+ *     udfs:status "active" ;
+ *     udfs:apiKey "sk-xxx" ;
+ *     udfs:label "Google AI" .
  */
-export const credentialTable = podTable(
-  'credential',
+export const Credential = podTable(
+  'Credential',
   {
     id: string('id').primaryKey(),
-    provider: uri('provider').reference('provider'), // 用表名引用，避免循环依赖
+    provider: uri('provider'),
     service: string('service'),
     status: string('status'),
     apiKey: string('apiKey'),
     baseUrl: string('baseUrl'),
+    proxyUrl: string('proxyUrl'),
+    projectId: string('projectId'),
+    organizationId: string('organizationId'),
     label: string('label'),
     lastUsedAt: datetime('lastUsedAt'),
     failCount: int('failCount'),
@@ -31,8 +37,9 @@ export const credentialTable = podTable(
   },
   {
     base: '/settings/credentials.ttl',
-    type: 'https://vocab.xpod.dev/credential#Credential',
-    namespace: CRED_NAMESPACE,
+    type: UDFS.Credential,
+    namespace: UDFS_NAMESPACE,
     subjectTemplate: '#{id}',
   },
 );
+

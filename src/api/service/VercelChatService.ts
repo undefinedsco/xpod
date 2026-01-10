@@ -30,21 +30,22 @@ export class VercelChatService {
     }
 
     // Priority: Pod Config > Environment Variable > Default (Ollama)
+    // Proxy only from Pod config (proxyUrl field)
     let baseURL = config?.baseUrl || process.env.XPOD_AI_BASE_URL;
     let apiKey = config?.apiKey || process.env.XPOD_AI_API_KEY;
-    let proxy = config?.proxy || process.env.XPOD_AI_PROXY;
+    const proxy = config?.proxyUrl; // Only use proxy if configured in Pod
 
     // Special handling for Google/Gemini if configured in env
     if (!baseURL && !apiKey && process.env.GOOGLE_API_KEY) {
       baseURL = 'https://generativelanguage.googleapis.com/v1beta/openai';
       apiKey = process.env.GOOGLE_API_KEY;
-      proxy = proxy || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
     }
 
     // Default to local Ollama if nothing else found
     baseURL = baseURL || 'http://localhost:11434/v1';
     apiKey = apiKey || 'ollama';
 
+    this.logger.info(`Provider config: baseURL=${baseURL}, proxy=${proxy || 'none'}`);
     return { baseURL, apiKey, proxy };
   }
 
@@ -74,7 +75,7 @@ export class VercelChatService {
       }));
 
       const result = await generateText({
-        model: provider(model),
+        model: provider.chat(model),
         messages: coreMessages,
         temperature,
         maxTokens: max_tokens,
@@ -119,7 +120,7 @@ export class VercelChatService {
     }));
 
     return streamText({
-      model: provider(model),
+      model: provider.chat(model),
       messages: coreMessages,
       temperature,
       maxTokens: max_tokens,
@@ -192,13 +193,33 @@ export class VercelChatService {
     return response.json();
   }
 
-  public async listModels(): Promise<any[]> {
+  public async listModels(auth?: AuthContext): Promise<any[]> {
+    // If auth provided, try to get models from Pod
+    if (auth) {
+      try {
+        const podModels = await this.podService.listModels(auth);
+        if (podModels.length > 0) {
+          return podModels.map(m => ({
+            id: m.id,
+            object: 'model',
+            created: Math.floor(Date.now() / 1000),
+            owned_by: m.providerId || 'user',
+            display_name: m.displayName,
+            type: m.modelType,
+          }));
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to list models from Pod: ${error}`);
+      }
+    }
+
+    // Fallback to default models
     return [
       {
         id: 'llama3',
         object: 'model',
         created: Math.floor(Date.now() / 1000),
-        owned_by: 'system',
+        owned_by: 'ollama',
       },
       {
         id: 'gpt-4o',

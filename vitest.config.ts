@@ -15,6 +15,7 @@ export default defineConfig({
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
+      '**/_deprecated/**',
       'tests/terminal/*.integration.test.ts',
       'ui/src/external/**',
     ],

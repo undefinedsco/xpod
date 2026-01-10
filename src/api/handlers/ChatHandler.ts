@@ -51,7 +51,7 @@ export interface ChatHandlerOptions {
     stream(request: ChatCompletionRequest, auth: AuthContext): Promise<any>;
     responses?(body: any, auth: AuthContext): Promise<any>;
     messages?(body: any, auth: AuthContext): Promise<any>;
-    listModels(): Promise<any[]>;
+    listModels(auth?: AuthContext): Promise<any[]>;
   };
 }
 
@@ -139,8 +139,8 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
       // Handle streaming
       if (completionRequest.stream) {
         const streamResult = await chatService.stream(completionRequest, auth);
-        // Vercel AI SDK's toDataStreamResponse returns a standard Web Response
-        const webResponse = streamResult.toDataStreamResponse();
+        // Vercel AI SDK v6 uses toTextStreamResponse (not toDataStreamResponse)
+        const webResponse = streamResult.toTextStreamResponse();
 
         // Copy headers (Content-Type: text/plain; charset=utf-8, X-Vercel-AI-Data-Stream: v1)
         webResponse.headers.forEach((value: string, key: string) => {
@@ -247,14 +247,15 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
   });
 
   // GET /v1/models - List available models (OpenAI-compatible)
-  server.get('/v1/models', async (_request, response, _params) => {
+  server.get('/v1/models', async (request, response, _params) => {
     if (!chatService) {
       sendJson(response, 503, { error: 'Chat service not configured' });
       return;
     }
 
     try {
-      const models = await chatService.listModels();
+      const auth = request.auth;
+      const models = await chatService.listModels(auth);
       sendJson(response, 200, {
         object: 'list',
         data: models,

@@ -99,7 +99,9 @@ async function handlePut(resourceStore: ResourceStore, url: string, init?: Reque
 
   if (typeof body === 'string') {
     data = Readable.from([body]);
-  } else if (body instanceof ArrayBuffer || body instanceof Uint8Array) {
+  } else if (body instanceof ArrayBuffer) {
+    data = Readable.from([Buffer.from(new Uint8Array(body))]);
+  } else if (body instanceof Uint8Array) {
     data = Readable.from([Buffer.from(body)]);
   } else if (body && typeof (body as any).getReader === 'function') {
     // Web ReadableStream

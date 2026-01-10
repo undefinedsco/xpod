@@ -84,20 +84,23 @@ describe('Chat Mock Logic Flow', () => {
       if (target.startsWith(`http://127.0.0.1:${aiPort}/v1`)) {
         const headerSource = init?.headers ?? (url instanceof Request ? url.headers : undefined);
         aiRequestHeaders = Object.fromEntries(new Headers(headerSource).entries());
+        // Return OpenAI Chat Completions API format (not Responses API)
         return new Response(JSON.stringify({
-          id: 'resp_mock',
-          object: 'response',
-          created_at: Math.floor(Date.now() / 1000),
-          status: 'completed',
-          output: [
+          id: 'chatcmpl-mock',
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: 'gpt-4',
+          choices: [
             {
-              id: 'msg_mock',
-              type: 'message',
-              role: 'assistant',
-              content: [{ type: 'output_text', text: 'Mock AI Success', annotations: [] }]
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: 'Mock AI Success'
+              },
+              finish_reason: 'stop'
             }
           ],
-          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
         }), { headers: { 'Content-Type': 'application/json' } });
       }
       return originalFetch(url, init);
@@ -119,12 +122,9 @@ describe('Chat Mock Logic Flow', () => {
       apiKeyStore: mockApiKeyStore as any
     });
     podService.getAiConfig = async () => ({
-      id: 'openai',
-      enabled: true,
+      providerId: 'openai',
       apiKey: 'sk-mock-key-from-pod',
       baseUrl: `http://127.0.0.1:${aiPort}/v1`,
-      models: [],
-      updatedAt: new Date(),
     });
 
     const chatService = new VercelChatService(podService);

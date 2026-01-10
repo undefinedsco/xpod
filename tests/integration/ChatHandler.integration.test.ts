@@ -40,8 +40,8 @@ describe('ChatHandler Integration', () => {
   };
 
   const makeStreamResult = () => ({
-    toDataStreamResponse: () => new Response('data: hello\n\n', {
-      headers: { 'Content-Type': 'text/event-stream' },
+    toTextStreamResponse: () => new Response('STREAM OK', {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     }),
   });
 
@@ -124,9 +124,10 @@ describe('ChatHandler Integration', () => {
     });
     expect(response.status).toBe(200);
     const contentType = response.headers.get('content-type') ?? '';
-    expect(contentType).toContain('text/event-stream');
+    // AI SDK v6 uses toTextStreamResponse which returns text/plain
+    expect(contentType).toContain('text/plain');
     const text = await response.text();
-    expect(text).toContain('data: hello');
+    expect(text).toContain('STREAM OK');
     expect(chatService.stream).toHaveBeenCalled();
   });
 

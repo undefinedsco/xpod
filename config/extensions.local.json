@@ -37,6 +37,17 @@
       }
     },
     {
+      "comment": "ProviderRegistry - AI Provider 注册表",
+      "@id": "urn:undefineds:xpod:ProviderRegistry",
+      "@type": "ProviderRegistryImpl"
+    },
+    {
+      "comment": "EmbeddingService - Embedding 生成服务",
+      "@id": "urn:undefineds:xpod:EmbeddingService",
+      "@type": "EmbeddingServiceImpl",
+      "providerRegistry": { "@id": "urn:undefineds:xpod:ProviderRegistry" }
+    },
+    {
       "comment": "Vector HTTP Handler",
       "@id": "urn:undefineds:xpod:VectorHttpHandler",
       "@type": "VectorHttpHandler",
@@ -44,6 +55,20 @@
       "credentialsExtractor": { "@id": "urn:solid-server:default:CredentialsExtractor" },
       "permissionReader": { "@id": "urn:solid-server:default:PermissionReader" },
       "authorizer": { "@id": "urn:solid-server:default:Authorizer" }
+    },
+    {
+      "comment": "SearchHttpHandler - 语义搜索端点 /-/search",
+      "@id": "urn:undefineds:xpod:SearchHttpHandler",
+      "@type": "SearchHttpHandler",
+      "vectorStore": { "@id": "urn:undefineds:xpod:VectorStore" },
+      "embeddingService": { "@id": "urn:undefineds:xpod:EmbeddingService" },
+      "sparqlEngine": { "@id": "urn:undefineds:xpod:DefaultSparqlEngine" },
+      "credentialsExtractor": { "@id": "urn:solid-server:default:CredentialsExtractor" },
+      "permissionReader": { "@id": "urn:solid-server:default:PermissionReader" },
+      "authorizer": { "@id": "urn:solid-server:default:Authorizer" },
+      "options_sidecarPath": "/-/search",
+      "options_defaultModel": "text-embedding-004",
+      "options_defaultLimit": 10
     },
     {
       "comment": "QuintStore-based SPARQL engine for local mode",
@@ -98,17 +123,21 @@
       "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
     },
     {
-      "comment": "等位替换: 用 SparqlUpdateResourceStore 替换默认的 DataAccessorBasedStore",
+      "comment": "等位替换: 用 ObservableResourceStore 包装 SparqlUpdateResourceStore",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:ResourceStore_Backend"
       },
       "overrideParameters": {
-        "@type": "SparqlUpdateResourceStore",
-        "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-        "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-        "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-        "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+        "@type": "ObservableResourceStore",
+        "source": {
+          "@type": "SparqlUpdateResourceStore",
+          "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
+          "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
+          "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
+          "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+        },
+        "options_listeners": []
       }
     },
     {
@@ -163,6 +192,9 @@
           },
           {
             "@id": "urn:undefineds:xpod:VectorHttpHandler"
+          },
+          {
+            "@id": "urn:undefineds:xpod:SearchHttpHandler"
           },
           {
             "@id": "urn:undefineds:xpod:TerminalHttpHandler"

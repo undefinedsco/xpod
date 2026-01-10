@@ -5,14 +5,15 @@ import { getFreePort } from './PortFinder';
 
 async function main() {
   const config = await loadConfig();
-  
+
   // 1. Determine Ports with auto-discovery
-  // We use different start ranges to avoid collision
-  const cssPort = await getFreePort(config.css.port || 3000);
-  const apiPort = await getFreePort(config.api.port || 3001);
-  
+  // Internal ports start after the gateway port to avoid collision
+  const gatewayPort = config.port;
+  const cssPort = await getFreePort(config.css.port || gatewayPort + 100);
+  const apiPort = await getFreePort(config.api.port || cssPort + 1);
+
   // 2. Determine Base URL
-  const baseUrl = config.baseUrl || `http://${config.host}:${config.port}/`;
+  const baseUrl = config.baseUrl || process.env.CSS_BASE_URL || `http://${config.host}:${gatewayPort}/`;
 
   console.log(`[Gateway] Orchestration Plan:`);
   console.log(`  - Gateway: ${baseUrl} (${config.host}:${config.port})`);
@@ -23,20 +24,17 @@ async function main() {
 
   // Register CSS (Solid Server)
   if (config.css.enabled) {
-    const cssArgs = ['dist/index.js'];
-    if (config.css.config) {
-      cssArgs.push('-c', config.css.config);
-    }
+    // Use community-solid-server CLI with config files
+    // Default to local config if not specified
+    const cssConfig = config.css.config || 'config/main.local.json config/extensions.local.json';
+    const cssArgs = ['-c', ...cssConfig.split(' '), '-m', '.', '-p', cssPort.toString(), '-b', baseUrl];
 
     supervisor.register({
       name: 'css',
-      command: 'node',
-      args: cssArgs,
+      command: 'npx',
+      args: ['community-solid-server', ...cssArgs],
       env: {
-        CSS_PORT: cssPort.toString(),
-        CSS_BASE_URL: baseUrl,
         CSS_TRUST_PROXY: 'true',
-        // Also forward internal API URL to CSS if needed? Not usually.
       },
     });
   }

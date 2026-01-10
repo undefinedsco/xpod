@@ -39,6 +39,8 @@ import { EdgeNodeAgent } from './edge/EdgeNodeAgent';
 import { EdgeNodeCertificateService } from './service/EdgeNodeCertificateService';
 import { createBandwidthThrottleTransform } from './util/stream/BandwidthThrottleTransform';
 import { UsageTrackingStore } from './storage/quota/UsageTrackingStore';
+import { ObservableResourceStore } from './storage/ObservableResourceStore';
+export type { ResourceChangeEvent, ResourceChangeListener } from './storage/ObservableResourceStore';
 import { EdgeNodeModeDetector } from './edge/EdgeNodeModeDetector';
 import { ClusterIdentifierStrategy } from './util/identifiers/ClusterIdentifierStrategy';
 import { CenterNodeRegistrationService } from './identity/CenterNodeRegistrationService';
@@ -53,7 +55,10 @@ import { BaseQuintStore } from './storage/quint/BaseQuintStore';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
 import { SqliteVectorStore, PostgresVectorStore } from './storage/vector/index';
+// VectorIndexingListener 已弃用，索引逻辑移至 API Server 层
+// export type { VectorStoreDefinition } from './storage/vector/VectorIndexingListener';
 import { VectorHttpHandler } from './http/vector/VectorHttpHandler';
+import { SearchHttpHandler } from './http/search/SearchHttpHandler';
 import { ProviderRegistryImpl } from './embedding/ProviderRegistryImpl';
 import { EmbeddingServiceImpl } from './embedding/EmbeddingServiceImpl';
 import { CredentialReaderImpl } from './embedding/CredentialReaderImpl';
@@ -118,6 +123,7 @@ export {
     EdgeNodeModeDetector,
     ClusterIdentifierStrategy,
   UsageTrackingStore,
+  ObservableResourceStore,
   CenterNodeRegistrationService,
   PodRoutingHttpHandler,
   TieredMinioDataAccessor,
@@ -130,7 +136,9 @@ export {
   // Vector exports
   SqliteVectorStore,
   PostgresVectorStore,
+  // VectorIndexingListener - 已弃用
   VectorHttpHandler,
+  SearchHttpHandler,
   ProviderRegistryImpl,
   EmbeddingServiceImpl,
   CredentialReaderImpl,

@@ -20,11 +20,17 @@ import { registerSignalRoutes } from './handlers/SignalHandler';
 import { registerNodeRoutes } from './handlers/NodeHandler';
 import { registerChatRoutes } from './handlers/ChatHandler';
 import { registerApiKeyRoutes } from './handlers/ApiKeyHandler';
+import { registerVectorRoutes } from './handlers/VectorHandler';
+import { registerVectorStoreRoutes } from './handlers/VectorStoreHandler';
 import { DrizzleClientCredentialsStore } from './store/DrizzleClientCredentialsStore';
 import { ClientCredentialsAuthenticator } from './auth/ClientCredentialsAuthenticator';
 import { MultiAuthenticator } from './auth/MultiAuthenticator';
 import { InternalPodService } from './service/InternalPodService';
 import { VercelChatService } from './service/VercelChatService';
+import { VectorService } from './service/VectorService';
+import { VectorStoreService } from './service/VectorStoreService';
+import { EmbeddingServiceImpl } from '../embedding/EmbeddingServiceImpl';
+import { ProviderRegistryImpl } from '../embedding/ProviderRegistryImpl';
 
 // Simple logger to avoid Components.js dependency
 const logger = {
@@ -41,6 +47,7 @@ async function main(): Promise<void> {
   const corsOrigins = process.env.CORS_ORIGINS?.split(',').map((s) => s.trim()) ?? ['*'];
   const encryptionKey = process.env.XPOD_ENCRYPTION_KEY ?? 'default-dev-key-change-me';
   const cssTokenEndpoint = process.env.CSS_TOKEN_ENDPOINT ?? 'http://localhost:3000/.oidc/token';
+  const webhookUrl = process.env.VECTOR_STORE_WEBHOOK_URL; // e.g., https://api.example.com/v1/vector_stores/webhook
 
   if (!databaseUrl) {
     logger.error('CSS_IDENTITY_DB_URL or DATABASE_URL environment variable is required');
@@ -80,6 +87,25 @@ async function main(): Promise<void> {
   });
   const chatService = new VercelChatService(podService);
 
+  // Setup Vector services
+  const cssBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:3000';
+  const providerRegistry = new ProviderRegistryImpl();
+  const embeddingService = new EmbeddingServiceImpl(providerRegistry);
+  const vectorService = new VectorService({
+    cssBaseUrl,
+    podService,
+    embeddingService,
+  });
+
+  // Setup Vector Store service (OpenAI compatible)
+  const vectorStoreService = new VectorStoreService({
+    cssBaseUrl,
+    tokenEndpoint: cssTokenEndpoint,
+    apiKeyStore,
+    embeddingService,
+    webhookUrl,
+  });
+
   // Create server
   const server = new ApiServer({
     port,
@@ -106,6 +132,8 @@ async function main(): Promise<void> {
   registerNodeRoutes(server, { repository: nodeRepo });
   registerApiKeyRoutes(server, { store: apiKeyStore });
   registerChatRoutes(server, { chatService });
+  registerVectorRoutes(server, { vectorService });
+  registerVectorStoreRoutes(server, { vectorStoreService });
 
   // Start server
   await server.start();
