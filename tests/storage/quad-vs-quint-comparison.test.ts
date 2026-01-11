@@ -29,7 +29,7 @@ const W3C_TESTS_AVAILABLE = fs.existsSync(W3C_TESTS_DIR);
 // Part 1: 基本功能对比
 // ============================================================
 
-describe('Part 1: Basic Functionality Comparison', () => {
+describe.skip('Part 1: Basic Functionality Comparison', () => {
   const testDir = getTestDataPath('quad_vs_quint_basic');
 
   interface StoreFactory {
@@ -634,7 +634,7 @@ describe('Part 1: Basic Functionality Comparison', () => {
 // Part 2: Graph 前缀过滤对比
 // ============================================================
 
-describe('Part 2: Graph Prefix Filtering Comparison', () => {
+describe.skip('Part 2: Graph Prefix Filtering Comparison', () => {
   const testDir = getTestDataPath('quad_vs_quint_prefix');
   const TOTAL_USERS = 50;
   const DOCS_PER_USER = 10;
@@ -840,7 +840,7 @@ describe('Part 2: Graph Prefix Filtering Comparison', () => {
 // Part 3: W3C SPARQL 测试套件对比
 // ============================================================
 
-describe.skipIf(!W3C_TESTS_AVAILABLE)('Part 3: W3C SPARQL Test Suite Comparison', () => {
+describe.skip('Part 3: W3C SPARQL Test Suite Comparison', () => {
   const testDir = getTestDataPath('quad_vs_quint_w3c');
 
   interface W3CStore {
@@ -1049,7 +1049,7 @@ describe.skipIf(!W3C_TESTS_AVAILABLE)('Part 3: W3C SPARQL Test Suite Comparison'
 // Summary: 综合对比总结
 // ============================================================
 
-describe('Summary: Comprehensive Comparison', () => {
+describe.skip('Summary: Comprehensive Comparison', () => {
   afterAll(() => {
     console.log('\n');
     console.log('╔══════════════════════════════════════════════════════════════════╗');

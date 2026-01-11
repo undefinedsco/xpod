@@ -326,6 +326,10 @@
       "comment": "Center node registration service for multi-node deployment",
       "@id": "urn:undefineds:xpod:CenterNodeRegistrationService",
       "@type": "CenterNodeRegistrationService",
+      "npmd:@undefineds/xpod/^0.0.0/dist/identity/CenterNodeRegistrationService.jsonld#CenterNodeRegistrationService_config_enabled": {
+        "@id": "urn:solid-server:default:variable:centerRegistrationEnabled",
+        "@type": "Variable"
+      },
       "config_identityDbUrl": {
         "@id": "urn:solid-server:default:variable:identityDbUrl",
         "@type": "Variable"
@@ -355,7 +359,7 @@
       },
       "overrideParameters": {
         "@type": "SequenceHandler",
-        "handlers": [
+        "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/WaterfallHandler.jsonld#WaterfallHandler_handlers": [
           { "@id": "urn:solid-server:default:CleanupInitializer" },
           { "@id": "urn:solid-server:default:MigrationInitializer" },
           { "@id": "urn:solid-server:default:BaseUrlVerifier" },
@@ -395,14 +399,9 @@
     },
     {
       "comment": "Inject edge-node aware handlers into the HTTP pipeline",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:BaseHttpHandler"
-      },
-      "overrideParameters": {
-        "@id": "urn:undefineds:xpod:EdgeWaterfallHandler",
-        "@type": "WaterfallHandler",
-        "handlers": [
+      "@id": "urn:solid-server:default:BaseHttpHandler",
+      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/WaterfallHandler.jsonld#WaterfallHandler",
+      "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/WaterfallHandler.jsonld#WaterfallHandler_handlers": [
           {
             "@id": "urn:undefineds:xpod:PodMigrationHttpHandler"
           },
@@ -440,7 +439,6 @@
             "@id": "urn:solid-server:default:LdpHandler"
           }
         ]
-      }
     },
     {
       "comment": "Composite handler that intercepts /api/v1/signal and forwards other traffic to CSS defaults.",
@@ -455,19 +453,14 @@
       "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_basePath": "/api/v1/signal"
     },
     {
-      "comment": "Override MainHttpHandler to include SignalAwareHttpHandler in the middleware chain.",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:undefineds:xpod:MainHttpHandler"
-      },
-      "overrideParameters": {
-        "@type": "ChainedHttpHandler",
-        "handlers": [
-          { "@id": "urn:undefineds:xpod:TracingMiddleware" },
-          { "@id": "urn:undefineds:xpod:SignalAwareHttpHandler" },
-          { "@id": "urn:solid-server:default:HttpHandler" }
-        ]
-      }
+      "comment": "Define MainHttpHandler with SignalAwareHttpHandler in the middleware chain.",
+      "@id": "urn:undefineds:xpod:MainHttpHandler",
+      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/ChainedHttpHandler.jsonld#ChainedHttpHandler",
+      "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/ChainedHttpHandler.jsonld#ChainedHttpHandler_handlers": [
+        { "@id": "urn:undefineds:xpod:TracingMiddleware" },
+        { "@id": "urn:undefineds:xpod:SignalAwareHttpHandler" },
+        { "@id": "urn:solid-server:default:HttpHandler" }
+      ]
     }
   ]
 }

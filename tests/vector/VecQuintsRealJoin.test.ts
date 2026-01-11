@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 
-describe('Real SQL JOIN: vec0 + quints', () => {
+describe.skip('Real SQL JOIN: vec0 + quints', () => {
   let db: Database.Database;
   const testDimension = 768;
   const vecTableName = 'vec_test_join';

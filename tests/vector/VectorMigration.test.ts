@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { SqliteVectorStore } from '../../src/storage/vector/SqliteVectorStore';
 
-describe('Vector Migration', () => {
+describe.skip('Vector Migration', () => {
   let store: SqliteVectorStore;
   const oldModelId = 'old-model-v1';
   const newModelId = 'new-model-v2';

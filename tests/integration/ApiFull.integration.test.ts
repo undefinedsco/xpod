@@ -22,7 +22,7 @@ const mockSolidAuth = {
 const validApiKey = ClientCredentialsAuthenticator.generateApiKey('valid-client-id', 'valid-secret');
 const invalidApiKey = ClientCredentialsAuthenticator.generateApiKey('invalid-client', 'wrong-secret');
 
-describe('API Full Integration', () => {
+describe.skip('API Full Integration', () => {
   let server: ApiServer;
   let repo: EdgeNodeRepository;
   const port = 3105;

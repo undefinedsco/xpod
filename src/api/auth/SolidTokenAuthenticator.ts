@@ -56,6 +56,8 @@ export class SolidTokenAuthenticator implements Authenticator {
       const method = (request.method ?? 'GET') as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
       const url = this.buildRequestUrl(request);
 
+      console.log(`[SolidTokenAuthenticator] Verifying DPoP for URL: ${url}, method: ${method}, host header: ${request.headers.host}, x-forwarded-host: ${request.headers['x-forwarded-host']}`);
+
       const dpopOptions = dpopHeader ? {
         header: dpopHeader,
         method,

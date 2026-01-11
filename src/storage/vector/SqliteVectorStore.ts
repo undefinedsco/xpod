@@ -12,16 +12,20 @@ import fs from 'fs';
 import path from 'path';
 import type { Finalizable, Initializable } from '@solid/community-server';
 import { VectorStore, hashModelId } from './VectorStore';
-import type { VectorRecord, VectorSearchOptions, VectorSearchResult } from './types';
+import type { VectorRecord, VectorSearchOptions, VectorSearchResult, VectorStoreOptions } from './types';
 
 export class SqliteVectorStore extends VectorStore implements Initializable, Finalizable {
   /** @ignored */
   private db: Database.Database | null = null;
   private readonly filename: string;
 
-  constructor(filename: string = ':memory:') {
+  public constructor(options: VectorStoreOptions) {
     super();
-    this.filename = filename;
+    let connStr = options.connectionString;
+    if (connStr.startsWith('sqlite:')) {
+      connStr = connStr.slice(7);
+    }
+    this.filename = connStr;
   }
 
   // ============================================

@@ -5,3 +5,7 @@ export * from './ChatHandler';
 export * from './VectorHandler';
 export * from './VectorStoreHandler';
 export * from './VectorStoreWebhookHandler';
+export * from './ApiKeyHandler';
+export * from './SubdomainHandler';
+export * from './SubdomainClientHandler';
+export * from './ChatKitHandler';

@@ -20,6 +20,7 @@ function AppRoutes() {
 
   return (
     <Routes>
+      {/* 账户管理 */}
       <Route path="/.account/" element={<IndexPage />} />
       <Route path="/.account/about/" element={<AboutPage />} />
       <Route path="/.account/account/" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />

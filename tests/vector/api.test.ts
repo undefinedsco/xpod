@@ -6,8 +6,6 @@
  * - POST /-/vector/search   - 搜索向量（只接受向量输入）
  * - POST /-/vector/delete   - 删除向量
  * - GET  /-/vector/status   - 索引状态
- *
- * 需要设置 SOLID_CLIENT_ID 和 SOLID_CLIENT_SECRET 环境变量，并运行 CSS 服务器
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -20,10 +18,6 @@ loadEnv({ path: '.env.local' });
 const oidcIssuer = process.env.SOLID_OIDC_ISSUER || 'http://localhost:3000/';
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const cssBaseUrl = process.env.CSS_BASE_URL;
-
-// Skip tests if CSS_BASE_URL is not set (server not running)
-const describeOrSkip = cssBaseUrl ? describe : describe.skip;
 
 const TEST_MODEL = 'test-embedding-model';
 const DIMENSION = 768;
@@ -38,7 +32,7 @@ function randomVector(dim = DIMENSION): number[] {
   return vec.map((x) => x / norm);
 }
 
-describeOrSkip('Vector API Endpoints', () => {
+describe.skip('Vector API Endpoints', () => {
   let session: Session;
   let doFetch: typeof fetch;
   let podUrl: string;

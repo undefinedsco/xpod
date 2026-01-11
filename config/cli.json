@@ -27,6 +27,22 @@
           }
         },
         {
+          "@type": "YargsParameter",
+          "name": "edgeAgentEnabled",
+          "options": {
+            "type": "boolean",
+            "describe": "Enable local edge agent functionality."
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "centerRegistrationEnabled",
+          "options": {
+            "type": "boolean",
+            "describe": "Enable center node registration for multi-node clusters."
+          }
+        },
+        {
           "comment": "=== Hidden: Data Layer ===",
           "@type": "YargsParameter",
           "name": "identityDbUrl",

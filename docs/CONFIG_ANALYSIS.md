@@ -21,7 +21,7 @@ Xpod支持4种运行模式：
    - 场景: 桌面应用、个人开发环境
 
 3. **yarn server** - 服务器模式
-   - 配置文件: `config/main.server.json` + `config/extensions.server.json`
+   - 配置文件: `config/main.server.json` + `config/extensions.cloud.json`
    - 环境文件: `.env.server`
    - 数据库: PostgreSQL
    - 存储: MinIO (S3兼容)

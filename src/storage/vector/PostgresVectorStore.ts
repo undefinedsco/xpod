@@ -12,7 +12,7 @@ import { drizzle as drizzlePg, NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { sql } from 'drizzle-orm';
 import type { Finalizable, Initializable } from '@solid/community-server';
 import { VectorStore, hashModelId } from './VectorStore';
-import type { VectorRecord, VectorSearchOptions, VectorSearchResult } from './types';
+import type { VectorRecord, VectorSearchOptions, VectorSearchResult, VectorStoreOptions } from './types';
 
 export class PostgresVectorStore extends VectorStore implements Initializable, Finalizable {
   protected readonly connectionString: string;
@@ -21,9 +21,9 @@ export class PostgresVectorStore extends VectorStore implements Initializable, F
   /** @ignored */
   private db: NodePgDatabase | null = null;
 
-  constructor(connectionString: string) {
+  public constructor(options: VectorStoreOptions) {
     super();
-    this.connectionString = connectionString;
+    this.connectionString = options.connectionString;
   }
 
   // ============================================

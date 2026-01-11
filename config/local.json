@@ -5,8 +5,10 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
-    "./xpod.json",
-    "./terminal.json"
+    "./main.json",
+    "./xpod.base.json",
+    "./terminal.json",
+    "./extensions.local.initializer.json"
   ],
   "@graph": [
     {
@@ -31,7 +33,7 @@
       "comment": "VectorStore using SQLite (same db as QuintStore for JOIN)",
       "@id": "urn:undefineds:xpod:VectorStore",
       "@type": "SqliteVectorStore",
-      "filename": {
+      "options_connectionString": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }

@@ -96,7 +96,7 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
           
           if (this.showLocation && typeof labelInner === 'string') {
             // Extract class name from label (typically like "MyClass" or "path/to/MyClass")
-            const className = labelInner.split('/').pop();
+            const className = (labelInner as string).split('/').pop();
             if (className && className !== 'Object') {
               displayLabel = className;
             }

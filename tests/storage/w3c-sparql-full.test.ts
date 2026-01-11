@@ -1,6 +1,8 @@
 /**
  * W3C SPARQL 1.1 完整测试套件对比
  * Quadstore vs QuintStore
+ *
+ * SKIPPED: Quadstore 已弃用，迁移到 QuintStore
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
@@ -233,8 +235,7 @@ async function runTest(
   }
 }
 
-// 跳过: 已迁移到 QuintStore，不再使用 Quadstore
-describe.skip('W3C SPARQL 1.1 Full Test Suite', () => {
+describe.skip('W3C SPARQL 1.1 Full Test Suite (Quadstore deprecated)', () => {
   const allResults: Record<string, Record<string, { passed: number; failed: number; total: number }>> = {};
 
   beforeAll(() => {

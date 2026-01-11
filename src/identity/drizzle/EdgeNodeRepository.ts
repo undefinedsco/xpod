@@ -105,8 +105,8 @@ export class EdgeNodeRepository {
     const ts = toDbTimestamp(this.db, now);
 
     await executeStatement(this.db, sql`
-      INSERT INTO identity_edge_node (id, display_name, token_hash, account_id, created_at, updated_at)
-      VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${accountId ?? null}, ${ts}, ${ts})
+      INSERT INTO identity_edge_node (id, display_name, owner_account_id, token_hash, created_at, updated_at)
+      VALUES (${nodeId}, ${displayName ?? null}, ${accountId ?? null}, ${tokenHash}, ${ts}, ${ts})
     `);
 
     return {
@@ -114,6 +114,24 @@ export class EdgeNodeRepository {
       token,
       createdAt: now.toISOString(),
     };
+  }
+
+  /**
+   * Get the owner account ID of a node.
+   */
+  public async getNodeOwner(nodeId: string): Promise<string | undefined> {
+    const result = await executeQuery(this.db, sql`
+      SELECT owner_account_id
+      FROM identity_edge_node
+      WHERE id = ${nodeId}
+      LIMIT 1
+    `);
+    
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+    
+    return result.rows[0].owner_account_id ? String(result.rows[0].owner_account_id) : undefined;
   }
 
   public async getNodeSecret(nodeId: string): Promise<EdgeNodeSecret | undefined> {
@@ -620,7 +638,7 @@ export class EdgeNodeRepository {
     const result = await executeQuery(this.db, sql`
       SELECT id, display_name, capabilities, metadata, access_mode, last_seen, connectivity_status
       FROM identity_edge_node
-      WHERE account_id = ${accountId} AND node_type = 'edge'
+      WHERE owner_account_id = ${accountId} AND node_type = 'edge'
       ORDER BY created_at DESC
     `);
 
@@ -640,30 +658,9 @@ export class EdgeNodeRepository {
   }
 
   /**
-   * Get the account ID that owns a node
-   */
-  public async getNodeOwner(nodeId: string): Promise<string | undefined> {
-    const result = await executeQuery(this.db, sql`
-      SELECT account_id
-      FROM identity_edge_node
-      WHERE id = ${nodeId}
-      LIMIT 1
-    `);
-
-    if (result.rows.length === 0) {
-      return undefined;
-    }
-
-    const row = result.rows[0] as any;
-    return row.account_id ?? undefined;
-  }
-
-  /**
    * Delete a node
    */
   public async deleteNode(nodeId: string): Promise<boolean> {
-    const isSqlite = isDatabaseSqlite(this.db);
-
     // First delete associated pods
     await executeStatement(this.db, sql`
       DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}

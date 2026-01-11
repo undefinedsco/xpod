@@ -1,0 +1,23 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+  ],
+  "@graph": [
+    {
+      "comment": "Redefine PrimarySequenceInitializer to include EdgeNodeAgentInitializer",
+      "@id": "urn:solid-server:default:PrimarySequenceInitializer",
+      "@type": "SequenceHandler",
+      "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/SequenceHandler.jsonld#SequenceHandler_handlers": [
+        { "@id": "urn:solid-server:default:CleanupInitializer" },
+        { "@id": "urn:solid-server:default:MigrationInitializer" },
+        { "@id": "urn:solid-server:default:BaseUrlVerifier" },
+        { "@id": "urn:solid-server:default:PrimaryParallelInitializer" },
+        { "@id": "urn:solid-server:default:ModuleVersionVerifier" },
+        { "@id": "urn:solid-server:default:WorkerManager" },
+        { "@id": "urn:solid-server:default:SeededAccountInitializer" },
+        { "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer" }
+      ]
+    }
+  ]
+}

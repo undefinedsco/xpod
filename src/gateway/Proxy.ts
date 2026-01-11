@@ -46,6 +46,11 @@ export class GatewayProxy {
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     const url = req.url ?? '/';
 
+    // Add x-forwarded-host for proper DPoP verification
+    if (!req.headers['x-forwarded-host']) {
+      req.headers['x-forwarded-host'] = req.headers.host;
+    }
+
     // 1. Gateway Internal API (Status & Control)
     if (url.startsWith('/_gateway/')) {
       this.handleInternalApi(req, res);

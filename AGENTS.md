@@ -13,6 +13,44 @@ Pod 内数据的读写**第一优先级使用 drizzle-solid** 进行操作：
 ## Project Structure & Module Organization
 Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/`, paired by environment (for example `config/main.dev.json` with `extensions.dev.json`). Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` handle storage smoke tests such as `node scripts/testInsert.js`.
 
+## 组件开发位置决策
+
+开发新组件前，**先明确其职责**，再决定放置位置：
+
+### 架构概览
+
+```
+Gateway (3000) - 统一入口
+  ├── CSS (内部端口) - Solid Server，Components.js 管理
+  └── API (内部端口) - 独立 API 服务，普通 TypeScript
+```
+
+### 决策流程
+
+| 职责类型 | 放置位置 | 技术栈 | 示例 |
+|----------|----------|--------|------|
+| Solid 协议相关（LDP、SPARQL、认证） | CSS (`src/http/`, `src/storage/`) | Components.js + jsonld | `SubgraphSparqlHttpHandler`, `MixDataAccessor` |
+| 管理/运维 API | API Server (`src/api/handlers/`) | 普通 TypeScript 路由 | `SubdomainHandler`, `NodeHandler`, `ApiKeyHandler` |
+| 数据访问/存储 | 共享 (`src/identity/`, `src/dns/`) | 可被两边复用 | `EdgeNodeRepository`, `TencentDnsProvider` |
+| 业务逻辑服务 | 共享 (`src/subdomain/`, `src/service/`) | 可被两边复用 | `SubdomainService`, `PodMigrationService` |
+
+### 判断标准
+
+**放 CSS (Components.js)**：
+- 需要拦截/扩展 Solid 请求处理链
+- 需要替换 CSS 默认组件（等位替换）
+- 需要 CSS 的 DI 容器管理生命周期
+
+**放 API Server**：
+- 管理功能（用户管理、节点管理、配额管理）
+- 与 Solid 协议无关的 REST API
+- 需要简单路由，不想折腾 Components.js
+
+**放共享模块**：
+- 纯业务逻辑，无 HTTP 层
+- 可能被 CSS 和 API 两边调用
+- 数据库访问、外部服务集成
+
 ## Build, Test, and Development Commands
 - `yarn install` — Sync dependencies after pulling changes.
 - `yarn build` — Run TypeScript compilation and regenerate Components.js output.
@@ -94,7 +132,7 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 
 ### 带宽配额与限速
 - Server / Mix 配置默认启用带宽统计：`UsageTrackingStore` 负责资源读写、`SubgraphSparqlHttpHandler` 负责 `.sparql` 入口，均会更新 `identity_account_usage` / `identity_pod_usage` 表中的 `ingress_bytes`、`egress_bytes`。
-- 默认限速 10 MiB/s（`config/extensions.server.json` 与 `config/extensions.mix.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
+- 默认限速 10 MiB/s（`config/extensions.cloud.json` 与 `config/extensions.mix.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
 - `identity_account_usage.storage_limit_bytes` / `bandwidth_limit_bps` 以及对应的 Pod 字段用于存储配额与带宽上限；未来 Admin/桌面端可直接更新这些列完成覆写。
 
 ## Package Manager

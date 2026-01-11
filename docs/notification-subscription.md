@@ -66,7 +66,7 @@ CSS 默认使用内存存储订阅数据，xpod 通过配置覆盖为 PostgreSQL
 
 使用 Redis 实现分布式锁，确保多节点环境下的并发安全：
 
-**配置文件**: `config/extensions.server.json`
+**配置文件**: `config/extensions.cloud.json`
 
 ```json
 {
@@ -233,7 +233,7 @@ wscat -c "wss://..."
 |------|------|
 | `src/http/ClusterWebSocketConfigurator.ts` | 集群 WebSocket 路由 |
 | `config/xpod.cluster.json` | PostgreSQL 订阅存储配置 |
-| `config/extensions.server.json` | Redis 分布式锁配置 |
+| `config/extensions.cloud.json` | Redis 分布式锁配置 |
 | `tests/integration/notification-subscription.test.ts` | 集成测试 |
 
 ## 参考

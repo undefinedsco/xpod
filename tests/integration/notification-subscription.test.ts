@@ -20,8 +20,7 @@ import fs from 'fs';
 
 // Use local config to avoid Redis dependency
 const configFiles = [
-  path.join(process.cwd(), 'config/main.local.json'),
-  path.join(process.cwd(), 'config/extensions.local.json'),
+  path.join(process.cwd(), 'config/local.json'),
 ];
 
 describe('Solid Notification Subscription', () => {

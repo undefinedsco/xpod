@@ -6,7 +6,7 @@
 |------|------|---------|---------|------|
 | **normal** | `yarn start` | main.json + extensions.json | 无 | 体验模式 |
 | **local** | `yarn local` | main.local.json + extensions.local.json | .env.local | 本地单机 |
-| **server** | `yarn server` | main.server.json + extensions.server.json | .env.server | 生产服务器 |
+| **server** | `yarn server` | main.server.json + extensions.cloud.json | .env.server | 生产服务器 |
 | **dev** | `yarn dev` | main.dev.json + extensions.dev.json | .env.local | 开发调试 |
 | **cluster:server** | `yarn cluster:server` | main.server.json + extensions.cluster.json | .env.cluster | 集群控制面 |
 | **cluster:local** | `yarn cluster:local` | main.local.json + extensions.local.json | .env.cluster.local | 集群边缘节点 |

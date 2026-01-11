@@ -1,0 +1,176 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+  ],
+  "import": [
+    "./cli.json",
+    "./resolver.json"
+  ],
+  "@graph": [
+    {
+      "comment": "Core mode: server or local",
+      "@id": "urn:solid-server:default:variable:edition",
+      "@type": "Variable"
+    },
+    {
+      "comment": "Whether edge node registry is enabled.",
+      "@id": "urn:solid-server:default:variable:edgeNodesEnabled",
+      "@type": "Variable"
+    },
+    {
+      "comment": "An accessor for a Quadstore",
+      "@type": "QuadstoreSparqlDataAccessor",
+      "@id": "urn:undefineds:xpod:QuadstoreSparqlDataAccessor",
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      }
+    },
+    {
+      "comment": "An accessor for a Minio",
+      "@type": "MinioDataAccessor",
+      "@id": "urn:undefineds:xpod:MinioDataAccessor"
+    },
+    {
+      "comment": "Static Asset Handler for the React UI.",
+      "@type": "AppStaticAssetHandler",
+      "@id": "urn:undefineds:xpod:AppStaticAssetHandler"
+    },
+    {
+      "comment": "Override root static asset to serve xpod SPA shell page.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:RootStaticAsset"
+      },
+      "overrideParameters": {
+        "@type": "StaticAssetEntry",
+        "relativeUrl": "/",
+        "filePath": "./static/app/index.html"
+      }
+    },
+    {
+      "comment": "Reserve admin routes for control plane and prevent conflicting pod IDs.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IdentifierGenerator"
+      },
+      "overrideParameters": {
+        "@type": "ReservedSuffixIdentifierGenerator",
+        "baseUrl": {
+          "@id": "urn:solid-server:default:variable:baseUrl",
+          "@type": "Variable"
+        },
+        "reserved": [
+          "admin"
+        ]
+      }
+    },
+    {
+      "comment": "Persist CSS identity accounts and logins in the SQL identity database using Drizzle.",
+      "@id": "urn:undefineds:xpod:DrizzleAccountStorage",
+      "@type": "BaseLoginAccountStorage",
+      "storage": {
+        "@type": "DrizzleIndexedStorage",
+        "connectionString": {
+          "@id": "urn:solid-server:default:variable:identityDbUrl",
+          "@type": "Variable"
+        },
+        "tablePrefix": "identity_"
+      }
+    },
+    {
+      "comment": "Replace HtmlViewHandler with ReactAppViewHandler - serves single React app for all identity routes.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:HtmlViewHandler"
+      },
+      "overrideParameters": {
+        "@type": "ReactAppViewHandler",
+        "index": { "@id": "urn:solid-server:default:IndexRoute" },
+        "htmlFile": "./static/app/auth.html"
+      }
+    },
+    {
+      "comment": "Override main HTML template to remove CSS default header/footer wrapper.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:MainTemplateEngine"
+      },
+      "overrideParameters": {
+        "@type": "StaticTemplateEngine",
+        "templateEngine": { "@id": "urn:solid-server:default:TemplateEngine" },
+        "template": "./templates/main.html.ejs"
+      }
+    },
+    {
+      "comment": "Default SPARQL engine (Quadstore-based)",
+      "@type": "QuadstoreSparqlEngine",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "endpoint": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Subgraph query engine wrapping default SPARQL engine",
+      "@type": "SubgraphQueryEngine",
+      "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
+      "engine": {
+        "@id": "urn:undefineds:xpod:DefaultSparqlEngine"
+      }
+    },
+    {
+      "comment": "Serves subgraph-scoped SPARQL endpoints",
+      "@type": "SubgraphSparqlHttpHandler",
+      "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler",
+      "queryEngine": {
+        "@id": "urn:undefineds:xpod:SubgraphQueryEngine"
+      },
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "permissionReader": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "authorizer": {
+        "@id": "urn:solid-server:default:Authorizer"
+      },
+      "options_identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      },
+      "options_usageDbUrl": {
+        "@id": "urn:solid-server:default:variable:usageDbUrl",
+        "@type": "Variable"
+      },
+      "options_defaultAccountBandwidthLimitBps": {
+        "@type": "Literal",
+        "value": 0
+      }
+    },
+    {
+      "comment": "Tracing handler for request ID and logging. Added to CSS Middleware.",
+      "@id": "urn:undefineds:xpod:TracingHandler",
+      "@type": "TracingHandler"
+    },
+    {
+      "comment": "Override CSS Middleware to add TracingHandler at the beginning.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:Middleware"
+      },
+      "overrideParameters": {
+        "@type": "SequenceHandler",
+        "handlers": [
+          { "@id": "urn:undefineds:xpod:TracingHandler" },
+          { "@id": "urn:solid-server:default:ParallelMiddleware" }
+        ]
+      }
+    }
+  ]
+}

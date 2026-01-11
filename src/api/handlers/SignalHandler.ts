@@ -3,7 +3,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ApiServer } from '../ApiServer';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
-import { getAccountId } from '../auth/AuthContext';
+import { getWebId } from '../auth/AuthContext';
 
 export interface SignalHandlerOptions {
   repository: EdgeNodeRepository;
@@ -11,9 +11,9 @@ export interface SignalHandlerOptions {
 
 /**
  * Handler for edge node signaling API
- * 
+ *
  * POST /v1/signal - Edge node heartbeat/signal
- * 
+ *
  * Requires API authentication and a nodeId in the request body.
  */
 export function registerSignalRoutes(server: ApiServer, options: SignalHandlerOptions): void {
@@ -23,8 +23,8 @@ export function registerSignalRoutes(server: ApiServer, options: SignalHandlerOp
   // POST /v1/signal - authenticated via API key or Solid token
   server.post('/v1/signal', async (request, response, _params) => {
     const auth = request.auth;
-    const accountId = auth ? getAccountId(auth) : undefined;
-    if (!accountId) {
+    const webId = auth ? getWebId(auth) : undefined;
+    if (!webId) {
       sendJson(response, 400, { error: 'Cannot determine user' });
       return;
     }
@@ -48,7 +48,7 @@ export function registerSignalRoutes(server: ApiServer, options: SignalHandlerOp
         sendJson(response, 404, { error: 'Node not found' });
         return;
       }
-      if (owner !== accountId) {
+      if (owner !== webId) {
         sendJson(response, 403, { error: 'Access denied' });
         return;
       }

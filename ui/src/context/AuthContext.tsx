@@ -13,8 +13,8 @@ export interface AuthContextType {
   isInitializing: boolean;
   initError: string | null;
   idpIndex: string;
-  authenticating: boolean;
   isLoggedIn: boolean;
+  authenticating: boolean;
   refetchControls: () => Promise<void>;
 }
 
@@ -27,13 +27,16 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const initialData = (window as any).__XPOD__ || (window as any).__INITIAL_DATA__ || { idpIndex: '/.account/', authenticating: false };
+  // Pure SPA mode: No server-side injection.
+  // We assume the IDP index is always at '/.account/' relative to the domain root.
+  const idpIndex = '/.account/';
+  
   const [controls, setControls] = useState<Controls | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
 
-  const idpIndex = typeof initialData.idpIndex === 'string' ? initialData.idpIndex : '/.account/';
   const isLoggedIn = Boolean(controls?.account?.logout);
+  const authenticating = isInitializing;
 
   const fetchControls = async () => {
     try {
@@ -42,10 +45,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const json = await res.json();
         setControls(json.controls || {});
       } else {
-        setInitError('Failed to load configuration');
+        // If we get a 404 or other error, it might mean we are not at the right place
+        // or the server is down. For now, we set an error.
+        setInitError(`Failed to load configuration (Status: ${res.status})`);
       }
-    } catch {
-      setInitError('Network error');
+    } catch (e) {
+      setInitError('Network error: Could not connect to authentication server');
     }
   };
 
@@ -61,7 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ controls, isInitializing, initError, idpIndex, authenticating: initialData.authenticating, isLoggedIn, refetchControls }}>
+    <AuthContext.Provider value={{ controls, isInitializing, initError, idpIndex, isLoggedIn, authenticating, refetchControls }}>
       {children}
     </AuthContext.Provider>
   );

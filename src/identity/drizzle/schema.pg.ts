@@ -26,10 +26,10 @@ export const podUsage = pgTable('identity_pod_usage', {
 
 export const edgeNodes = pgTable('identity_edge_node', {
   id: text('id').primaryKey(),
+  ownerAccountId: text('owner_account_id'),     // Owner of the node
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
   nodeType: text('node_type').default('edge'),  // 'center' | 'edge'
-  accountId: text('account_id'),                // Owner account ID (for user-created nodes)
   subdomain: text('subdomain').unique(),
   accessMode: text('access_mode'),
   publicIp: text('public_ip'),
@@ -50,7 +50,7 @@ export const edgeNodePods = pgTable('identity_edge_node_pod', {
   baseUrl: text('base_url').notNull(),
 });
 
-export const apiClientCredentials = pgTable('api_client_credentials', {
+export const apiClientCredentials = pgTable('identity_api_client_credentials', {
   clientId: text('client_id').primaryKey(),
   clientSecretEncrypted: text('client_secret_encrypted').notNull(),
   webId: text('web_id').notNull(),

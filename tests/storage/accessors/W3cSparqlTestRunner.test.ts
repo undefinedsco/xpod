@@ -258,8 +258,7 @@ function compareResults(
 // 测试套件
 // ============================================================
 
-// 跳过: 已迁移到 QuintStore，不再使用 Quadstore
-describe.skip('W3C SPARQL 1.1 Query Test Suite', { timeout: 60000 }, () => {
+describe.skip('W3C SPARQL 1.1 Query Test Suite', () => {
   const testDir = getTestDataPath('w3c_sparql');
   
   // 全局统计
@@ -333,7 +332,7 @@ describe.skip('W3C SPARQL 1.1 Query Test Suite', { timeout: 60000 }, () => {
         }
       });
       
-      it(`should run ${category.name} tests`, { timeout: 10000 }, async () => {
+      it(`should run ${category.name} tests`, async () => {
         const categoryStats: TestStats = {
           total: tests.length,
           passed: 0,
@@ -442,8 +441,7 @@ describe.skip('W3C SPARQL 1.1 Query Test Suite', { timeout: 60000 }, () => {
 // 性能基线测试
 // ============================================================
 
-// 跳过: 已迁移到 QuintStore，不再使用 Quadstore
-describe.skip('QuadstoreSparqlDataAccessor Performance Baseline', { timeout: 30000 }, () => {
+describe.skip('QuadstoreSparqlDataAccessor Performance Baseline', () => {
   const testDir = getTestDataPath('accessor_perf');
   let store: Quadstore;
   let engine: Engine;
