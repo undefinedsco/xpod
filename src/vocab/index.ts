@@ -27,4 +27,4 @@
 export { UDFS, UDFS_NAMESPACE } from './udfs';
 
 // 外部标准词汇表
-export { DCTerms, LDP, Schema, RDF, RDFS, XSD, FOAF, ACL, Solid } from './external';
+export { DCTerms, LDP, Schema, RDF, RDFS, XSD, FOAF, ACL, Solid, SIOC, Meeting, WF } from './external';

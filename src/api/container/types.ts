@@ -16,6 +16,8 @@ import type { SubdomainClient } from '../../subdomain/SubdomainClient';
 import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider } from '../../tunnel/TunnelProvider';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
+import type { ChatKitService, ChatKitStore, AiProvider } from '../chatkit';
+import type { StoreContext } from '../chatkit/store';
 
 /**
  * 容器配置
@@ -88,6 +90,11 @@ export interface ApiContainerCradle {
   // 业务服务
   podService: InternalPodService;
   chatService: VercelChatService;
+  
+  // ChatKit 服务 (OpenAI ChatKit 协议)
+  chatKitStore: ChatKitStore<StoreContext>;
+  chatKitAiProvider: AiProvider;
+  chatKitService: ChatKitService<StoreContext>;
   
   // 子域名相关 (可选，按 edition 注册)
   // Cloud 模式

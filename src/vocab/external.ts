@@ -257,3 +257,64 @@ export const Solid = createNamespace('solid', 'http://www.w3.org/ns/solid/terms#
   instance: 'instance',
   instanceContainer: 'instanceContainer',
 });
+
+// ============================================
+// SIOC (Semantically-Interlinked Online Communities)
+// ============================================
+
+/**
+ * SIOC vocabulary (for chat threads/content)
+ * @see http://rdfs.org/sioc/ns#
+ */
+export const SIOC = createNamespace('sioc', 'http://rdfs.org/sioc/ns#', {
+  // Classes
+  Thread: 'Thread',
+  Post: 'Post',
+  Forum: 'Forum',
+  Container: 'Container',
+  Item: 'Item',
+  UserAccount: 'UserAccount',
+
+  // Properties
+  content: 'content',
+  has_reply: 'has_reply',
+  reply_of: 'reply_of',
+  has_container: 'has_container',
+  container_of: 'container_of',
+  has_creator: 'has_creator',
+  has_parent: 'has_parent',
+  has_space: 'has_space',
+  num_replies: 'num_replies',
+});
+
+// ============================================
+// Meeting/Chat (SolidOS Long Chat)
+// ============================================
+
+/**
+ * Meeting vocabulary (SolidOS chat)
+ * @see http://www.w3.org/ns/pim/meeting#
+ */
+export const Meeting = createNamespace('meeting', 'http://www.w3.org/ns/pim/meeting#', {
+  // Classes
+  LongChat: 'LongChat',
+  ShortChat: 'ShortChat',
+  Meeting: 'Meeting',
+
+  // Properties
+  sharedNotes: 'sharedNotes',
+});
+
+// ============================================
+// WF (Workflow - used for chat messages)
+// ============================================
+
+/**
+ * Workflow vocabulary (used for chat message linking)
+ * @see http://www.w3.org/2005/01/wf/flow#
+ */
+export const WF = createNamespace('wf', 'http://www.w3.org/2005/01/wf/flow#', {
+  // Properties
+  message: 'message',
+  participant: 'participant',
+});

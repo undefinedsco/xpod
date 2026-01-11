@@ -186,26 +186,8 @@ export class VercelChatService {
     return response.json();
   }
 
-  public async listModels(auth?: AuthContext): Promise<any[]> {
-    // If auth provided, try to get models from Pod
-    if (auth) {
-      try {
-        const podModels = await this.podService.listModels(auth);
-        if (podModels.length > 0) {
-          return podModels.map(m => ({
-            id: m.id,
-            object: 'model',
-            created: Math.floor(Date.now() / 1000),
-            owned_by: m.providerId || 'user',
-            display_name: m.displayName,
-            type: m.modelType,
-          }));
-        }
-      } catch (error) {
-        this.logger.warn(`Failed to list models from Pod: ${error}`);
-      }
-    }
-
+  public async listModels(_auth?: AuthContext): Promise<any[]> {
+    // TODO: Get models from Pod when podService.listModels is implemented
     // Fallback to default models
     return [
       {

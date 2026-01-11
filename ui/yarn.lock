@@ -441,6 +441,18 @@
     "@nodelib/fs.scandir" "2.1.5"
     fastq "^1.6.0"
 
+"@openai/chatkit-react@^1.4.1":
+  version "1.4.1"
+  resolved "https://registry.yarnpkg.com/@openai/chatkit-react/-/chatkit-react-1.4.1.tgz#ff8538fd1cd02e82c0d0338adb1173847d3abbba"
+  integrity sha512-/PvaID18iCh1cbcJTuJDzfMAAHTZ/yDdQAIL/es6D7Wju8xjjnojEy1u/N8AdWs+65Hz3YfIoeOQ5/lD2n2VpQ==
+  dependencies:
+    "@openai/chatkit" "1.3.0"
+
+"@openai/chatkit@1.3.0":
+  version "1.3.0"
+  resolved "https://registry.yarnpkg.com/@openai/chatkit/-/chatkit-1.3.0.tgz#88d858c15e2308a4919284094591331d6a83397b"
+  integrity sha512-b/0UmnUAvTX7Zi3juAt4+FPGVMCguFlkR7+VccvEHl1vHXM3HjN4FNMr4LEMXg4nWp0t3i+1Hi2FXIiZesO0JA==
+
 "@rolldown/pluginutils@1.0.0-beta.53":
   version "1.0.0-beta.53"
   resolved "https://registry.yarnpkg.com/@rolldown/pluginutils/-/pluginutils-1.0.0-beta.53.tgz#c57a5234ae122671aff6fe72e673a7ed90f03f87"

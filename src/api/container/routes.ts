@@ -14,6 +14,7 @@ import { registerChatRoutes } from '../handlers/ChatHandler';
 import { registerApiKeyRoutes } from '../handlers/ApiKeyHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
 import { registerSubdomainClientRoutes } from '../handlers/SubdomainClientHandler';
+import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 
 /**
  * 注册所有 API 路由
@@ -63,11 +64,13 @@ function registerSharedRoutes(
   const nodeRepo = container.resolve('nodeRepo');
   const apiKeyStore = container.resolve('apiKeyStore');
   const chatService = container.resolve('chatService');
+  const chatKitService = container.resolve('chatKitService');
   
   registerSignalRoutes(server, { repository: nodeRepo });
   registerNodeRoutes(server, { repository: nodeRepo });
   registerApiKeyRoutes(server, { store: apiKeyStore });
   registerChatRoutes(server, { chatService });
+  registerChatKitRoutes(server, { chatKitService });
 }
 
 /**

@@ -17,6 +17,7 @@ import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { InternalPodService } from '../service/InternalPodService';
 import { VercelChatService } from '../service/VercelChatService';
 import { ApiServer } from '../ApiServer';
+import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 
 /**
  * 注册共享服务到容器
@@ -72,6 +73,24 @@ export function registerCommonServices(
 
     chatService: asFunction(({ podService }: ApiContainerCradle) => {
       return new VercelChatService(podService);
+    }).singleton(),
+
+    // ChatKit 服务 (OpenAI ChatKit 协议)
+    chatKitStore: asFunction(({ config }: ApiContainerCradle) => {
+      return new PodChatKitStore({
+        tokenEndpoint: config.cssTokenEndpoint,
+      });
+    }).singleton(),
+
+    chatKitAiProvider: asFunction(({ podService }: ApiContainerCradle) => {
+      return new VercelAiProvider({ podService });
+    }).singleton(),
+
+    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider }: ApiContainerCradle) => {
+      return new ChatKitService({
+        store: chatKitStore,
+        aiProvider: chatKitAiProvider,
+      });
     }).singleton(),
 
     // API Server

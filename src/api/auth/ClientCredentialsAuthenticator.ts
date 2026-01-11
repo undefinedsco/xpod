@@ -3,10 +3,39 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { Authenticator, AuthResult } from './Authenticator';
 import type { SolidAuthContext } from './AuthContext';
 
-/** API Key prefix */
-const API_KEY_PREFIX = 'sk-';
+/**
+ * Stored client credentials record
+ */
+export interface ClientCredentialsRecord {
+  clientId: string;
+  clientSecret: string;  // Encrypted
+  webId: string;
+  accountId: string;
+  displayName?: string;
+  createdAt: Date;
+}
+
+/**
+ * Interface for client credentials storage
+ */
+export interface ClientCredentialsStore {
+  /**
+   * Find by client_id
+   */
+  findByClientId(clientId: string): Promise<ClientCredentialsRecord | undefined>;
+}
+
+/**
+ * Interface for token cache
+ */
+export interface TokenCache {
+  get(clientId: string): Promise<{ token: string; expiresAt: Date } | undefined>;
+  set(clientId: string, token: string, expiresAt: Date): Promise<void>;
+}
 
 export interface ClientCredentialsAuthenticatorOptions {
+  store: ClientCredentialsStore;
+  tokenCache?: TokenCache;
   /**
    * CSS token endpoint URL
    */
@@ -14,61 +43,23 @@ export interface ClientCredentialsAuthenticatorOptions {
 }
 
 /**
- * Authenticator for CSS client credentials via API Key.
+ * Authenticator for API Keys that are actually CSS client credentials.
  * 
- * API Key format: sk-{base64(client_id:client_secret)}
- * 
- * Usage:
- *   Authorization: Bearer sk-xxxxxxxx
- * 
- * This is compatible with OpenAI-style API calls.
- * No storage needed - credentials are encoded in the API Key itself.
+ * When a third-party provides an API Key (client_id), this authenticator:
+ * 1. Looks up the stored client_secret
+ * 2. Exchanges client_id + secret for a Solid Token via CSS
+ * 3. Returns a SolidAuthContext (same as direct Solid Token auth)
  */
 export class ClientCredentialsAuthenticator implements Authenticator {
   private readonly logger = getLoggerFor(this);
+  private readonly store: ClientCredentialsStore;
+  private readonly tokenCache?: TokenCache;
   private readonly tokenEndpoint: string;
 
   public constructor(options: ClientCredentialsAuthenticatorOptions) {
+    this.store = options.store;
+    this.tokenCache = options.tokenCache;
     this.tokenEndpoint = options.tokenEndpoint;
-  }
-
-  /**
-   * Generate an API Key from client credentials.
-   * Format: sk-{base64(client_id:client_secret)}
-   */
-  public static generateApiKey(clientId: string, clientSecret: string): string {
-    const encoded = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-    return `${API_KEY_PREFIX}${encoded}`;
-  }
-
-  /**
-   * Parse an API Key to extract client credentials.
-   * Returns null if the key format is invalid.
-   */
-  public static parseApiKey(apiKey: string): { clientId: string; clientSecret: string } | null {
-    if (!apiKey.startsWith(API_KEY_PREFIX)) {
-      return null;
-    }
-
-    const base64 = apiKey.slice(API_KEY_PREFIX.length);
-    try {
-      const decoded = Buffer.from(base64, 'base64').toString('utf8');
-      const colonIndex = decoded.indexOf(':');
-      if (colonIndex === -1) {
-        return null;
-      }
-
-      const clientId = decoded.slice(0, colonIndex);
-      const clientSecret = decoded.slice(colonIndex + 1);
-
-      if (!clientId || !clientSecret) {
-        return null;
-      }
-
-      return { clientId, clientSecret };
-    } catch {
-      return null;
-    }
   }
 
   public canAuthenticate(request: IncomingMessage): boolean {
@@ -76,9 +67,15 @@ export class ClientCredentialsAuthenticator implements Authenticator {
     if (!auth?.startsWith('Bearer ')) {
       return false;
     }
-    // Only handle Bearer tokens that look like our API Keys (sk-xxx)
+    // If there's a DPoP header, it's a Solid Token, not an API Key
+    if (request.headers.dpop) {
+      return false;
+    }
     const token = auth.slice(7).trim();
-    return token.startsWith(API_KEY_PREFIX);
+    if (!token) {
+      return false;
+    }
+    return !this.isJwt(token);
   }
 
   public async authenticate(request: IncomingMessage): Promise<AuthResult> {
@@ -87,32 +84,58 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       return { success: false, error: 'Missing Bearer token' };
     }
 
-    const apiKey = authorization.slice(7).trim();
-    const credentials = ClientCredentialsAuthenticator.parseApiKey(apiKey);
-    
-    if (!credentials) {
-      return { success: false, error: 'Invalid API Key format' };
+    const clientId = authorization.slice(7).trim();
+    if (!clientId) {
+      return { success: false, error: 'Empty API Key' };
     }
 
-    const { clientId, clientSecret } = credentials;
-
     try {
+      // Look up stored credentials
+      const record = await this.store.findByClientId(clientId);
+      if (!record) {
+        this.logger.warn(`API Key not found: ${clientId.slice(0, 8)}...`);
+        return { success: false, error: 'Invalid API Key' };
+      }
+
+      // Check cache first
+      if (this.tokenCache) {
+        const cached = await this.tokenCache.get(clientId);
+        if (cached && cached.expiresAt > new Date()) {
+          this.logger.debug(`Using cached token for ${clientId.slice(0, 8)}...`);
+          return {
+            success: true,
+            context: {
+              type: 'solid',
+              webId: record.webId,
+              accountId: record.accountId,
+              clientId,
+              displayName: record.displayName,
+            },
+          };
+        }
+      }
+
       // Exchange for token
-      const tokenResult = await this.exchangeForToken(clientId, clientSecret);
+      const tokenResult = await this.exchangeForToken(record.clientId, record.clientSecret);
       if (!tokenResult.success) {
         return { success: false, error: tokenResult.error };
       }
 
+      // Cache the token
+      if (this.tokenCache && tokenResult.expiresAt) {
+        await this.tokenCache.set(clientId, tokenResult.token!, tokenResult.expiresAt);
+      }
+
       const context: SolidAuthContext = {
         type: 'solid',
-        webId: tokenResult.webId!,
-        accountId: tokenResult.webId!, // Use webId as accountId
+        webId: record.webId,
+        accountId: record.accountId,
         clientId,
-        clientSecret,
+        displayName: record.displayName,
         viaApiKey: true,
       };
 
-      this.logger.debug(`Authenticated API Key for webId: ${tokenResult.webId}`);
+      this.logger.debug(`Authenticated API Key for webId: ${record.webId}`);
       return { success: true, context };
     } catch (error) {
       this.logger.error(`API Key authentication error: ${error}`);
@@ -123,7 +146,6 @@ export class ClientCredentialsAuthenticator implements Authenticator {
   private async exchangeForToken(clientId: string, clientSecret: string): Promise<{
     success: boolean;
     token?: string;
-    webId?: string;
     expiresAt?: Date;
     error?: string;
   }> {
@@ -143,46 +165,14 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       if (!response.ok) {
         const error = await response.text();
         this.logger.warn(`Token exchange failed: ${response.status} ${error}`);
-        return { success: false, error: 'Invalid credentials' };
+        return { success: false, error: 'Token exchange failed' };
       }
 
       const data = await response.json() as {
         access_token: string;
         expires_in?: number;
         token_type: string;
-        id_token?: string;
       };
-
-      // Extract webId from id_token if present, or decode from access_token
-      let webId: string | undefined;
-      
-      // Try to get webId from id_token
-      if (data.id_token) {
-        try {
-          const payload = JSON.parse(
-            Buffer.from(data.id_token.split('.')[1], 'base64').toString('utf8')
-          );
-          webId = payload.webid || payload.sub;
-        } catch {
-          // Ignore decode errors
-        }
-      }
-
-      // Fallback: try access_token
-      if (!webId && data.access_token) {
-        try {
-          const payload = JSON.parse(
-            Buffer.from(data.access_token.split('.')[1], 'base64').toString('utf8')
-          );
-          webId = payload.webid || payload.sub;
-        } catch {
-          // Ignore decode errors
-        }
-      }
-
-      if (!webId) {
-        return { success: false, error: 'Cannot determine webId from token' };
-      }
 
       const expiresAt = data.expires_in
         ? new Date(Date.now() + data.expires_in * 1000 - 60000) // 1 min buffer
@@ -191,12 +181,15 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       return {
         success: true,
         token: data.access_token,
-        webId,
         expiresAt,
       };
     } catch (error) {
       this.logger.error(`Token exchange error: ${error}`);
       return { success: false, error: 'Token exchange failed' };
     }
+  }
+
+  private isJwt(token: string): boolean {
+    return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
   }
 }

@@ -179,6 +179,16 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   /** 错误 */
   error: 'error',
 
+  // --- Chat/Thread 属性 (扩展 SolidOS chat) ---
+  /** 消息角色 (user/assistant/system) */
+  role: 'role',
+  /** 推理选项 (model, temperature, etc.) */
+  inferenceOptions: 'inferenceOptions',
+  /** 消息状态 (in_progress/completed/incomplete) */
+  messageStatus: 'messageStatus',
+  /** Thread 状态 (active/locked/closed) */
+  threadStatus: 'threadStatus',
+
   // --- 向量存储属性 ---
   /** 名称 */
   name: 'name',
