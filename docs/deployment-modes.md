@@ -2,115 +2,72 @@
 
 ## Profile Comparison
 
-| Capability | `local` | `server` |
+| Capability | `local` | `cloud` |
 | --- | --- | --- |
-| Data & Dependencies | SQLite + local disk; no Redis/MinIO dependency (optional) | PostgreSQL + MinIO + Redis, supports horizontal scaling |
+| Data & Dependencies | SQLite + local disk; no Redis/MinIO dependency | PostgreSQL + MinIO + Redis, supports horizontal scaling |
 | Quota Strategy | `NoopQuotaService`, no validation by default | `PerAccountQuotaStrategy`, configurable default/custom limits |
-| Cloud-Edge Coordination | Disabled, Agent can be customized | Built-in `EdgeNodeSignal`, DNS-01, usage tracking; enable via env |
-| Tunnel Fallback | Disabled | Configurable `XPOD_FRP_*` + Agent `frp` auto-manages `frpc` |
-| Certificate Automation | Manual config or desktop client trigger | ACME + DNS-01 auto-renewal, distributed to nodes |
-| Bandwidth Quota | No tracking, no throttling | `identity_account_usage` / `identity_pod_usage` tables track `ingress_bytes` / `egress_bytes`; `UsageTrackingStore` + `SubgraphSparqlHttpHandler` collect data; default 10 MiB/s (configurable in `config/extensions.cloud.json`) |
-| Typical Scenarios | Personal dev, testing, desktop client | Production deployment, cloud-edge cluster with local nodes |
+| Cloud-Edge Coordination | Disabled by default | Built-in `EdgeNodeSignal`, DNS-01, usage tracking |
+| Tunnel Fallback | Disabled | Configurable `XPOD_FRP_*` |
+| Certificate Automation | Manual config | ACME + DNS-01 auto-renewal |
+| Typical Scenarios | Personal dev, testing, desktop client | Production deployment, multi-user hosting |
 
-> Cloud-edge coordination: Set Signal/DNS/ACME/FRP variables in server environment, run `EdgeNodeAgent` on local nodes (see [edge-node-agent.md](edge-node-agent.md)) for dynamic DNS, certificates, and tunnel orchestration.
-
-## Local Mode: Three Deployment Patterns
-
-### 1. Self-Managed HTTPS (Full Self-Hosting)
-
-Node manages its own certificates and 443 listener. `EdgeNodeAgent` doesn't participate in certificate/tunnel logic. Suitable for users familiar with TLS who have fixed public IPs.
-
-### 2. Direct Connection + Auto Certificates
-
-Node can expose port 443 but doesn't want to manually run ACME. Use `EdgeNodeAgent`'s `acme` config to request DNS-01 from server, then deploy certificates locally.
-
-### 3. No Port 443 Available
-
-Use FRP tunnel fallback. Agent auto-manages `frpc` based on server-provided config. Client access is forwarded through server's frps. Suitable for home broadband, mobile networks, or scenarios where port exposure is difficult.
-
-> Desktop client will integrate these capabilities (certificate requests, tunnel toggle, log viewing). This repository provides the underlying interfaces and example scripts.
-
-## Coordination with Server
-
-### Local-1 (Self-Managed HTTPS) ↔ Server
-
-Server only provides account management and heartbeat registration. Usage stats can be self-managed by node or aggregated to server as needed. DNS points to node's own HTTPS endpoint. Other cloud-edge features (ACME, tunnels) can remain disabled.
-
-### Local-2 (Direct + Auto Cert) ↔ Server
-
-Server handles DNS-01 challenge coordination and heartbeat registration. Node renews certificates locally and maintains its own usage data. DNS still points to node's public IP.
-
-### Local-3 (Tunnel Fallback) ↔ Server
-
-Server must enable DNS, FRP components. Responsible for assigning tunnel endpoints, distributing `frpc` config, and auto-falling back to tunnel traffic when direct connection unavailable.
-
-A single Server instance can manage multiple Local node types - just set the appropriate environment variables/Agent config for each node type.
-
-## Cluster Mode
-
-Cluster mode separates the control plane and edge nodes for cloud-edge architecture.
-
-### Cluster Server (Control Plane)
+## Quick Start
 
 ```bash
-yarn cluster:server    # or: yarn cluster
+# Local mode (SQLite, no external dependencies)
+cp example.env .env.local
+yarn local
+
+# Cloud mode (PostgreSQL + MinIO + Redis)
+cp example.env .env.cloud
+yarn cloud
 ```
 
-- Reuses server profile but reads `.env.cluster`
-- Runs the control plane for cloud-edge cluster
-- Manages edge node registration, DNS coordination, certificate distribution
+## Local Mode
 
-### Cluster Local (Edge Node)
+Local mode is designed for single-user, self-hosted scenarios:
+
+- **Storage**: SQLite database + local file system
+- **No external dependencies**: Works offline, no Redis/MinIO required
+- **Use cases**: Personal development, desktop client, testing
+
+### HTTPS Options
+
+1. **Self-Managed HTTPS**: Bring your own certificates and 443 listener
+2. **Reverse Proxy**: Use nginx/caddy with auto-SSL in front of Xpod
+3. **Development**: Run on HTTP locally, use `yarn dev`
+
+## Cloud Mode
+
+Cloud mode is designed for production multi-user deployments:
+
+- **Storage**: PostgreSQL + MinIO (S3-compatible)
+- **Caching**: Redis for sessions and coordination
+- **Scalable**: Supports horizontal scaling behind load balancer
+
+### Required Services
 
 ```bash
-yarn cluster:local
+# PostgreSQL
+CSS_DATABASE_URL=postgresql://user:pass@localhost:5432/xpod
+
+# MinIO / S3
+CSS_S3_ENDPOINT=http://localhost:9000
+CSS_S3_ACCESS_KEY=...
+CSS_S3_SECRET_KEY=...
+
+# Redis
+CSS_REDIS_URL=redis://localhost:6379
 ```
-
-- Reads `.env.cluster.local`
-- Connects to control plane as an edge node
-- Required environment variables:
-  ```bash
-  CSS_EDGE_NODES_ENABLED=true
-  CSS_NODE_ID=my-edge-node-001
-  CSS_NODE_TOKEN=<token-from-control-plane>
-  CSS_SIGNAL_ENDPOINT=https://control-plane.example.com/api/signal
-  ```
-
-### Cluster Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│                  Control Plane                       │
-│              (yarn cluster:server)                   │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐             │
-│  │ Signal  │  │  DNS    │  │  ACME   │             │
-│  │ Server  │  │ Coord   │  │ Coord   │             │
-│  └─────────┘  └─────────┘  └─────────┘             │
-└─────────────────────────────────────────────────────┘
-        │              │              │
-        ▼              ▼              ▼
-┌───────────┐  ┌───────────┐  ┌───────────┐
-│ Edge Node │  │ Edge Node │  │ Edge Node │
-│  (local)  │  │  (local)  │  │  (local)  │
-└───────────┘  └───────────┘  └───────────┘
-```
-
-### Environment Files
-
-| File | Purpose |
-| --- | --- |
-| `.env.cluster` | Control plane configuration |
-| `.env.cluster.local` | Edge node configuration |
 
 ## Environment Variables
 
-Copy environment templates for different modes:
+| Variable | Description | Default |
+| --- | --- | --- |
+| `CSS_BASE_URL` | Public base URL | `http://localhost:3000` |
+| `CSS_PORT` | HTTP port | `3000` |
+| `CSS_DATABASE_URL` | PostgreSQL connection string | (SQLite if not set) |
+| `CSS_S3_ENDPOINT` | S3/MinIO endpoint | (local disk if not set) |
+| `CSS_REDIS_URL` | Redis connection string | (optional) |
 
-```bash
-cp example.env .env.local          # Local / Dev
-cp example.env .env.server         # Server / Production
-cp example.env .env.cluster        # Cluster control plane
-cp example.env .env.cluster.local  # Cluster edge node
-```
-
-Edit the appropriate file based on your deployment mode. Root `.env` can be kept for legacy script compatibility.
+See `example.env` for full list.

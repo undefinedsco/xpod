@@ -12,8 +12,8 @@ Admin roles are now stored in `identity_account_role(account_id, role)` and can 
 
 ### Storage Implementation
 
-- `yarn local`: Uses `.internal/accounts` file storage for accounts (via `config/local.json`)
-- `yarn server` (cloud/production): Uses PostgreSQL (via `config/cloud.json`)
+- `yarn local`: Uses SQLite + `.internal/accounts` file storage (via `config/local.json`)
+- `yarn cloud`: Uses PostgreSQL (via `config/cloud.json`)
 - Both modes use the `identity_account_role` database table for admin roles
 
 ## Authorization

@@ -38,6 +38,7 @@ logs/
 .codex/
 .specify/
 .cursor/
+.codebuddy/
 
 # Test cache
 .rdf-test-suite-cache/

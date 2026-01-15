@@ -93,7 +93,7 @@ Xpod 支持 2 种核心运行模式，适用于不同场景：
 | 模式 | 命令 | 端口 | 正确访问 URL | 配置入口 | 用途 |
 | --- | --- | --- | --- | --- | --- |
 | **local** | `yarn local` | 3000 | `http://localhost:3000/` | `config/local.json` | 本地开发/桌面，SQLite + 文件 |
-| **cloud** | `yarn server` | 3000 | `http://localhost:3000/` | `config/cloud.json` | 生产部署，PostgreSQL + MinIO + Redis |
+| **cloud** | `yarn cloud` | 3000 | `http://localhost:3000/` | `config/cloud.json` | 生产部署，PostgreSQL + MinIO + Redis |
 
 **配置架构说明**：
 - 入口文件（`local.json`/`cloud.json`）通过 `@import` 加载 `main.json` → `xpod.base.json` → CSS 官方配置
@@ -107,8 +107,8 @@ yarn local &
 sleep 8 && curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/
 pkill -f "community-solid-server"
 
-# 验证 cloud 模式（需要配置 .env.server）
-yarn server &
+# 验证 cloud 模式（需要配置 .env.cloud）
+yarn cloud &
 sleep 8 && curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/
 pkill -f "community-solid-server"
 ```
@@ -117,7 +117,7 @@ pkill -f "community-solid-server"
 
 ## 8. 调试与部署建议
 
-1. **启动**：使用 `yarn server`（读取 `.env.server` 和 `config/cloud.json`）启动云端模式，观察日志确认 Handler 是否注册成功。
+1. **启动**：使用 `yarn cloud`（读取 `.env.cloud` 和 `config/cloud.json`）启动云端模式，观察日志确认 Handler 是否注册成功。
 2. **节点验证**：通过 API 注册测试节点，观察 `/api/signal` 返回的 metadata 中 `accessMode`、`dns`、`tunnel` 字段是否符合预期。
 3. **DNS / 证书**：借助 `dig`、`nslookup`、`openssl s_client` 验证 DNS 记录与证书链；若失败，重点排查 `CSS_TENCENT_DNS_*` 与 `CSS_ACME_*`。
 4. **隧道**：查看 `EdgeNodeSignalHttpHandler` 心跳日志中的 `tunnel.client` 字段和 `frpc` 日志，确保直连/隧道切换时可以快速恢复。
