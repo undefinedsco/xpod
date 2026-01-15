@@ -82,6 +82,14 @@
       }
     },
     {
+      "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for cloud (with OPTIONAL optimization)",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "@type": "QuintstoreSparqlEngine",
+      "store": {
+        "@id": "urn:undefineds:xpod:PgQuintStore"
+      }
+    },
+    {
       "comment": "QuintStore-based SPARQL data accessor for RDF storage.",
       "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
       "@type": "QuintStoreSparqlDataAccessor",

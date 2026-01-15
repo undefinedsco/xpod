@@ -38,6 +38,7 @@
     "build:ts": "tsc",
     "build:components": "componentsjs-generator -s src -c dist/components -r undefineds",
     "build:ui": "cd ui && yarn build",
+    "release": "yarn build && npm publish --access public",
     "prepare.": "yarn build",
     "clean": "rm -rf data/*",
     "clean:test": "rm -rf .test-data && rm -f *.sqlite *.sqlite-wal *.sqlite-shm",

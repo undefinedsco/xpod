@@ -108,16 +108,7 @@
       }
     },
     {
-      "comment": "Default SPARQL engine (Quadstore-based)",
-      "@type": "QuadstoreSparqlEngine",
-      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
-      "endpoint": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
-        "@type": "Variable"
-      }
-    },
-    {
-      "comment": "Subgraph query engine wrapping default SPARQL engine",
+      "comment": "Subgraph query engine wrapping default SPARQL engine (DefaultSparqlEngine defined in profile)",
       "@type": "SubgraphQueryEngine",
       "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
       "engine": {

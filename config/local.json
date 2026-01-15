@@ -48,24 +48,11 @@
       "authorizer": { "@id": "urn:solid-server:default:Authorizer" }
     },
     {
-      "comment": "QuintStore-based SPARQL engine for local mode",
-      "@id": "urn:undefineds:xpod:QuintstoreSparqlEngine",
+      "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for local (with OPTIONAL optimization)",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
       "@type": "QuintstoreSparqlEngine",
       "store": {
         "@id": "urn:undefineds:xpod:QuintStore"
-      }
-    },
-    {
-      "comment": "Override default SPARQL engine to use QuintstoreSparqlEngine",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:undefineds:xpod:DefaultSparqlEngine"
-      },
-      "overrideParameters": {
-        "@type": "QuintstoreSparqlEngine",
-        "store": {
-          "@id": "urn:undefineds:xpod:QuintStore"
-        }
       }
     },
     {
