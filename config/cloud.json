@@ -1,7 +1,7 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
@@ -79,6 +79,14 @@
       "options_connectionString": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
+      }
+    },
+    {
+      "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for cloud (with OPTIONAL optimization)",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "@type": "QuintstoreSparqlEngine",
+      "store": {
+        "@id": "urn:undefineds:xpod:PgQuintStore"
       }
     },
     {

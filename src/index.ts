@@ -39,8 +39,6 @@ import { EdgeNodeAgent } from './edge/EdgeNodeAgent';
 import { EdgeNodeCertificateService } from './service/EdgeNodeCertificateService';
 import { createBandwidthThrottleTransform } from './util/stream/BandwidthThrottleTransform';
 import { UsageTrackingStore } from './storage/quota/UsageTrackingStore';
-import { ObservableResourceStore } from './storage/ObservableResourceStore';
-export type { ResourceChangeEvent, ResourceChangeListener } from './storage/ObservableResourceStore';
 import { EdgeNodeModeDetector } from './edge/EdgeNodeModeDetector';
 import { ClusterIdentifierStrategy } from './util/identifiers/ClusterIdentifierStrategy';
 import { CenterNodeRegistrationService } from './identity/CenterNodeRegistrationService';
@@ -52,16 +50,18 @@ import { ReactAppViewHandler } from './identity/ReactAppViewHandler';
 import { SqliteQuintStore } from './storage/quint/SqliteQuintStore';
 import { PgQuintStore } from './storage/quint/PgQuintStore';
 import { BaseQuintStore } from './storage/quint/BaseQuintStore';
+import { QuintStore } from './storage/quint/types';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
 import { SqliteVectorStore, PostgresVectorStore } from './storage/vector/index';
-// VectorIndexingListener 已弃用，索引逻辑移至 API Server 层
-// export type { VectorStoreDefinition } from './storage/vector/VectorIndexingListener';
 import { VectorHttpHandler } from './http/vector/VectorHttpHandler';
-import { SearchHttpHandler } from './http/search/SearchHttpHandler';
+import { ProviderRegistry } from './embedding/ProviderRegistry';
 import { ProviderRegistryImpl } from './embedding/ProviderRegistryImpl';
+import { EmbeddingService } from './embedding/EmbeddingService';
 import { EmbeddingServiceImpl } from './embedding/EmbeddingServiceImpl';
+import { CredentialReader } from './embedding/CredentialReader';
 import { CredentialReaderImpl } from './embedding/CredentialReaderImpl';
+import { VectorStore } from './storage/vector/VectorStore';
 // Tunnel and Subdomain components
 import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';
 import { SubdomainService } from './subdomain/SubdomainService';
@@ -138,24 +138,28 @@ export {
     EdgeNodeModeDetector,
     ClusterIdentifierStrategy,
   UsageTrackingStore,
-  ObservableResourceStore,
   CenterNodeRegistrationService,
   PodRoutingHttpHandler,
   TieredMinioDataAccessor,
   PodMigrationHttpHandler,
   PodMigrationService,
   ReactAppViewHandler,
+  // Quint exports
+  QuintStore,
   SqliteQuintStore,
   PgQuintStore,
   BaseQuintStore,
   // Vector exports
+  VectorStore,
   SqliteVectorStore,
   PostgresVectorStore,
-  // VectorIndexingListener - 已弃用
   VectorHttpHandler,
-  SearchHttpHandler,
+  // Embedding exports
+  ProviderRegistry,
   ProviderRegistryImpl,
+  EmbeddingService,
   EmbeddingServiceImpl,
+  CredentialReader,
   CredentialReaderImpl,
   // Tunnel and Subdomain exports
   CloudflareTunnelProvider,

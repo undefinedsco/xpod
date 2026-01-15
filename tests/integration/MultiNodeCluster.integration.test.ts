@@ -56,7 +56,7 @@ suite('Multi-node Center Cluster', () => {
         mainModulePath: process.cwd(),
       },
       config: [
-        join(process.cwd(), 'config/main.local.json'),
+        join(process.cwd(), 'config/main.json'),
         join(process.cwd(), 'config/extensions.cluster-test.json'),
       ],
       shorthand: {
@@ -81,7 +81,7 @@ suite('Multi-node Center Cluster', () => {
         mainModulePath: process.cwd(),
       },
       config: [
-        join(process.cwd(), 'config/main.local.json'),
+        join(process.cwd(), 'config/main.json'),
         join(process.cwd(), 'config/extensions.cluster-test.json'),
       ],
       shorthand: {

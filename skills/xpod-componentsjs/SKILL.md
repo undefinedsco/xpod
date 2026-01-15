@@ -74,7 +74,109 @@ Variable (配置文件中) - 在组件配置中引用变量
 }
 ```
 
+## 抽象类和接口的处理
+
+### 关键规则：Generator 只处理导出的类
+
+Components.js Generator (`componentsjs-generator`) 只会为 **从 `src/index.ts` 导出的类** 生成 `.jsonld` 文件。
+
+### 问题场景
+
+当一个类继承抽象基类或实现接口时：
+
+```typescript
+// 子类生成的 jsonld 会包含 extends 引用
+"extends": ["undefineds:dist/path/to/BaseClass.jsonld#BaseClass"]
+```
+
+如果 `BaseClass` 没有被导出，Generator 不会为它生成 jsonld，启动时会报错：
+
+```
+Error: Resource .../BaseClass.jsonld#BaseClass is not a valid component
+```
+
+### 解决方案
+
+**1. 确保抽象类/基类从 index.ts 导出**
+
+```typescript
+// src/index.ts
+import { MyBaseClass } from './path/to/MyBaseClass';
+import { MyImplClass } from './path/to/MyImplClass';
+
+export default {
+  MyBaseClass,      // ← 必须导出基类！
+  MyImplClass,
+};
+```
+
+**2. 使用 abstract class 而不是 interface**
+
+Generator **不会为 TypeScript interface 生成 jsonld**。如果有类 `implements` 一个 interface，必须将 interface 改为 abstract class：
+
+```typescript
+// ❌ 错误 - interface 不会生成 jsonld
+export interface QuintStore {
+  get(pattern: QuintPattern): Promise<Quint[]>;
+  put(quint: Quint): Promise<void>;
+}
+
+export class MyStore implements QuintStore { ... }
+```
+
+```typescript
+// ✅ 正确 - abstract class 会生成 jsonld
+export abstract class QuintStore {
+  abstract get(pattern: QuintPattern): Promise<Quint[]>;
+  abstract put(quint: Quint): Promise<void>;
+}
+
+export class MyStore extends QuintStore { ... }
+```
+
+**3. 子类继承时添加 super() 和 override**
+
+```typescript
+export class MyStore extends QuintStore {
+  constructor(options: Options) {
+    super();  // ← 必须调用 super()
+    this.options = options;
+  }
+  
+  override async get(pattern: QuintPattern): Promise<Quint[]> {
+    // 如果基类有可选方法的实现，需要 override 修饰符
+  }
+}
+```
+
+### 检查清单
+
+添加新的抽象类/基类时：
+
+- [ ] 使用 `abstract class` 而不是 `interface`
+- [ ] 在 `src/index.ts` 中导出该类
+- [ ] 子类使用 `extends` 而不是 `implements`
+- [ ] 子类构造函数调用 `super()`
+- [ ] 覆盖父类方法时添加 `override` 修饰符
+- [ ] 运行 `yarn build` 验证 jsonld 生成
+
 ## 常见错误诊断
+
+### 错误: Resource is not a valid component
+
+```
+Error: Resource .../types.jsonld#QuintStore is not a valid component, 
+either it is not defined, has no type, or is incorrectly referenced
+```
+
+**原因**: 
+1. 使用了 TypeScript interface（Generator 不处理 interface）
+2. 抽象类/基类没有从 index.ts 导出
+
+**解决**: 
+1. 将 interface 改为 abstract class
+2. 在 index.ts 中导出该类
+3. 运行 `yarn build`
 
 ### 错误: Could not find (valid) component types
 
@@ -136,7 +238,7 @@ TypeError: options.routes.map is not a function
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld"
   ]
 }
 ```
@@ -156,6 +258,12 @@ community-solid-server -c config/xxx.json -m . --myNewParam test-value
 
 # 查看组件参数名
 grep -A 10 '"MyComponent"' dist/components/context.jsonld
+
+# 检查某个类的 jsonld 是否生成
+ls dist/path/to/MyClass.jsonld
+
+# 检查 components.jsonld 是否包含某个类的 import
+grep "MyClass" dist/components/components.jsonld
 ```
 
 ## 检查清单
@@ -168,92 +276,9 @@ grep -A 10 '"MyComponent"' dist/components/context.jsonld
 - [ ] 组件配置文件 - 使用 `"@type": "Variable"` 引用
 - [ ] 运行 `yarn build` 重新生成 components
 
-## 隐藏内部实现
+添加新的抽象类/基类时：
 
-### 推荐做法：内部初始化
-
-私有字段不作为构造参数，而是在类内部初始化（如 `initialize()` 方法中）。这样字段不会出现在生成的 jsonld 的 `constructorArguments` 中。
-
-```typescript
-// ✅ 推荐：db 不暴露到 jsonld
-export class MyStore {
-  private db: Database | null = null;  // 不是构造参数
-  
-  constructor(connectionString: string) {  // 只暴露必要的配置
-    this.connectionString = connectionString;
-  }
-  
-  async initialize() {
-    this.db = new Database(this.connectionString);  // 内部创建
-  }
-}
-```
-
-```typescript
-// ❌ 不推荐：db 会暴露到 jsonld 的 constructorArguments
-export class MyStore {
-  constructor(private db: Database) {}
-}
-```
-
-### 使用 `@ignored` 注解
-
-如果必须从构造函数传入，可以用 `/** @ignored */` 注解：
-
-```typescript
-export class MyStore {
-  /**
-   * @param config - 配置对象
-   * @param internalDep - @ignored
-   */
-  constructor(config: Config, internalDep: InternalService) {}
-}
-```
-
-### 隐藏整个类
-
-在项目根目录创建 `.componentsjs-generator-config.json`：
-
-```json
-{
-  "ignoreComponents": ["InternalHelper", "PrivateUtil"],
-  "ignorePackagePaths": ["src/internal"]
-}
-```
-
-## 为 TypeScript 接口创建 jsonld
-
-当类 `implements` 一个 TypeScript 接口时，Components.js Generator 会在 `extends` 中引用该接口的 jsonld。但接口不会自动生成 jsonld，需要**手写**。
-
-### 错误示例
-
-```
-Error: Resource .../types.jsonld#QuintStore is not a valid component
-```
-
-### 解决方案
-
-1. 在 `components/` 目录手写接口的 jsonld：
-
-```json
-// components/types.jsonld
-{
-  "@context": ["...context.jsonld"],
-  "@id": "npmd:@undefineds/xpod",
-  "components": [{
-    "@id": "npmd:.../types.jsonld#QuintStore",
-    "@type": "AbstractClass",
-    "requireElement": "QuintStore",
-    "parameters": [],
-    "constructorArguments": []
-  }]
-}
-```
-
-2. 在 `build:components:fix` 脚本中：
-   - 复制到正确的 dist 目录
-   - 在 `components.jsonld` 的 import 数组中添加引用
-
-### 关于 memberFields
-
-生成的 jsonld 中 `memberFields` 列出类的所有成员，这只是元数据，**不影响依赖注入**。真正影响注入的是 `parameters` 和 `constructorArguments`。
+- [ ] 使用 `abstract class` 而不是 `interface`
+- [ ] 在 `src/index.ts` 中导出该类
+- [ ] 子类使用 `extends` 而不是 `implements`
+- [ ] 运行 `yarn build` 验证 jsonld 生成

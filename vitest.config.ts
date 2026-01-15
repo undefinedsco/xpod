@@ -4,6 +4,7 @@ const coverageEnabled = process.env.COVERAGE === 'true';
 export default defineConfig({
   test: {
     environment: 'node',
+    pool: 'forks',  // Use forks instead of threads to avoid SIGSEGV with native modules
     environmentMatchGlobs: [
       [ 'tests/http/**', 'node' ],
       [ 'tests/storage/**', 'node' ],

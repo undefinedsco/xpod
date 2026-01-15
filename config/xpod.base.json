@@ -1,7 +1,7 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "import": [
@@ -108,16 +108,7 @@
       }
     },
     {
-      "comment": "Default SPARQL engine (Quadstore-based)",
-      "@type": "QuadstoreSparqlEngine",
-      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
-      "endpoint": {
-        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
-        "@type": "Variable"
-      }
-    },
-    {
-      "comment": "Subgraph query engine wrapping default SPARQL engine",
+      "comment": "Subgraph query engine wrapping default SPARQL engine (DefaultSparqlEngine defined in profile)",
       "@type": "SubgraphQueryEngine",
       "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
       "engine": {
@@ -168,7 +159,8 @@
         "@type": "SequenceHandler",
         "handlers": [
           { "@id": "urn:undefineds:xpod:TracingHandler" },
-          { "@id": "urn:solid-server:default:ParallelMiddleware" }
+          { "@id": "urn:solid-server:default:ParallelMiddleware" },
+          { "@id": "urn:solid-server:default:Middleware_Cors" }
         ]
       }
     }

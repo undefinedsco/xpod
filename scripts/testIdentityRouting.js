@@ -6,7 +6,6 @@ const path = require('path');
 
 const CONFIGS = [
   { file: 'config/main.json', variant: 'file-only' },
-  { file: 'config/main.server.json', variant: 'db-first' },
 ];
 
 const ROUTER_ID = 'urn:solid-server:default:RouterRule';

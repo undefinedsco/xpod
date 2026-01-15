@@ -273,9 +273,10 @@ All components follow CSS's Components.js dependency injection pattern:
 
 ### Key Configuration Files
 
-- `config/main.*.json` - Core CSS imports and overrides
-- `config/extensions.*.json` - Xpod component configurations
-- `config/xpod.json` - Common component definitions
+- `config/main.json` - Core CSS imports and overrides
+- `config/xpod.base.json` - Common component definitions
+- `config/local.json` - Development entry point
+- `config/cloud.json` - Production entry point
 - `config/xpod.cluster.json` - Cluster-specific components
 
 ## Data Layer Architecture

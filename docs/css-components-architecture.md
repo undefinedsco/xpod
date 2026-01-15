@@ -8,10 +8,10 @@
 
 1. **命令入口**
    ```bash
-   community-solid-server -c config/main.local.json config/extensions.local.json -m .
+   community-solid-server -c config/main.json config/local.json -m .
    ```
    - `-c` 后可跟多个配置文件，按顺序合并。通常先加载 CSS 官方主配置，再加载项目自定义扩展。
-   - `-m` 指定 “模块根目录”，Components.js 会从该路径解析 `package.json`、components.jsonld 等。
+   - `-m` 指定 "模块根目录"，Components.js 会从该路径解析 `package.json`、components.jsonld 等。
 
 2. **配置加载 → ComponentsManager**
    - CSS 会调用 `ComponentsManager.build({ mainModulePath, config: ... })`。
@@ -166,8 +166,8 @@ Tips：想知道 “某个 `@id` 对应哪个文件/类”，可以在 `node_mod
      ```
    - 没有别名时只能写完整 IRI（`npmd:@undefineds/...#UsageTrackingStore_source`），易读性差。先加别名再用短名，可以保持配置清晰。
 
-2. **更换日志实现**
-   - 在 `config/main*.json` 替换 `css:config/util/logging/winston.json`，改为自定义的 `./logging/*.json`。
+3. **更换日志实现**
+   - 在 `config/main.json` 替换 `css:config/util/logging/winston.json`，改为自定义的 `./logging/*.json`。
    - 自定义 json 中 `@id` 仍使用 `urn:solid-server:default:LoggerFactory`，`@type` 指向自己的类（需生成 jsonld 描述）。
 
 3. **自定义存储后端**
@@ -201,7 +201,7 @@ Tips：想知道 “某个 `@id` 对应哪个文件/类”，可以在 `node_mod
      | `LoginHtml` | `@css:templates/identity/login.html.ejs` | 登录方式选择 |
      | `PasswordLoginHtml` | `@css:templates/identity/password/login.html.ejs` | 邮箱密码登录 |
      | `RegisterPasswordAccountHtml` | `@css:templates/identity/password/register.html.ejs` | 注册表单 |
-   - 覆盖方式：在 `config/xpod.json` 添加 Override，将 `filePath` 指向项目内自定义模板（例如 `./templates/identity/login.html.ejs`）。`file:` 前缀同样不要写，以免解析成无效路径。
+   - 覆盖方式：在 `config/xpod.base.json` 添加 Override，将 `filePath` 指向项目内自定义模板（例如 `./templates/identity/login.html.ejs`）。`file:` 前缀同样不要写，以免解析成无效路径。
    - 我们当前的覆盖：使用 `templates/identity/**` 提供双语（中/英）界面，并在脚本中调用原有的 `fetchControls`、`postJsonForm` API，确保交互逻辑未变。
 
 ---
@@ -317,7 +317,7 @@ Resource .../types.jsonld#QuintStore is not a valid component
 | --- | --- | --- |
 | “Undefined variable …” | resolver 未覆盖变量 / CLI 未传参 | 检查 `config/resolver.json` 是否有该变量 + 默认值，注意同时支持大小写（如 `XPOD_TENCENT_DNS_TOKEN_ID` / `xpodTencentDnsTokenId`） |
 | “Could not find (valid) component types …” | 变量被写成 `Literal`、jsonld 未生成、`@type` 错误 | 确认 config 中引用的是 `@type: Variable`；运行 `yarn build:components` |
-| Handler 未生效 | Override 顺序错误、文件未被 import | 从主配置开始检查 `import` 链，确认 `./xpod.json` 在最后被合并 |
+| Handler 未生效 | Override 顺序错误、文件未被 import | 从主配置开始检查 `import` 链，确认 `./xpod.base.json` 在最后被合并 |
 | UI 未更新 | —— | Admin Console 已移除，若需要新的前端入口请在自定义工程中自行托管 |
 | CLI 参数不生效 | `KeyExtractor.key` 拼写错误或者环境变量未被导入 | `console.log(process.env)` 检查值是否存在；查看 CLI 启动日志 |
 

@@ -1,7 +1,7 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
   ],
   "@graph": [
@@ -13,8 +13,8 @@
     {
       "comment": "Identifier strategy that allows cluster root host and node subdomains.",
       "@id": "urn:undefineds:xpod:ClusterIdentifierStrategy",
-      "@type": "npmd:@undefineds/xpod/^0.0.0/dist/util/identifiers/ClusterIdentifierStrategy.jsonld#ClusterIdentifierStrategy",
-      "npmd:@undefineds/xpod/^0.0.0/dist/util/identifiers/ClusterIdentifierStrategy.jsonld#ClusterIdentifierStrategy_options_baseUrl": {
+      "@type": "npmd:@undefineds.co/xpod/^0.0.0/dist/util/identifiers/ClusterIdentifierStrategy.jsonld#ClusterIdentifierStrategy",
+      "npmd:@undefineds.co/xpod/^0.0.0/dist/util/identifiers/ClusterIdentifierStrategy.jsonld#ClusterIdentifierStrategy_options_baseUrl": {
         "@id": "urn:solid-server:default:variable:baseUrl",
         "@type": "Variable"
       }
@@ -425,14 +425,14 @@
     {
       "comment": "Composite handler that intercepts /api/v1/signal and forwards other traffic to CSS defaults.",
       "@id": "urn:undefineds:xpod:SignalAwareHttpHandler",
-      "@type": "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler",
-      "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_signalHandler": {
+      "@type": "npmd:@undefineds.co/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler",
+      "npmd:@undefineds.co/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_signalHandler": {
         "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler"
       },
-      "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_fallback": {
+      "npmd:@undefineds.co/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_fallback": {
         "@id": "urn:solid-server:default:HttpHandler"
       },
-      "npmd:@undefineds/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_basePath": "/api/v1/signal"
+      "npmd:@undefineds.co/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_basePath": "/api/v1/signal"
     },
     {
       "comment": "Override MainHttpHandler to include SignalAwareHttpHandler in the middleware chain.",

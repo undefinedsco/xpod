@@ -23,21 +23,20 @@ import {
   fpEncode,
   SEP,
 } from './serialization';
-import {
-  type Quint,
-  type QuintPattern,
-  QuintStore,
-  type QuintStoreOptions,
-  type QueryOptions,
-  type StoreStats,
-  type TermMatch,
-  type TermOperators,
-  type CompoundPattern,
-  type CompoundResult,
-  type OperatorValue,
-  type AttributeMap,
-  isTerm,
+import type {
+  Quint,
+  QuintPattern,
+  QuintStoreOptions,
+  QueryOptions,
+  StoreStats,
+  TermMatch,
+  TermOperators,
+  CompoundPattern,
+  CompoundResult,
+  OperatorValue,
+  AttributeMap,
 } from './types';
+import { isTerm, QuintStore } from './types';
 
 export interface QuintRow {
   graph: string;
@@ -244,7 +243,7 @@ export abstract class BaseQuintStore extends QuintStore {
   // Batch Attributes Query (for OPTIONAL optimization)
   // ============================================
 
-  public override async getAttributes(
+  override async getAttributes(
     subjects: string[],
     predicates: string[],
     graph?: Term

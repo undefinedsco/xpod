@@ -7,12 +7,14 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const { isLoggedIn, authenticating } = useAuth();
+  const { isLoggedIn, hasOidcPending } = useAuth();
   const location = useLocation();
   
-  if (authenticating) {
+  // If logged in and there's an OIDC flow waiting, redirect to consent
+  if (isLoggedIn && hasOidcPending) {
     return <Navigate to="/.account/oidc/consent/" replace />;
   }
+  
   if (!isLoggedIn) {
     // Save current path so we can return after login
     persistReturnTo(location.pathname + location.search);

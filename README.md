@@ -24,15 +24,13 @@ yarn build
 | Mode | Command | Description |
 | --- | --- | --- |
 | Local | `yarn local` | SQLite + local disk, no external dependencies |
-| Server | `yarn server` | PostgreSQL + MinIO + Redis, production ready |
-| Cluster Server | `yarn cluster:server` | Control plane for cloud-edge cluster |
-| Cluster Local | `yarn cluster:local` | Edge node connecting to control plane |
-| Dev | `yarn dev` | No auth, for API/frontend debugging |
+| Cloud | `yarn cloud` | PostgreSQL + MinIO + Redis, production ready |
+| Dev | `yarn dev` | Alias for local mode |
 
 Configure environment:
 ```bash
 cp example.env .env.local     # For local/dev
-cp example.env .env.server    # For server/production
+cp example.env .env.cloud     # For cloud/production
 ```
 
 Visit [http://localhost:3000/](http://localhost:3000/) after startup.
@@ -44,7 +42,7 @@ See [docs/deployment-modes.md](docs/deployment-modes.md) for detailed profile co
 Xpod supports two primary deployment models, functioning like a Personal OS or a Multi-User Mainframe:
 
 1.  **Self-Hosted (Personal OS)**: Run Xpod on your laptop (`yarn local`) or private server. You have exclusive control over the hardware and kernel. Ideal for personal agents and maximum privacy.
-2.  **Managed Hosting (Multi-User OS)**: Deploy Xpod as a shared server (`yarn server`) hosting thousands of Pods. Similar to a Unix mainframe with many users (`/home/alice`, `/home/bob`), Xpod strictly enforces isolation between Pods using WebIDs and ACLs. Users share infrastructure but retain ownership of their data and can migrate their Pods to other instances.
+2.  **Managed Hosting (Multi-User OS)**: Deploy Xpod as a shared server (`yarn cloud`) hosting thousands of Pods. Similar to a Unix mainframe with many users (`/home/alice`, `/home/bob`), Xpod strictly enforces isolation between Pods using WebIDs and ACLs. Users share infrastructure but retain ownership of their data and can migrate their Pods to other instances.
 
 ## The "Everything is a Resource" Architecture
 
@@ -102,7 +100,8 @@ Xpod is designed for the post-GDPR world, where **Data Sovereignty** is paramoun
 - [x] Fine-Grained Pod Capacity Management
 - [x] SPARQL 1.1 via LDP (sparql-update)
 - [x] Sidecar API: SPARQL (`/-/sparql`)
-- [ ] Sidecar API: Vector (`/-/vector`)
+- [x] Sidecar API: Vector (`/-/vector`)
+- [x] Cloud-Edge Cluster Architecture
 - [ ] Sidecar API: Chat Completions (`/-/chat/completions`)
 - [ ] Sidecar API: Responses (`/-/responses`)
 - [ ] Sidecar API: Terminal (`/-/terminal`)
@@ -111,14 +110,13 @@ Xpod is designed for the post-GDPR world, where **Data Sovereignty** is paramoun
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) - Project overview, CSS architecture, development guidelines
-- [docs/COMPONENTS.md](docs/COMPONENTS.md) - Component reference and database architecture
-- [docs/deployment-modes.md](docs/deployment-modes.md) - Deployment profiles and cloud-edge coordination
+- [docs/COMPONENTS.md](docs/COMPONENTS.md) - Components.js reference and configuration patterns
+- [docs/deployment-modes.md](docs/deployment-modes.md) - Deployment profiles (local, cloud)
 - [docs/admin-guide.md](docs/admin-guide.md) - Admin initialization, roles, and reserved names
-- [docs/usage-and-quota.md](docs/usage-and-quota.md) - Usage tracking, quota enforcement, external integration
-- [docs/database-optimization.md](docs/database-optimization.md) - PostgreSQL indexes and performance tuning
+- [docs/edge-cluster-architecture.md](docs/edge-cluster-architecture.md) - Cloud-edge coordination and routing
 - [docs/sidecar-api.md](docs/sidecar-api.md) - Sidecar API pattern (`/-/{service}`)
 - [docs/sparql-support.md](docs/sparql-support.md) - SPARQL 1.1 support details
+- [docs/vector-api-server-guide.md](docs/vector-api-server-guide.md) - Vector search API guide
 
 ## Contributing
 

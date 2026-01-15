@@ -56,7 +56,7 @@ interface MiddlewareHttpHandler {
 
 ## 配置示例
 
-### 基础配置 (xpod.json)
+### 基础配置 (xpod.base.json)
 
 ```json
 {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info } from 'lucide-react';
+import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 /**
@@ -13,7 +13,7 @@ function generateApiKey(clientId: string, clientSecret: string): string {
 }
 
 export function AccountPage() {
-  const { controls, refetchControls } = useAuth();
+  const { controls, refetchControls, hasOidcPending } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
@@ -270,6 +270,30 @@ export function AccountPage() {
         </div>
       </header>
       <main className="relative z-10 max-w-2xl mx-auto px-4 py-8 space-y-8">
+        {/* OIDC Authorization Pending Banner */}
+        {hasOidcPending && (
+          <div className="p-4 bg-[#7C4DFF]/10 border border-[#7C4DFF]/30 rounded-xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-[#7C4DFF]/20 rounded-lg">
+                  <Shield className="w-5 h-5 text-[#7C4DFF]" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-zinc-900">Authorization Pending</p>
+                  <p className="text-xs text-zinc-500">An application is waiting for your authorization</p>
+                </div>
+              </div>
+              <Link
+                to="/.account/oidc/consent/"
+                className="flex items-center gap-2 px-4 py-2 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                Continue
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+            </div>
+          </div>
+        )}
+
         <h1 className="text-2xl font-bold">Account Dashboard</h1>
 
         {/* Pods Section */}

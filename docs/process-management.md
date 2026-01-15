@@ -579,7 +579,7 @@ export class DesktopProcessManager {
     // 注册核心进程
     const configs = createDefaultConfigs({
       dataDir,
-      cssConfig: path.join(dataDir, 'config/main.local.json'),
+      cssConfig: path.join(dataDir, 'config/local.json'),
       databaseUrl: `sqlite:${path.join(dataDir, 'data/identity.sqlite')}`,
     });
     configs.forEach(c => this.pm.register(c));
@@ -629,7 +629,7 @@ async function main() {
 
   const configs = createDefaultConfigs({
     dataDir: process.cwd(),
-    cssConfig: 'config/main.local.json',
+    cssConfig: 'config/local.json',
   });
 
   configs.forEach(c => pm.register(c));

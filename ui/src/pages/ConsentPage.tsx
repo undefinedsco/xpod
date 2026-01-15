@@ -23,6 +23,7 @@ export function ConsentPage() {
   const cancelUrl = `${idpIndex}oidc/cancel`;
 
   useEffect(() => {
+    console.log('[Consent] Page loaded, fetching consent info...');
     persistReturnTo(window.location.href);
     (async () => {
       try {
@@ -30,6 +31,8 @@ export function ConsentPage() {
           headers: { Accept: 'application/json' }, 
           credentials: 'include' 
         });
+        
+        console.log('[Consent] GET consent response status:', consentRes.status);
         
         if (consentRes.status === 401 || consentRes.status === 403) {
           setError('Please sign in to continue authorization.');
@@ -100,11 +103,13 @@ export function ConsentPage() {
   };
 
   const handleConsent = async (allow: boolean) => {
+    console.log('[Consent] handleConsent called, allow:', allow);
     try {
       setIsLoading(true);
       setError(null);
 
       if (!allow) {
+        console.log('[Consent] Cancelling...');
         const res = await fetch(cancelUrl, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, 
@@ -112,6 +117,7 @@ export function ConsentPage() {
           body: JSON.stringify({})
         });
         const json = await res.json();
+        console.log('[Consent] Cancel response:', json);
         if (json.location) {
           window.location.href = json.location;
         }
@@ -119,6 +125,7 @@ export function ConsentPage() {
       }
 
       if (selectedWebId && selectedWebId !== currentWebId) {
+        console.log('[Consent] Picking WebID:', selectedWebId);
         const pickRes = await fetch(pickWebIdUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -141,12 +148,26 @@ export function ConsentPage() {
         body: JSON.stringify({ remember: rememberClient })
       });
       const consentJson = await consentRes.json();
+      console.log('[Consent] Response:', consentRes.status, consentJson);
+      console.log('[Consent] Location header:', consentRes.headers.get('Location'));
+      
       if (!consentRes.ok) {
         throw new Error(consentJson.message || 'Consent failed');
       }
 
-      if (consentJson.location) {
-        window.location.href = consentJson.location;
+      // Try to get redirect location from response
+      const headerLocation = consentRes.headers.get('Location');
+      const redirectUrl = consentJson.location || headerLocation;
+      
+      console.log('[Consent] Redirect URL:', redirectUrl);
+      
+      if (redirectUrl) {
+        window.location.href = redirectUrl;
+      } else {
+        // No redirect URL - authorization complete but nowhere to go
+        // This might happen if the OIDC session was lost
+        setError('Authorization completed but no redirect URL received. The application may need to restart the login flow.');
+        setIsLoading(false);
       }
     } catch (err: any) {
       setError(err.message || 'Consent failed');
