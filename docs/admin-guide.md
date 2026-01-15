@@ -12,8 +12,8 @@ Admin roles are now stored in `identity_account_role(account_id, role)` and can 
 
 ### Storage Implementation
 
-- `yarn local` / `yarn dev`: Uses `.internal/accounts` file storage for accounts
-- `yarn server` (cluster/production): Overridden to PostgreSQL in `config/extensions.cloud.json`
+- `yarn local`: Uses `.internal/accounts` file storage for accounts (via `config/local.json`)
+- `yarn server` (cloud/production): Uses PostgreSQL (via `config/cloud.json`)
 - Both modes use the `identity_account_role` database table for admin roles
 
 ## Authorization
@@ -32,7 +32,7 @@ The legacy Admin Console has been removed. All management actions must go throug
 
 Server mode accumulates ingress/egress traffic in `identity_account_usage` / `identity_pod_usage` tables (`ingress_bytes`, `egress_bytes` fields). Resource writes, reads (including `.sparql` queries) are tracked via `UsageTrackingStore` + `SubgraphSparqlHttpHandler`.
 
-Default bandwidth limit: 10 MiB/s. Configure via `options_defaultAccountBandwidthLimitBps` in `config/extensions.cloud.json` or `config/extensions.mix.json`. Set to 0 or remove to disable throttling.
+Default bandwidth limit: 10 MiB/s. Configure via `options_defaultAccountBandwidthLimitBps` in `config/cloud.json`. Set to 0 or remove to disable throttling.
 
 ## Data Archiving
 

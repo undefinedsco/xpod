@@ -163,7 +163,7 @@ xpod/
       // ... 其他 scripts
     }
     ```
-5.  **修改 `config/xpod.json`**:
+5.  **修改 `config/xpod.base.json`**:
     *   添加 `StaticAssetEntry`，将 `/css/` 路径映射到 `./static/css/`。
     *   考虑到 CSS 的 StaticAssetHandler 覆盖机制，这里需要小心，避免覆盖默认的 favicon 等。一种方式是增加一个独立的 StaticAssetHandler，或者明确列出所有需要服务的静态资源。**推荐方案：在主 `extensions.*.json` 中定义一个新的 HTTP Handler 插入到链中。**
     *   *暂时替代方案 (为快速验证)*: 允许浏览器直接访问 `static/css/main.css` 路径。

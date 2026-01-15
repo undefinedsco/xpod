@@ -1,20 +1,63 @@
-import { Supervisor } from '../lib/supervisor';
+#!/usr/bin/env node
+import { Supervisor } from './supervisor';
 import { GatewayProxy } from './gateway/Proxy';
 import { getFreePort } from './gateway/PortFinder';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import path from 'path';
+import fs from 'fs';
+
+// Load .env file manually
+function loadEnvFile(envPath: string): void {
+  if (!fs.existsSync(envPath)) {
+    console.warn(`[Warning] Env file not found: ${envPath}`);
+    return;
+  }
+  const content = fs.readFileSync(envPath, 'utf-8');
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIndex = trimmed.indexOf('=');
+    if (eqIndex === -1) continue;
+    const key = trimmed.slice(0, eqIndex).trim();
+    let value = trimmed.slice(eqIndex + 1).trim();
+    // Remove quotes
+    if ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+}
 
 async function main() {
   const argv = await yargs(hideBin(process.argv))
-    .option('config', { alias: 'c', type: 'string', description: 'Path to config file', default: 'config/local.json' })
+    .option('mode', { alias: 'm', type: 'string', choices: ['local', 'cloud'], description: 'Run mode' })
+    .option('config', { alias: 'c', type: 'string', description: 'Path to config file (overrides --mode)' })
+    .option('env', { alias: 'e', type: 'string', description: 'Path to .env file' })
     .option('port', { alias: 'p', type: 'number', description: 'Gateway port', default: 3000 })
-    .option('host', { alias: 'h', type: 'string', description: 'Gateway host', default: 'localhost' })
+    .option('host', { type: 'string', description: 'Gateway host', default: 'localhost' })
     .help()
     .parse();
 
+  // Load env file if specified
+  if (argv.env) {
+    loadEnvFile(argv.env);
+  }
+
   const gatewayPort = argv.port as number;
-  const configPath = argv.config as string;
+
+  // Determine config path: --config > --mode > default
+  let configPath: string;
+  if (argv.config) {
+    configPath = argv.config;
+  } else if (argv.mode) {
+    configPath = `config/${argv.mode}.json`;
+  } else {
+    configPath = 'config/local.json';
+  }
   
   // 1. Determine Ports with auto-discovery
   // Ensure CSS port search doesn't start exactly on the Gateway port

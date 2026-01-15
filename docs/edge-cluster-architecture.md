@@ -6,7 +6,7 @@
 
 ## 1. Handler 装配顺序
 
-Xpod 在 `config/xpod.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自研 Handler 插入默认链路之前。当前顺序如下：
+Xpod 在 `config/xpod.base.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自研 Handler 插入默认链路之前。当前顺序如下：
 
 1. **`EdgeNodeSignalHttpHandler`**（默认开启：`/api/signal` / `/api/signal/certificate`）  
    负责边缘节点注册、心跳、模式判定、证书协商等。
@@ -88,33 +88,28 @@ Xpod 在 `config/xpod.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自研 H
 
 ## 7. 运行模式与测试
 
-Xpod 支持 6 种运行模式，适用于不同场景：
+Xpod 支持 2 种核心运行模式，适用于不同场景：
 
-| 模式 | 命令 | 端口 | 正确访问 URL | 配置文件 | 用途 |
+| 模式 | 命令 | 端口 | 正确访问 URL | 配置入口 | 用途 |
 | --- | --- | --- | --- | --- | --- |
-| **start** | `yarn start` | 3000 | `http://localhost:3000/` | `extensions.json` | 快速体验，SQLite + 本地文件 |
-| **local** | `yarn local` | 3000 | `http://localhost:3000/` | `.env.local` + `extensions.local.json` | 桌面/单机部署，配额禁用 |
-| **dev** | `yarn dev` | 3000 | `http://localhost:3000/` | `.env.local` + `extensions.dev.json` | 开发调试，无认证 |
-| **server** | `yarn server` | 3000 | `http://localhost:3000/` | `.env.server` + `extensions.cloud.json` | 生产部署，PostgreSQL + MinIO |
-| **cluster:server** | `yarn cluster:server` | 3100 | `http://localhost:3100/` | `.env.cluster` + `extensions.cluster.json` | 集群控制面 |
-| **cluster:local** | `yarn cluster:local` | 3101 | `http://node-local.localhost:3101/` | `.env.cluster.local` + `extensions.local.json` | 边缘节点本地测试 |
+| **local** | `yarn local` | 3000 | `http://localhost:3000/` | `config/local.json` | 本地开发/桌面，SQLite + 文件 |
+| **cloud** | `yarn server` | 3000 | `http://localhost:3000/` | `config/cloud.json` | 生产部署，PostgreSQL + MinIO + Redis |
 
-**重要说明**：
-- `cluster:local` 必须通过 `http://node-local.localhost:3101/` 访问（带 subdomain），因为 `CSS_BASE_URL` 配置为该地址
-- 若使用 `http://localhost:3101/` 访问会返回 500 错误（Host header 不匹配 baseUrl）
-- 集群模式下，边缘节点流量通过 `ClusterIngressRouter` 从 cluster:server 代理到 cluster:local
+**配置架构说明**：
+- 入口文件（`local.json`/`cloud.json`）通过 `@import` 加载 `main.json` → `xpod.base.json` → CSS 官方配置
+- 模式差异体现在不同的 import 链和存储/锁后端选择
 
-### 快速验证所有模式
+### 快速验证
 
 ```bash
-# 验证单个模式
-yarn start &
+# 验证 local 模式
+yarn local &
 sleep 8 && curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/
 pkill -f "community-solid-server"
 
-# cluster:local 需要使用 subdomain
-yarn cluster:local &
-sleep 8 && curl -s -o /dev/null -w "%{http_code}" http://node-local.localhost:3101/
+# 验证 cloud 模式（需要配置 .env.server）
+yarn server &
+sleep 8 && curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/
 pkill -f "community-solid-server"
 ```
 
@@ -122,7 +117,7 @@ pkill -f "community-solid-server"
 
 ## 8. 调试与部署建议
 
-1. **启动**：使用 `yarn cluster:server`（读取 `.env.cluster`）启动控制面，观察日志确认 `EdgeNodeSignalHttpHandler`、`ClusterIngressRouter` 是否注册成功；本地节点用 `yarn cluster:local` 读取 `.env.cluster.local` 并连接到控制面。
+1. **启动**：使用 `yarn server`（读取 `.env.server` 和 `config/cloud.json`）启动云端模式，观察日志确认 Handler 是否注册成功。
 2. **节点验证**：通过 API 注册测试节点，观察 `/api/signal` 返回的 metadata 中 `accessMode`、`dns`、`tunnel` 字段是否符合预期。
 3. **DNS / 证书**：借助 `dig`、`nslookup`、`openssl s_client` 验证 DNS 记录与证书链；若失败，重点排查 `CSS_TENCENT_DNS_*` 与 `CSS_ACME_*`。
 4. **隧道**：查看 `EdgeNodeSignalHttpHandler` 心跳日志中的 `tunnel.client` 字段和 `frpc` 日志，确保直连/隧道切换时可以快速恢复。

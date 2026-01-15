@@ -15,6 +15,7 @@ export interface AuthContextType {
   idpIndex: string;
   isLoggedIn: boolean;
   authenticating: boolean;
+  hasOidcPending: boolean;
   refetchControls: () => Promise<void>;
 }
 
@@ -34,15 +35,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [controls, setControls] = useState<Controls | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
+  const [hasOidcPending, setHasOidcPending] = useState(false);
 
   const isLoggedIn = Boolean(controls?.account?.logout);
   const authenticating = isInitializing;
+
+  const checkOidcPending = async (): Promise<boolean> => {
+    try {
+      const res = await fetch('/.account/oidc/consent/', {
+        headers: { Accept: 'application/json' },
+        credentials: 'include',
+      });
+      // If we get 200 and valid client info, there's an OIDC flow waiting
+      if (res.ok) {
+        const data = await res.json();
+        return Boolean(data.client);
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
 
   const fetchControls = async () => {
     try {
       const res = await fetch(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' });
       if (res.ok) {
         const json = await res.json();
+        
+        // If user is logged in, check if there's an OIDC flow waiting BEFORE setting state
+        // This ensures hasOidcPending is set before isLoggedIn becomes true
+        let pending = false;
+        if (json.controls?.account?.logout) {
+          pending = await checkOidcPending();
+        }
+        
+        // Set both states together to avoid race condition
+        setHasOidcPending(pending);
         setControls(json.controls || {});
       } else {
         // If we get a 404 or other error, it might mean we are not at the right place
@@ -66,7 +95,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ controls, isInitializing, initError, idpIndex, isLoggedIn, authenticating, refetchControls }}>
+    <AuthContext.Provider value={{ controls, isInitializing, initError, idpIndex, isLoggedIn, authenticating, hasOidcPending, refetchControls }}>
       {children}
     </AuthContext.Provider>
   );

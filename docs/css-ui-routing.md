@@ -39,7 +39,7 @@ CSS 提供两种根路径初始化方式：
 
 ### 配置方式
 
-在 `config/xpod.json` 中 override `RootStaticAsset` 指向 SPA：
+在 `config/xpod.base.json` 中 override `RootStaticAsset` 指向 SPA：
 
 ```json
 {

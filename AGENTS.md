@@ -11,7 +11,7 @@ Pod 内数据的读写**第一优先级使用 drizzle-solid** 进行操作：
 4. **临时绕过**：仅在 issue 已记录且确实阻塞开发时，才考虑使用原生 SPARQL 或其他方式绕过
 
 ## Project Structure & Module Organization
-Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/`, paired by environment (for example `config/main.dev.json` with `extensions.dev.json`). Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` handle storage smoke tests such as `node scripts/testInsert.js`.
+Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/` with two main entry points: `local.json` for development and `cloud.json` for production. Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` handle storage smoke tests such as `node scripts/testInsert.js`.
 
 ## 组件开发位置决策
 
@@ -70,7 +70,7 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 ### 核心原则
 1. **接口兼容**：替换组件必须实现与被替换组件相同的接口/基类
 2. **行为扩展**：只增强功能，不删减 CSS 原有能力
-3. **配置隔离**：通过 `config/xpod.json` 定义通用组件，各 `extensions.*.json` 按需 Override
+3. **配置隔离**：通过 `config/xpod.base.json` 定义通用组件，`local.json` 和 `cloud.json` 按需 Override
 
 ### 当前等位替换清单
 | CSS 默认组件 | Xpod 替换组件 | 功能区别 |
@@ -86,10 +86,10 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 1. **创建组件**：在 `src/` 下创建 TypeScript 类，继承/实现 CSS 对应接口
 2. **导出组件**：在 `src/index.ts` 中导出新组件
 3. **生成定义**：运行 `yarn build:components` 生成 `.jsonld` 定义文件
-4. **配置组件**：在 `config/xpod.json` 或相应 `extensions.*.json` 中配置
+4. **配置组件**：在 `config/xpod.base.json` 或 `local.json`/`cloud.json` 中配置
 5. **CLI 参数**（如需要）：在 `config/cli.json` 添加参数定义，在 `config/resolver.json` 添加变量映射
 6. **更新文档**：在 `docs/COMPONENTS.md` 等位替换表中添加记录
-7. **验证配置**：确保所有模式 (local/dev/server/cluster/edge) 配置可正常加载
+7. **验证配置**：确保 local 和 cloud 模式配置可正常加载
 
 ### 文档对位原则
 - **新增组件必须同步更新文档**：`docs/COMPONENTS.md` 的等位替换表和组件说明
@@ -120,8 +120,8 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 - 管理端策略：cluster 侧运维入口完全依赖外部系统/门户（旧 Admin Console 已退场，不会在仓库内扩展 UI）；local 端若推出桌面版，可在桌面客户端整合这些配置与状态展示。
 
 ### 带宽配额与限速
-- Server / Mix 配置默认启用带宽统计：`UsageTrackingStore` 负责资源读写、`SubgraphSparqlHttpHandler` 负责 `.sparql` 入口，均会更新 `identity_account_usage` / `identity_pod_usage` 表中的 `ingress_bytes`、`egress_bytes`。
-- 默认限速 10 MiB/s（`config/extensions.cloud.json` 与 `config/extensions.mix.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
+- Cloud 配置默认启用带宽统计：`UsageTrackingStore` 负责资源读写、`SubgraphSparqlHttpHandler` 负责 `.sparql` 入口，均会更新 `identity_account_usage` / `identity_pod_usage` 表中的 `ingress_bytes`、`egress_bytes`。
+- 默认限速 10 MiB/s（`config/cloud.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
 - `identity_account_usage.storage_limit_bytes` / `bandwidth_limit_bps` 以及对应的 Pod 字段用于存储配额与带宽上限；未来 Admin/桌面端可直接更新这些列完成覆写。
 
 ## Communication
