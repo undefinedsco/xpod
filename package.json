@@ -1,41 +1,53 @@
 {
-  "name": "xpod",
+  "name": "@undefineds.co/xpod",
   "version": "0.1.0",
   "description": "Xpod is an extended Community Solid Server, offering rich-feature, production-level Solid Pod and identity management.",
   "repository": "https://github.com/undefinedsco/xpod",
   "author": "developer@undefineds.co",
   "license": "MIT",
   "private": false,
+  "bin": {
+    "xpod": "./dist/main.js"
+  },
+  "files": [
+    "dist",
+    "config",
+    "components",
+    "templates",
+    "static"
+  ],
+  "engines": {
+    "node": "^20.0.0 || ^22.0.0"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "lsd:module": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod",
+  "lsd:module": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod",
   "lsd:components": "dist/components/components.jsonld",
   "lsd:contexts": {
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/context.jsonld": "dist/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld": "dist/components/context.jsonld"
   },
   "lsd:importPaths": {
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/components/": "dist/components/",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/config/": "config/",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/dist/": "dist/",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/static/": "static/",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds/xpod/^0.0.0/templates/": "templates/"
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/": "dist/components/",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/": "config/",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/": "dist/",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/static/": "static/",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/templates/": "templates/"
   },
   "scripts": {
-    "build": "npm run build:ts && npm run build:components && npm run build:components:fix && npm run build:ui",
+    "build": "yarn build:ts && yarn build:components && yarn build:ui",
     "build:ts": "tsc",
     "build:components": "componentsjs-generator -s src -c dist/components -r undefineds",
-    "build:components:fix": "cp components/*.jsonld dist/storage/quint/ 2>/dev/null; cp components/VectorStore.jsonld dist/storage/vector/ 2>/dev/null; cp components/ProviderRegistry.jsonld components/EmbeddingService.jsonld components/CredentialReader.jsonld dist/embedding/ 2>/dev/null; node -e \"const fs=require('fs');const f='dist/components/components.jsonld';const c=JSON.parse(fs.readFileSync(f));const imports=['npmd:@undefineds/xpod/^0.0.0/dist/storage/quint/types.jsonld','npmd:@undefineds/xpod/^0.0.0/dist/storage/quint/BaseQuintStore.jsonld','npmd:@undefineds/xpod/^0.0.0/dist/storage/vector/VectorStore.jsonld','npmd:@undefineds/xpod/^0.0.0/dist/embedding/ProviderRegistry.jsonld','npmd:@undefineds/xpod/^0.0.0/dist/embedding/EmbeddingService.jsonld','npmd:@undefineds/xpod/^0.0.0/dist/embedding/CredentialReader.jsonld'];imports.forEach(i=>{if(!c.import.includes(i)){c.import.splice(-2,0,i)}});fs.writeFileSync(f,JSON.stringify(c,null,2))\"",
-    "build:ui": "cd ui && npm run build",
-    "prepare.": "yarn run build",
+    "build:ui": "cd ui && yarn build",
+    "prepare.": "yarn build",
     "clean": "rm -rf data/*",
     "clean:test": "rm -rf .test-data && rm -f *.sqlite *.sqlite-wal *.sqlite-shm",
-    "vanilla": "npx community-solid-server -c config/main.vanilla.json -f ./data_vanilla -p 3000",
-    "start": "npx ts-node src/main.ts",
+    "vanilla": "yarn community-solid-server -c config/main.vanilla.json -f ./data_vanilla -p 3000",
+    "start": "yarn ts-node src/main.ts",
     "local": "dotenv -e .env.local -- yarn start -c config/local.json",
     "cloud": "dotenv -e .env.cloud -- yarn start -c config/cloud.json",
-    "dev": "npm run local",
+    "dev": "yarn local",
     "dev:css": "dotenv -e .env.local -- community-solid-server -c config/local.json -m .",
-    "dev:api": "dotenv -e .env.local -- npx ts-node src/api/main.ts",
+    "dev:api": "dotenv -e .env.local -- yarn ts-node src/api/main.ts",
     "watch:css": "nodemon --watch config --watch templates --watch static --watch src --ext json,ejs,html,ts,tsx --exec \"yarn build:ts && yarn build:components && yarn dev:css\"",
     "test": "vitest --run",
     "test:run": "vitest --run",
@@ -50,9 +62,9 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
-    "@solid/community-server": "^8.0.0-alpha.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/http-proxy": "^1.17.17",
+    "@types/node": "^22.0.0",
     "@types/pg": "^8.10.2",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
@@ -78,18 +90,20 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.2",
-    "@comunica/query-sparql-rdfjs": "^4.5.0",
+    "@comunica/query-sparql-rdfjs": "^4.0.2",
     "@electric-sql/pglite": "^0.3.14",
     "@inrupt/solid-client-authn-node": "^3.1.0",
+    "@solid/community-server": "^8.0.0-alpha.1",
     "abstract-level": "^1.0.4",
     "acme-client": "^5.1.3",
     "ai": "^6.0.6",
+    "asynciterator": "^3.9.0",
     "awilix": "^12.0.5",
     "better-sqlite3": "^12.5.0",
     "classic-level": "^1.4.1",
     "clsx": "^2.1.0",
     "drizzle-orm": "^0.30.10",
-    "drizzle-solid": "0.2.1",
+    "drizzle-solid": "^0.2.5",
     "http-proxy": "^1.18.1",
     "i18next": "^23.10.1",
     "knex": "^3.1.0",
@@ -108,6 +122,24 @@
     "sqlite-vec": "^0.1.7-alpha.2",
     "sqlite3": "^5.1.7",
     "tree-kill": "^1.2.2",
-    "winston-daily-rotate-file": "^5.0.0"
+    "winston": "^3.17.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "yargs": "^17.7.2",
+    "zod": "^3.25.76"
+  },
+  "resolutions": {
+    "@inrupt/solid-client-authn-browser": "^3.1.1",
+    "@inrupt/solid-client-authn-core": "^3.1.1",
+    "@comunica/query-sparql-solid": "^4.0.2",
+    "@comunica/query-sparql-rdfjs": "^4.0.2",
+    "@comunica/query-sparql": "^4.5.0",
+    "@comunica/core": "^4.5.0",
+    "@comunica/types": "^4.5.0",
+    "@comunica/context-entries": "^4.5.0",
+    "@comunica/mediator-number": "^4.5.0",
+    "@comunica/mediator-all": "^4.5.0",
+    "@comunica/mediator-race": "^4.5.0",
+    "@comunica/mediator-combine-union": "^4.5.0",
+    "@comunica/mediator-combine-pipeline": "^4.5.0"
   }
 }

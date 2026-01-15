@@ -134,14 +134,14 @@ export interface CompoundResult {
 export type AttributeMap = Map<string, Map<string, Term[]>>;
 
 /**
- * QuintStore - 五元组存储接口
+ * QuintStore - 五元组存储抽象基类
  */
-export interface QuintStore {
+export abstract class QuintStore {
   // 查询
-  get(pattern: QuintPattern, options?: QueryOptions): Promise<Quint[]>;
-  match(subject?: Term | null, predicate?: Term | null, object?: Term | null, graph?: Term | null): AsyncIterator<Quint>;
-  getByGraphPrefix(prefix: string, options?: QueryOptions): Promise<Quint[]>;
-  count(pattern: QuintPattern): Promise<number>;
+  abstract get(pattern: QuintPattern, options?: QueryOptions): Promise<Quint[]>;
+  abstract match(subject?: Term | null, predicate?: Term | null, object?: Term | null, graph?: Term | null): AsyncIterator<Quint>;
+  abstract getByGraphPrefix(prefix: string, options?: QueryOptions): Promise<Quint[]>;
+  abstract count(pattern: QuintPattern): Promise<number>;
   
   // 复合查询 - 多 pattern JOIN，由数据库内部执行
   getCompound?(compound: CompoundPattern, options?: QueryOptions): Promise<CompoundResult[]>;
@@ -167,17 +167,17 @@ export interface QuintStore {
   ): Promise<AttributeMap>;
 
   // 写入
-  put(quint: Quint): Promise<void>;
-  multiPut(quints: Quint[]): Promise<void>;
-  updateEmbedding(pattern: QuintPattern, embedding: number[]): Promise<number>;
+  abstract put(quint: Quint): Promise<void>;
+  abstract multiPut(quints: Quint[]): Promise<void>;
+  abstract updateEmbedding(pattern: QuintPattern, embedding: number[]): Promise<number>;
 
   // 删除
-  del(pattern: QuintPattern): Promise<number>;
-  multiDel(quints: Quint[]): Promise<void>;
+  abstract del(pattern: QuintPattern): Promise<number>;
+  abstract multiDel(quints: Quint[]): Promise<void>;
 
   // 生命周期
-  open(): Promise<void>;
-  close(): Promise<void>;
-  stats(): Promise<StoreStats>;
-  clear(): Promise<void>;
+  abstract open(): Promise<void>;
+  abstract close(): Promise<void>;
+  abstract stats(): Promise<StoreStats>;
+  abstract clear(): Promise<void>;
 }

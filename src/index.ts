@@ -50,13 +50,18 @@ import { ReactAppViewHandler } from './identity/ReactAppViewHandler';
 import { SqliteQuintStore } from './storage/quint/SqliteQuintStore';
 import { PgQuintStore } from './storage/quint/PgQuintStore';
 import { BaseQuintStore } from './storage/quint/BaseQuintStore';
+import { QuintStore } from './storage/quint/types';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
 import { SqliteVectorStore, PostgresVectorStore } from './storage/vector/index';
 import { VectorHttpHandler } from './http/vector/VectorHttpHandler';
+import { ProviderRegistry } from './embedding/ProviderRegistry';
 import { ProviderRegistryImpl } from './embedding/ProviderRegistryImpl';
+import { EmbeddingService } from './embedding/EmbeddingService';
 import { EmbeddingServiceImpl } from './embedding/EmbeddingServiceImpl';
+import { CredentialReader } from './embedding/CredentialReader';
 import { CredentialReaderImpl } from './embedding/CredentialReaderImpl';
+import { VectorStore } from './storage/vector/VectorStore';
 // Tunnel and Subdomain components
 import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';
 import { SubdomainService } from './subdomain/SubdomainService';
@@ -139,15 +144,22 @@ export {
   PodMigrationHttpHandler,
   PodMigrationService,
   ReactAppViewHandler,
+  // Quint exports
+  QuintStore,
   SqliteQuintStore,
   PgQuintStore,
   BaseQuintStore,
   // Vector exports
+  VectorStore,
   SqliteVectorStore,
   PostgresVectorStore,
   VectorHttpHandler,
+  // Embedding exports
+  ProviderRegistry,
   ProviderRegistryImpl,
+  EmbeddingService,
   EmbeddingServiceImpl,
+  CredentialReader,
   CredentialReaderImpl,
   // Tunnel and Subdomain exports
   CloudflareTunnelProvider,

@@ -26,7 +26,6 @@ import {
 import type {
   Quint,
   QuintPattern,
-  QuintStore,
   QuintStoreOptions,
   QueryOptions,
   StoreStats,
@@ -37,7 +36,7 @@ import type {
   OperatorValue,
   AttributeMap,
 } from './types';
-import { isTerm } from './types';
+import { isTerm, QuintStore } from './types';
 
 export interface QuintRow {
   graph: string;
@@ -61,11 +60,12 @@ export interface SqlExecutor {
   exec(sql: string): Promise<void>;
 }
 
-export abstract class BaseQuintStore implements QuintStore {
+export abstract class BaseQuintStore extends QuintStore {
   protected options: QuintStoreOptions;
   protected executor: SqlExecutor | null = null;
 
   constructor(options: QuintStoreOptions) {
+    super();
     this.options = options;
   }
 
@@ -190,7 +190,7 @@ export abstract class BaseQuintStore implements QuintStore {
   // Compound Query (SQL JOIN)
   // ============================================
 
-  async getCompound(compound: CompoundPattern, options?: QueryOptions): Promise<CompoundResult[]> {
+  override async getCompound(compound: CompoundPattern, options?: QueryOptions): Promise<CompoundResult[]> {
     this.ensureOpen();
 
     const { patterns, joinOn, select } = compound;
@@ -243,7 +243,7 @@ export abstract class BaseQuintStore implements QuintStore {
   // Batch Attributes Query (for OPTIONAL optimization)
   // ============================================
 
-  async getAttributes(
+  override async getAttributes(
     subjects: string[],
     predicates: string[],
     graph?: Term
