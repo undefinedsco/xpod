@@ -78,8 +78,8 @@ export class GatewayProxy {
       return;
     }
 
-    // 2. API Server Routing (/v1 or /api) - API Server handles its own CORS
-    if ((url.startsWith('/v1/') || url.startsWith('/api/')) && this.targets.api) {
+    // 2. API Server Routing (/v1, /api, /chatkit) - API Server handles its own CORS
+    if ((url.startsWith('/v1/') || url.startsWith('/api/') || url.startsWith('/chatkit')) && this.targets.api) {
       this.proxy.web(req, res, { target: this.targets.api });
       return;
     }

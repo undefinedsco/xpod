@@ -1,10 +1,10 @@
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq, and } from 'drizzle-solid';
+import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
 import { CredentialReader } from './CredentialReader';
 import type { AiCredential } from './types';
-import { Credential } from '../credential/schema/tables';
-import { Provider } from './schema/tables';
-import { ServiceType, CredentialStatus } from '../credential/schema/types';
+import { Credential } from '../../credential/schema/tables';
+import { Provider } from '../schema/provider';
+import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 
 const schema = {
   credential: Credential,

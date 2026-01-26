@@ -4,9 +4,9 @@
  * AgentProvider 继承 Provider，添加 executorType 属性
  */
 
-import { podTable, string, uri, relations } from 'drizzle-solid';
+import { podTable, string, uri, relations } from '@undefineds.co/drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
-import { Model } from '../../embedding/schema/tables';
+import { Model } from '../../ai/schema/model';
 
 /**
  * 执行器类型（SDK 类型）

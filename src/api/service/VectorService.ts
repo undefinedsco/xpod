@@ -1,9 +1,10 @@
 import { getLoggerFor } from 'global-logger-factory';
-import type { InternalPodService } from './InternalPodService';
+import type { PodChatKitStore } from '../chatkit/pod-store';
+import type { StoreContext } from '../chatkit/store';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId } from '../auth/AuthContext';
-import type { EmbeddingService } from '../../embedding/EmbeddingService';
-import type { AiCredential } from '../../embedding/types';
+import type { EmbeddingService } from '../../ai/service/EmbeddingService';
+import type { AiCredential } from '../../ai/service/types';
 
 /**
  * Vector upsert request
@@ -79,8 +80,8 @@ export interface VectorStatusResponse {
 export interface VectorServiceOptions {
   /** CSS base URL for vector API */
   cssBaseUrl: string;
-  /** Pod service for getting AI credentials */
-  podService: InternalPodService;
+  /** Pod store for getting AI credentials */
+  store: PodChatKitStore;
   /** Embedding service for generating vectors */
   embeddingService: EmbeddingService;
 }
@@ -96,12 +97,12 @@ export interface VectorServiceOptions {
 export class VectorService {
   private readonly logger = getLoggerFor(this);
   private readonly cssBaseUrl: string;
-  private readonly podService: InternalPodService;
+  private readonly store: PodChatKitStore;
   private readonly embeddingService: EmbeddingService;
 
   public constructor(options: VectorServiceOptions) {
     this.cssBaseUrl = options.cssBaseUrl.replace(/\/$/, '');
-    this.podService = options.podService;
+    this.store = options.store;
     this.embeddingService = options.embeddingService;
   }
 
@@ -154,7 +155,7 @@ export class VectorService {
 
     // If query text provided, generate embedding
     if (request.query && !queryVector) {
-      const credential = await this.getAiCredential(userId, auth);
+      const credential = await this.getAiCredential(auth);
       if (!credential) {
         throw new Error('No AI credential found for embedding generation');
       }
@@ -246,8 +247,7 @@ export class VectorService {
     model: string,
     auth: AuthContext,
   ): Promise<number[]> {
-    const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
-    const credential = await this.getAiCredential(userId, auth);
+    const credential = await this.getAiCredential(auth);
 
     if (!credential) {
       throw new Error('No AI credential found for embedding generation');
@@ -264,8 +264,7 @@ export class VectorService {
     model: string,
     auth: AuthContext,
   ): Promise<number[][]> {
-    const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
-    const credential = await this.getAiCredential(userId, auth);
+    const credential = await this.getAiCredential(auth);
 
     if (!credential) {
       throw new Error('No AI credential found for embedding generation');
@@ -278,8 +277,19 @@ export class VectorService {
   // Private methods
   // ============================================
 
-  private async getAiCredential(userId: string, auth: AuthContext): Promise<AiCredential | undefined> {
-    const config = await this.podService.getAiConfig(userId, auth);
+  /**
+   * Create a StoreContext from AuthContext for Pod operations
+   */
+  private createStoreContext(auth: AuthContext): StoreContext {
+    return {
+      userId: getWebId(auth) ?? getAccountId(auth) ?? 'anonymous',
+      auth,
+    };
+  }
+
+  private async getAiCredential(auth: AuthContext): Promise<AiCredential | undefined> {
+    const context = this.createStoreContext(auth);
+    const config = await this.store.getAiConfig(context);
     if (!config) {
       return undefined;
     }

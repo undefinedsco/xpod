@@ -7,7 +7,7 @@ import { VectorIndexingListener } from '../../src/storage/vector/VectorIndexingL
 import type { VectorStoreDefinition } from '../../src/storage/vector/VectorIndexingListener';
 import type { ResourceChangeEvent } from '../../src/storage/ObservableResourceStore';
 import type { VectorStore } from '../../src/storage/vector/VectorStore';
-import type { EmbeddingService } from '../../src/embedding/EmbeddingService';
+import type { EmbeddingService } from '../../../src/ai/service/EmbeddingService';
 import type { SparqlEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
 import type { ResourceStore } from '@solid/community-server';
 import { Readable } from 'node:stream';

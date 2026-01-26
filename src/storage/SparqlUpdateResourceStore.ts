@@ -188,6 +188,7 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
     };
 
     try {
+      console.log(`[normalizeGraphs] Input SPARQL (first 500 chars): ${updateText.slice(0, 500)}`);
       const parsed = this.parser.parse(updateText) as unknown as SparqlUpdate;
 
       // Explicitly reject SPARQL Queries (SELECT, ASK, CONSTRUCT) in PATCH
@@ -216,20 +217,51 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
         (!op.where || op.where.length === 0) &&
         !hasVariables);
 
+      this.logger.debug(`[normalizeGraphs] simpleOps=${simpleOps}, hasVariables=${hasVariables}, deleteTriples=${deleteTriples.length}, insertTriples=${insertTriples.length}`);
+      this.logger.debug(`[normalizeGraphs] updateTypes: ${parsed.updates.map((op: any) => op.updateType).join(', ')}`);
+
       if (simpleOps && deleteTriples.length + insertTriples.length > 0) {
         const termToString = (term: any): string => {
           if (term.termType === 'NamedNode') {
             return `<${term.value}>`;
           }
           if (term.termType === 'Literal') {
+            // Escape special characters in literal values
+            const hasQuotes = term.value.includes('"');
+            const hasNewlines = term.value.includes('\n') || term.value.includes('\r');
+
+            let escaped: string;
+            let useTripleQuotes = false;
+
+            if (hasQuotes || hasNewlines) {
+              // Use triple-quoted strings for values with quotes or newlines
+              useTripleQuotes = true;
+              escaped = term.value;
+              // Escape triple-quote sequences
+              escaped = escaped.replace(/"""/g, '"\\"\\""');
+              // Escape trailing quotes to avoid """content"""" sequences
+              if (escaped.endsWith('"')) {
+                const match = escaped.match(/"*$/);
+                const trailingQuotes = match ? match[0].length : 0;
+                if (trailingQuotes > 0) {
+                  escaped = escaped.slice(0, -trailingQuotes) + '\\"'.repeat(trailingQuotes);
+                }
+              }
+            } else {
+              // Regular escaping for simple strings
+              escaped = term.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            }
+
+            const quote = useTripleQuotes ? '"""' : '"';
+
             // Handle language tags and datatypes
             if (term.language) {
-              return `"${term.value}"@${term.language}`;
+              return `${quote}${escaped}${quote}@${term.language}`;
             }
             if (term.datatype && term.datatype.value !== 'http://www.w3.org/2001/XMLSchema#string') {
-              return `"${term.value}"^^<${term.datatype.value}>`;
+              return `${quote}${escaped}${quote}^^<${term.datatype.value}>`;
             }
-            return `"${term.value}"`;
+            return `${quote}${escaped}${quote}`;
           }
           if (term.termType === 'BlankNode') {
             return `_:${term.value}`;
@@ -280,8 +312,11 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
       this.logger.verbose(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalized}`);
       return normalized;
     } catch (error: unknown) {
-      this.logger.warn(`Failed to parse SPARQL UPDATE for ${identifier.path}, applying DATA rewrite fallback: ${error}`);
-      return wrapDefaultGraph(updateText);
+      console.log(`[normalizeGraphs] Parse FAILED for ${identifier.path}: ${error}`);
+      console.log(`[normalizeGraphs] Input was: ${updateText.slice(0, 300)}`);
+      const fallbackResult = wrapDefaultGraph(updateText);
+      console.log(`[normalizeGraphs] Fallback result: ${fallbackResult.slice(0, 300)}`);
+      return fallbackResult;
     }
   }
 

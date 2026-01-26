@@ -1,10 +1,10 @@
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq } from 'drizzle-solid';
+import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import { randomBytes } from 'crypto';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId, isSolidAuth } from '../auth/AuthContext';
-import type { EmbeddingService } from '../../embedding/EmbeddingService';
-import type { AiCredential } from '../../embedding/types';
+import type { EmbeddingService } from '../../ai/service/EmbeddingService';
+import type { AiCredential } from '../../ai/service/types';
 import { Session } from '@inrupt/solid-client-authn-node';
 
 import {
@@ -17,7 +17,7 @@ import {
   ChunkingStrategy,
   FileIndexStatus,
   MigrationStatus,
-} from '../../embedding/schema/tables';
+} from '../../ai/schema';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 

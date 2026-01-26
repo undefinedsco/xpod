@@ -222,7 +222,7 @@ export class ChatKitService<TContext = StoreContext> {
 
     // If input provided, add user message and respond
     if (params.input) {
-      const userMessage = await this.createUserMessage(threadId, params.input.content, context);
+      const userMessage = await this.createUserMessage(threadId, params.input.content, context, thread);
       await this.store.addThreadItem(threadId, userMessage, context);
 
       yield {
@@ -354,13 +354,13 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.list
    */
   private async handleThreadsList(
-    params: { limit?: number; order?: string; after?: string },
+    params: { limit?: number; order?: string; after?: string } | undefined,
     context: TContext,
   ): Promise<Page<ThreadMetadata>> {
     return this.store.loadThreads(
-      params.limit ?? 20,
-      params.after,
-      params.order ?? 'desc',
+      params?.limit ?? 20,
+      params?.after,
+      params?.order ?? 'desc',
       context,
     );
   }
@@ -521,22 +521,9 @@ export class ChatKitService<TContext = StoreContext> {
         type: 'thread.item.done',
         item: assistantItem,
       } as ThreadItemDoneEvent;
-
-      // Auto-generate title if this is the first exchange
-      if (!thread.title) {
-        const title = this.generateThreadTitle(userMessage, fullText);
-        thread.title = title;
-        thread.updated_at = nowTimestamp();
-        await this.store.saveThread(thread, context);
-
-        yield {
-          type: 'thread.updated',
-          thread,
-        };
-      }
     } catch (error: any) {
       this.logger.error(`AI response generation failed: ${error}`);
-      
+
       assistantItem.content = [{ type: 'output_text', text: 'Sorry, an error occurred while generating the response.' }];
       assistantItem.status = 'incomplete';
       await this.store.saveItem(thread.id, assistantItem, context);
@@ -553,6 +540,24 @@ export class ChatKitService<TContext = StoreContext> {
           message: error.message || 'Failed to generate response',
         },
       };
+    }
+
+    // Auto-generate title if this is the first exchange (outside try/catch to not affect message saving)
+    if (!thread.title) {
+      try {
+        const title = this.generateThreadTitle(userMessage, fullText);
+        thread.title = title;
+        thread.updated_at = nowTimestamp();
+        await this.store.saveThread(thread, context);
+
+        yield {
+          type: 'thread.updated',
+          thread,
+        };
+      } catch (titleError: any) {
+        this.logger.warn(`Failed to auto-generate thread title: ${titleError.message}`);
+        // Don't throw - title generation failure shouldn't affect the response
+      }
     }
   }
 
@@ -598,9 +603,11 @@ export class ChatKitService<TContext = StoreContext> {
     threadId: string,
     content: UserMessageContent[],
     context: TContext,
+    thread?: ThreadMetadata,
   ): Promise<UserMessageItem> {
-    const thread = await this.store.loadThread(threadId, context);
-    const itemId = this.store.generateItemId('user_message', thread, context);
+    // Use provided thread or load it
+    const threadMeta = thread || await this.store.loadThread(threadId, context);
+    const itemId = this.store.generateItemId('user_message', threadMeta, context);
 
     return {
       id: itemId,

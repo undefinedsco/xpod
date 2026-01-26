@@ -1,5 +1,11 @@
-import { drizzle } from 'drizzle-solid';
-import { eq } from 'drizzle-solid';
+/**
+ * Setup Google AI Provider for Testing
+ *
+ * 创建测试用的 AI Provider 配置，包含：
+ * - Google Gemini API 配置
+ * - 代理设置
+ */
+import { drizzle } from '@undefineds.co/drizzle-solid';
 import { modelProviderTable } from '../src/api/models/model-provider.schema';
 import * as dotenv from 'dotenv';
 import path from 'path';
@@ -11,9 +17,11 @@ const CLIENT_ID = process.env.SOLID_CLIENT_ID;
 const CLIENT_SECRET = process.env.SOLID_CLIENT_SECRET;
 const WEB_ID = process.env.SOLID_WEBID || 'http://localhost:3000/test/profile/card#me';
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
+const PROXY_URL = process.env.XPOD_AI_PROXY_URL || 'http://127.0.0.1:7890';
 
 if (!CLIENT_ID || !CLIENT_SECRET || !GOOGLE_KEY) {
   console.error('Missing credentials in .env.local');
+  console.error('Required: SOLID_CLIENT_ID, SOLID_CLIENT_SECRET, GOOGLE_API_KEY');
   process.exit(1);
 }
 
@@ -50,30 +58,27 @@ async function main() {
     };
 
     // Initialize Drizzle-Solid
-    const db = drizzle({ 
-      fetch: authFetch, 
-      info: { webId: WEB_ID, isLoggedIn: true } 
+    const db = drizzle({
+      fetch: authFetch,
+      info: { webId: WEB_ID, isLoggedIn: true }
     } as any);
 
     console.log(`Connecting to Pod: ${WEB_ID}`);
 
-    // 2. Insert/Update Google Provider
-    const googleProviderId = 'google-gemini-test';
+    // Insert Google Provider
+    const googleProviderId = 'google-gemini';
     console.log(`Configuring Google Provider (${googleProviderId})...`);
-    
-    // Blindly insert (or update if I could)
-    // Since I can't check if exists easily due to the error, I'll just try to insert.
-    // Drizzle-Solid insert might fail if ID exists? No, RDF is additive usually, or overrides.
-    // Actually, drizzle-solid uses SPARQL UPDATE.
-    
+    console.log(`  - API Key: ${GOOGLE_KEY?.slice(0, 10)}...`);
+    console.log(`  - Base URL: https://generativelanguage.googleapis.com/v1beta/openai/`);
+    console.log(`  - Proxy: ${PROXY_URL}`);
+
     await db.insert(modelProviderTable).values({
-        id: googleProviderId,
-        enabled: true,
-        apiKey: GOOGLE_KEY,
-        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-        proxy: 'http://127.0.0.1:7890',
-        models: ['gemini-pro', 'gpt-4o'],
-        updatedAt: new Date()
+      id: googleProviderId,
+      enabled: true,
+      apiKey: GOOGLE_KEY,
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      proxy: PROXY_URL,
+      updatedAt: new Date()
     });
 
     console.log('✅ Google Provider configured successfully.');

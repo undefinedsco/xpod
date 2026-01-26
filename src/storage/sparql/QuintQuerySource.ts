@@ -24,6 +24,7 @@ import { FilterPushdownExtractor, type PushdownFilters, type PushdownResult } fr
 import { PatternBuilder } from './PatternBuilder';
 import { ExpressionEvaluator } from './ExpressionEvaluator';
 import { extractVariables } from './AlgebraUtils';
+import { deserializeObject } from '../quint/serialization';
 
 // Re-export types from Comunica - we define them here to avoid complex import paths
 export interface IActionContext {
@@ -948,41 +949,10 @@ export class QuintQuerySource implements IQuerySource {
 
   /**
    * Deserialize a value from storage format to RDF Term
+   * Uses the same deserialization logic as QuintStore
    */
   private deserializeValue(value: string): Term {
-    // Check if it's a literal (starts with ")
-    if (value.startsWith('"')) {
-      // Parse n3 literal format: "value" or "value"@lang or "value"^^<datatype>
-      const match = value.match(/^"([^"]*)"(?:@([a-zA-Z-]+)|\^\^<([^>]+)>)?$/);
-      if (match) {
-        const [, lexical, lang, datatype] = match;
-        if (lang) {
-          return dataFactory.literal(lexical, lang);
-        }
-        if (datatype) {
-          return dataFactory.literal(lexical, dataFactory.namedNode(datatype));
-        }
-        return dataFactory.literal(lexical);
-      }
-    }
-    
-    // Check for fpstring encoded numeric (starts with N\0)
-    if (value.startsWith('N\u0000')) {
-      const parts = value.split('\u0000');
-      const datatype = parts[2];
-      const originalValue = parts[3];
-      return dataFactory.literal(originalValue, dataFactory.namedNode(datatype));
-    }
-    
-    // Check for datetime (starts with D\0)
-    if (value.startsWith('D\u0000')) {
-      const parts = value.split('\u0000');
-      const originalValue = parts[2];
-      return dataFactory.literal(originalValue, dataFactory.namedNode('http://www.w3.org/2001/XMLSchema#dateTime'));
-    }
-    
-    // Default: named node
-    return dataFactory.namedNode(value);
+    return deserializeObject(value);
   }
 
   /**

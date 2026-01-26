@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
-import { InternalPodService } from '../../src/api/service/InternalPodService';
+import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import { VercelChatService } from '../../src/api/service/VercelChatService';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
@@ -10,65 +10,66 @@ vi.mock('@inrupt/solid-client-authn-node', () => {
   return {
     Session: vi.fn().mockImplementation(() => ({
       login: vi.fn().mockResolvedValue(undefined),
-                  fetch: vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-                    const target = url.toString();
-                    if (target.includes('/-/sparql')) {
-                      const method = init?.method?.toUpperCase() ?? 'GET';
-                      const queryFromUrl = (() => {
-                        try {
-                          return new URL(target).searchParams.get('query') ?? '';
-                        } catch {
-                          return '';
-                        }
-                      })();
-                      const body = (() => {
-                        const raw = init?.body;
-                        if (typeof raw === 'string') {
-                          return raw;
-                        }
-                        if (raw instanceof URLSearchParams) {
-                          return raw.toString();
-                        }
-                        if (raw instanceof Uint8Array) {
-                          return Buffer.from(raw).toString('utf8');
-                        }
-                        return '';
-                      })();
-                      const combined = `${queryFromUrl} ${body}`.toUpperCase();
-                      if (combined.includes('ASK') || method === 'HEAD') {
-                        return new Response(JSON.stringify({ boolean: true }), {
-                          headers: { 'Content-Type': 'application/sparql-results+json' }
-                        });
-                      }
-                      // Mock SPARQL JSON Result
-                      return new Response(JSON.stringify({
-                        head: { vars: ['subject', 'id', 'enabled', 'apiKey', 'baseUrl', 'models', 'updatedAt'] },
-                        results: {
-                          bindings: [{
-                            subject: { type: 'uri', value: 'http://localhost:3000/test/.data/model-providers/openai#it' },
-                            id: { type: 'literal', value: 'openai' },
-                            enabled: { type: 'literal', value: 'true', datatype: 'http://www.w3.org/2001/XMLSchema#boolean' },
-                            apiKey: { type: 'literal', value: 'sk-mock-key-from-pod' },
-                            baseUrl: { type: 'literal', value: 'http://127.0.0.1:4003/v1' },
-                            models: { type: 'literal', value: '[]' },
-                            updatedAt: { type: 'literal', value: new Date().toISOString(), datatype: 'http://www.w3.org/2001/XMLSchema#dateTime' }
-                          }]
-                        }
-                      }), { headers: { 'Content-Type': 'application/sparql-results+json' } });
-                    }
-                    return new Response('{}');
-                  }),      info: { isLoggedIn: true, webId: 'http://localhost:3000/test/profile/card#me' }
+      fetch: vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        const target = url.toString();
+        if (target.includes('/-/sparql')) {
+          const method = init?.method?.toUpperCase() ?? 'GET';
+          const queryFromUrl = (() => {
+            try {
+              return new URL(target).searchParams.get('query') ?? '';
+            } catch {
+              return '';
+            }
+          })();
+          const body = (() => {
+            const raw = init?.body;
+            if (typeof raw === 'string') {
+              return raw;
+            }
+            if (raw instanceof URLSearchParams) {
+              return raw.toString();
+            }
+            if (raw instanceof Uint8Array) {
+              return Buffer.from(raw).toString('utf8');
+            }
+            return '';
+          })();
+          const combined = `${queryFromUrl} ${body}`.toUpperCase();
+          if (combined.includes('ASK') || method === 'HEAD') {
+            return new Response(JSON.stringify({ boolean: true }), {
+              headers: { 'Content-Type': 'application/sparql-results+json' }
+            });
+          }
+          // Mock SPARQL JSON Result
+          return new Response(JSON.stringify({
+            head: { vars: ['subject', 'id', 'enabled', 'apiKey', 'baseUrl', 'models', 'updatedAt'] },
+            results: {
+              bindings: [{
+                subject: { type: 'uri', value: 'http://localhost:3000/test/.data/model-providers/openai#it' },
+                id: { type: 'literal', value: 'openai' },
+                enabled: { type: 'literal', value: 'true', datatype: 'http://www.w3.org/2001/XMLSchema#boolean' },
+                apiKey: { type: 'literal', value: 'sk-mock-key-from-pod' },
+                baseUrl: { type: 'literal', value: 'http://127.0.0.1:4003/v1' },
+                models: { type: 'literal', value: '[]' },
+                updatedAt: { type: 'literal', value: new Date().toISOString(), datatype: 'http://www.w3.org/2001/XMLSchema#dateTime' }
+              }]
+            }
+          }), { headers: { 'Content-Type': 'application/sparql-results+json' } });
+        }
+        return new Response('{}');
+      }),
+      info: { isLoggedIn: true, webId: 'http://localhost:3000/test/profile/card#me' }
     }))
   };
 });
 
 describe('Chat Mock Logic Flow', () => {
   let server: ApiServer;
-  let podService: InternalPodService;
+  let store: PodChatKitStore;
   const port = 3108;
   const aiPort = 4003;
   const baseUrl = `http://127.0.0.1:${port}`;
-  
+
   let aiRequestHeaders: any = null;
   let originalFetch: typeof fetch;
 
@@ -106,28 +107,20 @@ describe('Chat Mock Logic Flow', () => {
       return originalFetch(url, init);
     };
 
-    // 2. Setup Services
-    const mockApiKeyStore = {
-      findByClientId: async () => ({
-        clientId: 'test-client',
-        clientSecret: 'test-secret',
-        webId: 'http://localhost:3000/test/profile/card#me',
-        accountId: 'user-1',
-        createdAt: new Date()
-      })
-    };
-
-    podService = new InternalPodService({
+    // 2. Setup Services with PodChatKitStore
+    store = new PodChatKitStore({
       tokenEndpoint: 'http://localhost:3000/.oidc/token',
-      apiKeyStore: mockApiKeyStore as any
     });
-    podService.getAiConfig = async () => ({
+
+    // Mock getAiConfig to return test config
+    store.getAiConfig = async () => ({
       providerId: 'openai',
       apiKey: 'sk-mock-key-from-pod',
       baseUrl: `http://127.0.0.1:${aiPort}/v1`,
+      credentialId: 'test-cred',
     });
 
-    const chatService = new VercelChatService(podService);
+    const chatService = new VercelChatService(store);
 
     // 3. Setup API Server
     const authMiddleware = new AuthMiddleware({
@@ -135,7 +128,7 @@ describe('Chat Mock Logic Flow', () => {
         canAuthenticate: () => true,
         authenticate: async () => ({
           success: true,
-          context: { type: 'solid', clientId: 'test-client', webId: 'http://localhost:3000/test/profile/card#me', viaApiKey: true }
+          context: { type: 'solid', clientId: 'test-client', clientSecret: 'test-secret', webId: 'http://localhost:3000/test/profile/card#me', viaApiKey: true }
         })
       } as any
     });
@@ -162,7 +155,7 @@ describe('Chat Mock Logic Flow', () => {
     });
 
     const data = await response.json() as any;
-    
+
     // Check final output
     expect(response.status).toBe(200);
     expect(data.choices[0].message.content).toBe('Mock AI Success');

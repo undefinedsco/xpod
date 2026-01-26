@@ -8,8 +8,8 @@ import { useChatKit, ChatKit } from '@openai/chatkit-react';
 import { useAuth } from '../context/AuthContext';
 import { useState, useCallback } from 'react';
 
-// 获取 API URL（默认指向本地 API 服务）
-const API_URL = import.meta.env.VITE_CHATKIT_API_URL || 'http://localhost:3001/chatkit';
+// 获取 API URL（默认指向 Gateway）
+const API_URL = import.meta.env.VITE_CHATKIT_API_URL || 'http://localhost:3000/chatkit';
 // 开发环境使用 localhost 域名密钥
 const DOMAIN_KEY = import.meta.env.VITE_CHATKIT_DOMAIN_KEY || 'domain_pk_localhost_dev';
 
@@ -41,8 +41,11 @@ export function ChatPage() {
     },
     theme: 'light',
     header: {
-      showTitle: true,
-      title: 'Xpod Chat',
+      enabled: true,
+      title: {
+        enabled: true,
+        text: 'Xpod Chat',
+      },
     },
     history: {
       enabled: true,

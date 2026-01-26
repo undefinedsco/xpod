@@ -76,7 +76,7 @@
       "@id": "urn:undefineds:xpod:PgQuintStore",
       "@type": "PgQuintStore",
       "options_driver": "pg",
-      "options_connectionString": {
+      "connectionString": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }

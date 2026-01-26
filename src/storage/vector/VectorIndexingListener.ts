@@ -12,9 +12,9 @@
 import { getLoggerFor } from 'global-logger-factory';
 import type { ResourceChangeEvent, ResourceChangeListener } from '../ObservableResourceStore';
 import type { VectorStore } from '../vector/VectorStore';
-import type { EmbeddingService } from '../../embedding/EmbeddingService';
+import type { EmbeddingService } from '../../ai/service/EmbeddingService';
 import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
-import type { AiCredential } from '../../embedding/types';
+import type { AiCredential } from '../../ai/service/types';
 import type { ResourceStore, RepresentationPreferences } from '@solid/community-server';
 
 /**

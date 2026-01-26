@@ -12,21 +12,16 @@ import fs from 'fs';
 import path from 'path';
 import type { Finalizable, Initializable } from '@solid/community-server';
 import { VectorStore, hashModelId } from './VectorStore';
-import type { VectorRecord, VectorSearchOptions, VectorSearchResult } from './types';
-
-export interface SqliteVectorStoreArgs {
-  /** SQLite 数据库文件路径 (可带 sqlite: 前缀) */
-  filename: string;
-}
+import type { VectorRecord, VectorSearchOptions, VectorSearchResult, VectorStoreOptions } from './types';
 
 export class SqliteVectorStore extends VectorStore implements Initializable, Finalizable {
   /** @ignored */
   private db: Database.Database | null = null;
   private readonly filename: string;
 
-  public constructor(args: SqliteVectorStoreArgs) {
+  public constructor(options: VectorStoreOptions) {
     super();
-    let connStr = args.filename;
+    let connStr = options.connectionString;
     if (connStr.startsWith('sqlite:')) {
       connStr = connStr.slice(7);
     }

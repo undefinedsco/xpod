@@ -20,9 +20,9 @@ import {
 import { PERMISSIONS } from '@solidlab/policy-engine';
 import type { CredentialsExtractor, PermissionReader, Authorizer, ResourceIdentifier } from '@solid/community-server';
 import type { VectorStore } from '../../storage/vector/VectorStore';
-import type { EmbeddingService } from '../../embedding/EmbeddingService';
+import type { EmbeddingService } from '../../ai/service/EmbeddingService';
 import type { SparqlEngine } from '../../storage/sparql/SubgraphQueryEngine';
-import type { AiCredential } from '../../embedding/types';
+import type { AiCredential } from '../../ai/service/types';
 import type { VectorSearchOptions } from '../../storage/vector/types';
 
 const ALLOWED_METHODS = ['GET', 'POST', 'OPTIONS'];
@@ -298,16 +298,23 @@ export class SearchHttpHandler extends HttpHandler {
    */
   private async getAiCredential(podBaseUrl: string): Promise<AiCredential | null> {
     try {
+      // 使用 undefineds.co/ns# 命名空间，与 drizzle-solid schema 一致
       const query = `
-        PREFIX xpod: <https://xpod.dev/ns#>
-        SELECT ?apiKey ?baseUrl ?provider ?proxyUrl WHERE {
-          ?cred a xpod:Credential ;
-                xpod:service "AI" ;
-                xpod:status "active" ;
-                xpod:apiKey ?apiKey .
-          OPTIONAL { ?cred xpod:baseUrl ?baseUrl }
-          OPTIONAL { ?cred xpod:provider ?provider }
-          OPTIONAL { ?cred xpod:proxyUrl ?proxyUrl }
+        PREFIX udfs: <https://undefineds.co/ns#>
+        SELECT ?apiKey ?baseUrl ?providerUri ?proxyUrl WHERE {
+          ?cred a udfs:Credential ;
+                udfs:service "ai" ;
+                udfs:status "active" ;
+                udfs:apiKey ?apiKey .
+          OPTIONAL { ?cred udfs:provider ?providerUri }
+          OPTIONAL {
+            ?cred udfs:provider ?providerUri .
+            ?providerUri udfs:baseUrl ?baseUrl .
+          }
+          OPTIONAL {
+            ?cred udfs:provider ?providerUri .
+            ?providerUri udfs:proxyUrl ?proxyUrl .
+          }
         } LIMIT 1
       `;
 
@@ -316,14 +323,21 @@ export class SearchHttpHandler extends HttpHandler {
       for await (const binding of bindingsStream) {
         const apiKey = binding.get('apiKey');
         const baseUrl = binding.get('baseUrl');
-        const provider = binding.get('provider');
+        const providerUri = binding.get('providerUri');
         const proxyUrl = binding.get('proxyUrl');
 
         if (apiKey) {
+          // 从 provider URI 提取 provider 名称（如 #google -> google）
+          let providerName = 'google';
+          if (providerUri?.value) {
+            const match = providerUri.value.match(/#([^#]+)$/);
+            if (match) providerName = match[1];
+          }
+
           return {
             apiKey: apiKey.value,
             baseUrl: baseUrl?.value,
-            provider: provider?.value || 'google',
+            provider: providerName,
             proxyUrl: proxyUrl?.value,
           };
         }

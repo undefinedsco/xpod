@@ -135,6 +135,13 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 - 默认限速 10 MiB/s（`config/cloud.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
 - `identity_account_usage.storage_limit_bytes` / `bandwidth_limit_bps` 以及对应的 Pod 字段用于存储配额与带宽上限；未来 Admin/桌面端可直接更新这些列完成覆写。
 
+### AI Provider 配置原则
+- **禁止使用环境变量配置用户级 AI 参数**：AI provider 的 API Key、Base URL、Proxy URL 等配置**必须存储在用户 Pod** 中，而非服务器环境变量。
+- **原因**：用户无法管理服务器环境变量，每个用户的 AI 配置（包括代理）应由用户自行在 Pod 设置中录入。
+- **Pod 配置位置**：`modelProviderTable` schema，字段包括 `baseUrl`、`apiKey`、`proxy`、`defaultModel` 等。
+- **回退顺序**：Pod 配置 > 环境变量（仅用于开发/测试兜底） > 默认值（如 Ollama localhost）。
+- **代理配置**：用户在配置 AI provider 时一并填写 `proxyUrl`，代码中**不要为代理添加环境变量支持**。
+
 ## Package Manager
 - **统一使用 yarn**：项目所有目录（根目录及 `ui/` 子目录）均使用 yarn 管理依赖。
 - **禁止 npm**：不要使用 `npm install`，避免生成 `package-lock.json`。

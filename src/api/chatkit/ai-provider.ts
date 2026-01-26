@@ -1,17 +1,20 @@
 /**
  * AI Provider Adapter
- * 
+ *
  * Adapts existing AI services to the ChatKit AiProvider interface.
+ * Includes 429 rate limit handling with credential status backfill.
  */
 
 import { createOpenAI } from '@ai-sdk/openai';
-import { streamText } from 'ai';
+import { streamText, APICallError } from 'ai';
 import { getLoggerFor } from 'global-logger-factory';
 import { ProxyAgent } from 'undici';
 import type { AiProvider } from './service';
-import type { InternalPodService } from '../service/InternalPodService';
+import type { StoreContext } from './store';
+import type { PodChatKitStore } from './pod-store';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId } from '../auth/AuthContext';
+import { CredentialStatus } from '../../credential/schema/types';
 
 // Create a proxy-aware fetch function
 function createProxyFetch(proxyUrl: string): typeof fetch {
@@ -20,20 +23,21 @@ function createProxyFetch(proxyUrl: string): typeof fetch {
 }
 
 export interface VercelAiProviderOptions {
-  podService: InternalPodService;
+  store: PodChatKitStore;
 }
 
 /**
  * Vercel AI SDK based provider
- * 
- * Uses the same configuration as VercelChatService to get AI provider settings from Pod.
+ *
+ * Uses PodChatKitStore to get AI provider settings from Pod.
+ * Reuses the same Session cached in StoreContext.
  */
 export class VercelAiProvider implements AiProvider {
   private readonly logger = getLoggerFor(this);
-  private readonly podService: InternalPodService;
+  private readonly store: PodChatKitStore;
 
   public constructor(options: VercelAiProviderOptions) {
-    this.podService = options.podService;
+    this.store = options.store;
   }
 
   /**
@@ -48,40 +52,120 @@ export class VercelAiProvider implements AiProvider {
       context?: unknown;
     },
   ): AsyncIterable<string> {
-    // Get auth from options context if provided
-    const context = options?.context as Record<string, unknown> | undefined;
+    // Get context (contains auth and cached session)
+    const context = options?.context as StoreContext | undefined;
     const auth = context?.auth as AuthContext | undefined;
     const userId = auth ? (getWebId(auth) ?? getAccountId(auth) ?? 'anonymous') : 'anonymous';
-    
-    // 从 Pod 获取配置，包括默认模型
-    const config = await this.getProviderConfig(userId, auth);
-    const model = options?.model ?? config.defaultModel ?? 'gpt-4o-mini';
+
+    // 从 Pod 获取配置（复用 context 中缓存的 Session）
+    const config = await this.getProviderConfig(context);
+    const model = options?.model ?? config.defaultModel ?? 'gemini-3-flash-preview';
 
     this.logger.debug(`Streaming response for ${userId}, model: ${model}`);
 
-    const provider = await this.getProvider(config);
+    const provider = this.createProvider(config);
 
-    const result = streamText({
-      model: provider.chat(model),
-      messages: messages as any,
-      temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-    } as any);
+    try {
+      const result = streamText({
+        model: provider.chat(model),
+        messages: messages as any,
+        temperature: options?.temperature,
+        maxTokens: options?.maxTokens,
+      } as any);
 
-    // Stream text chunks
-    for await (const chunk of result.textStream) {
-      yield chunk;
+      // Stream text chunks
+      for await (const chunk of result.textStream) {
+        yield chunk;
+      }
+    } catch (error) {
+      // Handle 429 rate limit errors
+      if (this.isRateLimitError(error)) {
+        await this.handleRateLimitError(error, context, config.credentialId);
+      }
+      throw error;
     }
   }
 
-  private async getProviderConfig(userId: string, auth?: AuthContext) {
-    let config: any;
-    if (auth) {
+  /**
+   * Check if error is a 429 rate limit error
+   */
+  private isRateLimitError(error: unknown): boolean {
+    if (error instanceof APICallError) {
+      return error.statusCode === 429;
+    }
+    // Check for generic error with status
+    if (error && typeof error === 'object') {
+      const err = error as any;
+      return err.status === 429 || err.statusCode === 429 || err.code === 'rate_limit_exceeded';
+    }
+    return false;
+  }
+
+  /**
+   * Handle 429 rate limit error by updating credential status
+   */
+  private async handleRateLimitError(
+    error: unknown,
+    context: StoreContext | undefined,
+    credentialId: string | undefined,
+  ): Promise<void> {
+    if (!context || !credentialId) {
+      this.logger.debug('Cannot update credential status: missing context or credentialId');
+      return;
+    }
+
+    // Parse Retry-After header if available
+    let rateLimitResetAt: Date | undefined;
+    if (error instanceof APICallError && error.responseHeaders) {
+      const retryAfter = error.responseHeaders['retry-after'];
+      if (retryAfter) {
+        const seconds = parseInt(retryAfter, 10);
+        if (!isNaN(seconds)) {
+          rateLimitResetAt = new Date(Date.now() + seconds * 1000);
+        } else {
+          // Try parsing as HTTP date
+          const date = new Date(retryAfter);
+          if (!isNaN(date.getTime())) {
+            rateLimitResetAt = date;
+          }
+        }
+      }
+    }
+
+    // Default to 60 seconds if no Retry-After header
+    if (!rateLimitResetAt) {
+      rateLimitResetAt = new Date(Date.now() + 60 * 1000);
+    }
+
+    this.logger.warn(
+      `Rate limited for credential ${credentialId}, reset at ${rateLimitResetAt.toISOString()}`,
+    );
+
+    try {
+      await this.store.updateCredentialStatus(context, credentialId, CredentialStatus.RATE_LIMITED, {
+        rateLimitResetAt,
+        incrementFailCount: true,
+      });
+    } catch (updateError) {
+      this.logger.error(`Failed to update credential status: ${updateError}`);
+    }
+  }
+
+  private async getProviderConfig(context: StoreContext | undefined): Promise<{
+    baseURL: string;
+    apiKey: string;
+    proxy?: string;
+    defaultModel?: string;
+    credentialId?: string;
+  }> {
+    let config: Awaited<ReturnType<PodChatKitStore['getAiConfig']>> | undefined;
+
+    if (context) {
       try {
-        config = await this.podService.getAiConfig(userId, auth);
-        this.logger.debug(`Pod config for ${userId}: ${JSON.stringify(config)}`);
+        config = await this.store.getAiConfig(context);
+        this.logger.debug(`Pod config: ${JSON.stringify(config)}`);
       } catch (error) {
-        this.logger.warn(`Failed to get Pod config for ${userId}, falling back to env: ${error}`);
+        this.logger.warn(`Failed to get Pod config, falling back to env: ${error}`);
         config = undefined;
       }
     }
@@ -90,7 +174,6 @@ export class VercelAiProvider implements AiProvider {
     let baseURL = config?.baseUrl || process.env.XPOD_AI_BASE_URL;
     let apiKey = config?.apiKey || process.env.XPOD_AI_API_KEY;
     const proxy = config?.proxyUrl;
-    const defaultModel = config?.defaultModel; // 从 Pod 配置读取默认模型
 
     // Special handling for Google/Gemini
     if (!baseURL && !apiKey && process.env.GOOGLE_API_KEY) {
@@ -102,10 +185,10 @@ export class VercelAiProvider implements AiProvider {
     baseURL = baseURL || 'http://localhost:11434/v1';
     apiKey = apiKey || 'ollama';
 
-    return { baseURL, apiKey, proxy, defaultModel };
+    return { baseURL, apiKey, proxy, credentialId: config?.credentialId };
   }
 
-  private async getProvider(config: { baseURL: string; apiKey: string; proxy?: string }) {
+  private createProvider(config: { baseURL: string; apiKey: string; proxy?: string }) {
     const { baseURL, apiKey, proxy } = config;
 
     this.logger.debug(`Using AI Provider: ${baseURL} (proxy: ${proxy || 'none'})`);

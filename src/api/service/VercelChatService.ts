@@ -3,8 +3,10 @@ import { generateText, streamText } from 'ai';
 import { getLoggerFor } from 'global-logger-factory';
 import { ProxyAgent } from 'undici';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../handlers/ChatHandler';
-import type { InternalPodService } from './InternalPodService';
+import type { PodChatKitStore } from '../chatkit/pod-store';
+import type { StoreContext } from '../chatkit/store';
 import { type AuthContext, getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
+import { CredentialStatus } from '../../credential/schema/types';
 
 // Create a proxy-aware fetch function
 function createProxyFetch(proxyUrl: string): typeof fetch {
@@ -15,35 +17,45 @@ function createProxyFetch(proxyUrl: string): typeof fetch {
 export class VercelChatService {
   private readonly logger = getLoggerFor(this);
 
-  public constructor(private readonly podService: InternalPodService) {
+  public constructor(private readonly store: PodChatKitStore) {
     this.logger.info('Initializing VercelChatService with Pod-based config support');
   }
 
-  private async getProviderConfig(userId: string, auth: AuthContext) {
-    let config: any;
+  /**
+   * Create a StoreContext from AuthContext for Pod operations
+   */
+  private createStoreContext(auth: AuthContext): StoreContext {
+    return {
+      userId: getWebId(auth) ?? getAccountId(auth) ?? 'anonymous',
+      auth,
+    };
+  }
+
+  private async getProviderConfig(context: StoreContext) {
+    let config: Awaited<ReturnType<PodChatKitStore['getAiConfig']>> | undefined;
     try {
-      config = await this.podService.getAiConfig(userId, auth);
-      this.logger.info(`Pod config for ${userId}: ${JSON.stringify(config)}`);
+      config = await this.store.getAiConfig(context);
+      this.logger.info(`Pod config: ${JSON.stringify(config)}`);
     } catch (error) {
-      this.logger.warn(`Failed to get Pod config for ${userId}, falling back to defaults: ${error}`);
+      this.logger.warn(`Failed to get Pod config, falling back to defaults: ${error}`);
       config = undefined;
     }
 
     // Priority: Pod Config > Default (Ollama)
     let baseURL = config?.baseUrl;
     let apiKey = config?.apiKey;
-    let proxy = config?.proxy;
+    let proxy = config?.proxyUrl;
 
     // Default to local Ollama if nothing else found
     baseURL = baseURL || 'http://localhost:11434/v1';
     apiKey = apiKey || 'ollama';
 
     this.logger.info(`Provider config: baseURL=${baseURL}, proxy=${proxy || 'none'}`);
-    return { baseURL, apiKey, proxy };
+    return { baseURL, apiKey, proxy, credentialId: config?.credentialId };
   }
 
-  private async getProvider(userId: string, auth: AuthContext) {
-    const { baseURL, apiKey, proxy } = await this.getProviderConfig(userId, auth);
+  private async getProvider(context: StoreContext) {
+    const { baseURL, apiKey, proxy } = await this.getProviderConfig(context);
 
     this.logger.debug(`Using AI Provider: ${baseURL} (key length: ${apiKey?.length || 0}, proxy: ${proxy || 'none'})`);
 
@@ -57,11 +69,12 @@ export class VercelChatService {
 
   public async complete(request: ChatCompletionRequest, auth: AuthContext): Promise<ChatCompletionResponse> {
     const { model, messages, temperature, max_tokens } = request;
-    const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
+    const context = this.createStoreContext(auth);
+    const config = await this.getProviderConfig(context);
 
     try {
-      const provider = await this.getProvider(userId, auth);
-      
+      const provider = await this.getProvider(context);
+
       const coreMessages: any[] = messages.map((m) => ({
         role: m.role as any,
         content: m.content,
@@ -73,6 +86,13 @@ export class VercelChatService {
         temperature,
         maxTokens: max_tokens,
       } as any);
+
+      // Record successful API call
+      if (config.credentialId) {
+        this.store.recordCredentialSuccess(context, config.credentialId).catch((err) => {
+          this.logger.debug(`Failed to record credential success: ${err}`);
+        });
+      }
 
       return {
         id: `chatcmpl-${Date.now()}`,
@@ -96,16 +116,22 @@ export class VercelChatService {
         },
       };
     } catch (error) {
-      this.logger.error(`AI completion failed for user ${userId}: ${error}`);
+      this.logger.error(`AI completion failed: ${error}`);
+
+      // Handle error and update credential status
+      if (config.credentialId) {
+        await this.handleApiError(error, context, config.credentialId);
+      }
+
       throw error;
     }
   }
 
   public async stream(request: ChatCompletionRequest, auth: AuthContext): Promise<any> {
     const { model, messages, temperature, max_tokens } = request;
-    const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
+    const context = this.createStoreContext(auth);
 
-    const provider = await this.getProvider(userId, auth);
+    const provider = await this.getProvider(context);
 
     const coreMessages: any[] = messages.map((m) => ({
       role: m.role as any,
@@ -121,11 +147,11 @@ export class VercelChatService {
   }
 
   public async responses(body: any, auth: AuthContext): Promise<any> {
-    const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
-    const displayName = getDisplayName(auth) || userId;
+    const context = this.createStoreContext(auth);
+    const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
 
-    const { baseURL, apiKey, proxy } = await this.getProviderConfig(userId, auth);
+    const { baseURL, apiKey, proxy, credentialId } = await this.getProviderConfig(context);
 
     // Remove trailing slash if present
     const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
@@ -134,30 +160,53 @@ export class VercelChatService {
     this.logger.info(`Proxying responses request to ${url} for ${displayName} (acc: ${accountId}), proxy: ${proxy || 'none'}`);
 
     const fetchFn = proxy ? createProxyFetch(proxy) : fetch;
-    const response = await fetchFn(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      this.logger.error(`Responses API failed: ${response.status} ${errorText}`);
-      throw new Error(`Provider error: ${response.statusText}`);
+    try {
+      const response = await fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        this.logger.error(`Responses API failed: ${response.status} ${errorText}`);
+
+        // Handle error and update credential status
+        if (credentialId) {
+          await this.handleApiError(
+            { status: response.status, headers: response.headers },
+            context,
+            credentialId,
+          );
+        }
+
+        throw new Error(`Provider error: ${response.statusText}`);
+      }
+
+      // Record successful API call
+      if (credentialId) {
+        this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
+      }
+
+      return response.json();
+    } catch (error) {
+      if (credentialId && !(error instanceof Error && error.message.startsWith('Provider error'))) {
+        await this.handleApiError(error, context, credentialId);
+      }
+      throw error;
     }
-
-    return response.json();
   }
 
   public async messages(body: any, auth: AuthContext): Promise<any> {
-    const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
-    const displayName = getDisplayName(auth) || userId;
+    const context = this.createStoreContext(auth);
+    const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
 
-    const { baseURL, apiKey, proxy } = await this.getProviderConfig(userId, auth);
+    const { baseURL, apiKey, proxy, credentialId } = await this.getProviderConfig(context);
 
     // Remove trailing slash if present
     const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
@@ -166,28 +215,51 @@ export class VercelChatService {
     this.logger.info(`Proxying messages request to ${url} for ${displayName} (acc: ${accountId}), proxy: ${proxy || 'none'}`);
 
     const fetchFn = proxy ? createProxyFetch(proxy) : fetch;
-    const response = await fetchFn(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify(body),
-    });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      this.logger.error(`Messages API failed: ${response.status} ${errorText}`);
-      throw new Error(`Provider error: ${response.statusText}`);
+    try {
+      const response = await fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        this.logger.error(`Messages API failed: ${response.status} ${errorText}`);
+
+        // Handle error and update credential status
+        if (credentialId) {
+          await this.handleApiError(
+            { status: response.status, headers: response.headers },
+            context,
+            credentialId,
+          );
+        }
+
+        throw new Error(`Provider error: ${response.statusText}`);
+      }
+
+      // Record successful API call
+      if (credentialId) {
+        this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
+      }
+
+      return response.json();
+    } catch (error) {
+      if (credentialId && !(error instanceof Error && error.message.startsWith('Provider error'))) {
+        await this.handleApiError(error, context, credentialId);
+      }
+      throw error;
     }
-
-    return response.json();
   }
 
   public async listModels(_auth?: AuthContext): Promise<any[]> {
-    // TODO: Get models from Pod when podService.listModels is implemented
+    // TODO: Get models from Pod when store.listModels is implemented
     // Fallback to default models
     return [
       {
@@ -207,5 +279,88 @@ export class VercelChatService {
 
   private mapFinishReason(reason: string): 'stop' | 'length' | 'content_filter' {
     return reason as any;
+  }
+
+  /**
+   * Handle API errors and update credential status accordingly
+   */
+  private async handleApiError(
+    error: unknown,
+    context: StoreContext,
+    credentialId: string,
+  ): Promise<void> {
+    const errorInfo = this.parseApiError(error);
+
+    if (errorInfo.statusCode === 429) {
+      // Rate limit error - mark credential as rate limited
+      const resetAt = errorInfo.retryAfter
+        ? new Date(Date.now() + errorInfo.retryAfter * 1000)
+        : new Date(Date.now() + 60000); // Default 1 minute cooldown
+
+      this.logger.warn(`Rate limit hit for credential ${credentialId}, reset at: ${resetAt.toISOString()}`);
+
+      await this.store.updateCredentialStatus(
+        context,
+        credentialId,
+        CredentialStatus.RATE_LIMITED,
+        { rateLimitResetAt: resetAt },
+      );
+    } else if (errorInfo.statusCode === 401 || errorInfo.statusCode === 403) {
+      // Auth error - mark credential as inactive
+      this.logger.warn(`Auth error for credential ${credentialId}, marking as inactive`);
+
+      await this.store.updateCredentialStatus(
+        context,
+        credentialId,
+        CredentialStatus.INACTIVE,
+        { incrementFailCount: true },
+      );
+    } else if (errorInfo.statusCode >= 500) {
+      // Server error - increment fail count but keep active
+      this.logger.warn(`Server error ${errorInfo.statusCode} for credential ${credentialId}`);
+
+      await this.store.updateCredentialStatus(
+        context,
+        credentialId,
+        CredentialStatus.ACTIVE,
+        { incrementFailCount: true },
+      );
+    }
+  }
+
+  /**
+   * Parse error to extract status code and retry-after header
+   */
+  private parseApiError(error: unknown): { statusCode: number; retryAfter?: number } {
+    // Handle different error formats from AI SDK
+    if (error && typeof error === 'object') {
+      const err = error as any;
+
+      // Direct status code
+      if (typeof err.status === 'number') {
+        return {
+          statusCode: err.status,
+          retryAfter: err.retryAfter || err.headers?.['retry-after'],
+        };
+      }
+
+      // Nested response object
+      if (err.response && typeof err.response.status === 'number') {
+        return {
+          statusCode: err.response.status,
+          retryAfter: err.response.headers?.get?.('retry-after'),
+        };
+      }
+
+      // Error message parsing (fallback)
+      if (err.message) {
+        const match = err.message.match(/(\d{3})/);
+        if (match) {
+          return { statusCode: parseInt(match[1], 10) };
+        }
+      }
+    }
+
+    return { statusCode: 0 };
   }
 }

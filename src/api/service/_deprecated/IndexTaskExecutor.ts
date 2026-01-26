@@ -7,8 +7,8 @@
 
 import { getLoggerFor } from 'global-logger-factory';
 import type { Task, TaskHandler, TaskExecutionContext, TaskResult, TaskClassType } from '../../task/types';
-import type { EmbeddingService } from '../../embedding/EmbeddingService';
-import type { AiCredential } from '../../embedding/types';
+import type { EmbeddingService } from '../../../ai/service/EmbeddingService';
+import type { AiCredential } from '../../../ai/service/types';
 import type { IndexTaskPayload } from './IndexingService';
 import { TaskClass } from '../../task/schema';
 

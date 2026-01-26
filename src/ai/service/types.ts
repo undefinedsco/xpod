@@ -1,5 +1,5 @@
 /**
- * Embedding 相关类型定义
+ * AI Service 类型定义
  */
 
 /**

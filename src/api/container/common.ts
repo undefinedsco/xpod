@@ -1,6 +1,6 @@
 /**
  * 共享服务注册
- * 
+ *
  * cloud 和 local 模式都需要的服务
  */
 
@@ -14,7 +14,6 @@ import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
-import { InternalPodService } from '../service/InternalPodService';
 import { VercelChatService } from '../service/VercelChatService';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
@@ -40,17 +39,17 @@ export function registerCommonServices(
       return new DrizzleClientCredentialsStore({
         db,
         encryptionKey: config.encryptionKey,
+        isSqlite: config.databaseUrl.startsWith('sqlite:'),
       });
     }).singleton(),
 
     // 认证
-    authenticator: asFunction(({ apiKeyStore, config }: ApiContainerCradle) => {
+    authenticator: asFunction(({ config }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
-        store: apiKeyStore,
         tokenEndpoint: config.cssTokenEndpoint,
       });
 
@@ -64,15 +63,8 @@ export function registerCommonServices(
     }).singleton(),
 
     // 业务服务
-    podService: asFunction(({ apiKeyStore, config }: ApiContainerCradle) => {
-      return new InternalPodService({
-        tokenEndpoint: config.cssTokenEndpoint,
-        apiKeyStore,
-      });
-    }).singleton(),
-
-    chatService: asFunction(({ podService }: ApiContainerCradle) => {
-      return new VercelChatService(podService);
+    chatService: asFunction(({ chatKitStore }: ApiContainerCradle) => {
+      return new VercelChatService(chatKitStore);
     }).singleton(),
 
     // ChatKit 服务 (OpenAI ChatKit 协议)
@@ -82,8 +74,8 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    chatKitAiProvider: asFunction(({ podService }: ApiContainerCradle) => {
-      return new VercelAiProvider({ podService });
+    chatKitAiProvider: asFunction(({ chatKitStore }: ApiContainerCradle) => {
+      return new VercelAiProvider({ store: chatKitStore });
     }).singleton(),
 
     chatKitService: asFunction(({ chatKitStore, chatKitAiProvider }: ApiContainerCradle) => {

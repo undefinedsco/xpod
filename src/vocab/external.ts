@@ -198,6 +198,7 @@ export const FOAF = createNamespace('foaf', 'http://xmlns.com/foaf/0.1/', {
   mbox: 'mbox',
   homepage: 'homepage',
   knows: 'knows',
+  maker: 'maker',
   primaryTopic: 'primaryTopic',
   isPrimaryTopicOf: 'isPrimaryTopicOf',
 });
@@ -300,6 +301,7 @@ export const Meeting = createNamespace('meeting', 'http://www.w3.org/ns/pim/meet
   LongChat: 'LongChat',
   ShortChat: 'ShortChat',
   Meeting: 'Meeting',
+  Message: 'Message',
 
   // Properties
   sharedNotes: 'sharedNotes',

@@ -2,7 +2,7 @@
  * Credential Schema - Pod RDF 表定义
  */
 
-import { podTable, string, int, datetime, uri } from 'drizzle-solid';
+import { podTable, string, int, datetime, uri } from '@undefineds.co/drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 
 /**

@@ -7,21 +7,20 @@
 // Types
 export * from './types';
 
-// Schema (SolidOS compatible) - 使用别名避免与 types 冲突
+// Schema
 export {
-  ChatThread,
-  ChatMessage,
-  ThreadStatus as PodThreadStatus,
+  Chat,
+  Thread,
+  Message,
+  ChatStatus,
   MessageRole,
   MessageStatus,
-  type ChatThreadRecord,
-  type ChatMessageRecord,
-  type ThreadStatusType as PodThreadStatusType,
+  type ChatRecord,
+  type ThreadRecord,
+  type MessageRecord,
+  type ChatStatusType,
   type MessageRoleType,
   type MessageStatusType,
-  getThreadPath,
-  getThreadSubject,
-  getMessageSubject,
 } from './schema';
 
 // Store

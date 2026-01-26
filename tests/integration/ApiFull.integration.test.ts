@@ -18,9 +18,9 @@ const mockSolidAuth = {
   })
 };
 
-// Generate API Key for testing
-const validApiKey = ClientCredentialsAuthenticator.generateApiKey('valid-client-id', 'valid-secret');
-const invalidApiKey = ClientCredentialsAuthenticator.generateApiKey('invalid-client', 'wrong-secret');
+// Test API Keys (base64 encoded client_id:secret)
+const validApiKey = Buffer.from('valid-client-id:valid-secret').toString('base64');
+const invalidApiKey = Buffer.from('invalid-client:wrong-secret').toString('base64');
 
 describe.skip('API Full Integration', () => {
   let server: ApiServer;

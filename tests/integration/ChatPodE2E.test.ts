@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import dns from 'node:dns';
 import { ApiServer } from '../../src/api/ApiServer';
-import { InternalPodService } from '../../src/api/service/InternalPodService';
+import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import { VercelChatService } from '../../src/api/service/VercelChatService';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
@@ -28,7 +28,7 @@ Object.defineProperty(dns, 'lookup', {
       cb = options;
       opts = undefined;
     }
-    
+
     if (hostname === 'localhost') {
       // For localhost, always return IPv4
       if (cb) {
@@ -36,7 +36,7 @@ Object.defineProperty(dns, 'lookup', {
         return;
       }
     }
-    
+
     // Pass through to original
     return originalLookup(hostname, opts, cb);
   },
@@ -50,7 +50,7 @@ describe.skip('Chat Pod E2E Integration (Real Network)', () => {
   const port = 3107;
   const aiPort = 4002;
   const baseUrl = `http://localhost:${port}`;
-  
+
   let lastAIRequest: any = null;
 
   beforeAll(async () => {
@@ -83,24 +83,15 @@ describe.skip('Chat Pod E2E Integration (Real Network)', () => {
       });
     }).listen(aiPort);
 
-    // 2. Setup Services with REAL CSS login logic
+    // 2. Setup Services with PodChatKitStore
     // We expect CSS to be running on localhost:3000
-    const podService = new InternalPodService({
-      tokenEndpoint: 'http://localhost:3000/.account/oidc/token',
-      clientId: process.env.SOLID_CLIENT_ID || 'dummy',
-      clientSecret: process.env.SOLID_CLIENT_SECRET || 'dummy',
-      apiKeyStore: { findByClientId: async () => ({
-        clientId: 'test-client',
-        clientSecret: 'secret',
-        webId: 'http://localhost:3000/test/profile/card#me',
-        accountId: 'test-acc',
-        createdAt: new Date()
-      }) } as any
+    const store = new PodChatKitStore({
+      tokenEndpoint: 'http://localhost:3000/.oidc/token',
     });
 
     // We still mock the Pod DATA response because we don't want to rely on
     // actually writing RDF files to the running CSS server.
-    // BUT, the LOGIN process (InternalPodService.getAiProviders -> login) will be REAL.
+    // BUT, the LOGIN process will be REAL.
     // We intercept fetch ONLY for the data read, not the login.
     const originalFetch = global.fetch;
     global.fetch = async (url, init) => {
@@ -153,7 +144,7 @@ describe.skip('Chat Pod E2E Integration (Real Network)', () => {
       return originalFetch(url, init);
     };
 
-    const chatService = new VercelChatService(podService);
+    const chatService = new VercelChatService(store);
 
     // 3. Setup API Server
     const authMiddleware = new AuthMiddleware({
@@ -162,7 +153,6 @@ describe.skip('Chat Pod E2E Integration (Real Network)', () => {
         authenticate: async () => ({
           success: true,
           // This context simulates a user calling the API with an API Key
-          // The InternalPodService will use THIS clientId ('test-client') to login
           context: { type: 'solid', clientId: 'test-client', webId: 'http://localhost:3000/test/profile/card#me', viaApiKey: true }
         })
       } as any
@@ -183,12 +173,11 @@ describe.skip('Chat Pod E2E Integration (Real Network)', () => {
 
   it('should perform real login and simulated data fetch', async () => {
     // This request triggers:
-    // 1. ChatHandler -> VercelChatService -> InternalPodService.getAiProviders
-    // 2. InternalPodService -> apiKeyStore.findByClientId ('test-client') -> Gets Secret
-    // 3. InternalPodService -> session.login() -> REAL NETWORK to localhost:3000
-    // 4. InternalPodService -> drizzle -> fetch() -> INTERCEPTED (returns Turtle)
-    // 5. VercelChatService -> OpenAI -> REAL NETWORK to localhost:4002
-    
+    // 1. ChatHandler -> VercelChatService -> PodChatKitStore.getAiConfig
+    // 2. PodChatKitStore -> session.login() -> REAL NETWORK to localhost:3000
+    // 3. PodChatKitStore -> drizzle -> fetch() -> INTERCEPTED (returns Turtle)
+    // 4. VercelChatService -> OpenAI -> REAL NETWORK to localhost:4002
+
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer any' },
@@ -203,7 +192,7 @@ describe.skip('Chat Pod E2E Integration (Real Network)', () => {
     expect(response.status).toBe(200);
     const data = await response.json() as any;
     expect(data.choices[0].message.content).toBe('Real E2E Response');
-    
+
     // Verify that the key from our INTERCEPTED turtle was used in the REAL request to mock AI
     expect(lastAIRequest.headers.authorization).toBe('Bearer sk-real-e2e-key');
   }, 10000); // 10s timeout for real network

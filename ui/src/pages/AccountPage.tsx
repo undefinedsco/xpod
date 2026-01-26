@@ -454,8 +454,36 @@ export function AccountPage() {
                       <p className="text-sm font-medium text-emerald-700 mb-1">New API Key Created</p>
                       <p className="text-xs text-zinc-500 mb-3">Copy your API Key now. It will not be shown again.</p>
                       <div className="space-y-3 text-xs font-mono bg-white p-3 rounded-lg border border-zinc-200">
+                        {/* Client ID */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="text-zinc-400 select-none">Client ID</span>
+                            <p className="text-zinc-600 truncate">{newCredential.id}</p>
+                          </div>
+                          <button
+                            onClick={() => copyToClipboard(newCredential.id, 'id')}
+                            className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0"
+                            title="Copy Client ID"
+                          >
+                            {copiedField === 'id' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                        {/* Client Secret */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="text-zinc-400 select-none">Client Secret</span>
+                            <p className="text-zinc-600 break-all">{newCredential.secret}</p>
+                          </div>
+                          <button
+                            onClick={() => copyToClipboard(newCredential.secret, 'secret')}
+                            className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0"
+                            title="Copy Client Secret"
+                          >
+                            {copiedField === 'secret' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
                         {/* API Key - the main thing users need */}
-                        <div className="flex items-center justify-between gap-2 pb-3 border-b border-zinc-100">
+                        <div className="flex items-center justify-between gap-2 pt-3 border-t border-zinc-100">
                           <div className="min-w-0">
                             <span className="text-zinc-400 select-none">API Key</span>
                             <p className="text-emerald-600 break-all font-medium">{generateApiKey(newCredential.id, newCredential.secret)}</p>
@@ -466,20 +494,6 @@ export function AccountPage() {
                             title="Copy API Key"
                           >
                             {copiedField === 'apikey' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
-                        {/* Client ID - for reference */}
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <span className="text-zinc-400 select-none">Client ID</span>
-                            <p className="text-zinc-500 truncate text-[10px]">{newCredential.id}</p>
-                          </div>
-                          <button
-                            onClick={() => copyToClipboard(newCredential.id, 'id')}
-                            className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0"
-                            title="Copy Client ID"
-                          >
-                            {copiedField === 'id' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
                           </button>
                         </div>
                       </div>

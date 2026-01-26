@@ -11,7 +11,7 @@
  * 具体怎么处理、用什么工具、做到什么程度，全部由 Agent 自己决定。
  */
 
-import { podTable, string, datetime, json } from 'drizzle-solid';
+import { podTable, string, datetime, json } from '@undefineds.co/drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../vocab';
 
 /**

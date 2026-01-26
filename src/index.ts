@@ -55,12 +55,12 @@ import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateP
 // Vector components
 import { SqliteVectorStore, PostgresVectorStore } from './storage/vector/index';
 import { VectorHttpHandler } from './http/vector/VectorHttpHandler';
-import { ProviderRegistry } from './embedding/ProviderRegistry';
-import { ProviderRegistryImpl } from './embedding/ProviderRegistryImpl';
-import { EmbeddingService } from './embedding/EmbeddingService';
-import { EmbeddingServiceImpl } from './embedding/EmbeddingServiceImpl';
-import { CredentialReader } from './embedding/CredentialReader';
-import { CredentialReaderImpl } from './embedding/CredentialReaderImpl';
+import { ProviderRegistry } from './ai/service/ProviderRegistry';
+import { ProviderRegistryImpl } from './ai/service/ProviderRegistryImpl';
+import { EmbeddingService } from './ai/service/EmbeddingService';
+import { EmbeddingServiceImpl } from './ai/service/EmbeddingServiceImpl';
+import { CredentialReader } from './ai/service/CredentialReader';
+import { CredentialReaderImpl } from './ai/service/CredentialReaderImpl';
 import { VectorStore } from './storage/vector/VectorStore';
 // Tunnel and Subdomain components
 import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';

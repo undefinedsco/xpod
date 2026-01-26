@@ -13,12 +13,13 @@ import { DataFactory } from 'n3';
 import type { Term, Quad } from '@rdfjs/types';
 
 import { quints, type QuintRow, type NewQuintRow } from './schema';
-import { 
-  quadToRow, 
-  rowToQuad, 
+import {
+  quadToRow,
+  rowToQuad,
   parseVector,
   termToId,
   serializeObject,
+  deserializeObject,
   fpEncode,
   SEP,
 } from './serialization';
@@ -297,7 +298,7 @@ export class SqliteQuintStore {
       }
       
       // Deserialize object back to Term
-      const objectTerm = this.deserializeObject(row.object);
+      const objectTerm = deserializeObject(row.object);
       predicateMap.get(row.predicate)!.push(objectTerm);
     }
 
@@ -306,45 +307,6 @@ export class SqliteQuintStore {
     }
 
     return result;
-  }
-
-  /**
-   * Deserialize stored object string back to RDF Term
-   */
-  private deserializeObject(value: string): Term {
-    // Check if it's a literal (starts with ")
-    if (value.startsWith('"')) {
-      // Parse n3 literal format: "value" or "value"@lang or "value"^^<datatype>
-      const match = value.match(/^"([^"]*)"(?:@([a-zA-Z-]+)|\^\^<([^>]+)>)?$/);
-      if (match) {
-        const [, lexical, lang, datatype] = match;
-        if (lang) {
-          return DataFactory.literal(lexical, lang);
-        }
-        if (datatype) {
-          return DataFactory.literal(lexical, DataFactory.namedNode(datatype));
-        }
-        return DataFactory.literal(lexical);
-      }
-    }
-    
-    // Check for fpstring encoded numeric (starts with N\0)
-    if (value.startsWith('N\u0000')) {
-      const parts = value.split('\u0000');
-      const datatype = parts[2];
-      const originalValue = parts[3];
-      return DataFactory.literal(originalValue, DataFactory.namedNode(datatype));
-    }
-    
-    // Check for datetime (starts with D\0)
-    if (value.startsWith('D\u0000')) {
-      const parts = value.split('\u0000');
-      const originalValue = parts[2];
-      return DataFactory.literal(originalValue, DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#dateTime'));
-    }
-    
-    // Default: named node
-    return DataFactory.namedNode(value);
   }
 
   /**
