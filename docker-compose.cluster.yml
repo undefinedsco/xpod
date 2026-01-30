@@ -211,7 +211,52 @@ services:
     # 使用 src/main.ts 启动完整的栈 (Gateway + CSS + API)
     command: ["sh", "-c", "node dist/main.js -m local -p 5739"]
 
+  # Local SP (Storage Provider) - 使用外部 IdP 的纯存储节点
+  local-sp:
+    <<: *xpod-image
+    environment:
+      NODE_ENV: development
+      # === XPOD 配置 ===
+      XPOD_EDITION: local
+      XPOD_NODE_ID: local-sp-node
+      XPOD_ENCRYPTION_KEY: dev-encryption-key-change-in-production
+      # === API Server 配置 ===
+      API_PORT: "5742"
+      API_HOST: "0.0.0.0"
+      # === CSS 配置 ===
+      CSS_PORT: "5741"
+      CSS_BASE_URL: http://localhost:5741
+      CSS_CONFIG: /app/config/local-storage-provider.json
+      CSS_LOGGING_LEVEL: info
+      CSS_SPARQL_ENDPOINT: sqlite:/app/data/local-sp.sqlite
+      CSS_IDENTITY_DB_URL: sqlite:/app/data/local-sp-identity.sqlite
+      # === 外部 IdP 配置 ===
+      CSS_EXTERNAL_JWKS_URL: http://cloud:6300/.oidc/jwks
+      CSS_BASE_DOMAIN: pods.undefineds.site
+      # 禁用代理
+      http_proxy: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    ports:
+      - "5741:5741"
+      - "5742:5742"
+    volumes:
+      - local_sp_data:/app/data
+    depends_on:
+      cloud:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:5741/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # 使用 SP 模式启动
+    command: ["sh", "-c", "node dist/main.js -c /app/config/local-storage-provider.json -p 5741"]
+
 volumes:
+  local_sp_data:
   postgres_data:
   redis_data:
   minio_data:
