@@ -136,25 +136,20 @@
       }
     },
     {
-      "comment": "The setting of your redis",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:RedisLocker"
+      "comment": "Redis-based distributed locker for clustered deployments.",
+      "@id": "urn:solid-server:default:RedisLocker",
+      "@type": "RedisLocker",
+      "redisClient": {
+        "@id": "urn:solid-server:default:variable:redisClient",
+        "@type": "Variable"
       },
-      "overrideParameters": {
-        "@type": "RedisLocker",
-        "redisClient": {
-          "@id": "urn:solid-server:default:variable:redisClient",
-          "@type": "Variable"
-        },
-        "redisSettings_username": {
-          "@id": "urn:solid-server:default:variable:redisUsername",
-          "@type": "Variable"
-        },
-        "redisSettings_password": {
-          "@id": "urn:solid-server:default:variable:redisPassword",
-          "@type": "Variable"
-        }
+      "redisSettings_username": {
+        "@id": "urn:solid-server:default:variable:redisUsername",
+        "@type": "Variable"
+      },
+      "redisSettings_password": {
+        "@id": "urn:solid-server:default:variable:redisPassword",
+        "@type": "Variable"
       }
     },
     {

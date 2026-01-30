@@ -1,0 +1,220 @@
+# Xpod 集群测试环境 - 完整 3 模式测试
+#
+# 启动: yarn dev:cluster
+# 停止: yarn dev:cluster:down
+#
+# 架构:
+#   - postgres: PostgreSQL 数据库
+#   - redis: Redis 缓存/锁
+#   - minio: MinIO 对象存储
+#   - cloud: Cloud 节点 (IdP + API Server)
+#   - local-managed: Local 托管式 (连接 Cloud，自动获取 DDNS)
+#   - local-standalone: Local 独立式 (用户自管域名)
+#
+# 测试覆盖:
+#   ✅ Cloud 托管 - PostgreSQL + Redis + MinIO
+#   ✅ Local 托管式 - 连接 Cloud，DDNS 自动注册
+#   ✅ Local 独立式 - 用户自管域名和 IdP
+#
+# 镜像: 所有 xpod 服务共用同一个镜像，通过环境变量区分模式
+
+x-xpod-image: &xpod-image
+  image: xpod:dev
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: xpod
+      POSTGRES_PASSWORD: xpod
+      POSTGRES_DB: xpod
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xpod"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Cloud 节点 - 提供 IdP + API Server
+  cloud:
+    <<: *xpod-image
+    environment:
+      NODE_ENV: development
+      # === XPOD 配置 ===
+      XPOD_EDITION: cloud
+      XPOD_EDGE_NODES_ENABLED: "true"
+      XPOD_SUBDOMAIN_ENABLED: "false"
+      XPOD_DDNS_DOMAIN: undefineds.xyz
+      XPOD_ENCRYPTION_KEY: dev-encryption-key-change-in-production
+      # === API Server 配置 ===
+      API_PORT: "6301"
+      API_HOST: "0.0.0.0"
+      # === CSS 配置 ===
+      CSS_PORT: "6300"
+      CSS_BASE_URL: http://localhost:6300
+      CSS_LOGGING_LEVEL: info
+      # PostgreSQL
+      CSS_SPARQL_ENDPOINT: postgres://xpod:xpod@postgres:5432/xpod
+      CSS_IDENTITY_DB_URL: postgres://xpod:xpod@postgres:5432/xpod
+      # Redis
+      CSS_REDIS_CLIENT: redis:6379
+      CSS_REDIS_USERNAME: ""
+      CSS_REDIS_PASSWORD: ""
+      # MinIO
+      CSS_MINIO_ENDPOINT: http://minio:9000
+      CSS_MINIO_ACCESS_KEY: minioadmin
+      CSS_MINIO_SECRET_KEY: minioadmin
+      CSS_MINIO_BUCKET_NAME: xpod
+      # Email (placeholder for dev)
+      CSS_EMAIL_CONFIG_HOST: ""
+      CSS_EMAIL_CONFIG_PORT: "587"
+      CSS_EMAIL_CONFIG_AUTH_USER: ""
+      CSS_EMAIL_CONFIG_AUTH_PASS: ""
+      # Seed
+      CSS_SEED_CONFIG: /app/config/seed.dev.json
+    ports:
+      - "6300:6300"
+      - "6301:6301"
+    volumes:
+      - cloud_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:6300/" ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    # 使用 src/main.ts 启动完整的栈 (Gateway + CSS + API)
+    command: ["sh", "-c", "node dist/main.js -m cloud -p 6300"]
+
+  # Local 托管式 - 连接 Cloud，使用 Cloud IdP
+  local-managed:
+    <<: *xpod-image
+    environment:
+      NODE_ENV: development
+      XPOD_EDITION: local
+      XPOD_NODE_ID: local-managed-node
+      XPOD_NODE_TOKEN: dev-managed-token
+      XPOD_CLOUD_API_ENDPOINT: http://cloud:6301
+      XPOD_ENCRYPTION_KEY: dev-encryption-key-change-in-production
+      API_PORT: "5738"
+      API_HOST: "0.0.0.0"
+      CSS_PORT: "5737"
+      CSS_BASE_URL: http://host.docker.internal:5737
+      CSS_LOGGING_LEVEL: info
+      CSS_SPARQL_ENDPOINT: sqlite:/app/data/local-managed.sqlite
+      CSS_IDENTITY_DB_URL: sqlite:/app/data/local-managed-identity.sqlite
+      CSS_SEED_CONFIG: /app/config/seed.dev.json
+      # 托管式使用 Cloud IdP (用 XPOD_ 前缀避免被 CSS 解析)
+      XPOD_OIDC_ISSUER: http://cloud:6300
+      http_proxy: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    ports:
+      - "5737:5737"
+      - "5738:5738"
+    volumes:
+      - local_managed_data:/app/data
+    depends_on:
+      cloud:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:5737/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    command: ["sh", "-c", "node dist/main.js -m local -p 5737"]
+
+  # Local 独立式 - 用户自管域名和 IdP
+  local-standalone:
+    <<: *xpod-image
+    environment:
+      NODE_ENV: development
+      # === XPOD 配置 ===
+      XPOD_EDITION: local
+      # 不配置 XPOD_NODE_TOKEN，表示独立式
+      XPOD_ENCRYPTION_KEY: dev-encryption-key-change-in-production
+      # === API Server 配置 ===
+      API_PORT: "5740"
+      API_HOST: "0.0.0.0"
+      # === CSS 配置 ===
+      CSS_PORT: "5739"
+      CSS_BASE_URL: http://localhost:5739
+      CSS_LOGGING_LEVEL: info
+      CSS_SPARQL_ENDPOINT: sqlite:/app/data/local-standalone.sqlite
+      CSS_IDENTITY_DB_URL: sqlite:/app/data/local-standalone-identity.sqlite
+      CSS_SEED_CONFIG: /app/config/seed.dev.json
+      # 独立式使用本地 IdP，不配置 CSS_OIDC_ISSUER
+      # 用户自管 DNS，可配置 Cloudflare API Token
+      # CLOUDFLARE_API_TOKEN: xxx
+      # CSS_BASE_URL: https://your-domain.com
+      # 禁用代理
+      http_proxy: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    ports:
+      - "5739:5739"
+      - "5740:5740"
+    volumes:
+      - local_standalone_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:5739/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # 使用 src/main.ts 启动完整的栈 (Gateway + CSS + API)
+    command: ["sh", "-c", "node dist/main.js -m local -p 5739"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  cloud_data:
+  local_managed_data:
+  local_standalone_data:

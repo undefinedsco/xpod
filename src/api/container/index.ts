@@ -1,6 +1,6 @@
 /**
  * API Container 入口
- * 
+ *
  * 使用 Awilix 进行依赖注入，根据 edition 注册不同服务
  */
 
@@ -43,36 +43,59 @@ export function createApiContainer(config: ApiContainerConfig): AwilixContainer<
  * 从环境变量读取配置
  */
 export function loadConfigFromEnv(): ApiContainerConfig {
-  const edition = (process.env.CSS_EDITION ?? 'local') as 'cloud' | 'local';
-  
+  const edition = (process.env.XPOD_EDITION ?? 'local') as 'cloud' | 'local';
+
+  // Port auto-increment: API_PORT = CSS_PORT + 1 if not explicitly set
+  const cssPort = parseInt(process.env.CSS_PORT ?? '3000', 10);
+  const apiPort = process.env.API_PORT
+    ? parseInt(process.env.API_PORT, 10)
+    : cssPort + 1;
+
   return {
     edition,
-    port: parseInt(process.env.API_PORT ?? '3001', 10),
+    port: apiPort,
     host: process.env.API_HOST ?? '0.0.0.0',
     databaseUrl: process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? '',
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     encryptionKey: process.env.XPOD_ENCRYPTION_KEY ?? 'default-dev-key-change-me',
     cssTokenEndpoint: process.env.CSS_TOKEN_ENDPOINT ?? 'http://localhost:3000/.oidc/token',
-    
+
     // 子域名配置 (cloud 模式)
     subdomain: {
       enabled: process.env.XPOD_SUBDOMAIN_ENABLED === 'true',
-      baseDomain: process.env.XPOD_SUBDOMAIN_BASE_DOMAIN ?? 'pods.undefieds.co',
+      baseDomain: ((): string | undefined => {
+        if (!process.env.CSS_BASE_URL) return undefined;
+        try {
+          return new URL(process.env.CSS_BASE_URL).hostname;
+        } catch {
+          return undefined;
+        }
+      })(),
+      ddnsDomain: process.env.XPOD_DDNS_DOMAIN || 'undefineds.xyz',
       cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
       cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
       tencentDnsSecretId: process.env.TENCENT_DNS_SECRET_ID,
       tencentDnsSecretKey: process.env.TENCENT_DNS_SECRET_KEY,
     },
-    
-    // Signal 端点 (local 模式)
-    signalEndpoint: process.env.XPOD_SIGNAL_ENDPOINT,
-    
-    // Local 托管式：子域名客户端配置
+
+    // Local 托管式：连接 Cloud
     cloudApiEndpoint: process.env.XPOD_CLOUD_API_ENDPOINT,
     nodeId: process.env.XPOD_NODE_ID,
     nodeToken: process.env.XPOD_NODE_TOKEN,
-    
-    // Local 托管式/自管式：Cloudflare Tunnel Token
+
+    // OIDC Issuer (Local 托管式使用 Cloud IdP)
+    // 如果配置了 XPOD_NODE_TOKEN，默认使用 Cloud IdP
+    oidcIssuer: process.env.XPOD_OIDC_ISSUER ?? process.env.CSS_OIDC_ISSUER ?? (
+      process.env.XPOD_NODE_TOKEN
+        ? (process.env.XPOD_CLOUD_API_ENDPOINT ?? 'https://id.undefineds.co')
+        : undefined
+    ),
+
+    // 隧道配置
     cloudflareTunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN,
+    sakuraToken: process.env.SAKURA_TOKEN,
+
+    // Edge 节点管理 (cloud 模式)
+    edgeNodesEnabled: process.env.XPOD_EDGE_NODES_ENABLED === 'true',
   };
 }

@@ -6,6 +6,7 @@ import { EdgeNodeHeartbeatService } from '../service/EdgeNodeHeartbeatService';
 import { FrpcProcessManager, type FrpcRuntimeStatus } from './frp/FrpcProcessManager';
 import { AcmeCertificateManager } from './acme/AcmeCertificateManager';
 import { ClusterCertificateManager } from './acme/ClusterCertificateManager';
+import { EdgeNodeCapabilityDetector, type NetworkAddressInfo } from './EdgeNodeCapabilityDetector';
 
 export interface EdgeNodeAgentOptions {
   signalEndpoint: string;
@@ -15,6 +16,7 @@ export interface EdgeNodeAgentOptions {
   publicAddress?: string;
   pods?: string[];
   includeSystemMetrics?: boolean;
+  enableNetworkDetection?: boolean;
   metadata?: Record<string, unknown>;
   intervalMs?: number;
   onHeartbeatResponse?: (data: unknown) => void;
@@ -45,6 +47,10 @@ export class EdgeNodeAgent {
   private heartbeat?: EdgeNodeHeartbeatService;
   private frpManager?: FrpcProcessManager;
   private clusterCertificate?: ClusterCertificateManager;
+  private networkDetector?: EdgeNodeCapabilityDetector;
+  private cachedNetworkInfo?: NetworkAddressInfo;
+  private lastNetworkDetection = 0;
+  private readonly networkDetectionIntervalMs = 60_000; // 每分钟重新检测一次
 
   public async start(options: EdgeNodeAgentOptions): Promise<void> {
     if (options.acme) {
@@ -64,6 +70,20 @@ export class EdgeNodeAgent {
         autoRestart: options.frp.autoRestart,
       });
     }
+    
+    // 初始化网络检测器
+    if (options.enableNetworkDetection !== false) {
+      this.networkDetector = new EdgeNodeCapabilityDetector({
+        dynamicDetection: {
+          enableNetworkDetection: true,
+        },
+      });
+      // 执行初始网络检测
+      this.cachedNetworkInfo = await this.networkDetector.detectNetworkAddresses();
+      this.lastNetworkDetection = Date.now();
+      this.logger.info(`Network detection: IPv4=${this.cachedNetworkInfo.ipv4Public ?? this.cachedNetworkInfo.ipv4}, IPv6=${this.cachedNetworkInfo.ipv6Public ?? this.cachedNetworkInfo.ipv6}, hasPublicIPv6=${this.cachedNetworkInfo.hasPublicIPv6}`);
+    }
+    
     const systemMetrics = options.includeSystemMetrics ? this.collectSystemMetrics() : undefined;
     const metadataPayload = {
       ...(options.metadata ?? {}),
@@ -87,6 +107,7 @@ export class EdgeNodeAgent {
         this.handleHeartbeatResponse(data);
         options.onHeartbeatResponse?.(data);
       },
+      networkSupplier: this.networkDetector ? () => this.getNetworkInfo() : undefined,
     };
     if (this.frpManager) {
       heartbeatOptions.tunnelSupplier = () => this.buildTunnelHeartbeatPayload();
@@ -223,5 +244,30 @@ export class EdgeNodeAgent {
       return undefined;
     }
     return { client: status };
+  }
+
+  /**
+   * 获取网络信息（带缓存，每分钟刷新一次）
+   */
+  private async getNetworkInfo(): Promise<{ ipv4?: string; ipv6?: string }> {
+    const now = Date.now();
+    
+    // 如果缓存过期，重新检测
+    if (!this.cachedNetworkInfo || (now - this.lastNetworkDetection) > this.networkDetectionIntervalMs) {
+      if (this.networkDetector) {
+        try {
+          this.cachedNetworkInfo = await this.networkDetector.detectNetworkAddresses();
+          this.lastNetworkDetection = now;
+        } catch (error: unknown) {
+          this.logger.debug(`Network detection failed: ${(error as Error).message}`);
+        }
+      }
+    }
+    
+    // 优先返回公网地址
+    return {
+      ipv4: this.cachedNetworkInfo?.ipv4Public ?? this.cachedNetworkInfo?.ipv4,
+      ipv6: this.cachedNetworkInfo?.ipv6Public ?? this.cachedNetworkInfo?.ipv6,
+    };
   }
 }

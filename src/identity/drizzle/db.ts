@@ -33,7 +33,9 @@ const dbCache = new Map<string, CachedConnection>();
 const JSON_OIDS = [114, 3802];
 
 for (const oid of JSON_OIDS) {
-  types.setTypeParser(oid, (value) => (value == null ? null : JSON.parse(value)));
+  // Explicitly return raw string to avoid "Type Conflict" with CSS
+  // and to satisfy PgQuintStore's parseVector expecting a string.
+  types.setTypeParser(oid, (value) => value);
 }
 
 /**

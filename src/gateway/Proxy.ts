@@ -1,6 +1,7 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
-import type { Supervisor } from './Supervisor';
+import { getLoggerFor } from 'global-logger-factory';
+import type { Supervisor } from './supervisor';
 
 // CORS configuration matching CSS CorsHandler defaults
 const CORS_CONFIG = {
@@ -18,6 +19,7 @@ const CORS_CONFIG = {
 };
 
 export class GatewayProxy {
+  private readonly logger = getLoggerFor(this);
   private proxy: httpProxy;
   private server: http.Server;
   private targets: { css?: string; api?: string } = {};
@@ -28,7 +30,7 @@ export class GatewayProxy {
     });
 
     this.proxy.on('error', (err, _req, res) => {
-      console.error('[Gateway] Proxy error:', err);
+      this.logger.error('Proxy error:', err);
       if (res && 'writeHead' in res && !res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Service Unavailable', details: err.message }));
@@ -38,7 +40,12 @@ export class GatewayProxy {
     this.server = http.createServer(this.handleRequest.bind(this));
 
     this.server.on('upgrade', (req, socket, head) => {
-      if (this.targets.css) {
+      const url = req.url ?? '/';
+
+      // Route /ws/* WebSocket connections to API server
+      if (url.startsWith('/ws/') && this.targets.api) {
+        this.proxy.ws(req, socket, head, { target: this.targets.api });
+      } else if (this.targets.css) {
         this.proxy.ws(req, socket, head, { target: this.targets.css });
       } else {
         socket.destroy();
@@ -51,8 +58,8 @@ export class GatewayProxy {
   }
 
   public start(): void {
-    this.server.listen(this.port, () => {
-      console.log(`[Gateway] Listening on http://localhost:${this.port}`);
+    this.server.listen(this.port, '0.0.0.0', () => {
+      this.logger.info(`Listening on http://0.0.0.0:${this.port}`);
     });
   }
 
@@ -64,6 +71,16 @@ export class GatewayProxy {
     if (!req.headers['x-forwarded-host']) {
       req.headers['x-forwarded-host'] = req.headers.host;
     }
+
+    // Set x-forwarded-proto based on CSS_BASE_URL
+    // Override any existing value since cloudflared sets it to 'http' for local forwarding
+    const baseUrl = process.env.CSS_BASE_URL || '';
+    if (baseUrl.startsWith('https')) {
+      req.headers['x-forwarded-proto'] = 'https';
+    }
+
+    // Use debug level for per-request logs
+    this.logger.debug(`${req.method} ${url} x-forwarded-proto=${req.headers['x-forwarded-proto']} x-forwarded-host=${req.headers['x-forwarded-host']}`);
 
     // 1. Gateway Internal API (Status & Control) - Gateway handles CORS
     if (url.startsWith('/_gateway/')) {

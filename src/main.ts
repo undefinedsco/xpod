@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 import { Supervisor } from './supervisor';
-import { GatewayProxy } from './gateway/Proxy';
-import { getFreePort } from './gateway/PortFinder';
+import { GatewayProxy } from './gateway/proxy';
+import { getFreePort } from './gateway/port-finder';
+import { LocalTunnelProvider } from './tunnel/LocalTunnelProvider';
+import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
+import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import path from 'path';
 import fs from 'fs';
 
+// Placeholder for late initialization
+let logger = getLoggerFor('Main');
+
 // Load .env file manually
 function loadEnvFile(envPath: string): void {
   if (!fs.existsSync(envPath)) {
-    console.warn(`[Warning] Env file not found: ${envPath}`);
+    logger.warn(`Env file not found: ${envPath}`);
     return;
   }
   const content = fs.readFileSync(envPath, 'utf-8');
@@ -47,7 +53,18 @@ async function main() {
     loadEnvFile(argv.env);
   }
 
-  const gatewayPort = argv.port as number;
+  // 初始化全局统一日志工厂
+  const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
+    fileName: './logs/xpod-%DATE%.log',
+    showLocation: true
+  });
+  setGlobalLoggerFactory(loggerFactory);
+  logger = getLoggerFor('Main');
+
+  // Main port: 命令行参数 > 环境变量 > 默认值 3000
+  const mainPort = argv.port !== 3000 
+    ? argv.port as number 
+    : parseInt(process.env.XPOD_PORT ?? process.env.PORT ?? '3000', 10);
 
   // Determine config path: --config > --mode > default
   let configPath: string;
@@ -60,20 +77,21 @@ async function main() {
   }
   
   // 1. Determine Ports with auto-discovery
-  // Ensure CSS port search doesn't start exactly on the Gateway port
-  const cssStartPort = (gatewayPort === 3000 ? 3002 : 3000);
+  // Ensure CSS port search doesn't start exactly on the Main port
+  const cssStartPort = (mainPort === 3000 ? 3002 : 3000);
   const cssPort = await getFreePort(cssStartPort);
-  
-  const apiStartPort = (gatewayPort === 3001 ? 3003 : 3001);
+
+  // API port starts after CSS port to avoid collision
+  const apiStartPort = cssPort + 1;
   const apiPort = await getFreePort(apiStartPort);
   
-  // 2. Determine Base URL
-  const baseUrl = `http://${argv.host}:${gatewayPort}/`;
+  // 2. Determine Base URL (环境变量优先，否则用本地地址)
+  const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
 
-  console.log(`[Gateway] Orchestration Plan:`);
-  console.log(`  - Gateway: ${baseUrl} (${argv.host}:${gatewayPort})`);
-  console.log(`  - CSS:     http://localhost:${cssPort} (Internal)`);
-  console.log(`  - API:     http://localhost:${apiPort} (Internal)`);
+  logger.info('Orchestration Plan:');
+  logger.info(`  - Main Entry: ${baseUrl} (${argv.host}:${mainPort})`);
+  logger.info(`  - CSS (internal): http://localhost:${cssPort}`);
+  logger.info(`  - API (internal): http://localhost:${apiPort}`);
 
   const supervisor = new Supervisor();
 
@@ -107,12 +125,13 @@ async function main() {
     env: {
       ...process.env,
       API_PORT: apiPort.toString(),
+      XPOD_MAIN_PORT: mainPort.toString(),
       CSS_INTERNAL_URL: `http://localhost:${cssPort}`,
     },
   });
 
   // Start Gateway Proxy
-  const proxy = new GatewayProxy(gatewayPort, supervisor);
+  const proxy = new GatewayProxy(mainPort, supervisor);
   
   proxy.setTargets({
     css: `http://localhost:${cssPort}`,
@@ -122,6 +141,21 @@ async function main() {
   // Start processes
   await supervisor.startAll();
   proxy.start();
+
+  // Graceful shutdown
+  const shutdown = async (signal: string): Promise<void> => {
+    logger.info(`Received ${signal}, shutting down...`);
+    
+    // Stop supervisor (CSS + API)
+    await supervisor.stopAll();
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  logger.error(`Failed to start: ${error}`);
+  process.exit(1);
+});

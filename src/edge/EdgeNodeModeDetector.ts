@@ -3,6 +3,7 @@ import { getLoggerFor } from 'global-logger-factory';
 export interface NodeRegistrationInfo {
   nodeId: string;
   publicIp?: string;
+  publicIpv6?: string;
   publicPort?: number;
   capabilities: NodeCapabilities;
 }
@@ -55,24 +56,41 @@ export class EdgeNodeModeDetector {
     const supportsDirect = supportedModes.has('direct');
     const supportsProxy = supportedModes.has('proxy');
 
-    // Prefer direct if supported and publicIp is present
-    const hasPublicIp = Boolean(nodeInfo.publicIp);
+    // Prefer direct if supported and has public IP (IPv6 or IPv4)
+    const hasPublicIp = Boolean(nodeInfo.publicIp || nodeInfo.publicIpv6);
     let connectivityTest: { success: boolean; latencyMs?: number; error?: string } | undefined;
 
     if (supportsDirect && hasPublicIp) {
-      connectivityTest = await this.testDirectConnectivity(
-        nodeInfo.publicIp!,
-        nodeInfo.publicPort ?? 443
-      );
+      // 优先测试 IPv6 连通性
+      const ipToTest = nodeInfo.publicIpv6 ?? nodeInfo.publicIp!;
+      const port = nodeInfo.publicPort ?? 443;
+      
+      connectivityTest = await this.testDirectConnectivity(ipToTest, port);
 
       if (connectivityTest.success) {
-        this.logger.info(`Node ${nodeInfo.nodeId} is directly reachable at ${nodeInfo.publicIp}:${nodeInfo.publicPort ?? 443}`);
+        this.logger.info(`Node ${nodeInfo.nodeId} is directly reachable at ${ipToTest}:${port}`);
         return {
           accessMode: 'direct',
-          reason: 'Direct connectivity test passed',
+          reason: `Direct connectivity test passed (${nodeInfo.publicIpv6 ? 'IPv6' : 'IPv4'})`,
           subdomain,
           connectivityTest,
         };
+      }
+      
+      // 如果 IPv6 测试失败且有 IPv4，尝试 IPv4
+      if (nodeInfo.publicIpv6 && nodeInfo.publicIp) {
+        this.logger.debug(`IPv6 connectivity failed for ${nodeInfo.nodeId}, trying IPv4...`);
+        connectivityTest = await this.testDirectConnectivity(nodeInfo.publicIp, port);
+        
+        if (connectivityTest.success) {
+          this.logger.info(`Node ${nodeInfo.nodeId} is directly reachable via IPv4 at ${nodeInfo.publicIp}:${port}`);
+          return {
+            accessMode: 'direct',
+            reason: 'Direct connectivity test passed (IPv4 fallback)',
+            subdomain,
+            connectivityTest,
+          };
+        }
       }
 
       this.logger.info(`Node ${nodeInfo.nodeId} is not directly reachable, will fall back to proxy if available: ${connectivityTest.error}`);

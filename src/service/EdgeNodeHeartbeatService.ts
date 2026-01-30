@@ -7,6 +7,8 @@ export interface EdgeNodeHeartbeatServiceOptions {
   nodeToken?: string;
   baseUrl?: string;
   publicAddress?: string;
+  ipv4?: string;
+  ipv6?: string;
   pods?: string | string[];
   capabilities?: string | string[];
   reachability?: string;
@@ -20,6 +22,7 @@ export interface EdgeNodeHeartbeatServiceOptions {
   metadataSupplier?: () => Record<string, unknown> | undefined;
   metricsSupplier?: () => Record<string, unknown> | undefined;
   tunnelSupplier?: () => Record<string, unknown> | undefined;
+  networkSupplier?: () => Promise<{ ipv4?: string; ipv6?: string }> | { ipv4?: string; ipv6?: string };
 }
 
 type HeartbeatPayload = {
@@ -27,6 +30,8 @@ type HeartbeatPayload = {
   token: string;
   baseUrl?: string;
   publicAddress?: string;
+  ipv4?: string;
+  ipv6?: string;
   pods?: string[];
   capabilities?: string[];
   reachability?: Record<string, unknown>;
@@ -45,6 +50,8 @@ export class EdgeNodeHeartbeatService {
   private readonly baseToken?: string;
   private readonly baseUrl?: string;
   private readonly publicAddress?: string;
+  private readonly baseIpv4?: string;
+  private readonly baseIpv6?: string;
   private readonly basePods?: string[];
   private readonly baseCapabilities?: string[];
   private readonly baseReachability?: Record<string, unknown>;
@@ -56,6 +63,7 @@ export class EdgeNodeHeartbeatService {
   private readonly tunnelSupplier?: () => Record<string, unknown> | undefined;
   private readonly metricsSupplier?: () => Record<string, unknown> | undefined;
   private readonly metadataSupplier?: () => Record<string, unknown> | undefined;
+  private readonly networkSupplier?: () => Promise<{ ipv4?: string; ipv6?: string }> | { ipv4?: string; ipv6?: string };
   private readonly intervalMs: number = 30_000;
   private readonly onHeartbeatResponse?: (data: unknown) => void;
 
@@ -81,11 +89,14 @@ export class EdgeNodeHeartbeatService {
     this.metadataSupplier = options.metadataSupplier;
     this.metricsSupplier = options.metricsSupplier;
     this.tunnelSupplier = options.tunnelSupplier;
+    this.networkSupplier = options.networkSupplier;
 
     this.baseNodeId = nodeId;
     this.baseToken = nodeToken;
     this.baseUrl = this.normalizeString(options.baseUrl);
     this.publicAddress = this.normalizeString(options.publicAddress);
+    this.baseIpv4 = this.normalizeString(options.ipv4);
+    this.baseIpv6 = this.normalizeString(options.ipv6);
     this.basePods = this.normalizePods(options.pods);
     this.baseCapabilities = this.normalizeStringArray(options.capabilities);
     this.baseReachability = this.normalizeJsonRecord(options.reachability, 'reachability');
@@ -114,7 +125,7 @@ export class EdgeNodeHeartbeatService {
       return;
     }
 
-    const payload: Record<string, unknown> = this.buildPayload();
+    const payload: Record<string, unknown> = await this.buildPayload();
 
     try {
       const response = await fetch(this.endpoint, {
@@ -133,7 +144,7 @@ export class EdgeNodeHeartbeatService {
     }
   }
 
-  private buildPayload(): HeartbeatPayload {
+  private async buildPayload(): Promise<HeartbeatPayload> {
     const payload: HeartbeatPayload = {
       nodeId: this.baseNodeId!,
       token: this.baseToken!,
@@ -145,6 +156,26 @@ export class EdgeNodeHeartbeatService {
     if (this.publicAddress) {
       payload.publicAddress = this.publicAddress;
     }
+    
+    // 获取网络地址（支持动态检测）
+    let ipv4 = this.baseIpv4;
+    let ipv6 = this.baseIpv6;
+    if (this.networkSupplier) {
+      try {
+        const networkInfo = await Promise.resolve(this.networkSupplier());
+        ipv4 = networkInfo.ipv4 ?? ipv4;
+        ipv6 = networkInfo.ipv6 ?? ipv6;
+      } catch (error: unknown) {
+        this.logger.debug(`Network detection failed: ${(error as Error).message}`);
+      }
+    }
+    if (ipv4) {
+      payload.ipv4 = ipv4;
+    }
+    if (ipv6) {
+      payload.ipv6 = ipv6;
+    }
+    
     if (this.basePods && this.basePods.length > 0) {
       payload.pods = [ ...this.basePods ];
     }

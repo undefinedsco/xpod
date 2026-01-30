@@ -50,6 +50,39 @@ export interface SubdomainInfo {
   ownerId?: string;
 }
 
+export interface DdnsAllocationResult {
+  success: boolean;
+  subdomain: string;
+  domain: string;
+  fqdn: string;
+  ipAddress?: string;
+  ipv6Address?: string;
+  createdAt: string;
+}
+
+export interface DdnsUpdateResult {
+  success: boolean;
+  subdomain: string;
+  domain: string;
+  fqdn: string;
+  ipAddress?: string;
+  ipv6Address?: string;
+  updatedAt: string;
+}
+
+export interface DdnsRecordInfo {
+  subdomain: string;
+  domain: string;
+  fqdn: string;
+  ipAddress?: string;
+  ipv6Address?: string;
+  recordType: string;
+  status: string;
+  ttl: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * 子域名客户端 (Local 模式)
  * 
@@ -151,6 +184,63 @@ export class SubdomainClient {
     return response as { success: boolean; message: string };
   }
 
+  // ============ DDNS API ============
+
+  /**
+   * 分配 DDNS 子域名
+   */
+  async allocateDdns(options: {
+    subdomain: string;
+    ipAddress?: string;
+    ipv6Address?: string;
+  }): Promise<DdnsAllocationResult> {
+    const url = `${this.cloudApiEndpoint}/api/v1/ddns/allocate`;
+    const response = await this.fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({
+        subdomain: options.subdomain,
+        nodeId: this.nodeId,
+        ipAddress: options.ipAddress,
+        ipv6Address: options.ipv6Address,
+      }),
+    });
+    return response as DdnsAllocationResult;
+  }
+
+  /**
+   * 更新 DDNS 记录
+   */
+  async updateDdns(subdomain: string, options: {
+    ipAddress?: string;
+    ipv6Address?: string;
+  }): Promise<DdnsUpdateResult> {
+    const url = `${this.cloudApiEndpoint}/api/v1/ddns/${encodeURIComponent(subdomain)}`;
+    const response = await this.fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({
+        ip: options.ipAddress,
+        ipv6Address: options.ipv6Address,
+      }),
+    });
+    return response as DdnsUpdateResult;
+  }
+
+  /**
+   * 获取 DDNS 记录
+   */
+  async getDdns(subdomain: string): Promise<DdnsRecordInfo | null> {
+    const url = `${this.cloudApiEndpoint}/api/v1/ddns/${encodeURIComponent(subdomain)}`;
+    try {
+      const response = await this.fetch(url, { method: 'GET' });
+      return response as DdnsRecordInfo;
+    } catch (error) {
+      if (error instanceof SubdomainClientError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
   // ============ Private Methods ============
 
   private async fetch(url: string, options: {
@@ -161,7 +251,13 @@ export class SubdomainClient {
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const response = await fetch(url, {
+      // 使用 undici 的 fetch，禁用代理
+      const { fetch: undiciFetch, Agent } = await import('undici');
+      const agent = new Agent({
+        connect: { timeout: this.timeoutMs },
+      });
+
+      const response = await undiciFetch(url, {
         method: options.method,
         headers: {
           'Content-Type': 'application/json',
@@ -170,6 +266,7 @@ export class SubdomainClient {
         },
         body: options.body,
         signal: controller.signal,
+        dispatcher: agent,
       });
 
       const data = await response.json();

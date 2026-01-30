@@ -155,6 +155,8 @@ export class SubdomainService {
 
     if (publicIp) {
       const connectivity = await this.checkConnectivity(publicIp, localPort);
+      // 如果可达，或者虽然不可达但我们是在 Local 模式且用户显式指定了 IP
+      // 这里可以放宽一点限制，因为有些网络环境可能单向不通但 DNS 应该先挂上去
       if (connectivity.reachable) {
         mode = 'direct';
         verifiedIp = publicIp;
@@ -165,11 +167,12 @@ export class SubdomainService {
     let tunnelConfig: TunnelConfig | undefined;
 
     if (mode === 'direct') {
-      // 直连模式：创建 A 记录
+      const type = this.isIpv6(verifiedIp!) ? 'AAAA' : 'A';
+      // 直连模式：创建 A 或 AAAA 记录
       await this.dnsProvider.upsertRecord({
         subdomain: normalizedSubdomain,
         domain: this.baseDomain,
-        type: 'A',
+        type,
         value: verifiedIp!,
         ttl: 60,
       });
@@ -289,7 +292,9 @@ export class SubdomainService {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
 
-      const response = await fetch(`http://${ip}:${port}/.well-known/solid`, {
+      // IPv6 需要加中括号
+      const host = this.isIpv6(ip) ? `[${ip}]` : ip;
+      const response = await fetch(`http://${host}:${port}/.well-known/solid`, {
         method: 'HEAD',
         signal: controller.signal,
       });
@@ -309,5 +314,9 @@ export class SubdomainService {
         error: error instanceof Error ? error.message : 'Unknown error',
       };
     }
+  }
+
+  private isIpv6(ip: string): boolean {
+    return ip.includes(':');
   }
 }

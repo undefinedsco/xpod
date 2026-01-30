@@ -24,6 +24,7 @@ import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifi
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
+import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
 import { DefaultQuotaService } from './quota/DefaultQuotaService';
 import { DrizzleQuotaService } from './quota/DrizzleQuotaService';
 import { NoopQuotaService } from './quota/NoopQuotaService';
@@ -64,6 +65,7 @@ import { CredentialReaderImpl } from './embedding/CredentialReaderImpl';
 import { VectorStore } from './storage/vector/VectorStore';
 // Tunnel and Subdomain components
 import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';
+import { LocalTunnelProvider } from './tunnel/LocalTunnelProvider';
 import { SubdomainService } from './subdomain/SubdomainService';
 export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
 // Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
@@ -121,6 +123,7 @@ export {
     DrizzleIndexedStorage,
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
+    SqliteKeyValueStorage,
   DefaultQuotaService,
   DrizzleQuotaService,
     NoopQuotaService,
@@ -163,5 +166,6 @@ export {
   CredentialReaderImpl,
   // Tunnel and Subdomain exports
   CloudflareTunnelProvider,
+  LocalTunnelProvider,
   SubdomainService,
 };

@@ -77,7 +77,12 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
   protected getFormat(label: string): Format {
     return format.combine(
       format.label({ label }),
-      format.timestamp(),
+      format.timestamp({
+        format: () => {
+          // 使用 sv-SE 区域设置获得类似 ISO 但为本地时间的格式: YYYY-MM-DD HH:mm:ss
+          return new Date().toLocaleString('sv-SE', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+        }
+      }),
       format((info) => {
         const store = logContext.getStore();
         if (store?.requestId) {
@@ -91,18 +96,16 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
           const clusterInfo = this.clusterInfo(meta as LogMetadata);
           const requestInfo = requestId ? ` [Req:${requestId}]` : '';
           
-          // Use simplified class name when showLocation is enabled, otherwise use full label
+          // 模块名后置于时间戳
           let displayLabel = labelInner;
-          
           if (this.showLocation && labelInner) {
-            // Extract class name from label (typically like "MyClass" or "path/to/MyClass")
             const className = (labelInner as string).split('/').pop();
             if (className && className !== 'Object') {
               displayLabel = className;
             }
           }
           
-          return `${timestamp}${requestInfo} [${displayLabel}] {${clusterInfo}} ${levelInner}: ${message}`;
+          return `${timestamp}${requestInfo} [${displayLabel}] ${levelInner}: ${message}`;
         },
       ),
     );

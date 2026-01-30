@@ -12,6 +12,7 @@ import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
+import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { InternalPodService } from '../service/InternalPodService';
@@ -43,7 +44,7 @@ export function registerCommonServices(
     }).singleton(),
 
     // 认证
-    authenticator: asFunction(({ apiKeyStore, config }: ApiContainerCradle) => {
+    authenticator: asFunction(({ apiKeyStore, nodeRepo, config }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
       });
@@ -53,8 +54,14 @@ export function registerCommonServices(
         tokenEndpoint: config.cssTokenEndpoint,
       });
 
+      const nodeTokenAuthenticator = new NodeTokenAuthenticator({
+        repository: nodeRepo,
+      });
+
       return new MultiAuthenticator({
-        authenticators: [solidAuthenticator, clientCredAuthenticator],
+        // NodeTokenAuthenticator 必须在 ClientCredentialsAuthenticator 之前
+        // 因为两者都处理 Bearer token，但 Node Token 有 X-Node-Id 头
+        authenticators: [solidAuthenticator, nodeTokenAuthenticator, clientCredAuthenticator],
       });
     }).singleton(),
 

@@ -135,6 +135,20 @@
       }
     },
     {
+      "comment": "Use SQLite-based KeyValueStorage for internal data (avoids .internal directory)",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:KeyValueStorage"
+      },
+      "overrideParameters": {
+        "@type": "SqliteKeyValueStorage",
+        "path": {
+          "@id": "urn:solid-server:default:variable:identityDbUrl",
+          "@type": "Variable"
+        }
+      }
+    },
+    {
       "@id": "urn:solid-server:default:variable:registration",
       "@value": true
     },

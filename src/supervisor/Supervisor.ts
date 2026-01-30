@@ -89,12 +89,27 @@ export class Supervisor {
     this.processes.set(name, child);
     this.updateState(name, { status: 'running', pid: child.pid });
 
+    const prefixLog = (name: string, data: Buffer, isError = false) => {
+      const output = data.toString();
+      const lines = output.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed) {
+          if (isError) {
+            console.error(`[${name}] ${trimmed}`);
+          } else {
+            console.log(`[${name}] ${trimmed}`);
+          }
+        }
+      }
+    };
+
     child.stdout?.on('data', (data) => {
-      console.log(`[${name}] ${data.toString().trim()}`);
+      prefixLog(name, data, false);
     });
 
     child.stderr?.on('data', (data) => {
-      console.error(`[${name}] ${data.toString().trim()}`);
+      prefixLog(name, data, true);
     });
 
     child.on('error', (err) => {

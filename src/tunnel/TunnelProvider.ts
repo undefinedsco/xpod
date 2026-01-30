@@ -14,7 +14,7 @@ export interface TunnelConfig {
   subdomain: string;
 
   /** 隧道类型 */
-  provider: 'cloudflare' | 'frp';
+  provider: 'cloudflare' | 'frp' | 'sakura-frp';
 
   /** 公网访问端点 (如 https://mynode.pods.undefieds.co) */
   endpoint: string;
