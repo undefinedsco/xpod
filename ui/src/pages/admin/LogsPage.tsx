@@ -102,6 +102,12 @@ export function LogsPage() {
     }
   };
 
+  // 去除 ANSI 颜色代码
+  const stripAnsi = (str: string): string => {
+    // eslint-disable-next-line no-control-regex
+    return str.replace(/\x1b\[[0-9;]*m/g, '');
+  };
+
   // 日志级别颜色
   const getLevelColor = (level: LogEntry['level']) => {
     switch (level) {
@@ -193,7 +199,7 @@ export function LogsPage() {
                     <span className={clsx('shrink-0 w-12', getSourceColor(log.source))}>
                       [{log.source}]
                     </span>
-                    <span className="text-gray-700 break-all">{log.message}</span>
+                    <span className="text-gray-700 break-all">{stripAnsi(log.message)}</span>
                   </div>
                 ))}
                 <div ref={logsEndRef} />
