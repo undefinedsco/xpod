@@ -3,32 +3,54 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 
 // https://vitejs.dev/config/
-export default defineConfig({
-  base: '/app/',
-  plugins: [react()],
-  resolve: {
-    preserveSymlinks: true,
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-      '@linx': path.resolve(__dirname, './src/external/linx/src'),
+export default defineConfig(() => {
+  // 根据环境变量决定构建哪个 app
+  const buildTarget = process.env.BUILD_TARGET || 'app';
+
+  const configs = {
+    app: {
+      base: '/app/',
+      outDir: '../static/app',
+      input: 'index.html',
     },
-  },
-  server: {
-    fs: {
-      allow: [
-        path.resolve(__dirname, '../../'),
-      ],
+    dashboard: {
+      base: '/dashboard/',
+      outDir: '../static/dashboard',
+      input: 'dashboard.html',
     },
-  },
-  build: {
-    outDir: '../static/app',
-    emptyOutDir: true,
-    rollupOptions: {
-      output: {
-        entryFileNames: 'assets/main.js',
-        chunkFileNames: 'assets/[name].js',
-        assetFileNames: 'assets/[name].[ext]'
+  };
+
+  const config = configs[buildTarget as keyof typeof configs] || configs.app;
+
+  return {
+    base: config.base,
+    plugins: [react()],
+    resolve: {
+      preserveSymlinks: true,
+      alias: {
+        '@': path.resolve(__dirname, './src'),
+        '@linx': path.resolve(__dirname, './src/external/linx/src'),
+      },
+    },
+    server: {
+      fs: {
+        allow: [
+          path.resolve(__dirname, '../../'),
+        ],
+      },
+    },
+    build: {
+      outDir: config.outDir,
+      emptyOutDir: true,
+      rollupOptions: {
+        input: path.resolve(__dirname, config.input),
+        output: {
+          // app 使用固定文件名（auth.html 模板需要），dashboard 使用 hash
+          entryFileNames: buildTarget === 'app' ? 'assets/main.js' : 'assets/[name]-[hash].js',
+          chunkFileNames: 'assets/[name]-[hash].js',
+          assetFileNames: buildTarget === 'app' ? 'assets/[name].[ext]' : 'assets/[name]-[hash].[ext]'
+        }
       }
     }
-  }
+  };
 })

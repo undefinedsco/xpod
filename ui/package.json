@@ -5,15 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:dashboard": "BUILD_TARGET=dashboard vite",
     "build": "tsc -b && vite build",
+    "build:app": "tsc -b && vite build",
+    "build:dashboard": "tsc -b && BUILD_TARGET=dashboard vite build",
+    "build:all": "yarn build:app && yarn build:dashboard",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
     "@openai/chatkit-react": "^1.4.1",
+    "@radix-ui/react-select": "^2.2.6",
     "clsx": "^2.1.1",
     "framer-motion": "^12.23.26",
-    "lucide-react": "^0.562.0",
+    "lucide-react": "^0.563.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.11.0",
@@ -33,6 +38,7 @@
     "globals": "^16.5.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4"

@@ -2,19 +2,234 @@
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * Xpod 颜色系统 - 与 LinX 对齐，基于 Shadcn UI Violet 标准主题
+ *
+ * 核心色值完全对齐 shadcn/ui 官方配置:
+ * - Primary: Violet (#7C3AED / #8B5CF6)
+ * - Gray: Zinc / Slate
+ * - Radius: 0.5rem (8px)
+ */
+
 @layer base {
-  body {
-    @apply bg-zinc-50 text-zinc-900 antialiased;
+  :root {
+    /* ============================================== */
+    /* Shadcn UI Standard Theme (Light)               */
+    /* ============================================== */
+    --background: 0 0% 100%;
+    --foreground: 224 71.4% 4.1%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 224 71.4% 4.1%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71.4% 4.1%;
+
+    --primary: 262.1 83.3% 57.8%;
+    --primary-foreground: 210 20% 98%;
+
+    --secondary: 220 14.3% 95.9%;
+    --secondary-foreground: 220.9 39.3% 11%;
+
+    --muted: 220 14.3% 95.9%;
+    --muted-foreground: 220 8.9% 46.1%;
+
+    --accent: 220 14.3% 95.9%;
+    --accent-foreground: 220.9 39.3% 11%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 20% 98%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 262.1 83.3% 57.8%;
+
+    /* 圆角系统 */
+    --radius-xs: 2px;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 20px;
+    --radius-2xl: 24px;
+    --radius-3xl: 28px;
+    --radius: 0.5rem;
+
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+
+    /* ============================================== */
+    /* Layout Mappings (Derived from Standard)        */
+    /* ============================================== */
+    --layout-sidebar: 220 14.3% 95.9%;
+    --layout-list-header: 0 0% 100%;
+    --layout-list-hover: 220 14.3% 95.9%;
+    --layout-list-item: 0 0% 100%;
+    --layout-list-selected: 220 13% 91%;
+    --layout-content: 0 0% 100%;
   }
 
-  /* Fix browser autofill background color for light theme */
+  .dark {
+    /* ============================================== */
+    /* Shadcn UI Standard Theme (Dark)                */
+    /* ============================================== */
+    --background: 224 71.4% 4.1%;
+    --foreground: 210 20% 98%;
+
+    --card: 224 71.4% 4.1%;
+    --card-foreground: 210 20% 98%;
+
+    --popover: 224 71.4% 4.1%;
+    --popover-foreground: 210 20% 98%;
+
+    --primary: 263.4 70% 50.4%;
+    --primary-foreground: 210 20% 98%;
+
+    --secondary: 215 27.9% 16.9%;
+    --secondary-foreground: 210 20% 98%;
+
+    --muted: 215 27.9% 16.9%;
+    --muted-foreground: 217.9 10.6% 64.9%;
+
+    --accent: 215 27.9% 16.9%;
+    --accent-foreground: 210 20% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 20% 98%;
+
+    --border: 215 27.9% 16.9%;
+    --input: 215 27.9% 16.9%;
+    --ring: 263.4 70% 50.4%;
+
+    /* 圆角系统 */
+    --radius-xs: 2px;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 20px;
+    --radius-2xl: 24px;
+    --radius-3xl: 28px;
+    --radius: 0.5rem;
+
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+
+    /* Layout Mappings */
+    --layout-sidebar: 215 27.9% 16.9%;
+    --layout-list-header: 224 71.4% 4.1%;
+    --layout-list-hover: 215 27.9% 16.9%;
+    --layout-list-item: 224 71.4% 4.1%;
+    --layout-list-selected: 215 27.9% 16.9%;
+    --layout-content: 224 71.4% 4.1%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+
+  /* 全局滚动条美化 */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/20 rounded-full transition-colors;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+
+  /* Fix browser autofill background color */
   input:-webkit-autofill,
   input:-webkit-autofill:hover,
   input:-webkit-autofill:focus,
   input:-webkit-autofill:active {
-    -webkit-box-shadow: 0 0 0 30px rgb(250 250 250) inset !important; /* zinc-50 */
-    -webkit-text-fill-color: rgb(24 24 27) !important; /* zinc-900 */
-    caret-color: rgb(24 24 27) !important;
+    -webkit-box-shadow: 0 0 0 30px hsl(var(--background)) inset !important;
+    -webkit-text-fill-color: hsl(var(--foreground)) !important;
+    caret-color: hsl(var(--foreground)) !important;
     transition: background-color 5000s ease-in-out 0s;
+  }
+}
+
+@layer utilities {
+  .border-subtle {
+    border-color: hsl(var(--border));
+  }
+
+  .bg-muted-deeper {
+    background-color: hsl(var(--secondary));
+  }
+
+  .hover-bg {
+    @apply hover:bg-muted/80;
+  }
+}
+
+@layer components {
+  /* 全局语义化排版 */
+  .type-h1 {
+    @apply text-2xl font-semibold tracking-tight;
+  }
+  .type-h2 {
+    @apply text-xl font-semibold tracking-tight;
+  }
+  .type-h3 {
+    @apply text-lg font-semibold tracking-tight;
+  }
+  .type-body {
+    @apply text-sm leading-normal;
+  }
+  .type-caption {
+    @apply text-xs text-muted-foreground;
+  }
+  .type-label {
+    @apply text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70;
+  }
+
+  /* 温暖卡片 */
+  .warm-card {
+    @apply bg-card border border-border/50 rounded-xl;
+    @apply shadow-lg shadow-black/5;
+    @apply transition-all duration-300;
+  }
+
+  .warm-card-hover {
+    @apply hover:shadow-xl hover:shadow-black/8;
+    @apply hover:-translate-y-0.5;
+  }
+
+  /* 顶部装饰条 */
+  .top-accent {
+    @apply absolute top-0 left-0 right-0 h-1 rounded-t-xl;
+    background: linear-gradient(90deg,
+      hsl(var(--primary)),
+      hsl(var(--primary) / 0.5)
+    );
+  }
+
+  /* 温暖按钮 */
+  .btn-warm {
+    @apply rounded-lg h-10 px-4;
+    @apply bg-primary text-primary-foreground;
+    @apply shadow-sm;
+    @apply transition-all duration-200;
+    @apply hover:bg-primary/90;
+    @apply active:scale-[0.98];
   }
 }
