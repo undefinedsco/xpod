@@ -33,7 +33,8 @@ export function DashboardPage() {
   const cssRunning = cssService?.status === 'running';
   const apiRunning = apiService?.status === 'running';
   const allRunning = cssRunning && apiRunning;
-  const baseUrl = adminStatus?.env?.CSS_BASE_URL || window.location.origin;
+  // Use current window location as the Gateway URL (not CSS internal URL)
+  const baseUrl = window.location.origin;
 
   const formatUptime = (ms: number) => {
     const seconds = Math.floor(ms / 1000);
