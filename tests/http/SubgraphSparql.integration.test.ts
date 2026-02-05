@@ -5,7 +5,8 @@ import { config as loadEnv } from 'dotenv';
 
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
-const baseUrl = process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:3000/';
+const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:3000';
+const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
 const webId = process.env.SOLID_WEBID;
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;

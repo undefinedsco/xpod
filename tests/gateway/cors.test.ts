@@ -62,8 +62,8 @@ describe.skip('Gateway CORS Integration Tests (requires running xpod)', () => {
       expect(res.headers['access-control-allow-credentials']).toBe('true');
     });
 
-    it('should return 204 with CORS headers for /_gateway/status', async () => {
-      const res = await request(`${GATEWAY_URL}/_gateway/status`, {
+    it('should return 204 with CORS headers for /service/status', async () => {
+      const res = await request(`${GATEWAY_URL}/service/status`, {
         method: 'OPTIONS',
         headers: {
           'Origin': TEST_ORIGIN,
@@ -101,8 +101,8 @@ describe.skip('Gateway CORS Integration Tests (requires running xpod)', () => {
       expect(res.headers['access-control-allow-origin']).toBe(TEST_ORIGIN);
     });
 
-    it('should include CORS headers on GET /_gateway/status', async () => {
-      const res = await request(`${GATEWAY_URL}/_gateway/status`, {
+    it('should include CORS headers on GET /service/status', async () => {
+      const res = await request(`${GATEWAY_URL}/service/status`, {
         method: 'GET',
         headers: {
           'Origin': TEST_ORIGIN,

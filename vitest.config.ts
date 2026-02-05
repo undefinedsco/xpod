@@ -17,6 +17,7 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       '**/_deprecated/**',
+      '**/_deprecated_quadstore/**',
       'tests/terminal/*.integration.test.ts',
       'ui/src/external/**',
     ],

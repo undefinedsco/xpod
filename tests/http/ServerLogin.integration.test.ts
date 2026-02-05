@@ -4,7 +4,8 @@ import { config as loadEnv } from 'dotenv';
 
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.server' });
 
-const baseUrl = process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:3000/';
+const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:3000';
+const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
 const testEmail = `test-${Date.now()}@example.com`;
 const testPassword = 'TestServerLogin123!';
 const seedEmail = process.env.SOLID_EMAIL ?? 'test-integration@example.com';
