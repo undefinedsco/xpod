@@ -210,7 +210,13 @@ export class ApiServer {
 
   private pathToRegex(path: string): { pattern: RegExp; paramNames: string[] } {
     const paramNames: string[] = [];
-    const regexStr = path
+    let regexStr = path
+      // 先处理通配符 *path 或 * (匹配剩余所有路径)
+      .replace(/\*([a-zA-Z0-9_]*)/g, (_, name) => {
+        paramNames.push(name || 'wildcard');
+        return '(.*)';
+      })
+      // 再处理普通参数 :param (只匹配单段)
       .replace(/:([a-zA-Z0-9_]+)/g, (_, name) => {
         paramNames.push(name);
         return '([^/]+)';

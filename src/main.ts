@@ -2,6 +2,7 @@
 import { Supervisor } from './supervisor';
 import { GatewayProxy } from './gateway/Proxy';
 import { getFreePort } from './gateway/PortFinder';
+import { logger } from './util/logger';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import path from 'path';
@@ -63,19 +64,30 @@ async function main() {
   // Ensure CSS port search doesn't start exactly on the Gateway port
   const cssStartPort = (gatewayPort === 3000 ? 3002 : 3000);
   const cssPort = await getFreePort(cssStartPort);
-  
-  const apiStartPort = (gatewayPort === 3001 ? 3003 : 3001);
+
+  // API port must be different from both gateway and CSS ports
+  const apiStartPort = cssPort + 1;
   const apiPort = await getFreePort(apiStartPort);
   
   // 2. Determine Base URL
   const baseUrl = `http://${argv.host}:${gatewayPort}/`;
 
-  console.log(`[Gateway] Orchestration Plan:`);
-  console.log(`  - Gateway: ${baseUrl} (${argv.host}:${gatewayPort})`);
+  logger.log('Orchestration Plan:');
+  console.log(`  - xpod:    ${baseUrl} (${argv.host}:${gatewayPort})`);
   console.log(`  - CSS:     http://localhost:${cssPort} (Internal)`);
   console.log(`  - API:     http://localhost:${apiPort} (Internal)`);
 
   const supervisor = new Supervisor();
+
+  // Handle SIGUSR1 for graceful restart of child processes (triggered by API Server)
+  process.on('SIGUSR1', async () => {
+    logger.log('Received SIGUSR1, restarting child processes...');
+    await supervisor.stopAll();
+    // Reset restart counts before restarting
+    supervisor.resetRestartCounts();
+    await supervisor.startAll();
+    logger.log('Child processes restarted');
+  });
 
   // Optimized CSS Binary Path
   // Directly call the binary to avoid npx overhead and network risks

@@ -15,6 +15,9 @@ import { registerApiKeyRoutes } from '../handlers/ApiKeyHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
 import { registerSubdomainClientRoutes } from '../handlers/SubdomainClientHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
+import { registerDashboardRoutes } from '../handlers/DashboardHandler';
+import { registerAdminRoutes } from '../handlers/AdminHandler';
+import * as path from 'node:path';
 
 /**
  * 注册所有 API 路由
@@ -52,6 +55,10 @@ function registerHealthRoutes(server: ApiServer): void {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ status: 'ready' }));
   }, { public: true });
+
+  // Dashboard 静态资源
+  const staticDir = path.resolve(process.cwd(), 'static/dashboard');
+  registerDashboardRoutes(server, { staticDir });
 }
 
 /**
@@ -100,6 +107,9 @@ function registerLocalRoutes(
   container: AwilixContainer<ApiContainerCradle>,
   server: ApiServer,
 ): void {
+  // Admin API (配置管理、重启)
+  registerAdminRoutes(server);
+
   // 子域名客户端 API (通过 SubdomainClient 调用 Cloud)
   try {
     const subdomainClient = container.resolve('subdomainClient');
