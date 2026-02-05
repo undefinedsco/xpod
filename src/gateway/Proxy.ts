@@ -125,6 +125,12 @@ export class GatewayProxy {
       return;
     }
 
+    // SSE endpoint for streaming logs
+    if (req.url === '/service/logs/stream') {
+      this.handleLogStream(req, res);
+      return;
+    }
+
     if (req.url?.startsWith('/service/logs')) {
       // Parse query parameters
       const url = new URL(req.url, `http://localhost:${this.port}`);
@@ -156,5 +162,45 @@ export class GatewayProxy {
 
     res.writeHead(404);
     res.end('Not Found');
+  }
+
+  /**
+   * Handle SSE log streaming
+   */
+  private handleLogStream(req: http.IncomingMessage, res: http.ServerResponse): void {
+    // Set SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+
+    // Send initial logs
+    const logs = this.supervisor.getLogs();
+    res.write(`data: ${JSON.stringify({ type: 'init', logs: logs.slice(-100) })}
+
+`);
+
+    // Set up interval to send new logs
+    let lastIndex = logs.length;
+    const interval = setInterval(() => {
+      const currentLogs = this.supervisor.getLogs();
+      if (currentLogs.length > lastIndex) {
+        const newLogs = currentLogs.slice(lastIndex);
+        res.write(`data: ${JSON.stringify({ type: 'update', logs: newLogs })}
+
+`);
+        lastIndex = currentLogs.length;
+      }
+    }, 1000);
+
+    // Clean up on connection close
+    req.on('close', () => {
+      clearInterval(interval);
+    });
+
+    req.on('error', () => {
+      clearInterval(interval);
+    });
   }
 }

@@ -154,7 +154,7 @@ export function subscribeLogs(
   onLog: (logs: LogEntry[]) => void,
   onError?: (error: Event) => void
 ): () => void {
-  const eventSource = new EventSource(`${API_BASE}/logs/stream`);
+  const eventSource = new EventSource('/service/logs/stream');
 
   eventSource.onmessage = (event) => {
     try {
@@ -177,3 +177,4 @@ export function subscribeLogs(
     eventSource.close();
   };
 }
+

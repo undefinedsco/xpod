@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { Trash2, Download, Pause, Play } from 'lucide-react';
 import { clsx } from 'clsx';
-import { getLogs, type LogEntry } from '@/api/admin';
+import { getLogs, subscribeLogs, type LogEntry } from '@/api/admin';
 
 export function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -16,6 +16,7 @@ export function LogsPage() {
   const [levelFilter, setLevelFilter] = useState<string>('all');
   const [paused, setPaused] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const unsubscribeRef = useRef<(() => void) | null>(null);
 
   // 初始加载日志
   useEffect(() => {
@@ -26,27 +27,36 @@ export function LogsPage() {
     loadInitialLogs();
   }, []);
 
-  // 轮询实时日志 (Gateway 不支持 SSE，使用轮询)
+  // 订阅实时日志 (SSE)
   useEffect(() => {
     if (paused) {
+      // 暂停时关闭 SSE 连接
+      unsubscribeRef.current?.();
+      unsubscribeRef.current = null;
       return;
     }
 
-    // 每 2 秒轮询一次新日志
-    const interval = setInterval(async () => {
-      const newLogs = await getLogs({ limit: 100 });
-      setLogs((prev) => {
-        // 合并并去重（根据 timestamp 和 message）
-        const existingKeys = new Set(prev.map(l => `${l.timestamp}-${l.message}`));
-        const uniqueNew = newLogs.filter(l => !existingKeys.has(`${l.timestamp}-${l.message}`));
-        const combined = [...prev, ...uniqueNew];
-        // 保持最近500条日志
-        return combined.slice(-500);
-      });
-    }, 2000);
+    // 开始订阅
+    const unsubscribe = subscribeLogs(
+      (newLogs) => {
+        if (!paused) {
+          setLogs((prev) => {
+            const combined = [...prev, ...newLogs];
+            // 保持最近500条日志
+            return combined.slice(-500);
+          });
+        }
+      },
+      (error) => {
+        console.error('Log stream error:', error);
+      }
+    );
+
+    unsubscribeRef.current = unsubscribe;
 
     return () => {
-      clearInterval(interval);
+      unsubscribe();
+      unsubscribeRef.current = null;
     };
   }, [paused]);
 
