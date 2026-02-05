@@ -12,7 +12,8 @@ import { getLogs, subscribeLogs, type LogEntry } from '@/api/admin';
 
 export function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [filter, setFilter] = useState<string>('all');
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const [levelFilter, setLevelFilter] = useState<string>('all');
   const [paused, setPaused] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
@@ -69,9 +70,11 @@ export function LogsPage() {
   }, [logs, paused]);
 
   // 应用过滤器
-  const filteredLogs = filter === 'all'
-    ? logs
-    : logs.filter(log => log.source === filter || log.level === filter);
+  const filteredLogs = logs.filter(log => {
+    const sourceMatch = sourceFilter === 'all' || log.source === sourceFilter;
+    const levelMatch = levelFilter === 'all' || log.level === levelFilter;
+    return sourceMatch && levelMatch;
+  });
 
   // 清空日志
   const clearLogs = useCallback(() => {
@@ -127,17 +130,30 @@ export function LogsPage() {
       <div className="flex items-center justify-between mb-6 gap-4">
         <h1 className="type-h1 shrink-0">日志</h1>
         <div className="flex items-center gap-2 shrink-0">
-          <Select value={filter} onValueChange={setFilter}>
-            <SelectTrigger className="w-32 h-8 text-sm">
-              <SelectValue placeholder="筛选" />
+          {/* 模块筛选 */}
+          <Select value={sourceFilter} onValueChange={setSourceFilter}>
+            <SelectTrigger className="w-28 h-8 text-sm">
+              <SelectValue placeholder="模块" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="all">全部模块</SelectItem>
               <SelectItem value="xpod">xpod</SelectItem>
               <SelectItem value="css">CSS</SelectItem>
               <SelectItem value="api">API</SelectItem>
+            </SelectContent>
+          </Select>
+          
+          {/* 日志等级筛选 */}
+          <Select value={levelFilter} onValueChange={setLevelFilter}>
+            <SelectTrigger className="w-28 h-8 text-sm">
+              <SelectValue placeholder="等级" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部等级</SelectItem>
               <SelectItem value="error">错误</SelectItem>
               <SelectItem value="warn">警告</SelectItem>
+              <SelectItem value="info">信息</SelectItem>
+              <SelectItem value="debug">调试</SelectItem>
             </SelectContent>
           </Select>
           <Button
