@@ -9,6 +9,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Trash2, Download, Pause, Play } from 'lucide-react';
 import { clsx } from 'clsx';
 import { getLogs, subscribeLogs, type LogEntry } from '@/api/admin';
+import AnsiToHtml from 'ansi-to-html';
+
+const ansiConverter = new AnsiToHtml({
+  fg: '#333',
+  bg: '#fff',
+  newline: true,
+  escapeXML: true,
+});
 
 export function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -102,12 +110,6 @@ export function LogsPage() {
     }
   };
 
-  // 去除 ANSI 颜色代码
-  const stripAnsi = (str: string): string => {
-    // eslint-disable-next-line no-control-regex
-    return str.replace(/\x1b\[[0-9;]*m/g, '');
-  };
-
   // 日志级别颜色
   const getLevelColor = (level: LogEntry['level']) => {
     switch (level) {
@@ -199,7 +201,10 @@ export function LogsPage() {
                     <span className={clsx('shrink-0 w-12', getSourceColor(log.source))}>
                       [{log.source}]
                     </span>
-                    <span className="text-gray-700 break-all">{stripAnsi(log.message)}</span>
+                    <span 
+                      className="text-gray-700 break-all" 
+                      dangerouslySetInnerHTML={{ __html: ansiConverter.toHtml(log.message) }}
+                    />
                   </div>
                 ))}
                 <div ref={logsEndRef} />
