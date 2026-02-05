@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { Trash2, Download, Pause, Play } from 'lucide-react';
 import { clsx } from 'clsx';
-import { getLogs, subscribeLogs, type LogEntry } from '@/api/admin';
+import { getLogs, type LogEntry } from '@/api/admin';
 
 export function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -16,8 +16,6 @@ export function LogsPage() {
   const [levelFilter, setLevelFilter] = useState<string>('all');
   const [paused, setPaused] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-  const logsBufferRef = useRef<LogEntry[]>([]);
 
   // 初始加载日志
   useEffect(() => {
@@ -69,7 +67,6 @@ export function LogsPage() {
   // 清空日志
   const clearLogs = useCallback(() => {
     setLogs([]);
-    logsBufferRef.current = [];
   }, []);
 
   // 导出日志
