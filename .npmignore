@@ -1,0 +1,52 @@
+# Source maps
+**/*.map
+
+# Tests
+tests/
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+
+# Development configs
+config/extensions.cluster-test.json
+config/seeds/test.json
+
+# Documentation (keep README.md)
+docs/
+*.md
+!README.md
+!LICENSE
+
+# Development files
+.env*
+example.env*
+.vscode/
+.idea/
+
+# Build scripts
+scripts/
+
+# Test data
+.test-data/
+data/
+data_vanilla/
+*.sqlite
+*.sqlite-*
+
+# Logs
+logs/
+*.log
+
+# Binary distributions
+dist/xpod-macos/
+dist/xpod-macos.tar.gz
+
+# Source files (only dist is needed)
+src/
+ui/
+
+# Config files not needed in production
+patches/
+.github/
+.git/
