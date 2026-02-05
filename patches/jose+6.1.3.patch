@@ -1,0 +1,37 @@
+diff --git a/dist/webapi/key/generate_key_pair.js b/dist/webapi/key/generate_key_pair.js
+index abc123..def456 100644
+--- a/dist/webapi/key/generate_key_pair.js
++++ b/dist/webapi/key/generate_key_pair.js
+@@ -93,5 +93,5 @@ export async function generateKeyPair(alg, options) {
+         default:
+             throw new JOSENotSupported('Invalid or unsupported JWK "alg" (Algorithm) Parameter value');
+     }
+-    return crypto.subtle.generateKey(algorithm, options?.extractable ?? false, keyUsages);
++    return crypto.subtle.generateKey(algorithm, options?.extractable ?? true, keyUsages);
+ }
+\ No newline at end of file
+
+diff --git a/dist/webapi/key/generate_secret.js b/dist/webapi/key/generate_secret.js
+index abc123..def456 100644
+--- a/dist/webapi/key/generate_secret.js
++++ b/dist/webapi/key/generate_secret.js
+@@ -36,5 +36,5 @@ export async function generateSecret(alg, options) {
+         default:
+             throw new JOSENotSupported('Invalid or unsupported JWK "alg" (Algorithm) Parameter value');
+     }
+-    return crypto.subtle.generateKey(algorithm, options?.extractable ?? false, keyUsages);
++    return crypto.subtle.generateKey(algorithm, options?.extractable ?? true, keyUsages);
+ }
+\ No newline at end of file
+
+diff --git a/dist/webapi/lib/jwk_to_key.js b/dist/webapi/lib/jwk_to_key.js
+index abc123..def456 100644
+--- a/dist/webapi/lib/jwk_to_key.js
++++ b/dist/webapi/lib/jwk_to_key.js
+@@ -105,5 +105,5 @@ export async function jwkToKey(jwk) {
+     if (keyData.kty !== 'AKP') {
+         delete keyData.alg;
+     }
+-    return crypto.subtle.importKey('jwk', keyData, algorithm, jwk.ext ?? (jwk.d || jwk.priv ? false : true), jwk.key_ops ?? keyUsages);
++    return crypto.subtle.importKey('jwk', keyData, algorithm, jwk.ext ?? true, jwk.key_ops ?? keyUsages);
+ }

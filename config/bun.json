@@ -1,0 +1,90 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+  ],
+  "import": [
+    "./main.json",
+    "./xpod.base.json",
+    "./terminal.json",
+    "./extensions.local.initializer.json"
+  ],
+  "@graph": [
+    {
+      "comment": "Bun runtime profile - uses BunQuintStore and BunVectorStore instead of better-sqlite3 based stores",
+      "@id": "urn:undefineds:xpod:QuintStore",
+      "@type": "BunQuintStore",
+      "path": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "VectorStore using Bun SQLite",
+      "@id": "urn:undefineds:xpod:VectorStore",
+      "@type": "BunVectorStore",
+      "options_connectionString": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "Default SPARQL Engine for Bun",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "@type": "QuintstoreSparqlEngine",
+      "store": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      }
+    },
+    {
+      "comment": "Use Bun-compatible stores for RDF data",
+      "@id": "urn:undefineds:xpod:MixDataAccessor",
+      "@type": "MixDataAccessor",
+      "structuredDataAccessor": {
+        "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor"
+      },
+      "unstructuredDataAccessor": {
+        "@id": "urn:solid-server:default:FileDataAccessor"
+      }
+    },
+    {
+      "comment": "QuintStore-based data accessor",
+      "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
+      "@type": "QuintStoreSparqlDataAccessor",
+      "store": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      }
+    },
+    {
+      "comment": "Override ResourceStore to use Bun-compatible implementation",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ResourceStore_Backend"
+      },
+      "overrideParameters": {
+        "@type": "SparqlUpdateResourceStore",
+        "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
+        "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
+        "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
+        "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+      }
+    },
+    {
+      "comment": "Disable quota for local profile",
+      "@id": "urn:undefineds:xpod:QuotaService",
+      "@type": "NoopQuotaService"
+    },
+    {
+      "@id": "urn:solid-server:default:variable:rootFilePath",
+      "@value": "./data"
+    },
+    {
+      "@id": "urn:solid-server:default:variable:registration",
+      "@value": true
+    }
+  ]
+}
