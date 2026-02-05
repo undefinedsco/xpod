@@ -1,6 +1,7 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
 import type { Supervisor } from './Supervisor';
+import { logger } from '../util/logger';
 
 // CORS configuration matching CSS CorsHandler defaults
 const CORS_CONFIG = {
@@ -28,7 +29,8 @@ export class GatewayProxy {
     });
 
     this.proxy.on('error', (err, _req, res) => {
-      console.error('[Gateway] Proxy error:', err);
+      logger.error('Proxy error:', err);
+      this.supervisor.addLog('xpod', 'error', `Proxy error: ${err.message}`);
       if (res && 'writeHead' in res && !res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Service Unavailable', details: err.message }));
@@ -52,7 +54,9 @@ export class GatewayProxy {
 
   public start(): void {
     this.server.listen(this.port, () => {
-      console.log(`[Gateway] Listening on http://localhost:${this.port}`);
+      const msg = `Listening on http://localhost:${this.port}`;
+      logger.log(msg);
+      this.supervisor.addLog('xpod', 'info', msg);
     });
   }
 
@@ -65,8 +69,8 @@ export class GatewayProxy {
       req.headers['x-forwarded-host'] = req.headers.host;
     }
 
-    // 1. Gateway Internal API (Status & Control) - Gateway handles CORS
-    if (url.startsWith('/_gateway/')) {
+    // 1. Internal API (Status & Control) - handled here with CORS
+    if (url.startsWith('/service/')) {
       if (req.method === 'OPTIONS') {
         this.handleCorsPreflightRequest(res, origin);
         return;
@@ -78,8 +82,8 @@ export class GatewayProxy {
       return;
     }
 
-    // 2. API Server Routing (/v1, /api, /chatkit) - API Server handles its own CORS
-    if ((url.startsWith('/v1/') || url.startsWith('/api/') || url.startsWith('/chatkit')) && this.targets.api) {
+    // 2. API Server Routing (/v1, /api, /chatkit, /dashboard) - API Server handles its own CORS
+    if ((url.startsWith('/v1/') || url.startsWith('/api/') || url.startsWith('/chatkit') || url.startsWith('/dashboard')) && this.targets.api) {
       this.proxy.web(req, res, { target: this.targets.api });
       return;
     }
@@ -114,10 +118,39 @@ export class GatewayProxy {
   }
 
   private handleInternalApi(req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (req.url === '/_gateway/status') {
+    if (req.url === '/service/status') {
       const status = this.supervisor.getAllStatus();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
+      return;
+    }
+
+    if (req.url?.startsWith('/service/logs')) {
+      // Parse query parameters
+      const url = new URL(req.url, `http://localhost:${this.port}`);
+      const level = url.searchParams.get('level') || 'all';
+      const source = url.searchParams.get('source') || 'all';
+      const limit = parseInt(url.searchParams.get('limit') || '500', 10);
+      
+      let logs = this.supervisor.getLogs();
+      
+      // Filter by level
+      if (level !== 'all') {
+        logs = logs.filter(log => log.level === level);
+      }
+      
+      // Filter by source
+      if (source !== 'all') {
+        logs = logs.filter(log => log.source === source);
+      }
+      
+      // Apply limit (get last N logs)
+      if (logs.length > limit) {
+        logs = logs.slice(-limit);
+      }
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(logs));
       return;
     }
 

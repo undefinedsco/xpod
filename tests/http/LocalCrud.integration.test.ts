@@ -3,9 +3,9 @@ import type { Response } from 'undici';
 import { Session } from '@inrupt/solid-client-authn-node';
 import { config as loadEnv } from 'dotenv';
 
-loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
+loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local', override: false });
 
-const baseUrl = process.env.XPOD_LOCAL_BASE_URL ?? 'http://localhost:3000/';
+const baseUrl = (process.env.CSS_BASE_URL || 'http://localhost:3000').replace(/\/$/, '') + '/';
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
 const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import kill from 'tree-kill';
 import type { ServiceConfig, ServiceState, StatusChangeHandler } from './types';
+import { logger } from '../util/logger';
 
 const MAX_RESTARTS = 5;
 
@@ -10,6 +11,8 @@ export class Supervisor {
   private configs: Map<string, ServiceConfig> = new Map();
   private onStatusChange?: StatusChangeHandler;
   private isShuttingDown = false;
+  private logBuffer: Array<{ timestamp: string; level: 'info' | 'warn' | 'error'; source: string; message: string }> = [];
+  private static readonly MAX_LOGS = 1000;
 
   constructor() {
     // 确保父进程退出时清理所有子进程
@@ -18,10 +21,22 @@ export class Supervisor {
     process.on('SIGTERM', () => this.shutdown('SIGTERM'));
   }
 
+  public addLog(source: string, level: 'info' | 'warn' | 'error', message: string) {
+    const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    this.logBuffer.push({ timestamp, level, source, message });
+    if (this.logBuffer.length > Supervisor.MAX_LOGS) {
+      this.logBuffer.shift();
+    }
+  }
+
+  public getLogs() {
+    return this.logBuffer;
+  }
+
   private async shutdown(signal: string): Promise<void> {
     if (this.isShuttingDown) return;
     this.isShuttingDown = true;
-    console.log(`[Supervisor] Received ${signal}, stopping all services...`);
+    logger.log(`Received ${signal}, stopping all services...`);
     await this.stopAll();
     process.exit(0);
   }
@@ -65,6 +80,16 @@ export class Supervisor {
       promises.push(this.stop(name));
     }
     await Promise.all(promises);
+    this.isShuttingDown = false; // Reset for restart
+  }
+
+  /**
+   * Reset restart counts for all services (used before manual restart)
+   */
+  public resetRestartCounts(): void {
+    for (const state of this.states.values()) {
+      state.restartCount = 0;
+    }
   }
 
   public start(name: string): void {
@@ -74,7 +99,7 @@ export class Supervisor {
 
     if (state.status === 'running' || state.status === 'starting') return;
 
-    console.log(`[Supervisor] Starting ${name}...`);
+    logger.log(`Starting ${name}...`);
     this.updateState(name, { status: 'starting', startTime: Date.now() });
 
     const env = { ...process.env, ...config.env };
@@ -90,20 +115,24 @@ export class Supervisor {
     this.updateState(name, { status: 'running', pid: child.pid });
 
     child.stdout?.on('data', (data) => {
-      console.log(`[${name}] ${data.toString().trim()}`);
+      const msg = data.toString().trim();
+      console.log(`[${name}] ${msg}`);
+      this.addLog(name, 'info', msg);
     });
 
     child.stderr?.on('data', (data) => {
-      console.error(`[${name}] ${data.toString().trim()}`);
+      const msg = data.toString().trim();
+      console.error(`[${name}] ${msg}`);
+      this.addLog(name, 'error', msg);
     });
 
     child.on('error', (err) => {
-      console.error(`[Supervisor] Error spawning ${name}:`, err);
+      logger.error(`Error spawning ${name}:`, err);
       this.updateState(name, { status: 'crashed' });
     });
 
     child.on('exit', (code, signal) => {
-      console.log(`[Supervisor] ${name} exited with code ${code} signal ${signal}`);
+      logger.log(`${name} exited with code ${code} signal ${signal}`);
       const currentState = this.states.get(name);
       const wasManualStop = currentState?.status === 'stopped';
 
@@ -121,10 +150,10 @@ export class Supervisor {
 
         if (restartCount <= MAX_RESTARTS) {
           this.updateState(name, { restartCount });
-          console.log(`[Supervisor] Restarting ${name} in 2s... (attempt ${restartCount}/${MAX_RESTARTS})`);
+          logger.log(`Restarting ${name} in 2s... (attempt ${restartCount}/${MAX_RESTARTS})`);
           setTimeout(() => this.start(name), 2000);
         } else {
-          console.error(`[Supervisor] ${name} exceeded max restarts (${MAX_RESTARTS}), giving up`);
+          logger.error(`${name} exceeded max restarts (${MAX_RESTARTS}), giving up`);
         }
       }
     });
@@ -142,7 +171,7 @@ export class Supervisor {
       this.updateState(name, { status: 'stopped' });
 
       kill(child.pid, 'SIGTERM', (err) => {
-        if (err) console.error(`[Supervisor] Failed to kill ${name}:`, err);
+        if (err) logger.error(`Failed to kill ${name}:`, err);
         resolve();
       });
     });
