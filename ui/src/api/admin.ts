@@ -123,7 +123,7 @@ export async function getGatewayStatus(): Promise<ServiceState[] | null> {
 }
 
 /**
- * 获取日志
+ * 获取日志 (从 Gateway/Supervisor)
  */
 export async function getLogs(options?: {
   limit?: number;
@@ -136,10 +136,10 @@ export async function getLogs(options?: {
     if (options?.level && options.level !== 'all') params.set('level', options.level);
     if (options?.source && options.source !== 'all') params.set('source', options.source);
 
-    const res = await fetch(`${API_BASE}/logs?${params}`);
+    // 调用 Gateway 的 /service/logs 获取所有子进程日志
+    const res = await fetch(`/service/logs?${params}`);
     if (res.ok) {
-      const data = await res.json();
-      return data.logs || [];
+      return await res.json();
     }
   } catch (e) {
     console.error('Failed to get logs:', e);
