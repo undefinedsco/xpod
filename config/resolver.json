@@ -315,6 +315,31 @@
             "key": "podRoutingEnabled",
             "defaultValue": "false"
           }
+        },
+        {
+          "comment": "=== IdP/SP Separation Parameters ===",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:baseDomain",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "baseDomain",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:idpUrl",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "idpUrl",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:allowedHosts",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "allowedHosts",
+            "defaultValue": ""
+          }
         }
       ]
     }

@@ -8,6 +8,7 @@ import * as pgSchema from './schema.pg';
 import * as sqliteSchema from './schema.sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import { getSharedPool, releaseSharedPool } from '../../storage/database/PostgresPoolManager';
 
 // Use 'any' to allow both PostgreSQL and SQLite database instances
 // The actual type depends on the connection string at runtime
@@ -89,14 +90,17 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
     return db;
   }
 
-  // PostgreSQL
-  const pool = new Pool({ connectionString });
+  // PostgreSQL: use shared pool to avoid connection exhaustion and deadlocks
+  const pool = getSharedPool({ connectionString });
   const db = drizzlePg(pool);
   dbCache.set(connectionString, {
     db,
     schema: pgSchema,
     isSqlite: false,
-    close: async () => pool.end(),
+    close: async () => { 
+      // Release reference to shared pool instead of ending it
+      releaseSharedPool({ connectionString }); 
+    },
   });
   return db;
 }

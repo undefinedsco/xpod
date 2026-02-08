@@ -1,3 +1,4 @@
+import { getLoggerFor } from 'global-logger-factory';
 import { Transform, Readable } from 'node:stream';
 import {
   PassthroughStore,
@@ -28,6 +29,7 @@ type UsageContext = {
 };
 
 export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends PassthroughStore<T> {
+  protected readonly logger = getLoggerFor(this);
   private readonly usageRepo?: UsageRepository;
   private readonly podLookup?: PodLookupRepository;
   private readonly defaultBandwidthLimit?: number | null;
@@ -45,25 +47,29 @@ export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends
 
   public override async addResource(container: ResourceIdentifier, representation: Representation, conditions?: Conditions): Promise<ChangeMap> {
     const context = await this.resolveContext(container);
-    const previousSize = context ? await this.getExistingSize(container) : 0;
-    const limit = context ? await this.resolveBandwidthLimit(context) : undefined;
+    if (!context) {
+      return super.addResource(container, representation, conditions);
+    }
+
+    const previousSize = await this.getExistingSize(container);
+    const limit = await this.resolveBandwidthLimit(context);
     const { wrapped, sizePromise } = this.measureRepresentation(representation, limit);
     const change = await super.addResource(container, wrapped, conditions);
-    const newSize = await sizePromise;
-    await this.applyStorageUpdate(context, previousSize, newSize);
-    await this.recordBandwidth(context, newSize, 0);
+    await this.applyMeasuredWriteUsage(context, previousSize, representation, sizePromise);
     return change;
   }
 
   public override async setRepresentation(identifier: ResourceIdentifier, representation: Representation, conditions?: Conditions): Promise<ChangeMap> {
     const context = await this.resolveContext(identifier);
-    const previousSize = context ? await this.getExistingSize(identifier) : 0;
-    const limit = context ? await this.resolveBandwidthLimit(context) : undefined;
+    if (!context) {
+      return super.setRepresentation(identifier, representation, conditions);
+    }
+
+    const previousSize = await this.getExistingSize(identifier);
+    const limit = await this.resolveBandwidthLimit(context);
     const { wrapped, sizePromise } = this.measureRepresentation(representation, limit);
     const change = await super.setRepresentation(identifier, wrapped, conditions);
-    const newSize = await sizePromise;
-    await this.applyStorageUpdate(context, previousSize, newSize);
-    await this.recordBandwidth(context, newSize, 0);
+    await this.applyMeasuredWriteUsage(context, previousSize, representation, sizePromise);
     return change;
   }
 
@@ -83,14 +89,18 @@ export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends
 
   public override async deleteResource(identifier: ResourceIdentifier, conditions?: Conditions): Promise<ChangeMap> {
     const context = await this.resolveContext(identifier);
-    const previousSize = context ? await this.getExistingSize(identifier) : 0;
+    if (!context) {
+      return super.deleteResource(identifier, conditions);
+    }
+
+    const previousSize = await this.getExistingSize(identifier);
     const change = await super.deleteResource(identifier, conditions);
     await this.applyStorageUpdate(context, previousSize, 0);
     return change;
   }
 
   private measureRepresentation(representation: Representation, limit?: number | null): { wrapped: Representation; sizePromise: Promise<number> } {
-    if (!representation.data) {
+    if (!representation.data || representation.isEmpty) {
       return {
         wrapped: representation,
         sizePromise: Promise.resolve(this.extractSize(representation)),
@@ -152,6 +162,40 @@ export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends
       sizePromise: sizePromise.then((size) => (size !== 0 ? size : this.extractSize(representation)))
         .catch(() => this.extractSize(representation)),
     };
+  }
+
+  private async applyMeasuredWriteUsage(
+    context: UsageContext | undefined,
+    previousSize: number,
+    representation: Representation,
+    sizePromise: Promise<number>,
+  ): Promise<void> {
+    const estimatedSize = Math.max(0, Math.trunc(this.extractSize(representation)));
+
+    await this.applyStorageUpdate(context, previousSize, estimatedSize);
+    await this.recordBandwidth(context, estimatedSize, 0);
+
+    if (!context || !this.usageRepo) {
+      return;
+    }
+
+    void sizePromise
+      .then((measuredSize) => this.reconcileWriteUsage(context, estimatedSize, measuredSize))
+      .catch((error: unknown) => this.logger.warn(`Failed to resolve measured write usage: ${String(error)}`));
+  }
+
+  private async reconcileWriteUsage(context: UsageContext, estimatedSize: number, measuredSize: number): Promise<void> {
+    if (!this.usageRepo) {
+      return;
+    }
+
+    const normalizedMeasured = Math.max(0, Math.trunc(measuredSize));
+    const correction = normalizedMeasured - estimatedSize;
+    if (correction === 0) {
+      return;
+    }
+
+    await this.usageRepo.incrementUsage(context.accountId, context.podId, correction, correction, 0);
   }
 
   private extractSize(representation: Representation): number {

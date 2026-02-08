@@ -62,12 +62,13 @@ export class MixDataAccessor implements DataAccessor {
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
     // Metadata is always stored in the structured accessor
     const metadata = await this.structuredDataAccessor.getMetadata(identifier);
-    
-    // For non-container resources without explicit content type, default to RDF
-    if (!isContainerIdentifier(identifier) && !metadata.contentType) {
+
+    // For resources without explicit content type, default to RDF
+    // This includes containers (which are always RDF) and documents without contentType
+    if (!metadata.contentType) {
       metadata.contentType = INTERNAL_QUADS;
     }
-    
+
     return metadata;
   }
 

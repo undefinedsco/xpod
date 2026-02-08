@@ -17,6 +17,10 @@
       "npmd:@undefineds.co/xpod/^0.0.0/dist/util/identifiers/ClusterIdentifierStrategy.jsonld#ClusterIdentifierStrategy_options_baseUrl": {
         "@id": "urn:solid-server:default:variable:baseUrl",
         "@type": "Variable"
+      },
+      "npmd:@undefineds.co/xpod/^0.0.0/dist/util/identifiers/ClusterIdentifierStrategy.jsonld#ClusterIdentifierStrategy_options_allowedHosts": {
+        "@id": "urn:solid-server:default:variable:allowedHosts",
+        "@type": "Variable"
       }
     },
     {
@@ -46,21 +50,13 @@
       "namespace": "/.internal/"
     },
     {
-      "comment": "Maintain key hashing semantics while using the PostgreSQL backend.",
-      "@id": "urn:undefineds:xpod:InternalKeyValueStorage",
-      "@type": "MaxKeyLengthStorage",
-      "source": {
-        "@id": "urn:undefineds:xpod:PostgresInternalKeyValueStorage"
-      }
-    },
-    {
       "comment": "Route core key/value storage through PostgreSQL.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:KeyValueStorage"
       },
       "overrideParameters": {
-        "@id": "urn:undefineds:xpod:InternalKeyValueStorage"
+        "@id": "urn:undefineds:xpod:PostgresInternalKeyValueStorage"
       }
     },
     {
@@ -396,49 +392,6 @@
         "@id": "urn:solid-server:default:variable:identityDbUrl",
         "@type": "Variable"
       }
-    },
-    {
-      "comment": "Inject edge-node aware handlers into the HTTP pipeline",
-      "@id": "urn:solid-server:default:BaseHttpHandler",
-      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/WaterfallHandler.jsonld#WaterfallHandler",
-      "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/WaterfallHandler.jsonld#WaterfallHandler_handlers": [
-          {
-            "@id": "urn:undefineds:xpod:PodMigrationHttpHandler"
-          },
-          {
-            "@id": "urn:undefineds:xpod:ClusterIngressRouter"
-          },
-          {
-            "@id": "urn:undefineds:xpod:PodRoutingHttpHandler"
-          },
-          {
-            "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:StaticAssetHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:OidcHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:NotificationHttpHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:StorageDescriptionHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:AuthResourceHttpHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:IdentityProviderHandler"
-          },
-          {
-            "@id": "urn:undefineds:xpod:EdgeNodeDirectDebugHttpHandler"
-          },
-          {
-            "@id": "urn:solid-server:default:LdpHandler"
-          }
-        ]
     },
     {
       "comment": "Composite handler that intercepts /api/v1/signal and forwards other traffic to CSS defaults.",

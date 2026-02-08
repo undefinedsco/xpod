@@ -13,6 +13,7 @@ import { PGlite } from '@electric-sql/pglite';
 
 import { BaseQuintStore, type SqlExecutor } from './BaseQuintStore';
 import type { QuintStoreOptions, Quint } from './types';
+import { getSharedPool } from '../database/PostgresPoolManager';
 
 /**
  * PostgreSQL 连接配置
@@ -37,6 +38,12 @@ export interface PgQuintStoreOptions extends QuintStoreOptions {
   database?: string;
   user?: string;
   password?: string;
+  
+  /** 
+   * 共享的 pg Pool 实例（避免多个组件创建独立连接池导致死锁）
+   * 如果提供，将忽略其他连接配置
+   */
+  pool?: any;
 }
 
 /**
@@ -127,7 +134,10 @@ class PgExecutor implements SqlExecutor {
   async query<T = any>(sql: string, params?: any[]): Promise<T[]> {
     const pgSql = this.convertPlaceholders(sql);
     const safeParams = params?.map(p => typeof p === 'string' ? toPgSafe(p) : p);
+    console.log(`[PgExecutor] Query: ${pgSql.slice(0, 60)}...`);
+    const start = Date.now();
     const result = await this.pool.query(pgSql, safeParams);
+    console.log(`[PgExecutor] Query done in ${Date.now() - start}ms, ${result.rows.length} rows`);
     return result.rows.map((row: any) => this.restoreRow(row));
   }
 
@@ -139,19 +149,28 @@ class PgExecutor implements SqlExecutor {
   }
 
   async executeInTransaction(statements: { sql: string; params?: any[] }[]): Promise<void> {
+    console.log(`[PgExecutor] Getting connection from pool...`);
+    const start = Date.now();
     const client = await this.pool.connect();
+    console.log(`[PgExecutor] Got connection in ${Date.now() - start}ms`);
     try {
+      console.log(`[PgExecutor] BEGIN transaction`);
       await client.query('BEGIN');
-      for (const { sql, params } of statements) {
+      for (let i = 0; i < statements.length; i++) {
+        const { sql, params } = statements[i];
         const pgSql = this.convertPlaceholders(sql);
         const safeParams = params?.map(p => typeof p === 'string' ? toPgSafe(p) : p);
+        console.log(`[PgExecutor] Executing statement ${i + 1}/${statements.length}: ${pgSql.slice(0, 60)}...`);
         await client.query(pgSql, safeParams);
       }
+      console.log(`[PgExecutor] COMMIT transaction`);
       await client.query('COMMIT');
     } catch (error) {
+      console.error(`[PgExecutor] Error, rolling back:`, error);
       await client.query('ROLLBACK');
       throw error;
     } finally {
+      console.log(`[PgExecutor] Releasing connection`);
       client.release();
     }
   }
@@ -194,9 +213,14 @@ export class PgQuintStore extends BaseQuintStore {
 
   protected async createExecutor(): Promise<SqlExecutor> {
     if (this.pgOptions.driver === 'pg') {
-      // 动态导入 pg 包（避免硬依赖）
-      const { Pool } = await import('pg');
-      this.pgPool = new Pool({
+      // 使用共享的连接池（如果提供），避免死锁
+      if (this.pgOptions.pool) {
+        this.pgPool = this.pgOptions.pool;
+        return new PgExecutor(this.pgPool);
+      }
+      
+      // 使用共享连接池管理器，避免多个组件创建独立连接池
+      this.pgPool = getSharedPool({
         connectionString: this.pgOptions.connectionString,
         host: this.pgOptions.host,
         port: this.pgOptions.port,
@@ -282,9 +306,13 @@ export class PgQuintStore extends BaseQuintStore {
    * 重写 multiPut 方法，使用 PostgreSQL 的 ON CONFLICT
    */
   override async multiPut(quintList: Quint[]): Promise<void> {
+    console.log(`[PgQuintStore.multiPut] Starting: ${quintList.length} quints`);
     this.ensureOpen();
 
-    if (quintList.length === 0) return;
+    if (quintList.length === 0) {
+      console.log(`[PgQuintStore.multiPut] Empty list, skipping`);
+      return;
+    }
 
     const statements = quintList.map(quint => {
       const row = this.quintToRow(quint);
@@ -299,6 +327,9 @@ export class PgQuintStore extends BaseQuintStore {
       };
     });
 
+    console.log(`[PgQuintStore.multiPut] Executing ${statements.length} statements in transaction`);
+    const start = Date.now();
     await this.executor!.executeInTransaction(statements);
+    console.log(`[PgQuintStore.multiPut] Completed in ${Date.now() - start}ms`);
   }
 }

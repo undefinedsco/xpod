@@ -11,52 +11,82 @@
   ],
   "@graph": [
     {
-      "comment": "SP (Storage Provider) 模式配置 - 使用外部 IdP",
-      "@id": "urn:undefineds:xpod:ConfigSP",
+      "comment": "Xpod 统一配置 - 通过环境变量切换 Cloud/SP 模式",
+      "@id": "urn:undefineds:xpod:Config",
       "@type": "Void"
     },
     {
-      "comment": "Override: 使用子域名 Pod 标识策略",
+      "comment": "定义 idpUrl 变量（外部 IdP 基础 URL）- SP 模式必填",
+      "@id": "urn:solid-server:default:variable:idpUrl",
+      "@type": "Variable"
+    },
+    {
+      "comment": "MultiDomainIdentifierStrategy - 支持多域名（Cloud 模式）",
+      "@id": "urn:undefineds:xpod:MultiDomainIdentifierStrategy",
+      "@type": "MultiDomainIdentifierStrategy",
+      "primaryBaseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl"
+      },
+      "additionalBaseUrls": [
+        {
+          "@id": "urn:solid-server:default:variable:idpUrl"
+        }
+      ]
+    },
+    {
+      "comment": "SingleRootIdentifierStrategy - 单域名（SP 模式）",
+      "@id": "urn:undefineds:xpod:SingleRootIdentifierStrategy",
+      "@type": "SingleRootIdentifierStrategy",
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl"
+      }
+    },
+    {
+      "comment": "Override: 使用 MultiDomainIdentifierStrategy 替换默认策略（用于 Cloud 模式）",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:IdentifierStrategy"
       },
       "overrideParameters": {
-        "@type": "SubdomainPodIdentifierStrategy",
-        "baseDomain": {
-          "@id": "urn:solid-server:default:variable:baseDomain"
-        }
+        "@id": "urn:undefineds:xpod:MultiDomainIdentifierStrategy"
       }
     },
     {
-      "comment": "Override: 禁用本地 OIDC，使用外部 IdP",
+      "comment": "Auto-detect OIDC Handler - 有 idpUrl 时启用 SP 模式",
+      "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
+      "@type": "AutoDetectOidcHandler",
+      "options_idpUrl": {
+        "@id": "urn:solid-server:default:variable:idpUrl"
+      },
+      "options_cacheMs": 300000
+    },
+    {
+      "comment": "Override: 使用 AutoDetectOidcHandler 替换默认 OidcHandler",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:OidcHandler"
       },
       "overrideParameters": {
-        "@type": "DisabledOidcHandler",
-        "externalJwksUrl": {
-          "@id": "urn:solid-server:default:variable:externalJwksUrl"
-        },
-        "cacheMs": 300000
+        "@id": "urn:undefineds:xpod:AutoDetectOidcHandler"
       }
     },
     {
-      "comment": "Override: 禁用本地账户管理",
+      "comment": "Auto-detect Identity Provider Handler",
+      "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler",
+      "@type": "AutoDetectIdentityProviderHandler",
+      "options_idpUrl": {
+        "@id": "urn:solid-server:default:variable:idpUrl"
+      }
+    },
+    {
+      "comment": "Override: 使用 AutoDetectIdentityProviderHandler 替换默认 Handler",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:IdentityProviderHandler"
       },
       "overrideParameters": {
-        "@type": "DisabledIdentityProviderHandler",
-        "message": "Account management handled by external IdP"
+        "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler"
       }
-    },
-    {
-      "comment": "Override: 禁用 Pod 自动创建 (由 IdP 通过 API 创建)",
-      "@id": "urn:solid-server:default:variable:registration",
-      "@value": false
     },
     {
       "comment": "禁用 Quota",
@@ -68,7 +98,7 @@
       "@value": "./data"
     },
     {
-      "comment": "Shared QuintStore instance (SQLite for local)",
+      "comment": "Shared QuintStore instance",
       "@id": "urn:undefineds:xpod:QuintStore",
       "@type": "SqliteQuintStore",
       "path": {
@@ -94,7 +124,7 @@
       "authorizer": { "@id": "urn:solid-server:default:Authorizer" }
     },
     {
-      "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for local",
+      "comment": "DefaultSparqlEngine",
       "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
       "@type": "QuintstoreSparqlEngine",
       "store": { "@id": "urn:undefineds:xpod:QuintStore" }
@@ -174,7 +204,12 @@
       }
     },
     {
-      "comment": "SP HTTP Pipeline - 使用外部 IdP",
+      "comment": "注册开关 - Cloud 模式启用，SP 模式禁用",
+      "@id": "urn:solid-server:default:variable:registration",
+      "@type": "Variable"
+    },
+    {
+      "comment": "HTTP Pipeline",
       "@type": "Override",
       "overrideInstance": { "@id": "urn:solid-server:default:BaseHttpHandler" },
       "overrideParameters": {

@@ -71,19 +71,6 @@
       }
     },
     {
-      "comment": "Persist CSS identity accounts and logins in the SQL identity database using Drizzle.",
-      "@id": "urn:undefineds:xpod:DrizzleAccountStorage",
-      "@type": "BaseLoginAccountStorage",
-      "storage": {
-        "@type": "DrizzleIndexedStorage",
-        "connectionString": {
-          "@id": "urn:solid-server:default:variable:identityDbUrl",
-          "@type": "Variable"
-        },
-        "tablePrefix": "identity_"
-      }
-    },
-    {
       "comment": "Replace HtmlViewHandler with ReactAppViewHandler - serves single React app for all identity routes.",
       "@type": "Override",
       "overrideInstance": {

@@ -68,9 +68,12 @@ import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';
 import { LocalTunnelProvider } from './tunnel/LocalTunnelProvider';
 import { SubdomainService } from './subdomain/SubdomainService';
 // IdP/SP separation components
+import { MultiDomainIdentifierStrategy } from './util/identifiers/MultiDomainIdentifierStrategy';
 import { SubdomainPodIdentifierStrategy } from './util/identifiers/SubdomainPodIdentifierStrategy';
 import { DisabledOidcHandler } from './identity/oidc/DisabledOidcHandler';
 import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentityProviderHandler';
+import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
+import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
 export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
 // Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
 export type {
@@ -173,7 +176,10 @@ export {
   LocalTunnelProvider,
   SubdomainService,
   // IdP/SP separation exports
+  MultiDomainIdentifierStrategy,
   SubdomainPodIdentifierStrategy,
   DisabledOidcHandler,
   DisabledIdentityProviderHandler,
+  AutoDetectOidcHandler,
+  AutoDetectIdentityProviderHandler,
 };

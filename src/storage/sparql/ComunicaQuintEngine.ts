@@ -26,6 +26,7 @@ import { DataFactory } from 'rdf-data-factory';
 import type { QuintStore, QuintPattern, QueryOptions, TermName, TermOperators } from '../quint/types';
 import { QuintQuerySource } from './QuintQuerySource';
 import { QueryOptimizer } from './QueryOptimizer';
+import { SimpleSparqlExecutor } from './SimpleSparqlExecutor';
 
 export interface ComunicaQuintEngineOptions {
   debug?: boolean;
@@ -142,12 +143,16 @@ class QuintRdfStore implements RDF.Store {
     const emitter = new EventEmitter();
     
     const quads: Quad[] = [];
+    let ended = false;
     
+    // Handle data events
     stream.on('data', (quad: Quad) => {
       quads.push(quad);
     });
     
-    stream.on('end', () => {
+    const handleEnd = () => {
+      if (ended) return;
+      ended = true;
       if (quads.length > 0) {
         this.store.multiPut(quads as any[])
           .then(() => emitter.emit('end'))
@@ -155,10 +160,19 @@ class QuintRdfStore implements RDF.Store {
       } else {
         emitter.emit('end');
       }
-    });
+    };
     
+    stream.on('end', handleEnd);
     stream.on('error', (err) => {
       emitter.emit('error', err);
+    });
+    
+    // Handle already-ended streams (synchronous streams)
+    // Use setImmediate to ensure we check after all synchronous data events
+    setImmediate(() => {
+      if ((stream as any).readableEnded || (stream as any).closed) {
+        handleEnd();
+      }
     });
     
     return emitter;
@@ -171,6 +185,7 @@ class QuintRdfStore implements RDF.Store {
     const emitter = new EventEmitter();
     
     const deletePromises: Promise<number>[] = [];
+    let ended = false;
     
     stream.on('data', (quad: Quad) => {
       const pattern: QuintPattern = {
@@ -184,14 +199,24 @@ class QuintRdfStore implements RDF.Store {
       deletePromises.push(this.store.del(pattern));
     });
     
-    stream.on('end', () => {
+    const handleEnd = () => {
+      if (ended) return;
+      ended = true;
       Promise.all(deletePromises)
         .then(() => emitter.emit('end'))
         .catch((err) => emitter.emit('error', err));
-    });
+    };
     
+    stream.on('end', handleEnd);
     stream.on('error', (err) => {
       emitter.emit('error', err);
+    });
+    
+    // Handle already-ended streams (synchronous streams)
+    setImmediate(() => {
+      if ((stream as any).readableEnded || (stream as any).closed) {
+        handleEnd();
+      }
     });
     
     return emitter;
@@ -258,6 +283,7 @@ export class ComunicaQuintEngine {
   private readonly rdfStore: QuintRdfStore;
   private readonly querySource: QuintQuerySource;
   private readonly queryOptimizer: QueryOptimizer;
+  private readonly simpleExecutor: SimpleSparqlExecutor;
   private readonly engine: QueryEngine;
   private readonly debug: boolean;
   private bindingsFactory: any;
@@ -641,18 +667,25 @@ export class ComunicaQuintEngine {
    * Execute CONSTRUCT/DESCRIBE query
    */
   async queryQuads(query: string, context?: QueryContext): Promise<ResultStream<Quad>> {
+    console.log(`[ComunicaQuintEngine.queryQuads] Starting: ${query.slice(0, 100)}...`);
     const params = this.extractOptimizeParams(query);
     this.currentOptimizeParams = params;
     this.currentSecurityFilters = context?.filters;
     
     try {
+      const start = Date.now();
       const { sources: _ignored, filters: _filters, ...restContext } = context || {};
       const queryContext = {
         ...restContext,
         [CONTEXT_KEY_QUERY_SOURCES]: [{ source: this.querySource }],
       };
 
-      return await this.engine.queryQuads(query, queryContext as any);
+      const result = await this.engine.queryQuads(query, queryContext as any);
+      console.log(`[ComunicaQuintEngine.queryQuads] Completed in ${Date.now() - start}ms`);
+      return result;
+    } catch (err) {
+      console.error(`[ComunicaQuintEngine.queryQuads] Failed:`, err);
+      throw err;
     } finally {
       this.currentOptimizeParams = null;
       this.currentSecurityFilters = undefined;
@@ -664,13 +697,20 @@ export class ComunicaQuintEngine {
    * Uses RDF.Store interface since UPDATE doesn't need FILTER pushdown
    */
   async queryVoid(query: string, context?: QueryContext): Promise<void> {
+    console.log(`[ComunicaQuintEngine.queryVoid] Starting: ${query.slice(0, 100)}...`);
     this.currentSecurityFilters = context?.filters;
     
     try {
-      return await this.engine.queryVoid(query, {
+      const start = Date.now();
+      const result = await this.engine.queryVoid(query, {
         sources: [this.rdfStore],
         ...context,
       } as any);
+      console.log(`[ComunicaQuintEngine.queryVoid] Completed in ${Date.now() - start}ms`);
+      return result;
+    } catch (err) {
+      console.error(`[ComunicaQuintEngine.queryVoid] Failed:`, err);
+      throw err;
     } finally {
       this.currentSecurityFilters = undefined;
     }

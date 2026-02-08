@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { type IdentityDatabase, executeQuery, executeStatement, isDatabaseSqlite } from './db';
+import { type IdentityDatabase, executeQuery, isDatabaseSqlite } from './db';
 
 export interface PodLookupResult {
   podId: string;
@@ -17,139 +17,121 @@ export interface PodMigrationStatus {
   migrationProgress?: number;
 }
 
-interface PodRow {
-  id: string;
-  account_id: string;
-  base_url: string;
-  node_id?: string | null;
-  edge_node_id?: string | null;
-}
-
-interface MigrationRow {
-  id: string;
-  node_id?: string | null;
-  migration_status?: string | null;
-  migration_target_node?: string | null;
-  migration_progress?: number | null;
+interface InternalKvRow {
+  key: string;
+  value: string;
 }
 
 /**
- * Repository for Pod lookup and migration operations.
- * 
- * Note: Uses ->> JSON operator which works on both PostgreSQL and SQLite 3.38+.
- * Write operations (setNodeId, setMigrationStatus) use database-specific syntax
- * since json_set (SQLite) and jsonb_set (PostgreSQL) differ.
+ * Repository for Pod lookup operations.
+ *
+ * Reads Pod data from CSS's internal_kv table where account data is stored.
+ * CSS stores account data at key "accounts/data/{accountId}" with Pod info
+ * nested in the "**pod**" field.
+ *
+ * Note: Migration status (nodeId, edgeNodeId, etc.) is stored in a separate
+ * identity_pod_usage table, not in CSS's internal storage.
  */
 export class PodLookupRepository {
-  public constructor(private readonly db: IdentityDatabase) {}
+  private readonly kvTableName: string;
+  private readonly usageTableName: string;
 
-  public async findByResourceIdentifier(resourcePath: string): Promise<PodLookupResult | undefined> {
-    // ->> works on both PostgreSQL (jsonb) and SQLite 3.38+ (json)
-    const result = await executeQuery<PodRow>(this.db, sql`
-      SELECT 
-        id, 
-        payload ->> 'accountId' AS account_id, 
-        payload ->> 'baseUrl' AS base_url, 
-        payload ->> 'nodeId' AS node_id, 
-        payload ->> 'edgeNodeId' AS edge_node_id
-      FROM identity_pod
-      WHERE payload ->> 'baseUrl' IS NOT NULL
-        AND ${resourcePath} LIKE (payload ->> 'baseUrl') || '%'
-      ORDER BY length(payload ->> 'baseUrl') DESC
-      LIMIT 1
-    `);
-    if (result.rows.length === 0) {
-      return undefined;
-    }
-    const row = result.rows[0];
-    return {
-      podId: row.id,
-      accountId: row.account_id,
-      baseUrl: row.base_url,
-      nodeId: row.node_id ?? undefined,
-      edgeNodeId: row.edge_node_id ?? undefined,
-    };
+  public constructor(
+    private readonly db: IdentityDatabase,
+    kvTableName?: string,
+  ) {
+    this.kvTableName = kvTableName ?? 'internal_kv';
+    this.usageTableName = 'identity_pod_usage';
   }
 
   /**
-   * Get Pod by ID with node information.
+   * Find Pod by resource path (matches longest baseUrl prefix).
+   */
+  public async findByResourceIdentifier(resourcePath: string): Promise<PodLookupResult | undefined> {
+    // Get all account data and extract pods
+    const pods = await this.getAllPods();
+
+    // Find the pod with the longest matching baseUrl
+    let bestMatch: PodLookupResult | undefined;
+    let bestLength = 0;
+
+    for (const pod of pods) {
+      if (resourcePath.startsWith(pod.baseUrl) && pod.baseUrl.length > bestLength) {
+        bestMatch = pod;
+        bestLength = pod.baseUrl.length;
+      }
+    }
+
+    return bestMatch;
+  }
+
+  /**
+   * Get Pod by ID.
    */
   public async findById(podId: string): Promise<PodLookupResult | undefined> {
-    const result = await executeQuery<PodRow>(this.db, sql`
-      SELECT 
-        id, 
-        payload ->> 'accountId' AS account_id, 
-        payload ->> 'baseUrl' AS base_url, 
-        payload ->> 'nodeId' AS node_id, 
-        payload ->> 'edgeNodeId' AS edge_node_id
-      FROM identity_pod
-      WHERE id = ${podId}
-      LIMIT 1
-    `);
-
-    if (result.rows.length === 0) {
-      return undefined;
-    }
-    const row = result.rows[0];
-    return {
-      podId: row.id,
-      accountId: row.account_id,
-      baseUrl: row.base_url,
-      nodeId: row.node_id ?? undefined,
-      edgeNodeId: row.edge_node_id ?? undefined,
-    };
+    const pods = await this.getAllPods();
+    return pods.find(p => p.podId === podId);
   }
 
   /**
-   * Set the nodeId for a Pod.
-   */
-  public async setNodeId(podId: string, nodeId: string): Promise<void> {
-    if (isDatabaseSqlite(this.db)) {
-      await executeStatement(this.db, sql`
-        UPDATE identity_pod
-        SET payload = json_set(COALESCE(payload, '{}'), '$.nodeId', ${nodeId})
-        WHERE id = ${podId}
-      `);
-    } else {
-      await executeStatement(this.db, sql`
-        UPDATE identity_pod
-        SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{nodeId}', to_jsonb(${nodeId}::text))
-        WHERE id = ${podId}
-      `);
-    }
-  }
-
-  /**
-   * Get migration status for a Pod.
+   * Get migration status for a Pod from identity_pod_usage table.
    */
   public async getMigrationStatus(podId: string): Promise<PodMigrationStatus | undefined> {
-    const result = await executeQuery<MigrationRow>(this.db, sql`
-      SELECT 
-        id, 
-        payload ->> 'nodeId' AS node_id, 
-        payload ->> 'migrationStatus' AS migration_status,
-        payload ->> 'migrationTargetNode' AS migration_target_node, 
-        CAST(payload ->> 'migrationProgress' AS INTEGER) AS migration_progress
-      FROM identity_pod
-      WHERE id = ${podId}
-      LIMIT 1
-    `);
+    try {
+      const tableId = sql.identifier([this.usageTableName]);
+      const result = await executeQuery<{
+        pod_id: string;
+        node_id?: string | null;
+        migration_status?: string | null;
+        migration_target_node?: string | null;
+        migration_progress?: number | null;
+      }>(this.db, sql`
+        SELECT pod_id, node_id, migration_status, migration_target_node, migration_progress
+        FROM ${tableId}
+        WHERE pod_id = ${podId}
+        LIMIT 1
+      `);
 
-    if (result.rows.length === 0) {
-      return undefined;
+      if (result.rows.length === 0) {
+        return { podId };
+      }
+      const row = result.rows[0];
+      return {
+        podId: row.pod_id,
+        nodeId: row.node_id ?? undefined,
+        migrationStatus: row.migration_status as 'syncing' | 'done' | null | undefined,
+        migrationTargetNode: row.migration_target_node ?? undefined,
+        migrationProgress: row.migration_progress ?? undefined,
+      };
+    } catch {
+      // Table might not exist
+      return { podId };
     }
-    const row = result.rows[0];
-    return {
-      podId: row.id,
-      nodeId: row.node_id ?? undefined,
-      migrationStatus: row.migration_status as 'syncing' | 'done' | null | undefined,
-      migrationTargetNode: row.migration_target_node ?? undefined,
-      migrationProgress: row.migration_progress ?? undefined,
-    };
   }
 
   /**
-   * Update migration status for a Pod.
+   * Set the nodeId for a Pod in identity_pod_usage table.
+   */
+  public async setNodeId(podId: string, nodeId: string): Promise<void> {
+    const tableId = sql.identifier([this.usageTableName]);
+    // Upsert into identity_pod_usage
+    if (isDatabaseSqlite(this.db)) {
+      await executeQuery(this.db, sql`
+        INSERT INTO ${tableId} (pod_id, account_id, node_id)
+        VALUES (${podId}, '', ${nodeId})
+        ON CONFLICT (pod_id) DO UPDATE SET node_id = ${nodeId}
+      `);
+    } else {
+      await executeQuery(this.db, sql`
+        INSERT INTO ${tableId} (pod_id, account_id, node_id)
+        VALUES (${podId}, '', ${nodeId})
+        ON CONFLICT (pod_id) DO UPDATE SET node_id = EXCLUDED.node_id
+      `);
+    }
+  }
+
+  /**
+   * Update migration status for a Pod in identity_pod_usage table.
    */
   public async setMigrationStatus(
     podId: string,
@@ -157,55 +139,74 @@ export class PodLookupRepository {
     targetNode?: string | null,
     progress?: number | null,
   ): Promise<void> {
+    const tableId = sql.identifier([this.usageTableName]);
     if (isDatabaseSqlite(this.db)) {
-      await executeStatement(this.db, sql`
-        UPDATE identity_pod
-        SET payload = json_set(
-          json_set(
-            json_set(COALESCE(payload, '{}'), '$.migrationStatus', ${status}),
-            '$.migrationTargetNode', ${targetNode ?? null}
-          ),
-          '$.migrationProgress', ${progress ?? 0}
-        )
-        WHERE id = ${podId}
+      await executeQuery(this.db, sql`
+        INSERT INTO ${tableId} (pod_id, account_id, migration_status, migration_target_node, migration_progress)
+        VALUES (${podId}, '', ${status}, ${targetNode ?? null}, ${progress ?? 0})
+        ON CONFLICT (pod_id) DO UPDATE SET
+          migration_status = ${status},
+          migration_target_node = ${targetNode ?? null},
+          migration_progress = ${progress ?? 0}
       `);
     } else {
-      await executeStatement(this.db, sql`
-        UPDATE identity_pod
-        SET payload = jsonb_set(
-          jsonb_set(
-            jsonb_set(COALESCE(payload, '{}'::jsonb), '{migrationStatus}', to_jsonb(${status}::text)),
-            '{migrationTargetNode}', to_jsonb(${targetNode ?? null}::text)
-          ),
-          '{migrationProgress}', to_jsonb(${progress ?? 0})
-        )
-        WHERE id = ${podId}
+      await executeQuery(this.db, sql`
+        INSERT INTO ${tableId} (pod_id, account_id, migration_status, migration_target_node, migration_progress)
+        VALUES (${podId}, '', ${status}, ${targetNode ?? null}, ${progress ?? 0})
+        ON CONFLICT (pod_id) DO UPDATE SET
+          migration_status = EXCLUDED.migration_status,
+          migration_target_node = EXCLUDED.migration_target_node,
+          migration_progress = EXCLUDED.migration_progress
       `);
     }
   }
 
   /**
-   * List all pods with their node assignments.
+   * List all pods.
    */
   public async listAllPods(): Promise<PodLookupResult[]> {
-    const result = await executeQuery<PodRow>(this.db, sql`
-      SELECT 
-        id, 
-        payload ->> 'accountId' AS account_id, 
-        payload ->> 'baseUrl' AS base_url, 
-        payload ->> 'nodeId' AS node_id, 
-        payload ->> 'edgeNodeId' AS edge_node_id
-      FROM identity_pod
-      WHERE payload ->> 'baseUrl' IS NOT NULL
-      ORDER BY payload ->> 'baseUrl' ASC
+    return this.getAllPods();
+  }
+
+  /**
+   * Extract all pods from CSS's internal_kv storage.
+   */
+  private async getAllPods(): Promise<PodLookupResult[]> {
+    const kvTableId = sql.identifier([this.kvTableName]);
+
+    // Query all account data entries
+    const result = await executeQuery<InternalKvRow>(this.db, sql`
+      SELECT key, value FROM ${kvTableId}
+      WHERE key LIKE 'accounts/data/%'
     `);
 
-    return result.rows.map(row => ({
-      podId: row.id,
-      accountId: row.account_id,
-      baseUrl: row.base_url,
-      nodeId: row.node_id ?? undefined,
-      edgeNodeId: row.edge_node_id ?? undefined,
-    }));
+    const pods: PodLookupResult[] = [];
+
+    for (const row of result.rows) {
+      try {
+        const accountId = row.key.replace('accounts/data/', '');
+        const data = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+
+        // CSS stores pods in "**pod**" field
+        const podMap = data['**pod**'] || data.pod || {};
+
+        for (const [podId, podData] of Object.entries(podMap)) {
+          const pod = podData as Record<string, unknown>;
+          if (pod.baseUrl && typeof pod.baseUrl === 'string') {
+            pods.push({
+              podId,
+              accountId,
+              baseUrl: pod.baseUrl,
+              nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : undefined,
+              edgeNodeId: typeof pod.edgeNodeId === 'string' ? pod.edgeNodeId : undefined,
+            });
+          }
+        }
+      } catch {
+        // Skip malformed entries
+      }
+    }
+
+    return pods;
   }
 }

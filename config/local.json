@@ -12,9 +12,65 @@
   ],
   "@graph": [
     {
+      "comment": "File-based locker for local deployments",
+      "@id": "urn:solid-server:default:ResourceLocker",
+      "@type": "WrappedExpiringReadWriteLocker",
+      "locker": {
+        "@type": "FileSystemResourceLocker",
+        "rootFilePath": {
+          "@id": "urn:solid-server:default:variable:rootFilePath"
+        }
+      },
+      "expiration": 6000
+    },
+    {
       "comment": "Disable quota for local profile",
       "@id": "urn:undefineds:xpod:QuotaService",
       "@type": "NoopQuotaService"
+    },
+    {
+      "comment": "定义 idpUrl 变量（外部 IdP 基础 URL），设置后启用 SP 模式",
+      "@id": "urn:solid-server:default:variable:idpUrl",
+      "@type": "Variable"
+    },
+    {
+      "comment": "Auto-detect OIDC Handler - 有 idpUrl 时启用 SP 模式，代理 JWKS",
+      "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
+      "@type": "AutoDetectOidcHandler",
+      "AutoDetectOidcHandler:_options_idpUrl": {
+        "@id": "urn:solid-server:default:variable:idpUrl"
+      },
+      "AutoDetectOidcHandler:_options_cacheMs": 300000
+    },
+    {
+      "comment": "原始 IdentityProviderHandler 实例（用于标准模式委托）",
+      "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler",
+      "@type": "RouterHandler",
+      "baseUrl": { "@id": "urn:solid-server:default:variable:baseUrl" },
+      "targetExtractor": { "@id": "urn:solid-server:default:TargetExtractor" },
+      "allowedPathNames": [ "^/.account(/.*)?$" ],
+      "handler": { "@id": "urn:solid-server:default:IdentityProviderParsingHandler" }
+    },
+    {
+      "comment": "Auto-detect Identity Provider Handler - 有 idpUrl 时禁用本地账户管理",
+      "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler",
+      "@type": "AutoDetectIdentityProviderHandler",
+      "AutoDetectIdentityProviderHandler:_options_idpUrl": {
+        "@id": "urn:solid-server:default:variable:idpUrl"
+      },
+      "AutoDetectIdentityProviderHandler:_options_source": {
+        "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler"
+      }
+    },
+    {
+      "comment": "Override: 使用 AutoDetectIdentityProviderHandler 替换默认 Handler",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IdentityProviderHandler"
+      },
+      "overrideParameters": {
+        "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler"
+      }
     },
     {
       "@id": "urn:solid-server:default:variable:rootFilePath",
@@ -175,6 +231,10 @@
           },
           {
             "@id": "urn:solid-server:default:StaticAssetHandler"
+          },
+          {
+            "comment": "SP 模式下代理 JWKS，标准模式下透传",
+            "@id": "urn:undefineds:xpod:AutoDetectOidcHandler"
           },
           {
             "@id": "urn:solid-server:default:OidcHandler"

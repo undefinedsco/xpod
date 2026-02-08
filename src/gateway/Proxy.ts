@@ -67,10 +67,8 @@ export class GatewayProxy {
     const url = req.url ?? '/';
     const origin = req.headers.origin;
 
-    // Add x-forwarded-host for proper DPoP verification
-    if (!req.headers['x-forwarded-host']) {
-      req.headers['x-forwarded-host'] = req.headers.host;
-    }
+    // Store original host for x-forwarded-host before any rewrites
+    const originalHost = req.headers.host;
 
     // Set x-forwarded-proto based on CSS_BASE_URL
     // Override any existing value since cloudflared sets it to 'http' for local forwarding
@@ -79,8 +77,27 @@ export class GatewayProxy {
       req.headers['x-forwarded-proto'] = 'https';
     }
 
+    // Rewrite Host header to match CSS_BASE_URL for proper routing
+    // This ensures CSS RouterHandler can correctly match paths
+    // Also set x-forwarded-host to the same value so CSS OriginalUrlExtractor uses it
+    if (baseUrl) {
+      try {
+        const parsedBaseUrl = new URL(baseUrl);
+        req.headers.host = parsedBaseUrl.host;
+        // CSS uses x-forwarded-host if present, so we need to set it to match baseUrl
+        req.headers['x-forwarded-host'] = parsedBaseUrl.host;
+      } catch {
+        // Ignore invalid baseUrl, keep original host
+        if (!req.headers['x-forwarded-host']) {
+          req.headers['x-forwarded-host'] = originalHost;
+        }
+      }
+    } else if (!req.headers['x-forwarded-host']) {
+      req.headers['x-forwarded-host'] = originalHost;
+    }
+
     // Use debug level for per-request logs
-    this.logger.debug(`${req.method} ${url} x-forwarded-proto=${req.headers['x-forwarded-proto']} x-forwarded-host=${req.headers['x-forwarded-host']}`);
+    this.logger.debug(`${req.method} ${url} x-forwarded-proto=${req.headers['x-forwarded-proto']} x-forwarded-host=${req.headers['x-forwarded-host']} host=${req.headers.host}`);
 
     // 1. Gateway Internal API (Status & Control) - Gateway handles CORS
     if (url.startsWith('/_gateway/')) {
