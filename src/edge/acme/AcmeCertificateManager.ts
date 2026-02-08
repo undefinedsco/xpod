@@ -7,11 +7,74 @@ import type { Authorization } from 'acme-client';
 import { getLoggerFor } from 'global-logger-factory';
 import { DnsChallengeClient } from './DnsChallengeClient';
 import { toDns01Value } from './utils';
+import type { DnsProvider } from '../../dns/DnsProvider';
+
+/**
+ * DNS 验证处理器接口
+ */
+export interface DnsChallengeHandler {
+  setChallenge(host: string, value: string): Promise<void>;
+  removeChallenge(host: string, value?: string): Promise<void>;
+}
+
+/**
+ * 使用 DnsProvider 的本地 DNS 验证处理器
+ */
+export class LocalDnsChallengeHandler implements DnsChallengeHandler {
+  private readonly provider: DnsProvider;
+  private readonly rootDomain: string;
+
+  public constructor(provider: DnsProvider, rootDomain: string) {
+    this.provider = provider;
+    this.rootDomain = rootDomain;
+  }
+
+  public async setChallenge(host: string, value: string): Promise<void> {
+    // host 格式: _acme-challenge.node1.pods.undefineds.co
+    // 需要提取 subdomain: _acme-challenge.node1.pods
+    const subdomain = this.extractSubdomain(host);
+    await this.provider.upsertRecord({
+      domain: this.rootDomain,
+      subdomain,
+      type: 'TXT',
+      value,
+      ttl: 60,
+    });
+  }
+
+  public async removeChallenge(host: string, value?: string): Promise<void> {
+    const subdomain = this.extractSubdomain(host);
+    await this.provider.deleteRecord({
+      domain: this.rootDomain,
+      subdomain,
+      type: 'TXT',
+      value,
+    });
+  }
+
+  private extractSubdomain(host: string): string {
+    // 从 _acme-challenge.node1.pods.undefineds.co 提取 _acme-challenge.node1.pods
+    const suffix = `.${this.rootDomain}`;
+    if (host.endsWith(suffix)) {
+      return host.slice(0, -suffix.length);
+    }
+    return host;
+  }
+}
 
 export interface AcmeCertificateManagerOptions {
-  signalEndpoint: string;
-  nodeId: string;
-  nodeToken: string;
+  /** Cloud 模式: 通过 signal endpoint 操作 DNS */
+  signalEndpoint?: string;
+  nodeId?: string;
+  nodeToken?: string;
+  
+  /** Local 模式: 直接使用 DNS Provider */
+  dnsProvider?: DnsProvider;
+  rootDomain?: string;
+  
+  /** 或者直接提供自定义的 DNS 验证处理器 */
+  dnsChallengeHandler?: DnsChallengeHandler;
+  
   email: string;
   domains: string[];
   directoryUrl?: string;
@@ -32,7 +95,7 @@ const DEFAULT_FALLBACK_URLS = [
 
 export class AcmeCertificateManager {
   private readonly logger = getLoggerFor(this);
-  private readonly dnsClient: DnsChallengeClient;
+  private readonly dnsHandler: DnsChallengeHandler;
   private readonly email: string;
   private readonly domains: string[];
   private readonly directoryUrl: string;
@@ -45,11 +108,24 @@ export class AcmeCertificateManager {
   private readonly propagationDelayMs: number;
 
   public constructor(options: AcmeCertificateManagerOptions) {
-    this.dnsClient = new DnsChallengeClient({
-      signalEndpoint: options.signalEndpoint,
-      nodeId: options.nodeId,
-      nodeToken: options.nodeToken,
-    });
+    // 确定 DNS 验证处理器
+    if (options.dnsChallengeHandler) {
+      // 用户提供自定义处理器
+      this.dnsHandler = options.dnsChallengeHandler;
+    } else if (options.dnsProvider && options.rootDomain) {
+      // Local 模式：使用 DNS Provider
+      this.dnsHandler = new LocalDnsChallengeHandler(options.dnsProvider, options.rootDomain);
+    } else if (options.signalEndpoint && options.nodeId && options.nodeToken) {
+      // Cloud 模式：通过 signal endpoint
+      this.dnsHandler = new DnsChallengeClient({
+        signalEndpoint: options.signalEndpoint,
+        nodeId: options.nodeId,
+        nodeToken: options.nodeToken,
+      });
+    } else {
+      throw new Error('AcmeCertificateManager 需要提供 DNS 验证方式: dnsChallengeHandler, (dnsProvider + rootDomain), 或 (signalEndpoint + nodeId + nodeToken)');
+    }
+    
     this.email = options.email;
     this.domains = options.domains;
     this.directoryUrl = options.directoryUrl ?? DEFAULT_DIRECTORY_URL;
@@ -143,12 +219,12 @@ export class AcmeCertificateManager {
       challengeCreateFn: async (authz: Authorization, _challenge: unknown, keyAuthorization: string): Promise<void> => {
         const recordName = `_acme-challenge.${authz.identifier.value}`;
         const value = toDns01Value(keyAuthorization);
-        await this.dnsClient.setChallenge(recordName, value);
+        await this.dnsHandler.setChallenge(recordName, value);
         await this.delay(this.propagationDelayMs);
       },
       challengeRemoveFn: async (authz: Authorization): Promise<void> => {
         const recordName = `_acme-challenge.${authz.identifier.value}`;
-        await this.dnsClient.removeChallenge(recordName);
+        await this.dnsHandler.removeChallenge(recordName);
       },
     });
 

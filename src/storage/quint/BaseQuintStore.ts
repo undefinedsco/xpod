@@ -132,10 +132,15 @@ export abstract class BaseQuintStore extends QuintStore {
   // ============================================
 
   async get(pattern: QuintPattern, options?: QueryOptions): Promise<Quint[]> {
+    const patternDesc = Object.entries(pattern).map(([k, v]) => `${k}=${v ? 'set' : 'any'}`).join(',');
+    console.log(`[BaseQuintStore.get] Starting: ${patternDesc}`);
     this.ensureOpen();
 
     const { sql, params } = this.buildSelectQuery(pattern, options);
+    console.log(`[BaseQuintStore.get] SQL: ${sql.slice(0, 80)}...`);
+    const start = Date.now();
     const rows = await this.executor!.query<QuintRow>(sql, params);
+    console.log(`[BaseQuintStore.get] Completed in ${Date.now() - start}ms, got ${rows.length} rows`);
     
     return rows.map(row => this.rowToQuint(row));
   }

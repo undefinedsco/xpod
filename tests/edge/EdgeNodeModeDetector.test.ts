@@ -69,7 +69,7 @@ describe('EdgeNodeModeDetector', () => {
       const result = await detector.detectMode(nodeInfo);
 
       expect(result.accessMode).toBe('direct');
-      expect(result.reason).toBe('Direct connectivity test passed');
+      expect(result.reason).toBe('Direct connectivity test passed (IPv4)');
       expect(result.subdomain).toBe('test-node-456.cluster.example.com');
       expect(result.connectivityTest?.success).toBe(true);
       expect(result.connectivityTest?.latency).toBeGreaterThan(0);

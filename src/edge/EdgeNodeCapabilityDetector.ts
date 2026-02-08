@@ -1,5 +1,17 @@
+import * as os from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
 import { NodeCapabilities } from './EdgeNodeModeDetector';
+
+/**
+ * 网络地址检测结果
+ */
+export interface NetworkAddressInfo {
+  ipv4?: string;
+  ipv6?: string;
+  ipv4Public?: string;
+  ipv6Public?: string;
+  hasPublicIPv6: boolean;
+}
 
 /**
  * 边缘节点能力检测器
@@ -17,8 +29,11 @@ export interface EdgeNodeCapabilityDetectorOptions {
   dynamicDetection?: {
     enableBandwidthTest?: boolean;
     enableLocationDetection?: boolean;
+    enableNetworkDetection?: boolean;
     bandwidthTestUrl?: string;
     locationServiceUrl?: string;
+    ipv4ServiceUrl?: string;
+    ipv6ServiceUrl?: string;
   };
 }
 
@@ -32,6 +47,9 @@ export class EdgeNodeCapabilityDetector {
     this.dynamicDetection = {
       enableBandwidthTest: false,
       enableLocationDetection: false,
+      enableNetworkDetection: true,
+      ipv4ServiceUrl: 'https://4.ipw.cn/api/ip/myip?json',
+      ipv6ServiceUrl: 'https://6.ipw.cn/api/ip/myip?json',
       ...options.dynamicDetection,
     };
   }
@@ -308,5 +326,166 @@ export class EdgeNodeCapabilityDetector {
     }
 
     return capabilities;
+  }
+
+  /**
+   * 检测网络地址信息（IPv4/IPv6）
+   */
+  public async detectNetworkAddresses(): Promise<NetworkAddressInfo> {
+    const result: NetworkAddressInfo = {
+      hasPublicIPv6: false,
+    };
+
+    // 1. 检测本地网卡地址
+    const localAddresses = this.detectLocalNetworkAddresses();
+    result.ipv4 = localAddresses.ipv4;
+    result.ipv6 = localAddresses.ipv6;
+
+    // 2. 通过外部服务检测公网地址
+    if (this.dynamicDetection.enableNetworkDetection) {
+      const [publicIPv4, publicIPv6] = await Promise.all([
+        this.detectPublicIPv4(),
+        this.detectPublicIPv6(),
+      ]);
+      result.ipv4Public = publicIPv4;
+      result.ipv6Public = publicIPv6;
+      
+      // 如果外部探测失败，但本地网卡有全球 IPv6 地址，则作为 fallback
+      if (!result.ipv6Public && result.ipv6 && this.isGlobalIpv6(result.ipv6)) {
+        result.ipv6Public = result.ipv6;
+      }
+      
+      result.hasPublicIPv6 = !!result.ipv6Public && result.ipv6Public.includes(':');
+    }
+
+    this.logger.debug(`Network addresses detected: ${JSON.stringify(result)}`);
+    return result;
+  }
+
+  /**
+   * 判断是否为全球单播 IPv6 地址 (2xxx: 或 3xxx:)
+   */
+  private isGlobalIpv6(address: string): boolean {
+    const firstChar = address.toLowerCase()[0];
+    return firstChar === '2' || firstChar === '3';
+  }
+
+  /**
+   * 检测本地网卡地址
+   */
+  private detectLocalNetworkAddresses(): { ipv4?: string; ipv6?: string } {
+    const result: { ipv4?: string; ipv6?: string } = {};
+    const interfaces = os.networkInterfaces();
+
+    for (const name of Object.keys(interfaces)) {
+      const addrs = interfaces[name];
+      if (!addrs) continue;
+
+      for (const addr of addrs) {
+        if (addr.internal) continue;
+
+        // 获取第一个非内部 IPv4 地址
+        if (addr.family === 'IPv4' && !result.ipv4) {
+          result.ipv4 = addr.address;
+        }
+
+        // 获取第一个全局 IPv6 地址
+        if (addr.family === 'IPv6' && !result.ipv6) {
+          const address = addr.address.toLowerCase();
+          // 排除链路本地 (fe80:), 唯一本地 (fc00:, fd00:), 组播 (ff00:)
+          if (!address.startsWith('fe80:') && 
+              !address.startsWith('fc') && 
+              !address.startsWith('fd') &&
+              !address.startsWith('ff')) {
+            result.ipv6 = addr.address;
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * 通过外部服务检测公网 IPv4 地址
+   */
+  private async detectPublicIPv4(): Promise<string | undefined> {
+    const url = this.dynamicDetection.ipv4ServiceUrl;
+    if (!url) return undefined;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(url, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) return undefined;
+
+      const data = await response.json() as { ip: string };
+      // 验证是 IPv4 格式
+      if (data.ip && /^\d{1,3}(\.\d{1,3}){3}$/.test(data.ip)) {
+        return data.ip;
+      }
+    } catch {
+      this.logger.debug('Failed to detect public IPv4 address');
+    }
+    return undefined;
+  }
+
+  /**
+   * 通过外部服务检测公网 IPv6 地址
+   */
+  private async detectPublicIPv6(): Promise<string | undefined> {
+    const url = this.dynamicDetection.ipv6ServiceUrl;
+    if (!url) return undefined;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(url, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) return undefined;
+
+      const data = await response.json() as { ip: string };
+      // 验证是 IPv6 格式（包含冒号）
+      if (data.ip && data.ip.includes(':')) {
+        return data.ip;
+      }
+    } catch {
+      this.logger.debug('Failed to detect public IPv6 address');
+    }
+    return undefined;
+  }
+
+  /**
+   * 测试 IPv6 地址是否可从外部访问
+   * @param ipv6 要测试的 IPv6 地址
+   * @param port 要测试的端口
+   * @param timeoutMs 超时时间（毫秒）
+   */
+  public async testIPv6Reachability(ipv6: string, port: number, timeoutMs = 5000): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      // 尝试通过外部服务检测可达性
+      // 这里使用简单的 TCP 连接测试
+      const response = await fetch(`http://[${ipv6}]:${port}/`, {
+        method: 'HEAD',
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      return response.ok || response.status < 500;
+    } catch {
+      return false;
+    }
   }
 }

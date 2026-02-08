@@ -114,6 +114,7 @@ export class CloudflareTunnelProvider implements TunnelProvider {
 
     this.process = spawn(this.cloudflaredPath, [
       'tunnel',
+      '--protocol', 'http2',
       '--no-autoupdate',
       'run',
       '--token',

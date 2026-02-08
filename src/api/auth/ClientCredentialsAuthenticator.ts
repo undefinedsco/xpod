@@ -153,6 +153,16 @@ export class ClientCredentialsAuthenticator implements Authenticator {
     expiresAt?: Date;
     error?: string;
   }> {
+    // 开发模式：跳过 CSS token exchange
+    if (process.env.NODE_ENV === 'development') {
+      this.logger.warn(`[DEV] Skipping token exchange for ${clientId.slice(0, 8)}...`);
+      return {
+        success: true,
+        token: `dev-token-${clientId}`,
+        expiresAt: new Date(Date.now() + 3600000),
+      };
+    }
+
     try {
       const response = await fetch(this.tokenEndpoint, {
         method: 'POST',

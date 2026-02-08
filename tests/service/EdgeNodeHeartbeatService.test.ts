@@ -26,11 +26,10 @@ afterEach(() => {
   });
 
     const fetchMock = global.fetch as unknown as vi.Mock;
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    await Promise.resolve();
+    // sendHeartbeat 是异步调用，需要先让初始调用的 promise 完成
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 100 });
     await vi.advanceTimersByTimeAsync(1_000);
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 100 });
 
     const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(payload.nodeId).toBe('node-1');

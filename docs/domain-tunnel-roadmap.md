@@ -147,8 +147,6 @@ CSS_EDITION=cloud
 
 # 启用子域名功能
 XPOD_SUBDOMAIN_ENABLED=true
-XPOD_SUBDOMAIN_BASE_DOMAIN=pods.undefieds.co
-
 # Cloudflare (创建 Tunnel + DNS)
 CLOUDFLARE_API_TOKEN=xxx
 CLOUDFLARE_ACCOUNT_ID=xxx

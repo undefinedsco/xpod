@@ -56,11 +56,24 @@ export class EdgeNodeDnsCoordinator {
     
     // Determine DNS target based on access mode
     let target: string | undefined;
+    let recordType: DnsRecordTypeValue | undefined;
+    
     if (normalizedAccessMode === 'direct') {
       // Direct mode: DNS 指向节点公网 IP
-      target = this.extractString(metadata.publicIp) 
-        ?? this.extractString(metadata.ipv4)
-        ?? this.extractString(metadata.publicAddress);
+      // 优先使用 IPv6（如果有），因为可以避免 NAT 问题
+      const ipv6 = this.extractString(metadata.ipv6);
+      const ipv4 = this.extractString(metadata.ipv4);
+      const publicIp = this.extractString(metadata.publicIp);
+      const publicAddress = this.extractString(metadata.publicAddress);
+      
+      // IPv6 优先策略：如果有公网 IPv6，优先使用
+      if (ipv6 && this.isIpv6(ipv6)) {
+        target = ipv6;
+        recordType = 'AAAA';
+        this.logger.debug(`Node ${nodeId} 使用 IPv6 地址: ${ipv6}`);
+      } else {
+        target = publicIp ?? ipv4 ?? publicAddress;
+      }
       
       if (!target && hints?.target) {
         target = hints.target;
@@ -85,7 +98,7 @@ export class EdgeNodeDnsCoordinator {
       return;
     }
     
-    const type = this.detectRecordType(target) ?? this.defaultRecordType;
+    const type = recordType ?? this.detectRecordType(target) ?? this.defaultRecordType;
     const value = this.normalizeRecordValue(target, type);
 
     if (!value) {

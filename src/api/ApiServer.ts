@@ -141,6 +141,13 @@ export class ApiServer {
     });
   }
 
+  /**
+   * Get the underlying HTTP server (for WebSocket upgrade)
+   */
+  public getHttpServer(): Server | undefined {
+    return this.server;
+  }
+
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const method = request.method?.toUpperCase() ?? 'GET';
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);

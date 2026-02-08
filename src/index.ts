@@ -24,6 +24,7 @@ import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifi
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
+import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
 import { DefaultQuotaService } from './quota/DefaultQuotaService';
 import { DrizzleQuotaService } from './quota/DrizzleQuotaService';
 import { NoopQuotaService } from './quota/NoopQuotaService';
@@ -64,7 +65,15 @@ import { CredentialReaderImpl } from './ai/service/CredentialReaderImpl';
 import { VectorStore } from './storage/vector/VectorStore';
 // Tunnel and Subdomain components
 import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';
+import { LocalTunnelProvider } from './tunnel/LocalTunnelProvider';
 import { SubdomainService } from './subdomain/SubdomainService';
+// IdP/SP separation components
+import { MultiDomainIdentifierStrategy } from './util/identifiers/MultiDomainIdentifierStrategy';
+import { SubdomainPodIdentifierStrategy } from './util/identifiers/SubdomainPodIdentifierStrategy';
+import { DisabledOidcHandler } from './identity/oidc/DisabledOidcHandler';
+import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentityProviderHandler';
+import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
+import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
 export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
 // Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
 export type {
@@ -121,6 +130,7 @@ export {
     DrizzleIndexedStorage,
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
+    SqliteKeyValueStorage,
   DefaultQuotaService,
   DrizzleQuotaService,
     NoopQuotaService,
@@ -163,5 +173,13 @@ export {
   CredentialReaderImpl,
   // Tunnel and Subdomain exports
   CloudflareTunnelProvider,
+  LocalTunnelProvider,
   SubdomainService,
+  // IdP/SP separation exports
+  MultiDomainIdentifierStrategy,
+  SubdomainPodIdentifierStrategy,
+  DisabledOidcHandler,
+  DisabledIdentityProviderHandler,
+  AutoDetectOidcHandler,
+  AutoDetectIdentityProviderHandler,
 };

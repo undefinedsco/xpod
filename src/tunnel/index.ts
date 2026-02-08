@@ -9,3 +9,8 @@ export {
   CloudflareTunnelProvider,
   type CloudflareTunnelProviderOptions,
 } from './CloudflareTunnelProvider';
+
+export {
+  LocalTunnelProvider,
+  type LocalTunnelProviderOptions,
+} from './LocalTunnelProvider';

@@ -12,7 +12,7 @@ import { Readable } from 'node:stream';
 import arrayifyStream from 'arrayify-stream';
 
 import { DataFactory } from 'n3';
-import type { NamedNode, Quad } from '@rdfjs/types';
+import type { NamedNode, Quad, Term } from '@rdfjs/types';
 import type {
   ConstructQuery,
   GraphPattern,
@@ -56,6 +56,7 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
   private readonly store: QuintStore;
   private readonly engine: ComunicaQuintEngine;
   private readonly generator: SparqlGenerator;
+  private readonly baseUrl: string;
   private initialized = false;
 
   public constructor(
@@ -66,6 +67,10 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     this.identifierStrategy = identifierStrategy;
     this.generator = new Generator();
     this.engine = new ComunicaQuintEngine(this.store);
+    // Get baseUrl from identifierStrategy
+    const strategy = identifierStrategy as unknown as { baseUrl?: string };
+    this.baseUrl = strategy.baseUrl ?? '';
+    this.logger.info(`QuintStoreSparqlDataAccessor initialized with identifierStrategy: ${identifierStrategy.constructor.name}, baseUrl: ${this.baseUrl || 'N/A'}`);
   }
 
   /**
@@ -112,12 +117,15 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
    * Returns the metadata for the corresponding identifier.
    */
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
+    console.log(`[getMetadata] Starting for ${identifier.path}`);
     await this.initialize();
-    this.logger.debug(`getMetadata: ${identifier.path}`);
     const name = namedNode(identifier.path);
     const query = this.sparqlConstruct(this.getMetadataNode(name));
+    console.log(`[getMetadata] Sending CONSTRUCT for ${identifier.path}`);
     const stream = await this.sendSparqlConstruct(query);
+    console.log(`[getMetadata] Got stream for ${identifier.path}, reading...`);
     const quads: Quad[] = await arrayifyStream(stream);
+    console.log(`[getMetadata] Read ${quads.length} quads for ${identifier.path}`);
 
     if (quads.length === 0) {
       throw new NotFoundHttpError();
@@ -145,11 +153,16 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
    * Writes the given metadata for the container.
    */
   public async writeContainer(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
+    console.log(`[writeContainer] Starting for ${identifier.path}`);
     await this.initialize();
     addResourceMetadata(metadata, true);
     updateModifiedDate(metadata);
     const { name, parent } = this.getRelatedNames(identifier);
-    return this.sendSparqlUpdate(this.sparqlInsert(name, metadata, parent));
+    console.log(`[writeContainer] Sending SPARQL update for ${identifier.path}, parent: ${parent?.value || 'none'}`);
+    console.log(`[writeContainer] Metadata quads: ${metadata.quads().length}`);
+    const result = await this.sendSparqlUpdate(this.sparqlInsert(name, metadata, parent));
+    console.log(`[writeContainer] Completed for ${identifier.path}`);
+    return result;
   }
 
   /**
@@ -160,20 +173,40 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     data: Guarded<Readable>,
     metadata: RepresentationMetadata,
   ): Promise<void> {
+    console.log(`[writeDocument] Starting for ${identifier.path}`);
     await this.initialize();
     if (this.isMetadataIdentifier(identifier)) {
       throw new ConflictHttpError('Not allowed to create NamedNodes with the metadata extension.');
     }
     const { name, parent } = this.getRelatedNames(identifier);
+    console.log(`[writeDocument] Reading stream for ${identifier.path}`);
 
-    const triples = await arrayifyStream<Quad>(data);
+    // 添加超时处理
+    const timeoutMs = 5000;
+    const triplesPromise = arrayifyStream<Quad>(data);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`arrayifyStream timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+    
+    let triples: Quad[];
+    try {
+      triples = await Promise.race([triplesPromise, timeoutPromise]);
+      console.log(`[writeDocument] Read ${triples.length} triples for ${identifier.path}`);
+    } catch (e: any) {
+      console.error(`[writeDocument] Failed to read stream for ${identifier.path}:`, e?.message || e);
+      throw e;
+    }
+    
     const def = defaultGraph();
     if (triples.some((triple): boolean => !def.equals(triple.graph))) {
       throw new NotImplementedHttpError('Only triples in the default graph are supported.');
     }
 
     metadata.removeAll(CONTENT_TYPE_TERM);
-    return this.sendSparqlUpdate(this.sparqlInsert(name, metadata, parent, triples));
+    console.log(`[writeDocument] Sending SPARQL update for ${identifier.path}`);
+    const result = await this.sendSparqlUpdate(this.sparqlInsert(name, metadata, parent, triples));
+    console.log(`[writeDocument] Completed for ${identifier.path}`);
+    return result;
   }
 
   /**

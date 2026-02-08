@@ -197,13 +197,13 @@ describePg('PgQuintStore', () => {
         literal('o'),
         namedNode('http://g'),
       ) as Quint;
-      quint.embedding = embedding;
+      quint.vector = embedding;
 
       await store.put(quint);
       
       const results = await store.get({});
       expect(results).toHaveLength(1);
-      expect(results[0].embedding).toEqual(embedding);
+      expect(results[0].vector).toEqual(embedding);
     });
 
     it('should update embeddings', async () => {
@@ -223,7 +223,7 @@ describePg('PgQuintStore', () => {
       );
       
       const results = await store.get({});
-      expect(results[0].embedding).toEqual(newEmbedding);
+      expect(results[0].vector).toEqual(newEmbedding);
     });
   });
 });

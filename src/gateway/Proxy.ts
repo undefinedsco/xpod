@@ -1,7 +1,7 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
-import type { Supervisor } from './Supervisor';
-import { logger } from '../util/logger';
+import { getLoggerFor } from 'global-logger-factory';
+import type { Supervisor } from './supervisor';
 
 // CORS configuration matching CSS CorsHandler defaults
 const CORS_CONFIG = {
@@ -19,6 +19,7 @@ const CORS_CONFIG = {
 };
 
 export class GatewayProxy {
+  private readonly logger = getLoggerFor(this);
   private proxy: httpProxy;
   private server: http.Server;
   private targets: { css?: string; api?: string } = {};
@@ -29,8 +30,7 @@ export class GatewayProxy {
     });
 
     this.proxy.on('error', (err, _req, res) => {
-      logger.error('Proxy error:', err);
-      this.supervisor.addLog('xpod', 'error', `Proxy error: ${err.message}`);
+      this.logger.error('Proxy error:', err);
       if (res && 'writeHead' in res && !res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Service Unavailable', details: err.message }));
@@ -40,7 +40,12 @@ export class GatewayProxy {
     this.server = http.createServer(this.handleRequest.bind(this));
 
     this.server.on('upgrade', (req, socket, head) => {
-      if (this.targets.css) {
+      const url = req.url ?? '/';
+
+      // Route /ws/* WebSocket connections to API server
+      if (url.startsWith('/ws/') && this.targets.api) {
+        this.proxy.ws(req, socket, head, { target: this.targets.api });
+      } else if (this.targets.css) {
         this.proxy.ws(req, socket, head, { target: this.targets.css });
       } else {
         socket.destroy();
@@ -53,10 +58,8 @@ export class GatewayProxy {
   }
 
   public start(): void {
-    this.server.listen(this.port, () => {
-      const msg = `Listening on http://localhost:${this.port}`;
-      logger.log(msg);
-      this.supervisor.addLog('xpod', 'info', msg);
+    this.server.listen(this.port, '0.0.0.0', () => {
+      this.logger.info(`Listening on http://0.0.0.0:${this.port}`);
     });
   }
 
@@ -64,13 +67,40 @@ export class GatewayProxy {
     const url = req.url ?? '/';
     const origin = req.headers.origin;
 
-    // Add x-forwarded-host for proper DPoP verification
-    if (!req.headers['x-forwarded-host']) {
-      req.headers['x-forwarded-host'] = req.headers.host;
+    // Store original host for x-forwarded-host before any rewrites
+    const originalHost = req.headers.host;
+
+    // Set x-forwarded-proto based on CSS_BASE_URL
+    // Override any existing value since cloudflared sets it to 'http' for local forwarding
+    const baseUrl = process.env.CSS_BASE_URL || '';
+    if (baseUrl.startsWith('https')) {
+      req.headers['x-forwarded-proto'] = 'https';
     }
 
-    // 1. Internal API (Status & Control) - handled here with CORS
-    if (url.startsWith('/service/')) {
+    // Rewrite Host header to match CSS_BASE_URL for proper routing
+    // This ensures CSS RouterHandler can correctly match paths
+    // Also set x-forwarded-host to the same value so CSS OriginalUrlExtractor uses it
+    if (baseUrl) {
+      try {
+        const parsedBaseUrl = new URL(baseUrl);
+        req.headers.host = parsedBaseUrl.host;
+        // CSS uses x-forwarded-host if present, so we need to set it to match baseUrl
+        req.headers['x-forwarded-host'] = parsedBaseUrl.host;
+      } catch {
+        // Ignore invalid baseUrl, keep original host
+        if (!req.headers['x-forwarded-host']) {
+          req.headers['x-forwarded-host'] = originalHost;
+        }
+      }
+    } else if (!req.headers['x-forwarded-host']) {
+      req.headers['x-forwarded-host'] = originalHost;
+    }
+
+    // Use debug level for per-request logs
+    this.logger.debug(`${req.method} ${url} x-forwarded-proto=${req.headers['x-forwarded-proto']} x-forwarded-host=${req.headers['x-forwarded-host']} host=${req.headers.host}`);
+
+    // 1. Gateway Internal API (Status & Control) - Gateway handles CORS
+    if (url.startsWith('/_gateway/')) {
       if (req.method === 'OPTIONS') {
         this.handleCorsPreflightRequest(res, origin);
         return;
@@ -82,8 +112,8 @@ export class GatewayProxy {
       return;
     }
 
-    // 2. API Server Routing (/v1, /api, /chatkit, /dashboard) - API Server handles its own CORS
-    if ((url.startsWith('/v1/') || url.startsWith('/api/') || url.startsWith('/chatkit') || url.startsWith('/dashboard')) && this.targets.api) {
+    // 2. API Server Routing (/v1 or /api) - API Server handles its own CORS
+    if ((url.startsWith('/v1/') || url.startsWith('/api/')) && this.targets.api) {
       this.proxy.web(req, res, { target: this.targets.api });
       return;
     }
@@ -118,89 +148,14 @@ export class GatewayProxy {
   }
 
   private handleInternalApi(req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (req.url === '/service/status') {
+    if (req.url === '/_gateway/status') {
       const status = this.supervisor.getAllStatus();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
       return;
     }
 
-    // SSE endpoint for streaming logs
-    if (req.url === '/service/logs/stream') {
-      this.handleLogStream(req, res);
-      return;
-    }
-
-    if (req.url?.startsWith('/service/logs')) {
-      // Parse query parameters
-      const url = new URL(req.url, `http://localhost:${this.port}`);
-      const level = url.searchParams.get('level') || 'all';
-      const source = url.searchParams.get('source') || 'all';
-      const limit = parseInt(url.searchParams.get('limit') || '500', 10);
-      
-      let logs = this.supervisor.getLogs();
-      
-      // Filter by level
-      if (level !== 'all') {
-        logs = logs.filter(log => log.level === level);
-      }
-      
-      // Filter by source
-      if (source !== 'all') {
-        logs = logs.filter(log => log.source === source);
-      }
-      
-      // Apply limit (get last N logs)
-      if (logs.length > limit) {
-        logs = logs.slice(-limit);
-      }
-      
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(logs));
-      return;
-    }
-
     res.writeHead(404);
     res.end('Not Found');
-  }
-
-  /**
-   * Handle SSE log streaming
-   */
-  private handleLogStream(req: http.IncomingMessage, res: http.ServerResponse): void {
-    // Set SSE headers
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    });
-
-    // Send initial logs
-    const logs = this.supervisor.getLogs();
-    res.write(`data: ${JSON.stringify({ type: 'init', logs: logs.slice(-100) })}
-
-`);
-
-    // Set up interval to send new logs
-    let lastIndex = logs.length;
-    const interval = setInterval(() => {
-      const currentLogs = this.supervisor.getLogs();
-      if (currentLogs.length > lastIndex) {
-        const newLogs = currentLogs.slice(lastIndex);
-        res.write(`data: ${JSON.stringify({ type: 'update', logs: newLogs })}
-
-`);
-        lastIndex = currentLogs.length;
-      }
-    }, 1000);
-
-    // Clean up on connection close
-    req.on('close', () => {
-      clearInterval(interval);
-    });
-
-    req.on('error', () => {
-      clearInterval(interval);
-    });
   }
 }

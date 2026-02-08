@@ -1,6 +1,6 @@
 /**
  * 共享服务注册
- *
+ * 
  * cloud 和 local 模式都需要的服务
  */
 
@@ -12,11 +12,12 @@ import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
+import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
+import { InternalPodService } from '../service/InternalPodService';
 import { VercelChatService } from '../service/VercelChatService';
 import { ApiServer } from '../ApiServer';
-import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 
 /**
  * 注册共享服务到容器
@@ -39,22 +40,28 @@ export function registerCommonServices(
       return new DrizzleClientCredentialsStore({
         db,
         encryptionKey: config.encryptionKey,
-        isSqlite: config.databaseUrl.startsWith('sqlite:'),
       });
     }).singleton(),
 
     // 认证
-    authenticator: asFunction(({ config }: ApiContainerCradle) => {
+    authenticator: asFunction(({ apiKeyStore, nodeRepo, config }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
+        store: apiKeyStore,
         tokenEndpoint: config.cssTokenEndpoint,
       });
 
+      const nodeTokenAuthenticator = new NodeTokenAuthenticator({
+        repository: nodeRepo,
+      });
+
       return new MultiAuthenticator({
-        authenticators: [solidAuthenticator, clientCredAuthenticator],
+        // NodeTokenAuthenticator 必须在 ClientCredentialsAuthenticator 之前
+        // 因为两者都处理 Bearer token，但 Node Token 有 X-Node-Id 头
+        authenticators: [solidAuthenticator, nodeTokenAuthenticator, clientCredAuthenticator],
       });
     }).singleton(),
 
@@ -63,26 +70,15 @@ export function registerCommonServices(
     }).singleton(),
 
     // 业务服务
-    chatService: asFunction(({ chatKitStore }: ApiContainerCradle) => {
-      return new VercelChatService(chatKitStore);
-    }).singleton(),
-
-    // ChatKit 服务 (OpenAI ChatKit 协议)
-    chatKitStore: asFunction(({ config }: ApiContainerCradle) => {
-      return new PodChatKitStore({
+    podService: asFunction(({ apiKeyStore, config }: ApiContainerCradle) => {
+      return new InternalPodService({
         tokenEndpoint: config.cssTokenEndpoint,
+        apiKeyStore,
       });
     }).singleton(),
 
-    chatKitAiProvider: asFunction(({ chatKitStore }: ApiContainerCradle) => {
-      return new VercelAiProvider({ store: chatKitStore });
-    }).singleton(),
-
-    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider }: ApiContainerCradle) => {
-      return new ChatKitService({
-        store: chatKitStore,
-        aiProvider: chatKitAiProvider,
-      });
+    chatService: asFunction(({ podService }: ApiContainerCradle) => {
+      return new VercelChatService(podService);
     }).singleton(),
 
     // API Server

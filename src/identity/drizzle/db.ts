@@ -8,6 +8,7 @@ import * as pgSchema from './schema.pg';
 import * as sqliteSchema from './schema.sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import { getSharedPool, releaseSharedPool } from '../../storage/database/PostgresPoolManager';
 
 // Use 'any' to allow both PostgreSQL and SQLite database instances
 // The actual type depends on the connection string at runtime
@@ -33,7 +34,9 @@ const dbCache = new Map<string, CachedConnection>();
 const JSON_OIDS = [114, 3802];
 
 for (const oid of JSON_OIDS) {
-  types.setTypeParser(oid, (value) => (value == null ? null : JSON.parse(value)));
+  // Explicitly return raw string to avoid "Type Conflict" with CSS
+  // and to satisfy PgQuintStore's parseVector expecting a string.
+  types.setTypeParser(oid, (value) => value);
 }
 
 /**
@@ -87,14 +90,17 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
     return db;
   }
 
-  // PostgreSQL
-  const pool = new Pool({ connectionString });
+  // PostgreSQL: use shared pool to avoid connection exhaustion and deadlocks
+  const pool = getSharedPool({ connectionString });
   const db = drizzlePg(pool);
   dbCache.set(connectionString, {
     db,
     schema: pgSchema,
     isSqlite: false,
-    close: async () => pool.end(),
+    close: async () => { 
+      // Release reference to shared pool instead of ending it
+      releaseSharedPool({ connectionString }); 
+    },
   });
   return db;
 }

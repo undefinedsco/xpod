@@ -5,11 +5,17 @@ import type {
   KeyValueStorage,
 } from '@solid/community-server';
 import { getLoggerFor } from 'global-logger-factory';
+import { getSharedPool, releaseSharedPool } from '../database/PostgresPoolManager';
 
 export interface PostgresKeyValueStorageOptions {
   connectionString: string;
   tableName?: string;
   namespace?: string;
+  /** 
+   * 共享的 pg Pool 实例（避免多个组件创建独立连接池导致死锁）
+   * 如果提供，将忽略 connectionString
+   */
+  pool?: Pool;
 }
 
 function assertIdentifier(name: string): void {
@@ -30,7 +36,12 @@ export class PostgresKeyValueStorage<T = unknown> implements
   private readonly ready: Promise<void>;
 
   public constructor(options: PostgresKeyValueStorageOptions) {
-    this.pool = new Pool({ connectionString: options.connectionString });
+    // 使用共享的连接池，避免多个组件创建独立连接池导致死锁
+    if (options.pool) {
+      this.pool = options.pool;
+    } else {
+      this.pool = getSharedPool({ connectionString: options.connectionString });
+    }
     this.tableName = options.tableName ?? 'internal_kv';
     this.namespace = options.namespace ?? '';
     assertIdentifier(this.tableName);
@@ -43,9 +54,10 @@ export class PostgresKeyValueStorage<T = unknown> implements
   }
 
   public async finalize(): Promise<void> {
-    await this.pool.end().catch((error: unknown) => {
-      this.logger.warn(`Failed to close Postgres pool: ${error}`);
-    });
+    // 释放共享连接池引用（如果是共享的）
+    // 注意：这里我们无法确定是否是共享的，所以直接释放
+    // PoolManager 会处理引用计数
+    releaseSharedPool({ connectionString: '' });
   }
 
 

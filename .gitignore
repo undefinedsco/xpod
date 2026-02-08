@@ -43,6 +43,15 @@ logs/
 # Test cache
 .rdf-test-suite-cache/
 
+# Test data directories (generated during development)
+data-cloud/
+data-test/
+alice/
+bob/
+
+# Temporary/clipboard files
+.gemini-clipboard/
+
 # Temporary files
 local/
 third_party/

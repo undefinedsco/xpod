@@ -16,6 +16,7 @@ import {
   type DataAccessor,
   type IdentifierStrategy,
   type AuxiliaryStrategy,
+  type Representation,
 } from '@solid/community-server';
 import type { SparqlUpdatePatch } from '@solid/community-server';
 import { readableToString } from '@solid/community-server/dist/util/StreamUtil';
@@ -39,6 +40,9 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
 
   public constructor(options: SparqlUpdateResourceStoreOptions) {
     super(options.accessor, options.identifierStrategy, options.auxiliaryStrategy, options.metadataStrategy);
+    // Check if identifierStrategy has baseUrl property (SingleRootIdentifierStrategy)
+    const strategy = options.identifierStrategy as unknown as { baseUrl?: string };
+    this.logger.info(`SparqlUpdateResourceStore initialized with identifierStrategy: ${options.identifierStrategy.constructor.name}, baseUrl: ${strategy.baseUrl ?? 'N/A'}`);
   }
 
   // @ts-expect-error Upstream signature returns never; we return ChangeMap for successful PATCH.
@@ -332,5 +336,9 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
       accessor !== null &&
       typeof (accessor as { executeSparqlUpdate?: unknown }).executeSparqlUpdate === 'function' &&
       typeof (accessor as { getMetadata?: unknown }).getMetadata === 'function';
+  }
+
+  public override async setRepresentation(identifier: ResourceIdentifier, representation: Representation, conditions?: Conditions): Promise<ChangeMap> {
+    return super.setRepresentation(identifier, representation, conditions);
   }
 }

@@ -140,10 +140,14 @@ export class EdgeNodeSignalHttpHandler extends HttpHandler {
 
     const connectivityInfo = await this.repo.getNodeConnectivityInfo(payload.nodeId);
 
-    if (this.modeDetector && fallbackPublicIp) {
+    // 提取 IPv6 地址
+    const ipv6Address = this.optionalString(payload.ipv6) ?? this.optionalString(merged.ipv6);
+    
+    if (this.modeDetector && (fallbackPublicIp || ipv6Address)) {
       const nodeRegistrationInfo: NodeRegistrationInfo = {
         nodeId: payload.nodeId,
         publicIp: fallbackPublicIp,
+        publicIpv6: ipv6Address,
         publicPort: this.extractPortNumber(payload.publicAddress || merged.publicAddress),
         capabilities: this.buildNodeCapabilities(payload, merged),
       };

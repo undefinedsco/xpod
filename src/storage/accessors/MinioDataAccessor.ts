@@ -49,14 +49,32 @@ export class MinioDataAccessor implements DataAccessor {
     bucketName: string,
   ) {
     this.resourceMapper = resourceMapper;
+
+    // Parse endpoint - supports both URL format (http://host:port) and simple format (host:port)
+    let endPoint: string;
+    let port: number | undefined;
+    let useSSL = false;
+
+    if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
+      const url = new URL(endpoint);
+      endPoint = url.hostname;
+      port = url.port ? parseInt(url.port, 10) : undefined;
+      useSSL = url.protocol === 'https:';
+    } else {
+      const parts = endpoint.split(':');
+      endPoint = parts[0];
+      port = parts[1] ? parseInt(parts[1], 10) : undefined;
+    }
+
     this.client = new Client({
       accessKey,
       secretKey,
-      endPoint: endpoint,
-      useSSL: true,
+      endPoint,
+      port,
+      useSSL,
     });
     this.bucketName = bucketName;
-    this.logger.info(`MinioDataAccessor initialized with endpoint: ${endpoint}`)
+    this.logger.info(`MinioDataAccessor initialized with endpoint: ${endPoint}:${port} (SSL: ${useSSL})`)
   }
 
   /**
