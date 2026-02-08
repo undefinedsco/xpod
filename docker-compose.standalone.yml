@@ -1,0 +1,45 @@
+# Xpod 轻量集成测试环境（Standalone-only）
+# 启动: docker compose -f docker-compose.standalone.yml up -d
+# 停止: docker compose -f docker-compose.standalone.yml down
+
+x-xpod-image: &xpod-image
+  image: xpod:dev
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+services:
+  standalone:
+    <<: *xpod-image
+    environment:
+      NODE_ENV: development
+      XPOD_EDITION: local
+      XPOD_ENCRYPTION_KEY: dev-encryption-key-change-in-production
+      API_PORT: "5740"
+      API_HOST: "0.0.0.0"
+      CSS_PORT: "5739"
+      CSS_BASE_URL: http://localhost:5739
+      CSS_ALLOWED_HOSTS: "localhost,host.docker.internal"
+      CSS_LOGGING_LEVEL: info
+      CSS_SPARQL_ENDPOINT: sqlite:/app/data/local-standalone.sqlite
+      CSS_IDENTITY_DB_URL: sqlite:/app/data/local-standalone-identity.sqlite
+      CSS_SEED_CONFIG: /app/config/seed.dev.json
+      http_proxy: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    ports:
+      - "5739:5739"
+      - "5740:5740"
+    volumes:
+      - standalone_lite_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:5739/_gateway/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    command: ["sh", "-c", "node dist/main.js -m local -p 5739"]
+
+volumes:
+  standalone_lite_data:
