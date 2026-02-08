@@ -11,25 +11,12 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { AppRunner, App } from '@solid/community-server';
-import { Session } from '@inrupt/solid-client-authn-node';
-import path from 'path';
-import fs from 'fs';
 
 import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import type { StoreContext } from '../../src/api/chatkit/store';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
-
-// Test configuration
-const TEST_PORT = 4123;
-const TEST_BASE_URL = `http://localhost:${TEST_PORT}/`;
-const TEST_DATA_DIR = '.test-data/chatkit-pod-store';
-const SPARQL_DB_PATH = `${TEST_DATA_DIR}/quadstore.sqlite`;
-const ROOT_FILE_PATH = `${TEST_DATA_DIR}/data`;
-
-// Config files
-const configFiles = [path.join(process.cwd(), 'config/local.json')];
+import { setupAccount, type AccountSetup } from './helpers/solidAccount';
 
 // Mock AI Provider - simulates AI responses
 class MockAiProvider implements AiProvider {
@@ -51,124 +38,33 @@ class MockAiProvider implements AiProvider {
   }
 }
 
-describe('ChatKit PodStore Integration', () => {
-  let app: App;
+const RUN_DOCKER_TESTS = process.env.XPOD_RUN_DOCKER_TESTS === 'true';
+const shouldRun = RUN_DOCKER_TESTS;
+const suite = shouldRun ? describe : describe.skip;
+
+const solidBaseUrl = RUN_DOCKER_TESTS
+  ? 'http://localhost:5739'
+  : (process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+
+suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;
   let store: PodChatKitStore;
-  let session: Session;
   let testContext: StoreContext;
 
-  // Test user credentials (will be created during setup)
-  let clientId: string;
-  let clientSecret: string;
-  let webId: string;
+  // Test user credentials (created during setup)
+  let account: AccountSetup;
+  let podUrl: string;
 
   beforeAll(async () => {
-    // 1. Setup test directories
-    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
-    fs.mkdirSync(ROOT_FILE_PATH, { recursive: true });
+    const createdAccount = await setupAccount(solidBaseUrl, 'chatkit-store');
+    if (!createdAccount) {
+      throw new Error(`Failed to setup account on ${solidBaseUrl}`);
+    }
+    account = createdAccount;
+    podUrl = account.podUrl;
 
-    // 2. Set environment variables
-    process.env.CSS_SPARQL_ENDPOINT = `sqlite:${SPARQL_DB_PATH}`;
-    process.env.CSS_BASE_URL = TEST_BASE_URL;
-
-    // 3. Start CSS server
-    app = await new AppRunner().create({
-      config: configFiles,
-      loaderProperties: {
-        mainModulePath: process.cwd(),
-        typeChecking: false,
-      },
-      variableBindings: {
-        'urn:solid-server:default:variable:port': TEST_PORT,
-        'urn:solid-server:default:variable:baseUrl': TEST_BASE_URL,
-        'urn:solid-server:default:variable:showStackTrace': true,
-        'urn:solid-server:default:variable:loggingLevel': 'warn',
-        'urn:solid-server:default:variable:sparqlEndpoint': `sqlite:${SPARQL_DB_PATH}`,
-        'urn:solid-server:default:variable:rootFilePath': ROOT_FILE_PATH,
-      },
-    });
-
-    await app.start();
-
-    // 4. Create test account and Pod (CSS 8.0 API)
-    // Step 1: Create account
-    const createAccountResponse = await fetch(`${TEST_BASE_URL}.account/account/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    expect(createAccountResponse.ok).toBe(true);
-    const accountData = (await createAccountResponse.json()) as any;
-    const accountToken = accountData.authorization;
-
-    // Step 2: Get authenticated controls
-    const controlsResponse = await fetch(`${TEST_BASE_URL}.account/`, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': `CSS-Account-Token ${accountToken}`,
-      },
-    });
-    expect(controlsResponse.ok).toBe(true);
-    const controls = (await controlsResponse.json()) as any;
-
-    // Step 3: Create password login
-    const passwordResponse = await fetch(controls.controls.password.create, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `CSS-Account-Token ${accountToken}`,
-      },
-      body: JSON.stringify({
-        email: 'chatkit-test@example.com',
-        password: 'test-password-123',
-      }),
-    });
-    expect(passwordResponse.ok).toBe(true);
-
-    // Step 4: Create Pod
-    const podResponse = await fetch(controls.controls.account.pod, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `CSS-Account-Token ${accountToken}`,
-      },
-      body: JSON.stringify({ name: 'chatkit-test' }),
-    });
-    expect(podResponse.ok).toBe(true);
-    const podData = (await podResponse.json()) as any;
-    webId = podData.webId;
-
-    // Step 5: Create client credentials
-    const credResponse = await fetch(controls.controls.account.clientCredentials, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `CSS-Account-Token ${accountToken}`,
-      },
-      body: JSON.stringify({
-        name: 'chatkit-test-client',
-        webId,
-      }),
-    });
-    expect(credResponse.ok).toBe(true);
-    const credData = (await credResponse.json()) as any;
-    clientId = credData.id;
-    clientSecret = credData.secret;
-
-    // 5. Login with client credentials
-    session = new Session();
-    await session.login({
-      oidcIssuer: TEST_BASE_URL,
-      clientId,
-      clientSecret,
-    });
-    expect(session.info.isLoggedIn).toBe(true);
-
-    // 6. Setup ChatKit service with PodStore
     store = new PodChatKitStore({
-      tokenEndpoint: `${TEST_BASE_URL}.oidc/token`,
+      tokenEndpoint: `${account.issuer.replace(/\/$/, '')}/.oidc/token`,
     });
 
     service = new ChatKitService({
@@ -177,34 +73,20 @@ describe('ChatKit PodStore Integration', () => {
       systemPrompt: 'You are a helpful test assistant.',
     });
 
-    // 7. Create test context with auth info
     testContext = {
-      userId: webId,
+      userId: account.webId,
       auth: {
         type: 'solid',
-        webId,
-        clientId,
-        clientSecret,
+        webId: account.webId,
+        clientId: account.clientId,
+        clientSecret: account.clientSecret,
       },
     } as StoreContext;
   }, 60000);
 
   afterAll(async () => {
-    // Logout session
-    if (session?.info.isLoggedIn) {
-      await session.logout();
-    }
-
-    // Stop CSS server
-    if (app) {
-      await app.stop();
-    }
-
-    // Cleanup test data
-    if (fs.existsSync(TEST_DATA_DIR)) {
-      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-    }
-  }, 30000);
+    // No cleanup: integration accounts are ephemeral.
+  }, 1000);
 
   describe('Thread CRUD Operations', () => {
     let threadId: string;
@@ -616,7 +498,7 @@ describe('ChatKit PodStore Integration', () => {
       // Create a credential
       await db.insert(Credential).values({
         id: 'cred-test-001',
-        provider: `${TEST_BASE_URL}chatkit-test/settings/ai/providers.ttl#test-openai`,
+        provider: `${podUrl}settings/ai/providers.ttl#test-openai`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-test-key-123',
@@ -648,7 +530,7 @@ describe('ChatKit PodStore Integration', () => {
       // Create credential with custom baseUrl
       await db.insert(Credential).values({
         id: 'cred-custom-001',
-        provider: `${TEST_BASE_URL}chatkit-test/settings/ai/providers.ttl#custom-provider`,
+        provider: `${podUrl}settings/ai/providers.ttl#custom-provider`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-custom-key',
@@ -678,7 +560,7 @@ describe('ChatKit PodStore Integration', () => {
       // Create inactive credential
       await db.insert(Credential).values({
         id: 'cred-inactive-001',
-        provider: `${TEST_BASE_URL}chatkit-test/settings/ai/providers.ttl#inactive-provider`,
+        provider: `${podUrl}settings/ai/providers.ttl#inactive-provider`,
         service: ServiceType.AI,
         status: CredentialStatus.INACTIVE,
         apiKey: 'sk-inactive-key',
@@ -699,7 +581,7 @@ describe('ChatKit PodStore Integration', () => {
       // Create a credential for status update test
       await db.insert(Credential).values({
         id: 'cred-status-test',
-        provider: `${TEST_BASE_URL}chatkit-test/settings/ai/providers.ttl#test-openai`,
+        provider: `${podUrl}settings/ai/providers.ttl#test-openai`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-status-test-key',
@@ -731,7 +613,7 @@ describe('ChatKit PodStore Integration', () => {
       // Create a credential with some failures
       await db.insert(Credential).values({
         id: 'cred-success-test',
-        provider: `${TEST_BASE_URL}chatkit-test/settings/ai/providers.ttl#test-openai`,
+        provider: `${podUrl}settings/ai/providers.ttl#test-openai`,
         service: ServiceType.AI,
         status: CredentialStatus.RATE_LIMITED,
         apiKey: 'sk-success-test-key',
@@ -765,7 +647,7 @@ describe('ChatKit PodStore Integration', () => {
       // Create credential
       await db.insert(Credential).values({
         id: 'cred-proxy-001',
-        provider: `${TEST_BASE_URL}chatkit-test/settings/ai/providers.ttl#proxy-provider`,
+        provider: `${podUrl}settings/ai/providers.ttl#proxy-provider`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-proxy-key',

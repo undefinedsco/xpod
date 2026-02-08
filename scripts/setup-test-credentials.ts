@@ -1,10 +1,11 @@
 /**
- * Setup test credentials before running integration tests.
- * This script:
- * 1. Checks if the server is running
- * 2. Logs in with the seeded account
- * 3. Creates client credentials if needed
- * 4. Updates .env.local with the credentials
+ * Setup integration-test credentials.
+ *
+ * Strategy:
+ * 1. Login with one available seeded account (env override first, then CSS_SEED_CONFIG candidates).
+ * 2. Create a fresh pod based on current base URL.
+ * 3. Create fresh client credentials bound to that pod WebID.
+ * 4. Overwrite .env.local with latest SOLID_CLIENT_* / SOLID_WEBID / SOLID_OIDC_ISSUER.
  */
 
 import * as dotenv from 'dotenv';
@@ -15,25 +16,75 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
 const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:3000';
 const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
-const seedCandidates = [
-  {
-    email: process.env.SOLID_SEED_EMAIL ?? 'test-integration@example.com',
-    password: process.env.SOLID_SEED_PASSWORD ?? 'TestIntegration123!',
-  },
-  // docker standalone 默认 seed.dev.json
-  {
-    email: 'test@dev.local',
-    password: 'test123456',
-  },
-];
 const envFilePath = path.resolve(process.cwd(), '.env.local');
+const defaultSeedConfigPath = path.resolve(process.cwd(), 'config/seeds/test.json');
+const seedConfigPath = process.env.CSS_SEED_CONFIG ?? defaultSeedConfigPath;
+
+interface SeedAccount {
+  email: string;
+  password: string;
+}
 
 interface AccountControls {
   controls: {
-    password?: { create?: string };
-    credentials?: { create?: string };
-    account?: { clientCredentials?: string };
+    account?: {
+      pod?: string;
+      clientCredentials?: string;
+    };
+    password?: {
+      create?: string;
+    };
   };
+}
+
+interface PodCreationResult {
+  pod?: string;
+  webId?: string;
+}
+
+function loadSeedAccounts(): SeedAccount[] {
+  const accounts: SeedAccount[] = [];
+
+  if (process.env.SOLID_TEST_EMAIL && process.env.SOLID_TEST_PASSWORD) {
+    accounts.push({
+      email: process.env.SOLID_TEST_EMAIL,
+      password: process.env.SOLID_TEST_PASSWORD,
+    });
+  }
+
+  if (fs.existsSync(seedConfigPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(seedConfigPath, 'utf8')) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (
+            entry &&
+            typeof entry === 'object' &&
+            typeof (entry as Record<string, unknown>).email === 'string' &&
+            typeof (entry as Record<string, unknown>).password === 'string'
+          ) {
+            const email = (entry as Record<string, unknown>).email as string;
+            const password = (entry as Record<string, unknown>).password as string;
+            if (!accounts.some((item) => item.email === email)) {
+              accounts.push({ email, password });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn(`Failed to parse seed file ${seedConfigPath}: ${error}`);
+    }
+  }
+
+  if (accounts.length === 0) {
+    // Final fallback for older setups.
+    accounts.push({
+      email: 'test-integration@example.com',
+      password: 'TestIntegration123!',
+    });
+  }
+
+  return accounts;
 }
 
 async function checkServer(): Promise<boolean> {
@@ -47,29 +98,49 @@ async function checkServer(): Promise<boolean> {
   }
 }
 
-async function login(): Promise<string | null> {
-  for (const candidate of seedCandidates) {
-    const loginResponse = await fetch(`${baseUrl}.account/login/password/`, {
+async function login(email: string, password: string): Promise<string | null> {
+  const loginResponse = await fetch(`${baseUrl}.account/login/password/`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ email, password }),
+  });
+
+  if (!loginResponse.ok) {
+    const body = await loginResponse.text();
+    console.warn(`Login failed for ${email}: ${body}`);
+    return null;
+  }
+
+  const loginResult = (await loginResponse.json()) as { authorization?: string };
+  return loginResult.authorization ?? null;
+}
+
+
+async function createAccountToken(): Promise<string | null> {
+  try {
+    const response = await fetch(`${baseUrl}.account/account/`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      body: JSON.stringify({ email: candidate.email, password: candidate.password }),
+      body: JSON.stringify({}),
     });
 
-    if (!loginResponse.ok) {
-      continue;
+    if (!response.ok) {
+      console.warn(`Account bootstrap failed: ${response.status} ${await response.text()}`);
+      return null;
     }
 
-    const loginResult = (await loginResponse.json()) as { authorization?: string };
-    if (loginResult.authorization) {
-      console.log(`Login successful with seed account: ${candidate.email}`);
-      return loginResult.authorization;
-    }
+    const data = (await response.json()) as { authorization?: string };
+    return data.authorization ?? null;
+  } catch (error) {
+    console.warn(`Account bootstrap error: ${error}`);
+    return null;
   }
-
-  return null;
 }
 
 async function getAccountControls(token: string): Promise<AccountControls | null> {
@@ -88,6 +159,75 @@ async function getAccountControls(token: string): Promise<AccountControls | null
   return (await response.json()) as AccountControls;
 }
 
+
+async function ensurePasswordLogin(
+  token: string,
+  controls: AccountControls,
+  email: string,
+  password: string,
+): Promise<void> {
+  const createUrl = controls.controls.password?.create;
+  if (!createUrl) {
+    return;
+  }
+
+  try {
+    const response = await fetch(createUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `CSS-Account-Token ${token}`,
+      },
+      body: JSON.stringify({ email, password }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      // Existing login method should not block proceeding.
+      if (!body.includes('already') && !body.includes('exists')) {
+        console.warn(`Password login binding failed: ${response.status} ${body}`);
+      }
+    }
+  } catch (error) {
+    console.warn(`Password login binding error: ${error}`);
+  }
+}
+
+async function createFreshPod(token: string, podCreateUrl: string): Promise<{ webId: string; podName: string } | null> {
+  const baseName = process.env.SOLID_TEST_POD_ID || 'test-integration';
+  const candidateNames = [
+    `${baseName}-${Date.now()}`,
+    `${baseName}-${Math.random().toString(36).slice(2, 8)}`,
+  ];
+
+  for (const podName of candidateNames) {
+    const response = await fetch(podCreateUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `CSS-Account-Token ${token}`,
+      },
+      body: JSON.stringify({ name: podName }),
+    });
+
+    if (response.ok) {
+      const podData = (await response.json()) as PodCreationResult;
+      if (podData.webId) {
+        return { webId: podData.webId, podName };
+      }
+      console.error('Pod created but no webId returned:', JSON.stringify(podData));
+      return null;
+    }
+
+    const text = await response.text();
+    console.warn(`Create pod failed (${podName}): ${response.status} ${text.slice(0, 200)}`);
+  }
+
+  return null;
+}
+
 async function createClientCredentials(
   token: string,
   createUrl: string,
@@ -101,18 +241,13 @@ async function createClientCredentials(
       Authorization: `CSS-Account-Token ${token}`,
     },
     body: JSON.stringify({
-      name: 'integration-test',
+      name: `integration-test-${Date.now()}`,
       webId,
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    // If credential already exists, that's fine
-    if (text.includes('already exists')) {
-      console.log('Client credentials already exist');
-      return null;
-    }
     console.error('Failed to create client credentials:', text);
     return null;
   }
@@ -120,17 +255,26 @@ async function createClientCredentials(
   return (await response.json()) as { id: string; secret: string };
 }
 
-function updateEnvFile(clientId: string, clientSecret: string, webId: string): void {
+function toApiKey(clientId: string, clientSecret: string): string {
+  const raw = `${clientId}:${clientSecret}`;
+  return `sk-${Buffer.from(raw).toString('base64')}`;
+}
+
+function updateEnvFile(clientId: string, clientSecret: string, webId: string, podName: string): string {
   let envContent = '';
   if (fs.existsSync(envFilePath)) {
     envContent = fs.readFileSync(envFilePath, 'utf8');
   }
 
+  const apiKey = toApiKey(clientId, clientSecret);
+
   const updates: Record<string, string> = {
     SOLID_CLIENT_ID: clientId,
     SOLID_CLIENT_SECRET: clientSecret,
+    SOLID_API_KEY: apiKey,
     SOLID_WEBID: webId,
     SOLID_OIDC_ISSUER: baseUrl,
+    SOLID_TEST_POD_ID: podName,
   };
 
   for (const [key, value] of Object.entries(updates)) {
@@ -144,87 +288,90 @@ function updateEnvFile(clientId: string, clientSecret: string, webId: string): v
 
   fs.writeFileSync(envFilePath, envContent.trim() + '\n');
   console.log(`Updated ${envFilePath}`);
-}
-
-async function verifyCredentials(clientId: string, clientSecret: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${baseUrl}.oidc/token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: clientId,
-        client_secret: clientSecret,
-      }),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+  return apiKey;
 }
 
 async function main(): Promise<void> {
   console.log('Setting up test credentials...');
   console.log(`Base URL: ${baseUrl}`);
+  console.log(`Seed config: ${seedConfigPath}`);
 
-  // Check if server is running
   if (!(await checkServer())) {
     console.error('Server is not running. Please start it with "yarn local" first.');
     process.exit(1);
   }
   console.log('Server is running');
 
-  // Check if existing credentials work
-  const existingClientId = process.env.SOLID_CLIENT_ID;
-  const existingClientSecret = process.env.SOLID_CLIENT_SECRET;
-  if (existingClientId && existingClientSecret) {
-    console.log('Checking existing credentials...');
-    if (await verifyCredentials(existingClientId, existingClientSecret)) {
-      console.log('Existing credentials are valid');
-      return;
+  const accounts = loadSeedAccounts();
+  console.log(`Trying ${accounts.length} seed account(s)...`);
+
+  let token: string | null = null;
+  let activeEmail: string | null = null;
+  let activePassword: string | null = null;
+
+  for (const account of accounts) {
+    console.log(`Logging in as ${account.email}...`);
+    token = await login(account.email, account.password);
+    if (token) {
+      activeEmail = account.email;
+      activePassword = account.password;
+      break;
     }
-    console.log('Existing credentials are invalid, creating new ones...');
   }
 
-  // Login
-  console.log('Logging in with seeded account...');
-  const token = await login();
-  if (!token) {
-    console.error('Failed to login with all known seed accounts.');
+  const allowBootstrap = process.env.TEST_SETUP_ALLOW_BOOTSTRAP !== 'false';
+  if (!token && allowBootstrap) {
+    console.warn('Seed login failed, trying optional account bootstrap...');
+    token = await createAccountToken();
+    activeEmail = `bootstrap-${Date.now()}@test.local`;
+    activePassword = process.env.SOLID_TEST_PASSWORD ?? 'TestIntegration123!';
+  }
+
+  if (!token || !activeEmail) {
+    console.error('Failed to obtain account token from seeded accounts.');
+    console.error(`Seed config: ${seedConfigPath}`);
+    console.error('Hint: ensure seeded account password matches current server data, then rerun yarn test:setup.');
     process.exit(1);
   }
-  console.log('Login successful');
 
-  // Get account controls
+  console.log(`Account token ready: ${activeEmail}`);
+
   const controls = await getAccountControls(token);
   if (!controls) {
     console.error('Failed to get account controls');
     process.exit(1);
   }
 
-  // Find client credentials creation endpoint
-  const createUrl = controls.controls?.account?.clientCredentials;
-  if (!createUrl) {
-    console.error('Client credentials endpoint not found in controls:', JSON.stringify(controls, null, 2));
+  if (allowBootstrap && activeEmail && activePassword) {
+    await ensurePasswordLogin(token, controls, activeEmail, activePassword);
+  }
+
+  const podCreateUrl = controls.controls?.account?.pod;
+  const credCreateUrl = controls.controls?.account?.clientCredentials;
+  if (!podCreateUrl || !credCreateUrl) {
+    console.error('Pod/client credentials endpoints not found in controls:', JSON.stringify(controls, null, 2));
     process.exit(1);
   }
 
-  // Derive WebID
-  const webId = `${baseUrl}test/profile/card#me`;
-
-  // Create client credentials
-  console.log('Creating client credentials...');
-  const credentials = await createClientCredentials(token, createUrl, webId);
-  if (credentials) {
-    console.log(`Created credentials: ${credentials.id}`);
-    updateEnvFile(credentials.id, credentials.secret, webId);
-    console.log('Credentials saved to .env.local');
-  } else {
-    console.log('Could not create new credentials (may already exist)');
-    console.log('If tests fail with invalid_client, try running: yarn clean && yarn local');
+  console.log('Creating fresh pod...');
+  const podInfo = await createFreshPod(token, podCreateUrl);
+  if (!podInfo) {
+    console.error('Failed to create pod for integration tests');
+    process.exit(1);
   }
+  console.log(`Pod ready: ${podInfo.webId}`);
+
+  console.log('Creating fresh client credentials...');
+  const credentials = await createClientCredentials(token, credCreateUrl, podInfo.webId);
+  if (!credentials) {
+    console.error('Failed to create client credentials');
+    process.exit(1);
+  }
+
+  console.log(`Created credentials: ${credentials.id}`);
+  const apiKey = updateEnvFile(credentials.id, credentials.secret, podInfo.webId, podInfo.podName);
+  console.log('Credentials saved to .env.local');
+  console.log(`Generated SOLID_API_KEY: ${apiKey.slice(0, 24)}...`);
 }
 
 main().catch((error) => {

@@ -1,7 +1,7 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
 import { getLoggerFor } from 'global-logger-factory';
-import type { Supervisor } from './supervisor';
+import type { Supervisor } from './Supervisor';
 
 // CORS configuration matching CSS CorsHandler defaults
 const CORS_CONFIG = {
@@ -9,13 +9,13 @@ const CORS_CONFIG = {
   credentials: true,
   allowedHeaders: [
     'Authorization', 'Content-Type', 'Accept', 'DPoP', 'Origin',
-    'X-Requested-With', 'If-Match', 'If-None-Match', 'Slug', 'Link'
+    'X-Requested-With', 'If-Match', 'If-None-Match', 'Slug', 'Link',
   ],
   exposedHeaders: [
     'Accept-Patch', 'Accept-Post', 'Accept-Put', 'Allow', 'Content-Range',
     'ETag', 'Last-Modified', 'Link', 'Location', 'Updates-Via',
-    'WAC-Allow', 'Www-Authenticate', 'X-Request-Id'
-  ]
+    'WAC-Allow', 'Www-Authenticate', 'X-Request-Id',
+  ],
 };
 
 export class GatewayProxy {
@@ -53,7 +53,7 @@ export class GatewayProxy {
     });
   }
 
-  public setTargets(targets: { css?: string; api?: string }) {
+  public setTargets(targets: { css?: string; api?: string }): void {
     this.targets = targets;
   }
 
@@ -71,23 +71,18 @@ export class GatewayProxy {
     const originalHost = req.headers.host;
 
     // Set x-forwarded-proto based on CSS_BASE_URL
-    // Override any existing value since cloudflared sets it to 'http' for local forwarding
     const baseUrl = process.env.CSS_BASE_URL || '';
     if (baseUrl.startsWith('https')) {
       req.headers['x-forwarded-proto'] = 'https';
     }
 
     // Rewrite Host header to match CSS_BASE_URL for proper routing
-    // This ensures CSS RouterHandler can correctly match paths
-    // Also set x-forwarded-host to the same value so CSS OriginalUrlExtractor uses it
     if (baseUrl) {
       try {
         const parsedBaseUrl = new URL(baseUrl);
         req.headers.host = parsedBaseUrl.host;
-        // CSS uses x-forwarded-host if present, so we need to set it to match baseUrl
         req.headers['x-forwarded-host'] = parsedBaseUrl.host;
       } catch {
-        // Ignore invalid baseUrl, keep original host
         if (!req.headers['x-forwarded-host']) {
           req.headers['x-forwarded-host'] = originalHost;
         }
@@ -96,11 +91,12 @@ export class GatewayProxy {
       req.headers['x-forwarded-host'] = originalHost;
     }
 
-    // Use debug level for per-request logs
-    this.logger.debug(`${req.method} ${url} x-forwarded-proto=${req.headers['x-forwarded-proto']} x-forwarded-host=${req.headers['x-forwarded-host']} host=${req.headers.host}`);
+    this.logger.debug(
+      `${req.method} ${url} x-forwarded-proto=${req.headers['x-forwarded-proto']} x-forwarded-host=${req.headers['x-forwarded-host']} host=${req.headers.host}`,
+    );
 
-    // 1. Gateway Internal API (Status & Control) - Gateway handles CORS
-    if (url.startsWith('/_gateway/')) {
+    // 1. Gateway internal service endpoints
+    if (url.startsWith('/service/') || url.startsWith('/_gateway/')) {
       if (req.method === 'OPTIONS') {
         this.handleCorsPreflightRequest(res, origin);
         return;
@@ -112,13 +108,13 @@ export class GatewayProxy {
       return;
     }
 
-    // 2. API Server Routing (/v1 or /api) - API Server handles its own CORS
+    // 2. API Server Routing (/v1 or /api)
     if ((url.startsWith('/v1/') || url.startsWith('/api/')) && this.targets.api) {
       this.proxy.web(req, res, { target: this.targets.api });
       return;
     }
 
-    // 3. CSS Routing (Default) - CSS handles its own CORS
+    // 3. CSS Routing (Default)
     if (this.targets.css) {
       this.proxy.web(req, res, { target: this.targets.css });
     } else {
@@ -129,7 +125,7 @@ export class GatewayProxy {
 
   private handleCorsPreflightRequest(
     res: http.ServerResponse,
-    origin: string | undefined
+    origin: string | undefined,
   ): void {
     this.addCorsHeaders(res, origin);
     res.writeHead(204);
@@ -148,10 +144,31 @@ export class GatewayProxy {
   }
 
   private handleInternalApi(req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (req.url === '/_gateway/status') {
+    const reqUrl = req.url ?? '/';
+    const parsed = new URL(reqUrl, 'http://localhost');
+    const pathname = parsed.pathname;
+
+    if (pathname === '/service/status') {
       const status = this.supervisor.getAllStatus();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
+      return;
+    }
+
+    if (pathname === '/service/logs') {
+      const level = parsed.searchParams.get('level') ?? undefined;
+      const source = parsed.searchParams.get('source') ?? undefined;
+      const limitValue = parsed.searchParams.get('limit');
+      const limit = limitValue ? parseInt(limitValue, 10) : undefined;
+
+      const logs = this.supervisor.getLogs({
+        level,
+        source,
+        limit: Number.isFinite(limit as number) ? limit : undefined,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(logs));
       return;
     }
 
