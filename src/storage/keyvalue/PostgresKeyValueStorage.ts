@@ -5,7 +5,7 @@ import type {
   KeyValueStorage,
 } from '@solid/community-server';
 import { getLoggerFor } from 'global-logger-factory';
-import { getSharedPool, releaseSharedPool } from '../database/PostgresPoolManager';
+import { getSharedPool, releaseSharedPoolImmediately } from '../database/PostgresPoolManager';
 
 export interface PostgresKeyValueStorageOptions {
   connectionString: string;
@@ -34,13 +34,15 @@ export class PostgresKeyValueStorage<T = unknown> implements
   private readonly quotedTableName: string;
   private readonly namespace: string;
   private readonly ready: Promise<void>;
+  private readonly sharedPoolConfig?: { connectionString: string };
 
   public constructor(options: PostgresKeyValueStorageOptions) {
     // 使用共享的连接池，避免多个组件创建独立连接池导致死锁
     if (options.pool) {
       this.pool = options.pool;
     } else {
-      this.pool = getSharedPool({ connectionString: options.connectionString });
+      this.sharedPoolConfig = { connectionString: options.connectionString };
+      this.pool = getSharedPool(this.sharedPoolConfig);
     }
     this.tableName = options.tableName ?? 'internal_kv';
     this.namespace = options.namespace ?? '';
@@ -54,10 +56,12 @@ export class PostgresKeyValueStorage<T = unknown> implements
   }
 
   public async finalize(): Promise<void> {
-    // 释放共享连接池引用（如果是共享的）
-    // 注意：这里我们无法确定是否是共享的，所以直接释放
-    // PoolManager 会处理引用计数
-    releaseSharedPool({ connectionString: '' });
+    // If a Pool was provided explicitly, this storage owns it.
+    if (this.sharedPoolConfig) {
+      releaseSharedPoolImmediately(this.sharedPoolConfig);
+    } else {
+      await this.pool.end();
+    }
   }
 
 

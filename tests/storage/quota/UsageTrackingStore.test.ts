@@ -128,8 +128,7 @@ describe('UsageTrackingStore', () => {
 
     await store.addResource(identifier, representation);
 
-    expect(usageRepo.incrementUsage).toHaveBeenNthCalledWith(1, 'acc-1', 'pod-1', Buffer.byteLength('hello'), 0, 0);
-    expect(usageRepo.incrementUsage).toHaveBeenNthCalledWith(2, 'acc-1', 'pod-1', 0, Buffer.byteLength('hello'), 0);
+    expect(usageRepo.incrementUsage).toHaveBeenNthCalledWith(1, 'acc-1', 'pod-1', Buffer.byteLength('hello'), Buffer.byteLength('hello'), 0);
   });
 
   it('setRepresentation 会读取现有大小计算增量', async () => {

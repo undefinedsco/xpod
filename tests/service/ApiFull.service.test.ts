@@ -22,6 +22,11 @@ const mockSolidAuth = {
 };
 
 // Mock ClientCredentialsStore
+
+function createApiKey(clientId: string, clientSecret: string): string {
+  return `sk-${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
+}
+
 const mockCredStore = {
   findByClientId: async (id: string) => id === 'valid-api-key' ? ({
     clientId: id, 
@@ -48,12 +53,13 @@ suite('API Full Service', () => {
       tokenEndpoint: 'http://localhost:9999/token'
     });
 
-    // Mock the token exchange to bypass external HTTP
+    // Mock token exchange to bypass external HTTP.
     // @ts-ignore
-    clientAuth.exchangeForToken = async () => ({ 
-      success: true, 
-      token: 'fake-token', 
-      expiresAt: new Date(Date.now() + 3600000) 
+    clientAuth.exchangeForToken = async (clientId: string) => ({
+      success: true,
+      token: 'fake-token',
+      webId: clientId === 'valid-api-key' ? 'https://bot#me' : 'https://unknown#me',
+      expiresAt: new Date(Date.now() + 3600000),
     });
 
     const multiAuth = new MultiAuthenticator({
@@ -103,7 +109,7 @@ suite('API Full Service', () => {
 
   it('should authenticate via Solid DPoP and list nodes', async () => {
     // Create a node first
-    await repo.createNode('My Node', 'user-1');
+    await repo.createNode('My Node', 'https://user#me');
     
     const response = await fetch(`${baseUrl}/v1/nodes`, {
       headers: { 
@@ -119,7 +125,7 @@ suite('API Full Service', () => {
 
   it('should reject API key for node endpoints', async () => {
     const response = await fetch(`${baseUrl}/v1/nodes`, {
-      headers: { 'Authorization': 'Bearer valid-api-key' }
+      headers: { 'Authorization': `Bearer ${createApiKey('valid-api-key', 'secret')}` }
     });
     expect(response.status).toBe(403);
   });
@@ -147,7 +153,7 @@ suite('API Full Service', () => {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer valid-api-key',
+        'Authorization': `Bearer ${createApiKey('valid-api-key', 'secret')}`,
       },
       body: JSON.stringify({ nodeId: node.nodeId, version: '1.0.0' })
     });
@@ -158,7 +164,7 @@ suite('API Full Service', () => {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 
-        'Authorization': 'Bearer valid-api-key',
+        'Authorization': `Bearer ${createApiKey('valid-api-key', 'secret')}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ 
@@ -173,7 +179,7 @@ suite('API Full Service', () => {
 
   it('should list available models', async () => {
     const response = await fetch(`${baseUrl}/v1/models`, {
-      headers: { 'Authorization': 'Bearer valid-api-key' }
+      headers: { 'Authorization': `Bearer ${createApiKey('valid-api-key', 'secret')}` }
     });
     expect(response.status).toBe(200);
     const data = await response.json() as any;

@@ -1,6 +1,6 @@
 /**
  * PostgresPoolManager - 共享 PostgreSQL 连接池管理器
- * 
+ *
  * 解决多个组件（PostgresKeyValueStorage, PgQuintStore 等）
  * 创建独立连接池导致的死锁问题。
  */
@@ -40,60 +40,55 @@ class PoolManager {
    */
   getPool(config: PoolConfig): Pool {
     const key = this.getPoolKey(config);
-    console.log(`[PostgresPoolManager] getPool: ${key.substring(0, 50)}..., existing=${this.pools.has(key)}`);
-    
+
     let entry = this.pools.get(key);
     if (!entry) {
       const poolConfig = { ...this.defaultConfig, ...config };
-      console.log(`[PostgresPoolManager] Creating new pool (max=${poolConfig.max})`);
       const pool = new Pool(poolConfig);
-      
+
       entry = { pool, refCount: 0 };
       this.pools.set(key, entry);
-      
-      // 错误处理
-      pool.on('error', (err) => {
-        console.error('[PostgresPoolManager] Pool error:', err);
-      });
-      
-      // 连接池状态监控
-      pool.on('connect', () => {
-        console.log(`[PostgresPoolManager] New client connected. Total: ${pool.totalCount}, Idle: ${pool.idleCount}, Waiting: ${pool.waitingCount}`);
-      });
-      
-      pool.on('acquire', () => {
-        console.log(`[PostgresPoolManager] Client acquired. Total: ${pool.totalCount}, Idle: ${pool.idleCount}, Waiting: ${pool.waitingCount}`);
-      });
-      
-      pool.on('remove', () => {
-        console.log(`[PostgresPoolManager] Client removed. Total: ${pool.totalCount}, Idle: ${pool.idleCount}, Waiting: ${pool.waitingCount}`);
-      });
+
+      // Some tests use lightweight Pool mocks without EventEmitter APIs.
+      if (typeof (pool as any).on === 'function') {
+        (pool as any).on('error', () => {
+          // Ignore pool-level events here; query callers handle errors.
+        });
+      }
     }
-    
+
     entry.refCount++;
-    console.log(`[PostgresPoolManager] Pool refCount: ${entry.refCount}`);
     return entry.pool;
   }
 
   /**
    * 释放连接池引用
    */
-  releasePool(config: PoolConfig): void {
+  releasePool(config: PoolConfig, immediate = false): void {
     const key = this.getPoolKey(config);
     const entry = this.pools.get(key);
-    
-    if (entry) {
-      entry.refCount--;
-      if (entry.refCount <= 0) {
-        // 延迟关闭，允许复用
-        setTimeout(() => {
-          const current = this.pools.get(key);
-          if (current && current.refCount <= 0) {
-            current.pool.end().catch(() => {});
-            this.pools.delete(key);
-          }
-        }, 60000);
-      }
+
+    if (!entry) {
+      return;
+    }
+
+    if (immediate) {
+      entry.pool.end().catch(() => {});
+      this.pools.delete(key);
+      return;
+    }
+
+    entry.refCount--;
+
+    if (entry.refCount <= 0) {
+      // 延迟关闭，允许复用
+      setTimeout(() => {
+        const current = this.pools.get(key);
+        if (current && current.refCount <= 0) {
+          current.pool.end().catch(() => {});
+          this.pools.delete(key);
+        }
+      }, 60000);
     }
   }
 
@@ -106,18 +101,25 @@ class PoolManager {
     }
     return `${config.user}@${config.host}:${config.port}/${config.database}`;
   }
+
+  listPools(): IterableIterator<[string, PoolEntry]> {
+    return this.pools.entries();
+  }
 }
 
 // 单例实例
 const poolManager = new PoolManager();
 
 // 定期打印连接池状态
-setInterval(() => {
-  for (const [key, entry] of poolManager['pools'].entries()) {
+const statusTimer = setInterval(() => {
+  for (const [, entry] of poolManager.listPools()) {
     const pool = entry.pool;
     console.log(`[PostgresPoolManager] Status: total=${pool.totalCount}, idle=${pool.idleCount}, waiting=${pool.waitingCount}, refCount=${entry.refCount}`);
   }
 }, 30000);
+if (typeof (statusTimer as any).unref === 'function') {
+  (statusTimer as any).unref();
+}
 
 /**
  * 获取共享连接池
@@ -131,6 +133,13 @@ export function getSharedPool(config: PoolConfig): Pool {
  */
 export function releaseSharedPool(config: PoolConfig): void {
   poolManager.releasePool(config);
+}
+
+/**
+ * 释放共享连接池引用并立即关闭。
+ */
+export function releaseSharedPoolImmediately(config: PoolConfig): void {
+  poolManager.releasePool(config, true);
 }
 
 export { poolManager };

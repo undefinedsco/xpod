@@ -15,8 +15,17 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
 const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:3000';
 const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
-const seedEmail = 'test-integration@example.com';
-const seedPassword = 'TestIntegration123!';
+const seedCandidates = [
+  {
+    email: process.env.SOLID_SEED_EMAIL ?? 'test-integration@example.com',
+    password: process.env.SOLID_SEED_PASSWORD ?? 'TestIntegration123!',
+  },
+  // docker standalone 默认 seed.dev.json
+  {
+    email: 'test@dev.local',
+    password: 'test123456',
+  },
+];
 const envFilePath = path.resolve(process.cwd(), '.env.local');
 
 interface AccountControls {
@@ -39,23 +48,28 @@ async function checkServer(): Promise<boolean> {
 }
 
 async function login(): Promise<string | null> {
-  // Login with password
-  const loginResponse = await fetch(`${baseUrl}.account/login/password/`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ email: seedEmail, password: seedPassword }),
-  });
+  for (const candidate of seedCandidates) {
+    const loginResponse = await fetch(`${baseUrl}.account/login/password/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ email: candidate.email, password: candidate.password }),
+    });
 
-  if (!loginResponse.ok) {
-    console.error('Login failed:', await loginResponse.text());
-    return null;
+    if (!loginResponse.ok) {
+      continue;
+    }
+
+    const loginResult = (await loginResponse.json()) as { authorization?: string };
+    if (loginResult.authorization) {
+      console.log(`Login successful with seed account: ${candidate.email}`);
+      return loginResult.authorization;
+    }
   }
 
-  const loginResult = (await loginResponse.json()) as { authorization?: string };
-  return loginResult.authorization ?? null;
+  return null;
 }
 
 async function getAccountControls(token: string): Promise<AccountControls | null> {
@@ -175,10 +189,10 @@ async function main(): Promise<void> {
   }
 
   // Login
-  console.log(`Logging in as ${seedEmail}...`);
+  console.log('Logging in with seeded account...');
   const token = await login();
   if (!token) {
-    console.error('Failed to login');
+    console.error('Failed to login with all known seed accounts.');
     process.exit(1);
   }
   console.log('Login successful');
