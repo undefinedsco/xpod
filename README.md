@@ -19,6 +19,25 @@ yarn install
 yarn build
 ```
 
+
+## Single-File Build & Local npm Release
+
+- Build a single-file CLI entry (Node 22 target):
+  ```bash
+  yarn build:single
+  ```
+  Output: `dist/xpod.single.cjs` (also exposed as `xpod-single` in `bin`).
+
+- Create a local-tag npm publish (auto bumps to `-local.<timestamp>`):
+  ```bash
+  yarn publish:local
+  ```
+
+- Dry-run publish (no real upload, package.json auto-restored):
+  ```bash
+  yarn publish:local:dry
+  ```
+
 ## Quick Start
 
 | Mode | Command | Description |

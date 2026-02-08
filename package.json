@@ -7,7 +7,8 @@
   "license": "MIT",
   "private": false,
   "bin": {
-    "xpod": "./dist/main.js"
+    "xpod": "./dist/main.js",
+    "xpod-single": "./dist/xpod.single.cjs"
   },
   "files": [
     "dist",
@@ -77,7 +78,11 @@
     "test:docker:lite:down": "docker-compose -f docker-compose.standalone.yml down",
     "test:service": "XPOD_RUN_SERVICE_TESTS=true vitest --run tests/service",
     "test:setup": "dotenv -e .env.local -- yarn ts-node scripts/setup-test-credentials.ts",
-    "test:setup:docker": "CSS_BASE_URL=${CSS_BASE_URL:-http://localhost:5739} yarn ts-node scripts/setup-test-credentials.ts"
+    "test:setup:docker": "CSS_BASE_URL=${CSS_BASE_URL:-http://localhost:5739} yarn ts-node scripts/setup-test-credentials.ts",
+    "build:single": "node scripts/build-single-file.cjs",
+    "pack:single": "yarn build:single && npm pack --json",
+    "publish:local": "node scripts/publish-local.cjs",
+    "publish:local:dry": "XPOD_PUBLISH_DRY_RUN=true node scripts/publish-local.cjs --dry-run"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
