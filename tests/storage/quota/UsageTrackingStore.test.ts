@@ -3,6 +3,38 @@ import { Readable } from 'node:stream';
 import type { ResourceIdentifier } from '@solid/community-server/dist/http/representation/ResourceIdentifier';
 import type { Representation } from '@solid/community-server/dist/http/representation/Representation';
 import type { ChangeMap } from '@solid/community-server/dist/storage/ResourceStore';
+
+vi.mock('@solid/community-server', () => {
+  class PassthroughStore<T = any> {
+    protected readonly source: T;
+
+    public constructor(source: T) {
+      this.source = source;
+    }
+
+    public addResource(...args: any[]): any {
+      return (this.source as any).addResource(...args);
+    }
+
+    public setRepresentation(...args: any[]): any {
+      return (this.source as any).setRepresentation(...args);
+    }
+
+    public getRepresentation(...args: any[]): any {
+      return (this.source as any).getRepresentation(...args);
+    }
+
+    public deleteResource(...args: any[]): any {
+      return (this.source as any).deleteResource(...args);
+    }
+  }
+
+  return {
+    PassthroughStore,
+    guardStream: (stream: unknown) => stream,
+  };
+});
+
 import { UsageTrackingStore } from '../../../src/storage/quota/UsageTrackingStore';
 
 type MockUsageRepo = {
@@ -128,8 +160,13 @@ describe('UsageTrackingStore', () => {
 
     await store.addResource(identifier, representation);
 
-    expect(usageRepo.incrementUsage).toHaveBeenNthCalledWith(1, 'acc-1', 'pod-1', Buffer.byteLength('hello'), 0, 0);
-    expect(usageRepo.incrementUsage).toHaveBeenNthCalledWith(2, 'acc-1', 'pod-1', 0, Buffer.byteLength('hello'), 0);
+    expect(usageRepo.incrementUsage).toHaveBeenCalledWith(
+      'acc-1',
+      'pod-1',
+      Buffer.byteLength('hello'),
+      Buffer.byteLength('hello'),
+      0,
+    );
   });
 
   it('setRepresentation 会读取现有大小计算增量', async () => {

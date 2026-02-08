@@ -34,12 +34,15 @@ export class PostgresKeyValueStorage<T = unknown> implements
   private readonly quotedTableName: string;
   private readonly namespace: string;
   private readonly ready: Promise<void>;
+  private readonly sharedConnectionString?: string;
 
   public constructor(options: PostgresKeyValueStorageOptions) {
     // 使用共享的连接池，避免多个组件创建独立连接池导致死锁
     if (options.pool) {
       this.pool = options.pool;
+      this.sharedConnectionString = undefined;
     } else {
+      this.sharedConnectionString = options.connectionString;
       this.pool = getSharedPool({ connectionString: options.connectionString });
     }
     this.tableName = options.tableName ?? 'internal_kv';
@@ -54,10 +57,10 @@ export class PostgresKeyValueStorage<T = unknown> implements
   }
 
   public async finalize(): Promise<void> {
-    // 释放共享连接池引用（如果是共享的）
-    // 注意：这里我们无法确定是否是共享的，所以直接释放
-    // PoolManager 会处理引用计数
-    releaseSharedPool({ connectionString: '' });
+    if (!this.sharedConnectionString) {
+      return;
+    }
+    releaseSharedPool({ connectionString: this.sharedConnectionString });
   }
 
 

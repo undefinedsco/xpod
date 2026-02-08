@@ -18,6 +18,8 @@ import { Client } from 'pg';
 import { setupAccount, loginWithClientCredentials } from './helpers/solidAccount';
 
 const RUN_DOCKER_TESTS = process.env.XPOD_RUN_DOCKER_TESTS === 'true';
+const SERVICE_READY_RETRIES = Number(process.env.XPOD_DOCKER_READY_RETRIES ?? '45');
+const SERVICE_READY_DELAY_MS = Number(process.env.XPOD_DOCKER_READY_DELAY_MS ?? '1000');
 
 // 与 docker-compose.cluster.yml 对应的服务配置
 const SERVICES = {
@@ -68,12 +70,21 @@ suite('Docker Cluster Integration', () => {
       console.warn('PostgreSQL not available');
     }
 
-    // 等待所有服务就绪
-    for (const [name, config] of Object.entries(SERVICES)) {
-      const ready = await waitForService(config.baseUrl);
-      console.log(`${config.name} (${name}): ${ready ? 'ready' : 'not ready'}`);
+    // 并行等待所有服务就绪，避免串行等待导致 beforeAll 超时
+    const readiness = await Promise.all(
+      Object.entries(SERVICES).map(async ([name, config]) => {
+        const ready = await waitForService(config.baseUrl, SERVICE_READY_RETRIES, SERVICE_READY_DELAY_MS);
+        console.log(`${config.name} (${name}): ${ready ? 'ready' : 'not ready'}`);
+        return { name, config, ready };
+      }),
+    );
+
+    const notReady = readiness.filter((item) => !item.ready);
+    if (notReady.length > 0) {
+      const serviceNames = notReady.map((item) => item.config.name).join(', ');
+      throw new Error(`Docker services not ready: ${serviceNames}`);
     }
-  }, 60000);
+  }, 180000);
 
   // ==========================================
   // 基础连通性测试
@@ -228,9 +239,9 @@ suite('Docker Cluster Integration', () => {
 // Helper Functions
 // ==========================================
 
-async function waitForService(url: string, maxRetries = 30): Promise<boolean> {
+async function waitForService(url: string, maxRetries = 30, delayMs = 1000): Promise<boolean> {
   // 使用 Gateway status 端点检查服务是否就绪，避免 LDP 路径挂起问题
-  const statusUrl = `${url}/_gateway/status`;
+  const statusUrl = `${url}/service/status`;
   for (let i = 0; i < maxRetries; i++) {
     try {
       const res = await fetch(statusUrl, { method: 'GET' });
@@ -238,7 +249,7 @@ async function waitForService(url: string, maxRetries = 30): Promise<boolean> {
     } catch {
       // 服务未就绪
     }
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, delayMs));
   }
   return false;
 }

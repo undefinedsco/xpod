@@ -1,9 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PodLookupRepository } from '../../src/identity/drizzle/PodLookupRepository';
 
 function createMockDb(isSqlite = false) {
   if (isSqlite) {
-    // SQLite: has `all` and `run`, but NOT `execute`
     const all = vi.fn();
     const run = vi.fn();
     return {
@@ -13,7 +12,7 @@ function createMockDb(isSqlite = false) {
       run,
     };
   }
-  // PostgreSQL: has `execute`
+
   const execute = vi.fn();
   return {
     db: { execute } as any,
@@ -23,18 +22,30 @@ function createMockDb(isSqlite = false) {
   };
 }
 
+function accountKvRow(accountId: string, pods: Record<string, Record<string, unknown>>) {
+  return {
+    key: `accounts/data/${accountId}`,
+    value: JSON.stringify({ '**pod**': pods }),
+  };
+}
+
 describe('PodLookupRepository', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   describe('findById', () => {
     it('returns pod info when found', async () => {
       const { db, execute } = createMockDb();
       execute.mockResolvedValueOnce({
-        rows: [{
-          id: 'pod-123',
-          account_id: 'account-456',
-          base_url: 'https://example.com/alice/',
-          node_id: 'center-node-1',
-          edge_node_id: null,
-        }],
+        rows: [
+          accountKvRow('account-456', {
+            'pod-123': {
+              baseUrl: 'https://example.com/alice/',
+              nodeId: 'center-node-1',
+            },
+          }),
+        ],
       });
 
       const repo = new PodLookupRepository(db);
@@ -64,13 +75,15 @@ describe('PodLookupRepository', () => {
     it('returns pod matching resource path', async () => {
       const { db, execute } = createMockDb();
       execute.mockResolvedValueOnce({
-        rows: [{
-          id: 'pod-abc',
-          account_id: 'acc-1',
-          base_url: 'https://example.com/alice/',
-          node_id: 'node-1',
-          edge_node_id: 'edge-1',
-        }],
+        rows: [
+          accountKvRow('acc-1', {
+            'pod-abc': {
+              baseUrl: 'https://example.com/alice/',
+              nodeId: 'node-1',
+              edgeNodeId: 'edge-1',
+            },
+          }),
+        ],
       });
 
       const repo = new PodLookupRepository(db);
@@ -91,8 +104,12 @@ describe('PodLookupRepository', () => {
       const { db, execute } = createMockDb();
       execute.mockResolvedValueOnce({
         rows: [
-          { id: 'pod-1', account_id: 'acc-1', base_url: 'https://example.com/alice/', node_id: 'node-1', edge_node_id: null },
-          { id: 'pod-2', account_id: 'acc-2', base_url: 'https://example.com/bob/', node_id: 'node-2', edge_node_id: null },
+          accountKvRow('acc-1', {
+            'pod-1': { baseUrl: 'https://example.com/alice/', nodeId: 'node-1' },
+          }),
+          accountKvRow('acc-2', {
+            'pod-2': { baseUrl: 'https://example.com/bob/', nodeId: 'node-2' },
+          }),
         ],
       });
 
@@ -119,13 +136,15 @@ describe('PodLookupRepository', () => {
     it('returns migration status when set', async () => {
       const { db, execute } = createMockDb();
       execute.mockResolvedValueOnce({
-        rows: [{
-          id: 'pod-123',
-          node_id: 'node-1',
-          migration_status: 'syncing',
-          migration_target_node: 'node-2',
-          migration_progress: 50,
-        }],
+        rows: [
+          {
+            pod_id: 'pod-123',
+            node_id: 'node-1',
+            migration_status: 'syncing',
+            migration_target_node: 'node-2',
+            migration_progress: 50,
+          },
+        ],
       });
 
       const repo = new PodLookupRepository(db);
@@ -140,26 +159,28 @@ describe('PodLookupRepository', () => {
       });
     });
 
-    it('returns undefined when pod not found', async () => {
+    it('returns pod-only status when pod not found', async () => {
       const { db, execute } = createMockDb();
       execute.mockResolvedValueOnce({ rows: [] });
 
       const repo = new PodLookupRepository(db);
       const result = await repo.getMigrationStatus('non-existent');
 
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ podId: 'non-existent' });
     });
 
     it('returns status with null migration when not migrating', async () => {
       const { db, execute } = createMockDb();
       execute.mockResolvedValueOnce({
-        rows: [{
-          id: 'pod-123',
-          node_id: 'node-1',
-          migration_status: null,
-          migration_target_node: null,
-          migration_progress: null,
-        }],
+        rows: [
+          {
+            pod_id: 'pod-123',
+            node_id: 'node-1',
+            migration_status: null,
+            migration_target_node: null,
+            migration_progress: null,
+          },
+        ],
       });
 
       const repo = new PodLookupRepository(db);
@@ -187,12 +208,13 @@ describe('PodLookupRepository', () => {
     });
 
     it('updates nodeId for SQLite', async () => {
-      const { db, run } = createMockDb(true);
-      
+      const { db, all } = createMockDb(true);
+      all!.mockReturnValueOnce([]);
+
       const repo = new PodLookupRepository(db);
       await repo.setNodeId('pod-123', 'new-node-id');
 
-      expect(run!).toHaveBeenCalledTimes(1);
+      expect(all!).toHaveBeenCalledTimes(1);
     });
   });
 
