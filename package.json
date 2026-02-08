@@ -63,7 +63,16 @@
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run --coverage",
     "test:quad-vs-quint": "vitest --run tests/storage/quad-vs-quint-comparison.test.ts",
     "test:w3c": "vitest --run tests/storage/w3c-sparql-full.test.ts",
-    "test:storage": "vitest --run tests/storage/"
+    "test:storage": "vitest --run tests/storage/",
+    "test:docker": "yarn test:docker:lite",
+    "dev:cluster:lite": "docker-compose -f docker-compose.standalone.yml up --build",
+    "dev:cluster:lite:down": "docker-compose -f docker-compose.standalone.yml down",
+    "test:docker:lite": "XPOD_RUN_DOCKER_LITE_TESTS=true vitest --run tests/integration",
+    "test:docker:full": "XPOD_RUN_DOCKER_LITE_TESTS=true XPOD_RUN_DOCKER_TESTS=true vitest --run tests/integration",
+    "test:docker:all": "yarn test:docker:lite && yarn test:docker:full",
+    "test:docker:lite:up": "docker-compose -f docker-compose.standalone.yml up -d --build",
+    "test:docker:lite:down": "docker-compose -f docker-compose.standalone.yml down",
+    "test:service": "XPOD_RUN_SERVICE_TESTS=true vitest --run tests/service"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
