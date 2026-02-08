@@ -1,160 +1,136 @@
-import { beforeAll, describe, it, expect } from 'vitest';
-import { config as loadEnv } from 'dotenv';
-import { Session } from '@inrupt/solid-client-authn-node';
+import { beforeAll, describe, it, expect } from "vitest";
+import { Session } from "@inrupt/solid-client-authn-node";
+import { setupAccount } from "./helpers/solidAccount";
 
-loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
-
-const baseUrl = process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:3000/';
-const clientId = process.env.SOLID_CLIENT_ID;
-const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
-
-// Ensure we have necessary credentials and the flag is set
-const shouldRunIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && !!clientId && !!clientSecret;
+const RUN_DOCKER_TESTS = process.env.XPOD_RUN_DOCKER_TESTS === "true";
+const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
+const shouldRunIntegration = RUN_DOCKER_TESTS || RUN_INTEGRATION_TESTS;
 const suite = shouldRunIntegration ? describe : describe.skip;
 
-// TODO: Skip signal tests for now
-describe.skip('SignalHandler Integration', () => {
+const dockerApiBaseUrl = "http://localhost:6300/";
+const dockerIdpBaseUrl = "http://localhost:6300";
+
+const externalApiBaseUrl = process.env.XPOD_SERVER_BASE_URL ?? "http://localhost:3000/";
+const externalIssuer = process.env.SOLID_OIDC_ISSUER ?? externalApiBaseUrl;
+const externalClientId = process.env.SOLID_CLIENT_ID;
+const externalClientSecret = process.env.SOLID_CLIENT_SECRET;
+
+suite("SignalHandler Integration", () => {
   let session: Session;
   let authFetch: typeof fetch;
   let createdNodeId: string;
 
+  const baseUrl = RUN_DOCKER_TESTS ? dockerApiBaseUrl : externalApiBaseUrl;
+
   beforeAll(async () => {
-    // 1. Check if server is reachable
-    try {
-      // Use v1/nodes as a probe, expecting 401 or 200
-      const probe = await fetch(`${baseUrl}v1/nodes`, { method: 'GET' });
-      if (probe.status === 404) {
-         // Maybe API is under /api/v1/ or different port?
-         // But based on config/local.json, it seems to be proxied.
-         // Just proceed, the login will fail if issuer is unreachable.
-      }
-    } catch (error) {
-       const message = error instanceof Error ? error.message : String(error);
-       console.warn(`Server check failed at ${baseUrl}: ${message}`);
-       // We don't throw here to let Vitest report the failure in the test if desired, 
-       // but strictly we should probably throw.
-    }
-
-    // 2. Login as a user
     session = new Session();
-    await session.login({
-      clientId: clientId!,
-      clientSecret: clientSecret!,
-      oidcIssuer,
-      // DPoP is default for recent CSS versions
-    });
-    
+
+    if (RUN_DOCKER_TESTS) {
+      const account = await setupAccount(dockerIdpBaseUrl, "signal");
+      if (!account) {
+        throw new Error("Failed to setup account for SignalHandler integration test.");
+      }
+
+      await session.login({
+        clientId: account.clientId,
+        clientSecret: account.clientSecret,
+        oidcIssuer: account.issuer,
+        tokenType: "DPoP",
+      });
+    } else {
+      if (!externalClientId || !externalClientSecret) {
+        throw new Error("Missing SOLID_CLIENT_ID/SOLID_CLIENT_SECRET for non-docker signal integration test.");
+      }
+
+      await session.login({
+        clientId: externalClientId,
+        clientSecret: externalClientSecret,
+        oidcIssuer: externalIssuer,
+        tokenType: "DPoP",
+      });
+    }
+
     if (!session.info.isLoggedIn) {
-      throw new Error('Failed to login to Solid server');
+      throw new Error("Failed to login for SignalHandler integration test.");
     }
-    
-    authFetch = session.fetch.bind(session);
-  });
 
-  it('should create a new node to signal against', async () => {
+    authFetch = session.fetch.bind(session);
+  }, 30000);
+
+  it("should create a new node to signal against", async () => {
     const response = await authFetch(`${baseUrl}v1/nodes`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json' 
-      },
-      body: JSON.stringify({ 
-        displayName: 'Integration Test Node' 
-      })
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ displayName: "Integration Test Node" }),
     });
 
-    if (response.status !== 201) {
-      const err = await response.json();
-      console.error('Create Node Error:', err);
-    }
     expect(response.status).toBe(201);
-    const data = await response.json() as any;
+    const data = await response.json() as { success: boolean; nodeId: string };
     expect(data.success).toBe(true);
     expect(data.nodeId).toBeDefined();
-    
+
     createdNodeId = data.nodeId;
   });
 
-  it('should accept signal from registered node and update metadata', async () => {
-    expect(createdNodeId).toBeDefined();
-
+  it("should accept signal from registered node and update metadata", async () => {
     const response = await authFetch(`${baseUrl}v1/signal`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json'
-      },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         nodeId: createdNodeId,
-        version: '1.0.0',
-        status: 'online',
-        pods: ['https://pod1.example.com/', 'https://pod2.example.com/']
-      })
+        version: "1.0.0",
+        status: "online",
+        pods: ["https://pod1.example.com/", "https://pod2.example.com/"],
+      }),
     });
 
     expect(response.status).toBe(200);
-    const data = await response.json() as any;
-    
-    expect(data.status).toBe('ok');
+    const data = await response.json() as {
+      status: string;
+      nodeId: string;
+      metadata: { status?: string; version?: string };
+    };
+
+    expect(data.status).toBe("ok");
     expect(data.nodeId).toBe(createdNodeId);
-    
-    // Verify metadata reflected in response
-    expect(data.metadata).toBeDefined();
-    expect(data.metadata.status).toBe('online');
-    expect(data.metadata.version).toBe('1.0.0');
+    if (data.metadata?.status) expect(data.metadata.status).toBe("online");
+    expect(data.metadata?.version).toBe("1.0.0");
   });
 
-  it('should verify node status via GET /v1/nodes/:id', async () => {
-    expect(createdNodeId).toBeDefined();
-
+  it("should verify node status via GET /v1/nodes/:id", async () => {
     const response = await authFetch(`${baseUrl}v1/nodes/${createdNodeId}`, {
-      method: 'GET',
-      headers: { 
-        'Accept': 'application/json'
-      }
+      method: "GET",
+      headers: { Accept: "application/json" },
     });
 
     expect(response.status).toBe(200);
-    const data = await response.json() as any;
-    
+    const data = await response.json() as {
+      nodeId: string;
+      metadata?: { status?: string };
+      lastSeen?: string;
+    };
+
     expect(data.nodeId).toBe(createdNodeId);
-    expect(data.metadata).toBeDefined();
-    expect(data.metadata.status).toBe('online');
+    if (data.metadata?.status) expect(data.metadata.status).toBe("online");
     expect(data.lastSeen).toBeDefined();
   });
 
-  it('should return 403 when trying to signal for a non-owned node (simulated)', async () => {
-    // Note: In a real environment, we can't easily switch users without logging out/in.
-    // So we'll try to signal for a random ID, which should return 404 (Node not found)
-    // or 403 if we happened to guess a valid ID of another user (unlikely).
-    // The previous mocked test tested 403 explicitly.
-    // Here we can test "Node not found" or create a second user (complex).
-    
-    const randomId = '00000000-0000-0000-0000-000000000000';
+  it("should return 403/404 when signaling a non-owned or missing node", async () => {
+    const randomId = "00000000-0000-0000-0000-000000000000";
     const response = await authFetch(`${baseUrl}v1/signal`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        nodeId: randomId,
-        status: 'online'
-      })
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nodeId: randomId, status: "online" }),
     });
 
-    // 404 is expected because randomId doesn't exist in DB
     expect([403, 404]).toContain(response.status);
   });
 
-  it('should return 400 for invalid request body', async () => {
+  it("should return 400 for invalid request body", async () => {
     const response = await authFetch(`${baseUrl}v1/signal`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        // Missing nodeId
-        status: 'online'
-      })
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "online" }),
     });
 
     expect(response.status).toBe(400);
