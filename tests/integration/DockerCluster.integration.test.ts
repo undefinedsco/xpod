@@ -68,12 +68,21 @@ suite('Docker Cluster Integration', () => {
       console.warn('PostgreSQL not available');
     }
 
-    // 等待所有服务就绪
-    for (const [name, config] of Object.entries(SERVICES)) {
-      const ready = await waitForService(config.baseUrl);
-      console.log(`${config.name} (${name}): ${ready ? 'ready' : 'not ready'}`);
+    // 并行等待所有服务，避免串行等待导致 beforeAll 超时
+    const serviceReadiness = await Promise.all(
+      Object.entries(SERVICES).map(async ([name, config]) => {
+        const ready = await waitForService(config.baseUrl);
+        console.log(`${config.name} (${name}): ${ready ? 'ready' : 'not ready'}`);
+        return [name, ready] as const;
+      }),
+    );
+
+    // 预热阶段直接失败，给出明确错误，避免后续 case 才报连锁错误
+    const notReady = serviceReadiness.filter(([, ready]) => !ready).map(([name]) => name);
+    if (notReady.length > 0) {
+      throw new Error(`Services not ready: ${notReady.join(', ')}`);
     }
-  }, 60000);
+  }, 120000);
 
   // ==========================================
   // 基础连通性测试
@@ -228,17 +237,22 @@ suite('Docker Cluster Integration', () => {
 // Helper Functions
 // ==========================================
 
-async function waitForService(url: string, maxRetries = 30): Promise<boolean> {
-  // 使用 Gateway status 端点检查服务是否就绪，避免 LDP 路径挂起问题
-  const statusUrl = `${url}/_gateway/status`;
+async function waitForService(url: string, maxRetries = 45): Promise<boolean> {
+  // 优先检查 _gateway/status，若网关路由名调整则回退到 service/status
+  const statusUrls = [`${url}/_gateway/status`, `${url}/service/status`];
+
   for (let i = 0; i < maxRetries; i++) {
-    try {
-      const res = await fetch(statusUrl, { method: 'GET' });
-      if (res.status === 200) return true;
-    } catch {
-      // 服务未就绪
+    for (const statusUrl of statusUrls) {
+      try {
+        const res = await fetch(statusUrl, { method: 'GET' });
+        if (res.status === 200) {
+          return true;
+        }
+      } catch {
+        // 服务未就绪
+      }
     }
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
   }
   return false;
 }
