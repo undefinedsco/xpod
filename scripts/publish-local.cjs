@@ -29,13 +29,15 @@ function main() {
   console.log(`[publish:local] version bumped to ${nextVersion}`);
 
   const dryRun = process.argv.includes('--dry-run') || process.env.XPOD_PUBLISH_DRY_RUN === 'true';
+  const publishRegistry = process.env.XPOD_NPM_REGISTRY || 'https://registry.npmjs.org';
 
   try {
     run('yarn build:single');
     const npmCacheDir = path.join(repoRoot, '.test-data', 'npm-cache');
     fs.mkdirSync(npmCacheDir, { recursive: true });
-    run(`npm publish --tag local --access public${dryRun ? ' --dry-run' : ''}`, {
+    run(`npm publish --registry ${publishRegistry} --tag local --access public${dryRun ? ' --dry-run' : ''}`, {
       npm_config_cache: npmCacheDir,
+      npm_config_registry: publishRegistry,
     });
   } catch (error) {
     fs.writeFileSync(packageJsonPath, originalRaw);
@@ -46,6 +48,7 @@ function main() {
   }
 
   console.log(`[publish:local] ${dryRun ? 'dry-run complete' : 'publish complete'}, package.json restored`);
+  console.log(`[publish:local] registry: ${publishRegistry}`);
   console.log(`[publish:local] published ${packageJson.name}@${nextVersion} with tag=local${dryRun ? ' (dry-run)' : ''}`);
 }
 

@@ -38,6 +38,16 @@ yarn build
   yarn publish:local:dry
   ```
 
+- Publish stable release (`latest` tag by default):
+  ```bash
+  yarn publish:release
+  ```
+
+- Dry-run stable release publish:
+  ```bash
+  yarn publish:release:dry
+  ```
+
 ## Quick Start
 
 | Mode | Command | Description |

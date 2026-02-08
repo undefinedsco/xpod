@@ -82,7 +82,9 @@
     "build:single": "node scripts/build-single-file.cjs",
     "pack:single": "yarn build:single && npm pack --json",
     "publish:local": "node scripts/publish-local.cjs",
-    "publish:local:dry": "XPOD_PUBLISH_DRY_RUN=true node scripts/publish-local.cjs --dry-run"
+    "publish:local:dry": "XPOD_PUBLISH_DRY_RUN=true node scripts/publish-local.cjs --dry-run",
+    "publish:release": "node scripts/publish-release.cjs",
+    "publish:release:dry": "XPOD_PUBLISH_DRY_RUN=true node scripts/publish-release.cjs --dry-run"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
