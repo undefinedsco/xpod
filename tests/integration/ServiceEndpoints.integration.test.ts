@@ -20,8 +20,10 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 const BASE_URL = (process.env.CSS_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 const CLIENT_ID = process.env.SOLID_CLIENT_ID;
 const CLIENT_SECRET = process.env.SOLID_CLIENT_SECRET;
+const RUN_SERVICE_TESTS = process.env.XPOD_RUN_SERVICE_TESTS === 'true';
+const suite = RUN_SERVICE_TESTS ? describe : describe.skip;
 
-describe('Service Endpoints Integration', () => {
+suite('Service Endpoints Integration', () => {
   let accessToken: string | null = null;
 
   beforeAll(async () => {
