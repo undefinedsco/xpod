@@ -17,7 +17,7 @@ suite('Docker Standalone Integration', () => {
     }, 20000);
 
     it('gateway status should report running services', async () => {
-      const res = await fetch(`${STANDALONE.baseUrl}/service/status`);
+      const res = await fetch(`${STANDALONE.baseUrl}/_gateway/status`);
       expect(res.status).toBe(200);
       const status = await res.json() as Array<{ name: string; status: string }>;
       expect(Array.isArray(status)).toBe(true);
@@ -96,13 +96,15 @@ suite('Docker Standalone Integration', () => {
 });
 
 async function waitForService(url: string, maxRetries = 30): Promise<boolean> {
-  const statusUrl = `${url}/service/status`;
+  const statusUrls = [`${url}/_gateway/status`, `${url}/service/status`];
   for (let i = 0; i < maxRetries; i++) {
-    try {
-      const res = await fetch(statusUrl, { method: 'GET' });
-      if (res.status === 200) return true;
-    } catch {
-      // not ready
+    for (const statusUrl of statusUrls) {
+      try {
+        const res = await fetch(statusUrl, { method: 'GET' });
+        if (res.status === 200) return true;
+      } catch {
+        // not ready
+      }
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
