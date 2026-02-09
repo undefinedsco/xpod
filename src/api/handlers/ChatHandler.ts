@@ -4,6 +4,8 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ApiServer } from '../ApiServer';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
+import { IntentRecognitionService, IntentStorageService } from '../../ai/service';
+import { SmartInputPipelineService } from '../service/SmartInputPipelineService';
 
 /**
  * Chat completion request (OpenAI-compatible)
@@ -53,6 +55,16 @@ export interface ChatHandlerOptions {
     messages?(body: any, auth: AuthContext): Promise<any>;
     listModels(auth?: AuthContext): Promise<any[]>;
   };
+  /**
+   * Pod base URL for storage
+   */
+  podBaseUrl?: string;
+  /**
+   * Optional injection for intent pipeline tests/customization.
+   */
+  recognitionService?: IntentRecognitionService;
+  storageService?: IntentStorageService;
+  smartInputPipeline?: SmartInputPipelineService;
 }
 
 /**
@@ -68,6 +80,10 @@ export interface ChatHandlerOptions {
 export function registerChatRoutes(server: ApiServer, options: ChatHandlerOptions): void {
   const logger = getLoggerFor('ChatHandler');
   const chatService = options.chatService;
+  const smartInputPipeline = options.smartInputPipeline ?? new SmartInputPipelineService({
+    recognitionService: options.recognitionService ?? new IntentRecognitionService(),
+    storageService: options.storageService ?? new IntentStorageService(),
+  });
 
   // POST /api/chat/completions
   server.post('/v1/chat/completions', async (request, response, _params) => {
@@ -115,6 +131,34 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
     const displayName = getDisplayName(auth) || userId;
     const accountId = getAccountId(auth);
 
+    // Unified smart-input pipeline for all chat inputs.
+    const messages = payload.messages as ChatCompletionRequest['messages'];
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.content || '';
+    const storageResult = await smartInputPipeline.processText(lastUserMessage, auth);
+
+    if (storageResult) {
+      sendJson(response, 200, {
+        id: `chatcmpl-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: 'intent-recognition',
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: `✅ ${storageResult.message}
+
+已保存到: ${storageResult.location ?? '/'}
+
+后续对话将使用最新配置。`,
+          },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      });
+      return;
+    }
+
     // Check if service is available
     if (!chatService) {
       sendJson(response, 503, {
@@ -130,7 +174,7 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
     try {
       const completionRequest: ChatCompletionRequest = {
         model: payload.model as string,
-        messages: payload.messages as ChatCompletionRequest['messages'],
+        messages,
         temperature: typeof payload.temperature === 'number' ? payload.temperature : undefined,
         max_tokens: typeof payload.max_tokens === 'number' ? payload.max_tokens : undefined,
         stream: payload.stream === true,
@@ -204,6 +248,7 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
   server.post('/v1/responses', async (request, response, _params) => {
     const auth = request.auth!;
     const body = await readJsonBody(request);
+    await smartInputPipeline.processText(SmartInputPipelineService.extractTextFromBody(body), auth);
     const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
     const displayName = getDisplayName(auth) || userId;
     const accountId = getAccountId(auth);
@@ -227,6 +272,7 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
   server.post('/v1/messages', async (request, response, _params) => {
     const auth = request.auth!;
     const body = await readJsonBody(request);
+    await smartInputPipeline.processText(SmartInputPipelineService.extractTextFromBody(body), auth);
     const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
     const displayName = getDisplayName(auth) || userId;
     const accountId = getAccountId(auth);

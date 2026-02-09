@@ -31,7 +31,29 @@ export class VercelChatService {
     };
   }
 
-  private async getProviderConfig(context: StoreContext) {
+
+  private getDefaultBaseUrl(provider?: string): string {
+    const normalized = (provider || 'openrouter').toLowerCase();
+    const urls: Record<string, string> = {
+      openai: 'https://api.openai.com/v1',
+      google: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      anthropic: 'https://api.anthropic.com/v1',
+      deepseek: 'https://api.deepseek.com/v1',
+      openrouter: 'https://openrouter.ai/api/v1',
+      ollama: 'http://localhost:11434/v1',
+      mistral: 'https://api.mistral.ai/v1',
+      cohere: 'https://api.cohere.ai/v1',
+      zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+    };
+    return urls[normalized] || urls.openrouter;
+  }
+
+  private async getProviderConfig(context: StoreContext): Promise<{
+    baseURL: string;
+    apiKey: string;
+    proxy?: string;
+    credentialId?: string;
+  } | null> {
     let config: Awaited<ReturnType<PodChatKitStore['getAiConfig']>> | undefined;
     try {
       config = await this.store.getAiConfig(context);
@@ -41,21 +63,34 @@ export class VercelChatService {
       config = undefined;
     }
 
-    // Priority: Pod Config > Default (Ollama)
-    let baseURL = config?.baseUrl;
-    let apiKey = config?.apiKey;
-    let proxy = config?.proxyUrl;
+    // Priority: Pod config > DEFAULT_API_KEY env > local Ollama fallback
+    if (config?.apiKey) {
+      const baseURL = config.baseUrl || this.getDefaultBaseUrl('openrouter');
+      const proxy = config.proxyUrl;
+      this.logger.info(`Provider config: baseURL=${baseURL}, proxy=${proxy || 'none'} (source=pod)`);
+      return { baseURL, apiKey: config.apiKey, proxy, credentialId: config.credentialId };
+    }
 
-    // Default to local Ollama if nothing else found
-    baseURL = baseURL || 'http://localhost:11434/v1';
-    apiKey = apiKey || 'ollama';
+    if (process.env.DEFAULT_API_KEY) {
+      const provider = process.env.DEFAULT_PROVIDER || 'openrouter';
+      const baseURL = process.env.DEFAULT_BASE_URL || this.getDefaultBaseUrl(provider);
+      this.logger.info(`Provider config: baseURL=${baseURL}, proxy=none (source=default-env)`);
+      return { baseURL, apiKey: process.env.DEFAULT_API_KEY, proxy: undefined, credentialId: undefined };
+    }
 
-    this.logger.info(`Provider config: baseURL=${baseURL}, proxy=${proxy || 'none'}`);
-    return { baseURL, apiKey, proxy, credentialId: config?.credentialId };
+    this.logger.warn('No AI provider config found in Pod or DEFAULT_API_KEY');
+    return null;
   }
 
   private async getProvider(context: StoreContext) {
-    const { baseURL, apiKey, proxy } = await this.getProviderConfig(context);
+    const providerConfig = await this.getProviderConfig(context);
+    if (!providerConfig) {
+      const err = new Error('No AI provider configured. Please configure Pod AI provider or DEFAULT_API_KEY');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    const { baseURL, apiKey, proxy } = providerConfig;
 
     this.logger.debug(`Using AI Provider: ${baseURL} (key length: ${apiKey?.length || 0}, proxy: ${proxy || 'none'})`);
 
@@ -88,7 +123,7 @@ export class VercelChatService {
       } as any);
 
       // Record successful API call
-      if (config.credentialId) {
+      if (config?.credentialId) {
         this.store.recordCredentialSuccess(context, config.credentialId).catch((err) => {
           this.logger.debug(`Failed to record credential success: ${err}`);
         });
@@ -119,7 +154,7 @@ export class VercelChatService {
       this.logger.error(`AI completion failed: ${error}`);
 
       // Handle error and update credential status
-      if (config.credentialId) {
+      if (config?.credentialId) {
         await this.handleApiError(error, context, config.credentialId);
       }
 
@@ -151,7 +186,14 @@ export class VercelChatService {
     const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
 
-    const { baseURL, apiKey, proxy, credentialId } = await this.getProviderConfig(context);
+    const providerConfig = await this.getProviderConfig(context);
+    if (!providerConfig) {
+      const err = new Error('No AI provider configured. Please configure Pod AI provider or DEFAULT_API_KEY');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    const { baseURL, apiKey, proxy, credentialId } = providerConfig;
 
     // Remove trailing slash if present
     const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
@@ -206,7 +248,14 @@ export class VercelChatService {
     const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
 
-    const { baseURL, apiKey, proxy, credentialId } = await this.getProviderConfig(context);
+    const providerConfig = await this.getProviderConfig(context);
+    if (!providerConfig) {
+      const err = new Error('No AI provider configured. Please configure Pod AI provider or DEFAULT_API_KEY');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    const { baseURL, apiKey, proxy, credentialId } = providerConfig;
 
     // Remove trailing slash if present
     const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;

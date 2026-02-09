@@ -75,7 +75,9 @@
     "test:docker:all": "yarn test:docker:lite && yarn test:docker:full",
     "test:docker:lite:up": "docker-compose -f docker-compose.standalone.yml up -d --build",
     "test:docker:lite:down": "docker-compose -f docker-compose.standalone.yml down",
-    "test:service": "XPOD_RUN_SERVICE_TESTS=true vitest --run tests/service"
+    "test:service": "XPOD_RUN_SERVICE_TESTS=true vitest --run tests/service",
+    "build:single": "node scripts/build-single-file.js",
+    "build:single:standalone": "yarn build && node scripts/build-single-file.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

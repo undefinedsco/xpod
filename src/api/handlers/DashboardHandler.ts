@@ -77,14 +77,19 @@ export function registerDashboardRoutes(
 
     let fullPath = path.join(staticDir, filePath);
 
-    // 如果是目录，尝试 dashboard.html
+    // 优先兼容 dashboard.html，其次回退到 index.html。
+    // 这样能兼容当前产物（dashboard.html）和旧构建（index.html）。
     if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
-      fullPath = path.join(fullPath, 'index.html');
+      const dashboardEntry = path.join(fullPath, 'dashboard.html');
+      const indexEntry = path.join(fullPath, 'index.html');
+      fullPath = fs.existsSync(dashboardEntry) ? dashboardEntry : indexEntry;
     }
 
-    // 如果文件不存在，返回 dashboard.html (SPA fallback)
+    // SPA fallback
     if (!fs.existsSync(fullPath)) {
-      fullPath = path.join(staticDir, 'index.html');
+      const dashboardEntry = path.join(staticDir, 'dashboard.html');
+      const indexEntry = path.join(staticDir, 'index.html');
+      fullPath = fs.existsSync(dashboardEntry) ? dashboardEntry : indexEntry;
     }
 
     // 再次检查文件是否存在

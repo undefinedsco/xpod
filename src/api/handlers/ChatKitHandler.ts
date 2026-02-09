@@ -14,9 +14,11 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ChatKitService, StreamingResult, NonStreamingResult } from '../chatkit/service';
 import type { StoreContext } from '../chatkit/store';
 import { getWebId, getAccountId } from '../auth/AuthContext';
+import { SmartInputPipelineService } from '../service/SmartInputPipelineService';
 
 export interface ChatKitHandlerOptions {
   chatKitService: ChatKitService<StoreContext>;
+  smartInputPipeline?: SmartInputPipelineService;
 }
 
 /**
@@ -25,6 +27,7 @@ export interface ChatKitHandlerOptions {
 export function registerChatKitRoutes(server: ApiServer, options: ChatKitHandlerOptions): void {
   const logger = getLoggerFor('ChatKitHandler');
   const { chatKitService } = options;
+  const smartInputPipeline = options.smartInputPipeline;
 
   /**
    * POST /chatkit - Main ChatKit endpoint
@@ -58,6 +61,14 @@ export function registerChatKitRoutes(server: ApiServer, options: ChatKitHandler
       }
 
       logger.debug(`ChatKit request from ${userId}: ${body.slice(0, 200)}...`);
+
+      // Unified smart-input pipeline (side effect only, keep ChatKit protocol behavior).
+      if (auth && smartInputPipeline) {
+        await smartInputPipeline.processText(
+          SmartInputPipelineService.extractTextFromRawBody(body),
+          auth,
+        );
+      }
 
       // Process the request
       const result = await chatKitService.process(body, context);

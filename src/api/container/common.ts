@@ -1,11 +1,11 @@
 /**
  * 共享服务注册
- * 
+ *
  * cloud 和 local 模式都需要的服务
  */
 
-import { asClass, asFunction, asValue, type AwilixContainer } from 'awilix';
-import type { ApiContainerCradle, ApiContainerConfig } from './types';
+import { asFunction, type AwilixContainer } from 'awilix';
+import type { ApiContainerCradle } from './types';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -15,9 +15,11 @@ import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthent
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
-import { InternalPodService } from '../service/InternalPodService';
 import { VercelChatService } from '../service/VercelChatService';
 import { ApiServer } from '../ApiServer';
+import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
+import { IntentRecognitionService, IntentStorageService } from '../../ai/service';
+import { SmartInputPipelineService } from '../service/SmartInputPipelineService';
 
 /**
  * 注册共享服务到容器
@@ -40,6 +42,7 @@ export function registerCommonServices(
       return new DrizzleClientCredentialsStore({
         db,
         encryptionKey: config.encryptionKey,
+        isSqlite: config.databaseUrl.startsWith('sqlite:'),
       });
     }).singleton(),
 
@@ -69,16 +72,34 @@ export function registerCommonServices(
       return new AuthMiddleware({ authenticator });
     }).singleton(),
 
-    // 业务服务
-    podService: asFunction(({ apiKeyStore, config }: ApiContainerCradle) => {
-      return new InternalPodService({
+    // ChatKit 存储与服务
+    chatKitStore: asFunction(({ config }: ApiContainerCradle) => {
+      return new PodChatKitStore({
         tokenEndpoint: config.cssTokenEndpoint,
-        apiKeyStore,
       });
     }).singleton(),
 
-    chatService: asFunction(({ podService }: ApiContainerCradle) => {
-      return new VercelChatService(podService);
+    chatKitAiProvider: asFunction(({ chatKitStore }: ApiContainerCradle) => {
+      return new VercelAiProvider({ store: chatKitStore });
+    }).singleton(),
+
+    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider }: ApiContainerCradle) => {
+      return new ChatKitService({
+        store: chatKitStore,
+        aiProvider: chatKitAiProvider,
+      });
+    }).singleton(),
+
+    // 业务服务
+    chatService: asFunction(({ chatKitStore }: ApiContainerCradle) => {
+      return new VercelChatService(chatKitStore);
+    }).singleton(),
+
+    smartInputPipeline: asFunction(() => {
+      return new SmartInputPipelineService({
+        recognitionService: new IntentRecognitionService(),
+        storageService: new IntentStorageService(),
+      });
     }).singleton(),
 
     // API Server

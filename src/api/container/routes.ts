@@ -17,8 +17,13 @@ import { registerSubdomainClientRoutes } from '../handlers/SubdomainClientHandle
 import { registerDevRoutes } from '../handlers/DevHandler';
 import { registerWebIdProfileRoutes } from '../handlers/WebIdProfileHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
+import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
+import { registerDashboardRoutes } from '../handlers/DashboardHandler';
+import { registerAdminRoutes } from '../handlers/AdminHandler';
+import { registerSmartInputRoutes } from '../handlers/SmartInputHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
+import * as path from 'node:path';
 
 /**
  * 注册所有 API 路由
@@ -56,6 +61,10 @@ function registerHealthRoutes(server: ApiServer): void {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ status: 'ready' }));
   }, { public: true });
+
+  // Dashboard 静态资源
+  const staticDir = path.resolve(process.cwd(), 'static/dashboard');
+  registerDashboardRoutes(server, { staticDir });
 }
 
 /**
@@ -68,11 +77,14 @@ function registerSharedRoutes(
   const nodeRepo = container.resolve('nodeRepo') as EdgeNodeRepository;
   const apiKeyStore = container.resolve('apiKeyStore') as DrizzleClientCredentialsStore;
   const chatService = container.resolve('chatService');
+  const chatKitService = container.resolve('chatKitService');
+  const smartInputPipeline = container.resolve('smartInputPipeline');
 
   registerSignalRoutes(server, { repository: nodeRepo });
   registerNodeRoutes(server, { repository: nodeRepo });
   registerApiKeyRoutes(server, { store: apiKeyStore });
-  registerChatRoutes(server, { chatService: chatService as any });
+  registerChatRoutes(server, { chatService, smartInputPipeline });
+  registerChatKitRoutes(server, { chatKitService, smartInputPipeline });
 
   // 开发模式路由 (仅 NODE_ENV=development 时启用)
   registerDevRoutes(server, {
@@ -137,6 +149,12 @@ function registerLocalRoutes(
   container: AwilixContainer<ApiContainerCradle>,
   server: ApiServer,
 ): void {
+  // Admin API (配置管理、重启)
+  registerAdminRoutes(server);
+
+  // 智能输入 API (AI 识别意图并存储)
+  registerSmartInputRoutes(server, { tokenEndpoint: '' });
+
   // 子域名客户端 API (通过 SubdomainClient 调用 Cloud)
   try {
     const subdomainClient = container.resolve('subdomainClient') as ApiContainerCradle['subdomainClient'];

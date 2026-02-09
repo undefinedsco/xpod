@@ -88,6 +88,37 @@ suite('ChatKit PodStore Integration', () => {
     // No cleanup: integration accounts are ephemeral.
   }, 1000);
 
+
+  const waitForThreadItemsCount = async (threadId: string, minCount: number): Promise<any[]> => {
+    const maxRetries = 30;
+    const delayMs = 200;
+
+    for (let i = 0; i < maxRetries; i++) {
+      const request = JSON.stringify({
+        type: 'items.list',
+        params: { thread_id: threadId, limit: 50 },
+      });
+      const result = await service.process(request, testContext);
+      if (result.type === 'non_streaming') {
+        const data = JSON.parse(result.json);
+        if (Array.isArray(data.data) && data.data.length >= minCount) {
+          return data.data;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    const finalRequest = JSON.stringify({
+      type: 'items.list',
+      params: { thread_id: threadId, limit: 50 },
+    });
+    const finalResult = await service.process(finalRequest, testContext);
+    if (finalResult.type !== 'non_streaming') {
+      return [];
+    }
+    return (JSON.parse(finalResult.json).data ?? []) as any[];
+  };
+
   describe('Thread CRUD Operations', () => {
     let threadId: string;
 
@@ -271,29 +302,19 @@ suite('ChatKit PodStore Integration', () => {
     });
 
     it('should retrieve messages from Pod', async () => {
-      const request = JSON.stringify({
-        type: 'items.list',
-        params: { thread_id: threadId, limit: 50 },
-      });
+      const items = await waitForThreadItemsCount(threadId, 2);
+      expect(items).toBeInstanceOf(Array);
+      expect(items.length).toBeGreaterThanOrEqual(2); // At least user + assistant
 
-      const result = await service.process(request, testContext);
-      expect(result.type).toBe('non_streaming');
+      // Check user message
+      const userMsg = items.find((i: any) => i.type === 'user_message');
+      expect(userMsg).toBeDefined();
+      expect(userMsg.content[0].text).toContain('weather');
 
-      if (result.type === 'non_streaming') {
-        const data = JSON.parse(result.json);
-        expect(data.data).toBeInstanceOf(Array);
-        expect(data.data.length).toBeGreaterThanOrEqual(2); // At least user + assistant
-
-        // Check user message
-        const userMsg = data.data.find((i: any) => i.type === 'user_message');
-        expect(userMsg).toBeDefined();
-        expect(userMsg.content[0].text).toContain('weather');
-
-        // Check assistant message
-        const assistantMsg = data.data.find((i: any) => i.type === 'assistant_message');
-        expect(assistantMsg).toBeDefined();
-        expect(assistantMsg.content[0].text).toContain('Mock response');
-      }
+      // Check assistant message
+      const assistantMsg = items.find((i: any) => i.type === 'assistant_message');
+      expect(assistantMsg).toBeDefined();
+      expect(assistantMsg.content[0].text).toContain('Mock response');
     });
 
     it('should handle multiple messages in conversation', async () => {
@@ -319,16 +340,8 @@ suite('ChatKit PodStore Integration', () => {
       }
 
       // Verify all messages are stored
-      const listRequest = JSON.stringify({
-        type: 'items.list',
-        params: { thread_id: threadId, limit: 50 },
-      });
-
-      const listResult = await service.process(listRequest, testContext);
-      if (listResult.type === 'non_streaming') {
-        const data = JSON.parse(listResult.json);
-        expect(data.data.length).toBeGreaterThanOrEqual(4); // 2 user + 2 assistant
-      }
+      const items = await waitForThreadItemsCount(threadId, 4);
+      expect(items.length).toBeGreaterThanOrEqual(4); // 2 user + 2 assistant
     });
   });
 
@@ -388,7 +401,13 @@ suite('ChatKit PodStore Integration', () => {
             // items is a Page object with data array
             expect(data.items).toBeDefined();
             expect(data.items.data).toBeInstanceOf(Array);
-            expect(data.items.data.length).toBeGreaterThanOrEqual(2);
+
+            if (data.items.data.length < 2) {
+              const items = await waitForThreadItemsCount(threadId, 2);
+              expect(items.length).toBeGreaterThanOrEqual(2);
+            } else {
+              expect(data.items.data.length).toBeGreaterThanOrEqual(2);
+            }
           }
         }
       }

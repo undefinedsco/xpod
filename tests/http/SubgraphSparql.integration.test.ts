@@ -2,15 +2,13 @@ import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import { Session } from '@inrupt/solid-client-authn-node';
 import { Parser } from 'n3';
 import { config as loadEnv } from 'dotenv';
+import { resolveSolidIntegrationConfig } from './utils/integrationEnv';
 
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
-const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:3000';
-const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
-const webId = process.env.SOLID_WEBID;
+const { baseUrl, oidcIssuer, webId } = resolveSolidIntegrationConfig();
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
 const tokenType = process.env.SOLID_TOKEN_TYPE === 'Bearer' ? 'Bearer' : 'DPoP';
 
 function joinUrl(base: string, path: string): string {
@@ -137,8 +135,8 @@ suite('Subgraph SPARQL endpoint integration (/-/sparql)', () => {
 
   afterAll(async () => {
     // Cleanup - delete test resource and container
-    await authFetch(testResource, { method: 'DELETE' }).catch(() => {});
-    await authFetch(testContainer, { method: 'DELETE' }).catch(() => {});
+    await authFetch?.(testResource, { method: 'DELETE' }).catch(() => {});
+    await authFetch?.(testContainer, { method: 'DELETE' }).catch(() => {});
     await session?.logout();
   });
 

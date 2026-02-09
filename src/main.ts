@@ -102,7 +102,7 @@ async function main() {
   // Register CSS (Solid Server)
   supervisor.register({
     name: 'css',
-    command: 'node', // Direct node execution
+    command: process.execPath, // Keep child runtime aligned with current Node version
     args: [
       cssBinary, // Path to bin/server.js
       '-c', configPath,
@@ -120,13 +120,15 @@ async function main() {
   // Register API Server
   supervisor.register({
     name: 'api',
-    command: 'node',
+    command: process.execPath,
     args: ['dist/api/main.js'],
     env: {
       ...process.env,
       API_PORT: apiPort.toString(),
       XPOD_MAIN_PORT: mainPort.toString(),
       CSS_INTERNAL_URL: `http://localhost:${cssPort}`,
+      CSS_BASE_URL: baseUrl,
+      CSS_TOKEN_ENDPOINT: `${baseUrl}.oidc/token`,
     },
   });
 

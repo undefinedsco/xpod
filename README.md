@@ -37,6 +37,24 @@ Visit [http://localhost:3000/](http://localhost:3000/) after startup.
 
 See [docs/deployment-modes.md](docs/deployment-modes.md) for detailed profile comparison and cloud-edge coordination.
 
+## Single-File Packaging
+
+Build a self-extracting single-file launcher:
+
+```bash
+yarn build:single:standalone
+```
+
+Output file: `dist/xpod-single.cjs`
+
+Run it directly (requires Node.js):
+
+```bash
+node dist/xpod-single.cjs --mode local
+```
+
+On first start, it extracts runtime files to cache (default `~/.xpod/single-file-cache/`; override with `XPOD_SINGLE_CACHE_DIR`) and reuses that cache on subsequent launches.
+
 ## Deployment Strategies
 
 Xpod supports two primary deployment models, functioning like a Personal OS or a Multi-User Mainframe:

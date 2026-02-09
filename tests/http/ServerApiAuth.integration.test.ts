@@ -1,21 +1,37 @@
 import { beforeAll, describe, it, expect } from 'vitest';
 import { config as loadEnv } from 'dotenv';
 import { Session } from '@inrupt/solid-client-authn-node';
+import { resolveSolidIntegrationConfig } from './utils/integrationEnv';
 
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
-const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:3000';
-const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
+const { baseUrl, oidcIssuer } = resolveSolidIntegrationConfig();
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
 const tokenType = process.env.SOLID_TOKEN_TYPE === 'Bearer' ? 'Bearer' : 'DPoP';
+
+function derivePodRoot(): string {
+  const webId = process.env.SOLID_WEBID;
+  if (!webId) {
+    return joinUrl(baseUrl, 'test/');
+  }
+
+  const parsed = new URL(webId);
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    return `${parsed.origin}/`;
+  }
+
+  return `${parsed.origin}/${segments[0]}/`;
+}
+
+const podRoot = derivePodRoot();
 
 function joinUrl(base: string, path: string): string {
   return new URL(path, base).toString();
 }
 
-const shouldRunIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret;
+const shouldRunIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret && oidcIssuer;
 const suite = shouldRunIntegration ? describe : describe.skip;
 
 suite('API Authentication', () => {
@@ -73,7 +89,7 @@ suite('API Authentication', () => {
     });
 
     it('can create resources with valid credentials', async () => {
-      const testResource = joinUrl(baseUrl, 'test/api-auth-test/test-resource.txt');
+      const testResource = joinUrl(podRoot, 'api-auth-test/test-resource.txt');
 
       // Create a test resource
       const putResponse = await authFetch(testResource, {
@@ -108,7 +124,7 @@ suite('API Authentication', () => {
     });
 
     it('can list resources with valid credentials', async () => {
-      const response = await authFetch(joinUrl(baseUrl, 'test/'), {
+      const response = await authFetch(podRoot, {
         method: 'GET',
         headers: {
           'Accept': 'text/turtle, application/ld+json, application/json',
@@ -132,7 +148,7 @@ suite('API Authentication', () => {
   describe('Database Storage Integration', () => {
     it('verifies database connection through server', async () => {
       // Try to access any authenticated endpoint to verify the database-backed auth works
-      const response = await authFetch(joinUrl(baseUrl, 'test/'), {
+      const response = await authFetch(podRoot, {
         method: 'HEAD',
       });
 
@@ -148,9 +164,9 @@ suite('API Authentication', () => {
       // This tests that the token validation goes through the database
       // Multiple requests should work consistently (no connection pool issues)
       const requests = await Promise.all([
-        authFetch(joinUrl(baseUrl, 'test/'), { method: 'HEAD' }),
-        authFetch(joinUrl(baseUrl, 'test/'), { method: 'HEAD' }),
-        authFetch(joinUrl(baseUrl, 'test/'), { method: 'HEAD' }),
+        authFetch(podRoot, { method: 'HEAD' }),
+        authFetch(podRoot, { method: 'HEAD' }),
+        authFetch(podRoot, { method: 'HEAD' }),
       ]);
 
       // All should return consistent results

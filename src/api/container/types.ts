@@ -9,7 +9,6 @@ import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
-import type { InternalPodService } from '../service/InternalPodService';
 import type { VercelChatService } from '../service/VercelChatService';
 import type { SubdomainService } from '../../subdomain/SubdomainService';
 import type { SubdomainClient } from '../../subdomain/SubdomainClient';
@@ -18,6 +17,10 @@ import type { TunnelProvider } from '../../tunnel/TunnelProvider';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
 import type { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
+import type { ChatKitService, AiProvider } from '../chatkit';
+import type { StoreContext } from '../chatkit/store';
+import type { PodChatKitStore } from '../chatkit/pod-store';
+import type { SmartInputPipelineService } from '../service/SmartInputPipelineService';
 
 /**
  * 容器配置
@@ -101,8 +104,15 @@ export interface ApiContainerCradle {
   apiKeyStore: DrizzleClientCredentialsStore;
 
   // 业务服务
-  podService: InternalPodService;
   chatService: VercelChatService;
+
+  // ChatKit 服务 (OpenAI ChatKit 协议)
+  chatKitStore: PodChatKitStore;
+  chatKitAiProvider: AiProvider;
+  chatKitService: ChatKitService<StoreContext>;
+
+  // Unified smart-input pipeline for all chat-like endpoints
+  smartInputPipeline: SmartInputPipelineService;
 
   // Cloud 模式: 身份服务
   webIdProfileRepo?: WebIdProfileRepository;

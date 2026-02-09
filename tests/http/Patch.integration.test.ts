@@ -2,13 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Session } from '@inrupt/solid-client-authn-node';
 import { config as loadEnv } from 'dotenv';
 import { Parser } from 'n3';
+import { resolveSolidIntegrationConfig } from './utils/integrationEnv';
 
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
-const webId = process.env.SOLID_WEBID;
+const { webId, oidcIssuer } = resolveSolidIntegrationConfig();
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER;
 const tokenType = process.env.SOLID_TOKEN_TYPE === 'Bearer' ? 'Bearer' : 'DPoP';
 const shouldRun = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret && oidcIssuer && webId;
 const suite = shouldRun ? describe : describe.skip;
