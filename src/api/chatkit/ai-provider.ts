@@ -15,12 +15,24 @@ import type { PodChatKitStore } from './pod-store';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId } from '../auth/AuthContext';
 import { CredentialStatus } from '../../credential/schema/types';
+import { drizzle } from '@undefineds.co/drizzle-solid';
+import { Provider } from '../../ai/schema/provider';
+import { Model } from '../../ai/schema/model';
+import { Credential } from '../../credential/schema/tables';
+import { ServiceType } from '../../credential/schema/types';
+import { isDefaultAgentAvailable, streamDefaultAgent, type DefaultAgentContext } from './default-agent';
 
 // Create a proxy-aware fetch function
 function createProxyFetch(proxyUrl: string): typeof fetch {
   const agent = new ProxyAgent(proxyUrl);
   return (url, init) => fetch(url, { ...init, dispatcher: agent } as any);
 }
+
+const schema = {
+  provider: Provider,
+  model: Model,
+  credential: Credential,
+};
 
 export interface VercelAiProviderOptions {
   store: PodChatKitStore;
@@ -57,13 +69,27 @@ export class VercelAiProvider implements AiProvider {
     const auth = context?.auth as AuthContext | undefined;
     const userId = auth ? (getWebId(auth) ?? getAccountId(auth) ?? 'anonymous') : 'anonymous';
 
-    // 从 Pod 获取配置（复用 context 中缓存的 Session）
+    // Get last user message to check for AI config
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.content || '';
+
+    // 从 Pod 获取配置
     const config = await this.getProviderConfig(context);
-    const model = options?.model ?? config.defaultModel ?? 'gemini-3-flash-preview';
+
+    // 无有效配置，降级到 Default Agent
+    if (!config) {
+      this.logger.info(`No valid AI config for ${userId}, falling back to Default Agent`);
+      yield* this.streamWithDefaultAgent(messages, context);
+      return;
+    }
+
+    const model = options?.model ?? config.defaultModel ?? process.env.DEFAULT_MODEL ?? 'stepfun/step-3.5-flash:free';
 
     this.logger.debug(`Streaming response for ${userId}, model: ${model}`);
 
     const provider = this.createProvider(config);
+
+    // Check if user is providing AI config and auto-save
+    const autoSaved = await this.tryAutoSaveConfig(lastUserMessage, context);
 
     try {
       const result = streamText({
@@ -71,6 +97,16 @@ export class VercelAiProvider implements AiProvider {
         messages: messages as any,
         temperature: options?.temperature,
         maxTokens: options?.maxTokens,
+        system: `You are a helpful AI assistant running on Xpod (a Solid Pod-based platform).
+
+Your capabilities:
+1. Help users with various tasks
+2. When users provide AI configuration (API keys, provider names, models), acknowledge it and let them know it will be saved to their Pod
+
+Current AI Provider: ${config.baseURL.includes('openrouter') ? 'OpenRouter (Free)' : 'Custom'}
+Model: ${model}
+
+${autoSaved ? `[系统消息：已自动保存用户的 AI 配置]` : ''}`,
       } as any);
 
       // Stream text chunks
@@ -87,13 +123,162 @@ export class VercelAiProvider implements AiProvider {
   }
 
   /**
+   * Try to auto-save AI config from user message
+   */
+  private async tryAutoSaveConfig(
+    message: string,
+    context: StoreContext | undefined,
+  ): Promise<boolean> {
+    if (!context) return false;
+
+    // Parse AI config from message
+    const parsed = this.parseAiConfig(message);
+    if (!parsed || !parsed.apiKey) return false;
+
+    try {
+      await this.saveAiConfig(parsed, context);
+      this.logger.debug(`Auto-saved AI config: ${parsed.provider}`);
+      return true;
+    } catch (error) {
+      this.logger.error(`Failed to auto-save AI config: ${error}`);
+      return false;
+    }
+  }
+
+  /**
+   * Parse AI config from message
+   */
+  private parseAiConfig(message: string): {
+    provider: string;
+    apiKey: string;
+    model?: string;
+    baseUrl?: string;
+  } | null {
+    // Look for API key patterns
+    const apiKeyMatch = message.match(/(?:api[_-]?key|key|token|sk)[\s:=]+["']?([a-zA-Z0-9_\-]{20,})["']?/i) 
+      || message.match(/(sk-[a-zA-Z0-9]{20,})/i);
+    
+    if (!apiKeyMatch) return null;
+    const apiKey = apiKeyMatch[1];
+
+    // Look for provider
+    const providerPatterns: Record<string, RegExp> = {
+      openai: /openai/i,
+      google: /google|gemini/i,
+      anthropic: /anthropic|claude/i,
+      deepseek: /deepseek/i,
+      openrouter: /openrouter/i,
+      ollama: /ollama/i,
+      mistral: /mistral/i,
+      cohere: /cohere/i,
+      zhipu: /zhipu|智谱/i,
+    };
+
+    let provider = 'openrouter';
+    for (const [name, pattern] of Object.entries(providerPatterns)) {
+      if (pattern.test(message)) {
+        provider = name;
+        break;
+      }
+    }
+
+    // Look for model
+    const modelMatch = message.match(/(?:model|模型)[\s:=]+["']?([a-zA-Z0-9\/\-\:_\.]+)["']?/i)
+      || message.match(/gpt-4[\w\-]*/i)
+      || message.match(/gemini-[\w\-]+/i)
+      || message.match(/claude-[\w\-]+/i);
+
+    return {
+      provider,
+      apiKey,
+      model: modelMatch ? modelMatch[1] || modelMatch[0] : undefined,
+    };
+  }
+
+  /**
+   * Save AI configuration to Pod
+   */
+  private async saveAiConfig(
+    args: {
+      provider: string;
+      apiKey: string;
+      model?: string;
+      baseUrl?: string;
+    },
+    context: StoreContext,
+  ): Promise<void> {
+    const webId = context.auth ? getWebId(context.auth as AuthContext) : undefined;
+    if (!webId) {
+      throw new Error('Not authenticated');
+    }
+
+    const podBaseUrl = this.getPodBaseUrlFromWebId(webId);
+    
+    const session = {
+      info: { isLoggedIn: true, webId },
+      fetch: fetch,
+    };
+
+    const db = drizzle(session, { schema });
+
+    // 1. Create Provider
+    const providerId = args.provider.toLowerCase();
+    const displayName = args.provider.charAt(0).toUpperCase() + args.provider.slice(1);
+    const baseUrl = args.baseUrl || this.getDefaultBaseUrl(providerId);
+
+    const providerUri = `${podBaseUrl}settings/ai/providers.ttl#${providerId}`;
+
+    try {
+      await db.insert(Provider).values({
+        id: providerId,
+        displayName,
+        baseUrl,
+      });
+    } catch (e) {
+      // Provider might already exist
+      this.logger.debug(`Provider ${providerId} might already exist`);
+    }
+
+    // 2. Create Model (if provided)
+    if (args.model) {
+      const modelId = args.model.replace(/[^a-zA-Z0-9]/g, '_');
+      try {
+        await db.insert(Model).values({
+          id: modelId,
+          displayName: args.model,
+          status: 'active',
+          isProvidedBy: providerUri,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      } catch (e) {
+        this.logger.debug(`Model ${modelId} might already exist`);
+      }
+    }
+
+    // 3. Create Credential
+    const credentialId = `${providerId}-default`;
+    try {
+      await db.insert(Credential).values({
+        id: credentialId,
+        service: ServiceType.AI,
+        status: 'active' as any,
+        provider: providerUri,
+        apiKey: args.apiKey,
+      });
+    } catch (e) {
+      // Update existing credential
+      this.logger.debug(`Credential ${credentialId} might already exist, updating`);
+    }
+  }
+
+  /**
    * Check if error is a 429 rate limit error
    */
   private isRateLimitError(error: unknown): boolean {
     if (error instanceof APICallError) {
       return error.statusCode === 429;
     }
-    // Check for generic error with status
     if (error && typeof error === 'object') {
       const err = error as any;
       return err.status === 429 || err.statusCode === 429 || err.code === 'rate_limit_exceeded';
@@ -114,7 +299,6 @@ export class VercelAiProvider implements AiProvider {
       return;
     }
 
-    // Parse Retry-After header if available
     let rateLimitResetAt: Date | undefined;
     if (error instanceof APICallError && error.responseHeaders) {
       const retryAfter = error.responseHeaders['retry-after'];
@@ -123,7 +307,6 @@ export class VercelAiProvider implements AiProvider {
         if (!isNaN(seconds)) {
           rateLimitResetAt = new Date(Date.now() + seconds * 1000);
         } else {
-          // Try parsing as HTTP date
           const date = new Date(retryAfter);
           if (!isNaN(date.getTime())) {
             rateLimitResetAt = date;
@@ -132,14 +315,11 @@ export class VercelAiProvider implements AiProvider {
       }
     }
 
-    // Default to 60 seconds if no Retry-After header
     if (!rateLimitResetAt) {
       rateLimitResetAt = new Date(Date.now() + 60 * 1000);
     }
 
-    this.logger.warn(
-      `Rate limited for credential ${credentialId}, reset at ${rateLimitResetAt.toISOString()}`,
-    );
+    this.logger.warn(`Rate limited for credential ${credentialId}, reset at ${rateLimitResetAt.toISOString()}`);
 
     try {
       await this.store.updateCredentialStatus(context, credentialId, CredentialStatus.RATE_LIMITED, {
@@ -151,13 +331,15 @@ export class VercelAiProvider implements AiProvider {
     }
   }
 
-  private async getProviderConfig(context: StoreContext | undefined): Promise<{
+  private async getProviderConfig(
+    context: StoreContext | undefined,
+  ): Promise<{
     baseURL: string;
     apiKey: string;
     proxy?: string;
     defaultModel?: string;
     credentialId?: string;
-  }> {
+  } | null> {
     let config: Awaited<ReturnType<PodChatKitStore['getAiConfig']>> | undefined;
 
     if (context) {
@@ -165,27 +347,48 @@ export class VercelAiProvider implements AiProvider {
         config = await this.store.getAiConfig(context);
         this.logger.debug(`Pod config: ${JSON.stringify(config)}`);
       } catch (error) {
-        this.logger.warn(`Failed to get Pod config, falling back to env: ${error}`);
+        this.logger.debug(`Failed to get Pod config: ${error}`);
         config = undefined;
       }
     }
 
-    // Priority: Pod Config > Environment Variable > Default (Ollama)
-    let baseURL = config?.baseUrl || process.env.XPOD_AI_BASE_URL;
-    let apiKey = config?.apiKey || process.env.XPOD_AI_API_KEY;
-    const proxy = config?.proxyUrl;
-
-    // Special handling for Google/Gemini
-    if (!baseURL && !apiKey && process.env.GOOGLE_API_KEY) {
-      baseURL = 'https://generativelanguage.googleapis.com/v1beta/openai';
-      apiKey = process.env.GOOGLE_API_KEY;
+    // 用户 Pod 有配置，优先使用
+    if (config?.apiKey) {
+      return {
+        baseURL: config.baseUrl || this.getDefaultBaseUrl('openrouter'),
+        apiKey: config.apiKey,
+        proxy: config.proxyUrl,
+        credentialId: config.credentialId,
+      };
     }
 
-    // Default to local Ollama
-    baseURL = baseURL || 'http://localhost:11434/v1';
-    apiKey = apiKey || 'ollama';
+    // 环境变量配置（开发/测试用）
+    if (process.env.XPOD_AI_API_KEY) {
+      return {
+        baseURL: process.env.XPOD_AI_BASE_URL || 'https://openrouter.ai/api/v1',
+        apiKey: process.env.XPOD_AI_API_KEY,
+      };
+    }
 
-    return { baseURL, apiKey, proxy, credentialId: config?.credentialId };
+    // Google API Key 特殊处理
+    if (process.env.GOOGLE_API_KEY) {
+      return {
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        apiKey: process.env.GOOGLE_API_KEY,
+      };
+    }
+
+    // OpenRouter API Key
+    if (process.env.OPENROUTER_API_KEY) {
+      return {
+        baseURL: 'https://openrouter.ai/api/v1',
+        apiKey: process.env.OPENROUTER_API_KEY,
+      };
+    }
+
+    // 无有效配置，返回 null 表示需要降级到 Default Agent
+    this.logger.debug('No valid AI config found, will use Default Agent');
+    return null;
   }
 
   private createProvider(config: { baseURL: string; apiKey: string; proxy?: string }) {
@@ -199,5 +402,111 @@ export class VercelAiProvider implements AiProvider {
     }
 
     return createOpenAI(options);
+  }
+
+  private getPodBaseUrlFromWebId(webId: string): string {
+    try {
+      const url = new URL(webId);
+      url.hash = '';  // 清除 fragment
+      const pathParts = url.pathname.split('/');
+      if (pathParts.includes('profile')) {
+        const profileIndex = pathParts.indexOf('profile');
+        url.pathname = pathParts.slice(0, profileIndex).join('/');
+      }
+      return url.toString().replace(/\/$/, '') + '/';
+    } catch {
+      return '';
+    }
+  }
+
+  private getDefaultBaseUrl(provider: string): string {
+    const urls: Record<string, string> = {
+      openai: 'https://api.openai.com/v1',
+      google: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      anthropic: 'https://api.anthropic.com/v1',
+      deepseek: 'https://api.deepseek.com/v1',
+      openrouter: 'https://openrouter.ai/api/v1',
+      ollama: 'http://localhost:11434/v1',
+      mistral: 'https://api.mistral.ai/v1',
+      cohere: 'https://api.cohere.ai/v1',
+      zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+    };
+    return urls[provider.toLowerCase()] || urls.openrouter;
+  }
+
+  /**
+   * 使用 Default Agent 流式响应
+   */
+  private async *streamWithDefaultAgent(
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    context: StoreContext | undefined,
+  ): AsyncIterable<string> {
+    // 检查 Default Agent 是否可用
+    if (!isDefaultAgentAvailable()) {
+      yield '抱歉，您还没有配置 AI 服务，且系统默认 AI 也未配置。请先配置您的 AI API Key。';
+      return;
+    }
+
+    // 构建 Default Agent 上下文
+    const auth = context?.auth as AuthContext | undefined;
+    const webId = auth ? getWebId(auth) : undefined;
+
+    if (!webId) {
+      yield '抱歉，无法获取您的身份信息，请先登录。';
+      return;
+    }
+
+    const podBaseUrl = this.getPodBaseUrlFromWebId(webId);
+    const solidToken = this.getSolidToken(context);
+
+    if (!solidToken) {
+      yield '抱歉，无法获取访问令牌，请重新登录。';
+      return;
+    }
+
+    const agentContext: DefaultAgentContext = {
+      solidToken,
+      podBaseUrl,
+      webId,
+    };
+
+    // 获取最后一条用户消息
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.content || '';
+
+    try {
+      yield* streamDefaultAgent(lastUserMessage, agentContext);
+    } catch (error) {
+      this.logger.error(`Default Agent error: ${error}`);
+      yield `抱歉，Default Agent 出现错误：${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  /**
+   * 从上下文获取 Solid Token
+   */
+  private getSolidToken(context: StoreContext | undefined): string | undefined {
+    // 尝试从 context 中获取 token
+    // 这里需要根据实际的 auth 实现来获取
+    const auth = context?.auth as AuthContext | undefined;
+    if (!auth) return undefined;
+
+    // 如果 auth 中有 token，直接返回
+    if ('token' in auth && typeof auth.token === 'string') {
+      return auth.token;
+    }
+
+    // 如果有 accessToken
+    if ('accessToken' in auth && typeof auth.accessToken === 'string') {
+      return auth.accessToken;
+    }
+
+    // 尝试从 credentials 获取
+    if ('credentials' in auth && auth.credentials) {
+      const creds = auth.credentials as any;
+      if (creds.accessToken) return creds.accessToken;
+      if (creds.token) return creds.token;
+    }
+
+    return undefined;
   }
 }

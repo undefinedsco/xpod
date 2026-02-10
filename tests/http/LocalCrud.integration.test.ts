@@ -2,14 +2,13 @@ import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import type { Response } from 'undici';
 import { Session } from '@inrupt/solid-client-authn-node';
 import { config as loadEnv } from 'dotenv';
+import { resolveSolidIntegrationConfig } from './utils/integrationEnv';
 
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local', override: false });
 
-const baseUrl = (process.env.CSS_BASE_URL || 'http://localhost:3000').replace(/\/$/, '') + '/';
+const { baseUrl, oidcIssuer, webId } = resolveSolidIntegrationConfig();
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
-const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? baseUrl;
-const webId = process.env.SOLID_WEBID;
 const baseContainer = deriveBaseContainer();
 
 function joinUrl(base: string, path: string): string {
@@ -25,7 +24,7 @@ async function assertSuccess(response: Response, step: string): Promise<void> {
   }
 }
 
-const shouldRunIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret && oidcIssuer;
+const shouldRunIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true' && clientId && clientSecret && oidcIssuer && webId;
 const suite = shouldRunIntegration ? describe : describe.skip;
 
 suite('Local CSS CRUD integration', () => {

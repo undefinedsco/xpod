@@ -177,3 +177,64 @@ describe('ChatHandler without service', () => {
     expect(data.error).toBe('Chat service not configured');
   });
 });
+
+
+describe('ChatHandler smart pipeline', () => {
+  let server: ApiServer;
+  const port = 3113;
+  const baseUrl = `http://localhost:${port}`;
+
+  const chatService = {
+    complete: vi.fn(),
+    stream: vi.fn(),
+    listModels: vi.fn(),
+  };
+
+  const recognitionService = {
+    recognizeIntent: vi.fn().mockResolvedValue({
+      intent: 'ai_config',
+      confidence: 0.99,
+      data: { provider: 'openrouter', apiKey: 'sk-test-12345678901234567890', model: 'stepfun/step-3.5-flash:free' },
+    }),
+  };
+
+  const storageService = {
+    storeIntent: vi.fn().mockResolvedValue({
+      success: true,
+      message: '已保存 AI 配置',
+      location: '/settings/ai/',
+    }),
+  };
+
+  beforeAll(async () => {
+    server = new ApiServer({ port, authMiddleware });
+    registerChatRoutes(server, {
+      chatService: chatService as any,
+      recognitionService: recognitionService as any,
+      storageService: storageService as any,
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  it('stores smart input before delegating to chat service', async () => {
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify({
+        model: 'stepfun/step-3.5-flash:free',
+        messages: [{ role: 'user', content: '我的 key 是 sk-test-12345678901234567890' }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const data = await response.json() as any;
+    expect(data.model).toBe('intent-recognition');
+    expect(data.choices[0].message.content).toContain('已保存');
+    expect(storageService.storeIntent).toHaveBeenCalledTimes(1);
+    expect(chatService.complete).not.toHaveBeenCalled();
+  });
+});

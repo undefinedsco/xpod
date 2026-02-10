@@ -12,6 +12,22 @@ import { registerLocalServices } from './local';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
+function ensureTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
+function resolveCssTokenEndpoint(): string {
+  if (process.env.CSS_TOKEN_ENDPOINT) {
+    return process.env.CSS_TOKEN_ENDPOINT;
+  }
+
+  if (process.env.CSS_BASE_URL) {
+    return `${ensureTrailingSlash(process.env.CSS_BASE_URL)}.oidc/token`;
+  }
+
+  return 'http://localhost:3000/.oidc/token';
+}
+
 /**
  * 创建 API 容器
  */
@@ -58,7 +74,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     databaseUrl: process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? '',
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     encryptionKey: process.env.XPOD_ENCRYPTION_KEY ?? 'default-dev-key-change-me',
-    cssTokenEndpoint: process.env.CSS_TOKEN_ENDPOINT ?? 'http://localhost:3000/.oidc/token',
+    cssTokenEndpoint: resolveCssTokenEndpoint(),
 
     // 子域名配置 (cloud 模式)
     subdomain: {
