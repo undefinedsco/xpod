@@ -1,5 +1,5 @@
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq } from 'drizzle-solid';
 import { randomBytes } from 'crypto';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId, isSolidAuth } from '../auth/AuthContext';

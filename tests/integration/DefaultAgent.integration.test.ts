@@ -12,7 +12,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import {
   isDefaultAgentAvailable,
   getDefaultAgentConfig,
@@ -58,6 +57,7 @@ describe.skipIf(shouldSkip)('DefaultAgent Integration', () => {
       const timeoutId = setTimeout(() => abortController.abort(), testConfig.timeout);
 
       try {
+        const { query } = await import('@anthropic-ai/claude-agent-sdk');
         const q = query({
           prompt: '请执行 echo "TOKEN=$SOLID_TOKEN, POD=$POD_BASE_URL" 并返回结果',
           options: {

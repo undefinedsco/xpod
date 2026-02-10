@@ -3,11 +3,20 @@ import kill from 'tree-kill';
 import type { ServiceConfig, ServiceState, StatusChangeHandler } from './types';
 
 const MAX_RESTARTS = 5;
+const MAX_LOGS = 500;
+
+export interface SupervisorLog {
+  timestamp: string;
+  level: 'info' | 'warn' | 'error';
+  source: string;
+  message: string;
+}
 
 export class Supervisor {
   private processes: Map<string, ChildProcess> = new Map();
   private states: Map<string, ServiceState> = new Map();
   private configs: Map<string, ServiceConfig> = new Map();
+  private logs: SupervisorLog[] = [];
   private onStatusChange?: StatusChangeHandler;
   private isShuttingDown = false;
 
@@ -28,7 +37,7 @@ export class Supervisor {
 
   private killAll(): void {
     // 同步杀掉所有子进程（用于 process.on('exit')）
-    for (const [name, child] of this.processes) {
+    for (const [, child] of this.processes) {
       if (child.pid) {
         try {
           process.kill(child.pid, 'SIGKILL');
@@ -50,6 +59,41 @@ export class Supervisor {
       status: 'stopped',
       restartCount: 0,
     });
+  }
+
+  public addLog(source: string, level: SupervisorLog['level'], message: string): void {
+    this.logs.push({
+      timestamp: new Date().toISOString(),
+      level,
+      source,
+      message,
+    });
+
+    if (this.logs.length > MAX_LOGS) {
+      this.logs.splice(0, this.logs.length - MAX_LOGS);
+    }
+  }
+
+  public getLogs(filters?: {
+    level?: string;
+    source?: string;
+    limit?: number;
+  }): SupervisorLog[] {
+    let rows = this.logs;
+
+    if (filters?.level) {
+      rows = rows.filter((item) => item.level === filters.level);
+    }
+    if (filters?.source) {
+      rows = rows.filter((item) => item.source === filters.source);
+    }
+
+    const limit = filters?.limit;
+    if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+      return rows.slice(-limit);
+    }
+
+    return rows;
   }
 
   public async startAll(): Promise<void> {
@@ -75,6 +119,7 @@ export class Supervisor {
     if (state.status === 'running' || state.status === 'starting') return;
 
     console.log(`[Supervisor] Starting ${name}...`);
+    this.addLog(name, 'info', 'Service starting');
     this.updateState(name, { status: 'starting', startTime: Date.now() });
 
     const env = { ...process.env, ...config.env };
@@ -83,23 +128,27 @@ export class Supervisor {
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
       cwd: config.cwd || process.cwd(),
-      detached: false, // 确保子进程不脱离父进程
+      detached: false,
     });
 
     this.processes.set(name, child);
     this.updateState(name, { status: 'running', pid: child.pid });
 
-    const prefixLog = (name: string, data: Buffer, isError = false) => {
+    const prefixLog = (source: string, data: Buffer, isError = false): void => {
       const output = data.toString();
       const lines = output.split('\n');
       for (const line of lines) {
         const trimmed = line.trim();
-        if (trimmed) {
-          if (isError) {
-            console.error(`[${name}] ${trimmed}`);
-          } else {
-            console.log(`[${name}] ${trimmed}`);
-          }
+        if (!trimmed) {
+          continue;
+        }
+
+        if (isError) {
+          console.error(`[${source}] ${trimmed}`);
+          this.addLog(source, 'error', trimmed);
+        } else {
+          console.log(`[${source}] ${trimmed}`);
+          this.addLog(source, 'info', trimmed);
         }
       }
     };
@@ -114,11 +163,13 @@ export class Supervisor {
 
     child.on('error', (err) => {
       console.error(`[Supervisor] Error spawning ${name}:`, err);
+      this.addLog(name, 'error', `Spawn error: ${String(err)}`);
       this.updateState(name, { status: 'crashed' });
     });
 
     child.on('exit', (code, signal) => {
       console.log(`[Supervisor] ${name} exited with code ${code} signal ${signal}`);
+      this.addLog(name, code === 0 ? 'info' : 'error', `Exited with code ${code ?? 'null'} signal ${signal ?? 'null'}`);
       const currentState = this.states.get(name);
       const wasManualStop = currentState?.status === 'stopped';
 
@@ -137,9 +188,11 @@ export class Supervisor {
         if (restartCount <= MAX_RESTARTS) {
           this.updateState(name, { restartCount });
           console.log(`[Supervisor] Restarting ${name} in 2s... (attempt ${restartCount}/${MAX_RESTARTS})`);
+          this.addLog(name, 'warn', `Restarting in 2s (attempt ${restartCount}/${MAX_RESTARTS})`);
           setTimeout(() => this.start(name), 2000);
         } else {
           console.error(`[Supervisor] ${name} exceeded max restarts (${MAX_RESTARTS}), giving up`);
+          this.addLog(name, 'error', `Exceeded max restarts (${MAX_RESTARTS})`);
         }
       }
     });
@@ -155,9 +208,13 @@ export class Supervisor {
 
       // Mark as stopped first to prevent auto-restart
       this.updateState(name, { status: 'stopped' });
+      this.addLog(name, 'info', 'Stopping service');
 
       kill(child.pid, 'SIGTERM', (err) => {
-        if (err) console.error(`[Supervisor] Failed to kill ${name}:`, err);
+        if (err) {
+          console.error(`[Supervisor] Failed to kill ${name}:`, err);
+          this.addLog(name, 'error', `Failed to stop: ${String(err)}`);
+        }
         resolve();
       });
     });

@@ -95,7 +95,7 @@ export class ClaudeExecutor extends BaseAgentExecutor {
           const result = message as SDKResultMessage;
           if (result.subtype !== 'success') {
             // 检查是否是认证错误
-            if (result.errors?.some((e) => e.includes('authentication') || e.includes('api_key') || e.includes('401'))) {
+            if (result.errors?.some((e: string) => e.includes('authentication') || e.includes('api_key') || e.includes('401'))) {
               throw new ClaudeAuthenticationError(`Claude API Key 无效: ${result.errors.join(', ')}`);
             }
           }

@@ -34,7 +34,7 @@ services:
     volumes:
       - standalone_lite_data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:5739/_gateway/status"]
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:5739/service/status"]
       interval: 10s
       timeout: 5s
       retries: 10

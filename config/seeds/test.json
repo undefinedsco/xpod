@@ -7,5 +7,14 @@
         "name": "test"
       }
     ]
+  },
+  {
+    "email": "test@dev.local",
+    "password": "test123456",
+    "pods": [
+      {
+        "name": "test"
+      }
+    ]
   }
 ]
