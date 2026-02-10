@@ -12,18 +12,6 @@
   ],
   "@graph": [
     {
-      "comment": "File-based locker for local deployments",
-      "@id": "urn:solid-server:default:ResourceLocker",
-      "@type": "WrappedExpiringReadWriteLocker",
-      "locker": {
-        "@type": "FileSystemResourceLocker",
-        "rootFilePath": {
-          "@id": "urn:solid-server:default:variable:rootFilePath"
-        }
-      },
-      "expiration": 6000
-    },
-    {
       "comment": "Disable quota for local profile",
       "@id": "urn:undefineds:xpod:QuotaService",
       "@type": "NoopQuotaService"
@@ -46,10 +34,18 @@
       "comment": "原始 IdentityProviderHandler 实例（用于标准模式委托）",
       "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler",
       "@type": "RouterHandler",
-      "baseUrl": { "@id": "urn:solid-server:default:variable:baseUrl" },
-      "targetExtractor": { "@id": "urn:solid-server:default:TargetExtractor" },
-      "allowedPathNames": [ "^/.account(/.*)?$" ],
-      "handler": { "@id": "urn:solid-server:default:IdentityProviderParsingHandler" }
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl"
+      },
+      "targetExtractor": {
+        "@id": "urn:solid-server:default:TargetExtractor"
+      },
+      "allowedPathNames": [
+        "^/.account(/.*)?$"
+      ],
+      "handler": {
+        "@id": "urn:solid-server:default:IdentityProviderParsingHandler"
+      }
     },
     {
       "comment": "Auto-detect Identity Provider Handler - 有 idpUrl 时禁用本地账户管理",
@@ -98,10 +94,18 @@
       "comment": "Vector HTTP Handler",
       "@id": "urn:undefineds:xpod:VectorHttpHandler",
       "@type": "VectorHttpHandler",
-      "vectorStore": { "@id": "urn:undefineds:xpod:VectorStore" },
-      "credentialsExtractor": { "@id": "urn:solid-server:default:CredentialsExtractor" },
-      "permissionReader": { "@id": "urn:solid-server:default:PermissionReader" },
-      "authorizer": { "@id": "urn:solid-server:default:Authorizer" }
+      "vectorStore": {
+        "@id": "urn:undefineds:xpod:VectorStore"
+      },
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "permissionReader": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "authorizer": {
+        "@id": "urn:solid-server:default:Authorizer"
+      }
     },
     {
       "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for local (with OPTIONAL optimization)",
@@ -137,10 +141,18 @@
       "comment": "SPARQL-capable store for quadstore-backed resources.",
       "@id": "urn:undefineds:xpod:SparqlQuadstoreResourceStore",
       "@type": "SparqlUpdateResourceStore",
-      "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-      "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-      "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-      "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      },
+      "auxiliaryStrategy": {
+        "@id": "urn:solid-server:default:AuxiliaryStrategy"
+      },
+      "metadataStrategy": {
+        "@id": "urn:solid-server:default:MetadataStrategy"
+      },
+      "accessor": {
+        "@id": "urn:undefineds:xpod:MixDataAccessor"
+      }
     },
     {
       "comment": "等位替换: 用 SparqlUpdateResourceStore 替换默认的 DataAccessorBasedStore",
@@ -150,10 +162,18 @@
       },
       "overrideParameters": {
         "@type": "SparqlUpdateResourceStore",
-        "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-        "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-        "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-        "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+        "identifierStrategy": {
+          "@id": "urn:solid-server:default:IdentifierStrategy"
+        },
+        "auxiliaryStrategy": {
+          "@id": "urn:solid-server:default:AuxiliaryStrategy"
+        },
+        "metadataStrategy": {
+          "@id": "urn:solid-server:default:MetadataStrategy"
+        },
+        "accessor": {
+          "@id": "urn:undefineds:xpod:MixDataAccessor"
+        }
       }
     },
     {
@@ -164,10 +184,18 @@
       },
       "overrideParameters": {
         "@type": "RepresentationPartialConvertingStore",
-        "source": { "@id": "urn:solid-server:default:ResourceStore_Backend" },
-        "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-        "options_inConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
-        "options_outConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
+        "source": {
+          "@id": "urn:solid-server:default:ResourceStore_Backend"
+        },
+        "metadataStrategy": {
+          "@id": "urn:solid-server:default:MetadataStrategy"
+        },
+        "options_inConverter": {
+          "@id": "urn:solid-server:default:RepresentationConverter"
+        },
+        "options_outConverter": {
+          "@id": "urn:solid-server:default:RepresentationConverter"
+        },
         "options_inPreferences_type": {
           "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
           "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1
@@ -184,8 +212,12 @@
         "@type": "WrappedExpiringReadWriteLocker",
         "locker": {
           "@type": "GreedyReadWriteLocker",
-          "locker": { "@type": "MemoryResourceLocker" },
-          "storage": { "@type": "MemoryMapStorage" }
+          "locker": {
+            "@type": "MemoryResourceLocker"
+          },
+          "storage": {
+            "@type": "MemoryMapStorage"
+          }
         },
         "expiration": 6000
       }

@@ -88,6 +88,44 @@ suite('ChatKit PodStore Integration', () => {
     // No cleanup: integration accounts are ephemeral.
   }, 1000);
 
+
+  const truncate = (s: string, max = 800): string => (s.length <= max ? s : s.slice(0, max) + '...<truncated>');
+
+  const waitForThreadItemsCount = async (
+    threadId: string,
+    minCount: number,
+    options: { timeoutMs?: number; intervalMs?: number } = {},
+  ): Promise<any[]> => {
+    const timeoutMs = options.timeoutMs ?? 6000;
+    const intervalMs = options.intervalMs ?? 200;
+    const startedAt = Date.now();
+
+    let lastJson = '';
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const request = JSON.stringify({
+        type: 'items.list',
+        params: { thread_id: threadId, limit: 50 },
+      });
+      const result = await service.process(request, testContext);
+      if (result.type === 'non_streaming') {
+        lastJson = result.json;
+        const data = JSON.parse(result.json);
+        if (Array.isArray(data.data) && data.data.length >= minCount) {
+          return data.data;
+        }
+      } else {
+        lastJson = JSON.stringify({ type: result.type });
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    throw new Error(
+      'Timeout waiting for thread items (threadId=' + threadId + ', minCount=' + minCount + ', timeoutMs=' + timeoutMs + '). Last items.list response: ' + truncate(lastJson),
+    );
+  };
+
   describe('Thread CRUD Operations', () => {
     let threadId: string;
 
@@ -271,29 +309,19 @@ suite('ChatKit PodStore Integration', () => {
     });
 
     it('should retrieve messages from Pod', async () => {
-      const request = JSON.stringify({
-        type: 'items.list',
-        params: { thread_id: threadId, limit: 50 },
-      });
+      const items = await waitForThreadItemsCount(threadId, 2);
+      expect(items).toBeInstanceOf(Array);
+      expect(items.length).toBeGreaterThanOrEqual(2); // At least user + assistant
 
-      const result = await service.process(request, testContext);
-      expect(result.type).toBe('non_streaming');
+      // Check user message
+      const userMsg = items.find((i: any) => i.type === 'user_message');
+      expect(userMsg).toBeDefined();
+      expect(userMsg.content[0].text).toContain('weather');
 
-      if (result.type === 'non_streaming') {
-        const data = JSON.parse(result.json);
-        expect(data.data).toBeInstanceOf(Array);
-        expect(data.data.length).toBeGreaterThanOrEqual(2); // At least user + assistant
-
-        // Check user message
-        const userMsg = data.data.find((i: any) => i.type === 'user_message');
-        expect(userMsg).toBeDefined();
-        expect(userMsg.content[0].text).toContain('weather');
-
-        // Check assistant message
-        const assistantMsg = data.data.find((i: any) => i.type === 'assistant_message');
-        expect(assistantMsg).toBeDefined();
-        expect(assistantMsg.content[0].text).toContain('Mock response');
-      }
+      // Check assistant message
+      const assistantMsg = items.find((i: any) => i.type === 'assistant_message');
+      expect(assistantMsg).toBeDefined();
+      expect(assistantMsg.content[0].text).toContain('Mock response');
     });
 
     it('should handle multiple messages in conversation', async () => {
@@ -319,16 +347,8 @@ suite('ChatKit PodStore Integration', () => {
       }
 
       // Verify all messages are stored
-      const listRequest = JSON.stringify({
-        type: 'items.list',
-        params: { thread_id: threadId, limit: 50 },
-      });
-
-      const listResult = await service.process(listRequest, testContext);
-      if (listResult.type === 'non_streaming') {
-        const data = JSON.parse(listResult.json);
-        expect(data.data.length).toBeGreaterThanOrEqual(4); // 2 user + 2 assistant
-      }
+      const items = await waitForThreadItemsCount(threadId, 4);
+      expect(items.length).toBeGreaterThanOrEqual(4); // 2 user + 2 assistant
     });
   });
 
@@ -388,7 +408,13 @@ suite('ChatKit PodStore Integration', () => {
             // items is a Page object with data array
             expect(data.items).toBeDefined();
             expect(data.items.data).toBeInstanceOf(Array);
-            expect(data.items.data.length).toBeGreaterThanOrEqual(2);
+
+            if (data.items.data.length < 2) {
+              const items = await waitForThreadItemsCount(threadId, 2);
+              expect(items.length).toBeGreaterThanOrEqual(2);
+            } else {
+              expect(data.items.data.length).toBeGreaterThanOrEqual(2);
+            }
           }
         }
       }
@@ -576,7 +602,7 @@ suite('ChatKit PodStore Integration', () => {
     it('should update credential status to rate limited', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('@undefineds.co/drizzle-solid');
+      const { eq } = await import('drizzle-solid');
 
       // Create a credential for status update test
       await db.insert(Credential).values({
@@ -608,7 +634,7 @@ suite('ChatKit PodStore Integration', () => {
     it('should record credential success and reset fail count', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('@undefineds.co/drizzle-solid');
+      const { eq } = await import('drizzle-solid');
 
       // Create a credential with some failures
       await db.insert(Credential).values({

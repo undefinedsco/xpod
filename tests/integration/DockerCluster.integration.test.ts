@@ -240,22 +240,32 @@ suite('Docker Cluster Integration', () => {
 // ==========================================
 
 async function waitForService(url: string, maxRetries = 30, delayMs = 1000): Promise<boolean> {
-  // 优先检查 _gateway/status，若网关路由名调整则回退到 /service/status
-  const statusUrls = [`${url}/_gateway/status`, `${url}/service/status`];
+  // 探针统一走 xpod Gateway 新接口
+  const statusUrl = `${url}/service/status`;
 
   for (let i = 0; i < maxRetries; i++) {
-    for (const statusUrl of statusUrls) {
-      try {
-        const res = await fetch(statusUrl, { method: 'GET' });
-        if (res.status === 200) {
-          return true;
+    try {
+      const res = await fetch(statusUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(3000),
+      });
+
+      if (res.status === 200) {
+        const body = await res.json().catch(() => null) as Array<{ name?: string }> | null;
+        if (Array.isArray(body)) {
+          const names = new Set(body.map((item) => item?.name).filter(Boolean));
+          if (names.has('css') && names.has('api')) {
+            return true;
+          }
         }
-      } catch {
-        // 服务未就绪
       }
+    } catch {
+      // 服务未就绪
     }
-    await new Promise((r) => setTimeout(r, delayMs));
+
+    await new Promise(r => setTimeout(r, delayMs));
   }
+
   return false;
 }
 
