@@ -6,6 +6,7 @@ import type { ChatCompletionRequest, ChatCompletionResponse } from '../handlers/
 import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { StoreContext } from '../chatkit/store';
 import { type AuthContext, getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
+import { isDefaultAgentAvailable, runDefaultAgent, streamDefaultAgent, type DefaultAgentContext } from '../chatkit/default-agent';
 import { CredentialStatus } from '../../credential/schema/types';
 
 // Create a proxy-aware fetch function
@@ -63,7 +64,7 @@ export class VercelChatService {
       config = undefined;
     }
 
-    // Priority: Pod config > DEFAULT_API_KEY env > local Ollama fallback
+    // Priority: Pod config > DEFAULT_API_KEY env > Default Agent fallback
     if (config?.apiKey) {
       const baseURL = config.baseUrl || this.getDefaultBaseUrl('openrouter');
       const proxy = config.proxyUrl;
@@ -106,6 +107,10 @@ export class VercelChatService {
     const { model, messages, temperature, max_tokens } = request;
     const context = this.createStoreContext(auth);
     const config = await this.getProviderConfig(context);
+
+    if (!config) {
+      return this.completeWithDefaultAgent(messages, auth, model);
+    }
 
     try {
       const provider = await this.getProvider(context);
@@ -165,6 +170,11 @@ export class VercelChatService {
   public async stream(request: ChatCompletionRequest, auth: AuthContext): Promise<any> {
     const { model, messages, temperature, max_tokens } = request;
     const context = this.createStoreContext(auth);
+    const config = await this.getProviderConfig(context);
+
+    if (!config) {
+      return this.streamWithDefaultAgent(messages, auth, model);
+    }
 
     const provider = await this.getProvider(context);
 
@@ -188,9 +198,7 @@ export class VercelChatService {
 
     const providerConfig = await this.getProviderConfig(context);
     if (!providerConfig) {
-      const err = new Error('No AI provider configured. Please configure Pod AI provider or DEFAULT_API_KEY');
-      (err as any).code = 'model_not_configured';
-      throw err;
+      return this.responsesWithDefaultAgent(body, auth);
     }
 
     const { baseURL, apiKey, proxy, credentialId } = providerConfig;
@@ -250,9 +258,7 @@ export class VercelChatService {
 
     const providerConfig = await this.getProviderConfig(context);
     if (!providerConfig) {
-      const err = new Error('No AI provider configured. Please configure Pod AI provider or DEFAULT_API_KEY');
-      (err as any).code = 'model_not_configured';
-      throw err;
+      return this.messagesWithDefaultAgent(body, auth);
     }
 
     const { baseURL, apiKey, proxy, credentialId } = providerConfig;
@@ -307,6 +313,129 @@ export class VercelChatService {
     }
   }
 
+
+  private async responsesWithDefaultAgent(body: any, auth: AuthContext): Promise<any> {
+    const prompt = this.extractPromptFromResponsesBody(body);
+    const result = await runDefaultAgent(prompt, this.buildDefaultAgentContext(auth));
+
+    if (!result.success) {
+      const err = new Error(result.error || 'Default Agent is not available');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    const outputText = result.content;
+    const now = Math.floor(Date.now() / 1000);
+
+    return {
+      id: `resp_${Date.now()}`,
+      object: 'response',
+      created: now,
+      status: 'completed',
+      model: body?.model || process.env.DEFAULT_MODEL || 'stepfun/step-3.5-flash:free',
+      output: [{
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: outputText }],
+      }],
+      usage: {
+        input_tokens: prompt.length,
+        output_tokens: outputText.length,
+        total_tokens: prompt.length + outputText.length,
+      },
+    };
+  }
+
+  private async messagesWithDefaultAgent(body: any, auth: AuthContext): Promise<any> {
+    const prompt = this.extractPromptFromMessagesBody(body);
+    const result = await runDefaultAgent(prompt, this.buildDefaultAgentContext(auth));
+
+    if (!result.success) {
+      const err = new Error(result.error || 'Default Agent is not available');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    const text = result.content;
+    return {
+      id: `msg_${Date.now()}`,
+      type: 'message',
+      role: 'assistant',
+      model: body?.model || process.env.DEFAULT_MODEL || 'stepfun/step-3.5-flash:free',
+      content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: prompt.length,
+        output_tokens: text.length,
+      },
+    };
+  }
+
+  private extractPromptFromResponsesBody(body: any): string {
+    if (!body || typeof body !== 'object') {
+      return '';
+    }
+
+    if (typeof body.input === 'string') {
+      return body.input;
+    }
+
+    if (typeof body.prompt === 'string') {
+      return body.prompt;
+    }
+
+    if (Array.isArray(body.input)) {
+      const textParts: string[] = [];
+      for (const item of body.input) {
+        if (item && typeof item === 'object') {
+          const candidate = (item as any).content;
+          if (typeof candidate === 'string') {
+            textParts.push(candidate);
+          } else if (Array.isArray(candidate)) {
+            for (const part of candidate) {
+              if (part && typeof part === 'object' && typeof (part as any).text === 'string') {
+                textParts.push((part as any).text);
+              }
+            }
+          }
+        }
+      }
+      if (textParts.length > 0) {
+        return textParts.join('\n');
+      }
+    }
+
+    return '';
+  }
+
+  private extractPromptFromMessagesBody(body: any): string {
+    if (!body || typeof body !== 'object') {
+      return '';
+    }
+
+    if (typeof body.content === 'string') {
+      return body.content;
+    }
+
+    if (Array.isArray(body.messages)) {
+      const lastUser = [...body.messages].reverse().find((item: any) => item?.role === 'user');
+      if (lastUser) {
+        if (typeof lastUser.content === 'string') {
+          return lastUser.content;
+        }
+        if (Array.isArray(lastUser.content)) {
+          return lastUser.content
+            .filter((part: any) => part && typeof part === 'object' && typeof part.text === 'string')
+            .map((part: any) => part.text)
+            .join('\n');
+        }
+      }
+    }
+
+    return '';
+  }
+
   public async listModels(_auth?: AuthContext): Promise<any[]> {
     // TODO: Get models from Pod when store.listModels is implemented
     // Fallback to default models
@@ -324,6 +453,129 @@ export class VercelChatService {
         owned_by: 'openai',
       },
     ];
+  }
+
+  private async completeWithDefaultAgent(
+    messages: ChatCompletionRequest['messages'],
+    auth: AuthContext,
+    requestedModel: string,
+  ): Promise<ChatCompletionResponse> {
+    const agentContext = this.buildDefaultAgentContext(auth);
+    const prompt = messages.filter((m) => m.role === 'user').pop()?.content || '';
+
+    const result = await runDefaultAgent(prompt, agentContext);
+    if (!result.success) {
+      const err = new Error(result.error || 'Default Agent is not available');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    const completionTokens = result.content.length;
+    return {
+      id: `chatcmpl-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: requestedModel,
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: result.content },
+        finish_reason: 'stop',
+      }],
+      usage: {
+        prompt_tokens: prompt.length,
+        completion_tokens: completionTokens,
+        total_tokens: prompt.length + completionTokens,
+      },
+    };
+  }
+
+  private async streamWithDefaultAgent(
+    messages: ChatCompletionRequest['messages'],
+    auth: AuthContext,
+    _requestedModel: string,
+  ): Promise<{ toTextStreamResponse: () => Response }> {
+    const agentContext = this.buildDefaultAgentContext(auth);
+    const prompt = messages.filter((m) => m.role === 'user').pop()?.content || '';
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start: async (controller) => {
+        try {
+          for await (const chunk of streamDefaultAgent(prompt, agentContext)) {
+            controller.enqueue(encoder.encode(chunk));
+          }
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+    });
+
+    return {
+      toTextStreamResponse: () => new Response(stream, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'X-Vercel-AI-Data-Stream': 'v1',
+        },
+      }),
+    };
+  }
+
+  private buildDefaultAgentContext(auth: AuthContext): DefaultAgentContext {
+    if (!isDefaultAgentAvailable()) {
+      const err = new Error('No AI provider configured. Please configure Pod AI provider or DEFAULT_API_KEY');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    const webId = getWebId(auth);
+    if (!webId) {
+      const err = new Error('No WebID in auth context');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    const solidToken = this.getSolidToken(auth);
+    if (!solidToken) {
+      const err = new Error('No Solid token available for Default Agent');
+      (err as any).code = 'model_not_configured';
+      throw err;
+    }
+
+    return {
+      solidToken,
+      podBaseUrl: this.getPodBaseUrlFromWebId(webId),
+      webId,
+    };
+  }
+
+  private getPodBaseUrlFromWebId(webId: string): string {
+    const url = new URL(webId);
+    if (url.pathname.endsWith('/profile/card')) {
+      const podPath = url.pathname.replace('/profile/card', '');
+      return `${url.protocol}//${url.host}${podPath}/`;
+    }
+    return `${url.protocol}//${url.host}/`;
+  }
+
+  private getSolidToken(auth: AuthContext): string | undefined {
+    const candidate = auth as any;
+    if (typeof candidate.token === 'string') {
+      return candidate.token;
+    }
+    if (typeof candidate.accessToken === 'string') {
+      return candidate.accessToken;
+    }
+    if (candidate.credentials && typeof candidate.credentials === 'object') {
+      if (typeof candidate.credentials.accessToken === 'string') {
+        return candidate.credentials.accessToken;
+      }
+      if (typeof candidate.credentials.token === 'string') {
+        return candidate.credentials.token;
+      }
+    }
+    return undefined;
   }
 
   private mapFinishReason(reason: string): 'stop' | 'length' | 'content_filter' {

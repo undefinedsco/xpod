@@ -20,7 +20,6 @@ import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
-import { registerSmartInputRoutes } from '../handlers/SmartInputHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import * as path from 'node:path';
@@ -78,13 +77,11 @@ function registerSharedRoutes(
   const apiKeyStore = container.resolve('apiKeyStore') as DrizzleClientCredentialsStore;
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
-  const smartInputPipeline = container.resolve('smartInputPipeline');
-
   registerSignalRoutes(server, { repository: nodeRepo });
   registerNodeRoutes(server, { repository: nodeRepo });
   registerApiKeyRoutes(server, { store: apiKeyStore });
-  registerChatRoutes(server, { chatService, smartInputPipeline });
-  registerChatKitRoutes(server, { chatKitService, smartInputPipeline });
+  registerChatRoutes(server, { chatService });
+  registerChatKitRoutes(server, { chatKitService });
 
   // 开发模式路由 (仅 NODE_ENV=development 时启用)
   registerDevRoutes(server, {
@@ -151,9 +148,6 @@ function registerLocalRoutes(
 ): void {
   // Admin API (配置管理、重启)
   registerAdminRoutes(server);
-
-  // 智能输入 API (AI 识别意图并存储)
-  registerSmartInputRoutes(server, { tokenEndpoint: '' });
 
   // 子域名客户端 API (通过 SubdomainClient 调用 Cloud)
   try {
