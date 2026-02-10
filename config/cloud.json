@@ -11,17 +11,22 @@
   "@graph": [
     {
       "comment": "Redis-based locker with expiration wrapper for clustered deployments",
-      "@id": "urn:solid-server:default:ResourceLocker",
-      "@type": "WrappedExpiringReadWriteLocker",
-      "locker": {
-        "@type": "RedisLocker",
-        "redisClient": {
-          "@id": "urn:solid-server:default:variable:redisClient",
-          "@type": "Variable"
-        },
-        "attemptSettings_retryCount": 10
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ResourceLocker"
       },
-      "expiration": 6000
+      "overrideParameters": {
+        "@type": "WrappedExpiringReadWriteLocker",
+        "locker": {
+          "@type": "RedisLocker",
+          "redisClient": {
+            "@id": "urn:solid-server:default:variable:redisClient",
+            "@type": "Variable"
+          },
+          "attemptSettings_retryCount": 10
+        },
+        "expiration": 6000
+      }
     },
     {
       "comment": "Identifier strategy that allows cluster root host and node subdomains.",
@@ -51,14 +56,30 @@
       "@id": "urn:solid-server:default:PrimarySequenceInitializer",
       "@type": "SequenceHandler",
       "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/SequenceHandler.jsonld#SequenceHandler_handlers": [
-        { "@id": "urn:solid-server:default:CleanupInitializer" },
-        { "@id": "urn:solid-server:default:MigrationInitializer" },
-        { "@id": "urn:solid-server:default:BaseUrlVerifier" },
-        { "@id": "urn:solid-server:default:PrimaryParallelInitializer" },
-        { "@id": "urn:solid-server:default:ModuleVersionVerifier" },
-        { "@id": "urn:solid-server:default:WorkerManager" },
-        { "@id": "urn:solid-server:default:SeededAccountInitializer" },
-        { "@id": "urn:undefineds:xpod:CenterNodeRegistrationService" }
+        {
+          "@id": "urn:solid-server:default:CleanupInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:MigrationInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:BaseUrlVerifier"
+        },
+        {
+          "@id": "urn:solid-server:default:PrimaryParallelInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:ModuleVersionVerifier"
+        },
+        {
+          "@id": "urn:solid-server:default:WorkerManager"
+        },
+        {
+          "@id": "urn:solid-server:default:SeededAccountInitializer"
+        },
+        {
+          "@id": "urn:undefineds:xpod:CenterNodeRegistrationService"
+        }
       ]
     },
     {
@@ -138,17 +159,27 @@
       "comment": "Vector HTTP Handler",
       "@id": "urn:undefineds:xpod:VectorHttpHandler",
       "@type": "VectorHttpHandler",
-      "vectorStore": { "@id": "urn:undefineds:xpod:VectorStore" },
-      "credentialsExtractor": { "@id": "urn:solid-server:default:CredentialsExtractor" },
-      "permissionReader": { "@id": "urn:solid-server:default:PermissionReader" },
-      "authorizer": { "@id": "urn:solid-server:default:Authorizer" }
+      "vectorStore": {
+        "@id": "urn:undefineds:xpod:VectorStore"
+      },
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "permissionReader": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "authorizer": {
+        "@id": "urn:solid-server:default:Authorizer"
+      }
     },
     {
       "comment": "Terminal Sidecar HTTP Handler - manages PTY sessions for trusted AI agents",
       "@id": "urn:undefineds:xpod:TerminalHttpHandler",
       "@type": "TerminalHttpHandler",
       "sidecarPath": "/-/terminal",
-      "credentialsExtractor": { "@id": "urn:solid-server:default:CredentialsExtractor" },
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
       "maxSessionsPerUser": 5,
       "maxTotalSessions": 100,
       "defaultTimeout": 3600,
@@ -325,10 +356,18 @@
         "@type": "UsageTrackingStore",
         "UsageTrackingStore:_source": {
           "@type": "SparqlUpdateResourceStore",
-          "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" },
-          "auxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
-          "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-          "accessor": { "@id": "urn:undefineds:xpod:MixDataAccessor" }
+          "identifierStrategy": {
+            "@id": "urn:solid-server:default:IdentifierStrategy"
+          },
+          "auxiliaryStrategy": {
+            "@id": "urn:solid-server:default:AuxiliaryStrategy"
+          },
+          "metadataStrategy": {
+            "@id": "urn:solid-server:default:MetadataStrategy"
+          },
+          "accessor": {
+            "@id": "urn:undefineds:xpod:MixDataAccessor"
+          }
         },
         "options_identityDbUrl": {
           "@id": "urn:solid-server:default:variable:identityDbUrl",
@@ -348,10 +387,18 @@
       },
       "overrideParameters": {
         "@type": "RepresentationPartialConvertingStore",
-        "source": { "@id": "urn:solid-server:default:ResourceStore_Backend" },
-        "metadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" },
-        "options_inConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
-        "options_outConverter": { "@id": "urn:solid-server:default:RepresentationConverter" },
+        "source": {
+          "@id": "urn:solid-server:default:ResourceStore_Backend"
+        },
+        "metadataStrategy": {
+          "@id": "urn:solid-server:default:MetadataStrategy"
+        },
+        "options_inConverter": {
+          "@id": "urn:solid-server:default:RepresentationConverter"
+        },
+        "options_outConverter": {
+          "@id": "urn:solid-server:default:RepresentationConverter"
+        },
         "options_inPreferences_type": {
           "RepresentationPartialConvertingStore:_options_inPreferences_type_key": "internal/quads",
           "RepresentationPartialConvertingStore:_options_inPreferences_type_value": 1

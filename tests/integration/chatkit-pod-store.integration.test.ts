@@ -89,34 +89,41 @@ suite('ChatKit PodStore Integration', () => {
   }, 1000);
 
 
-  const waitForThreadItemsCount = async (threadId: string, minCount: number): Promise<any[]> => {
-    const maxRetries = 30;
-    const delayMs = 200;
+  const truncate = (s: string, max = 800): string => (s.length <= max ? s : s.slice(0, max) + '...<truncated>');
 
-    for (let i = 0; i < maxRetries; i++) {
+  const waitForThreadItemsCount = async (
+    threadId: string,
+    minCount: number,
+    options: { timeoutMs?: number; intervalMs?: number } = {},
+  ): Promise<any[]> => {
+    const timeoutMs = options.timeoutMs ?? 6000;
+    const intervalMs = options.intervalMs ?? 200;
+    const startedAt = Date.now();
+
+    let lastJson = '';
+
+    while (Date.now() - startedAt < timeoutMs) {
       const request = JSON.stringify({
         type: 'items.list',
         params: { thread_id: threadId, limit: 50 },
       });
       const result = await service.process(request, testContext);
       if (result.type === 'non_streaming') {
+        lastJson = result.json;
         const data = JSON.parse(result.json);
         if (Array.isArray(data.data) && data.data.length >= minCount) {
           return data.data;
         }
+      } else {
+        lastJson = JSON.stringify({ type: result.type });
       }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    const finalRequest = JSON.stringify({
-      type: 'items.list',
-      params: { thread_id: threadId, limit: 50 },
-    });
-    const finalResult = await service.process(finalRequest, testContext);
-    if (finalResult.type !== 'non_streaming') {
-      return [];
-    }
-    return (JSON.parse(finalResult.json).data ?? []) as any[];
+    throw new Error(
+      'Timeout waiting for thread items (threadId=' + threadId + ', minCount=' + minCount + ', timeoutMs=' + timeoutMs + '). Last items.list response: ' + truncate(lastJson),
+    );
   };
 
   describe('Thread CRUD Operations', () => {
@@ -595,7 +602,7 @@ suite('ChatKit PodStore Integration', () => {
     it('should update credential status to rate limited', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('@undefineds.co/drizzle-solid');
+      const { eq } = await import('drizzle-solid');
 
       // Create a credential for status update test
       await db.insert(Credential).values({
@@ -627,7 +634,7 @@ suite('ChatKit PodStore Integration', () => {
     it('should record credential success and reset fail count', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('@undefineds.co/drizzle-solid');
+      const { eq } = await import('drizzle-solid');
 
       // Create a credential with some failures
       await db.insert(Credential).values({

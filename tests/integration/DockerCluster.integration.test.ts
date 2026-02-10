@@ -240,17 +240,32 @@ suite('Docker Cluster Integration', () => {
 // ==========================================
 
 async function waitForService(url: string, maxRetries = 30, delayMs = 1000): Promise<boolean> {
-  // 使用 Gateway status 端点检查服务是否就绪，避免 LDP 路径挂起问题
+  // 探针统一走 xpod Gateway 新接口
   const statusUrl = `${url}/service/status`;
+
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const res = await fetch(statusUrl, { method: 'GET' });
-      if (res.status === 200) return true;
+      const res = await fetch(statusUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(3000),
+      });
+
+      if (res.status === 200) {
+        const body = await res.json().catch(() => null) as Array<{ name?: string }> | null;
+        if (Array.isArray(body)) {
+          const names = new Set(body.map((item) => item?.name).filter(Boolean));
+          if (names.has('css') && names.has('api')) {
+            return true;
+          }
+        }
+      }
     } catch {
       // 服务未就绪
     }
+
     await new Promise(r => setTimeout(r, delayMs));
   }
+
   return false;
 }
 

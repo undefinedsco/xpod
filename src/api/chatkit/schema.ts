@@ -59,7 +59,7 @@
  * ```
  */
 
-import { podTable, string, datetime, uri } from '@undefineds.co/drizzle-solid';
+import { podTable, string, datetime, uri } from 'drizzle-solid';
 import { Meeting, SIOC, FOAF } from '../../vocab';
 import { UDFS_NAMESPACE } from '../../vocab';
 
@@ -137,7 +137,7 @@ export const Thread = podTable(
  * 放在 Chat 下，通过 threadId 关联到 Thread。
  * 对应 ChatKit 的 ThreadItem 概念。
  *
- * 存储位置: /.data/chat/{chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}
+ * 存储位置: /.data/chat/{chatId}/{id}.ttl#{id}
  */
 export const Message = podTable(
   'Message',
@@ -157,7 +157,7 @@ export const Message = podTable(
     base: '/.data/chat/',
     type: Meeting.Message,
     namespace: UDFS_NAMESPACE,
-    subjectTemplate: '{chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}',
+    subjectTemplate: '{chatId}/{id}.ttl#{id}',
     sparqlEndpoint: '/.data/chat/-/sparql',
   },
 );

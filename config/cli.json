@@ -8,12 +8,6 @@
       "comment": "Extend the CLI with additional parameters. All use CSS_ env prefix via Yargs.",
       "@id": "urn:solid-server-app-setup:default:CliExtractor",
       "@type": "YargsCliExtractor",
-      "options": {
-        "usage": "node ./bin/server.js [args]",
-        "envVarPrefix": "CSS",
-        "loadFromEnv": true,
-        "strictMode": false
-      },
       "parameters": [
         {
           "comment": "=== Visible CLI parameters ===",
@@ -52,209 +46,327 @@
           "comment": "=== Hidden: Data Layer ===",
           "@type": "YargsParameter",
           "name": "identityDbUrl",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "identityTablePrefix",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "usageDbUrl",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "minioAccessKey",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "minioSecretKey",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "minioEndpoint",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "minioBucketName",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "cachePath",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "cacheMaxSize",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "redisClient",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "redisUsername",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "redisPassword",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "emailConfigHost",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "emailConfigPort",
-          "options": { "type": "number", "hidden": true }
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "emailConfigAuthUser",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "emailConfigAuthPass",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "comment": "=== Hidden: Business Features ===",
           "@type": "YargsParameter",
           "name": "signalEndpoint",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "clusterIngressDomain",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "clusterIngressIp",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "dnsRootDomain",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "dnsRecordTtl",
-          "options": { "type": "number", "hidden": true }
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "tencentDnsTokenId",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "tencentDnsToken",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "tencentDnsBaseUrl",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "tencentDnsDefaultLineId",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "tunnelEntrypoints",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "edgeHealthProbesEnabled",
-          "options": { "type": "boolean", "hidden": true }
+          "options": {
+            "type": "boolean",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "edgeHealthProbeTimeout",
-          "options": { "type": "number", "hidden": true }
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "frpServerHost",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "frpServerPort",
-          "options": { "type": "number", "hidden": true }
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "frpToken",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "frpProtocol",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "nodeId",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "nodeToken",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "nodePublicAddress",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "nodeHeartbeatInterval",
-          "options": { "type": "number", "hidden": true }
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
         },
         {
           "comment": "=== Hidden: Multi-Node Center Deployment ===",
           "@type": "YargsParameter",
           "name": "podRoutingEnabled",
-          "options": { "type": "boolean", "hidden": true }
+          "options": {
+            "type": "boolean",
+            "hidden": true
+          }
         },
         {
           "comment": "=== Hidden: IdP/SP Separation ===",
           "@type": "YargsParameter",
           "name": "baseDomain",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "idpUrl",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         },
         {
           "@type": "YargsParameter",
           "name": "allowedHosts",
-          "options": { "type": "string", "hidden": true }
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
         }
       ]
-    },
-    {
-      "comment": "Combines a CliExtractor and ShorthandResolver to be used by the AppRunner.",
-      "@id": "urn:solid-server-app-setup:default:CliResolver",
-      "@type": "CliResolver",
-      "cliExtractor": { "@id": "urn:solid-server-app-setup:default:CliExtractor" },
-      "shorthandResolver": { "@id": "urn:solid-server-app-setup:default:ShorthandResolver" }
     }
   ]
 }
