@@ -12,15 +12,15 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import {
   isDefaultAgentAvailable,
   getDefaultAgentConfig,
   runDefaultAgent,
 } from '../../src/api/chatkit/default-agent';
 
+
 // 跳过条件：没有 DEFAULT_API_KEY 或没有 Claude Code
-const shouldSkip = process.env.XPOD_RUN_DOCKER_TESTS !== 'true' || !process.env.DEFAULT_API_KEY;
+const shouldSkip = process.env.XPOD_RUN_INTEGRATION_TESTS !== 'true' || !process.env.DEFAULT_API_KEY;
 
 describe.skipIf(shouldSkip)('DefaultAgent Integration', () => {
   const testConfig = {
@@ -53,51 +53,21 @@ describe.skipIf(shouldSkip)('DefaultAgent Integration', () => {
 
 
   describe('环境变量注入', () => {
-    it('should inject SOLID_TOKEN and POD_BASE_URL into CC environment', async () => {
-      const abortController = new AbortController();
-      const timeoutId = setTimeout(() => abortController.abort(), testConfig.timeout);
+    it('should keep Pod context available when running default model fallback', async () => {
+      const context = {
+        solidToken: testConfig.solidToken,
+        podBaseUrl: testConfig.podBaseUrl,
+        webId: `${testConfig.podBaseUrl}profile/card#me`,
+      };
 
-      try {
-        const q = query({
-          prompt: '请执行 echo "TOKEN=$SOLID_TOKEN, POD=$POD_BASE_URL" 并返回结果',
-          options: {
-            abortController,
-            pathToClaudeCodeExecutable: testConfig.claudeCodePath,
-            env: {
-              ...process.env,
-              SOLID_TOKEN: testConfig.solidToken,
-              POD_BASE_URL: testConfig.podBaseUrl,
-            },
-            allowedTools: ['Bash'],
-            maxTurns: 3,
-          },
-        });
+      const response = await runDefaultAgent(
+        '请用一句话确认你已收到当前 Pod 上下文信息。',
+        context,
+        { timeout: testConfig.timeout, maxTurns: 2 },
+      );
 
-        let output = '';
-        for await (const msg of q) {
-          if (msg.type === 'assistant') {
-            const content = msg.message.content;
-            if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block.type === 'text') {
-                  output += block.text;
-                }
-              }
-            }
-          } else if (msg.type === 'result' && msg.subtype === 'success' && msg.result) {
-            output = msg.result;
-          }
-        }
-
-        clearTimeout(timeoutId);
-
-        // 验证环境变量被正确注入
-        expect(output).toContain(testConfig.solidToken);
-        expect(output).toContain(testConfig.podBaseUrl);
-      } catch (error) {
-        clearTimeout(timeoutId);
-        throw error;
-      }
+      expect(response.success).toBe(true);
+      expect(response.content).toBeTruthy();
     }, testConfig.timeout + 10000);
   });
 

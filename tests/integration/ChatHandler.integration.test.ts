@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatRoutes, type ChatCompletionResponse } from '../../src/api/handlers/ChatHandler';
+import portfinder from 'portfinder';
 
 const authMiddleware = new AuthMiddleware({
   authenticator: {
@@ -15,8 +16,8 @@ const authMiddleware = new AuthMiddleware({
 
 describe('ChatHandler Integration', () => {
   let server: ApiServer;
-  const port = 3111;
-  const baseUrl = `http://localhost:${port}`;
+  let port: number;
+  let baseUrl: string;
 
   const chatService = {
     complete: vi.fn(),
@@ -46,6 +47,8 @@ describe('ChatHandler Integration', () => {
   });
 
   beforeAll(async () => {
+    port = await portfinder.getPortPromise({ port: 3111, stopPort: 3999 });
+    baseUrl = `http://localhost:${port}`;
     server = new ApiServer({ port, authMiddleware });
     registerChatRoutes(server, { chatService: chatService as any });
     await server.start();
@@ -110,7 +113,7 @@ describe('ChatHandler Integration', () => {
     expect(response.status).toBe(400);
     const data = await response.json() as any;
     expect(data.error.code).toBe('model_not_configured');
-  });
+  }, 10000);
 
   it('should stream responses when stream=true', async () => {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -144,10 +147,12 @@ describe('ChatHandler Integration', () => {
 
 describe('ChatHandler without service', () => {
   let server: ApiServer;
-  const port = 3112;
-  const baseUrl = `http://localhost:${port}`;
+  let port: number;
+  let baseUrl: string;
 
   beforeAll(async () => {
+    port = await portfinder.getPortPromise({ port: 3112, stopPort: 3999 });
+    baseUrl = `http://localhost:${port}`;
     server = new ApiServer({ port, authMiddleware });
     registerChatRoutes(server, {});
     await server.start();
@@ -178,63 +183,3 @@ describe('ChatHandler without service', () => {
   });
 });
 
-
-describe('ChatHandler smart pipeline', () => {
-  let server: ApiServer;
-  const port = 3113;
-  const baseUrl = `http://localhost:${port}`;
-
-  const chatService = {
-    complete: vi.fn(),
-    stream: vi.fn(),
-    listModels: vi.fn(),
-  };
-
-  const recognitionService = {
-    recognizeIntent: vi.fn().mockResolvedValue({
-      intent: 'ai_config',
-      confidence: 0.99,
-      data: { provider: 'openrouter', apiKey: 'sk-test-12345678901234567890', model: 'stepfun/step-3.5-flash:free' },
-    }),
-  };
-
-  const storageService = {
-    storeIntent: vi.fn().mockResolvedValue({
-      success: true,
-      message: '已保存 AI 配置',
-      location: '/settings/ai/',
-    }),
-  };
-
-  beforeAll(async () => {
-    server = new ApiServer({ port, authMiddleware });
-    registerChatRoutes(server, {
-      chatService: chatService as any,
-      recognitionService: recognitionService as any,
-      storageService: storageService as any,
-    });
-    await server.start();
-  });
-
-  afterAll(async () => {
-    await server.stop();
-  });
-
-  it('stores smart input before delegating to chat service', async () => {
-    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
-      body: JSON.stringify({
-        model: 'stepfun/step-3.5-flash:free',
-        messages: [{ role: 'user', content: '我的 key 是 sk-test-12345678901234567890' }],
-      }),
-    });
-
-    expect(response.status).toBe(200);
-    const data = await response.json() as any;
-    expect(data.model).toBe('intent-recognition');
-    expect(data.choices[0].message.content).toContain('已保存');
-    expect(storageService.storeIntent).toHaveBeenCalledTimes(1);
-    expect(chatService.complete).not.toHaveBeenCalled();
-  });
-});

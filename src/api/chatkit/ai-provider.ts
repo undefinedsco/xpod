@@ -15,11 +15,6 @@ import type { PodChatKitStore } from './pod-store';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId } from '../auth/AuthContext';
 import { CredentialStatus } from '../../credential/schema/types';
-import { drizzle } from '@undefineds.co/drizzle-solid';
-import { Provider } from '../../ai/schema/provider';
-import { Model } from '../../ai/schema/model';
-import { Credential } from '../../credential/schema/tables';
-import { ServiceType } from '../../credential/schema/types';
 import { isDefaultAgentAvailable, streamDefaultAgent, type DefaultAgentContext } from './default-agent';
 
 // Create a proxy-aware fetch function
@@ -27,12 +22,6 @@ function createProxyFetch(proxyUrl: string): typeof fetch {
   const agent = new ProxyAgent(proxyUrl);
   return (url, init) => fetch(url, { ...init, dispatcher: agent } as any);
 }
-
-const schema = {
-  provider: Provider,
-  model: Model,
-  credential: Credential,
-};
 
 export interface VercelAiProviderOptions {
   store: PodChatKitStore;
@@ -69,9 +58,6 @@ export class VercelAiProvider implements AiProvider {
     const auth = context?.auth as AuthContext | undefined;
     const userId = auth ? (getWebId(auth) ?? getAccountId(auth) ?? 'anonymous') : 'anonymous';
 
-    // Get last user message to check for AI config
-    const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.content || '';
-
     // 从 Pod 获取配置
     const config = await this.getProviderConfig(context);
 
@@ -88,9 +74,6 @@ export class VercelAiProvider implements AiProvider {
 
     const provider = this.createProvider(config);
 
-    // Check if user is providing AI config and auto-save
-    const autoSaved = await this.tryAutoSaveConfig(lastUserMessage, context);
-
     try {
       const result = streamText({
         model: provider.chat(model),
@@ -101,12 +84,11 @@ export class VercelAiProvider implements AiProvider {
 
 Your capabilities:
 1. Help users with various tasks
-2. When users provide AI configuration (API keys, provider names, models), acknowledge it and let them know it will be saved to their Pod
+2. Use user's configured provider/model to respond consistently
 
 Current AI Provider: ${config.baseURL.includes('openrouter') ? 'OpenRouter (Free)' : 'Custom'}
 Model: ${model}
-
-${autoSaved ? `[系统消息：已自动保存用户的 AI 配置]` : ''}`,
+`,
       } as any);
 
       // Stream text chunks
@@ -119,156 +101,6 @@ ${autoSaved ? `[系统消息：已自动保存用户的 AI 配置]` : ''}`,
         await this.handleRateLimitError(error, context, config.credentialId);
       }
       throw error;
-    }
-  }
-
-  /**
-   * Try to auto-save AI config from user message
-   */
-  private async tryAutoSaveConfig(
-    message: string,
-    context: StoreContext | undefined,
-  ): Promise<boolean> {
-    if (!context) return false;
-
-    // Parse AI config from message
-    const parsed = this.parseAiConfig(message);
-    if (!parsed || !parsed.apiKey) return false;
-
-    try {
-      await this.saveAiConfig(parsed, context);
-      this.logger.debug(`Auto-saved AI config: ${parsed.provider}`);
-      return true;
-    } catch (error) {
-      this.logger.error(`Failed to auto-save AI config: ${error}`);
-      return false;
-    }
-  }
-
-  /**
-   * Parse AI config from message
-   */
-  private parseAiConfig(message: string): {
-    provider: string;
-    apiKey: string;
-    model?: string;
-    baseUrl?: string;
-  } | null {
-    // Look for API key patterns
-    const apiKeyMatch = message.match(/(?:api[_-]?key|key|token|sk)[\s:=]+["']?([a-zA-Z0-9_\-]{20,})["']?/i) 
-      || message.match(/(sk-[a-zA-Z0-9]{20,})/i);
-    
-    if (!apiKeyMatch) return null;
-    const apiKey = apiKeyMatch[1];
-
-    // Look for provider
-    const providerPatterns: Record<string, RegExp> = {
-      openai: /openai/i,
-      google: /google|gemini/i,
-      anthropic: /anthropic|claude/i,
-      deepseek: /deepseek/i,
-      openrouter: /openrouter/i,
-      ollama: /ollama/i,
-      mistral: /mistral/i,
-      cohere: /cohere/i,
-      zhipu: /zhipu|智谱/i,
-    };
-
-    let provider = 'openrouter';
-    for (const [name, pattern] of Object.entries(providerPatterns)) {
-      if (pattern.test(message)) {
-        provider = name;
-        break;
-      }
-    }
-
-    // Look for model
-    const modelMatch = message.match(/(?:model|模型)[\s:=]+["']?([a-zA-Z0-9\/\-\:_\.]+)["']?/i)
-      || message.match(/gpt-4[\w\-]*/i)
-      || message.match(/gemini-[\w\-]+/i)
-      || message.match(/claude-[\w\-]+/i);
-
-    return {
-      provider,
-      apiKey,
-      model: modelMatch ? modelMatch[1] || modelMatch[0] : undefined,
-    };
-  }
-
-  /**
-   * Save AI configuration to Pod
-   */
-  private async saveAiConfig(
-    args: {
-      provider: string;
-      apiKey: string;
-      model?: string;
-      baseUrl?: string;
-    },
-    context: StoreContext,
-  ): Promise<void> {
-    const webId = context.auth ? getWebId(context.auth as AuthContext) : undefined;
-    if (!webId) {
-      throw new Error('Not authenticated');
-    }
-
-    const podBaseUrl = this.getPodBaseUrlFromWebId(webId);
-    
-    const session = {
-      info: { isLoggedIn: true, webId },
-      fetch: fetch,
-    };
-
-    const db = drizzle(session, { schema });
-
-    // 1. Create Provider
-    const providerId = args.provider.toLowerCase();
-    const displayName = args.provider.charAt(0).toUpperCase() + args.provider.slice(1);
-    const baseUrl = args.baseUrl || this.getDefaultBaseUrl(providerId);
-
-    const providerUri = `${podBaseUrl}settings/ai/providers.ttl#${providerId}`;
-
-    try {
-      await db.insert(Provider).values({
-        id: providerId,
-        displayName,
-        baseUrl,
-      });
-    } catch (e) {
-      // Provider might already exist
-      this.logger.debug(`Provider ${providerId} might already exist`);
-    }
-
-    // 2. Create Model (if provided)
-    if (args.model) {
-      const modelId = args.model.replace(/[^a-zA-Z0-9]/g, '_');
-      try {
-        await db.insert(Model).values({
-          id: modelId,
-          displayName: args.model,
-          status: 'active',
-          isProvidedBy: providerUri,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-      } catch (e) {
-        this.logger.debug(`Model ${modelId} might already exist`);
-      }
-    }
-
-    // 3. Create Credential
-    const credentialId = `${providerId}-default`;
-    try {
-      await db.insert(Credential).values({
-        id: credentialId,
-        service: ServiceType.AI,
-        status: 'active' as any,
-        provider: providerUri,
-        apiKey: args.apiKey,
-      });
-    } catch (e) {
-      // Update existing credential
-      this.logger.debug(`Credential ${credentialId} might already exist, updating`);
     }
   }
 

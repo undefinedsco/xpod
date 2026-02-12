@@ -11,12 +11,25 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { IndexAgent, type IndexLevel } from '../../src/agents/IndexAgent';
-import { CodeBuddyExecutor, CodeBuddyAuthError } from '../../src/agents/CodeBuddyExecutor';
 import type { AgentContext } from '../../src/task/types';
 
 // 仅在设置环境变量时运行
 const runAgentTests = process.env.XPOD_RUN_AGENT_TESTS === 'true';
+
+const hasCodeBuddySdk = (() => {
+  try {
+    require.resolve('@tencent-ai/agent-sdk');
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+const shouldSkip = !runAgentTests || !hasCodeBuddySdk;
+
+let IndexAgent: any;
+let CodeBuddyExecutor: any;
+let CodeBuddyAuthError: any;
 
 // 创建临时目录模拟 Pod
 function createTempPod(): string {
@@ -184,10 +197,16 @@ function createUnauthenticatedContext(podPath: string): AgentContext {
   };
 }
 
-describe.skipIf(!runAgentTests)('IndexAgent Integration', () => {
+describe.skipIf(shouldSkip)('IndexAgent Integration', () => {
   let tempPodPath: string;
 
-  beforeAll(() => {
+  beforeAll(async () => {
+    const indexAgentModule = await import('../../src/agents/IndexAgent');
+    const codeBuddyModule = await import('../../src/agents/CodeBuddyExecutor');
+    IndexAgent = indexAgentModule.IndexAgent;
+    CodeBuddyExecutor = codeBuddyModule.CodeBuddyExecutor;
+    CodeBuddyAuthError = codeBuddyModule.CodeBuddyAuthError;
+
     tempPodPath = createTempPod();
     console.log(`Created temp pod at: ${tempPodPath}`);
   });
@@ -503,7 +522,7 @@ describe.skipIf(!runAgentTests)('Agent SDK Authentication', () => {
   });
 });
 
-describe.skipIf(!runAgentTests)('CodeBuddyExecutor Streaming', () => {
+describe.skipIf(shouldSkip)('CodeBuddyExecutor Streaming', () => {
   it('should stream execution messages', async () => {
     const executor = new CodeBuddyExecutor();
 

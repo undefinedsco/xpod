@@ -2,10 +2,8 @@ import { beforeAll, describe, it, expect } from "vitest";
 import { Session } from "@inrupt/solid-client-authn-node";
 import { setupAccount } from "./helpers/solidAccount";
 
-const RUN_DOCKER_TESTS = process.env.XPOD_RUN_DOCKER_TESTS === "true";
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
-const shouldRunIntegration = RUN_DOCKER_TESTS || RUN_INTEGRATION_TESTS;
-const suite = shouldRunIntegration ? describe : describe.skip;
+const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 const dockerApiBaseUrl = "http://localhost:6300/";
 const dockerIdpBaseUrl = "http://localhost:6300";
@@ -14,18 +12,19 @@ const externalApiBaseUrl = process.env.XPOD_SERVER_BASE_URL ?? "http://localhost
 const externalIssuer = process.env.SOLID_OIDC_ISSUER ?? externalApiBaseUrl;
 const externalClientId = process.env.SOLID_CLIENT_ID;
 const externalClientSecret = process.env.SOLID_CLIENT_SECRET;
+const useDockerDefaults = !externalClientId || !externalClientSecret;
 
 suite("SignalHandler Integration", () => {
   let session: Session;
   let authFetch: typeof fetch;
   let createdNodeId: string;
 
-  const baseUrl = RUN_DOCKER_TESTS ? dockerApiBaseUrl : externalApiBaseUrl;
+  const baseUrl = useDockerDefaults ? dockerApiBaseUrl : externalApiBaseUrl;
 
   beforeAll(async () => {
     session = new Session();
 
-    if (RUN_DOCKER_TESTS) {
+    if (useDockerDefaults) {
       const account = await setupAccount(dockerIdpBaseUrl, "signal");
       if (!account) {
         throw new Error("Failed to setup account for SignalHandler integration test.");
@@ -38,10 +37,6 @@ suite("SignalHandler Integration", () => {
         tokenType: "DPoP",
       });
     } else {
-      if (!externalClientId || !externalClientSecret) {
-        throw new Error("Missing SOLID_CLIENT_ID/SOLID_CLIENT_SECRET for non-docker signal integration test.");
-      }
-
       await session.login({
         clientId: externalClientId,
         clientSecret: externalClientSecret,

@@ -14,7 +14,8 @@
  * - SDK 会自动处理复杂的交互逻辑
  */
 
-import { query, type Options, type SDKMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+type Options = any;
+type SDKResultMessage = any;
 import { BaseAgentExecutor } from './BaseAgentExecutor';
 import type {
   ExecutorType,
@@ -42,6 +43,15 @@ export class ClaudeAuthenticationError extends Error {
  *
  * 封装 Claude Agent SDK 调用。
  */
+async function loadClaudeQuery(): Promise<(args: { prompt: string; options: Options }) => AsyncIterable<any>> {
+  const mod = await import('@anthropic-ai/claude-agent-sdk');
+  const q = (mod as any)?.query;
+  if (typeof q !== 'function') {
+    throw new Error('Claude SDK is installed but query API is unavailable');
+  }
+  return q;
+}
+
 export class ClaudeExecutor extends BaseAgentExecutor {
   public readonly executorType: ExecutorType = 'claude';
 
@@ -78,7 +88,8 @@ export class ClaudeExecutor extends BaseAgentExecutor {
       }
 
       // 发送一个简单查询来验证认证
-      const q = query({
+      const claudeQuery = await loadClaudeQuery();
+      const q = claudeQuery({
         prompt: 'hi',
         options: {
           env,
@@ -95,7 +106,7 @@ export class ClaudeExecutor extends BaseAgentExecutor {
           const result = message as SDKResultMessage;
           if (result.subtype !== 'success') {
             // 检查是否是认证错误
-            if (result.errors?.some((e) => e.includes('authentication') || e.includes('api_key') || e.includes('401'))) {
+            if (result.errors?.some((e: string) => e.includes('authentication') || e.includes('api_key') || e.includes('401'))) {
               throw new ClaudeAuthenticationError(`Claude API Key 无效: ${result.errors.join(', ')}`);
             }
           }
@@ -188,7 +199,8 @@ export class ClaudeExecutor extends BaseAgentExecutor {
       yield { type: 'system', executorType: this.executorType, model: modelName };
 
       const options = this.buildOptions(config);
-      const q = query({ prompt: message, options });
+      const claudeQuery = await loadClaudeQuery();
+      const q = claudeQuery({ prompt: message, options });
 
       let fullText = '';
       let promptTokens = 0;
@@ -320,7 +332,8 @@ export class ClaudeExecutor extends BaseAgentExecutor {
         options.systemPrompt = `${options.systemPrompt}\n\n## Conversation History\n${formattedMessages}`;
       }
 
-      const q = query({ prompt, options });
+      const claudeQuery = await loadClaudeQuery();
+      const q = claudeQuery({ prompt, options });
 
       let fullText = '';
       let promptTokens = 0;

@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 
-const RUN_DOCKER_TESTS = process.env.XPOD_RUN_DOCKER_TESTS === "true";
-const suite = RUN_DOCKER_TESTS ? describe : describe.skip;
+const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
+const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 const CLOUD_API_URL = "http://localhost:6301";
 const CLOUD_CSS_URL = "http://localhost:6300";
 
-suite("Edge Cluster Flow (Docker)", () => {
+suite("Edge Cluster Flow (Integration)", () => {
   it("signal endpoint should fail gracefully when edge mode is disabled", async () => {
     try {
       const res = await fetch(CLOUD_API_URL + "/api/v1/signal", {

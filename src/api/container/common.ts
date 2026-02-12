@@ -18,8 +18,6 @@ import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
-import { IntentRecognitionService, IntentStorageService } from '../../ai/service';
-import { SmartInputPipelineService } from '../service/SmartInputPipelineService';
 
 /**
  * 注册共享服务到容器
@@ -53,7 +51,6 @@ export function registerCommonServices(
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
-        store: apiKeyStore,
         tokenEndpoint: config.cssTokenEndpoint,
       });
 
@@ -95,12 +92,6 @@ export function registerCommonServices(
       return new VercelChatService(chatKitStore);
     }).singleton(),
 
-    smartInputPipeline: asFunction(() => {
-      return new SmartInputPipelineService({
-        recognitionService: new IntentRecognitionService(),
-        storageService: new IntentStorageService(),
-      });
-    }).singleton(),
 
     // API Server
     apiServer: asFunction(({ config, authMiddleware }: ApiContainerCradle) => {

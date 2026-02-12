@@ -65,9 +65,16 @@ export async function discoverOidcIssuerFromWebId(webId: string, fallbackIssuer:
 
 async function setupAccountOnce(baseUrl: string, prefix: string): Promise<AccountSetup | null> {
   try {
-    const timestamp = Date.now();
-    const email = `${prefix}-${timestamp}@test.com`;
-    const podName = `${prefix}-${timestamp}`;
+    const suffix = Date.now().toString(36);
+    const normalizedPrefix = (prefix || 'test')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'test';
+    const shortPrefix = normalizedPrefix.slice(0, 8).replace(/^-|-$/g, '') || 'test';
+    const emailPrefix = normalizedPrefix.slice(0, 24) || 'test';
+    const email = `${emailPrefix}-${suffix}@test.com`;
+    const podName = `${shortPrefix}-${suffix}`;
     const routingHeaders = hostHeaderFor(baseUrl);
 
     const createRes = await fetch(`${baseUrl}/.account/account/`, {

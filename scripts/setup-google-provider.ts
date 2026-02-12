@@ -5,7 +5,7 @@
  * - Google Gemini API 配置
  * - 代理设置
  */
-import { drizzle } from '@undefineds.co/drizzle-solid';
+import { drizzle } from 'drizzle-solid';
 import { modelProviderTable } from '../src/api/models/model-provider.schema';
 import * as dotenv from 'dotenv';
 import path from 'path';

@@ -7,8 +7,7 @@
   "license": "MIT",
   "private": false,
   "bin": {
-    "xpod": "./dist/main.js",
-    "xpod-single": "./dist/xpod.single.cjs"
+    "xpod": "./dist/main.js"
   },
   "files": [
     "dist",
@@ -54,37 +53,32 @@
     "dev:api": "NODE_ENV=development dotenv -e .env.local -- yarn ts-node src/api/main.ts",
     "dev:init": "NODE_ENV=development yarn ts-node scripts/init-dev-credentials.ts",
     "dev:test": "NODE_ENV=development yarn ts-node scripts/test-dev-flow.ts",
-    "dev:cluster": "docker-compose -f docker-compose.cluster.yml up --build",
-    "dev:cluster:down": "docker-compose -f docker-compose.cluster.yml down",
+    "dev:cluster": "docker compose -f docker-compose.cluster.yml up --build",
+    "dev:cluster:down": "docker compose -f docker-compose.cluster.yml down",
     "dev:css": "dotenv -e .env.local -- community-solid-server -c config/local.json -m .",
     "watch:css": "nodemon --watch config --watch templates --watch static --watch src --ext json,ejs,html,ts,tsx --exec \"yarn build:ts && yarn build:components && yarn dev:css\"",
     "test": "vitest --run",
     "test:run": "vitest --run",
     "test:terminal": "npx ts-node scripts/test-terminal.ts",
     "test:coverage": "vitest --run --coverage",
-    "test:integration": "XPOD_RUN_INTEGRATION_TESTS=true CSS_SEED_CONFIG=$PWD/config/seeds/test.json dotenv -e .env.local -- vitest --run",
+    "test:integration": "yarn test:setup && XPOD_RUN_INTEGRATION_TESTS=true CSS_SEED_CONFIG=$PWD/config/seeds/test.json dotenv -e .env.local -- vitest --run tests/integration --no-file-parallelism",
     "test:cluster": "XPOD_RUN_CLUSTER_TESTS=true vitest --run tests/integration/MultiNodeCluster.integration.test.ts",
     "test:docker": "yarn test:docker:lite",
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run --coverage",
     "test:quad-vs-quint": "vitest --run tests/storage/quad-vs-quint-comparison.test.ts",
     "test:w3c": "vitest --run tests/storage/w3c-sparql-full.test.ts",
     "test:storage": "vitest --run tests/storage/",
-    "dev:cluster:lite": "docker-compose -f docker-compose.standalone.yml up --build",
-    "dev:cluster:lite:down": "docker-compose -f docker-compose.standalone.yml down",
-    "test:docker:lite": "XPOD_RUN_DOCKER_LITE_TESTS=true vitest --run tests/integration/AiHandler.integration.test.ts tests/integration/ApiServer.integration.test.ts tests/integration/DockerStandalone.integration.test.ts tests/integration/ServerModeRoot.test.ts tests/integration/notification-subscription.test.ts tests/integration/SignalHandler.integration.test.ts tests/integration/FrpTunnel.integration.test.ts tests/integration/DockerCluster.integration.test.ts tests/integration/EdgeClusterFlow.test.ts tests/integration/MultiNodeCluster.integration.test.ts",
-    "test:docker:full": "XPOD_RUN_DOCKER_LITE_TESTS=true XPOD_RUN_DOCKER_TESTS=true vitest --run tests/integration/AiHandler.integration.test.ts tests/integration/ApiServer.integration.test.ts tests/integration/DockerStandalone.integration.test.ts tests/integration/ServerModeRoot.test.ts tests/integration/notification-subscription.test.ts tests/integration/SignalHandler.integration.test.ts tests/integration/FrpTunnel.integration.test.ts tests/integration/DockerCluster.integration.test.ts tests/integration/EdgeClusterFlow.test.ts tests/integration/MultiNodeCluster.integration.test.ts",
+    "dev:cluster:lite": "docker compose -f docker-compose.standalone.yml up --build",
+    "dev:cluster:lite:down": "docker compose -f docker-compose.standalone.yml down",
+    "test:docker:lite": "yarn test:setup && XPOD_RUN_INTEGRATION_TESTS=true CSS_SEED_CONFIG=$PWD/config/seeds/test.json dotenv -e .env.local -- vitest --run tests/integration --exclude tests/integration/DockerCluster.integration.test.ts --no-file-parallelism",
+    "test:docker:full": "yarn test:integration",
     "test:docker:all": "yarn test:docker:lite && yarn test:docker:full",
-    "test:docker:lite:up": "docker-compose -f docker-compose.standalone.yml up -d --build",
-    "test:docker:lite:down": "docker-compose -f docker-compose.standalone.yml down",
-    "test:service": "XPOD_RUN_SERVICE_TESTS=true vitest --run tests/service",
-    "test:setup": "dotenv -e .env.local -- yarn ts-node scripts/setup-test-credentials.ts",
-    "test:setup:docker": "CSS_BASE_URL=${CSS_BASE_URL:-http://localhost:5739} yarn ts-node scripts/setup-test-credentials.ts",
-    "build:single": "node scripts/build-single-file.cjs",
-    "pack:single": "yarn build:single && npm pack --json",
-    "publish:local": "node scripts/publish-local.cjs",
-    "publish:local:dry": "XPOD_PUBLISH_DRY_RUN=true node scripts/publish-local.cjs --dry-run",
-    "publish:release": "node scripts/publish-release.cjs",
-    "publish:release:dry": "XPOD_PUBLISH_DRY_RUN=true node scripts/publish-release.cjs --dry-run"
+    "test:docker:lite:up": "docker compose -f docker-compose.standalone.yml up -d --build",
+    "test:docker:lite:down": "docker compose -f docker-compose.standalone.yml down",
+    "test:service": "vitest --run tests/service",
+    "build:single": "node scripts/build-single-file.js",
+    "build:single:standalone": "yarn build && node scripts/build-single-file.js",
+    "test:setup": "dotenv -e .env.local -- yarn ts-node scripts/setup-test-credentials.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
@@ -118,6 +112,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.2",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.39",
     "@comunica/query-sparql-rdfjs": "^4.0.2",
     "@electric-sql/pglite": "^0.3.14",
     "@inrupt/solid-client-authn-node": "^3.1.0",
@@ -155,6 +150,9 @@
     "winston-daily-rotate-file": "^5.0.0",
     "yargs": "^17.7.2",
     "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "@tencent-ai/agent-sdk": "0.3.47"
   },
   "resolutions": {
     "@inrupt/solid-client-authn-browser": "^3.1.1",

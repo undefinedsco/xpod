@@ -48,9 +48,6 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     messages: vi.fn(),
   };
 
-  const smartInputPipeline = {
-    processText: vi.fn().mockResolvedValue(null),
-  };
 
   beforeAll(async () => {
     const port = await getFreePort();
@@ -58,7 +55,6 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     server = new ApiServer({ port, authMiddleware });
     registerChatRoutes(server, {
       chatService: chatService as any,
-      smartInputPipeline: smartInputPipeline as any,
     });
     await server.start();
   });
@@ -69,15 +65,13 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     chatService.listModels.mockReset();
     chatService.responses.mockReset();
     chatService.messages.mockReset();
-    smartInputPipeline.processText.mockReset();
-    smartInputPipeline.processText.mockResolvedValue(null);
   });
 
   afterAll(async () => {
     await server.stop();
   });
 
-  it('should handle POST /v1/responses and run smart input pipeline', async () => {
+  it('should handle POST /v1/responses', async () => {
     chatService.responses.mockResolvedValue({ id: 'resp-1', object: 'response' });
 
     const response = await fetch(baseUrl + '/v1/responses', {
@@ -90,10 +84,9 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     const data = await response.json();
     expect(data).toEqual({ id: 'resp-1', object: 'response' });
     expect(chatService.responses).toHaveBeenCalledWith({ prompt: '我的 key 是 sk-test-12345678901234567890' }, expect.anything());
-    expect(smartInputPipeline.processText).toHaveBeenCalledWith('我的 key 是 sk-test-12345678901234567890', expect.anything());
   });
 
-  it('should handle POST /v1/messages and run smart input pipeline', async () => {
+  it('should handle POST /v1/messages', async () => {
     chatService.messages.mockResolvedValue({ id: 'msg-1', role: 'assistant' });
 
     const response = await fetch(baseUrl + '/v1/messages', {
@@ -106,7 +99,6 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     const data = await response.json();
     expect(data).toEqual({ id: 'msg-1', role: 'assistant' });
     expect(chatService.messages).toHaveBeenCalledWith({ role: 'user', content: '保存一下 key sk-test-abcdefghijk1234567890' }, expect.anything());
-    expect(smartInputPipeline.processText).toHaveBeenCalledWith('保存一下 key sk-test-abcdefghijk1234567890', expect.anything());
   });
 });
 

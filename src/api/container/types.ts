@@ -20,7 +20,6 @@ import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { ChatKitService, AiProvider } from '../chatkit';
 import type { StoreContext } from '../chatkit/store';
 import type { PodChatKitStore } from '../chatkit/pod-store';
-import type { SmartInputPipelineService } from '../service/SmartInputPipelineService';
 
 /**
  * 容器配置
@@ -110,9 +109,6 @@ export interface ApiContainerCradle {
   chatKitStore: PodChatKitStore;
   chatKitAiProvider: AiProvider;
   chatKitService: ChatKitService<StoreContext>;
-
-  // Unified smart-input pipeline for all chat-like endpoints
-  smartInputPipeline: SmartInputPipelineService;
 
   // Cloud 模式: 身份服务
   webIdProfileRepo?: WebIdProfileRepository;

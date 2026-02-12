@@ -8,8 +8,8 @@
 import { getLoggerFor } from 'global-logger-factory';
 import cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
-import { eq } from '@undefineds.co/drizzle-solid';
-import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
+import { eq } from 'drizzle-solid';
+import type { SolidDatabase } from 'drizzle-solid';
 
 import { scheduleTable, type TaskClassType } from './schema';
 import type { Schedule, TaskQueue, TaskScheduler as ITaskScheduler } from './types';

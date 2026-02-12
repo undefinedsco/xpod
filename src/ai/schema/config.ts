@@ -16,7 +16,7 @@
  * - previousModel 记录迁移前的模型，用于双读策略
  */
 
-import { podTable, string, int, datetime, uri } from '@undefineds.co/drizzle-solid';
+import { podTable, string, int, datetime, uri } from 'drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 
 export const AIConfig = podTable(

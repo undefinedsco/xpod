@@ -5,7 +5,7 @@
  * 支持 MCP 工具、structuredOutput 等高级功能。
  */
 
-import { query, type Options, type McpServerConfig as SdkMcpServerConfig, type SystemMessage } from '@tencent-ai/agent-sdk';
+import type { Options, McpServerConfig as SdkMcpServerConfig, SystemMessage } from '@tencent-ai/agent-sdk';
 import { BaseAgentExecutor } from './BaseAgentExecutor';
 import type {
   ExecutorType,
@@ -19,6 +19,33 @@ import type {
   CodeBuddyOptions,
   BaseExecutorOptions,
 } from './types';
+
+
+type CodeBuddyQuery = (input: { prompt: string; options?: Options }) => AsyncIterable<any> & {
+  accountInfo(): Promise<any>;
+};
+
+let cachedCodeBuddyQuery: CodeBuddyQuery | undefined;
+
+async function loadCodeBuddyQuery(): Promise<CodeBuddyQuery> {
+  if (cachedCodeBuddyQuery) {
+    return cachedCodeBuddyQuery;
+  }
+
+  try {
+    const mod = await import('@tencent-ai/agent-sdk');
+    if (typeof mod.query !== 'function') {
+      throw new Error('Invalid CodeBuddy SDK: query() not found');
+    }
+    cachedCodeBuddyQuery = mod.query as CodeBuddyQuery;
+    return cachedCodeBuddyQuery;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CodeBuddyAuthError(
+      `CodeBuddy SDK 不可用，请安装可选依赖 @tencent-ai/agent-sdk（当前错误: ${detail}）`,
+    );
+  }
+}
 
 /**
  * CodeBuddy 鉴权错误
@@ -50,6 +77,7 @@ export class CodeBuddyExecutor extends BaseAgentExecutor {
    */
   public async checkAuthentication(): Promise<AuthInfo> {
     try {
+      const query = await loadCodeBuddyQuery();
       const q = query({
         prompt: '请回复 OK',
         options: {
@@ -152,6 +180,7 @@ export class CodeBuddyExecutor extends BaseAgentExecutor {
         systemPrompt: config.systemPrompt,
       };
 
+      const query = await loadCodeBuddyQuery();
       const q = query({
         prompt: message,
         options: sdkOptions,

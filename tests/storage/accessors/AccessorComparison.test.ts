@@ -47,6 +47,19 @@ const mockIdentifierStrategy = {
   return { path: new URL(parentPath, url.origin).href };
 });
 
+const runQuadstoreComparison = process.env.XPOD_RUN_QUADSTORE_TESTS === 'true';
+
+const hasBetterSqlite3Binding = (() => {
+  try {
+    const Database = require("better-sqlite3");
+    const db = new Database(":memory:");
+    db.close();
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 const accessorFactories: AccessorFactory[] = [
   {
     name: 'QuadstoreSparqlDataAccessor',
@@ -79,7 +92,11 @@ const accessorFactories: AccessorFactory[] = [
   },
 ];
 
-describe.each(accessorFactories)('DataAccessor Comparison: $name', ({ name, create }) => {
+const enabledAccessorFactories = accessorFactories.filter((factory) => runQuadstoreComparison || factory.name !== 'QuadstoreSparqlDataAccessor');
+
+const dataAccessorSuite = hasBetterSqlite3Binding ? describe : describe.skip;
+
+dataAccessorSuite.each(enabledAccessorFactories)('DataAccessor Comparison: $name', ({ name, create }) => {
   const testDir = getTestDataPath(`accessor_comparison_${name.toLowerCase()}`);
   let accessor: any;
   let cleanup: () => Promise<void>;
@@ -385,7 +402,7 @@ describe.each(accessorFactories)('DataAccessor Comparison: $name', ({ name, crea
 });
 
 // 性能对比测试
-describe('Performance Comparison', () => {
+(hasBetterSqlite3Binding ? describe : describe.skip)('Performance Comparison', () => {
   const testDir = getTestDataPath('accessor_perf');
   const results: Record<string, Record<string, number>> = {};
 
@@ -410,7 +427,7 @@ describe('Performance Comparison', () => {
     const testName = 'Write 100 documents';
     results[testName] = {};
 
-    for (const factory of accessorFactories) {
+    for (const factory of enabledAccessorFactories) {
       const dbPath = path.join(testDir, `perf_write_${factory.name}_${Date.now()}.sqlite`);
       const { accessor, cleanup } = await factory.create(dbPath);
 
@@ -441,7 +458,7 @@ describe('Performance Comparison', () => {
     const testName = 'Read 100 documents';
     results[testName] = {};
 
-    for (const factory of accessorFactories) {
+    for (const factory of enabledAccessorFactories) {
       const dbPath = path.join(testDir, `perf_read_${factory.name}_${Date.now()}.sqlite`);
       const { accessor, cleanup } = await factory.create(dbPath);
 
@@ -480,7 +497,7 @@ describe('Performance Comparison', () => {
     const testName = 'Write 1000 triples';
     results[testName] = {};
 
-    for (const factory of accessorFactories) {
+    for (const factory of enabledAccessorFactories) {
       const dbPath = path.join(testDir, `perf_bulk_${factory.name}_${Date.now()}.sqlite`);
       const { accessor, cleanup } = await factory.create(dbPath);
 

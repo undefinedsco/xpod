@@ -101,16 +101,19 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
         oidcIssuer: new URL(this.tokenEndpoint).origin,
         clientId: auth.clientId,
         clientSecret: auth.clientSecret,
+        tokenType: 'DPoP',
       });
 
       if (!session.info.isLoggedIn || !session.info.webId) {
         throw new Error('Login failed');
       }
 
+      const authFetch = session.fetch.bind(session) as typeof fetch;
       const db = drizzle(
-        { fetch: session.fetch, info: { webId: session.info.webId, isLoggedIn: true } } as any,
+        { fetch: authFetch, info: { webId: session.info.webId, isLoggedIn: true } } as any,
         { schema },
       );
+
 
       // 初始化表（创建容器、资源）
       this.logger.info(`Initializing tables for Pod: ${session.info.webId}`);
@@ -124,7 +127,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
       // Cache both db and session.fetch in context for reuse
       (context as any)._cachedDb = db;
-      (context as any)._cachedFetch = session.fetch;
+      (context as any)._cachedFetch = authFetch;
       (context as any)._cachedWebId = session.info.webId;
 
       return db;

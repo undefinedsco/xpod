@@ -14,7 +14,7 @@
  * 注：id 即为模型名（如 text-embedding-004），与供应商 API 对齐
  */
 
-import { podTable, string, int, datetime, uri, relations } from '@undefineds.co/drizzle-solid';
+import { podTable, string, int, datetime, uri, relations } from 'drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 import { Provider } from './provider';
 

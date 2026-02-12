@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 
-const RUN_DOCKER_LITE_TESTS = process.env.XPOD_RUN_DOCKER_LITE_TESTS === 'true';
-const suite = RUN_DOCKER_LITE_TESTS ? describe : describe.skip;
+const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
+const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
-suite('Solid Notification Subscription (Docker Lite)', () => {
+suite('Solid Notification Subscription (Integration)', () => {
   const baseUrl = 'http://localhost:5739';
   const NOTIFICATION_ENDPOINT = '/.notifications/WebSocketChannel2023/';
 
