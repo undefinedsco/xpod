@@ -55,7 +55,6 @@ bob/
 # Temporary files
 local/
 third_party/
-main.json
 package-lock.json
 
 # Development scripts (personal)
