@@ -12,7 +12,7 @@
 #   - standalone: Standalone 节点 (5739) - 自带 IdP，SQLite 存储
 #
 # 测试覆盖:
-#   ✅ 统一 Docker 测试: XPOD_RUN_DOCKER_TESTS=true yarn test:docker
+#   ✅ 统一 Docker 测试: XPOD_RUN_INTEGRATION_TESTS=true yarn test:docker
 #     包含以下场景的测试:
 #     - Cloud 模式 (6300): PostgreSQL + MinIO + IdP + API Server
 #     - Local 模式 (5737): SQLite 存储，使用 Cloud IdP

@@ -10,14 +10,14 @@
  *   COMPOSE_FILE=docker-compose.cluster.yml docker compose up -d
  *
  * 运行测试:
- *   XPOD_RUN_DOCKER_TESTS=true yarn test:docker
+ *   XPOD_RUN_INTEGRATION_TESTS=true yarn vitest --run tests/integration/DockerCluster.integration.test.ts
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { Client } from 'pg';
 import { setupAccount, loginWithClientCredentials } from './helpers/solidAccount';
 
-const RUN_DOCKER_TESTS = process.env.XPOD_RUN_DOCKER_TESTS === 'true';
+const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const SERVICE_READY_RETRIES = Number(process.env.XPOD_DOCKER_READY_RETRIES ?? '45');
 const SERVICE_READY_DELAY_MS = Number(process.env.XPOD_DOCKER_READY_DELAY_MS ?? '1000');
 
@@ -50,7 +50,7 @@ const SERVICES = {
   },
 } as const;
 
-const suite = RUN_DOCKER_TESTS ? describe : describe.skip;
+const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 suite('Docker Cluster Integration', () => {
   let pgClient: Client | null = null;

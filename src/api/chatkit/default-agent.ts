@@ -26,9 +26,8 @@ async function loadClaudeQuery(): Promise<ClaudeQuery> {
   }
 
   // Keep native dynamic import so CJS build can load ESM-only SDK lazily.
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<Record<string, unknown>>;
-  const mod = await dynamicImport('@anthropic-ai/claude-agent-sdk');
-  const maybeQuery = mod.query;
+  const mod = await import('@anthropic-ai/claude-agent-sdk') as Record<string, unknown>;
+  const maybeQuery = (mod as { query?: unknown }).query;
 
   if (typeof maybeQuery !== 'function') {
     throw new Error('Invalid Claude Agent SDK: query() not found');
@@ -228,6 +227,78 @@ curl -s -X PUT \\
 4. 其他情况正常对话即可
 5. 回复使用中文`;
 
+
+function getDefaultBaseUrl(provider?: string): string {
+  const normalized = (provider || 'openrouter').toLowerCase();
+  const urls: Record<string, string> = {
+    openai: 'https://api.openai.com/v1',
+    google: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    anthropic: 'https://api.anthropic.com/v1',
+    deepseek: 'https://api.deepseek.com/v1',
+    openrouter: 'https://openrouter.ai/api/v1',
+    ollama: 'http://localhost:11434/v1',
+    mistral: 'https://api.mistral.ai/v1',
+    cohere: 'https://api.cohere.ai/v1',
+    zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+  };
+  return urls[normalized] || urls.openrouter;
+}
+
+function normalizeClaudeBaseUrl(baseUrl: string): string {
+  if (baseUrl.endsWith('/v1')) {
+    return baseUrl.slice(0, -3);
+  }
+  if (baseUrl.endsWith('/v1/')) {
+    return baseUrl.slice(0, -4);
+  }
+  return baseUrl;
+}
+
+function buildClaudeEnv(config: DefaultAgentConfig, context: DefaultAgentContext): NodeJS.ProcessEnv {
+  const provider = (config.provider || '').toLowerCase();
+  const model = (config.model || '').trim();
+  const baseUrl = process.env.DEFAULT_BASE_URL || getDefaultBaseUrl(config.provider);
+  const isOpenRouterLike = provider === 'openrouter' || baseUrl.includes('openrouter.ai');
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    SOLID_TOKEN: context.solidToken,
+    POD_BASE_URL: context.podBaseUrl,
+  };
+
+  if (isOpenRouterLike) {
+    // Claude Code expects Anthropic-shaped settings; OpenRouter is compatible after base path normalization.
+    env.ANTHROPIC_BASE_URL = normalizeClaudeBaseUrl(baseUrl);
+    env.ANTHROPIC_AUTH_TOKEN = config.apiKey;
+    if (model) {
+      env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+      env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+    }
+    delete env.ANTHROPIC_API_KEY;
+  } else {
+    env.ANTHROPIC_BASE_URL = baseUrl;
+    env.ANTHROPIC_API_KEY = config.apiKey;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  }
+
+  return env;
+}
+
+function resolveClaudeModel(config: DefaultAgentConfig): string {
+  const model = (config.model || '').trim();
+  if (!model) {
+    return 'sonnet';
+  }
+
+  if (model.startsWith('claude') || model.includes('anthropic/')) {
+    return model;
+  }
+
+  // Non-Anthropic models (OpenRouter route) are mapped via ANTHROPIC_DEFAULT_SONNET_MODEL.
+  return 'sonnet';
+}
+
 /**
  * 运行 Default Agent
  */
@@ -266,15 +337,10 @@ export async function runDefaultAgent(
       options: {
         abortController,
         pathToClaudeCodeExecutable: config.claudeCodePath,
-        env: {
-          ...process.env,
-          SOLID_TOKEN: context.solidToken,
-          POD_BASE_URL: context.podBaseUrl,
-          // 通过 OpenRouter 使用 Claude 模型
-          ANTHROPIC_BASE_URL: 'https://openrouter.ai/api/v1',
-          ANTHROPIC_API_KEY: config.apiKey,
-        },
+        env: buildClaudeEnv(config, context),
         systemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
+        model: resolveClaudeModel(config),
+        permissionMode: 'acceptEdits',
         allowedTools: ['Bash', 'Read', 'Write'],
         maxTurns: options?.maxTurns || 10,
       },
@@ -290,7 +356,7 @@ export async function runDefaultAgent(
       }
 
       if (isResultMessage(msg)) {
-        if (msg.subtype === 'success' && typeof msg.result === 'string') {
+        if (msg.subtype === 'success' && typeof msg.result === 'string' && msg.result.trim()) {
           content = msg.result;
         }
         if (typeof msg.total_cost_usd === 'number') {
@@ -304,7 +370,7 @@ export async function runDefaultAgent(
     return {
       content,
       success: true,
-      model: config.model,
+      model: config.model || resolveClaudeModel(config),
       costUsd,
     };
   } catch (error) {
@@ -355,15 +421,10 @@ export async function* streamDefaultAgent(
       options: {
         abortController,
         pathToClaudeCodeExecutable: config.claudeCodePath,
-        env: {
-          ...process.env,
-          SOLID_TOKEN: context.solidToken,
-          POD_BASE_URL: context.podBaseUrl,
-          // 通过 OpenRouter 使用 Claude 模型
-          ANTHROPIC_BASE_URL: 'https://openrouter.ai/api/v1',
-          ANTHROPIC_API_KEY: config.apiKey,
-        },
+        env: buildClaudeEnv(config, context),
         systemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
+        model: resolveClaudeModel(config),
+        permissionMode: 'acceptEdits',
         allowedTools: ['Bash', 'Read', 'Write'],
         maxTurns: options?.maxTurns || 10,
         includePartialMessages: true,

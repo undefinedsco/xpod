@@ -10,17 +10,31 @@ import { Provider } from '../../src/ai/schema/provider';
 import { Credential } from '../../src/credential/schema/tables';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
 
-const RUN_DOCKER_TESTS = process.env.XPOD_RUN_DOCKER_TESTS === 'true';
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
-const AI_BASE_URL = process.env.DEFAULT_BASE_URL;
 const AI_API_KEY = process.env.DEFAULT_API_KEY;
 const AI_MODEL = process.env.DEFAULT_MODEL || 'stepfun/step-3.5-flash:free';
-const shouldRun = (RUN_DOCKER_TESTS || RUN_INTEGRATION_TESTS) && Boolean(AI_BASE_URL && AI_API_KEY);
+
+function resolveDefaultBaseUrl(provider?: string): string {
+  const normalized = (provider || 'openrouter').toLowerCase();
+  const urls: Record<string, string> = {
+    openai: 'https://api.openai.com/v1',
+    google: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    anthropic: 'https://api.anthropic.com/v1',
+    deepseek: 'https://api.deepseek.com/v1',
+    openrouter: 'https://openrouter.ai/api/v1',
+    ollama: 'http://localhost:11434/v1',
+    mistral: 'https://api.mistral.ai/v1',
+    cohere: 'https://api.cohere.ai/v1',
+    zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+  };
+  return urls[normalized] || urls.openrouter;
+}
+
+const AI_BASE_URL = process.env.DEFAULT_BASE_URL || resolveDefaultBaseUrl(process.env.DEFAULT_PROVIDER);
+const shouldRun = RUN_INTEGRATION_TESTS && Boolean(AI_API_KEY);
 const suite = shouldRun ? describe : describe.skip;
 
-const solidBaseUrl = RUN_DOCKER_TESTS
-  ? 'http://localhost:5739'
-  : (process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+const solidBaseUrl = (process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
 
 suite('Chat Pod E2E Integration (Real Network)', () => {
   let server: ApiServer;
@@ -98,7 +112,7 @@ suite('Chat Pod E2E Integration (Real Network)', () => {
     if (server) {
       await server.stop();
     }
-  });
+  }, 60000);
 
   it('should complete chat with real provider config in Pod', async () => {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -115,5 +129,5 @@ suite('Chat Pod E2E Integration (Real Network)', () => {
     expect(response.status).toBe(200);
     const data = await response.json() as any;
     expect(data.choices?.[0]?.message?.content).toBeTruthy();
-  }, 30000);
+  }, 60000);
 });

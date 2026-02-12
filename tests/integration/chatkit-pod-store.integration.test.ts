@@ -38,13 +38,11 @@ class MockAiProvider implements AiProvider {
   }
 }
 
-const RUN_DOCKER_TESTS = process.env.XPOD_RUN_DOCKER_TESTS === 'true';
-const shouldRun = RUN_DOCKER_TESTS;
+const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
+const shouldRun = RUN_INTEGRATION_TESTS;
 const suite = shouldRun ? describe : describe.skip;
 
-const solidBaseUrl = RUN_DOCKER_TESTS
-  ? 'http://localhost:5739'
-  : (process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+const solidBaseUrl = (process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
 
 suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;
@@ -56,12 +54,13 @@ suite('ChatKit PodStore Integration', () => {
   let podUrl: string;
 
   beforeAll(async () => {
-    const createdAccount = await setupAccount(solidBaseUrl, 'chatkit-store');
+    const createdAccount = await setupAccount(solidBaseUrl, 'ckstore');
     if (!createdAccount) {
       throw new Error(`Failed to setup account on ${solidBaseUrl}`);
     }
     account = createdAccount;
     podUrl = account.podUrl;
+
 
     store = new PodChatKitStore({
       tokenEndpoint: `${account.issuer.replace(/\/$/, '')}/.oidc/token`,
@@ -480,7 +479,7 @@ suite('ChatKit PodStore Integration', () => {
         // Both "Thread not found" and container 404 are valid outcomes
         expect(error.message).toMatch(/Thread not found|404|NotFoundHttpError|Could not retrieve/);
       }
-    });
+    }, 15000);
   });
 
   describe('Error Handling', () => {

@@ -1,15 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { Session } from '@inrupt/solid-client-authn-node';
 
-const RUN_DOCKER_LITE_TESTS = process.env.XPOD_RUN_DOCKER_LITE_TESTS === 'true';
-const suite = RUN_DOCKER_LITE_TESTS ? describe : describe.skip;
+const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
+const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 const STANDALONE = {
   baseUrl: 'http://localhost:5739',
   apiUrl: 'http://localhost:5740',
 } as const;
 
-suite('Docker Standalone Integration', () => {
+suite('Standalone Integration', () => {
   describe('Service Health', () => {
     it('service should be reachable', async () => {
       const ready = await waitForService(STANDALONE.baseUrl, 10);

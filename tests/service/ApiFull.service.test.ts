@@ -9,8 +9,10 @@ import { EdgeNodeRepository } from '../../src/identity/drizzle/EdgeNodeRepositor
 import { getIdentityDatabase, closeAllIdentityConnections } from '../../src/identity/drizzle/db';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 
-const RUN_SERVICE_TESTS = process.env.XPOD_RUN_SERVICE_TESTS === 'true';
-const suite = RUN_SERVICE_TESTS ? describe : describe.skip;
+// Build a valid sk- format API key: sk-base64(client_id:client_secret)
+const TEST_CLIENT_ID = 'test-client-id';
+const TEST_CLIENT_SECRET = 'test-client-secret';
+const VALID_SK_KEY = `sk-${Buffer.from(`${TEST_CLIENT_ID}:${TEST_CLIENT_SECRET}`).toString('base64')}`;
 
 // Mock SolidTokenAuthenticator
 const mockSolidAuth = {
@@ -21,18 +23,7 @@ const mockSolidAuth = {
   })
 };
 
-// Mock ClientCredentialsStore
-const mockCredStore = {
-  findByClientId: async (id: string) => id === 'valid-api-key' ? ({
-    clientId: id, 
-    clientSecret: 'secret', 
-    webId: 'https://bot#me', 
-    accountId: 'bot-1', 
-    createdAt: new Date()
-  }) : undefined
-};
-
-suite('API Full Service', () => {
+describe('API Full Service', () => {
   let server: ApiServer;
   let repo: EdgeNodeRepository;
   const port = 3105;
@@ -44,16 +35,16 @@ suite('API Full Service', () => {
     repo = new EdgeNodeRepository(db);
 
     const clientAuth = new ClientCredentialsAuthenticator({
-      store: mockCredStore,
       tokenEndpoint: 'http://localhost:9999/token'
     });
 
     // Mock the token exchange to bypass external HTTP
     // @ts-ignore
-    clientAuth.exchangeForToken = async () => ({ 
-      success: true, 
-      token: 'fake-token', 
-      expiresAt: new Date(Date.now() + 3600000) 
+    clientAuth.exchangeForToken = async () => ({
+      success: true,
+      token: 'fake-token',
+      webId: 'https://bot#me',
+      expiresAt: new Date(Date.now() + 3600000)
     });
 
     const multiAuth = new MultiAuthenticator({
@@ -103,7 +94,7 @@ suite('API Full Service', () => {
 
   it('should authenticate via Solid DPoP and list nodes', async () => {
     // Create a node first
-    await repo.createNode('My Node', 'user-1');
+    await repo.createNode('My Node', 'https://user#me');
     
     const response = await fetch(`${baseUrl}/v1/nodes`, {
       headers: { 
@@ -119,7 +110,7 @@ suite('API Full Service', () => {
 
   it('should reject API key for node endpoints', async () => {
     const response = await fetch(`${baseUrl}/v1/nodes`, {
-      headers: { 'Authorization': 'Bearer valid-api-key' }
+      headers: { 'Authorization': `Bearer ${VALID_SK_KEY}` }
     });
     expect(response.status).toBe(403);
   });
@@ -127,7 +118,7 @@ suite('API Full Service', () => {
   it('should create a new node via Solid auth', async () => {
     const response = await fetch(`${baseUrl}/v1/nodes`, {
       method: 'POST',
-      headers: { 
+      headers: {
         'Authorization': 'Bearer some-token',
         'DPoP': 'some-dpop-proof',
         'Content-Type': 'application/json'
@@ -145,9 +136,9 @@ suite('API Full Service', () => {
     const node = await repo.createNode('Edge', 'bot-1');
     const res = await fetch(`${baseUrl}/v1/signal`, {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer valid-api-key',
+        'Authorization': `Bearer ${VALID_SK_KEY}`,
       },
       body: JSON.stringify({ nodeId: node.nodeId, version: '1.0.0' })
     });
@@ -157,13 +148,13 @@ suite('API Full Service', () => {
   it('should handle chat completions', async () => {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 
-        'Authorization': 'Bearer valid-api-key',
+      headers: {
+        'Authorization': `Bearer ${VALID_SK_KEY}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ 
-        model: 'xpod-default', 
-        messages: [{ role: 'user', content: 'ping' }] 
+      body: JSON.stringify({
+        model: 'xpod-default',
+        messages: [{ role: 'user', content: 'ping' }]
       })
     });
     expect(response.status).toBe(200);
@@ -173,7 +164,7 @@ suite('API Full Service', () => {
 
   it('should list available models', async () => {
     const response = await fetch(`${baseUrl}/v1/models`, {
-      headers: { 'Authorization': 'Bearer valid-api-key' }
+      headers: { 'Authorization': `Bearer ${VALID_SK_KEY}` }
     });
     expect(response.status).toBe(200);
     const data = await response.json() as any;
@@ -183,7 +174,7 @@ suite('API Full Service', () => {
 
   it('should reject invalid auth', async () => {
     const response = await fetch(`${baseUrl}/v1/nodes`, {
-      headers: { 'Authorization': 'Bearer invalid-api-key' }
+      headers: { 'Authorization': 'Bearer sk-aW52YWxpZA==' }
     });
     expect(response.status).toBe(401);
   });
