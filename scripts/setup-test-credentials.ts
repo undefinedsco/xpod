@@ -14,7 +14,7 @@ import * as path from 'path';
 
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
-const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:3000';
+const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:5739';
 const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
 const envFilePath = path.resolve(process.cwd(), '.env.local');
 const defaultSeedConfigPath = path.resolve(process.cwd(), 'config/seeds/test.json');
@@ -297,7 +297,7 @@ async function main(): Promise<void> {
   console.log(`Seed config: ${seedConfigPath}`);
 
   if (!(await checkServer())) {
-    console.error('Server is not running. Please start it with "yarn local" first.');
+    console.error('Server is not running. Please start Docker standalone first (yarn test:docker:lite:up), or run yarn local and set CSS_BASE_URL=http://localhost:3000/.');
     process.exit(1);
   }
   console.log('Server is running');
