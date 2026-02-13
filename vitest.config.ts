@@ -3,6 +3,9 @@ const coverageEnabled = process.env.COVERAGE === 'true';
 
 export default defineConfig({
   test: {
+    // Always load `.env.local` when present. For integration runs we also allow it to
+    // override ambient env vars to keep tests deterministic across machines.
+    setupFiles: [ 'tests/vitest.setup.ts' ],
     environment: 'node',
     pool: 'forks',  // Use forks instead of threads to avoid SIGSEGV with native modules
     environmentMatchGlobs: [

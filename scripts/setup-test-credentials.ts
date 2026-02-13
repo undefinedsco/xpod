@@ -195,9 +195,10 @@ async function ensurePasswordLogin(
 }
 
 async function createFreshPod(token: string, podCreateUrl: string): Promise<{ webId: string; podName: string } | null> {
-  const baseName = process.env.SOLID_TEST_POD_ID || 'test-integration';
+  // Never use SOLID_TEST_POD_ID as a prefix because it is overwritten on every run.
+  const baseName = process.env.SOLID_TEST_POD_PREFIX ?? 'test-integration';
   const candidateNames = [
-    `${baseName}-${Date.now()}`,
+    `${baseName}-${Date.now().toString(36)}`,
     `${baseName}-${Math.random().toString(36).slice(2, 8)}`,
   ];
 

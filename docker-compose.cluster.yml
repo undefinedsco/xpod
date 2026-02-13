@@ -82,6 +82,7 @@ services:
     environment:
       NODE_ENV: development
       XPOD_EDITION: cloud
+      XPOD_NODE_ID: cloud-a
       XPOD_EDGE_NODES_ENABLED: "false"
       XPOD_SUBDOMAIN_ENABLED: "false"
       XPOD_DDNS_DOMAIN: undefineds.xyz
@@ -126,6 +127,64 @@ services:
       retries: 30
       start_period: 60s
     command: ["sh", "-c", "node dist/main.js -m cloud -p 6300"]
+
+  # Cloud_B 节点 - 第二个中心（与 Cloud 共享 postgres/redis/minio）
+  #
+  # 端口规划：
+  #   - cloud    : 6300/6301
+  #   - cloud_b  : 6400/6401
+  #
+  # 用于 MultiNodeCluster.integration.test.ts 的「双中心」集成测试。
+  cloud_b:
+    <<: *xpod-image
+    environment:
+      NODE_ENV: development
+      XPOD_EDITION: cloud
+      XPOD_NODE_ID: cloud-b
+      XPOD_EDGE_NODES_ENABLED: "false"
+      XPOD_SUBDOMAIN_ENABLED: "false"
+      XPOD_DDNS_DOMAIN: undefineds.xyz
+      XPOD_ENCRYPTION_KEY: dev-encryption-key-change-in-production
+      API_PORT: "6401"
+      API_HOST: "0.0.0.0"
+      CSS_PORT: "6400"
+      CSS_BASE_URL: http://localhost:6400
+      CSS_LOGGING_LEVEL: info
+      CSS_ALLOWED_HOSTS: "localhost,host.docker.internal"
+      CSS_SPARQL_ENDPOINT: postgres://xpod:xpod@postgres:5432/xpod
+      CSS_IDENTITY_DB_URL: postgres://xpod:xpod@postgres:5432/xpod
+      CSS_IDENTITY_TABLE_PREFIX: "identity_account_"
+      CSS_REDIS_CLIENT: redis:6379
+      CSS_REDIS_USERNAME: ""
+      CSS_REDIS_PASSWORD: ""
+      CSS_MINIO_ENDPOINT: http://minio:9000
+      CSS_MINIO_ACCESS_KEY: minioadmin
+      CSS_MINIO_SECRET_KEY: minioadmin
+      CSS_MINIO_BUCKET_NAME: xpod
+      CSS_EMAIL_CONFIG_HOST: ""
+      CSS_EMAIL_CONFIG_PORT: "587"
+      CSS_EMAIL_CONFIG_AUTH_USER: ""
+      CSS_EMAIL_CONFIG_AUTH_PASS: ""
+      CSS_SEED_CONFIG: /app/config/seed.dev.json
+    ports:
+      - "6400:6400"
+      - "6401:6401"
+    volumes:
+      - cloud_b_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:6400/service/status"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    command: ["sh", "-c", "node dist/main.js -m cloud -p 6400"]
 
   # Local 模式 - 托管式，使用 Cloud IdP，SQLite 存储
   local:
@@ -203,5 +262,6 @@ volumes:
   redis_data:
   minio_data:
   cloud_data:
+  cloud_b_data:
   local_data:
   standalone_data:
