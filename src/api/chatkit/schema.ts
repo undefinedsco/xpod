@@ -115,6 +115,11 @@ export const Thread = podTable(
     chatId: uri('chatId').predicate(SIOC.has_parent).reference(Chat),
     title: string('title'),
     status: string('status'),
+    /**
+     * JSON string for extended metadata (e.g., xpod runtime hints).
+     * Note: drizzle-solid stores this as an RDF literal.
+     */
+    metadata: string('metadata'),
     createdAt: datetime('createdAt'),
     updatedAt: datetime('updatedAt'),
   },

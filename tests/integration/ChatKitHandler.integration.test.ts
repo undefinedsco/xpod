@@ -75,7 +75,7 @@ describe('ChatKitHandler Integration', () => {
       ],
     };
 
-    const response = await fetch(baseUrl + '/chatkit', {
+    const response = await fetch(baseUrl + '/v1/chatkit', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

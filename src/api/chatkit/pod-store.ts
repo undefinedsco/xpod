@@ -216,6 +216,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
    */
   private threadRecordToMetadata(record: ThreadRecord): ThreadMetadata {
     const chatId = this.extractChatId(record.chatId);
+    let extra: Record<string, unknown> | undefined;
+    if (record.metadata) {
+      try {
+        extra = JSON.parse(record.metadata) as Record<string, unknown>;
+      } catch {
+        // ignore invalid metadata
+      }
+    }
 
     return {
       id: record.id,
@@ -225,6 +233,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       updated_at: record.updatedAt ? Math.floor(new Date(record.updatedAt).getTime() / 1000) : nowTimestamp(),
       metadata: {
         chat_id: chatId,
+        ...(extra ?? {}),
       },
     };
   }
@@ -392,6 +401,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 从 metadata 获取 chat_id
     const chatId = this.getChatIdFromMetadata(thread.metadata);
+    // Persist all metadata except chat_id (which is derived from storage location).
+    const metadataToPersist = { ...(thread.metadata ?? {}) } as Record<string, unknown>;
+    delete (metadataToPersist as any).chat_id;
+    const metadataJson = Object.keys(metadataToPersist).length > 0 ? JSON.stringify(metadataToPersist) : null;
 
     // 确保 Chat 容器存在
     await this.ensureChat(chatId, context);
@@ -409,6 +422,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       await db.update(Thread).set({
         title: thread.title || null,
         status: this.statusToString(thread.status),
+        metadata: metadataJson,
         updatedAt: now,
       }).where(eq(Thread.id, thread.id));
     } else {
@@ -418,6 +432,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
         chatId,  // 关联到 Chat 容器
         title: thread.title || null,
         status: this.statusToString(thread.status),
+        metadata: metadataJson,
         createdAt: new Date(thread.created_at * 1000).toISOString(),
         updatedAt: now,
       });
@@ -426,7 +441,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     // 缓存完整的 Thread metadata，确保 metadata.chat_id 包含正确的值
     const threadMetadata: ThreadMetadata = {
       ...thread,
-      metadata: { ...thread.metadata, chat_id: chatId },
+      metadata: { ...(thread.metadata ?? {}), chat_id: chatId },
     };
     this.cacheThreadMetadata(context, threadMetadata);
   }

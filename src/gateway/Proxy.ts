@@ -1,7 +1,7 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
 import { getLoggerFor } from 'global-logger-factory';
-import type { Supervisor } from './supervisor';
+import type { Supervisor } from './Supervisor';
 
 // CORS configuration matching CSS CorsHandler defaults
 const CORS_CONFIG = {

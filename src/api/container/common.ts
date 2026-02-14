@@ -80,10 +80,11 @@ export function registerCommonServices(
       return new VercelAiProvider({ store: chatKitStore });
     }).singleton(),
 
-    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider }: ApiContainerCradle) => {
+    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider, config }: ApiContainerCradle) => {
       return new ChatKitService({
         store: chatKitStore,
         aiProvider: chatKitAiProvider,
+        enablePtyRuntime: config.edition === 'local',
       });
     }).singleton(),
 

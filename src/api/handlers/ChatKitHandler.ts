@@ -2,7 +2,7 @@
  * ChatKit Handler
  * 
  * HTTP handler for the ChatKit protocol endpoint.
- * Provides a single `/chatkit` POST endpoint that handles all ChatKit requests.
+ * Provides a single `/v1/chatkit` POST endpoint that handles all ChatKit requests.
  * 
  * Based on https://github.com/openai/chatkit-python
  */
@@ -27,13 +27,13 @@ export function registerChatKitRoutes(server: ApiServer, options: ChatKitHandler
   const { chatKitService } = options;
 
   /**
-   * POST /chatkit - Main ChatKit endpoint
+   * POST /v1/chatkit - Main ChatKit endpoint
    * 
    * Handles all ChatKit protocol requests:
    * - Streaming requests (threads.create, threads.add_user_message, etc.)
    * - Non-streaming requests (threads.get_by_id, threads.list, etc.)
    */
-  server.post('/chatkit', async (request, response, _params) => {
+  server.post('/v1/chatkit', async (request, response, _params) => {
     const auth = request.auth;
     
     // Get userId from auth context (may be undefined for unauthenticated requests)
@@ -79,15 +79,15 @@ export function registerChatKitRoutes(server: ApiServer, options: ChatKitHandler
   });
 
   /**
-   * GET /chatkit/health - Health check endpoint
+   * GET /v1/chatkit/health - Health check endpoint
    */
-  server.get('/chatkit/health', async (_request, response, _params) => {
+  server.get('/v1/chatkit/health', async (_request, response, _params) => {
     response.statusCode = 200;
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({ status: 'ok', service: 'chatkit' }));
   }, { public: true });
 
-  logger.info('ChatKit routes registered: POST /chatkit, GET /chatkit/health');
+  logger.info('ChatKit routes registered: POST /v1/chatkit, GET /v1/chatkit/health');
 }
 
 /**

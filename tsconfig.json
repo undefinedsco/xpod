@@ -4,6 +4,7 @@
     "target": "es2021",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
     "outDir": "dist",
     "lib": [ "es2021" ],
     "module": "CommonJS",
