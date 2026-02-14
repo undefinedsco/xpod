@@ -1,14 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
-
-// node-pty is optional - load dynamically so tests can run in environments without it.
-let pty: typeof import('node-pty') | undefined;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  pty = require('node-pty');
-} catch {
-  // optional
-}
 
 export interface PtyRunnerOptions {
   command: string;
@@ -17,62 +9,74 @@ export interface PtyRunnerOptions {
   env?: Record<string, string | undefined>;
 }
 
+/**
+ * "PTY" runner (implementation uses stdio pipes).
+ *
+ * Why not node-pty:
+ * - In sandboxed/runtime-restricted environments node-pty can fail to spawn.
+ * - For MVP, stdio-based streaming is enough for agents that support non-TTY output.
+ *
+ * We keep the name stable so higher-level code doesn't churn.
+ */
 export class PtyRunner extends EventEmitter {
   private readonly logger = getLoggerFor(this);
-  private ptyProcess?: import('node-pty').IPty;
+  private proc?: ChildProcessWithoutNullStreams;
 
   start(options: PtyRunnerOptions): void {
-    if (this.ptyProcess) {
+    if (this.proc) {
       throw new Error('Runner already started');
     }
-    if (!pty) {
-      throw new Error('node-pty is not available');
-    }
 
-    this.ptyProcess = pty.spawn(options.command, options.args, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 40,
+    this.proc = spawn(options.command, options.args, {
       cwd: options.cwd,
       env: {
         ...process.env,
         ...(options.env ?? {}),
-        TERM: 'xterm-256color',
         FORCE_COLOR: process.env.FORCE_COLOR ?? '0',
-      },
+      } as NodeJS.ProcessEnv,
+      stdio: 'pipe',
     });
 
-    this.ptyProcess.onData((data: string) => {
+    this.proc.stdout.setEncoding('utf8');
+    this.proc.stderr.setEncoding('utf8');
+
+    this.proc.stdout.on('data', (data: string) => {
+      this.emit('data', data);
+    });
+    this.proc.stderr.on('data', (data: string) => {
+      // Merge stderr into the same stream for now (MVP).
       this.emit('data', data);
     });
 
-    this.ptyProcess.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
-      this.logger.debug(`PTY exited: code=${exitCode}, signal=${signal}`);
-      this.emit('exit', Number.isFinite(exitCode) ? exitCode : null, signal !== undefined ? String(signal) : undefined);
-      this.ptyProcess = undefined;
+    this.proc.on('exit', (code, signal) => {
+      this.logger.debug(`Process exited: code=${code}, signal=${signal}`);
+      this.emit('exit', code ?? null, signal ?? undefined);
+      this.proc = undefined;
+    });
+
+    this.proc.on('error', (err) => {
+      this.logger.error(`Process spawn error: ${err}`);
+      this.emit('error', err);
     });
   }
 
   write(text: string): void {
-    if (!this.ptyProcess) {
+    if (!this.proc) {
       throw new Error('Runner is not started');
     }
-    this.ptyProcess.write(text);
+    this.proc.stdin.write(text);
   }
 
   stop(signal: 'SIGINT' | 'SIGTERM' = 'SIGINT'): void {
-    if (!this.ptyProcess) {
+    if (!this.proc) {
       return;
     }
-    if (signal === 'SIGINT') {
-      this.ptyProcess.write('\x03');
-      return;
-    }
-    this.ptyProcess.kill();
+    // Best-effort. If a process doesn't handle SIGINT, caller can follow with SIGTERM.
+    this.proc.kill(signal);
   }
 
   isRunning(): boolean {
-    return Boolean(this.ptyProcess);
+    return Boolean(this.proc);
   }
 }
 
