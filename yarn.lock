@@ -7,6 +7,11 @@
   resolved "https://registry.yarnpkg.com/@agentclientprotocol/sdk/-/sdk-0.13.1.tgz#e1c2d67655cc734539b16712999f215234d95603"
   integrity sha512-6byvu+F/xc96GBkdAx4hq6/tB3vT63DSBO4i3gYCz8nuyZMerVFna2Gkhm8EHNpZX0J9DjUxzZCW+rnHXUg0FA==
 
+"@agentclientprotocol/sdk@^0.14.1":
+  version "0.14.1"
+  resolved "https://registry.yarnpkg.com/@agentclientprotocol/sdk/-/sdk-0.14.1.tgz#21e618065facd60ec440876bdbb27183a767dc1b"
+  integrity sha512-b6r3PS3Nly+Wyw9U+0nOr47bV8tfS476EgyEMhoKvJCZLbgqoDFN7DJwkxL88RR0aiOqOYV1ZnESHqb+RmdH8w==
+
 "@ai-sdk/gateway@3.0.13":
   version "3.0.13"
   resolved "https://registry.npmjs.org/@ai-sdk/gateway/-/gateway-3.0.13.tgz"

@@ -590,7 +590,16 @@ export class ChatKitService<TContext = StoreContext> {
     if (!pty.repoPath || !pty.worktree || !pty.runner) {
       throw new Error('Invalid thread.metadata.xpod.pty: repoPath/worktree/runner are required');
     }
-    return pty as PtyRuntimeConfig;
+    // Default to ACP for CLI runtimes unless explicitly requested.
+    // This keeps "thread metadata is enough" and avoids extra "smart input" plumbing.
+    const protocol = pty.runner.protocol ?? 'acp';
+    return {
+      ...pty,
+      runner: {
+        ...pty.runner,
+        protocol,
+      },
+    } as PtyRuntimeConfig;
   }
 
   private async *respondWithPty(

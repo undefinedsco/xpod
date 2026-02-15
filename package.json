@@ -111,6 +111,7 @@
     "vitest": "^1.4.0"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^0.14.1",
     "@ai-sdk/openai": "^3.0.2",
     "@anthropic-ai/claude-agent-sdk": "^0.2.39",
     "@comunica/query-sparql-rdfjs": "^4.0.2",

@@ -4,8 +4,10 @@ import * as fs from 'node:fs';
 import { getLoggerFor } from 'global-logger-factory';
 import { GitWorktreeService } from './GitWorktreeService';
 import { PtyRunner } from './PtyRunner';
+import { AcpRunner } from './AcpRunner';
 
 export type RunnerType = 'codebuddy' | 'claude' | 'codex';
+export type RunnerProtocol = 'raw' | 'acp';
 
 export type WorktreeSpec =
   | { mode: 'existing'; path: string }
@@ -16,6 +18,11 @@ export interface PtyRuntimeConfig {
   worktree: WorktreeSpec;
   runner: {
     type: RunnerType;
+    /**
+     * raw: write plain text to stdin (legacy mode)
+     * acp: JSON-RPC (Agent Client Protocol) over stdio (recommended)
+     */
+    protocol?: RunnerProtocol;
     argv?: string[];
   };
 }
@@ -23,6 +30,7 @@ export interface PtyRuntimeConfig {
 export interface PtyThreadRuntimeState {
   workdir: string;
   runnerType: RunnerType;
+  protocol: RunnerProtocol;
   argv: string[];
 }
 
@@ -37,8 +45,11 @@ export class PtyThreadRuntime {
   private readonly logger = getLoggerFor(this);
   private readonly git = new GitWorktreeService();
   private readonly runtimes = new Map<string, {
-    runner: PtyRunner;
+    runner: PtyRunner | AcpRunner;
     state: PtyThreadRuntimeState;
+    acp?: {
+      sessionId: string;
+    };
     jobs: Array<PtyJob>;
     processing: boolean;
   }>();
@@ -62,16 +73,44 @@ export class PtyThreadRuntime {
     const workdir = await this.resolveWorkdir(threadId, cfg.repoPath, cfg.worktree);
     this.git.ensurePathInsideRepo(cfg.repoPath, workdir);
 
-    const argv = this.resolveRunnerArgv(cfg.runner.type, cfg.runner.argv);
+    const protocol: RunnerProtocol = cfg.runner.protocol ?? 'raw';
+    const argv = this.resolveRunnerArgv(cfg.runner.type, protocol, cfg.runner.argv);
     const command = argv[0];
     const args = argv.slice(1);
 
-    const runner = new PtyRunner();
-    runner.start({ command, args, cwd: workdir });
+    if (protocol === 'acp') {
+      const runner = new AcpRunner();
+      runner.start({ command, args, cwd: workdir });
 
-    const state: PtyThreadRuntimeState = { workdir, runnerType: cfg.runner.type, argv };
-    this.runtimes.set(threadId, { runner, state, jobs: [], processing: false });
-    return state;
+      // ACP handshake + session creation (one session per thread).
+      // We intentionally keep capabilities minimal to avoid the agent calling back into the server.
+      await runner.request('initialize', {
+        protocolVersion: 1,
+        clientCapabilities: {},
+        clientInfo: { name: 'xpod', version: 'dev' },
+      });
+      const newSession = await runner.request<{ sessionId: string }>('session/new', { cwd: workdir });
+      if (!newSession?.sessionId) {
+        throw new Error('ACP session/new did not return sessionId');
+      }
+
+      const state: PtyThreadRuntimeState = { workdir, runnerType: cfg.runner.type, protocol, argv };
+      this.runtimes.set(threadId, {
+        runner,
+        state,
+        acp: { sessionId: newSession.sessionId },
+        jobs: [],
+        processing: false,
+      });
+      return state;
+    } else {
+      const runner = new PtyRunner();
+      runner.start({ command, args, cwd: workdir });
+
+      const state: PtyThreadRuntimeState = { workdir, runnerType: cfg.runner.type, protocol, argv };
+      this.runtimes.set(threadId, { runner, state, jobs: [], processing: false });
+      return state;
+    }
   }
 
   stop(threadId: string): void {
@@ -108,14 +147,18 @@ export class PtyThreadRuntime {
     try {
       while (rt.jobs.length > 0) {
         const job = rt.jobs.shift()!;
-        await this.runJob(rt.runner, job);
+        if (rt.state.protocol === 'acp') {
+          await this.runJobAcp(rt, job);
+        } else {
+          await this.runJobRaw(rt.runner as PtyRunner, job);
+        }
       }
     } finally {
       rt.processing = false;
     }
   }
 
-  private async runJob(runner: PtyRunner, job: PtyJob): Promise<void> {
+  private async runJobRaw(runner: PtyRunner, job: PtyJob): Promise<void> {
     let idleTimer: NodeJS.Timeout | undefined;
     let done = false;
 
@@ -152,6 +195,54 @@ export class PtyThreadRuntime {
     }
   }
 
+  private async runJobAcp(
+    rt: {
+      runner: PtyRunner | AcpRunner;
+      state: PtyThreadRuntimeState;
+      acp?: { sessionId: string };
+    },
+    job: PtyJob,
+  ): Promise<void> {
+    const runner = rt.runner as AcpRunner;
+    const sessionId = rt.acp?.sessionId;
+    if (!sessionId) {
+      throw new Error('ACP runtime missing sessionId');
+    }
+
+    const onNotification = (method: string, params: any): void => {
+      if (method !== 'session/update') {
+        return;
+      }
+      if (!params || params.sessionId !== sessionId) {
+        return;
+      }
+
+      const update = params.update;
+      if (!update || typeof update.type !== 'string') {
+        return;
+      }
+
+      // Minimal streaming: surface text chunks from agent_message_chunk updates.
+      if (update.type === 'agent_message_chunk') {
+        const contentBlock = update.content?.content;
+        if (contentBlock?.type === 'text' && typeof contentBlock.text === 'string') {
+          job.queue.push(contentBlock.text);
+        }
+      }
+    };
+
+    runner.on('notification', onNotification);
+    try {
+      await runner.request('session/prompt', {
+        sessionId,
+        prompt: [ { type: 'text', text: job.input } ],
+      });
+    } finally {
+      runner.off('notification', onNotification);
+      job.queue.close();
+    }
+  }
+
   private async resolveWorkdir(threadId: string, repoPath: string, worktree: WorktreeSpec): Promise<string> {
     if (worktree.mode === 'existing') {
       if (!fs.existsSync(worktree.path)) {
@@ -181,17 +272,23 @@ export class PtyThreadRuntime {
     return worktreePath;
   }
 
-  private resolveRunnerArgv(type: RunnerType, argv?: string[]): string[] {
+  private resolveRunnerArgv(type: RunnerType, protocol: RunnerProtocol, argv?: string[]): string[] {
     if (argv && argv.length > 0) {
       return argv;
     }
     switch (type) {
       case 'codebuddy':
-        return [ 'codebuddy', '--print', '--output-format', 'stream-json' ];
+        return protocol === 'acp'
+          ? [ 'codebuddy', '--acp' ]
+          : [ 'codebuddy', '--print', '--output-format', 'stream-json' ];
       case 'claude':
-        return [ 'claude' ];
+        return protocol === 'acp'
+          ? [ 'claude-code-acp' ] // from @zed-industries/claude-code-acp
+          : [ 'claude' ];
       case 'codex':
-        return [ 'codex' ];
+        return protocol === 'acp'
+          ? [ 'codex-acp' ] // from @zed-industries/codex-acp
+          : [ 'codex' ];
       default:
         return [ type ];
     }
