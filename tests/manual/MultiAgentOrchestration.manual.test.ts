@@ -85,12 +85,12 @@ describe('Manual: Multi-agent orchestration over ChatKit threads (PTY runtime)',
     const secretaryEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
       params: {
-        xpod: {
-          pty: {
-            repoPath,
-            worktree: { mode: 'existing', path: repoPath },
-            runner: { type: 'codex', argv: [node, agentScriptPath, 'secretary'] },
-          },
+        input: undefined,
+      },
+      metadata: {
+        runtime: {
+          workspace: { type: 'path', rootPath: repoPath },
+          runner: { type: 'codex', allowCustomArgv: true, argv: [node, agentScriptPath, 'secretary'] },
         },
       },
     }, context);
@@ -100,12 +100,12 @@ describe('Manual: Multi-agent orchestration over ChatKit threads (PTY runtime)',
     const claudeEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
       params: {
-        xpod: {
-          pty: {
-            repoPath,
-            worktree: { mode: 'existing', path: repoPath },
-            runner: { type: 'claude', argv: [node, agentScriptPath, 'worker-claude'] },
-          },
+        input: undefined,
+      },
+      metadata: {
+        runtime: {
+          workspace: { type: 'path', rootPath: repoPath },
+          runner: { type: 'claude', allowCustomArgv: true, argv: [node, agentScriptPath, 'worker-claude'] },
         },
       },
     }, context);
@@ -115,12 +115,12 @@ describe('Manual: Multi-agent orchestration over ChatKit threads (PTY runtime)',
     const buddyEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
       params: {
-        xpod: {
-          pty: {
-            repoPath,
-            worktree: { mode: 'existing', path: repoPath },
-            runner: { type: 'codebuddy', argv: [node, agentScriptPath, 'worker-codebuddy'] },
-          },
+        input: undefined,
+      },
+      metadata: {
+        runtime: {
+          workspace: { type: 'path', rootPath: repoPath },
+          runner: { type: 'codebuddy', allowCustomArgv: true, argv: [node, agentScriptPath, 'worker-codebuddy'] },
         },
       },
     }, context);

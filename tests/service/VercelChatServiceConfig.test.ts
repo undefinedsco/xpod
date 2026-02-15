@@ -10,7 +10,7 @@ import type { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 
 describe('VercelChatService provider config fallback', () => {
   const savedEnv: Record<string, string | undefined> = {};
-  const envKeys = ['DEFAULT_API_KEY', 'DEFAULT_PROVIDER', 'DEFAULT_BASE_URL', 'DEFAULT_MODEL'] as const;
+  const envKeys = ['DEFAULT_API_KEY', 'DEFAULT_PROVIDER', 'DEFAULT_API_BASE', 'DEFAULT_MODEL'] as const;
 
   beforeEach(() => {
     for (const key of envKeys) {

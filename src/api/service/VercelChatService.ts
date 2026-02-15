@@ -74,7 +74,7 @@ export class VercelChatService {
 
     if (process.env.DEFAULT_API_KEY) {
       const provider = process.env.DEFAULT_PROVIDER || 'openrouter';
-      const baseURL = process.env.DEFAULT_BASE_URL || this.getDefaultBaseUrl(provider);
+      const baseURL = process.env.DEFAULT_API_BASE || this.getDefaultBaseUrl(provider);
       this.logger.info(`Provider config: baseURL=${baseURL}, proxy=none (source=default-env)`);
       return { baseURL, apiKey: process.env.DEFAULT_API_KEY, proxy: undefined, credentialId: undefined };
     }

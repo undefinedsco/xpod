@@ -13,9 +13,12 @@ export type WorktreeSpec =
   | { mode: 'existing'; path: string }
   | { mode: 'create'; baseRef?: string; branch?: string };
 
+export type WorkspaceSpec =
+  | { type: 'path'; rootPath: string }
+  | { type: 'git'; rootPath: string; worktree: WorktreeSpec };
+
 export interface PtyRuntimeConfig {
-  repoPath: string;
-  worktree: WorktreeSpec;
+  workspace: WorkspaceSpec;
   runner: {
     type: RunnerType;
     /**
@@ -70,8 +73,10 @@ export class PtyThreadRuntime {
       return existing.state;
     }
 
-    const workdir = await this.resolveWorkdir(threadId, cfg.repoPath, cfg.worktree);
-    this.git.ensurePathInsideRepo(cfg.repoPath, workdir);
+    const workdir = await this.resolveWorkdir(threadId, cfg.workspace);
+    if (cfg.workspace.type === 'git') {
+      this.git.ensurePathInsideRepo(cfg.workspace.rootPath, workdir);
+    }
 
     const protocol: RunnerProtocol = cfg.runner.protocol ?? 'raw';
     const argv = this.resolveRunnerArgv(cfg.runner.type, protocol, cfg.runner.argv);
@@ -209,28 +214,41 @@ export class PtyThreadRuntime {
       throw new Error('ACP runtime missing sessionId');
     }
 
+    // For MVP:
+    // - auto-ack common "permission" style requests, so agents don't deadlock
+    // - surface text chunks from session/update notifications
+    const onRequest = (req: any): void => {
+      if (!req || typeof req.method !== 'string') return;
+      if (req.method === 'session/request_permission' || req.method === 'auth/request' || req.method === 'auth/authorize') {
+        const hint = req.params?.message || req.params?.reason || req.params?.url || req.method;
+        job.queue.push(`[AUTH] ${String(hint)}\n`);
+        // Default policy: allow. (Local-only; callers can override by adding a request handler later.)
+        req.respond({ granted: true });
+        return;
+      }
+      req.fail(-32601, `Method not found: ${req.method}`);
+    };
+
     const onNotification = (method: string, params: any): void => {
-      if (method !== 'session/update') {
-        return;
-      }
-      if (!params || params.sessionId !== sessionId) {
-        return;
-      }
+      if (method !== 'session/update') return;
+      if (!params || params.sessionId !== sessionId) return;
 
       const update = params.update;
-      if (!update || typeof update.type !== 'string') {
-        return;
-      }
+      if (!update || typeof update !== 'object') return;
 
-      // Minimal streaming: surface text chunks from agent_message_chunk updates.
-      if (update.type === 'agent_message_chunk') {
-        const contentBlock = update.content?.content;
-        if (contentBlock?.type === 'text' && typeof contentBlock.text === 'string') {
-          job.queue.push(contentBlock.text);
+      // Support both shapes:
+      // - { type: 'agent_message_chunk', ... } (older)
+      // - { sessionUpdate: 'agent_message_chunk', ... } (spec-ish)
+      const kind = (update as any).sessionUpdate ?? (update as any).type;
+      if (kind === 'agent_message_chunk') {
+        const content = (update as any).content?.content ?? (update as any).content;
+        if (content?.type === 'text' && typeof content.text === 'string') {
+          job.queue.push(content.text);
         }
       }
     };
 
+    runner.on('request', onRequest);
     runner.on('notification', onNotification);
     try {
       await runner.request('session/prompt', {
@@ -239,11 +257,23 @@ export class PtyThreadRuntime {
       });
     } finally {
       runner.off('notification', onNotification);
+      runner.off('request', onRequest);
       job.queue.close();
     }
   }
 
-  private async resolveWorkdir(threadId: string, repoPath: string, worktree: WorktreeSpec): Promise<string> {
+  private async resolveWorkdir(threadId: string, workspace: WorkspaceSpec): Promise<string> {
+    if (workspace.type === 'path') {
+      if (!fs.existsSync(workspace.rootPath)) {
+        throw new Error(`workspace.rootPath not found: ${workspace.rootPath}`);
+      }
+      return workspace.rootPath;
+    }
+
+    // workspace.type === 'git'
+    const repoRoot = workspace.rootPath;
+    const worktree = workspace.worktree;
+
     if (worktree.mode === 'existing') {
       if (!fs.existsSync(worktree.path)) {
         throw new Error(`worktree.path not found: ${worktree.path}`);
@@ -251,10 +281,10 @@ export class PtyThreadRuntime {
       return worktree.path;
     }
 
-    await this.git.assertGitRepo(repoPath);
+    await this.git.assertGitRepo(repoRoot);
 
     const rootDirName = this.options.worktreeRootDirName ?? '.xpod-worktrees';
-    const root = path.join(repoPath, rootDirName);
+    const root = path.join(repoRoot, rootDirName);
     const worktreePath = path.join(root, threadId);
 
     if (fs.existsSync(worktreePath)) {
@@ -263,7 +293,7 @@ export class PtyThreadRuntime {
 
     const baseRef = worktree.baseRef ?? 'main';
     await this.git.createWorktree({
-      repoPath,
+      repoPath: repoRoot,
       worktreePath,
       baseRef,
       branch: worktree.branch,

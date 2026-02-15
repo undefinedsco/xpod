@@ -10,8 +10,7 @@ describe('ACP Thread Runtime', () => {
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-echo-agent.js');
 
     await rt.ensureStarted('thread-acp-test', {
-      repoPath,
-      worktree: { mode: 'existing', path: workdir },
+      workspace: { type: 'path', rootPath: workdir },
       runner: {
         type: 'codex',
         protocol: 'acp',
@@ -27,4 +26,3 @@ describe('ACP Thread Runtime', () => {
     expect(out).toBe('echo:hello');
   });
 });
-

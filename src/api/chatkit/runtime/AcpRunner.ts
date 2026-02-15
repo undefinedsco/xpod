@@ -162,14 +162,26 @@ export class AcpRunner extends EventEmitter {
     }
 
     if ('method' in msg && typeof msg.method === 'string') {
-      // If the agent sends a request (has id), we don't support server->client methods yet.
+      // Agent -> client request (has id).
       if ('id' in msg && typeof (msg as any).id === 'number') {
         const id = (msg as any).id as number;
-        this.writeResponse({
-          jsonrpc: '2.0',
+        const request = {
           id,
-          error: { code: -32601, message: `Method not found: ${msg.method}` },
-        });
+          method: msg.method,
+          params: (msg as any).params,
+          respond: (result: unknown): void => {
+            this.writeResponse({ jsonrpc: '2.0', id, result });
+          },
+          fail: (code: number, message: string, data?: unknown): void => {
+            this.writeResponse({ jsonrpc: '2.0', id, error: { code, message, data } });
+          },
+        };
+
+        if (this.listenerCount('request') > 0) {
+          this.emit('request', request);
+        } else {
+          request.fail(-32601, `Method not found: ${msg.method}`);
+        }
         return;
       }
 
@@ -185,4 +197,3 @@ export class AcpRunner extends EventEmitter {
     this.proc.stdin.write(`${JSON.stringify(res)}\n`);
   }
 }
-

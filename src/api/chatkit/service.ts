@@ -30,7 +30,7 @@ import {
   nowTimestamp,
   extractUserMessageText,
 } from './types';
-import { PtyThreadRuntime, type PtyRuntimeConfig } from './runtime/PtyThreadRuntime';
+import { PtyThreadRuntime, type PtyRuntimeConfig, type RunnerType } from './runtime/PtyThreadRuntime';
 
 /**
  * AI Provider interface for generating responses
@@ -60,7 +60,7 @@ export interface ChatKitServiceOptions<TContext = StoreContext> {
   systemPrompt?: string;
   /**
    * Enable xpod PTY runtime threads (local-only feature).
-   * When enabled, thread.metadata.xpod.pty controls the runner/worktree.
+   * When enabled, thread.metadata.runtime controls the runner/worktree.
    */
   enablePtyRuntime?: boolean;
 }
@@ -159,7 +159,7 @@ export class ChatKitService<TContext = StoreContext> {
   private async *processStreaming(request: StreamingReq, context: TContext): AsyncIterable<ThreadStreamEvent> {
     switch (request.type) {
       case 'threads.create':
-        yield* this.handleThreadsCreate(request.params, context);
+        yield* this.handleThreadsCreate(request.params, context, request.metadata);
         break;
       case 'threads.add_user_message':
         yield* this.handleThreadsAddUserMessage(request.params, context);
@@ -208,8 +208,9 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.create - Create a new thread and optionally respond to initial message
    */
   private async *handleThreadsCreate(
-    params: { input?: { content: UserMessageContent[]; inference_options?: any }; xpod?: any },
+    params: { input?: { content: UserMessageContent[]; inference_options?: any } },
     context: TContext,
+    metadata?: Record<string, unknown>,
   ): AsyncIterable<ThreadStreamEvent> {
     // Create new thread
     const threadId = this.store.generateThreadId(context);
@@ -220,7 +221,7 @@ export class ChatKitService<TContext = StoreContext> {
       status: { type: 'active' },
       created_at: now,
       updated_at: now,
-      metadata: params?.xpod ? { xpod: params.xpod } : undefined,
+      metadata: metadata && Object.keys(metadata).length > 0 ? metadata : undefined,
     };
 
     await this.store.saveThread(thread, context);
@@ -582,21 +583,27 @@ export class ChatKitService<TContext = StoreContext> {
     if (!this.enablePtyRuntime) {
       return null;
     }
-    const xpod = (thread.metadata as any)?.xpod;
-    const pty = xpod?.pty;
-    if (!pty) {
+    const runtime = (thread.metadata as any)?.runtime;
+    if (!runtime) {
       return null;
     }
-    if (!pty.repoPath || !pty.worktree || !pty.runner) {
-      throw new Error('Invalid thread.metadata.xpod.pty: repoPath/worktree/runner are required');
+    if (!runtime.workspace || !runtime.runner) {
+      throw new Error('Invalid thread.metadata.runtime: workspace/runner are required');
     }
-    // Default to ACP for CLI runtimes unless explicitly requested.
-    // This keeps "thread metadata is enough" and avoids extra "smart input" plumbing.
-    const protocol = pty.runner.protocol ?? 'acp';
+    const runnerType = runtime.runner.type as RunnerType;
+    if (!runnerType) {
+      throw new Error('Invalid thread.metadata.runtime.runner.type');
+    }
+    const protocol = runtime.runner.protocol ?? 'acp';
+    // Keep runner args server-owned by default, unless explicitly allowed.
+    // This avoids exposing per-runner argv details to end users.
+    const allowCustomArgv = runtime.runner.allowCustomArgv === true;
+    const argv = allowCustomArgv ? runtime.runner.argv : undefined;
     return {
-      ...pty,
+      ...runtime,
       runner: {
-        ...pty.runner,
+        ...runtime.runner,
+        argv,
         protocol,
       },
     } as PtyRuntimeConfig;
