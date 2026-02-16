@@ -193,6 +193,8 @@ export class SubdomainClient {
     subdomain: string;
     ipAddress?: string;
     ipv6Address?: string;
+    mode?: 'direct' | 'tunnel';
+    tunnelProvider?: string;
   }): Promise<DdnsAllocationResult> {
     const url = `${this.cloudApiEndpoint}/api/v1/ddns/allocate`;
     const response = await this.fetch(url, {
@@ -202,6 +204,8 @@ export class SubdomainClient {
         nodeId: this.nodeId,
         ipAddress: options.ipAddress,
         ipv6Address: options.ipv6Address,
+        mode: options.mode,
+        tunnelProvider: options.tunnelProvider,
       }),
     });
     return response as DdnsAllocationResult;
@@ -213,6 +217,8 @@ export class SubdomainClient {
   async updateDdns(subdomain: string, options: {
     ipAddress?: string;
     ipv6Address?: string;
+    mode?: 'direct' | 'tunnel';
+    tunnelProvider?: string;
   }): Promise<DdnsUpdateResult> {
     const url = `${this.cloudApiEndpoint}/api/v1/ddns/${encodeURIComponent(subdomain)}`;
     const response = await this.fetch(url, {
@@ -220,6 +226,8 @@ export class SubdomainClient {
       body: JSON.stringify({
         ip: options.ipAddress,
         ipv6Address: options.ipv6Address,
+        mode: options.mode,
+        tunnelProvider: options.tunnelProvider,
       }),
     });
     return response as DdnsUpdateResult;

@@ -321,7 +321,7 @@ CREATE TABLE edge_node (
 | `CSS_*` | Community Solid Server 原生配置 | `CSS_BASE_URL`, `CSS_PORT` |
 | `XPOD_*` | XPOD 扩展功能配置 | `XPOD_EDITION`, `XPOD_NODE_TOKEN` |
 | `CLOUDFLARE_*` | Cloudflare 服务配置 | `CLOUDFLARE_TUNNEL_TOKEN` |
-| `SAKURA_*` | SakuraFRP 服务配置 | `SAKURA_TOKEN` |
+| `SAKURA_*` | SakuraFRP 服务配置 | `SAKURA_TUNNEL_TOKEN` |
 
 ### 9.2 Cloud 模式配置
 
@@ -370,7 +370,7 @@ CSS_PORT=5737
 CLOUDFLARE_TUNNEL_TOKEN=xxx
 
 # 方案3: SakuraFRP
-SAKURA_TOKEN=xxx
+SAKURA_TUNNEL_TOKEN=xxx
 ```
 
 ### 9.4 Local 独立式配置
@@ -405,8 +405,8 @@ function detectNetworkAccess() {
   }
 
   // 3. SakuraFRP
-  if (process.env.SAKURA_TOKEN) {
-    return { mode: 'sakura', token: process.env.SAKURA_TOKEN };
+  if (process.env.SAKURA_TUNNEL_TOKEN) {
+    return { mode: 'sakura', token: process.env.SAKURA_TUNNEL_TOKEN };
   }
 
   // 4. 自动检测: 公网 IP / IPv6 / UPnP
