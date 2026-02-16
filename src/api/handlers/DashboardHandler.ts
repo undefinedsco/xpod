@@ -62,7 +62,7 @@ export function registerDashboardRoutes(
 
   // 静态资源处理器
   const staticHandler: RouteHandler = async (
-    _req: AuthenticatedRequest,
+    req: AuthenticatedRequest,
     res: ServerResponse,
     params: Record<string, string>,
   ) => {
@@ -110,6 +110,13 @@ export function registerDashboardRoutes(
       res.statusCode = 200;
       res.setHeader('Content-Type', mimeType);
       res.setHeader('Cache-Control', ext === '.html' ? 'no-cache' : 'public, max-age=31536000');
+
+      // For HEAD requests, only return headers.
+      if ((req.method ?? 'GET').toUpperCase() == 'HEAD') {
+        res.end();
+        return;
+      }
+
       res.end(content);
     } catch (error) {
       console.error(`[Dashboard] Error reading file: ${fullPath}`, error);
@@ -124,4 +131,9 @@ export function registerDashboardRoutes(
   server.get('/dashboard', redirectHandler, { public: true });
   server.get('/dashboard/', staticHandler, { public: true });
   server.get('/dashboard/*path', staticHandler, { public: true });
+
+  // HEAD support for tooling (e.g. curl -I) and legacy health checks.
+  server.route('HEAD', '/dashboard', redirectHandler, { public: true });
+  server.route('HEAD', '/dashboard/', staticHandler, { public: true });
+  server.route('HEAD', '/dashboard/*path', staticHandler, { public: true });
 }

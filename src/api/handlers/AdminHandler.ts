@@ -12,7 +12,14 @@ import { createReadStream, statSync } from 'fs';
 import { createInterface } from 'readline';
 
 const CONFIG_DIR = path.resolve(process.cwd(), 'config');
-const ENV_FILE = path.resolve(process.cwd(), '.env.local');
+
+function getEnvFilePath(): string {
+  const envPath = process.env.XPOD_ENV_PATH;
+  if (envPath && envPath.trim()) {
+    return path.resolve(envPath);
+  }
+  return path.resolve(process.cwd(), '.env.local');
+}
 
 interface ConfigFile {
   name: string;
@@ -27,12 +34,12 @@ interface EnvConfig {
 /**
  * Read .env.local file and parse it
  */
-function readEnvFile(): EnvConfig {
+function readEnvFile(filePath: string): EnvConfig {
   const config: EnvConfig = {};
-  if (!fs.existsSync(ENV_FILE)) {
+  if (!fs.existsSync(filePath)) {
     return config;
   }
-  const content = fs.readFileSync(ENV_FILE, 'utf-8');
+  const content = fs.readFileSync(filePath, 'utf-8');
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -53,7 +60,7 @@ function readEnvFile(): EnvConfig {
 /**
  * Write .env.local file
  */
-function writeEnvFile(config: EnvConfig): void {
+function writeEnvFile(filePath: string, config: EnvConfig): void {
   const lines: string[] = [];
   for (const [key, value] of Object.entries(config)) {
     // Quote values that contain spaces or special characters
@@ -61,7 +68,7 @@ function writeEnvFile(config: EnvConfig): void {
     const quotedValue = needsQuotes ? `"${value}"` : value;
     lines.push(`${key}=${quotedValue}`);
   }
-  fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n');
+  fs.writeFileSync(filePath, lines.join('\n') + '\n');
 }
 
 /**
@@ -85,6 +92,53 @@ function listConfigFiles(): ConfigFile[] {
 /**
  * Send JSON response helper
  */
+
+function isPrivateIp(host: string): boolean {
+  if (host === 'localhost' || host === '::1') return true;
+  if (host.startsWith('127.')) return true;
+  if (host.startsWith('10.')) return true;
+  if (host.startsWith('192.168.')) return true;
+  const m = host.match(/^172\.(\d+)\./);
+  if (m) {
+    const second = Number(m[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  return false;
+}
+
+async function fetchPublicIp(): Promise<string | null> {
+  const endpoints = [
+    'https://api.ipify.org?format=json',
+    'https://ifconfig.me/ip',
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) {
+        continue;
+      }
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const json = await res.json() as { ip?: string };
+        const ip = json.ip?.trim();
+        if (ip) {
+          return ip;
+        }
+      } else {
+        const ip = (await res.text()).trim();
+        if (ip) {
+          return ip;
+        }
+      }
+    } catch {
+      // ignore and try next endpoint
+    }
+  }
+
+  return null;
+}
+
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
@@ -120,7 +174,8 @@ export function registerAdminRoutes(server: ApiServer): void {
     res: ServerResponse,
   ) => {
     try {
-      const env = readEnvFile();
+      const envFilePath = getEnvFilePath();
+      const env = readEnvFile(envFilePath);
       const configs = listConfigFiles();
 
       sendJson(res, 200, {
@@ -147,7 +202,8 @@ export function registerAdminRoutes(server: ApiServer): void {
     res: ServerResponse,
   ) => {
     try {
-      const env = readEnvFile();
+      const envFilePath = getEnvFilePath();
+      const env = readEnvFile(envFilePath);
       sendJson(res, 200, {
         env,
         configFiles: listConfigFiles(),
@@ -169,7 +225,8 @@ export function registerAdminRoutes(server: ApiServer): void {
 
       if (body.env) {
         // Merge with existing config
-        const currentEnv = readEnvFile();
+        const envFilePath = getEnvFilePath();
+        const currentEnv = readEnvFile(envFilePath);
         const newEnv = { ...currentEnv, ...body.env };
 
         // Remove keys set to null or empty string
@@ -179,7 +236,7 @@ export function registerAdminRoutes(server: ApiServer): void {
           }
         }
 
-        writeEnvFile(newEnv);
+        writeEnvFile(envFilePath, newEnv);
         logger.log('[Admin] Configuration updated');
       }
 
@@ -384,9 +441,104 @@ export function registerAdminRoutes(server: ApiServer): void {
     }
   };
 
+
+  // GET /api/admin/public-ip - Detect outbound public IP and compare with CSS_BASE_URL
+  const publicIpHandler: RouteHandler = async (
+    req: AuthenticatedRequest,
+    res: ServerResponse,
+  ) => {
+    try {
+      const envFilePath = getEnvFilePath();
+      const env = readEnvFile(envFilePath);
+      const parsedUrl = new URL(req.url ?? '/', 'http://localhost');
+      const baseUrl = parsedUrl.searchParams.get('baseUrl') || env.CSS_BASE_URL || process.env.CSS_BASE_URL || '';
+
+      const ip = await fetchPublicIp();
+
+      if (!baseUrl) {
+        sendJson(res, 200, {
+          status: 'unknown',
+          publicIp: ip,
+          baseUrl,
+          detail: ip ? '未配置 Base URL，无法判断是否可直连。' : '未配置 Base URL，且无法获取公网 IP。',
+        });
+        return;
+      }
+
+      let hostname = '';
+      try {
+        hostname = new URL(baseUrl).hostname;
+      } catch {
+        sendJson(res, 200, {
+          status: 'unknown',
+          publicIp: ip,
+          baseUrl,
+          detail: 'Base URL 格式不合法，无法判断。',
+        });
+        return;
+      }
+
+      if (isPrivateIp(hostname)) {
+        sendJson(res, 200, {
+          status: 'fail',
+          publicIp: ip,
+          baseUrl,
+          detail: 'Base URL 为本地/内网地址，默认不可直连。',
+        });
+        return;
+      }
+
+      // If hostname is an IP, compare directly.
+      const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
+      if (isIpLiteral) {
+        if (!ip) {
+          sendJson(res, 200, {
+            status: 'unknown',
+            publicIp: null,
+            baseUrl,
+            detail: '无法获取公网出口 IP，无法比对。',
+          });
+          return;
+        }
+        const ok = hostname === ip;
+        sendJson(res, 200, {
+          status: ok ? 'pass' : 'fail',
+          publicIp: ip,
+          baseUrl,
+          detail: ok
+            ? 'Base URL IP 与公网出口 IP 一致，默认可直连。'
+            : 'Base URL IP 与公网出口 IP 不一致，默认不可直连。',
+        });
+        return;
+      }
+
+      // Domain name: we can only do best-effort.
+      if (!ip) {
+        sendJson(res, 200, {
+          status: 'unknown',
+          publicIp: null,
+          baseUrl,
+          detail: '已配置域名，但无法获取公网出口 IP，无法进一步判断。',
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        status: 'pass',
+        publicIp: ip,
+        baseUrl,
+        detail: '已配置域名，默认可直连（仍需确保端口映射/防火墙放行）。',
+      });
+    } catch (error) {
+      logger.error('[Admin] Public IP check error:', error);
+      sendJson(res, 500, { error: 'Failed to detect public ip' });
+    }
+  };
+
   // Register routes - public for now (TODO: add auth for production)
   server.get('/api/admin/status', statusHandler, { public: true });
   server.get('/api/admin/config', getConfigHandler, { public: true });
+  server.get('/api/admin/public-ip', publicIpHandler, { public: true });
   server.put('/api/admin/config', updateConfigHandler, { public: true });
   server.post('/api/admin/restart', restartHandler, { public: true });
   server.get('/api/admin/logs', getLogsHandler, { public: true });

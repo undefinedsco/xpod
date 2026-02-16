@@ -5,7 +5,13 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from '@/components/ui/Select';
 import { Trash2, Download, Pause, Play } from 'lucide-react';
 import { clsx } from 'clsx';
 import { getLogs, subscribeLogs, type LogEntry } from '@/api/admin';
@@ -134,11 +140,11 @@ export function LogsPage() {
     <div className="p-8 h-full flex flex-col">
       <div className="flex items-center justify-between mb-6 gap-4">
         <h1 className="type-h1 shrink-0">日志</h1>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
           {/* 模块筛选 */}
-          <Select value={sourceFilter} onValueChange={setSourceFilter}>
-            <SelectTrigger className="w-28 h-8 text-sm">
-              <SelectValue placeholder="模块" />
+          <Select value={sourceFilter} onValueChange={(value) => setSourceFilter(value)}>
+            <SelectTrigger className="w-40 h-8 text-sm shrink-0">
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部模块</SelectItem>
@@ -147,11 +153,11 @@ export function LogsPage() {
               <SelectItem value="api">API</SelectItem>
             </SelectContent>
           </Select>
-          
+
           {/* 日志等级筛选 */}
-          <Select value={levelFilter} onValueChange={setLevelFilter}>
-            <SelectTrigger className="w-28 h-8 text-sm">
-              <SelectValue placeholder="等级" />
+          <Select value={levelFilter} onValueChange={(value) => setLevelFilter(value)}>
+            <SelectTrigger className="w-40 h-8 text-sm shrink-0">
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部等级</SelectItem>
@@ -189,9 +195,9 @@ export function LogsPage() {
                 暂无日志
               </div>
             ) : (
-              <div className="p-4 space-y-1">
+              <div className="p-4 space-y-1 min-w-max">
                 {filteredLogs.map((log, index) => (
-                  <div key={index} className="flex gap-2 hover:bg-gray-100 px-2 py-0.5 rounded">
+                  <div key={index} className="flex gap-2 hover:bg-gray-100 px-2 py-0.5 rounded w-max min-w-full">
                     <span className="text-gray-400 shrink-0 w-20">
                       {formatTime(log.timestamp)}
                     </span>
@@ -202,7 +208,7 @@ export function LogsPage() {
                       [{log.source}]
                     </span>
                     <span 
-                      className="text-gray-700 break-all" 
+                      className="text-gray-700 whitespace-pre" 
                       dangerouslySetInnerHTML={{ __html: ansiConverter.toHtml(log.message) }}
                     />
                   </div>

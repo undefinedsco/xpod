@@ -73,8 +73,8 @@ export interface ApiContainerConfig {
   /** Cloudflare Tunnel Token (local 托管式/自管式，启动 cloudflared) */
   cloudflareTunnelToken?: string;
 
-  /** SakuraFRP Token (local 托管式/自管式，启动 frpc) */
-  sakuraToken?: string;
+  /** SakuraFRP Tunnel Token (SAKURA_TUNNEL_TOKEN；local 托管式/自管式，启动 frpc) */
+  sakuraTunnelToken?: string;
 
   /** 是否接受 Edge 节点注册 (cloud 模式) */
   edgeNodesEnabled?: boolean;

@@ -109,7 +109,8 @@ export function loadConfigFromEnv(): ApiContainerConfig {
 
     // 隧道配置
     cloudflareTunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN,
-    sakuraToken: process.env.SAKURA_TOKEN,
+    // Prefer SAKURA_TUNNEL_TOKEN; keep SAKURA_TOKEN for backward compatibility.
+    sakuraTunnelToken: process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN,
 
     // Edge 节点管理 (cloud 模式)
     edgeNodesEnabled: process.env.XPOD_EDGE_NODES_ENABLED === 'true',
