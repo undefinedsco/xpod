@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: xpod-cloud
+  namespace: xpod-cloud
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: "128m"
+spec:
+  tls:
+    - hosts:
+        - pods.example.com
+      secretName: xpod-cloud-tls
+  rules:
+    - host: pods.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: xpod-cloud
+                port:
+                  name: http

@@ -72,3 +72,6 @@ openspec/
 
 # Binary libraries (generated during build)
 lib/
+
+# Runtime generated config
+.xpod/runtime/

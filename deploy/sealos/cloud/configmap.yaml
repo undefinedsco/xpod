@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xpod-cloud-config
+  namespace: xpod-cloud
+data:
+  NODE_ENV: production
+  XPOD_EDITION: cloud
+  XPOD_PORT: "3000"
+  CSS_PORT: "6300"
+  API_PORT: "6301"
+  CSS_LOGGING_LEVEL: info
+
+  # Replace with your public entry domain (must be HTTPS in production).
+  CSS_BASE_URL: https://pods.example.com
+
+  # Optional cloud features.
+  XPOD_EDGE_NODES_ENABLED: "true"
+  XPOD_SUBDOMAIN_ENABLED: "true"
+  XPOD_DDNS_DOMAIN: example.com
+
+  # Example: if you expose mail in cloud profile, fill these values.
+  # CSS_EMAIL_CONFIG_HOST: smtp.example.com
+  # CSS_EMAIL_CONFIG_PORT: "465"
+  # CSS_EMAIL_CONFIG_AUTH_USER: no-reply@example.com

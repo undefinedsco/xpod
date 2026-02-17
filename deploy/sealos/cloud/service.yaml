@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: xpod-cloud
+  namespace: xpod-cloud
+  labels:
+    app: xpod-cloud
+spec:
+  selector:
+    app: xpod-cloud
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  type: ClusterIP
