@@ -10,3 +10,6 @@
 !static/
 !templates/
 !types/
+
+# Explicitly excluded (not needed in image)
+.github/

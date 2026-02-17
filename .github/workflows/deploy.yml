@@ -1,0 +1,86 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: "Image tag to deploy (e.g. v0.1.0, sha-abc1234)"
+        required: false
+        default: latest
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - all
+          - cn
+          - sg
+        default: all
+
+jobs:
+  deploy-cn:
+    name: Deploy to China (Guangzhou)
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.environment == 'all' || inputs.environment == 'cn'))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_CN }}" | base64 -d > ~/.kube/config
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.image-tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update deployment image
+        run: |
+          kubectl set image deployment/xpod-cloud \
+            xpod=ghcr.io/undefinedsco/xpod:${{ steps.tag.outputs.tag }} \
+            -n xpod-cloud
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/xpod-cloud -n xpod-cloud --timeout=300s
+
+  deploy-sg:
+    name: Deploy to Singapore
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.environment == 'all' || inputs.environment == 'sg'))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_SG }}" | base64 -d > ~/.kube/config
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.image-tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update deployment image
+        run: |
+          kubectl set image deployment/xpod-cloud \
+            xpod=ghcr.io/undefinedsco/xpod:${{ steps.tag.outputs.tag }} \
+            -n xpod-cloud
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/xpod-cloud -n xpod-cloud --timeout=300s

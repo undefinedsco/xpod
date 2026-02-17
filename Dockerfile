@@ -21,6 +21,10 @@ RUN yarn build:ts && yarn build:components
 # Runtime
 FROM node:22-alpine
 
+LABEL org.opencontainers.image.source="https://github.com/undefinedsco/xpod"
+LABEL org.opencontainers.image.description="Xpod - Solid Pod Server"
+LABEL org.opencontainers.image.licenses="MIT"
+
 RUN apk add --no-cache curl
 WORKDIR /app
 
