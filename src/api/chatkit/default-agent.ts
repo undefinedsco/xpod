@@ -257,7 +257,7 @@ function normalizeClaudeBaseUrl(baseUrl: string): string {
 function buildClaudeEnv(config: DefaultAgentConfig, context: DefaultAgentContext): NodeJS.ProcessEnv {
   const provider = (config.provider || '').toLowerCase();
   const model = (config.model || '').trim();
-  const baseUrl = process.env.DEFAULT_BASE_URL || getDefaultBaseUrl(config.provider);
+  const baseUrl = process.env.DEFAULT_API_BASE || getDefaultBaseUrl(config.provider);
   const isOpenRouterLike = provider === 'openrouter' || baseUrl.includes('openrouter.ai');
 
   const env: NodeJS.ProcessEnv = {

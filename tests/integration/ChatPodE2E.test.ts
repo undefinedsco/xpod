@@ -11,6 +11,8 @@ import { Credential } from '../../src/credential/schema/tables';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
+// Business env vars (preferred):
+// - DEFAULT_API_KEY / DEFAULT_API_BASE / DEFAULT_MODEL
 const AI_API_KEY = process.env.DEFAULT_API_KEY;
 const AI_MODEL = process.env.DEFAULT_MODEL || 'stepfun/step-3.5-flash:free';
 
@@ -30,11 +32,15 @@ function resolveDefaultBaseUrl(provider?: string): string {
   return urls[normalized] || urls.openrouter;
 }
 
-const AI_BASE_URL = process.env.DEFAULT_BASE_URL || resolveDefaultBaseUrl(process.env.DEFAULT_PROVIDER);
+// Default to OpenRouter since the default E2E model id is OpenRouter-style.
+// Allow overriding baseUrl explicitly when testing other providers.
+const AI_BASE_URL =
+  process.env.DEFAULT_API_BASE ||
+  resolveDefaultBaseUrl(process.env.DEFAULT_PROVIDER);
 const shouldRun = RUN_INTEGRATION_TESTS && Boolean(AI_API_KEY);
 const suite = shouldRun ? describe : describe.skip;
 
-const solidBaseUrl = (process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
+const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
 
 suite('Chat Pod E2E Integration (Real Network)', () => {
   let server: ApiServer;

@@ -48,3 +48,13 @@ export type { AgentInstance, AgentConfig } from './AgentManager';
 // IndexAgent
 export { IndexAgent, indexAgent } from './IndexAgent';
 export type { IndexLevel, IndexAgentOptions } from './IndexAgent';
+
+// Agent Config (per-agent AGENT.md + .meta)
+export { parseAgentMd, AgentMetaSchema, resolveAgentConfig } from './config';
+export type {
+  AgentFrontmatter,
+  AgentMcpServerDef,
+  AgentMetaRecord,
+  ParsedAgentMd,
+  ResolvedAgentConfig,
+} from './config';

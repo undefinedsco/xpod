@@ -9,7 +9,7 @@
 import { Session } from '@inrupt/solid-client-authn-node';
 
 const API_BASE = process.env.API_BASE_URL ?? 'http://localhost:3001';
-const CSS_BASE = process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:3000/';
+const CSS_BASE = process.env.CSS_BASE_URL ?? 'http://localhost:3000/';
 const clientId = process.env.SOLID_CLIENT_ID;
 const clientSecret = process.env.SOLID_CLIENT_SECRET;
 const oidcIssuer = process.env.SOLID_OIDC_ISSUER ?? CSS_BASE;

@@ -8,16 +8,16 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 /**
  * Service Endpoints Integration Tests
  * 
- * These tests connect to an external running server via CSS_BASE_URL
+ * These tests connect to a running integration server.
  * Requires: yarn test:setup (to generate client credentials)
  * 
  * Environment variables:
- *   CSS_BASE_URL - Server base URL (default: http://localhost:3000)
+ *   CSS_BASE_URL - Server base URL (default: http://localhost:5739)
  *   SOLID_CLIENT_ID - Client ID for authentication
  *   SOLID_CLIENT_SECRET - Client Secret for authentication
  */
 
-const BASE_URL = (process.env.CSS_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
+const BASE_URL = (process.env.CSS_BASE_URL || 'http://localhost:5739').replace(/\/$/, '');
 const CLIENT_ID = process.env.SOLID_CLIENT_ID;
 const CLIENT_SECRET = process.env.SOLID_CLIENT_SECRET;
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
@@ -40,7 +40,7 @@ suite('Service Endpoints Integration', () => {
       console.log('✓ Server is reachable');
     } catch (error) {
       console.error(`✗ Failed to connect to server at ${BASE_URL}`);
-      console.error('  Please start the server first: yarn local');
+      console.error('  Please start integration server first: yarn test:integration:lite');
       throw error;
     }
 
@@ -174,8 +174,8 @@ suite('Service Endpoints Integration', () => {
   describe('Dashboard Integration', () => {
     it('should serve dashboard', async () => {
       const response = await fetch(`${BASE_URL}/dashboard/`);
-      // Dashboard UI may be intentionally absent in some deployments.
-      expect([200, 302, 404]).toContain(response.status);
+      // Dashboard may be disabled or protected in different deployments.
+      expect([200, 302, 401, 404]).toContain(response.status);
     });
 
     it('should allow dashboard to access service endpoints', async () => {
