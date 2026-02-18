@@ -24,7 +24,7 @@ export class GatewayProxy {
   private server: http.Server;
   private targets: { css?: string; api?: string } = {};
 
-  constructor(private port: number, private supervisor: Supervisor) {
+  constructor(private port: number, private supervisor: Supervisor, private bindHost = '0.0.0.0') {
     this.proxy = httpProxy.createProxyServer({
       xfwd: true,
     });
@@ -58,8 +58,20 @@ export class GatewayProxy {
   }
 
   public start(): void {
-    this.server.listen(this.port, '0.0.0.0', () => {
-      this.logger.info(`Listening on http://0.0.0.0:${this.port}`);
+    this.server.listen(this.port, this.bindHost, () => {
+      this.logger.info(`Listening on http://${this.bindHost}:${this.port}`);
+    });
+  }
+
+  public stop(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.server.close((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve();
+      });
     });
   }
 
@@ -109,6 +121,13 @@ export class GatewayProxy {
     }
 
     // 2. API Server Routing (/v1 or /api)
+
+    // 2a. Dashboard UI is served by API server under /dashboard/*
+    if ((url === '/dashboard' || url.startsWith('/dashboard/')) && this.targets.api) {
+      this.proxy.web(req, res, { target: this.targets.api });
+      return;
+    }
+
     if ((url.startsWith('/v1/') || url.startsWith('/api/')) && this.targets.api) {
       this.proxy.web(req, res, { target: this.targets.api });
       return;

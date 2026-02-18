@@ -20,7 +20,7 @@ import type {
  * SakuraFRP Tunnel Provider 配置
  */
 export interface SakuraFrpTunnelProviderOptions {
-  /** SakuraFRP Token (从环境变量 SAKURA_TOKEN 获取) */
+  /** SakuraFRP Token (从环境变量 SAKURA_TUNNEL_TOKEN 获取) */
   token: string;
 
   /** frpc 可执行文件路径 (默认 'frpc') */

@@ -28,7 +28,14 @@ export function registerLocalServices(
 ): void {
   const config = container.resolve('config') as ApiContainerConfig;
 
-  const { cloudApiEndpoint, nodeId, nodeToken, cloudflareTunnelToken, sakuraToken, subdomain: subdomainConfig } = config;
+  const {
+    cloudApiEndpoint,
+    nodeId,
+    nodeToken,
+    cloudflareTunnelToken,
+    sakuraTunnelToken,
+    subdomain: subdomainConfig,
+  } = config;
 
   // 1. 注册 Tunnel Provider (优先 Cloudflare，其次 SakuraFRP)
   if (cloudflareTunnelToken) {
@@ -40,15 +47,15 @@ export function registerLocalServices(
       }).singleton(),
     });
     console.log('[Local] Tunnel provider registered (CLOUDFLARE_TUNNEL_TOKEN configured)');
-  } else if (sakuraToken) {
+  } else if (sakuraTunnelToken) {
     container.register({
       localTunnelProvider: asFunction(() => {
         return new SakuraFrpTunnelProvider({
-          token: sakuraToken,
+          token: sakuraTunnelToken,
         });
       }).singleton(),
     });
-    console.log('[Local] Tunnel provider registered (SAKURA_TOKEN configured)');
+    console.log('[Local] Tunnel provider registered (SAKURA_TUNNEL_TOKEN configured)');
   }
 
   // 2. 自适应 DNS 管理 (Self-Hosted DNS)
@@ -185,7 +192,7 @@ export function registerLocalServices(
     console.log(`[Local] Using Cloud IdP: ${config.oidcIssuer}`);
   }
 
-  if (!cloudflareTunnelToken) {
+  if (!cloudflareTunnelToken && !sakuraTunnelToken) {
     console.log('[Local] Note: No tunnel token configured, assuming direct network access');
   }
 }

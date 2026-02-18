@@ -21,6 +21,7 @@ import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
+import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import * as path from 'node:path';
@@ -151,6 +152,14 @@ function registerLocalRoutes(
 ): void {
   // Admin API (配置管理、重启)
   registerAdminRoutes(server);
+
+  // DDNS status (托管式 Local 模式)
+  try {
+    const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;
+    registerAdminDdnsRoutes(server, { ddnsManager });
+  } catch {
+    // ignore
+  }
 
   // 子域名客户端 API (通过 SubdomainClient 调用 Cloud)
   try {

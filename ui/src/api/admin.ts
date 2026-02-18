@@ -43,6 +43,13 @@ export interface AdminConfig {
   }>;
 }
 
+export interface PublicIpCheckResult {
+  status: 'pass' | 'fail' | 'unknown';
+  publicIp: string | null;
+  baseUrl: string;
+  detail: string;
+}
+
 const API_BASE = '/api/admin';
 
 /**
@@ -71,6 +78,19 @@ export async function getAdminConfig(): Promise<AdminConfig | null> {
     }
   } catch (e) {
     console.error('Failed to get admin config:', e);
+  }
+  return null;
+}
+
+export async function getPublicIpCheck(baseUrl?: string): Promise<PublicIpCheckResult | null> {
+  try {
+    const qs = baseUrl ? '?baseUrl=' + encodeURIComponent(baseUrl) : '';
+    const res = await fetch(API_BASE + '/public-ip' + qs);
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.error('Failed to get public ip check:', e);
   }
   return null;
 }
@@ -178,3 +198,37 @@ export function subscribeLogs(
   };
 }
 
+
+export interface DdnsStatus {
+  enabled: boolean;
+  allocated: boolean;
+  fqdn: string | null;
+  baseUrl: string;
+  mode: 'direct' | 'tunnel' | 'unknown';
+  tunnelProvider: string;
+  ipv4: string | null;
+  ipv6: string | null;
+  detail: string;
+}
+
+export async function getDdnsStatus(): Promise<DdnsStatus | null> {
+  try {
+    const res = await fetch(`${API_BASE}/ddns`);
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.error('Failed to get ddns status:', e);
+  }
+  return null;
+}
+
+export async function refreshDdnsStatus(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/ddns/refresh`, { method: 'POST' });
+    return res.ok;
+  } catch (e) {
+    console.error('Failed to refresh ddns status:', e);
+    return false;
+  }
+}

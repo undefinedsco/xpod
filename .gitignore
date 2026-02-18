@@ -65,7 +65,7 @@ debug-*.ts
 debugging_report.md
 
 # Components.js generated files (entire directory is build output)
-components/
+/components/
 
 # Local config and specs
 openspec/
