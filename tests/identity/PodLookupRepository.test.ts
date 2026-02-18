@@ -166,7 +166,7 @@ describe('PodLookupRepository', () => {
       const repo = new PodLookupRepository(db);
       const result = await repo.getMigrationStatus('non-existent');
 
-      expect(result).toEqual({ podId: 'non-existent' });
+      expect(result).toBeUndefined();
     });
 
     it('returns status with null migration when not migrating', async () => {
@@ -208,13 +208,12 @@ describe('PodLookupRepository', () => {
     });
 
     it('updates nodeId for SQLite', async () => {
-      const { db, all } = createMockDb(true);
-      all!.mockReturnValueOnce([]);
+      const { db, run } = createMockDb(true);
 
       const repo = new PodLookupRepository(db);
       await repo.setNodeId('pod-123', 'new-node-id');
 
-      expect(all!).toHaveBeenCalledTimes(1);
+      expect(run!).toHaveBeenCalledTimes(1);
     });
   });
 
