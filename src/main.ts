@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { Supervisor } from './supervisor';
-import { GatewayProxy } from './gateway/Proxy';
-import { getFreePort } from './gateway/port-finder';
+import { GatewayProxy, getFreePort } from './runtime';
 import { LocalTunnelProvider } from './tunnel/LocalTunnelProvider';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
