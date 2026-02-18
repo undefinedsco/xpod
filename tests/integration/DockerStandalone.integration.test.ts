@@ -5,8 +5,7 @@ const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 const STANDALONE = {
-  baseUrl: 'http://localhost:5739',
-  apiUrl: 'http://localhost:5740',
+  baseUrl: process.env.CSS_BASE_URL?.replace(/\/$/, '') ?? 'http://localhost:5739',
 } as const;
 
 suite('Standalone Integration', () => {
@@ -30,7 +29,8 @@ suite('Standalone Integration', () => {
       const res = await fetch(`${STANDALONE.baseUrl}/.well-known/openid-configuration`);
       expect(res.status).toBe(200);
       const config = await res.json() as { issuer: string };
-      expect(config.issuer).toContain('localhost:5739');
+      const expectedHost = new URL(STANDALONE.baseUrl).host;
+      expect(config.issuer).toContain(expectedHost);
     });
 
     it('should expose JWKS endpoint', async () => {
@@ -90,7 +90,8 @@ suite('Standalone Integration', () => {
       const creds = await setupAccount(STANDALONE.baseUrl, 'issuer-discovery');
       expect(creds).not.toBeNull();
       const issuer = await discoverOidcIssuerFromWebId(creds!.webId, STANDALONE.baseUrl);
-      expect(issuer).toContain('localhost:5739');
+      const expectedHost = new URL(STANDALONE.baseUrl).host;
+      expect(issuer).toContain(expectedHost);
     }, 30000);
   });
 });

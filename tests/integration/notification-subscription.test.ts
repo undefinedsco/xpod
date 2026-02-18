@@ -4,7 +4,7 @@ const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 suite('Solid Notification Subscription (Integration)', () => {
-  const baseUrl = 'http://localhost:5739';
+  const baseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
   const NOTIFICATION_ENDPOINT = '/.notifications/WebSocketChannel2023/';
 
   describe('Subscription Endpoint Discovery', () => {

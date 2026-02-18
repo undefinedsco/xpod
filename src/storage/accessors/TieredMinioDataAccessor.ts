@@ -545,6 +545,16 @@ export class TieredMinioDataAccessor implements MigratableDataAccessor {
     }
   }
 
+  /**
+   * Generate a presigned GET URL for the given resource (bypasses cache).
+   * @param identifier - Resource identifier.
+   * @param expires - URL expiry in seconds (default 3600).
+   */
+  public async getPresignedUrl(identifier: ResourceIdentifier, expires = 3600): Promise<string> {
+    const url = new URL(identifier.path);
+    return this.client.presignedGetObject(this.bucketName, url.pathname, expires);
+  }
+
   // ============== Metadata Helpers ==============
 
   private async getFileMetadata(link: ResourceLink, stats: BucketItemStat): Promise<RepresentationMetadata> {

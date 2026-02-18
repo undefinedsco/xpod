@@ -2,10 +2,11 @@ import type { Readable } from 'stream';
 import { getLoggerFor } from 'global-logger-factory';
 
 import type { Quad } from '@rdfjs/types';
-import { 
+import {
   isContainerIdentifier,
   RepresentationMetadata,
   INTERNAL_QUADS,
+  FoundHttpError,
 } from '@solid/community-server';
 import type {
   Representation,
@@ -28,13 +29,16 @@ export class MixDataAccessor implements DataAccessor {
   
   private readonly structuredDataAccessor: DataAccessor;
   private readonly unstructuredDataAccessor: DataAccessor;
+  private readonly presignedRedirectEnabled: boolean;
 
   constructor(
     structuredDataAccessor: DataAccessor,
     unstructuredDataAccessor: DataAccessor,
+    presignedRedirectEnabled = false,
   ) {
     this.structuredDataAccessor = structuredDataAccessor;
     this.unstructuredDataAccessor = unstructuredDataAccessor;
+    this.presignedRedirectEnabled = presignedRedirectEnabled;
   }
 
   /**
@@ -54,6 +58,16 @@ export class MixDataAccessor implements DataAccessor {
   public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
     const metadata = await this.getMetadata(identifier);
     if (this.isUnstructured(metadata)) {
+      // When presigned redirect is enabled and the unstructured accessor supports it,
+      // generate a presigned URL and throw FoundHttpError to trigger a 302 redirect.
+      if (this.presignedRedirectEnabled) {
+        const accessor = this.unstructuredDataAccessor as { getPresignedUrl?: (id: ResourceIdentifier, expires?: number) => Promise<string> };
+        if (typeof accessor.getPresignedUrl === 'function') {
+          const presignedUrl = await accessor.getPresignedUrl(identifier);
+          this.logger.debug(`Presigned redirect: ${identifier.path}`);
+          throw new FoundHttpError(presignedUrl);
+        }
+      }
       return await this.unstructuredDataAccessor.getData(identifier);
     }
     return await this.structuredDataAccessor.getData(identifier);

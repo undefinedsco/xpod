@@ -104,6 +104,16 @@ export class MinioDataAccessor implements DataAccessor {
   }
 
   /**
+   * Generate a presigned GET URL for the given resource.
+   * @param identifier - Resource identifier.
+   * @param expires - URL expiry in seconds (default 3600).
+   */
+  public async getPresignedUrl(identifier: ResourceIdentifier, expires = 3600): Promise<string> {
+    const url = new URL(identifier.path);
+    return this.client.presignedGetObject(this.bucketName, url.pathname, expires);
+  }
+
+  /**
    * Returns the metadata corresponding to the identifier.
    * If possible, it is suggested to add a `posix:size` triple to the metadata indicating the binary size.
    * This is necessary for range requests.

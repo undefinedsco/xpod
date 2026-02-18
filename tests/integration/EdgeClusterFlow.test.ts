@@ -3,8 +3,8 @@ import { describe, it, expect } from "vitest";
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
-const CLOUD_API_URL = "http://localhost:6301";
-const CLOUD_CSS_URL = "http://localhost:6300";
+const CLOUD_API_URL = (process.env.CSS_BASE_URL ?? "http://localhost:6301").replace(/\/$/, "");
+const CLOUD_CSS_URL = (process.env.CSS_BASE_URL ?? "http://localhost:6300").replace(/\/$/, "");
 
 suite("Edge Cluster Flow (Integration)", () => {
   it("signal endpoint should fail gracefully when edge mode is disabled", async () => {

@@ -126,7 +126,8 @@
       },
       "unstructuredDataAccessor": {
         "@id": "urn:undefineds:xpod:RemoteDataAccessor"
-      }
+      },
+      "presignedRedirectEnabled": true
     },
     {
       "comment": "PgQuintStore instance for QuintStoreSparqlDataAccessor (PostgreSQL backend).",

@@ -5,8 +5,8 @@ import { setupAccount } from "./helpers/solidAccount";
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
-const dockerApiBaseUrl = "http://localhost:6300/";
-const dockerIdpBaseUrl = "http://localhost:6300";
+const dockerApiBaseUrl = (process.env.CSS_BASE_URL ?? "http://localhost:6300").replace(/\/$/, "") + "/";
+const dockerIdpBaseUrl = (process.env.CSS_BASE_URL ?? "http://localhost:6300").replace(/\/$/, "");
 
 const externalApiBaseUrl = process.env.XPOD_SERVER_BASE_URL ?? "http://localhost:3000/";
 const externalIssuer = process.env.SOLID_OIDC_ISSUER ?? externalApiBaseUrl;
