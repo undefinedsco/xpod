@@ -1,7 +1,7 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
 import { getLoggerFor } from 'global-logger-factory';
-import type { Supervisor } from './Supervisor';
+import type { Supervisor } from '../supervisor/Supervisor';
 
 // CORS configuration matching CSS CorsHandler defaults
 const CORS_CONFIG = {
@@ -107,8 +107,8 @@ export class GatewayProxy {
       `${req.method} ${url} x-forwarded-proto=${req.headers['x-forwarded-proto']} x-forwarded-host=${req.headers['x-forwarded-host']} host=${req.headers.host}`,
     );
 
-    // 1. Gateway internal service endpoints
-    if (url.startsWith('/service/') || url.startsWith('/_gateway/')) {
+    // 1. Internal service endpoints
+    if (url.startsWith('/service/')) {
       if (req.method === 'OPTIONS') {
         this.handleCorsPreflightRequest(res, origin);
         return;
@@ -191,6 +191,13 @@ export class GatewayProxy {
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(logs));
+        return;
+      }
+
+      if (pathname === '/service/stop' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        setImmediate(() => this.supervisor.stopAll().then(() => process.exit(0)));
         return;
       }
 
