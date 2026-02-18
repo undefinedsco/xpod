@@ -90,11 +90,48 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     const auth = context.auth as AuthContext | undefined;
 
-    if (!auth || !isSolidAuth(auth) || !auth.clientId || !auth.clientSecret) {
-      this.logger.warn('No valid client credentials in context, cannot access Pod');
+    if (!auth || !isSolidAuth(auth)) {
+      this.logger.warn('No valid solid auth in context, cannot access Pod');
       return null;
     }
 
+    // Preferred path: directly use caller's Solid access token.
+    if (auth.accessToken && auth.webId) {
+      try {
+        if (auth.tokenType === 'DPoP') {
+          this.logger.warn('Using DPoP access token without proof key; Pod access may fail if issuer enforces DPoP proof');
+        }
+
+        const authFetch = this.createAccessTokenFetch(auth.accessToken, auth.tokenType);
+        const db = drizzle(
+          { fetch: authFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
+          { schema },
+        );
+
+        this.logger.info(`Initializing tables for Pod (access token): ${auth.webId}`);
+        try {
+          await db.init([Chat, Thread, Message]);
+          this.logger.info('Tables initialized successfully');
+        } catch (initError) {
+          this.logger.error(`Failed to init tables: ${initError}`);
+        }
+
+        (context as any)._cachedDb = db;
+        (context as any)._cachedFetch = authFetch;
+        (context as any)._cachedWebId = auth.webId;
+        return db;
+      } catch (error) {
+        this.logger.error(`Failed to get Pod db with access token: ${error}`);
+        return null;
+      }
+    }
+
+    if (!auth.clientId || !auth.clientSecret) {
+      this.logger.warn('No accessToken and no valid client credentials in context, cannot access Pod');
+      return null;
+    }
+
+    // Fallback path: login with client credentials to obtain a Pod session.
     const session = new Session();
     try {
       await session.login({
@@ -135,6 +172,23 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       this.logger.error(`Failed to get Pod db: ${error}`);
       return null;
     }
+  }
+
+  private createAccessTokenFetch(accessToken: string, tokenType?: 'Bearer' | 'DPoP'): typeof fetch {
+    const scheme = tokenType ?? 'Bearer';
+    return async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ): Promise<Response> => {
+      const headers = new Headers(init?.headers);
+      if (!headers.has('Authorization')) {
+        headers.set('Authorization', `${scheme} ${accessToken}`);
+      }
+      return fetch(input, {
+        ...init,
+        headers,
+      });
+    };
   }
 
   /**

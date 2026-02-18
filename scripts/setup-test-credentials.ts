@@ -270,6 +270,7 @@ function updateEnvFile(clientId: string, clientSecret: string, webId: string, po
   const apiKey = toApiKey(clientId, clientSecret);
 
   const updates: Record<string, string> = {
+    CSS_BASE_URL: baseUrl.replace(/\/$/, ''),
     SOLID_CLIENT_ID: clientId,
     SOLID_CLIENT_SECRET: clientSecret,
     SOLID_API_KEY: apiKey,
@@ -298,7 +299,7 @@ async function main(): Promise<void> {
   console.log(`Seed config: ${seedConfigPath}`);
 
   if (!(await checkServer())) {
-    console.error('Server is not running. Please start Docker standalone first (yarn test:docker:lite:up), or run yarn local and set CSS_BASE_URL=http://localhost:3000/.');
+    console.error('Server is not running. Please run `yarn test:integration:lite` (auto starts local xpod) or start xpod manually and set CSS_BASE_URL.');
     process.exit(1);
   }
   console.log('Server is running');

@@ -40,7 +40,7 @@ const AI_BASE_URL =
 const shouldRun = RUN_INTEGRATION_TESTS && Boolean(AI_API_KEY);
 const suite = shouldRun ? describe : describe.skip;
 
-const solidBaseUrl = (process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
+const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
 
 suite('Chat Pod E2E Integration (Real Network)', () => {
   let server: ApiServer;

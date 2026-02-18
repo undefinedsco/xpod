@@ -104,7 +104,7 @@ export class GatewayProxy {
       if (origin) {
         this.addCorsHeaders(res, origin);
       }
-      this.handleInternalApi(req, res);
+      void this.handleInternalApi(req, res);
       return;
     }
 
@@ -143,36 +143,80 @@ export class GatewayProxy {
     res.setHeader('Access-Control-Expose-Headers', CORS_CONFIG.exposedHeaders.join(', '));
   }
 
-  private handleInternalApi(req: http.IncomingMessage, res: http.ServerResponse): void {
-    const reqUrl = req.url ?? '/';
-    const parsed = new URL(reqUrl, 'http://localhost');
-    const pathname = parsed.pathname;
+  private async handleInternalApi(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    try {
+      const reqUrl = req.url ?? '/';
+      const parsed = new URL(reqUrl, 'http://localhost');
+      const pathname = parsed.pathname;
 
-    if (pathname === '/service/status') {
-      const status = this.supervisor.getAllStatus();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(status));
-      return;
+      if (pathname === '/service/status') {
+        const status = this.supervisor.getAllStatus();
+        const cssReady = await this.isCssReady();
+        const code = cssReady ? 200 : 503;
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(status));
+        return;
+      }
+
+      if (pathname === '/service/logs') {
+        const level = parsed.searchParams.get('level') ?? undefined;
+        const source = parsed.searchParams.get('source') ?? undefined;
+        const limitValue = parsed.searchParams.get('limit');
+        const limit = limitValue ? parseInt(limitValue, 10) : undefined;
+
+        const logs = this.supervisor.getLogs({
+          level,
+          source,
+          limit: Number.isFinite(limit as number) ? limit : undefined,
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(logs));
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not Found');
+    } catch (error) {
+      this.logger.error('Internal service endpoint failed:', error);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+      }
+      res.end(JSON.stringify({ error: 'Internal Server Error' }));
+    }
+  }
+
+  private async isCssReady(): Promise<boolean> {
+    if (!this.targets.css) {
+      return true;
     }
 
-    if (pathname === '/service/logs') {
-      const level = parsed.searchParams.get('level') ?? undefined;
-      const source = parsed.searchParams.get('source') ?? undefined;
-      const limitValue = parsed.searchParams.get('limit');
-      const limit = limitValue ? parseInt(limitValue, 10) : undefined;
+    try {
+      // NOTE: CSS is configured with public `baseUrl` pointing at the gateway,
+      // so probing the internal CSS port can fail identifier-space checks.
+      // We probe through the gateway itself to mirror real client traffic.
+      const gatewayBase = `http://127.0.0.1:${this.port}/`;
+      const candidates = [
+        // CSS OIDC lives under /.oidc/*
+        new URL('.oidc/.well-known/openid-configuration', gatewayBase).toString(),
+        // Some deployments expose the well-known at root
+        new URL('.well-known/openid-configuration', gatewayBase).toString(),
+      ];
 
-      const logs = this.supervisor.getLogs({
-        level,
-        source,
-        limit: Number.isFinite(limit as number) ? limit : undefined,
-      });
+      for (const probeUrl of candidates) {
+        try {
+          const response = await fetch(probeUrl, { signal: AbortSignal.timeout(1500) });
+          if (response.ok) {
+            return true;
+          }
+        } catch {
+          // Try next candidate.
+        }
+      }
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(logs));
-      return;
+      return false;
+    } catch {
+      return false;
     }
-
-    res.writeHead(404);
-    res.end('Not Found');
   }
 }

@@ -347,3 +347,26 @@ X-Xpod-Default-Agent-Reason: no_user_config | config_invalid | rate_limited
 2. **阶段二**：开发 solid-fuse，提升 CC 操作体验
 3. **阶段三**：Default Agent 技能扩展（更多数据类型、智能分类）
 4. **阶段四**：Agent 配置外置到 Pod（支持用户自定义 Agent）
+
+## 实施进展（2026-02）
+
+### 已完成
+
+- **默认 Agent 降级链路已接通**：当用户配置缺失/不可用时，会回退到 Default Agent 继续完成请求。
+- **密钥收纳链路可用**：聊天链路可将用户输入中的 provider/key 配置写入 Pod（避免仅停留在会话文本）。
+- **ChatKit + ACP 基础对齐**：thread 运行时已支持 ACP runner（codebuddy / claude / codex）并完成基础事件流打通。
+- **集成测试基线改造**：
+  - `test:integration:lite` 改为本地自动拉起 xpod（不依赖 Docker）。
+  - 测试端口从写死值改为按 `CSS_BASE_URL` 动态获取，`test:setup` 后会刷新凭据再执行测试。
+  - `/service/status` 增加 OIDC well-known 就绪探针，避免 CSS 未就绪时“假绿”。
+
+### 未完成 / TODO
+
+- **Agent 配置去环境变量化（关键）**  
+  目前 ACP 相关测试和运行仍依赖较多 `DEFAULT_*` 环境变量。下一步应将 provider/model/credential 配置收敛到 Pod 内的 agent 数据模型，并在 `test:setup` 自动 seed。
+
+- **Codex ACP 与 OpenRouter 兼容性**  
+  `codex-acp` 在 OpenRouter 的 Responses 兼容层上不稳定；需要明确官方支持 base（如 OpenAI）或由 xpod `/v1/responses` 统一适配后再接入 codex runner。
+
+- **Full 集成语义收敛**  
+  当前 lite 已稳定，full 仍需结合 Docker/cluster 稳定性做最终口径收敛。

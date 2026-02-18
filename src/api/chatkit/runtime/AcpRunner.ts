@@ -67,6 +67,20 @@ export class AcpRunner extends EventEmitter {
       stdio: 'pipe',
     });
 
+    // If spawning fails (e.g. ENOENT), surface as an 'error' event.
+    // Avoid throwing, since consumers may set listeners after constructing.
+    this.proc.once('error', (err) => {
+      this.logger.error(`ACP spawn error: ${err}`);
+      for (const [ id, p ] of this.pending.entries()) {
+        p.reject(new Error(`ACP process error before response (id=${id}): ${String(err)}`));
+      }
+      this.pending.clear();
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', err);
+      }
+      this.proc = undefined;
+    });
+
     const rl = readline.createInterface({ input: this.proc.stdout });
 
     rl.on('line', (line) => {
@@ -102,10 +116,7 @@ export class AcpRunner extends EventEmitter {
       rl.close();
     });
 
-    this.proc.on('error', (err) => {
-      this.logger.error(`ACP spawn error: ${err}`);
-      this.emit('error', err);
-    });
+    // Note: we use the once('error', ...) handler above to avoid double-emitting.
   }
 
   stop(signal: 'SIGINT' | 'SIGTERM' = 'SIGINT'): void {
@@ -154,7 +165,14 @@ export class AcpRunner extends EventEmitter {
       }
       this.pending.delete(msg.id);
       if (msg.error) {
-        pending.reject(new Error(msg.error.message));
+        const detail =
+          msg.error.data && typeof msg.error.data === 'object' && 'details' in msg.error.data
+            ? ` details=${String((msg.error.data as any).details)}`
+            : '';
+        const err = new Error(`${msg.error.message} (code=${msg.error.code})${detail}`);
+        // Preserve error.data for callers that want to inspect richer failure modes.
+        (err as any).data = msg.error.data;
+        pending.reject(err);
       } else {
         pending.resolve(msg.result);
       }

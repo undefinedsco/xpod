@@ -23,6 +23,7 @@ import type {
   Page,
   Thread,
   UserMessageContent,
+  ClientToolCallItem,
 } from './types';
 import {
   isStreamingReq,
@@ -260,7 +261,7 @@ export class ChatKitService<TContext = StoreContext> {
     context: TContext,
   ): AsyncIterable<ThreadStreamEvent> {
     const thread = await this.store.loadThread(params.thread_id, context);
-    
+
     // Create and save user message
     const userMessage = await this.createUserMessage(params.thread_id, params.input.content, context);
     await this.store.addThreadItem(params.thread_id, userMessage, context);
@@ -301,6 +302,95 @@ export class ChatKitService<TContext = StoreContext> {
         type: 'thread.item.done',
         item: updatedItem,
       } as ThreadItemDoneEvent;
+
+      // ACP tool-call continuation: respond to the pending ACP request and stream follow-up output.
+      try {
+        const thread = await this.store.loadThread(params.thread_id, context);
+        const ptyConfig = this.getPtyConfig(thread);
+        let assistantItem: AssistantMessageItem | undefined;
+        let assistantText = '';
+
+        const idleMs = ptyConfig?.idleMs ?? 500;
+        for await (
+          const ev of this.ptyRuntime.respondToRequest(
+            params.thread_id,
+            item.call_id,
+            params.output,
+            { idleMs, authWaitMs: ptyConfig?.authWaitMs },
+          )
+        ) {
+          if (ev.type === 'text') {
+            if (!assistantItem) {
+              const assistantId = this.store.generateItemId('assistant_message', thread, context);
+              assistantItem = {
+                id: assistantId,
+                thread_id: params.thread_id,
+                type: 'assistant_message',
+                content: [{ type: 'output_text', text: '' }],
+                status: 'in_progress',
+                created_at: nowTimestamp(),
+              };
+              await this.store.addThreadItem(params.thread_id, assistantItem, context);
+              yield { type: 'thread.item.added', item: assistantItem } as ThreadItemAddedEvent;
+            }
+
+            assistantText += ev.text;
+            yield {
+              type: 'thread.item.updated',
+              item_id: assistantItem.id,
+              update: {
+                type: 'assistant_message.content_part.text_delta',
+                part_index: 0,
+                delta: ev.text,
+              },
+            } as ThreadItemUpdatedEvent;
+            continue;
+          }
+
+          if (ev.type === 'auth_required') {
+            yield {
+              type: 'client_effect',
+              effect: {
+                effect_type: 'runtime.auth_required',
+                data: {
+                  method: ev.method,
+                  url: ev.url,
+                  message: ev.message,
+                  options: ev.options,
+                },
+              },
+            };
+            continue;
+          }
+
+          if (ev.type === 'tool_call') {
+            const toolItem: ClientToolCallItem = {
+              id: this.store.generateItemId('client_tool_call', thread, context),
+              thread_id: params.thread_id,
+              type: 'client_tool_call',
+              name: ev.name,
+              arguments: ev.arguments,
+              call_id: ev.requestId,
+              status: 'pending',
+              created_at: nowTimestamp(),
+            };
+            await this.store.addThreadItem(params.thread_id, toolItem, context);
+            yield { type: 'thread.item.added', item: toolItem } as ThreadItemAddedEvent;
+          }
+        }
+
+        if (assistantItem) {
+          const completedItem: AssistantMessageItem = {
+            ...assistantItem,
+            content: [{ type: 'output_text', text: assistantText }],
+            status: 'completed',
+          };
+          await this.store.saveItem(params.thread_id, completedItem, context);
+          yield { type: 'thread.item.done', item: completedItem } as ThreadItemDoneEvent;
+        }
+      } catch {
+        // Ignore: non-runtime tool calls.
+      }
     }
   }
 
@@ -594,7 +684,8 @@ export class ChatKitService<TContext = StoreContext> {
     if (!runnerType) {
       throw new Error('Invalid thread.metadata.runtime.runner.type');
     }
-    const protocol = runtime.runner.protocol ?? 'acp';
+    // Enforce ACP-only: raw/stdio mode is removed.
+    const protocol = 'acp';
     // Keep runner args server-owned by default, unless explicitly allowed.
     // This avoids exposing per-runner argv details to end users.
     const allowCustomArgv = runtime.runner.allowCustomArgv === true;
@@ -606,6 +697,7 @@ export class ChatKitService<TContext = StoreContext> {
         argv,
         protocol,
       },
+      agentConfig: runtime.agentConfig,
     } as PtyRuntimeConfig;
   }
 
@@ -636,17 +728,87 @@ export class ChatKitService<TContext = StoreContext> {
     yield { type: 'thread.item.added', item: assistantItem } as ThreadItemAddedEvent;
 
     let fullText = '';
-    for await (const chunk of this.ptyRuntime.sendMessage(thread.id, userText, { idleMs: 500 })) {
-      fullText += chunk;
-      yield {
-        type: 'thread.item.updated',
-        item_id: assistantId,
-        update: {
-          type: 'assistant_message.content_part.text_delta',
-          part_index: 0,
-          delta: chunk,
-        },
-      } as ThreadItemUpdatedEvent;
+    let sawRuntimeError: string | undefined;
+    const idleMs = ptyConfig.idleMs ?? 500;
+    for await (const ev of this.ptyRuntime.sendMessage(thread.id, userText, { idleMs, authWaitMs: ptyConfig.authWaitMs })) {
+      if (ev.type === 'text') {
+        fullText += ev.text;
+        yield {
+          type: 'thread.item.updated',
+          item_id: assistantId,
+          update: {
+            type: 'assistant_message.content_part.text_delta',
+            part_index: 0,
+            delta: ev.text,
+          },
+        } as ThreadItemUpdatedEvent;
+        continue;
+      }
+
+      if (ev.type === 'error') {
+        sawRuntimeError = ev.message;
+        yield {
+          type: 'error',
+          error: {
+            code: 'runtime_error',
+            message: ev.message,
+          },
+        } as ThreadStreamEvent;
+        break;
+      }
+
+      if (ev.type === 'auth_required') {
+        // Runtime-only. Do not persist sensitive auth details into thread history.
+        yield {
+          type: 'client_effect',
+          effect: {
+            effect_type: 'runtime.auth_required',
+            data: {
+              method: ev.method,
+              url: ev.url,
+              message: ev.message,
+              options: ev.options,
+            },
+          },
+        };
+        continue;
+      }
+
+      if (ev.type === 'tool_call') {
+        const toolItem: ClientToolCallItem = {
+          id: this.store.generateItemId('client_tool_call', thread, context),
+          thread_id: thread.id,
+          type: 'client_tool_call',
+          name: ev.name,
+          arguments: ev.arguments,
+          call_id: ev.requestId,
+          status: 'pending',
+          created_at: nowTimestamp(),
+        };
+        await this.store.addThreadItem(thread.id, toolItem, context);
+        yield { type: 'thread.item.added', item: toolItem } as ThreadItemAddedEvent;
+
+        // Pause: client must call threads.add_client_tool_output to continue.
+        const incomplete: AssistantMessageItem = {
+          ...assistantItem,
+          content: [{ type: 'output_text', text: fullText }],
+          status: 'incomplete',
+        };
+        await this.store.saveItem(thread.id, incomplete, context);
+        yield { type: 'thread.item.done', item: incomplete } as ThreadItemDoneEvent;
+        return;
+      }
+    }
+
+    if (sawRuntimeError) {
+      const incomplete: AssistantMessageItem = {
+        ...assistantItem,
+        content: [{ type: 'output_text', text: fullText }],
+        status: 'incomplete',
+      };
+      await this.store.saveItem(thread.id, incomplete, context);
+      yield { type: 'thread.item.done', item: incomplete } as ThreadItemDoneEvent;
+      return;
     }
 
     const completedItem: AssistantMessageItem = {
