@@ -105,7 +105,7 @@ async function handlePut(resourceStore: ResourceStore, url: string, init?: Reque
     data = Readable.from([Buffer.from(body)]);
   } else if (body && typeof (body as any).getReader === 'function') {
     // Web ReadableStream
-    data = Readable.fromWeb(body as ReadableStream);
+    data = Readable.fromWeb(body as any);
   } else {
     data = Readable.from([]);
   }
@@ -134,7 +134,7 @@ async function handlePatch(resourceStore: ResourceStore, url: string, init?: Req
   if (typeof body === 'string') {
     data = Readable.from([body]);
   } else if (body && typeof (body as any).getReader === 'function') {
-    data = Readable.fromWeb(body as ReadableStream);
+    data = Readable.fromWeb(body as any);
   } else {
     data = Readable.from([]);
   }

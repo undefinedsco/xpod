@@ -6,7 +6,7 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "dist",
-    "lib": [ "es2021" ],
+    "lib": [ "es2021", "DOM" ],
     "module": "CommonJS",
     "resolveJsonModule": true,
     "moduleResolution": "node",

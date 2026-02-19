@@ -41,6 +41,7 @@ logs/
 # Binary distributions
 dist/xpod-macos/
 dist/xpod-macos.tar.gz
+dist/xpod-single.cjs
 
 # Source files (only dist is needed)
 src/
