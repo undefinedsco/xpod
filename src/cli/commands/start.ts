@@ -118,7 +118,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
     supervisor.register({
       name: 'api',
       command: process.execPath,
-      args: [path.resolve(__dirname, '..', 'api', 'main.js')],
+      args: [path.resolve(__dirname, '..', '..', 'api', 'main.js')],
       env: {
         ...process.env as Record<string, string>,
         API_PORT: apiPort.toString(),
