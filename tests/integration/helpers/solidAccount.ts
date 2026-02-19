@@ -15,20 +15,22 @@ type DockerServiceHost = {
 };
 
 function dockerServiceForBaseUrl(baseUrl: string): DockerServiceHost | null {
+  const cloudPort = process.env.CLOUD_PORT || '6300';
+  const cloudBPort = process.env.CLOUD_B_PORT || '6400';
   // docker-compose.cluster.yml: cloud and cloud_b are exposed as localhost ports,
   // but CSS may return internal service URLs in controls.
-  if (baseUrl.includes("localhost:6300")) {
+  if (baseUrl.includes(`localhost:${cloudPort}`)) {
     return {
       hostHeader: "cloud:6300",
       internalOrigin: "http://cloud:6300",
-      externalOrigin: "http://localhost:6300",
+      externalOrigin: `http://localhost:${cloudPort}`,
     };
   }
-  if (baseUrl.includes("localhost:6400")) {
+  if (baseUrl.includes(`localhost:${cloudBPort}`)) {
     return {
       hostHeader: "cloud_b:6400",
       internalOrigin: "http://cloud_b:6400",
-      externalOrigin: "http://localhost:6400",
+      externalOrigin: `http://localhost:${cloudBPort}`,
     };
   }
   return null;

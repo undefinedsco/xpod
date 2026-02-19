@@ -21,34 +21,41 @@ const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const SERVICE_READY_RETRIES = Number(process.env.XPOD_DOCKER_READY_RETRIES ?? '45');
 const SERVICE_READY_DELAY_MS = Number(process.env.XPOD_DOCKER_READY_DELAY_MS ?? '1000');
 
+const CLOUD_PORT = process.env.CLOUD_PORT || '6300';
+const CLOUD_API_PORT = process.env.CLOUD_API_PORT || '6301';
+const LOCAL_PORT = process.env.LOCAL_PORT || '5737';
+const LOCAL_API_PORT = process.env.LOCAL_API_PORT || '5738';
+const STANDALONE_PORT = process.env.STANDALONE_PORT || '5739';
+const STANDALONE_API_PORT = process.env.STANDALONE_API_PORT || '5740';
+
 // 与 docker-compose.cluster.yml 对应的服务配置
 const SERVICES = {
   cloud: {
     name: 'Cloud',
-    baseUrl: 'http://localhost:6300',
-    apiUrl: 'http://localhost:6301',
+    baseUrl: `http://localhost:${CLOUD_PORT}`,
+    apiUrl: `http://localhost:${CLOUD_API_PORT}`,
     storage: 'PostgreSQL + MinIO',
     hasIdp: true,
     isSp: false,
   },
   local: {
     name: 'Local',
-    baseUrl: 'http://localhost:5737',
-    apiUrl: 'http://localhost:5738',
+    baseUrl: `http://localhost:${LOCAL_PORT}`,
+    apiUrl: `http://localhost:${LOCAL_API_PORT}`,
     storage: 'SQLite + Cloud IdP',
     hasIdp: false, // 使用 Cloud IdP
     isSp: false,
-    idpUrl: 'http://localhost:6300',
+    idpUrl: `http://localhost:${CLOUD_PORT}`,
   },
   standalone: {
     name: 'Standalone',
-    baseUrl: 'http://localhost:5739',
-    apiUrl: 'http://localhost:5740',
+    baseUrl: `http://localhost:${STANDALONE_PORT}`,
+    apiUrl: `http://localhost:${STANDALONE_API_PORT}`,
     storage: 'SQLite',
     hasIdp: true,
     isSp: false,
   },
-} as const;
+};
 
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
@@ -110,7 +117,7 @@ suite('Docker Cluster Integration', () => {
       expect(res.status).toBe(200);
       const config = await res.json() as { issuer: string };
       // issuer 是 CSS 配置的 baseUrl
-      expect(config.issuer).toContain('localhost:6300');
+      expect(config.issuer).toContain(`localhost:${CLOUD_PORT}`);
     });
 
     it('Standalone should serve OIDC configuration', async () => {

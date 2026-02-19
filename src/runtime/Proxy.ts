@@ -65,13 +65,8 @@ export class GatewayProxy {
 
   public stop(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server.close((err) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve();
-      });
+      this.proxy.close();
+      this.server.close((err) => (err ? reject(err) : resolve()));
     });
   }
 

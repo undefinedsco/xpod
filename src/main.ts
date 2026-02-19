@@ -369,6 +369,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
   const shutdown = async(signal: string): Promise<void> => {
     logger.info(`Received ${signal}, shutting down...`);
     deleteRuntimeRecord(resolvedEnvPath);
+    await proxy.stop();
     await supervisor.stopAll();
     process.exit(EXIT_OK);
   };

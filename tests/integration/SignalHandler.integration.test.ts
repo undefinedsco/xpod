@@ -7,8 +7,9 @@ const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 const { baseUrl: envBaseUrl, oidcIssuer: envIssuer } = resolveSolidIntegrationConfig();
-const dockerApiBaseUrl = "http://localhost:5739/";
-const dockerIdpBaseUrl = "http://localhost:5739";
+const STANDALONE_BASE = (process.env.CSS_BASE_URL || `http://localhost:${process.env.STANDALONE_PORT || '5739'}`).replace(/\/$/, '');
+const dockerApiBaseUrl = `${STANDALONE_BASE}/`;
+const dockerIdpBaseUrl = STANDALONE_BASE;
 
 const externalApiBaseUrl = envBaseUrl;
 const externalIssuer = envIssuer;
