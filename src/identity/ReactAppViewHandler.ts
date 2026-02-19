@@ -15,6 +15,7 @@ import type {
 } from '@solid/community-server';
 import * as fs from 'fs';
 import * as path from 'path';
+import { PACKAGE_ROOT } from '../runtime';
 
 /**
  * Entry for a single HTML view template.
@@ -53,7 +54,7 @@ export class ReactAppViewHandler extends InteractionHandler {
     this.idpIndex = index.getPath();
     
     // Read the static HTML file at startup
-    const filePath = path.resolve(process.cwd(), htmlFile);
+    const filePath = path.resolve(PACKAGE_ROOT, htmlFile);
     this.htmlTemplate = fs.readFileSync(filePath, 'utf-8');
   }
 

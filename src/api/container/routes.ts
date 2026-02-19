@@ -25,6 +25,7 @@ import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import * as path from 'node:path';
+import { PACKAGE_ROOT } from '../../runtime';
 
 /**
  * 注册所有 API 路由
@@ -64,7 +65,7 @@ function registerHealthRoutes(server: ApiServer): void {
   }, { public: true });
 
   // Dashboard 静态资源
-  const staticDir = path.resolve(process.cwd(), 'static/dashboard');
+  const staticDir = path.resolve(PACKAGE_ROOT, 'static/dashboard');
   registerDashboardRoutes(server, { staticDir });
 }
 

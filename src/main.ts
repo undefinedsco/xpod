@@ -6,8 +6,7 @@ import path from 'path';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { GatewayProxy } from './runtime/Proxy';
-import { getFreePort } from './runtime/port-finder';
+import { GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
 
@@ -51,7 +50,7 @@ let logger = getLoggerFor('Main');
 
 function initLogger(): void {
   const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
-    fileName: './logs/xpod-%DATE%.log',
+    fileName: path.join(process.cwd(), 'logs/xpod-%DATE%.log'),
     showLocation: true,
   });
   setGlobalLoggerFactory(loggerFactory);
@@ -95,7 +94,7 @@ function resolveInstanceKey(envPath?: string): string {
 }
 
 function getRuntimeFilePath(envPath?: string): string {
-  const dir = path.resolve('.xpod/runtime');
+  const dir = path.join(process.cwd(), '.xpod/runtime');
   return path.join(dir, `${resolveInstanceKey(envPath)}.json`);
 }
 
@@ -140,7 +139,7 @@ function isProcessRunning(pid?: number): boolean {
 
 function getVersion(): string {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf-8')) as { version?: string };
+    const pkg = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf-8')) as { version?: string };
     return pkg.version ?? 'unknown';
   } catch {
     return 'unknown';
@@ -232,11 +231,12 @@ async function startRuntime(options: RunOptions): Promise<void> {
     ? requestedPort
     : parseInt(process.env.XPOD_PORT ?? process.env.PORT ?? '3000', 10);
   const host = options.host ?? '127.0.0.1';
-  let configPath = 'config/local.json';
+
+  let configPath = path.join(PACKAGE_ROOT, 'config/local.json');
   if (options.config) {
     configPath = options.config;
   } else if (options.mode) {
-    configPath = `config/${options.mode}.json`;
+    configPath = path.join(PACKAGE_ROOT, `config/${options.mode}.json`);
   }
 
   if (!fs.existsSync(configPath)) {
@@ -245,8 +245,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const mode: 'local' | 'cloud' = options.mode ?? (configPath.includes('cloud') ? 'cloud' : 'local');
 
-  const cssStartPort = (mainPort === 3000 ? 3002 : 3000);
-  const cssPort = await getFreePort(cssStartPort);
+  const cssPort = await getFreePort(mainPort + 1);
   const apiPort = await getFreePort(cssPort + 1);
   const baseUrl = ensureTrailingSlash(process.env.CSS_BASE_URL || `http://${host}:${mainPort}`);
 
@@ -259,15 +258,16 @@ async function startRuntime(options: RunOptions): Promise<void> {
   logger.info(`  - API (internal): http://localhost:${apiPort}`);
 
   const supervisor = new Supervisor();
-  const cssBinary = path.resolve('node_modules/@solid/community-server/bin/server.js');
+  const cssBinary = require.resolve('@solid/community-server/bin/server.js');
+  const cssModuleRoot = path.dirname(require.resolve('@solid/community-server/package.json'));
 
   supervisor.register({
     name: 'css',
-    command: process.execPath, // Keep child runtime aligned with current Node version
+    command: process.execPath,
     args: [
       cssBinary,
       '-c', configPath,
-      '-m', '.',
+      '-m', cssModuleRoot,
       '-p', cssPort.toString(),
       '-b', baseUrl,
     ],
@@ -281,7 +281,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
   supervisor.register({
     name: 'api',
     command: process.execPath,
-    args: ['dist/api/main.js'],
+    args: [path.join(__dirname, 'api', 'main.js')],
     env: {
       ...process.env,
       API_PORT: apiPort.toString(),
@@ -368,6 +368,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
   const shutdown = async(signal: string): Promise<void> => {
     logger.info(`Received ${signal}, shutting down...`);
     deleteRuntimeRecord(resolvedEnvPath);
+    await proxy.stop();
     await supervisor.stopAll();
     process.exit(EXIT_OK);
   };

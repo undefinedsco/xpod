@@ -7,6 +7,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import { PACKAGE_ROOT } from '../../runtime';
 
 // Platform detection
 const platform = `${process.platform}-${process.arch}`;
@@ -37,7 +38,7 @@ export function getVectorStoreLibs(): VectorStoreConfig | null {
   }
 
   // Check for bundled libraries (for packaged app)
-  const bundledDir = path.join(process.cwd(), 'lib', platform);
+  const bundledDir = path.join(PACKAGE_ROOT, 'lib', platform);
   const bundledSqlite = path.join(bundledDir, libs.sqlite);
   const bundledVec = path.join(bundledDir, libs.vec);
 
@@ -50,7 +51,7 @@ export function getVectorStoreLibs(): VectorStoreConfig | null {
   }
 
   // Development mode: use system SQLite + npm-installed sqlite-vec
-  const nodeModulesDir = path.join(process.cwd(), 'node_modules');
+  const nodeModulesDir = path.join(PACKAGE_ROOT, 'node_modules');
   const vecPackageDir = path.join(
     nodeModulesDir,
     `sqlite-vec-${platform.replace('-', '-')}`

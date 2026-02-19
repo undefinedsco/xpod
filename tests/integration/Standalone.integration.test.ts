@@ -4,8 +4,10 @@ import { Session } from '@inrupt/solid-client-authn-node';
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
+const STANDALONE_BASE = (process.env.CSS_BASE_URL || `http://localhost:${process.env.STANDALONE_PORT || '5739'}`).replace(/\/$/, '');
+
 const STANDALONE = {
-  baseUrl: process.env.CSS_BASE_URL?.replace(/\/$/, '') ?? 'http://localhost:5739',
+  baseUrl: STANDALONE_BASE,
 } as const;
 
 suite('Standalone Integration', () => {
@@ -29,8 +31,7 @@ suite('Standalone Integration', () => {
       const res = await fetch(`${STANDALONE.baseUrl}/.well-known/openid-configuration`);
       expect(res.status).toBe(200);
       const config = await res.json() as { issuer: string };
-      const expectedHost = new URL(STANDALONE.baseUrl).host;
-      expect(config.issuer).toContain(expectedHost);
+      expect(config.issuer).toContain(new URL(STANDALONE_BASE).host);
     });
 
     it('should expose JWKS endpoint', async () => {
@@ -90,8 +91,7 @@ suite('Standalone Integration', () => {
       const creds = await setupAccount(STANDALONE.baseUrl, 'issuer-discovery');
       expect(creds).not.toBeNull();
       const issuer = await discoverOidcIssuerFromWebId(creds!.webId, STANDALONE.baseUrl);
-      const expectedHost = new URL(STANDALONE.baseUrl).host;
-      expect(issuer).toContain(expectedHost);
+      expect(issuer).toContain(new URL(STANDALONE_BASE).host);
     }, 30000);
   });
 });

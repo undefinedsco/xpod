@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import type { Authenticator, AuthResult } from '../../src/api/auth/Authenticator';
+import { getFreePort } from '../../src/runtime/port-finder';
 
 class MockAuthenticator implements Authenticator {
   public async authenticate(request: any): Promise<AuthResult> {
@@ -22,10 +23,13 @@ class MockAuthenticator implements Authenticator {
 
 describe('ApiServer Integration', () => {
   let server: ApiServer;
-  const port = 3099;
-  const baseUrl = `http://localhost:${port}`;
+  let port: number;
+  let baseUrl: string;
 
   beforeAll(async () => {
+    port = await getFreePort(10000);
+    baseUrl = `http://localhost:${port}`;
+
     const authMiddleware = new AuthMiddleware({
       authenticator: new MockAuthenticator(),
     });
