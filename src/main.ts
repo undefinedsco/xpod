@@ -11,6 +11,9 @@ import { getFreePort } from './runtime/port-finder';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
 
+// Resolve project root from compiled dist/main.js → parent dir
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+
 interface RuntimeRecord {
   schemaVersion: '1.0';
   pid: number;
@@ -51,7 +54,7 @@ let logger = getLoggerFor('Main');
 
 function initLogger(): void {
   const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
-    fileName: './logs/xpod-%DATE%.log',
+    fileName: path.join(PROJECT_ROOT, 'logs/xpod-%DATE%.log'),
     showLocation: true,
   });
   setGlobalLoggerFactory(loggerFactory);
@@ -95,7 +98,7 @@ function resolveInstanceKey(envPath?: string): string {
 }
 
 function getRuntimeFilePath(envPath?: string): string {
-  const dir = path.resolve('.xpod/runtime');
+  const dir = path.join(PROJECT_ROOT, '.xpod/runtime');
   return path.join(dir, `${resolveInstanceKey(envPath)}.json`);
 }
 
@@ -140,7 +143,7 @@ function isProcessRunning(pid?: number): boolean {
 
 function getVersion(): string {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf-8')) as { version?: string };
+    const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf-8')) as { version?: string };
     return pkg.version ?? 'unknown';
   } catch {
     return 'unknown';
@@ -233,11 +236,11 @@ async function startRuntime(options: RunOptions): Promise<void> {
     : parseInt(process.env.XPOD_PORT ?? process.env.PORT ?? '3000', 10);
   const host = options.host ?? '127.0.0.1';
 
-  let configPath = 'config/local.json';
+  let configPath = path.join(PROJECT_ROOT, 'config/local.json');
   if (options.config) {
     configPath = options.config;
   } else if (options.mode) {
-    configPath = `config/${options.mode}.json`;
+    configPath = path.join(PROJECT_ROOT, `config/${options.mode}.json`);
   }
 
   if (!fs.existsSync(configPath)) {
@@ -260,7 +263,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
   logger.info(`  - API (internal): http://localhost:${apiPort}`);
 
   const supervisor = new Supervisor();
-  const cssBinary = path.resolve('node_modules/@solid/community-server/bin/server.js');
+  const cssBinary = path.join(PROJECT_ROOT, 'node_modules/@solid/community-server/bin/server.js');
 
   supervisor.register({
     name: 'css',
@@ -268,7 +271,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
     args: [
       cssBinary,
       '-c', configPath,
-      '-m', '.',
+      '-m', PROJECT_ROOT,
       '-p', cssPort.toString(),
       '-b', baseUrl,
     ],
@@ -282,7 +285,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
   supervisor.register({
     name: 'api',
     command: process.execPath,
-    args: ['dist/api/main.js'],
+    args: [path.join(PROJECT_ROOT, 'dist/api/main.js')],
     env: {
       ...process.env,
       API_PORT: apiPort.toString(),
