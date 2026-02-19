@@ -90,7 +90,7 @@ services:
       API_PORT: "6301"
       API_HOST: "0.0.0.0"
       CSS_PORT: "6300"
-      CSS_BASE_URL: http://localhost:6300
+      CSS_BASE_URL: http://localhost:${CLOUD_PORT:-6300}
       CSS_LOGGING_LEVEL: info
       CSS_ALLOWED_HOSTS: "localhost,host.docker.internal"
       CSS_SPARQL_ENDPOINT: postgres://xpod:xpod@postgres:5432/xpod
@@ -109,8 +109,7 @@ services:
       CSS_EMAIL_CONFIG_AUTH_PASS: ""
       CSS_SEED_CONFIG: /app/config/seed.dev.json
     ports:
-      - "6300:6300"
-      - "6301:6301"
+      - "${CLOUD_PORT:-6300}:6300"
     volumes:
       - cloud_data:/app/data
     depends_on:
@@ -148,7 +147,7 @@ services:
       API_PORT: "6401"
       API_HOST: "0.0.0.0"
       CSS_PORT: "6400"
-      CSS_BASE_URL: http://localhost:6400
+      CSS_BASE_URL: http://localhost:${CLOUD_B_PORT:-6400}
       CSS_LOGGING_LEVEL: info
       CSS_ALLOWED_HOSTS: "localhost,host.docker.internal"
       CSS_SPARQL_ENDPOINT: postgres://xpod:xpod@postgres:5432/xpod
@@ -167,8 +166,7 @@ services:
       CSS_EMAIL_CONFIG_AUTH_PASS: ""
       CSS_SEED_CONFIG: /app/config/seed.dev.json
     ports:
-      - "6400:6400"
-      - "6401:6401"
+      - "${CLOUD_B_PORT:-6400}:6400"
     volumes:
       - cloud_b_data:/app/data
     depends_on:
@@ -197,7 +195,7 @@ services:
       API_PORT: "5738"
       API_HOST: "0.0.0.0"
       CSS_PORT: "5737"
-      CSS_BASE_URL: http://localhost:5737
+      CSS_BASE_URL: http://localhost:${LOCAL_PORT:-5737}
       CSS_IDP_URL: http://cloud:6300
       CSS_LOGGING_LEVEL: info
       CSS_SPARQL_ENDPOINT: sqlite:/app/data/local-managed.sqlite
@@ -208,8 +206,7 @@ services:
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
     ports:
-      - "5737:5737"
-      - "5738:5738"
+      - "${LOCAL_PORT:-5737}:5737"
     volumes:
       - local_data:/app/data
     depends_on:
@@ -234,7 +231,7 @@ services:
       API_PORT: "5740"
       API_HOST: "0.0.0.0"
       CSS_PORT: "5739"
-      CSS_BASE_URL: http://localhost:5739
+      CSS_BASE_URL: http://localhost:${STANDALONE_PORT:-5739}
       CSS_ALLOWED_HOSTS: "localhost,host.docker.internal"
       CSS_LOGGING_LEVEL: info
       CSS_SPARQL_ENDPOINT: sqlite:/app/data/local-standalone.sqlite
@@ -245,8 +242,7 @@ services:
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
     ports:
-      - "5739:5739"
-      - "5740:5740"
+      - "${STANDALONE_PORT:-5739}:5739"
     volumes:
       - standalone_data:/app/data
     healthcheck:

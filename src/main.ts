@@ -148,7 +148,7 @@ async function main() {
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Received ${signal}, shutting down...`);
     
-    // Stop supervisor (CSS + API)
+    await proxy.stop();
     await supervisor.stopAll();
     process.exit(0);
   };

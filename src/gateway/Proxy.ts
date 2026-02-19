@@ -63,6 +63,13 @@ export class GatewayProxy {
     });
   }
 
+  public stop(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.proxy.close();
+      this.server.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
+
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     const url = req.url ?? '/';
     const origin = req.headers.origin;

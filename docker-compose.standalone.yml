@@ -1,6 +1,8 @@
 # Xpod 轻量集成测试环境（Standalone-only）
 # 启动: docker compose -f docker-compose.standalone.yml up -d
 # 停止: docker compose -f docker-compose.standalone.yml down
+#
+# 自定义宿主机端口: STANDALONE_PORT=7739 docker compose -f docker-compose.standalone.yml up -d
 
 x-xpod-image: &xpod-image
   image: xpod:dev
@@ -18,7 +20,7 @@ services:
       API_PORT: "5740"
       API_HOST: "0.0.0.0"
       CSS_PORT: "5739"
-      CSS_BASE_URL: http://localhost:5739
+      CSS_BASE_URL: http://localhost:${STANDALONE_PORT:-5739}
       CSS_ALLOWED_HOSTS: "localhost,host.docker.internal"
       CSS_LOGGING_LEVEL: info
       CSS_SPARQL_ENDPOINT: sqlite:/app/data/local-standalone.sqlite
@@ -29,8 +31,7 @@ services:
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
     ports:
-      - "5739:5739"
-      - "5740:5740"
+      - "${STANDALONE_PORT:-5739}:5739"
     volumes:
       - standalone_lite_data:/app/data
     healthcheck:

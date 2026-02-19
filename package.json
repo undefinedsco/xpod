@@ -70,7 +70,7 @@
     "dev:cluster:lite": "docker compose -f docker-compose.standalone.yml up --build",
     "dev:cluster:lite:down": "docker compose -f docker-compose.standalone.yml down",
     "test:integration:lite": "yarn ts-node scripts/run-integration-lite-local.ts",
-    "test:integration:full": "CSS_BASE_URL=http://localhost:5739 yarn test:setup && XPOD_RUN_INTEGRATION_TESTS=true CSS_BASE_URL=http://localhost:5739 CSS_SEED_CONFIG=$PWD/config/seeds/test.json dotenv -e .env.local -- vitest --run tests/integration --no-file-parallelism",
+    "test:integration:full": "CSS_BASE_URL=http://localhost:${STANDALONE_PORT:-5739} yarn test:setup && XPOD_RUN_INTEGRATION_TESTS=true CSS_BASE_URL=http://localhost:${STANDALONE_PORT:-5739} CSS_SEED_CONFIG=$PWD/config/seeds/test.json dotenv -e .env.local -- vitest --run tests/integration --no-file-parallelism",
     "test:integration:all": "yarn test:integration:full",
     "test:integration:lite:up": "docker compose -f docker-compose.standalone.yml up -d --build",
     "test:integration:lite:down": "docker compose -f docker-compose.standalone.yml down",

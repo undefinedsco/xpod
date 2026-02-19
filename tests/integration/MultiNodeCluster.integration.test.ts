@@ -5,8 +5,10 @@ import { setupAccount, loginWithClientCredentials } from "./helpers/solidAccount
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
-const CLOUD_A = "http://localhost:6300";
-const CLOUD_B = "http://localhost:6400";
+const CLOUD_A_PORT = process.env.CLOUD_PORT || "6300";
+const CLOUD_B_PORT = process.env.CLOUD_B_PORT || "6400";
+const CLOUD_A = `http://localhost:${CLOUD_A_PORT}`;
+const CLOUD_B = `http://localhost:${CLOUD_B_PORT}`;
 
 async function waitForService(url: string, maxRetries = 60, delayMs = 1000): Promise<boolean> {
   const statusUrl = `${url}/service/status`;
@@ -58,10 +60,10 @@ suite("Multi-node Center Cluster (dual cloud)", () => {
       expect(accountA).not.toBeNull();
       expect(accountB).not.toBeNull();
 
-      expect(accountA!.issuer).toContain("localhost:6300");
-      expect(accountB!.issuer).toContain("localhost:6400");
-      expect(accountA!.podUrl).toContain("localhost:6300");
-      expect(accountB!.podUrl).toContain("localhost:6400");
+      expect(accountA!.issuer).toContain(`localhost:${CLOUD_A_PORT}`);
+      expect(accountB!.issuer).toContain(`localhost:${CLOUD_B_PORT}`);
+      expect(accountA!.podUrl).toContain(`localhost:${CLOUD_A_PORT}`);
+      expect(accountB!.podUrl).toContain(`localhost:${CLOUD_B_PORT}`);
 
       const [sessionA, sessionB] = await Promise.all([
         loginWithClientCredentials(accountA!),
@@ -118,8 +120,8 @@ suite("Multi-node Center Cluster (dual cloud)", () => {
       oidcBRes.json() as Promise<{ issuer: string }>,
     ]);
 
-    expect(oidcA.issuer).toContain("localhost:6300");
-    expect(oidcB.issuer).toContain("localhost:6400");
+    expect(oidcA.issuer).toContain(`localhost:${CLOUD_A_PORT}`);
+    expect(oidcB.issuer).toContain(`localhost:${CLOUD_B_PORT}`);
     expect(oidcA.issuer).not.toEqual(oidcB.issuer);
   });
 });
