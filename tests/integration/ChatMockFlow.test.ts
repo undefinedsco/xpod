@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
+import { getFreePort } from '../../src/runtime/port-finder';
 import { VercelChatService } from '../../src/api/service/VercelChatService';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
@@ -66,14 +67,18 @@ vi.mock('@inrupt/solid-client-authn-node', () => {
 describe('Chat Mock Logic Flow', () => {
   let server: ApiServer;
   let store: PodChatKitStore;
-  const port = 3108;
-  const aiPort = 4003;
-  const baseUrl = `http://127.0.0.1:${port}`;
+  let port: number;
+  let aiPort: number;
+  let baseUrl: string;
 
   let aiRequestHeaders: any = null;
   let originalFetch: typeof fetch;
 
   beforeAll(async () => {
+    port = await getFreePort(10000);
+    aiPort = await getFreePort(port + 1);
+    baseUrl = `http://127.0.0.1:${port}`;
+
     // 1. Mock AI Backend fetch
     originalFetch = global.fetch;
     global.fetch = async (url, init) => {

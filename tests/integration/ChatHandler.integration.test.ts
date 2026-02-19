@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatRoutes, type ChatCompletionResponse } from '../../src/api/handlers/ChatHandler';
-import portfinder from 'portfinder';
+import { getFreePort } from '../../src/runtime/port-finder';
 
 const authMiddleware = new AuthMiddleware({
   authenticator: {
@@ -47,7 +47,7 @@ describe('ChatHandler Integration', () => {
   });
 
   beforeAll(async () => {
-    port = await portfinder.getPortPromise({ port: 3111, stopPort: 3999 });
+    port = await getFreePort(10000);
     baseUrl = `http://localhost:${port}`;
     server = new ApiServer({ port, authMiddleware });
     registerChatRoutes(server, { chatService: chatService as any });
@@ -151,7 +151,7 @@ describe('ChatHandler without service', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    port = await portfinder.getPortPromise({ port: 3112, stopPort: 3999 });
+    port = await getFreePort(10000);
     baseUrl = `http://localhost:${port}`;
     server = new ApiServer({ port, authMiddleware });
     registerChatRoutes(server, {});

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
+import { getFreePort } from '../../src/runtime/port-finder';
 import { VercelChatService } from '../../src/api/service/VercelChatService';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
@@ -44,11 +45,13 @@ const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').repla
 
 suite('Chat Pod E2E Integration (Real Network)', () => {
   let server: ApiServer;
-  const port = 3107;
-  const baseUrl = `http://localhost:${port}`;
+  let port: number;
+  let baseUrl: string;
   let account: AccountSetup;
 
   beforeAll(async () => {
+    port = await getFreePort(10000);
+    baseUrl = `http://localhost:${port}`;
     const createdAccount = await setupAccount(solidBaseUrl, 'chat-e2e');
     if (!createdAccount) {
       throw new Error(`Failed to setup account on ${solidBaseUrl}`);
