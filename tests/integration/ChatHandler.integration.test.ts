@@ -151,7 +151,7 @@ describe('ChatHandler without service', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    port = await getFreePort(10000);
+    port = await getFreePort(11000);
     baseUrl = `http://localhost:${port}`;
     server = new ApiServer({ port, authMiddleware });
     registerChatRoutes(server, {});
