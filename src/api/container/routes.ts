@@ -18,6 +18,7 @@ import { registerDevRoutes } from '../handlers/DevHandler';
 import { registerWebIdProfileRoutes } from '../handlers/WebIdProfileHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
+import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
@@ -78,11 +79,13 @@ function registerSharedRoutes(
   const apiKeyStore = container.resolve('apiKeyStore') as DrizzleClientCredentialsStore;
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
+  const chatKitStore = container.resolve('chatKitStore');
   registerSignalRoutes(server, { repository: nodeRepo });
   registerNodeRoutes(server, { repository: nodeRepo });
   registerApiKeyRoutes(server, { store: apiKeyStore });
   registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
+  registerChatKitV1Routes(server, { store: chatKitStore });
 
   // 开发模式路由 (仅 NODE_ENV=development 时启用)
   registerDevRoutes(server, {

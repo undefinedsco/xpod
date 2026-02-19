@@ -8,19 +8,45 @@ export interface AccountSetup {
   issuer: string;
 }
 
-function isCloudHost(baseUrl: string): boolean {
-  return baseUrl.includes("localhost:6300");
+type DockerServiceHost = {
+  hostHeader: string;
+  internalOrigin: string;
+  externalOrigin: string;
+};
+
+function dockerServiceForBaseUrl(baseUrl: string): DockerServiceHost | null {
+  // docker-compose.cluster.yml: cloud and cloud_b are exposed as localhost ports,
+  // but CSS may return internal service URLs in controls.
+  if (baseUrl.includes("localhost:6300")) {
+    return {
+      hostHeader: "cloud:6300",
+      internalOrigin: "http://cloud:6300",
+      externalOrigin: "http://localhost:6300",
+    };
+  }
+  if (baseUrl.includes("localhost:6400")) {
+    return {
+      hostHeader: "cloud_b:6400",
+      internalOrigin: "http://cloud_b:6400",
+      externalOrigin: "http://localhost:6400",
+    };
+  }
+  return null;
 }
 
 function normalizeServiceUrl(rawUrl: string, baseUrl: string): string {
-  if (isCloudHost(baseUrl)) {
-    return rawUrl.replace(/http:\/\/cloud:6300/g, "http://localhost:6300");
+  const service = dockerServiceForBaseUrl(baseUrl);
+  if (!service) {
+    return rawUrl;
   }
-  return rawUrl;
+
+  // Avoid regex escaping footguns in tests.
+  return rawUrl.split(service.internalOrigin).join(service.externalOrigin);
 }
 
 function hostHeaderFor(baseUrl: string): Record<string, string> {
-  return isCloudHost(baseUrl) ? { Host: "cloud:6300" } : {};
+  const service = dockerServiceForBaseUrl(baseUrl);
+  return service ? { Host: service.hostHeader } : {};
 }
 
 export async function discoverOidcIssuerFromWebId(webId: string, fallbackIssuer: string): Promise<string> {

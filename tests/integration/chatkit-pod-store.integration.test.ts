@@ -42,7 +42,7 @@ const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const shouldRun = RUN_INTEGRATION_TESTS;
 const suite = shouldRun ? describe : describe.skip;
 
-const solidBaseUrl = (process.env.CSS_BASE_URL ?? process.env.XPOD_SERVER_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
+const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
 
 suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;

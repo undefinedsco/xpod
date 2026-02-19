@@ -4,6 +4,21 @@
 
 xpod 的 Agent 系统让 AI 成为用户 Pod 的智能管家。当前聚焦 **L0 索引**（文件摘要），为文件生成描述和 embedding，使其可检索。
 
+## 实施进展（2026-02）
+
+### 已完成
+
+- **ChatKit thread runtime 支持 ACP runner**：支持以 ACP CLI 作为“工作进程”执行 thread（用于 codebuddy / claude-code / codex 等）。
+- **集成测试基线稳定**：lite 集成测试改为本地自动拉起 xpod 并动态选择端口，避免写死端口/旧凭据造成随机失败。
+
+### 未完成 / TODO
+
+- **Agent 数据模型（Pod 内）**  
+  需要把 agent/provider/credential 配置落到 Pod 侧可管理的数据结构里，并把 `test:setup` 升级为“seed agent 配置 + seed 凭据”，从而减少 ACP 运行与测试对环境变量的依赖。
+
+- **Codex runner 的 Responses 兼容策略**  
+  需要明确：codex runner 走哪种 API 形态（OpenAI Responses / xpod responses 适配 / OpenRouter 兼容层），并给出可复现的 smoke 测试入口。
+
 ## 架构
 
 ```

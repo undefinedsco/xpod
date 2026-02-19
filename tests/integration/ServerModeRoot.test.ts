@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { resolveSolidIntegrationConfig } from '../http/utils/integrationEnv';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 suite('Server Root Access (Integration)', () => {
-  const baseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/?$/, '/');
+  const { baseUrl } = resolveSolidIntegrationConfig();
 
   it('should return 200 OK for GET /', async () => {
     const response = await fetch(baseUrl);

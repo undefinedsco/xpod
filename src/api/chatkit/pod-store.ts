@@ -90,11 +90,48 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     const auth = context.auth as AuthContext | undefined;
 
-    if (!auth || !isSolidAuth(auth) || !auth.clientId || !auth.clientSecret) {
-      this.logger.warn('No valid client credentials in context, cannot access Pod');
+    if (!auth || !isSolidAuth(auth)) {
+      this.logger.warn('No valid solid auth in context, cannot access Pod');
       return null;
     }
 
+    // Preferred path: directly use caller's Solid access token.
+    if (auth.accessToken && auth.webId) {
+      try {
+        if (auth.tokenType === 'DPoP') {
+          this.logger.warn('Using DPoP access token without proof key; Pod access may fail if issuer enforces DPoP proof');
+        }
+
+        const authFetch = this.createAccessTokenFetch(auth.accessToken, auth.tokenType);
+        const db = drizzle(
+          { fetch: authFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
+          { schema },
+        );
+
+        this.logger.info(`Initializing tables for Pod (access token): ${auth.webId}`);
+        try {
+          await db.init([Chat, Thread, Message]);
+          this.logger.info('Tables initialized successfully');
+        } catch (initError) {
+          this.logger.error(`Failed to init tables: ${initError}`);
+        }
+
+        (context as any)._cachedDb = db;
+        (context as any)._cachedFetch = authFetch;
+        (context as any)._cachedWebId = auth.webId;
+        return db;
+      } catch (error) {
+        this.logger.error(`Failed to get Pod db with access token: ${error}`);
+        return null;
+      }
+    }
+
+    if (!auth.clientId || !auth.clientSecret) {
+      this.logger.warn('No accessToken and no valid client credentials in context, cannot access Pod');
+      return null;
+    }
+
+    // Fallback path: login with client credentials to obtain a Pod session.
     const session = new Session();
     try {
       await session.login({
@@ -135,6 +172,23 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       this.logger.error(`Failed to get Pod db: ${error}`);
       return null;
     }
+  }
+
+  private createAccessTokenFetch(accessToken: string, tokenType?: 'Bearer' | 'DPoP'): typeof fetch {
+    const scheme = tokenType ?? 'Bearer';
+    return async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ): Promise<Response> => {
+      const headers = new Headers(init?.headers);
+      if (!headers.has('Authorization')) {
+        headers.set('Authorization', `${scheme} ${accessToken}`);
+      }
+      return fetch(input, {
+        ...init,
+        headers,
+      });
+    };
   }
 
   /**
@@ -216,6 +270,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
    */
   private threadRecordToMetadata(record: ThreadRecord): ThreadMetadata {
     const chatId = this.extractChatId(record.chatId);
+    let extra: Record<string, unknown> | undefined;
+    if (record.metadata) {
+      try {
+        extra = JSON.parse(record.metadata) as Record<string, unknown>;
+      } catch {
+        // ignore invalid metadata
+      }
+    }
 
     return {
       id: record.id,
@@ -225,6 +287,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       updated_at: record.updatedAt ? Math.floor(new Date(record.updatedAt).getTime() / 1000) : nowTimestamp(),
       metadata: {
         chat_id: chatId,
+        ...(extra ?? {}),
       },
     };
   }
@@ -392,6 +455,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 从 metadata 获取 chat_id
     const chatId = this.getChatIdFromMetadata(thread.metadata);
+    // Persist all metadata except chat_id (which is derived from storage location).
+    const metadataToPersist = { ...(thread.metadata ?? {}) } as Record<string, unknown>;
+    delete (metadataToPersist as any).chat_id;
+    const metadataJson = Object.keys(metadataToPersist).length > 0 ? JSON.stringify(metadataToPersist) : null;
 
     // 确保 Chat 容器存在
     await this.ensureChat(chatId, context);
@@ -409,6 +476,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       await db.update(Thread).set({
         title: thread.title || null,
         status: this.statusToString(thread.status),
+        metadata: metadataJson,
         updatedAt: now,
       }).where(eq(Thread.id, thread.id));
     } else {
@@ -418,6 +486,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
         chatId,  // 关联到 Chat 容器
         title: thread.title || null,
         status: this.statusToString(thread.status),
+        metadata: metadataJson,
         createdAt: new Date(thread.created_at * 1000).toISOString(),
         updatedAt: now,
       });
@@ -426,7 +495,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     // 缓存完整的 Thread metadata，确保 metadata.chat_id 包含正确的值
     const threadMetadata: ThreadMetadata = {
       ...thread,
-      metadata: { ...thread.metadata, chat_id: chatId },
+      metadata: { ...(thread.metadata ?? {}), chat_id: chatId },
     };
     this.cacheThreadMetadata(context, threadMetadata);
   }

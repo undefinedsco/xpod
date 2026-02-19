@@ -6,8 +6,8 @@ import path from 'path';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { GatewayProxy } from './gateway/Proxy';
-import { getFreePort } from './gateway/port-finder';
+import { GatewayProxy } from './runtime/Proxy';
+import { getFreePort } from './runtime/port-finder';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
 

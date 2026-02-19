@@ -76,7 +76,7 @@
       "comment": "Shared QuintStore instance (SQLite for local)",
       "@id": "urn:undefineds:xpod:QuintStore",
       "@type": "SqliteQuintStore",
-      "path": {
+      "options_path": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }

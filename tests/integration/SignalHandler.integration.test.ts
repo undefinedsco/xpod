@@ -1,15 +1,17 @@
 import { beforeAll, describe, it, expect } from "vitest";
 import { Session } from "@inrupt/solid-client-authn-node";
 import { setupAccount } from "./helpers/solidAccount";
+import { resolveSolidIntegrationConfig } from "../http/utils/integrationEnv";
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
-const dockerApiBaseUrl = (process.env.CSS_BASE_URL ?? "http://localhost:6300").replace(/\/$/, "") + "/";
-const dockerIdpBaseUrl = (process.env.CSS_BASE_URL ?? "http://localhost:6300").replace(/\/$/, "");
+const { baseUrl: envBaseUrl, oidcIssuer: envIssuer } = resolveSolidIntegrationConfig();
+const dockerApiBaseUrl = "http://localhost:5739/";
+const dockerIdpBaseUrl = "http://localhost:5739";
 
-const externalApiBaseUrl = process.env.XPOD_SERVER_BASE_URL ?? "http://localhost:3000/";
-const externalIssuer = process.env.SOLID_OIDC_ISSUER ?? externalApiBaseUrl;
+const externalApiBaseUrl = envBaseUrl;
+const externalIssuer = envIssuer;
 const externalClientId = process.env.SOLID_CLIENT_ID;
 const externalClientSecret = process.env.SOLID_CLIENT_SECRET;
 const useDockerDefaults = !externalClientId || !externalClientSecret;
@@ -19,7 +21,7 @@ suite("SignalHandler Integration", () => {
   let authFetch: typeof fetch;
   let createdNodeId: string;
 
-  const baseUrl = useDockerDefaults ? dockerApiBaseUrl : externalApiBaseUrl;
+  const baseUrl = `${(useDockerDefaults ? dockerApiBaseUrl : externalApiBaseUrl).replace(/\/$/, "")}/`;
 
   beforeAll(async () => {
     session = new Session();

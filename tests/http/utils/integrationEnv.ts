@@ -1,4 +1,4 @@
-const defaultBaseUrl = 'http://localhost:3000/';
+const defaultBaseUrl = 'http://localhost:5739/';
 
 function ensureTrailingSlash(value: string): string {
   return value.endsWith('/') ? value : `${value}/`;
@@ -37,7 +37,6 @@ export function resolveSolidIntegrationConfig(options?: {
   const candidateBase =
     options?.baseUrl ||
     process.env.CSS_BASE_URL ||
-    process.env.XPOD_SERVER_BASE_URL ||
     defaultBaseUrl;
 
   const baseUrl = ensureTrailingSlash(candidateBase);

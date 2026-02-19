@@ -8,6 +8,11 @@ import type { StoreContext } from '../chatkit/store';
 import { type AuthContext, getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
 import { isDefaultAgentAvailable, runDefaultAgent, streamDefaultAgent, type DefaultAgentContext } from '../chatkit/default-agent';
 import { CredentialStatus } from '../../credential/schema/types';
+import {
+  getDefaultBaseUrl,
+  supportsResponsesApi,
+  supportsMessagesApi,
+} from './provider-registry';
 
 // Create a proxy-aware fetch function
 function createProxyFetch(proxyUrl: string): typeof fetch {
@@ -33,21 +38,7 @@ export class VercelChatService {
   }
 
 
-  private getDefaultBaseUrl(provider?: string): string {
-    const normalized = (provider || 'openrouter').toLowerCase();
-    const urls: Record<string, string> = {
-      openai: 'https://api.openai.com/v1',
-      google: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      anthropic: 'https://api.anthropic.com/v1',
-      deepseek: 'https://api.deepseek.com/v1',
-      openrouter: 'https://openrouter.ai/api/v1',
-      ollama: 'http://localhost:11434/v1',
-      mistral: 'https://api.mistral.ai/v1',
-      cohere: 'https://api.cohere.ai/v1',
-      zhipu: 'https://open.bigmodel.cn/api/paas/v4',
-    };
-    return urls[normalized] || urls.openrouter;
-  }
+
 
   private async getProviderConfig(context: StoreContext): Promise<{
     baseURL: string;
@@ -66,7 +57,7 @@ export class VercelChatService {
 
     // Priority: Pod config > DEFAULT_API_KEY env > Default Agent fallback
     if (config?.apiKey) {
-      const baseURL = config.baseUrl || this.getDefaultBaseUrl('openrouter');
+      const baseURL = config.baseUrl || getDefaultBaseUrl();
       const proxy = config.proxyUrl;
       this.logger.info(`Provider config: baseURL=${baseURL}, proxy=${proxy || 'none'} (source=pod)`);
       return { baseURL, apiKey: config.apiKey, proxy, credentialId: config.credentialId };
@@ -74,7 +65,7 @@ export class VercelChatService {
 
     if (process.env.DEFAULT_API_KEY) {
       const provider = process.env.DEFAULT_PROVIDER || 'openrouter';
-      const baseURL = process.env.DEFAULT_BASE_URL || this.getDefaultBaseUrl(provider);
+      const baseURL = process.env.DEFAULT_API_BASE || getDefaultBaseUrl(provider);
       this.logger.info(`Provider config: baseURL=${baseURL}, proxy=none (source=default-env)`);
       return { baseURL, apiKey: process.env.DEFAULT_API_KEY, proxy: undefined, credentialId: undefined };
     }
@@ -201,7 +192,15 @@ export class VercelChatService {
       return this.responsesWithDefaultAgent(body, auth);
     }
 
-    const { baseURL, apiKey, proxy, credentialId } = providerConfig;
+    const { baseURL } = providerConfig;
+
+    // Only OpenAI natively supports /v1/responses; all others go through Chat Completions
+    if (!supportsResponsesApi(baseURL)) {
+      this.logger.info(`Provider ${baseURL} does not support Responses API, converting to Chat Completions for ${displayName} (acc: ${accountId})`);
+      return this.responsesViaCompletions(body, context, providerConfig);
+    }
+
+    const { apiKey, proxy, credentialId } = providerConfig;
 
     // Remove trailing slash if present
     const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
@@ -261,7 +260,15 @@ export class VercelChatService {
       return this.messagesWithDefaultAgent(body, auth);
     }
 
-    const { baseURL, apiKey, proxy, credentialId } = providerConfig;
+    const { baseURL } = providerConfig;
+
+    // Only Anthropic natively supports /v1/messages; all others go through Chat Completions
+    if (!supportsMessagesApi(baseURL)) {
+      this.logger.info(`Provider ${baseURL} does not support Messages API, converting to Chat Completions for ${displayName} (acc: ${accountId})`);
+      return this.messagesViaCompletions(body, context, providerConfig);
+    }
+
+    const { apiKey, proxy, credentialId } = providerConfig;
 
     // Remove trailing slash if present
     const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
@@ -313,6 +320,112 @@ export class VercelChatService {
     }
   }
 
+
+
+
+  private async responsesViaCompletions(
+    body: any,
+    context: StoreContext,
+    providerConfig: { baseURL: string; apiKey: string; proxy?: string; credentialId?: string },
+  ): Promise<any> {
+    const prompt = this.extractPromptFromResponsesBody(body);
+    const model = body?.model || process.env.DEFAULT_MODEL || 'openai/gpt-4o-mini';
+
+    const provider = await this.getProvider(context);
+    const result = await generateText({
+      model: provider.chat(model),
+      messages: [{ role: 'user' as const, content: prompt }],
+      ...(body?.temperature != null ? { temperature: body.temperature } : {}),
+      ...(body?.max_output_tokens != null ? { maxTokens: body.max_output_tokens } : {}),
+    } as any);
+
+    if (providerConfig.credentialId) {
+      this.store.recordCredentialSuccess(context, providerConfig.credentialId).catch(() => {});
+    }
+
+    const outputText = result.text;
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      id: `resp_${Date.now()}`,
+      object: 'response',
+      created: now,
+      status: 'completed',
+      model,
+      output: [{
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: outputText }],
+      }],
+      usage: {
+        input_tokens: (result.usage as any)?.promptTokens ?? prompt.length,
+        output_tokens: (result.usage as any)?.completionTokens ?? outputText.length,
+        total_tokens: (result.usage as any)?.totalTokens ?? (prompt.length + outputText.length),
+      },
+    };
+  }
+
+  private async messagesViaCompletions(
+    body: any,
+    context: StoreContext,
+    providerConfig: { baseURL: string; apiKey: string; proxy?: string; credentialId?: string },
+  ): Promise<any> {
+    const prompt = this.extractPromptFromMessagesBody(body);
+    const model = body?.model || process.env.DEFAULT_MODEL || 'openai/gpt-4o-mini';
+
+    const coreMessages: any[] = [];
+    if (body?.system) {
+      const systemText = typeof body.system === 'string'
+        ? body.system
+        : Array.isArray(body.system)
+          ? body.system.map((b: any) => b?.text ?? '').join('\n')
+          : '';
+      if (systemText) {
+        coreMessages.push({ role: 'system', content: systemText });
+      }
+    }
+    if (Array.isArray(body?.messages)) {
+      for (const msg of body.messages) {
+        if (msg?.role && msg?.content != null) {
+          const content = typeof msg.content === 'string'
+            ? msg.content
+            : Array.isArray(msg.content)
+              ? msg.content.filter((p: any) => p?.type === 'text').map((p: any) => p.text).join('\n')
+              : String(msg.content);
+          coreMessages.push({ role: msg.role, content });
+        }
+      }
+    }
+    if (coreMessages.length === 0) {
+      coreMessages.push({ role: 'user', content: prompt });
+    }
+
+    const provider = await this.getProvider(context);
+    const result = await generateText({
+      model: provider.chat(model),
+      messages: coreMessages,
+      ...(body?.temperature != null ? { temperature: body.temperature } : {}),
+      ...(body?.max_tokens != null ? { maxTokens: body.max_tokens } : {}),
+    } as any);
+
+    if (providerConfig.credentialId) {
+      this.store.recordCredentialSuccess(context, providerConfig.credentialId).catch(() => {});
+    }
+
+    const text = result.text;
+    return {
+      id: `msg_${Date.now()}`,
+      type: 'message',
+      role: 'assistant',
+      model,
+      content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: (result.usage as any)?.promptTokens ?? prompt.length,
+        output_tokens: (result.usage as any)?.completionTokens ?? text.length,
+      },
+    };
+  }
 
   private async responsesWithDefaultAgent(body: any, auth: AuthContext): Promise<any> {
     const prompt = this.extractPromptFromResponsesBody(body);

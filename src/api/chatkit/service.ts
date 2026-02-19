@@ -23,6 +23,7 @@ import type {
   Page,
   Thread,
   UserMessageContent,
+  ClientToolCallItem,
 } from './types';
 import {
   isStreamingReq,
@@ -30,6 +31,7 @@ import {
   nowTimestamp,
   extractUserMessageText,
 } from './types';
+import { PtyThreadRuntime, type PtyRuntimeConfig, type RunnerType } from './runtime/PtyThreadRuntime';
 
 /**
  * AI Provider interface for generating responses
@@ -57,6 +59,11 @@ export interface ChatKitServiceOptions<TContext = StoreContext> {
   store: ChatKitStore<TContext>;
   aiProvider: AiProvider;
   systemPrompt?: string;
+  /**
+   * Enable xpod PTY runtime threads (local-only feature).
+   * When enabled, thread.metadata.runtime controls the runner/worktree.
+   */
+  enablePtyRuntime?: boolean;
 }
 
 /**
@@ -85,11 +92,15 @@ export class ChatKitService<TContext = StoreContext> {
   private readonly store: ChatKitStore<TContext>;
   private readonly aiProvider: AiProvider;
   private readonly systemPrompt: string;
+  private readonly enablePtyRuntime: boolean;
+  private readonly ptyRuntime: PtyThreadRuntime;
 
   public constructor(options: ChatKitServiceOptions<TContext>) {
     this.store = options.store;
     this.aiProvider = options.aiProvider;
     this.systemPrompt = options.systemPrompt ?? 'You are a helpful assistant.';
+    this.enablePtyRuntime = options.enablePtyRuntime ?? false;
+    this.ptyRuntime = new PtyThreadRuntime();
   }
 
   /**
@@ -149,7 +160,7 @@ export class ChatKitService<TContext = StoreContext> {
   private async *processStreaming(request: StreamingReq, context: TContext): AsyncIterable<ThreadStreamEvent> {
     switch (request.type) {
       case 'threads.create':
-        yield* this.handleThreadsCreate(request.params, context);
+        yield* this.handleThreadsCreate(request.params, context, request.metadata);
         break;
       case 'threads.add_user_message':
         yield* this.handleThreadsAddUserMessage(request.params, context);
@@ -200,6 +211,7 @@ export class ChatKitService<TContext = StoreContext> {
   private async *handleThreadsCreate(
     params: { input?: { content: UserMessageContent[]; inference_options?: any } },
     context: TContext,
+    metadata?: Record<string, unknown>,
   ): AsyncIterable<ThreadStreamEvent> {
     // Create new thread
     const threadId = this.store.generateThreadId(context);
@@ -210,6 +222,7 @@ export class ChatKitService<TContext = StoreContext> {
       status: { type: 'active' },
       created_at: now,
       updated_at: now,
+      metadata: metadata && Object.keys(metadata).length > 0 ? metadata : undefined,
     };
 
     await this.store.saveThread(thread, context);
@@ -235,7 +248,7 @@ export class ChatKitService<TContext = StoreContext> {
         item: userMessage,
       } as ThreadItemDoneEvent;
 
-      // Generate AI response
+      // Generate response (AI or PTY)
       yield* this.respond(thread, userMessage, context, params.input.inference_options);
     }
   }
@@ -248,7 +261,7 @@ export class ChatKitService<TContext = StoreContext> {
     context: TContext,
   ): AsyncIterable<ThreadStreamEvent> {
     const thread = await this.store.loadThread(params.thread_id, context);
-    
+
     // Create and save user message
     const userMessage = await this.createUserMessage(params.thread_id, params.input.content, context);
     await this.store.addThreadItem(params.thread_id, userMessage, context);
@@ -263,7 +276,7 @@ export class ChatKitService<TContext = StoreContext> {
       item: userMessage,
     } as ThreadItemDoneEvent;
 
-    // Generate AI response
+    // Generate response (AI or PTY)
     yield* this.respond(thread, userMessage, context, params.input.inference_options);
   }
 
@@ -289,6 +302,95 @@ export class ChatKitService<TContext = StoreContext> {
         type: 'thread.item.done',
         item: updatedItem,
       } as ThreadItemDoneEvent;
+
+      // ACP tool-call continuation: respond to the pending ACP request and stream follow-up output.
+      try {
+        const thread = await this.store.loadThread(params.thread_id, context);
+        const ptyConfig = this.getPtyConfig(thread);
+        let assistantItem: AssistantMessageItem | undefined;
+        let assistantText = '';
+
+        const idleMs = ptyConfig?.idleMs ?? 500;
+        for await (
+          const ev of this.ptyRuntime.respondToRequest(
+            params.thread_id,
+            item.call_id,
+            params.output,
+            { idleMs, authWaitMs: ptyConfig?.authWaitMs },
+          )
+        ) {
+          if (ev.type === 'text') {
+            if (!assistantItem) {
+              const assistantId = this.store.generateItemId('assistant_message', thread, context);
+              assistantItem = {
+                id: assistantId,
+                thread_id: params.thread_id,
+                type: 'assistant_message',
+                content: [{ type: 'output_text', text: '' }],
+                status: 'in_progress',
+                created_at: nowTimestamp(),
+              };
+              await this.store.addThreadItem(params.thread_id, assistantItem, context);
+              yield { type: 'thread.item.added', item: assistantItem } as ThreadItemAddedEvent;
+            }
+
+            assistantText += ev.text;
+            yield {
+              type: 'thread.item.updated',
+              item_id: assistantItem.id,
+              update: {
+                type: 'assistant_message.content_part.text_delta',
+                part_index: 0,
+                delta: ev.text,
+              },
+            } as ThreadItemUpdatedEvent;
+            continue;
+          }
+
+          if (ev.type === 'auth_required') {
+            yield {
+              type: 'client_effect',
+              effect: {
+                effect_type: 'runtime.auth_required',
+                data: {
+                  method: ev.method,
+                  url: ev.url,
+                  message: ev.message,
+                  options: ev.options,
+                },
+              },
+            };
+            continue;
+          }
+
+          if (ev.type === 'tool_call') {
+            const toolItem: ClientToolCallItem = {
+              id: this.store.generateItemId('client_tool_call', thread, context),
+              thread_id: params.thread_id,
+              type: 'client_tool_call',
+              name: ev.name,
+              arguments: ev.arguments,
+              call_id: ev.requestId,
+              status: 'pending',
+              created_at: nowTimestamp(),
+            };
+            await this.store.addThreadItem(params.thread_id, toolItem, context);
+            yield { type: 'thread.item.added', item: toolItem } as ThreadItemAddedEvent;
+          }
+        }
+
+        if (assistantItem) {
+          const completedItem: AssistantMessageItem = {
+            ...assistantItem,
+            content: [{ type: 'output_text', text: assistantText }],
+            status: 'completed',
+          };
+          await this.store.saveItem(params.thread_id, completedItem, context);
+          yield { type: 'thread.item.done', item: completedItem } as ThreadItemDoneEvent;
+        }
+      } catch {
+        // Ignore: non-runtime tool calls.
+      }
     }
   }
 
@@ -464,6 +566,12 @@ export class ChatKitService<TContext = StoreContext> {
     context: TContext,
     inferenceOptions?: any,
   ): AsyncIterable<ThreadStreamEvent> {
+    const ptyConfig = this.getPtyConfig(thread);
+    if (ptyConfig) {
+      yield* this.respondWithPty(thread, userMessage, context, ptyConfig);
+      return;
+    }
+
     // Build conversation history
     const messages = await this.buildConversationHistory(thread.id, context);
     
@@ -559,6 +667,157 @@ export class ChatKitService<TContext = StoreContext> {
         // Don't throw - title generation failure shouldn't affect the response
       }
     }
+  }
+
+  private getPtyConfig(thread: ThreadMetadata): PtyRuntimeConfig | null {
+    if (!this.enablePtyRuntime) {
+      return null;
+    }
+    const runtime = (thread.metadata as any)?.runtime;
+    if (!runtime) {
+      return null;
+    }
+    if (!runtime.workspace || !runtime.runner) {
+      throw new Error('Invalid thread.metadata.runtime: workspace/runner are required');
+    }
+    const runnerType = runtime.runner.type as RunnerType;
+    if (!runnerType) {
+      throw new Error('Invalid thread.metadata.runtime.runner.type');
+    }
+    // Enforce ACP-only: raw/stdio mode is removed.
+    const protocol = 'acp';
+    // Keep runner args server-owned by default, unless explicitly allowed.
+    // This avoids exposing per-runner argv details to end users.
+    const allowCustomArgv = runtime.runner.allowCustomArgv === true;
+    const argv = allowCustomArgv ? runtime.runner.argv : undefined;
+    return {
+      ...runtime,
+      runner: {
+        ...runtime.runner,
+        argv,
+        protocol,
+      },
+      agentConfig: runtime.agentConfig,
+    } as PtyRuntimeConfig;
+  }
+
+  private async *respondWithPty(
+    thread: ThreadMetadata,
+    userMessage: UserMessageItem,
+    context: TContext,
+    ptyConfig: PtyRuntimeConfig,
+  ): AsyncIterable<ThreadStreamEvent> {
+    const userText = extractUserMessageText(userMessage.content);
+    if (!userText.trim()) {
+      return;
+    }
+
+    await this.ptyRuntime.ensureStarted(thread.id, ptyConfig);
+
+    const assistantId = this.store.generateItemId('assistant_message', thread, context);
+    const assistantItem: AssistantMessageItem = {
+      id: assistantId,
+      thread_id: thread.id,
+      type: 'assistant_message',
+      content: [{ type: 'output_text', text: '' }],
+      status: 'in_progress',
+      created_at: nowTimestamp(),
+    };
+
+    await this.store.addThreadItem(thread.id, assistantItem, context);
+    yield { type: 'thread.item.added', item: assistantItem } as ThreadItemAddedEvent;
+
+    let fullText = '';
+    let sawRuntimeError: string | undefined;
+    const idleMs = ptyConfig.idleMs ?? 500;
+    for await (const ev of this.ptyRuntime.sendMessage(thread.id, userText, { idleMs, authWaitMs: ptyConfig.authWaitMs })) {
+      if (ev.type === 'text') {
+        fullText += ev.text;
+        yield {
+          type: 'thread.item.updated',
+          item_id: assistantId,
+          update: {
+            type: 'assistant_message.content_part.text_delta',
+            part_index: 0,
+            delta: ev.text,
+          },
+        } as ThreadItemUpdatedEvent;
+        continue;
+      }
+
+      if (ev.type === 'error') {
+        sawRuntimeError = ev.message;
+        yield {
+          type: 'error',
+          error: {
+            code: 'runtime_error',
+            message: ev.message,
+          },
+        } as ThreadStreamEvent;
+        break;
+      }
+
+      if (ev.type === 'auth_required') {
+        // Runtime-only. Do not persist sensitive auth details into thread history.
+        yield {
+          type: 'client_effect',
+          effect: {
+            effect_type: 'runtime.auth_required',
+            data: {
+              method: ev.method,
+              url: ev.url,
+              message: ev.message,
+              options: ev.options,
+            },
+          },
+        };
+        continue;
+      }
+
+      if (ev.type === 'tool_call') {
+        const toolItem: ClientToolCallItem = {
+          id: this.store.generateItemId('client_tool_call', thread, context),
+          thread_id: thread.id,
+          type: 'client_tool_call',
+          name: ev.name,
+          arguments: ev.arguments,
+          call_id: ev.requestId,
+          status: 'pending',
+          created_at: nowTimestamp(),
+        };
+        await this.store.addThreadItem(thread.id, toolItem, context);
+        yield { type: 'thread.item.added', item: toolItem } as ThreadItemAddedEvent;
+
+        // Pause: client must call threads.add_client_tool_output to continue.
+        const incomplete: AssistantMessageItem = {
+          ...assistantItem,
+          content: [{ type: 'output_text', text: fullText }],
+          status: 'incomplete',
+        };
+        await this.store.saveItem(thread.id, incomplete, context);
+        yield { type: 'thread.item.done', item: incomplete } as ThreadItemDoneEvent;
+        return;
+      }
+    }
+
+    if (sawRuntimeError) {
+      const incomplete: AssistantMessageItem = {
+        ...assistantItem,
+        content: [{ type: 'output_text', text: fullText }],
+        status: 'incomplete',
+      };
+      await this.store.saveItem(thread.id, incomplete, context);
+      yield { type: 'thread.item.done', item: incomplete } as ThreadItemDoneEvent;
+      return;
+    }
+
+    const completedItem: AssistantMessageItem = {
+      ...assistantItem,
+      content: [{ type: 'output_text', text: fullText }],
+      status: 'completed',
+    };
+    await this.store.saveItem(thread.id, completedItem, context);
+    yield { type: 'thread.item.done', item: completedItem } as ThreadItemDoneEvent;
   }
 
   /**

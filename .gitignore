@@ -71,7 +71,7 @@ debugging_report.md
 openspec/
 
 # Binary libraries (generated during build)
-lib/
+/lib/
 
 # Runtime generated config
 .xpod/runtime/
