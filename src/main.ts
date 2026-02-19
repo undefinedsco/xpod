@@ -262,15 +262,16 @@ async function startRuntime(options: RunOptions): Promise<void> {
   logger.info(`  - API (internal): http://localhost:${apiPort}`);
 
   const supervisor = new Supervisor();
-  const cssBinary = path.join(PROJECT_ROOT, 'node_modules/@solid/community-server/bin/server.js');
+  const cssBinary = require.resolve('@solid/community-server/bin/server.js');
+  const cssModuleRoot = path.dirname(require.resolve('@solid/community-server/package.json'));
 
   supervisor.register({
     name: 'css',
-    command: process.execPath, // Keep child runtime aligned with current Node version
+    command: process.execPath,
     args: [
       cssBinary,
       '-c', configPath,
-      '-m', PROJECT_ROOT,
+      '-m', cssModuleRoot,
       '-p', cssPort.toString(),
       '-b', baseUrl,
     ],
@@ -284,7 +285,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
   supervisor.register({
     name: 'api',
     command: process.execPath,
-    args: [path.join(PROJECT_ROOT, 'dist/api/main.js')],
+    args: [path.join(__dirname, 'api', 'main.js')],
     env: {
       ...process.env,
       API_PORT: apiPort.toString(),
