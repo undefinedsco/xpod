@@ -110,7 +110,8 @@ export class MinioDataAccessor implements DataAccessor {
    */
   public async getPresignedUrl(identifier: ResourceIdentifier, expires = 3600): Promise<string> {
     const url = new URL(identifier.path);
-    return this.client.presignedGetObject(this.bucketName, url.pathname, expires);
+    const objectKey = url.pathname.replace(/^\//, '');
+    return this.client.presignedGetObject(this.bucketName, objectKey, expires);
   }
 
   /**

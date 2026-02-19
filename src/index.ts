@@ -44,9 +44,6 @@ import { EdgeNodeModeDetector } from './edge/EdgeNodeModeDetector';
 import { ClusterIdentifierStrategy } from './util/identifiers/ClusterIdentifierStrategy';
 import { CenterNodeRegistrationService } from './identity/CenterNodeRegistrationService';
 import { PodRoutingHttpHandler } from './http/PodRoutingHttpHandler';
-import { TieredMinioDataAccessor } from './storage/accessors/TieredMinioDataAccessor';
-import { PodMigrationHttpHandler } from './http/cluster/PodMigrationHttpHandler';
-import { PodMigrationService } from './service/PodMigrationService';
 import { ReactAppViewHandler } from './identity/ReactAppViewHandler';
 import { SqliteQuintStore } from './storage/quint/SqliteQuintStore';
 import { PgQuintStore } from './storage/quint/PgQuintStore';
@@ -74,8 +71,6 @@ import { DisabledOidcHandler } from './identity/oidc/DisabledOidcHandler';
 import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentityProviderHandler';
 import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
-export type { MigratableDataAccessor, MigrationProgress } from './storage/MigratableDataAccessor';
-// Note: isMigratableAccessor is a function, not exported to avoid componentsjs-generator issues
 export type {
   DnsProvider,
   ListDnsRecordsInput,
@@ -150,9 +145,6 @@ export {
   UsageTrackingStore,
   CenterNodeRegistrationService,
   PodRoutingHttpHandler,
-  TieredMinioDataAccessor,
-  PodMigrationHttpHandler,
-  PodMigrationService,
   ReactAppViewHandler,
   // Quint exports
   QuintStore,

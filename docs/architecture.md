@@ -40,7 +40,7 @@ xpod 是基于 Community Solid Server (CSS) 的扩展，支持：
 
 | 组件 | 文件 | 说明 |
 |------|------|------|
-| `TieredMinioDataAccessor` | `src/storage/accessors/TieredMinioDataAccessor.ts` | 分层存储：本地缓存 + COS + 跨区域 fallback |
+| `MinioDataAccessor` | `src/storage/accessors/MinioDataAccessor.ts` | COS/R2 存储 + presigned URL 302 直出 |
 | `PodRoutingHttpHandler` | `src/http/PodRoutingHttpHandler.ts` | Pod 路由：查询 Pod 位置，代理到目标节点 |
 | `CenterNodeRegistrationService` | `src/identity/CenterNodeRegistrationService.ts` | 节点注册：自动发现内网 IP，心跳上报 |
 | `PodMigrationService` | `src/service/PodMigrationService.ts` | Pod 迁移：即时切换 node_id |

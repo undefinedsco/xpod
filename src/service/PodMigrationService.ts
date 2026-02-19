@@ -24,8 +24,7 @@ export interface MigrationResult {
  * 
  * Data does NOT need to be copied upfront:
  * - Metadata is in shared PostgreSQL (Quadstore), already accessible from all nodes
- * - Binary files use cross-region fallback read (TieredMinioDataAccessor)
- * - Files are lazily copied on first access if configured
+ * - Binary files use presigned URL redirect (302) from object storage
  * 
  * This provides instant, user-transparent migration.
  */

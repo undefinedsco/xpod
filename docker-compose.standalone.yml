@@ -39,7 +39,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-    command: ["sh", "-c", "node dist/main.js -m local -p 5739"]
+    command: ["sh", "-c", "node dist/main.js -m local -p 5739 --host 0.0.0.0"]
 
 volumes:
   standalone_lite_data:

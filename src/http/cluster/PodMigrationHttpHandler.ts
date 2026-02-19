@@ -28,7 +28,7 @@ interface MigrateRequest {
  * HTTP Handler for Pod migration operations.
  * 
  * Migration is now instant - it only updates the nodeId in the database.
- * Binary files are read via cross-region fallback (TieredMinioDataAccessor).
+ * Binary files are accessed via presigned URL redirect (302) from object storage.
  * 
  * Endpoints:
  * - POST /.cluster/pods/{podId}/migrate - Migrate pod to target node (instant)

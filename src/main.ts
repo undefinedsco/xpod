@@ -232,7 +232,6 @@ async function startRuntime(options: RunOptions): Promise<void> {
     ? requestedPort
     : parseInt(process.env.XPOD_PORT ?? process.env.PORT ?? '3000', 10);
   const host = options.host ?? '127.0.0.1';
-
   let configPath = 'config/local.json';
   if (options.config) {
     configPath = options.config;
@@ -293,9 +292,9 @@ async function startRuntime(options: RunOptions): Promise<void> {
     },
   });
 
-  // Default bind host: prefer explicit XPOD_LISTEN_HOST; otherwise derive from the public Base URL.
+  // Bind host: use CLI --host value; if not explicitly set, derive from the public Base URL.
   // In local dev/sandboxed environments, binding 0.0.0.0 can fail with EPERM.
-  const bindHost = process.env.XPOD_LISTEN_HOST || (() => {
+  const bindHost = options.host || (() => {
     try {
       const hostname = new URL(baseUrl).hostname;
       if (hostname === 'localhost') return '127.0.0.1';
@@ -509,7 +508,7 @@ async function main(): Promise<void> {
       .option('config', { alias: 'c', type: 'string', description: 'Path to config file (overrides --mode)' })
       .option('env', { alias: 'e', type: 'string', description: 'Path to .env file' })
       .option('port', { alias: 'p', type: 'number', description: 'Gateway port', default: 3000 })
-      .option('host', { type: 'string', description: 'Gateway host', default: '127.0.0.1' })
+      .option('host', { type: 'string', description: 'Gateway bind host' })
       .help()
       .parse();
 
@@ -537,7 +536,7 @@ async function main(): Promise<void> {
         .option('mode', { alias: 'm', type: 'string', choices: [ 'local', 'cloud' ], description: 'Run mode' })
         .option('config', { alias: 'c', type: 'string', description: 'Path to config file (overrides --mode)' })
         .option('port', { alias: 'p', type: 'number', description: 'Gateway port', default: 3000 })
-        .option('host', { type: 'string', description: 'Gateway host', default: '127.0.0.1' }),
+        .option('host', { type: 'string', description: 'Gateway bind host' }),
       async(argv) => {
         try {
           await startRuntime({
