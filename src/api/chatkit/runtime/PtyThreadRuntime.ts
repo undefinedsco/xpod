@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
+import { PACKAGE_ROOT } from '../../../runtime';
 import { GitWorktreeService } from './GitWorktreeService';
 import { AcpRunner } from './AcpRunner';
 import type { ResolvedAgentConfig } from '../../../agents/config/types';
@@ -539,7 +540,7 @@ export class PtyThreadRuntime {
   }
 
   private resolveLocalBin(binName: string): string {
-    const localBin = path.join(process.cwd(), 'node_modules', '.bin', binName);
+    const localBin = path.join(PACKAGE_ROOT, 'node_modules', '.bin', binName);
     if (fs.existsSync(localBin)) {
       return localBin;
     }

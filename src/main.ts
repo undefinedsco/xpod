@@ -6,13 +6,9 @@ import path from 'path';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { GatewayProxy } from './runtime/Proxy';
-import { getFreePort } from './runtime/port-finder';
+import { GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
-
-// Resolve project root from compiled dist/main.js → parent dir
-const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 interface RuntimeRecord {
   schemaVersion: '1.0';
@@ -54,7 +50,7 @@ let logger = getLoggerFor('Main');
 
 function initLogger(): void {
   const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
-    fileName: path.join(PROJECT_ROOT, 'logs/xpod-%DATE%.log'),
+    fileName: path.join(process.cwd(), 'logs/xpod-%DATE%.log'),
     showLocation: true,
   });
   setGlobalLoggerFactory(loggerFactory);
@@ -98,7 +94,7 @@ function resolveInstanceKey(envPath?: string): string {
 }
 
 function getRuntimeFilePath(envPath?: string): string {
-  const dir = path.join(PROJECT_ROOT, '.xpod/runtime');
+  const dir = path.join(process.cwd(), '.xpod/runtime');
   return path.join(dir, `${resolveInstanceKey(envPath)}.json`);
 }
 
@@ -143,7 +139,7 @@ function isProcessRunning(pid?: number): boolean {
 
 function getVersion(): string {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf-8')) as { version?: string };
+    const pkg = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf-8')) as { version?: string };
     return pkg.version ?? 'unknown';
   } catch {
     return 'unknown';
@@ -236,11 +232,11 @@ async function startRuntime(options: RunOptions): Promise<void> {
     : parseInt(process.env.XPOD_PORT ?? process.env.PORT ?? '3000', 10);
   const host = options.host ?? '127.0.0.1';
 
-  let configPath = path.join(PROJECT_ROOT, 'config/local.json');
+  let configPath = path.join(PACKAGE_ROOT, 'config/local.json');
   if (options.config) {
     configPath = options.config;
   } else if (options.mode) {
-    configPath = path.join(PROJECT_ROOT, `config/${options.mode}.json`);
+    configPath = path.join(PACKAGE_ROOT, `config/${options.mode}.json`);
   }
 
   if (!fs.existsSync(configPath)) {

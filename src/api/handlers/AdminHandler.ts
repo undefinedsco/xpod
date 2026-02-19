@@ -10,8 +10,9 @@ import fs from 'fs';
 import path from 'path';
 import { createReadStream, statSync } from 'fs';
 import { createInterface } from 'readline';
+import { PACKAGE_ROOT } from '../../runtime';
 
-const CONFIG_DIR = path.resolve(process.cwd(), 'config');
+const CONFIG_DIR = path.resolve(PACKAGE_ROOT, 'config');
 
 function getEnvFilePath(): string {
   const envPath = process.env.XPOD_ENV_PATH;

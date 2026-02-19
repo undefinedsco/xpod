@@ -2,9 +2,7 @@ import type { CommandModule } from 'yargs';
 import path from 'path';
 import fs from 'fs';
 import { Supervisor } from '../../supervisor';
-import { GatewayProxy, getFreePort } from '../../runtime';
-
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+import { GatewayProxy, getFreePort, PACKAGE_ROOT } from '../../runtime';
 
 interface StartArgs {
   mode?: string;
@@ -85,9 +83,9 @@ export const startCommand: CommandModule<object, StartArgs> = {
     if (argv.config) {
       configPath = argv.config;
     } else if (argv.mode) {
-      configPath = path.join(PROJECT_ROOT, `config/${argv.mode}.json`);
+      configPath = path.join(PACKAGE_ROOT, `config/${argv.mode}.json`);
     } else {
-      configPath = path.join(PROJECT_ROOT, 'config/local.json');
+      configPath = path.join(PACKAGE_ROOT, 'config/local.json');
     }
 
     const cssPort = await getFreePort(mainPort + 1);
