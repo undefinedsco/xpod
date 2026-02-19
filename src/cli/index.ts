@@ -7,6 +7,7 @@ import { statusCommand } from './commands/status';
 import { logsCommand } from './commands/logs';
 import { authCommand } from './commands/auth';
 import { configCommand } from './commands/config';
+import { importCommand } from './commands/import';
 
 yargs(hideBin(process.argv))
   .scriptName('xpod')
@@ -17,6 +18,7 @@ yargs(hideBin(process.argv))
   .command(logsCommand)
   .command(authCommand)
   .command(configCommand)
+  .command(importCommand)
   .demandCommand(1, 'Please specify a command')
   .strict()
   .help()

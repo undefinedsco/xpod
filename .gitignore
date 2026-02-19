@@ -71,4 +71,4 @@ debugging_report.md
 openspec/
 
 # Binary libraries (generated during build)
-lib/
+/lib/
