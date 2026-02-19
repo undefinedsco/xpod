@@ -249,8 +249,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const mode: 'local' | 'cloud' = options.mode ?? (configPath.includes('cloud') ? 'cloud' : 'local');
 
-  const cssStartPort = (mainPort === 3000 ? 3002 : 3000);
-  const cssPort = await getFreePort(cssStartPort);
+  const cssPort = await getFreePort(mainPort + 1);
   const apiPort = await getFreePort(cssPort + 1);
   const baseUrl = ensureTrailingSlash(process.env.CSS_BASE_URL || `http://${host}:${mainPort}`);
 

@@ -4,6 +4,8 @@ import fs from 'fs';
 import { Supervisor } from '../../supervisor';
 import { GatewayProxy, getFreePort } from '../../runtime';
 
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+
 interface StartArgs {
   mode?: string;
   config?: string;
@@ -83,13 +85,12 @@ export const startCommand: CommandModule<object, StartArgs> = {
     if (argv.config) {
       configPath = argv.config;
     } else if (argv.mode) {
-      configPath = `config/${argv.mode}.json`;
+      configPath = path.join(PROJECT_ROOT, `config/${argv.mode}.json`);
     } else {
-      configPath = 'config/local.json';
+      configPath = path.join(PROJECT_ROOT, 'config/local.json');
     }
 
-    const cssStartPort = mainPort === 3000 ? 3002 : 3000;
-    const cssPort = await getFreePort(cssStartPort);
+    const cssPort = await getFreePort(mainPort + 1);
     const apiPort = await getFreePort(cssPort + 1);
 
     const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
@@ -100,12 +101,12 @@ export const startCommand: CommandModule<object, StartArgs> = {
     console.log(`  API (internal): http://localhost:${apiPort}`);
 
     const supervisor = new Supervisor();
-    const cssBinary = path.resolve('node_modules/@solid/community-server/bin/server.js');
+    const cssBinary = path.join(PROJECT_ROOT, 'node_modules/@solid/community-server/bin/server.js');
 
     supervisor.register({
       name: 'css',
       command: process.execPath,
-      args: [cssBinary, '-c', configPath, '-m', '.', '-p', cssPort.toString(), '-b', baseUrl],
+      args: [cssBinary, '-c', configPath, '-m', PROJECT_ROOT, '-p', cssPort.toString(), '-b', baseUrl],
       env: {
         ...process.env as Record<string, string>,
         CSS_PORT: cssPort.toString(),
@@ -116,7 +117,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
     supervisor.register({
       name: 'api',
       command: process.execPath,
-      args: ['dist/api/main.js'],
+      args: [path.join(PROJECT_ROOT, 'dist/api/main.js')],
       env: {
         ...process.env as Record<string, string>,
         API_PORT: apiPort.toString(),
