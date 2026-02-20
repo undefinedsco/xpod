@@ -14,7 +14,6 @@ import { registerChatRoutes } from '../handlers/ChatHandler';
 import { registerApiKeyRoutes } from '../handlers/ApiKeyHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
 import { registerSubdomainClientRoutes } from '../handlers/SubdomainClientHandler';
-import { registerDevRoutes } from '../handlers/DevHandler';
 import { registerWebIdProfileRoutes } from '../handlers/WebIdProfileHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
@@ -87,12 +86,6 @@ function registerSharedRoutes(
   registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
-
-  // 开发模式路由 (仅 NODE_ENV=development 时启用)
-  registerDevRoutes(server, {
-    nodeRepo,
-    credentialsStore: apiKeyStore,
-  });
 }
 
 /**

@@ -246,7 +246,7 @@ export class ApiServer {
     }
 
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, DPoP');
+    response.setHeader('Access-Control-Allow-Headers', '*');
     response.setHeader('Access-Control-Max-Age', '86400');
   }
 }
