@@ -1,5 +1,6 @@
 import type { TunnelProvider, TunnelConfig } from '../tunnel/TunnelProvider';
 import type { DnsProvider } from '../dns/DnsProvider';
+import type { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
 
 /**
  * 子域名注册信息
@@ -25,6 +26,9 @@ export interface SubdomainRegistration {
 
   /** 所有者 ID */
   ownerId?: string;
+
+  /** 绑定的节点 ID */
+  nodeId?: string;
 }
 
 /**
@@ -57,8 +61,8 @@ export interface SubdomainServiceOptions {
   /** Tunnel Provider */
   tunnelProvider: TunnelProvider;
 
-  /** 连通性检测端点 (可选，用于回调检测) */
-  connectivityCheckEndpoint?: string;
+  /** Edge Node Repository (持久化) */
+  edgeNodeRepo: EdgeNodeRepository;
 
   /** 保留的子域名列表 */
   reservedSubdomains?: string[];
@@ -66,29 +70,28 @@ export interface SubdomainServiceOptions {
 
 /**
  * 子域名管理服务
- * 
+ *
  * 负责：
  * 1. 子域名可用性检查
  * 2. 连通性检测
  * 3. 直连/隧道模式选择
  * 4. DNS 记录管理
  * 5. 隧道创建
+ *
+ * 注册信息持久化到 EdgeNodeRepository（identity_edge_node.subdomain 字段）
  */
 export class SubdomainService {
   private readonly baseDomain: string;
   private readonly dnsProvider: DnsProvider;
   private readonly tunnelProvider: TunnelProvider;
-  private readonly connectivityCheckEndpoint?: string;
+  private readonly edgeNodeRepo: EdgeNodeRepository;
   private readonly reservedSubdomains: Set<string>;
-
-  /** 已注册的子域名 (内存缓存，后续可改为数据库) */
-  private registrations: Map<string, SubdomainRegistration> = new Map();
 
   constructor(options: SubdomainServiceOptions) {
     this.baseDomain = options.baseDomain;
     this.dnsProvider = options.dnsProvider;
     this.tunnelProvider = options.tunnelProvider;
-    this.connectivityCheckEndpoint = options.connectivityCheckEndpoint;
+    this.edgeNodeRepo = options.edgeNodeRepo;
     this.reservedSubdomains = new Set(options.reservedSubdomains ?? [
       'www', 'api', 'app', 'admin', 'mail', 'ftp', 'ssh',
       'pods', 'center', 'edge', 'node', 'test', 'dev', 'staging',
@@ -102,7 +105,6 @@ export class SubdomainService {
     available: boolean;
     reason?: string;
   }> {
-    // 1. 格式校验
     if (!this.isValidSubdomain(subdomain)) {
       return {
         available: false,
@@ -110,7 +112,6 @@ export class SubdomainService {
       };
     }
 
-    // 2. 保留名检查
     if (this.reservedSubdomains.has(subdomain.toLowerCase())) {
       return {
         available: false,
@@ -118,8 +119,8 @@ export class SubdomainService {
       };
     }
 
-    // 3. 已注册检查
-    if (this.registrations.has(subdomain.toLowerCase())) {
+    const existing = await this.edgeNodeRepo.findNodeBySubdomain(subdomain.toLowerCase());
+    if (existing) {
       return {
         available: false,
         reason: 'This subdomain is already registered.',
@@ -134,14 +135,14 @@ export class SubdomainService {
    */
   async register(options: {
     subdomain: string;
+    nodeId: string;
     localPort: number;
     publicIp?: string;
     ownerId?: string;
   }): Promise<SubdomainRegistration> {
-    const { subdomain, localPort, publicIp, ownerId } = options;
+    const { subdomain, nodeId, localPort, publicIp, ownerId } = options;
     const normalizedSubdomain = subdomain.toLowerCase();
 
-    // 1. 检查可用性
     const availability = await this.checkAvailability(normalizedSubdomain);
     if (!availability.available) {
       throw new Error(availability.reason);
@@ -149,26 +150,23 @@ export class SubdomainService {
 
     const fullDomain = `${normalizedSubdomain}.${this.baseDomain}`;
 
-    // 2. 连通性检测 (如果提供了公网 IP)
+    // 连通性检测
     let mode: 'direct' | 'tunnel' = 'tunnel';
     let verifiedIp: string | undefined;
 
     if (publicIp) {
       const connectivity = await this.checkConnectivity(publicIp, localPort);
-      // 如果可达，或者虽然不可达但我们是在 Local 模式且用户显式指定了 IP
-      // 这里可以放宽一点限制，因为有些网络环境可能单向不通但 DNS 应该先挂上去
       if (connectivity.reachable) {
         mode = 'direct';
         verifiedIp = publicIp;
       }
     }
 
-    // 3. 根据模式设置 DNS 和隧道
+    // DNS / 隧道
     let tunnelConfig: TunnelConfig | undefined;
 
     if (mode === 'direct') {
       const type = this.isIpv6(verifiedIp!) ? 'AAAA' : 'A';
-      // 直连模式：创建 A 或 AAAA 记录
       await this.dnsProvider.upsertRecord({
         subdomain: normalizedSubdomain,
         domain: this.baseDomain,
@@ -177,15 +175,22 @@ export class SubdomainService {
         ttl: 60,
       });
     } else {
-      // 隧道模式：创建隧道 + CNAME
       tunnelConfig = await this.tunnelProvider.setup({
         subdomain: normalizedSubdomain,
         localPort,
       });
     }
 
-    // 4. 保存注册信息
-    const registration: SubdomainRegistration = {
+    // 持久化到 EdgeNodeRepository
+    await this.edgeNodeRepo.updateNodeMode(nodeId, {
+      accessMode: mode === 'direct' ? 'direct' : 'proxy',
+      publicIp: verifiedIp,
+      publicPort: localPort,
+      subdomain: normalizedSubdomain,
+      connectivityStatus: mode === 'direct' ? 'reachable' : 'unknown',
+    });
+
+    return {
       subdomain: normalizedSubdomain,
       fullDomain,
       mode,
@@ -193,11 +198,8 @@ export class SubdomainService {
       tunnelConfig,
       registeredAt: new Date(),
       ownerId,
+      nodeId,
     };
-
-    this.registrations.set(normalizedSubdomain, registration);
-
-    return registration;
   }
 
   /**
@@ -205,61 +207,83 @@ export class SubdomainService {
    */
   async release(subdomain: string): Promise<void> {
     const normalizedSubdomain = subdomain.toLowerCase();
-    const registration = this.registrations.get(normalizedSubdomain);
+    const node = await this.edgeNodeRepo.findNodeBySubdomain(normalizedSubdomain);
 
-    if (!registration) {
+    if (!node) {
       throw new Error('Subdomain not found');
     }
 
-    // 1. 清理隧道
-    if (registration.tunnelConfig) {
-      await this.tunnelProvider.cleanup(registration.tunnelConfig);
-    }
+    // 获取完整连通性信息以判断模式
+    const info = await this.edgeNodeRepo.getNodeConnectivityInfo(node.nodeId);
+    const accessMode = info?.accessMode;
 
-    // 2. 删除 DNS 记录 (尝试删除 A 和 CNAME 类型)
+    // 删除 DNS 记录
     try {
       await this.dnsProvider.deleteRecord({
         subdomain: normalizedSubdomain,
         domain: this.baseDomain,
-        type: registration.mode === 'direct' ? 'A' : 'CNAME',
+        type: accessMode === 'direct' ? 'A' : 'CNAME',
       });
-    } catch (error) {
-      console.warn(`Failed to delete DNS record for ${normalizedSubdomain}:`, error);
+    } catch {
+      // DNS 删除失败不阻塞释放
     }
 
-    // 3. 移除注册信息
-    this.registrations.delete(normalizedSubdomain);
+    // 清除 DB 中的 subdomain
+    await this.edgeNodeRepo.updateNodeMode(node.nodeId, {
+      accessMode: 'proxy',
+      subdomain: undefined,
+      connectivityStatus: 'unknown',
+    });
   }
 
   /**
    * 获取注册信息
    */
-  getRegistration(subdomain: string): SubdomainRegistration | undefined {
-    return this.registrations.get(subdomain.toLowerCase());
+  async getRegistration(subdomain: string): Promise<SubdomainRegistration | undefined> {
+    const node = await this.edgeNodeRepo.findNodeBySubdomain(subdomain.toLowerCase());
+    if (!node) {
+      return undefined;
+    }
+    return this.nodeToRegistration(node);
   }
 
   /**
    * 获取所有注册
    */
-  getAllRegistrations(): SubdomainRegistration[] {
-    return Array.from(this.registrations.values());
+  async getAllRegistrations(): Promise<SubdomainRegistration[]> {
+    const nodes = await this.edgeNodeRepo.listNodes();
+    const results: SubdomainRegistration[] = [];
+    for (const n of nodes) {
+      if (!n.metadata || !(n.metadata as Record<string, unknown>).subdomain) {
+        // 需要查 connectivity info 获取 subdomain
+        const info = await this.edgeNodeRepo.getNodeConnectivityInfo(n.nodeId);
+        if (info?.subdomain) {
+          results.push({
+            subdomain: info.subdomain,
+            fullDomain: `${info.subdomain}.${this.baseDomain}`,
+            mode: info.accessMode === 'direct' ? 'direct' : 'tunnel',
+            publicIp: info.publicIp,
+            registeredAt: new Date(),
+            nodeId: n.nodeId,
+          });
+        }
+      }
+    }
+    return results;
   }
 
   /**
    * 启动隧道
    */
   async startTunnel(subdomain: string): Promise<void> {
-    const registration = this.registrations.get(subdomain.toLowerCase());
-
-    if (!registration) {
+    const reg = await this.getRegistration(subdomain);
+    if (!reg) {
       throw new Error('Subdomain not found');
     }
-
-    if (registration.mode !== 'tunnel' || !registration.tunnelConfig) {
+    if (reg.mode !== 'tunnel' || !reg.tunnelConfig) {
       throw new Error('Subdomain is not in tunnel mode');
     }
-
-    await this.tunnelProvider.start(registration.tunnelConfig);
+    await this.tunnelProvider.start(reg.tunnelConfig);
   }
 
   /**
@@ -271,28 +295,37 @@ export class SubdomainService {
 
   // ============ 私有方法 ============
 
-  /**
-   * 校验子域名格式
-   */
+  private nodeToRegistration(node: {
+    nodeId: string;
+    accessMode?: string;
+    metadata?: Record<string, unknown> | null;
+    subdomain?: string;
+  }): SubdomainRegistration {
+    const sub = node.subdomain!;
+    return {
+      subdomain: sub,
+      fullDomain: `${sub}.${this.baseDomain}`,
+      mode: node.accessMode === 'direct' ? 'direct' : 'tunnel',
+      registeredAt: new Date(),
+      nodeId: node.nodeId,
+      ownerId: (node.metadata as Record<string, unknown> | null)?.ownerId as string | undefined,
+    };
+  }
+
   private isValidSubdomain(subdomain: string): boolean {
-    // 3-63 字符，小写字母、数字、连字符，不能以连字符开头或结尾
     const regex = /^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])?$/;
     return regex.test(subdomain) && subdomain.length >= 3 && subdomain.length <= 63;
   }
 
-  /**
-   * 连通性检测
-   */
   private async checkConnectivity(
     ip: string,
-    port: number
+    port: number,
   ): Promise<ConnectivityResult> {
     try {
       const start = Date.now();
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
 
-      // IPv6 需要加中括号
       const host = this.isIpv6(ip) ? `[${ip}]` : ip;
       const response = await fetch(`http://${host}:${port}/.well-known/solid`, {
         method: 'HEAD',
@@ -301,12 +334,10 @@ export class SubdomainService {
 
       clearTimeout(timeout);
 
-      const latency = Date.now() - start;
-
       return {
         reachable: response.ok || response.status === 401,
         publicIp: ip,
-        latency,
+        latency: Date.now() - start,
       };
     } catch (error) {
       return {

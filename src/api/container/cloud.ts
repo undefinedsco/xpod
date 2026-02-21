@@ -98,12 +98,14 @@ export function registerCloudServices(
     const tunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true });
 
     if (dnsProvider && tunnelProvider) {
+      const nodeRepo = container.resolve('nodeRepo');
       container.register({
         subdomainService: asFunction(() => {
           return new SubdomainService({
             baseDomain: baseDomain!,
             dnsProvider: dnsProvider as any,
             tunnelProvider: tunnelProvider as any,
+            edgeNodeRepo: nodeRepo,
           });
         }).singleton(),
       });

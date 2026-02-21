@@ -1,5 +1,6 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
+import net from 'net';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Supervisor } from '../supervisor/Supervisor';
 
@@ -213,29 +214,20 @@ export class GatewayProxy {
     }
 
     try {
-      // NOTE: CSS is configured with public `baseUrl` pointing at the gateway,
-      // so probing the internal CSS port can fail identifier-space checks.
-      // We probe through the gateway itself to mirror real client traffic.
-      const gatewayBase = `http://127.0.0.1:${this.port}/`;
-      const candidates = [
-        // CSS OIDC lives under /.oidc/*
-        new URL('.oidc/.well-known/openid-configuration', gatewayBase).toString(),
-        // Some deployments expose the well-known at root
-        new URL('.well-known/openid-configuration', gatewayBase).toString(),
-      ];
-
-      for (const probeUrl of candidates) {
-        try {
-          const response = await fetch(probeUrl, { signal: AbortSignal.timeout(1500) });
-          if (response.ok) {
-            return true;
-          }
-        } catch {
-          // Try next candidate.
-        }
-      }
-
-      return false;
+      // TCP connect to the CSS internal port to check if it's listening.
+      // HTTP probes fail because CSS enforces identifier-space checks and
+      // the internal port differs from the public CSS_BASE_URL port.
+      const url = new URL(this.targets.css);
+      const port = parseInt(url.port || '80', 10);
+      const host = url.hostname;
+      return await new Promise<boolean>((resolve) => {
+        const socket = new net.Socket();
+        socket.setTimeout(1500);
+        socket.once('connect', () => { socket.destroy(); resolve(true); });
+        socket.once('error', () => { socket.destroy(); resolve(false); });
+        socket.once('timeout', () => { socket.destroy(); resolve(false); });
+        socket.connect(port, host);
+      });
     } catch {
       return false;
     }

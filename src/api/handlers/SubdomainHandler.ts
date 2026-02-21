@@ -72,7 +72,7 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
 
     try {
       // Filter registrations by owner
-      const allRegistrations = service.getAllRegistrations();
+      const allRegistrations = await service.getAllRegistrations();
       const userRegistrations = allRegistrations.filter(r => r.ownerId === webId);
 
       sendJson(response, 200, {
@@ -101,8 +101,8 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
     }
 
     try {
-      const registration = service.getRegistration(name);
-      
+      const registration = await service.getRegistration(name);
+
       if (!registration) {
         sendJson(response, 404, { error: 'Subdomain not found' });
         return;
@@ -143,10 +143,15 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
       return;
     }
 
-    const { subdomain, localPort, publicIp } = body as Record<string, unknown>;
+    const { subdomain, nodeId, localPort, publicIp } = body as Record<string, unknown>;
 
     if (!subdomain || typeof subdomain !== 'string') {
       sendJson(response, 400, { error: 'Missing "subdomain" field' });
+      return;
+    }
+
+    if (!nodeId || typeof nodeId !== 'string') {
+      sendJson(response, 400, { error: 'Missing "nodeId" field' });
       return;
     }
 
@@ -158,6 +163,7 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
     try {
       const registration = await service.register({
         subdomain,
+        nodeId,
         localPort,
         publicIp: typeof publicIp === 'string' ? publicIp : undefined,
         ownerId: webId,
@@ -195,8 +201,8 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
     }
 
     try {
-      const registration = service.getRegistration(name);
-      
+      const registration = await service.getRegistration(name);
+
       if (!registration) {
         sendJson(response, 404, { error: 'Subdomain not found' });
         return;
@@ -238,8 +244,8 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
     }
 
     try {
-      const registration = service.getRegistration(name);
-      
+      const registration = await service.getRegistration(name);
+
       if (!registration) {
         sendJson(response, 404, { error: 'Subdomain not found' });
         return;
@@ -284,8 +290,8 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
     }
 
     try {
-      const registration = service.getRegistration(name);
-      
+      const registration = await service.getRegistration(name);
+
       if (!registration) {
         sendJson(response, 404, { error: 'Subdomain not found' });
         return;

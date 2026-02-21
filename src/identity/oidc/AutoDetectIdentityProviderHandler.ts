@@ -53,11 +53,9 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
       throw new NotImplementedHttpError('Not an IdP request');
     }
 
-    // SP 模式：拒绝所有 IdP 请求
+    // SP 模式：接受 IdP 路径请求，在 handle 中返回 404
     if (this.idpUrl) {
-      throw new NotImplementedHttpError(
-        `External IdP mode: ${this.message}. Please use the external identity provider.`
-      );
+      return;
     }
 
     // 标准模式：委托给 source Handler
@@ -75,10 +73,10 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
    */
   public override async handle(input: HttpHandlerInput): Promise<void> {
     if (this.idpUrl) {
-      // SP 模式下不应该到达这里
-      throw new NotImplementedHttpError(
-        `External IdP mode: ${this.message}. Please use the external identity provider.`
-      );
+      const { response } = input;
+      response.writeHead(404, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: this.message }));
+      return;
     }
 
     // 标准模式：委托给 source Handler

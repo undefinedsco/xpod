@@ -116,7 +116,7 @@ export function registerLocalServices(
       }).singleton(),
 
       // Subdomain Service (Keep for API support)
-      subdomainService: asFunction(({ dnsProvider, localTunnelProvider }: ApiContainerCradle) => {
+      subdomainService: asFunction(({ dnsProvider, localTunnelProvider, nodeRepo }: ApiContainerCradle) => {
         // 如果没有配置 Tunnel Token，使用一个 Mock Provider
         const tunnelProvider = localTunnelProvider ?? {
           name: 'noop',
@@ -132,6 +132,7 @@ export function registerLocalServices(
           baseDomain: baseDomain!,
           dnsProvider: dnsProvider!,
           tunnelProvider,
+          edgeNodeRepo: nodeRepo,
         });
       }).singleton(),
     });

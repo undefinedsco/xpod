@@ -1,4 +1,15 @@
 import { Session } from "@inrupt/solid-client-authn-node";
+import dns from "node:dns";
+
+// Docker 内部主机名 → 127.0.0.1，让宿主机能访问 presigned URL
+const DOCKER_HOSTS: Record<string, string> = { minio: "127.0.0.1" };
+const _origLookup = dns.lookup;
+(dns as any).lookup = (hostname: string, ...args: any[]) => {
+  const mapped = DOCKER_HOSTS[hostname];
+  return mapped
+    ? (_origLookup as any).call(dns, mapped, ...args)
+    : (_origLookup as any).call(dns, hostname, ...args);
+};
 
 export interface AccountSetup {
   clientId: string;

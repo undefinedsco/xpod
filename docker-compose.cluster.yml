@@ -76,14 +76,6 @@ services:
       timeout: 5s
       retries: 5
 
-  minio-init:
-    image: minio/minio:latest
-    entrypoint: /bin/sh
-    command: ["-c", "mc alias set local http://minio:9000 minioadmin minioadmin && mc mb local/xpod --ignore-existing"]
-    depends_on:
-      minio:
-        condition: service_healthy
-
   # Cloud 节点 - 提供 IdP + API Server + Pod 存储
   cloud:
     <<: *xpod-image
@@ -190,7 +182,7 @@ services:
       timeout: 10s
       retries: 30
       start_period: 60s
-    command: ["sh", "-c", "node dist/main.js -m cloud -p 6400"]
+    command: ["sh", "-c", "node dist/main.js -m cloud -p 6400 --host 0.0.0.0"]
 
   # Local 模式 - 托管式，使用 Cloud IdP，SQLite 存储
   local:

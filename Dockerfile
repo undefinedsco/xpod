@@ -35,7 +35,9 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/static ./static
 COPY --from=build /app/templates ./templates
 
-RUN mkdir -p /app/data /app/logs
+RUN mkdir -p /app/data /app/logs \
+ && mkdir -p /app/node_modules/@undefineds.co \
+ && ln -s /app /app/node_modules/@undefineds.co/xpod
 
 ENV NODE_ENV=production
 ENV CSS_EDITION=local
