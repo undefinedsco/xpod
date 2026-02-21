@@ -40,9 +40,6 @@ export interface ApiContainerConfig {
   /** CORS 允许的源 */
   corsOrigins: string[];
 
-  /** 加密密钥 */
-  encryptionKey: string;
-
   /** CSS Token 端点 */
   cssTokenEndpoint: string;
 

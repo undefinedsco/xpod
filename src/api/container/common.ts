@@ -39,7 +39,6 @@ export function registerCommonServices(
     apiKeyStore: asFunction(({ db, config }: ApiContainerCradle) => {
       return new DrizzleClientCredentialsStore({
         db,
-        encryptionKey: config.encryptionKey,
         isSqlite: config.databaseUrl.startsWith('sqlite:'),
       });
     }).singleton(),
