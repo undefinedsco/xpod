@@ -73,7 +73,6 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     host: process.env.API_HOST ?? '0.0.0.0',
     databaseUrl: process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? '',
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
-    encryptionKey: process.env.XPOD_ENCRYPTION_KEY ?? 'default-dev-key-change-me',
     cssTokenEndpoint: resolveCssTokenEndpoint(),
 
     // 子域名配置 (cloud 模式)

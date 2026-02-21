@@ -96,7 +96,6 @@ export const edgeNodePods = sqliteTable('identity_edge_node_pod', {
 
 export const apiClientCredentials = sqliteTable('identity_api_client_credentials', {
   clientId: text('client_id').primaryKey(),
-  clientSecretEncrypted: text('client_secret_encrypted').notNull(),
   webId: text('web_id').notNull(),
   accountId: text('account_id').notNull(),
   displayName: text('display_name'),

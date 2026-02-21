@@ -84,7 +84,6 @@ export function registerApiKeyRoutes(server: ApiServer, options: ApiKeyHandlerOp
 
     // These come from CSS client credentials creation
     const clientId = payload.clientId;
-    const clientSecret = payload.clientSecret;
     const displayName = typeof payload.displayName === 'string' ? payload.displayName : undefined;
 
     if (typeof clientId !== 'string' || !clientId.trim()) {
@@ -92,16 +91,10 @@ export function registerApiKeyRoutes(server: ApiServer, options: ApiKeyHandlerOp
       return;
     }
 
-    if (typeof clientSecret !== 'string' || !clientSecret.trim()) {
-      sendJson(response, 400, { error: 'clientSecret is required' });
-      return;
-    }
-
     try {
       // Use webId as account identifier
       await store.store({
         clientId,
-        clientSecret,
         webId,
         accountId: webId,
         displayName,

@@ -239,7 +239,6 @@ export class ClientCredentialsAuthenticator implements Authenticator {
 // Re-export for backwards compatibility (these are no longer needed but keep for other code)
 export interface ClientCredentialsRecord {
   clientId: string;
-  clientSecret: string;
   webId: string;
   accountId: string;
   displayName?: string;

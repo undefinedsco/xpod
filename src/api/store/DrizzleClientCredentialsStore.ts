@@ -1,4 +1,3 @@
-import { randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
@@ -9,10 +8,6 @@ import type { ClientCredentialsRecord, ClientCredentialsStore } from '../auth/Cl
 export interface DrizzleClientCredentialsStoreOptions {
   db: IdentityDatabase;
   /**
-   * Encryption key for storing client secrets
-   */
-  encryptionKey: string;
-  /**
    * Whether using SQLite (default: false for PostgreSQL)
    */
   isSqlite?: boolean;
@@ -20,37 +15,33 @@ export interface DrizzleClientCredentialsStoreOptions {
 
 /**
  * Storage for API Keys (client credentials) using Drizzle ORM
+ *
+ * Only stores clientId → webId/accountId mapping.
+ * The actual clientSecret lives in the sk-xxx token and is never persisted.
  */
 export class DrizzleClientCredentialsStore implements ClientCredentialsStore {
   private readonly logger = getLoggerFor(this);
   private readonly db: IdentityDatabase;
-  private readonly encryptionKey: Buffer;
   private readonly apiClientCredentials: typeof pgApiClientCredentials | typeof sqliteApiClientCredentials;
 
   public constructor(options: DrizzleClientCredentialsStoreOptions) {
     this.db = options.db;
-    this.encryptionKey = scryptSync(options.encryptionKey, 'xpod-api-salt', 32);
-    // Select appropriate schema based on database type
     this.apiClientCredentials = options.isSqlite ? sqliteApiClientCredentials : pgApiClientCredentials;
   }
 
   /**
-   * Store client credentials (called when user creates API Key via frontend)
+   * Store API Key registration (called when user creates API Key via frontend)
    */
   public async store(options: {
     clientId: string;
-    clientSecret: string;
     webId: string;
     accountId: string;
     displayName?: string;
   }): Promise<void> {
-    const encryptedSecret = this.encrypt(options.clientSecret);
-
     await this.db
       .insert(this.apiClientCredentials)
       .values({
         clientId: options.clientId,
-        clientSecretEncrypted: encryptedSecret,
         webId: options.webId,
         accountId: options.accountId,
         displayName: options.displayName ?? null,
@@ -58,7 +49,6 @@ export class DrizzleClientCredentialsStore implements ClientCredentialsStore {
       .onConflictDoUpdate({
         target: this.apiClientCredentials.clientId,
         set: {
-          clientSecretEncrypted: encryptedSecret,
           displayName: options.displayName ?? null,
         },
       });
@@ -83,7 +73,6 @@ export class DrizzleClientCredentialsStore implements ClientCredentialsStore {
     const row = rows[0];
     return {
       clientId: row.clientId,
-      clientSecret: this.decrypt(row.clientSecretEncrypted),
       webId: row.webId,
       accountId: row.accountId,
       displayName: row.displayName ?? undefined,
@@ -92,7 +81,7 @@ export class DrizzleClientCredentialsStore implements ClientCredentialsStore {
   }
 
   /**
-   * List API Keys for an account (without secrets)
+   * List API Keys for an account
    */
   public async listByAccount(accountId: string): Promise<Array<{
     clientId: string;
@@ -120,7 +109,7 @@ export class DrizzleClientCredentialsStore implements ClientCredentialsStore {
   }
 
   /**
-   * Find the most recently created API Key for an account (including secret).
+   * Find the most recently created API Key for an account.
    */
   public async findByAccountId(accountId: string): Promise<ClientCredentialsRecord | undefined> {
     const rows = await this.db
@@ -137,7 +126,6 @@ export class DrizzleClientCredentialsStore implements ClientCredentialsStore {
     const row = rows[0];
     return {
       clientId: row.clientId,
-      clientSecret: this.decrypt(row.clientSecretEncrypted),
       webId: row.webId,
       accountId: row.accountId,
       displayName: row.displayName ?? undefined,
@@ -149,35 +137,9 @@ export class DrizzleClientCredentialsStore implements ClientCredentialsStore {
    * Delete an API Key
    */
   public async delete(clientId: string, accountId?: string): Promise<boolean> {
-    if (accountId) {
-      const result = await this.db
-        .delete(this.apiClientCredentials)
-        .where(eq(this.apiClientCredentials.clientId, clientId));
-      // Check if the deleted row belonged to the account
-      // For safety, we could add an AND condition, but Drizzle doesn't support multiple where easily
-      // So we trust the caller to verify ownership before calling delete
-    } else {
-      await this.db
-        .delete(this.apiClientCredentials)
-        .where(eq(this.apiClientCredentials.clientId, clientId));
-    }
+    await this.db
+      .delete(this.apiClientCredentials)
+      .where(eq(this.apiClientCredentials.clientId, clientId));
     return true;
-  }
-
-  private encrypt(plaintext: string): string {
-    const iv = randomBytes(16);
-    const cipher = createCipheriv('aes-256-cbc', this.encryptionKey, iv);
-    let encrypted = cipher.update(plaintext, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    return iv.toString('hex') + ':' + encrypted;
-  }
-
-  private decrypt(ciphertext: string): string {
-    const [ivHex, encrypted] = ciphertext.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const decipher = createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
   }
 }
