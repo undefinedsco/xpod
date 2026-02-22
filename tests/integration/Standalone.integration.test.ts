@@ -31,7 +31,7 @@ suite('Standalone Integration', () => {
       const res = await fetch(`${STANDALONE.baseUrl}/.well-known/openid-configuration`);
       expect(res.status).toBe(200);
       const config = await res.json() as { issuer: string };
-      expect(config.issuer).toContain(new URL(STANDALONE_BASE).host);
+      expect(config.issuer).toBe(STANDALONE_BASE + '/');
     });
 
     it('should expose JWKS endpoint', async () => {
@@ -91,7 +91,7 @@ suite('Standalone Integration', () => {
       const creds = await setupAccount(STANDALONE.baseUrl, 'issuer-discovery');
       expect(creds).not.toBeNull();
       const issuer = await discoverOidcIssuerFromWebId(creds!.webId, STANDALONE.baseUrl);
-      expect(issuer).toContain(new URL(STANDALONE_BASE).host);
+      expect(issuer).toBe(STANDALONE_BASE + '/');
     }, 30000);
   });
 });
