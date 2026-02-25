@@ -1,9 +1,9 @@
 import type { CommandModule } from 'yargs';
+import { loadCredentials } from '../lib/credentials-store';
+import { getAccessToken, authenticatedFetch } from '../lib/solid-auth';
 
 interface ConfigArgs {
-  url: string;
-  email: string;
-  password: string;
+  url?: string;
 }
 
 interface SetArgs extends ConfigArgs {
@@ -22,8 +22,8 @@ interface UnsetArgs extends ConfigArgs {
 /**
  * Config 子命令通过 Solid 协议读写 Pod 内的配置。
  *
- * 当前实现使用 CSS Account Token + 内部 API 代理来操作 Pod 数据。
- * 后续 PR 可切换为 DPoP token + 直接 Solid 协议访问。
+ * 使用 client credentials (存储在 ~/.xpod/credentials.json) 换取 access token，
+ * 然后用 Bearer token 直接访问 Pod 资源。
  *
  * 配置路径映射:
  *   ai.openai.api-key  → /settings/credentials.ttl 中 service=ai, provider 含 openai 的 apiKey 字段
@@ -41,7 +41,6 @@ const FIELD_MAP: Record<string, string> = {
 };
 
 function parseConfigKey(key: string): { service: string; provider: string; field: string } | null {
-  // e.g. ai.openai.api-key → service=ai, provider=openai, field=apiKey
   const parts = key.split('.');
   if (parts.length < 3) return null;
   const [service, provider, ...rest] = parts;
@@ -56,57 +55,42 @@ function maskSecret(value: string): string {
   return value.slice(0, 4) + '****' + value.slice(-4);
 }
 
-async function getAuthToken(email: string, password: string, baseUrl: string): Promise<string> {
-  const { login } = await import('../lib/css-account');
-  const { checkServer } = await import('../lib/css-account');
-
-  if (!(await checkServer(baseUrl))) {
-    console.error(`Cannot reach server at ${baseUrl}`);
+/**
+ * Resolve auth: load credentials from ~/.xpod/, get access token, derive pod URL from webId.
+ */
+async function resolveAuth(argv: ConfigArgs): Promise<{ accessToken: string; podUrl: string; baseUrl: string }> {
+  const creds = loadCredentials();
+  if (!creds) {
+    console.error('No credentials found. Run `xpod auth create-credentials` first.');
     process.exit(1);
   }
 
-  const token = await login(email, password, baseUrl);
-  if (!token) {
-    console.error('Login failed. Check email/password.');
+  const baseUrl = (argv.url ?? creds.url).replace(/\/?$/, '/');
+
+  const tokenResult = await getAccessToken(creds.clientId, creds.clientSecret, baseUrl);
+  if (!tokenResult) {
+    console.error('Failed to obtain access token. Credentials may be expired — run `xpod auth create-credentials` again.');
     process.exit(1);
   }
-  return token;
+
+  // Derive pod URL from webId: http://localhost:3000/alice/profile/card#me → http://localhost:3000/alice/
+  const webIdUrl = new URL(creds.webId);
+  const pathParts = webIdUrl.pathname.split('/').filter(Boolean);
+  const podUrl = `${webIdUrl.origin}/${pathParts[0]}/`;
+
+  return { accessToken: tokenResult.accessToken, podUrl, baseUrl };
 }
 
 /**
- * Read credentials from Pod via SPARQL through the API server.
- * Uses the /v1/pod/sparql endpoint which proxies SPARQL queries to the Pod.
+ * Read credentials from Pod settings/credentials.ttl using Bearer token.
  */
 async function readCredentials(
-  baseUrl: string,
-  token: string,
+  podUrl: string,
+  accessToken: string,
 ): Promise<Array<Record<string, string>>> {
-  // Use the CSS account token to read the credentials resource directly
-  const credUrl = `${baseUrl}.account/`;
-  const accountRes = await fetch(credUrl, {
-    headers: {
-      Accept: 'application/json',
-      Authorization: `CSS-Account-Token ${token}`,
-    },
-  });
-
-  if (!accountRes.ok) return [];
-
-  const accountData = (await accountRes.json()) as { webIds?: Record<string, string>; pods?: Record<string, string> };
-  const pods = accountData.pods;
-  if (!pods || typeof pods !== 'object') return [];
-
-  // Get the first pod URL
-  const podUrl = Object.values(pods)[0];
-  if (!podUrl) return [];
-
-  // Read the credentials.ttl resource from the pod
   const settingsUrl = `${podUrl}settings/credentials.ttl`;
-  const res = await fetch(settingsUrl, {
-    headers: {
-      Accept: 'application/json',
-      Authorization: `CSS-Account-Token ${token}`,
-    },
+  const res = await authenticatedFetch(settingsUrl, accessToken, {
+    headers: { Accept: 'application/json' },
   });
 
   if (!res.ok) return [];
@@ -136,32 +120,8 @@ const setCommand: CommandModule<ConfigArgs, SetArgs> = {
       process.exit(1);
     }
 
-    const baseUrl = argv.url.endsWith('/') ? argv.url : `${argv.url}/`;
-    const token = await getAuthToken(argv.email, argv.password, baseUrl);
+    const { accessToken, podUrl } = await resolveAuth(argv);
 
-    // Get account info to find pod URL
-    const accountRes = await fetch(`${baseUrl}.account/`, {
-      headers: {
-        Accept: 'application/json',
-        Authorization: `CSS-Account-Token ${token}`,
-      },
-    });
-
-    if (!accountRes.ok) {
-      console.error('Failed to get account info.');
-      process.exit(1);
-    }
-
-    const accountData = (await accountRes.json()) as { pods?: Record<string, string> };
-    const pods = accountData.pods;
-    const podUrl = pods ? Object.values(pods)[0] : undefined;
-
-    if (!podUrl) {
-      console.error('No pod found for this account.');
-      process.exit(1);
-    }
-
-    // Build SPARQL UPDATE to insert/update the credential
     const credId = `cred-${parsed.provider}`;
     const ns = 'http://undefineds.co/ns/';
     const subject = `<${podUrl}settings/credentials.ttl#${credId}>`;
@@ -176,12 +136,9 @@ WHERE { OPTIONAL { ${subject} udfs:${parsed.field} ?old } }
     `.trim();
 
     const patchUrl = `${podUrl}settings/credentials.ttl`;
-    const patchRes = await fetch(patchUrl, {
+    const patchRes = await authenticatedFetch(patchUrl, accessToken, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/sparql-update',
-        Authorization: `CSS-Account-Token ${token}`,
-      },
+      headers: { 'Content-Type': 'application/sparql-update' },
       body: sparql,
     });
 
@@ -204,16 +161,14 @@ const getCommand: CommandModule<ConfigArgs, GetArgs> = {
     yargs
       .positional('key', { type: 'string', demandOption: true, description: 'Config key prefix (e.g. ai)' }),
   handler: async (argv) => {
-    const baseUrl = argv.url.endsWith('/') ? argv.url : `${argv.url}/`;
-    const token = await getAuthToken(argv.email, argv.password, baseUrl);
-    const creds = await readCredentials(baseUrl, token);
+    const { accessToken, podUrl } = await resolveAuth(argv);
+    const creds = await readCredentials(podUrl, accessToken);
 
     if (creds.length === 0) {
       console.log('No credentials configured.');
       return;
     }
 
-    // Filter by key prefix
     const prefix = argv.key.toLowerCase();
     const filtered = creds.filter((c) => {
       const service = (c.service ?? '').toLowerCase();
@@ -239,9 +194,8 @@ const listConfigCommand: CommandModule<ConfigArgs, ConfigArgs> = {
   describe: 'List all Pod configurations',
   builder: (yargs) => yargs,
   handler: async (argv) => {
-    const baseUrl = argv.url.endsWith('/') ? argv.url : `${argv.url}/`;
-    const token = await getAuthToken(argv.email, argv.password, baseUrl);
-    const creds = await readCredentials(baseUrl, token);
+    const { accessToken, podUrl } = await resolveAuth(argv);
+    const creds = await readCredentials(podUrl, accessToken);
 
     if (creds.length === 0) {
       console.log('No credentials configured.');
@@ -272,30 +226,7 @@ const unsetCommand: CommandModule<ConfigArgs, UnsetArgs> = {
     }
 
     const [, provider] = parts;
-    const baseUrl = argv.url.endsWith('/') ? argv.url : `${argv.url}/`;
-    const token = await getAuthToken(argv.email, argv.password, baseUrl);
-
-    // Get pod URL
-    const accountRes = await fetch(`${baseUrl}.account/`, {
-      headers: {
-        Accept: 'application/json',
-        Authorization: `CSS-Account-Token ${token}`,
-      },
-    });
-
-    if (!accountRes.ok) {
-      console.error('Failed to get account info.');
-      process.exit(1);
-    }
-
-    const accountData = (await accountRes.json()) as { pods?: Record<string, string> };
-    const pods = accountData.pods;
-    const podUrl = pods ? Object.values(pods)[0] : undefined;
-
-    if (!podUrl) {
-      console.error('No pod found for this account.');
-      process.exit(1);
-    }
+    const { accessToken, podUrl } = await resolveAuth(argv);
 
     const credId = `cred-${provider}`;
     const subject = `<${podUrl}settings/credentials.ttl#${credId}>`;
@@ -303,12 +234,9 @@ const unsetCommand: CommandModule<ConfigArgs, UnsetArgs> = {
     const sparql = `DELETE WHERE { ${subject} ?p ?o }`;
 
     const patchUrl = `${podUrl}settings/credentials.ttl`;
-    const patchRes = await fetch(patchUrl, {
+    const patchRes = await authenticatedFetch(patchUrl, accessToken, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/sparql-update',
-        Authorization: `CSS-Account-Token ${token}`,
-      },
+      headers: { 'Content-Type': 'application/sparql-update' },
       body: sparql,
     });
 
@@ -330,17 +258,12 @@ export const configCommand: CommandModule<object, ConfigArgs> = {
       .option('url', {
         alias: 'u',
         type: 'string',
-        description: 'Server base URL',
-        default: process.env.CSS_BASE_URL || 'http://localhost:3000',
+        description: 'Server base URL (default: from ~/.xpod/credentials.json)',
       })
-      .option('email', { type: 'string', demandOption: true, description: 'Account email' })
-      .option('password', { type: 'string', demandOption: true, description: 'Account password' })
       .command(setCommand)
       .command(getCommand)
       .command(listConfigCommand)
       .command(unsetCommand)
       .demandCommand(1, 'Please specify a config subcommand'),
-  handler: () => {
-    // parent command, no-op
-  },
+  handler: () => {},
 };

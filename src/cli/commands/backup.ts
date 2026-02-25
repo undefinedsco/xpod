@@ -2,11 +2,13 @@ import type { CommandModule } from 'yargs';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, relative, dirname } from 'path';
 import { login, checkServer } from '../lib/css-account';
+import { loadCredentials } from '../lib/credentials-store';
+import { getAccessToken } from '../lib/solid-auth';
 
 interface BackupArgs {
-  url: string;
-  email: string;
-  password: string;
+  url?: string;
+  email?: string;
+  password?: string;
 }
 
 interface BackupExportArgs extends BackupArgs {
@@ -17,48 +19,79 @@ interface BackupImportArgs extends BackupArgs {
   input: string;
 }
 
-function resolveUrl(url: string): string {
-  const raw = url || process.env.CSS_BASE_URL || 'http://localhost:3000';
+function resolveUrl(url?: string, credUrl?: string): string {
+  const raw = url || credUrl || process.env.CSS_BASE_URL || 'http://localhost:3000';
   return raw.endsWith('/') ? raw : `${raw}/`;
 }
 
-async function loginOrExit(email: string, password: string, baseUrl: string): Promise<string> {
+/**
+ * Resolve auth: prefer client credentials from ~/.xpod/, fall back to email/password.
+ * Returns { authHeader, podUrl }.
+ */
+async function resolveBackupAuth(
+  argv: BackupArgs,
+): Promise<{ authHeader: string; podUrl: string }> {
+  const creds = loadCredentials();
+
+  // Try client credentials first
+  if (creds) {
+    const baseUrl = resolveUrl(argv.url, creds.url);
+    const tokenResult = await getAccessToken(creds.clientId, creds.clientSecret, baseUrl);
+    if (tokenResult) {
+      // Derive pod URL from webId
+      const webIdUrl = new URL(creds.webId);
+      const pathParts = webIdUrl.pathname.split('/').filter(Boolean);
+      const podUrl = `${webIdUrl.origin}/${pathParts[0]}/`;
+      return { authHeader: `Bearer ${tokenResult.accessToken}`, podUrl };
+    }
+  }
+
+  // Fall back to email/password
+  if (!argv.email || !argv.password) {
+    console.error('No credentials found. Run `xpod auth create-credentials` or provide --email and --password.');
+    process.exit(1);
+  }
+
+  const baseUrl = resolveUrl(argv.url, creds?.url);
   if (!(await checkServer(baseUrl))) {
     console.error(`Cannot reach server at ${baseUrl}`);
     process.exit(1);
   }
-  const token = await login(email, password, baseUrl);
+
+  const token = await login(argv.email, argv.password, baseUrl);
   if (!token) {
     console.error('Login failed. Check email/password.');
     process.exit(1);
   }
-  return token;
-}
 
-async function resolvePodUrl(token: string, baseUrl: string): Promise<string> {
+  // Resolve pod URL via account API
   const res = await fetch(`${baseUrl}.account/`, {
     headers: {
       Accept: 'application/json',
       Authorization: `CSS-Account-Token ${token}`,
     },
   });
-  if (!res.ok) throw new Error('Failed to get account info.');
+  if (!res.ok) {
+    console.error('Failed to get account info.');
+    process.exit(1);
+  }
   const data = (await res.json()) as { pods?: Record<string, string> };
   const podUrl = data.pods ? Object.values(data.pods)[0] : undefined;
-  if (!podUrl) throw new Error('No pod found for this account.');
-  return podUrl;
+  if (!podUrl) {
+    console.error('No pod found for this account.');
+    process.exit(1);
+  }
+
+  return { authHeader: `CSS-Account-Token ${token}`, podUrl };
 }
 
 /**
  * Parse ldp:contains links from a Turtle container listing.
- * Matches both <url> patterns in ldp:contains statements.
  */
 function parseContainedUrls(turtle: string, containerUrl: string): string[] {
   const urls: string[] = [];
-  // Match URLs in ldp:contains references
   const regex = /<([^>]+)>/g;
   let match: RegExpExecArray | null;
-  // Find lines with ldp:contains
   const lines = turtle.split('\n');
   let inContains = false;
   for (const line of lines) {
@@ -68,7 +101,6 @@ function parseContainedUrls(turtle: string, containerUrl: string): string[] {
     if (inContains) {
       while ((match = regex.exec(line)) !== null) {
         const url = match[1];
-        // Skip the container itself and vocabulary URIs
         if (url !== containerUrl && !url.startsWith('http://www.w3.org/') && !url.startsWith('http://purl.org/')) {
           urls.push(url);
         }
@@ -91,13 +123,11 @@ interface FetchedResource {
 
 async function fetchResource(
   url: string,
-  token: string,
+  authHeader: string,
 ): Promise<FetchedResource | null> {
   try {
     const res = await fetch(url, {
-      headers: {
-        Authorization: `CSS-Account-Token ${token}`,
-      },
+      headers: { Authorization: authHeader },
     });
     if (!res.ok) {
       console.error(`  WARN: GET ${url} → ${res.status}`);
@@ -114,13 +144,13 @@ async function fetchResource(
 
 async function fetchContainer(
   containerUrl: string,
-  token: string,
+  authHeader: string,
 ): Promise<string | null> {
   try {
     const res = await fetch(containerUrl, {
       headers: {
         Accept: 'text/turtle',
-        Authorization: `CSS-Account-Token ${token}`,
+        Authorization: authHeader,
       },
     });
     if (!res.ok) return null;
@@ -132,12 +162,12 @@ async function fetchContainer(
 
 async function crawlAndSave(
   containerUrl: string,
-  token: string,
+  authHeader: string,
   podUrl: string,
   outputDir: string,
   stats: { resources: number; bytes: number },
 ): Promise<void> {
-  const turtle = await fetchContainer(containerUrl, token);
+  const turtle = await fetchContainer(containerUrl, authHeader);
   if (!turtle) {
     console.error(`  WARN: Cannot read container ${containerUrl}`);
     return;
@@ -151,9 +181,9 @@ async function crawlAndSave(
     if (isContainer(url)) {
       const dirPath = join(outputDir, relativePath);
       mkdirSync(dirPath, { recursive: true });
-      await crawlAndSave(url, token, podUrl, outputDir, stats);
+      await crawlAndSave(url, authHeader, podUrl, outputDir, stats);
     } else {
-      const resource = await fetchResource(url, token);
+      const resource = await fetchResource(url, authHeader);
       if (resource) {
         const filePath = join(outputDir, relativePath);
         mkdirSync(dirname(filePath), { recursive: true });
@@ -165,9 +195,8 @@ async function crawlAndSave(
     }
   }
 
-  // Also try to fetch .acl for this container
   const aclUrl = `${containerUrl}.acl`;
-  const aclResource = await fetchResource(aclUrl, token);
+  const aclResource = await fetchResource(aclUrl, authHeader);
   if (aclResource) {
     const aclRelative = aclUrl.startsWith(podUrl) ? aclUrl.slice(podUrl.length) : `${containerUrl.slice(podUrl.length)}.acl`;
     const aclPath = join(outputDir, aclRelative);
@@ -181,35 +210,32 @@ async function crawlAndSave(
 async function restoreFromDir(
   dirPath: string,
   podUrl: string,
-  token: string,
+  authHeader: string,
   basePath: string,
   stats: { resources: number; bytes: number },
 ): Promise<void> {
   const entries = readdirSync(dirPath, { withFileTypes: true });
 
-  // Create containers first
   for (const entry of entries) {
     if (entry.isDirectory()) {
       const relativePath = relative(basePath, join(dirPath, entry.name));
       const containerUrl = `${podUrl}${relativePath}/`;
-      // PUT an empty container
       try {
         await fetch(containerUrl, {
           method: 'PUT',
           headers: {
             'Content-Type': 'text/turtle',
-            Authorization: `CSS-Account-Token ${token}`,
+            Authorization: authHeader,
           },
           body: '',
         });
       } catch {
         // Container may already exist
       }
-      await restoreFromDir(join(dirPath, entry.name), podUrl, token, basePath, stats);
+      await restoreFromDir(join(dirPath, entry.name), podUrl, authHeader, basePath, stats);
     }
   }
 
-  // Then write resources
   for (const entry of entries) {
     if (entry.isFile()) {
       const filePath = join(dirPath, entry.name);
@@ -217,7 +243,6 @@ async function restoreFromDir(
       const resourceUrl = `${podUrl}${relativePath}`;
       const body = readFileSync(filePath);
 
-      // Guess content type
       let contentType = 'application/octet-stream';
       if (entry.name.endsWith('.ttl')) contentType = 'text/turtle';
       else if (entry.name.endsWith('.json') || entry.name.endsWith('.jsonld')) contentType = 'application/ld+json';
@@ -231,7 +256,7 @@ async function restoreFromDir(
         method: 'PUT',
         headers: {
           'Content-Type': contentType,
-          Authorization: `CSS-Account-Token ${token}`,
+          Authorization: authHeader,
         },
         body,
       });
@@ -252,13 +277,12 @@ const backupCommand: CommandModule<object, BackupExportArgs> = {
   describe: 'Backup a Pod to a local directory',
   builder: (yargs) =>
     yargs
-      .option('email', { type: 'string', demandOption: true, description: 'Account email' })
-      .option('password', { type: 'string', demandOption: true, description: 'Account password' })
+      .option('email', { type: 'string', description: 'Account email (optional if credentials stored)' })
+      .option('password', { type: 'string', description: 'Account password (optional if credentials stored)' })
       .option('url', {
         alias: 'u',
         type: 'string',
         description: 'Server base URL',
-        default: process.env.CSS_BASE_URL || 'http://localhost:3000',
       })
       .option('output', {
         alias: 'o',
@@ -267,16 +291,7 @@ const backupCommand: CommandModule<object, BackupExportArgs> = {
         description: 'Output directory path',
       }),
   handler: async (argv) => {
-    const baseUrl = resolveUrl(argv.url);
-    const token = await loginOrExit(argv.email, argv.password, baseUrl);
-
-    let podUrl: string;
-    try {
-      podUrl = await resolvePodUrl(token, baseUrl);
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
+    const { authHeader, podUrl } = await resolveBackupAuth(argv);
 
     console.log(`Backing up pod: ${podUrl}`);
     console.log(`Output: ${argv.output}\n`);
@@ -284,7 +299,7 @@ const backupCommand: CommandModule<object, BackupExportArgs> = {
     mkdirSync(argv.output, { recursive: true });
     const stats = { resources: 0, bytes: 0 };
 
-    await crawlAndSave(podUrl, token, podUrl, argv.output, stats);
+    await crawlAndSave(podUrl, authHeader, podUrl, argv.output, stats);
 
     console.log(`\nBackup complete: ${stats.resources} resources, ${(stats.bytes / 1024).toFixed(1)} KB`);
   },
@@ -295,13 +310,12 @@ const restoreCommand: CommandModule<object, BackupImportArgs> = {
   describe: 'Restore a Pod from a local backup directory',
   builder: (yargs) =>
     yargs
-      .option('email', { type: 'string', demandOption: true, description: 'Account email' })
-      .option('password', { type: 'string', demandOption: true, description: 'Account password' })
+      .option('email', { type: 'string', description: 'Account email (optional if credentials stored)' })
+      .option('password', { type: 'string', description: 'Account password (optional if credentials stored)' })
       .option('url', {
         alias: 'u',
         type: 'string',
         description: 'Server base URL',
-        default: process.env.CSS_BASE_URL || 'http://localhost:3000',
       })
       .option('input', {
         alias: 'i',
@@ -310,28 +324,18 @@ const restoreCommand: CommandModule<object, BackupImportArgs> = {
         description: 'Input directory path',
       }),
   handler: async (argv) => {
-    const baseUrl = resolveUrl(argv.url);
-
     if (!existsSync(argv.input) || !statSync(argv.input).isDirectory()) {
       console.error(`Input path is not a directory: ${argv.input}`);
       process.exit(1);
     }
 
-    const token = await loginOrExit(argv.email, argv.password, baseUrl);
-
-    let podUrl: string;
-    try {
-      podUrl = await resolvePodUrl(token, baseUrl);
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
+    const { authHeader, podUrl } = await resolveBackupAuth(argv);
 
     console.log(`Restoring to pod: ${podUrl}`);
     console.log(`Input: ${argv.input}\n`);
 
     const stats = { resources: 0, bytes: 0 };
-    await restoreFromDir(argv.input, podUrl, token, argv.input, stats);
+    await restoreFromDir(argv.input, podUrl, authHeader, argv.input, stats);
 
     console.log(`\nRestore complete: ${stats.resources} resources, ${(stats.bytes / 1024).toFixed(1)} KB`);
   },

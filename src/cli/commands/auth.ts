@@ -1,6 +1,4 @@
 import type { CommandModule } from 'yargs';
-import fs from 'fs';
-import path from 'path';
 import {
   checkServer,
   login,
@@ -9,6 +7,7 @@ import {
   listClientCredentials,
   revokeClientCredential,
 } from '../lib/css-account';
+import { saveCredentials, clearCredentials, getConfigPath } from '../lib/credentials-store';
 
 interface AuthArgs {
   url: string;
@@ -24,7 +23,7 @@ interface CreateCredentialsArgs extends AuthArgs {
   password: string;
   'web-id'?: string;
   name?: string;
-  'write-env'?: string;
+  output?: boolean;
 }
 
 interface ListArgs extends AuthArgs {
@@ -78,7 +77,7 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
       .option('password', { type: 'string', demandOption: true, description: 'Account password' })
       .option('web-id', { type: 'string', description: 'WebID to bind credentials to' })
       .option('name', { type: 'string', description: 'Credential label' })
-      .option('write-env', { type: 'string', description: 'Write credentials to env file (e.g. .env.local)' }),
+      .option('output', { type: 'boolean', default: false, description: 'Print credentials to terminal instead of saving to ~/.xpod/' }),
   handler: async (argv) => {
     const baseUrl = resolveUrl(argv.url);
 
@@ -135,31 +134,14 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
     console.log(`  client_secret: ${cred.secret}`);
     console.log(`  webId:         ${webId}`);
 
-    if (argv['write-env']) {
-      const envPath = path.resolve(process.cwd(), argv['write-env']);
-      let content = '';
-      if (fs.existsSync(envPath)) {
-        content = fs.readFileSync(envPath, 'utf-8');
-      }
-
-      const updates: Record<string, string> = {
-        SOLID_CLIENT_ID: cred.id,
-        SOLID_CLIENT_SECRET: cred.secret ?? '',
-        SOLID_WEBID: webId,
-        SOLID_OIDC_ISSUER: baseUrl,
-      };
-
-      for (const [key, value] of Object.entries(updates)) {
-        const regex = new RegExp(`^${key}=.*$`, 'm');
-        if (regex.test(content)) {
-          content = content.replace(regex, `${key}=${value}`);
-        } else {
-          content += `\n${key}=${value}`;
-        }
-      }
-
-      fs.writeFileSync(envPath, content.trim() + '\n');
-      console.log(`\nWritten to ${envPath}`);
+    if (!argv.output) {
+      saveCredentials({
+        url: baseUrl,
+        clientId: cred.id,
+        clientSecret: cred.secret ?? '',
+        webId,
+      });
+      console.log(`\nSaved to ${getConfigPath().replace('/config.json', '/')}`);
     }
   },
 };
@@ -231,6 +213,16 @@ const revokeCommand: CommandModule<AuthArgs, RevokeArgs> = {
   },
 };
 
+const logoutCommand: CommandModule<AuthArgs, AuthArgs> = {
+  command: 'logout',
+  describe: 'Remove stored credentials from ~/.xpod/',
+  builder: (yargs) => yargs,
+  handler: async () => {
+    clearCredentials();
+    console.log('Credentials removed.');
+  },
+};
+
 export const authCommand: CommandModule<object, AuthArgs> = {
   command: 'auth',
   describe: 'Authentication and credential management',
@@ -244,6 +236,7 @@ export const authCommand: CommandModule<object, AuthArgs> = {
       })
       .command(loginCommand)
       .command(createCredentialsCommand)
+      .command(logoutCommand)
       .command(listCommand)
       .command(revokeCommand)
       .demandCommand(1, 'Please specify an auth subcommand'),

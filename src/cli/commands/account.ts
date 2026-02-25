@@ -4,19 +4,40 @@ import {
   login,
   getAccountData,
 } from '../lib/css-account';
+import { loadCredentials } from '../lib/credentials-store';
 
 interface AccountArgs {
-  url: string;
+  url?: string;
 }
 
 interface AccountAuthArgs extends AccountArgs {
-  email: string;
-  password: string;
+  email?: string;
+  password?: string;
 }
 
-function resolveUrl(url: string): string {
-  const raw = url || process.env.CSS_BASE_URL || 'http://localhost:3000';
+function resolveUrl(url?: string, credUrl?: string): string {
+  const raw = url || credUrl || process.env.CSS_BASE_URL || 'http://localhost:3000';
   return raw.endsWith('/') ? raw : `${raw}/`;
+}
+
+async function loginOrExit(email: string | undefined, password: string | undefined, baseUrl: string): Promise<string> {
+  if (!email || !password) {
+    console.error('This command requires --email and --password.');
+    console.error('Account management commands use the CSS Account API which requires email/password authentication.');
+    process.exit(1);
+  }
+
+  if (!(await checkServer(baseUrl))) {
+    console.error(`Cannot reach server at ${baseUrl}`);
+    process.exit(1);
+  }
+
+  const token = await login(email, password, baseUrl);
+  if (!token) {
+    console.error('Login failed. Check email/password.');
+    process.exit(1);
+  }
+  return token;
 }
 
 const accountCreateCommand: CommandModule<AccountArgs, AccountAuthArgs> = {
@@ -27,15 +48,14 @@ const accountCreateCommand: CommandModule<AccountArgs, AccountAuthArgs> = {
       .option('email', { type: 'string', demandOption: true, description: 'Account email' })
       .option('password', { type: 'string', demandOption: true, description: 'Account password' }),
   handler: async (argv) => {
-    const baseUrl = resolveUrl(argv.url);
+    const creds = loadCredentials();
+    const baseUrl = resolveUrl(argv.url, creds?.url);
 
     if (!(await checkServer(baseUrl))) {
       console.error(`Cannot reach server at ${baseUrl}`);
       process.exit(1);
     }
 
-    // CSS uses the same endpoint for register and login.
-    // POST to .account/login/password/ with new email creates the account.
     const res = await fetch(`${baseUrl}.account/login/password/`, {
       method: 'POST',
       headers: {
@@ -65,21 +85,12 @@ const accountListCommand: CommandModule<AccountArgs, AccountAuthArgs> = {
   describe: 'Show current account info',
   builder: (yargs) =>
     yargs
-      .option('email', { type: 'string', demandOption: true, description: 'Account email' })
-      .option('password', { type: 'string', demandOption: true, description: 'Account password' }),
+      .option('email', { type: 'string', description: 'Account email' })
+      .option('password', { type: 'string', description: 'Account password' }),
   handler: async (argv) => {
-    const baseUrl = resolveUrl(argv.url);
-
-    if (!(await checkServer(baseUrl))) {
-      console.error(`Cannot reach server at ${baseUrl}`);
-      process.exit(1);
-    }
-
-    const token = await login(argv.email, argv.password, baseUrl);
-    if (!token) {
-      console.error('Login failed. Check email/password.');
-      process.exit(1);
-    }
+    const creds = loadCredentials();
+    const baseUrl = resolveUrl(argv.url, creds?.url);
+    const token = await loginOrExit(argv.email, argv.password, baseUrl);
 
     const data = await getAccountData(token, baseUrl);
     if (!data) {
@@ -128,7 +139,6 @@ export const accountCommand: CommandModule<object, AccountArgs> = {
         alias: 'u',
         type: 'string',
         description: 'Server base URL',
-        default: process.env.CSS_BASE_URL || 'http://localhost:3000',
       })
       .command(accountCreateCommand)
       .command(accountListCommand)
