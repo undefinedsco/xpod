@@ -7,7 +7,7 @@ import { edgeNodes } from './schema';
 export interface EdgeNodeSummary {
   nodeId: string;
   displayName?: string;
-  nodeType: 'center' | 'edge';
+  nodeType: 'center' | 'edge' | 'sp';
   podCount: number;
   createdAt?: string;
   updatedAt?: string;
@@ -25,7 +25,7 @@ export interface EdgeNodeSecret {
   nodeId: string;
   displayName?: string;
   tokenHash: string;
-  nodeType: 'center' | 'edge';
+  nodeType: 'center' | 'edge' | 'sp';
   metadata?: Record<string, unknown> | null;
 }
 
@@ -35,6 +35,21 @@ export interface CenterNodeInfo {
   internalIp: string;
   internalPort: number;
   connectivityStatus: 'unknown' | 'reachable' | 'unreachable';
+  lastSeen?: Date;
+}
+
+export interface CreateSpNodeResult {
+  nodeId: string;
+  nodeToken: string;
+  serviceToken: string;
+  createdAt: string;
+}
+
+export interface SpNodeInfo {
+  nodeId: string;
+  displayName?: string;
+  publicUrl: string;
+  serviceTokenHash: string;
   lastSeen?: Date;
 }
 
@@ -87,7 +102,7 @@ export class EdgeNodeRepository {
       return {
         nodeId: String(row.id),
         displayName: row.display_name == null ? undefined : String(row.display_name),
-        nodeType: (row.node_type === 'center' ? 'center' : 'edge') as 'center' | 'edge',
+        nodeType: (['center', 'edge', 'sp'].includes(row.node_type) ? row.node_type : 'edge') as 'center' | 'edge' | 'sp',
         podCount: Number(row.pod_count ?? 0),
         createdAt: createdAt?.toISOString(),
         updatedAt: updatedAt?.toISOString(),
@@ -149,7 +164,7 @@ export class EdgeNodeRepository {
       nodeId: String(row.id),
       displayName: row.display_name == null ? undefined : String(row.display_name),
       tokenHash: String(row.token_hash ?? ''),
-      nodeType: (row.node_type === 'center' ? 'center' : 'edge') as 'center' | 'edge',
+      nodeType: (['center', 'edge', 'sp'].includes(row.node_type) ? row.node_type : 'edge') as 'center' | 'edge' | 'sp',
       metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata ?? null),
     };
   }
@@ -674,5 +689,82 @@ export class EdgeNodeRepository {
     `);
 
     return result.rows.length > 0;
+  }
+
+  // ============ SP (Storage Provider) Node Methods ============
+
+  /**
+   * Register or update an SP node (UPSERT by nodeId).
+   *
+   * SP 本地生成 deviceId 作为 nodeId，注册时带上来。
+   * 同一 nodeId 重复注册时更新 publicUrl、token 等，保留原记录。
+   * 不传 nodeId 则 Cloud 随机分配。
+   */
+  public async registerSpNode(options: {
+    publicUrl: string;
+    displayName?: string;
+    ownerAccountId?: string;
+    /** SP 提供的设备 ID，作为 nodeId（不传则随机生成） */
+    nodeId?: string;
+    /** SP 提供的 serviceToken，不传则随机生成 */
+    serviceToken?: string;
+  }): Promise<CreateSpNodeResult> {
+    const nodeId = options.nodeId || randomUUID();
+    const nodeToken = randomBytes(32).toString('base64url');
+    const nodeTokenHash = createHash('sha256').update(nodeToken).digest('hex');
+    const serviceToken = options.serviceToken || randomBytes(32).toString('base64url');
+    const now = new Date();
+    const ts = toDbTimestamp(this.db, now);
+
+    await executeStatement(this.db, sql`
+      INSERT INTO identity_edge_node (
+        id, display_name, owner_account_id, token_hash, service_token_hash,
+        node_type, public_url,
+        connectivity_status, created_at, updated_at
+      )
+      VALUES (
+        ${nodeId}, ${options.displayName ?? null}, ${options.ownerAccountId ?? null},
+        ${nodeTokenHash}, ${serviceToken},
+        'sp', ${options.publicUrl}, 'unknown', ${ts}, ${ts}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        display_name = EXCLUDED.display_name,
+        token_hash = EXCLUDED.token_hash,
+        service_token_hash = EXCLUDED.service_token_hash,
+        public_url = EXCLUDED.public_url,
+        updated_at = EXCLUDED.updated_at
+    `);
+
+    return {
+      nodeId,
+      nodeToken,
+      serviceToken,
+      createdAt: now.toISOString(),
+    };
+  }
+
+  /**
+   * Get SP node info by nodeId.
+   */
+  public async getSpNode(nodeId: string): Promise<SpNodeInfo | undefined> {
+    const result = await executeQuery(this.db, sql`
+      SELECT id, display_name, public_url, service_token_hash, last_seen
+      FROM identity_edge_node
+      WHERE id = ${nodeId} AND node_type = 'sp'
+      LIMIT 1
+    `);
+
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+
+    const row = result.rows[0] as any;
+    return {
+      nodeId: String(row.id),
+      displayName: row.display_name == null ? undefined : String(row.display_name),
+      publicUrl: String(row.public_url ?? ''),
+      serviceTokenHash: String(row.service_token_hash ?? ''),
+      lastSeen: fromDbTimestamp(row.last_seen),
+    };
   }
 }

@@ -1,0 +1,107 @@
+/**
+ * ProvisionPodCreator
+ *
+ * 等位替换 CSS 的 BasePodCreator。
+ *
+ * 检查 settings 里有没有 provisionCode：
+ * - 有 → 解码 JWT，回调远端 SP 的 /provision/pods 创建 Pod
+ * - 没有 → 委托给原始 BasePodCreator（标准本地创建）
+ */
+
+import { getLoggerFor } from 'global-logger-factory';
+import {
+  BasePodCreator,
+  type PodCreatorInput,
+  type PodCreatorOutput,
+  type BasePodCreatorArgs,
+} from '@solid/community-server';
+import { ProvisionCodeCodec } from './ProvisionCodeCodec';
+
+export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
+  /** 与 ProvisionHandler 使用相同的 baseUrl 派生签名密钥 */
+  provisionBaseUrl?: string;
+}
+
+export class ProvisionPodCreator extends BasePodCreator {
+  private readonly provisionLogger = getLoggerFor(this);
+  private readonly codec: ProvisionCodeCodec;
+
+  public constructor(args: ProvisionPodCreatorArgs) {
+    super(args);
+    this.codec = new ProvisionCodeCodec(args.provisionBaseUrl ?? args.baseUrl);
+  }
+
+  public override async handle(input: PodCreatorInput): Promise<PodCreatorOutput> {
+    const provisionCode = input.settings?.provisionCode as string | undefined;
+
+    if (!provisionCode) {
+      // 标准模式：委托给 BasePodCreator
+      return super.handle(input);
+    }
+
+    // SP 模式：解码 provisionCode，回调远端 SP
+    const payload = this.codec.decode(provisionCode);
+    if (!payload) {
+      throw new Error('Invalid or expired provisionCode');
+    }
+
+    this.provisionLogger.info(`Provisioning pod on remote SP: ${payload.spUrl}`);
+
+    // 1. 确定 podName
+    const podName = input.name;
+    if (!podName) {
+      throw new Error('Pod name is required for remote provisioning');
+    }
+
+    // 2. 回调 SP 创建 Pod
+    const callbackUrl = `${payload.spUrl.replace(/\/$/, '')}/provision/pods`;
+    const spResponse = await fetch(callbackUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${payload.serviceToken}`,
+      },
+      body: JSON.stringify({ podName }),
+    });
+
+    if (!spResponse.ok) {
+      const errBody = await spResponse.text();
+      this.provisionLogger.error(`SP callback failed: ${spResponse.status} ${errBody}`);
+      throw new Error(`Failed to create pod on SP: ${spResponse.status}`);
+    }
+
+    const spResult = await spResponse.json() as { podUrl?: string };
+
+    // storage URL 优先用 Cloud 分配的子域名，回调用实际地址
+    const storageBase = payload.spDomain
+      ? `https://${payload.spDomain}`
+      : payload.spUrl.replace(/\/$/, '');
+    const podUrl = spResult.podUrl || `${storageBase}/${podName}/`;
+
+    // 3. 生成 WebID（指向 Cloud，storage 指向 SP）
+    const webId = input.webId ?? `${this.baseUrl}${podName}/profile/card#me`;
+
+    // 4. 链接 WebID 到账户 + 在本地 PodStore 记录
+    // base.path 必须在 Cloud 的 identifier space 内（CSS PodStore 会检查），
+    // 所以用 Cloud 本地路径；真实的 SP storage URL 通过 podUrl 返回。
+    const localBase = this.identifierGenerator.generate(podName);
+    const podSettings = {
+      ...input.settings,
+      base: localBase,
+      webId,
+      oidcIssuer: this.baseUrl,
+    };
+
+    const webIdLink = await this.handleWebId(!input.webId, webId, input.accountId, podSettings);
+    const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink);
+
+    this.provisionLogger.info(`Provisioned pod ${podName} on SP ${payload.spUrl}, podUrl: ${podUrl}`);
+
+    return {
+      podUrl,
+      webId,
+      podId,
+      webIdLink,
+    };
+  }
+}

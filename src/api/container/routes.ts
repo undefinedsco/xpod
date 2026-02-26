@@ -21,6 +21,8 @@ import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
+import { registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
+import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import * as path from 'node:path';
@@ -124,16 +126,32 @@ function registerCloudRoutes(
     const config = container.resolve('config') as ApiContainerConfig;
 
     if (ddnsRepo) {
-      const ddnsDomain = config.subdomain?.ddnsDomain || 'undefineds.xyz';
-      registerDdnsRoutes(server, {
-        ddnsRepo: ddnsRepo as any,
-        dnsProvider: dnsProvider as any,
-        defaultDomain: ddnsDomain,
-      });
-      console.log(`[Cloud] DDNS routes registered (domain: ${ddnsDomain})`);
+      const baseStorageDomain = config.subdomain?.baseStorageDomain;
+      if (baseStorageDomain) {
+        registerDdnsRoutes(server, {
+          ddnsRepo: ddnsRepo as any,
+          dnsProvider: dnsProvider as any,
+          defaultDomain: baseStorageDomain,
+        });
+        console.log(`[Cloud] DDNS routes registered (domain: ${baseStorageDomain})`);
+      } else {
+        console.log('[Cloud] DDNS routes not registered (no CSS_BASE_STORAGE_DOMAIN)');
+      }
     }
   } catch {
     console.log('[Cloud] DDNS routes not registered (repo not available)');
+  }
+
+  // SP Provision API (SP 注册)
+  try {
+    const nodeRepo = container.resolve('nodeRepo') as EdgeNodeRepository;
+    const config = container.resolve('config') as ApiContainerConfig;
+    const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
+    const baseStorageDomain = config.subdomain?.baseStorageDomain;
+    registerProvisionRoutes(server, { repository: nodeRepo, baseUrl, baseStorageDomain });
+    console.log(`[Cloud] Provision routes registered${baseStorageDomain ? ` (baseStorageDomain: ${baseStorageDomain})` : ''}`);
+  } catch {
+    console.log('[Cloud] Provision routes not registered (dependencies not available)');
   }
 }
 
@@ -164,5 +182,38 @@ function registerLocalRoutes(
     }
   } catch {
     console.log('[Local] Subdomain client routes not registered (client not available)');
+  }
+
+  // Pod Provision API (SP 端，供 Cloud 回调创建 Pod)
+  try {
+    // rootDir: CSS 数据目录，默认 ./data
+    const rootDir = process.env.CSS_ROOT_FILE_PATH || './data';
+    // serviceToken 验证：从 SP 配置中读取
+    const expectedServiceToken = process.env.XPOD_SERVICE_TOKEN;
+
+    if (expectedServiceToken) {
+      registerPodManagementRoutes(server, {
+        rootDir,
+        verifyServiceToken: async (token: string) => token === expectedServiceToken,
+      });
+      console.log('[Local] Pod provision routes registered (/provision/pods)');
+    } else {
+      console.log('[Local] Pod provision routes not registered (XPOD_SERVICE_TOKEN not configured)');
+    }
+  } catch (error) {
+    console.log(`[Local] Pod provision routes not registered: ${error}`);
+  }
+
+  // SP 状态查询 (供 Linx 查询 SP 配置状态)
+  try {
+    const config = container.resolve('config') as ApiContainerConfig;
+    registerProvisionStatusRoute(server, {
+      cloudUrl: config.cloudApiEndpoint,
+      nodeId: config.nodeId,
+      cloudBaseUrl: config.oidcIssuer || config.cloudApiEndpoint,
+    });
+    console.log('[Local] Provision status route registered (/provision/status)');
+  } catch (error) {
+    console.log(`[Local] Provision status route not registered: ${error}`);
   }
 }

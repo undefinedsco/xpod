@@ -123,10 +123,8 @@ export class EdgeNodeModeDetector {
   }
 
   private generateSubdomain(nodeId: string): string {
-    // Generate a unique subdomain based on node ID
-    // For now, use a simple approach - in production you might want more sophisticated logic
-    const sanitized = nodeId.replace(/[^a-zA-Z0-9-]/g, '').toLowerCase();
-    return `${sanitized}.${this.baseDomain}`;
+    // 只返回前缀，完整 FQDN 由 DnsCoordinator 的 rootDomain 拼接
+    return nodeId.replace(/[^a-zA-Z0-9-]/g, '').toLowerCase();
   }
 
   private async testDirectConnectivity(ip: string, port: number): Promise<{

@@ -124,7 +124,7 @@ export class GatewayProxy {
       return;
     }
 
-    if ((url.startsWith('/v1/') || url.startsWith('/api/')) && this.targets.api) {
+    if ((url.startsWith('/v1/') || url.startsWith('/api/') || url.startsWith('/provision/')) && this.targets.api) {
       this.proxy.web(req, res, { target: this.targets.api });
       return;
     }

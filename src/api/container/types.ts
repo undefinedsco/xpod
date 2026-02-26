@@ -45,10 +45,8 @@ export interface ApiContainerConfig {
 
   /** 子域名功能配置 (cloud 模式) */
   subdomain?: {
-    enabled: boolean;
-    baseDomain?: string;
-    /** DDNS 服务使用的域名 (如 undefineds.xyz) */
-    ddnsDomain?: string;
+    /** 节点域名根域名 (如 undefineds.site)，有值即启用子域名功能 */
+    baseStorageDomain?: string;
     cloudflareAccountId?: string;
     cloudflareApiToken?: string;
     tencentDnsSecretId?: string;

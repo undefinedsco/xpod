@@ -37,20 +37,20 @@ describe('PodManagementHandler', () => {
   });
 
   describe('route registration', () => {
-    it('should register POST /api/v1/pods', () => {
-      expect(mockServer.post).toHaveBeenCalledWith('/api/v1/pods', expect.any(Function), { public: true });
+    it('should register POST /provision/pods', () => {
+      expect(mockServer.post).toHaveBeenCalledWith('/provision/pods', expect.any(Function), { public: true });
     });
 
-    it('should register DELETE /api/v1/pods/:podName', () => {
-      expect(mockServer.delete).toHaveBeenCalledWith('/api/v1/pods/:podName', expect.any(Function), { public: true });
+    it('should register DELETE /provision/pods/:podName', () => {
+      expect(mockServer.delete).toHaveBeenCalledWith('/provision/pods/:podName', expect.any(Function), { public: true });
     });
 
-    it('should register GET /api/v1/pods/:podName', () => {
-      expect(mockServer.get).toHaveBeenCalledWith('/api/v1/pods/:podName', expect.any(Function), { public: true });
+    it('should register GET /provision/pods/:podName', () => {
+      expect(mockServer.get).toHaveBeenCalledWith('/provision/pods/:podName', expect.any(Function), { public: true });
     });
   });
 
-  describe('POST /api/v1/pods', () => {
+  describe('POST /provision/pods', () => {
     const createMockRequest = (body: object, authHeader?: string): IncomingMessage =>
       ({
         headers: { authorization: authHeader, host: 'node1.pods.example.com' },
@@ -76,7 +76,7 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest({ podName: 'alice' }, 'Bearer valid_token');
       const response = createMockResponse();
 
-      await routes['POST /api/v1/pods'](request, response, {});
+      await routes['POST /provision/pods'](request, response, {});
 
       expect(response.statusCode).toBe(201);
       expect(mkdir).toHaveBeenCalledWith(`${testDir}/alice`, { recursive: true });
@@ -88,7 +88,7 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest({ podName: 'alice' }, 'Bearer invalid_token');
       const response = createMockResponse();
 
-      await routes['POST /api/v1/pods'](request, response, {});
+      await routes['POST /provision/pods'](request, response, {});
 
       expect(response.statusCode).toBe(401);
     });
@@ -97,7 +97,7 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest({ podName: 'alice' });
       const response = createMockResponse();
 
-      await routes['POST /api/v1/pods'](request, response, {});
+      await routes['POST /provision/pods'](request, response, {});
 
       expect(response.statusCode).toBe(401);
     });
@@ -108,7 +108,7 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest({ podName: 'invalid.pod' }, 'Bearer valid_token');
       const response = createMockResponse();
 
-      await routes['POST /api/v1/pods'](request, response, {});
+      await routes['POST /provision/pods'](request, response, {});
 
       expect(response.statusCode).toBe(400);
     });
@@ -120,13 +120,13 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest({ podName: 'alice' }, 'Bearer valid_token');
       const response = createMockResponse();
 
-      await routes['POST /api/v1/pods'](request, response, {});
+      await routes['POST /provision/pods'](request, response, {});
 
       expect(response.statusCode).toBe(409);
     });
   });
 
-  describe('DELETE /api/v1/pods/:podName', () => {
+  describe('DELETE /provision/pods/:podName', () => {
     const createMockRequest = (authHeader?: string): IncomingMessage =>
       ({
         headers: { authorization: authHeader },
@@ -147,7 +147,7 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest('Bearer valid_token');
       const response = createMockResponse();
 
-      await routes['DELETE /api/v1/pods/:podName'](request, response, { podName: 'alice' });
+      await routes['DELETE /provision/pods/:podName'](request, response, { podName: 'alice' });
 
       expect(response.statusCode).toBe(200);
       expect(rm).toHaveBeenCalledWith(`${testDir}/alice`, { recursive: true, force: true });
@@ -160,7 +160,7 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest('Bearer valid_token');
       const response = createMockResponse();
 
-      await routes['DELETE /api/v1/pods/:podName'](request, response, { podName: 'nonexistent' });
+      await routes['DELETE /provision/pods/:podName'](request, response, { podName: 'nonexistent' });
 
       expect(response.statusCode).toBe(404);
     });
@@ -171,13 +171,13 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest('Bearer invalid_token');
       const response = createMockResponse();
 
-      await routes['DELETE /api/v1/pods/:podName'](request, response, { podName: 'alice' });
+      await routes['DELETE /provision/pods/:podName'](request, response, { podName: 'alice' });
 
       expect(response.statusCode).toBe(401);
     });
   });
 
-  describe('GET /api/v1/pods/:podName', () => {
+  describe('GET /provision/pods/:podName', () => {
     const createMockRequest = (authHeader?: string): IncomingMessage =>
       ({
         headers: { authorization: authHeader, host: 'node1.pods.example.com' },
@@ -197,7 +197,7 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest('Bearer valid_token');
       const response = createMockResponse();
 
-      await routes['GET /api/v1/pods/:podName'](request, response, { podName: 'alice' });
+      await routes['GET /provision/pods/:podName'](request, response, { podName: 'alice' });
 
       expect(response.statusCode).toBe(200);
       const responseBody = JSON.parse((response.end as any).mock.calls[0][0]);
@@ -213,7 +213,7 @@ describe('PodManagementHandler', () => {
       const request = createMockRequest('Bearer valid_token');
       const response = createMockResponse();
 
-      await routes['GET /api/v1/pods/:podName'](request, response, { podName: 'nonexistent' });
+      await routes['GET /provision/pods/:podName'](request, response, { podName: 'nonexistent' });
 
       expect(response.statusCode).toBe(404);
     });

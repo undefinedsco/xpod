@@ -16,8 +16,7 @@ data:
 
   # Optional cloud features.
   XPOD_EDGE_NODES_ENABLED: "true"
-  XPOD_SUBDOMAIN_ENABLED: "true"
-  XPOD_DDNS_DOMAIN: example.com
+  CSS_BASE_STORAGE_DOMAIN: example.com
 
   # Example: if you expose mail in cloud profile, fill these values.
   # CSS_EMAIL_CONFIG_HOST: smtp.example.com

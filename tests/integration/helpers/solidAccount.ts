@@ -103,114 +103,125 @@ export async function discoverOidcIssuerFromWebId(webId: string, fallbackIssuer:
 }
 
 async function setupAccountOnce(baseUrl: string, prefix: string): Promise<AccountSetup | null> {
-  try {
-    const suffix = Date.now().toString(36);
-    const normalizedPrefix = (prefix || 'test')
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '') || 'test';
-    const shortPrefix = normalizedPrefix.slice(0, 8).replace(/^-|-$/g, '') || 'test';
-    const emailPrefix = normalizedPrefix.slice(0, 24) || 'test';
-    const email = `${emailPrefix}-${suffix}@test.com`;
-    const podName = `${shortPrefix}-${suffix}`;
-    const routingHeaders = hostHeaderFor(baseUrl);
+  const suffix = Date.now().toString(36);
+  const normalizedPrefix = (prefix || 'test')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'test';
+  const shortPrefix = normalizedPrefix.slice(0, 8).replace(/^-|-$/g, '') || 'test';
+  const emailPrefix = normalizedPrefix.slice(0, 24) || 'test';
+  const email = `${emailPrefix}-${suffix}@test.com`;
+  const podName = `${shortPrefix}-${suffix}`;
+  const routingHeaders = hostHeaderFor(baseUrl);
+  const tag = `[setupAccount:${prefix}]`;
 
-    const createRes = await fetch(`${baseUrl}/.account/account/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...routingHeaders },
-      body: JSON.stringify({}),
-    });
-    if (!createRes.ok) {
-      return null;
-    }
-
-    const createData = await createRes.json() as { authorization: string };
-    const authorization = createData.authorization;
-
-    const controlsRes = await fetch(`${baseUrl}/.account/`, {
-      headers: {
-        Authorization: `CSS-Account-Token ${authorization}`,
-        ...routingHeaders,
-      },
-    });
-    if (!controlsRes.ok) {
-      return null;
-    }
-
-    const controls = await controlsRes.json() as {
-      controls?: {
-        password?: { create?: string };
-        account?: { pod?: string; clientCredentials?: string };
-      };
-    };
-
-    const passwordUrl = controls.controls?.password?.create;
-    if (passwordUrl) {
-      await fetch(normalizeServiceUrl(passwordUrl, baseUrl), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `CSS-Account-Token ${authorization}`,
-          ...routingHeaders,
-        },
-        body: JSON.stringify({ email, password: "test123456" }),
-      });
-    }
-
-    const podCreateUrl = controls.controls?.account?.pod;
-    if (!podCreateUrl) {
-      return null;
-    }
-
-    const podRes = await fetch(normalizeServiceUrl(podCreateUrl, baseUrl), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `CSS-Account-Token ${authorization}`,
-        ...routingHeaders,
-      },
-      body: JSON.stringify({ name: podName }),
-    });
-    if (!podRes.ok) {
-      return null;
-    }
-
-    const podInfo = await podRes.json() as { webId?: string; pod?: string };
-    const webId = normalizeServiceUrl(podInfo.webId ?? `${baseUrl}/${podName}/profile/card#me`, baseUrl);
-    const podUrl = normalizeServiceUrl(podInfo.pod ?? `${baseUrl}/${podName}/`, baseUrl);
-
-    const clientCredsUrl = controls.controls?.account?.clientCredentials;
-    if (!clientCredsUrl) {
-      return null;
-    }
-
-    const credsRes = await fetch(normalizeServiceUrl(clientCredsUrl, baseUrl), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `CSS-Account-Token ${authorization}`,
-        ...routingHeaders,
-      },
-      body: JSON.stringify({ name: `${prefix}-client`, webId }),
-    });
-    if (!credsRes.ok) {
-      return null;
-    }
-
-    const creds = await credsRes.json() as { id: string; secret: string };
-    const issuer = await discoverOidcIssuerFromWebId(webId, baseUrl);
-
-    return {
-      clientId: creds.id,
-      clientSecret: creds.secret,
-      webId,
-      podUrl,
-      issuer,
-    };
-  } catch {
+  // Step 1: Create account
+  const createRes = await fetch(`${baseUrl}/.account/account/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...routingHeaders },
+    body: JSON.stringify({}),
+  });
+  if (!createRes.ok) {
+    console.error(`${tag} create account failed: ${createRes.status} ${await createRes.text().catch(() => '')}`);
     return null;
   }
+
+  const createData = await createRes.json() as { authorization: string };
+  const authorization = createData.authorization;
+
+  // Step 2: Get controls
+  const controlsRes = await fetch(`${baseUrl}/.account/`, {
+    headers: {
+      Authorization: `CSS-Account-Token ${authorization}`,
+      ...routingHeaders,
+    },
+  });
+  if (!controlsRes.ok) {
+    console.error(`${tag} get controls failed: ${controlsRes.status}`);
+    return null;
+  }
+
+  const controls = await controlsRes.json() as {
+    controls?: {
+      password?: { create?: string };
+      account?: { pod?: string; clientCredentials?: string };
+    };
+  };
+
+  // Step 3: Create password login
+  const passwordUrl = controls.controls?.password?.create;
+  if (passwordUrl) {
+    const pwRes = await fetch(normalizeServiceUrl(passwordUrl, baseUrl), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `CSS-Account-Token ${authorization}`,
+        ...routingHeaders,
+      },
+      body: JSON.stringify({ email, password: "test123456" }),
+    });
+    if (!pwRes.ok) {
+      console.error(`${tag} create password failed: ${pwRes.status} ${await pwRes.text().catch(() => '')}`);
+    }
+  }
+
+  // Step 4: Create pod
+  const podCreateUrl = controls.controls?.account?.pod;
+  if (!podCreateUrl) {
+    console.error(`${tag} no pod create URL in controls: ${JSON.stringify(controls.controls)}`);
+    return null;
+  }
+
+  const podRes = await fetch(normalizeServiceUrl(podCreateUrl, baseUrl), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `CSS-Account-Token ${authorization}`,
+      ...routingHeaders,
+    },
+    body: JSON.stringify({ name: podName }),
+  });
+  if (!podRes.ok) {
+    console.error(`${tag} create pod failed: ${podRes.status} ${await podRes.text().catch(() => '')}`);
+    return null;
+  }
+
+  const podInfo = await podRes.json() as { webId?: string; pod?: string };
+  const webId = normalizeServiceUrl(podInfo.webId ?? `${baseUrl}/${podName}/profile/card#me`, baseUrl);
+  const podUrl = normalizeServiceUrl(podInfo.pod ?? `${baseUrl}/${podName}/`, baseUrl);
+
+  // Step 5: Create client credentials
+  const clientCredsUrl = controls.controls?.account?.clientCredentials;
+  if (!clientCredsUrl) {
+    console.error(`${tag} no clientCredentials URL in controls: ${JSON.stringify(controls.controls)}`);
+    return null;
+  }
+
+  const credsRes = await fetch(normalizeServiceUrl(clientCredsUrl, baseUrl), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `CSS-Account-Token ${authorization}`,
+      ...routingHeaders,
+    },
+    body: JSON.stringify({ name: `${prefix}-client`, webId }),
+  });
+  if (!credsRes.ok) {
+    console.error(`${tag} create clientCredentials failed: ${credsRes.status} ${await credsRes.text().catch(() => '')}`);
+    return null;
+  }
+
+  const creds = await credsRes.json() as { id: string; secret: string };
+  const issuer = await discoverOidcIssuerFromWebId(webId, baseUrl);
+
+  return {
+    clientId: creds.id,
+    clientSecret: creds.secret,
+    webId,
+    podUrl,
+    issuer,
+  };
 }
 
 export async function setupAccount(baseUrl: string, prefix: string): Promise<AccountSetup | null> {
