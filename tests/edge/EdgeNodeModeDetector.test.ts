@@ -43,7 +43,7 @@ describe('EdgeNodeModeDetector', () => {
       expect(result).toEqual({
         accessMode: 'proxy',
         reason: 'Direct not available, using proxy',
-        subdomain: 'test-node-123.cluster.example.com',
+        subdomain: 'test-node-123',
       });
     });
 
@@ -70,7 +70,7 @@ describe('EdgeNodeModeDetector', () => {
 
       expect(result.accessMode).toBe('direct');
       expect(result.reason).toBe('Direct connectivity test passed (IPv4)');
-      expect(result.subdomain).toBe('test-node-456.cluster.example.com');
+      expect(result.subdomain).toBe('test-node-456');
       expect(result.connectivityTest?.success).toBe(true);
       expect(result.connectivityTest?.latency).toBeGreaterThan(0);
     });
@@ -98,7 +98,7 @@ describe('EdgeNodeModeDetector', () => {
 
       expect(result.accessMode).toBe('proxy');
       expect(result.reason).toContain('Direct connectivity failed');
-      expect(result.subdomain).toBe('test-node-789.cluster.example.com');
+      expect(result.subdomain).toBe('test-node-789');
       expect(result.connectivityTest?.success).toBe(false);
       expect(result.connectivityTest?.error).toBe('Connection refused');
     });
@@ -160,7 +160,7 @@ describe('EdgeNodeModeDetector', () => {
 
       const result = await detector.detectMode(nodeInfo);
 
-      expect(result.subdomain).toBe('testnode123.cluster.example.com');
+      expect(result.subdomain).toBe('testnode123');
     });
 
     it('should skip direct detection when node only supports proxy mode', async () => {

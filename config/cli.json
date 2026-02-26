@@ -352,6 +352,15 @@
         },
         {
           "@type": "YargsParameter",
+          "name": "baseStorageDomain",
+          "options": {
+            "type": "string",
+            "describe": "Root domain for edge/SP node DNS records (e.g. undefineds.site)",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
           "name": "idpUrl",
           "options": {
             "type": "string",

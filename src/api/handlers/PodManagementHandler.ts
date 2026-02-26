@@ -33,11 +33,12 @@ export interface DeletePodResponse {
  * Pod Management Handler
  *
  * SP (Storage Provider) 端供 IdP 调用的 API。
- * 用于创建/删除 Pod 目录。
+ * 用于创建/删除/查询 Pod 目录。
  *
- * 端点:
- * - POST /api/v1/pods - 创建 Pod
- * - DELETE /api/v1/pods/:podName - 删除 Pod
+ * 端点 (Solid Storage Provision Protocol):
+ * - POST   /provision/pods           - 创建 Pod
+ * - GET    /provision/pods/:podName  - 查询 Pod
+ * - DELETE /provision/pods/:podName  - 删除 Pod
  *
  * 认证:
  * - 使用 IdP service token (Bearer)
@@ -73,7 +74,7 @@ export function registerPodManagementRoutes(
   }
 
   /**
-   * POST /api/v1/pods
+   * POST /provision/pods
    *
    * 创建 Pod 目录
    *
@@ -88,7 +89,7 @@ export function registerPodManagementRoutes(
    *   401: { error: "Unauthorized" }
    *   409: { error: "Pod already exists" }
    */
-  server.post('/api/v1/pods', async (request, response) => {
+  server.post('/provision/pods', async (request, response) => {
     // 1. 认证
     if (!await authenticate(request)) {
       sendJson(response, 401, { error: 'Unauthorized', message: 'Invalid or missing service token' });
@@ -150,7 +151,7 @@ export function registerPodManagementRoutes(
   }, { public: true }); // Service token auth handled internally
 
   /**
-   * DELETE /api/v1/pods/:podName
+   * DELETE /provision/pods/:podName
    *
    * 删除 Pod 目录
    *
@@ -162,7 +163,7 @@ export function registerPodManagementRoutes(
    *   401: { error: "Unauthorized" }
    *   404: { error: "Pod not found" }
    */
-  server.delete('/api/v1/pods/:podName', async (request, response, params) => {
+  server.delete('/provision/pods/:podName', async (request, response, params) => {
     // 1. 认证
     if (!await authenticate(request)) {
       sendJson(response, 401, { error: 'Unauthorized', message: 'Invalid or missing service token' });
@@ -207,11 +208,11 @@ export function registerPodManagementRoutes(
   }, { public: true });
 
   /**
-   * GET /api/v1/pods/:podName
+   * GET /provision/pods/:podName
    *
    * 获取 Pod 信息（存在性检查）
    */
-  server.get('/api/v1/pods/:podName', async (request, response, params) => {
+  server.get('/provision/pods/:podName', async (request, response, params) => {
     // 1. 认证
     if (!await authenticate(request)) {
       sendJson(response, 401, { error: 'Unauthorized', message: 'Invalid or missing service token' });

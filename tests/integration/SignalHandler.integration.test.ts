@@ -1,52 +1,32 @@
 import { beforeAll, describe, it, expect } from "vitest";
 import { Session } from "@inrupt/solid-client-authn-node";
 import { setupAccount } from "./helpers/solidAccount";
-import { resolveSolidIntegrationConfig } from "../http/utils/integrationEnv";
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === "true";
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
-const { baseUrl: envBaseUrl, oidcIssuer: envIssuer } = resolveSolidIntegrationConfig();
 const STANDALONE_BASE = (process.env.CSS_BASE_URL || `http://localhost:${process.env.STANDALONE_PORT || '5739'}`).replace(/\/$/, '');
-const dockerApiBaseUrl = `${STANDALONE_BASE}/`;
-const dockerIdpBaseUrl = STANDALONE_BASE;
-
-const externalApiBaseUrl = envBaseUrl;
-const externalIssuer = envIssuer;
-const externalClientId = process.env.SOLID_CLIENT_ID;
-const externalClientSecret = process.env.SOLID_CLIENT_SECRET;
-const useDockerDefaults = !externalClientId || !externalClientSecret;
 
 suite("SignalHandler Integration", () => {
   let session: Session;
   let authFetch: typeof fetch;
   let createdNodeId: string;
 
-  const baseUrl = `${(useDockerDefaults ? dockerApiBaseUrl : externalApiBaseUrl).replace(/\/$/, "")}/`;
+  const baseUrl = `${STANDALONE_BASE}/`;
 
   beforeAll(async () => {
-    session = new Session();
-
-    if (useDockerDefaults) {
-      const account = await setupAccount(dockerIdpBaseUrl, "signal");
-      if (!account) {
-        throw new Error("Failed to setup account for SignalHandler integration test.");
-      }
-
-      await session.login({
-        clientId: account.clientId,
-        clientSecret: account.clientSecret,
-        oidcIssuer: account.issuer,
-        tokenType: "DPoP",
-      });
-    } else {
-      await session.login({
-        clientId: externalClientId,
-        clientSecret: externalClientSecret,
-        oidcIssuer: externalIssuer,
-        tokenType: "DPoP",
-      });
+    const account = await setupAccount(STANDALONE_BASE, "signal");
+    if (!account) {
+      throw new Error("Failed to setup account for SignalHandler integration test.");
     }
+
+    session = new Session();
+    await session.login({
+      clientId: account.clientId,
+      clientSecret: account.clientSecret,
+      oidcIssuer: account.issuer,
+      tokenType: "DPoP",
+    });
 
     if (!session.info.isLoggedIn) {
       throw new Error("Failed to login for SignalHandler integration test.");

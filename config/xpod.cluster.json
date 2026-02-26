@@ -197,15 +197,11 @@
         "@id": "urn:undefineds:xpod:TencentDnsProvider"
       },
       "rootDomain": {
-        "@id": "urn:solid-server:default:variable:baseUrl",
+        "@id": "urn:solid-server:default:variable:baseStorageDomain",
         "@type": "Variable"
       },
       "ttl": {
         "@id": "urn:solid-server:default:variable:dnsRecordTtl",
-        "@type": "Variable"
-      },
-      "clusterIp": {
-        "@id": "urn:solid-server:default:variable:clusterIngressIp",
         "@type": "Variable"
       }
     },
@@ -297,9 +293,6 @@
       },
       "certificateProvisioner": {
         "@id": "urn:undefineds:xpod:Dns01CertificateProvisioner"
-      },
-      "tunnelManager": {
-        "@id": "urn:undefineds:xpod:EdgeNodeTunnelManager"
       },
       "healthProbeService": {
         "@id": "urn:undefineds:xpod:EdgeNodeHealthProbeService"

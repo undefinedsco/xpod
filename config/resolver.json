@@ -326,6 +326,14 @@
           }
         },
         {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:baseStorageDomain",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "baseStorageDomain",
+            "defaultValue": ""
+          }
+        },
+        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:idpUrl",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",

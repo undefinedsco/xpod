@@ -28,6 +28,9 @@ x-xpod-image: &xpod-image
   build:
     context: .
     dockerfile: Dockerfile
+    args:
+      http_proxy: ${http_proxy:-http://host.docker.internal:7890}
+      https_proxy: ${https_proxy:-http://host.docker.internal:7890}
 
 services:
   postgres:
@@ -85,8 +88,7 @@ services:
       XPOD_EDITION: cloud
       XPOD_NODE_ID: cloud-a
       XPOD_EDGE_NODES_ENABLED: "false"
-      XPOD_SUBDOMAIN_ENABLED: "false"
-      XPOD_DDNS_DOMAIN: undefineds.xyz
+      CSS_BASE_STORAGE_DOMAIN: undefineds.site
       API_PORT: "6301"
       API_HOST: "0.0.0.0"
       CSS_PORT: "6300"
@@ -141,8 +143,6 @@ services:
       XPOD_EDITION: cloud
       XPOD_NODE_ID: cloud-b
       XPOD_EDGE_NODES_ENABLED: "false"
-      XPOD_SUBDOMAIN_ENABLED: "false"
-      XPOD_DDNS_DOMAIN: undefineds.xyz
       API_PORT: "6401"
       API_HOST: "0.0.0.0"
       CSS_PORT: "6400"
@@ -183,13 +183,14 @@ services:
       start_period: 60s
     command: ["sh", "-c", "node dist/main.js -m cloud -p 6400 --host 0.0.0.0"]
 
-  # Local 模式 - 托管式，使用 Cloud IdP，SQLite 存储
+  # Local 模式 - SP 模式，使用 Cloud IdP，SQLite 存储
   local:
     <<: *xpod-image
     environment:
       NODE_ENV: development
       XPOD_EDITION: local
       XPOD_NODE_ID: local-managed-node
+      XPOD_SERVICE_TOKEN: "test-service-token-for-integration"
       API_PORT: "5738"
       API_HOST: "0.0.0.0"
       CSS_PORT: "5737"
@@ -205,6 +206,7 @@ services:
       HTTPS_PROXY: ""
     ports:
       - "${LOCAL_PORT:-5737}:5737"
+      - "${LOCAL_API_PORT:-5738}:5738"
     volumes:
       - local_data:/app/data
     depends_on:

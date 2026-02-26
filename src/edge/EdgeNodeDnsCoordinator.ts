@@ -3,7 +3,7 @@ import type { DnsProvider, DnsRecordTypeValue } from '../dns/DnsProvider';
 
 export interface EdgeNodeDnsCoordinatorOptions {
   provider: DnsProvider;
-  /** 顶级域名，例如 `xpod.example`。 */
+  /** 顶级域名，例如 `undefineds.site`。 */
   rootDomain?: string | null;
   /**
    * 默认记录类型，当目标地址无法识别时回退使用。
@@ -12,11 +12,6 @@ export interface EdgeNodeDnsCoordinatorOptions {
   defaultRecordType?: DnsRecordTypeValue;
   /** TTL 秒数，缺省按供应商默认。 */
   ttl?: number | string | null;
-  /**
-   * Cluster 的公网 IP 地址，用于 proxy 模式的 DNS 指向。
-   * 如果未设置，proxy 模式节点将跳过 DNS 同步。
-   */
-  clusterIp?: string | null;
 }
 
 export class EdgeNodeDnsCoordinator {
@@ -25,7 +20,6 @@ export class EdgeNodeDnsCoordinator {
   private readonly rootDomain?: string;
   private readonly defaultRecordType: DnsRecordTypeValue;
   private readonly ttl?: number;
-  private readonly clusterIp?: string;
   private readonly enabled: boolean;
 
   public constructor(options: EdgeNodeDnsCoordinatorOptions) {
@@ -33,7 +27,6 @@ export class EdgeNodeDnsCoordinator {
     this.rootDomain = this.normalizeRootDomain(options.rootDomain);
     this.defaultRecordType = options.defaultRecordType ?? 'A';
     this.ttl = this.normalizeTtl(options.ttl);
-    this.clusterIp = this.extractString(options.clusterIp);
     this.enabled = Boolean(this.rootDomain);
   }
 
@@ -41,63 +34,58 @@ export class EdgeNodeDnsCoordinator {
     if (!this.enabled) {
       return;
     }
-    
+
     const hints = this.extractDnsHints(metadata);
 
-    // Extract subdomain and access mode
     const subdomain = this.extractString(metadata.subdomain) ?? hints?.subdomain;
     if (!subdomain) {
       this.logger.debug(`Node ${nodeId} 未提供 subdomain，跳过 DNS 同步。`);
       return;
     }
-    
-    const accessMode = this.extractString(metadata.accessMode);
-    const normalizedAccessMode = accessMode?.trim().toLowerCase();
-    
-    // Determine DNS target based on access mode
+
+    // 用节点上报的地址（公网 IP 或隧道入口，由节点自行决定）
     let target: string | undefined;
     let recordType: DnsRecordTypeValue | undefined;
-    
-    if (normalizedAccessMode === 'direct') {
-      // Direct mode: DNS 指向节点公网 IP
-      // 优先使用 IPv6（如果有），因为可以避免 NAT 问题
-      const ipv6 = this.extractString(metadata.ipv6);
-      const ipv4 = this.extractString(metadata.ipv4);
-      const publicIp = this.extractString(metadata.publicIp);
-      const publicAddress = this.extractString(metadata.publicAddress);
-      
-      // IPv6 优先策略：如果有公网 IPv6，优先使用
-      if (ipv6 && this.isIpv6(ipv6)) {
-        target = ipv6;
-        recordType = 'AAAA';
-        this.logger.debug(`Node ${nodeId} 使用 IPv6 地址: ${ipv6}`);
-      } else {
-        target = publicIp ?? ipv4 ?? publicAddress;
-      }
-      
-      if (!target && hints?.target) {
-        target = hints.target;
-      }
 
-      if (!target) {
-        this.logger.warn(`Node ${nodeId} (direct mode) 未提供公网 IP，跳过 DNS 同步。`);
-        return;
-      }
-    } else if (normalizedAccessMode === 'proxy') {
-      // Proxy mode: DNS 指向 Cluster IP
-      if (!this.clusterIp) {
-        this.logger.debug(`Cluster IP 未配置，跳过 proxy 模式节点 ${nodeId} 的 DNS 同步。`);
-        return;
-      }
-      target = this.clusterIp;
-    } else if (hints?.target) {
-      // Fallback: 使用旧的逻辑从 metadata 提取
-      target = hints.target;
+    const ipv6 = this.extractString(metadata.ipv6);
+    const ipv4 = this.extractString(metadata.ipv4);
+    const publicIp = this.extractString(metadata.publicIp);
+    const publicAddress = this.extractString(metadata.publicAddress);
+
+    // IPv6 优先
+    if (ipv6 && this.isIpv6(ipv6)) {
+      target = ipv6;
+      recordType = 'AAAA';
+      this.logger.debug(`Node ${nodeId} 使用 IPv6 地址: ${ipv6}`);
     } else {
-      this.logger.debug(`Node ${nodeId} 未提供 accessMode/dns hints，跳过同步。`);
+      target = publicIp ?? ipv4 ?? publicAddress;
+    }
+
+    if (!target && hints?.target) {
+      target = hints.target;
+    }
+
+    if (!target) {
+      this.logger.debug(`Node ${nodeId} 未提供可用地址，跳过 DNS 同步。`);
       return;
     }
-    
+
+    // 健康检查未通过时删除 DNS 记录
+    const connectivityStatus = this.extractString(metadata.connectivityStatus);
+    if (connectivityStatus === 'unreachable') {
+      this.logger.info(`节点 ${nodeId} 不可达，删除 DNS 记录 ${subdomain}.${this.rootDomain}`);
+      try {
+        await this.provider.deleteRecord({
+          domain: this.rootDomain!,
+          subdomain,
+          type: recordType ?? this.defaultRecordType,
+        });
+      } catch (error: unknown) {
+        this.logger.error(`删除节点 ${nodeId} DNS 记录失败: ${(error as Error).message}`);
+      }
+      return;
+    }
+
     const type = recordType ?? this.detectRecordType(target) ?? this.defaultRecordType;
     const value = this.normalizeRecordValue(target, type);
 
@@ -114,8 +102,7 @@ export class EdgeNodeDnsCoordinator {
         value,
         ttl: this.ttl,
       });
-      const loggedMode = normalizedAccessMode ?? 'unknown';
-      this.logger.info(`已同步节点 ${nodeId} (${loggedMode}) 的 DNS: ${subdomain}.${this.rootDomain} -> ${value}`);
+      this.logger.info(`已同步节点 ${nodeId} 的 DNS: ${subdomain}.${this.rootDomain} -> ${value}`);
     } catch (error: unknown) {
       this.logger.error(`同步节点 ${nodeId} DNS 记录失败: ${(error as Error).message}`);
       throw error;

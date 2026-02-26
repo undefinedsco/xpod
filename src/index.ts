@@ -72,6 +72,9 @@ import { DisabledOidcHandler } from './identity/oidc/DisabledOidcHandler';
 import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentityProviderHandler';
 import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
+// Provision components
+import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
+import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 export type {
   DnsProvider,
   ListDnsRecordsInput,
@@ -176,4 +179,7 @@ export {
   AutoDetectOidcHandler,
   AutoDetectIdentityProviderHandler,
   UrlAwareRedisLocker,
+  // Provision exports
+  ProvisionPodCreator,
+  ProvisionCodeCodec,
 };

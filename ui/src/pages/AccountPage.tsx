@@ -123,9 +123,17 @@ export function AccountPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ name: podName.trim() }),
+        body: JSON.stringify({
+          name: podName.trim(),
+          ...(() => {
+            const pc = sessionStorage.getItem('provisionCode');
+            return pc ? { settings: { provisionCode: pc } } : {};
+          })(),
+        }),
       });
       if (res.ok) {
+        // Pod 创建成功后清除 provisionCode
+        sessionStorage.removeItem('provisionCode');
         setPodName('');
         setShowCreatePod(false);
         // Refresh controls to get updated endpoints (including new WebID)

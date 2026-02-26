@@ -45,25 +45,19 @@ export function registerCloudServices(
   });
   logger.info('DDNS repository registered');
 
-  // 只有配置了子域名功能才注册 DNS/Tunnel 服务
-  if (!config.subdomain?.enabled) {
-    logger.info('Subdomain service disabled');
+  // 只有配置了 baseStorageDomain 才注册 DNS/Tunnel 服务
+  const baseStorageDomain = config.subdomain?.baseStorageDomain;
+  if (!baseStorageDomain) {
+    logger.info('Subdomain service disabled (no CSS_BASE_STORAGE_DOMAIN)');
     return;
   }
 
   const {
-    baseDomain,
     tencentDnsSecretId,
     tencentDnsSecretKey,
     cloudflareAccountId,
     cloudflareApiToken,
-  } = config.subdomain;
-
-  // 检查必要配置
-  if (!baseDomain) {
-    logger.warn('Subdomain enabled but missing baseDomain, skipping DNS/Tunnel services');
-    return;
-  }
+  } = config.subdomain!;
 
   // DNS Provider (腾讯云或 Cloudflare)
   if (tencentDnsSecretId && tencentDnsSecretKey) {
@@ -85,7 +79,7 @@ export function registerCloudServices(
         return new CloudflareTunnelProvider({
           accountId: cloudflareAccountId,
           apiToken: cloudflareApiToken,
-          baseDomain: baseDomain!,
+          baseDomain: baseStorageDomain,
         });
       }).singleton(),
     });
@@ -102,14 +96,14 @@ export function registerCloudServices(
       container.register({
         subdomainService: asFunction(() => {
           return new SubdomainService({
-            baseDomain: baseDomain!,
+            baseDomain: baseStorageDomain,
             dnsProvider: dnsProvider as any,
             tunnelProvider: tunnelProvider as any,
             edgeNodeRepo: nodeRepo,
           });
         }).singleton(),
       });
-      logger.info(`Subdomain service registered for domain: ${baseDomain}`);
+      logger.info(`Subdomain service registered for domain: ${baseStorageDomain}`);
     }
   } catch {
     logger.warn('Subdomain service not registered (missing DNS or Tunnel provider)');
