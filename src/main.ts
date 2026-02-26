@@ -77,7 +77,10 @@ function loadEnvFile(envPath: string): void {
       value = value.slice(1, -1);
     }
 
-    process.env[key] = value;
+    // Only set if not already defined — CLI / parent env takes precedence.
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
   }
 }
 

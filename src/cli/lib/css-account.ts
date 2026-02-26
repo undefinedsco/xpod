@@ -10,6 +10,13 @@ export interface AccountControls {
   webId?: string[];
 }
 
+export interface AccountData {
+  controls: AccountControls;
+  pods: Record<string, string>;
+  webIds: Record<string, string>;
+  clientCredentials: Record<string, string>;
+}
+
 export interface ClientCredential {
   id: string;
   secret?: string;
@@ -91,6 +98,75 @@ export async function getAccountControls(
       pod: data.controls?.account?.pod,
       clientCredentials: data.controls?.account?.clientCredentials,
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch full account data including pods, webIds, and credentials.
+ */
+export async function getAccountData(
+  token: string,
+  baseUrl?: string,
+): Promise<AccountData | null> {
+  const base = resolveBaseUrl(baseUrl);
+  try {
+    const res = await fetch(`${base}.account/`, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `CSS-Account-Token ${token}`,
+      },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      controls?: {
+        account?: {
+          pod?: string;
+          clientCredentials?: string;
+          webId?: string;
+        };
+      };
+      pods?: Record<string, string>;
+      webIds?: Record<string, string>;
+      clientCredentials?: Record<string, string>;
+    };
+    return {
+      controls: {
+        pod: data.controls?.account?.pod,
+        clientCredentials: data.controls?.account?.clientCredentials,
+      },
+      pods: data.pods ?? {},
+      webIds: data.webIds ?? {},
+      clientCredentials: data.clientCredentials ?? {},
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Create a new pod for the account.
+ */
+export async function createPod(
+  token: string,
+  podEndpoint: string,
+  podName: string,
+): Promise<{ podUrl: string; webId: string } | null> {
+  try {
+    const res = await fetch(podEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `CSS-Account-Token ${token}`,
+      },
+      body: JSON.stringify({ name: podName }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { pod?: string; webId?: string };
+    if (!data.pod || !data.webId) return null;
+    return { podUrl: data.pod, webId: data.webId };
   } catch {
     return null;
   }

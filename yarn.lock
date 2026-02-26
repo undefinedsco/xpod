@@ -7524,6 +7524,14 @@ bcryptjs@^3.0.2:
   resolved "https://registry.npmjs.org/bcryptjs/-/bcryptjs-3.0.3.tgz"
   integrity sha512-GlF5wPWnSa/X5LKM1o0wz0suXIINz1iHRLvTS+sLyi7XPbe5ycmYI3DlZqVGZZtDgl4DmasFg7gOB3JYbphV5g==
 
+better-sqlite3-multiple-ciphers@^12.6.2:
+  version "12.6.2"
+  resolved "https://registry.yarnpkg.com/better-sqlite3-multiple-ciphers/-/better-sqlite3-multiple-ciphers-12.6.2.tgz#dc6cbb3b5d58aeb931f2980fa7ef14bfa167cfeb"
+  integrity sha512-VNfYJI2+tEUHmMihWTd4P76s1FRvWWKJBhpfJhxPfgsQPezQsYqK8QJZFfLa9tc9bvVVDXhHucDln3I49y2Gcg==
+  dependencies:
+    bindings "^1.5.0"
+    prebuild-install "^7.1.1"
+
 better-sqlite3@^12.5.0:
   version "12.6.0"
   resolved "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-12.6.0.tgz"

@@ -125,6 +125,7 @@
     "asynciterator": "^3.9.0",
     "awilix": "^12.0.5",
     "better-sqlite3": "^12.5.0",
+    "better-sqlite3-multiple-ciphers": "^12.6.2",
     "classic-level": "^1.4.1",
     "clsx": "^2.1.0",
     "drizzle-orm": "^0.30.10",

@@ -8,6 +8,10 @@ import { logsCommand } from './commands/logs';
 import { authCommand } from './commands/auth';
 import { configCommand } from './commands/config';
 import { importCommand } from './commands/import';
+import { podCommand } from './commands/pod';
+import { accountCommand } from './commands/account';
+import { backupCommand, restoreCommand } from './commands/backup';
+import { doctorCommand } from './commands/doctor';
 
 yargs(hideBin(process.argv))
   .scriptName('xpod')
@@ -19,6 +23,11 @@ yargs(hideBin(process.argv))
   .command(authCommand)
   .command(configCommand)
   .command(importCommand)
+  .command(podCommand)
+  .command(accountCommand)
+  .command(backupCommand)
+  .command(restoreCommand)
+  .command(doctorCommand)
   .demandCommand(1, 'Please specify a command')
   .strict()
   .help()
