@@ -97,7 +97,6 @@ services:
       CSS_ALLOWED_HOSTS: "localhost,host.docker.internal"
       CSS_SPARQL_ENDPOINT: postgres://xpod:xpod@postgres:5432/xpod
       CSS_IDENTITY_DB_URL: postgres://xpod:xpod@postgres:5432/xpod
-      CSS_IDENTITY_TABLE_PREFIX: "identity_account_"
       CSS_REDIS_CLIENT: redis:6379
       CSS_REDIS_USERNAME: ""
       CSS_REDIS_PASSWORD: ""
@@ -151,7 +150,6 @@ services:
       CSS_ALLOWED_HOSTS: "localhost,host.docker.internal"
       CSS_SPARQL_ENDPOINT: postgres://xpod:xpod@postgres:5432/xpod
       CSS_IDENTITY_DB_URL: postgres://xpod:xpod@postgres:5432/xpod
-      CSS_IDENTITY_TABLE_PREFIX: "identity_account_"
       CSS_REDIS_CLIENT: redis:6379
       CSS_REDIS_USERNAME: ""
       CSS_REDIS_PASSWORD: ""

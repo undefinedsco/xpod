@@ -10,7 +10,7 @@
       "@type": "YargsCliExtractor",
       "parameters": [
         {
-          "comment": "=== Visible CLI parameters ===",
+          "comment": "=== Visible CLI parameters (核心模式开关) ===",
           "@type": "YargsParameter",
           "name": "edition",
           "options": {
@@ -28,14 +28,6 @@
         },
         {
           "@type": "YargsParameter",
-          "name": "edgeAgentEnabled",
-          "options": {
-            "type": "boolean",
-            "describe": "Enable local edge agent functionality."
-          }
-        },
-        {
-          "@type": "YargsParameter",
           "name": "centerRegistrationEnabled",
           "options": {
             "type": "boolean",
@@ -46,14 +38,6 @@
           "comment": "=== Hidden: Data Layer ===",
           "@type": "YargsParameter",
           "name": "identityDbUrl",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "identityTablePrefix",
           "options": {
             "type": "string",
             "hidden": true
@@ -94,22 +78,6 @@
         {
           "@type": "YargsParameter",
           "name": "minioBucketName",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "cachePath",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "cacheMaxSize",
           "options": {
             "type": "string",
             "hidden": true
@@ -174,14 +142,6 @@
         {
           "comment": "=== Hidden: Business Features ===",
           "@type": "YargsParameter",
-          "name": "signalEndpoint",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
-          "@type": "YargsParameter",
           "name": "clusterIngressDomain",
           "options": {
             "type": "string",
@@ -191,14 +151,6 @@
         {
           "@type": "YargsParameter",
           "name": "clusterIngressIp",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "dnsRootDomain",
           "options": {
             "type": "string",
             "hidden": true
@@ -239,14 +191,6 @@
         {
           "@type": "YargsParameter",
           "name": "tencentDnsDefaultLineId",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "tunnelEntrypoints",
           "options": {
             "type": "string",
             "hidden": true
@@ -310,22 +254,6 @@
         },
         {
           "@type": "YargsParameter",
-          "name": "nodeToken",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
-          "@type": "YargsParameter",
-          "name": "nodePublicAddress",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
-          "@type": "YargsParameter",
           "name": "nodeHeartbeatInterval",
           "options": {
             "type": "number",
@@ -343,14 +271,6 @@
         },
         {
           "comment": "=== Hidden: IdP/SP Separation ===",
-          "@type": "YargsParameter",
-          "name": "baseDomain",
-          "options": {
-            "type": "string",
-            "hidden": true
-          }
-        },
-        {
           "@type": "YargsParameter",
           "name": "baseStorageDomain",
           "options": {

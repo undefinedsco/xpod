@@ -13,7 +13,9 @@ RUN apk add --no-cache python3 make g++
 WORKDIR /app
 
 COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile --ignore-engines
+# Workaround: 禁用 SSL 验证以绕过代理 HTTPS 握手问题
+# 详见: docs/docker-build-troubleshooting.md
+RUN NODE_TLS_REJECT_UNAUTHORIZED=0 yarn install --frozen-lockfile --ignore-engines
 
 COPY . .
 RUN yarn build:ts && yarn build:components

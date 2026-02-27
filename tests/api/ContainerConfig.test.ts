@@ -5,7 +5,7 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
   const envKeys = [
     'CSS_TOKEN_ENDPOINT',
     'CSS_BASE_URL',
-    'CSS_EDITION',
+    'XPOD_EDITION',
     'API_PORT',
     'API_HOST',
   ] as const;
