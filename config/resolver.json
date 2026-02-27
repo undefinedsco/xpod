@@ -10,7 +10,7 @@
       "@type": "CombinedShorthandResolver",
       "resolvers": [
         {
-          "comment": "=== CLI Parameters (KeyExtractor, from Yargs args dict) ===",
+          "comment": "=== CLI Parameters (核心模式开关) ===",
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edition",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
@@ -27,14 +27,6 @@
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edgeAgentEnabled",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "edgeAgentEnabled",
-            "defaultValue": "false"
-          }
-        },
-        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:centerRegistrationEnabled",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
@@ -44,7 +36,7 @@
         },
 
         {
-          "comment": "=== Data Layer (KeyExtractor, hidden CLI params with CSS_ prefix) ===",
+          "comment": "=== Data Layer ===",
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:identityDbUrl",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
@@ -147,15 +139,7 @@
         },
 
         {
-          "comment": "=== Xpod Business Features (KeyExtractor, CSS_ prefix via Yargs) ===",
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:signalEndpoint",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "signalEndpoint",
-            "defaultValue": ""
-          }
-        },
-        {
+          "comment": "=== Business Features ===",
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:clusterIngressDomain",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
@@ -169,13 +153,6 @@
             "@type": "KeyExtractor",
             "key": "clusterIngressIp",
             "defaultValue": ""
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:dnsRootDomain",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "dnsRootDomain"
           }
         },
         {
@@ -216,14 +193,6 @@
             "@type": "KeyExtractor",
             "key": "tencentDnsDefaultLineId",
             "defaultValue": "0"
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:tunnelEntrypoints",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "tunnelEntrypoints",
-            "defaultValue": ""
           }
         },
         {
@@ -285,22 +254,6 @@
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodeToken",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "nodeToken",
-            "defaultValue": ""
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodePublicAddress",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "nodePublicAddress",
-            "defaultValue": ""
-          }
-        },
-        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodeHeartbeatInterval",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
@@ -316,16 +269,9 @@
             "defaultValue": "false"
           }
         },
+
         {
           "comment": "=== IdP/SP Separation Parameters ===",
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:baseDomain",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "baseDomain",
-            "defaultValue": ""
-          }
-        },
-        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:baseStorageDomain",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
