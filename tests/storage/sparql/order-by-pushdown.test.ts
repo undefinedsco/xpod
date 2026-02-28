@@ -8,6 +8,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { DataFactory } from 'rdf-data-factory';
 import { SqliteQuintStore } from '../../../src/storage/quint/SqliteQuintStore';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine';
+import { arrayFromStream } from '../../helpers/arrayFromStream';
 
 const df = new DataFactory();
 
@@ -65,7 +66,7 @@ describe('ORDER BY Pushdown', () => {
     `;
 
     const stream = await engine.queryBindings(query);
-    const bindings = await (stream as any).toArray();
+    const bindings = await arrayFromStream(stream);
     const results: any[] = [];
     for (const binding of bindings) {
       results.push({
@@ -96,7 +97,7 @@ describe('ORDER BY Pushdown', () => {
     `;
 
     const stream = await engine.queryBindings(query);
-    const bindings = await (stream as any).toArray();
+    const bindings = await arrayFromStream(stream);
     const results: any[] = [];
     for (const binding of bindings) {
       results.push({
@@ -118,7 +119,7 @@ describe('ORDER BY Pushdown', () => {
     `;
 
     const stream = await engine.queryBindings(query);
-    const bindings = await (stream as any).toArray();
+    const bindings = await arrayFromStream(stream);
     const results: any[] = [];
     for (const binding of bindings) {
       results.push({
@@ -144,7 +145,7 @@ describe('ORDER BY Pushdown', () => {
     `;
 
     const stream = await engine.queryBindings(query);
-    const bindings = await (stream as any).toArray();
+    const bindings = await arrayFromStream(stream);
     const results: any[] = [];
     for (const binding of bindings) {
       results.push({
@@ -213,7 +214,7 @@ describe('ORDER BY with OPTIONAL', () => {
     `;
 
     const stream = await engine.queryBindings(query);
-    const bindings = await (stream as any).toArray();
+    const bindings = await arrayFromStream(stream);
     const results: any[] = [];
     for (const binding of bindings) {
       results.push({
@@ -248,7 +249,7 @@ describe('ORDER BY with OPTIONAL', () => {
     `;
 
     const stream = await engine.queryBindings(query);
-    const bindings = await (stream as any).toArray();
+    const bindings = await arrayFromStream(stream);
     const results: any[] = [];
     for (const binding of bindings) {
       results.push({
@@ -279,7 +280,7 @@ describe('ORDER BY with OPTIONAL', () => {
     `;
 
     const stream = await engine.queryBindings(query);
-    const bindings = await (stream as any).toArray();
+    const bindings = await arrayFromStream(stream);
     const results: any[] = [];
     for (const binding of bindings) {
       results.push({

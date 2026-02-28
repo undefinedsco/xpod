@@ -11,6 +11,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { SqliteQuintStore } from '../../../src/storage/quint/SqliteQuintStore';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine';
 import { DataFactory } from 'n3';
+import { arrayFromStream } from '../../helpers/arrayFromStream';
 
 const { namedNode, literal, quad } = DataFactory;
 
@@ -106,7 +107,7 @@ describe('OPTIONAL Optimization', () => {
       `;
 
       const stream = await engine.queryBindings(query);
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       expect(results).toHaveLength(3);
 
@@ -137,7 +138,7 @@ describe('OPTIONAL Optimization', () => {
       `;
 
       const stream = await engine.queryBindings(query);
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       expect(results).toHaveLength(3);
 
@@ -252,7 +253,7 @@ describe('OPTIONAL Optimization', () => {
 
       const start = Date.now();
       const stream = await engine.queryBindings(query);
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
       const elapsed = Date.now() - start;
 
       expect(results).toHaveLength(10);
@@ -308,7 +309,7 @@ describe('OPTIONAL Optimization', () => {
       `;
 
       const stream = await engine.queryBindings(query);
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       expect(results).toHaveLength(1);
       expect(results[0].get('name')?.value).toBe('Alice');
@@ -324,7 +325,7 @@ describe('OPTIONAL Optimization', () => {
       `;
 
       const stream = await engine.queryBindings(query);
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       expect(results).toHaveLength(0);
     });

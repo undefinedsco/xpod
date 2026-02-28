@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DisabledOidcHandler } from '../../../src/identity/oidc/DisabledOidcHandler';
-import type { HttpResponse } from '@solid/community-server';
-import type { IncomingMessage } from 'node:http';
+import type { HttpRequest, HttpResponse } from '@solid/community-server';
 
 // Mock global fetch
 const mockFetch = vi.fn();
@@ -27,8 +26,8 @@ describe('DisabledOidcHandler', () => {
   });
 
   describe('canHandle', () => {
-    const createRequest = (url: string): IncomingMessage =>
-      ({ url } as IncomingMessage);
+    const createRequest = (url: string): HttpRequest =>
+      ({ url } as unknown as HttpRequest);
 
     it('should accept /.oidc/jwks requests', async () => {
       handler = new DisabledOidcHandler({
@@ -36,7 +35,7 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.oidc/jwks');
-      await expect(handler.canHandle({ request: request as any, response: mockResponse })).resolves.toBeUndefined();
+      await expect(handler.canHandle({ request, response: mockResponse })).resolves.toBeUndefined();
     });
 
     it('should reject other OIDC paths', async () => {
@@ -45,7 +44,7 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.oidc/auth');
-      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('External IdP mode');
+      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('External IdP mode');
     });
 
     it('should reject openid-configuration', async () => {
@@ -54,14 +53,14 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.well-known/openid-configuration');
-      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('External IdP mode');
+      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('External IdP mode');
     });
 
     it('should reject non-OIDC paths', async () => {
       handler = new DisabledOidcHandler({});
 
       const request = createRequest('/alice/data.ttl');
-      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('Not an OIDC request');
+      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('Not an OIDC request');
     });
 
     it('should reject all OIDC in fullyDisabled mode', async () => {
@@ -71,14 +70,14 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.oidc/jwks');
-      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('OIDC completely disabled');
+      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('OIDC completely disabled');
     });
 
     it('should throw if JWKS URL not configured', async () => {
       handler = new DisabledOidcHandler({});
 
       const request = createRequest('/.oidc/jwks');
-      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('JWKS proxy not configured');
+      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('JWKS proxy not configured');
     });
   });
 
@@ -90,8 +89,8 @@ describe('DisabledOidcHandler', () => {
       ]
     };
 
-    const createRequest = (url: string): IncomingMessage =>
-      ({ url } as IncomingMessage);
+    const createRequest = (url: string): HttpRequest =>
+      ({ url } as unknown as HttpRequest);
 
     beforeEach(() => {
       mockFetch.mockResolvedValue({
@@ -107,8 +106,8 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.oidc/jwks');
-      await handler.canHandle({ request: request as any, response: mockResponse });
-      await handler.handle({ request: request as any, response: mockResponse });
+      await handler.canHandle({ request, response: mockResponse });
+      await handler.handle({ request, response: mockResponse });
 
       expect(mockResponse.statusCode).toBe(200);
       expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'application/json');
@@ -128,12 +127,12 @@ describe('DisabledOidcHandler', () => {
       const request = createRequest('/.oidc/jwks');
 
       // First request
-      await handler.canHandle({ request: request as any, response: mockResponse });
-      await handler.handle({ request: request as any, response: mockResponse });
+      await handler.canHandle({ request, response: mockResponse });
+      await handler.handle({ request, response: mockResponse });
       expect(mockFetch).toHaveBeenCalledTimes(1);
 
       // Second request should use cache
-      await handler.handle({ request: request as any, response: mockResponse });
+      await handler.handle({ request, response: mockResponse });
       expect(mockFetch).toHaveBeenCalledTimes(1); // Still 1, not 2
     });
 
@@ -145,9 +144,9 @@ describe('DisabledOidcHandler', () => {
 
       const request = createRequest('/.oidc/jwks');
 
-      await handler.canHandle({ request: request as any, response: mockResponse });
-      await handler.handle({ request: request as any, response: mockResponse });
-      await handler.handle({ request: request as any, response: mockResponse });
+      await handler.canHandle({ request, response: mockResponse });
+      await handler.handle({ request, response: mockResponse });
+      await handler.handle({ request, response: mockResponse });
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
@@ -164,8 +163,8 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.oidc/jwks');
-      await handler.canHandle({ request: request as any, response: mockResponse });
-      await expect(handler.handle({ request: request as any, response: mockResponse })).rejects.toThrow('Failed to proxy JWKS');
+      await handler.canHandle({ request, response: mockResponse });
+      await expect(handler.handle({ request, response: mockResponse })).rejects.toThrow('Failed to proxy JWKS');
     });
 
     it('should throw on invalid JWKS format', async () => {
@@ -179,14 +178,14 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.oidc/jwks');
-      await handler.canHandle({ request: request as any, response: mockResponse });
-      await expect(handler.handle({ request: request as any, response: mockResponse })).rejects.toThrow();
+      await handler.canHandle({ request, response: mockResponse });
+      await expect(handler.handle({ request, response: mockResponse })).rejects.toThrow();
     });
   });
 
   describe('edge cases', () => {
-    const createRequest = (url: string): IncomingMessage =>
-      ({ url } as IncomingMessage);
+    const createRequest = (url: string): HttpRequest =>
+      ({ url } as unknown as HttpRequest);
 
     it('should handle full URLs in request', async () => {
       handler = new DisabledOidcHandler({
@@ -195,7 +194,7 @@ describe('DisabledOidcHandler', () => {
 
       const request = createRequest('https://node1.pods.example.com/.oidc/jwks');
 
-      await expect(handler.canHandle({ request: request as any, response: mockResponse })).resolves.toBeUndefined();
+      await expect(handler.canHandle({ request, response: mockResponse })).resolves.toBeUndefined();
     });
 
     it('should accept /.oidc/jwks.json variant', async () => {
@@ -204,7 +203,7 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.oidc/jwks.json');
-      await expect(handler.canHandle({ request: request as any, response: mockResponse })).resolves.toBeUndefined();
+      await expect(handler.canHandle({ request, response: mockResponse })).resolves.toBeUndefined();
     });
 
     it('should use correct Accept header when fetching', async () => {
@@ -218,8 +217,8 @@ describe('DisabledOidcHandler', () => {
       });
 
       const request = createRequest('/.oidc/jwks');
-      await handler.canHandle({ request: request as any, response: mockResponse });
-      await handler.handle({ request: request as any, response: mockResponse });
+      await handler.canHandle({ request, response: mockResponse });
+      await handler.handle({ request, response: mockResponse });
 
       expect(mockFetch).toHaveBeenCalledWith(
         'https://id.example.com/.oidc/jwks',

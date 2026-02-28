@@ -18,6 +18,7 @@ import { ComunicaQuintEngine } from '../../src/storage/sparql/ComunicaQuintEngin
 import { getBackend } from '../../src/libs/backends';
 import { getTestDataPath } from '../utils/sqlite';
 import type { Quad } from '@rdfjs/types';
+import { arrayFromStream } from '../helpers/arrayFromStream';
 
 const { namedNode, literal, quad, defaultGraph } = DataFactory;
 
@@ -75,7 +76,7 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
           },
           queryBindings: async (query: string) => {
             const stream = await engine.queryBindings(query);
-            const bindings = await (stream as any).toArray();
+            const bindings = await arrayFromStream(stream);
             const results: any[] = [];
             for (const binding of bindings) {
               const row: Record<string, string> = {};
@@ -88,7 +89,7 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
           },
           queryQuads: async (query: string) => {
             const stream = await engine.queryQuads(query);
-            const results: Quad[] = await (stream as any).toArray();
+            const results: Quad[] = await arrayFromStream(stream);
             return results;
           },
           close: async () => {
@@ -112,7 +113,7 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
           del: async (pattern: any) => await store.del(pattern),
           queryBindings: async (query: string) => {
             const stream = await engine.queryBindings(query);
-            const bindings = await (stream as any).toArray();
+            const bindings = await arrayFromStream(stream);
             const results: any[] = [];
             for (const binding of bindings) {
               const row: Record<string, string> = {};
@@ -125,7 +126,7 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
           },
           queryQuads: async (query: string) => {
             const stream = await engine.queryQuads(query);
-            const results: Quad[] = await (stream as any).toArray();
+            const results: Quad[] = await arrayFromStream(stream);
             return results;
           },
           close: async () => {
@@ -682,13 +683,13 @@ describe.skip('Part 2: Graph Prefix Filtering Comparison', () => {
               }
             `;
             const stream = await engine.queryBindings(query);
-            const results = await (stream as any).toArray();
+            const results = await arrayFromStream(stream);
             return results;
           },
           queryAll: async () => {
             const query = 'SELECT ?s ?title WHERE { GRAPH ?g { ?s <http://title> ?title } }';
             const stream = await engine.queryBindings(query);
-            const results = await (stream as any).toArray();
+            const results = await arrayFromStream(stream);
             return results;
           },
           close: async () => {
@@ -727,13 +728,13 @@ describe.skip('Part 2: Graph Prefix Filtering Comparison', () => {
             const stream = await engine.queryBindings(query, {
               filters: { graph: { $startsWith: prefix } }
             });
-            const results = await (stream as any).toArray();
+            const results = await arrayFromStream(stream);
             return results;
           },
           queryAll: async () => {
             const query = 'SELECT ?s ?title WHERE { GRAPH ?g { ?s <http://title> ?title } }';
             const stream = await engine.queryBindings(query);
-            const results = await (stream as any).toArray();
+            const results = await arrayFromStream(stream);
             return results;
           },
           close: async () => {
@@ -872,7 +873,7 @@ describe.skip('Part 3: W3C SPARQL Test Suite Comparison', () => {
           },
           queryBindings: async (query: string) => {
             const stream = await engine.queryBindings(query);
-            const results = await (stream as any).toArray();
+            const results = await arrayFromStream(stream);
             return results;
           },
           queryBoolean: async (query: string) => {
@@ -901,7 +902,7 @@ describe.skip('Part 3: W3C SPARQL Test Suite Comparison', () => {
           },
           queryBindings: async (query: string) => {
             const stream = await engine.queryBindings(query);
-            const results = await (stream as any).toArray();
+            const results = await arrayFromStream(stream);
             return results;
           },
           queryBoolean: async (query: string) => {

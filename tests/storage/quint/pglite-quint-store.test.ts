@@ -57,7 +57,6 @@ describe('PgQuintStore (PGLite backend)', () => {
         predicate: namedNode('http://example.org/p1'),
         object: literal('value1'),
         graph: namedNode('http://example.org/g1'),
-        version: 1
       };
 
       await store.put(quint);
@@ -79,21 +78,18 @@ describe('PgQuintStore (PGLite backend)', () => {
           predicate: namedNode('http://example.org/name'),
           object: literal('Alice'),
           graph: namedNode('http://example.org/g1'),
-          version: 1
         },
         {
           subject: namedNode('http://example.org/s1'),
           predicate: namedNode('http://example.org/age'),
           object: literal('30'),
           graph: namedNode('http://example.org/g1'),
-          version: 1
         },
         {
           subject: namedNode('http://example.org/s2'),
           predicate: namedNode('http://example.org/name'),
           object: literal('Bob'),
           graph: namedNode('http://example.org/g1'),
-          version: 1
         }
       ];
 
@@ -114,7 +110,6 @@ describe('PgQuintStore (PGLite backend)', () => {
         predicate: namedNode('http://example.org/p1'),
         object: literal('value1'),
         graph: namedNode('http://example.org/g1'),
-        version: 1
       };
 
       await store.put(quint);
@@ -137,7 +132,6 @@ describe('PgQuintStore (PGLite backend)', () => {
         predicate: namedNode('http://example.org/p1'),
         object: literal('value1'),
         graph: namedNode('http://example.org/g1'),
-        version: 1,
         vector: [0.1, 0.2, 0.3]
       };
 
@@ -146,7 +140,6 @@ describe('PgQuintStore (PGLite backend)', () => {
         predicate: namedNode('http://example.org/p1'),
         object: literal('value1'),  // Same object (UPSERT key includes object)
         graph: namedNode('http://example.org/g1'),
-        version: 2,  // Higher version
         vector: [0.4, 0.5, 0.6]  // Different vector
       };
 
@@ -171,17 +164,17 @@ describe('PgQuintStore (PGLite backend)', () => {
       // Setup test data
       const quints: any[] = [
         // Person 1: Alice
-        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/age'), object: literal('30'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/email'), object: literal('alice@example.org'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/age'), object: literal('30'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/email'), object: literal('alice@example.org'), graph: namedNode('http://example.org/g1') },
         
         // Person 2: Bob
-        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/name'), object: literal('Bob'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/age'), object: literal('25'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/name'), object: literal('Bob'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/age'), object: literal('25'), graph: namedNode('http://example.org/g1') },
         // Bob has no email
         
         // Person 3: Charlie
-        { subject: namedNode('http://example.org/person/3'), predicate: namedNode('http://example.org/name'), object: literal('Charlie'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/person/3'), predicate: namedNode('http://example.org/name'), object: literal('Charlie'), graph: namedNode('http://example.org/g1') },
         // Charlie has no age or email
       ];
 
@@ -213,16 +206,16 @@ describe('PgQuintStore (PGLite backend)', () => {
     beforeEach(async () => {
       const quints: any[] = [
         // Person 1
-        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/age'), object: literal('30'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/email'), object: literal('alice@example.org'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/age'), object: literal('30'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/email'), object: literal('alice@example.org'), graph: namedNode('http://example.org/g1') },
         
         // Person 2
-        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/name'), object: literal('Bob'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/age'), object: literal('25'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/name'), object: literal('Bob'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/age'), object: literal('25'), graph: namedNode('http://example.org/g1') },
         
         // Person 3
-        { subject: namedNode('http://example.org/person/3'), predicate: namedNode('http://example.org/name'), object: literal('Charlie'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/person/3'), predicate: namedNode('http://example.org/name'), object: literal('Charlie'), graph: namedNode('http://example.org/g1') },
       ];
 
       await store.multiPut(quints);
@@ -279,16 +272,16 @@ describe('PgQuintStore (PGLite backend)', () => {
     beforeEach(async () => {
       const quints: any[] = [
         // Person 1 with type
-        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type'), object: namedNode('http://example.org/Person'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type'), object: namedNode('http://example.org/Person'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1') },
         
         // Person 2 with type
-        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type'), object: namedNode('http://example.org/Person'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/name'), object: literal('Bob'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type'), object: namedNode('http://example.org/Person'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/person/2'), predicate: namedNode('http://example.org/name'), object: literal('Bob'), graph: namedNode('http://example.org/g1') },
         
         // Non-person entity
-        { subject: namedNode('http://example.org/org/1'), predicate: namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type'), object: namedNode('http://example.org/Organization'), graph: namedNode('http://example.org/g1'), version: 1 },
-        { subject: namedNode('http://example.org/org/1'), predicate: namedNode('http://example.org/name'), object: literal('Acme Corp'), graph: namedNode('http://example.org/g1'), version: 1 },
+        { subject: namedNode('http://example.org/org/1'), predicate: namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type'), object: namedNode('http://example.org/Organization'), graph: namedNode('http://example.org/g1') },
+        { subject: namedNode('http://example.org/org/1'), predicate: namedNode('http://example.org/name'), object: literal('Acme Corp'), graph: namedNode('http://example.org/g1') },
       ];
 
       await store.multiPut(quints);
@@ -331,7 +324,6 @@ describe('PgQuintStore (PGLite backend)', () => {
         predicate: namedNode('http://example.org/predicate'),
         object: namedNode('http://example.org/object'),
         graph: namedNode('http://example.org/graph'),
-        version: 1
       };
 
       await store.put(quint);
@@ -348,7 +340,6 @@ describe('PgQuintStore (PGLite backend)', () => {
         predicate: namedNode('http://example.org/label'),
         object: DF.literal('Hello', 'en'),
         graph: namedNode('http://example.org/g1'),
-        version: 1
       };
 
       await store.put(quint);
@@ -366,7 +357,6 @@ describe('PgQuintStore (PGLite backend)', () => {
         predicate: namedNode('http://example.org/count'),
         object: DF.literal('42', namedNode('http://www.w3.org/2001/XMLSchema#integer')),
         graph: namedNode('http://example.org/g1'),
-        version: 1
       };
 
       await store.put(quint);
@@ -384,7 +374,6 @@ describe('PgQuintStore (PGLite backend)', () => {
         predicate: namedNode('http://example.org/p1'),
         object: literal('value'),
         graph: namedNode('http://example.org/g1'),
-        version: 1
       };
 
       await store.put(quint);

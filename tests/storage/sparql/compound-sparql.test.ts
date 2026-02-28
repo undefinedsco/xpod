@@ -7,6 +7,7 @@ import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint/SqliteQuintStore';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine';
 import type { Quint } from '../../../src/storage/quint/types';
+import { arrayFromStream } from '../../helpers/arrayFromStream';
 
 const { namedNode, literal } = DataFactory;
 
@@ -68,7 +69,7 @@ describe('SPARQL Multi-Pattern Query with Compound Optimization', () => {
     
     const startTime = performance.now();
     const stream = await engine.queryBindings(query);
-    const bindings = await (stream as any).toArray();
+    const bindings = await arrayFromStream(stream);
     const results: any[] = [];
 
     for (const binding of bindings) {
@@ -108,7 +109,7 @@ describe('SPARQL Multi-Pattern Query with Compound Optimization', () => {
     for (let i = 0; i < 5; i++) {
       const start = performance.now();
       const stream = await engine.queryBindings(query);
-      const results: any[] = (await (stream as any).toArray());
+      const results: any[] = (await arrayFromStream(stream));
       times.push(performance.now() - start);
     }
 

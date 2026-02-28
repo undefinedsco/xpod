@@ -10,6 +10,7 @@ import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine';
 import type { Quad } from '@rdfjs/types';
+import { arrayFromStream } from '../../helpers/arrayFromStream';
 
 const { namedNode, literal, quad } = DataFactory;
 
@@ -103,7 +104,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://pod.example.org/alice/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       // 应该只返回 Alice 的数据 (profile + 2 docs = 4 个三元组)
       expect(results.length).toBe(4);
@@ -129,7 +130,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://pod.example.org/bob/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       // 应该只返回 Bob 的数据 (profile + 1 doc = 3 个三元组)
       expect(results.length).toBe(3);
@@ -145,7 +146,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://pod.example.org/alice/docs/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       // 应该只返回 Alice 的文档 (2 个)
       expect(results.length).toBe(2);
@@ -161,7 +162,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://pod.example.org/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       // 应该返回所有 pod 数据 (Alice 4 + Bob 3 = 7)
       const count = parseInt(results[0].get('count')?.value || '0');
@@ -178,7 +179,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://nonexistent.example.org/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       expect(results.length).toBe(0);
     });
@@ -242,7 +243,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://shop.example.org/alice/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       // Alice 只有一个订单价格 > 100 (order2, 200)
       expect(results.length).toBe(1);
@@ -259,7 +260,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://shop.example.org/alice/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       // Alice 的订单总价 100 + 200 = 300
       const total = parseFloat(results[0].get('total')?.value || '0');
@@ -278,7 +279,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://shop.example.org/alice/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
 
       // 应该返回最贵的订单
       expect(results.length).toBe(1);
@@ -321,7 +322,7 @@ describe('Graph Prefix Filter', () => {
       const stream = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://pod.example.org/user50/' } },
       });
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
       const elapsed = performance.now() - start;
 
       // 应该只返回 user50 的数据
@@ -342,7 +343,7 @@ describe('Graph Prefix Filter', () => {
       // 无前缀过滤 - 查询所有数据
       const startAll = performance.now();
       const streamAll = await engine.queryBindings(query);
-      const resultsAll = await (streamAll as any).toArray();
+      const resultsAll = await arrayFromStream(streamAll);
       const elapsedAll = performance.now() - startAll;
       const countAll = parseInt(resultsAll[0].get('count')?.value || '0');
 
@@ -351,7 +352,7 @@ describe('Graph Prefix Filter', () => {
       const streamFiltered = await engine.queryBindings(query, {
         filters: { graph: { $startsWith: 'http://pod.example.org/user50/' } },
       });
-      const resultsFiltered = await (streamFiltered as any).toArray();
+      const resultsFiltered = await arrayFromStream(streamFiltered);
       const elapsedFiltered = performance.now() - startFiltered;
       const countFiltered = parseInt(resultsFiltered[0].get('count')?.value || '0');
 

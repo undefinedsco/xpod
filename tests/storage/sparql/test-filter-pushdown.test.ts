@@ -2,6 +2,7 @@ import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine';
+import { arrayFromStream } from '../../helpers/arrayFromStream';
 
 const { namedNode, literal, quad } = DataFactory;
 
@@ -30,7 +31,7 @@ describe('ComunicaQuintEngine FILTER pushdown', () => {
     console.log('Query:', query);
     
     const stream = await engine.queryBindings(query);
-    const results = await (stream as any).toArray();
+    const results = await arrayFromStream(stream);
 
     console.log('Results count:', results.length);
     for (const binding of results) {
@@ -44,7 +45,7 @@ describe('ComunicaQuintEngine FILTER pushdown', () => {
     console.log('Query:', query);
     
     const stream = await engine.queryBindings(query);
-    const results = await (stream as any).toArray();
+    const results = await arrayFromStream(stream);
 
     console.log('Results count:', results.length);
   });

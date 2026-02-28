@@ -16,6 +16,7 @@ import { ComunicaQuintEngine } from '../../src/storage/sparql/ComunicaQuintEngin
 import { getBackend } from '../../src/libs/backends';
 import { getTestDataPath } from '../utils/sqlite';
 import type { Quad } from '@rdfjs/types';
+import { arrayFromStream } from '../helpers/arrayFromStream';
 
 // Quadstore 已知问题：
 // 某些查询模式（如只有 object 没有 subject/predicate）会在 stream 迭代时异步抛出
@@ -92,7 +93,7 @@ async function createQuintStore(): Promise<StoreWrapper> {
     },
     queryBindings: async (query: string) => {
       const stream = await engine.queryBindings(query);
-      const results = await (stream as any).toArray();
+      const results = await arrayFromStream(stream);
       return results;
     },
     queryBoolean: async (query: string) => {
@@ -100,7 +101,7 @@ async function createQuintStore(): Promise<StoreWrapper> {
     },
     queryQuads: async (query: string) => {
       const stream = await engine.queryQuads(query);
-      const results: Quad[] = await (stream as any).toArray();
+      const results: Quad[] = await arrayFromStream(stream);
       return results;
     },
     close: async () => { await store.close(); },
@@ -149,7 +150,7 @@ async function createQuadstore(): Promise<StoreWrapper> {
     queryBindings: async (query: string) => {
       return withTimeout(async () => {
         const stream = await engine.queryBindings(query);
-        const results: any[] = await (stream as any).toArray();
+        const results: any[] = await arrayFromStream(stream);
         return results;
       });
     },
@@ -159,7 +160,7 @@ async function createQuadstore(): Promise<StoreWrapper> {
     queryQuads: async (query: string) => {
       return withTimeout(async () => {
         const stream = await engine.queryQuads(query);
-        const results: Quad[] = await (stream as any).toArray();
+        const results: Quad[] = await arrayFromStream(stream);
         return results;
       });
     },
