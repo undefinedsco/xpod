@@ -228,10 +228,17 @@ export class QueryOptimizer {
   analyzeOptional(algebra: Algebra.Operation): OptionalAnalysis {
     // 从 project -> slice -> orderby -> ... 找到实际的查询结构
     let current = algebra;
-    while (current.type === 'project' || current.type === 'slice' || 
+    while (current.type === 'project' || current.type === 'slice' ||
            current.type === 'distinct' || current.type === 'reduced' ||
            current.type === 'orderby') {
       current = (current as any).input;
+    }
+
+    // 穿透 filter 节点，保留 filter expression 供后续包回 coreOp
+    let outerFilter: Algebra.Expression | null = null;
+    if (current.type === 'filter') {
+      outerFilter = (current as Algebra.Filter).expression;
+      current = (current as Algebra.Filter).input;
     }
 
     // 收集所有 leftjoin（OPTIONAL）和核心操作
@@ -244,7 +251,12 @@ export class QueryOptimizer {
         leftJoins.push(lj);
         collectLeftJoins(lj.input[0]);
       } else {
-        coreOp = op;
+        // 如果有外层 FILTER，把它包回 coreOp 上，确保核心查询仍带 FILTER 条件
+        if (outerFilter && op) {
+          coreOp = { type: 'filter', input: op, expression: outerFilter } as Algebra.Filter;
+        } else {
+          coreOp = op;
+        }
       }
     };
 

@@ -64,6 +64,7 @@ import { VectorStore } from './storage/vector/VectorStore';
 import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';
 import { LocalTunnelProvider } from './tunnel/LocalTunnelProvider';
 import { SubdomainService } from './subdomain/SubdomainService';
+import { UrlAwareRedisLocker } from './storage/locking/UrlAwareRedisLocker';
 // IdP/SP separation components
 import { MultiDomainIdentifierStrategy } from './util/identifiers/MultiDomainIdentifierStrategy';
 import { SubdomainPodIdentifierStrategy } from './util/identifiers/SubdomainPodIdentifierStrategy';
@@ -71,6 +72,9 @@ import { DisabledOidcHandler } from './identity/oidc/DisabledOidcHandler';
 import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentityProviderHandler';
 import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
+// Provision components
+import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
+import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 export type {
   DnsProvider,
   ListDnsRecordsInput,
@@ -174,4 +178,8 @@ export {
   DisabledIdentityProviderHandler,
   AutoDetectOidcHandler,
   AutoDetectIdentityProviderHandler,
+  UrlAwareRedisLocker,
+  // Provision exports
+  ProvisionPodCreator,
+  ProvisionCodeCodec,
 };

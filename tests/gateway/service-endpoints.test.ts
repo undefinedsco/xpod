@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { Supervisor } from '../../src/supervisor/Supervisor';
-import { GatewayProxy } from '../../src/gateway/Proxy';
+import { GatewayProxy } from '../../src/runtime/Proxy';
 
 describe('Service Endpoints', () => {
   let supervisor: Supervisor;

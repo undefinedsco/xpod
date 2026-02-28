@@ -248,6 +248,9 @@ function ensureSqliteTables(sqlite: Database.Database): void {
       access_mode TEXT,
       public_ip TEXT,
       public_port INTEGER,
+      public_url TEXT,
+      service_token_hash TEXT,
+      provision_code_hash TEXT,
       internal_ip TEXT,
       internal_port INTEGER,
       capabilities TEXT,
@@ -273,4 +276,25 @@ function ensureSqliteTables(sqlite: Database.Database): void {
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
   `);
+
+  // Migrate existing tables: add new columns if missing
+  migrateSqliteColumns(sqlite);
+}
+
+/**
+ * Add columns that may be missing from older databases.
+ * SQLite ALTER TABLE ADD COLUMN is idempotent-safe via try/catch.
+ */
+function migrateSqliteColumns(sqlite: Database.Database): void {
+  const addColumn = (table: string, column: string, type: string): void => {
+    try {
+      sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    } catch {
+      // Column already exists — ignore
+    }
+  };
+
+  addColumn('identity_edge_node', 'public_url', 'TEXT');
+  addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
+  addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
 }
