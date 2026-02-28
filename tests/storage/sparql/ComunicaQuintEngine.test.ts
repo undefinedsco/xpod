@@ -3,6 +3,7 @@ import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine';
 import { fpEncode, SEP } from '../../../src/storage/quint/serialization';
+import { arrayFromStream } from '../../helpers/arrayFromStream';
 
 const { namedNode, literal, quad } = DataFactory;
 
@@ -52,10 +53,10 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(2);
-      const names = results.map(r => r.get('name')?.value).sort();
+      const names = results.map((r: any) => r.get('name')?.value).sort();
       expect(names).toEqual(['Alice', 'Bob']);
     });
 
@@ -91,10 +92,10 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryQuads(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(2);
-      expect(results.every(q => q.predicate.value === 'http://example.org/hasName')).toBe(true);
+      expect(results.every((q: any) => q.predicate.value === 'http://example.org/hasName')).toBe(true);
     });
   });
 
@@ -145,10 +146,10 @@ describe('ComunicaQuintEngine', () => {
           graph: { $startsWith: 'http://pod/user0/' },
         },
       });
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(2);
-      const titles = results.map(r => r.get('title')?.value).sort();
+      const titles = results.map((r: any) => r.get('title')?.value).sort();
       expect(titles).toEqual(['Doc 1', 'Doc 2']);
     });
 
@@ -165,8 +166,8 @@ describe('ComunicaQuintEngine', () => {
           graph: { $startsWith: 'http://pod/' },
         },
       });
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(3);
     });
 
@@ -178,8 +179,8 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(4);
     });
   });
@@ -210,8 +211,8 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(5);
     });
 
@@ -225,8 +226,8 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(10);
     });
   });
@@ -264,8 +265,8 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(1);
       expect(results[0].get('name')?.value).toBe('Alice');
       expect(results[0].get('age')?.value).toBe('30');
@@ -282,12 +283,12 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(2);
-      
-      const alice = results.find(r => r.get('name')?.value === 'Alice');
-      const bob = results.find(r => r.get('name')?.value === 'Bob');
+
+      const alice = results.find((r: any) => r.get('name')?.value === 'Alice');
+      const bob = results.find((r: any) => r.get('name')?.value === 'Bob');
       
       expect(alice?.get('age')?.value).toBe('30');
       expect(bob?.get('age')).toBeUndefined();
@@ -327,10 +328,10 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       expect(results).toHaveLength(2);
-      const prices = results.map(r => parseInt(r.get('price')?.value ?? '0')).sort((a, b) => a - b);
+      const prices = results.map((r: any) => parseInt(r.get('price')?.value ?? '0')).sort((a: any, b: any) => a - b);
       expect(prices).toEqual([20, 30]);
     });
 
@@ -345,11 +346,11 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Should return items with price > 15 (20 and 30)
       expect(results).toHaveLength(2);
-      const prices = results.map(r => parseInt(r.get('price')?.value ?? '0')).sort((a, b) => a - b);
+      const prices = results.map((r: any) => parseInt(r.get('price')?.value ?? '0')).sort((a: any, b: any) => a - b);
       expect(prices).toEqual([20, 30]);
     });
 
@@ -362,11 +363,11 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Should return items with price 10 and 30
       expect(results).toHaveLength(2);
-      const prices = results.map(r => parseInt(r.get('price')?.value ?? '0')).sort((a, b) => a - b);
+      const prices = results.map((r: any) => parseInt(r.get('price')?.value ?? '0')).sort((a: any, b: any) => a - b);
       expect(prices).toEqual([10, 30]);
     });
 
@@ -389,8 +390,8 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Should return items with price OR name predicates (3 prices + 1 name = 4)
       expect(results).toHaveLength(4);
     });
@@ -406,11 +407,11 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Should return items with price 10 and 30
       expect(results).toHaveLength(2);
-      const prices = results.map(r => parseInt(r.get('price')?.value ?? '0')).sort((a, b) => a - b);
+      const prices = results.map((r: any) => parseInt(r.get('price')?.value ?? '0')).sort((a: any, b: any) => a - b);
       expect(prices).toEqual([10, 30]);
     });
 
@@ -433,8 +434,8 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Results should include:
       // - item1's price triple (matched by ?s = item1)
       // - item1's name triple (matched by both)
@@ -453,11 +454,11 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Should return price=10 (< 15) and price=30 (> 25)
       expect(results).toHaveLength(2);
-      const prices = results.map(r => parseInt(r.get('price')?.value ?? '0')).sort((a, b) => a - b);
+      const prices = results.map((r: any) => parseInt(r.get('price')?.value ?? '0')).sort((a: any, b: any) => a - b);
       expect(prices).toEqual([10, 30]);
     });
   });
@@ -527,11 +528,11 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Alice and Bob know someone, Charlie and Dave don't
       expect(results).toHaveLength(2);
-      const names = results.map(r => r.get('name')?.value).sort();
+      const names = results.map((r: any) => r.get('name')?.value).sort();
       expect(names).toEqual(['Alice', 'Bob']);
     });
 
@@ -547,11 +548,11 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Charlie and Dave don't know anyone
       expect(results).toHaveLength(2);
-      const names = results.map(r => r.get('name')?.value).sort();
+      const names = results.map((r: any) => r.get('name')?.value).sort();
       expect(names).toEqual(['Charlie', 'Dave']);
     });
 
@@ -568,7 +569,7 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      await stream.toArray();
+      await arrayFromStream(stream);
       
       // Check that EXISTS queries used limit: 1
       const existsCalls = getSpy.mock.calls.filter(call => {
@@ -596,14 +597,14 @@ describe('ComunicaQuintEngine', () => {
       `;
       
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
-      
+      const results = await arrayFromStream(stream);
+
       // Alice: knows someone (Bob), BUT has blocked Dave -> fails NOT EXISTS -> fails first branch, name != Dave -> fails
       // Bob: knows someone (Charlie), hasn't blocked anyone -> passes first branch
       // Charlie: doesn't know anyone -> fails first branch, name != Dave -> fails
       // Dave: doesn't know anyone -> fails first branch, but name = Dave -> passes second branch
       expect(results).toHaveLength(2);
-      const names = results.map(r => r.get('name')?.value).sort();
+      const names = results.map((r: any) => r.get('name')?.value).sort();
       expect(names).toEqual(['Bob', 'Dave']);
     });
   });

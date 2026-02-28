@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
+// @ts-expect-error moduleResolution mismatch for pglite/vector subpath
 import { vector } from '@electric-sql/pglite/vector';
 
 describe('PostgreSQL Vector Operations (via PGlite)', () => {

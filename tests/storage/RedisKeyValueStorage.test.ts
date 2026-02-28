@@ -29,7 +29,7 @@ describe('RedisKeyValueStorage', () => {
   beforeEach(() => {
     Object.values(commandMocks).forEach((mock) => mock.mockReset());
     commandMocks.ping.mockResolvedValue('PONG');
-    commandMocks.quit.mockResolvedValue();
+    commandMocks.quit.mockResolvedValue(undefined);
   });
 
   it('initializes and pings Redis', async () => {

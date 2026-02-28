@@ -15,7 +15,7 @@ function joinUrl(base: string, path: string): string {
   return new URL(path, base).toString();
 }
 
-function parseSetCookies(response: Response): Record<string, string> {
+function parseSetCookies(response: any): Record<string, string> {
   const cookies: Record<string, string> = {};
   const setCookieHeader = response.headers.get('set-cookie');
   if (setCookieHeader) {

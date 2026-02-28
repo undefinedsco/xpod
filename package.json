@@ -62,6 +62,7 @@
     "test:run": "vitest --run",
     "test:terminal": "npx ts-node scripts/test-terminal.ts",
     "test:coverage": "vitest --run --coverage",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "test:integration": "yarn test:integration:full",
     "test:cluster": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run tests/integration/MultiNodeCluster.integration.test.ts",
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run --coverage",

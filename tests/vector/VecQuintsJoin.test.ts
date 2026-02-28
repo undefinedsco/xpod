@@ -70,7 +70,7 @@ describe.skip('Vec + Quints JOIN', () => {
     }
 
     // 创建 SqliteVectorStore（使用已有的数据库连接）
-    vectorStore = new SqliteVectorStore(':memory:');
+    vectorStore = new SqliteVectorStore(':memory:' as any);
     await vectorStore.open();
 
     // 创建向量表

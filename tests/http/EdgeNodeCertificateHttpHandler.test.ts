@@ -37,11 +37,8 @@ class MockResponse {
 function createRequest(method: string, path: string, body?: string): HttpRequest {
   const stream = new PassThrough();
   const request = stream as unknown as HttpRequest;
-  // @ts-expect-error test assignment
   request.method = method;
-  // @ts-expect-error test assignment
   request.url = path;
-  // @ts-expect-error test assignment
   request.headers = { host: 'cluster.example' };
   request.setEncoding = (() => request) as HttpRequest['setEncoding'];
   if (body) {

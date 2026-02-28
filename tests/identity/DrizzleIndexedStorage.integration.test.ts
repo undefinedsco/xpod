@@ -8,7 +8,7 @@ import path from 'node:path';
 const suite = describe;
 
 suite('DrizzleIndexedStorage integration (SQLite)', () => {
-  let storage: DrizzleIndexedStorage<any>;
+  let storage: DrizzleIndexedStorage;
   let tmpDir: string;
   let dbPath: string;
 

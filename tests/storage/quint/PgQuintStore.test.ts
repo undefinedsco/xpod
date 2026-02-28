@@ -19,7 +19,6 @@ describePg('PgQuintStore', () => {
   beforeAll(async () => {
     store = new PgQuintStore({
       connectionString: PG_CONNECTION,
-      usePgVector: false, // Disable pgvector for basic tests
     });
     await store.open();
     // Clear any existing data

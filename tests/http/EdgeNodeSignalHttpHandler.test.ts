@@ -66,14 +66,11 @@ class MockResponse extends EventEmitter {
 function createRequest(method: string, path: string, body?: string): HttpRequest {
   const stream = new PassThrough();
   const request = stream as unknown as HttpRequest;
-  // @ts-expect-error test double assignment
   request.method = method;
-  // @ts-expect-error test double assignment
   request.url = path;
-  // @ts-expect-error test double assignment
   request.headers = { host: 'cluster.example' };
   const setEncoding = stream.setEncoding.bind(stream);
-  request.setEncoding = ((encoding: string) => {
+  request.setEncoding = ((encoding: BufferEncoding) => {
     setEncoding(encoding);
     return request;
   }) as HttpRequest['setEncoding'];
@@ -98,9 +95,8 @@ function buildHandler(enabled = true, withModeDetector = false): EdgeNodeSignalH
       getNodeConnectivityInfo: getNodeConnectivityInfoMock,
       updateNodeMode: updateNodeModeMock,
     } as any,
-    modeDetector: withModeDetector ? modeDetectorMock as any : undefined,
-    clusterBaseDomain: withModeDetector ? 'cluster.example.com' : undefined,
-  });
+    ...(withModeDetector ? { modeDetector: modeDetectorMock as any, clusterBaseDomain: 'cluster.example.com' } : {}),
+  } as any);
 }
 
 // TODO: Skip signal tests for now

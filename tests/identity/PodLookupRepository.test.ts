@@ -37,7 +37,7 @@ describe('PodLookupRepository', () => {
   describe('findById', () => {
     it('returns pod info when found', async () => {
       const { db, execute } = createMockDb();
-      execute.mockResolvedValueOnce({
+      execute!.mockResolvedValueOnce({
         rows: [
           accountKvRow('account-456', {
             'pod-123': {
@@ -62,7 +62,7 @@ describe('PodLookupRepository', () => {
 
     it('returns undefined when not found', async () => {
       const { db, execute } = createMockDb();
-      execute.mockResolvedValueOnce({ rows: [] });
+      execute!.mockResolvedValueOnce({ rows: [] });
 
       const repo = new PodLookupRepository(db);
       const result = await repo.findById('non-existent');
@@ -74,7 +74,7 @@ describe('PodLookupRepository', () => {
   describe('findByResourceIdentifier', () => {
     it('returns pod matching resource path', async () => {
       const { db, execute } = createMockDb();
-      execute.mockResolvedValueOnce({
+      execute!.mockResolvedValueOnce({
         rows: [
           accountKvRow('acc-1', {
             'pod-abc': {
@@ -102,7 +102,7 @@ describe('PodLookupRepository', () => {
   describe('listAllPods', () => {
     it('returns all pods', async () => {
       const { db, execute } = createMockDb();
-      execute.mockResolvedValueOnce({
+      execute!.mockResolvedValueOnce({
         rows: [
           accountKvRow('acc-1', {
             'pod-1': { baseUrl: 'https://example.com/alice/', nodeId: 'node-1' },
@@ -123,7 +123,7 @@ describe('PodLookupRepository', () => {
 
     it('returns empty array when no pods', async () => {
       const { db, execute } = createMockDb();
-      execute.mockResolvedValueOnce({ rows: [] });
+      execute!.mockResolvedValueOnce({ rows: [] });
 
       const repo = new PodLookupRepository(db);
       const result = await repo.listAllPods();
@@ -135,7 +135,7 @@ describe('PodLookupRepository', () => {
   describe('getMigrationStatus', () => {
     it('returns migration status when set', async () => {
       const { db, execute } = createMockDb();
-      execute.mockResolvedValueOnce({
+      execute!.mockResolvedValueOnce({
         rows: [
           {
             pod_id: 'pod-123',
@@ -161,7 +161,7 @@ describe('PodLookupRepository', () => {
 
     it('returns pod-only status when pod not found', async () => {
       const { db, execute } = createMockDb();
-      execute.mockResolvedValueOnce({ rows: [] });
+      execute!.mockResolvedValueOnce({ rows: [] });
 
       const repo = new PodLookupRepository(db);
       const result = await repo.getMigrationStatus('non-existent');
@@ -171,7 +171,7 @@ describe('PodLookupRepository', () => {
 
     it('returns status with null migration when not migrating', async () => {
       const { db, execute } = createMockDb();
-      execute.mockResolvedValueOnce({
+      execute!.mockResolvedValueOnce({
         rows: [
           {
             pod_id: 'pod-123',

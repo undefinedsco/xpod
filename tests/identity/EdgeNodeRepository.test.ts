@@ -58,7 +58,7 @@ describe('EdgeNodeRepository', () => {
   it('replaceNodePods 使用事务更新', async () => {
     const { repo, transaction } = createRepo();
     const txExecute = vi.fn();
-    transaction.mockImplementationOnce(async (callback: any) => {
+    transaction.mockImplementationOnce(async (callback: any): Promise<any> => {
       await callback({ execute: txExecute });
     });
 

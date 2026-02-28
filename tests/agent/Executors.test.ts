@@ -126,13 +126,20 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   }),
 }));
 
-// 动态导入以确保 mock 生效
-const { CodeBuddyExecutor, createCodeBuddyExecutor } = await import('../../src/agents/CodeBuddyExecutor');
-const { ClaudeExecutor, createClaudeExecutor } = await import('../../src/agents/ClaudeExecutor');
-const { BaseAgentExecutor } = await import('../../src/agents/BaseAgentExecutor');
-const { AgentExecutorFactory, SUPPORTED_EXECUTOR_TYPES } = await import('../../src/agents/AgentExecutorFactory');
-
 import type { ExecutorConfig, BaseExecutorOptions, AiCredential } from '../../src/agents/types';
+
+// 动态导入以确保 mock 生效
+let CodeBuddyExecutor: any, createCodeBuddyExecutor: any;
+let ClaudeExecutor: any, createClaudeExecutor: any;
+let BaseAgentExecutor: any;
+let AgentExecutorFactory: any, SUPPORTED_EXECUTOR_TYPES: any;
+
+beforeAll(async () => {
+  ({ CodeBuddyExecutor, createCodeBuddyExecutor } = await import('../../src/agents/CodeBuddyExecutor'));
+  ({ ClaudeExecutor, createClaudeExecutor } = await import('../../src/agents/ClaudeExecutor'));
+  ({ BaseAgentExecutor } = await import('../../src/agents/BaseAgentExecutor'));
+  ({ AgentExecutorFactory, SUPPORTED_EXECUTOR_TYPES } = await import('../../src/agents/AgentExecutorFactory'));
+});
 
 describe('Supported Executor Types', () => {
   it('should only support codebuddy and claude', () => {

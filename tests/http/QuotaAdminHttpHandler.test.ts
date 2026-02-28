@@ -83,14 +83,11 @@ class MockResponse extends EventEmitter {
 function createRequest(method: string, path: string, body?: string, headers: Record<string, string> = {}): HttpRequest {
   const stream = new PassThrough();
   const request = stream as unknown as HttpRequest;
-  // @ts-expect-error test double assignment
   request.method = method;
-  // @ts-expect-error test double assignment
   request.url = path;
-  // @ts-expect-error test double assignment
   request.headers = { host: 'quota.example', ...headers };
   const setEncoding = stream.setEncoding.bind(stream);
-  request.setEncoding = ((encoding: string) => {
+  request.setEncoding = ((encoding: BufferEncoding) => {
     setEncoding(encoding);
     return request;
   }) as HttpRequest['setEncoding'];
@@ -213,7 +210,7 @@ describe('QuotaAdminHttpHandler', () => {
     const { handler, quotaService } = createHandler();
     const request = createRequest('GET', '/api/quota/accounts/acc-1', undefined, { authorization: 'Bearer good' });
     const response = new MockResponse() as unknown as HttpResponse;
-    quotaService.getAccountLimit.mockResolvedValueOnce(2_048);
+    vi.mocked(quotaService.getAccountLimit).mockResolvedValueOnce(2_048);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
@@ -232,7 +229,7 @@ describe('QuotaAdminHttpHandler', () => {
     const response = new MockResponse() as unknown as HttpResponse;
     const repo = getLastAccountRepo();
     repo.getPodInfo.mockResolvedValueOnce({ accountId: 'acc-1', baseUrl: 'https://pods.example.com/alice/' });
-    quotaService.getPodLimit.mockResolvedValueOnce(1_024);
+    vi.mocked(quotaService.getPodLimit).mockResolvedValueOnce(1_024);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
@@ -254,8 +251,8 @@ describe('QuotaAdminHttpHandler', () => {
       'content-type': 'application/json',
     });
     const response = new MockResponse() as unknown as HttpResponse;
-    quotaService.setAccountLimit.mockResolvedValueOnce(undefined);
-    quotaService.getAccountLimit.mockResolvedValueOnce(512);
+    vi.mocked(quotaService.setAccountLimit).mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.getAccountLimit).mockResolvedValueOnce(512);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
@@ -274,8 +271,8 @@ describe('QuotaAdminHttpHandler', () => {
     const response = new MockResponse() as unknown as HttpResponse;
     const repo = getLastAccountRepo();
     repo.getPodInfo.mockResolvedValueOnce({ accountId: 'acc-2', baseUrl: 'https://pods.example.com/bob/' });
-    quotaService.setPodLimit.mockResolvedValueOnce(undefined);
-    quotaService.getPodLimit.mockResolvedValueOnce(null);
+    vi.mocked(quotaService.setPodLimit).mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.getPodLimit).mockResolvedValueOnce(null);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
@@ -289,7 +286,7 @@ describe('QuotaAdminHttpHandler', () => {
     const { handler, quotaService } = createHandler();
     const request = createRequest('DELETE', '/api/quota/accounts/acc-3', undefined, { authorization: 'Bearer good' });
     const response = new MockResponse() as unknown as HttpResponse;
-    quotaService.setAccountLimit.mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.setAccountLimit).mockResolvedValueOnce(undefined);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
@@ -304,7 +301,7 @@ describe('QuotaAdminHttpHandler', () => {
     const response = new MockResponse() as unknown as HttpResponse;
     const repo = getLastAccountRepo();
     repo.getPodInfo.mockResolvedValueOnce({ accountId: 'acc-4', baseUrl: 'https://pods.example.com/carl/' });
-    quotaService.setPodLimit.mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.setPodLimit).mockResolvedValueOnce(undefined);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
@@ -332,7 +329,7 @@ describe('QuotaAdminHttpHandler', () => {
     const { handler, quotaService } = createHandler();
     const request = createRequest('GET', '/api/quota/accounts/acc-6', undefined, { authorization: 'Bearer good' });
     const response = new MockResponse() as unknown as HttpResponse;
-    quotaService.getAccountLimit.mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.getAccountLimit).mockResolvedValueOnce(undefined);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
