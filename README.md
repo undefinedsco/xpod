@@ -192,11 +192,9 @@ Xpod is designed for the post-GDPR world, where **Data Sovereignty** is paramoun
 - [x] Multi-Auth: Solid Token / API Key / Node Token
 - [x] Edge Node Heartbeat + Health Check + DNS Sync
 - [x] SP Provision & Pod Management
-- [x] Chat API (OpenAI-compatible, SSE streaming)
+- [x] AI API: Chat Completions, Responses, Messages, Models (OpenAI-compatible, SSE streaming)
 - [x] ChatKit API (conversation management)
 - [x] Subdomain & DDNS Management
-- [ ] Sidecar API: Chat Completions (`/-/chat/completions`)
-- [ ] Sidecar API: Responses (`/-/responses`)
 - [ ] Sidecar API: Terminal (`/-/terminal`)
 - [ ] Rate Limiting
 - [ ] Attribute-Based Access Control (ABAC)
