@@ -10,22 +10,22 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { DataFactory } from 'rdf-data-factory';
 import { PgQuintStore } from '../../../src/storage/quint/PgQuintStore.js';
-import type { Quint, Term } from '../../../src/storage/quint/types.js';
+import type { Quint } from '../../../src/storage/quint/types.js';
 
 const DF = new DataFactory();
 
 // Helper to create a named node
-function namedNode(value: string): Term {
+function namedNode(value: string): any {
   return DF.namedNode(value);
 }
 
 // Helper to create a literal
-function literal(value: string): Term {
+function literal(value: string): any {
   return DF.literal(value);
 }
 
 // Helper to create a blank node
-function blankNode(value?: string): Term {
+function blankNode(value?: string): any {
   return DF.blankNode(value);
 }
 
@@ -52,7 +52,7 @@ describe('PgQuintStore (PGLite backend)', () => {
 
   describe('Basic Operations', () => {
     it('should store and retrieve a quint', async () => {
-      const quint: Quint = {
+      const quint: any = {
         subject: namedNode('http://example.org/s1'),
         predicate: namedNode('http://example.org/p1'),
         object: literal('value1'),
@@ -73,7 +73,7 @@ describe('PgQuintStore (PGLite backend)', () => {
     });
 
     it('should handle multiPut correctly', async () => {
-      const quints: Quint[] = [
+      const quints: any[] = [
         {
           subject: namedNode('http://example.org/s1'),
           predicate: namedNode('http://example.org/name'),
@@ -109,7 +109,7 @@ describe('PgQuintStore (PGLite backend)', () => {
     });
 
     it('should delete quints correctly', async () => {
-      const quint: Quint = {
+      const quint: any = {
         subject: namedNode('http://example.org/s1'),
         predicate: namedNode('http://example.org/p1'),
         object: literal('value1'),
@@ -132,7 +132,7 @@ describe('PgQuintStore (PGLite backend)', () => {
     });
 
     it('should update existing quint with put (upsert)', async () => {
-      const quint1: Quint = {
+      const quint1: any = {
         subject: namedNode('http://example.org/s1'),
         predicate: namedNode('http://example.org/p1'),
         object: literal('value1'),
@@ -141,7 +141,7 @@ describe('PgQuintStore (PGLite backend)', () => {
         vector: [0.1, 0.2, 0.3]
       };
 
-      const quint2: Quint = {
+      const quint2: any = {
         subject: namedNode('http://example.org/s1'),
         predicate: namedNode('http://example.org/p1'),
         object: literal('value1'),  // Same object (UPSERT key includes object)
@@ -169,7 +169,7 @@ describe('PgQuintStore (PGLite backend)', () => {
   describe('Query Operations', () => {
     beforeEach(async () => {
       // Setup test data
-      const quints: Quint[] = [
+      const quints: any[] = [
         // Person 1: Alice
         { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1'), version: 1 },
         { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/age'), object: literal('30'), graph: namedNode('http://example.org/g1'), version: 1 },
@@ -211,7 +211,7 @@ describe('PgQuintStore (PGLite backend)', () => {
 
   describe('getAttributes (Batch Query)', () => {
     beforeEach(async () => {
-      const quints: Quint[] = [
+      const quints: any[] = [
         // Person 1
         { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1'), version: 1 },
         { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/age'), object: literal('30'), graph: namedNode('http://example.org/g1'), version: 1 },
@@ -277,7 +277,7 @@ describe('PgQuintStore (PGLite backend)', () => {
 
   describe('getCompound (Complex Query)', () => {
     beforeEach(async () => {
-      const quints: Quint[] = [
+      const quints: any[] = [
         // Person 1 with type
         { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type'), object: namedNode('http://example.org/Person'), graph: namedNode('http://example.org/g1'), version: 1 },
         { subject: namedNode('http://example.org/person/1'), predicate: namedNode('http://example.org/name'), object: literal('Alice'), graph: namedNode('http://example.org/g1'), version: 1 },
@@ -326,7 +326,7 @@ describe('PgQuintStore (PGLite backend)', () => {
 
   describe('Term Serialization', () => {
     it('should handle named nodes correctly', async () => {
-      const quint: Quint = {
+      const quint: any = {
         subject: namedNode('http://example.org/subject'),
         predicate: namedNode('http://example.org/predicate'),
         object: namedNode('http://example.org/object'),
@@ -343,7 +343,7 @@ describe('PgQuintStore (PGLite backend)', () => {
     });
 
     it('should handle literals with language tags', async () => {
-      const quint: Quint = {
+      const quint: any = {
         subject: namedNode('http://example.org/s1'),
         predicate: namedNode('http://example.org/label'),
         object: DF.literal('Hello', 'en'),
@@ -361,7 +361,7 @@ describe('PgQuintStore (PGLite backend)', () => {
     });
 
     it('should handle literals with datatypes', async () => {
-      const quint: Quint = {
+      const quint: any = {
         subject: namedNode('http://example.org/s1'),
         predicate: namedNode('http://example.org/count'),
         object: DF.literal('42', namedNode('http://www.w3.org/2001/XMLSchema#integer')),
@@ -379,7 +379,7 @@ describe('PgQuintStore (PGLite backend)', () => {
     });
 
     it('should handle blank nodes', async () => {
-      const quint: Quint = {
+      const quint: any = {
         subject: blankNode('b1'),
         predicate: namedNode('http://example.org/p1'),
         object: literal('value'),

@@ -89,7 +89,7 @@ describe('Chat Mock Logic Flow', () => {
           : url.url;
       if (target.startsWith(`http://127.0.0.1:${aiPort}/v1`)) {
         const headerSource = init?.headers ?? (url instanceof Request ? url.headers : undefined);
-        aiRequestHeaders = Object.fromEntries(new Headers(headerSource).entries());
+        aiRequestHeaders = Object.fromEntries((new Headers(headerSource) as any).entries());
         // Return OpenAI Chat Completions API format (not Responses API)
         return new Response(JSON.stringify({
           id: 'chatcmpl-mock',

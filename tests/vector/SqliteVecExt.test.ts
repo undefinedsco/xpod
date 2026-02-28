@@ -22,7 +22,7 @@ describe.skip('SqliteVectorStore with sqlite-vec extension', () => {
 
   beforeAll(async () => {
     // 使用内存 SQLite
-    store = new SqliteVectorStore(':memory:');
+    store = new SqliteVectorStore(':memory:' as any);
     await store.open();
   });
 

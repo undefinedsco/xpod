@@ -31,42 +31,42 @@ describe('Pushdown Debug', () => {
   it('Simple equality - should pushdown', async () => {
     console.log('\n=== Simple equality ===');
     const stream = await engine.queryBindings('SELECT * WHERE { ?s <http://ex/p> ?o FILTER(?o = 20) }');
-    const results = await stream.toArray();
+    const results = await (stream as any).toArray();
     expect(results).toHaveLength(1);
   });
 
   it('Greater than - should pushdown', async () => {
     console.log('\n=== Greater than ===');
     const stream = await engine.queryBindings('SELECT * WHERE { ?s <http://ex/p> ?o FILTER(?o > 15) }');
-    const results = await stream.toArray();
+    const results = await (stream as any).toArray();
     expect(results).toHaveLength(2);
   });
 
   it('OR same var - should convert to $in', async () => {
     console.log('\n=== OR same var ===');
     const stream = await engine.queryBindings('SELECT * WHERE { ?s <http://ex/p> ?o FILTER(?o = 10 || ?o = 30) }');
-    const results = await stream.toArray();
+    const results = await (stream as any).toArray();
     expect(results).toHaveLength(2);
   });
 
   it('OR diff var - should use OR branches', async () => {
     console.log('\n=== OR diff var ===');
     const stream = await engine.queryBindings('SELECT * WHERE { ?s ?p ?o FILTER(?s = <http://ex/s1> || ?p = <http://ex/name>) }');
-    const results = await stream.toArray();
+    const results = await (stream as any).toArray();
     expect(results.length).toBeGreaterThanOrEqual(2);
   });
 
   it('AND - should pushdown both', async () => {
     console.log('\n=== AND ===');
     const stream = await engine.queryBindings('SELECT * WHERE { ?s <http://ex/p> ?o FILTER(?o > 10 && ?o < 30) }');
-    const results = await stream.toArray();
+    const results = await (stream as any).toArray();
     expect(results).toHaveLength(1);
   });
 
   it('STRSTARTS - should pushdown', async () => {
     console.log('\n=== STRSTARTS ===');
     const stream = await engine.queryBindings('SELECT * WHERE { ?s <http://ex/name> ?n FILTER(STRSTARTS(?n, "A")) }');
-    const results = await stream.toArray();
+    const results = await (stream as any).toArray();
     expect(results).toHaveLength(1);
   });
 
@@ -75,7 +75,7 @@ describe('Pushdown Debug', () => {
     // Alice = 5 chars, Bob = 3 chars
     // STRLEN > 3 means only Alice passes (5 > 3 = true, 3 > 3 = false)
     const stream = await engine.queryBindings('SELECT * WHERE { ?s <http://ex/name> ?n FILTER(STRLEN(?n) > 3) }');
-    const results = await stream.toArray();
+    const results = await (stream as any).toArray();
     expect(results).toHaveLength(1);
   });
 });

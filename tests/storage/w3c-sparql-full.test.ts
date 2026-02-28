@@ -92,10 +92,7 @@ async function createQuintStore(): Promise<StoreWrapper> {
     },
     queryBindings: async (query: string) => {
       const stream = await engine.queryBindings(query);
-      const results = [];
-      for await (const binding of stream) {
-        results.push(binding);
-      }
+      const results = await (stream as any).toArray();
       return results;
     },
     queryBoolean: async (query: string) => {
@@ -103,10 +100,7 @@ async function createQuintStore(): Promise<StoreWrapper> {
     },
     queryQuads: async (query: string) => {
       const stream = await engine.queryQuads(query);
-      const results = [];
-      for await (const q of stream) {
-        results.push(q);
-      }
+      const results: Quad[] = await (stream as any).toArray();
       return results;
     },
     close: async () => { await store.close(); },
@@ -117,7 +111,7 @@ async function createQuintStore(): Promise<StoreWrapper> {
 async function createQuadstore(): Promise<StoreWrapper> {
   const dbPath = path.join(testDir, `quadstore_${Date.now()}_${Math.random().toString(36).slice(2)}.sqlite`);
   const backend = getBackend(`sqlite:${dbPath}`, { tableName: 'quadstore' });
-  const store = new Quadstore({ backend, dataFactory: DataFactory });
+  const store = new Quadstore({ backend: backend as any, dataFactory: DataFactory });
   await store.open();
   const engine = new QuadstoreEngine(store);
   
@@ -155,10 +149,7 @@ async function createQuadstore(): Promise<StoreWrapper> {
     queryBindings: async (query: string) => {
       return withTimeout(async () => {
         const stream = await engine.queryBindings(query);
-        const results: any[] = [];
-        for await (const binding of stream) {
-          results.push(binding);
-        }
+        const results: any[] = await (stream as any).toArray();
         return results;
       });
     },
@@ -168,10 +159,7 @@ async function createQuadstore(): Promise<StoreWrapper> {
     queryQuads: async (query: string) => {
       return withTimeout(async () => {
         const stream = await engine.queryQuads(query);
-        const results: Quad[] = [];
-        for await (const q of stream) {
-          results.push(q);
-        }
+        const results: Quad[] = await (stream as any).toArray();
         return results;
       });
     },

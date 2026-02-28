@@ -162,7 +162,7 @@ describe('PerAccountQuotaStrategy', () => {
     podLookup.findByResourceIdentifier.mockResolvedValueOnce(undefined);
     reporter.getSize.mockResolvedValueOnce({ amount: 10, unit: UNIT_BYTES });
 
-    const result = await strategy.getTotalSpaceUsed(identifier);
+    const result = await (strategy as any).getTotalSpaceUsed(identifier);
     expect(result.amount).toBe(Number.MAX_SAFE_INTEGER);
   });
 
@@ -178,7 +178,7 @@ describe('PerAccountQuotaStrategy', () => {
     });
     reporter.getSize.mockResolvedValueOnce({ amount: 0, unit: UNIT_BYTES });
 
-    const result = await strategy.getTotalSpaceUsed(identifier);
+    const result = await (strategy as any).getTotalSpaceUsed(identifier);
     expect(usageRepo.getAccountUsage).toHaveBeenCalledWith('acc-4');
     expect(result.amount).toBe(720);
   });

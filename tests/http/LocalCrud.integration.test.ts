@@ -17,7 +17,7 @@ function joinUrl(base: string, path: string): string {
 
 const SUCCESS_STATUS = new Set([ 200, 201, 202, 204, 205, 207 ]);
 
-async function assertSuccess(response: Response, step: string): Promise<void> {
+async function assertSuccess(response: any, step: string): Promise<void> {
   if (!SUCCESS_STATUS.has(response.status)) {
     const text = await response.clone().text();
     throw new Error(`${step} failed with status ${response.status}: ${text}`);

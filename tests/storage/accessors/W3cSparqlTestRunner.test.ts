@@ -318,7 +318,7 @@ describe.skip('W3C SPARQL 1.1 Query Test Suite', () => {
         dbPath = path.join(testDir, `w3c_${category.name}_${Math.random().toString(36).substring(7)}.sqlite`);
         const backend = getBackend(`sqlite:${dbPath}`, { tableName: 'quadstore' });
         store = new Quadstore({
-          backend,
+          backend: backend as any,
           dataFactory: DataFactory,
         });
         await store.open();
@@ -359,7 +359,7 @@ describe.skip('W3C SPARQL 1.1 Query Test Suite', () => {
             }
             const backend = getBackend(`sqlite:${dbPath}`, { tableName: 'quadstore' });
             store = new Quadstore({
-              backend,
+              backend: backend as any,
               dataFactory: DataFactory,
             });
             await store.open();
@@ -457,7 +457,7 @@ describe.skip('QuadstoreSparqlDataAccessor Performance Baseline', () => {
     dbPath = path.join(testDir, `perf_${Date.now()}.sqlite`);
     const backend = getBackend(`sqlite:${dbPath}`, { tableName: 'quadstore' });
     store = new Quadstore({
-      backend,
+      backend: backend as any,
       dataFactory: DataFactory,
     });
     await store.open();
@@ -476,7 +476,7 @@ describe.skip('QuadstoreSparqlDataAccessor Performance Baseline', () => {
       batch.push(quad(subject, namedNode('http://example.org/label'), literal(`Item ${i}`), graph));
     }
     
-    await store.multiPut(batch);
+    await store.multiPut(batch as any);
     console.log(`✅ 数据生成完成，共 ${batch.length} 个 quad\n`);
   });
   

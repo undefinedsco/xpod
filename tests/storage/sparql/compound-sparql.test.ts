@@ -31,7 +31,7 @@ describe('SPARQL Multi-Pattern Query with Compound Optimization', () => {
         subject,
         predicate: namedNode('http://schema.org/name'),
         object: literal(`User ${i}`),
-      } as Quint);
+      } as unknown as Quint);
 
       // Add age as xsd:integer
       quints.push({
@@ -39,7 +39,7 @@ describe('SPARQL Multi-Pattern Query with Compound Optimization', () => {
         subject,
         predicate: namedNode('http://schema.org/age'),
         object: literal(i, namedNode('http://www.w3.org/2001/XMLSchema#integer')),
-      } as Quint);
+      } as unknown as Quint);
     }
 
     await store.multiPut(quints);
@@ -68,9 +68,10 @@ describe('SPARQL Multi-Pattern Query with Compound Optimization', () => {
     
     const startTime = performance.now();
     const stream = await engine.queryBindings(query);
+    const bindings = await (stream as any).toArray();
     const results: any[] = [];
-    
-    for await (const binding of stream) {
+
+    for (const binding of bindings) {
       results.push({
         s: binding.get('s')?.value,
         name: binding.get('name')?.value,
@@ -107,10 +108,7 @@ describe('SPARQL Multi-Pattern Query with Compound Optimization', () => {
     for (let i = 0; i < 5; i++) {
       const start = performance.now();
       const stream = await engine.queryBindings(query);
-      const results: any[] = [];
-      for await (const binding of stream) {
-        results.push(binding);
-      }
+      const results: any[] = (await (stream as any).toArray());
       times.push(performance.now() - start);
     }
 

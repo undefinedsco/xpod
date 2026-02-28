@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { SqliteQuintStore } from '../../../src/storage/quint/SQLiteQuintStore';
+import { SqliteQuintStore } from '../../../src/storage/quint/SqliteQuintStore';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine';
 import { DataFactory } from 'n3';
 
@@ -106,22 +106,22 @@ describe('OPTIONAL Optimization', () => {
       `;
 
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
+      const results = await (stream as any).toArray();
 
       expect(results).toHaveLength(3);
 
       // Alice has both name and age
-      const alice = results.find(r => r.get('s')?.value === 'http://example.org/alice');
+      const alice = results.find((r: any) => r.get('s')?.value === 'http://example.org/alice');
       expect(alice?.get('name')?.value).toBe('Alice');
       expect(alice?.get('age')?.value).toBe('30');
 
       // Bob has only name
-      const bob = results.find(r => r.get('s')?.value === 'http://example.org/bob');
+      const bob = results.find((r: any) => r.get('s')?.value === 'http://example.org/bob');
       expect(bob?.get('name')?.value).toBe('Bob');
       expect(bob?.get('age')).toBeUndefined();
 
       // Charlie has name and age
-      const charlie = results.find(r => r.get('s')?.value === 'http://example.org/charlie');
+      const charlie = results.find((r: any) => r.get('s')?.value === 'http://example.org/charlie');
       expect(charlie?.get('name')?.value).toBe('Charlie');
       expect(charlie?.get('age')?.value).toBe('25');
     });
@@ -137,18 +137,18 @@ describe('OPTIONAL Optimization', () => {
       `;
 
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
+      const results = await (stream as any).toArray();
 
       expect(results).toHaveLength(3);
 
       // Alice has all attributes
-      const alice = results.find(r => r.get('s')?.value === 'http://example.org/alice');
+      const alice = results.find((r: any) => r.get('s')?.value === 'http://example.org/alice');
       expect(alice?.get('name')?.value).toBe('Alice');
       expect(alice?.get('age')?.value).toBe('30');
       expect(alice?.get('email')?.value).toBe('alice@example.org');
 
       // Bob has only name
-      const bob = results.find(r => r.get('s')?.value === 'http://example.org/bob');
+      const bob = results.find((r: any) => r.get('s')?.value === 'http://example.org/bob');
       expect(bob?.get('name')?.value).toBe('Bob');
       expect(bob?.get('age')).toBeUndefined();
       expect(bob?.get('email')).toBeUndefined();
@@ -252,26 +252,26 @@ describe('OPTIONAL Optimization', () => {
 
       const start = Date.now();
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
+      const results = await (stream as any).toArray();
       const elapsed = Date.now() - start;
 
       expect(results).toHaveLength(10);
       
       // 验证数据正确性
       // person0: has name, age, no email
-      const person0 = results.find(r => r.get('s')?.value === 'http://example.org/person0');
+      const person0 = results.find((r: any) => r.get('s')?.value === 'http://example.org/person0');
       expect(person0?.get('name')?.value).toBe('Person 0');
       expect(person0?.get('age')?.value).toBe('20');
       expect(person0?.get('email')).toBeUndefined();
 
       // person5: has name, no age (odd), has email (>=5)
-      const person5 = results.find(r => r.get('s')?.value === 'http://example.org/person5');
+      const person5 = results.find((r: any) => r.get('s')?.value === 'http://example.org/person5');
       expect(person5?.get('name')?.value).toBe('Person 5');
       expect(person5?.get('age')).toBeUndefined();
       expect(person5?.get('email')?.value).toBe('person5@example.org');
 
       // person6: has name, age (even), email (>=5)
-      const person6 = results.find(r => r.get('s')?.value === 'http://example.org/person6');
+      const person6 = results.find((r: any) => r.get('s')?.value === 'http://example.org/person6');
       expect(person6?.get('name')?.value).toBe('Person 6');
       expect(person6?.get('age')?.value).toBe('26');
       expect(person6?.get('email')?.value).toBe('person6@example.org');
@@ -308,7 +308,7 @@ describe('OPTIONAL Optimization', () => {
       `;
 
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
+      const results = await (stream as any).toArray();
 
       expect(results).toHaveLength(1);
       expect(results[0].get('name')?.value).toBe('Alice');
@@ -324,7 +324,7 @@ describe('OPTIONAL Optimization', () => {
       `;
 
       const stream = await engine.queryBindings(query);
-      const results = await stream.toArray();
+      const results = await (stream as any).toArray();
 
       expect(results).toHaveLength(0);
     });

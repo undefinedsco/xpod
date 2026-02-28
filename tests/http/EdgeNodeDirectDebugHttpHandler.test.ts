@@ -25,11 +25,8 @@ class MockResponse extends EventEmitter {
 function createRequest(method: string, path: string): HttpRequest {
   const stream = new PassThrough();
   const request = stream as unknown as HttpRequest;
-  // @ts-expect-error test double assignment
   request.method = method;
-  // @ts-expect-error test double assignment
   request.url = path;
-  // @ts-expect-error test double assignment
   request.headers = { host: 'pods.example.com' };
   return request;
 }
@@ -85,8 +82,8 @@ describe('EdgeNodeDirectDebugHttpHandler', () => {
     await handler.handle({ request, response });
 
     expect(response.statusCode).toBe(307);
-    expect(response.headers.location).toBe('https://edge-1.example:8443/profile/card?version=1');
-    expect(response.headers['x-xpod-edge-node']).toBe('node-9');
+    expect((response as any).headers.location).toBe('https://edge-1.example:8443/profile/card?version=1');
+    expect((response as any).headers['x-xpod-edge-node']).toBe('node-9');
   });
 
   it('pod 基路径不匹配时跳过', async () => {

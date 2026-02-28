@@ -174,10 +174,10 @@ describe('UsageTrackingStore', () => {
     const identifier = { path: 'https://pods.example.com/alice/inbox/' } as ResourceIdentifier;
     podLookup.findByResourceIdentifier.mockResolvedValue({ accountId: 'acc-2', podId: 'pod-2' });
     setExistingBinary(identifier.path, Buffer.alloc(4));
-    const representation: Representation = {
+    const representation = {
       binary: false,
       metadata: { contentLength: '10' },
-    } as Representation;
+    } as unknown as Representation;
 
     await store.setRepresentation(identifier, representation);
 

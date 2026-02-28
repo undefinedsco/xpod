@@ -26,7 +26,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
   // 检查是否可以连接到 PostgreSQL
   async function canConnect(): Promise<boolean> {
     try {
-      const { default: postgres } = await import('postgres');
+      const { default: postgres } = await import('postgres' as any);
       const client = postgres(connectionString);
       await client`SELECT 1`;
       await client.end();
@@ -41,7 +41,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
     if (!(await canConnect())) {
       console.warn('PostgreSQL not available, skipping pgvector tests');
     } else {
-      store = new PostgresVectorStore(connectionString);
+      store = new PostgresVectorStore(connectionString as any);
       await store.open();
     }
   });
@@ -59,7 +59,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       await store.ensureVectorTable(testModelId);
       const exists = await store.hasVectorTable(testModelId);
       expect(exists).toBe(true);
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should insert single vector', async () => {
       if (!store) return;
@@ -73,7 +73,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       expect(retrieved).not.toBeNull();
       expect(retrieved!.id).toBe(id);
       expect(retrieved!.embedding.length).toBe(testDimension);
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should batch insert vectors', async () => {
       if (!store) return;
@@ -88,7 +88,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
 
       const count = await store.countVectors(testModelId);
       expect(count).toBeGreaterThanOrEqual(4); // 1 + 3
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should delete vector', async () => {
       if (!store) return;
@@ -96,7 +96,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       await store.deleteVector(testModelId, 2001);
       const retrieved = await store.getVector(testModelId, 2001);
       expect(retrieved).toBeNull();
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should batch delete vectors', async () => {
       if (!store) return;
@@ -104,7 +104,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       await store.batchDeleteVectors(testModelId, [2002, 2003]);
       const count = await store.countVectors(testModelId);
       expect(count).toBe(1); // 只剩 id=1001
-    }, { timeout: 10000 });
+    }, 10000);
   });
 
   describe('Vector Search', () => {
@@ -116,7 +116,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
         const id = 3000 + i;
         await store.upsertVector(testModelId, id, generateEmbedding(i));
       }
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should search similar vectors', async () => {
       if (!store) return;
@@ -128,7 +128,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       // 最相似的应该是 id=3005
       expect(results[0].id).toBe(3005);
       expect(results[0].score).toBeGreaterThan(0.9); // 应该很相似
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should respect limit parameter', async () => {
       if (!store) return;
@@ -137,7 +137,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       const results = await store.search(testModelId, queryEmbedding, { limit: 2 });
 
       expect(results.length).toBeLessThanOrEqual(2);
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should respect threshold parameter', async () => {
       if (!store) return;
@@ -151,7 +151,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       for (const r of results) {
         expect(r.score).toBeGreaterThanOrEqual(0.95);
       }
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should exclude specified ids', async () => {
       if (!store) return;
@@ -166,7 +166,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       for (const r of results) {
         expect(r.id).not.toBe(3005);
       }
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should return distance and score', async () => {
       if (!store) return;
@@ -178,7 +178,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
       expect(typeof results[0].distance).toBe('number');
       expect(typeof results[0].score).toBe('number');
       expect(results[0].score).toBe(1 - results[0].distance);
-    }, { timeout: 10000 });
+    }, 10000);
   });
 
   describe('Pagination', () => {
@@ -198,7 +198,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
           expect(nextIds[0]).toBeGreaterThan(ids[ids.length - 1]);
         }
       }
-    }, { timeout: 10000 });
+    }, 10000);
   });
 
   describe('Table Management', () => {
@@ -207,7 +207,7 @@ describe('PostgresVectorStore with pgvector extension', () => {
 
       const tables = await store.listVectorTables();
       expect(tables).toContain(store['getTableName'](testModelId));
-    }, { timeout: 10000 });
+    }, 10000);
 
     it('should drop vector table', async () => {
       if (!store) return;
@@ -215,6 +215,6 @@ describe('PostgresVectorStore with pgvector extension', () => {
       await store.dropVectorTable(testModelId);
       const exists = await store.hasVectorTable(testModelId);
       expect(exists).toBe(false);
-    }, { timeout: 10000 });
+    }, 10000);
   });
 });

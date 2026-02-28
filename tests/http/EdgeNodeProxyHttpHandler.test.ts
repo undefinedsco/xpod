@@ -15,7 +15,7 @@ class MockResponse extends Writable {
     this.headers[name.toLowerCase()] = value;
   }
 
-  public _write(chunk: any, _encoding: string, callback: () => void): void {
+  public override _write(chunk: any, _encoding: string, callback: () => void): void {
     this.chunks.push(Buffer.from(chunk));
     callback();
   }
@@ -78,7 +78,7 @@ describe('EdgeNodeProxyHttpHandler', () => {
     const response = new MockResponse();
     const finished = new Promise((resolve) => response.on('finish', resolve));
 
-    await handler.handle({ request, response: response as unknown as HttpResponse });
+    await handler.handle({ request: request as any, response: response as unknown as HttpResponse });
     await finished;
 
     expect(fetchSpy).toHaveBeenCalledWith(

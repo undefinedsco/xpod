@@ -30,8 +30,8 @@ describe('ComunicaQuintEngine FILTER pushdown', () => {
     console.log('Query:', query);
     
     const stream = await engine.queryBindings(query);
-    const results = await stream.toArray();
-    
+    const results = await (stream as any).toArray();
+
     console.log('Results count:', results.length);
     for (const binding of results) {
       console.log('  s:', binding.get('s')?.value, 'o:', binding.get('o')?.value);
@@ -44,8 +44,8 @@ describe('ComunicaQuintEngine FILTER pushdown', () => {
     console.log('Query:', query);
     
     const stream = await engine.queryBindings(query);
-    const results = await stream.toArray();
-    
+    const results = await (stream as any).toArray();
+
     console.log('Results count:', results.length);
   });
 });

@@ -25,49 +25,49 @@ describe('DisabledIdentityProviderHandler', () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/idp/login/');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
 
     it('should reject /account/ paths', async () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/account/create');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
 
     it('should reject /login paths', async () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/login');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
 
     it('should reject /logout paths', async () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/logout');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
 
     it('should reject /register paths', async () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/register');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
 
     it('should reject /.account/ paths', async () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/.account/');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
 
     it('should reject non-identity paths', async () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/alice/data.ttl');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('Not an identity');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('Not an identity');
     });
 
     it('should include custom message in rejection', async () => {
@@ -76,7 +76,7 @@ describe('DisabledIdentityProviderHandler', () => {
       });
 
       const request = createRequest('/login');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('Custom: use id.example.com');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('Custom: use id.example.com');
     });
   });
 
@@ -90,12 +90,12 @@ describe('DisabledIdentityProviderHandler', () => {
       });
 
       const request = createRequest('/login');
-      await handler.handle({ request, response: mockResponse });
+      await handler.handle({ request: request as any, response: mockResponse });
 
       expect(mockResponse.statusCode).toBe(501);
       expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'application/json');
 
-      const responseBody = (mockResponse.end as jest.Mock).mock.calls[0][0];
+      const responseBody = (mockResponse.end as any).mock.calls[0][0];
       const parsed = JSON.parse(responseBody);
       expect(parsed.error).toBe('not_implemented');
       expect(parsed.message).toBe('Test message');
@@ -111,21 +111,21 @@ describe('DisabledIdentityProviderHandler', () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('https://node1.pods.example.com/login');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
 
     it('should handle URLs with query strings', async () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/login?redirect=/alice/');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
 
     it('should handle POST requests', async () => {
       handler = new DisabledIdentityProviderHandler({});
 
       const request = createRequest('/account/create', 'POST');
-      await expect(handler.canHandle({ request, response: mockResponse })).rejects.toThrow('external IdP');
+      await expect(handler.canHandle({ request: request as any, response: mockResponse })).rejects.toThrow('external IdP');
     });
   });
 });

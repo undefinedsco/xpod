@@ -29,7 +29,7 @@ describe('SqliteQuintStore - Compound Query', () => {
         subject,
         predicate: namedNode('http://example.org/name'),
         object: literal(`User ${i}`),
-      } as Quint);
+      } as unknown as Quint);
 
       // Add age (formatted as 5 digits for proper string comparison)
       // Note: literal values are stored as '"value"' in n3 format
@@ -38,7 +38,7 @@ describe('SqliteQuintStore - Compound Query', () => {
         subject,
         predicate: namedNode('http://example.org/age'),
         object: literal(String(i).padStart(5, '0')),
-      } as Quint);
+      } as unknown as Quint);
     }
 
     await store.multiPut(quints);
@@ -134,7 +134,7 @@ describe('SqliteQuintStore - Compound Query', () => {
         subject,
         predicate: namedNode('http://example.org/email'),
         object: literal(`user${i}@example.org`),
-      } as Quint);
+      } as unknown as Quint);
     }
     await store.multiPut(quints);
 
@@ -184,7 +184,7 @@ describe('SqliteQuintStore - Numeric Comparison with xsd:integer', () => {
         subject: namedNode(`http://example.org/item/${val}`),
         predicate: namedNode('http://example.org/value'),
         object: literal(val, XSD_INTEGER),
-      } as Quint);
+      } as unknown as Quint);
     }
 
     console.log(`Inserted ${values.length} numeric quints`);
@@ -308,14 +308,14 @@ describe('SqliteQuintStore - Compound Query with xsd:integer', () => {
         subject,
         predicate: namedNode('http://schema.org/name'),
         object: literal(`User ${i}`),
-      } as Quint);
+      } as unknown as Quint);
 
       await store.put({
         graph,
         subject,
         predicate: namedNode('http://schema.org/age'),
         object: literal(i, XSD_INTEGER),
-      } as Quint);
+      } as unknown as Quint);
     }
 
     console.log('Inserted 11 users (9995-10005) with xsd:integer ages');

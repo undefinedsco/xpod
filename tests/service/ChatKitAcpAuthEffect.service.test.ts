@@ -22,11 +22,8 @@ describe('ChatKitService + ACP runtime', () => {
     const store = new InMemoryStore();
 
     const aiProvider: AiProvider = {
-      async generateResponse() {
+      async *streamResponse() {
         throw new Error('aiProvider should not be used when PTY runtime is enabled');
-      },
-      async listModels() {
-        return [];
       },
     };
 

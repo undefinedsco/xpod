@@ -51,7 +51,7 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
       create: async () => {
         const dbPath = path.join(testDir, `quadstore_${Date.now()}_${Math.random().toString(36).slice(2)}.sqlite`);
         const backend = getBackend(`sqlite:${dbPath}`, { tableName: 'quadstore' });
-        const store = new Quadstore({ backend, dataFactory: DataFactory });
+        const store = new Quadstore({ backend: backend as any, dataFactory: DataFactory });
         await store.open();
         const engine = new QuadstoreEngine(store);
         
@@ -75,8 +75,9 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
           },
           queryBindings: async (query: string) => {
             const stream = await engine.queryBindings(query);
+            const bindings = await (stream as any).toArray();
             const results: any[] = [];
-            for await (const binding of stream) {
+            for (const binding of bindings) {
               const row: Record<string, string> = {};
               for (const [key, value] of binding) {
                 row[key.value] = (value as any).value;
@@ -87,10 +88,7 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
           },
           queryQuads: async (query: string) => {
             const stream = await engine.queryQuads(query);
-            const results: Quad[] = [];
-            for await (const q of stream) {
-              results.push(q);
-            }
+            const results: Quad[] = await (stream as any).toArray();
             return results;
           },
           close: async () => {
@@ -114,8 +112,9 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
           del: async (pattern: any) => await store.del(pattern),
           queryBindings: async (query: string) => {
             const stream = await engine.queryBindings(query);
+            const bindings = await (stream as any).toArray();
             const results: any[] = [];
-            for await (const binding of stream) {
+            for (const binding of bindings) {
               const row: Record<string, string> = {};
               for (const [key, value] of binding) {
                 row[key.value] = (value as any).value;
@@ -126,10 +125,7 @@ describe.skip('Part 1: Basic Functionality Comparison', () => {
           },
           queryQuads: async (query: string) => {
             const stream = await engine.queryQuads(query);
-            const results: Quad[] = [];
-            for await (const q of stream) {
-              results.push(q);
-            }
+            const results: Quad[] = await (stream as any).toArray();
             return results;
           },
           close: async () => {
@@ -657,7 +653,7 @@ describe.skip('Part 2: Graph Prefix Filtering Comparison', () => {
       create: async () => {
         const dbPath = path.join(testDir, `quadstore_prefix_${Date.now()}.sqlite`);
         const backend = getBackend(`sqlite:${dbPath}`, { tableName: 'quadstore' });
-        const store = new Quadstore({ backend, dataFactory: DataFactory });
+        const store = new Quadstore({ backend: backend as any, dataFactory: DataFactory });
         await store.open();
         const engine = new QuadstoreEngine(store);
         
@@ -686,19 +682,13 @@ describe.skip('Part 2: Graph Prefix Filtering Comparison', () => {
               }
             `;
             const stream = await engine.queryBindings(query);
-            const results = [];
-            for await (const binding of stream) {
-              results.push(binding);
-            }
+            const results = await (stream as any).toArray();
             return results;
           },
           queryAll: async () => {
             const query = 'SELECT ?s ?title WHERE { GRAPH ?g { ?s <http://title> ?title } }';
             const stream = await engine.queryBindings(query);
-            const results = [];
-            for await (const binding of stream) {
-              results.push(binding);
-            }
+            const results = await (stream as any).toArray();
             return results;
           },
           close: async () => {
@@ -734,22 +724,16 @@ describe.skip('Part 2: Graph Prefix Filtering Comparison', () => {
           queryWithPrefix: async (prefix: string) => {
             // QuintStore 使用 filters.graph.$startsWith 参数
             const query = 'SELECT ?s ?title WHERE { GRAPH ?g { ?s <http://title> ?title } }';
-            const stream = await engine.queryBindings(query, { 
+            const stream = await engine.queryBindings(query, {
               filters: { graph: { $startsWith: prefix } }
             });
-            const results = [];
-            for await (const binding of stream) {
-              results.push(binding);
-            }
+            const results = await (stream as any).toArray();
             return results;
           },
           queryAll: async () => {
             const query = 'SELECT ?s ?title WHERE { GRAPH ?g { ?s <http://title> ?title } }';
             const stream = await engine.queryBindings(query);
-            const results = [];
-            for await (const binding of stream) {
-              results.push(binding);
-            }
+            const results = await (stream as any).toArray();
             return results;
           },
           close: async () => {
@@ -860,7 +844,7 @@ describe.skip('Part 3: W3C SPARQL Test Suite Comparison', () => {
       create: async () => {
         const dbPath = path.join(testDir, `quadstore_w3c_${Date.now()}.sqlite`);
         const backend = getBackend(`sqlite:${dbPath}`, { tableName: 'quadstore' });
-        const store = new Quadstore({ backend, dataFactory: DataFactory });
+        const store = new Quadstore({ backend: backend as any, dataFactory: DataFactory });
         await store.open();
         const engine = new QuadstoreEngine(store);
         
@@ -888,10 +872,7 @@ describe.skip('Part 3: W3C SPARQL Test Suite Comparison', () => {
           },
           queryBindings: async (query: string) => {
             const stream = await engine.queryBindings(query);
-            const results = [];
-            for await (const binding of stream) {
-              results.push(binding);
-            }
+            const results = await (stream as any).toArray();
             return results;
           },
           queryBoolean: async (query: string) => {
@@ -920,10 +901,7 @@ describe.skip('Part 3: W3C SPARQL Test Suite Comparison', () => {
           },
           queryBindings: async (query: string) => {
             const stream = await engine.queryBindings(query);
-            const results = [];
-            for await (const binding of stream) {
-              results.push(binding);
-            }
+            const results = await (stream as any).toArray();
             return results;
           },
           queryBoolean: async (query: string) => {
