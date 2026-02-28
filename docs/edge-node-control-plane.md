@@ -79,15 +79,15 @@
 
 ## 与现有实现的映射
 
-- `EdgeNodeHeartbeatService` 增强后可发送丰富的元数据字段，与本文档中的心跳扩展相对应。
-- `EdgeNodeSignalHttpHandler` 负责验证 token、落库心跳信息，并在未来驱动 DNS/隧道编排。
+- `EdgeNodeSignalClient` 增强后可发送丰富的元数据字段，与本文档中的心跳扩展相对应。
+- `EdgeNodeSignalHandler` 负责验证 token、落库心跳信息，并在未来驱动 DNS/隧道编排。
 - `EdgeNodeRedirectHttpHandler` 仅作为调试工具保留（例如验证节点是否已经可达），**不会**在生产路由中用来对最终用户做 HTTP 重定向兜底；实际兜底策略是返回可诊断的错误码，引导用户或节点自愈。
 - **DNS Provider 抽象**：`src/dns/DnsProvider.ts` 定义了统一的 `DnsProvider` 接口，`TencentDnsProvider` 基于 DNSPod v2 API 实现 `upsertRecord`/`deleteRecord`/`listRecords` 三个核心能力。集群可按需扩展其它供应商适配器，仅需实现相同接口即可。
-- **DNS 编排协调器**：`EdgeNodeDnsCoordinator` 会在 `EdgeNodeSignalHttpHandler` 成功落库后自动调用 DNS Provider，同步节点心跳中携带的 `metadata.dns.subdomain` 与 `target` 信息，确保二级域名实时指向最新探测到的出口地址。若缺少有效候选，将记录警告并保持现状。
+- **DNS 编排协调器**：`EdgeNodeDnsCoordinator` 会在 `EdgeNodeSignalHandler` 成功落库后自动调用 DNS Provider，同步节点心跳中携带的 `metadata.dns.subdomain` 与 `target` 信息，确保二级域名实时指向最新探测到的出口地址。若缺少有效候选，将记录警告并保持现状。
 - **证书自动化（DNS-01）**：`Dns01CertificateProvisioner` 解析心跳中的 `metadata.certificate.dns01` 字段，为 `_acme-challenge` 写入 TXT 记录，配合外部 ACME 客户端完成证书签发。未提供 challenge 时将跳过处理并输出告警。
 - **隧道协调**：`SimpleEdgeNodeTunnelManager` 监听心跳中的 `reachability` 状态，当检测到直连失败时自动选取兜底入口，将 `metadata.tunnel` 标记为 `active`；直连恢复后切回 `standby`。若需要接入真实隧道控制面，可实现 `EdgeNodeTunnelManager` 接口替换。
 - **健康探测**：`EdgeNodeHealthProbeService` 基于节点上报的 `directCandidates`/`publicAddress` 发起 `HEAD` 探测，写回 `reachability` 的候选列表、延迟和结果，供 DNS 与隧道决策使用。
-- **节点守护 Agent**：`EdgeNodeAgent` 封装心跳上报脚本，可在节点主机启动后自动采集系统指标、Pod 列表并推送给 `EdgeNodeSignalHttpHandler`，同时携带 `metadata.dns`/`certificate.dns01` 触发控制面的自动化流程。
+- **节点守护 Agent**：`EdgeNodeAgent` 封装心跳上报脚本，可在节点主机启动后自动采集系统指标、Pod 列表并推送给 `EdgeNodeSignalHandler`，同时携带 `metadata.dns`/`certificate.dns01` 触发控制面的自动化流程。
 - **节点 Agent 指南**：详见 `docs/edge-node-agent.md`，提供命令行示例与 systemd 集成建议。
 
 ## 配置要点

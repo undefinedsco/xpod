@@ -1,4 +1,4 @@
-export * from './SignalHandler';
+export * from './EdgeNodeSignalHandler';
 export * from './QuotaHandler';
 export * from './NodeHandler';
 export * from './ChatHandler';

@@ -76,6 +76,7 @@ export interface ApiContainerConfig {
 }
 
 import { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
+import { EdgeNodeHealthProbeService } from '../../edge/EdgeNodeHealthProbeService';
 import { EdgeNodeCapabilityDetector } from '../../edge/EdgeNodeCapabilityDetector';
 import { LocalNetworkManager } from '../../edge/LocalNetworkManager';
 import { DdnsManager } from '../../edge/DdnsManager';
@@ -113,6 +114,7 @@ export interface ApiContainerCradle {
   // Cloud 模式 或 Local 自管模式
   dnsProvider?: DnsProvider;
   dnsCoordinator?: EdgeNodeDnsCoordinator;
+  healthProbeService?: EdgeNodeHealthProbeService;
   capabilityDetector?: EdgeNodeCapabilityDetector;
   localNetworkManager?: LocalNetworkManager;
 

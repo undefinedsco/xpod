@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
 import { MultiAuthenticator } from '../../src/api/auth/MultiAuthenticator';
 import { ClientCredentialsAuthenticator } from '../../src/api/auth/ClientCredentialsAuthenticator';
-import { registerSignalRoutes } from '../../src/api/handlers/SignalHandler';
+import { registerEdgeNodeSignalRoutes } from '../../src/api/handlers/EdgeNodeSignalHandler';
 import { registerNodeRoutes } from '../../src/api/handlers/NodeHandler';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { EdgeNodeRepository } from '../../src/identity/drizzle/EdgeNodeRepository';
@@ -61,7 +61,7 @@ describe('API Full Service', () => {
     });
 
     // Register all routes
-    registerSignalRoutes(server, { repository: repo });
+    registerEdgeNodeSignalRoutes(server, { repository: repo });
     registerNodeRoutes(server, { repository: repo });
     registerChatRoutes(server, { 
       chatService: { 

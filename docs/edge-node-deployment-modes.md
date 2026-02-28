@@ -353,11 +353,11 @@ const dnsProvider = new TencentDnsProvider({
 ### 已完成
 
 - [x] IPv6 公网地址自动检测 (`EdgeNodeCapabilityDetector`)
-- [x] 心跳上报 IPv4/IPv6 地址 (`EdgeNodeHeartbeatService`)
+- [x] 心跳上报 IPv4/IPv6 地址 (`EdgeNodeSignalClient`)
 - [x] EdgeNodeAgent 集成网络检测
 - [x] DNS 协调器支持 IPv6 优先 (`EdgeNodeDnsCoordinator`)
 - [x] 模式检测支持 IPv6 (`EdgeNodeModeDetector`)
-- [x] 信令处理支持 IPv6 (`EdgeNodeSignalHttpHandler`)
+- [x] 信令处理支持 IPv6 (`EdgeNodeSignalHandler`)
 - [x] CloudflareDnsProvider 实现
 - [x] 多 DNS Provider 接口统一 (`ListableDnsProvider`)
 

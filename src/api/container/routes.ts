@@ -8,7 +8,7 @@ import type { AwilixContainer } from 'awilix';
 import type { ApiContainerCradle, ApiContainerConfig } from './types';
 import type { ApiServer } from '../ApiServer';
 
-import { registerSignalRoutes } from '../handlers/SignalHandler';
+import { registerEdgeNodeSignalRoutes } from '../handlers/EdgeNodeSignalHandler';
 import { registerNodeRoutes } from '../handlers/NodeHandler';
 import { registerChatRoutes } from '../handlers/ChatHandler';
 import { registerApiKeyRoutes } from '../handlers/ApiKeyHandler';
@@ -82,7 +82,11 @@ function registerSharedRoutes(
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
   const chatKitStore = container.resolve('chatKitStore');
-  registerSignalRoutes(server, { repository: nodeRepo });
+  registerEdgeNodeSignalRoutes(server, {
+    repository: nodeRepo,
+    dnsCoordinator: container.resolve('dnsCoordinator', { allowUnregistered: true }) as any,
+    healthProbeService: container.resolve('healthProbeService', { allowUnregistered: true }) as any,
+  });
   registerNodeRoutes(server, { repository: nodeRepo });
   registerApiKeyRoutes(server, { store: apiKeyStore });
   registerChatRoutes(server, { chatService });

@@ -132,6 +132,45 @@ Xpod introduces a robust distributed architecture on top of standard Solid proto
 - **Control Plane (The Cloud)**: The Xpod Server acts as a coordinator, providing DNS, TLS certificates, and Tunneling services. It ensures your Agent is discoverable and reachable from the global internet.
 - **Data Plane (The Edge)**: Your Local Xpod holds the actual data and runs the Agents. It connects to the Cloud for reachability but executes Skills locally, ensuring data never leaves your physical control.
 
+### 7. Dual-Process Architecture (CSS + API Server)
+
+Xpod runs as two cooperating processes behind a single gateway:
+
+| Process | Port | Responsibility |
+|---------|------|----------------|
+| **CSS** (Solid Server) | 3000 | LDP resource access, OIDC auth, SPARQL, WebSocket notifications |
+| **API Server** | 3001 | Node management, heartbeat/DNS sync, quota, API Keys, AI chat |
+
+- **CSS** handles everything related to the Solid protocol — it's the kernel of the Pod file system.
+- **API Server** handles management APIs that don't belong in the Solid request chain.
+- Both share the same PostgreSQL database (server mode) or SQLite (local mode).
+
+**Auth methods**: Solid Token (DPoP/Bearer), API Key (`sk-*`), Node Token (`XpodNode nodeId:token`).
+
+**API Server routes**:
+
+| Route | Description | Mode |
+|-------|-------------|------|
+| `POST /v1/signal` | Edge node heartbeat → health check → DNS sync | Shared |
+| `/v1/nodes/*` | Node CRUD | Shared |
+| `/v1/keys/*` | API Key management | Shared |
+| `/v1/chat/completions` | OpenAI-compatible chat (SSE streaming) | Shared |
+| `/v1/responses` | OpenAI Responses API | Shared |
+| `/v1/messages` | Anthropic/OpenAI Threads compatible | Shared |
+| `/v1/models` | List available models | Shared |
+| `POST /v1/chatkit` | ChatKit protocol endpoint (streaming) | Shared |
+| `/v1/chatkit/threads/*` | ChatKit REST API (threads CRUD, items) | Shared |
+| `/v1/subdomains/*` | Subdomain allocation | Cloud |
+| `/v1/ddns/*` | Dynamic DNS management | Cloud |
+| `/v1/webid-profile/*` | WebID Profile hosting | Cloud |
+| `/provision/nodes` | SP registration | Cloud |
+| `/provision/pods` | Pod creation (SP callback) | Local |
+| `/admin/*` | Local config & restart | Local |
+
+Key components:
+- `EdgeNodeSignalHandler` (API Server) — receives heartbeats, triggers health checks and DNS synchronization
+- `EdgeNodeSignalClient` (local/edge) — sends periodic heartbeats with system metrics, network info, and tunnel status
+
 ## Privacy & Compliance (GDPR)
 
 Xpod is designed for the post-GDPR world, where **Data Sovereignty** is paramount.
@@ -149,18 +188,28 @@ Xpod is designed for the post-GDPR world, where **Data Sovereignty** is paramoun
 - [x] Sidecar API: SPARQL (`/-/sparql`)
 - [x] Sidecar API: Vector (`/-/vector`)
 - [x] Cloud-Edge Cluster Architecture
+- [x] API Server (dual-process architecture, separated from CSS)
+- [x] Multi-Auth: Solid Token / API Key / Node Token
+- [x] Edge Node Heartbeat + Health Check + DNS Sync
+- [x] SP Provision & Pod Management
+- [x] Chat API (OpenAI-compatible, SSE streaming)
+- [x] ChatKit API (conversation management)
+- [x] Subdomain & DDNS Management
 - [ ] Sidecar API: Chat Completions (`/-/chat/completions`)
 - [ ] Sidecar API: Responses (`/-/responses`)
 - [ ] Sidecar API: Terminal (`/-/terminal`)
+- [ ] Rate Limiting
 - [ ] Attribute-Based Access Control (ABAC)
 - [ ] Feature Store (Federated Learning)
 
 ## Documentation
 
 - [docs/COMPONENTS.md](docs/COMPONENTS.md) - Components.js reference and configuration patterns
+- [docs/api-service-design.md](docs/api-service-design.md) - API Server architecture, routes, and auth design
 - [docs/deployment-modes.md](docs/deployment-modes.md) - Deployment profiles (local, cloud)
 - [docs/admin-guide.md](docs/admin-guide.md) - Admin initialization, roles, and reserved names
 - [docs/edge-cluster-architecture.md](docs/edge-cluster-architecture.md) - Cloud-edge coordination and routing
+- [docs/edge-node-deployment-modes.md](docs/edge-node-deployment-modes.md) - Edge node deployment scenarios
 - [docs/sidecar-api.md](docs/sidecar-api.md) - Sidecar API pattern (`/-/{service}`)
 - [docs/sparql-support.md](docs/sparql-support.md) - SPARQL 1.1 support details
 - [docs/vector-api-server-guide.md](docs/vector-api-server-guide.md) - Vector search API guide

@@ -170,15 +170,15 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Authentication**: Admin Bearer token required for write operations
 - **Deployment**: Server mode only
 
-### EdgeNodeSignalHttpHandler
-- **Path**: `src/http/admin/EdgeNodeSignalHttpHandler.ts`
-- **Purpose**: Edge node coordination API
-- **Endpoints**: `/signal/*` for node registration and configuration
-- **Functionality**: 
-  - Node heartbeat handling
-  - Configuration distribution
+### EdgeNodeSignalHandler (API Server)
+- **Path**: `src/api/handlers/EdgeNodeSignalHandler.ts`
+- **Purpose**: Edge node heartbeat API (nodeToken + WebID 双认证)
+- **Endpoints**: `POST /v1/signal`
+- **Functionality**:
+  - Node heartbeat handling (nodeToken / WebID 认证)
+  - 健康检查 → DNS 同步
   - Status monitoring
-- **Deployment**: Server mode with edge coordination
+- **Deployment**: API Server (cloud + local)
 
 ### SubgraphSparqlHttpHandler
 - **Path**: `src/http/SubgraphSparqlHttpHandler.ts`

@@ -8,7 +8,7 @@
 
 Xpod 在 `config/xpod.base.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自研 Handler 插入默认链路之前。当前顺序如下：
 
-1. **`EdgeNodeSignalHttpHandler`**（默认开启：`/api/signal` / `/api/signal/certificate`）  
+1. **`EdgeNodeSignalHandler`**（默认开启：`/api/signal` / `/api/signal/certificate`）  
    负责边缘节点注册、心跳、模式判定、证书协商等。
 2. **`EdgeNodeProxyHttpHandler`**（默认开启，`/pods/*` 请求在 proxy 模式下落到该 Handler）  
    当节点处于隧道/代理模式时执行反向代理，并追加 `X-Xpod-Edge-Node` 等诊断头。
@@ -28,7 +28,7 @@ Xpod 在 `config/xpod.base.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自
 | --- | --- | --- | --- |
 | 数据访问 | `QuadstoreSparqlDataAccessor` / `MinioDataAccessor` / `MixDataAccessor` | `src/storage/accessors/**` | 统一结构化与对象存储访问，实现 “结构化 → Quadstore / SQLite / Postgres，非结构化 → MinIO”。 |
 | 数据装饰 | `RepresentationPartialConvertingStore` / `UsageTrackingStore` / `PerAccountQuotaStrategy` | `src/storage/**` | RDF 转换、用量采集、账号配额策略。 |
-| HTTP Handler | `EdgeNodeSignalHttpHandler` / `EdgeNodeProxyHttpHandler` / `EdgeNodeRedirectHttpHandler` / `QuotaAdminHttpHandler` / `SubgraphSparqlHttpHandler` | `src/http/**` | 处理心跳、代理、调试跳转、配额配置及子图 `.sparql` 请求。 |
+| HTTP Handler | `EdgeNodeSignalHandler` / `EdgeNodeProxyHttpHandler` / `EdgeNodeRedirectHttpHandler` / `QuotaAdminHttpHandler` / `SubgraphSparqlHttpHandler` | `src/http/**` | 处理心跳、代理、调试跳转、配额配置及子图 `.sparql` 请求。 |
 | 服务 / 工具 | `EdgeNodeCertificateService` / `EdgeNodeDnsCoordinator` / `FrpTunnelManager` / `EdgeNodeHealthProbeService` / `ConfigurableLoggerFactory` 等 | `src/service/**`、`src/edge/**`、`src/logging/**` | 管理证书、DNS、隧道、健康探测以及日志配置。 |
 
 ---
@@ -36,7 +36,7 @@ Xpod 在 `config/xpod.base.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自
 ## 3. 边缘节点生命周期
 
 1. **注册与鉴权**  
-   - 节点通过 `/api/signal` 上报 `nodeId + nodeToken`。`EdgeNodeSignalHttpHandler` 调用 `EdgeNodeRepository` 校验 token 并合并最新的系统信息、Pod 列表、探测结果。
+   - 节点通过 `/api/signal` 上报 `nodeId + nodeToken`。`EdgeNodeSignalHandler` 调用 `EdgeNodeRepository` 校验 token 并合并最新的系统信息、Pod 列表、探测结果。
 2. **模式判定与 DNS**  
    - `EdgeNodeModeDetector` 结合 reachability、隧道状态等指标推导 `direct/proxy`。  
    - `EdgeNodeDnsCoordinator` 读取 `xpodClusterIngressIp`（proxy 模式）或节点公网 IP（direct 模式），驱动 `TencentDnsProvider` 更新记录。
@@ -120,6 +120,6 @@ pkill -f "community-solid-server"
 1. **启动**：使用 `yarn cloud`（读取 `.env.cloud` 和 `config/cloud.json`）启动云端模式，观察日志确认 Handler 是否注册成功。
 2. **节点验证**：通过 API 注册测试节点，观察 `/api/signal` 返回的 metadata 中 `accessMode`、`dns`、`tunnel` 字段是否符合预期。
 3. **DNS / 证书**：借助 `dig`、`nslookup`、`openssl s_client` 验证 DNS 记录与证书链；若失败，重点排查 `CSS_TENCENT_DNS_*` 与 `CSS_ACME_*`。
-4. **隧道**：查看 `EdgeNodeSignalHttpHandler` 心跳日志中的 `tunnel.client` 字段和 `frpc` 日志，确保直连/隧道切换时可以快速恢复。
+4. **隧道**：查看 `EdgeNodeSignalHandler` 心跳日志中的 `tunnel.client` 字段和 `frpc` 日志，确保直连/隧道切换时可以快速恢复。
 
 以上流程覆盖了当前云边架构的主要模块。后续若扩展新的 Handler 或前端入口，请以本文件为基准同步更新，保持"配置 ⇄ 代码 ⇄ 文档"一致。 

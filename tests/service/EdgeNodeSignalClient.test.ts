@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { EdgeNodeHeartbeatService } from '../../src/service/EdgeNodeHeartbeatService';
+import { EdgeNodeSignalClient } from '../../src/service/EdgeNodeSignalClient';
 
-describe('EdgeNodeHeartbeatService', () => {
+describe('EdgeNodeSignalClient', () => {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, statusText: 'OK' } as any));
@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
   it('立即发送心跳并按照间隔继续上报', async () => {
-  new EdgeNodeHeartbeatService({
+  new EdgeNodeSignalClient({
     edgeNodesEnabled: 'true',
     signalEndpoint: 'https://cluster.example/api/signal',
     nodeId: 'node-1',
@@ -37,9 +37,9 @@ afterEach(() => {
   });
 
   it('缺少配置时不会启动', () => {
-  new EdgeNodeHeartbeatService({ edgeNodesEnabled: 'false', signalEndpoint: 'https://cluster.example/api/signal', nodeId: 'node-1', nodeToken: 't' });
-  new EdgeNodeHeartbeatService({ edgeNodesEnabled: 'true', signalEndpoint: '', nodeId: 'node-1', nodeToken: 't' });
-  new EdgeNodeHeartbeatService({ edgeNodesEnabled: 'true', signalEndpoint: 'https://cluster.example/api/signal', nodeToken: 't' });
+  new EdgeNodeSignalClient({ edgeNodesEnabled: 'false', signalEndpoint: 'https://cluster.example/api/signal', nodeId: 'node-1', nodeToken: 't' });
+  new EdgeNodeSignalClient({ edgeNodesEnabled: 'true', signalEndpoint: '', nodeId: 'node-1', nodeToken: 't' });
+  new EdgeNodeSignalClient({ edgeNodesEnabled: 'true', signalEndpoint: 'https://cluster.example/api/signal', nodeToken: 't' });
     const fetchMock = global.fetch as any;
     expect(fetchMock).not.toHaveBeenCalled();
   });
