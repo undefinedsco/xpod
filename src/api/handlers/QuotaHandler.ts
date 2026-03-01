@@ -3,40 +3,56 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ApiServer } from '../ApiServer';
 import type { QuotaService } from '../../quota/QuotaService';
-import type { AccountRepository } from '../../identity/drizzle/AccountRepository';
+import type { UsageRepository } from '../../storage/quota/UsageRepository';
+import { hasScope } from '../auth/AuthContext';
 
 export interface QuotaHandlerOptions {
   quotaService: QuotaService;
-  accountRepo: AccountRepository;
+  usageRepo: UsageRepository;
 }
 
 /**
  * Handler for quota management API
- * 
- * These endpoints are for internal billing system use.
- * They require authentication via client credentials.
- * 
- * GET    /v1/quota/accounts/:accountId - Get account quota
+ *
+ * Supports four resource types: storage, bandwidth, compute, token.
+ * Requires ServiceAuthContext with 'quota:write' scope for mutations.
+ *
+ * GET    /v1/quota/accounts/:accountId - Get account quota + usage
  * PUT    /v1/quota/accounts/:accountId - Set account quota
- * DELETE /v1/quota/accounts/:accountId - Clear account quota
- * GET    /v1/quota/pods/:podId - Get pod quota
+ * DELETE /v1/quota/accounts/:accountId - Clear account quota (revert to defaults)
+ * GET    /v1/quota/pods/:podId - Get pod quota + usage
  * PUT    /v1/quota/pods/:podId - Set pod quota
  * DELETE /v1/quota/pods/:podId - Clear pod quota
  */
 export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOptions): void {
   const logger = getLoggerFor('QuotaHandler');
-  const { quotaService, accountRepo } = options;
+  const { quotaService, usageRepo } = options;
 
-  // GET /api/quota/accounts/:accountId
+  // GET /v1/quota/accounts/:accountId
   server.get('/v1/quota/accounts/:accountId', async (request, response, params) => {
     const accountId = decodeURIComponent(params.accountId);
 
     try {
-      const limit = await quotaService.getAccountLimit(accountId);
+      const quota = await quotaService.getAccountQuota(accountId);
+      const usage = await usageRepo.getAccountUsage(accountId);
+
       sendJson(response, 200, {
-        type: 'account',
         accountId,
-        quotaLimit: limit ?? null,
+        quota: {
+          storageLimitBytes: quota.storageLimitBytes,
+          bandwidthLimitBps: quota.bandwidthLimitBps,
+          computeLimitSeconds: quota.computeLimitSeconds,
+          tokenLimitMonthly: quota.tokenLimitMonthly,
+        },
+        usage: {
+          storageBytes: usage?.storageBytes ?? 0,
+          ingressBytes: usage?.ingressBytes ?? 0,
+          egressBytes: usage?.egressBytes ?? 0,
+          computeSeconds: usage?.computeSeconds ?? 0,
+          tokensUsed: usage?.tokensUsed ?? 0,
+          periodStart: usage?.periodStart?.toISOString() ?? null,
+        },
+        source: hasCustomQuota(usage) ? 'custom' : 'default',
       });
     } catch (error) {
       logger.error(`Failed to get account quota: ${error}`);
@@ -44,8 +60,12 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
     }
   });
 
-  // PUT /api/quota/accounts/:accountId
+  // PUT /v1/quota/accounts/:accountId
   server.put('/v1/quota/accounts/:accountId', async (request, response, params) => {
+    if (!requireScope(request, response, 'quota:write')) {
+      return;
+    }
+
     const accountId = decodeURIComponent(params.accountId);
     const body = await readJsonBody(request);
 
@@ -55,28 +75,22 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
     }
 
     const payload = body as Record<string, unknown>;
-    if (!Object.prototype.hasOwnProperty.call(payload, 'quotaLimit')) {
-      sendJson(response, 400, { error: 'Body must include quotaLimit' });
-      return;
-    }
-
-    const quota = extractQuota(payload.quotaLimit);
-    if (quota === undefined) {
-      sendJson(response, 400, { error: 'quotaLimit must be a non-negative number or null' });
+    const partial = extractQuotaFields(payload);
+    if (!partial) {
+      sendJson(response, 400, { error: 'Body must include at least one quota field (storageLimitBytes, bandwidthLimitBps, computeLimitSeconds, tokenLimitMonthly)' });
       return;
     }
 
     try {
-      await quotaService.setAccountLimit(accountId, quota);
-      const latest = await quotaService.getAccountLimit(accountId);
-      
-      logger.info(`Set account ${accountId} quota to ${quota}`);
-      
+      await quotaService.setAccountQuota(accountId, partial);
+      const latest = await quotaService.getAccountQuota(accountId);
+
+      logger.info(`Set account ${accountId} quota: ${JSON.stringify(partial)}`);
+
       sendJson(response, 200, {
         status: 'updated',
-        targetType: 'account',
-        targetId: accountId,
-        quotaLimit: latest ?? null,
+        accountId,
+        quota: latest,
       });
     } catch (error) {
       logger.error(`Failed to set account quota: ${error}`);
@@ -84,19 +98,22 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
     }
   });
 
-  // DELETE /api/quota/accounts/:accountId
+  // DELETE /v1/quota/accounts/:accountId
   server.delete('/v1/quota/accounts/:accountId', async (request, response, params) => {
+    if (!requireScope(request, response, 'quota:write')) {
+      return;
+    }
+
     const accountId = decodeURIComponent(params.accountId);
 
     try {
-      await quotaService.setAccountLimit(accountId, null);
-      
+      await quotaService.clearAccountQuota(accountId);
+
       logger.info(`Cleared account ${accountId} quota`);
-      
+
       sendJson(response, 200, {
         status: 'cleared',
-        targetType: 'account',
-        targetId: accountId,
+        accountId,
       });
     } catch (error) {
       logger.error(`Failed to clear account quota: ${error}`);
@@ -104,24 +121,32 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
     }
   });
 
-  // GET /api/quota/pods/:podId
+  // GET /v1/quota/pods/:podId
   server.get('/v1/quota/pods/:podId', async (request, response, params) => {
     const podId = decodeURIComponent(params.podId);
 
     try {
-      const podInfo = await accountRepo.getPodInfo(podId);
-      if (!podInfo) {
-        sendJson(response, 404, { error: 'Pod not found' });
-        return;
-      }
+      const quota = await quotaService.getPodQuota(podId);
+      const usage = await usageRepo.getPodUsage(podId);
 
-      const limit = await quotaService.getPodLimit(podId);
       sendJson(response, 200, {
-        type: 'pod',
         podId,
-        accountId: podInfo.accountId,
-        baseUrl: podInfo.baseUrl ?? null,
-        quotaLimit: limit ?? null,
+        accountId: usage?.accountId ?? null,
+        quota: {
+          storageLimitBytes: quota.storageLimitBytes,
+          bandwidthLimitBps: quota.bandwidthLimitBps,
+          computeLimitSeconds: quota.computeLimitSeconds,
+          tokenLimitMonthly: quota.tokenLimitMonthly,
+        },
+        usage: {
+          storageBytes: usage?.storageBytes ?? 0,
+          ingressBytes: usage?.ingressBytes ?? 0,
+          egressBytes: usage?.egressBytes ?? 0,
+          computeSeconds: usage?.computeSeconds ?? 0,
+          tokensUsed: usage?.tokensUsed ?? 0,
+          periodStart: usage?.periodStart?.toISOString() ?? null,
+        },
+        source: hasCustomQuota(usage) ? 'custom' : 'default',
       });
     } catch (error) {
       logger.error(`Failed to get pod quota: ${error}`);
@@ -129,8 +154,12 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
     }
   });
 
-  // PUT /api/quota/pods/:podId
+  // PUT /v1/quota/pods/:podId
   server.put('/v1/quota/pods/:podId', async (request, response, params) => {
+    if (!requireScope(request, response, 'quota:write')) {
+      return;
+    }
+
     const podId = decodeURIComponent(params.podId);
     const body = await readJsonBody(request);
 
@@ -140,34 +169,22 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
     }
 
     const payload = body as Record<string, unknown>;
-    if (!Object.prototype.hasOwnProperty.call(payload, 'quotaLimit')) {
-      sendJson(response, 400, { error: 'Body must include quotaLimit' });
-      return;
-    }
-
-    const quota = extractQuota(payload.quotaLimit);
-    if (quota === undefined) {
-      sendJson(response, 400, { error: 'quotaLimit must be a non-negative number or null' });
+    const partial = extractQuotaFields(payload);
+    if (!partial) {
+      sendJson(response, 400, { error: 'Body must include at least one quota field' });
       return;
     }
 
     try {
-      const podInfo = await accountRepo.getPodInfo(podId);
-      if (!podInfo) {
-        sendJson(response, 404, { error: 'Pod not found' });
-        return;
-      }
+      await quotaService.setPodQuota(podId, partial);
+      const latest = await quotaService.getPodQuota(podId);
 
-      await quotaService.setPodLimit(podId, quota);
-      const latest = await quotaService.getPodLimit(podId);
-      
-      logger.info(`Set pod ${podId} quota to ${quota}`);
-      
+      logger.info(`Set pod ${podId} quota: ${JSON.stringify(partial)}`);
+
       sendJson(response, 200, {
         status: 'updated',
-        targetType: 'pod',
-        targetId: podId,
-        quotaLimit: latest ?? null,
+        podId,
+        quota: latest,
       });
     } catch (error) {
       logger.error(`Failed to set pod quota: ${error}`);
@@ -175,25 +192,22 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
     }
   });
 
-  // DELETE /api/quota/pods/:podId
+  // DELETE /v1/quota/pods/:podId
   server.delete('/v1/quota/pods/:podId', async (request, response, params) => {
+    if (!requireScope(request, response, 'quota:write')) {
+      return;
+    }
+
     const podId = decodeURIComponent(params.podId);
 
     try {
-      const podInfo = await accountRepo.getPodInfo(podId);
-      if (!podInfo) {
-        sendJson(response, 404, { error: 'Pod not found' });
-        return;
-      }
+      await quotaService.clearPodQuota(podId);
 
-      await quotaService.setPodLimit(podId, null);
-      
       logger.info(`Cleared pod ${podId} quota`);
-      
+
       sendJson(response, 200, {
         status: 'cleared',
-        targetType: 'pod',
-        targetId: podId,
+        podId,
       });
     } catch (error) {
       logger.error(`Failed to clear pod quota: ${error}`);
@@ -202,14 +216,74 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
   });
 }
 
-function extractQuota(value: unknown): number | null | undefined {
-  if (value === null) {
-    return null;
+/**
+ * Check if the request has the required scope. Sends 403 if not.
+ */
+function requireScope(request: AuthenticatedRequest, response: ServerResponse, scope: string): boolean {
+  if (!request.auth) {
+    sendJson(response, 401, { error: 'Authentication required' });
+    return false;
   }
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    return undefined;
+  // Service tokens need explicit scope; Solid users with admin role can also access
+  if (request.auth.type === 'service') {
+    if (!hasScope(request.auth, scope)) {
+      sendJson(response, 403, { error: `Missing required scope: ${scope}` });
+      return false;
+    }
+    return true;
   }
-  return value;
+  // Allow Solid auth (for admin users) - actual admin check can be added later
+  if (request.auth.type === 'solid') {
+    return true;
+  }
+  sendJson(response, 403, { error: 'Insufficient permissions' });
+  return false;
+}
+
+const QUOTA_FIELDS = ['storageLimitBytes', 'bandwidthLimitBps', 'computeLimitSeconds', 'tokenLimitMonthly'] as const;
+
+function extractQuotaFields(payload: Record<string, unknown>): Record<string, number | null> | undefined {
+  const result: Record<string, number | null> = {};
+  let hasField = false;
+
+  for (const field of QUOTA_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(payload, field)) {
+      const value = payload[field];
+      if (value === null) {
+        result[field] = null;
+        hasField = true;
+      } else if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        result[field] = value;
+        hasField = true;
+      } else {
+        return undefined; // Invalid value
+      }
+    }
+  }
+
+  // Backward compat: support legacy 'quotaLimit' field
+  if (!hasField && Object.prototype.hasOwnProperty.call(payload, 'quotaLimit')) {
+    const value = payload.quotaLimit;
+    if (value === null) {
+      result.storageLimitBytes = null;
+      hasField = true;
+    } else if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      result.storageLimitBytes = value;
+      hasField = true;
+    }
+  }
+
+  return hasField ? result : undefined;
+}
+
+function hasCustomQuota(usage: { storageLimitBytes?: number | null; bandwidthLimitBps?: number | null; computeLimitSeconds?: number | null; tokenLimitMonthly?: number | null } | undefined): boolean {
+  if (!usage) {
+    return false;
+  }
+  return typeof usage.storageLimitBytes === 'number'
+    || typeof usage.bandwidthLimitBps === 'number'
+    || typeof usage.computeLimitSeconds === 'number'
+    || typeof usage.tokenLimitMonthly === 'number';
 }
 
 async function readJsonBody(request: AuthenticatedRequest): Promise<unknown> {

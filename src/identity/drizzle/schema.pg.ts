@@ -10,6 +10,11 @@ export const accountUsage = pgTable('identity_account_usage', {
   egressBytes: pgBigint('egress_bytes', { mode: 'number' }).notNull().default(0),
   storageLimitBytes: pgBigint('storage_limit_bytes', { mode: 'number' }),
   bandwidthLimitBps: pgBigint('bandwidth_limit_bps', { mode: 'number' }),
+  computeSeconds: pgBigint('compute_seconds', { mode: 'number' }).notNull().default(0),
+  tokensUsed: pgBigint('tokens_used', { mode: 'number' }).notNull().default(0),
+  computeLimitSeconds: pgBigint('compute_limit_seconds', { mode: 'number' }),
+  tokenLimitMonthly: pgBigint('token_limit_monthly', { mode: 'number' }),
+  periodStart: timestamp('period_start', { withTimezone: true }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -21,6 +26,11 @@ export const podUsage = pgTable('identity_pod_usage', {
   egressBytes: pgBigint('egress_bytes', { mode: 'number' }).notNull().default(0),
   storageLimitBytes: pgBigint('storage_limit_bytes', { mode: 'number' }),
   bandwidthLimitBps: pgBigint('bandwidth_limit_bps', { mode: 'number' }),
+  computeSeconds: pgBigint('compute_seconds', { mode: 'number' }).notNull().default(0),
+  tokensUsed: pgBigint('tokens_used', { mode: 'number' }).notNull().default(0),
+  computeLimitSeconds: pgBigint('compute_limit_seconds', { mode: 'number' }),
+  tokenLimitMonthly: pgBigint('token_limit_monthly', { mode: 'number' }),
+  periodStart: timestamp('period_start', { withTimezone: true }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -106,4 +116,18 @@ export const apiClientCredentials = pgTable('identity_api_client_credentials', {
   accountId: text('account_id').notNull(),
   displayName: text('display_name'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Service Token 表
+ * 用于服务间认证 (Business, Local SP, Cloud, Compute)
+ */
+export const serviceTokens = pgTable('identity_service_token', {
+  id: text('id').primaryKey(),
+  tokenHash: text('token_hash').notNull().unique(),
+  serviceType: text('service_type').notNull(), // 'local' | 'business' | 'cloud' | 'compute'
+  serviceId: text('service_id').notNull(),
+  scopes: text('scopes').notNull(), // JSON array: ["quota:write","usage:read"]
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
 });

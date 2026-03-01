@@ -9,10 +9,12 @@ import type { ApiContainerCradle } from './types';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
 import { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
+import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
@@ -44,7 +46,11 @@ export function registerCommonServices(
     }).singleton(),
 
     // 认证
-    authenticator: asFunction(({ apiKeyStore, nodeRepo, config }: ApiContainerCradle) => {
+    serviceTokenRepo: asFunction(({ db }: ApiContainerCradle) => {
+      return new ServiceTokenRepository(db);
+    }).singleton(),
+
+    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, config }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
       });
@@ -57,10 +63,14 @@ export function registerCommonServices(
         repository: nodeRepo,
       });
 
+      const serviceTokenAuthenticator = new ServiceTokenAuthenticator({
+        repository: serviceTokenRepo,
+      });
+
       return new MultiAuthenticator({
-        // NodeTokenAuthenticator 必须在 ClientCredentialsAuthenticator 之前
-        // 因为两者都处理 Bearer token，但 Node Token 有 X-Node-Id 头
-        authenticators: [solidAuthenticator, nodeTokenAuthenticator, clientCredAuthenticator],
+        // Order: Solid DPoP → Service Token → Node Token → Client Credentials
+        // ServiceTokenAuthenticator handles 'svc-' prefix, so no ambiguity
+        authenticators: [solidAuthenticator, serviceTokenAuthenticator, nodeTokenAuthenticator, clientCredAuthenticator],
       });
     }).singleton(),
 

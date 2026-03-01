@@ -7,6 +7,8 @@ import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { StoreContext } from '../chatkit/store';
 import { type AuthContext, getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
 import { CredentialStatus } from '../../credential/schema/types';
+import type { UsageRepository } from '../../storage/quota/UsageRepository';
+import type { QuotaService } from '../../quota/QuotaService';
 import {
   getDefaultBaseUrl,
   supportsResponsesApi,
@@ -21,9 +23,19 @@ function createProxyFetch(proxyUrl: string): typeof fetch {
 
 export class VercelChatService {
   private readonly logger = getLoggerFor(this);
+  private usageRepo?: UsageRepository;
+  private quotaService?: QuotaService;
 
   public constructor(private readonly store: PodChatKitStore) {
     this.logger.info('Initializing VercelChatService with Pod-based config support');
+  }
+
+  /**
+   * Set optional usage tracking dependencies (injected after construction)
+   */
+  public setUsageTracking(usageRepo: UsageRepository, quotaService: QuotaService): void {
+    this.usageRepo = usageRepo;
+    this.quotaService = quotaService;
   }
 
   /**
@@ -104,6 +116,12 @@ export class VercelChatService {
       throw err;
     }
 
+    // Token quota check
+    const accountId = getAccountId(auth);
+    if (accountId) {
+      await this.checkTokenQuota(accountId);
+    }
+
     try {
       const provider = await this.getProvider(context);
 
@@ -124,6 +142,12 @@ export class VercelChatService {
         this.store.recordCredentialSuccess(context, config.credentialId).catch((err) => {
           this.logger.debug(`Failed to record credential success: ${err}`);
         });
+      }
+
+      // Record token usage
+      const totalTokens = (result.usage as any)?.totalTokens ?? 0;
+      if (accountId && totalTokens > 0) {
+        this.recordTokenUsage(accountId, String(context.userId), totalTokens);
       }
 
       return {
@@ -614,5 +638,49 @@ export class VercelChatService {
     }
 
     return { statusCode: 0 };
+  }
+
+  /**
+   * Check if account has remaining token quota
+   */
+  private async checkTokenQuota(accountId: string): Promise<void> {
+    if (!this.quotaService || !this.usageRepo) {
+      return; // No quota enforcement if not configured
+    }
+
+    try {
+      const quota = await this.quotaService.getAccountQuota(accountId);
+      if (!quota.tokenLimitMonthly) {
+        return; // No limit set
+      }
+
+      const usage = await this.usageRepo.getAccountUsage(accountId);
+      const tokensUsed = usage?.tokensUsed ?? 0;
+
+      if (tokensUsed >= quota.tokenLimitMonthly) {
+        const err = new Error('Token quota exceeded for this month');
+        (err as any).code = 'quota_exceeded';
+        throw err;
+      }
+    } catch (error) {
+      if ((error as any).code === 'quota_exceeded') {
+        throw error;
+      }
+      // Log but don't block on quota check errors
+      this.logger.warn(`Token quota check failed: ${error}`);
+    }
+  }
+
+  /**
+   * Record token usage (fire-and-forget)
+   */
+  private recordTokenUsage(accountId: string, podId: string, tokens: number): void {
+    if (!this.usageRepo) {
+      return;
+    }
+
+    this.usageRepo.incrementTokenUsage(accountId, podId, tokens).catch((err) => {
+      this.logger.warn(`Failed to record token usage: ${err}`);
+    });
   }
 }

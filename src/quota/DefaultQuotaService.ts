@@ -1,4 +1,4 @@
-import type { QuotaService } from './QuotaService';
+import type { QuotaService, AccountQuota } from './QuotaService';
 
 interface DefaultQuotaServiceOptions {
   defaultAccountQuotaBytes?: number | null;
@@ -14,6 +14,47 @@ export class DefaultQuotaService implements QuotaService {
   public constructor(options: DefaultQuotaServiceOptions = {}) {
     const fallback = options.defaultAccountQuotaBytes ?? DefaultQuotaService.DEFAULT_ACCOUNT_QUOTA_BYTES;
     this.defaultQuota = fallback == null ? null : Math.max(0, Math.trunc(fallback));
+  }
+
+  public async getAccountQuota(accountId: string): Promise<AccountQuota> {
+    const storageLimit = this.accountLimits.has(accountId)
+      ? this.accountLimits.get(accountId)!
+      : this.defaultQuota;
+    return {
+      storageLimitBytes: storageLimit,
+      bandwidthLimitBps: null,
+      computeLimitSeconds: null,
+      tokenLimitMonthly: null,
+    };
+  }
+
+  public async setAccountQuota(accountId: string, quota: Partial<AccountQuota>): Promise<void> {
+    if (quota.storageLimitBytes !== undefined) {
+      await this.setAccountLimit(accountId, quota.storageLimitBytes);
+    }
+  }
+
+  public async getPodQuota(podId: string): Promise<AccountQuota> {
+    return {
+      storageLimitBytes: this.podLimits.get(podId) ?? null,
+      bandwidthLimitBps: null,
+      computeLimitSeconds: null,
+      tokenLimitMonthly: null,
+    };
+  }
+
+  public async setPodQuota(podId: string, quota: Partial<AccountQuota>): Promise<void> {
+    if (quota.storageLimitBytes !== undefined) {
+      await this.setPodLimit(podId, quota.storageLimitBytes);
+    }
+  }
+
+  public async clearAccountQuota(accountId: string): Promise<void> {
+    this.accountLimits.delete(accountId);
+  }
+
+  public async clearPodQuota(podId: string): Promise<void> {
+    this.podLimits.delete(podId);
   }
 
   public async getAccountLimit(accountId: string): Promise<number | null | undefined> {

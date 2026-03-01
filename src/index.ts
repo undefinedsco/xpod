@@ -83,7 +83,7 @@ export type {
 } from './dns/DnsProvider';
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
-export type { QuotaService } from './quota/QuotaService';
+export type { QuotaService, AccountQuota } from './quota/QuotaService';
 // Tunnel and Subdomain types
 export type {
   TunnelProvider,

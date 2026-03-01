@@ -7,6 +7,11 @@ export const accountUsage = sqliteTable('identity_account_usage', {
   egressBytes: integer('egress_bytes').notNull().default(0),
   storageLimitBytes: integer('storage_limit_bytes'),
   bandwidthLimitBps: integer('bandwidth_limit_bps'),
+  computeSeconds: integer('compute_seconds').notNull().default(0),
+  tokensUsed: integer('tokens_used').notNull().default(0),
+  computeLimitSeconds: integer('compute_limit_seconds'),
+  tokenLimitMonthly: integer('token_limit_monthly'),
+  periodStart: integer('period_start', { mode: 'timestamp' }),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 });
 
@@ -18,6 +23,11 @@ export const podUsage = sqliteTable('identity_pod_usage', {
   egressBytes: integer('egress_bytes').notNull().default(0),
   storageLimitBytes: integer('storage_limit_bytes'),
   bandwidthLimitBps: integer('bandwidth_limit_bps'),
+  computeSeconds: integer('compute_seconds').notNull().default(0),
+  tokensUsed: integer('tokens_used').notNull().default(0),
+  computeLimitSeconds: integer('compute_limit_seconds'),
+  tokenLimitMonthly: integer('token_limit_monthly'),
+  periodStart: integer('period_start', { mode: 'timestamp' }),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 });
 
@@ -103,4 +113,18 @@ export const apiClientCredentials = sqliteTable('identity_api_client_credentials
   accountId: text('account_id').notNull(),
   displayName: text('display_name'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+});
+
+/**
+ * Service Token 表
+ * 用于服务间认证 (Business, Local SP, Cloud, Compute)
+ */
+export const serviceTokens = sqliteTable('identity_service_token', {
+  id: text('id').primaryKey(),
+  tokenHash: text('token_hash').notNull().unique(),
+  serviceType: text('service_type').notNull(), // 'local' | 'business' | 'cloud' | 'compute'
+  serviceId: text('service_id').notNull(),
+  scopes: text('scopes').notNull(), // JSON array: ["quota:write","usage:read"]
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
 });
