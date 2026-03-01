@@ -110,7 +110,7 @@
 
 | 原文件 | 原路径 | 新路径 |
 |-------|-------|-------|
-| `EdgeNodeSignalHttpHandler.ts` | `/api/signal` | `/api/signal/*` |
+| `EdgeNodeSignalHandler.ts` | `/api/signal` | `/v1/signal` (API Server) |
 | `EdgeNodeCertificateHttpHandler.ts` | `/api/signal/certificate` | `/api/signal/certificate` |
 | `QuotaAdminHttpHandler.ts` | `/api/quota/*` | `/api/quota/*` |
 | `EdgeNodeAdminHttpHandler.ts` | `/admin/nodes/*` | `/api/nodes/*` |

@@ -49,7 +49,6 @@ describe('ClusterCertificateManager', () => {
         },
       }),
     });
-    // @ts-expect-error override global fetch for tests
     global.fetch = fetchMock;
 
     const manager = new ClusterCertificateManager({
@@ -66,7 +65,7 @@ describe('ClusterCertificateManager', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const storedCert = await fs.readFile(certPath, 'utf8');
     expect(storedCert).toContain('BEGIN CERTIFICATE');
-    const payload = manager.getHeartbeatPayload();
+    const payload = manager.getHeartbeatPayload() as any;
     expect(payload?.deployment?.domains).toContain('node-1.cluster.example');
     manager.stop();
     await fs.rm(tmpDir, { recursive: true, force: true });

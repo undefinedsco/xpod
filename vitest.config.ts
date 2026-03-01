@@ -34,7 +34,7 @@ export default defineConfig({
         'src/http/quota/**/*.ts',
         'src/storage/quota/PerAccountQuotaStrategy.ts',
         'src/storage/quota/UsageTrackingStore.ts',
-        'src/service/EdgeNodeHeartbeatService.ts',
+        'src/service/EdgeNodeSignalClient.ts',
         'src/identity/drizzle/**/*.ts'
       ],
       reporter: [ 'text', 'text-summary', 'lcov' ],

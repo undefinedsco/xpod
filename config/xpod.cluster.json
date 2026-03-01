@@ -277,28 +277,6 @@
       }
     },
     {
-      "comment": "Edge node signal handler",
-      "@type": "EdgeNodeSignalHttpHandler",
-      "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler",
-      "identityDbUrl": {
-        "@id": "urn:solid-server:default:variable:identityDbUrl",
-        "@type": "Variable"
-      },
-      "edgeNodesEnabled": {
-        "@id": "urn:solid-server:default:variable:edgeNodesEnabled",
-        "@type": "Variable"
-      },
-      "dnsCoordinator": {
-        "@id": "urn:undefineds:xpod:EdgeNodeDnsCoordinator"
-      },
-      "certificateProvisioner": {
-        "@id": "urn:undefineds:xpod:Dns01CertificateProvisioner"
-      },
-      "healthProbeService": {
-        "@id": "urn:undefineds:xpod:EdgeNodeHealthProbeService"
-      }
-    },
-    {
       "comment": "Redirects pod traffic to registered edge nodes (Debug Only)",
       "@type": "EdgeNodeDirectDebugHttpHandler",
       "@id": "urn:undefineds:xpod:EdgeNodeDirectDebugHttpHandler",
@@ -387,24 +365,11 @@
       }
     },
     {
-      "comment": "Composite handler that intercepts /api/v1/signal and forwards other traffic to CSS defaults.",
-      "@id": "urn:undefineds:xpod:SignalAwareHttpHandler",
-      "@type": "npmd:@undefineds.co/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler",
-      "npmd:@undefineds.co/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_signalHandler": {
-        "@id": "urn:undefineds:xpod:EdgeNodeSignalHttpHandler"
-      },
-      "npmd:@undefineds.co/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_fallback": {
-        "@id": "urn:solid-server:default:HttpHandler"
-      },
-      "npmd:@undefineds.co/xpod/^0.0.0/dist/http/SignalInterceptHttpHandler.jsonld#SignalInterceptHttpHandler_options_basePath": "/api/v1/signal"
-    },
-    {
-      "comment": "Define MainHttpHandler with SignalAwareHttpHandler in the middleware chain.",
+      "comment": "Define MainHttpHandler with tracing middleware.",
       "@id": "urn:undefineds:xpod:MainHttpHandler",
       "@type": "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/ChainedHttpHandler.jsonld#ChainedHttpHandler",
       "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/ChainedHttpHandler.jsonld#ChainedHttpHandler_handlers": [
         { "@id": "urn:undefineds:xpod:TracingMiddleware" },
-        { "@id": "urn:undefineds:xpod:SignalAwareHttpHandler" },
         { "@id": "urn:solid-server:default:HttpHandler" }
       ]
     }

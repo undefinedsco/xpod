@@ -8,13 +8,11 @@ import { SubgraphQueryEngine, QuadstoreSparqlEngine, QuintstoreSparqlEngine } fr
 export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
-import { EdgeNodeSignalHttpHandler } from './http/admin/EdgeNodeSignalHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
 import { ClusterWebSocketConfigurator } from './http/ClusterWebSocketConfigurator';
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
 import { EdgeNodeProxyHttpHandler } from './http/EdgeNodeProxyHttpHandler';
-import { SignalInterceptHttpHandler } from './http/SignalInterceptHttpHandler';
 import { RouterHttpHandler } from './http/RouterHttpHandler';
 import { RouterHttpRoute } from './http/RouterHttpRoute';
 import { TracingHandler } from './http/TracingHandler';
@@ -114,12 +112,10 @@ export {
     QuintstoreSparqlEngine,
     SubgraphSparqlHttpHandler,
     QuotaAdminHttpHandler,
-    EdgeNodeSignalHttpHandler,
     ClusterIngressRouter,
     ClusterWebSocketConfigurator,
     EdgeNodeDirectDebugHttpHandler,
     EdgeNodeProxyHttpHandler,
-    SignalInterceptHttpHandler,
     RouterHttpHandler,
     RouterHttpRoute,
     TracingHandler,

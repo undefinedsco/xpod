@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine';
+import { arrayFromStream } from '../../helpers/arrayFromStream';
 
 const { namedNode, literal, quad } = DataFactory;
 
@@ -58,8 +59,8 @@ describe('FILTER pushdown with multi-pattern BGP', () => {
     
     console.log('\n=== Single pattern query ===');
     const stream = await engine.queryBindings(query);
-    const results = await stream.toArray();
-    
+    const results = await arrayFromStream(stream);
+
     console.log(`Results: ${results.length}`);
     expect(results).toHaveLength(4); // 96, 97, 98, 99
   });
@@ -77,14 +78,14 @@ describe('FILTER pushdown with multi-pattern BGP', () => {
     
     console.log('\n=== Multi-pattern BGP query (the bug case) ===');
     const stream = await engine.queryBindings(query);
-    const results = await stream.toArray();
-    
+    const results = await arrayFromStream(stream);
+
     console.log(`Results: ${results.length}`);
     // Should return 4 items (value 96, 97, 98, 99)
     expect(results).toHaveLength(4);
-    
+
     // Verify values
-    const values = results.map(r => parseInt(r.get('value')?.value ?? '0')).sort((a, b) => a - b);
+    const values = results.map((r: any) => parseInt(r.get('value')?.value ?? '0')).sort((a: any, b: any) => a - b);
     expect(values).toEqual([96, 97, 98, 99]);
   });
 
@@ -119,25 +120,25 @@ describe('FILTER pushdown with multi-pattern BGP', () => {
     console.log('\n=== Performance comparison ===');
     
     // Warm up
-    await (await engine.queryBindings(singlePatternQuery)).toArray();
-    await (await engine.queryBindings(multiPatternQuery)).toArray();
-    await (await engine.queryBindings(allQuery)).toArray();
+    await arrayFromStream(await engine.queryBindings(singlePatternQuery));
+    await arrayFromStream(await engine.queryBindings(multiPatternQuery));
+    await arrayFromStream(await engine.queryBindings(allQuery));
 
     // Single pattern
     const start1 = performance.now();
-    const result1 = await (await engine.queryBindings(singlePatternQuery)).toArray();
+    const result1 = await arrayFromStream(await engine.queryBindings(singlePatternQuery));
     const time1 = performance.now() - start1;
     console.log(`Single pattern FILTER: ${result1.length} results in ${time1.toFixed(2)}ms`);
 
     // Multi-pattern
     const start2 = performance.now();
-    const result2 = await (await engine.queryBindings(multiPatternQuery)).toArray();
+    const result2 = await arrayFromStream(await engine.queryBindings(multiPatternQuery));
     const time2 = performance.now() - start2;
     console.log(`Multi-pattern FILTER: ${result2.length} results in ${time2.toFixed(2)}ms`);
 
     // All records
     const start3 = performance.now();
-    const result3 = await (await engine.queryBindings(allQuery)).toArray();
+    const result3 = await arrayFromStream(await engine.queryBindings(allQuery));
     const time3 = performance.now() - start3;
     console.log(`All records (no FILTER): ${result3.length} results in ${time3.toFixed(2)}ms`);
 

@@ -46,7 +46,7 @@ describe('RepresentationPartialConvertingStore', () => {
         inConverterCalls.push(args);
         const converted = createRepresentation('internal/quads');
         converted.metadata = { contentType: 'internal/quads' } as any;
-        converted.data = Readable.from(['converted quads']);
+        converted.data = Readable.from(['converted quads']) as any;
         return converted;
       }),
     };
@@ -57,7 +57,7 @@ describe('RepresentationPartialConvertingStore', () => {
         outConverterCalls.push(args);
         const converted = createRepresentation('text/turtle');
         converted.metadata = { contentType: 'text/turtle' } as any;
-        converted.data = Readable.from(['converted turtle']);
+        converted.data = Readable.from(['converted turtle']) as any;
         return converted;
       }),
     };
@@ -93,7 +93,7 @@ describe('RepresentationPartialConvertingStore', () => {
 
     expect(inConverter.handleSafe).toHaveBeenCalledTimes(1);
     expect(baseStore.addResource).toHaveBeenCalledTimes(1);
-    const converted = baseStore.addResource.mock.calls[0][1] as Representation;
+    const converted = (baseStore.addResource.mock.calls as any)[0][1] as unknown as Representation;
     expect(converted.metadata?.contentType).toBe('internal/quads');
   });
 
@@ -117,7 +117,7 @@ describe('RepresentationPartialConvertingStore', () => {
 
     expect(inConverter.handleSafe).toHaveBeenCalledTimes(1);
     expect(baseStore.setRepresentation).toHaveBeenCalledTimes(1);
-    const converted = baseStore.setRepresentation.mock.calls[0][1] as Representation;
+    const converted = (baseStore.setRepresentation.mock.calls as any)[0][1] as unknown as Representation;
     expect(converted.metadata?.contentType).toBe('internal/quads');
   });
 

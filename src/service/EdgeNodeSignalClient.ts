@@ -1,6 +1,6 @@
 import { getLoggerFor } from 'global-logger-factory';
 
-export interface EdgeNodeHeartbeatServiceOptions {
+export interface EdgeNodeSignalClientOptions {
   edgeNodesEnabled?: string | boolean;
   signalEndpoint?: string;
   nodeId?: string;
@@ -42,7 +42,7 @@ type HeartbeatPayload = {
   metadata?: Record<string, unknown>;
 };
 
-export class EdgeNodeHeartbeatService {
+export class EdgeNodeSignalClient {
   private readonly logger = getLoggerFor(this);
   private readonly interval?: NodeJS.Timeout;
   private readonly endpoint?: string;
@@ -67,7 +67,7 @@ export class EdgeNodeHeartbeatService {
   private readonly intervalMs: number = 30_000;
   private readonly onHeartbeatResponse?: (data: unknown) => void;
 
-  public constructor(options: EdgeNodeHeartbeatServiceOptions) {
+  public constructor(options: EdgeNodeSignalClientOptions) {
     const enabled = this.normalizeBoolean(options.edgeNodesEnabled);
     const endpoint = this.normalizeString(options.signalEndpoint);
     const nodeId = this.normalizeString(options.nodeId);

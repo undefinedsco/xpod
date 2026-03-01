@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DisabledOidcHandler } from '../../../src/identity/oidc/DisabledOidcHandler';
-import type { HttpResponse } from '@solid/community-server';
-import type { IncomingMessage } from 'node:http';
+import type { HttpRequest, HttpResponse } from '@solid/community-server';
 
 // Mock global fetch
 const mockFetch = vi.fn();
@@ -27,8 +26,8 @@ describe('DisabledOidcHandler', () => {
   });
 
   describe('canHandle', () => {
-    const createRequest = (url: string): IncomingMessage =>
-      ({ url } as IncomingMessage);
+    const createRequest = (url: string): HttpRequest =>
+      ({ url } as unknown as HttpRequest);
 
     it('should accept /.oidc/jwks requests', async () => {
       handler = new DisabledOidcHandler({
@@ -90,8 +89,8 @@ describe('DisabledOidcHandler', () => {
       ]
     };
 
-    const createRequest = (url: string): IncomingMessage =>
-      ({ url } as IncomingMessage);
+    const createRequest = (url: string): HttpRequest =>
+      ({ url } as unknown as HttpRequest);
 
     beforeEach(() => {
       mockFetch.mockResolvedValue({
@@ -185,8 +184,8 @@ describe('DisabledOidcHandler', () => {
   });
 
   describe('edge cases', () => {
-    const createRequest = (url: string): IncomingMessage =>
-      ({ url } as IncomingMessage);
+    const createRequest = (url: string): HttpRequest =>
+      ({ url } as unknown as HttpRequest);
 
     it('should handle full URLs in request', async () => {
       handler = new DisabledOidcHandler({

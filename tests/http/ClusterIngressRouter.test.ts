@@ -21,14 +21,14 @@ class MockWritableResponse extends Writable {
   public setHeader = vi.fn((name: string, value: any) => {
     this.headers[name] = value;
   });
-  public end = vi.fn((data?: any) => {
+  public override end = vi.fn((data?: any): any => {
     if (data) {
       this.write(data);
     }
     super.end();
   });
-  
-  public _write(chunk: any, encoding: string, callback: () => void): void {
+
+  public override _write(chunk: any, encoding: string, callback: () => void): void {
     callback();
   }
 }
@@ -74,7 +74,7 @@ describe('ClusterIngressRouter', () => {
     it('should handle valid node subdomain requests', async () => {
       const input = { request: mockRequest };
       
-      await expect(router.canHandle(input)).resolves.not.toThrow();
+      await expect(router.canHandle(input as any)).resolves.not.toThrow();
       
       expect(mockRepository.getNodeSecret).toHaveBeenCalledWith('node1');
     });
@@ -83,7 +83,7 @@ describe('ClusterIngressRouter', () => {
       mockRequest.headers.host = 'cluster.example.com';
       const input = { request: mockRequest };
       
-      await expect(router.canHandle(input))
+      await expect(router.canHandle(input as any))
         .rejects.toThrow(NotImplementedHttpError);
     });
 
@@ -91,7 +91,7 @@ describe('ClusterIngressRouter', () => {
       mockRequest.headers.host = 'invalid.subdomain.cluster.example.com';
       const input = { request: mockRequest };
       
-      await expect(router.canHandle(input))
+      await expect(router.canHandle(input as any))
         .rejects.toThrow(NotImplementedHttpError);
     });
 
@@ -99,7 +99,7 @@ describe('ClusterIngressRouter', () => {
       (mockRepository.getNodeSecret as any).mockResolvedValue(null);
       const input = { request: mockRequest };
       
-      await expect(router.canHandle(input))
+      await expect(router.canHandle(input as any))
         .rejects.toThrow(NotImplementedHttpError);
     });
 
@@ -112,7 +112,7 @@ describe('ClusterIngressRouter', () => {
 
       const input = { request: mockRequest };
       
-      await expect(disabledRouter.canHandle(input))
+      await expect(disabledRouter.canHandle(input as any))
         .rejects.toThrow(NotImplementedHttpError);
     });
 
@@ -120,7 +120,7 @@ describe('ClusterIngressRouter', () => {
       mockRequest.url = '/idp/auth';
       const input = { request: mockRequest };
 
-      await expect(router.canHandle(input))
+      await expect(router.canHandle(input as any))
         .rejects.toThrow(NotImplementedHttpError);
 
       expect(mockRequest.headers['x-original-host']).toBe('node1.cluster.example.com');
@@ -142,7 +142,7 @@ describe('ClusterIngressRouter', () => {
         publicPort: 443,
       });
 
-      const input = { request: mockRequest, response: mockResponse };
+      const input = { request: mockRequest, response: mockResponse as any };
       
       await router.handle(input);
       
@@ -164,7 +164,7 @@ describe('ClusterIngressRouter', () => {
         publicPort: 8443,
       });
 
-      const input = { request: mockRequest, response: mockResponse };
+      const input = { request: mockRequest, response: mockResponse as any };
       
       await router.handle(input);
       
@@ -204,7 +204,7 @@ describe('ClusterIngressRouter', () => {
         },
       });
 
-      const input = { request: mockRequest, response: mockResponse };
+      const input = { request: mockRequest, response: mockResponse as any };
       
       await proxyRouter.handle(input);
 
@@ -230,7 +230,7 @@ describe('ClusterIngressRouter', () => {
         metadata: {}, // No tunnel info
       });
 
-      const input = { request: mockRequest, response: mockResponse };
+      const input = { request: mockRequest, response: mockResponse as any };
       
       await expect(router.handle(input))
         .rejects.toThrow(InternalServerError);
@@ -239,7 +239,7 @@ describe('ClusterIngressRouter', () => {
     it('should handle missing connectivity info', async () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue(null);
 
-      const input = { request: mockRequest, response: mockResponse };
+      const input = { request: mockRequest, response: mockResponse as any };
       
       await expect(router.handle(input))
         .rejects.toThrow(InternalServerError);
@@ -256,7 +256,7 @@ describe('ClusterIngressRouter', () => {
         publicPort: 443,
       });
 
-      const input = { request: mockRequest, response: mockResponse };
+      const input = { request: mockRequest, response: mockResponse as any };
       
       await router.handle(input);
       
@@ -279,7 +279,7 @@ describe('ClusterIngressRouter', () => {
         publicPort: 443,
       });
 
-      const input = { request: mockRequest, response: mockResponse };
+      const input = { request: mockRequest, response: mockResponse as any };
       
       await router.handle(input);
       

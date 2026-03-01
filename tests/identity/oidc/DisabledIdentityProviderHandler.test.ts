@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DisabledIdentityProviderHandler } from '../../../src/identity/oidc/DisabledIdentityProviderHandler';
-import type { HttpResponse } from '@solid/community-server';
-import type { IncomingMessage } from 'node:http';
+import type { HttpRequest, HttpResponse } from '@solid/community-server';
 
 describe('DisabledIdentityProviderHandler', () => {
   let handler: DisabledIdentityProviderHandler;
@@ -18,8 +17,8 @@ describe('DisabledIdentityProviderHandler', () => {
   });
 
   describe('canHandle', () => {
-    const createRequest = (url: string, method = 'GET'): IncomingMessage =>
-      ({ url, method } as IncomingMessage);
+    const createRequest = (url: string, method = 'GET'): HttpRequest =>
+      ({ url, method } as unknown as HttpRequest);
 
     it('should reject /idp/ paths', async () => {
       handler = new DisabledIdentityProviderHandler({});
@@ -81,8 +80,8 @@ describe('DisabledIdentityProviderHandler', () => {
   });
 
   describe('handle', () => {
-    const createRequest = (url: string): IncomingMessage =>
-      ({ url } as IncomingMessage);
+    const createRequest = (url: string): HttpRequest =>
+      ({ url } as unknown as HttpRequest);
 
     it('should return 501 with error message', async () => {
       handler = new DisabledIdentityProviderHandler({
@@ -95,7 +94,7 @@ describe('DisabledIdentityProviderHandler', () => {
       expect(mockResponse.statusCode).toBe(501);
       expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'application/json');
 
-      const responseBody = (mockResponse.end as jest.Mock).mock.calls[0][0];
+      const responseBody = (mockResponse.end as any).mock.calls[0][0];
       const parsed = JSON.parse(responseBody);
       expect(parsed.error).toBe('not_implemented');
       expect(parsed.message).toBe('Test message');
@@ -104,8 +103,8 @@ describe('DisabledIdentityProviderHandler', () => {
   });
 
   describe('edge cases', () => {
-    const createRequest = (url: string, method = 'GET'): IncomingMessage =>
-      ({ url, method } as IncomingMessage);
+    const createRequest = (url: string, method = 'GET'): HttpRequest =>
+      ({ url, method } as unknown as HttpRequest);
 
     it('should handle full URLs', async () => {
       handler = new DisabledIdentityProviderHandler({});

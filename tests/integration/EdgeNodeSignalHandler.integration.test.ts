@@ -7,7 +7,7 @@ const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
 
 const STANDALONE_BASE = (process.env.CSS_BASE_URL || `http://localhost:${process.env.STANDALONE_PORT || '5739'}`).replace(/\/$/, '');
 
-suite("SignalHandler Integration", () => {
+suite("EdgeNodeSignalHandler Integration", () => {
   let session: Session;
   let authFetch: typeof fetch;
   let createdNodeId: string;
@@ -17,7 +17,7 @@ suite("SignalHandler Integration", () => {
   beforeAll(async () => {
     const account = await setupAccount(STANDALONE_BASE, "signal");
     if (!account) {
-      throw new Error("Failed to setup account for SignalHandler integration test.");
+      throw new Error("Failed to setup account for EdgeNodeSignalHandler integration test.");
     }
 
     session = new Session();
@@ -29,7 +29,7 @@ suite("SignalHandler Integration", () => {
     });
 
     if (!session.info.isLoggedIn) {
-      throw new Error("Failed to login for SignalHandler integration test.");
+      throw new Error("Failed to login for EdgeNodeSignalHandler integration test.");
     }
 
     authFetch = session.fetch.bind(session);

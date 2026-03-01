@@ -5,6 +5,10 @@ import type { Authenticator, AuthResult } from '../../src/api/auth/Authenticator
 import { getFreePort } from '../../src/runtime/port-finder';
 
 class MockAuthenticator implements Authenticator {
+  public canAuthenticate(_request: any): boolean {
+    return true;
+  }
+
   public async authenticate(request: any): Promise<AuthResult> {
     const authHeader = request.headers.authorization;
     if (authHeader === 'Bearer valid-token') {
@@ -49,7 +53,7 @@ describe('ApiServer Integration', () => {
     server.get('/protected', async (req, res) => {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ message: 'Welcome!', user: req.auth?.webId }));
+      res.end(JSON.stringify({ message: 'Welcome!', user: (req.auth as any)?.webId }));
     });
 
     server.post('/data/:id', async (_req, res, params) => {

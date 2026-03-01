@@ -149,7 +149,7 @@ public override async handle({ request, response }) {
 }
 ```
 
-`EdgeNodeSignalHttpHandler` 会在每次心跳时检视 `reachability.samples` 与 `tunnel.status`：直连探测成功立刻切回 `direct`，直连连续失败且隧道激活则切到 `proxy`，并通过 `EdgeNodeRepository.updateNodeMode` 触发 DNS 与 FRP 路由刷新。
+`EdgeNodeSignalHandler` 会在每次心跳时检视 `reachability.samples` 与 `tunnel.status`：直连探测成功立刻切回 `direct`，直连连续失败且隧道激活则切到 `proxy`，并通过 `EdgeNodeRepository.updateNodeMode` 触发 DNS 与 FRP 路由刷新。
 
 ### 数据面组件（CSS 外）
 
@@ -194,11 +194,11 @@ public override async handle({ request, response }) {
 ## 实现状态 (Phase 1 完成)
 
 - ✅ `EdgeNodeModeDetector` - 模式检测和自动切换
-- ✅ `EdgeNodeSignalHttpHandler` - 注册/心跳 API
+- ✅ `EdgeNodeSignalHandler` - 注册/心跳 API
 - ✅ `EdgeNodeRepository` - 数据库操作，包含 `accessMode` 字段
 - ✅ `EdgeNodeDnsCoordinator` - 直连/代理模式的 DNS 指向策略
 - ✅ `EdgeNodeHealthProbeService` - 健康探测
-- ✅ `EdgeNodeHeartbeatService` - 心跳客户端
+- ✅ `EdgeNodeSignalClient` - 心跳客户端
 - ✅ `EdgeNodeRedirectHttpHandler` - 支持双模式的重定向
 - ✅ `AcmeCertificateManager` - ACME 客户端（节点端）
 - ✅ `Dns01CertificateProvisioner` - DNS-01 协调器（集群端）
@@ -213,7 +213,7 @@ public override async handle({ request, response }) {
 ## 配置更新
 
 - 新增 `xpodClusterIngressIp`（可通过 `XPOD_CLUSTER_INGRESS_IP` 环境变量注入），供 `EdgeNodeDnsCoordinator` 在 proxy 模式下指向 cluster 入口 IP。
-- `EdgeNodeSignalHttpHandler` 会直接读取 CSS `baseUrl` 的 hostname 作为集群域，自动完成 DNS/证书编排，无需额外的 `XPOD_DNS_ROOT_DOMAIN`。
+- `EdgeNodeSignalHandler` 会直接读取 CSS `baseUrl` 的 hostname 作为集群域，自动完成 DNS/证书编排，无需额外的 `XPOD_DNS_ROOT_DOMAIN`。
 - `AcmeCertificateManager` 支持配置 `fallbackDirectoryUrls`，若主 CA 失败会自动回退到备用 ACME 端点。
 - Cluster 侧新增 ACME 账号配置：`XPOD_ACME_EMAIL`、`XPOD_ACME_DIRECTORY_URL`、`XPOD_ACME_ACCOUNT_KEY_PATH`、`XPOD_ACME_CERTIFICATE_STORE`、`XPOD_ACME_DNS_PROPAGATION_DELAY`，并暴露 `/api/signal/certificate` 供节点提交 CSR。
 - `XPOD_EDGE_PROBE_LOCATIONS` 用于配置多地连通性探测（格式如 `cluster,us-east@https://probe-us.example/api`），探测结果写入 `reachability.samples` 供 DNS/隧道调度参考。

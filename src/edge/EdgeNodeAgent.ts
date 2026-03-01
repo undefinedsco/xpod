@@ -1,8 +1,8 @@
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
-import type { EdgeNodeHeartbeatServiceOptions } from '../service/EdgeNodeHeartbeatService';
-import { EdgeNodeHeartbeatService } from '../service/EdgeNodeHeartbeatService';
+import type { EdgeNodeSignalClientOptions } from '../service/EdgeNodeSignalClient';
+import { EdgeNodeSignalClient } from '../service/EdgeNodeSignalClient';
 import { FrpcProcessManager, type FrpcRuntimeStatus } from './frp/FrpcProcessManager';
 import { AcmeCertificateManager } from './acme/AcmeCertificateManager';
 import { ClusterCertificateManager } from './acme/ClusterCertificateManager';
@@ -44,7 +44,7 @@ export interface EdgeNodeAgentOptions {
 
 export class EdgeNodeAgent {
   private readonly logger = getLoggerFor(this);
-  private heartbeat?: EdgeNodeHeartbeatService;
+  private heartbeat?: EdgeNodeSignalClient;
   private frpManager?: FrpcProcessManager;
   private clusterCertificate?: ClusterCertificateManager;
   private networkDetector?: EdgeNodeCapabilityDetector;
@@ -91,7 +91,7 @@ export class EdgeNodeAgent {
     } as Record<string, unknown>;
 
     const certificatePayload = this.clusterCertificate?.getHeartbeatPayload();
-    const heartbeatOptions: EdgeNodeHeartbeatServiceOptions = {
+    const heartbeatOptions: EdgeNodeSignalClientOptions = {
       edgeNodesEnabled: true,
       signalEndpoint: options.signalEndpoint,
       nodeId: options.nodeId,
@@ -113,7 +113,7 @@ export class EdgeNodeAgent {
       heartbeatOptions.tunnelSupplier = () => this.buildTunnelHeartbeatPayload();
     }
 
-    this.heartbeat = new EdgeNodeHeartbeatService(heartbeatOptions);
+    this.heartbeat = new EdgeNodeSignalClient(heartbeatOptions);
   }
 
   public stop(): void {

@@ -1,10 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-vi.mock('../../src/api/chatkit/default-agent', () => ({
-  isDefaultAgentAvailable: () => true,
-  runDefaultAgent: vi.fn(async () => ({ success: true, content: 'default-agent-reply' })),
-  streamDefaultAgent: vi.fn(),
-}));
 import { VercelChatService } from '../../src/api/service/VercelChatService';
 import type { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 
@@ -51,19 +46,19 @@ describe('VercelChatService provider config fallback', () => {
     expect(result.credentialId).toBe('cred-1');
   });
 
-  it('falls back to DEFAULT_API_KEY when pod config is missing', async () => {
-    process.env.DEFAULT_API_KEY = 'default-key';
-    process.env.DEFAULT_PROVIDER = 'openrouter';
+  it('falls back to DEFAULT_API_BASE platform Provider', async () => {
+    process.env.DEFAULT_API_BASE = 'https://platform.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'platform-key';
 
     const service = createService(undefined);
     const getProviderConfig = (service as any).getProviderConfig.bind(service);
     const result = await getProviderConfig({ auth: { type: 'solid', webId: 'http://localhost:3310/test/profile/card#me' } });
 
-    expect(result.baseURL).toBe('https://openrouter.ai/api/v1');
-    expect(result.apiKey).toBe('default-key');
+    expect(result.baseURL).toBe('https://platform.example.com/v1');
+    expect(result.apiKey).toBe('platform-key');
   });
 
-  it('returns null when neither pod config nor DEFAULT_API_KEY exists', async () => {
+  it('returns null when neither pod config nor DEFAULT_API_BASE exists', async () => {
     const service = createService(undefined);
     const getProviderConfig = (service as any).getProviderConfig.bind(service);
     const result = await getProviderConfig({ auth: { type: 'solid', webId: 'http://localhost:3310/test/profile/card#me' } });
@@ -71,29 +66,37 @@ describe('VercelChatService provider config fallback', () => {
     expect(result).toBeNull();
   });
 
-
-  it('falls back to DefaultAgent for responses when no provider config', async () => {
+  it('throws model_not_configured for responses when no provider config', async () => {
     const service = createService(undefined);
-    const response = await service.responses({ model: 'xpod-default', input: 'hello' }, {
-      type: 'solid',
-      webId: 'http://localhost:3310/test/profile/card#me',
-      token: 'test-token',
-    } as any);
-
-    expect(response.object).toBe('response');
-    expect(response.output[0].content[0].text).toContain('default-agent-reply');
+    await expect(
+      service.responses({ model: 'xpod-default', input: 'hello' }, {
+        type: 'solid',
+        webId: 'http://localhost:3310/test/profile/card#me',
+        token: 'test-token',
+      } as any),
+    ).rejects.toThrow('No AI provider configured');
   });
 
-  it('falls back to DefaultAgent for messages when no provider config', async () => {
+  it('throws model_not_configured for messages when no provider config', async () => {
     const service = createService(undefined);
-    const response = await service.messages({ model: 'xpod-default', content: 'hello' }, {
-      type: 'solid',
-      webId: 'http://localhost:3310/test/profile/card#me',
-      token: 'test-token',
-    } as any);
-
-    expect(response.type).toBe('message');
-    expect(response.content[0].text).toContain('default-agent-reply');
+    await expect(
+      service.messages({ model: 'xpod-default', content: 'hello' }, {
+        type: 'solid',
+        webId: 'http://localhost:3310/test/profile/card#me',
+        token: 'test-token',
+      } as any),
+    ).rejects.toThrow('No AI provider configured');
   });
 
+  it('uses DEFAULT_API_BASE with empty key when DEFAULT_API_KEY is not set', async () => {
+    process.env.DEFAULT_API_BASE = 'https://platform.example.com/v1';
+
+    const service = createService(undefined);
+    const getProviderConfig = (service as any).getProviderConfig.bind(service);
+    const result = await getProviderConfig({ auth: { type: 'solid', webId: 'http://localhost:3310/test/profile/card#me' } });
+
+    expect(result).not.toBeNull();
+    expect(result.baseURL).toBe('https://platform.example.com/v1');
+    expect(result.apiKey).toBe('');
+  });
 });

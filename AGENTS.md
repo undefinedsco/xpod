@@ -131,6 +131,9 @@ History favors emoji-prefixed, imperative commit titles such as `🐛 Fix quadst
   ```
 - **提交前检查**：始终运行 `git diff --cached` 确认暂存区内容正确。
 
+### 版本发布
+发布新版本的详细流程参见 `docs/RELEASE.md`。
+
 ## Security & Configuration Tips
 Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` and keep credentials local. When adding components, update both the relevant `config/*.json` and `extensions.*.json`, and list any new environment variables so deployments stay synchronised.
 

@@ -1,5 +1,6 @@
 import { PassThrough, Writable } from 'node:stream';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { HttpRequest } from '@solid/community-server/dist/server/HttpRequest';
 import type { HttpResponse } from '@solid/community-server/dist/server/HttpResponse';
 import { NotImplementedHttpError } from '@solid/community-server/dist/util/errors/NotImplementedHttpError';
 import { EdgeNodeProxyHttpHandler } from '../../src/http/EdgeNodeProxyHttpHandler';
@@ -15,7 +16,7 @@ class MockResponse extends Writable {
     this.headers[name.toLowerCase()] = value;
   }
 
-  public _write(chunk: any, _encoding: string, callback: () => void): void {
+  public override _write(chunk: any, _encoding: string, callback: () => void): void {
     this.chunks.push(Buffer.from(chunk));
     callback();
   }
@@ -25,16 +26,14 @@ class MockResponse extends Writable {
   }
 }
 
-function createRequest(method: string, host: string, path = '/'): PassThrough {
+function createRequest(method: string, host: string, path = '/'): HttpRequest {
   const stream = new PassThrough();
-  // @ts-expect-error test
-  stream.method = method;
-  // @ts-expect-error test
-  stream.url = path;
-  // @ts-expect-error test
-  stream.headers = { host };
+  const request = stream as unknown as HttpRequest;
+  request.method = method;
+  request.url = path;
+  request.headers = { host };
   process.nextTick(() => stream.end());
-  return stream;
+  return request;
 }
 
 function buildHandler(enabled = true, fetchImpl?: typeof fetch): EdgeNodeProxyHttpHandler {

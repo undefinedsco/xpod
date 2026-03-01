@@ -11,6 +11,8 @@ import type { ApiContainerCradle, ApiContainerConfig } from './types';
 import { TencentDnsProvider } from '../../dns/tencent/TencentDnsProvider';
 import { CloudflareTunnelProvider } from '../../tunnel/CloudflareTunnelProvider';
 import { SubdomainService } from '../../subdomain/SubdomainService';
+import { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
+import { EdgeNodeHealthProbeService } from '../../edge/EdgeNodeHealthProbeService';
 import { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import { getLoggerFor } from 'global-logger-factory';
@@ -108,4 +110,30 @@ export function registerCloudServices(
   } catch {
     logger.warn('Subdomain service not registered (missing DNS or Tunnel provider)');
   }
+
+  // DNS Coordinator (心跳→DNS 同步，需要 dnsProvider)
+  const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true });
+  if (dnsProvider) {
+    container.register({
+      dnsCoordinator: asFunction(() => {
+        return new EdgeNodeDnsCoordinator({
+          provider: dnsProvider as any,
+          rootDomain: baseStorageDomain,
+        });
+      }).singleton(),
+    });
+    logger.info('DNS coordinator registered');
+  }
+
+  // Health Probe Service (心跳时探测节点可达性)
+  const nodeRepo = container.resolve('nodeRepo');
+  container.register({
+    healthProbeService: asFunction(() => {
+      return new EdgeNodeHealthProbeService({
+        repository: nodeRepo,
+        enabled: true,
+      });
+    }).singleton(),
+  });
+  logger.info('Health probe service registered');
 }
