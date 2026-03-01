@@ -129,8 +129,7 @@ export function getDefaultAgentConfig(): DefaultAgentConfig {
  * 检查 Default Agent 是否可用
  */
 export function isDefaultAgentAvailable(): boolean {
-  const config = getDefaultAgentConfig();
-  return !!config.apiKey;
+  return !!(process.env.DEFAULT_API_KEY || process.env.DEFAULT_API_BASE);
 }
 
 /**
@@ -269,7 +268,9 @@ function buildClaudeEnv(config: DefaultAgentConfig, context: DefaultAgentContext
   if (isOpenRouterLike) {
     // Claude Code expects Anthropic-shaped settings; OpenRouter is compatible after base path normalization.
     env.ANTHROPIC_BASE_URL = normalizeClaudeBaseUrl(baseUrl);
-    env.ANTHROPIC_AUTH_TOKEN = config.apiKey;
+    if (config.apiKey) {
+      env.ANTHROPIC_AUTH_TOKEN = config.apiKey;
+    }
     if (model) {
       env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
@@ -278,7 +279,9 @@ function buildClaudeEnv(config: DefaultAgentConfig, context: DefaultAgentContext
     delete env.ANTHROPIC_API_KEY;
   } else {
     env.ANTHROPIC_BASE_URL = baseUrl;
-    env.ANTHROPIC_API_KEY = config.apiKey;
+    if (config.apiKey) {
+      env.ANTHROPIC_API_KEY = config.apiKey;
+    }
     delete env.ANTHROPIC_AUTH_TOKEN;
   }
 
@@ -312,11 +315,11 @@ export async function runDefaultAgent(
 ): Promise<DefaultAgentResponse> {
   const config = getDefaultAgentConfig();
 
-  if (!config.apiKey) {
+  if (!config.apiKey && !process.env.DEFAULT_API_BASE) {
     return {
       content: '',
       success: false,
-      error: 'Default Agent not configured: DEFAULT_API_KEY is required',
+      error: 'Default Agent not configured: DEFAULT_API_KEY or DEFAULT_API_BASE is required',
     };
   }
 
@@ -400,8 +403,8 @@ export async function* streamDefaultAgent(
 ): AsyncGenerator<string, void, unknown> {
   const config = getDefaultAgentConfig();
 
-  if (!config.apiKey) {
-    throw new Error('Default Agent not configured: DEFAULT_API_KEY is required');
+  if (!config.apiKey && !process.env.DEFAULT_API_BASE) {
+    throw new Error('Default Agent not configured: DEFAULT_API_KEY or DEFAULT_API_BASE is required');
   }
 
   const abortController = new AbortController();

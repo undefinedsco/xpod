@@ -15,7 +15,7 @@ import type { PodChatKitStore } from './pod-store';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId } from '../auth/AuthContext';
 import { CredentialStatus } from '../../credential/schema/types';
-import { isDefaultAgentAvailable, streamDefaultAgent, type DefaultAgentContext } from './default-agent';
+import { getDefaultBaseUrl } from '../service/provider-registry';
 
 // Create a proxy-aware fetch function
 function createProxyFetch(proxyUrl: string): typeof fetch {
@@ -61,11 +61,8 @@ export class VercelAiProvider implements AiProvider {
     // 从 Pod 获取配置
     const config = await this.getProviderConfig(context);
 
-    // 无有效配置，降级到 Default Agent
     if (!config) {
-      this.logger.info(`No valid AI config for ${userId}, falling back to Default Agent`);
-      yield* this.streamWithDefaultAgent(messages, context);
-      return;
+      throw new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
     }
 
     const model = options?.model ?? config.defaultModel ?? process.env.DEFAULT_MODEL ?? 'stepfun/step-3.5-flash:free';
@@ -184,42 +181,27 @@ Model: ${model}
       }
     }
 
-    // 用户 Pod 有配置，优先使用
+    // 1. 用户 Pod 有配置，优先使用
     if (config?.apiKey) {
       return {
-        baseURL: config.baseUrl || this.getDefaultBaseUrl('openrouter'),
+        baseURL: config.baseUrl || getDefaultBaseUrl(),
         apiKey: config.apiKey,
         proxy: config.proxyUrl,
         credentialId: config.credentialId,
       };
     }
 
-    // 环境变量配置（开发/测试用）
-    if (process.env.XPOD_AI_API_KEY) {
+    // 2. 平台 Provider
+    const platformBase = process.env.DEFAULT_API_BASE;
+    if (platformBase) {
       return {
-        baseURL: process.env.XPOD_AI_BASE_URL || 'https://openrouter.ai/api/v1',
-        apiKey: process.env.XPOD_AI_API_KEY,
+        baseURL: platformBase,
+        apiKey: process.env.DEFAULT_API_KEY || '',
       };
     }
 
-    // Google API Key 特殊处理
-    if (process.env.GOOGLE_API_KEY) {
-      return {
-        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
-        apiKey: process.env.GOOGLE_API_KEY,
-      };
-    }
-
-    // OpenRouter API Key
-    if (process.env.OPENROUTER_API_KEY) {
-      return {
-        baseURL: 'https://openrouter.ai/api/v1',
-        apiKey: process.env.OPENROUTER_API_KEY,
-      };
-    }
-
-    // 无有效配置，返回 null 表示需要降级到 Default Agent
-    this.logger.debug('No valid AI config found, will use Default Agent');
+    // 3. 无配置
+    this.logger.debug('No valid AI config found');
     return null;
   }
 
@@ -236,109 +218,4 @@ Model: ${model}
     return createOpenAI(options);
   }
 
-  private getPodBaseUrlFromWebId(webId: string): string {
-    try {
-      const url = new URL(webId);
-      url.hash = '';  // 清除 fragment
-      const pathParts = url.pathname.split('/');
-      if (pathParts.includes('profile')) {
-        const profileIndex = pathParts.indexOf('profile');
-        url.pathname = pathParts.slice(0, profileIndex).join('/');
-      }
-      return url.toString().replace(/\/$/, '') + '/';
-    } catch {
-      return '';
-    }
-  }
-
-  private getDefaultBaseUrl(provider: string): string {
-    const urls: Record<string, string> = {
-      openai: 'https://api.openai.com/v1',
-      google: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      anthropic: 'https://api.anthropic.com/v1',
-      deepseek: 'https://api.deepseek.com/v1',
-      openrouter: 'https://openrouter.ai/api/v1',
-      ollama: 'http://localhost:11434/v1',
-      mistral: 'https://api.mistral.ai/v1',
-      cohere: 'https://api.cohere.ai/v1',
-      zhipu: 'https://open.bigmodel.cn/api/paas/v4',
-    };
-    return urls[provider.toLowerCase()] || urls.openrouter;
-  }
-
-  /**
-   * 使用 Default Agent 流式响应
-   */
-  private async *streamWithDefaultAgent(
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    context: StoreContext | undefined,
-  ): AsyncIterable<string> {
-    // 检查 Default Agent 是否可用
-    if (!isDefaultAgentAvailable()) {
-      yield '抱歉，您还没有配置 AI 服务，且系统默认 AI 也未配置。请先配置您的 AI API Key。';
-      return;
-    }
-
-    // 构建 Default Agent 上下文
-    const auth = context?.auth as AuthContext | undefined;
-    const webId = auth ? getWebId(auth) : undefined;
-
-    if (!webId) {
-      yield '抱歉，无法获取您的身份信息，请先登录。';
-      return;
-    }
-
-    const podBaseUrl = this.getPodBaseUrlFromWebId(webId);
-    const solidToken = this.getSolidToken(context);
-
-    if (!solidToken) {
-      yield '抱歉，无法获取访问令牌，请重新登录。';
-      return;
-    }
-
-    const agentContext: DefaultAgentContext = {
-      solidToken,
-      podBaseUrl,
-      webId,
-    };
-
-    // 获取最后一条用户消息
-    const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.content || '';
-
-    try {
-      yield* streamDefaultAgent(lastUserMessage, agentContext);
-    } catch (error) {
-      this.logger.error(`Default Agent error: ${error}`);
-      yield `抱歉，Default Agent 出现错误：${error instanceof Error ? error.message : String(error)}`;
-    }
-  }
-
-  /**
-   * 从上下文获取 Solid Token
-   */
-  private getSolidToken(context: StoreContext | undefined): string | undefined {
-    // 尝试从 context 中获取 token
-    // 这里需要根据实际的 auth 实现来获取
-    const auth = context?.auth as AuthContext | undefined;
-    if (!auth) return undefined;
-
-    // 如果 auth 中有 token，直接返回
-    if ('token' in auth && typeof auth.token === 'string') {
-      return auth.token;
-    }
-
-    // 如果有 accessToken
-    if ('accessToken' in auth && typeof auth.accessToken === 'string') {
-      return auth.accessToken;
-    }
-
-    // 尝试从 credentials 获取
-    if ('credentials' in auth && auth.credentials) {
-      const creds = auth.credentials as any;
-      if (creds.accessToken) return creds.accessToken;
-      if (creds.token) return creds.token;
-    }
-
-    return undefined;
-  }
 }

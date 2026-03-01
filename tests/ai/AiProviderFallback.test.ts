@@ -11,15 +11,11 @@ import type { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 describe('VercelAiProvider', () => {
   const savedEnv: Record<string, string | undefined> = {};
   const envKeysToManage = [
-    'XPOD_AI_API_KEY',
-    'XPOD_AI_BASE_URL',
-    'GOOGLE_API_KEY',
-    'OPENROUTER_API_KEY',
     'DEFAULT_API_KEY',
+    'DEFAULT_API_BASE',
   ];
 
   beforeEach(() => {
-    // 保存并清除环境变量
     for (const key of envKeysToManage) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
@@ -27,7 +23,6 @@ describe('VercelAiProvider', () => {
   });
 
   afterEach(() => {
-    // 恢复环境变量
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value !== undefined) {
         process.env[key] = value;
@@ -54,7 +49,6 @@ describe('VercelAiProvider', () => {
       const store = createMockStore(undefined);
       const provider = new VercelAiProvider({ store });
 
-      // 访问私有方法
       const getProviderConfig = (provider as any).getProviderConfig.bind(provider);
       const config = await getProviderConfig(undefined);
 
@@ -82,9 +76,9 @@ describe('VercelAiProvider', () => {
       expect(config.credentialId).toBe('cred-123');
     });
 
-    it('should use XPOD_AI_API_KEY env var when Pod config not available', async () => {
-      process.env.XPOD_AI_API_KEY = 'env-api-key';
-      process.env.XPOD_AI_BASE_URL = 'https://env.api.com/v1';
+    it('should use DEFAULT_API_BASE as platform Provider fallback', async () => {
+      process.env.DEFAULT_API_BASE = 'https://platform.api.com/v1';
+      process.env.DEFAULT_API_KEY = 'platform-key';
 
       const store = createMockStore(undefined);
       const provider = new VercelAiProvider({ store });
@@ -93,12 +87,12 @@ describe('VercelAiProvider', () => {
       const config = await getProviderConfig(undefined);
 
       expect(config).not.toBeNull();
-      expect(config.apiKey).toBe('env-api-key');
-      expect(config.baseURL).toBe('https://env.api.com/v1');
+      expect(config.baseURL).toBe('https://platform.api.com/v1');
+      expect(config.apiKey).toBe('platform-key');
     });
 
-    it('should use GOOGLE_API_KEY env var', async () => {
-      process.env.GOOGLE_API_KEY = 'google-api-key';
+    it('should use DEFAULT_API_BASE with empty apiKey when DEFAULT_API_KEY is not set', async () => {
+      process.env.DEFAULT_API_BASE = 'https://platform.api.com/v1';
 
       const store = createMockStore(undefined);
       const provider = new VercelAiProvider({ store });
@@ -107,26 +101,13 @@ describe('VercelAiProvider', () => {
       const config = await getProviderConfig(undefined);
 
       expect(config).not.toBeNull();
-      expect(config.apiKey).toBe('google-api-key');
-      expect(config.baseURL).toBe('https://generativelanguage.googleapis.com/v1beta/openai');
+      expect(config.baseURL).toBe('https://platform.api.com/v1');
+      expect(config.apiKey).toBe('');
     });
 
-    it('should use OPENROUTER_API_KEY env var', async () => {
-      process.env.OPENROUTER_API_KEY = 'openrouter-api-key';
-
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getProviderConfig = (provider as any).getProviderConfig.bind(provider);
-      const config = await getProviderConfig(undefined);
-
-      expect(config).not.toBeNull();
-      expect(config.apiKey).toBe('openrouter-api-key');
-      expect(config.baseURL).toBe('https://openrouter.ai/api/v1');
-    });
-
-    it('should prioritize Pod config over env vars', async () => {
-      process.env.OPENROUTER_API_KEY = 'env-key';
+    it('should prioritize Pod config over platform Provider', async () => {
+      process.env.DEFAULT_API_BASE = 'https://platform.api.com/v1';
+      process.env.DEFAULT_API_KEY = 'platform-key';
 
       const podConfig = {
         apiKey: 'pod-key',
@@ -158,76 +139,6 @@ describe('VercelAiProvider', () => {
       expect(config).not.toBeNull();
       expect(config.apiKey).toBe('pod-key-only');
       expect(config.baseURL).toBe('https://openrouter.ai/api/v1');
-    });
-  });
-
-
-  describe('getPodBaseUrlFromWebId', () => {
-    it('should extract Pod base URL from WebID', () => {
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getPodBaseUrl = (provider as any).getPodBaseUrlFromWebId.bind(provider);
-
-      expect(getPodBaseUrl('http://localhost:3000/alice/profile/card#me'))
-        .toBe('http://localhost:3000/alice/');
-
-      expect(getPodBaseUrl('https://pod.example.com/user/profile/card#me'))
-        .toBe('https://pod.example.com/user/');
-    });
-
-    it('should handle WebID without profile path', () => {
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getPodBaseUrl = (provider as any).getPodBaseUrlFromWebId.bind(provider);
-
-      expect(getPodBaseUrl('http://localhost:3000/alice#me'))
-        .toBe('http://localhost:3000/alice/');
-    });
-
-    it('should return empty string for invalid WebID', () => {
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getPodBaseUrl = (provider as any).getPodBaseUrlFromWebId.bind(provider);
-
-      expect(getPodBaseUrl('not-a-url')).toBe('');
-    });
-  });
-
-  describe('getDefaultBaseUrl', () => {
-    it('should return correct URLs for known providers', () => {
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getDefaultBaseUrl = (provider as any).getDefaultBaseUrl.bind(provider);
-
-      expect(getDefaultBaseUrl('openai')).toBe('https://api.openai.com/v1');
-      expect(getDefaultBaseUrl('google')).toBe('https://generativelanguage.googleapis.com/v1beta/openai');
-      expect(getDefaultBaseUrl('anthropic')).toBe('https://api.anthropic.com/v1');
-      expect(getDefaultBaseUrl('deepseek')).toBe('https://api.deepseek.com/v1');
-      expect(getDefaultBaseUrl('openrouter')).toBe('https://openrouter.ai/api/v1');
-      expect(getDefaultBaseUrl('ollama')).toBe('http://localhost:11434/v1');
-    });
-
-    it('should return openrouter URL for unknown providers', () => {
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getDefaultBaseUrl = (provider as any).getDefaultBaseUrl.bind(provider);
-
-      expect(getDefaultBaseUrl('unknown')).toBe('https://openrouter.ai/api/v1');
-    });
-
-    it('should be case insensitive', () => {
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getDefaultBaseUrl = (provider as any).getDefaultBaseUrl.bind(provider);
-
-      expect(getDefaultBaseUrl('OpenAI')).toBe('https://api.openai.com/v1');
-      expect(getDefaultBaseUrl('GOOGLE')).toBe('https://generativelanguage.googleapis.com/v1beta/openai');
     });
   });
 });
