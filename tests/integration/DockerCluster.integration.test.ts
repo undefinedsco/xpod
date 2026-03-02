@@ -240,6 +240,179 @@ suite('Docker Cluster Integration', () => {
       expect(tableNames.length).toBeGreaterThan(0);
     });
   });
+
+  // ==========================================
+  // 统一服务鉴权测试
+  // ==========================================
+  describe('Service Authentication', () => {
+    const SERVICE_TOKEN = 'svc-testservicetokenforintegration';
+
+    it('should reject quota API without authentication', async () => {
+      const res = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/test-account`);
+      expect(res.status).toBe(401);
+    });
+
+    it('should reject quota API with invalid token', async () => {
+      const res = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/test-account`, {
+        headers: {
+          'Authorization': 'Bearer svc-invalidtoken',
+        },
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('should accept service token for quota read (no scope required)', async () => {
+      const res = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/test-account`, {
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+        },
+      });
+      // 200 (found) or 404 (not found) are both valid - we just verify auth works
+      expect([200, 404]).toContain(res.status);
+    });
+
+    it('should accept service token for quota write (quota:write scope)', async () => {
+      const accountId = `test-account-${Date.now()}`;
+      const res = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/${accountId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          storageLimitBytes: 1073741824, // 1GB
+          tokenLimitMonthly: 1000000,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const data = await res.json() as { status: string; accountId: string; quota: any };
+      expect(data.status).toBe('updated');
+      expect(data.accountId).toBe(accountId);
+      expect(data.quota.storageLimitBytes).toBe(1073741824);
+      expect(data.quota.tokenLimitMonthly).toBe(1000000);
+    });
+
+    it('should verify quota was persisted', async () => {
+      const accountId = `test-account-persist-${Date.now()}`;
+
+      // Set quota
+      const setRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/${accountId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          storageLimitBytes: 2147483648, // 2GB
+          bandwidthLimitBps: 10485760, // 10MiB/s
+        }),
+      });
+      expect(setRes.status).toBe(200);
+
+      // Read back
+      const getRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/${accountId}`, {
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+        },
+      });
+      expect(getRes.status).toBe(200);
+
+      const data = await getRes.json() as { quota: any; source: string };
+      expect(data.quota.storageLimitBytes).toBe(2147483648);
+      expect(data.quota.bandwidthLimitBps).toBe(10485760);
+      expect(data.source).toBe('custom');
+    });
+
+    it('should clear quota and revert to defaults', async () => {
+      const accountId = `test-account-clear-${Date.now()}`;
+
+      // Set custom quota
+      await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/${accountId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          storageLimitBytes: 5368709120, // 5GB
+        }),
+      });
+
+      // Clear quota
+      const clearRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/${accountId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+        },
+      });
+      expect(clearRes.status).toBe(200);
+
+      // Verify reverted to defaults
+      const getRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/${accountId}`, {
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+        },
+      });
+      expect(getRes.status).toBe(200);
+
+      const data = await getRes.json() as { source: string };
+      expect(data.source).toBe('default');
+    });
+
+    it('should support pod-level quota', async () => {
+      const podId = `test-pod-${Date.now()}`;
+
+      // Set pod quota
+      const setRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/pods/${podId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          storageLimitBytes: 536870912, // 512MB
+          computeLimitSeconds: 3600, // 1h
+        }),
+      });
+      expect(setRes.status).toBe(200);
+
+      // Read back
+      const getRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/pods/${podId}`, {
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+        },
+      });
+      expect(getRes.status).toBe(200);
+
+      const data = await getRes.json() as { quota: any };
+      expect(data.quota.storageLimitBytes).toBe(536870912);
+      expect(data.quota.computeLimitSeconds).toBe(3600);
+    });
+
+    it('should verify service token is registered in database', async () => {
+      if (!pgClient) {
+        console.warn('PostgreSQL not available, skipping');
+        return;
+      }
+
+      const result = await pgClient.query(`
+        SELECT service_type, service_id, scopes
+        FROM identity_service_token
+        WHERE service_type = 'cloud'
+      `);
+
+      expect(result.rows.length).toBeGreaterThan(0);
+      const row = result.rows[0];
+      expect(row.service_type).toBe('cloud');
+      expect(row.service_id).toBe('cloud-a');
+
+      const scopes = JSON.parse(row.scopes);
+      expect(scopes).toContain('quota:write');
+      expect(scopes).toContain('usage:read');
+      expect(scopes).toContain('account:manage');
+    });
+  });
 });
 
 // ==========================================

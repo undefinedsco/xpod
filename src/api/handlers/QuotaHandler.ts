@@ -50,7 +50,7 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
           egressBytes: usage?.egressBytes ?? 0,
           computeSeconds: usage?.computeSeconds ?? 0,
           tokensUsed: usage?.tokensUsed ?? 0,
-          periodStart: usage?.periodStart?.toISOString() ?? null,
+          periodStart: usage?.periodStart ? new Date(usage.periodStart * 1000).toISOString() : null,
         },
         source: hasCustomQuota(usage) ? 'custom' : 'default',
       });
@@ -144,7 +144,7 @@ export function registerQuotaRoutes(server: ApiServer, options: QuotaHandlerOpti
           egressBytes: usage?.egressBytes ?? 0,
           computeSeconds: usage?.computeSeconds ?? 0,
           tokensUsed: usage?.tokensUsed ?? 0,
-          periodStart: usage?.periodStart?.toISOString() ?? null,
+          periodStart: usage?.periodStart ? new Date(usage.periodStart * 1000).toISOString() : null,
         },
         source: hasCustomQuota(usage) ? 'custom' : 'default',
       });

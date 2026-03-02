@@ -11,8 +11,8 @@ export const accountUsage = sqliteTable('identity_account_usage', {
   tokensUsed: integer('tokens_used').notNull().default(0),
   computeLimitSeconds: integer('compute_limit_seconds'),
   tokenLimitMonthly: integer('token_limit_monthly'),
-  periodStart: integer('period_start', { mode: 'timestamp' }),
-  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  periodStart: integer('period_start'),
+  updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
 
 export const podUsage = sqliteTable('identity_pod_usage', {
@@ -27,8 +27,8 @@ export const podUsage = sqliteTable('identity_pod_usage', {
   tokensUsed: integer('tokens_used').notNull().default(0),
   computeLimitSeconds: integer('compute_limit_seconds'),
   tokenLimitMonthly: integer('token_limit_monthly'),
-  periodStart: integer('period_start', { mode: 'timestamp' }),
-  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  periodStart: integer('period_start'),
+  updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
 
 /**
@@ -43,8 +43,8 @@ export const webidProfiles = sqliteTable('identity_webid_profile', {
   oidcIssuer: text('oidc_issuer'),                    // https://id.undefineds.co/
   profileData: text('profile_data', { mode: 'json' }), // WebID Profile 的 JSON-LD 表示
   accountId: text('account_id'),                      // 关联的 CSS 账户 ID
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
 
 /**
@@ -56,7 +56,7 @@ export const ddnsDomains = sqliteTable('identity_ddns_domain', {
   status: text('status').default('active'),           // 'active' | 'suspended'
   provider: text('provider'),                         // 'cloudflare' | 'tencent'
   zoneId: text('zone_id'),                            // DNS Zone ID
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
 
 /**
@@ -74,8 +74,8 @@ export const ddnsRecords = sqliteTable('identity_ddns_record', {
   status: text('status').default('active'),           // 'active' | 'banned'
   bannedReason: text('banned_reason'),
   ttl: integer('ttl').default(60),
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
 
 export const edgeNodes = sqliteTable('identity_edge_node', {
@@ -96,10 +96,10 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
   capabilities: text('capabilities', { mode: 'json' }),
   metadata: text('metadata', { mode: 'json' }),
   connectivityStatus: text('connectivity_status').default('unknown'),
-  lastConnectivityCheck: integer('last_connectivity_check', { mode: 'timestamp' }),
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  lastSeen: integer('last_seen', { mode: 'timestamp' }),
+  lastConnectivityCheck: integer('last_connectivity_check'),
+  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  lastSeen: integer('last_seen'),
 });
 
 export const edgeNodePods = sqliteTable('identity_edge_node_pod', {
@@ -112,7 +112,7 @@ export const apiClientCredentials = sqliteTable('identity_api_client_credentials
   webId: text('web_id').notNull(),
   accountId: text('account_id').notNull(),
   displayName: text('display_name'),
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
 
 /**
@@ -125,6 +125,6 @@ export const serviceTokens = sqliteTable('identity_service_token', {
   serviceType: text('service_type').notNull(), // 'local' | 'business' | 'cloud' | 'compute'
   serviceId: text('service_id').notNull(),
   scopes: text('scopes').notNull(), // JSON array: ["quota:write","usage:read"]
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  expiresAt: integer('expires_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  expiresAt: integer('expires_at'),
 });

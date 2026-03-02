@@ -41,6 +41,7 @@ export class ServiceTokenRepository {
       serviceType: options.serviceType,
       serviceId: options.serviceId,
       scopes: JSON.stringify(options.scopes),
+      createdAt: Math.floor(Date.now() / 1000),
       expiresAt: options.expiresAt ?? null,
     });
 
@@ -80,6 +81,7 @@ export class ServiceTokenRepository {
       serviceType: options.serviceType,
       serviceId: options.serviceId,
       scopes: JSON.stringify(options.scopes),
+      createdAt: Math.floor(Date.now() / 1000),
       expiresAt: options.expiresAt ?? null,
     });
 
@@ -165,9 +167,9 @@ export class ServiceTokenRepository {
       serviceType: row.serviceType ?? row.service_type,
       serviceId: row.serviceId ?? row.service_id,
       scopes,
-      createdAt: row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt ?? row.created_at),
+      createdAt: row.createdAt instanceof Date ? row.createdAt : new Date((row.createdAt ?? row.created_at) * 1000),
       expiresAt: row.expiresAt || row.expires_at
-        ? (row.expiresAt instanceof Date ? row.expiresAt : new Date(row.expiresAt ?? row.expires_at))
+        ? (row.expiresAt instanceof Date ? row.expiresAt : new Date((row.expiresAt ?? row.expires_at) * 1000))
         : null,
     };
   }

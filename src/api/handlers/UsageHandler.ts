@@ -54,7 +54,7 @@ export function registerUsageRoutes(server: ApiServer, options: UsageHandlerOpti
           egressBytes: usage.egressBytes,
           computeSeconds: usage.computeSeconds,
           tokensUsed: usage.tokensUsed,
-          periodStart: usage.periodStart?.toISOString() ?? null,
+          periodStart: usage.periodStart ? new Date(usage.periodStart * 1000).toISOString() : null,
         },
         limits: {
           storageLimitBytes: usage.storageLimitBytes ?? null,
@@ -93,7 +93,7 @@ export function registerUsageRoutes(server: ApiServer, options: UsageHandlerOpti
           egressBytes: usage.egressBytes,
           computeSeconds: usage.computeSeconds,
           tokensUsed: usage.tokensUsed,
-          periodStart: usage.periodStart?.toISOString() ?? null,
+          periodStart: usage.periodStart ? new Date(usage.periodStart * 1000).toISOString() : null,
         },
         limits: {
           storageLimitBytes: usage.storageLimitBytes ?? null,

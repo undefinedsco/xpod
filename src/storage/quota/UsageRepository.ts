@@ -16,7 +16,7 @@ export interface AccountUsageRecord {
   tokensUsed: number;
   computeLimitSeconds?: number | null;
   tokenLimitMonthly?: number | null;
-  periodStart?: Date | null;
+  periodStart?: number | null;
 }
 
 export interface PodUsageRecord extends AccountUsageRecord {
@@ -107,7 +107,7 @@ export class UsageRepository {
       tokensUsed: this.coerceNumber(row.tokensUsed),
       computeLimitSeconds: this.coerceNullable(row.computeLimitSeconds),
       tokenLimitMonthly: this.coerceNullable(row.tokenLimitMonthly),
-      periodStart: row.periodStart instanceof Date ? row.periodStart : null,
+      periodStart: typeof row.periodStart === 'number' ? row.periodStart : null,
     };
   }
 
@@ -143,7 +143,7 @@ export class UsageRepository {
       tokensUsed: this.coerceNumber(row.tokensUsed),
       computeLimitSeconds: this.coerceNullable(row.computeLimitSeconds),
       tokenLimitMonthly: this.coerceNullable(row.tokenLimitMonthly),
-      periodStart: row.periodStart instanceof Date ? row.periodStart : null,
+      periodStart: typeof row.periodStart === 'number' ? row.periodStart : null,
     };
   }
 
@@ -220,7 +220,7 @@ export class UsageRepository {
         target: accountUsage.accountId,
         set: {
           tokensUsed: sql`${accountUsage.tokensUsed} + ${tokensDelta}`,
-          updatedAt: sql`now()`,
+          updatedAt: Math.floor(Date.now() / 1000),
         },
       });
   }
@@ -240,7 +240,7 @@ export class UsageRepository {
         set: {
           tokensUsed: sql`${podUsage.tokensUsed} + ${tokensDelta}`,
           accountId,
-          updatedAt: sql`now()`,
+          updatedAt: Math.floor(Date.now() / 1000),
         },
       });
   }
@@ -258,7 +258,7 @@ export class UsageRepository {
         target: accountUsage.accountId,
         set: {
           computeSeconds: sql`${accountUsage.computeSeconds} + ${secondsDelta}`,
-          updatedAt: sql`now()`,
+          updatedAt: Math.floor(Date.now() / 1000),
         },
       });
   }
@@ -278,7 +278,7 @@ export class UsageRepository {
         set: {
           computeSeconds: sql`${podUsage.computeSeconds} + ${secondsDelta}`,
           accountId,
-          updatedAt: sql`now()`,
+          updatedAt: Math.floor(Date.now() / 1000),
         },
       });
   }
@@ -297,7 +297,7 @@ export class UsageRepository {
           storageBytes: sql`${accountUsage.storageBytes} + ${storageDelta}`,
           ingressBytes: sql`${accountUsage.ingressBytes} + ${ingressDelta}`,
           egressBytes: sql`${accountUsage.egressBytes} + ${egressDelta}`,
-          updatedAt: sql`now()`,
+          updatedAt: Math.floor(Date.now() / 1000),
         },
       });
   }
@@ -318,7 +318,7 @@ export class UsageRepository {
           ingressBytes: sql`${podUsage.ingressBytes} + ${ingressDelta}`,
           egressBytes: sql`${podUsage.egressBytes} + ${egressDelta}`,
           accountId,
-          updatedAt: sql`now()`,
+          updatedAt: Math.floor(Date.now() / 1000),
         },
       });
   }
@@ -338,7 +338,7 @@ export class UsageRepository {
       insertValues.bandwidthLimitBps = bandwidthLimit;
     }
     const updateSet: Record<string, unknown> = {
-      updatedAt: sql`now()`,
+      updatedAt: Math.floor(Date.now() / 1000),
     };
     if (typeof storageValue === 'number') {
       updateSet.storageBytes = storageValue;
@@ -374,7 +374,7 @@ export class UsageRepository {
     }
     const updateSet: Record<string, unknown> = {
       accountId,
-      updatedAt: sql`now()`,
+      updatedAt: Math.floor(Date.now() / 1000),
     };
     if (typeof storageValue === 'number') {
       updateSet.storageBytes = storageValue;
@@ -410,7 +410,7 @@ export class UsageRepository {
         target: accountUsage.accountId,
         set: {
           [field]: value,
-          updatedAt: sql`now()`,
+          updatedAt: Math.floor(Date.now() / 1000),
         },
       });
   }
@@ -434,7 +434,7 @@ export class UsageRepository {
         set: {
           accountId,
           [field]: value,
-          updatedAt: sql`now()`,
+          updatedAt: Math.floor(Date.now() / 1000),
         },
       });
   }
@@ -471,7 +471,7 @@ export class UsageRepository {
       tokensUsed: this.coerceNumber(row.tokensUsed),
       computeLimitSeconds: this.coerceNullable(row.computeLimitSeconds),
       tokenLimitMonthly: this.coerceNullable(row.tokenLimitMonthly),
-      periodStart: row.periodStart instanceof Date ? row.periodStart : null,
+      periodStart: typeof row.periodStart === 'number' ? row.periodStart : null,
     };
   }
 
