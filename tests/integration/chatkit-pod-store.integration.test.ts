@@ -100,28 +100,33 @@ suite('ChatKit PodStore Integration', () => {
     const startedAt = Date.now();
 
     let lastJson = '';
+    let attemptCount = 0;
 
     while (Date.now() - startedAt < timeoutMs) {
+      attemptCount++;
       const request = JSON.stringify({
         type: 'items.list',
         params: { thread_id: threadId, limit: 50 },
       });
+      console.log(`[waitForThreadItemsCount] Attempt ${attemptCount}: Querying items for thread ${threadId}`);
       const result = await service.process(request, testContext);
       if (result.type === 'non_streaming') {
         lastJson = result.json;
         const data = JSON.parse(result.json);
+        console.log(`[waitForThreadItemsCount] Attempt ${attemptCount}: Got ${data.data?.length ?? 0} items (need ${minCount})`);
         if (Array.isArray(data.data) && data.data.length >= minCount) {
           return data.data;
         }
       } else {
         lastJson = JSON.stringify({ type: result.type });
+        console.log(`[waitForThreadItemsCount] Attempt ${attemptCount}: Got non-streaming result: ${result.type}`);
       }
 
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
     throw new Error(
-      'Timeout waiting for thread items (threadId=' + threadId + ', minCount=' + minCount + ', timeoutMs=' + timeoutMs + '). Last items.list response: ' + truncate(lastJson),
+      'Timeout waiting for thread items (threadId=' + threadId + ', minCount=' + minCount + ', timeoutMs=' + timeoutMs + ', attempts=' + attemptCount + '). Last items.list response: ' + truncate(lastJson),
     );
   };
 

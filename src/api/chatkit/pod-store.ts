@@ -85,6 +85,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   private async getDb(context: StoreContext) {
     // Check if we already have a cached db in context
     if ((context as any)._cachedDb) {
+      this.logger.debug('Using cached db from context');
       return (context as any)._cachedDb;
     }
 
@@ -102,6 +103,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
           this.logger.warn('Using DPoP access token without proof key; Pod access may fail if issuer enforces DPoP proof');
         }
 
+        this.logger.info(`[getDb] Using access token path for webId: ${auth.webId}`);
         const authFetch = this.createAccessTokenFetch(auth.accessToken, auth.tokenType);
         const db = drizzle(
           { fetch: authFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
@@ -132,6 +134,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
 
     // Fallback path: login with client credentials to obtain a Pod session.
+    this.logger.info(`[getDb] Using client credentials path for clientId: ${auth.clientId}`);
     const session = new Session();
     try {
       await session.login({
@@ -145,6 +148,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
         throw new Error('Login failed');
       }
 
+      this.logger.info(`[getDb] Session login successful, webId: ${session.info.webId}`);
       const authFetch = session.fetch.bind(session) as typeof fetch;
       const db = drizzle(
         { fetch: authFetch, info: { webId: session.info.webId, isLoggedIn: true } } as any,
@@ -166,6 +170,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       (context as any)._cachedDb = db;
       (context as any)._cachedFetch = authFetch;
       (context as any)._cachedWebId = session.info.webId;
+      (context as any)._cachedSession = session;
 
       return db;
     } catch (error) {
