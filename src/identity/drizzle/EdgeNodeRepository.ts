@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
-import { executeStatement, executeQuery, isDatabaseSqlite, toDbTimestamp, fromDbTimestamp } from './db';
+import { executeStatement, executeQuery, toDbTimestamp, fromDbTimestamp } from './db';
 import { edgeNodes } from './schema';
 
 export interface EdgeNodeSummary {
@@ -57,43 +57,23 @@ export class EdgeNodeRepository {
   public constructor(private readonly db: IdentityDatabase) {}
 
   public async listNodes(): Promise<EdgeNodeSummary[]> {
-    // Use different COUNT syntax for SQLite vs PostgreSQL
-    const isSqlite = isDatabaseSqlite(this.db);
-    const result = isSqlite
-      ? await executeQuery(this.db, sql`
-          SELECT en.id,
-                 en.display_name,
-                 en.node_type,
-                 en.created_at,
-                 en.updated_at,
-                 en.last_seen,
-                 en.metadata,
-                 COALESCE(pods.count, 0) AS pod_count
-          FROM identity_edge_node en
-          LEFT JOIN (
-            SELECT node_id, COUNT(*) AS count
-            FROM identity_edge_node_pod
-            GROUP BY node_id
-          ) pods ON pods.node_id = en.id
-          ORDER BY en.created_at ASC
-        `)
-      : await executeQuery(this.db, sql`
-          SELECT en.id,
-                 en.display_name,
-                 en.node_type,
-                 en.created_at,
-                 en.updated_at,
-                 en.last_seen,
-                 en.metadata,
-                 COALESCE(pods.count, 0) AS pod_count
-          FROM identity_edge_node en
-          LEFT JOIN (
-            SELECT node_id, COUNT(*)::integer AS count
-            FROM identity_edge_node_pod
-            GROUP BY node_id
-          ) pods ON pods.node_id = en.id
-          ORDER BY en.created_at ASC
-        `);
+    const result = await executeQuery(this.db, sql`
+      SELECT en.id,
+             en.display_name,
+             en.node_type,
+             en.created_at,
+             en.updated_at,
+             en.last_seen,
+             en.metadata,
+             COALESCE(pods.count, 0) AS pod_count
+      FROM identity_edge_node en
+      LEFT JOIN (
+        SELECT node_id, COUNT(*) AS count
+        FROM identity_edge_node_pod
+        GROUP BY node_id
+      ) pods ON pods.node_id = en.id
+      ORDER BY en.created_at ASC
+    `);
 
     return result.rows.map((row: any): EdgeNodeSummary => {
       const createdAt = fromDbTimestamp(row.created_at);
@@ -172,25 +152,14 @@ export class EdgeNodeRepository {
   public async updateNodeHeartbeat(nodeId: string, metadata: Record<string, unknown> | null, timestamp: Date): Promise<void> {
     const payload = metadata == null ? null : JSON.stringify(metadata);
     const ts = toDbTimestamp(this.db, timestamp);
-    const isSqlite = isDatabaseSqlite(this.db);
 
-    if (isSqlite) {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET metadata = ${payload},
-            last_seen = ${ts},
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    } else {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET metadata = ${payload}::jsonb,
-            last_seen = ${ts},
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    }
+    await executeStatement(this.db, sql`
+      UPDATE identity_edge_node
+      SET metadata = ${payload},
+          last_seen = ${ts},
+          updated_at = ${ts}
+      WHERE id = ${nodeId}
+    `);
   }
 
   public async updateNodeMode(nodeId: string, options: {
@@ -204,35 +173,19 @@ export class EdgeNodeRepository {
     const capabilitiesPayload = options.capabilities ? JSON.stringify(options.capabilities) : null;
     const now = new Date();
     const ts = toDbTimestamp(this.db, now);
-    const isSqlite = isDatabaseSqlite(this.db);
 
-    if (isSqlite) {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET access_mode = ${options.accessMode},
-            public_ip = ${options.publicIp ?? null},
-            public_port = ${options.publicPort ?? null},
-            subdomain = ${options.subdomain ?? null},
-            connectivity_status = ${options.connectivityStatus ?? 'unknown'},
-            capabilities = ${capabilitiesPayload},
-            last_connectivity_check = ${ts},
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    } else {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET access_mode = ${options.accessMode},
-            public_ip = ${options.publicIp ?? null},
-            public_port = ${options.publicPort ?? null},
-            subdomain = ${options.subdomain ?? null},
-            connectivity_status = ${options.connectivityStatus ?? 'unknown'},
-            capabilities = ${capabilitiesPayload}::jsonb,
-            last_connectivity_check = ${ts},
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    }
+    await executeStatement(this.db, sql`
+      UPDATE identity_edge_node
+      SET access_mode = ${options.accessMode},
+          public_ip = ${options.publicIp ?? null},
+          public_port = ${options.publicPort ?? null},
+          subdomain = ${options.subdomain ?? null},
+          connectivity_status = ${options.connectivityStatus ?? 'unknown'},
+          capabilities = ${capabilitiesPayload},
+          last_connectivity_check = ${ts},
+          updated_at = ${ts}
+      WHERE id = ${nodeId}
+    `);
   }
 
   public async getNodeConnectivityInfo(nodeId: string): Promise<{
@@ -269,26 +222,23 @@ export class EdgeNodeRepository {
   }
 
   public async mergeNodeMetadata(nodeId: string, patch: Record<string, unknown>): Promise<void> {
-    const payload = JSON.stringify(patch);
-    const isSqlite = isDatabaseSqlite(this.db);
+    // Read current metadata
+    const current = await this.getNodeMetadata(nodeId);
+    if (!current) {
+      throw new Error(`Node ${nodeId} not found`);
+    }
+
+    // Merge in application layer
+    const merged = { ...(current.metadata ?? {}), ...patch };
+    const payload = JSON.stringify(merged);
     const ts = toDbTimestamp(this.db, new Date());
 
-    if (isSqlite) {
-      // SQLite: use json_patch or simple replace
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET metadata = json_patch(COALESCE(metadata, '{}'), ${payload}),
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    } else {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${payload}::jsonb,
-            updated_at = now()
-        WHERE id = ${nodeId}
-      `);
-    }
+    await executeStatement(this.db, sql`
+      UPDATE identity_edge_node
+      SET metadata = ${payload},
+          updated_at = ${ts}
+      WHERE id = ${nodeId}
+    `);
   }
 
   public async getNodeMetadata(nodeId: string): Promise<{ nodeId: string; metadata: Record<string, unknown> | null; lastSeen?: Date } | undefined> {
@@ -310,33 +260,17 @@ export class EdgeNodeRepository {
   }
 
   public async replaceNodePods(nodeId: string, pods: string[]): Promise<void> {
-    const isSqlite = isDatabaseSqlite(this.db);
-    
-    if (isSqlite) {
-      // SQLite: use synchronous transaction via db.run
-      this.db.run(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
+    await this.db.transaction(async (tx: IdentityDatabase) => {
+      await tx.execute(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
       if (pods.length > 0) {
         const values = pods.map((baseUrl) => sql`(${nodeId}, ${baseUrl})`);
-        this.db.run(sql`
+        await tx.execute(sql`
           INSERT INTO identity_edge_node_pod (node_id, base_url)
           VALUES ${sql.join(values, sql`, `)}
           ON CONFLICT DO NOTHING
         `);
       }
-    } else {
-      // PostgreSQL: use async transaction
-      await this.db.transaction(async (tx: IdentityDatabase) => {
-        await tx.execute(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
-        if (pods.length > 0) {
-          const values = pods.map((baseUrl) => sql`(${nodeId}, ${baseUrl})`);
-          await tx.execute(sql`
-            INSERT INTO identity_edge_node_pod (node_id, base_url)
-            VALUES ${sql.join(values, sql`, `)}
-            ON CONFLICT DO NOTHING
-          `);
-        }
-      });
-    }
+    });
   }
 
   public async findNodeByResourcePath(path: string): Promise<{ nodeId: string; baseUrl: string; accessMode?: string; metadata?: Record<string, unknown> | null } | undefined> {

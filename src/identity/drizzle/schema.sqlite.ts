@@ -93,8 +93,13 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
   provisionCodeHash: text('provision_code_hash'), // bind 时用户传入的配对码 (hash)
   internalIp: text('internal_ip'),              // Internal network IP for center nodes
   internalPort: integer('internal_port'),
-  capabilities: text('capabilities', { mode: 'json' }),
-  metadata: text('metadata', { mode: 'json' }),
+  // Extracted from metadata
+  hostname: text('hostname'),                   // 节点主机名
+  ipv6: text('ipv6'),                          // IPv6 地址
+  version: text('version'),                    // Agent 版本
+  // JSON fields
+  capabilities: text('capabilities'),           // JSON string: 能力列表
+  metadata: text('metadata'),                   // JSON string: 复杂对象 (tunnel, certificate, metrics)
   connectivityStatus: text('connectivity_status').default('unknown'),
   lastConnectivityCheck: integer('last_connectivity_check'),
   createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),

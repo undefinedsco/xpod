@@ -27,7 +27,7 @@ const CLOUD_BASE_URL = `http://localhost:${CLOUD_PORT}`;
 const LOCAL_BASE_URL = `http://localhost:${LOCAL_PORT}`;
 
 // Docker 内 Local 的 service token（与 docker-compose.cluster.yml 一致）
-const LOCAL_SERVICE_TOKEN = 'test-service-token-for-integration';
+const LOCAL_SERVICE_TOKEN = 'svc-testservicetokenforintegration';
 const LOCAL_NODE_ID = 'local-managed-node';
 
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
