@@ -785,9 +785,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
 
     // 构建资源 URL 和 subject URI
-    // Template: {chatId}/{id}.ttl#{id}
+    // Template: {chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}
+    // 使用 createdAt 时间来计算日期，与 drizzle-solid 的模板填充逻辑保持一致
+    const dateForPath = createdAt ? new Date(createdAt) : new Date();
+    const yyyy = dateForPath.getUTCFullYear();
+    const mm = String(dateForPath.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dateForPath.getUTCDate()).padStart(2, '0');
+
     const podBaseUrl = cachedWebId.replace('/profile/card#me', '');
-    const resourceUrl = `${podBaseUrl}/.data/chat/${chatId}/${messageId}.ttl`;
+    const resourceUrl = `${podBaseUrl}/.data/chat/${chatId}/${yyyy}/${mm}/${dd}/messages.ttl`;
     const subjectUri = `${resourceUrl}#${messageId}`;
 
     // 构建 SPARQL UPDATE：删除旧值，插入新值
