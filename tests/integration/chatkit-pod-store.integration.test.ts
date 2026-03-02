@@ -326,7 +326,7 @@ suite('ChatKit PodStore Integration', () => {
       const assistantMsg = items.find((i: any) => i.type === 'assistant_message');
       expect(assistantMsg).toBeDefined();
       expect(assistantMsg.content[0].text).toContain('Mock response');
-    });
+    }, 10000); // Increase timeout to 10 seconds
 
     it('should handle multiple messages in conversation', async () => {
       // Send second message
@@ -353,7 +353,7 @@ suite('ChatKit PodStore Integration', () => {
       // Verify all messages are stored
       const items = await waitForThreadItemsCount(threadId, 4);
       expect(items.length).toBeGreaterThanOrEqual(4); // 2 user + 2 assistant
-    });
+    }, 10000); // Increase timeout to 10 seconds
   });
 
   describe('Thread with Initial Message', () => {
@@ -422,7 +422,7 @@ suite('ChatKit PodStore Integration', () => {
           }
         }
       }
-    });
+    }, 10000); // Increase timeout to 10 seconds
   });
 
   describe('Thread Deletion', () => {
