@@ -32,7 +32,7 @@ export interface SubdomainRegistrationResult {
   subdomain: string;
   fullDomain: string;
   mode: 'direct' | 'tunnel';
-  publicIp?: string;
+  ipv4?: string;
   tunnelProvider?: string;
   tunnelEndpoint?: string;
   registeredAt: string;
@@ -43,7 +43,7 @@ export interface SubdomainInfo {
   subdomain: string;
   fullDomain: string;
   mode: 'direct' | 'tunnel';
-  publicIp?: string;
+  ipv4?: string;
   tunnelProvider?: string;
   tunnelEndpoint?: string;
   registeredAt: string;
@@ -117,7 +117,7 @@ export class SubdomainClient {
   async register(options: {
     subdomain: string;
     localPort: number;
-    publicIp?: string;
+    ipv4?: string;
   }): Promise<SubdomainRegistrationResult> {
     const url = `${this.cloudApiEndpoint}/register`;
     const response = await this.fetch(url, {
@@ -125,7 +125,7 @@ export class SubdomainClient {
       body: JSON.stringify({
         subdomain: options.subdomain,
         localPort: options.localPort,
-        publicIp: options.publicIp,
+        ipv4: options.ipv4,
         nodeId: this.nodeId,
       }),
     });

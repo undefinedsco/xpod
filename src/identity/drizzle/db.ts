@@ -16,6 +16,18 @@ export type IdentityDatabase = any;
 export type IdentitySchema = typeof pgSchema | typeof sqliteSchema;
 
 /**
+ * Get the appropriate schema for the given database connection.
+ * This provides a unified abstraction layer over PG and SQLite schemas.
+ *
+ * @example
+ * const schema = getSchema(db);
+ * await db.select().from(schema.accountUsage).where(eq(schema.accountUsage.accountId, id));
+ */
+export function getSchema(db: IdentityDatabase): typeof pgSchema | typeof sqliteSchema {
+  return isDatabaseSqlite(db) ? sqliteSchema : pgSchema;
+}
+
+/**
  * Standardized query result format across databases.
  */
 export interface QueryResult<T = Record<string, unknown>> {
@@ -262,13 +274,16 @@ function ensureSqliteTables(sqlite: Database.Database): void {
       node_type TEXT DEFAULT 'edge',
       subdomain TEXT UNIQUE,
       access_mode TEXT,
-      public_ip TEXT,
+      ipv4 TEXT,
       public_port INTEGER,
       public_url TEXT,
       service_token_hash TEXT,
       provision_code_hash TEXT,
       internal_ip TEXT,
       internal_port INTEGER,
+      hostname TEXT,
+      ipv6 TEXT,
+      version TEXT,
       capabilities TEXT,
       metadata TEXT,
       connectivity_status TEXT DEFAULT 'unknown',

@@ -72,21 +72,32 @@ export class DrizzleQuotaService implements QuotaService {
   }
 
   public async setPodQuota(podId: string, quota: Partial<AccountQuota>): Promise<void> {
+    // Try to get pod info from CSS
     const podInfo = await this.accountRepo.getPodInfo(podId);
-    if (!podInfo?.accountId) {
-      throw new Error(`Pod ${podId} not found or has no associated account`);
+
+    // If pod doesn't exist in CSS, try to get accountId from usage table
+    let accountId = podInfo?.accountId;
+    if (!accountId) {
+      const usage = await this.usageRepo.getPodUsage(podId);
+      accountId = usage?.accountId;
     }
+
+    // If still no accountId, use a placeholder (quota can be set before pod creation)
+    if (!accountId) {
+      accountId = 'unknown';
+    }
+
     if (quota.storageLimitBytes !== undefined) {
-      await this.usageRepo.setPodStorageLimit(podId, podInfo.accountId, quota.storageLimitBytes);
+      await this.usageRepo.setPodStorageLimit(podId, accountId, quota.storageLimitBytes);
     }
     if (quota.bandwidthLimitBps !== undefined) {
-      await this.usageRepo.setPodBandwidthLimit(podId, podInfo.accountId, quota.bandwidthLimitBps);
+      await this.usageRepo.setPodBandwidthLimit(podId, accountId, quota.bandwidthLimitBps);
     }
     if (quota.computeLimitSeconds !== undefined) {
-      await this.usageRepo.setPodComputeLimit(podId, podInfo.accountId, quota.computeLimitSeconds);
+      await this.usageRepo.setPodComputeLimit(podId, accountId, quota.computeLimitSeconds);
     }
     if (quota.tokenLimitMonthly !== undefined) {
-      await this.usageRepo.setPodTokenLimit(podId, podInfo.accountId, quota.tokenLimitMonthly);
+      await this.usageRepo.setPodTokenLimit(podId, accountId, quota.tokenLimitMonthly);
     }
   }
 

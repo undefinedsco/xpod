@@ -159,14 +159,14 @@ export class PodRoutingHttpHandler extends HttpHandler {
    * For center nodes, prefer internal endpoint for intra-cluster communication.
    */
   private resolveUpstream(nodeInfo: {
-    publicIp?: string | null;
+    ipv4?: string | null;
     publicPort?: number | null;
     nodeId: string;
   }): string | undefined {
     // Try public IP first (for edge nodes or external access)
-    if (nodeInfo.publicIp) {
+    if (nodeInfo.ipv4) {
       const port = nodeInfo.publicPort && nodeInfo.publicPort !== 443 ? `:${nodeInfo.publicPort}` : '';
-      return `https://${nodeInfo.publicIp}${port}`;
+      return `https://${nodeInfo.ipv4}${port}`;
     }
 
     // NOTE: Internal endpoint lookup is done via CenterNodeRegistrationService.getNodeInternalUrl()

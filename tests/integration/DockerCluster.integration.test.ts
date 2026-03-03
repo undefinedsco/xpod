@@ -361,10 +361,11 @@ suite('Docker Cluster Integration', () => {
     });
 
     it('should support pod-level quota', async () => {
-      const podId = `test-pod-${Date.now()}`;
+      // Use existing seed pod instead of creating a new one
+      const podId = 'http://localhost:5737/test/';
 
       // Set pod quota
-      const setRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/pods/${podId}`, {
+      const setRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/pods/${encodeURIComponent(podId)}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${SERVICE_TOKEN}`,
@@ -378,7 +379,7 @@ suite('Docker Cluster Integration', () => {
       expect(setRes.status).toBe(200);
 
       // Read back
-      const getRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/pods/${podId}`, {
+      const getRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/pods/${encodeURIComponent(podId)}`, {
         headers: {
           'Authorization': `Bearer ${SERVICE_TOKEN}`,
         },
@@ -405,7 +406,7 @@ suite('Docker Cluster Integration', () => {
       expect(result.rows.length).toBeGreaterThan(0);
       const row = result.rows[0];
       expect(row.service_type).toBe('cloud');
-      expect(row.service_id).toBe('cloud-a');
+      expect(row.service_id).toBe('cloud-1');
 
       const scopes = JSON.parse(row.scopes);
       expect(scopes).toContain('quota:write');

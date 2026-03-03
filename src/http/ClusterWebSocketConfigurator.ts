@@ -110,10 +110,10 @@ export class ClusterWebSocketConfigurator {
 
     const mode = this.normalizeMode(nodeInfo.accessMode);
 
-    if (mode === 'direct' && nodeInfo.publicIp) {
+    if (mode === 'direct' && nodeInfo.ipv4) {
       // Direct mode: redirect client to connect directly
       const port = nodeInfo.publicPort && nodeInfo.publicPort !== 443 ? `:${nodeInfo.publicPort}` : '';
-      const directUrl = `wss://${nodeInfo.publicIp}${port}${request.url ?? '/'}`;
+      const directUrl = `wss://${nodeInfo.ipv4}${port}${request.url ?? '/'}`;
 
       this.logger.info(`WebSocket direct mode: redirecting to ${directUrl}`);
       

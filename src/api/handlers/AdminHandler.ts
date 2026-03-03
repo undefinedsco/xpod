@@ -444,7 +444,7 @@ export function registerAdminRoutes(server: ApiServer): void {
 
 
   // GET /api/admin/public-ip - Detect outbound public IP and compare with CSS_BASE_URL
-  const publicIpHandler: RouteHandler = async (
+  const ipv4Handler: RouteHandler = async (
     req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
@@ -459,7 +459,7 @@ export function registerAdminRoutes(server: ApiServer): void {
       if (!baseUrl) {
         sendJson(res, 200, {
           status: 'unknown',
-          publicIp: ip,
+          ipv4: ip,
           baseUrl,
           detail: ip ? '未配置 Base URL，无法判断是否可直连。' : '未配置 Base URL，且无法获取公网 IP。',
         });
@@ -472,7 +472,7 @@ export function registerAdminRoutes(server: ApiServer): void {
       } catch {
         sendJson(res, 200, {
           status: 'unknown',
-          publicIp: ip,
+          ipv4: ip,
           baseUrl,
           detail: 'Base URL 格式不合法，无法判断。',
         });
@@ -482,7 +482,7 @@ export function registerAdminRoutes(server: ApiServer): void {
       if (isPrivateIp(hostname)) {
         sendJson(res, 200, {
           status: 'fail',
-          publicIp: ip,
+          ipv4: ip,
           baseUrl,
           detail: 'Base URL 为本地/内网地址，默认不可直连。',
         });
@@ -495,7 +495,7 @@ export function registerAdminRoutes(server: ApiServer): void {
         if (!ip) {
           sendJson(res, 200, {
             status: 'unknown',
-            publicIp: null,
+            ipv4: null,
             baseUrl,
             detail: '无法获取公网出口 IP，无法比对。',
           });
@@ -504,7 +504,7 @@ export function registerAdminRoutes(server: ApiServer): void {
         const ok = hostname === ip;
         sendJson(res, 200, {
           status: ok ? 'pass' : 'fail',
-          publicIp: ip,
+          ipv4: ip,
           baseUrl,
           detail: ok
             ? 'Base URL IP 与公网出口 IP 一致，默认可直连。'
@@ -517,7 +517,7 @@ export function registerAdminRoutes(server: ApiServer): void {
       if (!ip) {
         sendJson(res, 200, {
           status: 'unknown',
-          publicIp: null,
+          ipv4: null,
           baseUrl,
           detail: '已配置域名，但无法获取公网出口 IP，无法进一步判断。',
         });
@@ -526,7 +526,7 @@ export function registerAdminRoutes(server: ApiServer): void {
 
       sendJson(res, 200, {
         status: 'pass',
-        publicIp: ip,
+        ipv4: ip,
         baseUrl,
         detail: '已配置域名，默认可直连（仍需确保端口映射/防火墙放行）。',
       });
@@ -539,7 +539,7 @@ export function registerAdminRoutes(server: ApiServer): void {
   // Register routes - public for now (TODO: add auth for production)
   server.get('/api/admin/status', statusHandler, { public: true });
   server.get('/api/admin/config', getConfigHandler, { public: true });
-  server.get('/api/admin/public-ip', publicIpHandler, { public: true });
+  server.get('/api/admin/public-ip', ipv4Handler, { public: true });
   server.put('/api/admin/config', updateConfigHandler, { public: true });
   server.post('/api/admin/restart', restartHandler, { public: true });
   server.get('/api/admin/logs', getLogsHandler, { public: true });

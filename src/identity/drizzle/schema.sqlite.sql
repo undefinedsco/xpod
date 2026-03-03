@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS identity_edge_node (
   node_type TEXT DEFAULT 'edge',
   subdomain TEXT UNIQUE,
   access_mode TEXT,
-  public_ip TEXT,
+  ipv4 TEXT,
   public_port INTEGER,
   public_url TEXT,
   service_token_hash TEXT,

@@ -47,13 +47,13 @@ export function registerProvisionRoutes(
    * SP 注册端点（公开，SP 启动时调用，此时用户可能还没有 Cloud 账号）
    *
    * Request:
-   *   { publicUrl: string, nodeId?: string, displayName?: string, publicIp?: string, serviceToken?: string }
+   *   { publicUrl: string, nodeId?: string, displayName?: string, ipv4?: string, serviceToken?: string }
    *
    * Response 201:
    *   { nodeId, nodeToken, serviceToken, provisionCode, spDomain? }
    */
   server.post('/provision/nodes', async (request, response) => {
-    let body: { publicUrl?: string; nodeId?: string; displayName?: string; publicIp?: string; serviceToken?: string };
+    let body: { publicUrl?: string; nodeId?: string; displayName?: string; ipv4?: string; serviceToken?: string };
     try {
       body = await readJsonBody(request) as any ?? {};
     } catch {
@@ -91,11 +91,11 @@ export function registerProvisionRoutes(
         ? `${subdomainPrefix}.${baseStorageDomain}`
         : undefined;
 
-      // 如果提供了 publicIp，存入节点信息（供后续健康检查使用）
-      if (body.publicIp || subdomainPrefix) {
+      // 如果提供了 ipv4，存入节点信息（供后续健康检查使用）
+      if (body.ipv4 || subdomainPrefix) {
         await repository.updateNodeMode(result.nodeId, {
           accessMode: 'direct',
-          publicIp: body.publicIp,
+          ipv4: body.ipv4,
           subdomain: subdomainPrefix,
         });
       }

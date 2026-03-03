@@ -164,7 +164,7 @@ export class EdgeNodeRepository {
 
   public async updateNodeMode(nodeId: string, options: {
     accessMode: 'direct' | 'proxy';
-    publicIp?: string;
+    ipv4?: string;
     publicPort?: number;
     subdomain?: string;
     connectivityStatus?: 'unknown' | 'reachable' | 'unreachable';
@@ -177,7 +177,7 @@ export class EdgeNodeRepository {
     await executeStatement(this.db, sql`
       UPDATE identity_edge_node
       SET access_mode = ${options.accessMode},
-          public_ip = ${options.publicIp ?? null},
+          ipv4 = ${options.ipv4 ?? null},
           public_port = ${options.publicPort ?? null},
           subdomain = ${options.subdomain ?? null},
           connectivity_status = ${options.connectivityStatus ?? 'unknown'},
@@ -191,29 +191,29 @@ export class EdgeNodeRepository {
   public async getNodeConnectivityInfo(nodeId: string): Promise<{
     nodeId: string;
     accessMode?: string;
-    publicIp?: string;
+    ipv4?: string;
     publicPort?: number;
     subdomain?: string;
     connectivityStatus?: string;
     lastConnectivityCheck?: Date;
   } | undefined> {
     const result = await executeQuery(this.db, sql`
-      SELECT id, access_mode, public_ip, public_port, subdomain, 
+      SELECT id, access_mode, ipv4, public_port, subdomain,
              connectivity_status, last_connectivity_check
       FROM identity_edge_node
       WHERE id = ${nodeId}
       LIMIT 1
     `);
-    
+
     if (result.rows.length === 0) {
       return undefined;
     }
-    
+
     const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       accessMode: row.access_mode ? String(row.access_mode) : undefined,
-      publicIp: row.public_ip ? String(row.public_ip) : undefined,
+      ipv4: row.ipv4 ? String(row.ipv4) : undefined,
       publicPort: row.public_port ? Number(row.public_port) : undefined,
       subdomain: row.subdomain ? String(row.subdomain) : undefined,
       connectivityStatus: row.connectivity_status ? String(row.connectivity_status) : undefined,

@@ -16,7 +16,7 @@ export interface SubdomainRegistration {
   mode: 'direct' | 'tunnel';
 
   /** 公网 IP (直连模式) */
-  publicIp?: string;
+  ipv4?: string;
 
   /** 隧道配置 (隧道模式) */
   tunnelConfig?: TunnelConfig;
@@ -39,7 +39,7 @@ export interface ConnectivityResult {
   reachable: boolean;
 
   /** 公网 IP */
-  publicIp?: string;
+  ipv4?: string;
 
   /** 延迟 (ms) */
   latency?: number;
@@ -137,10 +137,10 @@ export class SubdomainService {
     subdomain: string;
     nodeId: string;
     localPort: number;
-    publicIp?: string;
+    ipv4?: string;
     ownerId?: string;
   }): Promise<SubdomainRegistration> {
-    const { subdomain, nodeId, localPort, publicIp, ownerId } = options;
+    const { subdomain, nodeId, localPort, ipv4, ownerId } = options;
     const normalizedSubdomain = subdomain.toLowerCase();
 
     const availability = await this.checkAvailability(normalizedSubdomain);
@@ -154,11 +154,11 @@ export class SubdomainService {
     let mode: 'direct' | 'tunnel' = 'tunnel';
     let verifiedIp: string | undefined;
 
-    if (publicIp) {
-      const connectivity = await this.checkConnectivity(publicIp, localPort);
+    if (ipv4) {
+      const connectivity = await this.checkConnectivity(ipv4, localPort);
       if (connectivity.reachable) {
         mode = 'direct';
-        verifiedIp = publicIp;
+        verifiedIp = ipv4;
       }
     }
 
@@ -184,7 +184,7 @@ export class SubdomainService {
     // 持久化到 EdgeNodeRepository
     await this.edgeNodeRepo.updateNodeMode(nodeId, {
       accessMode: mode === 'direct' ? 'direct' : 'proxy',
-      publicIp: verifiedIp,
+      ipv4: verifiedIp,
       publicPort: localPort,
       subdomain: normalizedSubdomain,
       connectivityStatus: mode === 'direct' ? 'reachable' : 'unknown',
@@ -194,7 +194,7 @@ export class SubdomainService {
       subdomain: normalizedSubdomain,
       fullDomain,
       mode,
-      publicIp: verifiedIp,
+      ipv4: verifiedIp,
       tunnelConfig,
       registeredAt: new Date(),
       ownerId,
@@ -262,7 +262,7 @@ export class SubdomainService {
             subdomain: info.subdomain,
             fullDomain: `${info.subdomain}.${this.baseDomain}`,
             mode: info.accessMode === 'direct' ? 'direct' : 'tunnel',
-            publicIp: info.publicIp,
+            ipv4: info.ipv4,
             registeredAt: new Date(),
             nodeId: n.nodeId,
           });
@@ -336,7 +336,7 @@ export class SubdomainService {
 
       return {
         reachable: response.ok || response.status === 401,
-        publicIp: ip,
+        ipv4: ip,
         latency: Date.now() - start,
       };
     } catch (error) {

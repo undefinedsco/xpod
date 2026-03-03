@@ -86,7 +86,7 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
   nodeType: text('node_type').default('edge'),  // 'center' | 'edge' | 'sp'
   subdomain: text('subdomain').unique(),
   accessMode: text('access_mode'),
-  publicIp: text('public_ip'),
+  ipv4: text('ipv4'),                          // IPv4 地址
   publicPort: integer('public_port'),
   publicUrl: text('public_url'),                // SP 的公网地址 (e.g. https://sp.example)
   serviceTokenHash: text('service_token_hash'), // Cloud → SP 回调认证 token (明文)
