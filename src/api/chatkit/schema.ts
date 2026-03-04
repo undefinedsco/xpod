@@ -59,7 +59,7 @@
  * ```
  */
 
-import { podTable, string, datetime, uri } from 'drizzle-solid';
+import { podTable, string, datetime, uri } from '@undefineds.co/drizzle-solid';
 import { Meeting, SIOC, FOAF } from '../../vocab';
 import { UDFS_NAMESPACE } from '../../vocab';
 
@@ -115,6 +115,8 @@ export const Thread = podTable(
     chatId: uri('chatId').predicate(SIOC.has_parent).reference(Chat),
     title: string('title'),
     status: string('status'),
+    /** 工作目录路径，可变（运行时可切换） */
+    workspace: string('workspace'),
     /**
      * JSON string for extended metadata (e.g., xpod runtime hints).
      * Note: drizzle-solid stores this as an RDF literal.
@@ -142,27 +144,35 @@ export const Thread = podTable(
  * 放在 Chat 下，通过 threadId 关联到 Thread。
  * 对应 ChatKit 的 ThreadItem 概念。
  *
- * 存储位置: /.data/chat/{chatId}/{id}.ttl#{id}
+ * 存储位置: /.data/chat/{chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}
+ * 按日期分组存储，避免独立文件导致的 SPARQL OPTIONAL 查询失败问题
  */
 export const Message = podTable(
   'Message',
   {
     id: string('id').primaryKey(),
-    // chatId 用于路径构建
-    chatId: string('chatId'),
-    // threadId 关联到 Thread (ChatKit thread) - 使用简单字符串便于查询
-    threadId: string('threadId'),
+    // chatId 引用 Chat，同时用于路径构建（insert 时传入 bare ID）
+    chatId: uri('chatId').reference(Chat),
+    // threadId 关联到 Thread，表达 RDF 关系
+    threadId: uri('threadId').predicate(SIOC.has_container).reference(Thread),
     maker: uri('maker').predicate(FOAF.maker),
     role: string('role'),
     content: string('content').predicate(SIOC.content),
     status: string('status'),
     createdAt: datetime('createdAt'),
+
+    // 工具调用字段（方便 SPARQL 查询和索引）
+    toolName: string('toolName'),
+    toolCallId: string('toolCallId'),
+
+    // 详细信息（JSON 字符串，存储复杂数据）
+    metadata: string('metadata'),
   },
   {
     base: '/.data/chat/',
     type: Meeting.Message,
     namespace: UDFS_NAMESPACE,
-    subjectTemplate: '{chatId}/{id}.ttl#{id}',
+    subjectTemplate: '{chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}',
     sparqlEndpoint: '/.data/chat/-/sparql',
   },
 );
