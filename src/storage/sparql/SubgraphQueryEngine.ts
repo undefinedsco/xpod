@@ -36,6 +36,7 @@ export class QuadstoreSparqlEngine implements SparqlEngine {
   private readonly store: Quadstore;
   private readonly engine: QueryEngine;
   private readonly optimizedEngine: OptimizedQuadstoreEngine;
+  private readonly logger = getLoggerFor(this);
   private readonly ready: Promise<void>;
 
   public constructor(endpoint: string) {
@@ -108,6 +109,8 @@ export class QuadstoreSparqlEngine implements SparqlEngine {
   }
 
   private createContext(basePath: string): QueryContext {
+    const logger = this.logger;
+    const self = this;
     return {
       unionDefaultGraph: true,
       baseIRI: basePath,
@@ -116,14 +119,15 @@ export class QuadstoreSparqlEngine implements SparqlEngine {
           type: 'rdfjsSource',
           value: {
             match: (subject?: Quad_Subject | null, predicate?: Quad_Predicate | null, object?: Quad_Object | null, graph?: Quad_Graph | null): AsyncIterator<Quad> => {
-              const iterator = this.store.match(
+              logger.debug(`[match] s=${subject?.value ?? '*'} p=${predicate?.value ?? '*'} o=${object?.value ?? '*'} g=${graph?.value ?? '*'} gType=${graph?.termType ?? 'null'}`);
+              const iterator = self.store.match(
                 subject ?? undefined,
                 predicate ?? undefined,
                 object ?? undefined,
                 graph ?? undefined,
               );
               const filtered = (iterator as unknown as AsyncIterator<Quad>).filter((quad): boolean =>
-                this.isInScope(basePath, quad.graph)
+                self.isInScope(basePath, quad.graph)
               );
               return filtered;
             },
