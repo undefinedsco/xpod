@@ -112,7 +112,9 @@ export const edgeNodes = pgTable('identity_edge_node', {
 export const edgeNodePods = pgTable('identity_edge_node_pod', {
   nodeId: text('node_id').notNull().references(() => edgeNodes.id, { onDelete: 'cascade' }),
   baseUrl: text('base_url').notNull(),
-});
+}, (table) => ({
+  pk: primaryKey({ columns: [table.nodeId, table.baseUrl] }),
+}));
 
 export const apiClientCredentials = pgTable('identity_api_client_credentials', {
   clientId: text('client_id').primaryKey(),

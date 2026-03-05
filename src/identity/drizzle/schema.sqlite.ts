@@ -110,7 +110,9 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
 export const edgeNodePods = sqliteTable('identity_edge_node_pod', {
   nodeId: text('node_id').notNull().references(() => edgeNodes.id, { onDelete: 'cascade' }),
   baseUrl: text('base_url').notNull(),
-});
+}, (table) => ({
+  pk: primaryKey({ columns: [table.nodeId, table.baseUrl] }),
+}));
 
 export const apiClientCredentials = sqliteTable('identity_api_client_credentials', {
   clientId: text('client_id').primaryKey(),

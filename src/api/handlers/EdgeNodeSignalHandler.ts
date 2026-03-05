@@ -134,7 +134,10 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
         metadata,
       });
     } catch (error) {
-      logger.error(`Signal handling error for node ${nodeId}: ${error}`);
+      logger.error(`Signal handling error for node ${nodeId}:`, error);
+      if (error instanceof Error) {
+        logger.error(`Stack trace: ${error.stack}`);
+      }
       sendJson(response, 500, { error: 'Failed to process signal' });
     }
   });
