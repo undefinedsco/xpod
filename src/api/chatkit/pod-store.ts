@@ -12,7 +12,7 @@
  */
 
 import { Session } from '@inrupt/solid-client-authn-node';
-import { drizzle, eq, and } from 'drizzle-solid';
+import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ChatKitStore, StoreContext } from './store';
 import type {
@@ -585,7 +585,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 删除 Thread
     try {
-      await db.delete(Thread).where(eq(Thread.id, threadId));
+      if (chatId) {
+        await db.delete(Thread).where(and(eq(Thread.id, threadId), eq(Thread.chatId, chatId)));
+      } else {
+        // 如果没有 chatId，尝试只用 id 删除（可能失败）
+        await db.delete(Thread).where(eq(Thread.id, threadId));
+      }
     } catch (err: any) {
       if (!err.message?.includes('404') && !err.message?.includes('Could not retrieve') && !err.message?.includes('Parse error')) {
         throw err;

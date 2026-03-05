@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { eq } from '@undefineds.co/drizzle-solid';
 
 import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
@@ -606,7 +607,6 @@ suite('ChatKit PodStore Integration', () => {
     it('should update credential status to rate limited', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('drizzle-solid');
 
       // Create a credential for status update test
       await db.insert(Credential).values({
@@ -638,7 +638,6 @@ suite('ChatKit PodStore Integration', () => {
     it('should record credential success and reset fail count', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('drizzle-solid');
 
       // Create a credential with some failures
       await db.insert(Credential).values({
