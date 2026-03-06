@@ -14,7 +14,7 @@ describe('EdgeNodeDnsCoordinator', () => {
     deleteRecord.mockReset();
   });
 
-  it('synchronizes node to its publicIp', async () => {
+  it('synchronizes node to its ipv4', async () => {
     const coordinator = new EdgeNodeDnsCoordinator({
       provider: mockProvider as any,
       rootDomain: 'undefineds.site',
@@ -23,7 +23,7 @@ describe('EdgeNodeDnsCoordinator', () => {
 
     await coordinator.synchronize('node-1', {
       subdomain: 'node-1',
-      publicIp: '198.51.100.5',
+      ipv4: '198.51.100.5',
     });
 
     expect(upsertRecord).toHaveBeenCalledWith({
@@ -35,7 +35,7 @@ describe('EdgeNodeDnsCoordinator', () => {
     });
   });
 
-  it('falls back to ipv4 field when publicIp is missing', async () => {
+  it('falls back to ipv4 field when ipv4 is missing', async () => {
     const coordinator = new EdgeNodeDnsCoordinator({
       provider: mockProvider as any,
       rootDomain: 'undefineds.site',
@@ -100,7 +100,7 @@ describe('EdgeNodeDnsCoordinator', () => {
 
     await coordinator.synchronize('node-down', {
       subdomain: 'node-down',
-      publicIp: '198.51.100.5',
+      ipv4: '198.51.100.5',
       connectivityStatus: 'unreachable',
     });
 
@@ -121,7 +121,7 @@ describe('EdgeNodeDnsCoordinator', () => {
 
     await coordinator.synchronize('node-up', {
       subdomain: 'node-up',
-      publicIp: '198.51.100.10',
+      ipv4: '198.51.100.10',
       connectivityStatus: 'reachable',
     });
 
@@ -135,7 +135,7 @@ describe('EdgeNodeDnsCoordinator', () => {
     expect(deleteRecord).not.toHaveBeenCalled();
   });
 
-  it('uses FRP entrypoint IP when node reports it as publicIp', async () => {
+  it('uses FRP entrypoint IP when node reports it as ipv4', async () => {
     const coordinator = new EdgeNodeDnsCoordinator({
       provider: mockProvider as any,
       rootDomain: 'undefineds.site',
@@ -145,7 +145,7 @@ describe('EdgeNodeDnsCoordinator', () => {
     // 节点没有公网 IP，报的是 FRP 入口地址
     await coordinator.synchronize('node-frp', {
       subdomain: 'node-frp',
-      publicIp: '10.0.0.99',
+      ipv4: '10.0.0.99',
     });
 
     expect(upsertRecord).toHaveBeenCalledWith({

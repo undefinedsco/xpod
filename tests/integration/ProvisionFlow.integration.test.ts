@@ -103,14 +103,14 @@ suite('Provision Flow (IdP + SP)', () => {
       console.log(`  SP registered: nodeId=${body.nodeId}, spDomain=${body.spDomain}`);
     });
 
-    it('should accept publicIp parameter', async () => {
+    it('should accept ipv4 parameter', async () => {
       const res = await fetch(`${CLOUD_BASE_URL}/provision/nodes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           publicUrl: LOCAL_BASE_URL,
           displayName: 'SP with IP',
-          publicIp: '192.168.1.100',
+          ipv4: '192.168.1.100',
         }),
       });
 
