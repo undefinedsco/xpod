@@ -23,7 +23,6 @@ import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage'
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
-import { DefaultQuotaService } from './quota/DefaultQuotaService';
 import { DrizzleQuotaService } from './quota/DrizzleQuotaService';
 import { NoopQuotaService } from './quota/NoopQuotaService';
 import { PerAccountQuotaStrategy } from './storage/quota/PerAccountQuotaStrategy';
@@ -126,7 +125,6 @@ export {
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
     SqliteKeyValueStorage,
-  DefaultQuotaService,
   DrizzleQuotaService,
     NoopQuotaService,
     PerAccountQuotaStrategy,

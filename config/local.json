@@ -12,9 +12,13 @@
   ],
   "@graph": [
     {
-      "comment": "Disable quota for local profile",
+      "comment": "Quota service backed by identity DB, no env defaults = unlimited",
       "@id": "urn:undefineds:xpod:QuotaService",
-      "@type": "NoopQuotaService"
+      "@type": "DrizzleQuotaService",
+      "DrizzleQuotaService:_options_identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl",
+        "@type": "Variable"
+      }
     },
     {
       "comment": "定义 idpUrl 变量（外部 IdP 基础 URL），设置后启用 SP 模式",
