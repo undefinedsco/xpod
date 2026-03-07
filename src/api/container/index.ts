@@ -13,6 +13,7 @@ import type { ApiContainerCradle, ApiContainerConfig } from './types';
 import { registerCommonServices } from './common';
 import { registerCloudServices } from './cloud';
 import { registerLocalServices } from './local';
+import { registerBusinessToken } from './business-token';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
@@ -55,6 +56,9 @@ export function createApiContainer(config: ApiContainerConfig): AwilixContainer<
   } else {
     registerLocalServices(container);
   }
+
+  // 注册 Business Token (如果配置了 XPOD_BUSINESS_TOKEN)
+  registerBusinessToken(container);
 
   return container;
 }

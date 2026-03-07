@@ -82,14 +82,14 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
       const existing = await repo.getNodeMetadata(nodeId);
       let metadata = mergeMetadata(existing?.metadata ?? {}, payload, now);
 
-      // 从 DB connectivity 列注入 subdomain/publicIp，供 dnsCoordinator 使用
+      // 从 DB connectivity 列注入 subdomain/ipv4，供 dnsCoordinator 使用
       const connectivityInfo = await repo.getNodeConnectivityInfo(nodeId);
       if (connectivityInfo) {
         if (connectivityInfo.subdomain && !metadata.subdomain) {
           metadata.subdomain = connectivityInfo.subdomain;
         }
-        if (connectivityInfo.publicIp && !metadata.publicIp) {
-          metadata.publicIp = connectivityInfo.publicIp;
+        if (connectivityInfo.ipv4 && !metadata.ipv4) {
+          metadata.ipv4 = connectivityInfo.ipv4;
         }
         if (connectivityInfo.connectivityStatus && !metadata.connectivityStatus) {
           metadata.connectivityStatus = connectivityInfo.connectivityStatus;
@@ -134,7 +134,10 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
         metadata,
       });
     } catch (error) {
-      logger.error(`Signal handling error for node ${nodeId}: ${error}`);
+      logger.error(`Signal handling error for node ${nodeId}:`, error);
+      if (error instanceof Error) {
+        logger.error(`Stack trace: ${error.stack}`);
+      }
       sendJson(response, 500, { error: 'Failed to process signal' });
     }
   });

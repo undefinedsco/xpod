@@ -88,6 +88,7 @@ services:
       XPOD_EDITION: cloud
       XPOD_NODE_ID: cloud-a
       XPOD_EDGE_NODES_ENABLED: "false"
+      XPOD_SERVICE_TOKEN: "svc-testservicetokenforintegration"
       CSS_BASE_STORAGE_DOMAIN: undefineds.site
       API_PORT: "6301"
       API_HOST: "0.0.0.0"
@@ -188,7 +189,7 @@ services:
       NODE_ENV: development
       XPOD_EDITION: local
       XPOD_NODE_ID: local-managed-node
-      XPOD_SERVICE_TOKEN: "test-service-token-for-integration"
+      XPOD_SERVICE_TOKEN: "svc-testservicetokenforintegration"
       API_PORT: "5738"
       API_HOST: "0.0.0.0"
       CSS_PORT: "5737"
@@ -224,6 +225,7 @@ services:
     environment:
       NODE_ENV: development
       XPOD_EDITION: local
+      XPOD_SERVICE_TOKEN: "svc-testservicetokenforintegration"
       # Standalone 模式：使用标准 local.json（自带 IdP）
       API_PORT: "5740"
       API_HOST: "0.0.0.0"

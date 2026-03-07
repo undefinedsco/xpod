@@ -108,7 +108,7 @@ describe('ProvisionHandler', () => {
         createdAt: '2024-01-01T00:00:00.000Z',
       });
 
-      const request = createMockRequest({ publicUrl: 'https://sp.example.com', publicIp: '1.2.3.4' });
+      const request = createMockRequest({ publicUrl: 'https://sp.example.com', ipv4: '1.2.3.4' });
       const response = createMockResponse();
 
       await routes['POST /provision/nodes'](request, response, {});
@@ -124,12 +124,12 @@ describe('ProvisionHandler', () => {
       expect(payload).toBeDefined();
       expect(payload!.spDomain).toBe('abc12345-6789-0000-0000-000000000000.undefineds.site');
 
-      // Should have called updateNodeMode with publicIp and subdomain
+      // Should have called updateNodeMode with ipv4 and subdomain
       expect(mockRepo.updateNodeMode).toHaveBeenCalledWith(
         'abc12345-6789-0000-0000-000000000000',
         expect.objectContaining({
           accessMode: 'direct',
-          publicIp: '1.2.3.4',
+          ipv4: '1.2.3.4',
           subdomain: 'abc12345-6789-0000-0000-000000000000',
         }),
       );

@@ -1,7 +1,7 @@
 import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
+import { getSchema, isDatabaseSqlite } from '../../identity/drizzle/db';
 import type { NodePgTransaction } from 'drizzle-orm/node-postgres/session';
-import { accountUsage, podUsage } from '../../identity/drizzle/schema';
 
 type DbClient = IdentityDatabase | NodePgTransaction<any, any>;
 
@@ -12,6 +12,11 @@ export interface AccountUsageRecord {
   egressBytes: number;
   storageLimitBytes?: number | null;
   bandwidthLimitBps?: number | null;
+  computeSeconds: number;
+  tokensUsed: number;
+  computeLimitSeconds?: number | null;
+  tokenLimitMonthly?: number | null;
+  periodStart?: number | null;
 }
 
 export interface PodUsageRecord extends AccountUsageRecord {
@@ -20,17 +25,14 @@ export interface PodUsageRecord extends AccountUsageRecord {
 
 /**
  * Repository for tracking pod and account usage metrics.
- * NOTE: This repository only supports PostgreSQL. SQLite is not supported.
- * For local/dev modes, usage tracking should be disabled.
- *
- * TODO: Make UsageRepository database-agnostic to support SQLite in local mode.
- * Required changes:
- * - Replace `sql\`now()\`` with cross-database compatible timestamp (e.g., new Date())
- * - Use Drizzle's database-agnostic transaction API or raw SQL compatible with both
- * - Test with both SQLite and PostgreSQL backends
+ * Supports both PostgreSQL and SQLite through unified schema abstraction.
  */
 export class UsageRepository {
-  public constructor(private readonly db: IdentityDatabase) {}
+  private readonly schema: ReturnType<typeof getSchema>;
+
+  public constructor(private readonly db: IdentityDatabase) {
+    this.schema = getSchema(db);
+  }
 
   public async incrementUsage(accountId: string, podId: string, storageDelta: number, ingressDelta: number, egressDelta: number): Promise<void> {
     const normalizedStorage = this.normalizeDelta(storageDelta);
@@ -75,13 +77,18 @@ export class UsageRepository {
 
   public async getAccountUsage(accountId: string): Promise<AccountUsageRecord | undefined> {
     const result = await this.db.select({
-      storage: accountUsage.storageBytes,
-      ingress: accountUsage.ingressBytes,
-      egress: accountUsage.egressBytes,
-      storageLimit: accountUsage.storageLimitBytes,
-      bandwidthLimit: accountUsage.bandwidthLimitBps,
-    }).from(accountUsage)
-      .where(eq(accountUsage.accountId, accountId));
+      storage: this.schema.accountUsage.storageBytes,
+      ingress: this.schema.accountUsage.ingressBytes,
+      egress: this.schema.accountUsage.egressBytes,
+      storageLimit: this.schema.accountUsage.storageLimitBytes,
+      bandwidthLimit: this.schema.accountUsage.bandwidthLimitBps,
+      computeSeconds: this.schema.accountUsage.computeSeconds,
+      tokensUsed: this.schema.accountUsage.tokensUsed,
+      computeLimitSeconds: this.schema.accountUsage.computeLimitSeconds,
+      tokenLimitMonthly: this.schema.accountUsage.tokenLimitMonthly,
+      periodStart: this.schema.accountUsage.periodStart,
+    }).from(this.schema.accountUsage)
+      .where(eq(this.schema.accountUsage.accountId, accountId));
     if (!result || result.length === 0) {
       return undefined;
     }
@@ -93,19 +100,29 @@ export class UsageRepository {
       egressBytes: this.coerceNumber(row.egress),
       storageLimitBytes: this.coerceNullable(row.storageLimit),
       bandwidthLimitBps: this.coerceNullable(row.bandwidthLimit),
+      computeSeconds: this.coerceNumber(row.computeSeconds),
+      tokensUsed: this.coerceNumber(row.tokensUsed),
+      computeLimitSeconds: this.coerceNullable(row.computeLimitSeconds),
+      tokenLimitMonthly: this.coerceNullable(row.tokenLimitMonthly),
+      periodStart: this.coerceTimestamp(row.periodStart),
     };
   }
 
   public async getPodUsage(podId: string): Promise<PodUsageRecord | undefined> {
     const result = await this.db.select({
-      accountId: podUsage.accountId,
-      storage: podUsage.storageBytes,
-      ingress: podUsage.ingressBytes,
-      egress: podUsage.egressBytes,
-      storageLimit: podUsage.storageLimitBytes,
-      bandwidthLimit: podUsage.bandwidthLimitBps,
-    }).from(podUsage)
-      .where(eq(podUsage.podId, podId));
+      accountId: this.schema.podUsage.accountId,
+      storage: this.schema.podUsage.storageBytes,
+      ingress: this.schema.podUsage.ingressBytes,
+      egress: this.schema.podUsage.egressBytes,
+      storageLimit: this.schema.podUsage.storageLimitBytes,
+      bandwidthLimit: this.schema.podUsage.bandwidthLimitBps,
+      computeSeconds: this.schema.podUsage.computeSeconds,
+      tokensUsed: this.schema.podUsage.tokensUsed,
+      computeLimitSeconds: this.schema.podUsage.computeLimitSeconds,
+      tokenLimitMonthly: this.schema.podUsage.tokenLimitMonthly,
+      periodStart: this.schema.podUsage.periodStart,
+    }).from(this.schema.podUsage)
+      .where(eq(this.schema.podUsage.podId, podId));
     if (!result || result.length === 0) {
       return undefined;
     }
@@ -119,6 +136,11 @@ export class UsageRepository {
       egressBytes: this.coerceNumber(row.egress),
       storageLimitBytes: this.coerceNullable(row.storageLimit),
       bandwidthLimitBps: this.coerceNullable(row.bandwidthLimit),
+      computeSeconds: this.coerceNumber(row.computeSeconds),
+      tokensUsed: this.coerceNumber(row.tokensUsed),
+      computeLimitSeconds: this.coerceNullable(row.computeLimitSeconds),
+      tokenLimitMonthly: this.coerceNullable(row.tokenLimitMonthly),
+      periodStart: this.coerceTimestamp(row.periodStart),
     };
   }
 
@@ -138,8 +160,128 @@ export class UsageRepository {
     await this.upsertPodUsage(this.db, accountId, podId, undefined, undefined, limit);
   }
 
+  public async setAccountComputeLimit(accountId: string, limit: number | null): Promise<void> {
+    await this.upsertAccountLimit(this.db, accountId, 'computeLimitSeconds', limit);
+  }
+
+  public async setAccountTokenLimit(accountId: string, limit: number | null): Promise<void> {
+    await this.upsertAccountLimit(this.db, accountId, 'tokenLimitMonthly', limit);
+  }
+
+  public async setPodComputeLimit(podId: string, accountId: string, limit: number | null): Promise<void> {
+    await this.upsertPodLimit(this.db, accountId, podId, 'computeLimitSeconds', limit);
+  }
+
+  public async setPodTokenLimit(podId: string, accountId: string, limit: number | null): Promise<void> {
+    await this.upsertPodLimit(this.db, accountId, podId, 'tokenLimitMonthly', limit);
+  }
+
+  /**
+   * Increment token usage for an account and pod.
+   */
+  public async incrementTokenUsage(accountId: string, podId: string, tokensDelta: number): Promise<void> {
+    const normalized = this.normalizeDelta(tokensDelta);
+    if (normalized === 0) {
+      return;
+    }
+    await this.db.transaction(async (tx: IdentityDatabase) => {
+      await this.incrementPodTokensWith(tx, accountId, podId, normalized);
+      await this.incrementAccountTokensWith(tx, accountId, normalized);
+    });
+  }
+
+  /**
+   * Increment compute usage for an account and pod.
+   */
+  public async incrementComputeUsage(accountId: string, podId: string, secondsDelta: number): Promise<void> {
+    const normalized = this.normalizeDelta(secondsDelta);
+    if (normalized === 0) {
+      return;
+    }
+    await this.db.transaction(async (tx: IdentityDatabase) => {
+      await this.incrementPodComputeWith(tx, accountId, podId, normalized);
+      await this.incrementAccountComputeWith(tx, accountId, normalized);
+    });
+  }
+
+  private async incrementAccountTokensWith(client: DbClient, accountId: string, tokensDelta: number): Promise<void> {
+    await client.insert(this.schema.accountUsage)
+      .values({
+        accountId,
+        storageBytes: 0,
+        ingressBytes: 0,
+        egressBytes: 0,
+        tokensUsed: tokensDelta,
+      })
+      .onConflictDoUpdate({
+        target: this.schema.accountUsage.accountId,
+        set: {
+          tokensUsed: sql`${this.schema.accountUsage.tokensUsed} + ${tokensDelta}`,
+          updatedAt: this.now(),
+        },
+      });
+  }
+
+  private async incrementPodTokensWith(client: DbClient, accountId: string, podId: string, tokensDelta: number): Promise<void> {
+    await client.insert(this.schema.podUsage)
+      .values({
+        podId,
+        accountId,
+        storageBytes: 0,
+        ingressBytes: 0,
+        egressBytes: 0,
+        tokensUsed: tokensDelta,
+      })
+      .onConflictDoUpdate({
+        target: this.schema.podUsage.podId,
+        set: {
+          tokensUsed: sql`${this.schema.podUsage.tokensUsed} + ${tokensDelta}`,
+          accountId,
+          updatedAt: this.now(),
+        },
+      });
+  }
+
+  private async incrementAccountComputeWith(client: DbClient, accountId: string, secondsDelta: number): Promise<void> {
+    await client.insert(this.schema.accountUsage)
+      .values({
+        accountId,
+        storageBytes: 0,
+        ingressBytes: 0,
+        egressBytes: 0,
+        computeSeconds: secondsDelta,
+      })
+      .onConflictDoUpdate({
+        target: this.schema.accountUsage.accountId,
+        set: {
+          computeSeconds: sql`${this.schema.accountUsage.computeSeconds} + ${secondsDelta}`,
+          updatedAt: this.now(),
+        },
+      });
+  }
+
+  private async incrementPodComputeWith(client: DbClient, accountId: string, podId: string, secondsDelta: number): Promise<void> {
+    await client.insert(this.schema.podUsage)
+      .values({
+        podId,
+        accountId,
+        storageBytes: 0,
+        ingressBytes: 0,
+        egressBytes: 0,
+        computeSeconds: secondsDelta,
+      })
+      .onConflictDoUpdate({
+        target: this.schema.podUsage.podId,
+        set: {
+          computeSeconds: sql`${this.schema.podUsage.computeSeconds} + ${secondsDelta}`,
+          accountId,
+          updatedAt: this.now(),
+        },
+      });
+  }
+
   private async incrementAccountUsageWith(client: DbClient, accountId: string, storageDelta: number, ingressDelta: number, egressDelta: number): Promise<void> {
-    await client.insert(accountUsage)
+    await client.insert(this.schema.accountUsage)
       .values({
         accountId,
         storageBytes: storageDelta,
@@ -147,18 +289,18 @@ export class UsageRepository {
         egressBytes: egressDelta,
       })
       .onConflictDoUpdate({
-        target: accountUsage.accountId,
+        target: this.schema.accountUsage.accountId,
         set: {
-          storageBytes: sql`${accountUsage.storageBytes} + ${storageDelta}`,
-          ingressBytes: sql`${accountUsage.ingressBytes} + ${ingressDelta}`,
-          egressBytes: sql`${accountUsage.egressBytes} + ${egressDelta}`,
-          updatedAt: sql`now()`,
+          storageBytes: sql`${this.schema.accountUsage.storageBytes} + ${storageDelta}`,
+          ingressBytes: sql`${this.schema.accountUsage.ingressBytes} + ${ingressDelta}`,
+          egressBytes: sql`${this.schema.accountUsage.egressBytes} + ${egressDelta}`,
+          updatedAt: this.now(),
         },
       });
   }
 
   private async incrementPodUsageWith(client: DbClient, accountId: string, podId: string, storageDelta: number, ingressDelta: number, egressDelta: number): Promise<void> {
-    await client.insert(podUsage)
+    await client.insert(this.schema.podUsage)
       .values({
         podId,
         accountId,
@@ -167,13 +309,13 @@ export class UsageRepository {
         egressBytes: egressDelta,
       })
       .onConflictDoUpdate({
-        target: podUsage.podId,
+        target: this.schema.podUsage.podId,
         set: {
-          storageBytes: sql`${podUsage.storageBytes} + ${storageDelta}`,
-          ingressBytes: sql`${podUsage.ingressBytes} + ${ingressDelta}`,
-          egressBytes: sql`${podUsage.egressBytes} + ${egressDelta}`,
+          storageBytes: sql`${this.schema.podUsage.storageBytes} + ${storageDelta}`,
+          ingressBytes: sql`${this.schema.podUsage.ingressBytes} + ${ingressDelta}`,
+          egressBytes: sql`${this.schema.podUsage.egressBytes} + ${egressDelta}`,
           accountId,
-          updatedAt: sql`now()`,
+          updatedAt: this.now(),
         },
       });
   }
@@ -193,7 +335,7 @@ export class UsageRepository {
       insertValues.bandwidthLimitBps = bandwidthLimit;
     }
     const updateSet: Record<string, unknown> = {
-      updatedAt: sql`now()`,
+      updatedAt: this.now(),
     };
     if (typeof storageValue === 'number') {
       updateSet.storageBytes = storageValue;
@@ -204,10 +346,10 @@ export class UsageRepository {
     if (bandwidthLimit !== undefined) {
       updateSet.bandwidthLimitBps = bandwidthLimit;
     }
-    await client.insert(accountUsage)
+    await client.insert(this.schema.accountUsage)
       .values(insertValues)
       .onConflictDoUpdate({
-        target: accountUsage.accountId,
+        target: this.schema.accountUsage.accountId,
         set: updateSet,
       });
   }
@@ -229,7 +371,7 @@ export class UsageRepository {
     }
     const updateSet: Record<string, unknown> = {
       accountId,
-      updatedAt: sql`now()`,
+      updatedAt: this.now(),
     };
     if (typeof storageValue === 'number') {
       updateSet.storageBytes = storageValue;
@@ -240,24 +382,75 @@ export class UsageRepository {
     if (bandwidthLimit !== undefined) {
       updateSet.bandwidthLimitBps = bandwidthLimit;
     }
-    await client.insert(podUsage)
+    await client.insert(this.schema.podUsage)
       .values(insertValues)
       .onConflictDoUpdate({
-        target: podUsage.podId,
+        target: this.schema.podUsage.podId,
         set: updateSet,
+      });
+  }
+
+  /**
+   * Generic account limit setter for compute/token limits.
+   */
+  private async upsertAccountLimit(client: DbClient, accountId: string, field: 'computeLimitSeconds' | 'tokenLimitMonthly', value: number | null): Promise<void> {
+    const insertValues: Record<string, unknown> = {
+      accountId,
+      storageBytes: 0,
+      ingressBytes: 0,
+      egressBytes: 0,
+      [field]: value,
+    };
+    await client.insert(this.schema.accountUsage)
+      .values(insertValues)
+      .onConflictDoUpdate({
+        target: this.schema.accountUsage.accountId,
+        set: {
+          [field]: value,
+          updatedAt: this.now(),
+        },
+      });
+  }
+
+  /**
+   * Generic pod limit setter for compute/token limits.
+   */
+  private async upsertPodLimit(client: DbClient, accountId: string, podId: string, field: 'computeLimitSeconds' | 'tokenLimitMonthly', value: number | null): Promise<void> {
+    const insertValues: Record<string, unknown> = {
+      podId,
+      accountId,
+      storageBytes: 0,
+      ingressBytes: 0,
+      egressBytes: 0,
+      [field]: value,
+    };
+    await client.insert(this.schema.podUsage)
+      .values(insertValues)
+      .onConflictDoUpdate({
+        target: this.schema.podUsage.podId,
+        set: {
+          accountId,
+          [field]: value,
+          updatedAt: this.now(),
+        },
       });
   }
 
   private async getPodUsageWith(client: DbClient, podId: string): Promise<PodUsageRecord | undefined> {
     const result = await client.select({
-      accountId: podUsage.accountId,
-      storage: podUsage.storageBytes,
-      ingress: podUsage.ingressBytes,
-      egress: podUsage.egressBytes,
-      storageLimit: podUsage.storageLimitBytes,
-      bandwidthLimit: podUsage.bandwidthLimitBps,
-    }).from(podUsage)
-      .where(eq(podUsage.podId, podId));
+      accountId: this.schema.podUsage.accountId,
+      storage: this.schema.podUsage.storageBytes,
+      ingress: this.schema.podUsage.ingressBytes,
+      egress: this.schema.podUsage.egressBytes,
+      storageLimit: this.schema.podUsage.storageLimitBytes,
+      bandwidthLimit: this.schema.podUsage.bandwidthLimitBps,
+      computeSeconds: this.schema.podUsage.computeSeconds,
+      tokensUsed: this.schema.podUsage.tokensUsed,
+      computeLimitSeconds: this.schema.podUsage.computeLimitSeconds,
+      tokenLimitMonthly: this.schema.podUsage.tokenLimitMonthly,
+      periodStart: this.schema.podUsage.periodStart,
+    }).from(this.schema.podUsage)
+      .where(eq(this.schema.podUsage.podId, podId));
     if (!result || result.length === 0) {
       return undefined;
     }
@@ -271,6 +464,11 @@ export class UsageRepository {
       egressBytes: this.coerceNumber(row.egress),
       storageLimitBytes: this.coerceNullable(row.storageLimit),
       bandwidthLimitBps: this.coerceNullable(row.bandwidthLimit),
+      computeSeconds: this.coerceNumber(row.computeSeconds),
+      tokensUsed: this.coerceNumber(row.tokensUsed),
+      computeLimitSeconds: this.coerceNullable(row.computeLimitSeconds),
+      tokenLimitMonthly: this.coerceNullable(row.tokenLimitMonthly),
+      periodStart: this.coerceTimestamp(row.periodStart),
     };
   }
 
@@ -305,5 +503,31 @@ export class UsageRepository {
       return null;
     }
     return Math.trunc(numeric);
+  }
+
+  /**
+   * Coerce timestamp value to Unix timestamp (seconds).
+   * Handles Date objects (from PG) and numbers (from SQLite).
+   */
+  private coerceTimestamp(value: unknown): number | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (value instanceof Date) {
+      return Math.floor(value.getTime() / 1000);
+    }
+    if (typeof value === 'number') {
+      return value;
+    }
+    return null;
+  }
+
+  /**
+   * Get the current timestamp in the format expected by the database.
+   * PG expects Date objects, SQLite expects Unix timestamps (seconds).
+   */
+  private now(): Date | number {
+    const timestamp = new Date();
+    return isDatabaseSqlite(this.db) ? Math.floor(timestamp.getTime() / 1000) : timestamp;
   }
 }

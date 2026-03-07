@@ -133,10 +133,10 @@ describe('EdgeNodeSignalHandler', () => {
   // ── connectivity info 注入 ──
 
   describe('connectivity info 注入', () => {
-    it('从 DB 注入 subdomain 和 publicIp', async () => {
+    it('从 DB 注入 subdomain 和 ipv4', async () => {
       repo.getNodeConnectivityInfo.mockResolvedValue({
         subdomain: 'alice',
-        publicIp: '1.2.3.4',
+        ipv4: '1.2.3.4',
         connectivityStatus: 'reachable',
       });
       const handler = register();
@@ -147,7 +147,7 @@ describe('EdgeNodeSignalHandler', () => {
       expect(res.statusCode).toBe(200);
       const body = res._body();
       expect(body.metadata.subdomain).toBe('alice');
-      expect(body.metadata.publicIp).toBe('1.2.3.4');
+      expect(body.metadata.ipv4).toBe('1.2.3.4');
     });
   });
 

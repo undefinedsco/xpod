@@ -62,6 +62,11 @@ suite("EdgeNodeSignalHandler Integration", () => {
       }),
     });
 
+    if (response.status !== 200) {
+      const errorData = await response.json();
+      console.error(`Signal request failed with status ${response.status}:`, errorData);
+    }
+
     expect(response.status).toBe(200);
     const data = await response.json() as {
       status: string;

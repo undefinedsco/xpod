@@ -23,7 +23,6 @@ import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage'
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
-import { DefaultQuotaService } from './quota/DefaultQuotaService';
 import { DrizzleQuotaService } from './quota/DrizzleQuotaService';
 import { NoopQuotaService } from './quota/NoopQuotaService';
 import { PerAccountQuotaStrategy } from './storage/quota/PerAccountQuotaStrategy';
@@ -85,7 +84,7 @@ export type {
 } from './dns/DnsProvider';
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
-export type { QuotaService } from './quota/QuotaService';
+export type { QuotaService, AccountQuota } from './quota/QuotaService';
 // Tunnel and Subdomain types
 export type {
   TunnelProvider,
@@ -128,7 +127,6 @@ export {
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
     SqliteKeyValueStorage,
-  DefaultQuotaService,
   DrizzleQuotaService,
     NoopQuotaService,
     PerAccountQuotaStrategy,

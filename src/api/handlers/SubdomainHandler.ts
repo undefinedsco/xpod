@@ -143,7 +143,7 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
       return;
     }
 
-    const { subdomain, nodeId, localPort, publicIp } = body as Record<string, unknown>;
+    const { subdomain, nodeId, localPort, ipv4 } = body as Record<string, unknown>;
 
     if (!subdomain || typeof subdomain !== 'string') {
       sendJson(response, 400, { error: 'Missing "subdomain" field' });
@@ -165,7 +165,7 @@ export function registerSubdomainRoutes(server: ApiServer, options: SubdomainHan
         subdomain,
         nodeId,
         localPort,
-        publicIp: typeof publicIp === 'string' ? publicIp : undefined,
+        ipv4: typeof ipv4 === 'string' ? ipv4 : undefined,
         ownerId: webId,
       });
 
@@ -323,7 +323,7 @@ function formatRegistration(reg: SubdomainRegistration): Record<string, unknown>
     subdomain: reg.subdomain,
     fullDomain: reg.fullDomain,
     mode: reg.mode,
-    publicIp: reg.publicIp,
+    ipv4: reg.ipv4,
     tunnelProvider: reg.tunnelConfig?.provider,
     tunnelEndpoint: reg.tunnelConfig?.endpoint,
     registeredAt: reg.registeredAt.toISOString(),

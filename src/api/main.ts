@@ -43,6 +43,26 @@ async function main(): Promise<void> {
   // 注册路由
   registerRoutes(container);
 
+  // 自动注册 service token（如果配置了 XPOD_SERVICE_TOKEN）
+  try {
+    const serviceToken = process.env.XPOD_SERVICE_TOKEN;
+    if (serviceToken) {
+      const serviceTokenRepo = container.resolve('serviceTokenRepo') as any;
+      const serviceType = config.edition === 'cloud' ? 'cloud' : 'local';
+      const serviceId = process.env.XPOD_NODE_ID || (config.edition === 'cloud' ? 'cloud-1' : 'local-1');
+
+      await serviceTokenRepo.registerToken(serviceToken, {
+        serviceType,
+        serviceId,
+        scopes: ['quota:write', 'usage:read', 'account:manage'],
+      });
+
+      logger.info(`Registered service token for ${serviceType}:${serviceId}`);
+    }
+  } catch (error) {
+    logger.error(`Failed to register service token: ${error}`);
+  }
+
   // Start background maintenance (IPv6 DDNS / Tunnel Control)
   try {
     const localNetworkManager = container.resolve('localNetworkManager', { allowUnregistered: true }) as any;

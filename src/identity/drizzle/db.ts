@@ -16,6 +16,18 @@ export type IdentityDatabase = any;
 export type IdentitySchema = typeof pgSchema | typeof sqliteSchema;
 
 /**
+ * Get the appropriate schema for the given database connection.
+ * This provides a unified abstraction layer over PG and SQLite schemas.
+ *
+ * @example
+ * const schema = getSchema(db);
+ * await db.select().from(schema.accountUsage).where(eq(schema.accountUsage.accountId, id));
+ */
+export function getSchema(db: IdentityDatabase): typeof pgSchema | typeof sqliteSchema {
+  return isDatabaseSqlite(db) ? sqliteSchema : pgSchema;
+}
+
+/**
  * Standardized query result format across databases.
  */
 export interface QueryResult<T = Record<string, unknown>> {
@@ -95,8 +107,14 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
   // PostgreSQL: use shared pool to avoid connection exhaustion and deadlocks
   const pool = getSharedPool({ connectionString });
   const db = drizzlePg(pool);
-  const initPromise = ensurePostgresTables(pool);
+  const initPromise = (async(): Promise<void> => {
+    await ensurePostgresTables(pool);
+    await migratePgColumns(pool);
+  })();
   dbInitPromises.set(db as object, initPromise);
+  initPromise.catch((err) => {
+    console.error(`[IdentityDB] PG migration failed: ${err}`);
+  });
   dbCache.set(connectionString, {
     db,
     schema: pgSchema,
@@ -236,6 +254,11 @@ function ensureSqliteTables(sqlite: Database.Database): void {
       egress_bytes INTEGER NOT NULL DEFAULT 0,
       storage_limit_bytes INTEGER,
       bandwidth_limit_bps INTEGER,
+      compute_seconds INTEGER NOT NULL DEFAULT 0,
+      tokens_used INTEGER NOT NULL DEFAULT 0,
+      compute_limit_seconds INTEGER,
+      token_limit_monthly INTEGER,
+      period_start INTEGER,
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
@@ -247,6 +270,11 @@ function ensureSqliteTables(sqlite: Database.Database): void {
       egress_bytes INTEGER NOT NULL DEFAULT 0,
       storage_limit_bytes INTEGER,
       bandwidth_limit_bps INTEGER,
+      compute_seconds INTEGER NOT NULL DEFAULT 0,
+      tokens_used INTEGER NOT NULL DEFAULT 0,
+      compute_limit_seconds INTEGER,
+      token_limit_monthly INTEGER,
+      period_start INTEGER,
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
@@ -259,13 +287,16 @@ function ensureSqliteTables(sqlite: Database.Database): void {
       node_type TEXT DEFAULT 'edge',
       subdomain TEXT UNIQUE,
       access_mode TEXT,
-      public_ip TEXT,
+      ipv4 TEXT,
       public_port INTEGER,
       public_url TEXT,
       service_token_hash TEXT,
       provision_code_hash TEXT,
       internal_ip TEXT,
       internal_port INTEGER,
+      hostname TEXT,
+      ipv6 TEXT,
+      version TEXT,
       capabilities TEXT,
       metadata TEXT,
       connectivity_status TEXT DEFAULT 'unknown',
@@ -287,6 +318,16 @@ function ensureSqliteTables(sqlite: Database.Database): void {
       account_id TEXT NOT NULL,
       display_name TEXT,
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_service_token (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      service_type TEXT NOT NULL,
+      service_id TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      expires_at INTEGER
     );
   `);
 
@@ -310,6 +351,70 @@ function migrateSqliteColumns(sqlite: Database.Database): void {
   addColumn('identity_edge_node', 'public_url', 'TEXT');
   addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
   addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
+
+  // Usage tables: compute/token columns
+  addColumn('identity_account_usage', 'compute_seconds', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_account_usage', 'tokens_used', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_account_usage', 'compute_limit_seconds', 'INTEGER');
+  addColumn('identity_account_usage', 'token_limit_monthly', 'INTEGER');
+  addColumn('identity_account_usage', 'period_start', 'INTEGER');
+  addColumn('identity_pod_usage', 'compute_seconds', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_pod_usage', 'tokens_used', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_pod_usage', 'compute_limit_seconds', 'INTEGER');
+  addColumn('identity_pod_usage', 'token_limit_monthly', 'INTEGER');
+  addColumn('identity_pod_usage', 'period_start', 'INTEGER');
+}
+
+/**
+ * Add columns that may be missing from older PostgreSQL databases.
+ * Uses IF NOT EXISTS via information_schema check + ALTER TABLE.
+ */
+async function migratePgColumns(pool: { query: (sql: string) => Promise<any> }): Promise<void> {
+  const addColumn = async (table: string, column: string, type: string): Promise<void> => {
+    try {
+      await pool.query(
+        `DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = '${table}' AND column_name = '${column}'
+          ) THEN
+            ALTER TABLE ${table} ADD COLUMN ${column} ${type};
+          END IF;
+        END $$;`,
+      );
+    } catch {
+      // Ignore errors (table might not exist yet)
+    }
+  };
+
+  // Usage tables: compute/token columns
+  await addColumn('identity_account_usage', 'compute_seconds', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_account_usage', 'tokens_used', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_account_usage', 'compute_limit_seconds', 'BIGINT');
+  await addColumn('identity_account_usage', 'token_limit_monthly', 'BIGINT');
+  await addColumn('identity_account_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
+  await addColumn('identity_pod_usage', 'compute_seconds', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_pod_usage', 'tokens_used', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_pod_usage', 'compute_limit_seconds', 'BIGINT');
+  await addColumn('identity_pod_usage', 'token_limit_monthly', 'BIGINT');
+  await addColumn('identity_pod_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
+
+  // Service token table
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS identity_service_token (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        service_type TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        scopes TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMP WITH TIME ZONE
+      );
+    `);
+  } catch {
+    // Ignore if already exists
+  }
 }
 
 

@@ -27,7 +27,7 @@ const CLOUD_BASE_URL = `http://localhost:${CLOUD_PORT}`;
 const LOCAL_BASE_URL = `http://localhost:${LOCAL_PORT}`;
 
 // Docker 内 Local 的 service token（与 docker-compose.cluster.yml 一致）
-const LOCAL_SERVICE_TOKEN = 'test-service-token-for-integration';
+const LOCAL_SERVICE_TOKEN = 'svc-testservicetokenforintegration';
 const LOCAL_NODE_ID = 'local-managed-node';
 
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
@@ -103,14 +103,14 @@ suite('Provision Flow (IdP + SP)', () => {
       console.log(`  SP registered: nodeId=${body.nodeId}, spDomain=${body.spDomain}`);
     });
 
-    it('should accept publicIp parameter', async () => {
+    it('should accept ipv4 parameter', async () => {
       const res = await fetch(`${CLOUD_BASE_URL}/provision/nodes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           publicUrl: LOCAL_BASE_URL,
           displayName: 'SP with IP',
-          publicIp: '192.168.1.100',
+          ipv4: '192.168.1.100',
         }),
       });
 

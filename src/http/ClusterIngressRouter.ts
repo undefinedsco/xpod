@@ -151,7 +151,7 @@ export class ClusterIngressRouter extends HttpHandler {
       }
 
       const mode = this.normalizeMode(nodeInfo.accessMode);
-      if (mode === 'direct' && nodeInfo.publicIp) {
+      if (mode === 'direct' && nodeInfo.ipv4) {
         await this.handleDirectModeRedirect(response, nodeInfo, url);
       } else if (mode === 'proxy') {
         await this.handleProxyModeRequest(request, response, nodeId, nodeInfo, nodeMetadata?.metadata || null, url);
@@ -175,7 +175,7 @@ export class ClusterIngressRouter extends HttpHandler {
     url: URL
   ): Promise<void> {
     const port = nodeInfo.publicPort && nodeInfo.publicPort !== 443 ? `:${nodeInfo.publicPort}` : '';
-    const nodeDirectUrl = `https://${nodeInfo.publicIp}${port}${url.pathname}${url.search}${url.hash}`;
+    const nodeDirectUrl = `https://${nodeInfo.ipv4}${port}${url.pathname}${url.search}${url.hash}`;
     
     this.logger.debug(`Redirecting to edge node (direct mode): ${nodeDirectUrl}`);
     
@@ -183,7 +183,7 @@ export class ClusterIngressRouter extends HttpHandler {
     response.setHeader('Location', nodeDirectUrl);
     response.setHeader('Cache-Control', 'no-cache');
     response.setHeader('X-Xpod-Direct-Node', nodeInfo.nodeId);
-    response.setHeader('X-Xpod-Target-IP', nodeInfo.publicIp!);
+    response.setHeader('X-Xpod-Target-IP', nodeInfo.ipv4!);
     response.end();
   }
 

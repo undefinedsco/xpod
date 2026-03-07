@@ -12,7 +12,7 @@
  */
 
 import { Session } from '@inrupt/solid-client-authn-node';
-import { drizzle, eq, and } from 'drizzle-solid';
+import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ChatKitStore, StoreContext } from './store';
 import type {
@@ -85,6 +85,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   private async getDb(context: StoreContext) {
     // Check if we already have a cached db in context
     if ((context as any)._cachedDb) {
+      this.logger.debug('Using cached db from context');
       return (context as any)._cachedDb;
     }
 
@@ -102,6 +103,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
           this.logger.warn('Using DPoP access token without proof key; Pod access may fail if issuer enforces DPoP proof');
         }
 
+        this.logger.info(`[getDb] Using access token path for webId: ${auth.webId}`);
         const authFetch = this.createAccessTokenFetch(auth.accessToken, auth.tokenType);
         const db = drizzle(
           { fetch: authFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
@@ -132,6 +134,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
 
     // Fallback path: login with client credentials to obtain a Pod session.
+    this.logger.info(`[getDb] Using client credentials path for clientId: ${auth.clientId}`);
     const session = new Session();
     try {
       await session.login({
@@ -145,6 +148,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
         throw new Error('Login failed');
       }
 
+      this.logger.info(`[getDb] Session login successful, webId: ${session.info.webId}`);
       const authFetch = session.fetch.bind(session) as typeof fetch;
       const db = drizzle(
         { fetch: authFetch, info: { webId: session.info.webId, isLoggedIn: true } } as any,
@@ -166,6 +170,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       (context as any)._cachedDb = db;
       (context as any)._cachedFetch = authFetch;
       (context as any)._cachedWebId = session.info.webId;
+      (context as any)._cachedSession = session;
 
       return db;
     } catch (error) {
@@ -580,7 +585,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 删除 Thread
     try {
-      await db.delete(Thread).where(eq(Thread.id, threadId));
+      if (chatId) {
+        await db.delete(Thread).where(and(eq(Thread.id, threadId), eq(Thread.chatId, chatId)));
+      } else {
+        // 如果没有 chatId，尝试只用 id 删除（可能失败）
+        await db.delete(Thread).where(eq(Thread.id, threadId));
+      }
     } catch (err: any) {
       if (!err.message?.includes('404') && !err.message?.includes('Could not retrieve') && !err.message?.includes('Parse error')) {
         throw err;
@@ -780,9 +790,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
 
     // 构建资源 URL 和 subject URI
-    // Template: {chatId}/{id}.ttl#{id}
+    // Template: {chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}
+    // 使用 createdAt 时间来计算日期，与 drizzle-solid 的模板填充逻辑保持一致
+    const dateForPath = createdAt ? new Date(createdAt) : new Date();
+    const yyyy = dateForPath.getUTCFullYear();
+    const mm = String(dateForPath.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dateForPath.getUTCDate()).padStart(2, '0');
+
     const podBaseUrl = cachedWebId.replace('/profile/card#me', '');
-    const resourceUrl = `${podBaseUrl}/.data/chat/${chatId}/${messageId}.ttl`;
+    const resourceUrl = `${podBaseUrl}/.data/chat/${chatId}/${yyyy}/${mm}/${dd}/messages.ttl`;
     const subjectUri = `${resourceUrl}#${messageId}`;
 
     // 构建 SPARQL UPDATE：删除旧值，插入新值

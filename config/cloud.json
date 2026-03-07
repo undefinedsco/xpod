@@ -83,12 +83,11 @@
       ]
     },
     {
-      "comment": "Default quota limits (in-memory overrides)",
+      "comment": "Quota service backed by identity DB, falls back to env defaults then unlimited",
       "@id": "urn:undefineds:xpod:QuotaService",
-      "@type": "DefaultQuotaService",
-      "DefaultQuotaService:_options_defaultAccountQuotaBytes": {
-        "@type": "Literal",
-        "value": 10737418240
+      "@type": "DrizzleQuotaService",
+      "DrizzleQuotaService:_options_identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl"
       }
     },
     {

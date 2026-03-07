@@ -89,9 +89,12 @@
       }
     },
     {
-      "comment": "禁用 Quota",
+      "comment": "Quota service backed by identity DB, no env defaults = unlimited",
       "@id": "urn:undefineds:xpod:QuotaService",
-      "@type": "NoopQuotaService"
+      "@type": "DrizzleQuotaService",
+      "DrizzleQuotaService:_options_identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl"
+      }
     },
     {
       "@id": "urn:solid-server:default:variable:rootFilePath",

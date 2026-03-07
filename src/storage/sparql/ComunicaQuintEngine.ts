@@ -697,23 +697,65 @@ export class ComunicaQuintEngine {
    * Uses RDF.Store interface since UPDATE doesn't need FILTER pushdown
    */
   async queryVoid(query: string, context?: QueryContext): Promise<void> {
-    console.log(`[ComunicaQuintEngine.queryVoid] Starting: ${query.slice(0, 100)}...`);
     this.currentSecurityFilters = context?.filters;
-    
+
     try {
-      const start = Date.now();
-      const result = await this.engine.queryVoid(query, {
-        sources: [this.rdfStore],
-        ...context,
-      } as any);
-      console.log(`[ComunicaQuintEngine.queryVoid] Completed in ${Date.now() - start}ms`);
-      return result;
+      // Comunica does not properly await the RDF.Store remove() EventEmitter
+      // before proceeding to the next operation. This causes DELETE WHERE to
+      // complete after INSERT DATA, deleting newly inserted triples.
+      // Fix: split compound updates and handle DELETE WHERE directly via QuintStore.
+      const statements = this.splitUpdateStatements(query);
+      for (const stmt of statements) {
+        const deleteGraphUri = this.parseDeleteWhereGraph(stmt);
+        if (deleteGraphUri) {
+          // Execute DELETE WHERE directly via QuintStore.del()
+          await this.store.del({ graph: { termType: 'NamedNode', value: deleteGraphUri } as any });
+        } else {
+          await this.engine.queryVoid(stmt, {
+            sources: [this.rdfStore],
+            ...context,
+          } as any);
+        }
+      }
     } catch (err) {
-      console.error(`[ComunicaQuintEngine.queryVoid] Failed:`, err);
       throw err;
     } finally {
       this.currentSecurityFilters = undefined;
     }
+  }
+
+  /**
+   * Parse "DELETE WHERE { GRAPH <uri> { ?s ?p ?o. } }" and return the graph URI.
+   * Returns null if the statement doesn't match this pattern.
+   */
+  private parseDeleteWhereGraph(stmt: string): string | null {
+    const m = stmt.match(
+      /^\s*DELETE\s+WHERE\s*\{\s*GRAPH\s*<([^>]+)>\s*\{\s*\?(\w+)\s+\?(\w+)\s+\?(\w+)\s*\.?\s*\}\s*\}\s*$/i
+    );
+    return m ? m[1] : null;
+  }
+
+  /**
+   * Split a compound SPARQL UPDATE into individual statements.
+   */
+  private splitUpdateStatements(query: string): string[] {
+    const statements: string[] = [];
+    let depth = 0;
+    let start = 0;
+
+    for (let i = 0; i < query.length; i++) {
+      if (query[i] === '{') depth++;
+      else if (query[i] === '}') depth--;
+      else if (query[i] === ';' && depth === 0) {
+        const stmt = query.slice(start, i).trim();
+        if (stmt) statements.push(stmt);
+        start = i + 1;
+      }
+    }
+    const last = query.slice(start).trim();
+    if (last) statements.push(last);
+
+    return statements;
   }
 
   /**

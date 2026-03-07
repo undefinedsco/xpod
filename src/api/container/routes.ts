@@ -23,8 +23,12 @@ import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
+import { registerQuotaRoutes } from '../handlers/QuotaHandler';
+import { registerUsageRoutes } from '../handlers/UsageHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
+import { UsageRepository } from '../../storage/quota/UsageRepository';
+import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime';
 
@@ -82,6 +86,8 @@ function registerSharedRoutes(
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
   const chatKitStore = container.resolve('chatKitStore');
+  const config = container.resolve('config') as ApiContainerConfig;
+
   registerEdgeNodeSignalRoutes(server, {
     repository: nodeRepo,
     dnsCoordinator: container.resolve('dnsCoordinator', { allowUnregistered: true }) as any,
@@ -92,6 +98,17 @@ function registerSharedRoutes(
   registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
+
+  // Quota & Usage API (Business 对接)
+  try {
+    const quotaService = new DrizzleQuotaService({ identityDbUrl: config.databaseUrl });
+    const usageRepo = new UsageRepository(container.resolve('db'));
+    registerQuotaRoutes(server, { quotaService, usageRepo });
+    registerUsageRoutes(server, { usageRepo });
+    console.log('[Shared] Quota & Usage routes registered');
+  } catch (error) {
+    console.log(`[Shared] Quota & Usage routes not registered: ${error}`);
+  }
 }
 
 /**

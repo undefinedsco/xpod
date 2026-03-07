@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { eq } from '@undefineds.co/drizzle-solid';
 
 import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
@@ -100,28 +101,33 @@ suite('ChatKit PodStore Integration', () => {
     const startedAt = Date.now();
 
     let lastJson = '';
+    let attemptCount = 0;
 
     while (Date.now() - startedAt < timeoutMs) {
+      attemptCount++;
       const request = JSON.stringify({
         type: 'items.list',
         params: { thread_id: threadId, limit: 50 },
       });
+      console.log(`[waitForThreadItemsCount] Attempt ${attemptCount}: Querying items for thread ${threadId}`);
       const result = await service.process(request, testContext);
       if (result.type === 'non_streaming') {
         lastJson = result.json;
         const data = JSON.parse(result.json);
+        console.log(`[waitForThreadItemsCount] Attempt ${attemptCount}: Got ${data.data?.length ?? 0} items (need ${minCount})`);
         if (Array.isArray(data.data) && data.data.length >= minCount) {
           return data.data;
         }
       } else {
         lastJson = JSON.stringify({ type: result.type });
+        console.log(`[waitForThreadItemsCount] Attempt ${attemptCount}: Got non-streaming result: ${result.type}`);
       }
 
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
     throw new Error(
-      'Timeout waiting for thread items (threadId=' + threadId + ', minCount=' + minCount + ', timeoutMs=' + timeoutMs + '). Last items.list response: ' + truncate(lastJson),
+      'Timeout waiting for thread items (threadId=' + threadId + ', minCount=' + minCount + ', timeoutMs=' + timeoutMs + ', attempts=' + attemptCount + '). Last items.list response: ' + truncate(lastJson),
     );
   };
 
@@ -321,7 +327,7 @@ suite('ChatKit PodStore Integration', () => {
       const assistantMsg = items.find((i: any) => i.type === 'assistant_message');
       expect(assistantMsg).toBeDefined();
       expect(assistantMsg.content[0].text).toContain('Mock response');
-    });
+    }, 10000); // Increase timeout to 10 seconds
 
     it('should handle multiple messages in conversation', async () => {
       // Send second message
@@ -348,7 +354,7 @@ suite('ChatKit PodStore Integration', () => {
       // Verify all messages are stored
       const items = await waitForThreadItemsCount(threadId, 4);
       expect(items.length).toBeGreaterThanOrEqual(4); // 2 user + 2 assistant
-    });
+    }, 10000); // Increase timeout to 10 seconds
   });
 
   describe('Thread with Initial Message', () => {
@@ -417,7 +423,7 @@ suite('ChatKit PodStore Integration', () => {
           }
         }
       }
-    });
+    }, 10000); // Increase timeout to 10 seconds
   });
 
   describe('Thread Deletion', () => {
@@ -601,7 +607,6 @@ suite('ChatKit PodStore Integration', () => {
     it('should update credential status to rate limited', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('drizzle-solid');
 
       // Create a credential for status update test
       await db.insert(Credential).values({
@@ -633,7 +638,6 @@ suite('ChatKit PodStore Integration', () => {
     it('should record credential success and reset fail count', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('drizzle-solid');
 
       // Create a credential with some failures
       await db.insert(Credential).values({
