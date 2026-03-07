@@ -30,6 +30,7 @@ interface CachedConnection {
 }
 
 const dbCache = new Map<string, CachedConnection>();
+const dbInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
 
@@ -81,6 +82,7 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
     // Create tables if they don't exist
     ensureSqliteTables(sqlite);
 
+    dbInitPromises.set(db as object, Promise.resolve());
     dbCache.set(connectionString, {
       db,
       schema: sqliteSchema,
@@ -93,6 +95,8 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
   // PostgreSQL: use shared pool to avoid connection exhaustion and deadlocks
   const pool = getSharedPool({ connectionString });
   const db = drizzlePg(pool);
+  const initPromise = ensurePostgresTables(pool);
+  dbInitPromises.set(db as object, initPromise);
   dbCache.set(connectionString, {
     db,
     schema: pgSchema,
@@ -145,6 +149,13 @@ export function isDatabaseSqlite(db: IdentityDatabase): boolean {
   return typeof db.all === 'function' && typeof db.execute !== 'function';
 }
 
+async function ensureDatabaseReady(db: IdentityDatabase): Promise<void> {
+  const initPromise = dbInitPromises.get(db as object);
+  if (initPromise) {
+    await initPromise;
+  }
+}
+
 /**
  * Execute a SQL query uniformly across PostgreSQL and SQLite.
  * Returns a standardized result with rows array.
@@ -157,6 +168,7 @@ export async function executeQuery<T = Record<string, unknown>>(
   db: IdentityDatabase,
   query: SQL,
 ): Promise<QueryResult<T>> {
+  await ensureDatabaseReady(db);
   if (isDatabaseSqlite(db)) {
     // SQLite: db.all() returns array directly
     const rows = db.all(query) as T[];
@@ -174,6 +186,7 @@ export async function executeStatement(
   db: IdentityDatabase,
   query: SQL,
 ): Promise<void> {
+  await ensureDatabaseReady(db);
   if (isDatabaseSqlite(db)) {
     // SQLite: db.run() for statements
     db.run(query);
@@ -297,4 +310,81 @@ function migrateSqliteColumns(sqlite: Database.Database): void {
   addColumn('identity_edge_node', 'public_url', 'TEXT');
   addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
   addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
+}
+
+
+async function ensurePostgresTables(pool: Pool): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS identity_account_usage (
+      account_id TEXT PRIMARY KEY,
+      storage_bytes BIGINT NOT NULL DEFAULT 0,
+      ingress_bytes BIGINT NOT NULL DEFAULT 0,
+      egress_bytes BIGINT NOT NULL DEFAULT 0,
+      storage_limit_bytes BIGINT,
+      bandwidth_limit_bps BIGINT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_pod_usage (
+      pod_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      storage_bytes BIGINT NOT NULL DEFAULT 0,
+      ingress_bytes BIGINT NOT NULL DEFAULT 0,
+      egress_bytes BIGINT NOT NULL DEFAULT 0,
+      storage_limit_bytes BIGINT,
+      bandwidth_limit_bps BIGINT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_edge_node (
+      id TEXT PRIMARY KEY,
+      display_name TEXT,
+      owner_account_id TEXT,
+      token_hash TEXT NOT NULL,
+      account_id TEXT,
+      node_type TEXT DEFAULT 'edge',
+      subdomain TEXT UNIQUE,
+      access_mode TEXT,
+      public_ip TEXT,
+      public_port BIGINT,
+      public_url TEXT,
+      service_token_hash TEXT,
+      provision_code_hash TEXT,
+      internal_ip TEXT,
+      internal_port BIGINT,
+      capabilities JSONB,
+      metadata JSONB,
+      connectivity_status TEXT DEFAULT 'unknown',
+      last_connectivity_check TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_edge_node_pod (
+      node_id TEXT NOT NULL REFERENCES identity_edge_node(id) ON DELETE CASCADE,
+      base_url TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS api_client_credentials (
+      client_id TEXT PRIMARY KEY,
+      client_secret_encrypted TEXT NOT NULL,
+      web_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      display_name TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await migratePostgresColumns(pool);
+}
+
+async function migratePostgresColumns(pool: Pool): Promise<void> {
+  const addColumn = async (table: string, column: string, type: string): Promise<void> => {
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+  };
+
+  await addColumn('identity_edge_node', 'public_url', 'TEXT');
+  await addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
+  await addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
 }

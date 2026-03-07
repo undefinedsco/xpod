@@ -125,10 +125,19 @@ export const startCommand: CommandModule<object, StartArgs> = {
       },
     });
 
+    const isDevMode = __filename.endsWith('.ts');
+    const apiArgs = isDevMode
+      ? [
+          '-r',
+          require.resolve('ts-node/register/transpile-only'),
+          path.resolve(__dirname, '..', '..', 'api', 'main.ts'),
+        ]
+      : [path.resolve(__dirname, '..', '..', 'api', 'main.js')];
+
     supervisor.register({
       name: 'api',
       command: process.execPath,
-      args: [path.resolve(__dirname, '..', '..', 'api', 'main.js')],
+      args: apiArgs,
       env: {
         ...process.env as Record<string, string>,
         API_PORT: apiPort.toString(),
@@ -141,14 +150,17 @@ export const startCommand: CommandModule<object, StartArgs> = {
       },
     });
 
-    const proxy = new GatewayProxy(mainPort, supervisor);
+    const proxy = new GatewayProxy(mainPort, supervisor, '0.0.0.0', {
+      exitOnStop: true,
+      baseUrl,
+    });
     proxy.setTargets({
       css: `http://localhost:${cssPort}`,
       api: `http://localhost:${apiPort}`,
     });
 
     await supervisor.startAll();
-    proxy.start();
+    await proxy.start();
 
     const shutdown = async (signal: string): Promise<void> => {
       console.log(`\nReceived ${signal}, shutting down...`);

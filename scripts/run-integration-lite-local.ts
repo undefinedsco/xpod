@@ -8,17 +8,18 @@ async function main() {
   try {
     console.log('Starting xpod stack...');
     await stack.start();
-    console.log(`Stack ready on port ${stack.port}`);
+    console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
     exitCode = await new Promise<number>((resolve) => {
       const child = spawn('yarn', ['vitest', '--run',
         'tests/integration',
-        '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster}*',
+        '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow}*',
       ], {
         stdio: 'inherit',
         env: {
           ...process.env,
-          CSS_BASE_URL: `http://localhost:${stack.port}/`,
+          CSS_BASE_URL: stack.baseUrl,
+          XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
           XPOD_RUN_INTEGRATION_TESTS: 'true',
         },
       });

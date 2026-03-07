@@ -66,6 +66,98 @@ Visit [http://localhost:3000/](http://localhost:3000/) after startup.
 
 See [docs/deployment-modes.md](docs/deployment-modes.md) for detailed profile comparison and cloud-edge coordination.
 
+## Library Mode for Tests
+
+If you want to start the full Xpod stack inside your test process, you can import it as a library instead of spawning the CLI.
+
+```ts
+import { startXpodRuntime } from '@undefineds.co/xpod';
+
+const runtime = await startXpodRuntime({
+  mode: 'local',
+  open: true,
+  transport: 'socket',
+});
+
+const res = await runtime.fetch('/service/status');
+console.log(await res.json());
+
+await runtime.stop();
+```
+
+For the lightest test setup, use the test helper export:
+
+```ts
+import { startNoAuthXpod } from '@undefineds.co/xpod/test-utils';
+
+const xpod = await startNoAuthXpod();
+console.log(xpod.baseUrl);
+await xpod.stop();
+```
+
+Notes:
+- In socket mode, the logical base URL is `http://localhost/`, but real traffic goes through a Unix socket.
+- This mode is ideal for CI and integration tests that should avoid external port conflicts.
+- Docker/cluster integration tests should still use real service startup.
+
+### Using Xpod from a downstream project
+
+Install Xpod as a dev dependency in your test project:
+
+```bash
+yarn add -D @undefineds.co/xpod
+```
+
+Recommended entry points:
+- `@undefineds.co/xpod` — full runtime API (`startXpodRuntime`)
+- `@undefineds.co/xpod/test-utils` — lightest no-auth helper (`startNoAuthXpod`)
+- `@undefineds.co/xpod/runtime` — runtime-only subpath if you want to avoid the broader root entry
+
+A minimal `vitest` example in a downstream repo:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startNoAuthXpod } from '@undefineds.co/xpod/test-utils';
+
+let xpod: Awaited<ReturnType<typeof startNoAuthXpod>>;
+
+afterAll(async() => {
+  await xpod?.stop();
+});
+
+beforeAll(async() => {
+  xpod = await startNoAuthXpod();
+}, 60_000);
+
+describe('xpod integration', () => {
+  it('starts in-process', async() => {
+    const response = await fetch(new URL('/service/status', xpod.baseUrl));
+    expect(response.ok).toBe(true);
+  });
+});
+```
+
+If you need more control in a downstream repo, use `startXpodRuntime` directly:
+
+```ts
+import { startXpodRuntime } from '@undefineds.co/xpod';
+
+const runtime = await startXpodRuntime({
+  mode: 'local',
+  open: true,
+  transport: 'socket',
+  runtimeRoot: './.test-data/xpod-runtime',
+});
+
+// use runtime.baseUrl / runtime.fetch / runtime.sockets here
+await runtime.stop();
+```
+
+Typical downstream use cases:
+- Use `startNoAuthXpod()` for CI-friendly integration tests that only need an open local stack.
+- Use `startXpodRuntime()` when you need auth mode, custom storage paths, or explicit runtime options.
+- Keep Docker/cluster tests on real services; use library mode for local/lite test paths.
+
 ## Single-File Packaging
 
 Build a self-extracting single-file launcher:

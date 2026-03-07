@@ -20,6 +20,51 @@
       "@type": "Variable"
     },
     {
+      "comment": "ACP permission reader clone for auth mode switching.",
+      "@id": "urn:undefineds:xpod:AcpPermissionReader",
+      "@type": "CachedHandler",
+      "fields": [
+        "credentials",
+        "requestedModes"
+      ],
+      "source": {
+        "@type": "AuxiliaryReader",
+        "reader": {
+          "@type": "PathBasedReader",
+          "defaultReader": {
+            "@type": "AuthAuxiliaryReader",
+            "reader": {
+              "@type": "OwnerPermissionReader",
+              "reader": {
+                "@type": "ReadDeleteReader",
+                "reader": {
+                  "@type": "PolicyEngineReader",
+                  "engine": {
+                    "@id": "urn:solidlab:policy-engine:PolicyEngine"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "comment": "Override default permission reader so tests can switch auth mode with a parameter.",
+      "@id": "urn:solid-server:default:PermissionReader",
+      "@type": "AuthModeSelector",
+      "authMode": {
+        "@id": "urn:solid-server:default:variable:authMode",
+        "@type": "Variable"
+      },
+      "acpReader": {
+        "@id": "urn:undefineds:xpod:AcpPermissionReader"
+      },
+      "aclReader": {
+        "@id": "urn:undefineds:xpod:AcpPermissionReader"
+      }
+    },
+    {
       "comment": "An accessor for a Quadstore",
       "@type": "QuadstoreSparqlDataAccessor",
       "@id": "urn:undefineds:xpod:QuadstoreSparqlDataAccessor",

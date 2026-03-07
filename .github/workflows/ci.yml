@@ -28,3 +28,35 @@ jobs:
 
       - name: Unit tests
         run: yarn test:run
+
+  integration-lite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - run: yarn install --frozen-lockfile --ignore-engines
+
+      - name: Lite integration tests
+        run: yarn test:integration:lite
+
+  integration-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - run: yarn install --frozen-lockfile --ignore-engines
+
+      - name: Real cluster integration tests
+        run: yarn test:integration:cluster

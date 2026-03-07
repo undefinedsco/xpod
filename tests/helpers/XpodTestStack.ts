@@ -1,47 +1,46 @@
-import { spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import kill from 'tree-kill';
-import { getFreePort } from '../../src/runtime/port-finder';
+import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 
 export class XpodTestStack {
   public port = 0;
-  private proc: ChildProcess | null = null;
+  public baseUrl = '';
+  public socketPath?: string;
+  private runtime: XpodRuntimeHandle | null = null;
 
-  async start(mode = 'local'): Promise<void> {
+  async start(mode = 'local', options: Partial<XpodRuntimeOptions> = {}): Promise<void> {
     const envFile = path.resolve('.env.local');
-    if (!fs.existsSync(envFile)) {
-      throw new Error(`XpodTestStack: .env.local not found at ${envFile}. Copy from example.env first.`);
-    }
 
-    this.port = await getFreePort(10000);
-    const mainJs = path.resolve('dist/main.js');
-
-    this.proc = spawn(process.execPath, [mainJs, '--port', String(this.port), '--mode', mode, '--env', envFile], {
-      stdio: 'pipe',
-      env: { ...process.env, CSS_BASE_URL: `http://localhost:${this.port}/` },
+    this.runtime = await startXpodRuntime({
+      mode: mode as 'local' | 'cloud',
+      open: true,
+      transport: options.transport ?? 'socket',
+      envFile: fs.existsSync(envFile) ? envFile : undefined,
+      ...options,
     });
 
-    this.proc.stderr?.on('data', (d: Buffer) => process.stderr.write(d));
+    this.port = this.runtime.ports.gateway ?? 0;
+    this.baseUrl = this.runtime.baseUrl;
+    this.socketPath = this.runtime.sockets.gateway;
 
     await this.waitReady();
   }
 
   async stop(): Promise<void> {
-    if (!this.proc?.pid) return;
-    await new Promise<void>((resolve) => {
-      kill(this.proc!.pid!, 'SIGTERM', () => resolve());
-    });
-    this.proc = null;
+    if (!this.runtime) {
+      return;
+    }
+    await this.runtime.stop();
+    this.runtime = null;
   }
 
   private async waitReady(timeoutMs = 60_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
-    const url = `http://localhost:${this.port}/service/status`;
+    const url = new URL('/service/status', this.baseUrl).href;
 
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
+        const res = await (this.runtime?.fetch(url, { signal: AbortSignal.timeout(2000) }) ?? fetch(url, { signal: AbortSignal.timeout(2000) }));
         if (res.ok) return;
       } catch { /* not ready yet */ }
       await new Promise((r) => setTimeout(r, 500));

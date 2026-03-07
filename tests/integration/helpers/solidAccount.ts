@@ -1,4 +1,4 @@
-import { Session } from "@inrupt/solid-client-authn-node";
+import type { Session } from "@inrupt/solid-client-authn-node";
 import dns from "node:dns";
 
 // Docker 内部主机名 → 127.0.0.1，让宿主机能访问 presigned URL
@@ -235,13 +235,78 @@ export async function setupAccount(baseUrl: string, prefix: string): Promise<Acc
   return null;
 }
 
-export async function loginWithClientCredentials(account: AccountSetup): Promise<Session> {
-  const session = new Session();
-  await session.login({
-    clientId: account.clientId,
-    clientSecret: account.clientSecret,
-    oidcIssuer: account.issuer,
-    tokenType: "DPoP",
+
+
+function normalizeTokenType(value: unknown): 'Bearer' | 'DPoP' {
+  return typeof value === 'string' && value.toUpperCase() === 'DPOP' ? 'DPoP' : 'Bearer';
+}
+
+function createAuthorizedFetch(accessToken: string, tokenType: 'Bearer' | 'DPoP'): typeof fetch {
+  return async(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> => {
+    const headers = new Headers(init?.headers);
+    if (!headers.has('Authorization')) {
+      headers.set('Authorization', `${tokenType} ${accessToken}`);
+    }
+
+    return fetch(input, {
+      ...init,
+      headers,
+    });
+  };
+}
+
+export async function getClientCredentialsToken(account: AccountSetup): Promise<{
+  accessToken: string;
+  tokenType: 'Bearer' | 'DPoP';
+  expiresAt?: number;
+}> {
+  const issuer = account.issuer.replace(/\/$/, '');
+  const tokenEndpoint = `${issuer}/.oidc/token`;
+  const response = await fetch(normalizeServiceUrl(tokenEndpoint, account.issuer), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      ...hostHeaderFor(account.issuer),
+    },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: account.clientId,
+      client_secret: account.clientSecret,
+    }),
   });
-  return session;
+
+  if (!response.ok) {
+    throw new Error(`Client credentials token request failed: ${response.status} ${await response.text().catch(() => '')}`);
+  }
+
+  const token = await response.json() as { access_token?: string; token_type?: string; expires_in?: number };
+  if (!token.access_token) {
+    throw new Error(`Client credentials token response missing access_token: ${JSON.stringify(token)}`);
+  }
+
+  const expiresAt = typeof token.expires_in === 'number'
+    ? Date.now() + token.expires_in * 1000
+    : undefined;
+
+  return {
+    accessToken: token.access_token,
+    tokenType: normalizeTokenType(token.token_type),
+    expiresAt,
+  };
+}
+
+export async function loginWithClientCredentials(account: AccountSetup): Promise<Session> {
+  const token = await getClientCredentialsToken(account);
+  const authFetch = createAuthorizedFetch(token.accessToken, token.tokenType);
+
+  return {
+    info: {
+      sessionId: `direct-${Date.now()}`,
+      isLoggedIn: true,
+      webId: account.webId,
+      expirationDate: token.expiresAt,
+    },
+    fetch: authFetch,
+    logout: async() => undefined,
+  } as unknown as Session;
 }

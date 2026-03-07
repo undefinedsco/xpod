@@ -1,0 +1,33 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+  ],
+  "@graph": [
+    {
+      "comment": "Runtime-only override: allow all LDP operations in lib/test mode.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "overrideParameters": {
+        "@type": "AllStaticReader",
+        "allow": true
+      }
+    },
+    {
+      "comment": "Runtime-only override: disable auth resource handler in allow-all mode.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:AuthResourceHttpHandler"
+      },
+      "overrideParameters": {
+        "@type": "StaticThrowHandler",
+        "onlyHandle": false,
+        "factory": {
+          "@id": "urn:solid-server:default:UnsupportedErrorFactory"
+        }
+      }
+    }
+  ]
+}

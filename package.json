@@ -21,6 +21,21 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "default": "./dist/runtime/index.js"
+    },
+    "./test-utils": {
+      "types": "./dist/test-utils/index.d.ts",
+      "default": "./dist/test-utils/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "lsd:module": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod",
   "lsd:components": "dist/components/components.jsonld",
   "lsd:contexts": {
@@ -63,7 +78,7 @@
     "test:terminal": "npx ts-node scripts/test-terminal.ts",
     "test:coverage": "vitest --run --coverage",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
-    "test:integration": "yarn test:integration:full",
+    "test:integration": "yarn test:integration:all",
     "test:cluster": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run tests/integration/MultiNodeCluster.integration.test.ts",
     "test:all": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run --coverage",
     "test:quad-vs-quint": "vitest --run tests/storage/quad-vs-quint-comparison.test.ts",
@@ -72,13 +87,14 @@
     "dev:cluster:lite": "docker compose -f docker-compose.standalone.yml up --build",
     "dev:cluster:lite:down": "docker compose -f docker-compose.standalone.yml down",
     "test:integration:lite": "yarn ts-node scripts/run-integration-lite-local.ts",
-    "test:integration:full": "CSS_BASE_URL=http://localhost:${STANDALONE_PORT:-5739} yarn test:setup && XPOD_RUN_INTEGRATION_TESTS=true CSS_BASE_URL=http://localhost:${STANDALONE_PORT:-5739} CSS_SEED_CONFIG=$PWD/config/seeds/test.json dotenv -e .env.local -- vitest --run tests/integration --no-file-parallelism",
-    "test:integration:all": "yarn test:integration:full",
+    "test:integration:full": "yarn test:integration:cluster",
+    "test:integration:all": "yarn test:integration:lite && yarn test:integration:cluster",
     "test:integration:lite:up": "docker compose -f docker-compose.standalone.yml up -d --build",
     "test:integration:lite:down": "docker compose -f docker-compose.standalone.yml down",
     "build:single": "node scripts/build-single-file.js",
     "build:single:standalone": "yarn build && node scripts/build-single-file.js",
-    "test:setup": "dotenv -e .env.local -- yarn ts-node scripts/setup-test-credentials.ts"
+    "test:setup": "dotenv -e .env.local -- yarn ts-node scripts/setup-test-credentials.ts",
+    "test:integration:cluster": "yarn ts-node scripts/run-integration-cluster.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

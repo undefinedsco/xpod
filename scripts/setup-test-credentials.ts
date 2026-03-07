@@ -11,8 +11,25 @@
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
+import { registerSocketFetchOrigin } from '../src/runtime/socket-fetch';
+import { registerSocketHttpOrigin } from '../src/runtime/socket-http';
 
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
+
+const socketOriginMapRaw = process.env.XPOD_SOCKET_ORIGIN_MAP;
+if (socketOriginMapRaw) {
+  const socketOriginMap = JSON.parse(socketOriginMapRaw) as Record<string, string>;
+  for (const [origin, socketPath] of Object.entries(socketOriginMap)) {
+    if (!origin || !socketPath) {
+      continue;
+    }
+    registerSocketFetchOrigin(origin, socketPath);
+    registerSocketHttpOrigin(origin, socketPath);
+  }
+} else if (process.env.XPOD_GATEWAY_SOCKET_PATH && process.env.CSS_BASE_URL) {
+  registerSocketFetchOrigin(process.env.CSS_BASE_URL, process.env.XPOD_GATEWAY_SOCKET_PATH);
+  registerSocketHttpOrigin(process.env.CSS_BASE_URL, process.env.XPOD_GATEWAY_SOCKET_PATH);
+}
 
 const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:5739';
 const baseUrl = rawBaseUrl.endsWith('/') ? rawBaseUrl : `${rawBaseUrl}/`;
@@ -89,10 +106,18 @@ function loadSeedAccounts(): SeedAccount[] {
 
 async function checkServer(): Promise<boolean> {
   try {
-    const response = await fetch(`${baseUrl}.account/`, {
+    const statusResponse = await fetch(`${baseUrl}service/status`, {
       headers: { Accept: 'application/json' },
     });
-    return response.ok;
+
+    if (!statusResponse.ok) {
+      return false;
+    }
+
+    const oidcResponse = await fetch(`${baseUrl}.well-known/openid-configuration`, {
+      headers: { Accept: 'application/json' },
+    });
+    return oidcResponse.ok;
   } catch {
     return false;
   }

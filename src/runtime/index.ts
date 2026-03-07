@@ -17,3 +17,7 @@ export const PACKAGE_ROOT = findPackageRoot(__dirname);
 
 export { GatewayProxy } from './Proxy';
 export { getFreePort } from './port-finder';
+export { applyEnv, loadEnvFile } from './env-utils';
+export { registerSocketFetchOrigin } from './socket-fetch';
+export { startXpodRuntime } from './XpodRuntime';
+export type { XpodRuntimeOptions, XpodRuntimeHandle } from './XpodRuntime';

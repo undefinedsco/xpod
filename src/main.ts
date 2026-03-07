@@ -281,10 +281,22 @@ async function startRuntime(options: RunOptions): Promise<void> {
     },
   });
 
+  // API server: resolve the entry point dynamically
+  // In dev (ts-node): use ts-node to run the .ts file
+  // In production: use the compiled .js file
+  const isDevMode = __filename.endsWith('.ts');
+  const apiArgs = isDevMode
+    ? [
+        '-r',
+        require.resolve('ts-node/register/transpile-only'),
+        path.join(__dirname, 'api', 'main.ts'),
+      ]
+    : [path.join(__dirname, 'api', 'main.js')];
+
   supervisor.register({
     name: 'api',
     command: process.execPath,
-    args: [path.join(__dirname, 'api', 'main.js')],
+    args: apiArgs,
     env: {
       ...process.env,
       API_PORT: apiPort.toString(),
@@ -309,14 +321,17 @@ async function startRuntime(options: RunOptions): Promise<void> {
     return '0.0.0.0';
   })();
 
-  const proxy = new GatewayProxy(mainPort, supervisor, bindHost);
+  const proxy = new GatewayProxy(mainPort, supervisor, bindHost, {
+    exitOnStop: true,
+    baseUrl,
+  });
   proxy.setTargets({
     css: `http://localhost:${cssPort}`,
     api: `http://localhost:${apiPort}`,
   });
 
   await supervisor.startAll();
-  proxy.start();
+  await proxy.start();
 
   let restarting = false;
   const restart = async(): Promise<void> => {

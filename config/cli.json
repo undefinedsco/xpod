@@ -20,6 +20,15 @@
         },
         {
           "@type": "YargsParameter",
+          "name": "authMode",
+          "options": {
+            "type": "string",
+            "describe": "Authorization mode: acp, acl, or allow-all",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
           "name": "edgeNodesEnabled",
           "options": {
             "type": "boolean",

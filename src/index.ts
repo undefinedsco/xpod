@@ -73,6 +73,8 @@ import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIde
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
+// Authorization components
+import { AuthModeSelector } from './authorization/AuthModeSelector';
 export type {
   DnsProvider,
   ListDnsRecordsInput,
@@ -178,4 +180,12 @@ export {
   // Provision exports
   ProvisionPodCreator,
   ProvisionCodeCodec,
+  // Authorization exports
+  AuthModeSelector,
 };
+
+export { startXpodRuntime } from './runtime/XpodRuntime';
+export type { XpodRuntimeOptions, XpodRuntimeHandle } from './runtime/XpodRuntime';
+
+export { startNoAuthXpod } from './test-utils/no-auth-xpod';
+export type { NoAuthXpodOptions } from './test-utils/no-auth-xpod';

@@ -19,6 +19,14 @@
           }
         },
         {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:authMode",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "authMode",
+            "defaultValue": "acp"
+          }
+        },
+        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edgeNodesEnabled",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
