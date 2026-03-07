@@ -4,7 +4,7 @@
  * 存储位置: /settings/ai/vector-stores.ttl
  */
 
-import { podTable, string, int, datetime, uri } from '@undefineds.co/drizzle-solid';
+import { podTable, string, int, datetime, uri } from 'drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 
 /**

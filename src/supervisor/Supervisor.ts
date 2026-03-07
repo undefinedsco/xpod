@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import kill from 'tree-kill';
-import type { ServiceConfig, ServiceState, StatusChangeHandler } from './types';
+import type { ServiceConfig, ServiceState, ServiceStatus, StatusChangeHandler } from './types';
 
 const MAX_RESTARTS = 5;
 const MAX_LOGS = 500;
@@ -14,13 +14,18 @@ export interface SupervisorLog {
 
 export class Supervisor {
   private processes: Map<string, ChildProcess> = new Map();
+  private managedStops: Map<string, () => Promise<void>> = new Map();
   private states: Map<string, ServiceState> = new Map();
   private configs: Map<string, ServiceConfig> = new Map();
   private logs: SupervisorLog[] = [];
   private onStatusChange?: StatusChangeHandler;
   private isShuttingDown = false;
 
-  constructor() {
+  constructor(options: { handleProcessSignals?: boolean } = {}) {
+    if (options.handleProcessSignals === false) {
+      return;
+    }
+
     // 确保父进程退出时清理所有子进程
     process.on('exit', () => this.killAll());
     process.on('SIGINT', () => this.shutdown('SIGINT'));
@@ -58,6 +63,33 @@ export class Supervisor {
       name: config.name,
       status: 'stopped',
       restartCount: 0,
+    });
+  }
+
+  public registerManaged(name: string, stop?: () => Promise<void> | void): void {
+    if (!this.states.has(name)) {
+      this.states.set(name, {
+        name,
+        status: 'stopped',
+        restartCount: 0,
+      });
+    }
+
+    if (stop) {
+      this.managedStops.set(name, async() => {
+        await stop();
+      });
+    }
+  }
+
+  public setStatus(name: string, status: ServiceStatus, extra?: Partial<ServiceState>): void {
+    if (!this.states.has(name)) {
+      this.registerManaged(name);
+    }
+
+    this.updateState(name, {
+      status,
+      ...extra,
     });
   }
 
@@ -107,6 +139,11 @@ export class Supervisor {
     const promises: Promise<void>[] = [];
     for (const name of this.processes.keys()) {
       promises.push(this.stop(name));
+    }
+    for (const [ name, stop ] of this.managedStops) {
+      promises.push(stop().catch((error) => {
+        this.addLog(name, 'error', `Failed to stop managed service: ${String(error)}`);
+      }));
     }
     await Promise.all(promises);
   }

@@ -59,7 +59,7 @@
  * ```
  */
 
-import { podTable, string, datetime, uri } from '@undefineds.co/drizzle-solid';
+import { podTable, string, datetime, uri } from 'drizzle-solid';
 import { Meeting, SIOC, FOAF } from '../../vocab';
 import { UDFS_NAMESPACE } from '../../vocab';
 

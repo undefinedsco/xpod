@@ -8,8 +8,8 @@
 
 import { getLoggerFor } from 'global-logger-factory';
 import { randomBytes } from 'crypto';
-import { eq } from '@undefineds.co/drizzle-solid';
-import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
+import { eq } from 'drizzle-solid';
+import type { SolidDatabase } from 'drizzle-solid';
 
 import { Task as taskTable, TaskStatus as TaskStatusConst } from './schema';
 import type {

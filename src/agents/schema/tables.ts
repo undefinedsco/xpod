@@ -4,7 +4,7 @@
  * AgentProvider 继承 Provider，添加 executorType 属性
  */
 
-import { podTable, string, uri, relations } from '@undefineds.co/drizzle-solid';
+import { podTable, string, uri, relations } from 'drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 import { Model } from '../../ai/schema/model';
 

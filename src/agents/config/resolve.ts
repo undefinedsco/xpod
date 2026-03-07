@@ -14,7 +14,7 @@
  */
 
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq } from 'drizzle-solid';
 import { parseAgentMd } from './parse-agent-md';
 import { AgentMetaSchema } from './agent-meta-schema';
 import { AgentProvider } from '../schema/tables';

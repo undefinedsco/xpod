@@ -6,7 +6,7 @@
  * 存储位置: /settings/ai/agents.ttl
  */
 
-import { podTable, string, uri, int, datetime } from '@undefineds.co/drizzle-solid';
+import { podTable, string, uri, int, datetime } from 'drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 
 /**

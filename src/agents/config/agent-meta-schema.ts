@@ -19,7 +19,7 @@
  *   const table = AgentMetaSchema.table('AgentMeta', { base: `/agents/${agentId}/.meta` });
  */
 
-import { solidSchema, string, uri } from '@undefineds.co/drizzle-solid';
+import { solidSchema, string, uri } from 'drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 
 /**

@@ -71,7 +71,7 @@ See [docs/deployment-modes.md](docs/deployment-modes.md) for detailed profile co
 If you want to start the full Xpod stack inside your test process, you can import it as a library instead of spawning the CLI.
 
 ```ts
-import { startXpodRuntime } from '@undefineds.co/xpod';
+import { startXpodRuntime } from '@undefineds.co/xpod/runtime';
 
 const runtime = await startXpodRuntime({
   mode: 'local',
@@ -109,9 +109,9 @@ yarn add -D @undefineds.co/xpod
 ```
 
 Recommended entry points:
-- `@undefineds.co/xpod` — full runtime API (`startXpodRuntime`)
+- `@undefineds.co/xpod` — CSS/components main entry
+- `@undefineds.co/xpod/runtime` — in-process runtime API (`startXpodRuntime`)
 - `@undefineds.co/xpod/test-utils` — lightest no-auth helper (`startNoAuthXpod`)
-- `@undefineds.co/xpod/runtime` — runtime-only subpath if you want to avoid the broader root entry
 
 A minimal `vitest` example in a downstream repo:
 
@@ -140,7 +140,7 @@ describe('xpod integration', () => {
 If you need more control in a downstream repo, use `startXpodRuntime` directly:
 
 ```ts
-import { startXpodRuntime } from '@undefineds.co/xpod';
+import { startXpodRuntime } from '@undefineds.co/xpod/runtime';
 
 const runtime = await startXpodRuntime({
   mode: 'local',

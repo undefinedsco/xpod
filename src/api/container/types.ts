@@ -35,6 +35,9 @@ export interface ApiContainerConfig {
   /** API Server 主机 */
   host: string;
 
+  /** API Server Unix socket 路径 */
+  socketPath?: string;
+
   /** 数据库连接 URL */
   databaseUrl: string;
 

@@ -1,5 +1,5 @@
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq, and } from 'drizzle-solid';
 import { CredentialReader } from './CredentialReader';
 import type { AiCredential } from './types';
 import { Credential } from '../../credential/schema/tables';

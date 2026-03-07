@@ -12,7 +12,7 @@
  */
 
 import { Session } from '@inrupt/solid-client-authn-node';
-import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq, and } from 'drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ChatKitStore, StoreContext } from './store';
 import type {

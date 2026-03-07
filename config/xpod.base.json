@@ -28,40 +28,27 @@
         "requestedModes"
       ],
       "source": {
-        "@type": "AuxiliaryReader",
-        "reader": {
-          "@type": "PathBasedReader",
-          "defaultReader": {
-            "@type": "AuthAuxiliaryReader",
-            "reader": {
-              "@type": "OwnerPermissionReader",
-              "reader": {
-                "@type": "ReadDeleteReader",
-                "reader": {
-                  "@type": "PolicyEngineReader",
-                  "engine": {
-                    "@id": "urn:solidlab:policy-engine:PolicyEngine"
-                  }
-                }
-              }
-            }
-          }
-        }
+        "@id": "urn:solid-server:default:AuxiliaryReader"
       }
     },
     {
       "comment": "Override default permission reader so tests can switch auth mode with a parameter.",
-      "@id": "urn:solid-server:default:PermissionReader",
-      "@type": "AuthModeSelector",
-      "authMode": {
-        "@id": "urn:solid-server:default:variable:authMode",
-        "@type": "Variable"
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PermissionReader"
       },
-      "acpReader": {
-        "@id": "urn:undefineds:xpod:AcpPermissionReader"
-      },
-      "aclReader": {
-        "@id": "urn:undefineds:xpod:AcpPermissionReader"
+      "overrideParameters": {
+        "@type": "AuthModeSelector",
+        "authMode": {
+          "@id": "urn:solid-server:default:variable:authMode",
+          "@type": "Variable"
+        },
+        "acpReader": {
+          "@id": "urn:undefineds:xpod:AcpPermissionReader"
+        },
+        "aclReader": {
+          "@id": "urn:undefineds:xpod:AcpPermissionReader"
+        }
       }
     },
     {

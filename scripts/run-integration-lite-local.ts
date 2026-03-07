@@ -1,6 +1,16 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
 import { spawn } from 'child_process';
 
+function runYarn(args: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const child = spawn('yarn', args, {
+      stdio: 'inherit',
+      env,
+    });
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+}
+
 async function main() {
   const stack = new XpodTestStack();
   let exitCode = 1;
@@ -10,21 +20,24 @@ async function main() {
     await stack.start();
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
-    exitCode = await new Promise<number>((resolve) => {
-      const child = spawn('yarn', ['vitest', '--run',
-        'tests/integration',
-        '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow}*',
-      ], {
-        stdio: 'inherit',
-        env: {
-          ...process.env,
-          CSS_BASE_URL: stack.baseUrl,
-          XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
-          XPOD_RUN_INTEGRATION_TESTS: 'true',
-        },
-      });
-      child.on('close', (code) => resolve(code ?? 1));
-    });
+    const testEnv = {
+      ...process.env,
+      CSS_BASE_URL: stack.baseUrl,
+      XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
+      XPOD_RUN_INTEGRATION_TESTS: 'true',
+    };
+
+    const setupCode = await runYarn(['ts-node', 'scripts/setup-test-credentials.ts'], testEnv);
+    if (setupCode !== 0) {
+      exitCode = setupCode;
+      return;
+    }
+
+    exitCode = await runYarn([
+      'vitest', '--run',
+      'tests/integration',
+      '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow}*',
+    ], testEnv);
   } finally {
     await stack.stop();
   }

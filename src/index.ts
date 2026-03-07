@@ -182,8 +182,3 @@ export {
   AuthModeSelector,
 };
 
-export { startXpodRuntime } from './runtime/XpodRuntime';
-export type { XpodRuntimeOptions, XpodRuntimeHandle } from './runtime/XpodRuntime';
-
-export { startNoAuthXpod } from './test-utils/no-auth-xpod';
-export type { NoAuthXpodOptions } from './test-utils/no-auth-xpod';
