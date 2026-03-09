@@ -12,12 +12,30 @@ This is achieved through **Pods** (Personal Online Data stores)—portable web c
 
 ## Installation
 
-Ensure you have [Node.js](https://nodejs.org/) and [Yarn](https://yarnpkg.com/) installed:
+Ensure you have [Node.js 22.x LTS](https://nodejs.org/) and [Yarn](https://yarnpkg.com/) installed:
 
 ```bash
 yarn install
 yarn build
 ```
+
+> **Node runtime note**
+> Xpod currently targets Node 22 (`>=22 <23`). `.nvmrc` only declares the version; it does not force non-interactive runners to switch automatically.
+> AI/Codex runtimes, IDE background tasks, CI shells, or tmux panes may still start with the wrong `node` on `PATH`.
+>
+> Before running installs, local startup, or integration tests, run:
+>
+> ```bash
+> nvm use
+> yarn check:abi
+> ```
+>
+> If you hit `better-sqlite3` / `NODE_MODULE_VERSION` errors, reinstall native dependencies under the same Node major:
+>
+> ```bash
+> nvm use
+> yarn install --force --ignore-engines
+> ```
 
 
 ## Single-File Build & Local npm Release
@@ -98,7 +116,7 @@ await xpod.stop();
 Notes:
 - In socket mode, the logical base URL is `http://localhost/`, but real traffic goes through a Unix socket.
 - This mode is ideal for CI and integration tests that should avoid external port conflicts.
-- Docker/cluster integration tests should still use real service startup.
+- Docker/full integration tests should still use real service startup.
 
 ### Using Xpod from a downstream project
 
@@ -107,6 +125,10 @@ Install Xpod as a dev dependency in your test project:
 ```bash
 yarn add -D @undefineds.co/xpod
 ```
+
+Important for downstream CI / agent runners:
+- Run the parent toolchain with Node 22 as well. If Codex, IDE tasks, or other AI runtimes are launched under Node 23, they may ignore your directory-level `nvm` hook and still load the wrong native ABI.
+- The package ships `yarn check:abi`; use it before startup when debugging local environment issues.
 
 Recommended entry points:
 - `@undefineds.co/xpod` — CSS/components main entry

@@ -77,7 +77,7 @@ const custom = UDFS('CustomTerm');  // 'https://undefineds.co/ns#CustomTerm'
 ### 基本结构
 
 ```typescript
-import { podTable, string, uri, datetime, int } from 'drizzle-solid';
+import { podTable, string, uri, datetime, int } from '@undefineds.co/drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../vocab';
 
 /**
@@ -106,7 +106,7 @@ export const Credential = podTable(
 ### 关系定义
 
 ```typescript
-import { relations } from 'drizzle-solid';
+import { relations } from '@undefineds.co/drizzle-solid';
 
 export const CredentialRelations = relations(Credential, ({ one }) => ({
   provider: one(Provider, {

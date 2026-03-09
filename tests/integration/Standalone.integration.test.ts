@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Session } from '@inrupt/solid-client-authn-node';
+import { loginWithClientCredentials, setupAccount as setupSharedAccount } from './helpers/solidAccount';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
@@ -45,18 +45,13 @@ suite('Standalone Integration', () => {
 
   describe('Account & Pod Flow', () => {
     it('should create account, login and read/write data', async () => {
-      const creds = await setupAccount(STANDALONE.baseUrl, 'standalone-lite');
+      const creds = await setupSharedAccount(STANDALONE.baseUrl, 'standalone-lite');
       expect(creds).not.toBeNull();
 
-      const session = new Session();
       const discoveredIssuer = await discoverOidcIssuerFromWebId(creds!.webId, STANDALONE.baseUrl);
-      await session.login({
-        clientId: creds!.clientId,
-        clientSecret: creds!.clientSecret,
-        oidcIssuer: discoveredIssuer,
-        tokenType: 'DPoP',
-      });
+      expect(discoveredIssuer).toBe(STANDALONE_BASE + '/');
 
+      const session = await loginWithClientCredentials(creds! as any);
       expect(session.info.isLoggedIn).toBe(true);
       expect(session.info.webId).toBe(creds!.webId);
 
@@ -88,7 +83,7 @@ suite('Standalone Integration', () => {
     });
 
     it('discovery from WebID should resolve usable issuer', async () => {
-      const creds = await setupAccount(STANDALONE.baseUrl, 'issuer-discovery');
+      const creds = await setupSharedAccount(STANDALONE.baseUrl, 'issuer-discovery');
       expect(creds).not.toBeNull();
       const issuer = await discoverOidcIssuerFromWebId(creds!.webId, STANDALONE.baseUrl);
       expect(issuer).toBe(STANDALONE_BASE + '/');

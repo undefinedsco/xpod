@@ -59,7 +59,7 @@
  * ```
  */
 
-import { podTable, string, datetime, uri } from 'drizzle-solid';
+import { podTable, string, datetime, uri } from '@undefineds.co/drizzle-solid';
 import { Meeting, SIOC, FOAF } from '../../vocab';
 import { UDFS_NAMESPACE } from '../../vocab';
 
@@ -112,7 +112,7 @@ export const Thread = podTable(
   'Thread',
   {
     id: string('id').primaryKey(),
-    chatId: uri('chatId').predicate(SIOC.has_parent).reference(Chat),
+    chatId: uri('chatId').predicate(SIOC.has_parent).link(Chat),
     title: string('title'),
     status: string('status'),
     /** 工作目录路径，可变（运行时可切换） */
@@ -152,9 +152,9 @@ export const Message = podTable(
   {
     id: string('id').primaryKey(),
     // chatId 引用 Chat，同时用于路径构建（insert 时传入 bare ID）
-    chatId: uri('chatId').reference(Chat),
+    chatId: uri('chatId').link(Chat),
     // threadId 关联到 Thread，表达 RDF 关系
-    threadId: uri('threadId').predicate(SIOC.has_container).reference(Thread),
+    threadId: uri('threadId').predicate(SIOC.has_container).link(Thread),
     maker: uri('maker').predicate(FOAF.maker),
     role: string('role'),
     content: string('content').predicate(SIOC.content),

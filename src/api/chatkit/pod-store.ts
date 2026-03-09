@@ -11,8 +11,7 @@
  *   {yyyy}/{MM}/{dd}/messages.ttl     # Messages (meeting:Message)
  */
 
-import { Session } from '@inrupt/solid-client-authn-node';
-import { drizzle, eq, and } from 'drizzle-solid';
+import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ChatKitStore, StoreContext } from './store';
 import type {
@@ -133,50 +132,72 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       return null;
     }
 
-    // Fallback path: login with client credentials to obtain a Pod session.
+    // Fallback path: exchange client credentials for an access token directly.
     this.logger.info(`[getDb] Using client credentials path for clientId: ${auth.clientId}`);
-    const session = new Session();
     try {
-      await session.login({
-        oidcIssuer: new URL(this.tokenEndpoint).origin,
-        clientId: auth.clientId,
-        clientSecret: auth.clientSecret,
-        tokenType: 'DPoP',
-      });
-
-      if (!session.info.isLoggedIn || !session.info.webId) {
-        throw new Error('Login failed');
+      const token = await this.getClientCredentialsAccessToken(auth.clientId, auth.clientSecret);
+      const webId = auth.webId ?? this.getWebId(context);
+      if (!webId) {
+        throw new Error('Missing webId for client credentials auth');
       }
 
-      this.logger.info(`[getDb] Session login successful, webId: ${session.info.webId}`);
-      const authFetch = session.fetch.bind(session) as typeof fetch;
+      this.logger.info(`[getDb] Client credentials token acquired, webId: ${webId}`);
+      const authFetch = this.createAccessTokenFetch(token.accessToken, token.tokenType);
       const db = drizzle(
-        { fetch: authFetch, info: { webId: session.info.webId, isLoggedIn: true } } as any,
+        { fetch: authFetch, info: { webId, isLoggedIn: true } } as any,
         { schema },
       );
 
-
-      // 初始化表（创建容器、资源）
-      this.logger.info(`Initializing tables for Pod: ${session.info.webId}`);
+      this.logger.info(`Initializing tables for Pod: ${webId}`);
       try {
         await db.init([Chat, Thread, Message]);
         this.logger.info('Tables initialized successfully');
       } catch (initError) {
         this.logger.error(`Failed to init tables: ${initError}`);
-        // 继续执行，可能容器已存在
       }
 
-      // Cache both db and session.fetch in context for reuse
       (context as any)._cachedDb = db;
       (context as any)._cachedFetch = authFetch;
-      (context as any)._cachedWebId = session.info.webId;
-      (context as any)._cachedSession = session;
+      (context as any)._cachedWebId = webId;
+      (context as any)._cachedAccessToken = token.accessToken;
+      (context as any)._cachedTokenType = token.tokenType;
 
       return db;
     } catch (error) {
       this.logger.error(`Failed to get Pod db: ${error}`);
       return null;
     }
+  }
+
+  private async getClientCredentialsAccessToken(clientId: string, clientSecret: string): Promise<{
+    accessToken: string;
+    tokenType: 'Bearer' | 'DPoP';
+  }> {
+    const response = await fetch(this.tokenEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Client credentials token request failed: ${response.status} ${await response.text().catch(() => '')}`);
+    }
+
+    const token = await response.json() as { access_token?: string; token_type?: string };
+    if (!token.access_token) {
+      throw new Error(`Client credentials token response missing access_token: ${JSON.stringify(token)}`);
+    }
+
+    return {
+      accessToken: token.access_token,
+      tokenType: token.token_type?.toUpperCase() === 'DPOP' ? 'DPoP' : 'Bearer',
+    };
   }
 
   private createAccessTokenFetch(accessToken: string, tokenType?: 'Bearer' | 'DPoP'): typeof fetch {
@@ -338,6 +359,57 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       }
     }
     return chatIdOrUri;
+  }
+
+  private extractThreadId(threadIdOrUri: string | null | undefined): string | undefined {
+    if (!threadIdOrUri) return undefined;
+
+    if (threadIdOrUri.includes('#')) {
+      return threadIdOrUri.split('#').pop() || undefined;
+    }
+
+    return threadIdOrUri;
+  }
+
+  private getPodBaseUrl(context: StoreContext): string {
+    const cachedWebId = (context as any)._cachedWebId as string | undefined;
+    const webId = cachedWebId ?? this.getWebId(context);
+    if (!webId) {
+      throw new Error('Missing webId for Pod URI resolution');
+    }
+
+    return webId.replace('/profile/card#me', '').replace(/\/$/, '');
+  }
+
+  private buildThreadUri(chatId: string, threadId: string, context: StoreContext): string {
+    return `${this.getPodBaseUrl(context)}/.data/chat/${chatId}/index.ttl#${threadId}`;
+  }
+
+  private async selectMessagesForThread(threadId: string, context: StoreContext): Promise<MessageRecord[]> {
+    const db = await this.getDb(context);
+    if (!db) {
+      throw new Error('Cannot access Pod: invalid credentials');
+    }
+
+    const chatId = await this.getThreadChatId(threadId, context);
+    const messages = await db.select().from(Message) as MessageRecord[];
+    return messages.filter(
+      (message) => this.extractChatId(message.chatId) === chatId && this.extractThreadId(message.threadId) === threadId,
+    );
+  }
+
+  private async deleteMessageRecord(db: NonNullable<Awaited<ReturnType<PodChatKitStore['getDb']>>>, message: MessageRecord): Promise<void> {
+    const messageIri = (message as MessageRecord & { '@id'?: string })['@id'];
+    if (messageIri) {
+      await db.delete(Message).whereByIri(messageIri);
+      return;
+    }
+
+    await db.delete(Message).where(and(
+      eq(Message.id, message.id),
+      eq(Message.chatId, this.extractChatId(message.chatId)),
+      eq(Message.createdAt, message.createdAt as any),
+    ));
   }
 
   /**
@@ -575,7 +647,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 删除关联到此 Thread 的消息
     try {
-      await db.delete(Message).where(eq(Message.threadId, threadId));
+      const messages = await this.selectMessagesForThread(threadId, context);
+      for (const message of messages) {
+        await this.deleteMessageRecord(db, message);
+      }
     } catch (err: any) {
       if (!err.message?.includes('404') && !err.message?.includes('Could not retrieve') && !err.message?.includes('Parse error')) {
         throw err;
@@ -616,16 +691,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     order: string,
     context: StoreContext,
   ): Promise<Page<ThreadItem>> {
-    const db = await this.getDb(context);
-    if (!db) {
-      return { data: [], has_more: false };
-    }
-
     try {
-      // 按 threadId 查询 Message
-      const messages = await db.select().from(Message).where(
-        eq(Message.threadId, threadId),
-      ) as MessageRecord[];
+      const messages = await this.selectMessagesForThread(threadId, context);
 
       // 排序
       messages.sort((a: MessageRecord, b: MessageRecord) => {
@@ -695,7 +762,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     const messageRecord = {
       id: item.id,
       chatId,      // 用于路径构建
-      threadId,    // 关联到 Thread
+      threadId: this.buildThreadUri(chatId, threadId, context),    // 关联到 Thread
       maker: role === MessageRole.USER ? webId : null,
       role,
       content,
@@ -855,17 +922,9 @@ WHERE { ${deletePatterns.join(' ')} }
   }
 
   async loadItem(threadId: string, itemId: string, context: StoreContext): Promise<ThreadItem> {
-    const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
-    const messages = await db.select().from(Message).where(
-      and(
-        eq(Message.id, itemId),
-        eq(Message.threadId, threadId),
-      ),
-    ) as MessageRecord[];
+    const messages = (await this.selectMessagesForThread(threadId, context)).filter(
+      (message) => message.id === itemId,
+    );
 
     if (messages.length === 0) {
       throw new Error(`Item not found: ${itemId}`);
@@ -880,12 +939,13 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    await db.delete(Message).where(
-      and(
-        eq(Message.id, itemId),
-        eq(Message.threadId, threadId),
-      ),
-    );
+    const messages = await this.selectMessagesForThread(threadId, context);
+    const target = messages.find((message) => message.id === itemId);
+    if (!target) {
+      return;
+    }
+
+    await this.deleteMessageRecord(db, target);
   }
 
   // =========================================================================

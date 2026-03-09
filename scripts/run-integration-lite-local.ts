@@ -36,7 +36,7 @@ async function main() {
     exitCode = await runYarn([
       'vitest', '--run',
       'tests/integration',
-      '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow}*',
+      '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
     ], testEnv);
   } finally {
     await stack.stop();

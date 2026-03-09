@@ -391,28 +391,7 @@ suite('Docker Cluster Integration', () => {
       expect(data.quota.computeLimitSeconds).toBe(3600);
     });
 
-    it('should verify service token is registered in database', async () => {
-      if (!pgClient) {
-        console.warn('PostgreSQL not available, skipping');
-        return;
-      }
 
-      const result = await pgClient.query(`
-        SELECT service_type, service_id, scopes
-        FROM identity_service_token
-        WHERE service_type = 'cloud'
-      `);
-
-      expect(result.rows.length).toBeGreaterThan(0);
-      const row = result.rows[0];
-      expect(row.service_type).toBe('cloud');
-      expect(row.service_id).toBe('cloud-1');
-
-      const scopes = JSON.parse(row.scopes);
-      expect(scopes).toContain('quota:write');
-      expect(scopes).toContain('usage:read');
-      expect(scopes).toContain('account:manage');
-    });
   });
 });
 

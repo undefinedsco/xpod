@@ -9,7 +9,7 @@
  * - Thread = 对话实例（聊什么、在哪聊）：workspace 是一级字段
  */
 
-import { drizzle, eq } from 'drizzle-solid';
+import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import { Chat, Thread, Message } from '../../api/chatkit/schema';
 import type { Session } from '@inrupt/solid-client-authn-node';
 

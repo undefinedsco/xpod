@@ -1,6 +1,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { AuthMiddleware, AuthenticatedRequest } from './middleware/AuthMiddleware';
+import { prepareSocketPath, removeSocketPath } from '../runtime/socket-utils';
 
 /**
  * Route handler function
@@ -24,8 +25,9 @@ export interface Route {
 }
 
 export interface ApiServerOptions {
-  port: number;
+  port?: number;
   host?: string;
+  socketPath?: string;
   authMiddleware: AuthMiddleware;
   corsOrigins?: string[];
 }
@@ -37,14 +39,16 @@ export class ApiServer {
   private readonly logger = getLoggerFor(this);
   private readonly port: number;
   private readonly host: string;
+  private readonly socketPath?: string;
   private readonly authMiddleware: AuthMiddleware;
   private readonly corsOrigins: string[];
   private readonly routes: Route[] = [];
   private server?: Server;
 
   public constructor(options: ApiServerOptions) {
-    this.port = options.port;
+    this.port = options.port ?? 0;
     this.host = options.host ?? '0.0.0.0';
+    this.socketPath = options.socketPath;
     this.authMiddleware = options.authMiddleware;
     this.corsOrigins = options.corsOrigins ?? ['*'];
   }
@@ -113,6 +117,15 @@ export class ApiServer {
 
       this.server.on('error', reject);
 
+      if (this.socketPath) {
+        prepareSocketPath(this.socketPath);
+        this.server.listen(this.socketPath, () => {
+          this.logger.info(`API Server listening on unix://${this.socketPath}`);
+          resolve();
+        });
+        return;
+      }
+
       this.server.listen(this.port, this.host, () => {
         this.logger.info(`API Server listening on ${this.host}:${this.port}`);
         resolve();
@@ -134,6 +147,9 @@ export class ApiServer {
         if (error) {
           reject(error);
         } else {
+          if (this.socketPath) {
+            removeSocketPath(this.socketPath);
+          }
           this.logger.info('API Server stopped');
           resolve();
         }

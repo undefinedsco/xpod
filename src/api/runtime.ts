@@ -27,6 +27,33 @@ function initApiLogger(): void {
   setGlobalLoggerFactory(loggerFactory);
 }
 
+async function registerPrimaryServiceToken(
+  container: AwilixContainer<ApiContainerCradle>,
+  config: ApiContainerConfig,
+  logger: ReturnType<typeof getLoggerFor>,
+): Promise<void> {
+  try {
+    const serviceToken = process.env.XPOD_SERVICE_TOKEN;
+    if (!serviceToken) {
+      return;
+    }
+
+    const serviceTokenRepo = container.resolve('serviceTokenRepo') as any;
+    const serviceType = config.edition === 'cloud' ? 'cloud' : 'local';
+    const serviceId = process.env.XPOD_NODE_ID || (config.edition === 'cloud' ? 'cloud-1' : 'local-1');
+
+    await serviceTokenRepo.registerToken(serviceToken, {
+      serviceType,
+      serviceId,
+      scopes: ['quota:write', 'usage:read', 'account:manage'],
+    });
+
+    logger.info(`Registered service token for ${serviceType}:${serviceId}`);
+  } catch (error) {
+    logger.error(`Failed to register service token: ${error}`);
+  }
+}
+
 async function startBackgroundServices(
   container: AwilixContainer<ApiContainerCradle>,
   logger: ReturnType<typeof getLoggerFor>,
@@ -110,6 +137,7 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
   }
 
   registerRoutes(container);
+  await registerPrimaryServiceToken(container, config, logger);
   await startBackgroundServices(container, logger);
 
   const server = container.resolve('apiServer');

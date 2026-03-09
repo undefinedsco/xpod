@@ -12,7 +12,7 @@
  */
 
 import { Session } from '@inrupt/solid-client-authn-node';
-import { drizzle, eq } from 'drizzle-solid';
+import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import { config as loadEnv } from 'dotenv';
 
 // 加载环境变量

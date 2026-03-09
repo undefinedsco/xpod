@@ -48,7 +48,7 @@ jobs:
       - name: Lite integration tests
         run: yarn test:integration:lite
 
-  integration-cluster:
+  integration-full:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -64,5 +64,5 @@ jobs:
       - name: Build runtime artifacts
         run: yarn build:ts && yarn build:components
 
-      - name: Real cluster integration tests
-        run: yarn test:integration:cluster
+      - name: Full integration tests
+        run: yarn test:integration:full

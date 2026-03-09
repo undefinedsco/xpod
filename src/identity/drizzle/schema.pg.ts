@@ -1,4 +1,4 @@
-import { pgTable, text } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { bigint as pgBigint } from 'drizzle-orm/pg-core/columns/bigint';
 import { integer } from 'drizzle-orm/pg-core/columns/integer';
 
@@ -13,8 +13,8 @@ export const accountUsage = pgTable('identity_account_usage', {
   tokensUsed: pgBigint('tokens_used', { mode: 'number' }).notNull().default(0),
   computeLimitSeconds: pgBigint('compute_limit_seconds', { mode: 'number' }),
   tokenLimitMonthly: pgBigint('token_limit_monthly', { mode: 'number' }),
-  periodStart: pgBigint('period_start', { mode: 'number' }),
-  updatedAt: pgBigint('updated_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  periodStart: timestamp('period_start', { withTimezone: true, mode: 'date' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 export const podUsage = pgTable('identity_pod_usage', {
@@ -29,8 +29,8 @@ export const podUsage = pgTable('identity_pod_usage', {
   tokensUsed: pgBigint('tokens_used', { mode: 'number' }).notNull().default(0),
   computeLimitSeconds: pgBigint('compute_limit_seconds', { mode: 'number' }),
   tokenLimitMonthly: pgBigint('token_limit_monthly', { mode: 'number' }),
-  periodStart: pgBigint('period_start', { mode: 'number' }),
-  updatedAt: pgBigint('updated_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  periodStart: timestamp('period_start', { withTimezone: true, mode: 'date' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 /**
@@ -45,8 +45,8 @@ export const webidProfiles = pgTable('identity_webid_profile', {
   oidcIssuer: text('oidc_issuer'),                    // https://id.undefineds.co/
   profileData: text('profile_data'), // WebID Profile 的 JSON-LD 表示 (stored as JSON string)
   accountId: text('account_id'),                      // 关联的 CSS 账户 ID
-  createdAt: pgBigint('created_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-  updatedAt: pgBigint('updated_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 /**
@@ -58,7 +58,7 @@ export const ddnsDomains = pgTable('identity_ddns_domain', {
   status: text('status').default('active'),           // 'active' | 'suspended'
   provider: text('provider'),                         // 'cloudflare' | 'tencent'
   zoneId: text('zone_id'),                            // DNS Zone ID
-  createdAt: pgBigint('created_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 /**
@@ -76,8 +76,8 @@ export const ddnsRecords = pgTable('identity_ddns_record', {
   status: text('status').default('active'),           // 'active' | 'banned'
   bannedReason: text('banned_reason'),
   ttl: integer('ttl').default(60),
-  createdAt: pgBigint('created_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-  updatedAt: pgBigint('updated_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 export const edgeNodes = pgTable('identity_edge_node', {
@@ -103,10 +103,10 @@ export const edgeNodes = pgTable('identity_edge_node', {
   capabilities: text('capabilities'),           // JSON string: 能力列表
   metadata: text('metadata'),                   // JSON string: 复杂对象 (tunnel, certificate, metrics)
   connectivityStatus: text('connectivity_status').default('unknown'),
-  lastConnectivityCheck: pgBigint('last_connectivity_check', { mode: 'number' }),
-  createdAt: pgBigint('created_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-  updatedAt: pgBigint('updated_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-  lastSeen: pgBigint('last_seen', { mode: 'number' }),
+  lastConnectivityCheck: timestamp('last_connectivity_check', { withTimezone: true, mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  lastSeen: timestamp('last_seen', { withTimezone: true, mode: 'date' }),
 });
 
 export const edgeNodePods = pgTable('identity_edge_node_pod', {
@@ -119,7 +119,7 @@ export const apiClientCredentials = pgTable('identity_api_client_credentials', {
   webId: text('web_id').notNull(),
   accountId: text('account_id').notNull(),
   displayName: text('display_name'),
-  createdAt: pgBigint('created_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 /**
@@ -132,6 +132,6 @@ export const serviceTokens = pgTable('identity_service_token', {
   serviceType: text('service_type').notNull(), // 'local' | 'business' | 'cloud' | 'compute'
   serviceId: text('service_id').notNull(),
   scopes: text('scopes').notNull(), // JSON array: ["quota:write","usage:read"]
-  createdAt: pgBigint('created_at', { mode: 'number' }).notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-  expiresAt: pgBigint('expires_at', { mode: 'number' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
 });

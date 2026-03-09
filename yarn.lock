@@ -7025,6 +7025,22 @@
     "@typescript-eslint/types" "7.18.0"
     eslint-visitor-keys "^3.4.3"
 
+"@undefineds.co/drizzle-solid@^0.3.0":
+  version "0.3.0"
+  resolved "https://registry.yarnpkg.com/@undefineds.co/drizzle-solid/-/drizzle-solid-0.3.0.tgz#1b6fce4bbe0b3914b357615de8dd4a4403cd58c8"
+  integrity sha512-lgXo94PDae+j7ukkHZyuyxwlSNtd5TX6p3C4bLzrTHK+z4+YkehLehBCaZ5yW2pN4tN11zJv6Y5olHiz7GIZPQ==
+  dependencies:
+    "@inrupt/solid-client" "^3.0.0"
+    "@inrupt/solid-client-authn-node" "^3.1.1"
+    "@inrupt/universal-fetch" "^1.0.3"
+    "@inrupt/vocab-common-rdf" "^1.0.5"
+    dotenv "^17.2.2"
+    drizzle-orm "^0.28.0"
+    n3 "^1.26.0"
+    node-fetch "^3.3.2"
+    sparqljs "^3.7.3"
+    zod "^4.1.8"
+
 "@vercel/oidc@3.1.0":
   version "3.1.0"
   resolved "https://registry.npmjs.org/@vercel/oidc/-/oidc-3.1.0.tgz"
@@ -8341,23 +8357,6 @@ drizzle-orm@^0.30.10:
   version "0.30.10"
   resolved "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.30.10.tgz"
   integrity sha512-IRy/QmMWw9lAQHpwbUh1b8fcn27S/a9zMIzqea1WNOxK9/4EB8gIo+FZWLiPXzl2n9ixGSv8BhsLZiOppWEwBw==
-
-drizzle-solid@^0.2.5:
-  version "0.2.5"
-  resolved "https://registry.npmjs.org/drizzle-solid/-/drizzle-solid-0.2.5.tgz"
-  integrity sha512-YTimMg5FsiRD69EYPMTISmTj1xFnhN3KuHVJH6eCkpANmWz9YDro8LFdtxPqLf+EQl23NbCxjVsilNsLPZrUzQ==
-  dependencies:
-    "@comunica/query-sparql-solid" "^4.0.2"
-    "@inrupt/solid-client" "^3.0.0"
-    "@inrupt/solid-client-authn-node" "^3.1.1"
-    "@inrupt/universal-fetch" "^1.0.3"
-    "@inrupt/vocab-common-rdf" "^1.0.5"
-    dotenv "^17.2.2"
-    drizzle-orm "^0.28.0"
-    n3 "^1.26.0"
-    node-fetch "^3.3.2"
-    sparqljs "^3.7.3"
-    zod "^4.1.8"
 
 dunder-proto@^1.0.1:
   version "1.0.1"

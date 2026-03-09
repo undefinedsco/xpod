@@ -3,7 +3,6 @@ import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
 import { drizzle as drizzleSqlite, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { SQL } from 'drizzle-orm/sql';
-import Database from 'better-sqlite3';
 import * as pgSchema from './schema.pg';
 import * as sqliteSchema from './schema.sqlite';
 import path from 'node:path';
@@ -46,10 +45,40 @@ const dbInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
 
+type SqliteDdlExecutor = { exec: (sql: string) => unknown };
+
 for (const oid of JSON_OIDS) {
   // Explicitly return raw string to avoid "Type Conflict" with CSS
   // and to satisfy PgQuintStore's parseVector expecting a string.
   types.setTypeParser(oid, (value) => value);
+}
+
+function wrapBetterSqliteError(error: unknown): Error {
+  if (!(error instanceof Error)) {
+    return new Error(String(error));
+  }
+
+  if (!/NODE_MODULE_VERSION|compiled against a different Node\.js version/i.test(error.message)) {
+    return error;
+  }
+
+  return new Error([
+    `Failed to load better-sqlite3 under Node ${process.version} (ABI ${process.versions.modules}).`,
+    'This usually means native modules were installed with a different Node.js major version.',
+    'Suggested fix:',
+    '  1. nvm use 22',
+    '  2. yarn install --force --ignore-engines',
+    '',
+    `Original error: ${error.message}`,
+  ].join('\n'));
+}
+
+function loadBetterSqlite3(): any {
+  try {
+    return require('better-sqlite3');
+  } catch (error) {
+    throw wrapBetterSqliteError(error);
+  }
 }
 
 /**
@@ -78,7 +107,8 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
         fs.mkdirSync(directory, { recursive: true });
       }
     }
-    const sqlite = new Database(isMemory ? ':memory:' : filename);
+    const BetterSqlite3 = loadBetterSqlite3();
+    const sqlite = new BetterSqlite3(isMemory ? ':memory:' : filename);
 
     // Apply pragmas for better concurrency (prevents SQLITE_BUSY errors)
     // WAL mode allows concurrent reads during writes
@@ -245,7 +275,7 @@ export function fromDbTimestamp(value: unknown): Date | undefined {
 /**
  * Ensure SQLite tables exist (simple DDL for local/dev mode).
  */
-function ensureSqliteTables(sqlite: Database.Database): void {
+function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS identity_account_usage (
       account_id TEXT PRIMARY KEY,
@@ -339,7 +369,7 @@ function ensureSqliteTables(sqlite: Database.Database): void {
  * Add columns that may be missing from older databases.
  * SQLite ALTER TABLE ADD COLUMN is idempotent-safe via try/catch.
  */
-function migrateSqliteColumns(sqlite: Database.Database): void {
+function migrateSqliteColumns(sqlite: SqliteDdlExecutor): void {
   const addColumn = (table: string, column: string, type: string): void => {
     try {
       sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);

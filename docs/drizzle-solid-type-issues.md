@@ -84,7 +84,7 @@ const db = drizzle(session);
 
 **建议提供**：
 ```typescript
-import { createSession } from 'drizzle-solid';
+import { createSession } from '@undefineds.co/drizzle-solid';
 
 const session = createSession(authenticatedFetch);
 // 或

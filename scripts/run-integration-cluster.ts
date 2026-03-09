@@ -16,6 +16,7 @@ const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
   'tests/integration/ProvisionFlow.integration.test.ts',
+  'tests/integration/CloudQuotaBusinessToken.integration.test.ts',
 ];
 
 function runCommand(
@@ -133,6 +134,7 @@ async function startClusterRuntimes(): Promise<XpodRuntimeHandle[]> {
     CSS_ALLOWED_HOSTS: 'localhost,cloud,cloud_b,host.docker.internal',
     CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     XPOD_EDGE_NODES_ENABLED: 'false',
+    XPOD_BUSINESS_TOKEN: 'svc-testservicetokenforintegration',
   };
 
   runtimes.push(await startXpodRuntime({
@@ -178,7 +180,7 @@ async function startClusterRuntimes(): Promise<XpodRuntimeHandle[]> {
       CSS_IDP_URL: `http://localhost:${CLOUD_PORT}`,
       XPOD_CLOUD_API_ENDPOINT: `http://localhost:${CLOUD_PORT}`,
       XPOD_NODE_ID: 'local-managed-node',
-      XPOD_SERVICE_TOKEN: 'test-service-token-for-integration',
+      XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
       CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     },

@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from './db';
-import { getSchema } from './db';
+import { getSchema, toDbTimestamp, fromDbTimestamp } from './db';
 
 export type ServiceType = 'local' | 'business' | 'cloud' | 'compute';
 
@@ -44,8 +44,8 @@ export class ServiceTokenRepository {
       serviceType: options.serviceType,
       serviceId: options.serviceId,
       scopes: JSON.stringify(options.scopes),
-      createdAt: Math.floor(Date.now() / 1000),
-      expiresAt: options.expiresAt ? Math.floor(options.expiresAt.getTime() / 1000) : null,
+      createdAt: toDbTimestamp(this.db, new Date()),
+      expiresAt: options.expiresAt ? toDbTimestamp(this.db, options.expiresAt) : null,
     });
 
     this.logger.info(`Created service token ${id} for ${options.serviceType}:${options.serviceId}`);
@@ -70,7 +70,7 @@ export class ServiceTokenRepository {
         .set({
           tokenHash,
           scopes: JSON.stringify(options.scopes),
-          expiresAt: options.expiresAt ? Math.floor(options.expiresAt.getTime() / 1000) : null,
+          expiresAt: options.expiresAt ? toDbTimestamp(this.db, options.expiresAt) : null,
         })
         .where(eq(this.schema.serviceTokens.id, existing.id));
       this.logger.info(`Updated service token ${existing.id} for ${options.serviceType}:${options.serviceId}`);
@@ -84,8 +84,8 @@ export class ServiceTokenRepository {
       serviceType: options.serviceType,
       serviceId: options.serviceId,
       scopes: JSON.stringify(options.scopes),
-      createdAt: Math.floor(Date.now() / 1000),
-      expiresAt: options.expiresAt ? Math.floor(options.expiresAt.getTime() / 1000) : null,
+      createdAt: toDbTimestamp(this.db, new Date()),
+      expiresAt: options.expiresAt ? toDbTimestamp(this.db, options.expiresAt) : null,
     });
 
     this.logger.info(`Registered service token ${id} for ${options.serviceType}:${options.serviceId}`);
@@ -110,7 +110,8 @@ export class ServiceTokenRepository {
 
     // Check expiration (expiresAt is Unix timestamp in seconds)
     if (row.expiresAt) {
-      const expiresAtMs = typeof row.expiresAt === 'number' ? row.expiresAt * 1000 : new Date(row.expiresAt).getTime();
+      const expiresAtValue = fromDbTimestamp(row.expiresAt);
+      const expiresAtMs = expiresAtValue?.getTime() ?? Number.NaN;
       if (expiresAtMs < Date.now()) {
         this.logger.debug(`Service token ${row.id} has expired`);
         return undefined;
@@ -173,10 +174,8 @@ export class ServiceTokenRepository {
       serviceType: row.serviceType ?? row.service_type,
       serviceId: row.serviceId ?? row.service_id,
       scopes,
-      createdAt: row.createdAt instanceof Date ? row.createdAt : new Date((row.createdAt ?? row.created_at) * 1000),
-      expiresAt: row.expiresAt || row.expires_at
-        ? (row.expiresAt instanceof Date ? row.expiresAt : new Date((row.expiresAt ?? row.expires_at) * 1000))
-        : null,
+      createdAt: fromDbTimestamp(row.createdAt ?? row.created_at) ?? new Date(0),
+      expiresAt: fromDbTimestamp(row.expiresAt ?? row.expires_at) ?? null,
     };
   }
 }
