@@ -7,9 +7,9 @@
  * All test data files are stored in .test-data/ for easy cleanup.
  * Run `yarn clean:test` to remove all test artifacts.
  */
-import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
+import { getSqliteRuntime, type SqliteDatabase } from '../../src/storage/SqliteRuntime';
 
 /**
  * Root directory for all test data files.
@@ -93,11 +93,11 @@ export const SQLITE_INTEGRATION_PRAGMAS = {
 };
 
 /**
- * Apply integration test pragmas to a better-sqlite3 database instance.
+ * Apply integration test pragmas to a SQLite database instance.
  *
- * @param db - The better-sqlite3 Database instance
+ * @param db - The SQLite database instance
  */
-export function applyIntegrationPragmas(db: Database.Database): void {
+export function applyIntegrationPragmas(db: SqliteDatabase): void {
   db.pragma(`journal_mode = ${SQLITE_INTEGRATION_PRAGMAS.journal_mode}`);
   db.pragma(`busy_timeout = ${SQLITE_INTEGRATION_PRAGMAS.busy_timeout}`);
   db.pragma(`synchronous = ${SQLITE_INTEGRATION_PRAGMAS.synchronous}`);
@@ -117,35 +117,36 @@ export function createMemoryDbUrl(prefix = 'test'): string {
 
 /**
  * Generate a unique in-memory connection string for Drizzle/identity database.
- * Uses :memory: format compatible with better-sqlite3.
+ * Uses :memory: format compatible with the current SQLite runtime.
  *
  * @param prefix - Optional prefix for identification
  * @returns A sqlite::memory: connection string
  */
 export function createMemoryIdentityDbUrl(prefix = 'identity'): string {
-  // For better-sqlite3, we use the special :memory: filename
-  // To keep each test isolated, we use a unique named memory database
+  // Keep each test isolated with a unique named in-memory database
   const uniqueId = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
   return `sqlite::memory:${uniqueId}`;
 }
 
 /**
- * Create an isolated in-memory better-sqlite3 database for unit tests.
+ * Create an isolated in-memory SQLite database for unit tests.
  *
  * @returns A new in-memory Database instance
  */
-export function createMemoryDatabase(): Database.Database {
-  return new Database(':memory:');
+export function createMemoryDatabase(): SqliteDatabase {
+  const sqliteRuntime = getSqliteRuntime();
+  return sqliteRuntime.openDatabase(':memory:');
 }
 
 /**
- * Create a better-sqlite3 database with integration test pragmas applied.
+ * Create a SQLite database with integration test pragmas applied.
  *
  * @param filename - The database file path
  * @returns A Database instance with WAL mode and busy_timeout configured
  */
-export function createIntegrationDatabase(filename: string): Database.Database {
-  const db = new Database(filename);
+export function createIntegrationDatabase(filename: string): SqliteDatabase {
+  const sqliteRuntime = getSqliteRuntime();
+  const db = sqliteRuntime.openDatabase(filename);
   applyIntegrationPragmas(db);
   return db;
 }
