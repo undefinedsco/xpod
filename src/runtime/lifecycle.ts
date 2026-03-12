@@ -1,18 +1,23 @@
-import { AppRunner, type App } from '@solid/community-server';
+import type { App } from '@solid/community-server';
 import type { AuthContext } from '../api/auth/AuthContext';
-import { startApiService, type ApiServiceHandle } from '../api/runtime';
+import type { ApiServiceHandle } from '../api/runtime';
 import { Supervisor } from '../supervisor/Supervisor';
 import type { Logger } from 'global-logger-factory';
 import { PACKAGE_ROOT } from './package-root';
-import { GatewayProxy } from './Proxy';
 import type { RuntimeHost } from './host/types';
 import type { RuntimeBootstrapState } from './bootstrap';
 import { closeManagedRedisClients } from '../storage/redis/RedisClientLifecycle';
+import type {
+  ApiRuntimeRunner,
+  CssRuntimeRunner,
+  GatewayRuntimeHandle,
+  GatewayRuntimeRunner,
+} from './runner/types';
 
 export interface RuntimeServices {
   cssApp?: App;
   apiService?: ApiServiceHandle;
-  gateway?: GatewayProxy;
+  gateway?: GatewayRuntimeHandle;
 }
 
 interface StartCssRuntimeOptions {
@@ -22,6 +27,7 @@ interface StartCssRuntimeOptions {
   supervisor: Supervisor;
   open: boolean;
   createCssRuntimeConfig: (state: RuntimeBootstrapState, open: boolean) => string;
+  cssRunner: CssRuntimeRunner;
 }
 
 interface StartApiRuntimeOptions {
@@ -29,6 +35,7 @@ interface StartApiRuntimeOptions {
   host: RuntimeHost;
   supervisor: Supervisor;
   authContext?: AuthContext;
+  apiRunner: ApiRuntimeRunner;
 }
 
 interface StartGatewayRuntimeOptions {
@@ -36,6 +43,7 @@ interface StartGatewayRuntimeOptions {
   host: RuntimeHost;
   supervisor: Supervisor;
   shutdownHandler: () => Promise<void>;
+  gatewayRunner: GatewayRuntimeRunner;
 }
 
 interface StopRuntimeServicesOptions {
@@ -96,24 +104,21 @@ export async function startCssRuntime({
   supervisor,
   open,
   createCssRuntimeConfig,
+  cssRunner,
 }: StartCssRuntimeOptions): Promise<App> {
-  const runner = new AppRunner();
   const cssConfigPath = createCssRuntimeConfig(state, open || state.cssAuthMode === 'allow-all');
 
   supervisor.setStatus('css', 'starting', { startTime: Date.now() });
-  const cssApp = await runner.create({
-    config: cssConfigPath,
-    loaderProperties: {
-      mainModulePath: PACKAGE_ROOT,
-      logLevel: state.logLevel as any,
-    },
+  const cssApp = await cssRunner.start({
+    configPath: cssConfigPath,
+    packageRoot: PACKAGE_ROOT,
+    logLevel: state.logLevel,
     shorthand: {
       ...(state.sockets.css ? { socket: state.sockets.css } : { port: state.ports.css! }),
       ...runtimeShorthand,
     },
   });
 
-  await cssApp.start();
   await host.waitForPortReady(state.ports.css!, '127.0.0.1');
   supervisor.addLog('css', 'info', `CSS started (http://127.0.0.1:${state.ports.css})`);
   supervisor.setStatus('css', 'running', { startTime: Date.now() });
@@ -125,13 +130,13 @@ export async function startApiRuntime({
   host,
   supervisor,
   authContext,
+  apiRunner,
 }: StartApiRuntimeOptions): Promise<ApiServiceHandle> {
   supervisor.setStatus('api', 'starting', { startTime: Date.now() });
 
-  const apiService = await startApiService({
+  const apiService = await apiRunner.start({
     open: state.apiOpen,
     authContext: createOpenAuthContext(state.baseUrl, authContext),
-    initializeLogger: false,
     runtimeHost: host,
   });
 
@@ -145,23 +150,23 @@ export async function startGatewayRuntime({
   host,
   supervisor,
   shutdownHandler,
-}: StartGatewayRuntimeOptions): Promise<GatewayProxy> {
+  gatewayRunner,
+}: StartGatewayRuntimeOptions): Promise<GatewayRuntimeHandle> {
   supervisor.setStatus('gateway', 'starting', { startTime: Date.now() });
 
-  const gateway = new GatewayProxy(state.ports.gateway, supervisor, state.bindHost, {
+  const gateway = await gatewayRunner.start({
+    port: state.ports.gateway,
+    bindHost: state.bindHost,
     socketPath: state.sockets.gateway,
-    exitOnStop: false,
     shutdownHandler,
     baseUrl: state.baseUrl,
     runtimeHost: host,
+    supervisor,
+    targets: {
+      css: { url: `http://127.0.0.1:${state.ports.css}` },
+      api: state.transport === 'socket' ? { socketPath: state.sockets.api! } : { url: `http://127.0.0.1:${state.ports.api}` },
+    },
   });
-
-  gateway.setTargets({
-    css: { url: `http://127.0.0.1:${state.ports.css}` },
-    api: state.transport === 'socket' ? { socketPath: state.sockets.api } : { url: `http://127.0.0.1:${state.ports.api}` },
-  });
-
-  await gateway.start();
   supervisor.addLog('xpod', 'info', `Gateway started (${state.transport === 'socket' ? `unix://${state.sockets.gateway}` : state.baseUrl})`);
   supervisor.setStatus('gateway', 'running', { startTime: Date.now() });
   return gateway;

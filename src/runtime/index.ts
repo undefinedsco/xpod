@@ -22,6 +22,15 @@ export { getFreePort } from './port-finder';
 export { applyEnv, loadEnvFile } from './env-utils';
 export { NodeRuntimeHost, nodeRuntimeHost } from './host/node/NodeRuntimeHost';
 export { registerSocketFetchOrigin } from './socket-fetch';
+export {
+  CommunitySolidServerCssRunner,
+  communitySolidServerCssRunner,
+} from './runner/node/CommunitySolidServerCssRunner';
+export { NodeApiRuntimeRunner, nodeApiRuntimeRunner } from './runner/node/NodeApiRuntimeRunner';
+export {
+  NodeGatewayRuntimeRunner,
+  nodeGatewayRuntimeRunner,
+} from './runner/node/NodeGatewayRuntimeRunner';
 export type {
   RuntimeConnectionTarget,
   RuntimeHost,
@@ -32,6 +41,15 @@ export type {
   RuntimeTransport,
   RuntimeTransportPreference,
 } from './host/types';
+export type {
+  ApiRuntimeRunner,
+  ApiRuntimeRunnerStartOptions,
+  CssRuntimeRunner,
+  CssRuntimeRunnerStartOptions,
+  GatewayRuntimeHandle,
+  GatewayRuntimeRunner,
+  GatewayRuntimeRunnerStartOptions,
+} from './runner/types';
 export { startXpodRuntime } from './XpodRuntime';
 export type {
   XpodRuntimeHandle,

@@ -17,10 +17,16 @@ import {
   stopRuntimeServices,
   type RuntimeServices,
 } from './lifecycle';
+import { nodeApiRuntimeRunner } from './runner/node/NodeApiRuntimeRunner';
+import { communitySolidServerCssRunner } from './runner/node/CommunitySolidServerCssRunner';
+import { nodeGatewayRuntimeRunner } from './runner/node/NodeGatewayRuntimeRunner';
 import type { XpodRuntimeHandle, XpodRuntimeOptions } from './runtime-types';
 
 export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promise<XpodRuntimeHandle> {
   const host = options.host ?? nodeRuntimeHost;
+  const cssRunner = options.cssRunner ?? communitySolidServerCssRunner;
+  const apiRunner = options.apiRunner ?? nodeApiRuntimeRunner;
+  const gatewayRunner = options.gatewayRunner ?? nodeGatewayRuntimeRunner;
   const id = randomUUID().slice(0, 8);
   const state = await resolveRuntimeBootstrap(id, options, host);
 
@@ -73,6 +79,7 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       supervisor,
       open: options.open ?? false,
       createCssRuntimeConfig,
+      cssRunner,
     });
 
     services.apiService = await startApiRuntime({
@@ -80,6 +87,7 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       host,
       supervisor,
       authContext: options.authContext,
+      apiRunner,
     });
 
     services.gateway = await startGatewayRuntime({
@@ -87,6 +95,7 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       host,
       supervisor,
       shutdownHandler: stop,
+      gatewayRunner,
     });
     environment.restore();
 
