@@ -21,6 +21,7 @@ import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { ChatKitService, AiProvider } from '../chatkit';
 import type { StoreContext } from '../chatkit/store';
 import type { PodChatKitStore } from '../chatkit/pod-store';
+import type { RuntimeHost } from '../../runtime/host/types';
 
 /**
  * 容器配置
@@ -37,6 +38,9 @@ export interface ApiContainerConfig {
 
   /** API Server Unix socket 路径 */
   socketPath?: string;
+
+  /** Runtime host implementation */
+  runtimeHost?: RuntimeHost;
 
   /** 数据库连接 URL */
   databaseUrl: string;

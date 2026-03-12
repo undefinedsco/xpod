@@ -5,12 +5,14 @@ import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig, type Ap
 import { registerRoutes } from './container/routes';
 import type { AuthContext } from './auth/AuthContext';
 import { OpenAuthMiddleware } from './middleware/OpenAuthMiddleware';
+import type { RuntimeHost } from '../runtime/host/types';
 
 export interface StartApiServiceOptions {
   config?: ApiContainerConfig;
   open?: boolean;
   authContext?: AuthContext;
   initializeLogger?: boolean;
+  runtimeHost?: RuntimeHost;
 }
 
 export interface ApiServiceHandle {
@@ -119,7 +121,11 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
     initApiLogger();
   }
 
-  const config = options.config ?? loadConfigFromEnv();
+  const baseConfig = options.config ?? loadConfigFromEnv();
+  const config = {
+    ...baseConfig,
+    runtimeHost: options.runtimeHost ?? baseConfig.runtimeHost,
+  };
   const logger = getLoggerFor('ApiRuntime');
 
   if (!config.databaseUrl) {

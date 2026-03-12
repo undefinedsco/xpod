@@ -10,14 +10,16 @@ const commandMocks = {
   scan: vi.fn(),
   mget: vi.fn(),
   quit: vi.fn(),
+  disconnect: vi.fn(),
+  on: vi.fn(),
 };
 
 vi.mock('ioredis', () => ({
   Redis: class Redis {
-    public static lastOptions: Record<string, unknown> | undefined;
+    public static lastArgs: unknown[] | undefined;
 
-    public constructor(options: Record<string, unknown>) {
-      Redis.lastOptions = options;
+    public constructor(...args: unknown[]) {
+      Redis.lastArgs = args;
       Object.assign(this, commandMocks);
     }
   },
@@ -38,6 +40,12 @@ describe('RedisKeyValueStorage', () => {
     expect(commandMocks.ping).toHaveBeenCalled();
     await storage.finalize();
     expect(commandMocks.quit).toHaveBeenCalled();
+    expect(commandMocks.disconnect).toHaveBeenCalledWith(false);
+  });
+
+  it('registers a Redis error listener on construction', () => {
+    new RedisKeyValueStorage({ client: '6379' });
+    expect(commandMocks.on).toHaveBeenCalledWith('error', expect.any(Function));
   });
 
   it('sets values with TTL when expires is provided', async () => {

@@ -1,9 +1,9 @@
 import httpProxy from 'http-proxy';
 import http from 'http';
-import net from 'net';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Supervisor } from '../supervisor/Supervisor';
-import { prepareSocketPath, removeSocketPath } from './socket-utils';
+import { nodeRuntimeHost } from './host/node/NodeRuntimeHost';
+import type { RuntimeHost, RuntimeListenEndpoint } from './host/types';
 
 type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean };
 
@@ -27,18 +27,24 @@ export class GatewayProxy {
   private proxy: httpProxy;
   private server: http.Server;
   private targets: { css?: GatewayProxyTarget; api?: GatewayProxyTarget } = {};
-  private readonly socketPath?: string;
+  private readonly runtimeHost: RuntimeHost;
+  private readonly listenEndpoint: RuntimeListenEndpoint;
   private readonly exitOnStop: boolean;
   private readonly shutdownHandler?: () => Promise<void>;
   private readonly baseUrl?: string;
 
   constructor(
-    private port: number | undefined,
+    port: number | undefined,
     private supervisor: Supervisor,
-    private bindHost = '0.0.0.0',
+    bindHost = '0.0.0.0',
     options: GatewayProxyOptions = {},
   ) {
-    this.socketPath = options.socketPath;
+    this.runtimeHost = options.runtimeHost ?? nodeRuntimeHost;
+    this.listenEndpoint = options.listenEndpoint ?? this.runtimeHost.createListenEndpoint({
+      port,
+      host: bindHost,
+      socketPath: options.socketPath,
+    });
     this.exitOnStop = options.exitOnStop ?? false;
     this.shutdownHandler = options.shutdownHandler;
     this.baseUrl = options.baseUrl;
@@ -97,38 +103,16 @@ export class GatewayProxy {
   }
 
   public async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.server.once('error', reject);
-
-      if (this.socketPath) {
-        prepareSocketPath(this.socketPath);
-        this.server.listen(this.socketPath, () => {
-          this.logger.info(`Listening on unix://${this.socketPath}`);
-          resolve();
-        });
-        return;
-      }
-
-      this.server.listen(this.port, this.bindHost, () => {
-        this.logger.info(`Listening on http://${this.bindHost}:${this.port}`);
-        resolve();
-      });
-    });
+    await this.runtimeHost.listen(this.server, this.listenEndpoint);
+    this.logger.info(`Listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
   }
 
   public stop(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.proxy.close();
-      this.server.close((err) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        if (this.socketPath) {
-          removeSocketPath(this.socketPath);
-        }
+      this.runtimeHost.close(this.server, this.listenEndpoint).then(() => {
         resolve();
-      });
+      }, reject);
     });
   }
 
@@ -334,37 +318,7 @@ export class GatewayProxy {
       return true;
     }
 
-    try {
-      const cssTarget = this.targets.css;
-      const socketPath = cssTarget.socketPath;
-      if (socketPath) {
-        return await new Promise<boolean>((resolve) => {
-          const socket = new net.Socket();
-          socket.setTimeout(1500);
-          socket.once('connect', () => { socket.destroy(); resolve(true); });
-          socket.once('error', () => { socket.destroy(); resolve(false); });
-          socket.once('timeout', () => { socket.destroy(); resolve(false); });
-          socket.connect(socketPath);
-        });
-      }
-
-      // TCP connect to the CSS internal port to check if it's listening.
-      // HTTP probes fail because CSS enforces identifier-space checks and
-      // the internal port differs from the public CSS_BASE_URL port.
-      const url = new URL(cssTarget.url!);
-      const port = parseInt(url.port || '80', 10);
-      const host = url.hostname;
-      return await new Promise<boolean>((resolve) => {
-        const socket = new net.Socket();
-        socket.setTimeout(1500);
-        socket.once('connect', () => { socket.destroy(); resolve(true); });
-        socket.once('error', () => { socket.destroy(); resolve(false); });
-        socket.once('timeout', () => { socket.destroy(); resolve(false); });
-        socket.connect(port, host);
-      });
-    } catch {
-      return false;
-    }
+    return this.runtimeHost.isConnectionTargetReady(this.targets.css, 1_500);
   }
 
   private normalizeTarget(target?: string | GatewayProxyTarget): GatewayProxyTarget | undefined {
@@ -395,6 +349,8 @@ export interface GatewayProxyTarget {
 
 export interface GatewayProxyOptions {
   socketPath?: string;
+  listenEndpoint?: RuntimeListenEndpoint;
+  runtimeHost?: RuntimeHost;
   exitOnStop?: boolean;
   shutdownHandler?: () => Promise<void>;
   baseUrl?: string;

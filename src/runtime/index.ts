@@ -1,23 +1,41 @@
-import path from 'path';
-import fs from 'fs';
-
-/** xpod package root: walk up from __dirname until we find package.json */
-function findPackageRoot(dir: string): string {
-  let current = dir;
-  while (current !== path.dirname(current)) {
-    if (fs.existsSync(path.join(current, 'package.json'))) {
-      return current;
-    }
-    current = path.dirname(current);
-  }
-  return dir;
-}
-
-export const PACKAGE_ROOT = findPackageRoot(__dirname);
-
+export { PACKAGE_ROOT, findPackageRoot } from './package-root';
+export {
+  buildRuntimeEnv,
+  buildRuntimeShorthand,
+  createCssRuntimeConfig,
+  initRuntimeLogger,
+  resolveRuntimeBootstrap,
+} from './bootstrap';
+export { createRuntimeEnvironmentSession } from './environment';
+export type { RuntimeEnvironmentSession } from './environment';
+export {
+  createOpenAuthContext,
+  registerManagedRuntimeServices,
+  startApiRuntime,
+  startCssRuntime,
+  startGatewayRuntime,
+  stopRuntimeServices,
+} from './lifecycle';
+export type { RuntimeServices } from './lifecycle';
 export { GatewayProxy } from './Proxy';
 export { getFreePort } from './port-finder';
 export { applyEnv, loadEnvFile } from './env-utils';
+export { NodeRuntimeHost, nodeRuntimeHost } from './host/node/NodeRuntimeHost';
 export { registerSocketFetchOrigin } from './socket-fetch';
+export type {
+  RuntimeConnectionTarget,
+  RuntimeHost,
+  RuntimeListenEndpoint,
+  RuntimeListenableServer,
+  RuntimePortAllocationOptions,
+  RuntimePorts,
+  RuntimeTransport,
+  RuntimeTransportPreference,
+} from './host/types';
 export { startXpodRuntime } from './XpodRuntime';
-export type { XpodRuntimeOptions, XpodRuntimeHandle } from './XpodRuntime';
+export type {
+  XpodRuntimeHandle,
+  XpodRuntimeOptions,
+  XpodRuntimePorts,
+  XpodRuntimeSockets,
+} from './runtime-types';

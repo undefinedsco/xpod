@@ -109,6 +109,7 @@ export function registerCommonServices(
         port: config.port,
         host: config.host,
         socketPath: config.socketPath,
+        runtimeHost: config.runtimeHost,
         authMiddleware,
         corsOrigins: config.corsOrigins,
       });

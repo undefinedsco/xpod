@@ -1,0 +1,217 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { setGlobalLoggerFactory } from 'global-logger-factory';
+import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
+import { PACKAGE_ROOT } from './package-root';
+import type { RuntimeHost } from './host/types';
+import type { XpodRuntimeOptions, XpodRuntimePorts, XpodRuntimeSockets } from './runtime-types';
+
+const BASE_PROCESS_ENV = { ...process.env };
+
+export interface RuntimeBootstrapState {
+  id: string;
+  host: RuntimeHost;
+  mode: 'local' | 'cloud';
+  transport: 'socket' | 'port';
+  bindHost: string;
+  runtimeRoot: string;
+  rootFilePath: string;
+  sparqlEndpoint: string;
+  identityDbUrl: string;
+  usageDbUrl: string;
+  cssAuthMode: 'acp' | 'acl' | 'allow-all';
+  apiOpen: boolean;
+  logLevel: string;
+  baseUrl: string;
+  envFilePath?: string;
+  ports: XpodRuntimePorts;
+  sockets: XpodRuntimeSockets;
+}
+
+function ensureTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
+function withDefinedEntries(entries: Array<[string, string | number | boolean | undefined]>): Record<string, string | number | boolean> {
+  const result: Record<string, string | number | boolean> = {};
+  for (const [key, value] of entries) {
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function normalizeDatabaseUrl(value: string): string {
+  if (
+    value.startsWith('sqlite:') ||
+    value.startsWith('postgres://') ||
+    value.startsWith('postgresql://') ||
+    value.startsWith('mysql://')
+  ) {
+    return value;
+  }
+  return `sqlite:${path.resolve(value)}`;
+}
+
+export async function resolveRuntimeBootstrap(
+  id: string,
+  options: XpodRuntimeOptions,
+  host: RuntimeHost,
+): Promise<RuntimeBootstrapState> {
+  const mode = options.mode ?? 'local';
+  const transport = host.resolveTransport(options.transport);
+  const bindHost = options.bindHost ?? '127.0.0.1';
+  const runtimeRoot = path.resolve(options.runtimeRoot ?? path.join(process.cwd(), '.test-data', 'xpod-runtime', id));
+  const rootFilePath = path.resolve(options.rootFilePath ?? path.join(runtimeRoot, 'data'));
+  const sparqlEndpoint = normalizeDatabaseUrl(options.sparqlEndpoint ?? path.join(runtimeRoot, 'quadstore.sqlite'));
+  const identityDbUrl = normalizeDatabaseUrl(options.identityDbUrl ?? path.join(runtimeRoot, 'identity.sqlite'));
+  const usageDbUrl = normalizeDatabaseUrl(options.usageDbUrl ?? path.join(runtimeRoot, 'usage.sqlite'));
+  const cssAuthMode = options.authMode ?? (options.open ? 'allow-all' : 'acp');
+  const apiOpen = options.apiOpen ?? options.open ?? false;
+  const logLevel = options.logLevel ?? process.env.CSS_LOGGING_LEVEL ?? 'warn';
+
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  fs.mkdirSync(rootFilePath, { recursive: true });
+
+  const socketsRoot = path.join(runtimeRoot, 'sockets');
+  const allocatedPorts = await host.allocatePorts({
+    gatewayPort: options.gatewayPort,
+    cssPort: options.cssPort,
+    apiPort: options.apiPort,
+    basePort: 5600,
+  });
+
+  const ports: XpodRuntimePorts = {
+    gateway: allocatedPorts.gateway,
+    css: allocatedPorts.css,
+    api: allocatedPorts.api,
+  };
+  const sockets: XpodRuntimeSockets = {};
+
+  if (transport === 'socket') {
+    sockets.gateway = path.resolve(options.gatewaySocketPath ?? path.join(socketsRoot, 'gateway.sock'));
+    sockets.api = path.resolve(options.apiSocketPath ?? path.join(socketsRoot, 'api.sock'));
+  }
+
+  const baseUrl = ensureTrailingSlash(
+    options.baseUrl ?? (transport === 'socket'
+      ? 'http://localhost'
+      : `http://${bindHost}:${ports.gateway}`),
+  );
+
+  return {
+    id,
+    host,
+    mode,
+    transport,
+    bindHost,
+    runtimeRoot,
+    rootFilePath,
+    sparqlEndpoint,
+    identityDbUrl,
+    usageDbUrl,
+    cssAuthMode,
+    apiOpen,
+    logLevel,
+    baseUrl,
+    envFilePath: options.envFile ? path.resolve(options.envFile) : undefined,
+    ports,
+    sockets,
+  };
+}
+
+export function buildRuntimeEnv(
+  state: RuntimeBootstrapState,
+  options: XpodRuntimeOptions,
+  envFromFile: Record<string, string | undefined> = {},
+): Record<string, string | undefined> {
+  return {
+    ...envFromFile,
+    ...options.env,
+    XPOD_ENV_PATH: state.envFilePath,
+    XPOD_EDITION: state.mode,
+    CSS_BASE_URL: state.baseUrl,
+    CSS_TOKEN_ENDPOINT: `${state.baseUrl}.oidc/token`,
+    CSS_ROOT_FILE_PATH: state.rootFilePath,
+    CSS_IDENTITY_DB_URL: state.identityDbUrl,
+    DATABASE_URL: state.identityDbUrl,
+    CSS_PORT: String(state.ports.css ?? 0),
+    API_PORT: String(state.ports.api ?? 0),
+    API_HOST: state.bindHost,
+    API_SOCKET_PATH: state.sockets.api,
+    XPOD_MAIN_PORT: String(state.ports.gateway ?? 0),
+    CORS_ORIGINS: new URL(state.baseUrl).origin,
+    CSS_LOGGING_LEVEL: state.logLevel,
+  };
+}
+
+export function buildRuntimeShorthand(
+  runtimeEnv: Record<string, string | undefined>,
+  options: XpodRuntimeOptions,
+  state: RuntimeBootstrapState,
+): Record<string, string | number | boolean> {
+  const envValue = (key: string): string | undefined => runtimeEnv[key] ?? BASE_PROCESS_ENV[key];
+
+  return {
+    ...withDefinedEntries([
+      ['baseStorageDomain', envValue('CSS_BASE_STORAGE_DOMAIN')],
+      ['minioAccessKey', envValue('CSS_MINIO_ACCESS_KEY')],
+      ['minioSecretKey', envValue('CSS_MINIO_SECRET_KEY')],
+      ['minioEndpoint', envValue('CSS_MINIO_ENDPOINT')],
+      ['minioBucketName', envValue('CSS_MINIO_BUCKET_NAME')],
+      ['redisClient', envValue('CSS_REDIS_CLIENT')],
+      ['redisUsername', envValue('CSS_REDIS_USERNAME')],
+      ['redisPassword', envValue('CSS_REDIS_PASSWORD')],
+      ['emailConfigHost', envValue('CSS_EMAIL_CONFIG_HOST')],
+      ['emailConfigPort', envValue('CSS_EMAIL_CONFIG_PORT')],
+      ['emailConfigAuthUser', envValue('CSS_EMAIL_CONFIG_AUTH_USER')],
+      ['emailConfigAuthPass', envValue('CSS_EMAIL_CONFIG_AUTH_PASS')],
+      ['idpUrl', envValue('CSS_IDP_URL') ?? envValue('XPOD_CLOUD_API_ENDPOINT')],
+      ['allowedHosts', envValue('CSS_ALLOWED_HOSTS')],
+      ['nodeId', envValue('XPOD_NODE_ID')],
+      ['nodeToken', envValue('XPOD_NODE_TOKEN')],
+      ['serviceToken', envValue('XPOD_SERVICE_TOKEN')],
+    ]),
+    baseUrl: state.baseUrl,
+    rootFilePath: state.rootFilePath,
+    sparqlEndpoint: state.sparqlEndpoint,
+    identityDbUrl: state.identityDbUrl,
+    usageDbUrl: state.usageDbUrl,
+    logLevel: state.logLevel,
+    authMode: state.cssAuthMode,
+    edition: state.mode === 'cloud' ? 'server' : 'local',
+    edgeNodesEnabled: options.edgeNodesEnabled ?? false,
+    centerRegistrationEnabled: options.centerRegistrationEnabled ?? false,
+    ...(options.shorthand ?? {}),
+  };
+}
+
+export function createCssRuntimeConfig(state: RuntimeBootstrapState, open: boolean): string {
+  const configPath = path.join(PACKAGE_ROOT, `config/${state.mode}.json`);
+  if (!open) {
+    return configPath;
+  }
+
+  const runtimeConfigPath = path.join(state.runtimeRoot, 'css-runtime.config.json');
+  fs.writeFileSync(runtimeConfigPath, JSON.stringify({
+    '@context': [
+      'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+      'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld',
+    ],
+    import: [
+      configPath,
+      path.join(PACKAGE_ROOT, 'config/runtime-open.json'),
+    ],
+  }, null, 2));
+
+  return runtimeConfigPath;
+}
+
+export function initRuntimeLogger(level: string): void {
+  const loggerFactory = new ConfigurableLoggerFactory(level, {
+    fileName: path.join(process.cwd(), 'logs/xpod-%DATE%.log'),
+    showLocation: true,
+  });
+  setGlobalLoggerFactory(loggerFactory);
+}

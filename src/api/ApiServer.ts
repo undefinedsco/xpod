@@ -1,7 +1,8 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { AuthMiddleware, AuthenticatedRequest } from './middleware/AuthMiddleware';
-import { prepareSocketPath, removeSocketPath } from '../runtime/socket-utils';
+import { nodeRuntimeHost } from '../runtime/host/node/NodeRuntimeHost';
+import type { RuntimeHost, RuntimeListenEndpoint } from '../runtime/host/types';
 
 /**
  * Route handler function
@@ -28,6 +29,8 @@ export interface ApiServerOptions {
   port?: number;
   host?: string;
   socketPath?: string;
+  listenEndpoint?: RuntimeListenEndpoint;
+  runtimeHost?: RuntimeHost;
   authMiddleware: AuthMiddleware;
   corsOrigins?: string[];
 }
@@ -37,18 +40,20 @@ export interface ApiServerOptions {
  */
 export class ApiServer {
   private readonly logger = getLoggerFor(this);
-  private readonly port: number;
-  private readonly host: string;
-  private readonly socketPath?: string;
+  private readonly runtimeHost: RuntimeHost;
+  private readonly listenEndpoint: RuntimeListenEndpoint;
   private readonly authMiddleware: AuthMiddleware;
   private readonly corsOrigins: string[];
   private readonly routes: Route[] = [];
   private server?: Server;
 
   public constructor(options: ApiServerOptions) {
-    this.port = options.port ?? 0;
-    this.host = options.host ?? '0.0.0.0';
-    this.socketPath = options.socketPath;
+    this.runtimeHost = options.runtimeHost ?? nodeRuntimeHost;
+    this.listenEndpoint = options.listenEndpoint ?? this.runtimeHost.createListenEndpoint({
+      port: options.port,
+      host: options.host,
+      socketPath: options.socketPath,
+    });
     this.authMiddleware = options.authMiddleware;
     this.corsOrigins = options.corsOrigins ?? ['*'];
   }
@@ -115,21 +120,10 @@ export class ApiServer {
         });
       });
 
-      this.server.on('error', reject);
-
-      if (this.socketPath) {
-        prepareSocketPath(this.socketPath);
-        this.server.listen(this.socketPath, () => {
-          this.logger.info(`API Server listening on unix://${this.socketPath}`);
-          resolve();
-        });
-        return;
-      }
-
-      this.server.listen(this.port, this.host, () => {
-        this.logger.info(`API Server listening on ${this.host}:${this.port}`);
+      this.runtimeHost.listen(this.server, this.listenEndpoint).then(() => {
+        this.logger.info(`API Server listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
         resolve();
-      });
+      }, reject);
     });
   }
 
@@ -143,17 +137,10 @@ export class ApiServer {
         return;
       }
 
-      this.server.close((error) => {
-        if (error) {
-          reject(error);
-        } else {
-          if (this.socketPath) {
-            removeSocketPath(this.socketPath);
-          }
+      this.runtimeHost.close(this.server, this.listenEndpoint).then(() => {
           this.logger.info('API Server stopped');
           resolve();
-        }
-      });
+      }, reject);
     });
   }
 
