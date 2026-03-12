@@ -7,6 +7,7 @@
 
 import { Client as PgClient } from 'pg';
 import type { DbConnection, DbSource, Row } from './types';
+import { getSqliteRuntime } from '../../../storage/SqliteRuntime';
 
 /**
  * Connect to a database and return a unified DbConnection.
@@ -54,14 +55,12 @@ async function connectPostgres(connectionString: string): Promise<DbConnection> 
 // ============================================
 
 async function connectSqlite(filePath: string): Promise<DbConnection> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const Database = require('better-sqlite3');
-  const db = new Database(filePath, { readonly: true });
+  const sqliteRuntime = getSqliteRuntime();
+  const db = sqliteRuntime.openDatabase(filePath, { readonly: true });
 
   return {
     async *query(sql: string): AsyncIterable<Row> {
-      const stmt = db.prepare(sql);
-      for (const row of stmt.iterate()) {
+      for (const row of db.prepare(sql).iterate()) {
         yield row as Row;
       }
     },

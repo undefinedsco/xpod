@@ -1,13 +1,10 @@
 import { Pool, types } from 'pg';
 import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
-import { drizzle as drizzleSqlite, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { SQL } from 'drizzle-orm/sql';
 import * as pgSchema from './schema.pg';
 import * as sqliteSchema from './schema.sqlite';
-import path from 'node:path';
-import fs from 'node:fs';
 import { getSharedPool, releaseSharedPool } from '../../storage/database/PostgresPoolManager';
+import { getSqliteRuntime, type SqliteDatabase } from '../../storage/SqliteRuntime';
 
 // Use 'any' to allow both PostgreSQL and SQLite database instances
 // The actual type depends on the connection string at runtime
@@ -45,40 +42,12 @@ const dbInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
 
-type SqliteDdlExecutor = { exec: (sql: string) => unknown };
+type SqliteDdlExecutor = Pick<SqliteDatabase, 'exec'>;
 
 for (const oid of JSON_OIDS) {
   // Explicitly return raw string to avoid "Type Conflict" with CSS
   // and to satisfy PgQuintStore's parseVector expecting a string.
   types.setTypeParser(oid, (value) => value);
-}
-
-function wrapBetterSqliteError(error: unknown): Error {
-  if (!(error instanceof Error)) {
-    return new Error(String(error));
-  }
-
-  if (!/NODE_MODULE_VERSION|compiled against a different Node\.js version/i.test(error.message)) {
-    return error;
-  }
-
-  return new Error([
-    `Failed to load better-sqlite3 under Node ${process.version} (ABI ${process.versions.modules}).`,
-    'This usually means native modules were installed with a different Node.js major version.',
-    'Suggested fix:',
-    '  1. nvm use 22',
-    '  2. yarn install --force --ignore-engines',
-    '',
-    `Original error: ${error.message}`,
-  ].join('\n'));
-}
-
-function loadBetterSqlite3(): any {
-  try {
-    return require('better-sqlite3');
-  } catch (error) {
-    throw wrapBetterSqliteError(error);
-  }
 }
 
 /**
@@ -101,27 +70,17 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
   if (isSqliteUrl(connectionString)) {
     const filename = connectionString.replace('sqlite:', '');
     const isMemory = filename === ':memory:' || filename.startsWith(':memory:');
-    if (!isMemory) {
-      const directory = path.dirname(filename);
-      if (directory && !fs.existsSync(directory)) {
-        fs.mkdirSync(directory, { recursive: true });
-      }
-    }
-    const BetterSqlite3 = loadBetterSqlite3();
-    const sqlite = new BetterSqlite3(isMemory ? ':memory:' : filename);
+    const sqliteRuntime = getSqliteRuntime();
+    const sqlite = sqliteRuntime.openDatabase(isMemory ? ':memory:' : filename);
 
-    // Apply pragmas for better concurrency (prevents SQLITE_BUSY errors)
-    // WAL mode allows concurrent reads during writes
-    // busy_timeout waits up to 5 seconds before throwing SQLITE_BUSY
     if (!isMemory) {
       sqlite.pragma('journal_mode = WAL');
       sqlite.pragma('busy_timeout = 5000');
       sqlite.pragma('synchronous = NORMAL');
     }
 
-    const db = drizzleSqlite(sqlite);
+    const db = sqliteRuntime.createDrizzleDatabase(sqlite);
 
-    // Create tables if they don't exist
     ensureSqliteTables(sqlite);
 
     dbInitPromises.set(db as object, Promise.resolve());
@@ -193,7 +152,9 @@ export async function closeAllIdentityConnections(): Promise<void> {
  * PostgreSQL drizzle has `execute()` method but no `all()` method.
  */
 export function isDatabaseSqlite(db: IdentityDatabase): boolean {
-  // SQLite drizzle has `all` method, PostgreSQL drizzle has `execute` method
+  if ((db as any)?.$xpodSqliteRuntime) {
+    return true;
+  }
   return typeof db.all === 'function' && typeof db.execute !== 'function';
 }
 

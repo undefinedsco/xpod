@@ -7,17 +7,18 @@
  * - 通过 rowid JOIN quints 表即可关联业务数据
  */
 
-import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import type { Finalizable, Initializable } from '@solid/community-server';
 import { VectorStore, hashModelId } from './VectorStore';
 import type { VectorRecord, VectorSearchOptions, VectorSearchResult, VectorStoreOptions } from './types';
+import { getSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 
 export class SqliteVectorStore extends VectorStore implements Initializable, Finalizable {
   /** @ignored */
-  private db: Database.Database | null = null;
+  private db: SqliteDatabase | null = null;
   private readonly filename: string;
+  private readonly sqliteRuntime = getSqliteRuntime();
 
   public constructor(options: VectorStoreOptions) {
     super();
@@ -51,12 +52,8 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
       }
     }
 
-    this.db = new Database(this.filename);
-
-    // 加载 sqlite-vec 扩展
-    const { load } = require('sqlite-vec');
-    const vecPath = require('sqlite-vec').getLoadablePath();
-    load(this.db, vecPath);
+    this.db = this.sqliteRuntime.openDatabase(this.filename);
+    this.loadVectorExtension(this.db);
 
     if (this.filename !== ':memory:') {
       this.db.pragma('journal_mode = WAL');
@@ -71,7 +68,7 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     }
   }
 
-  private ensureOpen(): Database.Database {
+  private ensureOpen(): SqliteDatabase {
     if (!this.db) {
       // 懒初始化：如果尚未打开，则自动打开
       // 确保目录存在
@@ -82,12 +79,8 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
         }
       }
 
-      this.db = new Database(this.filename);
-
-      // 加载 sqlite-vec 扩展
-      const { load } = require('sqlite-vec');
-      const vecPath = require('sqlite-vec').getLoadablePath();
-      load(this.db, vecPath);
+      this.db = this.sqliteRuntime.openDatabase(this.filename);
+      this.loadVectorExtension(this.db);
 
       if (this.filename !== ':memory:') {
         this.db.pragma('journal_mode = WAL');
@@ -95,6 +88,21 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
       }
     }
     return this.db;
+  }
+
+  private loadVectorExtension(db: SqliteDatabase): void {
+    const sqliteVec = require('sqlite-vec') as {
+      load?: (database: unknown, extensionPath: string) => void;
+      getLoadablePath: () => string;
+    };
+    const vecPath = sqliteVec.getLoadablePath();
+
+    if (db.kind === 'node-better-sqlite3' && sqliteVec.load) {
+      sqliteVec.load(db.native, vecPath);
+      return;
+    }
+
+    db.loadExtension(vecPath);
   }
 
   private getTableName(modelId: string): string {

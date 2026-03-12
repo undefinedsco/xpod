@@ -1,9 +1,9 @@
 /**
  * Seed 测试 Pod 数据 - 在 SPARQL 数据库插入容器元数据
  */
-import Database from 'better-sqlite3';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { getSqliteRuntime } from '../storage/SqliteRuntime';
 
 export interface SeedPodOptions {
   rootFilePath: string;
@@ -17,7 +17,8 @@ export async function seedPod(options: SeedPodOptions): Promise<void> {
   await fs.mkdir(rootFilePath, { recursive: true });
 
   const sparqlDbPath = path.join(rootFilePath, 'sparql.db');
-  const db = new Database(sparqlDbPath);
+  const sqliteRuntime = getSqliteRuntime();
+  const db = sqliteRuntime.openDatabase(sparqlDbPath);
 
   // 创建 quints 表（如果不存在）
   db.exec(`

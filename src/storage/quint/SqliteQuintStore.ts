@@ -4,8 +4,6 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
-import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { eq, ne, and, gte, gt, lt, lte, like, inArray, notInArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { wrap, AsyncIterator } from 'asynciterator';
@@ -23,6 +21,7 @@ import {
   fpEncode,
   SEP,
 } from './serialization';
+import { getSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type {
   Quint,
   QuintPattern,
@@ -44,9 +43,10 @@ export interface SqliteQuintStoreOptions extends QuintStoreOptions {
 }
 
 export class SqliteQuintStore {
-  private sqlite: Database.Database | null = null;
-  private db: BetterSQLite3Database | null = null;
+  private sqlite: SqliteDatabase | null = null;
+  private db: any | null = null;
   private options: SqliteQuintStoreOptions;
+  private readonly sqliteRuntime = getSqliteRuntime();
 
   constructor(options: SqliteQuintStoreOptions) {
     // Handle sqlite: prefix
@@ -77,8 +77,8 @@ export class SqliteQuintStore {
       }
     }
     
-    this.sqlite = new Database(dbPath);
-    this.db = drizzle(this.sqlite);
+    this.sqlite = this.sqliteRuntime.openDatabase(dbPath);
+    this.db = this.sqliteRuntime.createDrizzleDatabase(this.sqlite);
 
     // Create table and indexes
     this.sqlite.exec(`
@@ -143,7 +143,7 @@ export class SqliteQuintStore {
     }
 
     const rows = await query;
-    return rows.map(row => this.rowToQuint(row));
+    return rows.map((row: QuintRow) => this.rowToQuint(row));
   }
 
   match(

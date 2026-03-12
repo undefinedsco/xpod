@@ -1,10 +1,10 @@
-import Database from 'better-sqlite3';
 import type {
   Finalizable,
   Initializable,
   KeyValueStorage,
 } from '@solid/community-server';
 import { getLoggerFor } from 'global-logger-factory';
+import { getSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 
 export interface SqliteKeyValueStorageOptions {
   /** Path to SQLite database file (can be prefixed with sqlite:) */
@@ -36,10 +36,11 @@ export class SqliteKeyValueStorage<T = unknown> implements
   Initializable,
   Finalizable {
   protected readonly logger = getLoggerFor(this);
-  private db: Database.Database | null = null;
+  private db: SqliteDatabase | null = null;
   private readonly path: string;
   private readonly tableName: string;
   private readonly namespace: string;
+  private readonly sqliteRuntime = getSqliteRuntime();
 
   public constructor(options: SqliteKeyValueStorageOptions) {
     this.path = parseSqlitePath(options.path);
@@ -51,18 +52,7 @@ export class SqliteKeyValueStorage<T = unknown> implements
   public async initialize(): Promise<void> {
     if (this.db) return;
 
-    this.db = new Database(this.path);
-    this.db.pragma('journal_mode = WAL');
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS ${this.tableName} (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
-
-    this.logger.info(`SqliteKeyValueStorage initialized: ${this.path}`);
+    this.db = this.createDatabase();
   }
 
   public async finalize(): Promise<void> {
@@ -72,23 +62,27 @@ export class SqliteKeyValueStorage<T = unknown> implements
     }
   }
 
-  private getDb(): Database.Database {
+  private getDb(): SqliteDatabase {
     if (!this.db) {
-      // Lazy initialization
-      this.db = new Database(this.path);
-      this.db.pragma('journal_mode = WAL');
-
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS ${this.tableName} (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-      `);
-
-      this.logger.info(`SqliteKeyValueStorage initialized: ${this.path}`);
+      this.db = this.createDatabase();
     }
     return this.db;
+  }
+
+  private createDatabase(): SqliteDatabase {
+    const db = this.sqliteRuntime.openDatabase(this.path);
+    db.pragma('journal_mode = WAL');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS ${this.tableName} (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+
+    this.logger.info(`SqliteKeyValueStorage initialized: ${this.path}`);
+    return db;
   }
 
   public async has(key: string): Promise<boolean> {
