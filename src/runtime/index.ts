@@ -21,6 +21,7 @@ export { GatewayProxy } from './Proxy';
 export { getFreePort } from './port-finder';
 export { applyEnv, loadEnvFile } from './env-utils';
 export { NodeRuntimeHost, nodeRuntimeHost } from './host/node/NodeRuntimeHost';
+export { NodeRuntimePlatform, nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
 export { registerSocketFetchOrigin } from './socket-fetch';
 export {
   CommunitySolidServerCssRunner,
@@ -41,6 +42,7 @@ export type {
   RuntimeTransport,
   RuntimeTransportPreference,
 } from './host/types';
+export type { RuntimePlatform } from './platform/types';
 export type {
   ApiRuntimeRunner,
   ApiRuntimeRunnerStartOptions,

@@ -1,5 +1,7 @@
 import { applyEnv, loadEnvFile } from './env-utils';
 import { buildRuntimeEnv, buildRuntimeShorthand, type RuntimeBootstrapState } from './bootstrap';
+import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
+import type { RuntimePlatform } from './platform/types';
 import type { XpodRuntimeOptions } from './runtime-types';
 
 export interface RuntimeEnvironmentSession {
@@ -11,11 +13,12 @@ export interface RuntimeEnvironmentSession {
 export function createRuntimeEnvironmentSession(
   state: RuntimeBootstrapState,
   options: XpodRuntimeOptions,
+  platform: RuntimePlatform = nodeRuntimePlatform,
 ): RuntimeEnvironmentSession {
-  const envFromFile = state.envFilePath ? loadEnvFile(state.envFilePath) : {};
+  const envFromFile = state.envFilePath ? loadEnvFile(state.envFilePath, platform) : {};
   const env = buildRuntimeEnv(state, options, envFromFile);
-  const restoreEnv = applyEnv(env);
-  const shorthand = buildRuntimeShorthand(env, options, state);
+  const restoreEnv = applyEnv(env, platform);
+  const shorthand = buildRuntimeShorthand(env, options, state, platform.baseEnv);
 
   let restored = false;
 

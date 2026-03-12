@@ -1,13 +1,16 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
+import type { RuntimePlatform } from './platform/types';
 
-export function findPackageRoot(dir: string): string {
+export function findPackageRoot(
+  dir: string,
+  platform: Pick<RuntimePlatform, 'dirname' | 'joinPath' | 'fileExists'> = nodeRuntimePlatform,
+): string {
   let current = dir;
-  while (current !== path.dirname(current)) {
-    if (fs.existsSync(path.join(current, 'package.json'))) {
+  while (current !== platform.dirname(current)) {
+    if (platform.fileExists(platform.joinPath(current, 'package.json'))) {
       return current;
     }
-    current = path.dirname(current);
+    current = platform.dirname(current);
   }
   return dir;
 }

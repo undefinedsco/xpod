@@ -1,12 +1,10 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { setGlobalLoggerFactory } from 'global-logger-factory';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
 import { PACKAGE_ROOT } from './package-root';
 import type { RuntimeHost } from './host/types';
+import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
+import type { RuntimePlatform } from './platform/types';
 import type { XpodRuntimeOptions, XpodRuntimePorts, XpodRuntimeSockets } from './runtime-types';
-
-const BASE_PROCESS_ENV = { ...process.env };
 
 export interface RuntimeBootstrapState {
   id: string;
@@ -42,7 +40,10 @@ function withDefinedEntries(entries: Array<[string, string | number | boolean | 
   return result;
 }
 
-function normalizeDatabaseUrl(value: string): string {
+function normalizeDatabaseUrl(
+  value: string,
+  platform: Pick<RuntimePlatform, 'resolvePath'> = nodeRuntimePlatform,
+): string {
   if (
     value.startsWith('sqlite:') ||
     value.startsWith('postgres://') ||
@@ -51,30 +52,31 @@ function normalizeDatabaseUrl(value: string): string {
   ) {
     return value;
   }
-  return `sqlite:${path.resolve(value)}`;
+  return `sqlite:${platform.resolvePath(value)}`;
 }
 
 export async function resolveRuntimeBootstrap(
   id: string,
   options: XpodRuntimeOptions,
   host: RuntimeHost,
+  platform: RuntimePlatform = nodeRuntimePlatform,
 ): Promise<RuntimeBootstrapState> {
   const mode = options.mode ?? 'local';
   const transport = host.resolveTransport(options.transport);
   const bindHost = options.bindHost ?? '127.0.0.1';
-  const runtimeRoot = path.resolve(options.runtimeRoot ?? path.join(process.cwd(), '.test-data', 'xpod-runtime', id));
-  const rootFilePath = path.resolve(options.rootFilePath ?? path.join(runtimeRoot, 'data'));
-  const sparqlEndpoint = normalizeDatabaseUrl(options.sparqlEndpoint ?? path.join(runtimeRoot, 'quadstore.sqlite'));
-  const identityDbUrl = normalizeDatabaseUrl(options.identityDbUrl ?? path.join(runtimeRoot, 'identity.sqlite'));
-  const usageDbUrl = normalizeDatabaseUrl(options.usageDbUrl ?? path.join(runtimeRoot, 'usage.sqlite'));
+  const runtimeRoot = platform.resolvePath(options.runtimeRoot ?? platform.joinPath(platform.cwd(), '.test-data', 'xpod-runtime', id));
+  const rootFilePath = platform.resolvePath(options.rootFilePath ?? platform.joinPath(runtimeRoot, 'data'));
+  const sparqlEndpoint = normalizeDatabaseUrl(options.sparqlEndpoint ?? platform.joinPath(runtimeRoot, 'quadstore.sqlite'), platform);
+  const identityDbUrl = normalizeDatabaseUrl(options.identityDbUrl ?? platform.joinPath(runtimeRoot, 'identity.sqlite'), platform);
+  const usageDbUrl = normalizeDatabaseUrl(options.usageDbUrl ?? platform.joinPath(runtimeRoot, 'usage.sqlite'), platform);
   const cssAuthMode = options.authMode ?? (options.open ? 'allow-all' : 'acp');
   const apiOpen = options.apiOpen ?? options.open ?? false;
-  const logLevel = options.logLevel ?? process.env.CSS_LOGGING_LEVEL ?? 'warn';
+  const logLevel = options.logLevel ?? platform.getEnv('CSS_LOGGING_LEVEL') ?? 'warn';
 
-  fs.mkdirSync(runtimeRoot, { recursive: true });
-  fs.mkdirSync(rootFilePath, { recursive: true });
+  platform.ensureDir(runtimeRoot);
+  platform.ensureDir(rootFilePath);
 
-  const socketsRoot = path.join(runtimeRoot, 'sockets');
+  const socketsRoot = platform.joinPath(runtimeRoot, 'sockets');
   const allocatedPorts = await host.allocatePorts({
     gatewayPort: options.gatewayPort,
     cssPort: options.cssPort,
@@ -90,8 +92,8 @@ export async function resolveRuntimeBootstrap(
   const sockets: XpodRuntimeSockets = {};
 
   if (transport === 'socket') {
-    sockets.gateway = path.resolve(options.gatewaySocketPath ?? path.join(socketsRoot, 'gateway.sock'));
-    sockets.api = path.resolve(options.apiSocketPath ?? path.join(socketsRoot, 'api.sock'));
+    sockets.gateway = platform.resolvePath(options.gatewaySocketPath ?? platform.joinPath(socketsRoot, 'gateway.sock'));
+    sockets.api = platform.resolvePath(options.apiSocketPath ?? platform.joinPath(socketsRoot, 'api.sock'));
   }
 
   const baseUrl = ensureTrailingSlash(
@@ -115,7 +117,7 @@ export async function resolveRuntimeBootstrap(
     apiOpen,
     logLevel,
     baseUrl,
-    envFilePath: options.envFile ? path.resolve(options.envFile) : undefined,
+    envFilePath: options.envFile ? platform.resolvePath(options.envFile) : undefined,
     ports,
     sockets,
   };
@@ -150,8 +152,9 @@ export function buildRuntimeShorthand(
   runtimeEnv: Record<string, string | undefined>,
   options: XpodRuntimeOptions,
   state: RuntimeBootstrapState,
+  baseEnv: Record<string, string | undefined> = nodeRuntimePlatform.baseEnv,
 ): Record<string, string | number | boolean> {
-  const envValue = (key: string): string | undefined => runtimeEnv[key] ?? BASE_PROCESS_ENV[key];
+  const envValue = (key: string): string | undefined => runtimeEnv[key] ?? baseEnv[key];
 
   return {
     ...withDefinedEntries([
@@ -187,30 +190,37 @@ export function buildRuntimeShorthand(
   };
 }
 
-export function createCssRuntimeConfig(state: RuntimeBootstrapState, open: boolean): string {
-  const configPath = path.join(PACKAGE_ROOT, `config/${state.mode}.json`);
+export function createCssRuntimeConfig(
+  state: RuntimeBootstrapState,
+  open: boolean,
+  platform: Pick<RuntimePlatform, 'joinPath' | 'writeTextFile'> = nodeRuntimePlatform,
+): string {
+  const configPath = platform.joinPath(PACKAGE_ROOT, `config/${state.mode}.json`);
   if (!open) {
     return configPath;
   }
 
-  const runtimeConfigPath = path.join(state.runtimeRoot, 'css-runtime.config.json');
-  fs.writeFileSync(runtimeConfigPath, JSON.stringify({
+  const runtimeConfigPath = platform.joinPath(state.runtimeRoot, 'css-runtime.config.json');
+  platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
       'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
       'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld',
     ],
     import: [
       configPath,
-      path.join(PACKAGE_ROOT, 'config/runtime-open.json'),
+      platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json'),
     ],
   }, null, 2));
 
   return runtimeConfigPath;
 }
 
-export function initRuntimeLogger(level: string): void {
+export function initRuntimeLogger(
+  level: string,
+  platform: Pick<RuntimePlatform, 'cwd' | 'joinPath'> = nodeRuntimePlatform,
+): void {
   const loggerFactory = new ConfigurableLoggerFactory(level, {
-    fileName: path.join(process.cwd(), 'logs/xpod-%DATE%.log'),
+    fileName: platform.joinPath(platform.cwd(), 'logs/xpod-%DATE%.log'),
     showLocation: true,
   });
   setGlobalLoggerFactory(loggerFactory);

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import { closeAllIdentityConnections } from '../identity/drizzle/db';
 import { Supervisor } from '../supervisor/Supervisor';
@@ -9,6 +8,7 @@ import {
 } from './bootstrap';
 import { createRuntimeEnvironmentSession } from './environment';
 import { nodeRuntimeHost } from './host/node/NodeRuntimeHost';
+import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
 import {
   registerManagedRuntimeServices,
   startApiRuntime,
@@ -24,15 +24,16 @@ import type { XpodRuntimeHandle, XpodRuntimeOptions } from './runtime-types';
 
 export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promise<XpodRuntimeHandle> {
   const host = options.host ?? nodeRuntimeHost;
+  const platform = options.platform ?? nodeRuntimePlatform;
   const cssRunner = options.cssRunner ?? communitySolidServerCssRunner;
   const apiRunner = options.apiRunner ?? nodeApiRuntimeRunner;
   const gatewayRunner = options.gatewayRunner ?? nodeGatewayRuntimeRunner;
-  const id = randomUUID().slice(0, 8);
-  const state = await resolveRuntimeBootstrap(id, options, host);
+  const id = platform.createRuntimeId();
+  const state = await resolveRuntimeBootstrap(id, options, host, platform);
 
-  initRuntimeLogger(state.logLevel);
+  initRuntimeLogger(state.logLevel, platform);
   const logger = getLoggerFor('XpodRuntime');
-  const environment = createRuntimeEnvironmentSession(state, options);
+  const environment = createRuntimeEnvironmentSession(state, options, platform);
 
   const unregisterSocketOrigins = state.transport === 'socket'
     ? host.registerSocketOrigins(state.baseUrl, state.sockets.gateway!)
@@ -109,9 +110,9 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       sockets: state.sockets,
       fetch: async(input: string | URL | Request, init?: RequestInit): Promise<Response> => {
         if (typeof input === 'string' || input instanceof URL) {
-          return fetch(new URL(String(input), state.baseUrl), init);
+          return platform.fetch(new URL(String(input), state.baseUrl), init);
         }
-        return fetch(input, init);
+        return platform.fetch(input, init);
       },
       stop,
     };

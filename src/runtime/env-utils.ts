@@ -1,12 +1,16 @@
-import fs from 'node:fs';
+import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
+import type { RuntimePlatform } from './platform/types';
 
-export function loadEnvFile(envPath: string): Record<string, string> {
-  if (!fs.existsSync(envPath)) {
+export function loadEnvFile(
+  envPath: string,
+  platform: Pick<RuntimePlatform, 'fileExists' | 'readTextFile'> = nodeRuntimePlatform,
+): Record<string, string> {
+  if (!platform.fileExists(envPath)) {
     throw new Error(`Env file not found: ${envPath}`);
   }
 
   const values: Record<string, string> = {};
-  const content = fs.readFileSync(envPath, 'utf-8');
+  const content = platform.readTextFile(envPath);
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) {
@@ -29,25 +33,20 @@ export function loadEnvFile(envPath: string): Record<string, string> {
   return values;
 }
 
-export function applyEnv(overrides: Record<string, string | undefined>): () => void {
+export function applyEnv(
+  overrides: Record<string, string | undefined>,
+  platform: Pick<RuntimePlatform, 'getEnv' | 'setEnv'> = nodeRuntimePlatform,
+): () => void {
   const previous = new Map<string, string | undefined>();
 
   for (const [ key, value ] of Object.entries(overrides)) {
-    previous.set(key, process.env[key]);
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
+    previous.set(key, platform.getEnv(key));
+    platform.setEnv(key, value);
   }
 
   return (): void => {
     for (const [ key, value ] of previous.entries()) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
+      platform.setEnv(key, value);
     }
   };
 }

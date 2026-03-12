@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { buildRuntimeEnv, buildRuntimeShorthand, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
+import type { RuntimeHost } from '../../src/runtime/host/types';
+import type { RuntimePlatform } from '../../src/runtime/platform/types';
 
 describe('runtime bootstrap helpers', () => {
   it('should resolve socket runtime bootstrap layout', async() => {
@@ -53,5 +56,44 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.nodeId).toBe('node-1');
     expect(shorthand.edgeNodesEnabled).toBe(true);
     expect(shorthand.centerRegistrationEnabled).toBe(true);
+  });
+
+  it('should resolve runtime paths and log level via injected platform', async() => {
+    const ensureDir = vi.fn();
+    const host = {
+      resolveTransport: vi.fn().mockReturnValue('port'),
+      allocatePorts: vi.fn().mockResolvedValue({
+        gateway: 5910,
+        css: 5911,
+        api: 5912,
+      }),
+    } as Pick<RuntimeHost, 'resolveTransport' | 'allocatePorts'> as RuntimeHost;
+    const platform: RuntimePlatform = {
+      name: 'fake-platform',
+      baseEnv: {},
+      createRuntimeId: (): string => 'fake-id',
+      cwd: (): string => '/sandbox',
+      joinPath: (...segments: string[]): string => path.posix.join(...segments),
+      resolvePath: (...segments: string[]): string => path.posix.resolve(...segments),
+      dirname: (filePath: string): string => path.posix.dirname(filePath),
+      fileExists: (): boolean => true,
+      readTextFile: (): string => '',
+      writeTextFile: (): void => undefined,
+      ensureDir,
+      getEnv: (key: string): string | undefined => key === 'CSS_LOGGING_LEVEL' ? 'error' : undefined,
+      setEnv: (): void => undefined,
+      fetch: async(): Promise<Response> => new Response(null, { status: 204 }),
+    };
+
+    const state = await resolveRuntimeBootstrap('platform-id', {
+      mode: 'local',
+    }, host, platform);
+
+    expect(state.runtimeRoot).toBe('/sandbox/.test-data/xpod-runtime/platform-id');
+    expect(state.rootFilePath).toBe('/sandbox/.test-data/xpod-runtime/platform-id/data');
+    expect(state.sparqlEndpoint).toBe('sqlite:/sandbox/.test-data/xpod-runtime/platform-id/quadstore.sqlite');
+    expect(state.logLevel).toBe('error');
+    expect(ensureDir).toHaveBeenCalledWith('/sandbox/.test-data/xpod-runtime/platform-id');
+    expect(ensureDir).toHaveBeenCalledWith('/sandbox/.test-data/xpod-runtime/platform-id/data');
   });
 });

@@ -1,6 +1,7 @@
 import type { AuthContext } from '../api/auth/AuthContext';
 import type { Supervisor } from '../supervisor/Supervisor';
 import type { RuntimeHost } from './host/types';
+import type { RuntimePlatform } from './platform/types';
 import type { ApiRuntimeRunner, CssRuntimeRunner, GatewayRuntimeRunner } from './runner/types';
 
 export interface XpodRuntimePorts {
@@ -42,6 +43,7 @@ export interface XpodRuntimeOptions {
   edgeNodesEnabled?: boolean;
   centerRegistrationEnabled?: boolean;
   host?: RuntimeHost;
+  platform?: RuntimePlatform;
   cssRunner?: CssRuntimeRunner;
   apiRunner?: ApiRuntimeRunner;
   gatewayRunner?: GatewayRuntimeRunner;
