@@ -8,12 +8,14 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import Database from 'better-sqlite3';
 import { SqliteVectorStore } from '../../src/storage/vector/SqliteVectorStore';
+import { getSqliteRuntime, type SqliteDatabase } from '../../src/storage/SqliteRuntime';
+import { cleanupSqliteFiles, getTestDbPath } from '../utils/sqlite';
 
 describe.skip('Vec + Quints JOIN', () => {
-  let db: Database.Database;
+  let db: SqliteDatabase;
   let vectorStore: SqliteVectorStore;
+  let dbPath: string;
   const testModelId = 'test-join-model';
   const testDimension = 768;
 
@@ -28,8 +30,8 @@ describe.skip('Vec + Quints JOIN', () => {
   }
 
   beforeAll(async () => {
-    // 使用内存 SQLite，共享同一个数据库
-    db = new Database(':memory:');
+    dbPath = getTestDbPath('vec-quints-join');
+    db = getSqliteRuntime().openDatabase(dbPath);
 
     // 创建 quints 表（模拟 SqliteQuintStore）
     db.exec(`
@@ -69,8 +71,8 @@ describe.skip('Vec + Quints JOIN', () => {
       insertQuint.run(graph, subject, predicate, object);
     }
 
-    // 创建 SqliteVectorStore（使用已有的数据库连接）
-    vectorStore = new SqliteVectorStore(':memory:' as any);
+    // 创建 SqliteVectorStore（与 quints 共享同一个数据库文件）
+    vectorStore = new SqliteVectorStore({ connectionString: `sqlite:${dbPath}` });
     await vectorStore.open();
 
     // 创建向量表
@@ -91,6 +93,7 @@ describe.skip('Vec + Quints JOIN', () => {
   afterAll(async () => {
     await vectorStore.close();
     db.close();
+    cleanupSqliteFiles(dbPath);
   });
 
   describe('Basic Vector Search', () => {
@@ -107,7 +110,7 @@ describe.skip('Vec + Quints JOIN', () => {
   describe('JOIN with Quints Table', () => {
     it('should support manual JOIN query for subgraph filtering', async () => {
       // 这个测试验证 SqliteVectorStore 创建的 vec0 虚拟表可以与 quints 表 JOIN
-      // 由于 SqliteVectorStore 使用独立的内存数据库，这里我们手动模拟 JOIN 场景
+      // 当前测试已经改为共享同一个 SQLite 文件，这里验证联合使用场景
 
       // 首先验证 vector store 的基本功能
       const allResults = await vectorStore.search(testModelId, generateEmbedding(1), { limit: 10 });

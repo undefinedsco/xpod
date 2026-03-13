@@ -150,3 +150,12 @@ export function createIntegrationDatabase(filename: string): SqliteDatabase {
   applyIntegrationPragmas(db);
   return db;
 }
+
+export function cleanupSqliteFiles(filename: string): void {
+  for (const suffix of ['', '-shm', '-wal']) {
+    const target = `${filename}${suffix}`;
+    if (fs.existsSync(target)) {
+      fs.unlinkSync(target);
+    }
+  }
+}
