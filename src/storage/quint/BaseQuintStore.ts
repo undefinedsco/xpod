@@ -2,7 +2,7 @@
  * BaseQuintStore - 统一的 QuintStore 抽象基类
  * 
  * 支持：
- * - SQLite (via better-sqlite3 + drizzle-orm)
+ * - SQLite (via pluggable SQLite runtime + drizzle-orm)
  * - PGLite (via @electric-sql/pglite + drizzle-orm)
  * - PostgreSQL (via pg + drizzle-orm) - 未来
  * 

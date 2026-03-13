@@ -20,7 +20,7 @@ export async function connectDb(source: DbSource): Promise<DbConnection> {
       if (source.encryption) {
         throw new Error(
           'Encrypted SQLite is not yet supported. ' +
-          'Install better-sqlite3-multiple-ciphers and update db-connector.ts.',
+          'Add an encrypted SQLite runtime backend before enabling this path.',
         );
       }
       return connectSqlite(source.connectionString);
