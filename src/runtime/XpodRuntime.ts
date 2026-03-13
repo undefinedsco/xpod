@@ -6,9 +6,8 @@ import {
   initRuntimeLogger,
   resolveRuntimeBootstrap,
 } from './bootstrap';
+import { nodeRuntimeDriver } from './driver/node/NodeRuntimeDriver';
 import { createRuntimeEnvironmentSession } from './environment';
-import { nodeRuntimeHost } from './host/node/NodeRuntimeHost';
-import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
 import {
   registerManagedRuntimeServices,
   startApiRuntime,
@@ -17,17 +16,15 @@ import {
   stopRuntimeServices,
   type RuntimeServices,
 } from './lifecycle';
-import { nodeApiRuntimeRunner } from './runner/node/NodeApiRuntimeRunner';
-import { communitySolidServerCssRunner } from './runner/node/CommunitySolidServerCssRunner';
-import { nodeGatewayRuntimeRunner } from './runner/node/NodeGatewayRuntimeRunner';
 import type { XpodRuntimeHandle, XpodRuntimeOptions } from './runtime-types';
 
 export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promise<XpodRuntimeHandle> {
-  const host = options.host ?? nodeRuntimeHost;
-  const platform = options.platform ?? nodeRuntimePlatform;
-  const cssRunner = options.cssRunner ?? communitySolidServerCssRunner;
-  const apiRunner = options.apiRunner ?? nodeApiRuntimeRunner;
-  const gatewayRunner = options.gatewayRunner ?? nodeGatewayRuntimeRunner;
+  const driver = options.driver ?? nodeRuntimeDriver;
+  const host = options.host ?? driver.host;
+  const platform = options.platform ?? driver.platform;
+  const cssRunner = options.cssRunner ?? driver.cssRunner;
+  const apiRunner = options.apiRunner ?? driver.apiRunner;
+  const gatewayRunner = options.gatewayRunner ?? driver.gatewayRunner;
   const id = platform.createRuntimeId();
   const state = await resolveRuntimeBootstrap(id, options, host, platform);
 

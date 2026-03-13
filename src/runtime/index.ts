@@ -6,6 +6,8 @@ export {
   initRuntimeLogger,
   resolveRuntimeBootstrap,
 } from './bootstrap';
+export { NodeRuntimeDriver, nodeRuntimeDriver } from './driver/node/NodeRuntimeDriver';
+export type { RuntimeDriver } from './driver/types';
 export { createRuntimeEnvironmentSession } from './environment';
 export type { RuntimeEnvironmentSession } from './environment';
 export {
