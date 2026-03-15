@@ -13,13 +13,13 @@ on:
         type: choice
         options:
           - all
+          - co
           - cn
-          - sg
         default: all
 
 jobs:
   deploy-cn:
-    name: Deploy to China (Guangzhou)
+    name: Deploy to .cn
     runs-on: ubuntu-latest
     environment: cn
     if: >-
@@ -63,13 +63,13 @@ jobs:
           kubectl apply -f /tmp/xpod-deployment.yaml
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
 
-  deploy-sg:
-    name: Deploy to Singapore
+  deploy-co:
+    name: Deploy to .co
     runs-on: ubuntu-latest
-    environment: sg
+    environment: co
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      (inputs.environment == 'all' || inputs.environment == 'sg')
+      (inputs.environment == 'all' || inputs.environment == 'co')
     steps:
       - uses: actions/checkout@v4
 

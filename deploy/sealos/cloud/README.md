@@ -78,7 +78,7 @@ curl -i https://你的域名/service/status
 - `SEALOS_NAMESPACE`
 - `APP_ENV_FILE`
 
-以上运行时 secrets 建议放在 GitHub `environment` 里按区域分别配置，例如 `sg` / `cn`。
+以上运行时 secrets 建议放在 GitHub `environment` 里分别配置，例如 `co` / `cn`。
 
 其中 `APP_ENV_FILE` 直接保存完整 env 文件内容，workflow 会在集群里生成 `xpod-cloud-secret`，不会在日志里回显具体值。
 
