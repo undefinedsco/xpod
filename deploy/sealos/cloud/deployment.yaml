@@ -16,8 +16,6 @@ spec:
       labels:
         app: xpod-cloud
     spec:
-      imagePullSecrets:
-        - name: ghcr-creds
       containers:
         - name: xpod
           image: ghcr.io/undefinedsco/xpod:0.2.0

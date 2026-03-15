@@ -33,18 +33,6 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
 
-      - name: Prepare registry secret
-        env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        run: |
-          kubectl -n "$SEALOS_NAMESPACE" create secret docker-registry ghcr-creds \
-            --docker-server=ghcr.io \
-            --docker-username="$GHCR_USERNAME" \
-            --docker-password="$GHCR_TOKEN" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
       - name: Apply runtime secret
         env:
           SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
@@ -89,18 +77,6 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
-
-      - name: Prepare registry secret
-        env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        run: |
-          kubectl -n "$SEALOS_NAMESPACE" create secret docker-registry ghcr-creds \
-            --docker-server=ghcr.io \
-            --docker-username="$GHCR_USERNAME" \
-            --docker-password="$GHCR_TOKEN" \
-            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Apply runtime secret
         env:
