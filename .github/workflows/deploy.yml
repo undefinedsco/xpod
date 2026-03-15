@@ -1,9 +1,6 @@
 name: Deploy
 
 on:
-  workflow_run:
-    workflows: [Release]
-    types: [completed]
   workflow_dispatch:
     inputs:
       image-tag:
@@ -25,8 +22,8 @@ jobs:
     name: Deploy to China (Guangzhou)
     runs-on: ubuntu-latest
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.environment == 'all' || inputs.environment == 'cn'))
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.environment == 'all' || inputs.environment == 'cn')
     steps:
       - uses: actions/checkout@v4
 
@@ -35,30 +32,54 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_CN }}" | base64 -d > ~/.kube/config
 
-      - name: Determine image tag
-        id: tag
+      - name: Prepare registry secret
+        env:
+          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE_CN }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.image-tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          fi
+          kubectl -n "$SEALOS_NAMESPACE" create secret docker-registry ghcr-creds \
+            --docker-server=ghcr.io \
+            --docker-username="$GHCR_USERNAME" \
+            --docker-password="$GHCR_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Update deployment image
+      - name: Apply runtime secret
+        env:
+          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE_CN }}
+          XPOD_ENV_FILE: ${{ secrets.XPOD_ENV_FILE_CN }}
         run: |
-          kubectl set image deployment/xpod-cloud \
-            xpod=ghcr.io/undefinedsco/xpod:${{ steps.tag.outputs.tag }} \
-            -n xpod-cloud
+          printf '%s\n' "$XPOD_ENV_FILE" > /tmp/xpod.env
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-cloud-secret \
+            --from-env-file=/tmp/xpod.env \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Wait for rollout
-        run: kubectl rollout status deployment/xpod-cloud -n xpod-cloud --timeout=300s
+      - name: Render manifests
+        env:
+          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE_CN }}
+        run: |
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            -e "s#ghcr.io/undefinedsco/xpod:0.2.0#ghcr.io/undefinedsco/xpod:${{ inputs.image-tag }}#g" \
+            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/service.yaml > /tmp/xpod-service.yaml
+
+      - name: Apply manifests
+        env:
+          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE_CN }}
+        run: |
+          kubectl apply -f /tmp/xpod-service.yaml
+          kubectl apply -f /tmp/xpod-deployment.yaml
+          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
 
   deploy-sg:
     name: Deploy to Singapore
     runs-on: ubuntu-latest
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.environment == 'all' || inputs.environment == 'sg'))
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.environment == 'all' || inputs.environment == 'sg')
     steps:
       - uses: actions/checkout@v4
 
@@ -67,20 +88,44 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_SG }}" | base64 -d > ~/.kube/config
 
-      - name: Determine image tag
-        id: tag
+      - name: Prepare registry secret
+        env:
+          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE_SG }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.image-tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          fi
+          kubectl -n "$SEALOS_NAMESPACE" create secret docker-registry ghcr-creds \
+            --docker-server=ghcr.io \
+            --docker-username="$GHCR_USERNAME" \
+            --docker-password="$GHCR_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Update deployment image
+      - name: Apply runtime secret
+        env:
+          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE_SG }}
+          XPOD_ENV_FILE: ${{ secrets.XPOD_ENV_FILE_SG }}
         run: |
-          kubectl set image deployment/xpod-cloud \
-            xpod=ghcr.io/undefinedsco/xpod:${{ steps.tag.outputs.tag }} \
-            -n xpod-cloud
+          printf '%s\n' "$XPOD_ENV_FILE" > /tmp/xpod.env
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-cloud-secret \
+            --from-env-file=/tmp/xpod.env \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Wait for rollout
-        run: kubectl rollout status deployment/xpod-cloud -n xpod-cloud --timeout=300s
+      - name: Render manifests
+        env:
+          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE_SG }}
+        run: |
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            -e "s#ghcr.io/undefinedsco/xpod:0.2.0#ghcr.io/undefinedsco/xpod:${{ inputs.image-tag }}#g" \
+            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/service.yaml > /tmp/xpod-service.yaml
+
+      - name: Apply manifests
+        env:
+          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE_SG }}
+        run: |
+          kubectl apply -f /tmp/xpod-service.yaml
+          kubectl apply -f /tmp/xpod-deployment.yaml
+          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s

@@ -16,12 +16,11 @@ spec:
       labels:
         app: xpod-cloud
     spec:
-      # If you are using a private registry, create an imagePullSecret and reference it here.
-      # imagePullSecrets:
-      #   - name: regcred
+      imagePullSecrets:
+        - name: ghcr-creds
       containers:
         - name: xpod
-          image: ghcr.io/undefinedsco/xpod:latest
+          image: ghcr.io/undefinedsco/xpod:0.2.0
           imagePullPolicy: IfNotPresent
           args:
             - node
@@ -35,6 +34,9 @@ spec:
               containerPort: 3000
               protocol: TCP
           envFrom:
+            - configMapRef:
+                name: xpod-cloud-config
+                optional: true
             - secretRef:
                 name: xpod-cloud-secret
           readinessProbe:

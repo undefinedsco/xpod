@@ -1,0 +1,94 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: xpod
+  namespace: xpod-cloud
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: "128m"
+spec:
+  tls:
+    - hosts:
+        - id.example.com
+        - pods.example.com
+        - api.example.com
+      secretName: example-com-wildcard-tls
+  rules:
+    - host: id.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: xpod
+                port:
+                  number: 80
+    - host: pods.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: xpod
+                port:
+                  number: 80
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: xpod
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: billing
+  namespace: billing
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+    - hosts:
+        - billing.example.com
+      secretName: example-com-wildcard-tls
+  rules:
+    - host: billing.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: billing
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: discovery
+  namespace: discovery
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+    - hosts:
+        - discovery.example.com
+      secretName: example-com-wildcard-tls
+  rules:
+    - host: discovery.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: discovery
+                port:
+                  number: 80

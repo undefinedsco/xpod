@@ -13,6 +13,7 @@ data:
 
   # Replace with your public entry domain (must be HTTPS in production).
   CSS_BASE_URL: https://pods.example.com
+  CSS_ALLOWED_HOSTS: id.example.com,pods.example.com
 
   # Optional cloud features.
   XPOD_EDGE_NODES_ENABLED: "true"
