@@ -152,14 +152,14 @@ On Unix, `transport: 'socket'` keeps the full Xpod runtime in-process without bi
 
 Use `open`, `authMode`, and `apiOpen` to tune authentication behavior for tests or embedded app flows.
 
-### Localhost runtime service for external apps
+### Localhost gateway for external apps
 
 ```ts
 import { startXpodRuntime } from '@undefineds.co/xpod/runtime';
 
 const runtime = await startXpodRuntime({
   mode: 'local',
-  transport: 'port',
+  transport: 'socket',
   bindHost: '127.0.0.1',
   baseUrl: 'http://127.0.0.1:5710/',
   gatewayPort: 5710,
@@ -168,7 +168,9 @@ const runtime = await startXpodRuntime({
 console.log(runtime.baseUrl); // http://127.0.0.1:5710/
 ```
 
-Use this shape when Xpod needs to behave as a shared local service. External apps should connect over HTTP to the localhost gateway, not to an internal socket.
+Use this shape when Xpod needs to behave as a shared local service on Unix. External apps connect over HTTP to the localhost gateway, while internal CSS/API traffic stays on Unix sockets.
+
+If Unix sockets are unavailable, switch to `transport: 'port'` to run the internal services on TCP ports too.
 
 Useful package entry points:
 
@@ -177,6 +179,8 @@ Useful package entry points:
 - `@undefineds.co/xpod/test-utils`
 
 ## Single-File Packaging
+
+### Node launcher
 
 Build a self-extracting launcher:
 
@@ -195,6 +199,41 @@ node dist/xpod-single.cjs --mode local
 ```
 
 On first start, it extracts runtime files to cache (default `~/.xpod/single-file-cache/`; override with `XPOD_SINGLE_CACHE_DIR`) and reuses that cache on subsequent launches.
+
+### Bun native binary
+
+Supported Unix targets for npm-distributed native binaries:
+
+- `darwin-arm64`
+- `darwin-x64`
+- `linux-arm64-gnu`
+- `linux-arm64-musl`
+- `linux-x64-gnu`
+- `linux-x64-musl`
+
+When installed via `npm install @undefineds.co/xpod`, the main package declares matching platform-specific optional dependencies. On supported Unix platforms, the `xpod` CLI prefers the matching Bun native binary and only falls back to the JS CLI when no native package is present.
+
+Build the Bun single-file binary:
+
+```bash
+yarn build:single:bun
+```
+
+Output file:
+
+- `dist/xpod-bun`
+
+Run it directly:
+
+```bash
+dist/xpod-bun --mode local --port 5710
+```
+
+This shape exposes one localhost HTTP gateway for external apps while keeping internal CSS/API traffic on Unix sockets.
+
+If you need to pin the public origin explicitly, use `--baseUrl`. Priority is: CLI `--baseUrl` > `.env` file `CSS_BASE_URL` > derived `http://<host>:<port>/`.
+
+On first start, it extracts runtime files to cache (default `~/.xpod/bun-single-cache/`; override with `XPOD_SINGLE_CACHE_DIR`) and reuses that cache on subsequent launches.
 
 ## Architecture at a Glance
 

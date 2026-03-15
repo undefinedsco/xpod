@@ -23,11 +23,46 @@ jobs:
 
       - run: yarn install --frozen-lockfile --ignore-engines
 
+      - name: Check platform package versions
+        run: yarn check:platform-package-version
+
       - name: Type check
         run: yarn build:ts
 
       - name: Unit tests
         run: yarn test:run
+
+  bun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: yarn install --frozen-lockfile --ignore-engines
+
+      - name: Bun tests
+        run: bun x vitest --run --no-file-parallelism --exclude 'tests/integration/**'
+
+      - name: Build runtime artifacts
+        run: yarn build:ts && yarn build:components
+
+      - name: Bun lite integration tests
+        run: XPOD_TEST_RUNNER=bun yarn test:integration:lite
+
+      - name: Bun full integration tests
+        run: XPOD_TEST_RUNNER=bun yarn test:integration:full
+
+      - name: Bun single-file build
+        run: yarn build:single:bun
 
   integration-lite:
     runs-on: ubuntu-latest

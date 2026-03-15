@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
+const { applyPlatformOptionalDependencies } = require('./platform-binaries.cjs');
 
 function buildLocalVersion(currentVersion) {
   const [core] = currentVersion.split('-');
@@ -24,6 +25,7 @@ function main() {
 
   const nextVersion = buildLocalVersion(packageJson.version);
   packageJson.version = nextVersion;
+  applyPlatformOptionalDependencies(packageJson, nextVersion);
 
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n');
   console.log(`[publish:local] version bumped to ${nextVersion}`);
@@ -32,9 +34,14 @@ function main() {
   const publishRegistry = process.env.XPOD_NPM_REGISTRY || 'https://registry.npmjs.org';
 
   try {
-    run('yarn build:single');
+    run('yarn build');
     const npmCacheDir = path.join(repoRoot, '.test-data', 'npm-cache');
     fs.mkdirSync(npmCacheDir, { recursive: true });
+    run(`node scripts/publish-platform-packages.cjs --tag=local${dryRun ? ' --dry-run' : ''}`, {
+      npm_config_cache: npmCacheDir,
+      npm_config_registry: publishRegistry,
+      XPOD_NPM_REGISTRY: publishRegistry,
+    });
     run(`npm publish --registry ${publishRegistry} --tag local --access public${dryRun ? ' --dry-run' : ''}`, {
       npm_config_cache: npmCacheDir,
       npm_config_registry: publishRegistry,

@@ -56,13 +56,19 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: yarn
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - run: yarn install --frozen-lockfile --ignore-engines
 
+      - name: Check platform package versions
+        run: yarn check:platform-package-version
+
       - name: Build package
-        run: yarn build:ts && yarn build:components
+        run: yarn build
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: node scripts/publish-release.cjs --skip-build
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-

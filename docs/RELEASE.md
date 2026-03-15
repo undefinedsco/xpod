@@ -24,7 +24,7 @@
    - 破坏性变更描述"
    ```
 5. **推送到远程**：`git push origin main --tags`
-6. **自动构建发布**：GitHub Actions 会自动触发 `.github/workflows/release.yml`，构建 Docker 镜像并推送到 `ghcr.io/undefinedsco/xpod`
+6. **自动构建发布**：GitHub Actions 会自动触发 `.github/workflows/release.yml`，构建 Docker 镜像、先发布平台 Bun 二进制子包、再发布主 npm 包
 7. **验证发布**：访问 https://github.com/undefinedsco/xpod/actions 查看构建状态
 8. **切回工作分支**：`git checkout api`
 
@@ -46,6 +46,7 @@
 ## 注意事项
 
 - 发布前务必确认所有测试通过
+- 发布前务必确认 `package.json` 里的平台 `optionalDependencies` 版本与主版本一致（CI 会执行 `yarn check:platform-package-version`）
 - 提交信息应清晰列出本次发布的主要改动
 - 推送 tag 后无法撤回，请谨慎操作
 - 如需回滚，创建新的 patch 版本修复问题
