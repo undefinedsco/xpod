@@ -60,7 +60,7 @@
  */
 
 import { podTable, string, datetime, uri } from '@undefineds.co/drizzle-solid';
-import { Meeting, SIOC, FOAF } from '../../vocab';
+import { Meeting, SIOC, FOAF, WF } from '../../vocab';
 import { UDFS_NAMESPACE } from '../../vocab';
 
 // ============================================================================
@@ -82,7 +82,7 @@ export const Chat = podTable(
     id: string('id').primaryKey(),
     title: string('title'),
     author: uri('author'),
-    participants: uri('participants').array(),
+    participants: uri('participants').array().predicate(WF.participant),
     status: string('status'),
     createdAt: datetime('createdAt'),
     updatedAt: datetime('updatedAt'),
@@ -141,7 +141,7 @@ export const Thread = podTable(
 /**
  * Message - ChatKit 的 ThreadItem（单条消息）
  *
- * 放在 Chat 下，通过 threadId 关联到 Thread。
+ * 放在 Chat 下，通过 thread 关联到 Thread。
  * 对应 ChatKit 的 ThreadItem 概念。
  *
  * 存储位置: /.data/chat/{chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}
@@ -151,10 +151,10 @@ export const Message = podTable(
   'Message',
   {
     id: string('id').primaryKey(),
-    // chatId 引用 Chat，同时用于路径构建（insert 时传入 bare ID）
-    chatId: uri('chatId').reference(Chat),
-    // threadId 关联到 Thread，表达 RDF 关系
-    threadId: uri('threadId').predicate(SIOC.has_container).reference(Thread),
+    // chat 是真实 Chat 关联；当前版本依然传 bare chat ID 以参与 subjectTemplate 路径构建。
+    chat: uri('chat').predicate(WF.message).reference(Chat),
+    // thread 是真实 Thread 关联，持久化时传完整 Thread URI。
+    thread: uri('thread').predicate(SIOC.has_container).reference(Thread),
     maker: uri('maker').predicate(FOAF.maker),
     role: string('role'),
     content: string('content').predicate(SIOC.content),
@@ -172,7 +172,7 @@ export const Message = podTable(
     base: '/.data/chat/',
     type: Meeting.Message,
     namespace: UDFS_NAMESPACE,
-    subjectTemplate: '{chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}',
+    subjectTemplate: '{chat}/{yyyy}/{MM}/{dd}/messages.ttl#{id}',
     sparqlEndpoint: '/.data/chat/-/sparql',
   },
 );
