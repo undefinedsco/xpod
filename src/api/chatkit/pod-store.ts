@@ -10,7 +10,6 @@
  *     #{threadId}                     # Thread (sioc:Thread)
  *   {yyyy}/{MM}/{dd}/messages.ttl     # Messages (meeting:Message)
  */
-
 import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ChatKitStore, StoreContext } from './store';
@@ -31,7 +30,6 @@ import {
   Message,
   MessageRole,
   MessageStatus,
-  type ChatRecord,
   type ThreadRecord,
   type MessageRecord,
 } from './schema';
@@ -294,8 +292,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
    * 将 ThreadRecord 转为 ThreadMetadata
    * 包含 metadata.chat_id 暴露 Chat 容器 ID
    */
-  private threadRecordToMetadata(record: ThreadRecord): ThreadMetadata {
-    const chatId = this.extractChatId(record.chatId);
+  private threadRecordToMetadata(record: ThreadRecord, chatUriMap: Map<string, string>): ThreadMetadata {
+    const chatId = this.resolveChatIdFromUri(record.chatId, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
     let extra: Record<string, unknown> | undefined;
     if (record.metadata) {
       try {
@@ -346,19 +344,28 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   }
 
   /**
-   * 从 Thread 获取 chatId（提取纯 ID）
+   * 获取或构建 chatUri → bare chatId 的映射缓存。
+   * drizzle-solid 的 uri() 字段返回完整 URI，通过 Chat 的 @id 比对来还原 bare ID。
    */
-  private extractChatId(chatIdOrUri: string | null | undefined): string {
-    if (!chatIdOrUri) return PodChatKitStore.DEFAULT_CHAT_ID;
-
-    if (chatIdOrUri.includes('#')) {
-      // 从 URI 中提取，如 http://.../.data/chat/default/index.ttl#this -> default
-      const match = chatIdOrUri.match(/\.data\/chat\/([^/]+)\/index\.ttl#this/);
-      if (match) {
-        return match[1];
+  private async getChatUriMap(context: StoreContext): Promise<Map<string, string>> {
+    if ((context as any)._chatUriMap) {
+      return (context as any)._chatUriMap;
+    }
+    const db = await this.getDb(context);
+    const map = new Map<string, string>();
+    if (db) {
+      try {
+        const chats = await db.select().from(Chat);
+        for (const c of chats) {
+          const uri = (c as any)['@id'] as string | undefined;
+          if (uri) map.set(uri, c.id);
+        }
+      } catch {
+        // ignore
       }
     }
-    return chatIdOrUri;
+    (context as any)._chatUriMap = map;
+    return map;
   }
 
   private extractThreadId(threadIdOrUri: string | null | undefined): string | undefined {
@@ -392,9 +399,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
 
     const chatId = await this.getThreadChatId(threadId, context);
+    const chatUriMap = await this.getChatUriMap(context);
+    const threadUri = await this.getThreadUri(threadId, context);
     const messages = await db.select().from(Message) as MessageRecord[];
     return messages.filter(
-      (message) => this.extractChatId(message.chatId) === chatId && this.extractThreadId(message.threadId) === threadId,
+      (message) => {
+        const messageChatId = this.resolveChatIdFromUri(message.chat, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
+        const messageThreadId = this.extractThreadId(message.thread);
+        return messageChatId === chatId && (message.thread === threadUri || messageThreadId === threadId);
+      },
     );
   }
 
@@ -405,16 +418,53 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       return;
     }
 
+    if (message.thread) {
+      await db.delete(Message).where(and(
+        eq(Message.id, message.id),
+        eq(Message.thread, message.thread),
+        eq(Message.createdAt, message.createdAt as any),
+      ));
+      return;
+    }
+
     await db.delete(Message).where(and(
       eq(Message.id, message.id),
-      eq(Message.chatId, this.extractChatId(message.chatId)),
       eq(Message.createdAt, message.createdAt as any),
     ));
   }
 
   /**
-   * 获取 Thread 的 chatId
-   * 先从缓存获取，如果没有再查询数据库
+   * 从 chatId URI 还原 bare chatId。
+   * 优先通过 @id 映射，fallback 处理裸 ID。
+   */
+  private resolveChatIdFromUri(
+    chatIdUri: string | null | undefined,
+    chatUriMap: Map<string, string>,
+    fallback: string,
+  ): string {
+    if (!chatIdUri) return fallback;
+    const bare = chatUriMap.get(chatIdUri);
+    if (bare) return bare;
+    // Bare ID passed directly (not a URI)
+    return chatIdUri.includes('/') ? fallback : chatIdUri;
+  }
+
+  /**
+   * 根据 bare threadId 构造完整 Thread URI。
+   */
+  private async getThreadUri(threadId: string, context: StoreContext): Promise<string> {
+    const chatId = await this.getThreadChatId(threadId, context);
+    const cachedWebId = (context as any)._cachedWebId as string | undefined;
+    if (!cachedWebId) {
+      throw new Error('No cached webId - call getDb first');
+    }
+    const podBaseUrl = cachedWebId.replace('/profile/card#me', '');
+    return `${podBaseUrl}/.data/chat/${chatId}/index.ttl#${threadId}`;
+  }
+
+  /**
+   * 获取 Thread 的 chatId（裸 ID，用于路径构建）
+   * 先从缓存获取，如果没有再查询数据库。
    */
   private async getThreadChatId(threadId: string, context: StoreContext): Promise<string> {
     // 先检查缓存
@@ -433,13 +483,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     });
 
     if (!thread) {
-      // 如果找不到 Thread，返回默认 chatId
       this.logger.warn(`Thread not found in DB, using default chatId: ${threadId}`);
       return PodChatKitStore.DEFAULT_CHAT_ID;
     }
 
-    const chatId = this.extractChatId(thread.chatId);
-    // 缓存结果
+    const chatUriMap = await this.getChatUriMap(context);
+    const chatId = this.resolveChatIdFromUri(thread.chatId, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
     this.cacheThreadChatId(context, threadId, chatId);
     return chatId;
   }
@@ -516,7 +565,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       throw new Error(`Thread not found: ${threadId}`);
     }
 
-    const metadata = this.threadRecordToMetadata(thread);
+    const chatUriMap = await this.getChatUriMap(context);
+    const metadata = this.threadRecordToMetadata(thread, chatUriMap);
     // 缓存结果
     this.cacheThreadMetadata(context, metadata);
     return metadata;
@@ -610,8 +660,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       const slice = threads.slice(startIndex, startIndex + limit);
       const hasMore = startIndex + limit < threads.length;
 
+      const chatUriMap = await this.getChatUriMap(context);
+
       return {
-        data: slice.map((t: ThreadRecord) => this.threadRecordToMetadata(t)),
+        data: slice.map((t: ThreadRecord) => this.threadRecordToMetadata(t, chatUriMap)),
         has_more: hasMore,
         after: slice.length > 0 ? slice[slice.length - 1].id : undefined,
       };
@@ -637,7 +689,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
           where: eq(Thread.id, threadId),
         });
         if (thread) {
-          chatId = this.extractChatId(thread.chatId);
+          const chatUriMap = await this.getChatUriMap(context);
+          chatId = this.resolveChatIdFromUri(thread.chatId, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
         }
       } catch (err: any) {
         // 忽略查询错误，继续尝试删除
@@ -660,12 +713,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 删除 Thread
     try {
-      if (chatId) {
-        await db.delete(Thread).where(and(eq(Thread.id, threadId), eq(Thread.chatId, chatId)));
-      } else {
-        // 如果没有 chatId，尝试只用 id 删除（可能失败）
-        await db.delete(Thread).where(eq(Thread.id, threadId));
-      }
+      const threadDeleteWhere = chatId
+        ? and(eq(Thread.id, threadId), eq(Thread.chatId, chatId))
+        : eq(Thread.id, threadId);
+      await db.delete(Thread).where(threadDeleteWhere);
     } catch (err: any) {
       if (!err.message?.includes('404') && !err.message?.includes('Could not retrieve') && !err.message?.includes('Parse error')) {
         throw err;
@@ -730,8 +781,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    // 从 Thread 获取 chatId
+    // 从 Thread 获取 chatId (bare ID，用于路径构建)
     const chatId = await this.getThreadChatId(threadId, context);
+    const threadUri = await this.getThreadUri(threadId, context);
 
     const webId = this.getWebId(context);
     let content = '';
@@ -761,8 +813,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     const messageRecord = {
       id: item.id,
-      chatId,      // 用于路径构建
-      threadId: this.buildThreadUri(chatId, threadId, context),    // 关联到 Thread
+      chat: chatId,      // bare ID，用于路径构建
+      thread: threadUri,    // 完整 URI，用于 RDF 引用
       maker: role === MessageRole.USER ? webId : null,
       role,
       content,
@@ -787,6 +839,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 从 Thread 获取 chatId（用于构建资源路径）
     const chatId = await this.getThreadChatId(threadId, context);
+    const threadUri = await this.getThreadUri(threadId, context);
 
     // 准备更新数据
     let content = '';
@@ -820,7 +873,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 对于非最近创建的消息，使用普通流程
     const existingItems = await db.select().from(Message).where(
-      eq(Message.id, item.id),
+      and(
+        eq(Message.id, item.id),
+        eq(Message.thread, threadUri),
+      ),
     ) as MessageRecord[];
     const existing = existingItems.length > 0 ? existingItems[0] : null;
 
@@ -983,6 +1039,19 @@ WHERE { ${deletePatterns.join(' ')} }
    * 从 Pod 获取 AI 配置（Provider + Credential）
    * 复用已缓存的 Session，避免重复登录
    */
+  private extractProviderId(provider: string): string {
+    if (!provider) {
+      return '';
+    }
+
+    const hashIndex = provider.lastIndexOf('#');
+    if (hashIndex >= 0 && hashIndex < provider.length - 1) {
+      return provider.slice(hashIndex + 1);
+    }
+
+    return provider;
+  }
+
   async getAiConfig(context: StoreContext): Promise<{
     providerId: string;
     baseUrl: string;
@@ -1008,22 +1077,26 @@ WHERE { ${deletePatterns.join(' ')} }
         return undefined;
       }
 
+      // Build provider @id → record map for URI matching
+      const allProviders = await db.select().from(Provider);
+      const providerByUri = new Map<string, typeof allProviders[0]>();
+      for (const p of allProviders) {
+        const uri = (p as any)['@id'] as string | undefined;
+        if (uri) providerByUri.set(uri, p);
+        // Also index by bare id for fallback
+        providerByUri.set(p.id, p);
+      }
+
       // 遍历凭据，找到有效的 Provider
       for (const cred of credentials) {
         if (!cred.provider) continue;
 
-        // 从 URI 提取 provider ID
-        const providerId = this.extractProviderId(cred.provider);
-
-        // 查询 Provider
-        const providers = await db.select()
-          .from(Provider)
-          .where(eq(Provider.id, providerId));
-
-        const provider = providers[0];
+        // Match provider by full URI first, then fallback to bare fragment id.
+        const provider = providerByUri.get(cred.provider)
+          ?? providerByUri.get(this.extractProviderId(cred.provider));
         if (!provider) continue;
 
-        const baseUrl = cred.baseUrl || provider.baseUrl;
+        const baseUrl = provider.baseUrl;
         if (!baseUrl) continue;
 
         this.logger.debug(`Using credential ${cred.id} with provider ${provider.id}`);
@@ -1031,7 +1104,7 @@ WHERE { ${deletePatterns.join(' ')} }
         return {
           providerId: provider.id,
           baseUrl,
-          proxyUrl: cred.proxyUrl || provider.proxyUrl || undefined,
+          proxyUrl: provider.proxyUrl || undefined,
           apiKey: cred.apiKey!,
           credentialId: cred.id,
         };
@@ -1112,15 +1185,4 @@ WHERE { ${deletePatterns.join(' ')} }
     }
   }
 
-  /**
-   * 从 provider URI 提取 ID
-   * e.g., "http://localhost:3000/test/settings/ai/providers.ttl#google" -> "google"
-   */
-  private extractProviderId(providerUri: string): string {
-    const hash = providerUri.lastIndexOf('#');
-    if (hash >= 0) {
-      return providerUri.slice(hash + 1);
-    }
-    return providerUri;
-  }
 }

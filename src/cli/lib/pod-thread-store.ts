@@ -41,6 +41,11 @@ function createDb(session: Session) {
   } as any);
 }
 
+function buildThreadUri(session: Session, chatId: string, threadId: string): string {
+  const podBaseUrl = session.info.webId!.replace('/profile/card#me', '');
+  return `${podBaseUrl}/.data/chat/${chatId}/index.ttl#${threadId}`;
+}
+
 /**
  * Get or create the default 1v1 Chat for CLI (user ↔ SecretaryAI).
  * Returns the chatId (bare ID, not URI).
@@ -119,7 +124,7 @@ export async function loadThread(
   try {
     const db = createDb(session);
     const podBaseUrl = session.info.webId!.replace('/profile/card#me', '');
-    const threadUri = `${podBaseUrl}/.data/chat/${chatId}/index.ttl#${threadId}`;
+    const threadUri = buildThreadUri(session, chatId, threadId);
 
     // Query thread by full URI
     const thread = await db.findByIri(Thread, threadUri);
@@ -199,16 +204,15 @@ export async function saveMessage(
     await ensureThread(db, chatId, threadId, session.info.webId!);
 
     // 构建完整的 Thread URI（用于 RDF 引用）
-    const podBaseUrl = session.info.webId!.replace('/profile/card#me', '');
-    const threadUri = `${podBaseUrl}/.data/chat/${chatId}/index.ttl#${threadId}`;
+    const threadUri = buildThreadUri(session, chatId, threadId);
 
     // Insert message
     // Note: yyyy/MM/dd are automatically extracted from createdAt by drizzle-solid
     const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await db.insert(Message).values({
       id: messageId,
-      chatId,
-      threadId: threadUri,  // 传入完整 URI
+      chat: chatId,
+      thread: threadUri,  // 传入完整 URI
       maker: session.info.webId!,
       role: message.role,
       content: message.content,
@@ -246,16 +250,15 @@ export async function saveToolCall(
     await ensureThread(db, chatId, threadId, session.info.webId!);
 
     // 构建完整的 Thread URI（用于 RDF 引用）
-    const podBaseUrl = session.info.webId!.replace('/profile/card#me', '');
-    const threadUri = `${podBaseUrl}/.data/chat/${chatId}/index.ttl#${threadId}`;
+    const threadUri = buildThreadUri(session, chatId, threadId);
 
     // Insert tool call message
     // Note: yyyy/MM/dd are automatically extracted from createdAt by drizzle-solid
     const messageId = `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await db.insert(Message).values({
       id: messageId,
-      chatId,
-      threadId: threadUri,  // 传入完整 URI
+      chat: chatId,
+      thread: threadUri,  // 传入完整 URI
       maker: session.info.webId!,
       role: 'tool_call',
       content: `Executed ${toolCall.toolName}`,
