@@ -53,6 +53,20 @@ export interface PodChatKitStoreOptions {
   tokenEndpoint: string;
 }
 
+type QueriedMessageRecord = {
+  id: string;
+  chat?: string | null;
+  thread?: string | null;
+  maker?: string | null;
+  role?: string | null;
+  content?: string | null;
+  status?: string | null;
+  createdAt?: string | Date | null;
+  toolName?: string | null;
+  toolCallId?: string | null;
+  metadata?: string | null;
+};
+
 /**
  * Pod-based ChatKit Store implementation
  *
@@ -295,7 +309,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
    * 将 MessageRecord 转为 ThreadItem
    * thread_id 返回 Message 所属的 Thread ID
    */
-  private messageRecordToItem(record: MessageRecord, threadId: string): ThreadItem {
+  private messageRecordToItem(record: QueriedMessageRecord, threadId: string): ThreadItem {
     const createdAt = record.createdAt ? Math.floor(new Date(record.createdAt).getTime() / 1000) : nowTimestamp();
 
     if (record.role === MessageRole.USER) {
@@ -437,6 +451,99 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   private getCachedThreadMetadata(context: StoreContext, threadId: string): ThreadMetadata | undefined {
     const cache = (context as any)._threadMetadataCache as Map<string, ThreadMetadata> | undefined;
     return cache?.get(threadId);
+  }
+
+  private getCachedFetch(context: StoreContext): typeof fetch | undefined {
+    return (context as any)._cachedFetch as typeof fetch | undefined;
+  }
+
+  private getCachedPodBaseUrl(context: StoreContext): string | undefined {
+    const cachedWebId = (context as any)._cachedWebId as string | undefined;
+    return cachedWebId?.replace('/profile/card#me', '');
+  }
+
+  private extractFragmentId(subjectUri: string): string {
+    const hashIndex = subjectUri.lastIndexOf('#');
+    if (hashIndex >= 0 && hashIndex < subjectUri.length - 1) {
+      return subjectUri.slice(hashIndex + 1);
+    }
+    const slashIndex = subjectUri.lastIndexOf('/');
+    return slashIndex >= 0 && slashIndex < subjectUri.length - 1 ? subjectUri.slice(slashIndex + 1) : subjectUri;
+  }
+
+  private parseSparqlBindingValue(binding: Record<string, { value?: string }> | undefined, key: string): string | null {
+    return binding?.[key]?.value ?? null;
+  }
+
+  private async selectMessagesForThread(
+    threadId: string,
+    context: StoreContext,
+  ): Promise<QueriedMessageRecord[]> {
+    await this.getDb(context);
+
+    const cachedFetch = this.getCachedFetch(context);
+    const podBaseUrl = this.getCachedPodBaseUrl(context);
+    if (!cachedFetch || !podBaseUrl) {
+      return [];
+    }
+
+    const threadUri = await this.getThreadUri(threadId, context);
+    const endpoint = `${podBaseUrl}/.data/chat/-/sparql`;
+    const query = `
+      PREFIX meeting: <http://www.w3.org/ns/pim/meeting#>
+      PREFIX sioc: <http://rdfs.org/sioc/ns#>
+      PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+      PREFIX udfs: <https://undefineds.co/ns#>
+      SELECT ?msg ?maker ?role ?content ?status ?createdAt ?toolName ?toolCallId ?metadata
+      WHERE {
+        ?msg a meeting:Message ;
+             sioc:has_container <${threadUri}> .
+        OPTIONAL { ?msg foaf:maker ?maker . }
+        OPTIONAL { ?msg udfs:role ?role . }
+        OPTIONAL { ?msg sioc:content ?content . }
+        OPTIONAL { ?msg udfs:status ?status . }
+        OPTIONAL { ?msg udfs:createdAt ?createdAt . }
+        OPTIONAL { ?msg udfs:toolName ?toolName . }
+        OPTIONAL { ?msg udfs:toolCallId ?toolCallId . }
+        OPTIONAL { ?msg udfs:metadata ?metadata . }
+      }
+      ORDER BY ?createdAt
+    `.trim();
+
+    const response = await cachedFetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/sparql-query',
+        Accept: 'application/sparql-results+json',
+      },
+      body: query,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Failed to query thread messages: ${response.status} ${response.statusText} - ${text}`);
+    }
+
+    const json = await response.json() as {
+      results?: {
+        bindings?: Array<Record<string, { value?: string }>>;
+      };
+    };
+
+    const bindings = json.results?.bindings ?? [];
+    return bindings.map((binding) => ({
+      id: this.extractFragmentId(this.parseSparqlBindingValue(binding, 'msg') ?? ''),
+      chat: null,
+      thread: threadUri,
+      maker: this.parseSparqlBindingValue(binding, 'maker'),
+      role: this.parseSparqlBindingValue(binding, 'role'),
+      content: this.parseSparqlBindingValue(binding, 'content'),
+      status: this.parseSparqlBindingValue(binding, 'status'),
+      createdAt: this.parseSparqlBindingValue(binding, 'createdAt'),
+      toolName: this.parseSparqlBindingValue(binding, 'toolName'),
+      toolCallId: this.parseSparqlBindingValue(binding, 'toolCallId'),
+      metadata: this.parseSparqlBindingValue(binding, 'metadata'),
+    }));
   }
 
   // =========================================================================
@@ -656,14 +763,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
 
     try {
-      const threadUri = await this.getThreadUri(threadId, context);
-      // 按 threadId 查询 Message
-      const messages = await db.select().from(Message).where(
-        eq(Message.thread, threadUri),
-      ) as MessageRecord[];
+      const messages = await this.selectMessagesForThread(threadId, context);
 
       // 排序
-      messages.sort((a: MessageRecord, b: MessageRecord) => {
+      messages.sort((a: QueriedMessageRecord, b: QueriedMessageRecord) => {
         const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return order === 'desc' ? bTime - aTime : aTime - bTime;
@@ -672,7 +775,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       // 分页
       let startIndex = 0;
       if (after) {
-        const afterIndex = messages.findIndex((m: MessageRecord) => m.id === after);
+        const afterIndex = messages.findIndex((m: QueriedMessageRecord) => m.id === after);
         if (afterIndex !== -1) {
           startIndex = afterIndex + 1;
         }
@@ -682,7 +785,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       const hasMore = startIndex + limit < messages.length;
 
       return {
-        data: slice.map((m: MessageRecord) => this.messageRecordToItem(m, threadId)),
+        data: slice.map((m: QueriedMessageRecord) => this.messageRecordToItem(m, threadId)),
         has_more: hasMore,
         after: slice.length > 0 ? slice[slice.length - 1].id : undefined,
       };
@@ -789,12 +892,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
 
     // 对于非最近创建的消息，使用普通流程
-    const existingItems = await db.select().from(Message).where(
-      and(
-        eq(Message.id, item.id),
-        eq(Message.thread, threadUri),
-      ),
-    ) as MessageRecord[];
+    const existingItems = (await this.selectMessagesForThread(threadId, context))
+      .filter((message) => message.id === item.id);
     const existing = existingItems.length > 0 ? existingItems[0] : null;
 
     if (existing) {
@@ -898,12 +997,8 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    const messages = await db.select().from(Message).where(
-      and(
-        eq(Message.id, itemId),
-        eq(Message.thread, await this.getThreadUri(threadId, context)),
-      ),
-    ) as MessageRecord[];
+    const messages = (await this.selectMessagesForThread(threadId, context))
+      .filter((message) => message.id === itemId);
 
     if (messages.length === 0) {
       throw new Error(`Item not found: ${itemId}`);
@@ -918,12 +1013,13 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    await db.delete(Message).where(
-      and(
-        eq(Message.id, itemId),
-        eq(Message.thread, await this.getThreadUri(threadId, context)),
-      ),
-    );
+    const target = (await this.selectMessagesForThread(threadId, context))
+      .find((message) => message.id === itemId);
+    if (!target) {
+      return;
+    }
+
+    await db.delete(Message).where(eq(Message.id, itemId));
   }
 
   // =========================================================================
