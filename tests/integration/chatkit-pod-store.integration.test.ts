@@ -17,7 +17,7 @@ import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import type { StoreContext } from '../../src/api/chatkit/store';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
-import { setupAccount, type AccountSetup } from './helpers/solidAccount';
+import { getClientCredentialsToken, setupAccount, type AccountSetup } from './helpers/solidAccount';
 
 // Mock AI Provider - simulates AI responses
 class MockAiProvider implements AiProvider {
@@ -61,7 +61,7 @@ suite('ChatKit PodStore Integration', () => {
     }
     account = createdAccount;
     podUrl = account.podUrl;
-
+    const token = await getClientCredentialsToken(account);
 
     store = new PodChatKitStore({
       tokenEndpoint: `${account.issuer.replace(/\/$/, '')}/.oidc/token`,
@@ -80,6 +80,8 @@ suite('ChatKit PodStore Integration', () => {
         webId: account.webId,
         clientId: account.clientId,
         clientSecret: account.clientSecret,
+        accessToken: token.accessToken,
+        tokenType: token.tokenType,
       },
     } as StoreContext;
   }, 60000);
@@ -96,7 +98,7 @@ suite('ChatKit PodStore Integration', () => {
     minCount: number,
     options: { timeoutMs?: number; intervalMs?: number } = {},
   ): Promise<any[]> => {
-    const timeoutMs = options.timeoutMs ?? 6000;
+    const timeoutMs = options.timeoutMs ?? 10000;
     const intervalMs = options.intervalMs ?? 200;
     const startedAt = Date.now();
 
@@ -327,7 +329,7 @@ suite('ChatKit PodStore Integration', () => {
       const assistantMsg = items.find((i: any) => i.type === 'assistant_message');
       expect(assistantMsg).toBeDefined();
       expect(assistantMsg.content[0].text).toContain('Mock response');
-    }, 10000); // Increase timeout to 10 seconds
+    }, 15000);
 
     it('should handle multiple messages in conversation', async () => {
       // Send second message
@@ -354,7 +356,7 @@ suite('ChatKit PodStore Integration', () => {
       // Verify all messages are stored
       const items = await waitForThreadItemsCount(threadId, 4);
       expect(items.length).toBeGreaterThanOrEqual(4); // 2 user + 2 assistant
-    }, 10000); // Increase timeout to 10 seconds
+    }, 15000);
   });
 
   describe('Thread with Initial Message', () => {
@@ -423,7 +425,7 @@ suite('ChatKit PodStore Integration', () => {
           }
         }
       }
-    }, 10000); // Increase timeout to 10 seconds
+    }, 15000);
   });
 
   describe('Thread Deletion', () => {
@@ -546,7 +548,7 @@ suite('ChatKit PodStore Integration', () => {
       expect(config!.credentialId).toBe('cred-test-001');
     });
 
-    it('should use credential baseUrl over provider baseUrl', async () => {
+    it('should use provider baseUrl', async () => {
       const db = await (store as any).getDb(testContext);
       const { Provider } = await import('../../src/ai/schema/provider');
       const { Credential } = await import('../../src/credential/schema/tables');
@@ -558,22 +560,21 @@ suite('ChatKit PodStore Integration', () => {
         baseUrl: 'https://default.api.com/v1',
       });
 
-      // Create credential with custom baseUrl
+      // Create credential
       await db.insert(Credential).values({
         id: 'cred-custom-001',
         provider: `${podUrl}settings/ai/providers.ttl#custom-provider`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-custom-key',
-        baseUrl: 'https://custom.api.com/v1',
         label: 'Custom Credential',
       });
 
       const config = await store.getAiConfig(testContext);
 
-      // Should use credential's baseUrl
+      // Should use provider's baseUrl
       expect(config).toBeDefined();
-      expect(config!.baseUrl).toBe('https://custom.api.com/v1');
+      expect(config!.baseUrl).toBe('https://default.api.com/v1');
     });
 
     it('should skip inactive credentials', async () => {

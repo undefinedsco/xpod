@@ -61,6 +61,7 @@ export class GatewayProxy {
     });
 
     this.proxy.on('proxyRes', (proxyRes, req, res) => {
+      this.sanitizeProxyResponseHeaders(req, proxyRes);
       const interceptedRequest = req as InterceptedRequest;
       const outgoing = res as http.ServerResponse;
       if (!interceptedRequest.__xpodInspectRootMutation || !outgoing || outgoing.headersSent) {
@@ -234,6 +235,27 @@ export class GatewayProxy {
     delete headers['transfer-encoding'];
     headers['content-length'] = String(body.byteLength);
     return { statusCode, headers, body };
+  }
+
+  private sanitizeProxyResponseHeaders(req: http.IncomingMessage, proxyRes: http.IncomingMessage): void {
+    const method = (req.method ?? 'GET').toUpperCase();
+    const statusCode = proxyRes.statusCode ?? 200;
+    const headers = proxyRes.headers as Record<string, string | string[] | undefined>;
+    const transferEncoding = headers['transfer-encoding'];
+    const hasTransferEncoding = Array.isArray(transferEncoding)
+      ? transferEncoding.some((value) => value.toLowerCase().includes('chunked'))
+      : typeof transferEncoding === 'string'
+        ? transferEncoding.toLowerCase().includes('chunked')
+        : false;
+
+    if (method === 'HEAD' || statusCode === 204 || statusCode === 304 || (statusCode >= 100 && statusCode < 200)) {
+      delete headers['transfer-encoding'];
+      return;
+    }
+
+    if (hasTransferEncoding && headers['content-length'] !== undefined) {
+      delete headers['content-length'];
+    }
   }
 
   private handleCorsPreflightRequest(
