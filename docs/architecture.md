@@ -233,7 +233,7 @@ yarn test
 yarn test:integration
 
 # 集群测试（多节点）
-yarn test:cluster
+yarn test:multi-node
 ```
 
 ---

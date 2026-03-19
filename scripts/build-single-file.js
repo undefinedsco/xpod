@@ -10,7 +10,6 @@ const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 
 const rootDir = path.resolve(__dirname, '..');
-const distDir = path.join(rootDir, 'dist');
 
 const argv = process.argv.slice(2);
 const args = new Set(argv);
@@ -18,12 +17,12 @@ const shouldIncludeNodeModules = !args.has('--no-node-modules');
 const outputArg = argv.find(function(arg) { return arg.indexOf('--output=') === 0; });
 const outputPath = outputArg
   ? path.resolve(rootDir, outputArg.slice('--output='.length))
-  : path.join(distDir, 'xpod-single.cjs');
+  : path.join(rootDir, '.artifacts', 'xpod-single.cjs');
 
 if (args.has('--help')) {
   console.log('Usage: node scripts/build-single-file.js [options]\n');
   console.log('Options:');
-  console.log('  --output=<file>      Output file path (default: dist/xpod-single.cjs)');
+  console.log('  --output=<file>      Output file path (default: .artifacts/xpod-single.cjs)');
   console.log('  --no-node-modules    Skip embedding node_modules (smaller, not standalone)');
   console.log('  --help               Show this help message');
   process.exit(0);
@@ -40,7 +39,7 @@ const requiredEntries = [
 for (const rel of requiredEntries) {
   if (!fs.existsSync(path.join(rootDir, rel))) {
     console.error('Missing required build artifact: ' + rel);
-    console.error('Please run yarn build first.');
+    console.error('Please run bun run build first.');
     process.exit(1);
   }
 }
@@ -51,6 +50,7 @@ const includeEntries = [
   'static',
   'templates',
   'package.json',
+  'bun.lock',
   'yarn.lock',
   'example.env',
   'example.env.local',

@@ -17,6 +17,15 @@ function run(command, extraEnv = {}) {
   });
 }
 
+function readPackMetadata(packJsonPath) {
+  const items = JSON.parse(fs.readFileSync(packJsonPath, 'utf8'));
+  const pack = Array.isArray(items) ? items[0] : items;
+  if (!pack?.filename) {
+    throw new Error(`No tarball filename found in ${packJsonPath}`);
+  }
+  return pack;
+}
+
 function main() {
   const repoRoot = process.cwd();
   const packageJsonPath = path.join(repoRoot, 'package.json');
@@ -34,18 +43,30 @@ function main() {
   const publishRegistry = process.env.XPOD_NPM_REGISTRY || 'https://registry.npmjs.org';
 
   try {
-    run('yarn build');
+    run('bun run build');
+
     const npmCacheDir = path.join(repoRoot, '.test-data', 'npm-cache');
+    const packDir = path.join(repoRoot, '.test-data', 'npm-pack');
     fs.mkdirSync(npmCacheDir, { recursive: true });
-    run(`node scripts/publish-platform-packages.cjs --tag=local${dryRun ? ' --dry-run' : ''}`, {
+    fs.rmSync(packDir, { recursive: true, force: true });
+    fs.mkdirSync(packDir, { recursive: true });
+
+    const npmEnv = {
       npm_config_cache: npmCacheDir,
       npm_config_registry: publishRegistry,
       XPOD_NPM_REGISTRY: publishRegistry,
-    });
-    run(`npm publish --registry ${publishRegistry} --tag local --access public${dryRun ? ' --dry-run' : ''}`, {
-      npm_config_cache: npmCacheDir,
-      npm_config_registry: publishRegistry,
-    });
+    };
+
+    run(`node scripts/run-npm-pack.cjs ${JSON.stringify(packDir)} ${JSON.stringify(npmCacheDir)}`, npmEnv);
+
+    const packJsonPath = path.join(packDir, 'pack.json');
+    run(`node scripts/check-pack-json.cjs ${JSON.stringify(packJsonPath)}`);
+
+    run(`node scripts/publish-platform-packages.cjs --tag=local${dryRun ? ' --dry-run' : ''}`, npmEnv);
+
+    const pack = readPackMetadata(packJsonPath);
+    const tarballPath = path.join(packDir, pack.filename);
+    run(`npm publish ${JSON.stringify(tarballPath)} --registry ${publishRegistry} --tag local --access public${dryRun ? ' --dry-run' : ''}`, npmEnv);
   } catch (error) {
     fs.writeFileSync(packageJsonPath, originalRaw);
     console.error('[publish:local] failed, package.json restored');

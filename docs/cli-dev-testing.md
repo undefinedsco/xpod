@@ -5,8 +5,8 @@
 ### 前置条件
 
 ```bash
-yarn build:ts          # 编译 TypeScript
-yarn build:components  # 生成 Components.js 清单（CSS 依赖）
+bun run build:ts          # 编译 TypeScript
+bun run build:components  # 生成 Components.js 清单（CSS 依赖）
 ```
 
 ### 启动方式
@@ -15,7 +15,7 @@ yarn build:components  # 生成 Components.js 清单（CSS 依赖）
 
 ```bash
 # 清理旧数据
-yarn clean
+bun run clean
 
 # 带 seed 启动（自动创建 test/alice/bob 账号）
 CSS_BASE_URL=http://localhost:3000/ \
@@ -39,8 +39,8 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/test/
 
 | 错误 | 原因 | 解决 |
 |------|------|------|
-| `Cannot find module '@undefineds.co/xpod'` | Components.js 清单未生成 | `yarn build:components` |
-| `Cannot find module 'src/api/main.js'` | ts-node 模式下 API fork 路径不对 | 用 `dist/main.js` 而非 `yarn local` |
+| `Cannot find module '@undefineds.co/xpod'` | Components.js 清单未生成 | `bun run build:components` |
+| `Cannot find module 'src/api/main.js'` | ts-node 模式下 API fork 路径不对 | 用 `dist/main.js` 而非 `bun run local` |
 | CSS 第一次启动失败，第二次成功 | Components.js 模块发现时序 | 正常现象，Supervisor 会自动重试 |
 
 ## 申请 Client Credentials

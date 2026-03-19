@@ -6,19 +6,19 @@
 #   API_PORT=6301 (cloud) / 5738 (local)
 #
 
-FROM node:22-alpine AS build
+FROM oven/bun:1.3.8-alpine AS build
 
 RUN apk add --no-cache python3 make g++ cmake
 
 WORKDIR /app
 
-COPY package.json yarn.lock ./
+COPY package.json bun.lock ./
 # Workaround: 禁用 SSL 验证以绕过代理 HTTPS 握手问题
 # 详见: docs/docker-build-troubleshooting.md
-RUN NODE_TLS_REJECT_UNAUTHORIZED=0 yarn install --frozen-lockfile --ignore-engines
+RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
-RUN yarn build:ts && yarn build:components
+RUN bun run build:ts && bun run build:components
 
 # Runtime
 FROM node:22-alpine

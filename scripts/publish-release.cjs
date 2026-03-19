@@ -11,6 +11,15 @@ function run(command, extraEnv = {}) {
   });
 }
 
+function readPackMetadata(packJsonPath) {
+  const items = JSON.parse(fs.readFileSync(packJsonPath, 'utf8'));
+  const pack = Array.isArray(items) ? items[0] : items;
+  if (!pack?.filename) {
+    throw new Error(`No tarball filename found in ${packJsonPath}`);
+  }
+  return pack;
+}
+
 function main() {
   const repoRoot = process.cwd();
   const dryRun = process.argv.includes('--dry-run') || process.env.XPOD_PUBLISH_DRY_RUN === 'true';
@@ -28,22 +37,31 @@ function main() {
   }
 
   if (!skipBuild) {
-    run('yarn build');
+    run('bun run build');
   }
 
   const npmCacheDir = path.join(repoRoot, '.test-data', 'npm-cache');
+  const packDir = path.join(repoRoot, '.test-data', 'npm-pack');
   fs.mkdirSync(npmCacheDir, { recursive: true });
+  fs.rmSync(packDir, { recursive: true, force: true });
+  fs.mkdirSync(packDir, { recursive: true });
 
-  run(`node scripts/publish-platform-packages.cjs${dryRun ? ' --dry-run' : ''}`, {
+  const npmEnv = {
     npm_config_cache: npmCacheDir,
     npm_config_registry: publishRegistry,
     XPOD_NPM_REGISTRY: publishRegistry,
-  });
+  };
 
-  run(`npm publish --registry ${publishRegistry} --access public${dryRun ? ' --dry-run' : ''}`, {
-    npm_config_cache: npmCacheDir,
-    npm_config_registry: publishRegistry,
-  });
+  run(`node scripts/run-npm-pack.cjs ${JSON.stringify(packDir)} ${JSON.stringify(npmCacheDir)}`, npmEnv);
+
+  const packJsonPath = path.join(packDir, 'pack.json');
+  run(`node scripts/check-pack-json.cjs ${JSON.stringify(packJsonPath)}`);
+
+  run(`node scripts/publish-platform-packages.cjs${dryRun ? ' --dry-run' : ''}`, npmEnv);
+
+  const pack = readPackMetadata(packJsonPath);
+  const tarballPath = path.join(packDir, pack.filename);
+  run(`npm publish ${JSON.stringify(tarballPath)} --registry ${publishRegistry} --access public${dryRun ? ' --dry-run' : ''}`, npmEnv);
 
   console.log(`[publish:release] ${dryRun ? 'dry-run complete' : 'publish complete'}`);
   console.log(`[publish:release] registry: ${publishRegistry}`);

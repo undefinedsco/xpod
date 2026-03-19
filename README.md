@@ -82,40 +82,41 @@ See `docs/deployment-modes.md` for more detail.
 
 ### Requirements
 
-- Node.js 22
-- Yarn 1.x
+- Bun 1.3+
+- Node.js 22+
+
+If you are building from source, Bun is the main package manager and task runner. If you are only consuming the published npm package, Node is still enough at runtime.
 
 ### Install
 
 ```bash
-nvm use
-yarn install
-yarn build
+bun install
+bun run build
 ```
 
 ### ABI note
 
-Xpod currently targets Node 22 (`>=22 <23`). `.nvmrc` helps humans, but non-interactive shells, IDE tasks, AI runtimes, or CI subprocesses may still pick the wrong `node` from `PATH`.
+Xpod currently expects Node in `>=22 <27` for Node-based runtime and packaging paths. `.nvmrc` helps humans, but non-interactive shells, IDE tasks, AI runtimes, or CI subprocesses may still pick the wrong `node` from `PATH`.
 
 Before local startup or integration tests, run:
 
 ```bash
 nvm use
-yarn check:abi
+bun run check:abi
 ```
 
-If you hit `better-sqlite3` or `NODE_MODULE_VERSION` errors, reinstall native dependencies under the same Node major:
+If you hit native module or `NODE_MODULE_VERSION` errors, reinstall dependencies under the same Node major:
 
 ```bash
 nvm use
-yarn install --force --ignore-engines
+bun install --force
 ```
 
 ### Run locally
 
 ```bash
 cp example.env .env.local
-yarn local
+bun run local
 ```
 
 Visit `http://localhost:3000/` after startup.
@@ -124,7 +125,7 @@ Visit `http://localhost:3000/` after startup.
 
 ```bash
 cp example.env .env.cloud
-yarn cloud
+bun run cloud
 ```
 
 ## Library Mode
@@ -150,7 +151,58 @@ await runtime.stop();
 
 On Unix, `transport: 'socket'` keeps the full Xpod runtime in-process without binding a TCP port. This is the preferred shape for CI and integration tests.
 
-Use `open`, `authMode`, and `apiOpen` to tune authentication behavior for tests or embedded app flows.
+Use `open`, `authMode`, `apiOpen`, and related runtime options to tune authentication behavior for tests or embedded app flows.
+
+### No-auth test helper
+
+```ts
+import { startNoAuthXpod } from '@undefineds.co/xpod/test-utils';
+
+const xpod = await startNoAuthXpod();
+console.log(xpod.baseUrl);
+await xpod.stop();
+```
+
+This helper is the lightest downstream path for integration tests that only need an open local stack.
+
+### Using Xpod from a downstream project
+
+Install Xpod as a dev dependency:
+
+```bash
+bun add -d @undefineds.co/xpod
+```
+
+Recommended entry points:
+
+- `@undefineds.co/xpod/runtime` — full runtime API (`startXpodRuntime`)
+- `@undefineds.co/xpod/test-utils` — lightest no-auth helper (`startNoAuthXpod`)
+
+A minimal `vitest` example:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startNoAuthXpod } from '@undefineds.co/xpod/test-utils';
+
+let xpod: Awaited<ReturnType<typeof startNoAuthXpod>>;
+
+beforeAll(async() => {
+  xpod = await startNoAuthXpod();
+}, 60_000);
+
+afterAll(async() => {
+  await xpod?.stop();
+});
+
+describe('xpod integration', () => {
+  it('starts in-process', async() => {
+    const response = await fetch(new URL('/service/status', xpod.baseUrl));
+    expect(response.ok).toBe(true);
+  });
+});
+```
+
+Keep Docker/full integration tests on real services. Use library mode for lite and app-embedded test paths.
 
 ### Localhost gateway for external apps
 
@@ -168,15 +220,21 @@ const runtime = await startXpodRuntime({
 console.log(runtime.baseUrl); // http://127.0.0.1:5710/
 ```
 
-Use this shape when Xpod needs to behave as a shared local service on Unix. External apps connect over HTTP to the localhost gateway, while internal CSS/API traffic stays on Unix sockets.
+Use this shape when Xpod needs to behave as a shared local service. External apps connect over HTTP to the localhost gateway, while internal CSS/API traffic stays on Unix sockets.
 
 If Unix sockets are unavailable, switch to `transport: 'port'` to run the internal services on TCP ports too.
 
-Useful package entry points:
+## Testing
 
-- `@undefineds.co/xpod`
-- `@undefineds.co/xpod/runtime`
-- `@undefineds.co/xpod/test-utils`
+```bash
+bun run test:integration:lite
+bun run test:integration:full
+bun run test:bun:runtime
+```
+
+- `test:integration:lite` starts Xpod in-process and runs the light integration path
+- `test:integration:full` keeps the real service stack for PostgreSQL / Redis / MinIO dependent paths
+- `test:bun:runtime` is the Bun runtime smoke gate
 
 ## Single-File Packaging
 
@@ -185,38 +243,25 @@ Useful package entry points:
 Build a self-extracting launcher:
 
 ```bash
-yarn build:single:standalone
+bun run build:single:standalone
 ```
 
 Output file:
 
-- `dist/xpod-single.cjs`
+- `.artifacts/xpod-single.cjs`
 
 Run it directly with Node:
 
 ```bash
-node dist/xpod-single.cjs --mode local
+node .artifacts/xpod-single.cjs --mode local
 ```
 
-On first start, it extracts runtime files to cache (default `~/.xpod/single-file-cache/`; override with `XPOD_SINGLE_CACHE_DIR`) and reuses that cache on subsequent launches.
-
 ### Bun native binary
-
-Supported Unix targets for npm-distributed native binaries:
-
-- `darwin-arm64`
-- `darwin-x64`
-- `linux-arm64-gnu`
-- `linux-arm64-musl`
-- `linux-x64-gnu`
-- `linux-x64-musl`
-
-When installed via `npm install @undefineds.co/xpod`, the main package declares matching platform-specific optional dependencies. On supported Unix platforms, the `xpod` CLI prefers the matching Bun native binary and only falls back to the JS CLI when no native package is present.
 
 Build the Bun single-file binary:
 
 ```bash
-yarn build:single:bun
+bun run build:single:bun
 ```
 
 Output file:
@@ -229,11 +274,7 @@ Run it directly:
 dist/xpod-bun --mode local --port 5710
 ```
 
-This shape exposes one localhost HTTP gateway for external apps while keeping internal CSS/API traffic on Unix sockets.
-
-If you need to pin the public origin explicitly, use `--baseUrl`. Priority is: CLI `--baseUrl` > `.env` file `CSS_BASE_URL` > derived `http://<host>:<port>/`.
-
-On first start, it extracts runtime files to cache (default `~/.xpod/bun-single-cache/`; override with `XPOD_SINGLE_CACHE_DIR`) and reuses that cache on subsequent launches.
+On supported Unix platforms, `npm install @undefineds.co/xpod` can also resolve a matching optional platform package for the native `xpod` binary.
 
 ## Architecture at a Glance
 
@@ -258,8 +299,3 @@ In implementation terms, CSS and the API service are internal parts of Xpod's ru
 - `docs/architecture.md` — system architecture overview
 - `docs/COMPONENTS.md` — component overrides and architecture extensions
 - `docs/sidecar-api.md` — sidecar API patterns
-- `docs/desktop-roadmap.md` — local and desktop-oriented evolution ideas
-
-## License
-
-MIT

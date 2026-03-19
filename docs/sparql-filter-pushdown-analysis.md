@@ -159,7 +159,7 @@ public async queryBindings(query: string, basePath: string): Promise<any> {
 对于简单的数值范围 FILTER（如 `?value > N`），在 `OptimizedQuadstoreEngine` 中：
 
 1. 分析 FILTER 表达式，识别简单比较
-2. 使用 better-sqlite3 的原生 SQL 范围查询
+2. 使用 SQLite 原生 SQL 范围查询
 3. 对于复杂 FILTER，仍然委托 Comunica
 
 ```typescript

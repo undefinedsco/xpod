@@ -16,11 +16,11 @@
 ```bash
 # Local mode (SQLite, no external dependencies)
 cp example.env .env.local
-yarn local
+bun run local
 
 # Cloud mode (PostgreSQL + MinIO + Redis)
 cp example.env .env.cloud
-yarn cloud
+bun run cloud
 ```
 
 ## Local Mode
@@ -35,7 +35,7 @@ Local mode is designed for single-user, self-hosted scenarios:
 
 1. **Self-Managed HTTPS**: Bring your own certificates and 443 listener
 2. **Reverse Proxy**: Use nginx/caddy with auto-SSL in front of Xpod
-3. **Development**: Run on HTTP locally, use `yarn dev`
+3. **Development**: Run on HTTP locally, use `bun run dev`
 
 ## Cloud Mode
 

@@ -42,6 +42,8 @@ logs/
 dist/xpod-macos/
 dist/xpod-macos.tar.gz
 dist/xpod-single.cjs
+dist/xpod.single.cjs
+.artifacts/
 
 # Source files (only dist is needed)
 src/
