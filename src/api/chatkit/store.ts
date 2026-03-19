@@ -7,12 +7,13 @@
 
 import type {
   ThreadMetadata,
+  ThreadRef,
   ThreadItem,
   Attachment,
   Page,
   StoreItemType,
 } from './types';
-import { generateId, nowTimestamp } from './types';
+import { generateId, getThreadIdFromRef, nowTimestamp } from './types';
 
 /**
  * Context type for store operations (generic)
@@ -28,17 +29,17 @@ export interface ChatKitStore<TContext = StoreContext> {
   generateItemId(itemType: StoreItemType, thread: ThreadMetadata, context: TContext): string;
 
   // Thread operations
-  loadThread(threadId: string, context: TContext): Promise<ThreadMetadata>;
+  loadThread(thread: ThreadRef, context: TContext): Promise<ThreadMetadata>;
   saveThread(thread: ThreadMetadata, context: TContext): Promise<void>;
   loadThreads(limit: number, after: string | undefined, order: string, context: TContext): Promise<Page<ThreadMetadata>>;
-  deleteThread(threadId: string, context: TContext): Promise<void>;
+  deleteThread(thread: ThreadRef, context: TContext): Promise<void>;
 
   // Thread Item operations
-  loadThreadItems(threadId: string, after: string | undefined, limit: number, order: string, context: TContext): Promise<Page<ThreadItem>>;
-  addThreadItem(threadId: string, item: ThreadItem, context: TContext): Promise<void>;
-  saveItem(threadId: string, item: ThreadItem, context: TContext): Promise<void>;
-  loadItem(threadId: string, itemId: string, context: TContext): Promise<ThreadItem>;
-  deleteThreadItem(threadId: string, itemId: string, context: TContext): Promise<void>;
+  loadThreadItems(thread: ThreadRef, after: string | undefined, limit: number, order: string, context: TContext): Promise<Page<ThreadItem>>;
+  addThreadItem(thread: ThreadRef, item: ThreadItem, context: TContext): Promise<void>;
+  saveItem(thread: ThreadRef, item: ThreadItem, context: TContext): Promise<void>;
+  loadItem(thread: ThreadRef, itemId: string, context: TContext): Promise<ThreadItem>;
+  deleteThreadItem(thread: ThreadRef, itemId: string, context: TContext): Promise<void>;
 
   // Attachment operations (optional)
   saveAttachment?(attachment: Attachment, context: TContext): Promise<void>;
@@ -67,6 +68,10 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     return `${this.getUserKey(context)}:${threadId}`;
   }
 
+  private normalizeThreadId(thread: ThreadRef): string {
+    return getThreadIdFromRef(thread);
+  }
+
   // ID Generation
   generateThreadId(_context: TContext): string {
     return generateId('thread');
@@ -77,13 +82,14 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
   }
 
   // Thread operations
-  async loadThread(threadId: string, context: TContext): Promise<ThreadMetadata> {
+  async loadThread(thread: ThreadRef, context: TContext): Promise<ThreadMetadata> {
+    const threadId = this.normalizeThreadId(thread);
     const key = this.getThreadKey(threadId, context);
-    const thread = this.threads.get(key);
-    if (!thread) {
+    const threadData = this.threads.get(key);
+    if (!threadData) {
       throw new Error(`Thread not found: ${threadId}`);
     }
-    return thread;
+    return threadData;
   }
 
   async saveThread(thread: ThreadMetadata, context: TContext): Promise<void> {
@@ -127,14 +133,16 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     };
   }
 
-  async deleteThread(threadId: string, context: TContext): Promise<void> {
+  async deleteThread(thread: ThreadRef, context: TContext): Promise<void> {
+    const threadId = this.normalizeThreadId(thread);
     const key = this.getThreadKey(threadId, context);
     this.threads.delete(key);
     this.items.delete(key);
   }
 
   // Thread Item operations
-  async loadThreadItems(threadId: string, after: string | undefined, limit: number, order: string, context: TContext): Promise<Page<ThreadItem>> {
+  async loadThreadItems(thread: ThreadRef, after: string | undefined, limit: number, order: string, context: TContext): Promise<Page<ThreadItem>> {
+    const threadId = this.normalizeThreadId(thread);
     const key = this.getThreadKey(threadId, context);
     const threadItems = this.items.get(key);
     
@@ -168,7 +176,8 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     };
   }
 
-  async addThreadItem(threadId: string, item: ThreadItem, context: TContext): Promise<void> {
+  async addThreadItem(thread: ThreadRef, item: ThreadItem, context: TContext): Promise<void> {
+    const threadId = this.normalizeThreadId(thread);
     const key = this.getThreadKey(threadId, context);
     let threadItems = this.items.get(key);
     if (!threadItems) {
@@ -178,11 +187,12 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     threadItems.set(item.id, item);
   }
 
-  async saveItem(threadId: string, item: ThreadItem, context: TContext): Promise<void> {
-    await this.addThreadItem(threadId, item, context);
+  async saveItem(thread: ThreadRef, item: ThreadItem, context: TContext): Promise<void> {
+    await this.addThreadItem(thread, item, context);
   }
 
-  async loadItem(threadId: string, itemId: string, context: TContext): Promise<ThreadItem> {
+  async loadItem(thread: ThreadRef, itemId: string, context: TContext): Promise<ThreadItem> {
+    const threadId = this.normalizeThreadId(thread);
     const key = this.getThreadKey(threadId, context);
     const threadItems = this.items.get(key);
     if (!threadItems) {
@@ -195,7 +205,8 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     return item;
   }
 
-  async deleteThreadItem(threadId: string, itemId: string, context: TContext): Promise<void> {
+  async deleteThreadItem(thread: ThreadRef, itemId: string, context: TContext): Promise<void> {
+    const threadId = this.normalizeThreadId(thread);
     const key = this.getThreadKey(threadId, context);
     const threadItems = this.items.get(key);
     if (threadItems) {

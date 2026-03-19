@@ -2,17 +2,14 @@ import http from 'node:http';
 import https from 'node:https';
 import type { RequestOptions } from 'node:http';
 import { URL } from 'node:url';
+import { getSocketPathForOrigin, registerSocketOrigin } from './socket-origin-registry';
 
-interface SocketHttpEntry {
-  socketPath: string;
-}
-
-const registry = new Map<string, SocketHttpEntry>();
 const originalHttpRequest = http.request.bind(http);
 const originalHttpsRequest = https.request.bind(https);
 const originalHttpGet = http.get.bind(http);
 const originalHttpsGet = https.get.bind(https);
 let patched = false;
+let patchRefCount = 0;
 const debugSocketHttp = process.env.XPOD_DEBUG_SOCKET_HTTP === 'true';
 
 function hasHostHeader(headers: RequestOptions['headers']): boolean {
@@ -106,15 +103,15 @@ function createPatchedRequest(
     }
 
     const explicitSocketPath = hasExplicitSocketPath(input, options);
-    const entry = !explicitSocketPath && url ? registry.get(url.origin) : undefined;
+    const socketPath = !explicitSocketPath && url ? getSocketPathForOrigin(url.origin) : undefined;
     if (debugSocketHttp && url) {
-      console.log(`[socket-http] ${entry ? 'rewrite' : 'passthrough'} ${url.toString()}${explicitSocketPath ? ' (explicit-socket)' : ''}`);
+      console.log(`[socket-http] ${socketPath ? 'rewrite' : 'passthrough'} ${url.toString()}${explicitSocketPath ? ' (explicit-socket)' : ''}`);
     }
-    if (!url || !entry) {
+    if (!url || !socketPath) {
       return original(input as any, options as any, callback as any);
     }
 
-    const rewritten = rewriteRequestOptions(url, requestOptions, entry.socketPath);
+    const rewritten = rewriteRequestOptions(url, requestOptions, socketPath);
     return cb ? original(rewritten, cb as any) : original(rewritten);
   }) as typeof http.request;
 }
@@ -140,8 +137,8 @@ function ensurePatched(): void {
   patched = true;
 }
 
-async function maybeRestoreOriginalHttp(): Promise<void> {
-  if (registry.size > 0 || !patched) {
+function maybeRestoreOriginalHttp(): void {
+  if (patchRefCount > 0 || !patched) {
     return;
   }
 
@@ -152,16 +149,24 @@ async function maybeRestoreOriginalHttp(): Promise<void> {
   patched = false;
 }
 
-export function registerSocketHttpOrigin(origin: string, socketPath: string): () => Promise<void> {
-  const normalizedOrigin = new URL(origin).origin;
-  if (!registry.has(normalizedOrigin)) {
-    registry.set(normalizedOrigin, { socketPath });
-  }
-
+export function acquireSocketHttpShim(): void {
+  patchRefCount += 1;
   ensurePatched();
+}
+
+export function releaseSocketHttpShim(): void {
+  if (patchRefCount > 0) {
+    patchRefCount -= 1;
+  }
+  maybeRestoreOriginalHttp();
+}
+
+export function registerSocketHttpOrigin(origin: string, socketPath: string): () => Promise<void> {
+  const unregisterOrigin = registerSocketOrigin(origin, socketPath);
+  acquireSocketHttpShim();
 
   return async(): Promise<void> => {
-    registry.delete(normalizedOrigin);
-    await maybeRestoreOriginalHttp();
+    unregisterOrigin();
+    releaseSocketHttpShim();
   };
 }

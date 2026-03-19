@@ -25,6 +25,7 @@ export { applyEnv, loadEnvFile } from './env-utils';
 export { NodeRuntimeHost, nodeRuntimeHost } from './host/node/NodeRuntimeHost';
 export { NodeRuntimePlatform, nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
 export { registerSocketFetchOrigin } from './socket-fetch';
+export { registerSocketOriginShims } from './socket-shim';
 export {
   CommunitySolidServerCssRunner,
   communitySolidServerCssRunner,
@@ -54,6 +55,7 @@ export type {
   GatewayRuntimeRunner,
   GatewayRuntimeRunnerStartOptions,
 } from './runner/types';
+export { registerSocketOriginShims } from './socket-shim';
 export { startXpodRuntime } from './XpodRuntime';
 export type {
   XpodRuntimeHandle,

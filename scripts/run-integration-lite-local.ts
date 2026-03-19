@@ -1,13 +1,15 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
 import { spawn } from 'child_process';
 
-function runYarn(args: string[], env: NodeJS.ProcessEnv): Promise<number> {
-  return new Promise<number>((resolve) => {
-    const child = spawn('yarn', args, {
+function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
       stdio: 'inherit',
       env,
     });
+
     child.on('close', (code) => resolve(code ?? 1));
+    child.on('error', reject);
   });
 }
 
@@ -20,24 +22,20 @@ async function main() {
     await stack.start();
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
-    const testEnv = {
+    const sharedEnv = {
       ...process.env,
       CSS_BASE_URL: stack.baseUrl,
       XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
       XPOD_RUN_INTEGRATION_TESTS: 'true',
     };
 
-    const setupCode = await runYarn(['ts-node', 'scripts/setup-test-credentials.ts'], testEnv);
-    if (setupCode !== 0) {
-      exitCode = setupCode;
-      return;
+    exitCode = await runCommand('bun', [ 'run', 'test:setup' ], sharedEnv);
+    if (exitCode === 0) {
+      exitCode = await runCommand('bun', [ 'run', 'vitest', '--run',
+          'tests/integration',
+          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow}*',
+        ], sharedEnv);
     }
-
-    exitCode = await runYarn([
-      'vitest', '--run',
-      'tests/integration',
-      '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
-    ], testEnv);
   } finally {
     await stack.stop();
   }

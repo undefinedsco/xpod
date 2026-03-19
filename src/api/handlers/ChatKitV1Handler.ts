@@ -13,7 +13,8 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { StoreContext, ChatKitStore } from '../chatkit/store';
-import type { Page, ThreadItem, ThreadMetadata } from '../chatkit/types';
+import type { Page, ThreadItem, ThreadMetadata, ThreadRef } from '../chatkit/types';
+import { toThreadRef } from '../chatkit/types';
 import { getWebId, getAccountId } from '../auth/AuthContext';
 
 export interface ChatKitV1HandlerOptions {
@@ -52,9 +53,13 @@ export function registerChatKitV1Routes(server: ApiServer, options: ChatKitV1Han
 
   // GET /v1/chatkit/threads/:thread_id
   server.get('/v1/chatkit/threads/:thread_id', async (request, response, params) => {
+    const threadRef = getThreadRefFromRequest(request, response, params.thread_id);
+    if (!threadRef) {
+      return;
+    }
     const ctx = buildContext(request);
-    const thread = await store.loadThread(params.thread_id, ctx);
-    const items = await store.loadThreadItems(params.thread_id, undefined, 50, 'asc', ctx);
+    const thread = await store.loadThread(threadRef, ctx);
+    const items = await store.loadThreadItems(threadRef, undefined, 50, 'asc', ctx);
 
     sendJson(response, 200, {
       ...thread,
@@ -69,7 +74,11 @@ export function registerChatKitV1Routes(server: ApiServer, options: ChatKitV1Han
 
   // DELETE /v1/chatkit/threads/:thread_id
   server.delete('/v1/chatkit/threads/:thread_id', async (request, response, params) => {
-    await store.deleteThread(params.thread_id, buildContext(request));
+    const threadRef = getThreadRefFromRequest(request, response, params.thread_id);
+    if (!threadRef) {
+      return;
+    }
+    await store.deleteThread(threadRef, buildContext(request));
     // OpenAI style: return a success object (keep simple)
     sendJson(response, 200, { success: true });
   });
@@ -77,11 +86,21 @@ export function registerChatKitV1Routes(server: ApiServer, options: ChatKitV1Han
   // GET /v1/chatkit/threads/:thread_id/items
   server.get('/v1/chatkit/threads/:thread_id/items', async (request, response, params) => {
     const url = new URL(request.url ?? '', `http://${request.headers.host}`);
+    const threadRef = getThreadRefFromRequest(request, response, params.thread_id);
+    if (!threadRef) {
+      return;
+    }
     const limit = parseOptionalInt(url.searchParams.get('limit')) ?? 50;
     const after = url.searchParams.get('after') ?? undefined;
     const order = (url.searchParams.get('order') ?? 'asc') as 'asc' | 'desc';
 
-    const page = await store.loadThreadItems(params.thread_id, after, limit, order, buildContext(request));
+    const page = await store.loadThreadItems(
+      threadRef,
+      after,
+      limit,
+      order,
+      buildContext(request),
+    );
     const data: ChatKitThreadItemObject[] = page.data.map((it) => ({ ...it, object: 'chatkit.thread_item' }));
 
     sendJson(response, 200, {
@@ -99,6 +118,25 @@ function parseOptionalInt(value: string | null): number | undefined {
   }
   const n = Number.parseInt(value, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function getThreadRefFromRequest(
+  request: AuthenticatedRequest,
+  response: any,
+  rawThreadId: string,
+): ThreadRef | null {
+  const url = new URL(request.url ?? '', `http://${request.headers.host}`);
+  try {
+    return toThreadRef({
+      thread_id: decodeURIComponent(rawThreadId),
+      chat_id: url.searchParams.get('chat_id') ?? undefined,
+    });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error instanceof Error ? error.message : 'Invalid thread reference',
+    });
+    return null;
+  }
 }
 
 function sendJson(response: any, status: number, data: unknown): void {

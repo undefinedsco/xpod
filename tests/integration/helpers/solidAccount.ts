@@ -19,6 +19,67 @@ export interface AccountSetup {
   issuer: string;
 }
 
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value : `${value}/`;
+}
+
+function alignToBaseOrigin(raw: string | undefined, baseUrl: string, fallbackPath: string): string {
+  const base = new URL(baseUrl);
+
+  if (!raw) {
+    return new URL(fallbackPath, base).toString();
+  }
+
+  try {
+    const source = new URL(raw);
+    if (source.origin === base.origin) {
+      return source.toString();
+    }
+
+    return new URL(source.pathname + source.search + source.hash, base).toString();
+  } catch {
+    return new URL(fallbackPath, base).toString();
+  }
+}
+
+function derivePodUrlFromWebId(webId: string, baseUrl: string): string {
+  const profileUrl = webId.split("#")[0];
+  if (profileUrl.endsWith("/profile/card")) {
+    return `${profileUrl.slice(0, -"/profile/card".length)}/`;
+  }
+
+  try {
+    const url = new URL(profileUrl);
+    const [podSegment] = url.pathname.split("/").filter(Boolean);
+    return podSegment ? new URL(`/${podSegment}/`, baseUrl).toString() : ensureTrailingSlash(baseUrl);
+  } catch {
+    return ensureTrailingSlash(baseUrl);
+  }
+}
+
+export function getConfiguredAccount(baseUrl?: string): AccountSetup | null {
+  const clientId = process.env.SOLID_CLIENT_ID?.trim();
+  const clientSecret = process.env.SOLID_CLIENT_SECRET?.trim();
+  const candidateBase = ensureTrailingSlash(baseUrl || process.env.CSS_BASE_URL || process.env.SOLID_OIDC_ISSUER || 'http://localhost/');
+  const defaultPodId = process.env.SOLID_TEST_POD_ID || 'test';
+
+  if (!clientId || !clientSecret) {
+    return null;
+  }
+
+  const issuer = ensureTrailingSlash(alignToBaseOrigin(process.env.SOLID_OIDC_ISSUER, candidateBase, '/'));
+  const webId = alignToBaseOrigin(process.env.SOLID_WEBID, candidateBase, `/${defaultPodId}/profile/card#me`);
+  const podUrl = derivePodUrlFromWebId(webId, candidateBase);
+
+  return {
+    clientId,
+    clientSecret,
+    webId,
+    podUrl,
+    issuer,
+  };
+}
+
 type DockerServiceHost = {
   hostHeader: string;
   internalOrigin: string;
@@ -90,7 +151,7 @@ export async function discoverOidcIssuerFromWebId(webId: string, fallbackIssuer:
       return fallbackIssuer;
     }
 
-    const discoveredIssuer = discoveredUrl.toString();
+    const discoveredIssuer = ensureTrailingSlash(discoveredUrl.toString());
     const openidRes = await fetch(`${discoveredIssuer.replace(/\/$/, "")}/.well-known/openid-configuration`);
     if (!openidRes.ok) {
       return fallbackIssuer;
@@ -119,7 +180,11 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
   // Step 1: Create account
   const createRes = await fetch(`${baseUrl}/.account/account/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...routingHeaders },
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...routingHeaders,
+    },
     body: JSON.stringify({}),
   });
   if (!createRes.ok) {
@@ -133,6 +198,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
   // Step 2: Get controls
   const controlsRes = await fetch(`${baseUrl}/.account/`, {
     headers: {
+      Accept: "application/json",
       Authorization: `CSS-Account-Token ${authorization}`,
       ...routingHeaders,
     },
@@ -155,6 +221,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
     const pwRes = await fetch(normalizeServiceUrl(passwordUrl, baseUrl), {
       method: "POST",
       headers: {
+        Accept: "application/json",
         "Content-Type": "application/json",
         Authorization: `CSS-Account-Token ${authorization}`,
         ...routingHeaders,
@@ -176,6 +243,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
   const podRes = await fetch(normalizeServiceUrl(podCreateUrl, baseUrl), {
     method: "POST",
     headers: {
+      Accept: "application/json",
       "Content-Type": "application/json",
       Authorization: `CSS-Account-Token ${authorization}`,
       ...routingHeaders,
@@ -201,6 +269,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
   const credsRes = await fetch(normalizeServiceUrl(clientCredsUrl, baseUrl), {
     method: "POST",
     headers: {
+      Accept: "application/json",
       "Content-Type": "application/json",
       Authorization: `CSS-Account-Token ${authorization}`,
       ...routingHeaders,
@@ -265,6 +334,7 @@ export async function getClientCredentialsToken(account: AccountSetup): Promise<
   const response = await fetch(normalizeServiceUrl(tokenEndpoint, account.issuer), {
     method: 'POST',
     headers: {
+      Accept: 'application/json',
       'Content-Type': 'application/x-www-form-urlencoded',
       ...hostHeaderFor(account.issuer),
     },

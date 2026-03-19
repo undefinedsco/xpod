@@ -41,7 +41,6 @@ export interface ApiContainerConfig {
 
   /** Runtime host implementation */
   runtimeHost?: RuntimeHost;
-
   /** 数据库连接 URL */
   databaseUrl: string;
 

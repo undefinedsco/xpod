@@ -11,8 +11,7 @@
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
-import { registerSocketFetchOrigin } from '../src/runtime/socket-fetch';
-import { registerSocketHttpOrigin } from '../src/runtime/socket-http';
+import { registerSocketOriginShims } from '../src/runtime/socket-shim';
 
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
@@ -23,12 +22,10 @@ if (socketOriginMapRaw) {
     if (!origin || !socketPath) {
       continue;
     }
-    registerSocketFetchOrigin(origin, socketPath);
-    registerSocketHttpOrigin(origin, socketPath);
+    registerSocketOriginShims(origin, socketPath);
   }
 } else if (process.env.XPOD_GATEWAY_SOCKET_PATH && process.env.CSS_BASE_URL) {
-  registerSocketFetchOrigin(process.env.CSS_BASE_URL, process.env.XPOD_GATEWAY_SOCKET_PATH);
-  registerSocketHttpOrigin(process.env.CSS_BASE_URL, process.env.XPOD_GATEWAY_SOCKET_PATH);
+  registerSocketOriginShims(process.env.CSS_BASE_URL, process.env.XPOD_GATEWAY_SOCKET_PATH);
 }
 
 const rawBaseUrl = process.env.CSS_BASE_URL ?? 'http://localhost:5739';
@@ -324,7 +321,7 @@ async function main(): Promise<void> {
   console.log(`Seed config: ${seedConfigPath}`);
 
   if (!(await checkServer())) {
-    console.error('Server is not running. Please run `yarn test:integration:lite` (auto starts local xpod) or start xpod manually and set CSS_BASE_URL.');
+    console.error('Server is not running. Please run `bun run test:integration:lite` (auto starts local xpod) or start xpod manually and set CSS_BASE_URL.');
     process.exit(1);
   }
   console.log('Server is running');
@@ -357,7 +354,7 @@ async function main(): Promise<void> {
   if (!token || !activeEmail) {
     console.error('Failed to obtain account token from seeded accounts.');
     console.error(`Seed config: ${seedConfigPath}`);
-    console.error('Hint: ensure seeded account password matches current server data, then rerun yarn test:setup.');
+    console.error('Hint: ensure seeded account password matches current server data, then rerun bun run test:setup.');
     process.exit(1);
   }
 

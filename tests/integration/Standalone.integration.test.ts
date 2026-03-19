@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { loginWithClientCredentials, setupAccount as setupSharedAccount } from './helpers/solidAccount';
+import {
+  discoverOidcIssuerFromWebId,
+  getConfiguredAccount,
+  loginWithClientCredentials,
+} from './helpers/solidAccount';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
@@ -45,7 +49,7 @@ suite('Standalone Integration', () => {
 
   describe('Account & Pod Flow', () => {
     it('should create account, login and read/write data', async () => {
-      const creds = await setupSharedAccount(STANDALONE.baseUrl, 'standalone-lite');
+      const creds = getConfiguredAccount(STANDALONE.baseUrl);
       expect(creds).not.toBeNull();
 
       const discoveredIssuer = await discoverOidcIssuerFromWebId(creds!.webId, STANDALONE.baseUrl);
@@ -83,7 +87,7 @@ suite('Standalone Integration', () => {
     });
 
     it('discovery from WebID should resolve usable issuer', async () => {
-      const creds = await setupSharedAccount(STANDALONE.baseUrl, 'issuer-discovery');
+      const creds = getConfiguredAccount(STANDALONE.baseUrl);
       expect(creds).not.toBeNull();
       const issuer = await discoverOidcIssuerFromWebId(creds!.webId, STANDALONE.baseUrl);
       expect(issuer).toBe(STANDALONE_BASE + '/');
@@ -103,120 +107,4 @@ async function waitForService(url: string, maxRetries = 30): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 1000));
   }
   return false;
-}
-
-async function discoverOidcIssuerFromWebId(webId: string, fallbackIssuer: string): Promise<string> {
-  try {
-    const profileUrl = webId.split('#')[0];
-    const res = await fetch(profileUrl, {
-      headers: { Accept: 'text/turtle, application/ld+json;q=0.9, application/rdf+xml;q=0.8' },
-    });
-    if (!res.ok) return fallbackIssuer;
-    const body = await res.text();
-
-    const fullIriMatch = body.match(/<http:\/\/www\.w3\.org\/ns\/solid\/terms#oidcIssuer>\s*<([^>]+)>/);
-    const prefixedMatch = body.match(/solid:oidcIssuer\s*<([^>]+)>/);
-    const raw = fullIriMatch?.[1] ?? prefixedMatch?.[1];
-    if (!raw) return fallbackIssuer;
-
-    const discovered = new URL(raw, profileUrl).toString();
-    const config = await fetch(`${discovered.replace(/\/$/, '')}/.well-known/openid-configuration`);
-    if (config.ok) {
-      return discovered;
-    }
-  } catch {
-    // ignore and fallback
-  }
-  return fallbackIssuer;
-}
-
-interface AccountSetup {
-  clientId: string;
-  clientSecret: string;
-  webId: string;
-  podUrl: string;
-}
-
-async function setupAccount(baseUrl: string, prefix: string): Promise<AccountSetup | null> {
-  try {
-    const timestamp = Date.now();
-    const email = `${prefix}-${timestamp}@test.com`;
-    const podName = `${prefix}-${timestamp}`;
-
-    const createRes = await fetch(`${baseUrl}/.account/account/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    if (!createRes.ok) return null;
-
-    const { authorization: token } = await createRes.json() as { authorization: string };
-
-    const accountRes = await fetch(`${baseUrl}/.account/`, {
-      headers: { Authorization: `CSS-Account-Token ${token}` },
-    });
-    if (!accountRes.ok) return null;
-
-    const accountInfo = await accountRes.json() as {
-      controls?: {
-        password?: { create?: string };
-        account?: { pod?: string; clientCredentials?: string };
-      };
-    };
-
-    const pwdUrl = accountInfo.controls?.password?.create;
-    if (pwdUrl) {
-      const pwdRes = await fetch(pwdUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `CSS-Account-Token ${token}`,
-        },
-        body: JSON.stringify({ email, password: 'test123456' }),
-      });
-      if (!pwdRes.ok) return null;
-    }
-
-    const podEndpoint = accountInfo.controls?.account?.pod;
-    if (!podEndpoint) return null;
-
-    const podRes = await fetch(podEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `CSS-Account-Token ${token}`,
-      },
-      body: JSON.stringify({ name: podName }),
-    });
-    if (!podRes.ok) return null;
-
-    const podData = await podRes.json() as { webId?: string; pod?: string };
-    const webId = podData.webId || `${baseUrl}/${podName}/profile/card#me`;
-    const podUrl = podData.pod || `${baseUrl}/${podName}/`;
-
-    const credsUrl = accountInfo.controls?.account?.clientCredentials;
-    if (!credsUrl) return null;
-
-    const credRes = await fetch(credsUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `CSS-Account-Token ${token}`,
-      },
-      body: JSON.stringify({ name: 'standalone-lite-client', webId }),
-    });
-
-    if (!credRes.ok) return null;
-    const creds = await credRes.json() as { id: string; secret: string };
-    if (!creds.id || !creds.secret) return null;
-
-    return {
-      clientId: creds.id,
-      clientSecret: creds.secret,
-      webId,
-      podUrl,
-    };
-  } catch {
-    return null;
-  }
 }

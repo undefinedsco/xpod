@@ -47,6 +47,9 @@ const EXIT_CONFIG_ERROR = 20;
 const EXIT_INTERNAL_ERROR = 50;
 
 let logger = getLoggerFor('Main');
+const childJsRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined'
+  ? (process.env.XPOD_NODE_BINARY ?? 'node')
+  : process.execPath;
 
 function initLogger(): void {
   const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
@@ -248,9 +251,9 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const mode: 'local' | 'cloud' = options.mode ?? (configPath.includes('cloud') ? 'cloud' : 'local');
 
-  const cssPort = await getFreePort(mainPort + 1);
-  const apiPort = await getFreePort(cssPort + 1);
   const baseUrl = ensureTrailingSlash(process.env.CSS_BASE_URL || `http://${host}:${mainPort}`);
+  const cssPort = await getFreePort(mainPort + 1, host);
+  const apiPort = await getFreePort(cssPort + 1, host);
 
   // Make sure GatewayProxy has access to the effective baseUrl for host rewrites.
   process.env.CSS_BASE_URL = baseUrl;
@@ -266,7 +269,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   supervisor.register({
     name: 'css',
-    command: process.execPath,
+    command: childJsRuntime,
     args: [
       cssBinary,
       '-c', configPath,
@@ -295,7 +298,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   supervisor.register({
     name: 'api',
-    command: process.execPath,
+    command: childJsRuntime,
     args: apiArgs,
     env: {
       ...process.env,

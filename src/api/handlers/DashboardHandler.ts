@@ -44,7 +44,7 @@ export function registerDashboardRoutes(
   // 检查目录是否存在
   if (!fs.existsSync(staticDir)) {
     console.warn(`[Dashboard] Static directory not found: ${staticDir}`);
-    console.warn('[Dashboard] Run "cd dashboard && yarn build" to build the dashboard UI');
+    console.warn('[Dashboard] Run "cd ui && bun run build" to build the dashboard UI');
     return;
   }
 
