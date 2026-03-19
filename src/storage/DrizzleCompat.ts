@@ -1,12 +1,11 @@
-/**
- * Drizzle ORM Compatibility Layer
- *
- * Auto-selects better-sqlite3 or bun-sqlite driver based on runtime
- */
-
-import type { SQL } from 'drizzle-orm';
-
-const isBun = typeof (globalThis as any).Bun !== 'undefined';
+import { createRequire } from 'node:module';
+import {
+  createSqliteDatabase,
+  type SqliteOpenOptions,
+  isBun,
+} from './SqliteCompat';
+import type { SqliteDatabase } from './SqliteCompat';
+import { drizzleNodeSqlite } from './NodeSqliteDrizzle';
 
 export type DrizzleDb = any;
 
@@ -14,31 +13,68 @@ interface DrizzleDeps {
   drizzle: (db: any) => DrizzleDb;
 }
 
-let deps: DrizzleDeps | undefined;
-
-export async function getDrizzleDeps(): Promise<DrizzleDeps> {
-  if (deps) return deps;
-
-  if (isBun) {
-    const bunSqlite = await import('drizzle-orm/bun-sqlite');
-    deps = { drizzle: bunSqlite.drizzle };
-  } else {
-    const betterSqlite = await import('drizzle-orm/better-sqlite3');
-    deps = { drizzle: betterSqlite.drizzle };
+function getRequire(): NodeRequire {
+  if (typeof require === 'function') {
+    return require;
   }
 
+  return createRequire(typeof __filename === 'string' ? __filename : `${process.cwd()}/package.json`);
+}
+
+let deps: DrizzleDeps | undefined;
+
+function getDrizzleDeps(): DrizzleDeps {
+  if (deps) {
+    return deps;
+  }
+
+  if (isBun) {
+    const bunSqlite = getRequire()('drizzle-orm/bun-sqlite') as {
+      drizzle: (options: { client: any }) => DrizzleDb;
+    };
+    deps = {
+      drizzle: (db: any) => bunSqlite.drizzle({ client: db }),
+    };
+    return deps;
+  }
+
+  try {
+    const nodeSqlite = getRequire()('drizzle-orm/node-sqlite') as {
+      drizzle: (options: { client: any }) => DrizzleDb;
+    };
+    deps = {
+      drizzle: (db: any) => nodeSqlite.drizzle({ client: db }),
+    };
+    return deps;
+  } catch {
+    deps = {
+      drizzle: (db: any) => drizzleNodeSqlite({ client: db }),
+    };
+  }
   return deps;
 }
 
-/**
- * Create Drizzle database instance
- */
-export async function createDrizzleDb(sqliteDb: any): Promise<DrizzleDb> {
-  const { drizzle } = await getDrizzleDeps();
-  const db = drizzle(sqliteDb);
-  // Mark as Bun SQLite for db.ts detection
+export function createDrizzleDb(sqliteDb: SqliteDatabase | any): DrizzleDb {
+  const nativeDatabase = sqliteDb && typeof sqliteDb.getInternalDb === 'function'
+    ? sqliteDb.getInternalDb()
+    : sqliteDb;
+  const db = getDrizzleDeps().drizzle(nativeDatabase);
   if (isBun) {
     db.$isBunSqlite = true;
   }
   return db;
+}
+
+export function createDrizzleSqliteDatabase(
+  filePath: string,
+  options: SqliteOpenOptions = {},
+): { sqlite: SqliteDatabase; db: DrizzleDb } {
+  const sqlite = createSqliteDatabase(filePath, {
+    ...options,
+    driver: isBun ? 'bun:sqlite' : 'node:sqlite',
+  });
+  return {
+    sqlite,
+    db: createDrizzleDb(sqlite),
+  };
 }

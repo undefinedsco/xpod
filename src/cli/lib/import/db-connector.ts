@@ -2,11 +2,12 @@
  * Unified database connector for PostgreSQL and SQLite.
  *
  * Provides a common async-iterable interface over query results.
- * Encrypted SQLite support is stubbed for future implementation.
+ * Encrypted SQLite is currently unsupported.
  */
 
 import { Client as PgClient } from 'pg';
 import type { DbConnection, DbSource, Row } from './types';
+import { createReadonlySqliteDatabase } from '../../../storage/SqliteCompat';
 
 /**
  * Connect to a database and return a unified DbConnection.
@@ -16,12 +17,6 @@ export async function connectDb(source: DbSource): Promise<DbConnection> {
     case 'postgres':
       return connectPostgres(source.connectionString);
     case 'sqlite':
-      if (source.encryption) {
-        throw new Error(
-          'Encrypted SQLite is not yet supported. ' +
-          'Install better-sqlite3-multiple-ciphers and update db-connector.ts.',
-        );
-      }
       return connectSqlite(source.connectionString);
     default:
       throw new Error(`Unsupported database type: ${source.type}`);
@@ -54,9 +49,7 @@ async function connectPostgres(connectionString: string): Promise<DbConnection> 
 // ============================================
 
 async function connectSqlite(filePath: string): Promise<DbConnection> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const Database = require('better-sqlite3');
-  const db = new Database(filePath, { readonly: true });
+  const db = createReadonlySqliteDatabase(filePath);
 
   return {
     async *query(sql: string): AsyncIterable<Row> {

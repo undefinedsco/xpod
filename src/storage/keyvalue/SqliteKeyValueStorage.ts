@@ -1,10 +1,10 @@
-import Database from 'better-sqlite3';
 import type {
   Finalizable,
   Initializable,
   KeyValueStorage,
 } from '@solid/community-server';
 import { getLoggerFor } from 'global-logger-factory';
+import { createSqliteDatabase, type SqliteDatabase } from '../SqliteCompat';
 
 export interface SqliteKeyValueStorageOptions {
   /** Path to SQLite database file (can be prefixed with sqlite:) */
@@ -36,7 +36,7 @@ export class SqliteKeyValueStorage<T = unknown> implements
   Initializable,
   Finalizable {
   protected readonly logger = getLoggerFor(this);
-  private db: Database.Database | null = null;
+  private db: SqliteDatabase | null = null;
   private readonly path: string;
   private readonly tableName: string;
   private readonly namespace: string;
@@ -51,7 +51,7 @@ export class SqliteKeyValueStorage<T = unknown> implements
   public async initialize(): Promise<void> {
     if (this.db) return;
 
-    this.db = new Database(this.path);
+    this.db = createSqliteDatabase(this.path);
     this.db.pragma('journal_mode = WAL');
 
     this.db.exec(`
@@ -72,10 +72,9 @@ export class SqliteKeyValueStorage<T = unknown> implements
     }
   }
 
-  private getDb(): Database.Database {
+  private getDb(): SqliteDatabase {
     if (!this.db) {
-      // Lazy initialization
-      this.db = new Database(this.path);
+      this.db = createSqliteDatabase(this.path);
       this.db.pragma('journal_mode = WAL');
 
       this.db.exec(`

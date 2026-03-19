@@ -1,14 +1,14 @@
 import { Pool, types } from 'pg';
 import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
-import { drizzle as drizzleSqlite, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { SQL } from 'drizzle-orm/sql';
-import Database from 'better-sqlite3';
 import * as pgSchema from './schema.pg';
 import * as sqliteSchema from './schema.sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { getSharedPool, releaseSharedPool } from '../../storage/database/PostgresPoolManager';
+import { createDrizzleSqliteDatabase } from '../../storage/DrizzleCompat';
+import type { SqliteDatabase } from '../../storage/SqliteCompat';
 
 // Use 'any' to allow both PostgreSQL and SQLite database instances
 // The actual type depends on the connection string at runtime
@@ -66,18 +66,12 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
         fs.mkdirSync(directory, { recursive: true });
       }
     }
-    const sqlite = new Database(isMemory ? ':memory:' : filename);
-
-    // Apply pragmas for better concurrency (prevents SQLITE_BUSY errors)
-    // WAL mode allows concurrent reads during writes
-    // busy_timeout waits up to 5 seconds before throwing SQLITE_BUSY
+    const { sqlite, db } = createDrizzleSqliteDatabase(isMemory ? ':memory:' : filename);
     if (!isMemory) {
       sqlite.pragma('journal_mode = WAL');
       sqlite.pragma('busy_timeout = 5000');
       sqlite.pragma('synchronous = NORMAL');
     }
-
-    const db = drizzleSqlite(sqlite);
 
     // Create tables if they don't exist
     ensureSqliteTables(sqlite);
@@ -227,7 +221,7 @@ export function fromDbTimestamp(value: unknown): Date | undefined {
 /**
  * Ensure SQLite tables exist (simple DDL for local/dev mode).
  */
-function ensureSqliteTables(sqlite: Database.Database): void {
+function ensureSqliteTables(sqlite: SqliteDatabase): void {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS identity_account_usage (
       account_id TEXT PRIMARY KEY,
@@ -298,7 +292,7 @@ function ensureSqliteTables(sqlite: Database.Database): void {
  * Add columns that may be missing from older databases.
  * SQLite ALTER TABLE ADD COLUMN is idempotent-safe via try/catch.
  */
-function migrateSqliteColumns(sqlite: Database.Database): void {
+function migrateSqliteColumns(sqlite: SqliteDatabase): void {
   const addColumn = (table: string, column: string, type: string): void => {
     try {
       sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
@@ -307,9 +301,22 @@ function migrateSqliteColumns(sqlite: Database.Database): void {
     }
   };
 
+  addColumn('identity_edge_node', 'account_id', 'TEXT');
+  addColumn('identity_edge_node', 'node_type', "TEXT DEFAULT 'edge'");
+  addColumn('identity_edge_node', 'subdomain', 'TEXT');
+  addColumn('identity_edge_node', 'access_mode', 'TEXT');
+  addColumn('identity_edge_node', 'public_ip', 'TEXT');
+  addColumn('identity_edge_node', 'public_port', 'INTEGER');
   addColumn('identity_edge_node', 'public_url', 'TEXT');
   addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
   addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
+  addColumn('identity_edge_node', 'internal_ip', 'TEXT');
+  addColumn('identity_edge_node', 'internal_port', 'INTEGER');
+  addColumn('identity_edge_node', 'capabilities', 'TEXT');
+  addColumn('identity_edge_node', 'metadata', 'TEXT');
+  addColumn('identity_edge_node', 'connectivity_status', "TEXT DEFAULT 'unknown'");
+  addColumn('identity_edge_node', 'last_connectivity_check', 'INTEGER');
+  addColumn('identity_edge_node', 'last_seen', 'INTEGER');
 }
 
 
@@ -384,7 +391,20 @@ async function migratePostgresColumns(pool: Pool): Promise<void> {
     await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
   };
 
+  await addColumn('identity_edge_node', 'account_id', 'TEXT');
+  await addColumn('identity_edge_node', 'node_type', "TEXT DEFAULT 'edge'");
+  await addColumn('identity_edge_node', 'subdomain', 'TEXT');
+  await addColumn('identity_edge_node', 'access_mode', 'TEXT');
+  await addColumn('identity_edge_node', 'public_ip', 'TEXT');
+  await addColumn('identity_edge_node', 'public_port', 'BIGINT');
   await addColumn('identity_edge_node', 'public_url', 'TEXT');
   await addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
   await addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
+  await addColumn('identity_edge_node', 'internal_ip', 'TEXT');
+  await addColumn('identity_edge_node', 'internal_port', 'BIGINT');
+  await addColumn('identity_edge_node', 'capabilities', 'JSONB');
+  await addColumn('identity_edge_node', 'metadata', 'JSONB');
+  await addColumn('identity_edge_node', 'connectivity_status', "TEXT DEFAULT 'unknown'");
+  await addColumn('identity_edge_node', 'last_connectivity_check', 'TIMESTAMPTZ');
+  await addColumn('identity_edge_node', 'last_seen', 'TIMESTAMPTZ');
 }

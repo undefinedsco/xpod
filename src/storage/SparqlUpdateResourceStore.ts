@@ -2,7 +2,6 @@ import { DataFactory } from 'n3';
 import { Generator as SparqlGenerator, Parser as SparqlParser, type GraphQuads, type UpdateOperation, type Update as SparqlUpdate } from 'sparqljs';
 import {
   DataAccessorBasedStore,
-  IdentifierMap,
   type ChangeMap,
   type ResourceIdentifier,
   type Patch,
@@ -79,7 +78,7 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
     await accessor.executeSparqlUpdate(sparqlUpdate, identifier.path);
 
     // PATCH does not affect containment; mark the target resource as updated.
-    const changes: ChangeMap = new IdentifierMap();
+    const changes: ChangeMap = new Map() as any;
     changes.set(identifier, new RepresentationMetadata(identifier, { [SOLID_AS.activity]: AS.terms.Update }));
     return changes;
   }

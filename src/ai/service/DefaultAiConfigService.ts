@@ -6,7 +6,7 @@
  */
 
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle } from 'drizzle-solid';
+import { drizzle } from '@undefineds.co/drizzle-solid';
 import { Provider } from '../schema/provider';
 import { Model } from '../schema/model';
 import { Credential } from '../../credential/schema/tables';

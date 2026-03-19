@@ -415,7 +415,7 @@ describe('Credential Switching', () => {
       expect(cred!.proxyUrl).toBe('http://proxy.example.com:8080');
     });
 
-    it('should use credential baseUrl over provider baseUrl', async () => {
+    it('should use provider baseUrl', async () => {
       reader.setCredentials([
         {
           id: 'cred1',
@@ -423,14 +423,13 @@ describe('Credential Switching', () => {
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-1',
-          baseUrl: 'https://custom.api.example.com', // 凭据级别覆盖
           providerData: googleProvider,
         },
       ]);
 
       const cred = await reader.getAiCredential('http://pod/', 'google');
       expect(cred).not.toBeNull();
-      expect(cred!.baseUrl).toBe('https://custom.api.example.com');
+      expect(cred!.baseUrl).toBe('https://generativelanguage.googleapis.com/v1beta/openai');
     });
   });
 });

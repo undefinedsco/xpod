@@ -1,167 +1,252 @@
-/**
- * SQLite Compatibility Layer
- *
- * Unifies better-sqlite3 and bun:sqlite APIs for cross-runtime support
- */
+import { createRequire } from 'node:module';
 
-import type { SQL } from 'drizzle-orm/sql';
-
-// Runtime detection
 const isBun = typeof (globalThis as any).Bun !== 'undefined';
 
-// Database instance type (unified)
-export type SqliteDatabase = any;
+export type SqliteDriverName =
+  | 'auto'
+  | 'node:sqlite'
+  | 'bun:sqlite';
 
-// Statement type (unified)
-export type SqliteStatement = any;
-
-interface SqliteDeps {
-  openDatabase: (path: string) => SqliteDatabase;
-  closeDatabase: (db: SqliteDatabase) => void;
-  prepare: (db: SqliteDatabase, sql: string) => SqliteStatement;
-  exec: (db: SqliteDatabase, sql: string) => void;
-  pragma: (db: SqliteDatabase, pragma: string) => any;
-  loadExtension: (db: SqliteDatabase, path: string) => void;
-  run: (stmt: SqliteStatement, ...params: any[]) => { changes: number; lastInsertRowid: number };
-  get: (stmt: SqliteStatement, ...params: any[]) => any;
-  all: (stmt: SqliteStatement, ...params: any[]) => any[];
-  transaction: <T>(db: SqliteDatabase, fn: () => T) => T;
+export interface SqliteOpenOptions {
+  driver?: SqliteDriverName;
+  readonly?: boolean;
+  pragmas?: string[];
 }
 
-let deps: SqliteDeps | undefined;
+type NativeDatabase = any;
+type NativeStatement = any;
 
-async function loadDeps(): Promise<SqliteDeps> {
-  if (deps) return deps;
-
-  if (isBun) {
-    // Bun runtime with custom SQLite (supports extensions)
-    const { Database } = await import('bun:sqlite');
-
-    deps = {
-      openDatabase: (path: string) => new Database(path),
-      closeDatabase: (db: SqliteDatabase) => db.close(),
-      prepare: (db: SqliteDatabase, sql: string) => db.prepare(sql),
-      exec: (db: SqliteDatabase, sql: string) => db.exec(sql),
-      pragma: (db: SqliteDatabase, pragma: string) => db.query(`PRAGMA ${pragma}`).get(),
-      loadExtension: (db: SqliteDatabase, path: string) => db.loadExtension(path),
-      run: (stmt: SqliteStatement, ...params: any[]) => {
-        const result = stmt.run(...params);
-        return {
-          changes: result.changes,
-          lastInsertRowid: result.lastInsertRowid,
-        };
-      },
-      get: (stmt: SqliteStatement, ...params: any[]) => stmt.get(...params),
-      all: (stmt: SqliteStatement, ...params: any[]) => stmt.all(...params),
-      transaction: <T>(db: SqliteDatabase, fn: () => T) => db.transaction(fn)(),
-    };
-  } else {
-    // Node runtime with better-sqlite3
-    const BetterSQLite3 = await import('better-sqlite3');
-    const Database = BetterSQLite3.default;
-
-    deps = {
-      openDatabase: (path: string) => new Database(path),
-      closeDatabase: (db: SqliteDatabase) => db.close(),
-      prepare: (db: SqliteDatabase, sql: string) => db.prepare(sql),
-      exec: (db: SqliteDatabase, sql: string) => db.exec(sql),
-      pragma: (db: SqliteDatabase, pragma: string) => db.pragma(pragma),
-      loadExtension: (db: SqliteDatabase, path: string) => db.loadExtension(path),
-      run: (stmt: SqliteStatement, ...params: any[]) => stmt.run(...params),
-      get: (stmt: SqliteStatement, ...params: any[]) => stmt.get(...params),
-      all: (stmt: SqliteStatement, ...params: any[]) => stmt.all(...params),
-      transaction: <T>(db: SqliteDatabase, fn: () => T) => db.transaction(fn)(),
-    };
-  }
-
-  return deps;
+interface SqliteAdapter {
+  name: Exclude<SqliteDriverName, 'auto'>;
+  openDatabase: (filePath: string, options: SqliteOpenOptions) => NativeDatabase;
+  closeDatabase: (db: NativeDatabase) => void;
+  prepare: (db: NativeDatabase, sql: string) => NativeStatement;
+  exec: (db: NativeDatabase, sql: string) => void;
+  pragma: (db: NativeDatabase, pragma: string) => unknown;
+  loadExtension: (db: NativeDatabase, filePath: string) => void;
+  run: (statement: NativeStatement, ...params: any[]) => { changes: number; lastInsertRowid: number | bigint };
+  get: (statement: NativeStatement, ...params: any[]) => unknown;
+  all: (statement: NativeStatement, ...params: any[]) => unknown[];
+  iterate: (statement: NativeStatement, ...params: any[]) => IterableIterator<unknown>;
 }
 
-/**
- * Unified SQLite Database class
- */
-export class UnifiedDatabase {
-  private db: SqliteDatabase | null = null;
-  private deps: SqliteDeps | null = null;
-  private path: string;
-
-  constructor(path: string) {
-    this.path = path;
+function getRequire(): NodeRequire {
+  if (typeof require === 'function') {
+    return require;
   }
 
-  async open(): Promise<void> {
-    this.deps = await loadDeps();
-    this.db = this.deps.openDatabase(this.path);
+  return createRequire(typeof __filename === 'string' ? __filename : `${process.cwd()}/package.json`);
+}
+
+function normalizePragma(pragma: string): string {
+  return /^PRAGMA\b/i.test(pragma.trim()) ? pragma : `PRAGMA ${pragma}`;
+}
+
+function iterateFromAll(rows: unknown[]): IterableIterator<unknown> {
+  return rows[Symbol.iterator]() as IterableIterator<unknown>;
+}
+
+function createNodeSqliteAdapter(): SqliteAdapter {
+  const sqlite = getRequire()('node:sqlite') as {
+    DatabaseSync: new(filePath: string, options?: { open?: boolean; readOnly?: boolean; allowExtension?: boolean }) => any;
+  };
+
+  return {
+    name: 'node:sqlite',
+    openDatabase: (filePath, options) => new sqlite.DatabaseSync(filePath, {
+      open: true,
+      readOnly: options.readonly ?? false,
+      allowExtension: true,
+    }),
+    closeDatabase: (db) => db.close(),
+    prepare: (db, sql) => db.prepare(sql),
+    exec: (db, sql) => db.exec(sql),
+    pragma: (db, pragma) => {
+      const sql = normalizePragma(pragma);
+      try {
+        return db.prepare(sql).get();
+      } catch {
+        db.exec(sql);
+        return undefined;
+      }
+    },
+    loadExtension: (db, filePath) => {
+      db.enableLoadExtension(true);
+      try {
+        db.loadExtension(filePath);
+      } finally {
+        db.enableLoadExtension(false);
+      }
+    },
+    run: (statement, ...params) => statement.run(...params),
+    get: (statement, ...params) => statement.get(...params),
+    all: (statement, ...params) => statement.all(...params),
+    iterate: (statement, ...params) => statement.iterate(...params),
+  };
+}
+
+function createBunSqliteAdapter(): SqliteAdapter {
+  const sqlite = getRequire()('bun:sqlite') as {
+    Database: new(filePath: string) => any;
+  };
+
+  return {
+    name: 'bun:sqlite',
+    openDatabase: (filePath, _options) => new sqlite.Database(filePath),
+    closeDatabase: (db) => db.close(),
+    prepare: (db, sql) => {
+      if (typeof db.prepare === 'function') {
+        return db.prepare(sql);
+      }
+      return db.query(sql);
+    },
+    exec: (db, sql) => db.exec(sql),
+    pragma: (db, pragma) => {
+      const sql = normalizePragma(pragma);
+      try {
+        return db.query(sql).get();
+      } catch {
+        db.exec(sql);
+        return undefined;
+      }
+    },
+    loadExtension: (db, filePath) => db.loadExtension(filePath),
+    run: (statement, ...params) => statement.run(...params),
+    get: (statement, ...params) => statement.get(...params),
+    all: (statement, ...params) => statement.all(...params),
+    iterate: (statement, ...params) => {
+      if (typeof statement.iterate === 'function') {
+        return statement.iterate(...params);
+      }
+      return iterateFromAll(statement.all(...params));
+    },
+  };
+}
+
+let adapters = new Map<Exclude<SqliteDriverName, 'auto'>, SqliteAdapter>();
+
+function resolveDriverName(options: SqliteOpenOptions = {}): Exclude<SqliteDriverName, 'auto'> {
+  if (options.driver && options.driver !== 'auto') {
+    return options.driver;
+  }
+  return isBun ? 'bun:sqlite' : 'node:sqlite';
+}
+
+function getAdapter(options: SqliteOpenOptions = {}): SqliteAdapter {
+  const driverName = resolveDriverName(options);
+  const existing = adapters.get(driverName);
+  if (existing) {
+    return existing;
   }
 
-  /**
-   * Get the internal native database instance
-   * This is needed for Drizzle ORM which expects the native instance
-   */
-  getInternalDb(): SqliteDatabase {
-    if (!this.db) throw new Error('Database not open');
-    return this.db;
+  let adapter: SqliteAdapter;
+  switch (driverName) {
+    case 'node:sqlite':
+      adapter = createNodeSqliteAdapter();
+      break;
+    case 'bun:sqlite':
+      adapter = createBunSqliteAdapter();
+      break;
+    default:
+      throw new Error(`Unsupported SQLite driver: ${driverName}`);
   }
 
-  close(): void {
-    if (this.db && this.deps) {
-      this.deps.closeDatabase(this.db);
-      this.db = null;
+  adapters.set(driverName, adapter);
+  return adapter;
+}
+
+export class SqliteStatement {
+  public constructor(
+    private readonly statement: NativeStatement,
+    private readonly adapter: SqliteAdapter,
+  ) {}
+
+  public run(...params: any[]): { changes: number; lastInsertRowid: number | bigint } {
+    return this.adapter.run(this.statement, ...params);
+  }
+
+  public get<T = unknown>(...params: any[]): T {
+    return this.adapter.get(this.statement, ...params) as T;
+  }
+
+  public all<T = unknown>(...params: any[]): T[] {
+    return this.adapter.all(this.statement, ...params) as T[];
+  }
+
+  public iterate<T = unknown>(...params: any[]): IterableIterator<T> {
+    return this.adapter.iterate(this.statement, ...params) as IterableIterator<T>;
+  }
+}
+
+export class SqliteDatabase {
+  private readonly adapter: SqliteAdapter;
+  private readonly nativeDatabase: NativeDatabase;
+
+  public constructor(filePath: string, options: SqliteOpenOptions = {}) {
+    this.adapter = getAdapter(options);
+    this.nativeDatabase = this.adapter.openDatabase(filePath, options);
+
+    for (const pragma of options.pragmas ?? []) {
+      this.pragma(pragma);
     }
   }
 
-  prepare(sql: string): UnifiedStatement {
-    if (!this.db || !this.deps) throw new Error('Database not open');
-    const stmt = this.deps.prepare(this.db, sql);
-    return new UnifiedStatement(stmt, this.deps);
+  public get driverName(): Exclude<SqliteDriverName, 'auto'> {
+    return this.adapter.name;
   }
 
-  exec(sql: string): void {
-    if (!this.db || !this.deps) throw new Error('Database not open');
-    this.deps.exec(this.db, sql);
+  public getInternalDb(): NativeDatabase {
+    return this.nativeDatabase;
   }
 
-  pragma(pragma: string): any {
-    if (!this.db || !this.deps) throw new Error('Database not open');
-    return this.deps.pragma(this.db, pragma);
+  public prepare(sql: string): SqliteStatement {
+    return new SqliteStatement(this.adapter.prepare(this.nativeDatabase, sql), this.adapter);
   }
 
-  loadExtension(path: string): void {
-    if (!this.db || !this.deps) throw new Error('Database not open');
-    this.deps.loadExtension(this.db, path);
+  public exec(sql: string): void {
+    this.adapter.exec(this.nativeDatabase, sql);
   }
 
-  transaction<T>(fn: () => T): T {
-    if (!this.db || !this.deps) throw new Error('Database not open');
-    return this.deps.transaction(this.db, fn);
+  public pragma(pragma: string): unknown {
+    return this.adapter.pragma(this.nativeDatabase, pragma);
   }
 
-  get isOpen(): boolean {
-    return this.db !== null;
-  }
-}
-
-/**
- * Unified Statement class
- */
-export class UnifiedStatement {
-  constructor(
-    private stmt: SqliteStatement,
-    private deps: SqliteDeps
-  ) {}
-
-  run(...params: any[]): { changes: number; lastInsertRowid: number } {
-    return this.deps.run(this.stmt, ...params);
+  public loadExtension(filePath: string): void {
+    this.adapter.loadExtension(this.nativeDatabase, filePath);
   }
 
-  get(...params: any[]): any {
-    return this.deps.get(this.stmt, ...params);
+  public close(): void {
+    this.adapter.closeDatabase(this.nativeDatabase);
   }
 
-  all(...params: any[]): any[] {
-    return this.deps.all(this.stmt, ...params);
+  public transaction<TArgs extends any[], TResult>(fn: (...args: TArgs) => TResult): (...args: TArgs) => TResult {
+    return (...args: TArgs): TResult => {
+      this.exec('BEGIN');
+      try {
+        const result = fn(...args);
+        this.exec('COMMIT');
+        return result;
+      } catch (error) {
+        try {
+          this.exec('ROLLBACK');
+        } catch {
+        }
+        throw error;
+      }
+    };
   }
 }
 
-// Re-export for convenience
+export function createSqliteDatabase(filePath: string, options: SqliteOpenOptions = {}): SqliteDatabase {
+  return new SqliteDatabase(filePath, options);
+}
+
+export function createReadonlySqliteDatabase(filePath: string, options: Omit<SqliteOpenOptions, 'readonly'> = {}): SqliteDatabase {
+  return new SqliteDatabase(filePath, { ...options, readonly: true });
+}
+
+export function resetSqliteAdaptersForTests(): void {
+  adapters = new Map();
+}
+
 export { isBun };

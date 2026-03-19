@@ -111,6 +111,7 @@ export class QuadstoreSparqlEngine implements SparqlEngine {
   private createContext(basePath: string): QueryContext {
     const logger = this.logger;
     const self = this;
+    let matchCallCount = 0;
     return {
       unionDefaultGraph: true,
       baseIRI: basePath,
@@ -119,16 +120,34 @@ export class QuadstoreSparqlEngine implements SparqlEngine {
           type: 'rdfjsSource',
           value: {
             match: (subject?: Quad_Subject | null, predicate?: Quad_Predicate | null, object?: Quad_Object | null, graph?: Quad_Graph | null): AsyncIterator<Quad> => {
-              logger.debug(`[match] s=${subject?.value ?? '*'} p=${predicate?.value ?? '*'} o=${object?.value ?? '*'} g=${graph?.value ?? '*'} gType=${graph?.termType ?? 'null'}`);
+              matchCallCount++;
+              const callId = matchCallCount;
+              logger.debug(`[match #${callId}] s=${subject?.value ?? '*'} p=${predicate?.value ?? '*'} o=${object?.value ?? '*'} g=${graph?.value ?? '*'} gType=${graph?.termType ?? 'null'}`);
+
               const iterator = self.store.match(
                 subject ?? undefined,
                 predicate ?? undefined,
                 object ?? undefined,
                 graph ?? undefined,
               );
-              const filtered = (iterator as unknown as AsyncIterator<Quad>).filter((quad): boolean =>
-                self.isInScope(basePath, quad.graph)
-              );
+
+              let quadCount = 0;
+              let filteredCount = 0;
+              const filtered = (iterator as unknown as AsyncIterator<Quad>).filter((quad): boolean => {
+                quadCount++;
+                const inScope = self.isInScope(basePath, quad.graph);
+                if (!inScope) {
+                  logger.debug(`[match #${callId}] FILTERED OUT quad #${quadCount}: graph=${quad.graph.value} termType=${quad.graph.termType}`);
+                } else {
+                  filteredCount++;
+                }
+                return inScope;
+              });
+
+              filtered.on('end', () => {
+                logger.debug(`[match #${callId}] END: ${quadCount} quads total, ${filteredCount} passed filter`);
+              });
+
               return filtered;
             },
           },

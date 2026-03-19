@@ -8,32 +8,33 @@ import {
   revokeClientCredential,
 } from '../lib/css-account';
 import { saveCredentials, clearCredentials, getConfigPath } from '../lib/credentials-store';
+import { promptPassword, promptText } from '../lib/prompt';
 
 interface AuthArgs {
   url: string;
 }
 
 interface LoginArgs extends AuthArgs {
-  email: string;
-  password: string;
+  email?: string;
+  password?: string;
 }
 
 interface CreateCredentialsArgs extends AuthArgs {
-  email: string;
-  password: string;
+  email?: string;
+  password?: string;
   'web-id'?: string;
   name?: string;
   output?: boolean;
 }
 
 interface ListArgs extends AuthArgs {
-  email: string;
-  password: string;
+  email?: string;
+  password?: string;
 }
 
 interface RevokeArgs extends AuthArgs {
-  email: string;
-  password: string;
+  email?: string;
+  password?: string;
   'client-id': string;
 }
 
@@ -47,8 +48,8 @@ const loginCommand: CommandModule<AuthArgs, LoginArgs> = {
   describe: 'Login and get an account token',
   builder: (yargs) =>
     yargs
-      .option('email', { type: 'string', demandOption: true, description: 'Account email' })
-      .option('password', { type: 'string', demandOption: true, description: 'Account password' }),
+      .option('email', { type: 'string', description: 'Account email (will prompt if not provided)' })
+      .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' }),
   handler: async (argv) => {
     const baseUrl = resolveUrl(argv.url);
 
@@ -57,7 +58,27 @@ const loginCommand: CommandModule<AuthArgs, LoginArgs> = {
       process.exit(1);
     }
 
-    const token = await login(argv.email, argv.password, baseUrl);
+    // Prompt for email if not provided
+    let email = argv.email;
+    if (!email) {
+      email = await promptText('Email: ');
+      if (!email) {
+        console.error('Email is required');
+        process.exit(1);
+      }
+    }
+
+    // Prompt for password if not provided (secure input)
+    let password = argv.password;
+    if (!password) {
+      password = await promptPassword('Password: ');
+      if (!password) {
+        console.error('Password is required');
+        process.exit(1);
+      }
+    }
+
+    const token = await login(email, password, baseUrl);
     if (!token) {
       console.error('Login failed. Check email/password.');
       process.exit(1);
@@ -73,8 +94,8 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
   describe: 'Create client credentials (client_id/secret)',
   builder: (yargs) =>
     yargs
-      .option('email', { type: 'string', demandOption: true, description: 'Account email' })
-      .option('password', { type: 'string', demandOption: true, description: 'Account password' })
+      .option('email', { type: 'string', description: 'Account email (will prompt if not provided)' })
+      .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' })
       .option('web-id', { type: 'string', description: 'WebID to bind credentials to' })
       .option('name', { type: 'string', description: 'Credential label' })
       .option('output', { type: 'boolean', default: false, description: 'Print credentials to terminal instead of saving to ~/.xpod/' }),
@@ -86,7 +107,27 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
       process.exit(1);
     }
 
-    const token = await login(argv.email, argv.password, baseUrl);
+    // Prompt for email if not provided
+    let email = argv.email;
+    if (!email) {
+      email = await promptText('Email: ');
+      if (!email) {
+        console.error('Email is required');
+        process.exit(1);
+      }
+    }
+
+    // Prompt for password if not provided (secure input)
+    let password = argv.password;
+    if (!password) {
+      password = await promptPassword('Password: ');
+      if (!password) {
+        console.error('Password is required');
+        process.exit(1);
+      }
+    }
+
+    const token = await login(email, password, baseUrl);
     if (!token) {
       console.error('Login failed.');
       process.exit(1);
@@ -137,11 +178,16 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
     if (!argv.output) {
       saveCredentials({
         url: baseUrl,
-        clientId: cred.id,
-        clientSecret: cred.secret ?? '',
         webId,
+        authType: 'client_credentials',
+        secrets: {
+          clientId: cred.id,
+          clientSecret: cred.secret ?? '',
+        },
       });
       console.log(`\nSaved to ${getConfigPath().replace('/config.json', '/')}`);
+      console.log('\n✓ Setup complete! You can now use xpod commands without entering password.');
+      console.log('  Example: xpod backup export');
     }
   },
 };
@@ -151,8 +197,8 @@ const listCommand: CommandModule<AuthArgs, ListArgs> = {
   describe: 'List client credentials',
   builder: (yargs) =>
     yargs
-      .option('email', { type: 'string', demandOption: true, description: 'Account email' })
-      .option('password', { type: 'string', demandOption: true, description: 'Account password' }),
+      .option('email', { type: 'string', description: 'Account email (will prompt if not provided)' })
+      .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' }),
   handler: async (argv) => {
     const baseUrl = resolveUrl(argv.url);
 
@@ -161,7 +207,27 @@ const listCommand: CommandModule<AuthArgs, ListArgs> = {
       process.exit(1);
     }
 
-    const token = await login(argv.email, argv.password, baseUrl);
+    // Prompt for email if not provided
+    let email = argv.email;
+    if (!email) {
+      email = await promptText('Email: ');
+      if (!email) {
+        console.error('Email is required');
+        process.exit(1);
+      }
+    }
+
+    // Prompt for password if not provided (secure input)
+    let password = argv.password;
+    if (!password) {
+      password = await promptPassword('Password: ');
+      if (!password) {
+        console.error('Password is required');
+        process.exit(1);
+      }
+    }
+
+    const token = await login(email, password, baseUrl);
     if (!token) {
       console.error('Login failed.');
       process.exit(1);
@@ -186,8 +252,8 @@ const revokeCommand: CommandModule<AuthArgs, RevokeArgs> = {
   describe: 'Revoke a client credential',
   builder: (yargs) =>
     yargs
-      .option('email', { type: 'string', demandOption: true, description: 'Account email' })
-      .option('password', { type: 'string', demandOption: true, description: 'Account password' })
+      .option('email', { type: 'string', description: 'Account email (will prompt if not provided)' })
+      .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' })
       .option('client-id', { type: 'string', demandOption: true, description: 'Client ID to revoke' }),
   handler: async (argv) => {
     const baseUrl = resolveUrl(argv.url);
@@ -197,7 +263,27 @@ const revokeCommand: CommandModule<AuthArgs, RevokeArgs> = {
       process.exit(1);
     }
 
-    const token = await login(argv.email, argv.password, baseUrl);
+    // Prompt for email if not provided
+    let email = argv.email;
+    if (!email) {
+      email = await promptText('Email: ');
+      if (!email) {
+        console.error('Email is required');
+        process.exit(1);
+      }
+    }
+
+    // Prompt for password if not provided (secure input)
+    let password = argv.password;
+    if (!password) {
+      password = await promptPassword('Password: ');
+      if (!password) {
+        console.error('Password is required');
+        process.exit(1);
+      }
+    }
+
+    const token = await login(email, password, baseUrl);
     if (!token) {
       console.error('Login failed.');
       process.exit(1);

@@ -10,7 +10,7 @@
  *     udfs:hasModel </settings/ai/models.ttl#text-embedding-004> .
  */
 
-import { podTable, string, uri } from 'drizzle-solid';
+import { podTable, string, uri } from '@undefineds.co/drizzle-solid';
 import { UDFS, UDFS_NAMESPACE } from '../../vocab';
 
 export const Provider = podTable(
@@ -20,6 +20,8 @@ export const Provider = podTable(
     displayName: string('displayName'),
     baseUrl: string('baseUrl'),
     proxyUrl: string('proxyUrl'),
+    projectId: string('projectId'),
+    organizationId: string('organizationId'),
     hasModel: uri('hasModel'),
     hasCredential: uri('hasCredential'),
   },

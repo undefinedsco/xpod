@@ -4,8 +4,6 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
-import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { eq, ne, and, gte, gt, lt, lte, like, inArray, notInArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { wrap, AsyncIterator } from 'asynciterator';
@@ -21,6 +19,7 @@ import {
   serializeObject,
   deserializeObject,
   fpEncode,
+  isSerializedObjectValue,
   SEP,
 } from './serialization';
 import type {
@@ -37,15 +36,19 @@ import type {
   OperatorValue,
 } from './types';
 import { isTerm } from './types';
+import { createDrizzleSqliteDatabase, type DrizzleDb } from '../DrizzleCompat';
+import type { SqliteDatabase } from '../SqliteCompat';
 
 export interface SqliteQuintStoreOptions extends QuintStoreOptions {
   /** SQLite database file path, use ':memory:' for in-memory database */
   path: string;
 }
 
+const SQLITE_OFFSET_WITHOUT_LIMIT = Number.MAX_SAFE_INTEGER;
+
 export class SqliteQuintStore {
-  private sqlite: Database.Database | null = null;
-  private db: BetterSQLite3Database | null = null;
+  private sqlite: SqliteDatabase | null = null;
+  private db: DrizzleDb | null = null;
   private options: SqliteQuintStoreOptions;
 
   constructor(options: SqliteQuintStoreOptions) {
@@ -77,8 +80,9 @@ export class SqliteQuintStore {
       }
     }
     
-    this.sqlite = new Database(dbPath);
-    this.db = drizzle(this.sqlite);
+    const handle = createDrizzleSqliteDatabase(dbPath);
+    this.sqlite = handle.sqlite;
+    this.db = handle.db;
 
     // Create table and indexes
     this.sqlite.exec(`
@@ -135,15 +139,14 @@ export class SqliteQuintStore {
       query = query.limit(options.limit) as any;
     }
     if (options?.offset) {
-      // SQLite requires LIMIT when using OFFSET
       if (!options?.limit) {
-        query = query.limit(-1) as any; // -1 means no limit in SQLite
+        query = query.limit(SQLITE_OFFSET_WITHOUT_LIMIT) as any;
       }
       query = query.offset(options.offset) as any;
     }
 
     const rows = await query;
-    return rows.map(row => this.rowToQuint(row));
+    return rows.map((row: QuintRow) => this.rowToQuint(row));
   }
 
   match(
@@ -369,7 +372,8 @@ export class SqliteQuintStore {
     }
     if (options?.offset) {
       if (!options?.limit) {
-        sql += ` LIMIT -1`;
+        sql += ` LIMIT ?`;
+        params.push(SQLITE_OFFSET_WITHOUT_LIMIT);
       }
       sql += ` OFFSET ?`;
       params.push(options.offset);
@@ -422,11 +426,9 @@ export class SqliteQuintStore {
       
       // String value
       if (isObject) {
-        // Already serialized (starts with N\0 or D\0 or ")
-        if (value.startsWith('N\u0000') || value.startsWith('D\u0000') || value.startsWith('"')) {
+        if (isSerializedObjectValue(value)) {
           return value;
         }
-        // Plain string - wrap as xsd:string literal
         return `"${value}"`;
       }
       return value;
@@ -689,8 +691,7 @@ export class SqliteQuintStore {
         return value;
       }
       
-      // String - already serialized or plain string
-      if (isObject && !value.startsWith('N\u0000') && !value.startsWith('D\u0000') && !value.startsWith('"')) {
+      if (isObject && !isSerializedObjectValue(value)) {
         return `"${value}"`;
       }
       return value;

@@ -2,8 +2,8 @@
  * Write Turtle data to a Solid Pod.
  *
  * Supports two granularity modes:
- * - per-table: PUT the entire Turtle string as a single resource
- * - per-row:   PUT each row as a separate .ttl resource under a container
+ * - document: all triples in one resource
+ * - fragment: one resource per subject
  *
  * Reuses css-account.ts for authentication.
  */

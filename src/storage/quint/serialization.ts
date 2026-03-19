@@ -111,8 +111,30 @@ export function fpEncode(stringOrNumber: string | number): string {
 // Object serialization with fpstring
 // ============================================
 
-// Separator that won't appear in valid RDF data (same as quadstore)
-export const SEP = '\u0000';
+export const LEGACY_SEP = '\u0000';
+export const SEP = '\u001f';
+
+function splitEncodedLiteral(str: string): string[] {
+  if (str.includes(SEP)) {
+    return str.split(SEP);
+  }
+  if (str.includes(LEGACY_SEP)) {
+    return str.split(LEGACY_SEP);
+  }
+  return [ str ];
+}
+
+export function isSerializedNumericLiteral(str: string): boolean {
+  return str.startsWith(`N${SEP}`) || str.startsWith(`N${LEGACY_SEP}`);
+}
+
+export function isSerializedDateTimeLiteral(str: string): boolean {
+  return str.startsWith(`D${SEP}`) || str.startsWith(`D${LEGACY_SEP}`);
+}
+
+export function isSerializedObjectValue(str: string): boolean {
+  return str.startsWith('"') || isSerializedNumericLiteral(str) || isSerializedDateTimeLiteral(str);
+}
 
 /**
  * Serialize object term with fpstring encoding for numeric literals
@@ -154,17 +176,15 @@ export function serializeObject(term: any): string {
  * Deserialize object from storage format
  */
 export function deserializeObject(str: string): any {
-  // Numeric literal: N<SEP><fpstring><SEP><datatype><SEP><original_value>
-  if (str.startsWith(`N${SEP}`)) {
-    const parts = str.split(SEP);
+  if (isSerializedNumericLiteral(str)) {
+    const parts = splitEncodedLiteral(str);
     const datatype = parts[2];
     const value = parts[3];
     return DataFactory.literal(value, DataFactory.namedNode(datatype));
   }
 
-  // DateTime literal: D<SEP><fpstring><SEP><original_value>
-  if (str.startsWith(`D${SEP}`)) {
-    const parts = str.split(SEP);
+  if (isSerializedDateTimeLiteral(str)) {
+    const parts = splitEncodedLiteral(str);
     const value = parts[2];
     return DataFactory.literal(value, DataFactory.namedNode(DATETIME_TYPE));
   }

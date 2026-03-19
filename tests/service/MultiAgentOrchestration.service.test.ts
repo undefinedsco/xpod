@@ -100,7 +100,9 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
       },
     }, context);
     const secretaryThreadId = secretaryEvents.find((e) => e.type === 'thread.created')?.thread?.id;
+    const secretaryChatId = secretaryEvents.find((e) => e.type === 'thread.created')?.thread?.metadata?.chat_id;
     expect(typeof secretaryThreadId).toBe('string');
+    expect(typeof secretaryChatId).toBe('string');
 
     const claudeEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
@@ -118,7 +120,9 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
       },
     }, context);
     const claudeThreadId = claudeEvents.find((e) => e.type === 'thread.created')?.thread?.id;
+    const claudeChatId = claudeEvents.find((e) => e.type === 'thread.created')?.thread?.metadata?.chat_id;
     expect(typeof claudeThreadId).toBe('string');
+    expect(typeof claudeChatId).toBe('string');
 
     const buddyEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
@@ -136,12 +140,15 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
       },
     }, context);
     const buddyThreadId = buddyEvents.find((e) => e.type === 'thread.created')?.thread?.id;
+    const buddyChatId = buddyEvents.find((e) => e.type === 'thread.created')?.thread?.metadata?.chat_id;
     expect(typeof buddyThreadId).toBe('string');
+    expect(typeof buddyChatId).toBe('string');
 
     const secretaryRound1 = await collectStreamingEvents(service, {
       type: 'threads.add_user_message',
       params: {
         thread_id: secretaryThreadId,
+        chat_id: secretaryChatId,
         input: { content: [{ type: 'input_text', text: 'REQUEST: Please delegate two tasks and wait.' }] },
       },
     }, context);
@@ -161,6 +168,7 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
       type: 'threads.add_user_message',
       params: {
         thread_id: claudeThreadId,
+        chat_id: claudeChatId,
         input: { content: [{ type: 'input_text', text: claudeTask }] },
       },
     }, context);
@@ -171,6 +179,7 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
       type: 'threads.add_user_message',
       params: {
         thread_id: buddyThreadId,
+        chat_id: buddyChatId,
         input: { content: [{ type: 'input_text', text: buddyTask }] },
       },
     }, context);
@@ -181,6 +190,7 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
       type: 'threads.add_user_message',
       params: {
         thread_id: secretaryThreadId,
+        chat_id: secretaryChatId,
         input: {
           content: [{
             type: 'input_text',

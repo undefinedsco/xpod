@@ -14,7 +14,7 @@ import { buildSql } from '../lib/import/sql-builder';
 import { generateTriplesForRow, extractSubjectId, buildPrefixHeader } from '../lib/import/triple-generator';
 import { connectDb, detectDbType } from '../lib/import/db-connector';
 import { resolvePod, putTurtle } from '../lib/import/pod-writer';
-import type { TriplesMap, Row, Granularity } from '../lib/import/types';
+import type { TriplesMap, Row } from '../lib/import/types';
 
 interface ImportArgs {
   'from-db'?: string;
@@ -25,7 +25,6 @@ interface ImportArgs {
   url: string;
   email?: string;
   password?: string;
-  granularity: Granularity;
   'dry-run': boolean;
   'base-iri'?: string;
   format?: string;
@@ -162,6 +161,13 @@ async function authenticateAndResolvePod(argv: ImportArgs) {
   });
 }
 
+/**
+ * Detect mode from subject template: contains '#' → fragment, otherwise → document.
+ */
+function isFragmentMode(map: TriplesMap): boolean {
+  return map.subjectMap.template.includes('#');
+}
+
 async function processTriplesMaps(
   maps: TriplesMap[],
   queryFn: (sql: string) => AsyncIterable<Row>,
@@ -169,7 +175,6 @@ async function processTriplesMaps(
 ): Promise<void> {
   const prefixHeader = buildPrefixHeader(maps);
   const isDryRun = argv['dry-run'];
-  const granularity = argv.granularity;
 
   let pod: Awaited<ReturnType<typeof resolvePod>> | null = null;
   if (!isDryRun) {
@@ -177,9 +182,11 @@ async function processTriplesMaps(
   }
 
   for (const map of maps) {
+    const fragment = isFragmentMode(map);
     const sql = buildSql(map);
     if (isDryRun) {
       console.error(`# SQL for ${map.id}: ${sql}`);
+      console.error(`# Mode: ${fragment ? 'fragment' : 'document'}`);
     }
 
     const turtleChunks: string[] = [];
@@ -189,7 +196,8 @@ async function processTriplesMaps(
       const triples = generateTriplesForRow(map, row);
       rowCount++;
 
-      if (granularity === 'per-row') {
+      if (!fragment) {
+        // document mode: each row → separate .ttl file
         const subjectId = extractSubjectId(map, row);
         const fullTurtle = `${prefixHeader}\n\n${triples}\n`;
 
@@ -201,6 +209,7 @@ async function processTriplesMaps(
           await putTurtle(pod!, targetPath, fullTurtle);
         }
       } else {
+        // fragment mode: collect all triples into one document
         turtleChunks.push(triples);
       }
 
@@ -209,8 +218,8 @@ async function processTriplesMaps(
       }
     }
 
-    // per-table: write all triples as one resource
-    if (granularity === 'per-table' && turtleChunks.length > 0) {
+    // fragment mode: write all triples as one resource
+    if (fragment && turtleChunks.length > 0) {
       const fullTurtle = `${prefixHeader}\n\n${turtleChunks.join('\n\n')}\n`;
 
       if (isDryRun) {
@@ -220,7 +229,7 @@ async function processTriplesMaps(
       }
     }
 
-    console.error(`  ${map.id}: ${rowCount} rows processed.`);
+    console.error(`  ${map.id}: ${rowCount} rows processed (${fragment ? 'fragment' : 'document'} mode).`);
   }
 }
 
@@ -267,13 +276,6 @@ export const importCommand: CommandModule<object, ImportArgs> = {
       })
       .option('email', { type: 'string', description: 'Account email' })
       .option('password', { type: 'string', description: 'Account password' })
-      .option('granularity', {
-        alias: 'g',
-        type: 'string',
-        choices: ['per-table', 'per-row'] as const,
-        default: 'per-table' as Granularity,
-        description: 'Write granularity: one file per table or per row',
-      })
       .option('dry-run', {
         type: 'boolean',
         default: false,

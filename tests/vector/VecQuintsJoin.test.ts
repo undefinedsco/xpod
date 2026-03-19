@@ -8,11 +8,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import Database from 'better-sqlite3';
 import { SqliteVectorStore } from '../../src/storage/vector/SqliteVectorStore';
+import { createSqliteDatabase, type SqliteDatabase } from '../../src/storage/SqliteCompat';
 
 describe.skip('Vec + Quints JOIN', () => {
-  let db: Database.Database;
+  let db: SqliteDatabase;
   let vectorStore: SqliteVectorStore;
   const testModelId = 'test-join-model';
   const testDimension = 768;
@@ -29,7 +29,7 @@ describe.skip('Vec + Quints JOIN', () => {
 
   beforeAll(async () => {
     // 使用内存 SQLite，共享同一个数据库
-    db = new Database(':memory:');
+    db = createSqliteDatabase(':memory:');
 
     // 创建 quints 表（模拟 SqliteQuintStore）
     db.exec(`

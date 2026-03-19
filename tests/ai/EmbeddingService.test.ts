@@ -57,24 +57,7 @@ describe('EmbeddingServiceImpl', () => {
       });
     });
 
-    it('should use credential baseUrl over provider baseUrl', async () => {
-      const { createOpenAI } = await import('@ai-sdk/openai');
-
-      const customCredential: AiCredential = {
-        ...mockCredential,
-        baseUrl: 'https://custom.api.com/v1',
-      };
-
-      await service.embed('test', customCredential, 'text-embedding-3-small');
-
-      expect(createOpenAI).toHaveBeenCalledWith(
-        expect.objectContaining({
-          baseURL: 'https://custom.api.com/v1',
-        }),
-      );
-    });
-
-    it('should fall back to provider baseUrl if credential has none', async () => {
+    it('should use provider baseUrl', async () => {
       const { createOpenAI } = await import('@ai-sdk/openai');
 
       const credentialWithoutBaseUrl: AiCredential = {

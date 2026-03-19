@@ -2,16 +2,16 @@
  * 真实的 Vec + Quints SQL JOIN 测试
  *
  * 测试在同一个 SQLite 数据库中，vec0 虚拟表与 quints 表的真实 SQL JOIN
- * - 使用 better-sqlite3 直接操作同一个数据库
+ * - 使用原生 SQLite 运行时直接操作同一个数据库
  * - 验证 sqlite-vec 的 vec0 表可以与普通表 JOIN
  * - 测试子图过滤 + 向量搜索的 SQL 查询
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import Database from 'better-sqlite3';
+import { createSqliteDatabase, type SqliteDatabase } from '../../src/storage/SqliteCompat';
 
 describe.skip('Real SQL JOIN: vec0 + quints', () => {
-  let db: Database.Database;
+  let db: SqliteDatabase;
   const testDimension = 768;
   const vecTableName = 'vec_test_join';
 
@@ -26,12 +26,10 @@ describe.skip('Real SQL JOIN: vec0 + quints', () => {
   }
 
   beforeAll(async () => {
-    db = new Database(':memory:');
+    db = createSqliteDatabase(':memory:');
 
-    // 加载 sqlite-vec 扩展
-    const { load } = require('sqlite-vec');
-    const vecPath = require('sqlite-vec').getLoadablePath();
-    load(db, vecPath);
+    const sqliteVec = require('sqlite-vec') as { getLoadablePath: () => string };
+    db.loadExtension(sqliteVec.getLoadablePath());
 
     // 创建 quints 表
     db.exec(`

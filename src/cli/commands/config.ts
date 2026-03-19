@@ -1,5 +1,5 @@
 import type { CommandModule } from 'yargs';
-import { loadCredentials } from '../lib/credentials-store';
+import { loadCredentials, getClientCredentials } from '../lib/credentials-store';
 import { getAccessToken, authenticatedFetch } from '../lib/solid-auth';
 
 interface ConfigArgs {
@@ -10,6 +10,7 @@ interface SetArgs extends ConfigArgs {
   provider?: string;
   model?: string;
   'api-key'?: string;
+  type?: 'api-key' | 'oauth';  // 认证类型
 }
 
 /**
@@ -39,7 +40,11 @@ export const PROVIDER_BASE_URLS: Record<string, string> = {
   mistral: 'https://api.mistral.ai/v1',
   cohere: 'https://api.cohere.ai/v1',
   zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+  codebuddy: 'https://api.codebuddy.ai/v1',  // OAuth provider
 };
+
+/** OAuth providers that require browser login */
+export const OAUTH_PROVIDERS = new Set(['codebuddy']);
 
 export function maskSecret(value: string): string {
   if (value.length <= 8) return '****';
@@ -57,9 +62,15 @@ async function resolveAuth(argv: ConfigArgs): Promise<{ accessToken: string; pod
     process.exit(1);
   }
 
+  const clientCreds = getClientCredentials(creds);
+  if (!clientCreds) {
+    console.error('OAuth authentication not yet supported. Please use client credentials.');
+    process.exit(1);
+  }
+
   const baseUrl = (argv.url ?? creds.url).replace(/\/?$/, '/');
 
-  const tokenResult = await getAccessToken(creds.clientId, creds.clientSecret, baseUrl);
+  const tokenResult = await getAccessToken(clientCreds.clientId, clientCreds.clientSecret, baseUrl);
   if (!tokenResult) {
     console.error('Failed to obtain access token. Credentials may be expired — run `xpod auth create-credentials` again.');
     process.exit(1);

@@ -7,7 +7,19 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
-import { PACKAGE_ROOT } from '../../runtime';
+
+function findPackageRoot(dir: string): string {
+  let current = dir;
+  while (current !== path.dirname(current)) {
+    if (fs.existsSync(path.join(current, 'package.json'))) {
+      return current;
+    }
+    current = path.dirname(current);
+  }
+  return dir;
+}
+
+const PACKAGE_ROOT = findPackageRoot(__dirname);
 
 // Platform detection
 const platform = `${process.platform}-${process.arch}`;
@@ -25,6 +37,48 @@ interface VectorStoreConfig {
   sqlitePath: string;
   vecExtensionPath: string;
   useSystemSQLite: boolean;
+}
+
+function resolveSystemSqlitePath(libraryName: string): string | null {
+  const candidates = (() => {
+    switch (process.platform) {
+      case 'darwin':
+        return [
+          `/usr/lib/${libraryName}`,
+          `/opt/homebrew/lib/${libraryName}`,
+          `/usr/local/lib/${libraryName}`,
+        ];
+      case 'linux':
+        return [
+          `/usr/lib/${libraryName}`,
+          `/usr/lib64/${libraryName}`,
+          `/lib/${libraryName}`,
+          `/lib64/${libraryName}`,
+          `/usr/lib/x86_64-linux-gnu/${libraryName}`,
+          `/lib/x86_64-linux-gnu/${libraryName}`,
+          `/usr/lib/aarch64-linux-gnu/${libraryName}`,
+          `/lib/aarch64-linux-gnu/${libraryName}`,
+          `/usr/lib/arm-linux-gnueabihf/${libraryName}`,
+          `/lib/arm-linux-gnueabihf/${libraryName}`,
+          `/usr/lib/x86_64-linux-gnu/${libraryName}.0`,
+          `/lib/x86_64-linux-gnu/${libraryName}.0`,
+          `/usr/lib/aarch64-linux-gnu/${libraryName}.0`,
+          `/lib/aarch64-linux-gnu/${libraryName}.0`,
+        ];
+      case 'win32':
+        return [];
+      default:
+        return [];
+    }
+  })();
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -60,7 +114,7 @@ export function getVectorStoreLibs(): VectorStoreConfig | null {
 
   if (fs.existsSync(vecPath)) {
     return {
-      sqlitePath: '', // Use system SQLite
+      sqlitePath: resolveSystemSqlitePath(libs.sqlite) ?? '',
       vecExtensionPath: vecPath,
       useSystemSQLite: true,
     };
@@ -83,14 +137,11 @@ export function initBunSQLite(): boolean {
   try {
     const { Database } = require('bun:sqlite');
 
-    // macOS/Windows need custom SQLite with extension support
-    if (process.platform === 'darwin' || process.platform === 'win32') {
-      if (!libs.useSystemSQLite && libs.sqlitePath) {
-        Database.setCustomSQLite(libs.sqlitePath);
-        console.log('[VectorStore] Using bundled SQLite:', libs.sqlitePath);
-      } else if (libs.useSystemSQLite) {
-        console.log('[VectorStore] Using system SQLite with sqlite-vec');
-      }
+    if (libs.sqlitePath) {
+      Database.setCustomSQLite(libs.sqlitePath);
+      console.log(`[VectorStore] Using ${libs.useSystemSQLite ? 'system' : 'bundled'} SQLite:`, libs.sqlitePath);
+    } else if (libs.useSystemSQLite) {
+      console.warn('[VectorStore] System sqlite-vec found, but no loadable SQLite library was resolved');
     }
 
     return true;
@@ -101,7 +152,7 @@ export function initBunSQLite(): boolean {
 }
 
 /**
- * Get sqlite-vec extension path for better-sqlite3
+ * Get sqlite-vec extension path for native SQLite runtimes
  */
 export function getVecExtensionPath(): string | null {
   const libs = getVectorStoreLibs();

@@ -2,7 +2,7 @@
  * BaseQuintStore - 统一的 QuintStore 抽象基类
  * 
  * 支持：
- * - SQLite (via better-sqlite3 + drizzle-orm)
+ * - SQLite (via node:sqlite / bun:sqlite + drizzle-orm)
  * - PGLite (via @electric-sql/pglite + drizzle-orm)
  * - PostgreSQL (via pg + drizzle-orm) - 未来
  * 
@@ -20,7 +20,9 @@ import {
   parseVector,
   termToId,
   serializeObject,
+  deserializeObject,
   fpEncode,
+  isSerializedObjectValue,
   SEP,
 } from './serialization';
 import type {
@@ -542,7 +544,7 @@ export abstract class BaseQuintStore extends QuintStore {
       return value;
     }
     
-    if (isObject && !value.startsWith('N\u0000') && !value.startsWith('D\u0000') && !value.startsWith('"')) {
+    if (isObject && !isSerializedObjectValue(value)) {
       return `"${value}"`;
     }
     return value;
@@ -675,33 +677,6 @@ export abstract class BaseQuintStore extends QuintStore {
   }
 
   protected deserializeObject(value: string): Term {
-    if (value.startsWith('"')) {
-      const match = value.match(/^"([^"]*)"(?:@([a-zA-Z-]+)|\^\^<([^>]+)>)?$/);
-      if (match) {
-        const [, lexical, lang, datatype] = match;
-        if (lang) {
-          return DataFactory.literal(lexical, lang);
-        }
-        if (datatype) {
-          return DataFactory.literal(lexical, DataFactory.namedNode(datatype));
-        }
-        return DataFactory.literal(lexical);
-      }
-    }
-    
-    if (value.startsWith('N\u0000')) {
-      const parts = value.split('\u0000');
-      const datatype = parts[2];
-      const originalValue = parts[3];
-      return DataFactory.literal(originalValue, DataFactory.namedNode(datatype));
-    }
-    
-    if (value.startsWith('D\u0000')) {
-      const parts = value.split('\u0000');
-      const originalValue = parts[2];
-      return DataFactory.literal(originalValue, DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#dateTime'));
-    }
-    
-    return DataFactory.namedNode(value);
+    return deserializeObject(value);
   }
 }

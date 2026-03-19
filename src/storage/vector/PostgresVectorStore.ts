@@ -73,6 +73,15 @@ export class PostgresVectorStore extends VectorStore implements Initializable, F
     return `quint_vec_${hashModelId(modelId)}`;
   }
 
+  private getCountTableCandidates(modelIdOrTableName: string): string[] {
+    const candidates: string[] = [];
+    if (modelIdOrTableName.startsWith('quint_vec_')) {
+      candidates.push(modelIdOrTableName);
+    }
+    candidates.push(this.getTableName(modelIdOrTableName));
+    return [...new Set(candidates)];
+  }
+
   // ============================================
   // 向量表管理
   // ============================================
@@ -257,16 +266,18 @@ export class PostgresVectorStore extends VectorStore implements Initializable, F
 
   public async countVectors(modelId: string): Promise<number> {
     await this.ensureOpen();
-    const tableName = this.getTableName(modelId);
-
-    try {
-      const result = await this.getDb().execute(sql`
-        SELECT COUNT(*) as count FROM ${sql.identifier(tableName)}
-      `);
-      return parseInt(result.rows[0]?.count ?? '0', 10);
-    } catch {
-      return 0;
+    for (const tableName of this.getCountTableCandidates(modelId)) {
+      try {
+        const result = await this.getDb().execute(sql`
+          SELECT COUNT(*) as count FROM ${sql.identifier(tableName)}
+        `);
+        return parseInt(result.rows[0]?.count ?? '0', 10);
+      } catch {
+        continue;
+      }
     }
+
+    return 0;
   }
 
   // ============================================

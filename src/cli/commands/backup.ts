@@ -2,7 +2,7 @@ import type { CommandModule } from 'yargs';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, relative, dirname } from 'path';
 import { login, checkServer } from '../lib/css-account';
-import { loadCredentials } from '../lib/credentials-store';
+import { loadCredentials, getClientCredentials } from '../lib/credentials-store';
 import { getAccessToken } from '../lib/solid-auth';
 
 interface BackupArgs {
@@ -35,14 +35,17 @@ async function resolveBackupAuth(
 
   // Try client credentials first
   if (creds) {
-    const baseUrl = resolveUrl(argv.url, creds.url);
-    const tokenResult = await getAccessToken(creds.clientId, creds.clientSecret, baseUrl);
-    if (tokenResult) {
-      // Derive pod URL from webId
-      const webIdUrl = new URL(creds.webId);
-      const pathParts = webIdUrl.pathname.split('/').filter(Boolean);
-      const podUrl = `${webIdUrl.origin}/${pathParts[0]}/`;
-      return { authHeader: `Bearer ${tokenResult.accessToken}`, podUrl };
+    const clientCreds = getClientCredentials(creds);
+    if (clientCreds) {
+      const baseUrl = resolveUrl(argv.url, creds.url);
+      const tokenResult = await getAccessToken(clientCreds.clientId, clientCreds.clientSecret, baseUrl);
+      if (tokenResult) {
+        // Derive pod URL from webId
+        const webIdUrl = new URL(creds.webId);
+        const pathParts = webIdUrl.pathname.split('/').filter(Boolean);
+        const podUrl = `${webIdUrl.origin}/${pathParts[0]}/`;
+        return { authHeader: `Bearer ${tokenResult.accessToken}`, podUrl };
+      }
     }
   }
 

@@ -64,9 +64,22 @@ describe('PodChatKitStore AI Config Operations', () => {
       },
     } as StoreContext;
 
+    let selectCallIndex = 0;
+    const createSelectChain = (credentials = mockCredentials, providers = mockProviders) => ({
+      from: vi.fn().mockImplementation(() => {
+        selectCallIndex++;
+        if (selectCallIndex === 1) {
+          return {
+            where: vi.fn().mockResolvedValue(credentials),
+          };
+        }
+        return Promise.resolve(providers);
+      }),
+    });
+
     // Create mock db
     mockDb = {
-      select: vi.fn().mockReturnThis(),
+      select: vi.fn().mockImplementation(() => createSelectChain()),
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockReturnThis(),
@@ -78,6 +91,8 @@ describe('PodChatKitStore AI Config Operations', () => {
         message: { findFirst: vi.fn() },
       },
     };
+
+    vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
   });
 
   describe('extractProviderId', () => {
@@ -114,33 +129,24 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should return undefined when no active credentials exist', async () => {
-      // Mock getDb to return db with empty credentials
-      mockDb.from = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([]),
-      });
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
+      let selectCallIndex = 0;
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => {
+          selectCallIndex++;
+          if (selectCallIndex === 1) {
+            return {
+              where: vi.fn().mockResolvedValue([]),
+            };
+          }
+          return Promise.resolve([]);
+        }),
+      }));
 
       const config = await store.getAiConfig(mockContext);
       expect(config).toBeUndefined();
     });
 
     it('should return AI config when valid credential and provider exist', async () => {
-      // Track which call we're on
-      let callIndex = 0;
-
-      // Mock the query chain - first call returns credentials, second returns providers
-      mockDb.select = vi.fn().mockReturnValue({
-        from: vi.fn().mockImplementation(() => ({
-          where: vi.fn().mockImplementation(() => {
-            callIndex++;
-            if (callIndex === 1) {
-              return Promise.resolve(mockCredentials);
-            }
-            return Promise.resolve(mockProviders);
-          }),
-        })),
-      });
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const config = await store.getAiConfig(mockContext);
 
@@ -151,55 +157,33 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config!.credentialId).toBe('cred-001');
     });
 
-    it('should prefer credential baseUrl over provider baseUrl', async () => {
-      const credWithCustomUrl = [
-        {
-          ...mockCredentials[0],
-          baseUrl: 'https://custom.api.com/v1',
-        },
-      ];
-
-      let callIndex = 0;
-      mockDb.select = vi.fn().mockReturnValue({
-        from: vi.fn().mockImplementation(() => ({
-          where: vi.fn().mockImplementation(() => {
-            callIndex++;
-            if (callIndex === 1) {
-              return Promise.resolve(credWithCustomUrl);
-            }
-            return Promise.resolve(mockProviders);
-          }),
-        })),
-      });
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
-
+    it('should use provider baseUrl', async () => {
       const config = await store.getAiConfig(mockContext);
 
       expect(config).toBeDefined();
-      expect(config!.baseUrl).toBe('https://custom.api.com/v1');
+      expect(config!.baseUrl).toBe('https://api.openai.com/v1');
     });
 
-    it('should include proxyUrl when available on credential', async () => {
-      const credWithProxy = [
+    it('should include proxyUrl when available on provider', async () => {
+      const providerWithProxy = [
         {
-          ...mockCredentials[0],
+          ...mockProviders[0],
           proxyUrl: 'http://proxy.example.com:8080',
         },
       ];
 
-      let callIndex = 0;
-      mockDb.select = vi.fn().mockReturnValue({
-        from: vi.fn().mockImplementation(() => ({
-          where: vi.fn().mockImplementation(() => {
-            callIndex++;
-            if (callIndex === 1) {
-              return Promise.resolve(credWithProxy);
-            }
-            return Promise.resolve(mockProviders);
-          }),
-        })),
-      });
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
+      let selectCallIndex = 0;
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => {
+          selectCallIndex++;
+          if (selectCallIndex === 1) {
+            return {
+              where: vi.fn().mockResolvedValue(mockCredentials),
+            };
+          }
+          return Promise.resolve(providerWithProxy);
+        }),
+      }));
 
       const config = await store.getAiConfig(mockContext);
 
@@ -207,51 +191,32 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config!.proxyUrl).toBe('http://proxy.example.com:8080');
     });
 
-    it('should include proxyUrl from provider when credential has none', async () => {
-      const providerWithProxy = [
-        {
-          ...mockProviders[0],
-          proxyUrl: 'http://provider-proxy.example.com:8080',
-        },
-      ];
-
-      let callIndex = 0;
-      mockDb.select = vi.fn().mockReturnValue({
-        from: vi.fn().mockImplementation(() => ({
-          where: vi.fn().mockImplementation(() => {
-            callIndex++;
-            if (callIndex === 1) {
-              return Promise.resolve(mockCredentials);
-            }
-            return Promise.resolve(providerWithProxy);
-          }),
-        })),
-      });
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
-
-      const config = await store.getAiConfig(mockContext);
-
-      expect(config).toBeDefined();
-      expect(config!.proxyUrl).toBe('http://provider-proxy.example.com:8080');
-    });
-
     it('should skip credentials without provider', async () => {
       const credWithoutProvider = [{ ...mockCredentials[0], provider: null }];
 
-      mockDb.from = vi.fn().mockImplementation(() => ({
-        where: vi.fn().mockResolvedValue(credWithoutProvider),
+      let selectCallIndex = 0;
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => {
+          selectCallIndex++;
+          if (selectCallIndex === 1) {
+            return {
+              where: vi.fn().mockResolvedValue(credWithoutProvider),
+            };
+          }
+          return Promise.resolve(mockProviders);
+        }),
       }));
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const config = await store.getAiConfig(mockContext);
       expect(config).toBeUndefined();
     });
 
     it('should handle errors gracefully', async () => {
-      mockDb.from = vi.fn().mockImplementation(() => ({
-        where: vi.fn().mockRejectedValue(new Error('Query failed')),
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockRejectedValue(new Error('Query failed')),
+        })),
       }));
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const config = await store.getAiConfig(mockContext);
       expect(config).toBeUndefined();
@@ -312,9 +277,11 @@ describe('PodChatKitStore AI Config Operations', () => {
     it('should increment failCount when requested', async () => {
       const existingCred = { ...mockCredentials[0], failCount: 2 };
 
-      mockDb.from = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([existingCred]),
-      });
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([existingCred]),
+        }),
+      }));
       const setMock = vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue(undefined),
       });

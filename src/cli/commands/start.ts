@@ -12,6 +12,10 @@ interface StartArgs {
   host: string;
 }
 
+const childJsRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined'
+  ? (process.env.XPOD_NODE_BINARY ?? 'node')
+  : process.execPath;
+
 function loadEnvFile(envPath: string): void {
   if (!fs.existsSync(envPath)) {
     console.warn(`Env file not found: ${envPath}`);
@@ -88,8 +92,8 @@ export const startCommand: CommandModule<object, StartArgs> = {
       configPath = path.join(PACKAGE_ROOT, 'config/local.json');
     }
 
-    const cssPort = await getFreePort(mainPort + 1);
-    const apiPort = await getFreePort(cssPort + 1);
+    const cssPort = await getFreePort(mainPort + 1, argv.host);
+    const apiPort = await getFreePort(cssPort + 1, argv.host);
 
     const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
 
@@ -116,7 +120,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
 
     supervisor.register({
       name: 'css',
-      command: process.execPath,
+      command: childJsRuntime,
       args: cssArgs,
       env: {
         ...process.env as Record<string, string>,
@@ -136,7 +140,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
 
     supervisor.register({
       name: 'api',
-      command: process.execPath,
+      command: childJsRuntime,
       args: apiArgs,
       env: {
         ...process.env as Record<string, string>,

@@ -50,7 +50,11 @@ export class ProvisionCodeCodec {
    * 解码并验证 provisionCode
    * 返回 payload，过期或签名无效则返回 undefined
    */
-  public decode(code: string): ProvisionCodePayload | undefined {
+  public decode(code: string | undefined | null): ProvisionCodePayload | undefined {
+    if (typeof code !== 'string' || code.length === 0) {
+      return undefined;
+    }
+
     const dotIndex = code.indexOf('.');
     if (dotIndex <= 0) {
       return undefined;
