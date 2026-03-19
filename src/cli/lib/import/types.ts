@@ -70,21 +70,14 @@ export type DbType = 'postgres' | 'sqlite';
 export interface DbSource {
   type: DbType;
   connectionString: string;
-  encryption?: {
-    cipher: string;
-    key: string;
-  };
 }
 
 // ============================================
 // Import configuration
 // ============================================
 
-export type Granularity = 'per-table' | 'per-row';
-
 export interface ImportOptions {
   dryRun: boolean;
-  granularity: Granularity;
   baseIri?: string;
   /** Target path inside the Pod (e.g. "data/contacts.ttl") */
   targetPath: string;

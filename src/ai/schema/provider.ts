@@ -20,6 +20,8 @@ export const Provider = podTable(
     displayName: string('displayName'),
     baseUrl: string('baseUrl'),
     proxyUrl: string('proxyUrl'),
+    projectId: string('projectId'),
+    organizationId: string('organizationId'),
     hasModel: uri('hasModel'),
     hasCredential: uri('hasCredential'),
   },

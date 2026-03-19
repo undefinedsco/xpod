@@ -213,7 +213,7 @@ export class VectorHttpHandler extends HttpHandler {
     }
 
     const startTime = Date.now();
-    await this.authorizeFor(baseUrl, request, [PERMISSIONS.Append]);
+    await this.authorizeForWithBodyDrain(baseUrl, request, [PERMISSIONS.Append]);
 
     const body = await this.readJsonBody<UpsertRequest>(request);
 
@@ -260,7 +260,7 @@ export class VectorHttpHandler extends HttpHandler {
     }
 
     const startTime = Date.now();
-    await this.authorizeFor(baseUrl, request, [PERMISSIONS.Read]);
+    await this.authorizeForWithBodyDrain(baseUrl, request, [PERMISSIONS.Read]);
 
     const body = await this.readJsonBody<SearchRequest>(request);
 
@@ -298,7 +298,7 @@ export class VectorHttpHandler extends HttpHandler {
 
     const startTime = Date.now();
     // 使用 Modify 权限，因为删除向量是对向量存储的修改操作
-    await this.authorizeFor(baseUrl, request, [PERMISSIONS.Modify]);
+    await this.authorizeForWithBodyDrain(baseUrl, request, [PERMISSIONS.Modify]);
 
     const body = await this.readJsonBody<DeleteRequest>(request);
 
@@ -385,6 +385,19 @@ export class VectorHttpHandler extends HttpHandler {
     await this.authorizer.handleSafe({ credentials, identifier, requestedModes, availablePermissions } as any);
   }
 
+  private async authorizeForWithBodyDrain(
+    baseUrl: string,
+    request: HttpRequest,
+    permissions: typeof PERMISSIONS[keyof typeof PERMISSIONS][],
+  ): Promise<void> {
+    try {
+      await this.authorizeFor(baseUrl, request, permissions);
+    } catch (error: unknown) {
+      await this.drainRequest(request);
+      throw error;
+    }
+  }
+
   private parseUrl(request: HttpRequest): URL {
     const protocol = request.headers['x-forwarded-proto'] || 'http';
     const host = request.headers['x-forwarded-host'] || request.headers.host || 'localhost';
@@ -401,6 +414,14 @@ export class VectorHttpHandler extends HttpHandler {
       return JSON.parse(body) as T;
     } catch {
       throw VectorApiError.invalidRequest('Invalid JSON body');
+    }
+  }
+
+  private async drainRequest(request: HttpRequest): Promise<void> {
+    try {
+      for await (const _chunk of request) {
+      }
+    } catch {
     }
   }
 

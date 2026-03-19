@@ -56,6 +56,10 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   // --- 凭据 ---
   /** 凭据基类 */
   Credential: 'Credential',
+  /** API Key 凭据 */
+  ApiKeyCredential: 'ApiKeyCredential',
+  /** OAuth 凭据 */
+  OAuthCredential: 'OAuthCredential',
 
   // --- AI 供应商和模型 ---
   /** AI 供应商（Embedding 用） */
@@ -122,6 +126,14 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   failCount: 'failCount',
   /** 限流重置时间 */
   rateLimitResetAt: 'rateLimitResetAt',
+
+  // --- OAuth 凭据属性 ---
+  /** OAuth Refresh Token */
+  oauthRefreshToken: 'oauthRefreshToken',
+  /** OAuth Access Token */
+  oauthAccessToken: 'oauthAccessToken',
+  /** OAuth Token 过期时间 */
+  oauthExpiresAt: 'oauthExpiresAt',
   /** 项目 ID (Vertex AI) */
   projectId: 'projectId',
   /** 组织 ID (OpenAI) */
@@ -188,6 +200,30 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   messageStatus: 'messageStatus',
   /** Thread 状态 (active/locked/closed) */
   threadStatus: 'threadStatus',
+
+  // --- 工具调用属性 ---
+  /** 工具名称 (bash, write, edit, etc.) */
+  toolName: 'toolName',
+  /** 工具调用 ID */
+  toolCallId: 'toolCallId',
+  /** 工具参数 (JSON) */
+  toolArguments: 'toolArguments',
+  /** 工具输出 */
+  toolOutput: 'toolOutput',
+  /** 工具状态 (pending/completed/failed) */
+  toolStatus: 'toolStatus',
+
+  // --- 权限审批属性 ---
+  /** 权限请求的工具 */
+  permissionTool: 'permissionTool',
+  /** 权限请求原因 */
+  permissionReason: 'permissionReason',
+  /** 权限状态 (pending/approved/rejected) */
+  permissionStatus: 'permissionStatus',
+  /** 审批人 */
+  approvedBy: 'approvedBy',
+  /** 审批时间 */
+  approvedAt: 'approvedAt',
 
   // --- 向量存储属性 ---
   /** 名称 */

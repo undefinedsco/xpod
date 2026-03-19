@@ -20,7 +20,7 @@ function check(ok: boolean, label: string): CheckResult {
 
 async function checkNodeVersion(): Promise<CheckResult> {
   const major = parseInt(process.versions.node.split('.')[0], 10);
-  return check(major >= 18, `Node.js v${process.versions.node} (≥ 18)`);
+  return check(major >= 22 && major <= 26, `Node.js v${process.versions.node} (supported: 22–26)`);
 }
 
 async function checkServerReachable(url?: string): Promise<CheckResult> {
@@ -51,7 +51,7 @@ function checkBuildFreshness(): CheckResult {
     const distStat = statSync(distPath);
     const srcStat = statSync(srcPath);
     const fresh = distStat.mtimeMs >= srcStat.mtimeMs;
-    return check(fresh, fresh ? 'dist/ up to date' : 'dist/ outdated (run yarn build)');
+    return check(fresh, fresh ? 'dist/ up to date' : 'dist/ outdated (run bun run build)');
   } catch {
     return check(true, 'dist/ exists');
   }

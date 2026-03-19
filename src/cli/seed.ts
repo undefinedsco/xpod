@@ -27,8 +27,19 @@ export interface SeedCredentials {
   issuer: string;
 }
 
+export interface ResolveSeedCredentialsOptions {
+  seedPath?: string;
+  baseUrl?: string;
+  podName?: string;
+  label?: string;
+}
+
 const DEFAULT_SEED_PATH = 'config/seeds/test.json';
 const DEFAULT_BASE_URL = 'http://localhost:3000/';
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith('/') ? value : `${value}/`;
+}
 
 /**
  * 加载 seed 配置
@@ -64,7 +75,7 @@ export function loadSeedConfig(seedPath?: string): SeedAccount[] {
  */
 export function getBaseUrl(): string {
   const raw = process.env.CSS_BASE_URL || DEFAULT_BASE_URL;
-  return raw.endsWith('/') ? raw : `${raw}/`;
+  return ensureTrailingSlash(raw);
 }
 
 /**
@@ -156,7 +167,8 @@ async function getAccountControls(
 async function createCredentials(
   credCreateUrl: string,
   token: string,
-  webId: string
+  webId: string,
+  label?: string,
 ): Promise<{ id: string; secret: string } | null> {
   try {
     const response = await fetch(credCreateUrl, {
@@ -167,7 +179,7 @@ async function createCredentials(
         Authorization: `CSS-Account-Token ${token}`,
       },
       body: JSON.stringify({
-        name: `seed-credentials-${Date.now()}`,
+        name: label ? `${label}-${Date.now()}` : `seed-credentials-${Date.now()}`,
         webId,
       }),
     });
@@ -180,6 +192,79 @@ async function createCredentials(
   } catch {
     return null;
   }
+}
+
+function getPodCandidates(account: SeedAccount, preferredPodName?: string): string[] {
+  const names = new Set<string>();
+
+  if (preferredPodName) {
+    names.add(preferredPodName);
+  }
+
+  for (const pod of account.pods ?? []) {
+    if (typeof pod?.name === 'string' && pod.name) {
+      names.add(pod.name);
+    }
+  }
+
+  if (names.size === 0) {
+    names.add('test');
+  }
+
+  return [...names];
+}
+
+export async function resolveSeedCredentials(
+  options: ResolveSeedCredentialsOptions = {},
+): Promise<SeedCredentials | null> {
+  const baseUrl = ensureTrailingSlash(options.baseUrl || getBaseUrl());
+
+  if (!(await checkServer(baseUrl))) {
+    return null;
+  }
+
+  const accounts = loadSeedConfig(options.seedPath);
+  if (accounts.length === 0) {
+    return null;
+  }
+
+  for (const account of accounts) {
+    const token = await loginWithSeed(baseUrl, account.email, account.password);
+    if (!token) {
+      continue;
+    }
+
+    const controls = await getAccountControls(baseUrl, token);
+    if (!controls?.credCreate) {
+      continue;
+    }
+
+    for (const podName of getPodCandidates(account, options.podName)) {
+      const podUrl = `${baseUrl}${podName}/`;
+      const webId = `${podUrl}profile/card#me`;
+      const creds = await createCredentials(
+        controls.credCreate,
+        token,
+        webId,
+        options.label ?? 'seed-credentials',
+      );
+
+      if (!creds) {
+        continue;
+      }
+
+      const issuer = await discoverIssuer(baseUrl, webId);
+      return {
+        clientId: creds.id,
+        clientSecret: creds.secret,
+        webId,
+        podUrl,
+        issuer,
+      };
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -198,7 +283,10 @@ async function discoverIssuer(baseUrl: string, webId: string): Promise<string> {
 
     const body = await response.text();
     const match = body.match(/<http:\/\/www\.w3\.org\/ns\/solid\/terms#oidcIssuer>\s*<([^>]+)>/);
-    return match ? match[1] : baseUrl;
+    if (!match?.[1]) {
+      return baseUrl;
+    }
+    return ensureTrailingSlash(new URL(match[1], profileUrl).toString());
   } catch {
     return baseUrl;
   }
@@ -240,71 +328,11 @@ export async function seedStatus(seedPath?: string): Promise<void> {
 export async function seedCredentials(seedPath?: string): Promise<void> {
   const baseUrl = getBaseUrl();
   console.log(`Base URL: ${baseUrl}`);
-
-  // 检查服务
-  if (!(await checkServer(baseUrl))) {
-    console.error('Server is not running. Start with: xpod start');
+  const result = await resolveSeedCredentials({ seedPath, baseUrl });
+  if (!result) {
+    console.error('Failed to resolve seed credentials');
     return;
   }
-
-  // 加载 seed 配置
-  const accounts = loadSeedConfig(seedPath);
-  if (accounts.length === 0) {
-    console.error('No seed accounts found in config');
-    return;
-  }
-
-  // 尝试登录
-  let token: string | null = null;
-  let activeAccount: SeedAccount | null = null;
-
-  for (const account of accounts) {
-    console.log(`Trying login: ${account.email}`);
-    token = await loginWithSeed(baseUrl, account.email, account.password);
-    if (token) {
-      activeAccount = account;
-      break;
-    }
-  }
-
-  if (!token || !activeAccount) {
-    console.error('Failed to login with any seed account');
-    return;
-  }
-
-  console.log(`Logged in: ${activeAccount.email}`);
-
-  // 获取控制端点
-  const controls = await getAccountControls(baseUrl, token);
-  if (!controls?.credCreate) {
-    console.error('Failed to get account controls');
-    return;
-  }
-
-  // 获取或创建 WebID
-  // 假设 seed 账户已有 pod，使用第一个 pod 的 webId
-  const podName = activeAccount.pods?.[0]?.name || 'test';
-  const webId = `${baseUrl}${podName}/profile/card#me`;
-  const podUrl = `${baseUrl}${podName}/`;
-
-  // 创建凭证
-  console.log('Creating credentials...');
-  const creds = await createCredentials(controls.credCreate, token, webId);
-
-  if (!creds) {
-    console.error('Failed to create credentials');
-    return;
-  }
-
-  const issuer = await discoverIssuer(baseUrl, webId);
-
-  const result: SeedCredentials = {
-    clientId: creds.id,
-    clientSecret: creds.secret,
-    webId,
-    podUrl,
-    issuer,
-  };
 
   // 输出
   console.log('\n# Seed Pod Credentials');

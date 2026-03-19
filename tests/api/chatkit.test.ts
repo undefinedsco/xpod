@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   ChatKitService,
+  DEFAULT_THREAD_CHAT_ID,
   InMemoryStore,
   type AiProvider,
   type StoreContext,
@@ -43,6 +44,11 @@ describe('ChatKit Service', () => {
 
   afterAll(() => {
     store.clear();
+  });
+
+  const threadParams = (threadId: string) => ({
+    thread_id: threadId,
+    chat_id: DEFAULT_THREAD_CHAT_ID,
   });
 
   describe('Thread Operations', () => {
@@ -151,7 +157,7 @@ describe('ChatKit Service', () => {
       // Now get the thread
       const getRequest = JSON.stringify({
         type: 'threads.get_by_id',
-        params: { thread_id: newThreadId },
+        params: threadParams(newThreadId),
       });
 
       const result = await service.process(getRequest, context);
@@ -206,7 +212,7 @@ describe('ChatKit Service', () => {
       // Update the title
       const updateRequest = JSON.stringify({
         type: 'threads.update',
-        params: { thread_id: newThreadId, title: 'Test Thread' },
+        params: { ...threadParams(newThreadId), title: 'Test Thread' },
       });
 
       const result = await service.process(updateRequest, context);
@@ -243,7 +249,7 @@ describe('ChatKit Service', () => {
       // Delete the thread
       const deleteRequest = JSON.stringify({
         type: 'threads.delete',
-        params: { thread_id: newThreadId },
+        params: threadParams(newThreadId),
       });
 
       const result = await service.process(deleteRequest, context);
@@ -257,7 +263,7 @@ describe('ChatKit Service', () => {
       // Verify thread is deleted
       const getRequest = JSON.stringify({
         type: 'threads.get_by_id',
-        params: { thread_id: newThreadId },
+        params: threadParams(newThreadId),
       });
 
       await expect(service.process(getRequest, context)).rejects.toThrow();
@@ -292,7 +298,7 @@ describe('ChatKit Service', () => {
       const request = JSON.stringify({
         type: 'threads.add_user_message',
         params: {
-          thread_id: threadId,
+          ...threadParams(threadId),
           input: {
             content: [{ type: 'input_text', text: 'What is 2 + 2?' }],
           },
@@ -334,7 +340,7 @@ describe('ChatKit Service', () => {
     it('should list items in thread', async () => {
       const request = JSON.stringify({
         type: 'items.list',
-        params: { thread_id: threadId, limit: 50 },
+        params: { ...threadParams(threadId), limit: 50 },
       });
 
       const result = await service.process(request, context);
@@ -351,7 +357,7 @@ describe('ChatKit Service', () => {
       // Get items first
       const listRequest = JSON.stringify({
         type: 'items.list',
-        params: { thread_id: threadId, limit: 50 },
+        params: { ...threadParams(threadId), limit: 50 },
       });
 
       const listResult = await service.process(listRequest, context);
@@ -369,7 +375,7 @@ describe('ChatKit Service', () => {
         const request = JSON.stringify({
           type: 'items.feedback',
           params: {
-            thread_id: threadId,
+            ...threadParams(threadId),
             item_ids: [itemId],
             feedback: 'positive',
           },
@@ -405,10 +411,19 @@ describe('ChatKit Service', () => {
     it('should handle non-existent thread', async () => {
       const request = JSON.stringify({
         type: 'threads.get_by_id',
-        params: { thread_id: 'non-existent-thread' },
+        params: threadParams('non-existent-thread'),
       });
 
       await expect(service.process(request, context)).rejects.toThrow('Thread not found');
+    });
+
+    it('should reject bare thread_id without chat_id', async () => {
+      const request = JSON.stringify({
+        type: 'threads.get_by_id',
+        params: { thread_id: 'thread-without-chat' },
+      });
+
+      await expect(service.process(request, context)).rejects.toThrow('chat_id is required');
     });
   });
 });
