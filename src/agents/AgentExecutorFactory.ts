@@ -69,12 +69,10 @@ export class AgentExecutorFactory {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
       };
-      const db = drizzle(session, { schema });
+      const db: any = drizzle(session, { schema });
 
       // 1. 读取供应商配置
-      const provider = await db.query.agentProvider.findFirst({
-        where: eq(AgentProvider.id, providerId),
-      });
+      const provider = await db.findByLocator(AgentProvider, { id: providerId });
 
       if (!provider) {
         this.logger.debug(`Agent provider not found: ${providerId}`);
@@ -155,7 +153,7 @@ export class AgentExecutorFactory {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
       };
-      const db = drizzle(session, { schema });
+      const db: any = drizzle(session, { schema });
 
       const providers = await db.query.agentProvider.findMany();
 

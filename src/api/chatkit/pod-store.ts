@@ -15,6 +15,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { ChatKitStore, StoreContext } from './store';
 import type {
   ThreadMetadata,
+  ThreadRef,
   ThreadItem,
   Attachment,
   Page,
@@ -23,7 +24,7 @@ import type {
   AssistantMessageItem,
   ThreadStatus,
 } from './types';
-import { generateId, nowTimestamp } from './types';
+import { generateId, getThreadIdFromRef, nowTimestamp } from './types';
 import {
   Chat,
   Thread,
@@ -63,6 +64,23 @@ type QueriedMessageRecord = {
   toolName?: string | null;
   toolCallId?: string | null;
   metadata?: string | null;
+  subjectUri?: string | null;
+};
+
+type ThreadMetadataSource = {
+  id: string;
+  chatId?: string | null;
+  title?: string | null;
+  status?: string | null;
+  metadata?: string | null;
+  createdAt?: string | Date | null;
+  updatedAt?: string | Date | null;
+};
+
+type ResolvedThreadRef = {
+  threadId: string;
+  chatId: string;
+  threadUri: string;
 };
 
 /**
@@ -93,7 +111,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   /**
    * 获取认证后的 drizzle 实例 (缓存到 context 中)
    */
-  private async getDb(context: StoreContext) {
+  private async getDb(context: StoreContext): Promise<any | null> {
     // Check if we already have a cached db in context
     if ((context as any)._cachedDb) {
       this.logger.debug('Using cached db from context');
@@ -116,14 +134,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
         this.logger.info(`[getDb] Using access token path for webId: ${auth.webId}`);
         const authFetch = this.createAccessTokenFetch(auth.accessToken, auth.tokenType);
-        const db = drizzle(
+        const db: any = drizzle(
           { fetch: authFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
           { schema },
         );
 
         this.logger.info(`Initializing tables for Pod (access token): ${auth.webId}`);
         try {
-          await db.init([Chat, Thread, Message]);
+          await db.init(Chat, Thread, Message);
           this.logger.info('Tables initialized successfully');
         } catch (initError) {
           this.logger.error(`Failed to init tables: ${initError}`);
@@ -154,15 +172,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       }
 
       this.logger.info(`[getDb] Client credentials token acquired, webId: ${webId}`);
-      const authFetch = this.createAccessTokenFetch(token.accessToken, token.tokenType);
-      const db = drizzle(
-        { fetch: authFetch, info: { webId, isLoggedIn: true } } as any,
+      const db: any = drizzle(
+        { fetch: this.createAccessTokenFetch(token.accessToken, token.tokenType), info: { webId, isLoggedIn: true } } as any,
         { schema },
       );
+      const authFetch = this.createAccessTokenFetch(token.accessToken, token.tokenType);
 
       this.logger.info(`Initializing tables for Pod: ${webId}`);
       try {
-        await db.init([Chat, Thread, Message]);
+        await db.init(Chat, Thread, Message);
         this.logger.info('Tables initialized successfully');
       } catch (initError) {
         this.logger.error(`Failed to init tables: ${initError}`);
@@ -240,6 +258,44 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     return undefined;
   }
 
+  private derivePodBaseUrl(webId: string | undefined): string | undefined {
+    if (!webId) {
+      return undefined;
+    }
+
+    try {
+      const url = new URL(webId);
+      url.hash = '';
+      url.search = '';
+
+      const normalizedPath = url.pathname.replace(/\/+$/, '');
+      if (!normalizedPath.endsWith('/profile/card')) {
+        return undefined;
+      }
+
+      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
+      if (podPath === '/') {
+        return url.origin;
+      }
+      url.pathname = podPath;
+      return url.toString().replace(/\/$/, '');
+    } catch {
+      const withoutHash = webId.split('#')[0]?.replace(/\/+$/, '');
+      if (!withoutHash?.endsWith('/profile/card')) {
+        return undefined;
+      }
+      const podBase = withoutHash.slice(0, -'/profile/card'.length) || '/';
+      if (podBase === '/') {
+        try {
+          return new URL(webId).origin;
+        } catch {
+          return undefined;
+        }
+      }
+      return podBase.endsWith('/') ? podBase.slice(0, -1) : podBase;
+    }
+  }
+
   /**
    * 将 ThreadStatus 对象转为字符串
    */
@@ -283,9 +339,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     const webId = this.getWebId(context);
 
     // 检查是否存在
-    const existing = await db.query.chat.findFirst({
-      where: eq(Chat.id, chatId),
-    });
+    const existing = await db.findByLocator(Chat, { id: chatId });
 
     if (!existing) {
       // 创建 Chat 容器
@@ -306,7 +360,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
    * 将 ThreadRecord 转为 ThreadMetadata
    * 包含 metadata.chat_id 暴露 Chat 容器 ID
    */
-  private threadRecordToMetadata(record: ThreadRecord, chatUriMap: Map<string, string>): ThreadMetadata {
+  private threadRecordToMetadata(record: ThreadMetadataSource, chatUriMap: Map<string, string>): ThreadMetadata {
     const chatId = this.resolveChatIdFromUri(record.chatId, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
     let extra: Record<string, unknown> | undefined;
     if (record.metadata) {
@@ -382,71 +436,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     return map;
   }
 
-  private extractThreadId(threadIdOrUri: string | null | undefined): string | undefined {
-    if (!threadIdOrUri) return undefined;
-
-    if (threadIdOrUri.includes('#')) {
-      return threadIdOrUri.split('#').pop() || undefined;
-    }
-
-    return threadIdOrUri;
-  }
-
-  private getPodBaseUrl(context: StoreContext): string {
-    const cachedWebId = (context as any)._cachedWebId as string | undefined;
-    const webId = cachedWebId ?? this.getWebId(context);
-    if (!webId) {
-      throw new Error('Missing webId for Pod URI resolution');
-    }
-
-    return webId.replace('/profile/card#me', '').replace(/\/$/, '');
-  }
-
-  private buildThreadUri(chatId: string, threadId: string, context: StoreContext): string {
-    return `${this.getPodBaseUrl(context)}/.data/chat/${chatId}/index.ttl#${threadId}`;
-  }
-
-  private async selectMessagesForThread(threadId: string, context: StoreContext): Promise<MessageRecord[]> {
-    const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
-    const chatId = await this.getThreadChatId(threadId, context);
-    const chatUriMap = await this.getChatUriMap(context);
-    const threadUri = await this.getThreadUri(threadId, context);
-    const messages = await db.select().from(Message) as MessageRecord[];
-    return messages.filter(
-      (message) => {
-        const messageChatId = this.resolveChatIdFromUri(message.chat, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
-        const messageThreadId = this.extractThreadId(message.thread);
-        return messageChatId === chatId && (message.thread === threadUri || messageThreadId === threadId);
-      },
-    );
-  }
-
-  private async deleteMessageRecord(db: NonNullable<Awaited<ReturnType<PodChatKitStore['getDb']>>>, message: MessageRecord): Promise<void> {
-    const messageIri = (message as MessageRecord & { '@id'?: string })['@id'];
-    if (messageIri) {
-      await db.delete(Message).whereByIri(messageIri);
-      return;
-    }
-
-    if (message.thread) {
-      await db.delete(Message).where(and(
-        eq(Message.id, message.id),
-        eq(Message.thread, message.thread),
-        eq(Message.createdAt, message.createdAt as any),
-      ));
-      return;
-    }
-
-    await db.delete(Message).where(and(
-      eq(Message.id, message.id),
-      eq(Message.createdAt, message.createdAt as any),
-    ));
-  }
-
   /**
    * 从 chatId URI 还原 bare chatId。
    * 优先通过 @id 映射，fallback 处理裸 ID。
@@ -463,48 +452,78 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     return chatIdUri.includes('/') ? fallback : chatIdUri;
   }
 
-  /**
-   * 根据 bare threadId 构造完整 Thread URI。
-   */
-  private async getThreadUri(threadId: string, context: StoreContext): Promise<string> {
-    const chatId = await this.getThreadChatId(threadId, context);
-    const cachedWebId = (context as any)._cachedWebId as string | undefined;
-    if (!cachedWebId) {
-      throw new Error('No cached webId - call getDb first');
+  private isAbsoluteHttpIri(value: string): boolean {
+    try {
+      const url = new URL(value);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+      return false;
     }
-    const podBaseUrl = cachedWebId.replace('/profile/card#me', '');
+  }
+
+  private parseThreadIri(threadIri: string): ResolvedThreadRef | null {
+    try {
+      const url = new URL(threadIri);
+      const match = url.pathname.match(/\/\.data\/chat\/([^/]+)\/index\.ttl$/);
+      const threadId = url.hash.startsWith('#') ? decodeURIComponent(url.hash.slice(1)) : '';
+      if (!match || !threadId) {
+        return null;
+      }
+      return {
+        threadId,
+        chatId: decodeURIComponent(match[1]),
+        threadUri: url.toString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeThreadCacheKey(thread: ThreadRef): string {
+    return getThreadIdFromRef(thread);
+  }
+
+  private async buildThreadUri(
+    threadId: string,
+    chatId: string,
+    context: StoreContext,
+  ): Promise<string> {
+    await this.getDb(context);
+    const podBaseUrl = this.getCachedPodBaseUrl(context)
+      ?? this.derivePodBaseUrl(this.getWebId(context));
+    if (!podBaseUrl) {
+      throw new Error('Cannot resolve Pod base URL for thread locator');
+    }
     return `${podBaseUrl}/.data/chat/${chatId}/index.ttl#${threadId}`;
   }
 
-  /**
-   * 获取 Thread 的 chatId（裸 ID，用于路径构建）
-   * 先从缓存获取，如果没有再查询数据库。
-   */
-  private async getThreadChatId(threadId: string, context: StoreContext): Promise<string> {
-    // 先检查缓存
-    const cached = this.getCachedThreadChatId(context, threadId);
-    if (cached) {
-      return cached;
+  private async resolveThreadRef(
+    thread: ThreadRef,
+    context: StoreContext,
+  ): Promise<ResolvedThreadRef> {
+    const threadIdOrIri = thread.thread_id;
+    if (this.isAbsoluteHttpIri(threadIdOrIri)) {
+      const parsed = this.parseThreadIri(threadIdOrIri);
+      if (!parsed) {
+        throw new Error(`Invalid thread IRI: ${threadIdOrIri}`);
+      }
+      this.cacheThreadChatId(context, parsed.threadId, parsed.chatId);
+      return parsed;
     }
 
-    const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
+    if (!('chat_id' in thread) || !thread.chat_id) {
+      throw new Error(`chat_id is required when thread_id "${threadIdOrIri}" is not a full thread IRI`);
     }
 
-    const thread = await db.query.thread.findFirst({
-      where: eq(Thread.id, threadId),
-    });
+    const chatId = thread.chat_id;
 
-    if (!thread) {
-      this.logger.warn(`Thread not found in DB, using default chatId: ${threadId}`);
-      return PodChatKitStore.DEFAULT_CHAT_ID;
-    }
-
-    const chatUriMap = await this.getChatUriMap(context);
-    const chatId = this.resolveChatIdFromUri(thread.chatId, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
-    this.cacheThreadChatId(context, threadId, chatId);
-    return chatId;
+    const threadUri = await this.buildThreadUri(threadIdOrIri, chatId, context);
+    this.cacheThreadChatId(context, threadIdOrIri, chatId);
+    return {
+      threadId: threadIdOrIri,
+      chatId,
+      threadUri,
+    };
   }
 
   /**
@@ -515,14 +534,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       (context as any)._threadChatIdCache = new Map<string, string>();
     }
     (context as any)._threadChatIdCache.set(threadId, chatId);
-  }
-
-  /**
-   * 从缓存获取 Thread 的 chatId
-   */
-  private getCachedThreadChatId(context: StoreContext, threadId: string): string | undefined {
-    const cache = (context as any)._threadChatIdCache as Map<string, string> | undefined;
-    return cache?.get(threadId);
   }
 
   /**
@@ -549,7 +560,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
   private getCachedPodBaseUrl(context: StoreContext): string | undefined {
     const cachedWebId = (context as any)._cachedWebId as string | undefined;
-    return cachedWebId?.replace('/profile/card#me', '');
+    return this.derivePodBaseUrl(cachedWebId);
   }
 
   private extractFragmentId(subjectUri: string): string {
@@ -566,7 +577,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   }
 
   private async selectMessagesForThread(
-    threadId: string,
+    thread: ThreadRef,
     context: StoreContext,
   ): Promise<QueriedMessageRecord[]> {
     await this.getDb(context);
@@ -577,7 +588,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       return [];
     }
 
-    const threadUri = await this.getThreadUri(threadId, context);
+    const resolvedThread = await this.resolveThreadRef(thread, context);
     const endpoint = `${podBaseUrl}/.data/chat/-/sparql`;
     const query = `
       PREFIX meeting: <http://www.w3.org/ns/pim/meeting#>
@@ -587,7 +598,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       SELECT ?msg ?maker ?role ?content ?status ?createdAt ?toolName ?toolCallId ?metadata
       WHERE {
         ?msg a meeting:Message ;
-             sioc:has_container <${threadUri}> .
+             sioc:has_container <${resolvedThread.threadUri}> .
         OPTIONAL { ?msg foaf:maker ?maker . }
         OPTIONAL { ?msg udfs:role ?role . }
         OPTIONAL { ?msg sioc:content ?content . }
@@ -624,7 +635,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     return bindings.map((binding) => ({
       id: this.extractFragmentId(this.parseSparqlBindingValue(binding, 'msg') ?? ''),
       chat: null,
-      thread: threadUri,
+      thread: resolvedThread.threadUri,
       maker: this.parseSparqlBindingValue(binding, 'maker'),
       role: this.parseSparqlBindingValue(binding, 'role'),
       content: this.parseSparqlBindingValue(binding, 'content'),
@@ -633,6 +644,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       toolName: this.parseSparqlBindingValue(binding, 'toolName'),
       toolCallId: this.parseSparqlBindingValue(binding, 'toolCallId'),
       metadata: this.parseSparqlBindingValue(binding, 'metadata'),
+      subjectUri: this.parseSparqlBindingValue(binding, 'msg'),
     }));
   }
 
@@ -652,9 +664,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   // Thread Operations (ChatKit thread = our Thread)
   // =========================================================================
 
-  async loadThread(threadId: string, context: StoreContext): Promise<ThreadMetadata> {
+  async loadThread(thread: ThreadRef, context: StoreContext): Promise<ThreadMetadata> {
+    const cacheKey = this.normalizeThreadCacheKey(thread);
     // 先从缓存获取
-    const cached = this.getCachedThreadMetadata(context, threadId);
+    const cached = this.getCachedThreadMetadata(context, cacheKey);
     if (cached) {
       return cached;
     }
@@ -664,18 +677,18 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    const thread = await db.query.thread.findFirst({
-      where: eq(Thread.id, threadId),
-    });
+    const resolvedThread = await this.resolveThreadRef(thread, context);
+    const threadRecord = await db.findByIri(Thread, resolvedThread.threadUri) as ThreadRecord | null;
 
-    if (!thread) {
-      throw new Error(`Thread not found: ${threadId}`);
+    if (!threadRecord) {
+      throw new Error(`Thread not found: ${resolvedThread.threadId}`);
     }
 
     const chatUriMap = await this.getChatUriMap(context);
-    const metadata = this.threadRecordToMetadata(thread, chatUriMap);
+    const metadata = this.threadRecordToMetadata(threadRecord, chatUriMap);
     // 缓存结果
     this.cacheThreadMetadata(context, metadata);
+    this.cacheThreadChatId(context, metadata.id, resolvedThread.chatId);
     return metadata;
   }
 
@@ -689,6 +702,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 从 metadata 获取 chat_id
     const chatId = this.getChatIdFromMetadata(thread.metadata);
+    thread.metadata = { ...(thread.metadata ?? {}), chat_id: chatId };
     // Persist all metadata except chat_id (which is derived from storage location).
     const metadataToPersist = { ...(thread.metadata ?? {}) } as Record<string, unknown>;
     delete (metadataToPersist as any).chat_id;
@@ -699,20 +713,22 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 缓存 Thread -> chatId 映射，避免后续查询
     this.cacheThreadChatId(context, thread.id, chatId);
+    const threadUri = await this.buildThreadUri(thread.id, chatId, context);
 
     // 检查 Thread 是否存在
-    const existing = await db.query.thread.findFirst({
-      where: eq(Thread.id, thread.id),
-    });
+    const existing = await db.findByIri(Thread, threadUri) as ThreadRecord | null;
 
     if (existing) {
       // Update
-      await db.update(Thread).set({
+      await db.updateByLocator(Thread, {
+        id: thread.id,
+        chatId,
+      }, {
         title: thread.title || null,
         status: this.statusToString(thread.status),
         metadata: metadataJson,
         updatedAt: now,
-      }).where(eq(Thread.id, thread.id));
+      });
     } else {
       // Insert
       await db.insert(Thread).values({
@@ -780,37 +796,16 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
   }
 
-  async deleteThread(threadId: string, context: StoreContext): Promise<void> {
+  async deleteThread(thread: ThreadRef, context: StoreContext): Promise<void> {
+    const resolvedThread = await this.resolveThreadRef(thread, context);
     const db = await this.getDb(context);
     if (!db) {
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    // 尝试从缓存获取 chatId
-    let chatId = this.getCachedThreadChatId(context, threadId);
-
-    // 如果缓存没有，尝试从数据库查询
-    if (!chatId) {
-      try {
-        const thread = await db.query.thread.findFirst({
-          where: eq(Thread.id, threadId),
-        });
-        if (thread) {
-          const chatUriMap = await this.getChatUriMap(context);
-          chatId = this.resolveChatIdFromUri(thread.chatId, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
-        }
-      } catch (err: any) {
-        // 忽略查询错误，继续尝试删除
-        this.logger.debug(`Ignoring thread query error during delete: ${err.message}`);
-      }
-    }
-
     // 删除关联到此 Thread 的消息
     try {
-      const messages = await this.selectMessagesForThread(threadId, context);
-      for (const message of messages) {
-        await this.deleteMessageRecord(db, message);
-      }
+      await db.delete(Message).where(eq(Message.thread, resolvedThread.threadUri));
     } catch (err: any) {
       if (!err.message?.includes('404') && !err.message?.includes('Could not retrieve') && !err.message?.includes('Parse error')) {
         throw err;
@@ -820,10 +815,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 删除 Thread
     try {
-      const threadDeleteWhere = chatId
-        ? and(eq(Thread.id, threadId), eq(Thread.chatId, chatId))
-        : eq(Thread.id, threadId);
-      await db.delete(Thread).where(threadDeleteWhere);
+      await db.deleteByLocator(Thread, {
+        id: resolvedThread.threadId,
+        chatId: resolvedThread.chatId,
+      });
     } catch (err: any) {
       if (!err.message?.includes('404') && !err.message?.includes('Could not retrieve') && !err.message?.includes('Parse error')) {
         throw err;
@@ -834,8 +829,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     // 清除缓存
     const metadataCache = (context as any)._threadMetadataCache as Map<string, ThreadMetadata> | undefined;
     const chatIdCache = (context as any)._threadChatIdCache as Map<string, string> | undefined;
-    metadataCache?.delete(threadId);
-    chatIdCache?.delete(threadId);
+    metadataCache?.delete(resolvedThread.threadId);
+    chatIdCache?.delete(resolvedThread.threadId);
   }
 
   // =========================================================================
@@ -843,14 +838,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   // =========================================================================
 
   async loadThreadItems(
-    threadId: string,
+    thread: ThreadRef,
     after: string | undefined,
     limit: number,
     order: string,
     context: StoreContext,
   ): Promise<Page<ThreadItem>> {
     try {
-      const messages = await this.selectMessagesForThread(threadId, context);
+      const resolvedThread = await this.resolveThreadRef(thread, context);
+      const messages = await this.selectMessagesForThread(thread, context);
 
       // 排序
       messages.sort((a: QueriedMessageRecord, b: QueriedMessageRecord) => {
@@ -872,7 +868,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       const hasMore = startIndex + limit < messages.length;
 
       return {
-        data: slice.map((m: QueriedMessageRecord) => this.messageRecordToItem(m, threadId)),
+        data: slice.map((m: QueriedMessageRecord) => this.messageRecordToItem(m, resolvedThread.threadId)),
         has_more: hasMore,
         after: slice.length > 0 ? slice[slice.length - 1].id : undefined,
       };
@@ -882,15 +878,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     }
   }
 
-  async addThreadItem(threadId: string, item: ThreadItem, context: StoreContext): Promise<void> {
+  async addThreadItem(thread: ThreadRef, item: ThreadItem, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
     if (!db) {
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    // 从 Thread 获取 chatId (bare ID，用于路径构建)
-    const chatId = await this.getThreadChatId(threadId, context);
-    const threadUri = await this.getThreadUri(threadId, context);
+    const resolvedThread = await this.resolveThreadRef(thread, context);
 
     const webId = this.getWebId(context);
     let content = '';
@@ -920,8 +914,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     const messageRecord = {
       id: item.id,
-      chat: chatId,      // bare ID，用于路径构建
-      thread: threadUri,    // 完整 URI，用于 RDF 引用
+      chat: resolvedThread.chatId,      // bare ID，用于路径构建
+      thread: resolvedThread.threadUri, // 完整 URI，用于 RDF 引用
       maker: role === MessageRole.USER ? webId : null,
       role,
       content,
@@ -938,15 +932,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
   // Track recently created message IDs to avoid SELECT cache timing issues
   private recentlyCreatedIds = new Set<string>();
 
-  async saveItem(threadId: string, item: ThreadItem, context: StoreContext): Promise<void> {
+  async saveItem(thread: ThreadRef, item: ThreadItem, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
     if (!db) {
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    // 从 Thread 获取 chatId（用于构建资源路径）
-    const chatId = await this.getThreadChatId(threadId, context);
-    const threadUri = await this.getThreadUri(threadId, context);
+    const resolvedThread = await this.resolveThreadRef(thread, context);
 
     // 准备更新数据
     let content = '';
@@ -974,12 +966,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
     const wasRecentlyCreated = this.recentlyCreatedIds.has(item.id);
     if (wasRecentlyCreated) {
       this.recentlyCreatedIds.delete(item.id);
-      await this.directPatchMessage(context, chatId, item.id, content, status, createdAt);
+      await this.directPatchMessage(context, resolvedThread.chatId, item.id, content, status, createdAt);
       return;
     }
 
     // 对于非最近创建的消息，使用普通流程
-    const existingItems = (await this.selectMessagesForThread(threadId, context))
+    const existingItems = (await this.selectMessagesForThread(thread, context))
       .filter((message) => message.id === item.id);
     const existing = existingItems.length > 0 ? existingItems[0] : null;
 
@@ -988,10 +980,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
       const existingCreatedAt = existing.createdAt
         ? (existing.createdAt instanceof Date ? existing.createdAt.toISOString() : String(existing.createdAt))
         : undefined;
-      await this.directPatchMessage(context, chatId, item.id, content, status, existingCreatedAt);
+      await this.directPatchMessage(context, resolvedThread.chatId, item.id, content, status, existingCreatedAt);
     } else {
       // Create new record
-      await this.addThreadItem(threadId, item, context);
+      await this.addThreadItem(thread, item, context);
     }
   }
 
@@ -1017,14 +1009,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext> {
 
     // 构建资源 URL 和 subject URI
     // Template: {chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}
-    // 使用 createdAt 时间来计算日期，与 drizzle-solid 的模板填充逻辑保持一致
-    const dateForPath = createdAt ? new Date(createdAt) : new Date();
-    const yyyy = dateForPath.getUTCFullYear();
-    const mm = String(dateForPath.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(dateForPath.getUTCDate()).padStart(2, '0');
-
-    const podBaseUrl = cachedWebId.replace('/profile/card#me', '');
-    const resourceUrl = `${podBaseUrl}/.data/chat/${chatId}/${yyyy}/${mm}/${dd}/messages.ttl`;
+    const podBaseUrl = this.derivePodBaseUrl(cachedWebId);
+    if (!podBaseUrl) {
+      throw new Error(`Cannot resolve Pod base URL from cached WebID: ${cachedWebId}`);
+    }
+    const messageDate = createdAt ? new Date(createdAt) : new Date();
+    const yyyy = String(messageDate.getUTCFullYear());
+    const MM = String(messageDate.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(messageDate.getUTCDate()).padStart(2, '0');
+    const resourceUrl = `${podBaseUrl}/.data/chat/${chatId}/${yyyy}/${MM}/${dd}/messages.ttl`;
     const subjectUri = `${resourceUrl}#${messageId}`;
 
     // 构建 SPARQL UPDATE：删除旧值，插入新值
@@ -1080,31 +1073,60 @@ WHERE { ${deletePatterns.join(' ')} }
     }
   }
 
-  async loadItem(threadId: string, itemId: string, context: StoreContext): Promise<ThreadItem> {
-    const messages = (await this.selectMessagesForThread(threadId, context)).filter(
-      (message) => message.id === itemId,
-    );
-
-    if (messages.length === 0) {
-      throw new Error(`Item not found: ${itemId}`);
+  private async directDeleteMessage(
+    context: StoreContext,
+    subjectUri?: string | null,
+  ): Promise<void> {
+    if (!subjectUri) {
+      throw new Error('Cannot delete message without subject URI');
     }
 
-    return this.messageRecordToItem(messages[0], threadId);
+    const cachedFetch = (context as any)._cachedFetch as typeof fetch | undefined;
+    if (!cachedFetch) {
+      throw new Error('No cached session for direct DELETE - call getDb first');
+    }
+
+    const hashIndex = subjectUri.lastIndexOf('#');
+    const resourceUrl = hashIndex >= 0 ? subjectUri.slice(0, hashIndex) : subjectUri;
+    const sparql = `DELETE WHERE { <${subjectUri}> ?p ?o . }`;
+
+    const response = await cachedFetch(resourceUrl, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/sparql-update' },
+      body: sparql,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Direct message delete failed: ${response.status} ${response.statusText} - ${text}`);
+    }
   }
 
-  async deleteThreadItem(threadId: string, itemId: string, context: StoreContext): Promise<void> {
+  async loadItem(thread: ThreadRef, itemId: string, context: StoreContext): Promise<ThreadItem> {
     const db = await this.getDb(context);
     if (!db) {
       throw new Error('Cannot access Pod: invalid credentials');
     }
 
-    const messages = await this.selectMessagesForThread(threadId, context);
-    const target = messages.find((message) => message.id === itemId);
+    const resolvedThread = await this.resolveThreadRef(thread, context);
+    const messages = (await this.selectMessagesForThread(thread, context))
+      .filter((message) => message.id === itemId);
+
+    if (messages.length === 0) {
+      throw new Error(`Item not found: ${itemId}`);
+    }
+
+    return this.messageRecordToItem(messages[0], resolvedThread.threadId);
+  }
+
+  async deleteThreadItem(thread: ThreadRef, itemId: string, context: StoreContext): Promise<void> {
+    const target = (await this.selectMessagesForThread(thread, context))
+      .find((message) => message.id === itemId);
     if (!target) {
       return;
     }
 
-    await this.deleteMessageRecord(db, target);
+    await this.directDeleteMessage(context, target.subjectUri);
   }
 
   // =========================================================================
@@ -1245,19 +1267,13 @@ WHERE { ${deletePatterns.join(' ')} }
 
       // 如果需要递增 failCount，先查询当前值
       if (options?.incrementFailCount) {
-        const credentials = await db.select()
-          .from(Credential)
-          .where(eq(Credential.id, credentialId));
-
-        const currentCred = credentials[0];
+        const currentCred = await db.findByLocator(Credential, { id: credentialId });
         if (currentCred) {
           updateData.failCount = (currentCred.failCount ?? 0) + 1;
         }
       }
 
-      await db.update(Credential)
-        .set(updateData)
-        .where(eq(Credential.id, credentialId));
+      await db.updateByLocator(Credential, { id: credentialId }, updateData);
 
       this.logger.info(`Credential ${credentialId} status updated to ${status}`);
     } catch (error) {
@@ -1275,14 +1291,12 @@ WHERE { ${deletePatterns.join(' ')} }
     }
 
     try {
-      await db.update(Credential)
-        .set({
-          lastUsedAt: new Date(),
-          failCount: 0,
-          status: CredentialStatus.ACTIVE,
-          rateLimitResetAt: undefined,
-        })
-        .where(eq(Credential.id, credentialId));
+      await db.updateByLocator(Credential, { id: credentialId }, {
+        lastUsedAt: new Date(),
+        failCount: 0,
+        status: CredentialStatus.ACTIVE,
+        rateLimitResetAt: undefined,
+      });
     } catch (error) {
       this.logger.debug(`Failed to record credential success: ${error}`);
     }

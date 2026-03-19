@@ -9,7 +9,6 @@
 import { getLoggerFor } from 'global-logger-factory';
 import { randomBytes } from 'crypto';
 import { eq } from '@undefineds.co/drizzle-solid';
-import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
 
 import { Task as taskTable, TaskStatus as TaskStatusConst } from './schema';
 import type {
@@ -29,7 +28,7 @@ export interface DrizzleTaskQueueOptions {
   /**
    * drizzle-solid 数据库实例
    */
-  db: SolidDatabase<{ task: typeof taskTable }>;
+  db: any;
 }
 
 /**
@@ -38,7 +37,7 @@ export interface DrizzleTaskQueueOptions {
 export class DrizzleTaskQueue implements TaskQueue {
   protected readonly logger = getLoggerFor(this);
   private readonly podBaseUrl: string;
-  private readonly db: SolidDatabase<{ task: typeof taskTable }>;
+  private readonly db: any;
 
   public constructor(options: DrizzleTaskQueueOptions) {
     this.podBaseUrl = options.podBaseUrl.endsWith('/') ? options.podBaseUrl : `${options.podBaseUrl}/`;
@@ -77,13 +76,11 @@ export class DrizzleTaskQueue implements TaskQueue {
    * 获取任务
    */
   public async getTask(taskId: string): Promise<Task | null> {
-    const tasks = await this.db.select().from(taskTable).where(eq(taskTable.id, taskId));
-
-    if (tasks.length === 0) {
+    const task = await this.db.findByLocator(taskTable, { id: taskId });
+    if (!task) {
       return null;
     }
-
-    return this.dbTaskToTask(tasks[0]);
+    return this.dbTaskToTask(task);
   }
 
   /**
@@ -153,7 +150,7 @@ export class DrizzleTaskQueue implements TaskQueue {
       if (updates.error !== undefined) updateData.error = updates.error;
     }
 
-    await this.db.update(taskTable).set(updateData).where(eq(taskTable.id, taskId));
+    await this.db.updateByLocator(taskTable, { id: taskId }, updateData);
 
     this.logger.info(`Task ${taskId} status changed to ${status}`);
   }
@@ -162,7 +159,7 @@ export class DrizzleTaskQueue implements TaskQueue {
    * 删除任务
    */
   public async deleteTask(taskId: string): Promise<void> {
-    await this.db.delete(taskTable).where(eq(taskTable.id, taskId));
+    await this.db.deleteByLocator(taskTable, { id: taskId });
     this.logger.info(`Deleted task ${taskId}`);
   }
 

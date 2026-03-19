@@ -25,7 +25,7 @@ export class CredentialReaderImpl extends CredentialReader {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
       };
-      const db = drizzle(session, { schema });
+      const db: any = drizzle(session, { schema });
 
       // 构建 Provider URI
       const providerUri = `${podBaseUrl}settings/ai/providers.ttl#${providerId}`;

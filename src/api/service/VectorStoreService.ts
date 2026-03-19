@@ -215,11 +215,11 @@ export class VectorStoreService {
       throw new Error('Failed to authenticate with Pod');
     }
 
-    const stores = await db.select().from(VectorStore);
+    const stores = await db.select().from(VectorStore) as any[];
 
     // 排序
     const order = options?.order || 'desc';
-    stores.sort((a, b) => {
+    stores.sort((a: any, b: any) => {
       const aTime = a.createdAt?.getTime() || 0;
       const bTime = b.createdAt?.getTime() || 0;
       return order === 'desc' ? bTime - aTime : aTime - bTime;
@@ -227,7 +227,7 @@ export class VectorStoreService {
 
     // 分页
     const limit = options?.limit || 20;
-    const data = stores.slice(0, limit).map(store => this.buildVectorStoreObject(store.id, {
+    const data = stores.slice(0, limit).map((store: any) => this.buildVectorStoreObject(store.id, {
       name: store.name || '',
       containerUrl: store.container || '',
       chunkingStrategy: store.chunkingStrategy || 'auto',
@@ -252,12 +252,10 @@ export class VectorStoreService {
       throw new Error('Failed to authenticate with Pod');
     }
 
-    const stores = await db.select().from(VectorStore).where(eq(VectorStore.id, id));
-    if (stores.length === 0) {
+    const store = await db.findByLocator(VectorStore, { id });
+    if (!store) {
       throw new Error(`Vector store ${id} not found`);
     }
-
-    const store = stores[0];
 
     // 获取 file_counts（基于 Container 前缀匹配）
     const fileCounts = await this.getFileCounts(store.container || '', auth);
@@ -291,7 +289,7 @@ export class VectorStoreService {
     if (request.name !== undefined) updates.name = request.name;
     if (request.chunking_strategy !== undefined) updates.chunkingStrategy = request.chunking_strategy;
 
-    await db.update(VectorStore).set(updates).where(eq(VectorStore.id, id));
+    await db.updateByLocator(VectorStore, { id }, updates);
 
     return this.getVectorStore(id, auth);
   }
@@ -308,7 +306,7 @@ export class VectorStoreService {
       throw new Error('Failed to authenticate with Pod');
     }
 
-    await db.delete(VectorStore).where(eq(VectorStore.id, id));
+    await db.deleteByLocator(VectorStore, { id });
 
     this.logger.info(`Deleted vector store ${id}`);
 
@@ -361,11 +359,11 @@ export class VectorStoreService {
     if (existingFiles.length > 0) {
       // 文件已存在，更新状态
       fileIndexId = existingFiles[0].id;
-      await db.update(IndexedFile).set({
+      await db.updateByLocator(IndexedFile, { id: fileIndexId }, {
         status: FileIndexStatus.IN_PROGRESS,
         chunkingStrategy,
         indexedAt: new Date(),
-      }).where(eq(IndexedFile.id, fileIndexId));
+      });
     } else {
       // 创建新的索引记录
       fileIndexId = `idx_${randomBytes(8).toString('hex')}`;
@@ -400,11 +398,11 @@ export class VectorStoreService {
       await this.upsertVector(aiConfig.embeddingModel, vectorId, embedding, accessToken);
 
       // 更新索引记录为 completed
-      await db.update(IndexedFile).set({
+      await db.updateByLocator(IndexedFile, { id: fileIndexId }, {
         status: FileIndexStatus.COMPLETED,
         usageBytes: content.length,
         lastError: null,
-      }).where(eq(IndexedFile.id, fileIndexId));
+      });
 
       this.logger.info(`Indexed file ${fileUrl} with model ${aiConfig.embeddingModel}`);
 
@@ -412,10 +410,10 @@ export class VectorStoreService {
     } catch (error) {
       // 更新索引记录为 failed
       const errorMsg = error instanceof Error ? error.message : String(error);
-      await db.update(IndexedFile).set({
+      await db.updateByLocator(IndexedFile, { id: fileIndexId }, {
         status: FileIndexStatus.FAILED,
         lastError: errorMsg,
-      }).where(eq(IndexedFile.id, fileIndexId));
+      });
 
       this.logger.error(`Failed to index file ${fileUrl}: ${errorMsg}`);
       throw error;
@@ -430,10 +428,10 @@ export class VectorStoreService {
     if (!db) return ChunkingStrategy.AUTO;
 
     // 获取所有 VectorStore
-    const allStores = await db.select().from(VectorStore);
+    const allStores = await db.select().from(VectorStore) as any[];
 
     // 找到所有是 fileUrl 前缀的 VectorStore
-    const matchedStores = allStores.filter(store => {
+    const matchedStores = allStores.filter((store: any) => {
       if (!store.container) return false;
       const containerUrl = store.container.endsWith('/') ? store.container : store.container + '/';
       return fileUrl.startsWith(containerUrl);
@@ -444,7 +442,7 @@ export class VectorStoreService {
     }
 
     // 找最长前缀（最近的父级）
-    matchedStores.sort((a, b) => (b.container?.length || 0) - (a.container?.length || 0));
+    matchedStores.sort((a: any, b: any) => (b.container?.length || 0) - (a.container?.length || 0));
     return matchedStores[0].chunkingStrategy || ChunkingStrategy.AUTO;
   }
 
@@ -486,7 +484,7 @@ export class VectorStoreService {
     }
 
     // 删除索引记录
-    await db.delete(IndexedFile).where(eq(IndexedFile.id, fileRecord.id));
+    await db.deleteByLocator(IndexedFile, { id: fileRecord.id });
 
     this.logger.info(`Removed file index ${fileUrl}`);
     return { deleted: true };
@@ -505,9 +503,9 @@ export class VectorStoreService {
     }
 
     // 获取所有索引文件，过滤属于该 Container 的
-    const allFiles = await db.select().from(IndexedFile);
+    const allFiles = await db.select().from(IndexedFile) as any[];
     const containerPrefix = containerUrl.endsWith('/') ? containerUrl : containerUrl + '/';
-    const files = allFiles.filter(f => f.fileUrl?.startsWith(containerPrefix));
+    const files = allFiles.filter((f: any) => f.fileUrl?.startsWith(containerPrefix));
 
     const counts = {
       in_progress: 0,
@@ -600,10 +598,10 @@ export class VectorStoreService {
     if (!db) return [];
 
     // 获取所有 VectorStore
-    const allStores = await db.select().from(VectorStore);
+    const allStores = await db.select().from(VectorStore) as any[];
 
     // 过滤出 container 是 fileUrl 前缀的 VectorStore
-    const matchedStores = allStores.filter(store => {
+    const matchedStores = allStores.filter((store: any) => {
       if (!store.container) return false;
       // 确保 container URL 以 / 结尾
       const containerUrl = store.container.endsWith('/') ? store.container : store.container + '/';
@@ -611,7 +609,7 @@ export class VectorStoreService {
     });
 
     // 转换为 VectorStoreObject
-    return matchedStores.map(store => this.buildVectorStoreObject(store.id, {
+    return matchedStores.map((store: any) => this.buildVectorStoreObject(store.id, {
       name: store.name || '',
       containerUrl: store.container || '',
       chunkingStrategy: store.chunkingStrategy || 'auto',
@@ -769,7 +767,7 @@ export class VectorStoreService {
     };
   }
 
-  private async getPodDb(auth: AuthContext) {
+  private async getPodDb(auth: AuthContext): Promise<any | null> {
     if (!isSolidAuth(auth) || !auth.clientId || !auth.clientSecret) {
       this.logger.debug('No clientId or clientSecret in auth context');
       return null;
@@ -787,7 +785,7 @@ export class VectorStoreService {
         throw new Error('Login failed');
       }
 
-      return drizzle({ fetch: session.fetch, info: { webId: session.info.webId, isLoggedIn: true } } as any, { schema });
+      return drizzle({ fetch: session.fetch, info: { webId: session.info.webId, isLoggedIn: true } } as any, { schema }) as any;
     } catch (error) {
       this.logger.error(`Failed to login: ${error}`);
       return null;
@@ -803,7 +801,7 @@ export class VectorStoreService {
         eq(Credential.service, ServiceType.AI),
       );
 
-      const activeCred = credentials.find(c => c.status === CredentialStatus.ACTIVE);
+      const activeCred = credentials.find((c: any) => c.status === CredentialStatus.ACTIVE);
       if (!activeCred || !activeCred.apiKey) return undefined;
 
       // 获取 provider 信息
@@ -812,7 +810,13 @@ export class VectorStoreService {
 
       if (activeCred.provider) {
         const providers = await db.select().from(Provider);
-        const provider = providers.find(p => activeCred.provider?.includes(p.id));
+        const providerByUri = new Map<string, any>();
+        for (const p of providers) {
+          const uri = (p as any)['@id'] as string | undefined;
+          if (uri) providerByUri.set(uri, p);
+          providerByUri.set(p.id, p);
+        }
+        const provider = providerByUri.get(activeCred.provider);
         if (provider) {
           baseUrl = provider.baseUrl || undefined;
           proxyUrl = provider.proxyUrl || undefined;
@@ -822,7 +826,7 @@ export class VectorStoreService {
       return {
         provider: activeCred.id,
         apiKey: activeCred.apiKey,
-        baseUrl: activeCred.baseUrl || baseUrl,
+        baseUrl,
         proxyUrl,
       };
     } catch (error) {
@@ -840,12 +844,12 @@ export class VectorStoreService {
 
     try {
       const configs = await db.select().from(AIConfig);
-      const config = configs.find(c => c.id === 'config');
+      const config = configs.find((c: any) => c.id === 'config');
 
       if (!config || !config.embeddingModel) {
         // 如果没有配置，尝试使用默认模型
         const models = await db.select().from(Model);
-        const defaultModel = models.find(m => m.modelType === 'embedding') || models[0];
+        const defaultModel = models.find((m: any) => m.modelType === 'embedding') || models[0];
         if (defaultModel) {
           return {
             embeddingModel: defaultModel.id,
@@ -894,17 +898,17 @@ export class VectorStoreService {
     try {
       // 检查配置是否已存在
       const configs = await db.select().from(AIConfig);
-      const existingConfig = configs.find(c => c.id === 'config');
+      const existingConfig = configs.find((c: any) => c.id === 'config');
 
       if (existingConfig) {
         // 更新现有配置
-        await db.update(AIConfig).set({
+        await db.updateByLocator(AIConfig, { id: 'config' }, {
           embeddingModel: modelUri,
           previousModel: modelChanged ? `${podBaseUrl}settings/ai/models.ttl#${currentModel}` : existingConfig.previousModel,
           migrationStatus: modelChanged ? MigrationStatus.IN_PROGRESS : existingConfig.migrationStatus,
           migrationProgress: modelChanged ? 0 : existingConfig.migrationProgress,
           updatedAt: new Date(),
-        }).where(eq(AIConfig.id, 'config'));
+        });
       } else {
         // 创建新配置
         await db.insert(AIConfig).values({
@@ -954,11 +958,11 @@ export class VectorStoreService {
 
       if (totalFiles === 0) {
         // 无文件需要迁移
-        await db.update(AIConfig).set({
+        await db.updateByLocator(AIConfig, { id: 'config' }, {
           migrationStatus: MigrationStatus.COMPLETED,
           migrationProgress: 100,
           updatedAt: new Date(),
-        }).where(eq(AIConfig.id, 'config'));
+        });
         return;
       }
 
@@ -979,27 +983,27 @@ export class VectorStoreService {
 
         // 更新迁移进度
         const progress = Math.round(((completedFiles + failedFiles) / totalFiles) * 100);
-        await db.update(AIConfig).set({
+        await db.updateByLocator(AIConfig, { id: 'config' }, {
           migrationProgress: progress,
           updatedAt: new Date(),
-        }).where(eq(AIConfig.id, 'config'));
+        });
       }
 
       // 标记迁移完成
       const finalStatus = failedFiles === 0 ? MigrationStatus.COMPLETED : MigrationStatus.FAILED;
-      await db.update(AIConfig).set({
+      await db.updateByLocator(AIConfig, { id: 'config' }, {
         migrationStatus: finalStatus,
         migrationProgress: 100,
         updatedAt: new Date(),
-      }).where(eq(AIConfig.id, 'config'));
+      });
 
       this.logger.info(`Migration completed: ${completedFiles} success, ${failedFiles} failed`);
     } catch (error) {
       this.logger.error(`Migration error: ${error}`);
-      await db.update(AIConfig).set({
+      await db.updateByLocator(AIConfig, { id: 'config' }, {
         migrationStatus: MigrationStatus.FAILED,
         updatedAt: new Date(),
-      }).where(eq(AIConfig.id, 'config'));
+      });
     }
   }
 
