@@ -76,3 +76,14 @@ openspec/
 
 # Runtime generated config
 .xpod/runtime/
+
+# Local scratch outputs
+/ckstore-*/
+/signal-*/
+/issuer-discovery-*/
+/standalone-lite-*/
+/postgres:/
+/test/
+/test_doc_mode_*
+/test_fragment_mode_*
+/undefineds.co-xpod-*.tgz
