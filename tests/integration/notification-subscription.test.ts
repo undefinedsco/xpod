@@ -85,8 +85,8 @@ suite('Solid Notification Subscription (Integration)', () => {
         body: JSON.stringify(subscriptionBody),
       });
 
-      // In standalone profile, unauthenticated validation may accept topic format without checking resource existence.
-      expect([200, 401, 404]).toContain(response.status);
+      // Standalone profile may reject the topic earlier during request validation.
+      expect([200, 400, 401, 404]).toContain(response.status);
     });
 
     it('should reject subscription with invalid content type (422)', async () => {

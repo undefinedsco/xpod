@@ -11,7 +11,18 @@ import type {
   ChatKitReq,
   StreamingReq,
   NonStreamingReq,
+  ThreadCreateParams,
+  ThreadAddUserMessageParams,
+  ThreadAddClientToolOutputParams,
+  ThreadRetryAfterItemParams,
+  ThreadCustomActionParams,
+  ThreadGetByIdParams,
+  ItemsListParams,
+  ItemFeedbackParams,
+  ThreadUpdateParams,
+  ThreadDeleteParams,
   ThreadMetadata,
+  ThreadRef,
   ThreadItem,
   UserMessageItem,
   AssistantMessageItem,
@@ -26,9 +37,13 @@ import type {
   ClientToolCallItem,
 } from './types';
 import {
+  DEFAULT_THREAD_CHAT_ID,
+  getChatIdFromThreadMetadata,
+  getThreadIdFromRef,
   isStreamingReq,
   generateId,
   nowTimestamp,
+  toThreadRef,
   extractUserMessageText,
 } from './types';
 import { PtyThreadRuntime, type PtyRuntimeConfig, type RunnerType } from './runtime/PtyThreadRuntime';
@@ -209,7 +224,7 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.create - Create a new thread and optionally respond to initial message
    */
   private async *handleThreadsCreate(
-    params: { input?: { content: UserMessageContent[]; inference_options?: any } },
+    params: ThreadCreateParams,
     context: TContext,
     metadata?: Record<string, unknown>,
   ): AsyncIterable<ThreadStreamEvent> {
@@ -222,7 +237,7 @@ export class ChatKitService<TContext = StoreContext> {
       status: { type: 'active' },
       created_at: now,
       updated_at: now,
-      metadata: metadata && Object.keys(metadata).length > 0 ? metadata : undefined,
+      metadata: this.normalizeThreadMetadata(metadata, params.chat_id),
     };
 
     await this.store.saveThread(thread, context);
@@ -235,8 +250,9 @@ export class ChatKitService<TContext = StoreContext> {
 
     // If input provided, add user message and respond
     if (params.input) {
-      const userMessage = await this.createUserMessage(threadId, params.input.content, context, thread);
-      await this.store.addThreadItem(threadId, userMessage, context);
+      const threadRef = this.threadRefFromThread(thread);
+      const userMessage = await this.createUserMessage(threadRef, params.input.content, context, thread);
+      await this.store.addThreadItem(threadRef, userMessage, context);
 
       yield {
         type: 'thread.item.added',
@@ -257,14 +273,15 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.add_user_message - Add a user message and respond
    */
   private async *handleThreadsAddUserMessage(
-    params: { thread_id: string; input: { content: UserMessageContent[]; inference_options?: any } },
+    params: ThreadAddUserMessageParams,
     context: TContext,
   ): AsyncIterable<ThreadStreamEvent> {
-    const thread = await this.store.loadThread(params.thread_id, context);
+    const threadRef = this.threadRefFromParams(params);
+    const thread = await this.store.loadThread(threadRef, context);
 
     // Create and save user message
-    const userMessage = await this.createUserMessage(params.thread_id, params.input.content, context);
-    await this.store.addThreadItem(params.thread_id, userMessage, context);
+    const userMessage = await this.createUserMessage(threadRef, params.input.content, context);
+    await this.store.addThreadItem(threadRef, userMessage, context);
 
     yield {
       type: 'thread.item.added',
@@ -277,18 +294,20 @@ export class ChatKitService<TContext = StoreContext> {
     } as ThreadItemDoneEvent;
 
     // Generate response (AI or PTY)
-    yield* this.respond(thread, userMessage, context, params.input.inference_options);
+    yield* this.respond(thread, userMessage, context, params.input.inference_options, threadRef);
   }
 
   /**
    * Handle threads.add_client_tool_output - Handle tool output (not fully implemented)
    */
   private async *handleThreadsAddClientToolOutput(
-    params: { thread_id: string; item_id: string; output: string },
+    params: ThreadAddClientToolOutputParams,
     context: TContext,
   ): AsyncIterable<ThreadStreamEvent> {
+    const threadRef = this.threadRefFromParams(params);
+    const threadId = getThreadIdFromRef(threadRef);
     // Update the tool call item with output
-    const item = await this.store.loadItem(params.thread_id, params.item_id, context);
+    const item = await this.store.loadItem(threadRef, params.item_id, context);
     
     if (item.type === 'client_tool_call') {
       const updatedItem = {
@@ -296,7 +315,7 @@ export class ChatKitService<TContext = StoreContext> {
         output: params.output,
         status: 'completed' as const,
       };
-      await this.store.saveItem(params.thread_id, updatedItem, context);
+      await this.store.saveItem(threadRef, updatedItem, context);
 
       yield {
         type: 'thread.item.done',
@@ -305,7 +324,7 @@ export class ChatKitService<TContext = StoreContext> {
 
       // ACP tool-call continuation: respond to the pending ACP request and stream follow-up output.
       try {
-        const thread = await this.store.loadThread(params.thread_id, context);
+        const thread = await this.store.loadThread(threadRef, context);
         const ptyConfig = this.getPtyConfig(thread);
         let assistantItem: AssistantMessageItem | undefined;
         let assistantText = '';
@@ -313,7 +332,7 @@ export class ChatKitService<TContext = StoreContext> {
         const idleMs = ptyConfig?.idleMs ?? 500;
         for await (
           const ev of this.ptyRuntime.respondToRequest(
-            params.thread_id,
+            threadId,
             item.call_id,
             params.output,
             { idleMs, authWaitMs: ptyConfig?.authWaitMs },
@@ -324,13 +343,13 @@ export class ChatKitService<TContext = StoreContext> {
               const assistantId = this.store.generateItemId('assistant_message', thread, context);
               assistantItem = {
                 id: assistantId,
-                thread_id: params.thread_id,
+                thread_id: threadId,
                 type: 'assistant_message',
                 content: [{ type: 'output_text', text: '' }],
                 status: 'in_progress',
                 created_at: nowTimestamp(),
               };
-              await this.store.addThreadItem(params.thread_id, assistantItem, context);
+              await this.store.addThreadItem(threadRef, assistantItem, context);
               yield { type: 'thread.item.added', item: assistantItem } as ThreadItemAddedEvent;
             }
 
@@ -366,7 +385,7 @@ export class ChatKitService<TContext = StoreContext> {
           if (ev.type === 'tool_call') {
             const toolItem: ClientToolCallItem = {
               id: this.store.generateItemId('client_tool_call', thread, context),
-              thread_id: params.thread_id,
+              thread_id: threadId,
               type: 'client_tool_call',
               name: ev.name,
               arguments: ev.arguments,
@@ -374,7 +393,7 @@ export class ChatKitService<TContext = StoreContext> {
               status: 'pending',
               created_at: nowTimestamp(),
             };
-            await this.store.addThreadItem(params.thread_id, toolItem, context);
+            await this.store.addThreadItem(threadRef, toolItem, context);
             yield { type: 'thread.item.added', item: toolItem } as ThreadItemAddedEvent;
           }
         }
@@ -385,7 +404,7 @@ export class ChatKitService<TContext = StoreContext> {
             content: [{ type: 'output_text', text: assistantText }],
             status: 'completed',
           };
-          await this.store.saveItem(params.thread_id, completedItem, context);
+          await this.store.saveItem(threadRef, completedItem, context);
           yield { type: 'thread.item.done', item: completedItem } as ThreadItemDoneEvent;
         }
       } catch {
@@ -398,13 +417,14 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.retry_after_item - Retry generation after a specific item
    */
   private async *handleThreadsRetryAfterItem(
-    params: { thread_id: string; item_id: string },
+    params: ThreadRetryAfterItemParams,
     context: TContext,
   ): AsyncIterable<ThreadStreamEvent> {
-    const thread = await this.store.loadThread(params.thread_id, context);
+    const threadRef = this.threadRefFromParams(params);
+    const thread = await this.store.loadThread(threadRef, context);
     
     // Load all items and find the last user message before the retry point
-    const items = await this.store.loadThreadItems(params.thread_id, undefined, 1000, 'asc', context);
+    const items = await this.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
     
     let lastUserMessage: UserMessageItem | undefined;
     for (const item of items.data) {
@@ -417,7 +437,7 @@ export class ChatKitService<TContext = StoreContext> {
     }
 
     if (lastUserMessage) {
-      yield* this.respond(thread, lastUserMessage, context);
+      yield* this.respond(thread, lastUserMessage, context, undefined, threadRef);
     }
   }
 
@@ -425,7 +445,7 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.custom_action - Handle custom widget actions (not fully implemented)
    */
   private async *handleThreadsCustomAction(
-    params: { thread_id: string; item_id: string; action: string; data?: unknown },
+    params: ThreadCustomActionParams,
     context: TContext,
   ): AsyncIterable<ThreadStreamEvent> {
     this.logger.info(`Custom action: ${params.action} on item ${params.item_id}`);
@@ -440,11 +460,12 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.get_by_id
    */
   private async handleThreadsGetById(
-    params: { thread_id: string },
+    params: ThreadGetByIdParams,
     context: TContext,
   ): Promise<Thread> {
-    const thread = await this.store.loadThread(params.thread_id, context);
-    const items = await this.store.loadThreadItems(params.thread_id, undefined, 50, 'asc', context);
+    const threadRef = this.threadRefFromParams(params);
+    const thread = await this.store.loadThread(threadRef, context);
+    const items = await this.store.loadThreadItems(threadRef, undefined, 50, 'asc', context);
     
     return {
       ...thread,
@@ -471,11 +492,11 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle items.list
    */
   private async handleItemsList(
-    params: { thread_id: string; limit?: number; order?: string; after?: string },
+    params: ItemsListParams,
     context: TContext,
   ): Promise<Page<ThreadItem>> {
     return this.store.loadThreadItems(
-      params.thread_id,
+      this.threadRefFromParams(params),
       params.after,
       params.limit ?? 50,
       params.order ?? 'asc',
@@ -487,7 +508,7 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle items.feedback (acknowledge only for now)
    */
   private async handleItemsFeedback(
-    params: { thread_id: string; item_ids: string[]; feedback: 'positive' | 'negative' },
+    params: ItemFeedbackParams,
     context: TContext,
   ): Promise<{ success: boolean }> {
     this.logger.info(`Feedback received: ${params.feedback} for items ${params.item_ids.join(', ')}`);
@@ -527,10 +548,11 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.update
    */
   private async handleThreadsUpdate(
-    params: { thread_id: string; title?: string },
+    params: ThreadUpdateParams,
     context: TContext,
   ): Promise<ThreadMetadata> {
-    const thread = await this.store.loadThread(params.thread_id, context);
+    const threadRef = this.threadRefFromParams(params);
+    const thread = await this.store.loadThread(threadRef, context);
     
     if (params.title !== undefined) {
       thread.title = params.title;
@@ -545,10 +567,10 @@ export class ChatKitService<TContext = StoreContext> {
    * Handle threads.delete
    */
   private async handleThreadsDelete(
-    params: { thread_id: string },
+    params: ThreadDeleteParams,
     context: TContext,
   ): Promise<{ success: boolean }> {
-    await this.store.deleteThread(params.thread_id, context);
+    await this.store.deleteThread(this.threadRefFromParams(params), context);
     return { success: true };
   }
 
@@ -565,6 +587,7 @@ export class ChatKitService<TContext = StoreContext> {
     userMessage: UserMessageItem,
     context: TContext,
     inferenceOptions?: any,
+    threadRef: ThreadRef = this.threadRefFromThread(thread),
   ): AsyncIterable<ThreadStreamEvent> {
     const ptyConfig = this.getPtyConfig(thread);
     if (ptyConfig) {
@@ -573,7 +596,7 @@ export class ChatKitService<TContext = StoreContext> {
     }
 
     // Build conversation history
-    const messages = await this.buildConversationHistory(thread.id, context);
+    const messages = await this.buildConversationHistory(threadRef, context);
     
     // Create assistant message item
     const assistantItemId = this.store.generateItemId('assistant_message', thread, context);
@@ -586,7 +609,7 @@ export class ChatKitService<TContext = StoreContext> {
       created_at: nowTimestamp(),
     };
 
-    await this.store.addThreadItem(thread.id, assistantItem, context);
+    await this.store.addThreadItem(threadRef, assistantItem, context);
 
     // Emit item added event
     yield {
@@ -622,7 +645,7 @@ export class ChatKitService<TContext = StoreContext> {
       // Update item with full content
       assistantItem.content = [{ type: 'output_text', text: fullText }];
       assistantItem.status = 'completed';
-      await this.store.saveItem(thread.id, assistantItem, context);
+      await this.store.saveItem(threadRef, assistantItem, context);
 
       // Emit item done event
       yield {
@@ -634,7 +657,7 @@ export class ChatKitService<TContext = StoreContext> {
 
       assistantItem.content = [{ type: 'output_text', text: 'Sorry, an error occurred while generating the response.' }];
       assistantItem.status = 'incomplete';
-      await this.store.saveItem(thread.id, assistantItem, context);
+      await this.store.saveItem(threadRef, assistantItem, context);
 
       yield {
         type: 'thread.item.done',
@@ -712,6 +735,8 @@ export class ChatKitService<TContext = StoreContext> {
       return;
     }
 
+    const threadRef = this.threadRefFromThread(thread);
+
     await this.ptyRuntime.ensureStarted(thread.id, ptyConfig);
 
     const assistantId = this.store.generateItemId('assistant_message', thread, context);
@@ -724,7 +749,7 @@ export class ChatKitService<TContext = StoreContext> {
       created_at: nowTimestamp(),
     };
 
-    await this.store.addThreadItem(thread.id, assistantItem, context);
+    await this.store.addThreadItem(threadRef, assistantItem, context);
     yield { type: 'thread.item.added', item: assistantItem } as ThreadItemAddedEvent;
 
     let fullText = '';
@@ -785,7 +810,7 @@ export class ChatKitService<TContext = StoreContext> {
           status: 'pending',
           created_at: nowTimestamp(),
         };
-        await this.store.addThreadItem(thread.id, toolItem, context);
+        await this.store.addThreadItem(threadRef, toolItem, context);
         yield { type: 'thread.item.added', item: toolItem } as ThreadItemAddedEvent;
 
         // Pause: client must call threads.add_client_tool_output to continue.
@@ -794,7 +819,7 @@ export class ChatKitService<TContext = StoreContext> {
           content: [{ type: 'output_text', text: fullText }],
           status: 'incomplete',
         };
-        await this.store.saveItem(thread.id, incomplete, context);
+        await this.store.saveItem(threadRef, incomplete, context);
         yield { type: 'thread.item.done', item: incomplete } as ThreadItemDoneEvent;
         return;
       }
@@ -806,7 +831,7 @@ export class ChatKitService<TContext = StoreContext> {
         content: [{ type: 'output_text', text: fullText }],
         status: 'incomplete',
       };
-      await this.store.saveItem(thread.id, incomplete, context);
+      await this.store.saveItem(threadRef, incomplete, context);
       yield { type: 'thread.item.done', item: incomplete } as ThreadItemDoneEvent;
       return;
     }
@@ -816,7 +841,7 @@ export class ChatKitService<TContext = StoreContext> {
       content: [{ type: 'output_text', text: fullText }],
       status: 'completed',
     };
-    await this.store.saveItem(thread.id, completedItem, context);
+    await this.store.saveItem(threadRef, completedItem, context);
     yield { type: 'thread.item.done', item: completedItem } as ThreadItemDoneEvent;
   }
 
@@ -824,7 +849,7 @@ export class ChatKitService<TContext = StoreContext> {
    * Build conversation history from thread items
    */
   private async buildConversationHistory(
-    threadId: string,
+    thread: ThreadRef,
     context: TContext,
   ): Promise<Array<{ role: 'system' | 'user' | 'assistant'; content: string }>> {
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
@@ -833,7 +858,7 @@ export class ChatKitService<TContext = StoreContext> {
     messages.push({ role: 'system', content: this.systemPrompt });
 
     // Load thread items
-    const items = await this.store.loadThreadItems(threadId, undefined, 100, 'asc', context);
+    const items = await this.store.loadThreadItems(thread, undefined, 100, 'asc', context);
 
     for (const item of items.data) {
       if (item.type === 'user_message') {
@@ -859,13 +884,14 @@ export class ChatKitService<TContext = StoreContext> {
    * Create a user message item
    */
   private async createUserMessage(
-    threadId: string,
+    threadRef: ThreadRef,
     content: UserMessageContent[],
     context: TContext,
     thread?: ThreadMetadata,
   ): Promise<UserMessageItem> {
     // Use provided thread or load it
-    const threadMeta = thread || await this.store.loadThread(threadId, context);
+    const threadMeta = thread || await this.store.loadThread(threadRef, context);
+    const threadId = getThreadIdFromRef(threadRef);
     const itemId = this.store.generateItemId('user_message', threadMeta, context);
 
     return {
@@ -888,5 +914,28 @@ export class ChatKitService<TContext = StoreContext> {
       title += '...';
     }
     return title || 'New Chat';
+  }
+
+  private normalizeThreadMetadata(
+    metadata: Record<string, unknown> | undefined,
+    chatId?: string,
+  ): Record<string, unknown> | undefined {
+    const normalized = { ...(metadata ?? {}) };
+    normalized.chat_id = chatId
+      ?? (typeof normalized.chat_id === 'string' && normalized.chat_id.length > 0
+        ? normalized.chat_id
+        : DEFAULT_THREAD_CHAT_ID);
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
+  }
+
+  private threadRefFromParams(params: { thread_id: string; chat_id?: string }): ThreadRef {
+    return toThreadRef(params);
+  }
+
+  private threadRefFromThread(thread: ThreadMetadata): ThreadRef {
+    return {
+      thread_id: thread.id,
+      chat_id: getChatIdFromThreadMetadata(thread),
+    };
   }
 }

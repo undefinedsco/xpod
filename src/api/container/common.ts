@@ -98,6 +98,7 @@ export function registerCommonServices(
       return new ApiServer({
         port: config.port,
         host: config.host,
+        socketPath: config.socketPath,
         authMiddleware,
         corsOrigins: config.corsOrigins,
       });

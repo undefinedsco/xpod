@@ -12,8 +12,8 @@ import { Supervisor } from '../supervisor/Supervisor';
 import { applyEnv, loadEnvFile } from './env-utils';
 import { getFreePort } from './port-finder';
 import { GatewayProxy } from './Proxy';
-import { registerSocketFetchOrigin } from './socket-fetch';
-import { registerSocketHttpOrigin } from './socket-http';
+import { fetchViaSocket } from './socket-fetch';
+import { registerSocketOriginShims } from './socket-shim';
 import { removeSocketPath } from './socket-utils';
 
 export interface XpodRuntimeOptions {
@@ -125,6 +125,7 @@ function resolveRuntimeShorthand(
       ['nodeId', envValue('XPOD_NODE_ID')],
       ['nodeToken', envValue('XPOD_NODE_TOKEN')],
       ['serviceToken', envValue('XPOD_SERVICE_TOKEN')],
+      ['seedConfig', envValue('CSS_SEED_CONFIG')],
     ]),
     baseUrl,
     rootFilePath,
@@ -250,6 +251,9 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
   fs.mkdirSync(rootFilePath, { recursive: true });
 
   const socketsRoot = path.join(runtimeRoot, 'sockets');
+  if (transport === 'socket') {
+    fs.mkdirSync(socketsRoot, { recursive: true });
+  }
   const ports = {
     gateway: undefined as number | undefined,
     css: undefined as number | undefined,
@@ -263,14 +267,15 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
 
   if (transport === 'socket') {
     sockets.gateway = path.resolve(options.gatewaySocketPath ?? path.join(socketsRoot, 'gateway.sock'));
+    sockets.css = path.resolve(options.cssSocketPath ?? path.join(socketsRoot, 'css.sock'));
     sockets.api = path.resolve(options.apiSocketPath ?? path.join(socketsRoot, 'api.sock'));
-    ports.gateway = options.gatewayPort ?? await getFreePort(5600);
-    ports.css = options.cssPort ?? await getFreePort((ports.gateway ?? 5600) + 1);
-    ports.api = options.apiPort ?? await getFreePort((ports.css ?? 5601) + 1);
+    ports.gateway = options.gatewayPort ?? 0;
+    ports.css = options.cssPort ?? 0;
+    ports.api = options.apiPort ?? 0;
   } else {
-    ports.gateway = options.gatewayPort ?? await getFreePort(5600);
-    ports.css = options.cssPort ?? await getFreePort((ports.gateway ?? 5600) + 1);
-    ports.api = options.apiPort ?? await getFreePort((ports.css ?? 5601) + 1);
+    ports.gateway = options.gatewayPort ?? await getFreePort(5600, bindHost);
+    ports.css = options.cssPort ?? await getFreePort((ports.gateway ?? 5600) + 1, bindHost);
+    ports.api = options.apiPort ?? await getFreePort((ports.css ?? 5601) + 1, bindHost);
   }
 
   const baseUrl = ensureTrailingSlash(
@@ -323,11 +328,8 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
     logLevel,
   );
 
-  const unregisterSocketFetch = transport === 'socket'
-    ? registerSocketFetchOrigin(baseUrl, sockets.gateway!)
-    : async(): Promise<void> => undefined;
-  const unregisterSocketHttp = transport === 'socket'
-    ? registerSocketHttpOrigin(baseUrl, sockets.gateway!)
+  const unregisterSocketShims = transport === 'socket'
+    ? registerSocketOriginShims(baseUrl, sockets.gateway!)
     : async(): Promise<void> => undefined;
 
   const supervisor = new Supervisor({ handleProcessSignals: false });
@@ -382,8 +384,7 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
         removeSocketPath(sockets.api);
       }
 
-      await unregisterSocketFetch();
-      await unregisterSocketHttp();
+      await unregisterSocketShims();
       await closeAllIdentityConnections();
       restoreRuntimeEnv();
     })();
@@ -429,8 +430,10 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       },
     });
     await cssApp.start();
-    await waitForTcpReady(ports.css!, '127.0.0.1');
-    supervisor.addLog('css', 'info', `CSS started (http://127.0.0.1:${ports.css})`);
+    if (transport === 'port') {
+      await waitForTcpReady(ports.css!, '127.0.0.1');
+    }
+    supervisor.addLog('css', 'info', `CSS started (${transport === 'socket' ? `unix://${sockets.css}` : `http://127.0.0.1:${ports.css}`})`);
     supervisor.setStatus('css', 'running', { startTime: Date.now() });
 
     supervisor.setStatus('api', 'starting', { startTime: Date.now() });
@@ -450,7 +453,7 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       baseUrl,
     });
     gateway.setTargets({
-      css: { url: `http://127.0.0.1:${ports.css}` },
+      css: transport === 'socket' ? { socketPath: sockets.css } : { url: `http://127.0.0.1:${ports.css}` },
       api: transport === 'socket' ? { socketPath: sockets.api } : { url: `http://127.0.0.1:${ports.api}` },
     });
     await gateway.start();
@@ -467,6 +470,9 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       ports,
       sockets,
       fetch: async(input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        if (transport === 'socket' && sockets.gateway) {
+          return fetchViaSocket(sockets.gateway, baseUrl, input, init);
+        }
         if (typeof input === 'string' || input instanceof URL) {
           return fetch(new URL(String(input), baseUrl), init);
         }

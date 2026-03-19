@@ -8,10 +8,10 @@ const CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
 const CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
 const LOCAL_PORT = Number(process.env.LOCAL_PORT || '5737');
 const STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
-const COMPOSE_PROJECT = process.env.XPOD_CLUSTER_PROJECT || 'xpod-cluster-test';
+const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
 const composeArgs = ['compose', '-p', COMPOSE_PROJECT, '-f', 'docker-compose.cluster.yml'];
-const runtimeRoot = path.resolve('.test-data/cluster-runtime');
-const cloudDb = process.env.XPOD_CLUSTER_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
+const runtimeRoot = path.resolve('.test-data/full-runtime');
+const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
 const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
@@ -100,7 +100,7 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
         if (Array.isArray(body)) {
           const names = new Set(body.map((entry) => entry?.name).filter(Boolean));
           if (names.has('css') && names.has('api')) {
-            console.log(`[cluster] ${name} ready at ${baseUrl}`);
+            console.log(`[full] ${name} ready at ${baseUrl}`);
             return;
           }
         }
@@ -112,10 +112,10 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
-  throw new Error(`[cluster] ${name} not ready: ${statusUrl}`);
+  throw new Error(`[full] ${name} not ready: ${statusUrl}`);
 }
 
-async function startClusterRuntimes(): Promise<XpodRuntimeHandle[]> {
+async function startFullRuntimes(): Promise<XpodRuntimeHandle[]> {
   const runtimes: XpodRuntimeHandle[] = [];
   const commonCloudEnv = {
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
@@ -204,7 +204,7 @@ async function startClusterRuntimes(): Promise<XpodRuntimeHandle[]> {
   return runtimes;
 }
 
-async function waitForClusterPorts(): Promise<void> {
+async function waitForFullPorts(): Promise<void> {
   await Promise.all([
     waitForService('cloud', `http://localhost:${CLOUD_PORT}`),
     waitForService('cloud_b', `http://localhost:${CLOUD_B_PORT}`),
@@ -220,13 +220,13 @@ async function main(): Promise<void> {
     CSS_BASE_URL: `http://localhost:${STANDALONE_PORT}`,
   };
   const runtimes: XpodRuntimeHandle[] = [];
-  const reuseExistingInfra = process.env.XPOD_CLUSTER_USE_EXISTING_INFRA === 'true' || await shouldReuseExistingInfra();
+  const reuseExistingInfra = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true' || await shouldReuseExistingInfra();
   const startedInfra = !reuseExistingInfra;
 
   if (startedInfra) {
     await runCommand('docker', [...composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
   } else {
-    console.log('[cluster] Reusing existing postgres/redis/minio on localhost.');
+    console.log('[full] Reusing existing postgres/redis/minio on localhost.');
   }
 
   let testExitCode = 1;
@@ -234,14 +234,15 @@ async function main(): Promise<void> {
     if (startedInfra) {
       await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
     }
-    runtimes.push(...await startClusterRuntimes());
-    await waitForClusterPorts();
+    runtimes.push(...await startFullRuntimes());
+    await waitForFullPorts();
 
-    await runCommand('yarn', ['test:setup'], { env: sharedEnv });
+    await runCommand('bun', ['run', 'test:setup'], { env: sharedEnv });
 
     testExitCode = await runCommand(
-      'yarn',
+      'bun',
       [
+        'run',
         'vitest',
         '--run',
         ...testTargets,
@@ -258,7 +259,7 @@ async function main(): Promise<void> {
     );
   } finally {
     await Promise.allSettled(runtimes.map((runtime) => runtime.stop()));
-    if (startedInfra && process.env.XPOD_CLUSTER_KEEP_RUNNING !== 'true') {
+    if (startedInfra && process.env.XPOD_FULL_KEEP_RUNNING !== 'true') {
       await runCommand('docker', [...composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
     }
   }

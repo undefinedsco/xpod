@@ -2,8 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import dotenv from 'dotenv';
-import { registerSocketFetchOrigin } from '../src/runtime/socket-fetch';
-import { registerSocketHttpOrigin } from '../src/runtime/socket-http';
+import { registerSocketOriginShims } from '../src/runtime/socket-shim';
 
 // Make test runs deterministic:
 // - If .env.local exists, load it.
@@ -20,7 +19,7 @@ if (!fs.existsSync(envPath)) {
     );
   }
 } else {
-  dotenv.config({ path: envPath, override: false });
+  dotenv.config({ path: envPath, override: isIntegrationRun });
 }
 
 const socketOriginMapRaw = process.env.XPOD_SOCKET_ORIGIN_MAP;
@@ -30,14 +29,12 @@ if (isIntegrationRun && socketOriginMapRaw) {
     if (!origin || !socketPath) {
       continue;
     }
-    registerSocketFetchOrigin(origin, socketPath);
-    registerSocketHttpOrigin(origin, socketPath);
+    registerSocketOriginShims(origin, socketPath);
   }
 } else {
   const socketPath = process.env.XPOD_GATEWAY_SOCKET_PATH;
   const socketBaseUrl = process.env.CSS_BASE_URL;
   if (isIntegrationRun && socketPath && socketBaseUrl) {
-    registerSocketFetchOrigin(socketBaseUrl, socketPath);
-    registerSocketHttpOrigin(socketBaseUrl, socketPath);
+    registerSocketOriginShims(socketBaseUrl, socketPath);
   }
 }

@@ -49,6 +49,57 @@ export interface Thread extends ThreadMetadata {
   items: Page<ThreadItem>;
 }
 
+export const DEFAULT_THREAD_CHAT_ID = 'default';
+
+export type HttpIri = `http://${string}` | `https://${string}`;
+
+export interface ThreadLocatorRef {
+  thread_id: string;
+  chat_id: string;
+}
+
+export interface ThreadIriRef {
+  thread_id: HttpIri;
+  chat_id?: never;
+}
+
+export type ThreadRef = ThreadLocatorRef | ThreadIriRef;
+
+export function isHttpIri(value: string): value is HttpIri {
+  return value.startsWith('http://') || value.startsWith('https://');
+}
+
+export function toThreadRef(params: { thread_id: string; chat_id?: string }): ThreadRef {
+  if (isHttpIri(params.thread_id)) {
+    return { thread_id: params.thread_id };
+  }
+  if (params.chat_id) {
+    return { thread_id: params.thread_id, chat_id: params.chat_id };
+  }
+  throw new Error(`chat_id is required when thread_id "${params.thread_id}" is not a full thread IRI`);
+}
+
+export function getThreadIdFromRef(thread: ThreadRef): string {
+  if ('chat_id' in thread) {
+    return thread.thread_id;
+  }
+  try {
+    const url = new URL(thread.thread_id);
+    return url.hash.startsWith('#')
+      ? decodeURIComponent(url.hash.slice(1))
+      : thread.thread_id;
+  } catch {
+    return thread.thread_id;
+  }
+}
+
+export function getChatIdFromThreadMetadata(thread: ThreadMetadata): string {
+  const chatId = thread.metadata?.chat_id;
+  return typeof chatId === 'string' && chatId.length > 0
+    ? chatId
+    : DEFAULT_THREAD_CHAT_ID;
+}
+
 // ============================================================================
 // Thread Item Types
 // ============================================================================
@@ -292,9 +343,7 @@ export interface BaseReq {
 }
 
 // Thread Requests
-export interface ThreadGetByIdParams {
-  thread_id: string;
-}
+export type ThreadGetByIdParams = ThreadRef;
 
 export interface ThreadsGetByIdReq extends BaseReq {
   type: 'threads.get_by_id';
@@ -302,6 +351,7 @@ export interface ThreadsGetByIdReq extends BaseReq {
 }
 
 export interface ThreadCreateParams {
+  chat_id?: string;
   input?: UserMessageInput;
 }
 
@@ -327,62 +377,55 @@ export interface ThreadsListReq extends BaseReq {
   params: ThreadListParams;
 }
 
-export interface ThreadAddUserMessageParams {
-  thread_id: string;
+export type ThreadAddUserMessageParams = ThreadRef & {
   input: UserMessageInput;
-}
+};
 
 export interface ThreadsAddUserMessageReq extends BaseReq {
   type: 'threads.add_user_message';
   params: ThreadAddUserMessageParams;
 }
 
-export interface ThreadAddClientToolOutputParams {
-  thread_id: string;
+export type ThreadAddClientToolOutputParams = ThreadRef & {
   item_id: string;
   output: string;
-}
+};
 
 export interface ThreadsAddClientToolOutputReq extends BaseReq {
   type: 'threads.add_client_tool_output';
   params: ThreadAddClientToolOutputParams;
 }
 
-export interface ThreadCustomActionParams {
-  thread_id: string;
+export type ThreadCustomActionParams = ThreadRef & {
   item_id: string;
   action: string;
   data?: unknown;
-}
+};
 
 export interface ThreadsCustomActionReq extends BaseReq {
   type: 'threads.custom_action';
   params: ThreadCustomActionParams;
 }
 
-export interface ThreadRetryAfterItemParams {
-  thread_id: string;
+export type ThreadRetryAfterItemParams = ThreadRef & {
   item_id: string;
-}
+};
 
 export interface ThreadsRetryAfterItemReq extends BaseReq {
   type: 'threads.retry_after_item';
   params: ThreadRetryAfterItemParams;
 }
 
-export interface ThreadUpdateParams {
-  thread_id: string;
+export type ThreadUpdateParams = ThreadRef & {
   title?: string;
-}
+};
 
 export interface ThreadsUpdateReq extends BaseReq {
   type: 'threads.update';
   params: ThreadUpdateParams;
 }
 
-export interface ThreadDeleteParams {
-  thread_id: string;
-}
+export type ThreadDeleteParams = ThreadRef;
 
 export interface ThreadsDeleteReq extends BaseReq {
   type: 'threads.delete';
@@ -390,23 +433,21 @@ export interface ThreadsDeleteReq extends BaseReq {
 }
 
 // Items Requests
-export interface ItemsListParams {
-  thread_id: string;
+export type ItemsListParams = ThreadRef & {
   limit?: number;
   order?: 'asc' | 'desc';
   after?: string;
-}
+};
 
 export interface ItemsListReq extends BaseReq {
   type: 'items.list';
   params: ItemsListParams;
 }
 
-export interface ItemFeedbackParams {
-  thread_id: string;
+export type ItemFeedbackParams = ThreadRef & {
   item_ids: string[];
   feedback: FeedbackKind;
-}
+};
 
 export type FeedbackKind = 'positive' | 'negative';
 

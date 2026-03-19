@@ -75,6 +75,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     edition,
     port: apiPort,
     host: process.env.API_HOST ?? '0.0.0.0',
+    socketPath: process.env.API_SOCKET_PATH,
     databaseUrl: process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? '',
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),

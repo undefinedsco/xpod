@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatKitV1Routes } from '../../src/api/handlers/ChatKitV1Handler';
+import { DEFAULT_THREAD_CHAT_ID } from '../../src/api/chatkit/types';
 import { InMemoryStore } from '../../src/api/chatkit/store';
 import type { StoreContext } from '../../src/api/chatkit/store';
 import type { ThreadMetadata, UserMessageItem } from '../../src/api/chatkit/types';
@@ -70,7 +71,7 @@ describe('ChatKitV1Handler Integration', () => {
       created_at: now,
       content: [{ type: 'input_text', text: 'hello' }],
     };
-    await store.addThreadItem(thread.id, item, ctx);
+    await store.addThreadItem({ thread_id: thread.id, chat_id: DEFAULT_THREAD_CHAT_ID }, item, ctx);
   });
 
   afterAll(async () => {
@@ -90,7 +91,7 @@ describe('ChatKitV1Handler Integration', () => {
   });
 
   it('retrieves thread at /v1/chatkit/threads/:id', async () => {
-    const res = await fetch(baseUrl + '/v1/chatkit/threads/thread_test_1', {
+    const res = await fetch(`${baseUrl}/v1/chatkit/threads/thread_test_1?chat_id=${DEFAULT_THREAD_CHAT_ID}`, {
       headers: { Authorization: 'Bearer test-token' },
     });
     expect(res.status).toBe(200);
@@ -102,7 +103,7 @@ describe('ChatKitV1Handler Integration', () => {
   });
 
   it('lists items at /v1/chatkit/threads/:id/items', async () => {
-    const res = await fetch(baseUrl + '/v1/chatkit/threads/thread_test_1/items?limit=50', {
+    const res = await fetch(`${baseUrl}/v1/chatkit/threads/thread_test_1/items?chat_id=${DEFAULT_THREAD_CHAT_ID}&limit=50`, {
       headers: { Authorization: 'Bearer test-token' },
     });
     expect(res.status).toBe(200);
@@ -110,5 +111,14 @@ describe('ChatKitV1Handler Integration', () => {
     expect(json.object).toBe('list');
     expect(json.data.length).toBeGreaterThanOrEqual(1);
     expect(json.data[0].object).toBe('chatkit.thread_item');
+  });
+
+  it('returns 400 when bare thread id misses chat_id', async () => {
+    const res = await fetch(baseUrl + '/v1/chatkit/threads/thread_test_1', {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain('chat_id is required');
   });
 });

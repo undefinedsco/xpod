@@ -19,5 +19,6 @@ export { GatewayProxy } from './Proxy';
 export { getFreePort } from './port-finder';
 export { applyEnv, loadEnvFile } from './env-utils';
 export { registerSocketFetchOrigin } from './socket-fetch';
+export { registerSocketOriginShims } from './socket-shim';
 export { startXpodRuntime } from './XpodRuntime';
 export type { XpodRuntimeOptions, XpodRuntimeHandle } from './XpodRuntime';
