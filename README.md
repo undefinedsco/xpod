@@ -12,49 +12,54 @@ This is achieved through **Pods** (Personal Online Data stores)—portable web c
 
 ## Installation
 
-Ensure you have [Node.js](https://nodejs.org/) and [Yarn](https://yarnpkg.com/) installed:
+Ensure you have [Bun](https://bun.sh/) and [Node.js 22+](https://nodejs.org/) installed.
+Bun is the primary package manager and task runner; Xpod currently targets Node 22+ and keeps the engine range open through `<27` for upcoming Node 26 compatibility.
+
+If you are using the published npm package as an end user, Node alone is still enough at runtime. Bun is only the source-build/dev mainline.
+
+Current SQLite mainline uses native runtimes (`node:sqlite` / `bun:sqlite`). Encrypted SQLite is not supported in the current mainline.
 
 ```bash
-yarn install
-yarn build
+bun install
+bun run build
 ```
 
 
 ## Single-File Build & Local npm Release
 
-- Build a single-file CLI entry (Node 22 target):
+- Build a single-file CLI entry (Node 22–26 target):
   ```bash
-  yarn build:single
+  bun run build:single
   ```
-  Output: `dist/xpod.single.cjs` (also exposed as `xpod-single` in `bin`).
+  Output: `.artifacts/xpod-single.cjs` (standalone artifact, not included in the npm package).
 
 - Create a local-tag npm publish (auto bumps to `-local.<timestamp>`):
   ```bash
-  yarn publish:local
+  bun run publish:local
   ```
 
 - Dry-run publish (no real upload, package.json auto-restored):
   ```bash
-  yarn publish:local:dry
+  bun run publish:local:dry
   ```
 
 - Publish stable release (`latest` tag by default):
   ```bash
-  yarn publish:release
+  bun run publish:release
   ```
 
 - Dry-run stable release publish:
   ```bash
-  yarn publish:release:dry
+  bun run publish:release:dry
   ```
 
 ## Quick Start
 
 | Mode | Command | Description |
 | --- | --- | --- |
-| Local | `yarn local` | SQLite + local disk, no external dependencies |
-| Cloud | `yarn cloud` | PostgreSQL + MinIO + Redis, production ready |
-| Dev | `yarn dev` | Alias for local mode |
+| Local | `bun run local` | SQLite + local disk, no external dependencies |
+| Cloud | `bun run cloud` | PostgreSQL + MinIO + Redis, production ready |
+| Dev | `bun run dev` | Alias for local mode |
 
 Configure environment:
 ```bash
@@ -97,6 +102,7 @@ await xpod.stop();
 
 Notes:
 - In socket mode, the logical base URL is `http://localhost/`, but real traffic goes through a Unix socket.
+- Under Bun or Windows, prefer `transport: 'port'` unless you explicitly need socket transport.
 - This mode is ideal for CI and integration tests that should avoid external port conflicts.
 - Docker/cluster integration tests should still use real service startup.
 
@@ -105,7 +111,7 @@ Notes:
 Install Xpod as a dev dependency in your test project:
 
 ```bash
-yarn add -D @undefineds.co/xpod
+bun add -d @undefineds.co/xpod
 ```
 
 Recommended entry points:
@@ -158,20 +164,38 @@ Typical downstream use cases:
 - Use `startXpodRuntime()` when you need auth mode, custom storage paths, or explicit runtime options.
 - Keep Docker/cluster tests on real services; use library mode for local/lite test paths.
 
+## Testing
+
+```bash
+# Local in-process integration path
+bun run test:integration:lite
+
+# Full integration path with real postgres/redis/minio
+bun run test:integration:full
+
+# Bun runtime smoke
+bun run test:bun:runtime
+```
+
+Notes:
+- `test:integration:lite` starts Xpod in-process and refreshes test credentials before running `vitest`.
+- `test:bun:runtime` is the current Bun gate; it covers open runtime plus auth+vector flow.
+- If `sqlite-vec` cannot be loaded under Bun, vector search falls back to the plain SQLite implementation.
+
 ## Single-File Packaging
 
 Build a self-extracting single-file launcher:
 
 ```bash
-yarn build:single:standalone
+bun run build:single:standalone
 ```
 
-Output file: `dist/xpod-single.cjs`
+Output file: `.artifacts/xpod-single.cjs`
 
 Run it directly (requires Node.js):
 
 ```bash
-node dist/xpod-single.cjs --mode local
+node .artifacts/xpod-single.cjs --mode local
 ```
 
 On first start, it extracts runtime files to cache (default `~/.xpod/single-file-cache/`; override with `XPOD_SINGLE_CACHE_DIR`) and reuses that cache on subsequent launches.
@@ -180,8 +204,8 @@ On first start, it extracts runtime files to cache (default `~/.xpod/single-file
 
 Xpod supports two primary deployment models, functioning like a Personal OS or a Multi-User Mainframe:
 
-1.  **Self-Hosted (Personal OS)**: Run Xpod on your laptop (`yarn local`) or private server. You have exclusive control over the hardware and kernel. Ideal for personal agents and maximum privacy.
-2.  **Managed Hosting (Multi-User OS)**: Deploy Xpod as a shared server (`yarn cloud`) hosting thousands of Pods. Similar to a Unix mainframe with many users (`/home/alice`, `/home/bob`), Xpod strictly enforces isolation between Pods using WebIDs and ACLs. Users share infrastructure but retain ownership of their data and can migrate their Pods to other instances.
+1.  **Self-Hosted (Personal OS)**: Run Xpod on your laptop (`bun run local`) or private server. You have exclusive control over the hardware and kernel. Ideal for personal agents and maximum privacy.
+2.  **Managed Hosting (Multi-User OS)**: Deploy Xpod as a shared server (`bun run cloud`) hosting thousands of Pods. Similar to a Unix mainframe with many users (`/home/alice`, `/home/bob`), Xpod strictly enforces isolation between Pods using WebIDs and ACLs. Users share infrastructure but retain ownership of their data and can migrate their Pods to other instances.
 
 ## The "Everything is a Resource" Architecture
 

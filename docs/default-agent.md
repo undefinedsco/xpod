@@ -368,5 +368,8 @@ X-Xpod-Default-Agent-Reason: no_user_config | config_invalid | rate_limited
 - **Codex ACP 与 OpenRouter 兼容性**  
   `codex-acp` 在 OpenRouter 的 Responses 兼容层上不稳定；需要明确官方支持 base（如 OpenAI）或由 xpod `/v1/responses` 统一适配后再接入 codex runner。
 
-- **Full 集成语义收敛**  
-  当前 lite 已稳定，full 仍需结合 Docker/cluster 稳定性做最终口径收敛。
+- **Bun 覆盖继续扩展**  
+  当前已补上 Bun runtime smoke（open runtime + auth/vector 闭环），后续如需更强覆盖，优先继续补 direct smoke，而不是依赖 `vitest --bun`。
+
+- **Cloud Chat 端到端验收**  
+  待 cloud 部署具备 chat 能力后，补一条带真实 provider 密钥的端到端验证：用户在 Pod 中配置 API Key 后，`ChatKit`、`/v1/chat/completions` 与默认 Agent 聊天链路应可直接打通。

@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "build:app": "tsc -b && vite build",
     "build:dashboard": "tsc -b && BUILD_TARGET=dashboard vite build",
-    "build:all": "yarn build:app && yarn build:dashboard",
+    "build:all": "bun run build:app && bun run build:dashboard",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -43,5 +43,6 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4"
-  }
+  },
+  "packageManager": "bun@1.3.8"
 }
