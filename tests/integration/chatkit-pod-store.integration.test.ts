@@ -16,7 +16,7 @@ import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import type { StoreContext } from '../../src/api/chatkit/store';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
-import { getClientCredentialsToken, setupAccount, type AccountSetup } from './helpers/solidAccount';
+import { getClientCredentialsToken, getConfiguredAccount, type AccountSetup } from './helpers/solidAccount';
 
 // Mock AI Provider - simulates AI responses
 class MockAiProvider implements AiProvider {
@@ -54,9 +54,9 @@ suite('ChatKit PodStore Integration', () => {
   let podUrl: string;
 
   beforeAll(async () => {
-    const createdAccount = await setupAccount(solidBaseUrl, 'ckstore');
+    const createdAccount = getConfiguredAccount(solidBaseUrl);
     if (!createdAccount) {
-      throw new Error(`Failed to setup account on ${solidBaseUrl}`);
+      throw new Error(`Missing integration credentials for ${solidBaseUrl}`);
     }
     account = createdAccount;
     podUrl = account.podUrl;
@@ -92,8 +92,13 @@ suite('ChatKit PodStore Integration', () => {
 
   const truncate = (s: string, max = 800): string => (s.length <= max ? s : s.slice(0, max) + '...<truncated>');
 
+  const threadParams = (threadId: string, chatId?: string): Record<string, unknown> => (
+    chatId ? { thread_id: threadId, chat_id: chatId } : { thread_id: threadId }
+  );
+
   const waitForThreadItemsCount = async (
     threadId: string,
+    chatId: string | undefined,
     minCount: number,
     options: { timeoutMs?: number; intervalMs?: number } = {},
   ): Promise<any[]> => {
@@ -106,7 +111,7 @@ suite('ChatKit PodStore Integration', () => {
     while (Date.now() - startedAt < timeoutMs) {
       const request = JSON.stringify({
         type: 'items.list',
-        params: { thread_id: threadId, limit: 50 },
+        params: { ...threadParams(threadId, chatId), limit: 50 },
       });
       const result = await service.process(request, testContext);
       if (result.type === 'non_streaming') {
@@ -129,6 +134,7 @@ suite('ChatKit PodStore Integration', () => {
 
   describe('Thread CRUD Operations', () => {
     let threadId: string;
+    let chatId: string;
 
     it('should create a new thread and store in Pod', async () => {
       const request = JSON.stringify({
@@ -159,8 +165,10 @@ suite('ChatKit PodStore Integration', () => {
         expect(createdEvent).toBeDefined();
         expect(createdEvent.thread.id).toBeDefined();
         expect(createdEvent.thread.status.type).toBe('active');
+        expect(createdEvent.thread.metadata?.chat_id).toBeDefined();
 
         threadId = createdEvent.thread.id;
+        chatId = createdEvent.thread.metadata.chat_id;
       }
     });
 
@@ -169,7 +177,7 @@ suite('ChatKit PodStore Integration', () => {
 
       const request = JSON.stringify({
         type: 'threads.get_by_id',
-        params: { thread_id: threadId },
+        params: threadParams(threadId, chatId),
       });
 
       const result = await service.process(request, testContext);
@@ -179,6 +187,36 @@ suite('ChatKit PodStore Integration', () => {
         const data = JSON.parse(result.json);
         expect(data.id).toBe(threadId);
         expect(data.status.type).toBe('active');
+      }
+    });
+
+    it('should retrieve thread from Pod with a fresh store instance', async () => {
+      expect(threadId).toBeDefined();
+
+      const freshStore = new PodChatKitStore({
+        tokenEndpoint: `${account.issuer.replace(/\/$/, '')}/.oidc/token`,
+      });
+      const freshService = new ChatKitService({
+        store: freshStore,
+        aiProvider: new MockAiProvider(),
+        systemPrompt: 'You are a helpful test assistant.',
+      });
+      const freshContext = {
+        ...testContext,
+      } as StoreContext;
+
+      const request = JSON.stringify({
+        type: 'threads.get_by_id',
+        params: threadParams(threadId, chatId),
+      });
+
+      const result = await freshService.process(request, freshContext);
+      expect(result.type).toBe('non_streaming');
+
+      if (result.type === 'non_streaming') {
+        const data = JSON.parse(result.json);
+        expect(data.id).toBe(threadId);
+        expect(data.metadata?.chat_id).toBeDefined();
       }
     });
 
@@ -202,7 +240,7 @@ suite('ChatKit PodStore Integration', () => {
     it('should update thread title in Pod', async () => {
       const request = JSON.stringify({
         type: 'threads.update',
-        params: { thread_id: threadId, title: 'Updated Test Thread' },
+        params: { ...threadParams(threadId, chatId), title: 'Updated Test Thread' },
       });
 
       const result = await service.process(request, testContext);
@@ -216,7 +254,7 @@ suite('ChatKit PodStore Integration', () => {
       // Verify update persisted
       const getRequest = JSON.stringify({
         type: 'threads.get_by_id',
-        params: { thread_id: threadId },
+        params: threadParams(threadId, chatId),
       });
 
       const getResult = await service.process(getRequest, testContext);
@@ -229,6 +267,7 @@ suite('ChatKit PodStore Integration', () => {
 
   describe('Message Flow with AI Response', () => {
     let threadId: string;
+    let chatId: string;
 
     beforeAll(async () => {
       // Create a thread for message tests
@@ -240,14 +279,20 @@ suite('ChatKit PodStore Integration', () => {
       const result = await service.process(request, testContext);
       if (result.type === 'streaming') {
         const decoder = new TextDecoder();
+        const events: any[] = [];
         for await (const chunk of result.stream()) {
           const text = decoder.decode(chunk);
-          const match = text.match(/"thread\.created".*?"id":"([^"]+)"/);
-          if (match) {
-            threadId = match[1];
-            break;
+          const lines = text.split('\n\n').filter(Boolean);
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = JSON.parse(line.slice(6));
+              events.push(data);
+            }
           }
         }
+        const createdEvent = events.find((e) => e.type === 'thread.created');
+        threadId = createdEvent?.thread.id;
+        chatId = createdEvent?.thread.metadata?.chat_id;
       }
     });
 
@@ -257,7 +302,7 @@ suite('ChatKit PodStore Integration', () => {
       const request = JSON.stringify({
         type: 'threads.add_user_message',
         params: {
-          thread_id: threadId,
+          ...threadParams(threadId, chatId),
           input: {
             content: [{ type: 'input_text', text: 'Hello, what is the weather today?' }],
           },
@@ -310,7 +355,7 @@ suite('ChatKit PodStore Integration', () => {
     });
 
     it('should retrieve messages from Pod', async () => {
-      const items = await waitForThreadItemsCount(threadId, 2);
+      const items = await waitForThreadItemsCount(threadId, chatId, 2);
       expect(items).toBeInstanceOf(Array);
       expect(items.length).toBeGreaterThanOrEqual(2); // At least user + assistant
 
@@ -330,7 +375,7 @@ suite('ChatKit PodStore Integration', () => {
       const request = JSON.stringify({
         type: 'threads.add_user_message',
         params: {
-          thread_id: threadId,
+          ...threadParams(threadId, chatId),
           input: {
             content: [{ type: 'input_text', text: 'Tell me more about that.' }],
           },
@@ -348,7 +393,7 @@ suite('ChatKit PodStore Integration', () => {
       }
 
       // Verify all messages are stored
-      const items = await waitForThreadItemsCount(threadId, 4);
+      const items = await waitForThreadItemsCount(threadId, chatId, 4);
       expect(items.length).toBeGreaterThanOrEqual(4); // 2 user + 2 assistant
     }, 15000);
   });
@@ -395,11 +440,12 @@ suite('ChatKit PodStore Integration', () => {
         // Get thread ID and verify persistence
         const createdEvent = events.find((e) => e.type === 'thread.created');
         const threadId = createdEvent?.thread.id;
+        const chatId = createdEvent?.thread.metadata?.chat_id;
 
         if (threadId) {
           const getRequest = JSON.stringify({
             type: 'threads.get_by_id',
-            params: { thread_id: threadId },
+            params: threadParams(threadId, chatId),
           });
 
           const getResult = await service.process(getRequest, testContext);
@@ -411,7 +457,7 @@ suite('ChatKit PodStore Integration', () => {
             expect(data.items.data).toBeInstanceOf(Array);
 
             if (data.items.data.length < 2) {
-              const items = await waitForThreadItemsCount(threadId, 2);
+              const items = await waitForThreadItemsCount(threadId, chatId, 2);
               expect(items.length).toBeGreaterThanOrEqual(2);
             } else {
               expect(data.items.data.length).toBeGreaterThanOrEqual(2);
@@ -436,26 +482,32 @@ suite('ChatKit PodStore Integration', () => {
 
       const createResult = await service.process(createRequest, testContext);
       let threadId: string = '';
+      let chatId: string = '';
 
       if (createResult.type === 'streaming') {
         const decoder = new TextDecoder();
         // Must consume the entire stream to ensure all operations complete
         for await (const chunk of createResult.stream()) {
           const text = decoder.decode(chunk);
-          const match = text.match(/"thread\.created".*?"id":"([^"]+)"/);
-          if (match && !threadId) {
-            threadId = match[1];
+          const lines = text.split('\n\n').filter(Boolean);
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = JSON.parse(line.slice(6));
+            if (data.type === 'thread.created' && !threadId) {
+              threadId = data.thread.id;
+              chatId = data.thread.metadata?.chat_id ?? '';
+            }
           }
-          // Continue consuming the stream, don't break early
         }
       }
 
       expect(threadId).toBeTruthy();
+      expect(chatId).toBeTruthy();
 
       // Delete the thread
       const deleteRequest = JSON.stringify({
         type: 'threads.delete',
-        params: { thread_id: threadId },
+        params: threadParams(threadId, chatId),
       });
 
       const deleteResult = await service.process(deleteRequest, testContext);
@@ -469,7 +521,7 @@ suite('ChatKit PodStore Integration', () => {
       // Verify thread is deleted - should throw either "Thread not found" or container 404
       const getRequest = JSON.stringify({
         type: 'threads.get_by_id',
-        params: { thread_id: threadId },
+        params: threadParams(threadId, chatId),
       });
 
       // The query might throw "Thread not found" or a 404 error if the container was cleaned up
@@ -488,7 +540,7 @@ suite('ChatKit PodStore Integration', () => {
     it('should handle non-existent thread', async () => {
       const request = JSON.stringify({
         type: 'threads.get_by_id',
-        params: { thread_id: 'non-existent-thread-id' },
+        params: { thread_id: 'non-existent-thread-id', chat_id: 'default' },
       });
 
       await expect(service.process(request, testContext)).rejects.toThrow('Thread not found');
@@ -602,7 +654,6 @@ suite('ChatKit PodStore Integration', () => {
     it('should update credential status to rate limited', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('@undefineds.co/drizzle-solid');
 
       // Create a credential for status update test
       await db.insert(Credential).values({
@@ -625,16 +676,15 @@ suite('ChatKit PodStore Integration', () => {
       );
 
       // Verify the update
-      const credentials = await db.select().from(Credential).where(eq(Credential.id, 'cred-status-test'));
-      expect(credentials.length).toBe(1);
-      expect(credentials[0].status).toBe(CredentialStatus.RATE_LIMITED);
-      expect(credentials[0].failCount).toBe(1);
+      const credential = await db.findByLocator(Credential, { id: 'cred-status-test' });
+      expect(credential).toBeTruthy();
+      expect(credential.status).toBe(CredentialStatus.RATE_LIMITED);
+      expect(credential.failCount).toBe(1);
     });
 
     it('should record credential success and reset fail count', async () => {
       const db = await (store as any).getDb(testContext);
       const { Credential } = await import('../../src/credential/schema/tables');
-      const { eq } = await import('@undefineds.co/drizzle-solid');
 
       // Create a credential with some failures
       await db.insert(Credential).values({
@@ -651,10 +701,10 @@ suite('ChatKit PodStore Integration', () => {
       await store.recordCredentialSuccess(testContext, 'cred-success-test');
 
       // Verify the update
-      const credentials = await db.select().from(Credential).where(eq(Credential.id, 'cred-success-test'));
-      expect(credentials.length).toBe(1);
-      expect(credentials[0].status).toBe(CredentialStatus.ACTIVE);
-      expect(credentials[0].failCount).toBe(0);
+      const credential = await db.findByLocator(Credential, { id: 'cred-success-test' });
+      expect(credential).toBeTruthy();
+      expect(credential.status).toBe(CredentialStatus.ACTIVE);
+      expect(credential.failCount).toBe(0);
     });
 
     it('should include proxyUrl in AI config when set', async () => {

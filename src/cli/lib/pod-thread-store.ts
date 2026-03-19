@@ -38,7 +38,7 @@ function createDb(session: Session) {
   return drizzle({
     fetch: session.fetch,
     info: session.info,
-  } as any);
+  } as any) as any;
 }
 
 function buildThreadUri(session: Session, chatId: string, threadId: string): string {

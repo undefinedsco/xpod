@@ -112,7 +112,7 @@ export const Thread = podTable(
   'Thread',
   {
     id: string('id').primaryKey(),
-    chatId: uri('chatId').predicate(SIOC.has_parent).reference(Chat),
+    chatId: uri('chatId').predicate(SIOC.has_parent).link(Chat),
     title: string('title'),
     status: string('status'),
     /** 工作目录路径，可变（运行时可切换） */
@@ -151,10 +151,10 @@ export const Message = podTable(
   'Message',
   {
     id: string('id').primaryKey(),
-    // chat 是真实 Chat 关联；当前版本依然传 bare chat ID 以参与 subjectTemplate 路径构建。
-    chat: uri('chat').predicate(WF.message).reference(Chat),
-    // thread 是真实 Thread 关联，持久化时传完整 Thread URI。
-    thread: uri('thread').predicate(SIOC.has_container).reference(Thread),
+    // chat 是真实 Chat 关联；写入时仍可传 bare chat ID，由 .link(Chat) 负责解析完整 URI。
+    chat: uri('chat').predicate(WF.message).link(Chat),
+    // thread 是真实 Thread 关联；写入时可传完整 URI，读取时会按 Thread 模板还原成 bare ID。
+    thread: uri('thread').predicate(SIOC.has_container).link(Thread),
     maker: uri('maker').predicate(FOAF.maker),
     role: string('role'),
     content: string('content').predicate(SIOC.content),

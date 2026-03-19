@@ -14,7 +14,7 @@
  */
 
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq, and } from 'drizzle-solid';
+import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
 import type { IAgentExecutor, ExecutorType, AiCredential, ProviderConfig, BaseExecutorOptions } from './types';
 import { AgentProvider } from './schema/tables';
 import { Credential } from '../credential/schema/tables';
@@ -69,12 +69,10 @@ export class AgentExecutorFactory {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
       };
-      const db = drizzle(session, { schema });
+      const db: any = drizzle(session, { schema });
 
       // 1. 读取供应商配置
-      const provider = await db.query.agentProvider.findFirst({
-        where: eq(AgentProvider.id, providerId),
-      });
+      const provider = await db.findByLocator(AgentProvider, { id: providerId });
 
       if (!provider) {
         this.logger.debug(`Agent provider not found: ${providerId}`);
@@ -155,7 +153,7 @@ export class AgentExecutorFactory {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
       };
-      const db = drizzle(session, { schema });
+      const db: any = drizzle(session, { schema });
 
       const providers = await db.query.agentProvider.findMany();
 

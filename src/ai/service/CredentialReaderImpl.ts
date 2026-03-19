@@ -1,5 +1,5 @@
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq, and } from 'drizzle-solid';
+import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
 import { CredentialReader } from './CredentialReader';
 import type { AiCredential } from './types';
 import { Credential } from '../../credential/schema/tables';
@@ -25,7 +25,7 @@ export class CredentialReaderImpl extends CredentialReader {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
       };
-      const db = drizzle(session, { schema });
+      const db: any = drizzle(session, { schema });
 
       // 构建 Provider URI
       const providerUri = `${podBaseUrl}settings/ai/providers.ttl#${providerId}`;

@@ -9,7 +9,7 @@
  */
 
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq } from 'drizzle-solid';
+import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import type { IAgentExecutor, ExecutorType, ExecutorConfig, AiCredential } from './types';
 import { AgentConfig as AgentConfigTable, AgentStatus } from './schema/agent-config';
 import { AgentProvider } from './schema/tables';
@@ -130,12 +130,10 @@ export class AgentManager {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
       };
-      const db = drizzle(session, { schema });
+      const db: any = drizzle(session, { schema });
 
       // 1. 读取 Agent 配置
-      const agentConfig = await db.query.agentConfig.findFirst({
-        where: eq(AgentConfigTable.id, agentId),
-      });
+      const agentConfig = await db.findByLocator(AgentConfigTable, { id: agentId });
 
       if (!agentConfig) {
         this.logger.warn(`Agent config not found: ${agentId}`);
@@ -162,9 +160,7 @@ export class AgentManager {
       }
 
       // 3. 读取 Provider 配置
-      const provider = await db.query.agentProvider.findFirst({
-        where: eq(AgentProvider.id, providerId),
-      });
+      const provider = await db.findByLocator(AgentProvider, { id: providerId });
 
       if (!provider) {
         this.logger.error(`Provider not found: ${providerId}`);
@@ -307,24 +303,19 @@ export class AgentManager {
         info: { isLoggedIn: true, webId },
         fetch: authenticatedFetch,
       };
-      const db = drizzle(session, { schema });
+      const db: any = drizzle(session, { schema });
 
       const now = new Date().toISOString();
 
       // 先查询是否存在，再决定插入或更新
-      const existing = await db.query.agentStatus.findFirst({
-        where: eq(AgentStatus.id, agentId),
-      });
+      const existing = await db.findByLocator(AgentStatus, { id: agentId });
 
       if (existing) {
-        await db
-          .update(AgentStatus)
-          .set({
-            status,
-            lastActivityAt: now,
-            errorMessage: errorMessage ?? undefined,
-          })
-          .where(eq(AgentStatus.id, agentId));
+        await db.updateByLocator(AgentStatus, { id: agentId }, {
+          status,
+          lastActivityAt: now,
+          errorMessage: errorMessage ?? undefined,
+        });
       } else {
         await db.insert(AgentStatus).values({
           id: agentId,

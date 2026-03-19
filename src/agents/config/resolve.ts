@@ -14,7 +14,7 @@
  */
 
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq } from 'drizzle-solid';
+import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import { parseAgentMd } from './parse-agent-md';
 import { AgentMetaSchema } from './agent-meta-schema';
 import { AgentProvider } from '../schema/tables';
@@ -63,7 +63,7 @@ export async function resolveAgentConfig(
     info: { isLoggedIn: true, webId },
     fetch: authenticatedFetch,
   };
-  const db = drizzle(session, {
+  const db: any = drizzle(session, {
     schema: {
       agentMeta: metaTable,
       agentProvider: AgentProvider,
@@ -95,9 +95,7 @@ export async function resolveAgentConfig(
     return null;
   }
 
-  const provider = await db.query.agentProvider.findFirst({
-    where: eq(AgentProvider.id, providerId),
-  });
+  const provider = await db.findByLocator(AgentProvider, { id: providerId });
   if (!provider) {
     logger.error(`Provider not found: ${providerId}`);
     return null;
@@ -112,9 +110,7 @@ export async function resolveAgentConfig(
   if (credentialUri) {
     const credentialId = credentialUri.split('#').pop();
     if (credentialId) {
-      const cred = await db.query.credential.findFirst({
-        where: eq(Credential.id, credentialId),
-      });
+      const cred = await db.findByLocator(Credential, { id: credentialId });
       if (cred) {
         apiKey = (cred as any).apiKey ?? '';
         baseUrl = (cred as any).baseUrl ?? baseUrl;
@@ -129,9 +125,7 @@ export async function resolveAgentConfig(
   if (modelUri) {
     const modelId = modelUri.split('#').pop();
     if (modelId) {
-      const modelRecord = await db.query.model.findFirst({
-        where: eq(Model.id, modelId),
-      });
+      const modelRecord = await db.findByLocator(Model, { id: modelId });
       if (modelRecord) {
         modelName = modelRecord.id;
       }
