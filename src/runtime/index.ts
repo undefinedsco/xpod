@@ -55,7 +55,6 @@ export type {
   GatewayRuntimeRunner,
   GatewayRuntimeRunnerStartOptions,
 } from './runner/types';
-export { registerSocketOriginShims } from './socket-shim';
 export { startXpodRuntime } from './XpodRuntime';
 export type {
   XpodRuntimeHandle,
