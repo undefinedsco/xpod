@@ -1,10 +1,13 @@
-import { AppRunner, type App } from '@solid/community-server';
+import type { App } from '@solid/community-server';
+import { ensureBunUndiciCompat } from '../../compat/ensureBunUndiciCompat';
 import type { CssRuntimeRunner, CssRuntimeRunnerStartOptions } from '../types';
 
 export class CommunitySolidServerCssRunner implements CssRuntimeRunner {
   public readonly name = 'community-solid-server';
 
   public async start(options: CssRuntimeRunnerStartOptions): Promise<App> {
+    ensureBunUndiciCompat(options.packageRoot);
+    const { AppRunner } = await import('@solid/community-server');
     const runner = new AppRunner();
     const app = await runner.create({
       config: options.configPath,

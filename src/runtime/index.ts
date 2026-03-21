@@ -1,4 +1,5 @@
 export { PACKAGE_ROOT, findPackageRoot } from './package-root';
+export { ensureBunUndiciCompat } from './compat/ensureBunUndiciCompat';
 export {
   buildRuntimeEnv,
   buildRuntimeShorthand,

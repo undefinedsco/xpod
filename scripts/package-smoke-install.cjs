@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
@@ -30,6 +31,30 @@ function resolveInstallSpec(input) {
   return normalizeInstallSpec(input);
 }
 
+function createSmokeTarball(installSpec) {
+  if (!fs.existsSync(installSpec) || !installSpec.endsWith('.tgz')) {
+    return installSpec;
+  }
+
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-package-smoke-'));
+  const unpackDir = path.join(tempRoot, 'unpack');
+  const packageDir = path.join(unpackDir, 'package');
+  const packageJsonPath = path.join(packageDir, 'package.json');
+  const smokeTarballPath = path.join(tempRoot, `${path.basename(installSpec, '.tgz')}.smoke.tgz`);
+
+  fs.mkdirSync(unpackDir, { recursive: true });
+  execFileSync('tar', [ '-xzf', installSpec, '-C', unpackDir ]);
+
+  if (fs.existsSync(packageJsonPath)) {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    delete packageJson.optionalDependencies;
+    fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+  }
+
+  execFileSync('tar', [ '-czf', smokeTarballPath, '-C', unpackDir, 'package' ]);
+  return smokeTarballPath;
+}
+
 function toInstallerSpec(installSpec, packageManager) {
   if (packageManager === 'bun' && fs.existsSync(installSpec)) {
     return pathToFileURL(installSpec).href;
@@ -45,6 +70,10 @@ function runCommand(packageManager, args, cwd, cacheDir) {
     env.BUN_INSTALL_CACHE_DIR = cacheDir;
   } else {
     env.npm_config_cache = cacheDir;
+    env.npm_config_prefer_offline = env.npm_config_prefer_offline || 'true';
+    env.npm_config_audit = 'false';
+    env.npm_config_fund = 'false';
+    env.npm_config_maxsockets = env.npm_config_maxsockets || '1';
   }
   execFileSync(getCommand(packageManager), args, {
     cwd,
@@ -69,7 +98,8 @@ function main() {
   const repoRoot = process.cwd();
   const targetDir = path.resolve(repoRoot, targetDirArg);
   const cacheDir = path.resolve(repoRoot, cacheDirArg);
-  const installSpec = resolveInstallSpec(rawInstallSpec);
+  const resolvedInstallSpec = resolveInstallSpec(rawInstallSpec);
+  const installSpec = createSmokeTarball(resolvedInstallSpec);
   const installerSpec = toInstallerSpec(installSpec, packageManager);
 
   fs.rmSync(targetDir, { recursive: true, force: true });
@@ -81,11 +111,14 @@ function main() {
     runCommand(packageManager, [ 'add', installerSpec ], targetDir, cacheDir);
   } else {
     runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir);
-    runCommand(packageManager, [ 'install', installerSpec ], targetDir, cacheDir);
+    runCommand(packageManager, [ 'install', '--omit=optional', '--prefer-offline', '--no-audit', '--no-fund', installerSpec ], targetDir, cacheDir);
   }
 
   console.log(`[package-install] manager=${packageManager}`);
   console.log(`[package-install] installed ${installerSpec}`);
+  if (resolvedInstallSpec !== installSpec) {
+    console.log(`[package-install] sanitized optionalDependencies for local tarball smoke`);
+  }
   console.log(`[package-install] target ${targetDir}`);
 }
 
