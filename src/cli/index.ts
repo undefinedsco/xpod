@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import '../runtime/configure-drizzle-solid';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { registerCustomOAuthProviders } from './lib/oauth-providers';

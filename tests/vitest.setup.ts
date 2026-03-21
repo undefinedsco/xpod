@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import dotenv from 'dotenv';
+import '../src/runtime/configure-drizzle-solid';
 import { registerSocketOriginShims } from '../src/runtime/socket-shim';
 
 // Make test runs deterministic:

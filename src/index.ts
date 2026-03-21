@@ -1,3 +1,4 @@
+import './runtime/configure-drizzle-solid';
 import { RepresentationPartialConvertingStore } from './storage/RepresentationPartialConvertingStore';
 import { MinioDataAccessor } from './storage/accessors/MinioDataAccessor';
 import { QuadstoreSparqlDataAccessor } from './storage/accessors/QuadstoreSparqlDataAccessor';
@@ -181,4 +182,3 @@ export {
   // Authorization exports
   AuthModeSelector,
 };
-
