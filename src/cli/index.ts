@@ -2,7 +2,6 @@
 import '../runtime/configure-drizzle-solid';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { registerCustomOAuthProviders } from './lib/oauth-providers';
 
 // Known subcommands
 const KNOWN_COMMANDS = [
@@ -78,9 +77,6 @@ async function createCommandParser() {
  * - No args → interactive REPL
  */
 async function main() {
-  // 注册自定义 OAuth providers（CodeBuddy 等）
-  await registerCustomOAuthProviders();
-
   const argv = process.argv.slice(2);
   const wantsRootHelp = argv.includes('--help') || argv.includes('-h') || argv[0] === 'help';
   const wantsVersion = argv.includes('--version') || argv.includes('-v');

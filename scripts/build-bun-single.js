@@ -219,7 +219,7 @@ function createPackagePatchPlugin(packageName, packageDir) {
 
 async function bundlePackageMain(packageName, packageDir, packageJson, stageDir) {
   const entryPoint = packageName === rootPackage.name
-    ? path.join(packageDir, 'src', 'index.ts')
+    ? path.join(packageDir, 'src', 'cli', 'index.ts')
     : packageJson.main ? path.join(packageDir, packageJson.main) : undefined;
   if (!entryPoint) {
     return undefined;
@@ -320,16 +320,70 @@ async function main() {
   const manifestSha = crypto.createHash('sha256').update(compressedManifest).digest('hex');
 
   const generatedEntryPath = path.join(tempRoot, 'bun-single-entry.ts');
-  const runtimeSourcePath = path.join(repoRoot, 'src', 'bun-single', 'runtime.ts')
-    .split(path.sep)
-    .join(path.posix.sep);
-
   fs.writeFileSync(generatedEntryPath, [
-    `import { runBunSingleBinary } from '${runtimeSourcePath}';`,
-    'void runBunSingleBinary({',
-    `  sha256: '${manifestSha}',`,
-    `  manifestBase64: '${compressedManifest.toString('base64')}',`,
-    '});',
+    'import crypto from \'node:crypto\';',
+    'import fs from \'node:fs\';',
+    'import os from \'node:os\';',
+    'import path from \'node:path\';',
+    'import zlib from \'node:zlib\';',
+    'import { pathToFileURL } from \'node:url\';',
+    '',
+    `const ARCHIVE_SHA256 = '${manifestSha}';`,
+    `const MANIFEST_BASE64 = '${compressedManifest.toString('base64')}';`,
+    '',
+    'function resolveCacheRoot(): string {',
+    '  const candidates = [',
+    '    process.env.XPOD_BUN_SINGLE_CACHE_DIR,',
+    '    path.join(os.tmpdir(), \'xpod-bun-cache\'),',
+    '    path.join(os.homedir(), \'.xpod\', \'bun-single-cache\'),',
+    '  ].filter((value): value is string => typeof value === \'string\' && value.length > 0);',
+    '  for (const candidate of candidates) {',
+    '    try {',
+    '      const absolute = path.resolve(candidate);',
+    '      fs.mkdirSync(absolute, { recursive: true });',
+    '      return absolute;',
+    '    } catch {',
+    '    }',
+    '  }',
+    '  throw new Error(\'No writable cache directory found for Bun single binary.\');',
+    '}',
+    '',
+    'function ensureExtracted(cacheDir: string): void {',
+    '  const marker = path.join(cacheDir, \'.xpod-bun-single-ready\');',
+    '  if (fs.existsSync(marker)) {',
+    '    return;',
+    '  }',
+    '  fs.mkdirSync(cacheDir, { recursive: true });',
+    '  const compressedManifest = Buffer.from(MANIFEST_BASE64, \'base64\');',
+    '  const actualSha = crypto.createHash(\'sha256\').update(compressedManifest).digest(\'hex\');',
+    '  if (actualSha !== ARCHIVE_SHA256) {',
+    '    throw new Error(\'Embedded manifest checksum mismatch.\');',
+    '  }',
+    '  const manifest = JSON.parse(zlib.gunzipSync(compressedManifest).toString(\'utf8\')) as Array<{ path: string; contentBase64: string; mode: number }>;',
+    '  for (const item of manifest) {',
+    '    const targetPath = path.join(cacheDir, item.path);',
+    '    fs.mkdirSync(path.dirname(targetPath), { recursive: true });',
+    '    fs.writeFileSync(targetPath, Buffer.from(item.contentBase64, \'base64\'));',
+    '    if (process.platform !== \'win32\' && typeof item.mode === \'number\') {',
+    '      fs.chmodSync(targetPath, item.mode);',
+    '    }',
+    '  }',
+    '  fs.writeFileSync(marker, new Date().toISOString());',
+    '}',
+    '',
+    'async function main(): Promise<void> {',
+    '  const cacheRoot = resolveCacheRoot();',
+    '  const cacheDir = path.join(cacheRoot, ARCHIVE_SHA256.slice(0, 16));',
+    '  ensureExtracted(cacheDir);',
+    '  const entryPath = path.join(cacheDir, \'dist\', \'__bundle__.cjs\');',
+    '  const argv0 = process.argv[0] ?? process.execPath;',
+    '  const userArgs = process.argv.length > 1 ? process.argv.slice(1) : [];',
+    '  process.argv = [argv0, entryPath, ...userArgs];',
+    '  process.chdir(cacheDir);',
+    '  await import(pathToFileURL(entryPath).href);',
+    '}',
+    '',
+    'void main();',
     '',
   ].join('\n'));
 

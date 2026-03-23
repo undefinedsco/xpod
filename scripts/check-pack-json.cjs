@@ -19,6 +19,11 @@ if (badFile) {
   throw new Error(`Standalone artifact leaked into npm tarball: ${badFile.path}`);
 }
 
+const platformBinaryFile = (pack.files || []).find((file) => /(?:^|\/)dist\/npm(?:\/|$)/.test(file.path));
+if (platformBinaryFile) {
+  throw new Error(`Platform binary artifact leaked into npm tarball: ${platformBinaryFile.path}`);
+}
+
 const packedLimitBytes = packedSizeLimitMb * 1024 * 1024;
 const unpackedLimitBytes = unpackedSizeLimitMb * 1024 * 1024;
 

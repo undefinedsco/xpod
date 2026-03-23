@@ -11,6 +11,7 @@ import { loadCredentials, getClientCredentials } from '../lib/credentials-store'
 import { authenticate } from '../lib/solid-auth';
 import { loadPiAiOAuthUtils, type OAuthAuthInfo, type OAuthPrompt } from '../lib/pi-optional';
 import { saveOAuthCredential } from '../lib/oauth-credential-manager';
+import { registerCustomOAuthProviders } from '../lib/oauth-providers';
 import { promptText } from '../lib/prompt';
 
 interface LoginArgs {
@@ -51,6 +52,8 @@ const loginCommand: CommandModule<{}, LoginArgs> = {
 
     const { session } = auth;
     const podUrl = creds.url.endsWith('/') ? creds.url : `${creds.url}/`;
+
+    await registerCustomOAuthProviders();
 
     // 3. 获取 provider
     let providerId = argv.provider;

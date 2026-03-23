@@ -11,6 +11,8 @@
   },
   "files": [
     "dist",
+    "!dist/npm",
+    "!dist/npm/**",
     "!dist/xpod-single.cjs",
     "!dist/xpod.single.cjs",
     "config",
