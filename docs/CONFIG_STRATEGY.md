@@ -5,7 +5,7 @@
 | 模式 | 命令 | 配置入口 | ENV文件 | 说明 |
 |------|------|---------|---------|------|
 | **local** | `yarn local` | config/local.json | .env.local | 本地/开发模式，SQLite + 文件存储 |
-| **cloud** | `yarn server` | config/cloud.json | .env.server | 生产/云端模式，PostgreSQL + MinIO + Redis |
+| **cloud** | `yarn cloud` | config/cloud.json | .env.cloud | 生产/云端模式，PostgreSQL + MinIO + Redis |
 
 配置入口文件通过 `@import` 链组装完整配置：
 - `local.json` → `main.json` → `xpod.base.json` → CSS 官方配置
@@ -256,14 +256,13 @@ export class EnvExtractor extends ShorthandExtractor {
 
 ### 更新ENV文件
 
-5. `.env.cluster` - 使用新的变量名
-6. `.env.cluster.local` - 使用新的变量名
-7. `.env.server` - 如有 CSS_XPOD_* 需改为 XPOD_*
-8. `example.env` - 更新示例
+5. `.env.local` - 使用新的变量名
+6. `.env.cloud` - 使用新的变量名
+7. `example.env.local` / `example.env.cloud` - 更新示例
 
 ## 六、ENV文件示例
 
-### .env.cluster (cluster:server)
+### .env.cloud (cloud)
 
 ```bash
 # CSS原生
@@ -316,16 +315,14 @@ XPOD_NODE_TOKEN=xxx
 yarn build:ts && yarn build:components
 
 # 2. 检查CLI帮助（应该只有少量新增参数）
-yarn server --help
+yarn cloud --help
 
 # 3. 测试各模式启动
 yarn local
-yarn server
-yarn cluster:server
-yarn cluster:local
+yarn cloud
 
 # 4. 检查变量是否正确读取
-CSS_LOGGING_LEVEL=debug yarn server
+CSS_LOGGING_LEVEL=debug yarn cloud
 ```
 
 ## 八、变量对照表（完整）

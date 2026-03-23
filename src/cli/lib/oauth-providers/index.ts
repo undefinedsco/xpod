@@ -6,13 +6,14 @@
  * 这里的 provider token 存 Pod，跨环境复用。
  */
 
-import { registerOAuthProvider } from '@mariozechner/pi-ai/dist/utils/oauth/index.js';
+import { loadPiAiOAuthUtils } from '../pi-optional';
 import { codeBuddyOAuthProvider } from './codebuddy';
 
 /**
  * 注册所有自定义 OAuth providers 到 pi-mono 框架
  */
-export function registerCustomOAuthProviders(): void {
+export async function registerCustomOAuthProviders(): Promise<void> {
+  const { registerOAuthProvider } = await loadPiAiOAuthUtils();
   registerOAuthProvider(codeBuddyOAuthProvider);
 }
 

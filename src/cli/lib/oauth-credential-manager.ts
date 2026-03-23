@@ -11,8 +11,7 @@ import { drizzle } from '@undefineds.co/drizzle-solid';
 import { OAuthCredential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import type { Session } from '@inrupt/solid-client-authn-node';
-import type { OAuthCredentials } from '@mariozechner/pi-ai/dist/utils/oauth/types.js';
-import { getOAuthProvider } from '@mariozechner/pi-ai/dist/utils/oauth/index.js';
+import { loadPiAiOAuthUtils, type OAuthCredentials } from './pi-optional';
 
 /**
  * 保存 OAuth credentials 到 Pod
@@ -80,6 +79,7 @@ export async function refreshOAuthToken(
   }
 
   // 2. 获取 OAuth provider
+  const { getOAuthProvider } = await loadPiAiOAuthUtils();
   const provider = getOAuthProvider(providerId);
   if (!provider) {
     throw new Error(`OAuth provider not found: ${providerId}`);

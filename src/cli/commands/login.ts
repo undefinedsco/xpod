@@ -9,7 +9,7 @@
 import type { CommandModule } from 'yargs';
 import { loadCredentials, getClientCredentials } from '../lib/credentials-store';
 import { authenticate } from '../lib/solid-auth';
-import { getOAuthProvider } from '@mariozechner/pi-ai/dist/utils/oauth/index.js';
+import { loadPiAiOAuthUtils, type OAuthAuthInfo, type OAuthPrompt } from '../lib/pi-optional';
 import { saveOAuthCredential } from '../lib/oauth-credential-manager';
 import { promptText } from '../lib/prompt';
 
@@ -67,6 +67,7 @@ const loginCommand: CommandModule<{}, LoginArgs> = {
       }
     }
 
+    const { getOAuthProvider } = await loadPiAiOAuthUtils();
     const provider = getOAuthProvider(providerId);
     if (!provider) {
       console.error(`Error: Unknown provider: ${providerId}`);
@@ -79,14 +80,14 @@ const loginCommand: CommandModule<{}, LoginArgs> = {
 
     try {
       const credentials = await provider.login({
-        onAuth: (info) => {
+        onAuth: (info: OAuthAuthInfo) => {
           console.log(info.instructions || 'Please login in your browser');
           console.log(`\nURL: ${info.url}\n`);
         },
-        onPrompt: async (prompt) => {
+        onPrompt: async (prompt: OAuthPrompt) => {
           return await promptText(prompt.message + (prompt.placeholder ? ` (${prompt.placeholder})` : '') + ': ');
         },
-        onProgress: (message) => {
+        onProgress: (message: string) => {
           console.log(message);
         },
       });

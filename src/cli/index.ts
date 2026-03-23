@@ -79,7 +79,7 @@ async function createCommandParser() {
  */
 async function main() {
   // 注册自定义 OAuth providers（CodeBuddy 等）
-  registerCustomOAuthProviders();
+  await registerCustomOAuthProviders();
 
   const argv = process.argv.slice(2);
   const wantsRootHelp = argv.includes('--help') || argv.includes('-h') || argv[0] === 'help';

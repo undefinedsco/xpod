@@ -11,19 +11,12 @@ import { saveMessage, saveToolCall, createThread, loadThread } from './pod-threa
 import type { Session } from '@inrupt/solid-client-authn-node';
 import * as os from 'os';
 import * as path from 'path';
-
-// Dynamic imports for ESM-only packages.
-// Use indirect Function('return import(...)') to prevent TypeScript from
-// converting `import()` to `require()` under CommonJS module output.
-const dynamicImport = new Function('specifier', 'return import(specifier)') as
-  (specifier: string) => Promise<any>;
-
-type PiCodingAgent = typeof import('@mariozechner/pi-coding-agent');
-type AgentSession = import('@mariozechner/pi-coding-agent').AgentSession;
-type AgentSessionEvent = import('@mariozechner/pi-coding-agent').AgentSessionEvent;
-type CreateAgentSessionResult = import('@mariozechner/pi-coding-agent').CreateAgentSessionResult;
-type InteractiveMode = import('@mariozechner/pi-coding-agent').InteractiveMode;
-type Model = import('@mariozechner/pi-ai').Model<any>;
+import {
+  loadPiCodingAgent,
+  type AgentSessionLike,
+  type CreateAgentSessionResultLike,
+  type PiModel,
+} from './pi-optional';
 
 export interface InitAgentOptions {
   session: Session;       // Authenticated Solid session (for Pod ops)
@@ -38,7 +31,7 @@ export interface InitAgentOptions {
 /**
  * Build a Model object for an OpenAI-compatible endpoint.
  */
-function buildModel(baseUrl: string, modelId: string): Model {
+function buildModel(baseUrl: string, modelId: string): PiModel {
   return {
     id: modelId,
     name: modelId,
@@ -61,7 +54,7 @@ async function resolveAiConfig(
   xpodUrl: string,
   apiKey: string,
   modelOverride?: string,
-): Promise<{ model: Model; providerApiKey: string; source: string }> {
+): Promise<{ model: PiModel; providerApiKey: string; source: string }> {
   const base = xpodUrl.endsWith('/') ? `${xpodUrl}v1` : `${xpodUrl}/v1`;
   return {
     model: buildModel(base, modelOverride || 'default'),
@@ -75,7 +68,7 @@ async function resolveAiConfig(
  *
  * LLM routing: Pod AI config → direct provider call; fallback → xpod API proxy.
  */
-export async function initAgent(opts: InitAgentOptions): Promise<{ agent: AgentSession; threadId: string }> {
+export async function initAgent(opts: InitAgentOptions): Promise<{ agent: AgentSessionLike; threadId: string }> {
   const {
     session,
     apiKey,
@@ -90,7 +83,7 @@ export async function initAgent(opts: InitAgentOptions): Promise<{ agent: AgentS
   const threadId = existingThreadId ?? await createThread(session, chatId, workspace);
 
   // Dynamic import ESM packages (must bypass tsc's CJS transform)
-  const piCodingAgent = await dynamicImport('@mariozechner/pi-coding-agent') as PiCodingAgent;
+  const piCodingAgent = await loadPiCodingAgent();
   const { createAgentSession, AuthStorage, SessionManager, SettingsManager, DefaultResourceLoader } = piCodingAgent;
 
   // 1. Resolve AI config (always use xpod API)
@@ -119,7 +112,7 @@ export async function initAgent(opts: InitAgentOptions): Promise<{ agent: AgentS
   await resourceLoader.reload();
 
   // 5. Create agent session (allow runtime model/thinking switching)
-  const result: CreateAgentSessionResult = await createAgentSession({
+  const result: CreateAgentSessionResultLike = await createAgentSession({
     cwd: workspace,
     authStorage,
     model: aiConfig.model,
@@ -155,7 +148,7 @@ export async function initAgent(opts: InitAgentOptions): Promise<{ agent: AgentS
   const currentToolCalls = new Map<string, any>();
 
   // 6. Set up event handlers for audit
-  agent.subscribe(async (event: AgentSessionEvent) => {
+  agent.subscribe(async (event: any) => {
     try {
       // Audit: track tool call start
       if (event.type === 'tool_execution_start') {
@@ -214,7 +207,7 @@ export async function initAgent(opts: InitAgentOptions): Promise<{ agent: AgentS
  * Uses pi-coding-agent's runPrintMode for proper formatting.
  */
 export async function runOnce(
-  agent: AgentSession,
+  agent: AgentSessionLike,
   message: string,
   session: Session,
   chatId: string,
@@ -226,7 +219,7 @@ export async function runOnce(
     timestamp: new Date().toISOString(),
   });
 
-  const piCodingAgent = await dynamicImport('@mariozechner/pi-coding-agent') as PiCodingAgent;
+  const piCodingAgent = await loadPiCodingAgent();
   await piCodingAgent.runPrintMode(agent, {
     mode: 'text',
     initialMessage: message,
@@ -238,13 +231,13 @@ export async function runOnce(
  * Provides diff preview, tool execution visualization, multi-line editor, etc.
  */
 export async function runInteractive(
-  agent: AgentSession,
+  agent: AgentSessionLike,
   _session: Session,
   _chatId: string,
   _threadId: string,
   initialPrompt?: string,
 ): Promise<void> {
-  const piCodingAgent = await dynamicImport('@mariozechner/pi-coding-agent') as PiCodingAgent;
+  const piCodingAgent = await loadPiCodingAgent();
   const mode = new piCodingAgent.InteractiveMode(agent, {
     initialMessage: initialPrompt,
   });

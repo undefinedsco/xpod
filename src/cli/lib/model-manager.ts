@@ -11,7 +11,7 @@ import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import type { Session } from '@inrupt/solid-client-authn-node';
-import { getModels } from '@mariozechner/pi-ai';
+import { loadPiAi } from './pi-optional';
 
 export interface AvailableModel {
   id: string;
@@ -77,7 +77,8 @@ export async function getAvailableModels(session: Session, xpodUrl: string): Pro
           continue;
         }
 
-        const providerModels = getModels(providerId as any);
+        const { getModels } = await loadPiAi();
+        const providerModels = getModels(providerId);
         for (const model of providerModels) {
           models.push({
             id: model.id,

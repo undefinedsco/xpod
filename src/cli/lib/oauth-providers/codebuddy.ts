@@ -9,7 +9,7 @@ import type {
   OAuthCredentials,
   OAuthLoginCallbacks,
   OAuthProviderInterface,
-} from '@mariozechner/pi-ai/dist/utils/oauth/types.js';
+} from '../pi-optional';
 
 interface CodeBuddyAuthState {
   state: string;
