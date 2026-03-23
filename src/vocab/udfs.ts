@@ -66,7 +66,7 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   Provider: 'Provider',
   /** AI 模型 */
   Model: 'Model',
-  /** Agent 供应商（指定 executorType） */
+  /** @deprecated 旧 AgentProvider 名义，当前统一收敛到 Provider */
   AgentProvider: 'AgentProvider',
   /** Agent 配置 */
   AgentConfig: 'AgentConfig',
@@ -158,9 +158,11 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   hasModel: 'hasModel',
   /** 默认模型 */
   defaultModel: 'defaultModel',
+  /** 运行时类型 (claude, codebuddy) */
+  runtimeKind: 'runtimeKind',
 
   // --- Agent 属性 ---
-  /** 执行器类型 (claude, openai, gemini, codebuddy) */
+  /** @deprecated 运行时应使用 runtimeKind */
   executorType: 'executorType',
   /** System Prompt */
   systemPrompt: 'systemPrompt',

@@ -12,8 +12,9 @@ import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import type { IAgentExecutor, ExecutorType, ExecutorConfig, AiCredential } from './types';
 import { AgentConfig as AgentConfigTable, AgentStatus } from './schema/agent-config';
-import { AgentProvider } from './schema/tables';
+import { Provider } from '../ai/schema/provider';
 import { Credential } from '../credential/schema/tables';
+import { Model } from '../ai/schema/model';
 import { ServiceType, CredentialStatus } from '../credential/schema/types';
 import { AgentExecutorFactory } from './AgentExecutorFactory';
 
@@ -44,11 +45,12 @@ export interface AgentInstance {
  */
 export interface AgentConfig {
   id: string;
-  displayName?: string;
+  name?: string;
   description?: string;
-  providerId: string;
-  modelUri?: string;
-  systemPrompt: string;
+  provider?: string;
+  runtimeKind?: ExecutorType;
+  model?: string;
+  instructions: string;
   maxTurns?: number;
   timeout?: number;
   enabled: boolean;
@@ -57,8 +59,9 @@ export interface AgentConfig {
 const schema = {
   agentConfig: AgentConfigTable,
   agentStatus: AgentStatus,
-  agentProvider: AgentProvider,
+  provider: Provider,
   credential: Credential,
+  model: Model,
 };
 
 /**
@@ -70,6 +73,15 @@ export class AgentManager {
   private readonly logger = getLoggerFor(this);
   private readonly factory = new AgentExecutorFactory();
   private readonly instances = new Map<string, AgentInstance>();
+
+  private async resolveModelId(db: any, modelRef: string | null | undefined): Promise<string | undefined> {
+    if (!modelRef) {
+      return undefined;
+    }
+
+    const model = await db.findByIri(Model, modelRef);
+    return model?.id ?? undefined;
+  }
 
   /**
    * 获取或创建 Agent 实例
@@ -145,25 +157,24 @@ export class AgentManager {
         return null;
       }
 
-      // 2. 解析 provider URI，获取 provider ID
+      // 2. 读取 provider URI
       const providerUri = agentConfig.provider;
       if (!providerUri) {
         this.logger.error(`Agent ${agentId} has no provider configured`);
         return null;
       }
 
-      // provider URI 格式: /settings/ai/agent-providers.ttl#codebuddy
-      const providerId = providerUri.split('#').pop();
-      if (!providerId) {
-        this.logger.error(`Invalid provider URI: ${providerUri}`);
+      // 3. 读取 Provider 配置
+      const provider = await db.findByIri(Provider, providerUri);
+
+      if (!provider) {
+        this.logger.error(`Provider not found: ${providerUri}`);
         return null;
       }
 
-      // 3. 读取 Provider 配置
-      const provider = await db.findByLocator(AgentProvider, { id: providerId });
-
-      if (!provider) {
-        this.logger.error(`Provider not found: ${providerId}`);
+      const runtimeKind = agentConfig.runtimeKind;
+      if (!runtimeKind || !this.factory.isSupported(runtimeKind)) {
+        this.logger.error(`Agent ${agentId} has invalid runtimeKind: ${runtimeKind ?? '(missing)'}`);
         return null;
       }
 
@@ -176,6 +187,10 @@ export class AgentManager {
         (c: any) => c.status === CredentialStatus.ACTIVE && c.service === ServiceType.AI,
       );
 
+      const providerId = provider.id;
+      const defaultModel = await this.resolveModelId(db, provider.defaultModel ?? provider.hasModel);
+      const selectedModel = await this.resolveModelId(db, agentConfig.model ?? undefined) ?? defaultModel;
+
       // 构建凭证（可能为空，Executor 会处理）
       const credential: AiCredential = {
         providerId,
@@ -186,16 +201,15 @@ export class AgentManager {
       };
 
       // 5. 创建 Executor
-      const executorType = provider.executorType as ExecutorType;
-      const executor = this.factory.createExecutor(executorType, {
+      const executor = this.factory.createExecutor(runtimeKind, {
         providerId,
         credential,
         providerConfig: {
           id: providerId,
           displayName: provider.displayName ?? providerId,
-          executorType,
+          executorType: runtimeKind,
           baseUrl: provider.baseUrl ?? undefined,
-          defaultModel: provider.defaultModel ?? undefined,
+          defaultModel,
           enabled: provider.enabled === 'true',
         },
       });
@@ -204,15 +218,15 @@ export class AgentManager {
       const config: ExecutorConfig = {
         name: agentId,
         description: agentConfig.description ?? undefined,
-        systemPrompt: agentConfig.systemPrompt ?? '',
-        model: agentConfig.model ?? provider.defaultModel ?? undefined,
+        systemPrompt: agentConfig.instructions ?? '',
+        model: selectedModel,
         maxTokens: 8192,
       };
 
       // 7. 返回实例
       return {
         id: agentId,
-        displayName: agentConfig.displayName ?? agentId,
+        displayName: agentConfig.name ?? agentId,
         description: agentConfig.description ?? '',
         executor,
         config,

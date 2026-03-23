@@ -4,32 +4,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const POD_MODELS_PACKAGE = '@linx/pod-models';
 const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
+const MODELS_PACKAGE = '@undefineds.co/models';
 
 function getNpmCommand() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm';
 }
 
 function getBundledLocalDependencies(repoRoot) {
-  const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-  const fileDependencies = Object.entries(packageJson.dependencies ?? {}).flatMap(([ name, spec ]) => {
-    if (typeof spec !== 'string' || !spec.startsWith('file:')) {
-      return [];
-    }
-
-    const sourcePackageRoot = path.resolve(repoRoot, spec.slice('file:'.length));
-    if (!fs.existsSync(sourcePackageRoot)) {
-      throw new Error(`Missing bundled local dependency source: ${sourcePackageRoot}`);
-    }
-
-    return [{
-      name,
-      sourcePackageRoot: fs.realpathSync(sourcePackageRoot),
-    }];
-  });
-
-  const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE ].flatMap((name) => {
+  const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE, MODELS_PACKAGE ].flatMap((name) => {
     const sourcePackageRoot = path.join(repoRoot, 'node_modules', ...name.split('/'));
     if (!fs.existsSync(sourcePackageRoot)) {
       return [];
@@ -37,7 +20,7 @@ function getBundledLocalDependencies(repoRoot) {
     return [{ name, sourcePackageRoot: fs.realpathSync(sourcePackageRoot) }];
   });
 
-  return [ ...fileDependencies, ...privatePatchedDependencies ];
+  return privatePatchedDependencies;
 }
 
 function shouldCopyBundledDependency(sourceRoot, sourcePath) {
@@ -92,43 +75,6 @@ function rewriteRelativeImportSpecifiers(filePath) {
   }
 }
 
-function patchBundledPodModels(destinationDir) {
-  const distDir = path.join(destinationDir, 'dist');
-  if (!fs.existsSync(distDir)) {
-    return;
-  }
-
-  const queue = [ distDir ];
-  while (queue.length > 0) {
-    const currentDir = queue.pop();
-    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
-      const entryPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        queue.push(entryPath);
-        continue;
-      }
-      if (entry.isFile() && entryPath.endsWith('.js')) {
-        rewriteRelativeImportSpecifiers(entryPath);
-      }
-    }
-  }
-
-  const namespacesPath = path.join(distDir, 'namespaces.js');
-  if (!fs.existsSync(namespacesPath)) {
-    return;
-  }
-
-  const namespacesSource = fs.readFileSync(namespacesPath, 'utf8');
-  if (namespacesSource.includes('oauthRefreshToken')) {
-    return;
-  }
-
-  fs.writeFileSync(
-    namespacesPath,
-    `${namespacesSource}\nfor (const term of ['oauthRefreshToken', 'oauthAccessToken', 'oauthExpiresAt']) {\n  if (typeof UDFS[term] !== 'string') {\n    Object.defineProperty(UDFS, term, {\n      value: UDFS(term),\n      enumerable: true,\n      configurable: true,\n    });\n  }\n}\n`,
-  );
-}
-
 function patchBundledDrizzleSolid(destinationDir) {
   const esmDir = path.join(destinationDir, 'dist', 'esm');
   if (!fs.existsSync(esmDir)) {
@@ -174,9 +120,6 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies) {
       dereference: true,
       filter: (sourcePath) => shouldCopyBundledDependency(dependency.sourcePackageRoot, sourcePath),
     });
-    if (dependency.name === POD_MODELS_PACKAGE) {
-      patchBundledPodModels(destinationDir);
-    }
     if (dependency.name === DRIZZLE_SOLID_PACKAGE) {
       patchBundledDrizzleSolid(destinationDir);
     }

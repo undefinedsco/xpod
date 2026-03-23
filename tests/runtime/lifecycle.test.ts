@@ -125,6 +125,7 @@ describe('runtime lifecycle helpers', () => {
       },
       sockets: {
         gateway: '/tmp/xpod-gateway.sock',
+        css: '/tmp/xpod-css.sock',
         api: '/tmp/xpod-api.sock',
       },
       baseUrl: 'http://localhost/',
@@ -148,7 +149,7 @@ describe('runtime lifecycle helpers', () => {
       runtimeHost: host,
       supervisor,
       targets: {
-        css: { url: 'http://127.0.0.1:6111' },
+        css: { socketPath: '/tmp/xpod-css.sock' },
         api: { socketPath: '/tmp/xpod-api.sock' },
       },
     });

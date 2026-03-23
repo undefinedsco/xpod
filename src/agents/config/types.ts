@@ -60,14 +60,20 @@ export interface ParsedAgentMd {
 export interface AgentMetaRecord {
   /** Agent ID (folder name) */
   id: string;
-  displayName?: string;
-  /** URI ref → AgentProvider */
+  name?: string;
+  description?: string;
+  instructions?: string;
+  /** URI ref → Provider */
   provider?: string;
+  /** Runtime class selection */
+  runtimeKind?: ExecutorType;
   /** URI ref → Credential */
   credential?: string;
   /** URI ref → Model */
   model?: string;
-  enabled?: boolean;
+  enabled?: string;
+  maxTurns?: number;
+  timeout?: number;
 }
 
 // ============================================
@@ -90,11 +96,11 @@ export interface ResolvedAgentConfig {
   systemPrompt: string;
 
   // --- Resolved from .meta ---
-  /** Executor type (from AgentProvider) */
+  /** Executor type (from AgentConfig.runtimeKind) */
   executorType: ExecutorType;
   /** API key (from Credential) */
   apiKey: string;
-  /** API base URL (from Credential or AgentProvider) */
+  /** API base URL (from Credential or Provider) */
   baseUrl?: string;
   /** Proxy URL */
   proxyUrl?: string;

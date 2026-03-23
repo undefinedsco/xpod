@@ -22,6 +22,7 @@ import {
   serializeObject,
   fpEncode,
   SEP,
+  isSerializedObjectValue,
 } from './serialization';
 import type {
   Quint,
@@ -542,7 +543,7 @@ export abstract class BaseQuintStore extends QuintStore {
       return value;
     }
     
-    if (isObject && !value.startsWith('N\u0000') && !value.startsWith('D\u0000') && !value.startsWith('"')) {
+    if (isObject && !isSerializedObjectValue(value)) {
       return `"${value}"`;
     }
     return value;

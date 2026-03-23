@@ -1,4 +1,4 @@
-export type SqliteRuntimeKind = 'node-better-sqlite3' | 'node-sqlite' | 'bun-sqlite';
+export type SqliteRuntimeKind = 'node-sqlite' | 'bun-sqlite';
 
 export interface SqliteOpenOptions {
   readonly?: boolean;

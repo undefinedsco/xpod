@@ -38,7 +38,7 @@ export { ClaudeExecutor, ClaudeAuthenticationError, createClaudeExecutor } from 
 export { BaseAgentExecutor } from './BaseAgentExecutor';
 
 // Schema
-export { AgentProvider, AgentProviderRelations, ExecutorType as ExecutorTypeEnum } from './schema/tables';
+export { Provider, ProviderRelations, RuntimeKind } from './schema/tables';
 export { AgentConfig as AgentConfigTable, AgentStatus } from './schema/agent-config';
 
 // Agent Manager

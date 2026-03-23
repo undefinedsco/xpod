@@ -154,10 +154,12 @@ export class ChatKitService<TContext = StoreContext> {
     const encoder = new TextEncoder();
     try {
       for await (const event of this.processStreaming(request, context)) {
+        this.logger.info(`ChatKit streaming event (${request.type}): ${event.type}`);
         const data = JSON.stringify(event);
         yield encoder.encode(`data: ${data}\n\n`);
       }
     } catch (error: any) {
+      this.logger.error(`ChatKit streaming request failed (${request.type}): ${error?.stack || error}`);
       const errorEvent: ThreadStreamEvent = {
         type: 'error',
         error: {

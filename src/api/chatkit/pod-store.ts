@@ -37,6 +37,7 @@ import {
 import type { AuthContext } from '../auth/AuthContext';
 import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
+import { Model } from '../../ai/schema/model';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 
@@ -45,6 +46,7 @@ const schema = {
   thread: Thread,
   message: Message,
   provider: Provider,
+  model: Model,
   credential: Credential,
 };
 
@@ -1181,6 +1183,7 @@ WHERE { ${deletePatterns.join(' ')} }
     providerId: string;
     baseUrl: string;
     proxyUrl?: string;
+    defaultModel?: string;
     apiKey: string;
     credentialId: string;
   } | undefined> {
@@ -1224,12 +1227,18 @@ WHERE { ${deletePatterns.join(' ')} }
         const baseUrl = provider.baseUrl;
         if (!baseUrl) continue;
 
+        const defaultModelRef = provider.defaultModel ?? provider.hasModel;
+        const defaultModel = defaultModelRef
+          ? (await db.findByIri(Model, defaultModelRef))?.id ?? undefined
+          : undefined;
+
         this.logger.debug(`Using credential ${cred.id} with provider ${provider.id}`);
 
         return {
           providerId: provider.id,
           baseUrl,
           proxyUrl: provider.proxyUrl || undefined,
+          defaultModel,
           apiKey: cred.apiKey!,
           credentialId: cred.id,
         };

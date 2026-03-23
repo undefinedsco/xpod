@@ -20,6 +20,7 @@ import {
   deserializeObject,
   fpEncode,
   SEP,
+  isSerializedObjectValue,
 } from './serialization';
 import { getSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type {
@@ -36,6 +37,8 @@ import type {
   OperatorValue,
 } from './types';
 import { isTerm } from './types';
+
+const SQLITE_UNBOUNDED_LIMIT = Number.MAX_SAFE_INTEGER;
 
 export interface SqliteQuintStoreOptions extends QuintStoreOptions {
   /** SQLite database file path, use ':memory:' for in-memory database */
@@ -131,13 +134,13 @@ export class SqliteQuintStore {
       query = query.orderBy(sql.raw(`${orderCol} ${direction}`)) as any;
     }
 
-    if (options?.limit) {
+    if (options?.limit !== undefined) {
       query = query.limit(options.limit) as any;
     }
-    if (options?.offset) {
+    if (options?.offset !== undefined) {
       // SQLite requires LIMIT when using OFFSET
-      if (!options?.limit) {
-        query = query.limit(-1) as any; // -1 means no limit in SQLite
+      if (options?.limit === undefined) {
+        query = query.limit(SQLITE_UNBOUNDED_LIMIT) as any;
       }
       query = query.offset(options.offset) as any;
     }
@@ -420,13 +423,10 @@ export class SqliteQuintStore {
         return value;
       }
       
-      // String value
       if (isObject) {
-        // Already serialized (starts with N\0 or D\0 or ")
-        if (value.startsWith('N\u0000') || value.startsWith('D\u0000') || value.startsWith('"')) {
+        if (isSerializedObjectValue(value)) {
           return value;
         }
-        // Plain string - wrap as xsd:string literal
         return `"${value}"`;
       }
       return value;
@@ -689,8 +689,7 @@ export class SqliteQuintStore {
         return value;
       }
       
-      // String - already serialized or plain string
-      if (isObject && !value.startsWith('N\u0000') && !value.startsWith('D\u0000') && !value.startsWith('"')) {
+      if (isObject && !isSerializedObjectValue(value)) {
         return `"${value}"`;
       }
       return value;

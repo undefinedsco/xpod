@@ -5,7 +5,6 @@ const path = require('node:path');
 const repoRoot = process.cwd();
 const packageJsonPath = path.join(repoRoot, 'package.json');
 const backupPath = path.join(repoRoot, '.test-data', 'package.json.pack.backup');
-const POD_MODELS_PACKAGE = '@linx/pod-models';
 
 function sanitizeManifest(pkg) {
   const nextPkg = { ...pkg };
@@ -15,13 +14,6 @@ function sanitizeManifest(pkg) {
     delete nextScripts.prepack;
     delete nextScripts.postpack;
     nextPkg.scripts = nextScripts;
-  }
-
-  const podModelsSpec = nextPkg.dependencies?.[POD_MODELS_PACKAGE];
-  if (typeof podModelsSpec === 'string' && podModelsSpec.startsWith('file:')) {
-    const nextDependencies = { ...nextPkg.dependencies };
-    delete nextDependencies[POD_MODELS_PACKAGE];
-    nextPkg.dependencies = nextDependencies;
   }
 
   delete nextPkg.bundleDependencies;

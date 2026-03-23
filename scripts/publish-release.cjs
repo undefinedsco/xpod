@@ -3,6 +3,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
 const { getPlatformDependencyMismatches } = require('./platform-binaries.cjs');
+const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org';
+
+function readNonEmptyEnv(key) {
+  const value = process.env[key];
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 function run(command, extraEnv = {}) {
   execSync(command, {
@@ -24,7 +34,7 @@ function main() {
   const repoRoot = process.cwd();
   const dryRun = process.argv.includes('--dry-run') || process.env.XPOD_PUBLISH_DRY_RUN === 'true';
   const skipBuild = process.argv.includes('--skip-build');
-  const publishRegistry = process.env.XPOD_NPM_REGISTRY || 'https://registry.npmjs.org';
+  const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY') || OFFICIAL_NPM_REGISTRY;
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   const mismatches = getPlatformDependencyMismatches(packageJson, packageJson.version);
 
@@ -49,7 +59,6 @@ function main() {
   const npmEnv = {
     npm_config_cache: npmCacheDir,
     npm_config_registry: publishRegistry,
-    XPOD_NPM_REGISTRY: publishRegistry,
   };
 
   run(`node scripts/run-npm-pack.cjs ${JSON.stringify(packDir)} ${JSON.stringify(npmCacheDir)}`, npmEnv);

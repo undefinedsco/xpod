@@ -19,6 +19,7 @@ export default defineConfig({
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
+      '**/.test-data/**',
       '**/_deprecated/**',
       '**/_deprecated_quadstore/**',
       'tests/terminal/*.integration.test.ts',

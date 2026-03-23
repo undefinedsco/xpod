@@ -3,6 +3,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
 const { applyPlatformOptionalDependencies } = require('./platform-binaries.cjs');
+const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org';
+
+function readNonEmptyEnv(key) {
+  const value = process.env[key];
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 function buildLocalVersion(currentVersion) {
   const [core] = currentVersion.split('-');
@@ -40,7 +50,7 @@ function main() {
   console.log(`[publish:local] version bumped to ${nextVersion}`);
 
   const dryRun = process.argv.includes('--dry-run') || process.env.XPOD_PUBLISH_DRY_RUN === 'true';
-  const publishRegistry = process.env.XPOD_NPM_REGISTRY || 'https://registry.npmjs.org';
+  const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY') || OFFICIAL_NPM_REGISTRY;
 
   try {
     run('bun run build');
@@ -54,7 +64,6 @@ function main() {
     const npmEnv = {
       npm_config_cache: npmCacheDir,
       npm_config_registry: publishRegistry,
-      XPOD_NPM_REGISTRY: publishRegistry,
     };
 
     run(`node scripts/run-npm-pack.cjs ${JSON.stringify(packDir)} ${JSON.stringify(npmCacheDir)}`, npmEnv);
