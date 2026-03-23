@@ -1,20 +1,10 @@
-import type { Quad, Quad_Graph, Quad_Object, Quad_Predicate, Quad_Subject } from '@rdfjs/types';
+import type { Quad } from '@rdfjs/types';
 import type { Bindings } from '@comunica/types';
 import type { AsyncIterator } from 'asynciterator';
-import { QueryEngine } from '@comunica/query-sparql';
-import { Quadstore } from 'quadstore';
-import { DataFactory } from 'n3';
 import { getLoggerFor } from 'global-logger-factory';
-import { getBackend } from '../../libs/backends/index';
-import { OptimizedQuadstoreEngine } from './OptimizedQuadstoreEngine';
 import { ComunicaQuintEngine } from './ComunicaQuintEngine';
+import { QuintEngine } from './QuintEngine';
 import type { QuintStore } from '../quint/types';
-
-interface QueryContext {
-  sources: [{ type: 'rdfjsSource'; value: { match: (subject?: Quad_Subject | null, predicate?: Quad_Predicate | null, object?: Quad_Object | null, graph?: Quad_Graph | null) => AsyncIterator<Quad> }}];
-  unionDefaultGraph: boolean;
-  baseIRI: string;
-}
 
 /**
  * SPARQL Engine interface - common abstraction for SPARQL query engines
@@ -30,178 +20,43 @@ export interface SparqlEngine {
 }
 
 /**
- * Quadstore-based SPARQL engine implementation
+ * @deprecated Compatibility wrapper preserved for older call sites.
+ * Mainline xpod now executes subgraph queries through QuintStore.
  */
 export class QuadstoreSparqlEngine implements SparqlEngine {
-  private readonly store: Quadstore;
-  private readonly engine: QueryEngine;
-  private readonly optimizedEngine: OptimizedQuadstoreEngine;
-  private readonly logger = getLoggerFor(this);
-  private readonly ready: Promise<void>;
+  private readonly delegate: QuintstoreSparqlEngine;
 
   public constructor(endpoint: string) {
-    const backend = getBackend(endpoint, { tableName: 'quadstore' });
-    this.store = new Quadstore({
-      backend: backend as any,
-      dataFactory: DataFactory as any,
-    });
-    this.engine = new QueryEngine();
-    this.optimizedEngine = new OptimizedQuadstoreEngine(this.store);
-    this.ready = this.store.open();
+    const store = new QuintEngine({ endpoint }).getStore();
+    this.delegate = new QuintstoreSparqlEngine(store);
   }
 
   public async queryBindings(query: string, basePath: string): Promise<any> {
-    await this.ready;
-    return this.engine.queryBindings(query, this.createContext(basePath) as unknown as any);
+    return this.delegate.queryBindings(query, basePath);
   }
 
   public async queryQuads(query: string, basePath: string): Promise<any> {
-    await this.ready;
-    return this.engine.queryQuads(query, this.createContext(basePath) as unknown as any);
+    return this.delegate.queryQuads(query, basePath);
   }
 
   public async queryBoolean(query: string, basePath: string): Promise<boolean> {
-    await this.ready;
-    return this.engine.queryBoolean(query, this.createContext(basePath) as unknown as any);
+    return this.delegate.queryBoolean(query, basePath);
   }
 
   public async queryVoid(query: string, basePath: string): Promise<void> {
-    await this.ready;
-    await this.optimizedEngine.queryVoid(query, { baseIRI: basePath });
+    await this.delegate.queryVoid(query, basePath);
   }
 
   public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
-    await this.ready;
-    const constructQuery = `CONSTRUCT { ?s ?p ?o } WHERE { GRAPH <${graph}> { ?s ?p ?o } }`;
-    return this.engine.queryQuads(constructQuery, this.createContext(basePath) as unknown as any) as unknown as AsyncIterator<Quad>;
+    return this.delegate.constructGraph(graph, basePath);
   }
 
   public async listGraphs(basePath: string): Promise<Set<string>> {
-    await this.ready;
-    const graphs = new Set<string>();
-    
-    const query = `
-      SELECT DISTINCT ?g WHERE {
-        GRAPH ?g { ?s ?p ?o }
-        FILTER(STRSTARTS(STR(?g), "${basePath}"))
-      }
-    `;
-    
-    const stream = await this.optimizedEngine.queryBindings(query);
-    try {
-      for await (const binding of stream as AsyncIterator<Bindings>) {
-        const value = binding.get('g');
-        if (value && typeof value === 'object' && 'termType' in value && value.termType === 'NamedNode') {
-          graphs.add(value.value);
-        }
-      }
-    } finally {
-      const close = (stream as unknown as { close?: () => void }).close;
-      if (typeof close === 'function') {
-        close();
-      }
-    }
-    return graphs;
+    return this.delegate.listGraphs(basePath);
   }
 
   public async close(): Promise<void> {
-    await this.store.close();
-  }
-
-  private createContext(basePath: string): QueryContext {
-    const logger = this.logger;
-    const self = this;
-    let matchCallCount = 0;
-    return {
-      unionDefaultGraph: true,
-      baseIRI: basePath,
-      sources: [
-        {
-          type: 'rdfjsSource',
-          value: {
-            match: (subject?: Quad_Subject | null, predicate?: Quad_Predicate | null, object?: Quad_Object | null, graph?: Quad_Graph | null): AsyncIterator<Quad> => {
-              matchCallCount++;
-              const callId = matchCallCount;
-              logger.debug(`[match #${callId}] s=${subject?.value ?? '*'} p=${predicate?.value ?? '*'} o=${object?.value ?? '*'} g=${graph?.value ?? '*'} gType=${graph?.termType ?? 'null'}`);
-
-              const iterator = self.store.match(
-                subject ?? undefined,
-                predicate ?? undefined,
-                object ?? undefined,
-                graph ?? undefined,
-              );
-
-              let quadCount = 0;
-              let filteredCount = 0;
-              const filtered = (iterator as unknown as AsyncIterator<Quad>).filter((quad): boolean => {
-                quadCount++;
-                const inScope = self.isInScope(basePath, quad.graph);
-                if (!inScope) {
-                  logger.debug(`[match #${callId}] FILTERED OUT quad #${quadCount}: graph=${quad.graph.value} termType=${quad.graph.termType}`);
-                } else {
-                  filteredCount++;
-                }
-                return inScope;
-              });
-
-              filtered.on('end', () => {
-                logger.debug(`[match #${callId}] END: ${quadCount} quads total, ${filteredCount} passed filter`);
-              });
-
-              return filtered;
-            },
-          },
-        },
-      ],
-    };
-  }
-
-  private isInScope(basePath: string, graph: Quad_Graph): boolean {
-    if (!graph || graph.termType !== 'NamedNode') {
-      return false;
-    }
-
-    let graphValue = graph.value;
-
-    if (graphValue.startsWith('meta:')) {
-      graphValue = graphValue.slice(5);
-    }
-
-    if (graphValue === basePath) {
-      return true;
-    }
-
-    const childPrefix = basePath.endsWith('/') ? basePath : `${basePath}/`;
-    const fragmentPrefix = `${basePath}#`;
-
-    if (graphValue.startsWith(childPrefix) || graphValue.startsWith(fragmentPrefix)) {
-      return true;
-    }
-
-    let pathOnly = basePath;
-    try {
-      const url = new URL(basePath);
-      pathOnly = url.pathname;
-    } catch {
-      // basePath is already a path
-    }
-
-    if (pathOnly === basePath) {
-      return false;
-    }
-
-    if (graphValue.startsWith('meta:')) {
-       graphValue = graphValue.slice(5);
-    }
-
-    if (graphValue === pathOnly) {
-      return true;
-    }
-
-    const pathChildPrefix = pathOnly.endsWith('/') ? pathOnly : `${pathOnly}/`;
-    const pathFragmentPrefix = `${pathOnly}#`;
-
-    return graphValue.startsWith(pathChildPrefix) || graphValue.startsWith(pathFragmentPrefix);
+    await this.delegate.close();
   }
 }
 

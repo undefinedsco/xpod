@@ -35,34 +35,27 @@ import {
   LDP,
   createErrorMessage,
 } from '@solid/community-server';
-import { Quadstore } from 'quadstore';
-import { Engine } from 'quadstore-comunica';
-import { getBackend } from '../../libs/backends/index';
+import { QuintEngine } from '../sparql/QuintEngine';
 
 
 const { defaultGraph, namedNode, quad, variable } = DataFactory;
 
-
+/**
+ * @deprecated Compatibility wrapper preserved for older configs.
+ * Mainline xpod now persists structured RDF through QuintStore.
+ */
 export class QuadstoreSparqlDataAccessor implements DataAccessor {
   protected readonly logger = getLoggerFor(this);
-  private readonly endpoint: string;
   private readonly publicEndpoint: string;
   private readonly identifierStrategy: IdentifierStrategy;
-  private readonly store: Quadstore;
-  private readonly engine: Engine;
+  private readonly engine: QuintEngine;
   private readonly generator: SparqlGenerator;
 
   public constructor(endpoint: string, identifierStrategy: IdentifierStrategy) {
-    this.endpoint = endpoint;
     this.publicEndpoint = this.getPublicEndpoint(endpoint);
     this.identifierStrategy = identifierStrategy;
     this.generator = new Generator();
-    const backend = getBackend(endpoint, { tableName: 'quadstore' });
-    this.store = new Quadstore({
-      backend: backend as any,
-      dataFactory: DataFactory as any,
-    });
-    this.engine = new Engine(this.store);
+    this.engine = new QuintEngine({ endpoint });
   }
 
   /**
@@ -72,9 +65,13 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
     if (endpoint.startsWith('sqlite:')) {
       return endpoint;
     }
-    const url = new URL(endpoint);
-    const host = url.host.split(':')[0];
-    return `${url.protocol}//${host}`;
+    try {
+      const url = new URL(endpoint);
+      const host = url.host.split(':')[0];
+      return `${url.protocol}//${host}`;
+    } catch {
+      return endpoint;
+    }
   }
 
   /**
@@ -485,12 +482,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Wait for the store to be ready.
    */
   private async waitForStoreReady(): Promise<void> {
-    if (this.store.db.status !== 'open' && this.store.db.status !== 'opening') {
-      throw new Error('Store is not open');
-    }
-    while (this.store.db.status !== 'open') {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await this.engine.open();
   }
 
 
@@ -498,6 +490,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Closes the underlying store.
    */
   public async close(): Promise<void> {
-    await this.store.close();
+    await this.engine.close();
   }
 }
