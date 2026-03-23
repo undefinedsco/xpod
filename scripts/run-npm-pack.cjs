@@ -7,8 +7,18 @@ const { execFileSync } = require('node:child_process');
 const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
 const MODELS_PACKAGE = '@undefineds.co/models';
 
-function getNpmCommand() {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+function getNpmInvocation(args) {
+  if (process.platform === 'win32') {
+    return {
+      command: process.env.ComSpec || 'cmd.exe',
+      args: [ '/d', '/s', '/c', 'npm.cmd', ...args ],
+    };
+  }
+
+  return {
+    command: 'npm',
+    args,
+  };
 }
 
 function getBundledLocalDependencies(repoRoot) {
@@ -178,13 +188,15 @@ function main() {
   fs.mkdirSync(packDir, { recursive: true });
   fs.mkdirSync(cacheDir, { recursive: true });
 
-  const stdout = execFileSync(getNpmCommand(), [
+  const npmInvocation = getNpmInvocation([
     'pack',
     '--json',
     '--silent',
     '--pack-destination',
     packDir,
-  ], {
+  ]);
+
+  const stdout = execFileSync(npmInvocation.command, npmInvocation.args, {
     encoding: 'utf8',
     env: {
       ...process.env,
