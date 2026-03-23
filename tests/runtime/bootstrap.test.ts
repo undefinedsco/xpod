@@ -97,7 +97,7 @@ describe('runtime bootstrap helpers', () => {
     expect(ensureDir).toHaveBeenCalledWith('/sandbox/.test-data/xpod-runtime/platform-id/data');
   });
 
-  it('should write Components config imports as file URLs on Windows paths', () => {
+  it('should write Components config imports as relative paths on Windows paths', () => {
     const writeTextFile = vi.fn();
     const runtimeConfigPath = createCssRuntimeConfig({
       mode: 'local',
@@ -119,10 +119,8 @@ describe('runtime bootstrap helpers', () => {
     const [, content] = writeTextFile.mock.calls[0];
     const parsed = JSON.parse(content);
     expect(parsed.import).toEqual([
-      expect.stringMatching(/^file:\/\/\/[A-Z]:\//),
-      expect.stringMatching(/^file:\/\/\/[A-Z]:\//),
+      '../package/config/local.json',
+      '../package/config/runtime-open.json',
     ]);
-    expect(parsed.import[0]).toContain('/config/local.json');
-    expect(parsed.import[1]).toContain('/config/runtime-open.json');
   });
 });

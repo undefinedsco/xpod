@@ -1,5 +1,5 @@
 import { setGlobalLoggerFactory } from 'global-logger-factory';
-import { pathToFileURL } from 'node:url';
+import path from 'node:path';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
 import { PACKAGE_ROOT } from './package-root';
 import type { RuntimeHost } from './host/types';
@@ -31,14 +31,14 @@ function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
 }
 
-function toConfigResourceIri(filePath: string): string {
-  const normalizedPath = filePath.replace(/\\/g, '/');
-  if (/^[A-Za-z]:\//.test(normalizedPath)) {
-    const fileUrl = new URL('file:///');
-    fileUrl.pathname = normalizedPath;
-    return fileUrl.href;
+function toConfigImportSpecifier(fromFilePath: string, toFilePath: string): string {
+  const useWindowsPaths = /^[A-Za-z]:[\\/]/.test(fromFilePath) || /^[A-Za-z]:[\\/]/.test(toFilePath);
+  const pathApi = useWindowsPaths ? path.win32 : path.posix;
+  const relativePath = pathApi.relative(pathApi.dirname(fromFilePath), toFilePath).replace(/\\/g, '/');
+  if (relativePath.startsWith('./') || relativePath.startsWith('../')) {
+    return relativePath;
   }
-  return pathToFileURL(filePath).href;
+  return `./${relativePath}`;
 }
 
 function withDefinedEntries(entries: Array<[string, string | number | boolean | undefined]>): Record<string, string | number | boolean> {
@@ -212,14 +212,15 @@ export function createCssRuntimeConfig(
   }
 
   const runtimeConfigPath = platform.joinPath(state.runtimeRoot, 'css-runtime.config.json');
+  const openConfigPath = platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json');
   platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
       'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
       'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld',
     ],
     import: [
-      toConfigResourceIri(configPath),
-      toConfigResourceIri(platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json')),
+      toConfigImportSpecifier(runtimeConfigPath, configPath),
+      toConfigImportSpecifier(runtimeConfigPath, openConfigPath),
     ],
   }, null, 2));
 
