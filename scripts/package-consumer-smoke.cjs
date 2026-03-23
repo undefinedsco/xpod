@@ -17,6 +17,34 @@ async function getFreePort() {
   });
 }
 
+function isPortConflict(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Failed to start server\. Is port \d+ in use\?/i.test(message) ||
+    /EADDRINUSE/i.test(message) ||
+    /address already in use/i.test(message);
+}
+
+async function startNoAuthXpodWithRetry(testUtils, options, maxAttempts = 4) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const port = await getFreePort();
+    try {
+      return await testUtils.startNoAuthXpod({
+        ...options,
+        port,
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isPortConflict(error) || attempt === maxAttempts) {
+        throw error;
+      }
+      console.warn(`[consumer-smoke] port conflict on ${port}, retry ${attempt}/${maxAttempts}`);
+      await new Promise((resolve) => setTimeout(resolve, attempt * 100));
+    }
+  }
+  throw lastError;
+}
+
 function runCli(consumerDir, requireFromConsumer) {
   const packageJsonPath = requireFromConsumer.resolve('@undefineds.co/xpod/package.json');
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
@@ -60,9 +88,7 @@ async function main() {
 
   try {
     process.chdir(consumerDir);
-    const port = await getFreePort();
-    xpod = await testUtils.startNoAuthXpod({
-      port,
+    xpod = await startNoAuthXpodWithRetry(testUtils, {
       logLevel: 'error',
     });
     const response = await fetch(new URL('/service/status', xpod.baseUrl));
