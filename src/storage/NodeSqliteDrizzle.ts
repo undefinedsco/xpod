@@ -10,7 +10,6 @@ import {
   SQLiteTransaction,
 } from 'drizzle-orm/sqlite-core';
 import { fillPlaceholders, sql } from 'drizzle-orm/sql/sql';
-import { isConfig } from 'drizzle-orm/utils';
 
 const { mapResultRow } = require('drizzle-orm/utils') as {
   mapResultRow: (fields: any, row: any, joinsNotNullableMap: any) => any;
@@ -24,6 +23,26 @@ type NodeSqliteClientConfig = {
 
 function getDatabaseSyncCtor(): typeof DatabaseSync {
   return require('node:sqlite').DatabaseSync as typeof DatabaseSync;
+}
+
+function looksLikeDatabaseClient(value: unknown): boolean {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return typeof (value as DatabaseSync).prepare === 'function';
+}
+
+function isDrizzleConfig(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || looksLikeDatabaseClient(value)) {
+    return false;
+  }
+
+  return 'connection' in value
+    || 'client' in value
+    || 'schema' in value
+    || 'logger' in value
+    || 'casing' in value;
 }
 
 class NodeSqliteDatabase extends BaseSQLiteDatabase<'sync', any, Record<string, never>> {
@@ -181,7 +200,7 @@ class NodeSqlitePreparedQuery extends PreparedQueryBase<{
 }
 
 function constructNodeSqliteDb(client: DatabaseSync, config: NodeSqliteDrizzleConfig = {}): any {
-  const dialect = new SQLiteSyncDialect({ casing: config.casing });
+  const dialect = new SQLiteSyncDialect();
   const logger = config.logger === true
     ? new DefaultLogger()
     : config.logger === false
@@ -212,7 +231,7 @@ export function drizzleNodeSqlite(...params: any[]): any {
     return constructNodeSqliteDb(instance, params[1]);
   }
 
-  if (isConfig(params[0])) {
+  if (isDrizzleConfig(params[0])) {
     const { connection, client, ...drizzleConfig } = params[0];
     if (client) {
       return constructNodeSqliteDb(client, drizzleConfig);
