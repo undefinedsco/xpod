@@ -1,24 +1,8 @@
 #!/usr/bin/env node
+import '../runtime/configure-drizzle-solid';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { startCommand } from './commands/start';
-import { stopCommand } from './commands/stop';
-import { statusCommand } from './commands/status';
-import { logsCommand } from './commands/logs';
-import { authCommand } from './commands/auth';
-import { loginCommandModule } from './commands/login';
-import { configCommand } from './commands/config';
-import { importCommand } from './commands/import';
-import { podCommand } from './commands/pod';
-import { accountCommand } from './commands/account';
-import { backupCommand, restoreCommand } from './commands/backup';
-import { doctorCommand } from './commands/doctor';
-import { loadCredentials, getClientCredentials } from './lib/credentials-store';
-import { authenticate } from './lib/solid-auth';
-import { initAgent, runOnce, runInteractive } from './lib/agent-session';
-import { listThreads, getOrCreateDefaultChat } from './lib/pod-thread-store';
 import { registerCustomOAuthProviders } from './lib/oauth-providers';
-import { ensureAiCredentials } from './lib/ensure-ai-credentials';
 
 // Known subcommands
 const KNOWN_COMMANDS = [
@@ -26,6 +10,63 @@ const KNOWN_COMMANDS = [
   'auth', 'login', 'config', 'import', 'pod',
   'account', 'backup', 'restore', 'doctor',
 ];
+
+function createRootParser() {
+  return yargs(hideBin(process.argv))
+    .scriptName('xpod')
+    .usage('$0 <command> [options]')
+    .epilog(`Commands: ${KNOWN_COMMANDS.join(', ')}`)
+    .help()
+    .version();
+}
+
+async function createCommandParser() {
+  const [
+    { startCommand },
+    { stopCommand },
+    { statusCommand },
+    { logsCommand },
+    { authCommand },
+    { loginCommandModule },
+    { configCommand },
+    { importCommand },
+    { podCommand },
+    { accountCommand },
+    { backupCommand, restoreCommand },
+    { doctorCommand },
+  ] = await Promise.all([
+    import('./commands/start'),
+    import('./commands/stop'),
+    import('./commands/status'),
+    import('./commands/logs'),
+    import('./commands/auth'),
+    import('./commands/login'),
+    import('./commands/config'),
+    import('./commands/import'),
+    import('./commands/pod'),
+    import('./commands/account'),
+    import('./commands/backup'),
+    import('./commands/doctor'),
+  ]);
+
+  return createRootParser()
+    .command(startCommand)
+    .command(stopCommand)
+    .command(statusCommand)
+    .command(logsCommand)
+    .command(authCommand)
+    .command(loginCommandModule)
+    .command(configCommand)
+    .command(importCommand)
+    .command(podCommand)
+    .command(accountCommand)
+    .command(backupCommand)
+    .command(restoreCommand)
+    .command(doctorCommand)
+    .strict()
+    .help()
+    .version();
+}
 
 /**
  * Entry point: support both subcommands and default agent behavior.
@@ -41,29 +82,19 @@ async function main() {
   registerCustomOAuthProviders();
 
   const argv = process.argv.slice(2);
+  const wantsRootHelp = argv.includes('--help') || argv.includes('-h') || argv[0] === 'help';
+  const wantsVersion = argv.includes('--version') || argv.includes('-v');
 
   // If first arg is a known command, delegate to yargs
   if (argv.length > 0 && KNOWN_COMMANDS.includes(argv[0])) {
-    yargs(hideBin(process.argv))
-      .scriptName('xpod')
-      .usage('$0 <command> [options]')
-      .command(startCommand)
-      .command(stopCommand)
-      .command(statusCommand)
-      .command(logsCommand)
-      .command(authCommand)
-      .command(loginCommandModule)
-      .command(configCommand)
-      .command(importCommand)
-      .command(podCommand)
-      .command(accountCommand)
-      .command(backupCommand)
-      .command(restoreCommand)
-      .command(doctorCommand)
+    (await createCommandParser())
       .demandCommand(1, 'Please specify a command')
-      .strict()
-      .help()
       .parse();
+    return;
+  }
+
+  if (wantsRootHelp || wantsVersion) {
+    createRootParser().parse();
     return;
   }
 
@@ -72,6 +103,20 @@ async function main() {
 }
 
 async function runAgentMode(argv: string[]) {
+  const [
+    credentialsStore,
+    solidAuth,
+    agentSession,
+    podThreadStore,
+    aiCredentials,
+  ] = await Promise.all([
+    import('./lib/credentials-store'),
+    import('./lib/solid-auth'),
+    import('./lib/agent-session'),
+    import('./lib/pod-thread-store'),
+    import('./lib/ensure-ai-credentials'),
+  ]);
+
   // Parse agent-specific flags
   let printMode = false;
   let continueMode = false;
@@ -98,7 +143,7 @@ async function runAgentMode(argv: string[]) {
   }
 
   // Load credentials
-  const creds = loadCredentials();
+  const creds = credentialsStore.loadCredentials();
   if (!creds) {
     console.error('Error: No credentials found. Please run `xpod auth create-credentials` first.');
     process.exit(1);
@@ -107,12 +152,12 @@ async function runAgentMode(argv: string[]) {
   // Authenticate with Pod
   let auth;
   try {
-    const clientCreds = getClientCredentials(creds);
+    const clientCreds = credentialsStore.getClientCredentials(creds);
     if (!clientCreds) {
       console.error('Error: OAuth authentication not yet supported. Please use client credentials.');
       process.exit(1);
     }
-    auth = await authenticate(clientCreds.clientId, clientCreds.clientSecret, creds.url);
+    auth = await solidAuth.authenticate(clientCreds.clientId, clientCreds.clientSecret, creds.url);
   } catch (error) {
     console.error(`Error: Failed to authenticate. ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -122,18 +167,18 @@ async function runAgentMode(argv: string[]) {
   const workspace = process.cwd();
 
   // Check AI credentials (optional, uses platform default if not configured)
-  const hasCredentials = await ensureAiCredentials(session);
+  const hasCredentials = await aiCredentials.ensureAiCredentials(session);
   if (!hasCredentials) {
     process.exit(0); // User chose to configure first
   }
 
   // Get or create default CLI chat (1v1 with SecretaryAI)
-  const chatId = await getOrCreateDefaultChat(session);
+  const chatId = await podThreadStore.getOrCreateDefaultChat(session);
 
   // Resolve thread ID for continue mode
   let threadId: string | undefined;
   if (continueMode) {
-    const threads = await listThreads(session, chatId);
+    const threads = await podThreadStore.listThreads(session, chatId);
     if (threads.length > 0) {
       threadId = threads[0]; // Most recent
       console.log(`Continuing thread: ${threadId}`);
@@ -145,7 +190,7 @@ async function runAgentMode(argv: string[]) {
   // Initialize agent — LLM calls go through xpod API, no AI keys needed on client
   let result;
   try {
-    result = await initAgent({
+    result = await agentSession.initAgent({
       session,
       apiKey,
       xpodUrl: creds.url,
@@ -167,11 +212,11 @@ async function runAgentMode(argv: string[]) {
       console.error('Error: -p/--print requires a prompt');
       process.exit(1);
     }
-    await runOnce(agent, prompt, session, chatId, activeThreadId);
+    await agentSession.runOnce(agent, prompt, session, chatId, activeThreadId);
     await session.logout();
     process.exit(0);
   } else {
-    await runInteractive(agent, session, chatId, activeThreadId, prompt);
+    await agentSession.runInteractive(agent, session, chatId, activeThreadId, prompt);
   }
 }
 

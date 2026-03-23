@@ -47,6 +47,9 @@
 
 - 发布前务必确认所有测试通过
 - 发布前务必确认 `package.json` 里的平台 `optionalDependencies` 版本与主版本一致（CI 会执行 `yarn check:platform-package-version`）
+- 安装/烟测链路默认尊重用户级 `npm` / `bun` registry 配置；也可显式设置 `XPOD_INSTALL_REGISTRY`
+- 发布链路默认固定到官方源 `https://registry.npmjs.org`，如确需覆盖请显式设置 `XPOD_PUBLISH_REGISTRY`
+- 国内网络下本地安装可先执行 `npm config set registry https://registry.npmmirror.com` 与 `bun pm config set --global registry https://registry.npmmirror.com`
 - 提交信息应清晰列出本次发布的主要改动
 - 推送 tag 后无法撤回，请谨慎操作
 - 如需回滚，创建新的 patch 版本修复问题

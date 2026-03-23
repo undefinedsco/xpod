@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { Session } from '@inrupt/solid-client-authn-node';
 import { resolveSeedCredentials } from '../../../src/cli/seed';
-import { createSqliteDatabase } from '../../../src/storage/SqliteCompat';
+import { getSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 import { XpodTestStack } from '../../helpers/XpodTestStack';
 import { resolveTestRuntimeTransport } from '../../helpers/runtimeTransport';
 import { loginWithClientCredentials } from '../../integration/helpers/solidAccount';
@@ -113,7 +113,7 @@ export interface VectorIntegrationContext {
 
 export function getSqliteVecCapability(): SqliteVecCapability {
   try {
-    const db = createSqliteDatabase(':memory:');
+    const db = getSqliteRuntime().openDatabase(':memory:');
     db.close();
     return { available: true };
   } catch (error) {

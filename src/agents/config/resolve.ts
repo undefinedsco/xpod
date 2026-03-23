@@ -7,23 +7,40 @@
  * Flow:
  * 1. Fetch AGENT.md → parse frontmatter + body
  * 2. Query .meta TTL → get provider/credential/model URIs
- * 3. Resolve URIs → AgentProvider, Credential, Model records
+ * 3. Resolve URIs → Provider, Credential, Model records
  * 4. Fetch skills (if any) → concatenate prompt content
  * 5. Convert MCP server defs → McpServerConfig map
  * 6. Return ResolvedAgentConfig
  */
 
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { drizzle } from '@undefineds.co/drizzle-solid';
 import { parseAgentMd } from './parse-agent-md';
 import { AgentMetaSchema } from './agent-meta-schema';
-import { AgentProvider } from '../schema/tables';
+import { Provider } from '../../ai/schema/provider';
 import { Credential } from '../../credential/schema/tables';
 import { Model } from '../../ai/schema/model';
 import type { ResolvedAgentConfig, AgentMcpServerDef } from './types';
+import type { ExecutorType } from '../types';
 import type { McpServerConfig } from '../types';
 
 const logger = getLoggerFor('AgentConfigResolver');
+
+function isExecutorType(value: string | undefined): value is ExecutorType {
+  return value === 'codebuddy' || value === 'claude';
+}
+
+async function resolveModelId(
+  db: any,
+  modelRef: string | null | undefined,
+): Promise<string | undefined> {
+  if (!modelRef) {
+    return undefined;
+  }
+
+  const modelRecord = await db.findByIri(Model, modelRef);
+  return modelRecord?.id ?? undefined;
+}
 
 interface ResolveContext {
   podBaseUrl: string;
@@ -47,16 +64,21 @@ export async function resolveAgentConfig(
   // 1. Fetch AGENT.md
   const agentMdUrl = new URL(`/agents/${agentId}/AGENT.md`, podBaseUrl).href;
   const mdResponse = await authenticatedFetch(agentMdUrl);
-  if (!mdResponse.ok) {
-    logger.warn(`AGENT.md not found for ${agentId}: ${mdResponse.status}`);
-    return null;
+  let frontmatter: ReturnType<typeof parseAgentMd>['frontmatter'] = {};
+  let promptFromMarkdown = '';
+  if (mdResponse.ok) {
+    const mdContent = await mdResponse.text();
+    const parsed = parseAgentMd(mdContent);
+    frontmatter = parsed.frontmatter;
+    promptFromMarkdown = parsed.body;
+  } else {
+    logger.warn(`AGENT.md not found for ${agentId}: ${mdResponse.status}, fallback to Pod metadata`);
   }
-  const mdContent = await mdResponse.text();
-  const { frontmatter, body: systemPrompt } = parseAgentMd(mdContent);
 
   // 2. Query .meta
   const metaTable = AgentMetaSchema.table('AgentMeta', {
     base: `/agents/${agentId}/.meta`,
+    subjectTemplate: '#{id}',
   });
 
   const session = {
@@ -66,7 +88,7 @@ export async function resolveAgentConfig(
   const db: any = drizzle(session, {
     schema: {
       agentMeta: metaTable,
-      agentProvider: AgentProvider,
+      provider: Provider,
       credential: Credential,
       model: Model,
     },
@@ -89,15 +111,15 @@ export async function resolveAgentConfig(
     logger.error(`Agent ${agentId} has no provider in .meta`);
     return null;
   }
-  const providerId = providerUri.split('#').pop();
-  if (!providerId) {
-    logger.error(`Invalid provider URI: ${providerUri}`);
+  const provider = await db.findByIri(Provider, providerUri);
+  if (!provider) {
+    logger.error(`Provider not found: ${providerUri}`);
     return null;
   }
 
-  const provider = await db.findByLocator(AgentProvider, { id: providerId });
-  if (!provider) {
-    logger.error(`Provider not found: ${providerId}`);
+  const runtimeKind = metaRecord.runtimeKind;
+  if (!isExecutorType(runtimeKind)) {
+    logger.error(`Agent ${agentId} has invalid runtimeKind: ${runtimeKind ?? '(missing)'}`);
     return null;
   }
 
@@ -108,27 +130,21 @@ export async function resolveAgentConfig(
   let proxyUrl: string | undefined;
 
   if (credentialUri) {
-    const credentialId = credentialUri.split('#').pop();
-    if (credentialId) {
-      const cred = await db.findByLocator(Credential, { id: credentialId });
-      if (cred) {
-        apiKey = (cred as any).apiKey ?? '';
-        baseUrl = (cred as any).baseUrl ?? baseUrl;
-        proxyUrl = (cred as any).proxyUrl ?? undefined;
-      }
+    const cred = await db.findByIri(Credential, credentialUri);
+    if (cred) {
+      apiKey = (cred as any).apiKey ?? '';
+      baseUrl = (cred as any).baseUrl ?? baseUrl;
+      proxyUrl = (cred as any).proxyUrl ?? undefined;
     }
   }
 
   // 5. Resolve model
-  let modelName = provider.defaultModel ?? undefined;
+  let modelName = await resolveModelId(db, provider.defaultModel ?? provider.hasModel);
   const modelUri = metaRecord.model;
   if (modelUri) {
-    const modelId = modelUri.split('#').pop();
-    if (modelId) {
-      const modelRecord = await db.findByLocator(Model, { id: modelId });
-      if (modelRecord) {
-        modelName = modelRecord.id;
-      }
+    const resolvedModel = await resolveModelId(db, modelUri);
+    if (resolvedModel) {
+      modelName = resolvedModel;
     }
   }
 
@@ -144,17 +160,19 @@ export async function resolveAgentConfig(
   const mcpServers = convertMcpServers(frontmatter['mcp-servers'] ?? []);
 
   // 8. Assemble
+  const systemPrompt = promptFromMarkdown || metaRecord.instructions || '';
+
   return {
     id: agentId,
-    displayName: metaRecord.displayName ?? frontmatter.name ?? agentId,
-    description: frontmatter.description,
+    displayName: metaRecord.name ?? frontmatter.name ?? agentId,
+    description: metaRecord.description ?? frontmatter.description,
     systemPrompt,
-    executorType: provider.executorType as ResolvedAgentConfig['executorType'],
+    executorType: runtimeKind,
     apiKey,
     baseUrl,
     proxyUrl,
     model: modelName,
-    maxTurns: frontmatter['max-turns'],
+    maxTurns: frontmatter['max-turns'] ?? metaRecord.maxTurns,
     allowedTools: Array.isArray(frontmatter['allowed-tools'])
       ? frontmatter['allowed-tools']
       : undefined,

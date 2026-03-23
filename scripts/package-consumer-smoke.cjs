@@ -25,11 +25,15 @@ function runCli(consumerDir, requireFromConsumer) {
     throw new Error('Missing xpod bin entry');
   }
   const binPath = path.resolve(path.dirname(packageJsonPath), binRelative);
-  const result = spawnSync(process.execPath, [ binPath, '--help' ], {
+  const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+  const result = spawnSync(nodeExecutable, [ binPath, '--help' ], {
     cwd: consumerDir,
     encoding: 'utf8',
     stdio: [ 'ignore', 'pipe', 'pipe' ],
-    env: process.env,
+    env: {
+      ...process.env,
+      XPOD_PREFER_JS_CLI: 'true',
+    },
   });
   if (result.status !== 0) {
     throw new Error(`xpod --help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
@@ -40,13 +44,8 @@ async function main() {
   const consumerDir = path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
   const requireFromConsumer = createRequire(path.join(consumerDir, 'package.json'));
 
-  const root = requireFromConsumer('@undefineds.co/xpod');
   const runtime = requireFromConsumer('@undefineds.co/xpod/runtime');
   const testUtils = requireFromConsumer('@undefineds.co/xpod/test-utils');
-
-  if (typeof root.startXpodRuntime !== 'function') {
-    throw new Error('Missing startXpodRuntime export from root entry');
-  }
   if (typeof runtime.startXpodRuntime !== 'function') {
     throw new Error('Missing startXpodRuntime export from runtime entry');
   }

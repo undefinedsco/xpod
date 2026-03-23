@@ -22,7 +22,7 @@
  * 
  * 依赖：
  *   - quadstore + quadstore-comunica
- *   - better-sqlite3 (通过 src/libs/backends)
+ *   - SQLite backend (通过 src/libs/backends)
  */
 
 import fs from 'fs';

@@ -77,22 +77,22 @@ export async function resolveRuntimeBootstrap(
   platform.ensureDir(rootFilePath);
 
   const socketsRoot = platform.joinPath(runtimeRoot, 'sockets');
-  const allocatedPorts = await host.allocatePorts({
-    gatewayPort: options.gatewayPort,
-    cssPort: options.cssPort,
-    apiPort: options.apiPort,
-    basePort: 5600,
-  });
-
-  const ports: XpodRuntimePorts = {
-    gateway: allocatedPorts.gateway,
-    css: allocatedPorts.css,
-    api: allocatedPorts.api,
-  };
+  if (transport === 'socket') {
+    platform.ensureDir(socketsRoot);
+  }
+  const ports: XpodRuntimePorts = transport === 'port'
+    ? await host.allocatePorts({
+      gatewayPort: options.gatewayPort,
+      cssPort: options.cssPort,
+      apiPort: options.apiPort,
+      basePort: 5600,
+    })
+    : {};
   const sockets: XpodRuntimeSockets = {};
 
   if (transport === 'socket') {
     sockets.gateway = platform.resolvePath(options.gatewaySocketPath ?? platform.joinPath(socketsRoot, 'gateway.sock'));
+    sockets.css = platform.resolvePath(options.cssSocketPath ?? platform.joinPath(socketsRoot, 'css.sock'));
     sockets.api = platform.resolvePath(options.apiSocketPath ?? platform.joinPath(socketsRoot, 'api.sock'));
   }
 
@@ -138,11 +138,11 @@ export function buildRuntimeEnv(
     CSS_ROOT_FILE_PATH: state.rootFilePath,
     CSS_IDENTITY_DB_URL: state.identityDbUrl,
     DATABASE_URL: state.identityDbUrl,
-    CSS_PORT: String(state.ports.css ?? 0),
-    API_PORT: String(state.ports.api ?? 0),
+    CSS_PORT: state.ports.css !== undefined ? String(state.ports.css) : undefined,
+    API_PORT: state.ports.api !== undefined ? String(state.ports.api) : undefined,
     API_HOST: state.bindHost,
     API_SOCKET_PATH: state.sockets.api,
-    XPOD_MAIN_PORT: String(state.ports.gateway ?? 0),
+    XPOD_MAIN_PORT: state.ports.gateway !== undefined ? String(state.ports.gateway) : undefined,
     CORS_ORIGINS: new URL(state.baseUrl).origin,
     CSS_LOGGING_LEVEL: state.logLevel,
   };

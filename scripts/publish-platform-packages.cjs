@@ -7,6 +7,16 @@ const { buildPlatformPackage } = require('./build-platform-package.cjs');
 const { PLATFORM_TARGETS } = require('./platform-binaries.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
+const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org';
+
+function readNonEmptyEnv(key) {
+  const value = process.env[key];
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -51,7 +61,7 @@ function parseArgs(argv) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const publishRegistry = process.env.XPOD_NPM_REGISTRY || 'https://registry.npmjs.org';
+  const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY') || OFFICIAL_NPM_REGISTRY;
   const npmCacheDir = path.join(repoRoot, '.test-data', 'npm-cache');
   fs.mkdirSync(npmCacheDir, { recursive: true });
 

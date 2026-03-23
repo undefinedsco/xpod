@@ -82,8 +82,8 @@ describe('PodChatKitStore AI Config Operations', () => {
       select: vi.fn().mockImplementation(() => createSelectChain()),
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue([]),
-      update: vi.fn().mockReturnThis(),
-      set: vi.fn().mockReturnThis(),
+      findByLocator: vi.fn().mockResolvedValue(mockCredentials[0]),
+      updateByLocator: vi.fn().mockResolvedValue(undefined),
       init: vi.fn().mockResolvedValue(undefined),
       query: {
         chat: { findFirst: vi.fn() },
@@ -233,10 +233,7 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should call update with correct status', async () => {
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.updateCredentialStatus(
@@ -245,17 +242,14 @@ describe('PodChatKitStore AI Config Operations', () => {
         CredentialStatus.RATE_LIMITED,
       );
 
-      expect(mockDb.update).toHaveBeenCalled();
-      expect(setMock).toHaveBeenCalledWith(
+      expect(mockDb.updateByLocator).toHaveBeenCalled();
+      expect(mockDb.updateByLocator.mock.calls[0][2]).toEqual(
         expect.objectContaining({ status: CredentialStatus.RATE_LIMITED }),
       );
     });
 
     it('should include rateLimitResetAt when provided', async () => {
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const resetAt = new Date(Date.now() + 60000);
@@ -266,7 +260,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         { rateLimitResetAt: resetAt },
       );
 
-      expect(setMock).toHaveBeenCalledWith(
+      expect(mockDb.updateByLocator.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.RATE_LIMITED,
           rateLimitResetAt: resetAt,
@@ -277,15 +271,8 @@ describe('PodChatKitStore AI Config Operations', () => {
     it('should increment failCount when requested', async () => {
       const existingCred = { ...mockCredentials[0], failCount: 2 };
 
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([existingCred]),
-        }),
-      }));
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.findByLocator = vi.fn().mockResolvedValue(existingCred);
+      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.updateCredentialStatus(
@@ -295,7 +282,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         { incrementFailCount: true },
       );
 
-      expect(setMock).toHaveBeenCalledWith(
+      expect(mockDb.updateByLocator.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.RATE_LIMITED,
           failCount: 3,
@@ -304,11 +291,7 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should handle errors gracefully', async () => {
-      mockDb.update = vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockRejectedValue(new Error('Update failed')),
-        }),
-      });
+      mockDb.updateByLocator = vi.fn().mockRejectedValue(new Error('Update failed'));
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       // Should not throw
@@ -328,16 +311,13 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should reset status and failCount on success', async () => {
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.recordCredentialSuccess(mockContext, 'cred-001');
 
-      expect(mockDb.update).toHaveBeenCalled();
-      expect(setMock).toHaveBeenCalledWith(
+      expect(mockDb.updateByLocator).toHaveBeenCalled();
+      expect(mockDb.updateByLocator.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.ACTIVE,
           failCount: 0,
@@ -347,29 +327,22 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should set lastUsedAt to current date', async () => {
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const beforeCall = new Date();
       await store.recordCredentialSuccess(mockContext, 'cred-001');
       const afterCall = new Date();
 
-      expect(setMock).toHaveBeenCalled();
-      const callArgs = setMock.mock.calls[0][0];
+      expect(mockDb.updateByLocator).toHaveBeenCalled();
+      const callArgs = mockDb.updateByLocator.mock.calls[0][2];
       expect(callArgs.lastUsedAt).toBeInstanceOf(Date);
       expect(callArgs.lastUsedAt.getTime()).toBeGreaterThanOrEqual(beforeCall.getTime());
       expect(callArgs.lastUsedAt.getTime()).toBeLessThanOrEqual(afterCall.getTime());
     });
 
     it('should handle errors gracefully', async () => {
-      mockDb.update = vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockRejectedValue(new Error('Update failed')),
-        }),
-      });
+      mockDb.updateByLocator = vi.fn().mockRejectedValue(new Error('Update failed'));
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       // Should not throw

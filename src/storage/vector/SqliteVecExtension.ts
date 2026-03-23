@@ -16,11 +16,5 @@ export function getSqliteVecExtensionPath(): string {
 export function loadSqliteVecExtension(database: SqliteDatabase): void {
   const sqliteVec = getSqliteVecModule();
   const extensionPath = sqliteVec.getLoadablePath();
-
-  if (database.kind === 'node-better-sqlite3' && sqliteVec.load) {
-    sqliteVec.load(database.native, extensionPath);
-    return;
-  }
-
   database.loadExtension(extensionPath);
 }

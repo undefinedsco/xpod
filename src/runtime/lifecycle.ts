@@ -119,8 +119,16 @@ export async function startCssRuntime({
     },
   });
 
-  await host.waitForPortReady(state.ports.css!, '127.0.0.1');
-  supervisor.addLog('css', 'info', `CSS started (http://127.0.0.1:${state.ports.css})`);
+  if (state.sockets.css) {
+    const ready = await host.isConnectionTargetReady({ socketPath: state.sockets.css }, 5_000);
+    if (!ready) {
+      throw new Error(`Timed out waiting for CSS socket ${state.sockets.css}`);
+    }
+    supervisor.addLog('css', 'info', `CSS started (unix://${state.sockets.css})`);
+  } else {
+    await host.waitForPortReady(state.ports.css!, '127.0.0.1');
+    supervisor.addLog('css', 'info', `CSS started (http://127.0.0.1:${state.ports.css})`);
+  }
   supervisor.setStatus('css', 'running', { startTime: Date.now() });
   return cssApp;
 }
@@ -163,7 +171,7 @@ export async function startGatewayRuntime({
     runtimeHost: host,
     supervisor,
     targets: {
-      css: { url: `http://127.0.0.1:${state.ports.css}` },
+      css: state.transport === 'socket' ? { socketPath: state.sockets.css! } : { url: `http://127.0.0.1:${state.ports.css}` },
       api: state.transport === 'socket' ? { socketPath: state.sockets.api! } : { url: `http://127.0.0.1:${state.ports.api}` },
     },
   });

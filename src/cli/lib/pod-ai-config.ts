@@ -8,6 +8,7 @@
 import { drizzle } from '@undefineds.co/drizzle-solid';
 import { ApiKeyCredential, OAuthCredential } from '../../credential/schema/tables';
 import { Provider } from '../../ai/schema/provider';
+import { Model } from '../../ai/schema/model';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import type { Session } from '@inrupt/solid-client-authn-node';
 import { ensureOAuthTokenValid } from './oauth-credential-manager';
@@ -98,9 +99,14 @@ export async function loadPodAiConfig(session: Session): Promise<PodAiConfig | n
         }
       }
 
+      const defaultModelRef = provider.defaultModel ?? provider.hasModel;
+      const defaultModel = defaultModelRef
+        ? (await db.findByIri(Model, defaultModelRef))?.id ?? ''
+        : '';
+
       return {
         provider: provider.id as string,
-        modelId: provider.hasModel as string || '',
+        modelId: defaultModel,
         apiKey: isApiKey ? (cred as any).apiKey : (cred as any).oauthAccessToken,
         baseUrl,
         proxyUrl: provider.proxyUrl || undefined,

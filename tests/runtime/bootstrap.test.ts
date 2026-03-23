@@ -20,7 +20,7 @@ describe('runtime bootstrap helpers', () => {
     expect(state.baseUrl).toBe('http://localhost/');
     expect(state.sockets.gateway).toContain('gateway.sock');
     expect(state.sockets.api).toContain('api.sock');
-    expect(state.ports.gateway).toBe(5610);
+    expect(state.ports.gateway).toBeUndefined();
   });
 
   it('should build env and shorthand from bootstrap state', async() => {

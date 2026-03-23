@@ -6,7 +6,7 @@
  * - 代理设置
  */
 import { drizzle } from '@undefineds.co/drizzle-solid';
-import { modelProviderTable } from '../src/api/models/model-provider.schema';
+import { Provider as modelProviderTable } from '../src/ai/schema/provider';
 import * as dotenv from 'dotenv';
 import path from 'path';
 

@@ -187,6 +187,7 @@ Model: ${model}
         baseURL: config.baseUrl || getDefaultBaseUrl(),
         apiKey: config.apiKey,
         proxy: config.proxyUrl,
+        defaultModel: config.defaultModel,
         credentialId: config.credentialId,
       };
     }

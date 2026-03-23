@@ -1,4 +1,3 @@
-import { createBetterSqlite3Runtime } from './backends/BetterSqlite3Runtime';
 import { createBunSqliteRuntime } from './backends/BunSqliteRuntime';
 import { createNodeSqliteRuntime } from './backends/NodeSqliteRuntime';
 import type { SqliteRuntime, SqliteRuntimeKind } from './types';
@@ -12,7 +11,7 @@ function parseConfiguredSqliteRuntimeKind(value: string | undefined): SqliteRunt
     return undefined;
   }
 
-  if (value === 'node-better-sqlite3' || value === 'node-sqlite' || value === 'bun-sqlite') {
+  if (value === 'node-sqlite' || value === 'bun-sqlite') {
     return value;
   }
 
@@ -21,7 +20,7 @@ function parseConfiguredSqliteRuntimeKind(value: string | undefined): SqliteRunt
 
 export function resolveDefaultSqliteRuntimeKind(): SqliteRuntimeKind {
   return parseConfiguredSqliteRuntimeKind(process.env.XPOD_SQLITE_RUNTIME)
-    ?? (isBunRuntime() ? 'bun-sqlite' : 'node-better-sqlite3');
+    ?? (isBunRuntime() ? 'bun-sqlite' : 'node-sqlite');
 }
 
 export function createSqliteRuntime(kind: SqliteRuntimeKind = resolveDefaultSqliteRuntimeKind()): SqliteRuntime {
@@ -30,8 +29,6 @@ export function createSqliteRuntime(kind: SqliteRuntimeKind = resolveDefaultSqli
       return createBunSqliteRuntime();
     case 'node-sqlite':
       return createNodeSqliteRuntime();
-    case 'node-better-sqlite3':
-      return createBetterSqlite3Runtime();
     default: {
       const exhaustiveKind: never = kind;
       throw new Error(`Unsupported sqlite runtime kind: ${String(exhaustiveKind)}`);

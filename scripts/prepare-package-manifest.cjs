@@ -15,6 +15,10 @@ function sanitizeManifest(pkg) {
     delete nextScripts.postpack;
     nextPkg.scripts = nextScripts;
   }
+
+  delete nextPkg.bundleDependencies;
+  delete nextPkg.bundledDependencies;
+
   return nextPkg;
 }
 
