@@ -6,11 +6,25 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
-function getCommand(packageManager) {
+function getCommandInvocation(packageManager, args) {
   if (packageManager === 'bun') {
-    return process.platform === 'win32' ? 'bun.exe' : 'bun';
+    return {
+      command: process.platform === 'win32' ? 'bun.exe' : 'bun',
+      args,
+    };
   }
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+  if (process.platform === 'win32') {
+    return {
+      command: process.env.ComSpec || 'cmd.exe',
+      args: [ '/d', '/s', '/c', 'npm.cmd', ...args ],
+    };
+  }
+
+  return {
+    command: 'npm',
+    args,
+  };
 }
 
 function normalizeInstallSpec(rawSpec) {
@@ -58,6 +72,9 @@ function createSmokeTarball(installSpec) {
 
 function toInstallerSpec(installSpec, packageManager) {
   if (packageManager === 'bun' && fs.existsSync(installSpec)) {
+    if (process.platform === 'win32') {
+      return installSpec;
+    }
     return pathToFileURL(installSpec).href;
   }
   return installSpec;
@@ -182,7 +199,8 @@ function runCommand(packageManager, args, cwd, cacheDir, baseEnv) {
       env.npm_config_registry = installRegistry;
     }
   }
-  execFileSync(getCommand(packageManager), args, {
+  const invocation = getCommandInvocation(packageManager, args);
+  execFileSync(invocation.command, invocation.args, {
     cwd,
     stdio: 'inherit',
     env,

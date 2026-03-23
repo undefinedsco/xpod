@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
 
-function getNpmCommand() {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+function getNpmInvocation(args) {
+  if (process.platform === 'win32') {
+    return {
+      command: process.env.ComSpec || 'cmd.exe',
+      args: [ '/d', '/s', '/c', 'npm.cmd', ...args ],
+    };
+  }
+
+  return {
+    command: 'npm',
+    args,
+  };
 }
 
 function normalizeInstallSpec(rawSpec) {
@@ -25,7 +35,8 @@ async function main() {
   const packageSpec = normalizeInstallSpec(rawSpec);
 
   for (let index = 1; index <= attempts; index += 1) {
-    const result = spawnSync(getNpmCommand(), [ 'view', packageSpec, 'version' ], {
+    const invocation = getNpmInvocation([ 'view', packageSpec, 'version' ]);
+    const result = spawnSync(invocation.command, invocation.args, {
       encoding: 'utf8',
       stdio: [ 'ignore', 'pipe', 'pipe' ],
     });
