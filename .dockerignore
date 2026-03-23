@@ -3,6 +3,7 @@
 
 # 构建需要的文件
 !package.json
+!bun.lock
 !yarn.lock
 !tsconfig.json
 !src/

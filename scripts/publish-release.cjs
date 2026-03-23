@@ -34,6 +34,7 @@ function main() {
   const repoRoot = process.cwd();
   const dryRun = process.argv.includes('--dry-run') || process.env.XPOD_PUBLISH_DRY_RUN === 'true';
   const skipBuild = process.argv.includes('--skip-build');
+  const publishPlatformPackages = process.env.XPOD_PUBLISH_PLATFORM_PACKAGES === 'true';
   const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY') || OFFICIAL_NPM_REGISTRY;
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   const mismatches = getPlatformDependencyMismatches(packageJson, packageJson.version);
@@ -59,6 +60,7 @@ function main() {
   const npmEnv = {
     npm_config_cache: npmCacheDir,
     npm_config_registry: publishRegistry,
+    XPOD_INCLUDE_PLATFORM_PACKAGES: publishPlatformPackages ? 'true' : 'false',
   };
 
   run(`node scripts/run-npm-pack.cjs ${JSON.stringify(packDir)} ${JSON.stringify(npmCacheDir)}`, npmEnv);
@@ -66,7 +68,11 @@ function main() {
   const packJsonPath = path.join(packDir, 'pack.json');
   run(`node scripts/check-pack-json.cjs ${JSON.stringify(packJsonPath)}`);
 
-  run(`node scripts/publish-platform-packages.cjs${dryRun ? ' --dry-run' : ''}`, npmEnv);
+  if (publishPlatformPackages) {
+    run(`node scripts/publish-platform-packages.cjs${dryRun ? ' --dry-run' : ''}`, npmEnv);
+  } else {
+    console.log('[publish:release] skipping platform package publish (set XPOD_PUBLISH_PLATFORM_PACKAGES=true to enable)');
+  }
 
   const pack = readPackMetadata(packJsonPath);
   const tarballPath = path.join(packDir, pack.filename);

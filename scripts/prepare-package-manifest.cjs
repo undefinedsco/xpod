@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
+const { PLATFORM_PACKAGE_PREFIX } = require('./platform-binaries.cjs');
 
 const repoRoot = process.cwd();
 const packageJsonPath = path.join(repoRoot, 'package.json');
@@ -18,6 +19,21 @@ function sanitizeManifest(pkg) {
 
   delete nextPkg.bundleDependencies;
   delete nextPkg.bundledDependencies;
+
+  if (process.env.XPOD_INCLUDE_PLATFORM_PACKAGES !== 'true' && nextPkg.optionalDependencies) {
+    const nextOptionalDependencies = { ...nextPkg.optionalDependencies };
+    for (const dependencyName of Object.keys(nextOptionalDependencies)) {
+      if (dependencyName.startsWith(PLATFORM_PACKAGE_PREFIX)) {
+        delete nextOptionalDependencies[dependencyName];
+      }
+    }
+
+    if (Object.keys(nextOptionalDependencies).length === 0) {
+      delete nextPkg.optionalDependencies;
+    } else {
+      nextPkg.optionalDependencies = nextOptionalDependencies;
+    }
+  }
 
   return nextPkg;
 }
