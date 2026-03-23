@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { buildRuntimeEnv, buildRuntimeShorthand, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
+import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost } from '../../src/runtime/host/types';
 import type { RuntimePlatform } from '../../src/runtime/platform/types';
@@ -95,5 +95,34 @@ describe('runtime bootstrap helpers', () => {
     expect(state.logLevel).toBe('error');
     expect(ensureDir).toHaveBeenCalledWith('/sandbox/.test-data/xpod-runtime/platform-id');
     expect(ensureDir).toHaveBeenCalledWith('/sandbox/.test-data/xpod-runtime/platform-id/data');
+  });
+
+  it('should write Components config imports as file URLs on Windows paths', () => {
+    const writeTextFile = vi.fn();
+    const runtimeConfigPath = createCssRuntimeConfig({
+      mode: 'local',
+      runtimeRoot: 'D:\\runtime',
+    } as any, true, {
+      joinPath: (...segments: string[]): string => {
+        const lastSegment = segments[segments.length - 1]?.replace(/\//g, '\\');
+        if (lastSegment === 'config\\local.json' || lastSegment === 'config\\runtime-open.json') {
+          return `D:\\package\\${lastSegment}`;
+        }
+        return segments.join('\\');
+      },
+      writeTextFile,
+    });
+
+    expect(runtimeConfigPath).toBe(`D:\\runtime\\css-runtime.config.json`);
+    expect(writeTextFile).toHaveBeenCalledTimes(1);
+
+    const [, content] = writeTextFile.mock.calls[0];
+    const parsed = JSON.parse(content);
+    expect(parsed.import).toEqual([
+      expect.stringMatching(/^file:\/\/\/[A-Z]:\//),
+      expect.stringMatching(/^file:\/\/\/[A-Z]:\//),
+    ]);
+    expect(parsed.import[0]).toContain('/config/local.json');
+    expect(parsed.import[1]).toContain('/config/runtime-open.json');
   });
 });

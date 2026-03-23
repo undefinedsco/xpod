@@ -1,4 +1,5 @@
 import { setGlobalLoggerFactory } from 'global-logger-factory';
+import { pathToFileURL } from 'node:url';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
 import { PACKAGE_ROOT } from './package-root';
 import type { RuntimeHost } from './host/types';
@@ -28,6 +29,14 @@ export interface RuntimeBootstrapState {
 
 function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
+}
+
+function toConfigResourceIri(filePath: string): string {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  if (/^[A-Za-z]:\//.test(normalizedPath)) {
+    return pathToFileURL(`/${normalizedPath}`).href;
+  }
+  return pathToFileURL(filePath).href;
 }
 
 function withDefinedEntries(entries: Array<[string, string | number | boolean | undefined]>): Record<string, string | number | boolean> {
@@ -207,8 +216,8 @@ export function createCssRuntimeConfig(
       'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld',
     ],
     import: [
-      configPath,
-      platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json'),
+      toConfigResourceIri(configPath),
+      toConfigResourceIri(platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json')),
     ],
   }, null, 2));
 
