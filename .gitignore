@@ -5,10 +5,15 @@ node_modules
 # Environment files (contain sensitive information)
 .env
 .env.local
-.env.server  
+.env.server
 .env.cluster
 .env.dev
 .env.*
+
+# K8s secrets (contain sensitive credentials)
+deploy/**/secret.*.yaml
+!deploy/**/secret.*.example.yaml
+config/kubeconfig*.yaml
 
 # Database files
 *.sqlite
