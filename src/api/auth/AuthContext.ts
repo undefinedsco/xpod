@@ -16,6 +16,7 @@ export interface SolidAuthContext {
   displayName?: string;
   accessToken?: string;
   tokenType?: 'Bearer' | 'DPoP';
+  dpopProof?: string;
   /** Whether this was authenticated via API Key (client credentials) */
   viaApiKey?: boolean;
 }

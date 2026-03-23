@@ -21,6 +21,13 @@ function createProxyFetch(proxyUrl: string): typeof fetch {
   return (url, init) => fetch(url, { ...init, dispatcher: agent } as any);
 }
 
+interface ProviderConfig {
+  baseURL: string;
+  apiKey: string;
+  proxy?: string;
+  credentialId?: string;
+}
+
 export class VercelChatService {
   private readonly logger = getLoggerFor(this);
   private usageRepo?: UsageRepository;
@@ -48,15 +55,271 @@ export class VercelChatService {
     };
   }
 
+  private getAiGatewayBaseUrl(): string | null {
+    const raw = process.env.XPOD_AI_GATEWAY_BASE_URL?.trim();
+    return raw ? raw.replace(/\/$/, '') : null;
+  }
 
+  private getAiGatewayEntryModels(): Set<string> {
+    return new Set(
+      (process.env.XPOD_AI_GATEWAY_ENTRY_MODELS ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+  }
 
+  private getAiGatewayTimeoutMs(): number {
+    const raw = process.env.XPOD_AI_GATEWAY_TIMEOUT_MS?.trim();
+    if (!raw) {
+      return 30_000;
+    }
 
-  private async getProviderConfig(context: StoreContext): Promise<{
-    baseURL: string;
-    apiKey: string;
-    proxy?: string;
-    credentialId?: string;
-  } | null> {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+  }
+
+  private shouldUseAiGateway(model?: string): boolean {
+    if (!model || !this.getAiGatewayBaseUrl()) {
+      return false;
+    }
+
+    return this.getAiGatewayEntryModels().has(model);
+  }
+
+  private buildAiGatewayUrl(path: string): string {
+    const baseUrl = this.getAiGatewayBaseUrl();
+    if (!baseUrl) {
+      throw new Error('XPOD_AI_GATEWAY_BASE_URL is not configured');
+    }
+
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    if (baseUrl.endsWith('/v1') && normalizedPath.startsWith('/v1/')) {
+      return `${baseUrl}${normalizedPath.slice(3)}`;
+    }
+
+    return `${baseUrl}${normalizedPath}`;
+  }
+
+  private getForwardedAccessToken(auth: AuthContext): string | null {
+    if (auth.type !== 'solid') {
+      return null;
+    }
+
+    const rawToken = auth.accessToken ?? (auth as { token?: string }).token;
+    return rawToken?.trim() || null;
+  }
+
+  private getForwardedTokenType(auth: AuthContext): 'Bearer' | 'DPoP' {
+    if (auth.type !== 'solid') {
+      return 'Bearer';
+    }
+
+    return auth.tokenType ?? 'Bearer';
+  }
+
+  private getForwardedDpopProof(auth: AuthContext): string | null {
+    if (auth.type !== 'solid') {
+      return null;
+    }
+
+    return auth.dpopProof?.trim() || null;
+  }
+
+  private createAiGatewayAbortSignal(): AbortSignal | undefined {
+    const abortSignal = AbortSignal as typeof AbortSignal & {
+      timeout?: (milliseconds: number) => AbortSignal;
+    };
+    return typeof abortSignal.timeout === 'function'
+      ? abortSignal.timeout(this.getAiGatewayTimeoutMs())
+      : undefined;
+  }
+
+  private async sendAiGatewayRequest(
+    path: string,
+    auth: AuthContext,
+    method: 'GET' | 'POST',
+    body?: unknown,
+    headers?: HeadersInit,
+  ): Promise<Response> {
+    const accessToken = this.getForwardedAccessToken(auth);
+    if (!accessToken) {
+      throw new Error('Authenticated access token is required for ai-gateway forwarding');
+    }
+    const tokenType = this.getForwardedTokenType(auth);
+    const dpopProof = this.getForwardedDpopProof(auth);
+    if (tokenType === 'DPoP' && !dpopProof) {
+      throw new Error('DPoP token forwarding requires dpopProof in auth context');
+    }
+
+    const requestHeaders = new Headers(headers);
+    requestHeaders.set('Authorization', `${tokenType} ${accessToken}`);
+    if (tokenType === 'DPoP' && dpopProof) {
+      requestHeaders.set('DPoP', dpopProof);
+    }
+    if (body !== undefined && !requestHeaders.has('Content-Type')) {
+      requestHeaders.set('Content-Type', 'application/json');
+    }
+
+    const response = await fetch(this.buildAiGatewayUrl(path), {
+      method,
+      headers: requestHeaders,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: this.createAiGatewayAbortSignal(),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      this.logger.warn(`AI gateway request failed: ${response.status} ${errorText}`);
+
+      const error = new Error(`AI gateway error: ${response.status} ${response.statusText}`);
+      (error as any).status = response.status;
+      (error as any).headers = response.headers;
+      (error as any).body = errorText;
+      throw error;
+    }
+
+    return response;
+  }
+
+  private async forwardAiGatewayJson(path: string, body: unknown, auth: AuthContext): Promise<any> {
+    const response = await this.sendAiGatewayRequest(path, auth, 'POST', body, {
+      'Accept': 'application/json',
+    });
+    return response.json();
+  }
+
+  private async forwardAiGatewayStream(path: string, body: unknown, auth: AuthContext): Promise<{
+    toTextStreamResponse: () => Response;
+  }> {
+    const response = await this.sendAiGatewayRequest(path, auth, 'POST', body, {
+      'Accept': 'text/event-stream',
+    });
+
+    return {
+      toTextStreamResponse: () => new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: new Headers(response.headers),
+      }),
+    };
+  }
+
+  private extractCompletionText(content: unknown): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+
+    if (Array.isArray(content)) {
+      return content
+        .filter((item) => item && typeof item === 'object' && typeof (item as any).text === 'string')
+        .map((item) => (item as any).text)
+        .join('\n');
+    }
+
+    return content == null ? '' : String(content);
+  }
+
+  private buildChatCompletionsBodyFromMessages(body: any): Record<string, unknown> {
+    const messages: Array<{ role: string; content: string }> = [];
+
+    if (body?.system) {
+      const systemText = this.extractCompletionText(body.system);
+      if (systemText) {
+        messages.push({ role: 'system', content: systemText });
+      }
+    }
+
+    if (Array.isArray(body?.messages)) {
+      for (const message of body.messages) {
+        if (!message?.role || message?.content == null) {
+          continue;
+        }
+
+        messages.push({
+          role: String(message.role),
+          content: this.extractCompletionText(message.content),
+        });
+      }
+    }
+
+    if (messages.length === 0 && body?.content != null) {
+      messages.push({
+        role: 'user',
+        content: this.extractCompletionText(body.content),
+      });
+    }
+
+    return {
+      model: body?.model,
+      messages,
+      ...(body?.temperature != null ? { temperature: body.temperature } : {}),
+      ...(body?.max_tokens != null ? { max_tokens: body.max_tokens } : {}),
+      ...(Array.isArray(body?.stop_sequences) && body.stop_sequences.length > 0
+        ? { stop: body.stop_sequences }
+        : {}),
+    };
+  }
+
+  private mapChatCompletionFinishReason(reason: string | null | undefined): string {
+    if (reason === 'length') {
+      return 'max_tokens';
+    }
+    if (reason === 'content_filter') {
+      return 'stop_sequence';
+    }
+    return 'end_turn';
+  }
+
+  private mapChatCompletionToMessagesResponse(body: any, completion: any): any {
+    const choice = Array.isArray(completion?.choices) ? completion.choices[0] : undefined;
+    const text = this.extractCompletionText(choice?.message?.content);
+    const prompt = this.extractPromptFromMessagesBody(body);
+
+    return {
+      id: completion?.id ?? `msg_${Date.now()}`,
+      type: 'message',
+      role: 'assistant',
+      model: completion?.model ?? body?.model,
+      content: [{ type: 'text', text }],
+      stop_reason: this.mapChatCompletionFinishReason(choice?.finish_reason),
+      stop_sequence: null,
+      usage: {
+        input_tokens: completion?.usage?.prompt_tokens ?? prompt.length,
+        output_tokens: completion?.usage?.completion_tokens ?? text.length,
+      },
+    };
+  }
+
+  private extractTotalTokens(usage: any): number {
+    if (!usage || typeof usage !== 'object') {
+      return 0;
+    }
+
+    if (typeof usage.total_tokens === 'number') {
+      return usage.total_tokens;
+    }
+    if (typeof usage.totalTokens === 'number') {
+      return usage.totalTokens;
+    }
+    if (typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number') {
+      return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+    }
+    if (typeof usage.prompt_tokens === 'number' || typeof usage.completion_tokens === 'number') {
+      return (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
+    }
+
+    return 0;
+  }
+
+  private recordForwardedUsage(accountId: string | undefined, podId: string, payload: any): void {
+    const totalTokens = this.extractTotalTokens(payload?.usage);
+    if (accountId && totalTokens > 0) {
+      this.recordTokenUsage(accountId, podId, totalTokens);
+    }
+  }
+
+  private async getProviderConfig(context: StoreContext): Promise<ProviderConfig | null> {
     let config: Awaited<ReturnType<PodChatKitStore['getAiConfig']>> | undefined;
     try {
       config = await this.store.getAiConfig(context);
@@ -108,18 +371,23 @@ export class VercelChatService {
   public async complete(request: ChatCompletionRequest, auth: AuthContext): Promise<ChatCompletionResponse> {
     const { model, messages, temperature, max_tokens } = request;
     const context = this.createStoreContext(auth);
-    const config = await this.getProviderConfig(context);
+    const accountId = getAccountId(auth);
+    if (accountId) {
+      await this.checkTokenQuota(accountId);
+    }
 
+    if (this.shouldUseAiGateway(model)) {
+      this.logger.info(`Forwarding chat completion for model ${model} to ai-gateway`);
+      const result = await this.forwardAiGatewayJson('/v1/chat/completions', request, auth) as ChatCompletionResponse;
+      this.recordForwardedUsage(accountId, String(context.userId), result);
+      return result;
+    }
+
+    const config = await this.getProviderConfig(context);
     if (!config) {
       const err = new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
       (err as any).code = 'model_not_configured';
       throw err;
-    }
-
-    // Token quota check
-    const accountId = getAccountId(auth);
-    if (accountId) {
-      await this.checkTokenQuota(accountId);
     }
 
     try {
@@ -186,6 +454,12 @@ export class VercelChatService {
   public async stream(request: ChatCompletionRequest, auth: AuthContext): Promise<any> {
     const { model, messages, temperature, max_tokens } = request;
     const context = this.createStoreContext(auth);
+
+    if (this.shouldUseAiGateway(model)) {
+      this.logger.info(`Forwarding chat stream for model ${model} to ai-gateway`);
+      return this.forwardAiGatewayStream('/v1/chat/completions', request, auth);
+    }
+
     const config = await this.getProviderConfig(context);
 
     if (!config) {
@@ -213,6 +487,13 @@ export class VercelChatService {
     const context = this.createStoreContext(auth);
     const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
+
+    if (this.shouldUseAiGateway(body?.model)) {
+      this.logger.info(`Forwarding responses request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
+      const result = await this.forwardAiGatewayJson('/v1/responses', body, auth);
+      this.recordForwardedUsage(accountId, String(context.userId), result);
+      return result;
+    }
 
     const providerConfig = await this.getProviderConfig(context);
     if (!providerConfig) {
@@ -283,6 +564,15 @@ export class VercelChatService {
     const context = this.createStoreContext(auth);
     const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
+
+    if (this.shouldUseAiGateway(body?.model)) {
+      this.logger.info(`Forwarding messages request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
+      const completionBody = this.buildChatCompletionsBodyFromMessages(body);
+      const completion = await this.forwardAiGatewayJson('/v1/chat/completions', completionBody, auth);
+      const result = this.mapChatCompletionToMessagesResponse(body, completion);
+      this.recordForwardedUsage(accountId, String(context.userId), result);
+      return result;
+    }
 
     const providerConfig = await this.getProviderConfig(context);
     if (!providerConfig) {
@@ -522,8 +812,35 @@ export class VercelChatService {
     return '';
   }
 
-  public async listModels(_auth?: AuthContext): Promise<any[]> {
+  public async listModels(auth?: AuthContext): Promise<any[]> {
     const models: any[] = [];
+    const seenModelIds = new Set<string>();
+
+    const pushModels = (items: any[]): void => {
+      for (const model of items) {
+        const modelId = typeof model?.id === 'string' ? model.id : JSON.stringify(model);
+        if (seenModelIds.has(modelId)) {
+          continue;
+        }
+        seenModelIds.add(modelId);
+        models.push(model);
+      }
+    };
+
+    const aiGatewayBase = this.getAiGatewayBaseUrl();
+    if (aiGatewayBase && auth) {
+      try {
+        const response = await this.sendAiGatewayRequest('/v1/models', auth, 'GET', undefined, {
+          'Accept': 'application/json',
+        });
+        const data = await response.json() as { data?: any[] };
+        if (Array.isArray(data.data)) {
+          pushModels(data.data);
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to fetch ai-gateway models: ${error}`);
+      }
+    }
 
     // 平台 Provider 模型（从 DEFAULT_API_BASE 获取）
     const platformBase = process.env.DEFAULT_API_BASE;
@@ -538,8 +855,8 @@ export class VercelChatService {
         const resp = await fetch(url, { headers });
         if (resp.ok) {
           const data = await resp.json() as { data?: any[] };
-          if (data.data) {
-            models.push(...data.data);
+          if (Array.isArray(data.data)) {
+            pushModels(data.data);
           }
         } else {
           this.logger.warn(`Failed to fetch platform models: ${resp.status}`);
