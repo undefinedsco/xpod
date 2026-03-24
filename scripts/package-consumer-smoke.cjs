@@ -5,6 +5,34 @@ const net = require('node:net');
 const { spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
 
+function getConsumerDir() {
+  if (process.env.XPOD_CONSUMER_SMOKE_CHILD === '1') {
+    return process.cwd();
+  }
+  return path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
+}
+
+function runInIsolatedConsumerProcess(consumerDir) {
+  const childScriptPath = path.join(consumerDir, '.xpod-package-consumer-smoke.cjs');
+  fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
+
+  try {
+    const result = spawnSync(process.execPath, [ childScriptPath ], {
+      cwd: consumerDir,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        XPOD_CONSUMER_SMOKE_CHILD: '1',
+      },
+    });
+    if (result.status !== 0) {
+      throw new Error(`consumer smoke child exited with code ${result.status ?? 1}`);
+    }
+  } finally {
+    fs.rmSync(childScriptPath, { force: true });
+  }
+}
+
 async function getFreePort() {
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -69,7 +97,12 @@ function runCli(consumerDir, requireFromConsumer) {
 }
 
 async function main() {
-  const consumerDir = path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
+  const consumerDir = getConsumerDir();
+  if (process.env.XPOD_CONSUMER_SMOKE_CHILD !== '1') {
+    runInIsolatedConsumerProcess(consumerDir);
+    return;
+  }
+
   const requireFromConsumer = createRequire(path.join(consumerDir, 'package.json'));
 
   const runtime = requireFromConsumer('@undefineds.co/xpod/runtime');

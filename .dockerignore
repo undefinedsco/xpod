@@ -6,6 +6,7 @@
 !bun.lock
 !yarn.lock
 !tsconfig.json
+!scripts/patch-jose.js
 !src/
 !config/
 !static/
