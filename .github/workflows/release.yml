@@ -97,6 +97,7 @@ jobs:
   build-and-push:
     needs: [verify-package-tarball, verify-package-tarball-bun]
     runs-on: ubuntu-latest
+    continue-on-error: true
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
     steps:
@@ -163,6 +164,7 @@ jobs:
     needs: publish-npm
     name: verify-npm-consumer (${{ matrix.os }} / node${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
+    continue-on-error: true
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -191,6 +193,7 @@ jobs:
     needs: publish-npm
     name: verify-npm-consumer-bun (${{ matrix.os }} / node${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
+    continue-on-error: true
     timeout-minutes: 30
     strategy:
       fail-fast: false

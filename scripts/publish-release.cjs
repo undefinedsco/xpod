@@ -30,6 +30,31 @@ function readPackMetadata(packJsonPath) {
   return pack;
 }
 
+function readPublishedVersion(packageName, version, registry) {
+  try {
+    const output = execSync(
+      `npm view ${JSON.stringify(`${packageName}@${version}`)} version --json --registry ${JSON.stringify(registry)}`,
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          npm_config_registry: registry,
+        },
+      },
+    ).trim();
+
+    if (!output) {
+      return undefined;
+    }
+
+    const parsed = JSON.parse(output);
+    return typeof parsed === 'string' && parsed.length > 0 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function main() {
   const repoRoot = process.cwd();
   const dryRun = process.argv.includes('--dry-run') || process.env.XPOD_PUBLISH_DRY_RUN === 'true';
@@ -76,7 +101,31 @@ function main() {
 
   const pack = readPackMetadata(packJsonPath);
   const tarballPath = path.join(packDir, pack.filename);
-  run(`npm publish ${JSON.stringify(tarballPath)} --registry ${publishRegistry} --access public${dryRun ? ' --dry-run' : ''}`, npmEnv);
+  const packageRef = `${packageJson.name}@${packageJson.version}`;
+
+  if (!dryRun) {
+    const publishedVersion = readPublishedVersion(packageJson.name, packageJson.version, publishRegistry);
+    if (publishedVersion === packageJson.version) {
+      console.log(`[publish:release] ${packageRef} already exists on ${publishRegistry}, skipping npm publish`);
+      console.log(`[publish:release] registry: ${publishRegistry}`);
+      return;
+    }
+  }
+
+  try {
+    run(`npm publish ${JSON.stringify(tarballPath)} --registry ${publishRegistry} --access public${dryRun ? ' --dry-run' : ''}`, npmEnv);
+  } catch (error) {
+    if (!dryRun) {
+      const publishedVersion = readPublishedVersion(packageJson.name, packageJson.version, publishRegistry);
+      if (publishedVersion === packageJson.version) {
+        console.log(`[publish:release] ${packageRef} is already available on ${publishRegistry}, treating publish as successful`);
+        console.log(`[publish:release] registry: ${publishRegistry}`);
+        return;
+      }
+    }
+
+    throw error;
+  }
 
   console.log(`[publish:release] ${dryRun ? 'dry-run complete' : 'publish complete'}`);
   console.log(`[publish:release] registry: ${publishRegistry}`);
