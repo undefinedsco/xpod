@@ -1,6 +1,10 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
 import { setupAccount } from '../tests/integration/helpers/solidAccount';
-import { createVectorIntegrationContext, randomVector } from '../tests/vector/helpers/vectorIntegration';
+import {
+  createVectorIntegrationContext,
+  getSqliteVecCapability,
+  randomVector,
+} from '../tests/vector/helpers/vectorIntegration';
 
 async function verifyOpenRuntime(): Promise<void> {
   const stack = new XpodTestStack();
@@ -39,6 +43,12 @@ async function verifyOpenRuntime(): Promise<void> {
 }
 
 async function verifyVectorRuntime(): Promise<void> {
+  const capability = getSqliteVecCapability();
+  if (!capability.available) {
+    console.warn(`[bun-smoke] skip vector runtime: ${capability.reason ?? 'sqlite-vec unavailable'}`);
+    return;
+  }
+
   const context = await createVectorIntegrationContext('bun-runtime');
   const model = `bun-runtime-${Date.now()}`;
   const firstVector = randomVector();

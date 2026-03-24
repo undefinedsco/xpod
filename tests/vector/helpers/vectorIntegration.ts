@@ -1,10 +1,9 @@
-import path from 'node:path';
 import type { Session } from '@inrupt/solid-client-authn-node';
-import { resolveSeedCredentials } from '../../../src/cli/seed';
 import { getSqliteRuntime } from '../../../src/storage/SqliteRuntime';
+import { loadSqliteVecExtension } from '../../../src/storage/vector/SqliteVecExtension';
 import { XpodTestStack } from '../../helpers/XpodTestStack';
 import { resolveTestRuntimeTransport } from '../../helpers/runtimeTransport';
-import { loginWithClientCredentials } from '../../integration/helpers/solidAccount';
+import { loginWithClientCredentials, setupAccount } from '../../integration/helpers/solidAccount';
 import { resolveSolidIntegrationConfig } from '../../http/utils/integrationEnv';
 import { createTestDir } from '../../utils/sqlite';
 
@@ -114,7 +113,16 @@ export interface VectorIntegrationContext {
 export function getSqliteVecCapability(): SqliteVecCapability {
   try {
     const db = getSqliteRuntime().openDatabase(':memory:');
-    db.close();
+    try {
+      loadSqliteVecExtension(db);
+      db.exec(`
+        CREATE VIRTUAL TABLE vec_capability_probe USING vec0(
+          embedding float[2]
+        )
+      `);
+    } finally {
+      db.close();
+    }
     return { available: true };
   } catch (error) {
     return {
@@ -146,7 +154,6 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 export async function createVectorIntegrationContext(prefix: string): Promise<VectorIntegrationContext> {
   const runExternalIntegration = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
-  const seedPath = path.resolve(process.cwd(), process.env.CSS_SEED_CONFIG || 'config/seeds/test.json');
 
   let stack: XpodTestStack | undefined;
   let baseUrl: string;
@@ -161,23 +168,15 @@ export async function createVectorIntegrationContext(prefix: string): Promise<Ve
       transport: resolveTestRuntimeTransport(),
       runtimeRoot: createTestDir(`${prefix}-runtime`),
       logLevel: 'warn',
-      env: {
-        CSS_SEED_CONFIG: seedPath,
-      },
     });
     baseUrl = stack.baseUrl;
   }
 
-  const credentials = await resolveSeedCredentials({
-    seedPath,
-    baseUrl,
-    podName: 'test',
-    label: prefix,
-  });
+  const credentials = await setupAccount(baseUrl.replace(/\/$/, ''), prefix);
 
   if (!credentials) {
     await stack?.stop();
-    throw new Error(`Failed to resolve seed credentials for ${baseUrl} with ${seedPath}`);
+    throw new Error(`Failed to self-bootstrap account for ${baseUrl}`);
   }
 
   const session = await loginWithClientCredentials(credentials);

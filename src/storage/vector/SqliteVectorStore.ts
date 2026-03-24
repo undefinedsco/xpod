@@ -95,6 +95,15 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     return `vec_${hashModelId(modelId)}`;
   }
 
+  private getCountTableCandidates(modelIdOrTableName: string): string[] {
+    const candidates: string[] = [];
+    if (modelIdOrTableName.startsWith('vec_')) {
+      candidates.push(modelIdOrTableName);
+    }
+    candidates.push(this.getTableName(modelIdOrTableName));
+    return [...new Set(candidates)];
+  }
+
   private getDimension(): number {
     return this.defaultDimension;
   }
@@ -142,7 +151,13 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
 
     try {
       const rows = db
-        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'vec_%'`)
+        .prepare(`
+          SELECT name
+          FROM sqlite_master
+          WHERE type = 'table'
+            AND name LIKE 'vec_%'
+            AND sql LIKE '%USING vec0%'
+        `)
         .all() as { name: string }[];
       return rows.map((r) => r.name);
     } catch {
@@ -272,14 +287,17 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
 
   public override async countVectors(modelId: string): Promise<number> {
     const db = this.ensureOpen();
-    const tableName = this.getTableName(modelId);
 
-    try {
-      const row = db.prepare(`SELECT COUNT(*) as count FROM ${tableName}`).get() as any;
-      return row?.count ?? 0;
-    } catch {
-      return 0;
+    for (const tableName of this.getCountTableCandidates(modelId)) {
+      try {
+        const row = db.prepare(`SELECT COUNT(*) as count FROM ${tableName}`).get() as any;
+        return row?.count ?? 0;
+      } catch {
+        continue;
+      }
     }
+
+    return 0;
   }
 
   // ============================================

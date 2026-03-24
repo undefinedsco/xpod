@@ -97,7 +97,7 @@
     "test:integration:lite": "bun scripts/run-integration-lite-local.ts",
     "test:integration:full": "bun scripts/run-integration-full.ts",
     "test:integration:all": "bun run test:integration:lite && bun run test:integration:full",
-    "test:bun:runtime": "bun run build:ts && XPOD_TEST_TRANSPORT=port bun scripts/run-bun-runtime-smoke.ts",
+    "test:bun:runtime": "bun run build:ts && bun run build:components && XPOD_TEST_TRANSPORT=port bun scripts/run-bun-runtime-smoke.ts",
     "test:integration:lite:up": "docker compose -f docker-compose.standalone.yml up -d --build",
     "test:integration:lite:down": "docker compose -f docker-compose.standalone.yml down",
     "build:single": "node scripts/build-single-file.js",
