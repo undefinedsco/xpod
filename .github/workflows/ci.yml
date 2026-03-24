@@ -32,6 +32,9 @@ jobs:
       - name: Type check
         run: bun run build:ts
 
+      - name: Build Components artifacts
+        run: bun run build:components
+
       - name: Unit tests
         run: bun run test:run
 
