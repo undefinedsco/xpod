@@ -158,6 +158,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
+          XPOD_PUBLISH_PLATFORM_PACKAGES: 'true'
 
   verify-npm-consumer:
     if: startsWith(github.ref, 'refs/tags/v')
