@@ -34,7 +34,17 @@ function ensureTrailingSlash(url: string): string {
 function toConfigImportSpecifier(fromFilePath: string, toFilePath: string): string {
   const useWindowsPaths = /^[A-Za-z]:[\\/]/.test(fromFilePath) || /^[A-Za-z]:[\\/]/.test(toFilePath);
   const pathApi = useWindowsPaths ? path.win32 : path.posix;
-  const relativePath = pathApi.relative(pathApi.dirname(fromFilePath), toFilePath).replace(/\\/g, '/');
+  const fromDirectoryPath = pathApi.dirname(fromFilePath);
+
+  if (useWindowsPaths) {
+    const fromRoot = path.win32.parse(fromDirectoryPath).root.toLowerCase();
+    const toRoot = path.win32.parse(toFilePath).root.toLowerCase();
+    if (fromRoot && toRoot && fromRoot !== toRoot) {
+      return new URL(`file:///${toFilePath.replace(/\\/g, '/')}`).href;
+    }
+  }
+
+  const relativePath = pathApi.relative(fromDirectoryPath, toFilePath).replace(/\\/g, '/');
   if (relativePath.startsWith('./') || relativePath.startsWith('../')) {
     return relativePath;
   }

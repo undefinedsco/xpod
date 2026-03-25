@@ -123,4 +123,31 @@ describe('runtime bootstrap helpers', () => {
       '../package/config/runtime-open.json',
     ]);
   });
+
+  it('should write Components config imports as file URLs for Windows cross-drive paths', () => {
+    const writeTextFile = vi.fn();
+    const runtimeConfigPath = createCssRuntimeConfig({
+      mode: 'local',
+      runtimeRoot: 'C:\\runtime',
+    } as any, true, {
+      joinPath: (...segments: string[]): string => {
+        const lastSegment = segments[segments.length - 1]?.replace(/\//g, '\\');
+        if (lastSegment === 'config\\local.json' || lastSegment === 'config\\runtime-open.json') {
+          return `D:\\package\\${lastSegment}`;
+        }
+        return segments.join('\\');
+      },
+      writeTextFile,
+    });
+
+    expect(runtimeConfigPath).toBe('C:\\runtime\\css-runtime.config.json');
+    expect(writeTextFile).toHaveBeenCalledTimes(1);
+
+    const [, content] = writeTextFile.mock.calls[0];
+    const parsed = JSON.parse(content);
+    expect(parsed.import).toEqual([
+      'file:///D:/package/config/local.json',
+      'file:///D:/package/config/runtime-open.json',
+    ]);
+  });
 });
