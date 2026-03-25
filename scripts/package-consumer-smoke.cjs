@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
-const net = require('node:net');
 const { spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
 
@@ -31,46 +31,6 @@ function runInIsolatedConsumerProcess(consumerDir) {
   } finally {
     fs.rmSync(childScriptPath, { force: true });
   }
-}
-
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close((error) => error ? reject(error) : resolve(port));
-    });
-  });
-}
-
-function isPortConflict(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /Failed to start server\. Is port \d+ in use\?/i.test(message) ||
-    /EADDRINUSE/i.test(message) ||
-    /address already in use/i.test(message);
-}
-
-async function startNoAuthXpodWithRetry(testUtils, options, maxAttempts = 4) {
-  let lastError;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const port = await getFreePort();
-    try {
-      return await testUtils.startNoAuthXpod({
-        ...options,
-        port,
-      });
-    } catch (error) {
-      lastError = error;
-      if (!isPortConflict(error) || attempt === maxAttempts) {
-        throw error;
-      }
-      console.warn(`[consumer-smoke] port conflict on ${port}, retry ${attempt}/${maxAttempts}`);
-      await new Promise((resolve) => setTimeout(resolve, attempt * 100));
-    }
-  }
-  throw lastError;
 }
 
 function runCli(consumerDir, requireFromConsumer) {
@@ -117,14 +77,19 @@ async function main() {
   runCli(consumerDir, requireFromConsumer);
 
   const previousCwd = process.cwd();
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-smoke-'));
   let xpod;
 
   try {
     process.chdir(consumerDir);
-    xpod = await startNoAuthXpodWithRetry(testUtils, {
+    xpod = await runtime.startXpodRuntime({
+      mode: 'local',
+      open: true,
+      transport: 'auto',
+      runtimeRoot,
       logLevel: 'error',
     });
-    const response = await fetch(new URL('/service/status', xpod.baseUrl));
+    const response = await xpod.fetch('/service/status');
     if (!response.ok) {
       throw new Error(`Unexpected status from installed package runtime: ${response.status}`);
     }
@@ -132,6 +97,7 @@ async function main() {
     if (xpod) {
       await xpod.stop();
     }
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
     process.chdir(previousCwd);
   }
 
