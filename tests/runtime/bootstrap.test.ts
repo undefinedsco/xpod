@@ -4,6 +4,19 @@ import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolve
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost } from '../../src/runtime/host/types';
 import type { RuntimePlatform } from '../../src/runtime/platform/types';
+import { PACKAGE_ROOT } from '../../src/runtime/package-root';
+
+function createWindowsJoinPath(packageRoot: string) {
+  return (...segments: string[]): string => {
+    const normalizedSegments = segments.map((segment, index) => {
+      if (index === 0 && segment === PACKAGE_ROOT) {
+        return packageRoot;
+      }
+      return segment;
+    });
+    return path.win32.join(...normalizedSegments);
+  };
+}
 
 describe('runtime bootstrap helpers', () => {
   it('should resolve socket runtime bootstrap layout', async() => {
@@ -99,21 +112,21 @@ describe('runtime bootstrap helpers', () => {
 
   it('should write Components config imports as relative paths on Windows paths', () => {
     const writeTextFile = vi.fn();
+    const ensureDir = vi.fn();
+    const joinPath = createWindowsJoinPath('D:\\package');
     const runtimeConfigPath = createCssRuntimeConfig({
+      id: 'same-drive',
       mode: 'local',
       runtimeRoot: 'D:\\runtime',
     } as any, true, {
-      joinPath: (...segments: string[]): string => {
-        const lastSegment = segments[segments.length - 1]?.replace(/\//g, '\\');
-        if (lastSegment === 'config\\local.json' || lastSegment === 'config\\runtime-open.json') {
-          return `D:\\package\\${lastSegment}`;
-        }
-        return segments.join('\\');
-      },
+      dirname: (filePath: string): string => path.win32.dirname(filePath),
+      ensureDir,
+      joinPath,
       writeTextFile,
     });
 
     expect(runtimeConfigPath).toBe(`D:\\runtime\\css-runtime.config.json`);
+    expect(ensureDir).not.toHaveBeenCalled();
     expect(writeTextFile).toHaveBeenCalledTimes(1);
 
     const [, content] = writeTextFile.mock.calls[0];
@@ -124,30 +137,30 @@ describe('runtime bootstrap helpers', () => {
     ]);
   });
 
-  it('should write Components config imports as file URLs for Windows cross-drive paths', () => {
+  it('should write Components config imports from a package-local runtime dir on Windows cross-drive paths', () => {
     const writeTextFile = vi.fn();
+    const ensureDir = vi.fn();
+    const joinPath = createWindowsJoinPath('D:\\package');
     const runtimeConfigPath = createCssRuntimeConfig({
+      id: 'cross-drive',
       mode: 'local',
       runtimeRoot: 'C:\\runtime',
     } as any, true, {
-      joinPath: (...segments: string[]): string => {
-        const lastSegment = segments[segments.length - 1]?.replace(/\//g, '\\');
-        if (lastSegment === 'config\\local.json' || lastSegment === 'config\\runtime-open.json') {
-          return `D:\\package\\${lastSegment}`;
-        }
-        return segments.join('\\');
-      },
+      dirname: (filePath: string): string => path.win32.dirname(filePath),
+      ensureDir,
+      joinPath,
       writeTextFile,
     });
 
-    expect(runtimeConfigPath).toBe('C:\\runtime\\css-runtime.config.json');
+    expect(runtimeConfigPath).toBe('D:\\package\\.xpod-runtime\\cross-drive\\css-runtime.config.json');
+    expect(ensureDir).toHaveBeenCalledWith('D:\\package\\.xpod-runtime\\cross-drive');
     expect(writeTextFile).toHaveBeenCalledTimes(1);
 
     const [, content] = writeTextFile.mock.calls[0];
     const parsed = JSON.parse(content);
     expect(parsed.import).toEqual([
-      'file:///D:/package/config/local.json',
-      'file:///D:/package/config/runtime-open.json',
+      '../../config/local.json',
+      '../../config/runtime-open.json',
     ]);
   });
 });

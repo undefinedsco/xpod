@@ -31,17 +31,23 @@ function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
 }
 
+function getWindowsDriveRoot(filePath: string): string | undefined {
+  return /^[A-Za-z]:[\\/]/.test(filePath) ? path.win32.parse(filePath).root.toLowerCase() : undefined;
+}
+
+function arePathsOnDifferentWindowsDrives(firstPath: string, secondPath: string): boolean {
+  const firstRoot = getWindowsDriveRoot(firstPath);
+  const secondRoot = getWindowsDriveRoot(secondPath);
+  return Boolean(firstRoot && secondRoot && firstRoot !== secondRoot);
+}
+
 function toConfigImportSpecifier(fromFilePath: string, toFilePath: string): string {
   const useWindowsPaths = /^[A-Za-z]:[\\/]/.test(fromFilePath) || /^[A-Za-z]:[\\/]/.test(toFilePath);
   const pathApi = useWindowsPaths ? path.win32 : path.posix;
   const fromDirectoryPath = pathApi.dirname(fromFilePath);
 
-  if (useWindowsPaths) {
-    const fromRoot = path.win32.parse(fromDirectoryPath).root.toLowerCase();
-    const toRoot = path.win32.parse(toFilePath).root.toLowerCase();
-    if (fromRoot && toRoot && fromRoot !== toRoot) {
+  if (useWindowsPaths && arePathsOnDifferentWindowsDrives(fromDirectoryPath, toFilePath)) {
       return new URL(`file:///${toFilePath.replace(/\\/g, '/')}`).href;
-    }
   }
 
   const relativePath = pathApi.relative(fromDirectoryPath, toFilePath).replace(/\\/g, '/');
@@ -214,14 +220,25 @@ export function buildRuntimeShorthand(
 export function createCssRuntimeConfig(
   state: RuntimeBootstrapState,
   open: boolean,
-  platform: Pick<RuntimePlatform, 'joinPath' | 'writeTextFile'> = nodeRuntimePlatform,
+  platform: Pick<RuntimePlatform, 'dirname' | 'ensureDir' | 'joinPath' | 'writeTextFile'> = nodeRuntimePlatform,
 ): string {
   const configPath = platform.joinPath(PACKAGE_ROOT, `config/${state.mode}.json`);
   if (!open) {
     return configPath;
   }
 
-  const runtimeConfigPath = platform.joinPath(state.runtimeRoot, 'css-runtime.config.json');
+  const runtimeConfigPath = arePathsOnDifferentWindowsDrives(state.runtimeRoot, configPath)
+    ? (() => {
+      const runtimeConfigDir = platform.joinPath(
+        platform.dirname(configPath),
+        '..',
+        '.xpod-runtime',
+        state.id,
+      );
+      platform.ensureDir(runtimeConfigDir);
+      return platform.joinPath(runtimeConfigDir, 'css-runtime.config.json');
+    })()
+    : platform.joinPath(state.runtimeRoot, 'css-runtime.config.json');
   const openConfigPath = platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json');
   platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
