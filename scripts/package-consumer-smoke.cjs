@@ -56,6 +56,33 @@ function runCli(consumerDir, requireFromConsumer) {
   }
 }
 
+function shouldRetryRemove(error) {
+  return Boolean(error && typeof error === 'object' && [
+    'EBUSY',
+    'ENOTEMPTY',
+    'EPERM',
+  ].includes(error.code));
+}
+
+async function removeRuntimeRoot(runtimeRoot) {
+  const maxAttempts = process.platform === 'win32' ? 8 : 2;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      fs.rmSync(runtimeRoot, {
+        recursive: true,
+        force: true,
+      });
+      return;
+    } catch (error) {
+      if (!shouldRetryRemove(error) || attempt === maxAttempts) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 200));
+    }
+  }
+}
+
 async function main() {
   const consumerDir = getConsumerDir();
   if (process.env.XPOD_CONSUMER_SMOKE_CHILD !== '1') {
@@ -97,8 +124,8 @@ async function main() {
     if (xpod) {
       await xpod.stop();
     }
-    fs.rmSync(runtimeRoot, { recursive: true, force: true });
     process.chdir(previousCwd);
+    await removeRuntimeRoot(runtimeRoot);
   }
 
   console.log(`[consumer-smoke] ok: ${consumerDir}`);
