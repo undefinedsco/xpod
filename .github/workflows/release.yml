@@ -47,10 +47,10 @@ jobs:
         run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
 
       - name: Install tarball in clean consumer workspace
-        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json .test-data/package-smoke .test-data/npm-cache
+        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
 
       - name: Consumer runtime smoke
-        run: node scripts/package-consumer-smoke.cjs .test-data/package-smoke
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
 
   verify-package-tarball-bun:
     name: verify-package-tarball-bun (${{ matrix.os }} / node${{ matrix.node-version }})
@@ -89,10 +89,10 @@ jobs:
         run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
 
       - name: Install tarball with Bun in clean consumer workspace
-        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json .test-data/package-smoke-bun .test-data/bun-cache bun
+        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
 
       - name: Consumer runtime smoke under Bun
-        run: bun scripts/package-consumer-smoke.cjs .test-data/package-smoke-bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
 
   build-and-push:
     needs: [verify-package-tarball, verify-package-tarball-bun]
@@ -184,10 +184,10 @@ jobs:
         run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ github.ref_name }}"
 
       - name: Install published package in clean workspace
-        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" .test-data/package-smoke .test-data/npm-cache
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
 
       - name: Published runtime smoke
-        run: node scripts/package-consumer-smoke.cjs .test-data/package-smoke
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
 
   verify-npm-consumer-bun:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -217,7 +217,7 @@ jobs:
         run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ github.ref_name }}"
 
       - name: Install published package with Bun in clean workspace
-        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" .test-data/package-smoke-bun .test-data/bun-cache bun
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
 
       - name: Published runtime smoke under Bun
-        run: bun scripts/package-consumer-smoke.cjs .test-data/package-smoke-bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"

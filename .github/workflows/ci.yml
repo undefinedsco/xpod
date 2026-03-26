@@ -138,10 +138,10 @@ jobs:
         run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
 
       - name: Install tarball in clean consumer workspace
-        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json .test-data/package-smoke .test-data/npm-cache
+        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
 
       - name: Consumer runtime smoke
-        run: node scripts/package-consumer-smoke.cjs .test-data/package-smoke
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
 
   package-smoke-bun:
     name: package-smoke-bun (${{ matrix.os }} / node${{ matrix.node-version }})
@@ -180,7 +180,7 @@ jobs:
         run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
 
       - name: Install tarball with Bun in clean consumer workspace
-        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json .test-data/package-smoke-bun .test-data/bun-cache bun
+        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
 
       - name: Consumer runtime smoke under Bun
-        run: bun scripts/package-consumer-smoke.cjs .test-data/package-smoke-bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"

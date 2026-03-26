@@ -113,6 +113,7 @@ async function main() {
 
   const previousCwd = process.cwd();
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-smoke-'));
+  const transport = process.env.XPOD_TEST_TRANSPORT || process.env.XPOD_SMOKE_TRANSPORT || 'auto';
   let xpod;
 
   try {
@@ -120,7 +121,7 @@ async function main() {
     xpod = await runtime.startXpodRuntime({
       mode: 'local',
       open: true,
-      transport: 'auto',
+      transport,
       runtimeRoot,
       logLevel: 'error',
     });
