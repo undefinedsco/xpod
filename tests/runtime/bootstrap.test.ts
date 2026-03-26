@@ -190,4 +190,31 @@ describe('runtime bootstrap helpers', () => {
       '../../config/runtime-open.json',
     ]);
   });
+
+  it('should normalize slash-prefixed Windows package roots before writing runtime config', () => {
+    const writeTextFile = vi.fn();
+    const ensureDir = vi.fn();
+    const joinPath = createWindowsJoinPath('/D:/package');
+    const runtimeConfigPath = createCssRuntimeConfig({
+      id: 'slash-prefixed-package-root',
+      mode: 'local',
+      runtimeRoot: 'C:\\runtime',
+    } as any, true, {
+      dirname: (filePath: string): string => path.win32.dirname(filePath),
+      ensureDir,
+      joinPath,
+      writeTextFile,
+    });
+
+    expect(runtimeConfigPath).toBe('D:\\package\\.xpod-runtime\\slash-prefixed-package-root\\css-runtime.config.json');
+    expect(ensureDir).toHaveBeenCalledWith('D:\\package\\.xpod-runtime\\slash-prefixed-package-root');
+    expect(writeTextFile).toHaveBeenCalledTimes(1);
+
+    const [, content] = writeTextFile.mock.calls[0];
+    const parsed = JSON.parse(content);
+    expect(parsed.import).toEqual([
+      '../../config/local.json',
+      '../../config/runtime-open.json',
+    ]);
+  });
 });

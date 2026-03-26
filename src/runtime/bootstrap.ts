@@ -32,7 +32,7 @@ function ensureTrailingSlash(url: string): string {
 }
 
 function normalizeWindowsAbsolutePath(filePath: string): string {
-  return /^\/[A-Za-z]:[\\/]/.test(filePath) ? filePath.slice(1) : filePath;
+  return filePath.replace(/^[\\/]+(?=[A-Za-z]:[\\/])/, '');
 }
 
 function isWindowsAbsolutePath(filePath: string): boolean {
@@ -239,24 +239,25 @@ export function createCssRuntimeConfig(
   open: boolean,
   platform: Pick<RuntimePlatform, 'dirname' | 'ensureDir' | 'joinPath' | 'writeTextFile'> = nodeRuntimePlatform,
 ): string {
-  const configPath = platform.joinPath(PACKAGE_ROOT, `config/${state.mode}.json`);
+  const configPath = normalizeWindowsAbsolutePath(platform.joinPath(PACKAGE_ROOT, `config/${state.mode}.json`));
   if (!open) {
     return configPath;
   }
 
-  const runtimeConfigPath = arePathsOnDifferentWindowsDrives(state.runtimeRoot, configPath)
+  const runtimeRoot = normalizeWindowsAbsolutePath(state.runtimeRoot);
+  const runtimeConfigPath = arePathsOnDifferentWindowsDrives(runtimeRoot, configPath)
     ? (() => {
-      const runtimeConfigDir = platform.joinPath(
+      const runtimeConfigDir = normalizeWindowsAbsolutePath(platform.joinPath(
         platform.dirname(configPath),
         '..',
         '.xpod-runtime',
         state.id,
-      );
+      ));
       platform.ensureDir(runtimeConfigDir);
-      return platform.joinPath(runtimeConfigDir, 'css-runtime.config.json');
+      return normalizeWindowsAbsolutePath(platform.joinPath(runtimeConfigDir, 'css-runtime.config.json'));
     })()
-    : platform.joinPath(state.runtimeRoot, 'css-runtime.config.json');
-  const openConfigPath = platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json');
+    : normalizeWindowsAbsolutePath(platform.joinPath(runtimeRoot, 'css-runtime.config.json'));
+  const openConfigPath = normalizeWindowsAbsolutePath(platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json'));
   platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
       'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
