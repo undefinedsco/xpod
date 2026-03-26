@@ -75,7 +75,15 @@ async function removeRuntimeRoot(runtimeRoot) {
       });
       return;
     } catch (error) {
-      if (!shouldRetryRemove(error) || attempt === maxAttempts) {
+      const finalAttempt = attempt === maxAttempts;
+      if (!shouldRetryRemove(error)) {
+        throw error;
+      }
+      if (finalAttempt) {
+        if (process.platform === 'win32') {
+          console.warn(`[consumer-smoke] cleanup skipped for busy runtime root: ${runtimeRoot} (${error.code})`);
+          return;
+        }
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, attempt * 200));
