@@ -163,4 +163,31 @@ describe('runtime bootstrap helpers', () => {
       '../../config/runtime-open.json',
     ]);
   });
+
+  it('should detect slash-prefixed Windows cross-drive runtime roots', () => {
+    const writeTextFile = vi.fn();
+    const ensureDir = vi.fn();
+    const joinPath = createWindowsJoinPath('D:\\package');
+    const runtimeConfigPath = createCssRuntimeConfig({
+      id: 'cross-drive-slash-prefixed',
+      mode: 'local',
+      runtimeRoot: '/C:/runtime',
+    } as any, true, {
+      dirname: (filePath: string): string => path.win32.dirname(filePath),
+      ensureDir,
+      joinPath,
+      writeTextFile,
+    });
+
+    expect(runtimeConfigPath).toBe('D:\\package\\.xpod-runtime\\cross-drive-slash-prefixed\\css-runtime.config.json');
+    expect(ensureDir).toHaveBeenCalledWith('D:\\package\\.xpod-runtime\\cross-drive-slash-prefixed');
+    expect(writeTextFile).toHaveBeenCalledTimes(1);
+
+    const [, content] = writeTextFile.mock.calls[0];
+    const parsed = JSON.parse(content);
+    expect(parsed.import).toEqual([
+      '../../config/local.json',
+      '../../config/runtime-open.json',
+    ]);
+  });
 });

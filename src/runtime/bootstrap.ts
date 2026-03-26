@@ -31,8 +31,17 @@ function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
 }
 
+function normalizeWindowsAbsolutePath(filePath: string): string {
+  return /^\/[A-Za-z]:[\\/]/.test(filePath) ? filePath.slice(1) : filePath;
+}
+
+function isWindowsAbsolutePath(filePath: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(normalizeWindowsAbsolutePath(filePath));
+}
+
 function getWindowsDriveRoot(filePath: string): string | undefined {
-  return /^[A-Za-z]:[\\/]/.test(filePath) ? path.win32.parse(filePath).root.toLowerCase() : undefined;
+  const normalizedPath = normalizeWindowsAbsolutePath(filePath);
+  return isWindowsAbsolutePath(normalizedPath) ? path.win32.parse(normalizedPath).root.toLowerCase() : undefined;
 }
 
 function arePathsOnDifferentWindowsDrives(firstPath: string, secondPath: string): boolean {
@@ -41,16 +50,24 @@ function arePathsOnDifferentWindowsDrives(firstPath: string, secondPath: string)
   return Boolean(firstRoot && secondRoot && firstRoot !== secondRoot);
 }
 
-function toConfigImportSpecifier(fromFilePath: string, toFilePath: string): string {
-  const useWindowsPaths = /^[A-Za-z]:[\\/]/.test(fromFilePath) || /^[A-Za-z]:[\\/]/.test(toFilePath);
-  const pathApi = useWindowsPaths ? path.win32 : path.posix;
-  const fromDirectoryPath = pathApi.dirname(fromFilePath);
+function toWindowsFileUrl(filePath: string): string {
+  const normalizedPath = normalizeWindowsAbsolutePath(filePath).replace(/\\/g, '/');
+  return new URL(`file:///${normalizedPath}`).href;
+}
 
-  if (useWindowsPaths && arePathsOnDifferentWindowsDrives(fromDirectoryPath, toFilePath)) {
-      return new URL(`file:///${toFilePath.replace(/\\/g, '/')}`).href;
+function toConfigImportSpecifier(fromFilePath: string, toFilePath: string): string {
+  const normalizedFromPath = normalizeWindowsAbsolutePath(fromFilePath);
+  const normalizedToPath = normalizeWindowsAbsolutePath(toFilePath);
+  const useWindowsPaths = isWindowsAbsolutePath(normalizedFromPath) || isWindowsAbsolutePath(normalizedToPath);
+  const pathApi = useWindowsPaths ? path.win32 : path.posix;
+  const fromDirectoryPath = pathApi.dirname(useWindowsPaths ? normalizedFromPath : fromFilePath);
+  const targetPath = useWindowsPaths ? normalizedToPath : toFilePath;
+
+  if (useWindowsPaths && arePathsOnDifferentWindowsDrives(fromDirectoryPath, targetPath)) {
+    return toWindowsFileUrl(targetPath);
   }
 
-  const relativePath = pathApi.relative(fromDirectoryPath, toFilePath).replace(/\\/g, '/');
+  const relativePath = pathApi.relative(fromDirectoryPath, targetPath).replace(/\\/g, '/');
   if (relativePath.startsWith('./') || relativePath.startsWith('../')) {
     return relativePath;
   }
