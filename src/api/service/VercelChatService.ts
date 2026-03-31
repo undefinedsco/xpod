@@ -28,10 +28,19 @@ interface ProviderConfig {
   credentialId?: string;
 }
 
+interface AiGatewayModelCache {
+  fetchedAt: number;
+  items: any[];
+  modelIds: Set<string>;
+}
+
 export class VercelChatService {
+  private static readonly AI_GATEWAY_MODEL_CACHE_TTL_MS = 30_000;
   private readonly logger = getLoggerFor(this);
   private usageRepo?: UsageRepository;
   private quotaService?: QuotaService;
+  private aiGatewayModelCache: AiGatewayModelCache | null = null;
+  private aiGatewayModelCachePromise: Promise<AiGatewayModelCache | null> | null = null;
 
   public constructor(private readonly store: PodChatKitStore) {
     this.logger.info('Initializing VercelChatService with Pod-based config support');
@@ -60,15 +69,6 @@ export class VercelChatService {
     return raw ? raw.replace(/\/$/, '') : null;
   }
 
-  private getAiGatewayEntryModels(): Set<string> {
-    return new Set(
-      (process.env.XPOD_AI_GATEWAY_ENTRY_MODELS ?? '')
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean),
-    );
-  }
-
   private getAiGatewayTimeoutMs(): number {
     const raw = process.env.XPOD_AI_GATEWAY_TIMEOUT_MS?.trim();
     if (!raw) {
@@ -85,12 +85,64 @@ export class VercelChatService {
     return raw || null;
   }
 
-  private shouldUseAiGateway(model?: string): boolean {
+  private toModelId(model: any): string {
+    return typeof model?.id === 'string' ? model.id : JSON.stringify(model);
+  }
+
+  private isAiGatewayModelCacheFresh(): boolean {
+    return !!this.aiGatewayModelCache
+      && Date.now() - this.aiGatewayModelCache.fetchedAt < VercelChatService.AI_GATEWAY_MODEL_CACHE_TTL_MS;
+  }
+
+  private async getAiGatewayModelCache(): Promise<AiGatewayModelCache | null> {
+    if (!this.getAiGatewayBaseUrl()) {
+      return null;
+    }
+
+    if (this.isAiGatewayModelCacheFresh()) {
+      return this.aiGatewayModelCache;
+    }
+
+    if (this.aiGatewayModelCachePromise) {
+      return this.aiGatewayModelCachePromise;
+    }
+
+    this.aiGatewayModelCachePromise = (async() => {
+      const response = await this.sendAiGatewayRequest('/v1/models', 'GET', undefined, {
+        'Accept': 'application/json',
+      });
+      const data = await response.json() as { data?: any[] };
+      const items = Array.isArray(data.data) ? data.data : [];
+      const cache: AiGatewayModelCache = {
+        fetchedAt: Date.now(),
+        items,
+        modelIds: new Set(items.map((item) => this.toModelId(item))),
+      };
+      this.aiGatewayModelCache = cache;
+      return cache;
+    })();
+
+    try {
+      return await this.aiGatewayModelCachePromise;
+    } catch (error) {
+      if (this.aiGatewayModelCache) {
+        this.logger.warn(`Failed to refresh ai-gateway models, using stale cache: ${error}`);
+        return this.aiGatewayModelCache;
+      }
+      this.logger.warn(`Failed to fetch ai-gateway models: ${error}`);
+      return null;
+    } finally {
+      this.aiGatewayModelCachePromise = null;
+    }
+  }
+
+  private async shouldUseAiGateway(model?: string): Promise<boolean> {
     if (!model || !this.getAiGatewayBaseUrl()) {
       return false;
     }
 
-    return this.getAiGatewayEntryModels().has(model);
+    const cache = await this.getAiGatewayModelCache();
+    return cache?.modelIds.has(model) ?? false;
   }
 
   private buildAiGatewayUrl(path: string): string {
@@ -348,7 +400,7 @@ export class VercelChatService {
       await this.checkTokenQuota(accountId);
     }
 
-    if (this.shouldUseAiGateway(model)) {
+    if (await this.shouldUseAiGateway(model)) {
       this.logger.info(`Forwarding chat completion for model ${model} to ai-gateway`);
       const result = await this.forwardAiGatewayJson('/v1/chat/completions', request, auth) as ChatCompletionResponse;
       this.recordForwardedUsage(accountId, String(context.userId), result);
@@ -427,7 +479,7 @@ export class VercelChatService {
     const { model, messages, temperature, max_tokens } = request;
     const context = this.createStoreContext(auth);
 
-    if (this.shouldUseAiGateway(model)) {
+    if (await this.shouldUseAiGateway(model)) {
       this.logger.info(`Forwarding chat stream for model ${model} to ai-gateway`);
       return this.forwardAiGatewayStream('/v1/chat/completions', request, auth);
     }
@@ -460,7 +512,7 @@ export class VercelChatService {
     const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
 
-    if (this.shouldUseAiGateway(body?.model)) {
+    if (await this.shouldUseAiGateway(body?.model)) {
       this.logger.info(`Forwarding responses request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
       const result = await this.forwardAiGatewayJson('/v1/responses', body, auth);
       this.recordForwardedUsage(accountId, String(context.userId), result);
@@ -537,7 +589,7 @@ export class VercelChatService {
     const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
 
-    if (this.shouldUseAiGateway(body?.model)) {
+    if (await this.shouldUseAiGateway(body?.model)) {
       this.logger.info(`Forwarding messages request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
       const completionBody = this.buildChatCompletionsBodyFromMessages(body);
       const completion = await this.forwardAiGatewayJson('/v1/chat/completions', completionBody, auth);
@@ -790,7 +842,7 @@ export class VercelChatService {
 
     const pushModels = (items: any[]): void => {
       for (const model of items) {
-        const modelId = typeof model?.id === 'string' ? model.id : JSON.stringify(model);
+        const modelId = this.toModelId(model);
         if (seenModelIds.has(modelId)) {
           continue;
         }
@@ -799,19 +851,9 @@ export class VercelChatService {
       }
     };
 
-    const aiGatewayBase = this.getAiGatewayBaseUrl();
-    if (aiGatewayBase) {
-      try {
-        const response = await this.sendAiGatewayRequest('/v1/models', 'GET', undefined, {
-          'Accept': 'application/json',
-        });
-        const data = await response.json() as { data?: any[] };
-        if (Array.isArray(data.data)) {
-          pushModels(data.data);
-        }
-      } catch (error) {
-        this.logger.warn(`Failed to fetch ai-gateway models: ${error}`);
-      }
+    const aiGatewayCache = await this.getAiGatewayModelCache();
+    if (aiGatewayCache) {
+      pushModels(aiGatewayCache.items);
     }
 
     // 平台 Provider 模型（从 DEFAULT_API_BASE 获取）
