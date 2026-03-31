@@ -79,6 +79,12 @@ export class VercelChatService {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
   }
 
+  private getAiGatewayApiKey(): string | null {
+    const raw = process.env.XPOD_AI_GATEWAY_API_KEY?.trim()
+      ?? process.env.AI_GATEWAY_SERVICE_API_KEY?.trim();
+    return raw || null;
+  }
+
   private shouldUseAiGateway(model?: string): boolean {
     if (!model || !this.getAiGatewayBaseUrl()) {
       return false;
@@ -101,31 +107,6 @@ export class VercelChatService {
     return `${baseUrl}${normalizedPath}`;
   }
 
-  private getForwardedAccessToken(auth: AuthContext): string | null {
-    if (auth.type !== 'solid') {
-      return null;
-    }
-
-    const rawToken = auth.accessToken ?? (auth as { token?: string }).token;
-    return rawToken?.trim() || null;
-  }
-
-  private getForwardedTokenType(auth: AuthContext): 'Bearer' | 'DPoP' {
-    if (auth.type !== 'solid') {
-      return 'Bearer';
-    }
-
-    return auth.tokenType ?? 'Bearer';
-  }
-
-  private getForwardedDpopProof(auth: AuthContext): string | null {
-    if (auth.type !== 'solid') {
-      return null;
-    }
-
-    return auth.dpopProof?.trim() || null;
-  }
-
   private createAiGatewayAbortSignal(): AbortSignal | undefined {
     const abortSignal = AbortSignal as typeof AbortSignal & {
       timeout?: (milliseconds: number) => AbortSignal;
@@ -137,26 +118,17 @@ export class VercelChatService {
 
   private async sendAiGatewayRequest(
     path: string,
-    auth: AuthContext,
     method: 'GET' | 'POST',
     body?: unknown,
     headers?: HeadersInit,
   ): Promise<Response> {
-    const accessToken = this.getForwardedAccessToken(auth);
-    if (!accessToken) {
-      throw new Error('Authenticated access token is required for ai-gateway forwarding');
-    }
-    const tokenType = this.getForwardedTokenType(auth);
-    const dpopProof = this.getForwardedDpopProof(auth);
-    if (tokenType === 'DPoP' && !dpopProof) {
-      throw new Error('DPoP token forwarding requires dpopProof in auth context');
+    const apiKey = this.getAiGatewayApiKey();
+    if (!apiKey) {
+      throw new Error('XPOD_AI_GATEWAY_API_KEY is not configured');
     }
 
     const requestHeaders = new Headers(headers);
-    requestHeaders.set('Authorization', `${tokenType} ${accessToken}`);
-    if (tokenType === 'DPoP' && dpopProof) {
-      requestHeaders.set('DPoP', dpopProof);
-    }
+    requestHeaders.set('Authorization', `Bearer ${apiKey}`);
     if (body !== undefined && !requestHeaders.has('Content-Type')) {
       requestHeaders.set('Content-Type', 'application/json');
     }
@@ -182,17 +154,17 @@ export class VercelChatService {
     return response;
   }
 
-  private async forwardAiGatewayJson(path: string, body: unknown, auth: AuthContext): Promise<any> {
-    const response = await this.sendAiGatewayRequest(path, auth, 'POST', body, {
+  private async forwardAiGatewayJson(path: string, body: unknown, _auth: AuthContext): Promise<any> {
+    const response = await this.sendAiGatewayRequest(path, 'POST', body, {
       'Accept': 'application/json',
     });
     return response.json();
   }
 
-  private async forwardAiGatewayStream(path: string, body: unknown, auth: AuthContext): Promise<{
+  private async forwardAiGatewayStream(path: string, body: unknown, _auth: AuthContext): Promise<{
     toTextStreamResponse: () => Response;
   }> {
-    const response = await this.sendAiGatewayRequest(path, auth, 'POST', body, {
+    const response = await this.sendAiGatewayRequest(path, 'POST', body, {
       'Accept': 'text/event-stream',
     });
 
@@ -812,7 +784,7 @@ export class VercelChatService {
     return '';
   }
 
-  public async listModels(auth?: AuthContext): Promise<any[]> {
+  public async listModels(_auth?: AuthContext): Promise<any[]> {
     const models: any[] = [];
     const seenModelIds = new Set<string>();
 
@@ -828,9 +800,9 @@ export class VercelChatService {
     };
 
     const aiGatewayBase = this.getAiGatewayBaseUrl();
-    if (aiGatewayBase && auth) {
+    if (aiGatewayBase) {
       try {
-        const response = await this.sendAiGatewayRequest('/v1/models', auth, 'GET', undefined, {
+        const response = await this.sendAiGatewayRequest('/v1/models', 'GET', undefined, {
           'Accept': 'application/json',
         });
         const data = await response.json() as { data?: any[] };
