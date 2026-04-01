@@ -1,12 +1,12 @@
-# Xpod 0.2.0 云端部署指南（Sealos / R2 / Supabase / Upstash）
+# Xpod 云端部署指南（Sealos / R2 / Supabase / Upstash）
 
-> 适用版本：`xpod@0.2.0`
+> 当前示例镜像：`ghcr.io/undefinedsco/xpod:0.2.1`
 >
 > 适用环境：Sealos + Cloudflare R2 + Supabase PostgreSQL + Upstash Redis
 >
-> 更新时间：2026-03-10
+> 更新时间：2026-03-28
 
-完整上线核对项见 `deploy/sealos/cloud/CHECKLIST-0.2.0.md`。
+完整上线核对项见 `deploy/sealos/cloud/CHECKLIST.md`。
 
 ## 架构
 
@@ -27,7 +27,7 @@ xpod (Gateway + CSS + API)
 
 ### 1. 发布物
 
-- 镜像：`ghcr.io/undefinedsco/xpod:0.2.0`
+- 镜像：`ghcr.io/undefinedsco/xpod:0.2.1`
 - Node 运行时要求已内置在镜像中，无需额外安装
 
 ### 2. 外部服务
@@ -93,9 +93,17 @@ discovery.undefineds.co   -> discovery
 
 ```bash
 CSS_BASE_URL=https://id.undefineds.co
+CSS_OIDC_ISSUER=https://id.undefineds.co
 CSS_ALLOWED_HOSTS=id.undefineds.co,pods.undefineds.co,api.undefineds.co
 CSS_BASE_STORAGE_DOMAIN=undefineds.site
 ```
+
+其中：
+
+- `CSS_BASE_URL` 填系统主入口 `id.*`
+- `pods.*` 和 `api.*` 通过 `CSS_ALLOWED_HOSTS` 放行
+- `CSS_BASE_STORAGE_DOMAIN` 填 Pod / edge 节点的存储根域
+- 如果 `CSS_OIDC_ISSUER` 不单独配置，默认可与 `CSS_BASE_URL` 保持一致
 
 ## 方案一：Sealos App Launchpad
 
@@ -103,7 +111,7 @@ CSS_BASE_STORAGE_DOMAIN=undefineds.site
 
 ```text
 应用名称: xpod
-镜像:     ghcr.io/undefinedsco/xpod:0.2.0
+镜像:     ghcr.io/undefinedsco/xpod:0.2.1
 CPU:      0.5 Core
 内存:     1 GiB
 副本数:   1
@@ -126,13 +134,14 @@ Args:    dist/main.js -m cloud -p 3000 --host 0.0.0.0
 
 ### 环境变量
 
-可直接参考 `deploy/sealos/cloud/env.sg.example`，最少需要：
+可直接参考 `deploy/sealos/cloud/env.co.example`，最少需要：
 
 ```bash
 NODE_ENV=production
 XPOD_EDITION=cloud
 XPOD_EDGE_NODES_ENABLED=true
 CSS_BASE_URL=https://id.undefineds.co
+CSS_OIDC_ISSUER=https://id.undefineds.co
 CSS_ALLOWED_HOSTS=id.undefineds.co,pods.undefineds.co,api.undefineds.co
 CSS_BASE_STORAGE_DOMAIN=undefineds.site
 CSS_LOGGING_LEVEL=info
@@ -186,7 +195,7 @@ kubectl create secret generic xpod-cloud-secret \
 当前目录提供了：
 
 - 通用示例：`deploy/sealos/cloud/configmap.yaml`
-- 新加坡示例：`deploy/sealos/cloud/configmap.sg.yaml`
+- 海外示例：`deploy/sealos/cloud/configmap.co.yaml`
 
 如你使用 `kustomize`，Deployment 会同时读取：
 
@@ -199,21 +208,44 @@ kubectl create secret generic xpod-cloud-secret \
 kubectl apply -k deploy/sealos/cloud
 ```
 
+如需公网入口，单独渲染并应用 `deploy/sealos/cloud/ingress.yaml`，不要直接把占位域名提交到生产：
+
+```bash
+kubectl apply -f deploy/sealos/cloud/ingress.yaml
+```
+
 ### 4. 验证
 
 ```bash
-kubectl -n xpod-cloud get pods,svc,ingress
+kubectl -n xpod-cloud get pods,svc
 kubectl -n xpod-cloud logs deploy/xpod-cloud -f
 curl -i https://你的域名/service/status
 ```
 
-## 升级到 0.2.0
+## GitHub Actions 部署
+
+生产推荐直接使用 `Deploy` workflow，并在 GitHub `environment`（`co` / `cn`）里分别配置：
+
+- `KUBE_CONFIG_DATA`
+- `SEALOS_NAMESPACE`
+- `APP_ENV_FILE`
+
+其中 `APP_ENV_FILE` 直接保存完整 env 文件内容；workflow 会自动：
+
+- 确保 namespace 存在
+- 创建或更新 `xpod-cloud-secret`
+- 应用 `configmap + service + deployment`
+- 等待 `deployment/xpod-cloud` rollout 完成
+
+`image-tag` 必须显式填写不可变 tag，例如 `0.2.1`。
+
+## 升级部署版本
 
 如果之前跑的是旧版本：
 
 ```bash
 kubectl set image deployment/xpod-cloud \
-  xpod=ghcr.io/undefinedsco/xpod:0.2.0 \
+  xpod=ghcr.io/undefinedsco/xpod:0.2.1 \
   -n xpod-cloud
 
 kubectl rollout status deployment/xpod-cloud -n xpod-cloud --timeout=300s
@@ -221,8 +253,8 @@ kubectl rollout status deployment/xpod-cloud -n xpod-cloud --timeout=300s
 
 如果走 GitHub Actions：
 
-- `Release` workflow 负责构建并推送 `ghcr.io/undefinedsco/xpod:0.2.0`
-- `Deploy` workflow 负责执行 `kubectl set image`
+- `Release` workflow 负责构建并推送 `ghcr.io/undefinedsco/xpod:0.2.1`
+- `Deploy` workflow 负责执行升级 rollout
 
 ## 常见问题
 
@@ -260,11 +292,11 @@ kubectl rollout status deployment/xpod-cloud -n xpod-cloud --timeout=300s
 
 ## 相关文件
 
-- `deploy/sealos/cloud/CHECKLIST-0.2.0.md`
+- `deploy/sealos/cloud/CHECKLIST.md`
 - `deploy/sealos/cloud/README.md`
-- `deploy/sealos/cloud/env.sg.example`
+- `deploy/sealos/cloud/env.co.example`
 - `deploy/sealos/cloud/configmap.yaml`
-- `deploy/sealos/cloud/configmap.sg.yaml`
-- `deploy/sealos/cloud/secret.sg.example.yaml`
+- `deploy/sealos/cloud/configmap.co.yaml`
+- `deploy/sealos/cloud/secret.co.example.yaml`
 - `deploy/sealos/cloud/deployment.yaml`
 - `deploy/sealos/gateway/README.md`
