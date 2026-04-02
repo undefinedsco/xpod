@@ -100,6 +100,11 @@ jobs:
         run: |
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
+
+      - name: Wait for rollout
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
 
       - name: Dump diagnostics on failure
@@ -199,6 +204,11 @@ jobs:
         run: |
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
+
+      - name: Wait for rollout
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
 
       - name: Dump diagnostics on failure
