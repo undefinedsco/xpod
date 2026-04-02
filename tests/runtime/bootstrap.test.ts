@@ -119,10 +119,8 @@ describe('runtime bootstrap helpers', () => {
     const [, content] = writeTextFile.mock.calls[0];
     const parsed = JSON.parse(content);
     expect(parsed.import).toEqual([
-      expect.stringMatching(/^file:\/\/\/[A-Z]:\//),
-      expect.stringMatching(/^file:\/\/\/[A-Z]:\//),
+      'file:///D:/package/config/local.json',
+      'file:///D:/package/config/runtime-open.json',
     ]);
-    expect(parsed.import[0]).toContain('/config/local.json');
-    expect(parsed.import[1]).toContain('/config/runtime-open.json');
   });
 });

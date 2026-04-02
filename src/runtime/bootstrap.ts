@@ -34,7 +34,7 @@ function ensureTrailingSlash(url: string): string {
 function toConfigResourceIri(filePath: string): string {
   const normalizedPath = filePath.replace(/\\/g, '/');
   if (/^[A-Za-z]:\//.test(normalizedPath)) {
-    return pathToFileURL(`/${normalizedPath}`).href;
+    return new URL(`file:///${normalizedPath}`).href;
   }
   return pathToFileURL(filePath).href;
 }
