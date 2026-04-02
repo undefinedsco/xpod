@@ -119,8 +119,8 @@ describe('runtime bootstrap helpers', () => {
     const [, content] = writeTextFile.mock.calls[0];
     const parsed = JSON.parse(content);
     expect(parsed.import).toEqual([
-      'file:///D:/package/config/local.json',
-      'file:///D:/package/config/runtime-open.json',
+      'D:/package/config/local.json',
+      'D:/package/config/runtime-open.json',
     ]);
   });
 });
