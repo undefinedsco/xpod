@@ -39,7 +39,11 @@ jobs:
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
-          kubectl create namespace "$SEALOS_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          if kubectl get namespace "$SEALOS_NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $SEALOS_NAMESPACE already exists"
+          else
+            kubectl create namespace "$SEALOS_NAMESPACE"
+          fi
 
       - name: Apply runtime secret
         env:
@@ -98,7 +102,11 @@ jobs:
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
-          kubectl create namespace "$SEALOS_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          if kubectl get namespace "$SEALOS_NAMESPACE" >/dev/null 2>&1; then
+            echo "Namespace $SEALOS_NAMESPACE already exists"
+          else
+            kubectl create namespace "$SEALOS_NAMESPACE"
+          fi
 
       - name: Apply runtime secret
         env:
