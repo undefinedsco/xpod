@@ -69,6 +69,10 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.nodeId).toBe('node-1');
     expect(shorthand.edgeNodesEnabled).toBe(true);
     expect(shorthand.centerRegistrationEnabled).toBe(true);
+    expect(shorthand.emailConfigHost).toBe('');
+    expect(shorthand.emailConfigPort).toBe('587');
+    expect(shorthand.emailConfigAuthUser).toBe('');
+    expect(shorthand.emailConfigAuthPass).toBe('');
   });
 
   it('should resolve runtime paths and log level via injected platform', async() => {
