@@ -19,7 +19,7 @@ COPY scripts/patch-jose.js ./scripts/patch-jose.js
 RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
-RUN bun run build:ts && bun run build:components
+RUN bun run build:ts && bun run build:components && bun run build:ui
 
 # Runtime
 FROM node:22-alpine
