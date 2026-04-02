@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       image-tag:
-        description: "Image tag to deploy (e.g. v0.1.0, sha-abc1234)"
-        required: false
-        default: latest
+        description: "Immutable image tag to deploy (e.g. 0.2.1, sha-abc1234)"
+        required: true
       environment:
         description: "Target environment"
         required: true
@@ -22,6 +21,9 @@ jobs:
     name: Deploy to .cn
     runs-on: ubuntu-latest
     environment: cn
+    concurrency:
+      group: xpod-deploy-cn
+      cancel-in-progress: false
     if: >-
       github.event_name == 'workflow_dispatch' &&
       (inputs.environment == 'all' || inputs.environment == 'cn')
@@ -33,9 +35,15 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
 
+      - name: Ensure namespace
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          kubectl create namespace "$SEALOS_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Apply runtime secret
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
           APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
         run: |
           printf '%s\n' "$APP_ENV_FILE" > /tmp/xpod.env
@@ -45,20 +53,25 @@ jobs:
 
       - name: Render manifests
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#ghcr.io/undefinedsco/xpod:0.2.0#ghcr.io/undefinedsco/xpod:${{ inputs.image-tag }}#g" \
-            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
+            deploy/sealos/cloud/configmap.yaml > /tmp/xpod-configmap.yaml
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
             deploy/sealos/cloud/service.yaml > /tmp/xpod-service.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${IMAGE_TAG}#g" \
+            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
 
       - name: Apply manifests
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
+          kubectl apply -f /tmp/xpod-configmap.yaml
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
@@ -67,6 +80,9 @@ jobs:
     name: Deploy to .co
     runs-on: ubuntu-latest
     environment: co
+    concurrency:
+      group: xpod-deploy-co
+      cancel-in-progress: false
     if: >-
       github.event_name == 'workflow_dispatch' &&
       (inputs.environment == 'all' || inputs.environment == 'co')
@@ -78,9 +94,15 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
 
+      - name: Ensure namespace
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          kubectl create namespace "$SEALOS_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Apply runtime secret
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
           APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
         run: |
           printf '%s\n' "$APP_ENV_FILE" > /tmp/xpod.env
@@ -90,20 +112,25 @@ jobs:
 
       - name: Render manifests
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#ghcr.io/undefinedsco/xpod:0.2.0#ghcr.io/undefinedsco/xpod:${{ inputs.image-tag }}#g" \
-            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
+            deploy/sealos/cloud/configmap.yaml > /tmp/xpod-configmap.yaml
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
             deploy/sealos/cloud/service.yaml > /tmp/xpod-service.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${IMAGE_TAG}#g" \
+            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
 
       - name: Apply manifests
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
+          kubectl apply -f /tmp/xpod-configmap.yaml
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
