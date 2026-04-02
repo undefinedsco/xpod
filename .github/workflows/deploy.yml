@@ -78,7 +78,22 @@ jobs:
           kubectl apply -f /tmp/xpod-configmap.yaml
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
+
+      - name: Wait for rollout
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud --all-containers=true --tail=200 || true
 
   deploy-co:
     name: Deploy to .co
@@ -141,4 +156,19 @@ jobs:
           kubectl apply -f /tmp/xpod-configmap.yaml
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
+
+      - name: Wait for rollout
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud --all-containers=true --tail=200 || true
