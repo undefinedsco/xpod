@@ -3,6 +3,8 @@ import { getIdentityDatabase } from '../identity/drizzle/db';
 import { AccountRepository } from '../identity/drizzle/AccountRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
 import type { QuotaService, AccountQuota } from './QuotaService';
+import type { EntitlementProvider } from './EntitlementProvider';
+import { createEntitlementProviderFromEnv } from './EntitlementProvider';
 
 /**
  * 环境变量默认值
@@ -18,31 +20,38 @@ function envNumber(key: string): number | null {
 
 interface DrizzleQuotaServiceOptions {
   identityDbUrl: string;
+  entitlementProvider?: EntitlementProvider;
 }
 
 /**
  * 统一 QuotaService 实现
  *
- * 查询优先级：DB 值 > 环境变量默认值 > 不限制 (null)
+ * 查询优先级：本地自定义配额 > 远端 entitlement > 环境变量默认值 > 不限制 (null)
  */
 export class DrizzleQuotaService implements QuotaService {
   private readonly logger = getLoggerFor(this);
   private readonly accountRepo: AccountRepository;
   private readonly usageRepo: UsageRepository;
+  private readonly entitlementProvider: EntitlementProvider;
 
   public constructor(options: DrizzleQuotaServiceOptions) {
     const db = getIdentityDatabase(options.identityDbUrl);
     this.accountRepo = new AccountRepository(db);
     this.usageRepo = new UsageRepository(db);
+    this.entitlementProvider = options.entitlementProvider ?? createEntitlementProviderFromEnv();
   }
 
   public async getAccountQuota(accountId: string): Promise<AccountQuota> {
     const usage = await this.usageRepo.getAccountUsage(accountId);
+    const entitlement = this.needsRemoteEntitlement(usage)
+      ? await this.entitlementProvider.getAccountEntitlement(accountId)
+      : undefined;
+
     return {
-      storageLimitBytes: this.resolve(usage?.storageLimitBytes, 'XPOD_DEFAULT_STORAGE_LIMIT_BYTES'),
-      bandwidthLimitBps: this.resolve(usage?.bandwidthLimitBps, 'XPOD_DEFAULT_BANDWIDTH_LIMIT_BPS'),
-      computeLimitSeconds: this.resolve(usage?.computeLimitSeconds, 'XPOD_DEFAULT_COMPUTE_LIMIT_SECONDS'),
-      tokenLimitMonthly: this.resolve(usage?.tokenLimitMonthly, 'XPOD_DEFAULT_TOKEN_LIMIT_MONTHLY'),
+      storageLimitBytes: this.resolve(usage?.storageLimitBytes, entitlement?.quota.storageLimitBytes, 'XPOD_DEFAULT_STORAGE_LIMIT_BYTES'),
+      bandwidthLimitBps: this.resolve(usage?.bandwidthLimitBps, entitlement?.quota.bandwidthLimitBps, 'XPOD_DEFAULT_BANDWIDTH_LIMIT_BPS'),
+      computeLimitSeconds: this.resolve(usage?.computeLimitSeconds, entitlement?.quota.computeLimitSeconds, 'XPOD_DEFAULT_COMPUTE_LIMIT_SECONDS'),
+      tokenLimitMonthly: this.resolve(usage?.tokenLimitMonthly, entitlement?.quota.tokenLimitMonthly, 'XPOD_DEFAULT_TOKEN_LIMIT_MONTHLY'),
     };
   }
 
@@ -64,10 +73,10 @@ export class DrizzleQuotaService implements QuotaService {
   public async getPodQuota(podId: string): Promise<AccountQuota> {
     const usage = await this.usageRepo.getPodUsage(podId);
     return {
-      storageLimitBytes: this.resolve(usage?.storageLimitBytes, 'XPOD_DEFAULT_STORAGE_LIMIT_BYTES'),
-      bandwidthLimitBps: this.resolve(usage?.bandwidthLimitBps, 'XPOD_DEFAULT_BANDWIDTH_LIMIT_BPS'),
-      computeLimitSeconds: this.resolve(usage?.computeLimitSeconds, 'XPOD_DEFAULT_COMPUTE_LIMIT_SECONDS'),
-      tokenLimitMonthly: this.resolve(usage?.tokenLimitMonthly, 'XPOD_DEFAULT_TOKEN_LIMIT_MONTHLY'),
+      storageLimitBytes: this.resolve(usage?.storageLimitBytes, undefined, 'XPOD_DEFAULT_STORAGE_LIMIT_BYTES'),
+      bandwidthLimitBps: this.resolve(usage?.bandwidthLimitBps, undefined, 'XPOD_DEFAULT_BANDWIDTH_LIMIT_BPS'),
+      computeLimitSeconds: this.resolve(usage?.computeLimitSeconds, undefined, 'XPOD_DEFAULT_COMPUTE_LIMIT_SECONDS'),
+      tokenLimitMonthly: this.resolve(usage?.tokenLimitMonthly, undefined, 'XPOD_DEFAULT_TOKEN_LIMIT_MONTHLY'),
     };
   }
 
@@ -143,14 +152,31 @@ export class DrizzleQuotaService implements QuotaService {
   }
 
   /**
-   * 解析配额值：DB 值 > 环境变量默认值 > null (不限制)
+   * 解析配额值：本地自定义配额 > 远端 entitlement > 环境变量默认值 > null (不限制)
    */
-  private resolve(dbValue: number | null | undefined, envKey: string): number | null {
+  private resolve(dbValue: number | null | undefined, remoteValue: number | null | undefined, envKey: string): number | null {
     // DB 中有明确值（包括 0）
     if (typeof dbValue === 'number') {
       return dbValue;
     }
+    if (remoteValue === null || typeof remoteValue === 'number') {
+      return remoteValue;
+    }
     // 回退到环境变量
     return envNumber(envKey);
+  }
+
+  private needsRemoteEntitlement(usage: {
+    storageLimitBytes?: number | null;
+    bandwidthLimitBps?: number | null;
+    computeLimitSeconds?: number | null;
+    tokenLimitMonthly?: number | null;
+  } | undefined): boolean {
+    return ![
+      usage?.storageLimitBytes,
+      usage?.bandwidthLimitBps,
+      usage?.computeLimitSeconds,
+      usage?.tokenLimitMonthly,
+    ].every((value) => typeof value === 'number');
   }
 }

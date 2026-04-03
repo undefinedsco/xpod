@@ -26,6 +26,7 @@ import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
 import { DrizzleQuotaService } from './quota/DrizzleQuotaService';
 import { NoopQuotaService } from './quota/NoopQuotaService';
+import { HttpEntitlementProvider, NoopEntitlementProvider } from './quota/EntitlementProvider';
 import { PerAccountQuotaStrategy } from './storage/quota/PerAccountQuotaStrategy';
 import { TencentDnsProvider } from './dns/tencent/TencentDnsProvider';
 import { EdgeNodeDnsCoordinator } from './edge/EdgeNodeDnsCoordinator';
@@ -86,6 +87,7 @@ export type {
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService, AccountQuota } from './quota/QuotaService';
+export type { EntitlementProvider, AccountEntitlement } from './quota/EntitlementProvider';
 // Tunnel and Subdomain types
 export type {
   TunnelProvider,
@@ -129,8 +131,10 @@ export {
     RedisKeyValueStorage,
     SqliteKeyValueStorage,
   DrizzleQuotaService,
-    NoopQuotaService,
-    PerAccountQuotaStrategy,
+  NoopQuotaService,
+  HttpEntitlementProvider,
+  NoopEntitlementProvider,
+  PerAccountQuotaStrategy,
     TencentDnsProvider,
     EdgeNodeDnsCoordinator,
     Dns01CertificateProvisioner,
