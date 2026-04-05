@@ -21,7 +21,7 @@
 ### 4.1 Account & Pod Metadata
 - 创建 `ExtendedAccountStore`，在 `ACCOUNT_STORAGE_DESCRIPTION` 中添加 `quotaLimit: 'number?'`。
 - 可选：在 Pod 元数据中增加 `podQuotaLimit`、`podQuotaGraceBytes` 字段。
-  - 对未配置的账号返回全局默认值（当前为 10 GiB，可通过 `XPOD_DEFAULT_QUOTA` 覆盖）。
+  - 对未配置的账号返回全局默认值；当前建议拆成 `XPOD_DEFAULT_STORAGE_LIMIT_BYTES`、`XPOD_DEFAULT_BANDWIDTH_LIMIT_BPS`、`XPOD_DEFAULT_TOKEN_LIMIT_MONTHLY` 等独立环境变量。
 
 ### 4.2 Usage Tracking Wrapper
 - 新增 `UsageTrackingStore`，包装现有 `DataAccessorBasedStore`：
@@ -31,9 +31,9 @@
 
 ### 4.3 Quota Enforcement
 - 新增 `PerAccountQuotaStrategy`：
-  - 当前实现仅对比账号的全局默认上限（10 GiB），忽略数据库中的个性化配额字段。
+  - 当前实现按资源类型分别回退到 `XPOD_DEFAULT_*` 默认值，并优先尊重数据库中的个性化配额字段。
   - 若 `usage + delta > 默认上限`，抛出 413；否则调用原先的 CSS `QuotaStrategy`。
-  - 本地 `local` 配置未覆盖 `QuotaStrategy`，因此无配额限制。
+  - 本地 `local` 配置未覆盖 `QuotaStrategy`，因此默认无配额限制；需要模拟 hosted preview 时可手动设置 `XPOD_DEFAULT_*`。
 - 用 Components override 注入新的策略。
 
 ### 4.4 Nightly Reconciliation
@@ -59,8 +59,12 @@
 - 账号存储：Components override `urn:solid-server:default:AccountStore` → `ExtendedAccountStore`。
 - 资源存储：`DataAccessorBasedStore` 外层包装 `UsageTrackingStore`。
 - 配额策略：重写 `urn:solid-server:default:QuotaStrategy`。
-- 新增环境变量（可选）：`XPOD_DEFAULT_QUOTA` 记录全局默认配额。
-- 默认账号配额：集群/开发构建中通过 `PerAccountQuotaStrategy._options_defaultAccountQuotaBytes` 配置为 10 GiB；`local` 配置未启用配额覆盖，可无限制写入。
+- 新增环境变量（可选）：
+  - `XPOD_DEFAULT_STORAGE_LIMIT_BYTES`
+  - `XPOD_DEFAULT_BANDWIDTH_LIMIT_BPS`
+  - `XPOD_DEFAULT_TOKEN_LIMIT_MONTHLY`
+  - `XPOD_DEFAULT_COMPUTE_LIMIT_SECONDS`
+- 默认账号配额：集群/开发构建中优先读取 `XPOD_DEFAULT_*`；`local` 配置未启用配额覆盖，可无限制写入。
 - 用量统计：`UsageRepository` / `ResourceUsageRepository` 在节点本地的身份库中维护账号/Pod 以及资源级的已用字节，`QuotaService` 仅负责返回上限数值；集群无需集中收集数据，节点之间可通过对账脚本共享汇总结果。
 
 ## 7. Testing Plan

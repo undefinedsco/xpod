@@ -128,6 +128,14 @@ cp example.env .env.cloud
 bun run cloud
 ```
 
+## Hosted Preview and Support
+
+- `xpod` Cloud 当前按 `hosted preview` 提供免费账号基线，不承诺正式订阅套餐
+- 免费账号额度直接由 `XPOD_DEFAULT_*` 控制，不通过 `billing plan` 下发
+- 当前支持方式是手工捐款与 supporter 认领，不是自动开通的资源升级档
+- supporter 记录只表达支持关系与非资源权益，不会自动提高存储、带宽或模型额度
+- 对外口径与支持说明可放在 `https://undefineds.co/zh-CN/support/` 与 `https://undefineds.co/en/support/`
+
 ## Library Mode
 
 If you want the full Xpod stack inside your own process, import it as a library instead of spawning the CLI.
