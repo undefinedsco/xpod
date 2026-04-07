@@ -1,11 +1,15 @@
 name: Deploy
 
 on:
+  workflow_run:
+    workflows: ['Release']
+    types: [completed]
   workflow_dispatch:
     inputs:
       image-tag:
-        description: "Immutable image tag to deploy (e.g. 0.2.1, sha-abc1234)"
-        required: true
+        description: "Image tag to deploy (e.g. v0.2.3, 0.2.3, sha-abc1234)"
+        required: false
+        default: ''
       environment:
         description: "Target environment"
         required: true
@@ -16,34 +20,57 @@ on:
           - cn
         default: all
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   deploy-cn:
     name: Deploy to .cn
     runs-on: ubuntu-latest
     environment: cn
-    concurrency:
-      group: xpod-deploy-cn
-      cancel-in-progress: false
     if: >-
       github.event_name == 'workflow_dispatch' &&
       (inputs.environment == 'all' || inputs.environment == 'cn')
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve image tag
+        id: image
+        env:
+          INPUT_IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          IMAGE_TAG="${INPUT_IMAGE_TAG#v}"
+          if [ -z "$IMAGE_TAG" ]; then
+            echo "::error::workflow_dispatch 时必须提供 image-tag"
+            exit 1
+          fi
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for image
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker manifest inspect "ghcr.io/undefinedsco/xpod:${IMAGE_TAG}" > /dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Image ghcr.io/undefinedsco/xpod:${IMAGE_TAG} not found"
+          exit 1
+
       - name: Set up kubeconfig
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
-
-      - name: Ensure namespace
-        env:
-          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-        run: |
-          if kubectl get namespace "$SEALOS_NAMESPACE" >/dev/null 2>&1; then
-            echo "Namespace $SEALOS_NAMESPACE already exists"
-          else
-            kubectl create namespace "$SEALOS_NAMESPACE"
-          fi
 
       - name: Apply runtime secret
         env:
@@ -58,31 +85,21 @@ jobs:
       - name: Render manifests
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-          IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            deploy/sealos/cloud/configmap.yaml > /tmp/xpod-configmap.yaml
+            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${{ steps.image.outputs.image_tag }}#g" \
+            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
             deploy/sealos/cloud/service.yaml > /tmp/xpod-service.yaml
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${IMAGE_TAG}#g" \
-            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
 
       - name: Apply manifests
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
-          kubectl apply -f /tmp/xpod-configmap.yaml
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
-
-      - name: Wait for rollout
-        env:
-          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-        run: |
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
 
       - name: Dump diagnostics on failure
@@ -99,29 +116,60 @@ jobs:
     name: Deploy to .co
     runs-on: ubuntu-latest
     environment: co
-    concurrency:
-      group: xpod-deploy-co
-      cancel-in-progress: false
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      (inputs.environment == 'all' || inputs.environment == 'co')
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')) ||
+      (github.event_name == 'workflow_dispatch' &&
+      (inputs.environment == 'all' || inputs.environment == 'co'))
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resolve image tag
+        id: image
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INPUT_IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            IMAGE_TAG="${WORKFLOW_HEAD_BRANCH#v}"
+          else
+            IMAGE_TAG="${INPUT_IMAGE_TAG#v}"
+          fi
+          if [ -z "$IMAGE_TAG" ]; then
+            echo "::error::workflow_dispatch 时必须提供 image-tag"
+            exit 1
+          fi
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for image
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker manifest inspect "ghcr.io/undefinedsco/xpod:${IMAGE_TAG}" > /dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Image ghcr.io/undefinedsco/xpod:${IMAGE_TAG} not found"
+          exit 1
 
       - name: Set up kubeconfig
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
-
-      - name: Ensure namespace
-        env:
-          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-        run: |
-          if kubectl get namespace "$SEALOS_NAMESPACE" >/dev/null 2>&1; then
-            echo "Namespace $SEALOS_NAMESPACE already exists"
-          else
-            kubectl create namespace "$SEALOS_NAMESPACE"
-          fi
 
       - name: Apply runtime secret
         env:
@@ -136,31 +184,21 @@ jobs:
       - name: Render manifests
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-          IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            deploy/sealos/cloud/configmap.yaml > /tmp/xpod-configmap.yaml
+            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${{ steps.image.outputs.image_tag }}#g" \
+            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
             deploy/sealos/cloud/service.yaml > /tmp/xpod-service.yaml
-          sed \
-            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${IMAGE_TAG}#g" \
-            deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
 
       - name: Apply manifests
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
-          kubectl apply -f /tmp/xpod-configmap.yaml
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
-
-      - name: Wait for rollout
-        env:
-          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
-        run: |
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
 
       - name: Dump diagnostics on failure
