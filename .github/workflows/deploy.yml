@@ -1,8 +1,9 @@
 name: Deploy
 
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: ['Release']
+    types: [completed]
   workflow_dispatch:
     inputs:
       image-tag:
@@ -57,7 +58,7 @@ jobs:
         env:
           IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
         run: |
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 60); do
             if docker manifest inspect "ghcr.io/undefinedsco/xpod:${IMAGE_TAG}" > /dev/null 2>&1; then
               exit 0
             fi
@@ -73,7 +74,7 @@ jobs:
 
       - name: Apply runtime secret
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
           APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
         run: |
           printf '%s\n' "$APP_ENV_FILE" > /tmp/xpod.env
@@ -83,11 +84,11 @@ jobs:
 
       - name: Render manifests
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#ghcr.io/undefinedsco/xpod:0.2.0#ghcr.io/undefinedsco/xpod:${{ steps.image.outputs.image_tag }}#g" \
+            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${{ steps.image.outputs.image_tag }}#g" \
             deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
@@ -95,32 +96,47 @@ jobs:
 
       - name: Apply manifests
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud --all-containers=true --tail=200 || true
 
   deploy-co:
     name: Deploy to .co
     runs-on: ubuntu-latest
     environment: co
     if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')) ||
       (github.event_name == 'workflow_dispatch' &&
       (inputs.environment == 'all' || inputs.environment == 'co'))
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Resolve image tag
         id: image
         env:
           EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
+          WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           INPUT_IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
-          if [ "$EVENT_NAME" = "push" ]; then
-            IMAGE_TAG="${REF_NAME#v}"
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            IMAGE_TAG="${WORKFLOW_HEAD_BRANCH#v}"
           else
             IMAGE_TAG="${INPUT_IMAGE_TAG#v}"
           fi
@@ -141,7 +157,7 @@ jobs:
         env:
           IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
         run: |
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 60); do
             if docker manifest inspect "ghcr.io/undefinedsco/xpod:${IMAGE_TAG}" > /dev/null 2>&1; then
               exit 0
             fi
@@ -157,7 +173,7 @@ jobs:
 
       - name: Apply runtime secret
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
           APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
         run: |
           printf '%s\n' "$APP_ENV_FILE" > /tmp/xpod.env
@@ -167,11 +183,11 @@ jobs:
 
       - name: Render manifests
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
-            -e "s#ghcr.io/undefinedsco/xpod:0.2.0#ghcr.io/undefinedsco/xpod:${{ steps.image.outputs.image_tag }}#g" \
+            -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${{ steps.image.outputs.image_tag }}#g" \
             deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
@@ -179,8 +195,18 @@ jobs:
 
       - name: Apply manifests
         env:
-          SEALOS_NAMESPACE: ${{ secrets.SEALOS_NAMESPACE }}
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
           kubectl apply -f /tmp/xpod-service.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud --all-containers=true --tail=200 || true
