@@ -22,6 +22,8 @@ import type { ChatKitService, AiProvider } from '../chatkit';
 import type { StoreContext } from '../chatkit/store';
 import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { RuntimeHost } from '../../runtime/host/types';
+import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
+import type { VectorService } from '../service/VectorService';
 
 /**
  * 容器配置
@@ -113,6 +115,9 @@ export interface ApiContainerCradle {
   chatKitStore: PodChatKitStore;
   chatKitAiProvider: AiProvider;
   chatKitService: ChatKitService<StoreContext>;
+  providerRegistry: ProviderRegistry;
+  embeddingService: EmbeddingService;
+  vectorService: VectorService;
 
   // Cloud 模式: 身份服务
   webIdProfileRepo?: WebIdProfileRepository;
