@@ -18,8 +18,22 @@ import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
+import { VectorService } from '../service/VectorService';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
+import { EmbeddingServiceImpl, ProviderRegistryImpl } from '../../ai/service';
+
+function resolveCssServiceBaseUrl(): string {
+  if (process.env.CSS_INTERNAL_URL) {
+    return process.env.CSS_INTERNAL_URL;
+  }
+
+  if (process.env.CSS_BASE_URL) {
+    return process.env.CSS_BASE_URL;
+  }
+
+  return 'http://localhost:3000/';
+}
 
 /**
  * 注册共享服务到容器
@@ -94,6 +108,22 @@ export function registerCommonServices(
         store: chatKitStore,
         aiProvider: chatKitAiProvider,
         enablePtyRuntime: config.edition === 'local',
+      });
+    }).singleton(),
+
+    providerRegistry: asFunction(() => {
+      return new ProviderRegistryImpl();
+    }).singleton(),
+
+    embeddingService: asFunction(({ providerRegistry }: ApiContainerCradle) => {
+      return new EmbeddingServiceImpl(providerRegistry);
+    }).singleton(),
+
+    vectorService: asFunction(({ chatKitStore, embeddingService }: ApiContainerCradle) => {
+      return new VectorService({
+        cssBaseUrl: resolveCssServiceBaseUrl(),
+        store: chatKitStore,
+        embeddingService,
       });
     }).singleton(),
 

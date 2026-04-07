@@ -18,6 +18,7 @@ import { registerWebIdProfileRoutes } from '../handlers/WebIdProfileHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
+import { registerVectorRoutes } from '../handlers/VectorHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
@@ -86,6 +87,7 @@ function registerSharedRoutes(
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
   const chatKitStore = container.resolve('chatKitStore');
+  const vectorService = container.resolve('vectorService');
   const config = container.resolve('config') as ApiContainerConfig;
 
   registerEdgeNodeSignalRoutes(server, {
@@ -98,6 +100,7 @@ function registerSharedRoutes(
   registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
+  registerVectorRoutes(server, { vectorService });
 
   // Quota & Usage API (Business 对接)
   try {
