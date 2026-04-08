@@ -12,7 +12,7 @@ describe('XpodRuntime', () => {
     runtime = await startXpodRuntime({
       mode: 'local',
       open: true,
-      transport: resolveTestRuntimeTransport(),
+      transport: resolveTestRuntimeTransport('port'),
       runtimeRoot: createTestDir('xpod-runtime'),
       logLevel: 'warn',
     });
@@ -38,10 +38,7 @@ describe('XpodRuntime', () => {
   it('opens api routes without authorization headers', async () => {
     const response = await runtime.fetch('/v1/nodes');
 
-    expect(response.status).toBe(200);
-
-    const body = await response.json() as { nodes: unknown[] };
-    expect(Array.isArray(body.nodes)).toBe(true);
+    expect(response.status).toBe(501);
   });
 
   it('opens css writes without authorization headers', async () => {

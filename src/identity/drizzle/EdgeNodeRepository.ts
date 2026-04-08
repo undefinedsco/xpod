@@ -92,7 +92,7 @@ export class EdgeNodeRepository {
     });
   }
 
-  public async createNode(displayName?: string, accountId?: string): Promise<CreateEdgeNodeResult> {
+  public async createNode(displayName?: string, _accountId?: string): Promise<CreateEdgeNodeResult> {
     const nodeId = randomUUID();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -100,8 +100,8 @@ export class EdgeNodeRepository {
     const ts = toDbTimestamp(this.db, now);
 
     await executeStatement(this.db, sql`
-      INSERT INTO identity_edge_node (id, display_name, owner_account_id, token_hash, created_at, updated_at)
-      VALUES (${nodeId}, ${displayName ?? null}, ${accountId ?? null}, ${tokenHash}, ${ts}, ${ts})
+      INSERT INTO identity_edge_node (id, display_name, token_hash, created_at, updated_at)
+      VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${ts}, ${ts})
     `);
 
     return {
@@ -112,21 +112,10 @@ export class EdgeNodeRepository {
   }
 
   /**
-   * Get the owner account ID of a node.
+   * Node/account 关系待产品化后单独建模；当前阶段不再在节点表上持久化账号归属。
    */
-  public async getNodeOwner(nodeId: string): Promise<string | undefined> {
-    const result = await executeQuery(this.db, sql`
-      SELECT owner_account_id
-      FROM identity_edge_node
-      WHERE id = ${nodeId}
-      LIMIT 1
-    `);
-    
-    if (result.rows.length === 0) {
-      return undefined;
-    }
-    
-    return result.rows[0].owner_account_id ? String(result.rows[0].owner_account_id) : undefined;
+  public async getNodeOwner(_nodeId: string): Promise<string | undefined> {
+    return undefined;
   }
 
   public async getNodeSecret(nodeId: string): Promise<EdgeNodeSecret | undefined> {
@@ -584,26 +573,8 @@ export class EdgeNodeRepository {
     lastSeen: Date | null;
     connectivityStatus: string | null;
   }>> {
-    const result = await executeQuery(this.db, sql`
-      SELECT id, display_name, capabilities, metadata, access_mode, last_seen, connectivity_status
-      FROM identity_edge_node
-      WHERE owner_account_id = ${accountId} AND node_type = 'edge'
-      ORDER BY created_at DESC
-    `);
-
-    return result.rows.map((row: any) => {
-      const metadata = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata as Record<string, unknown> | null);
-      const capabilities = typeof row.capabilities === 'string' ? JSON.parse(row.capabilities) : (row.capabilities as Record<string, unknown> | null);
-      return {
-        nodeId: String(row.id),
-        displayName: row.display_name ?? undefined,
-        capabilities: capabilities ?? null,
-        stringCapabilities: (metadata?.capabilities as string[] | undefined) ?? null,
-        accessMode: row.access_mode ?? null,
-        lastSeen: fromDbTimestamp(row.last_seen) ?? null,
-        connectivityStatus: row.connectivity_status ?? null,
-      };
-    });
+    void accountId;
+    return [];
   }
 
   /**
@@ -637,7 +608,6 @@ export class EdgeNodeRepository {
   public async registerSpNode(options: {
     publicUrl: string;
     displayName?: string;
-    ownerAccountId?: string;
     /** SP 提供的设备 ID，作为 nodeId（不传则随机生成） */
     nodeId?: string;
     /** SP 提供的 serviceToken，不传则随机生成 */
@@ -652,13 +622,12 @@ export class EdgeNodeRepository {
 
     await executeStatement(this.db, sql`
       INSERT INTO identity_edge_node (
-        id, display_name, owner_account_id, token_hash, service_token_hash,
+        id, display_name, token_hash, service_token_hash,
         node_type, public_url,
         connectivity_status, created_at, updated_at
       )
       VALUES (
-        ${nodeId}, ${options.displayName ?? null}, ${options.ownerAccountId ?? null},
-        ${nodeTokenHash}, ${serviceToken},
+        ${nodeId}, ${options.displayName ?? null}, ${nodeTokenHash}, ${serviceToken},
         'sp', ${options.publicUrl}, 'unknown', ${ts}, ${ts}
       )
       ON CONFLICT (id) DO UPDATE SET
