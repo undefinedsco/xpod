@@ -91,13 +91,18 @@ export function registerProvisionRoutes(
         ? `${subdomainPrefix}.${baseStorageDomain}`
         : undefined;
 
-      // 如果提供了 ipv4，存入节点信息（供后续健康检查使用）
+      // 节点注册本身不应依赖后续 connectivity 元数据写入是否成功。
+      // 这里的 mode/subdomain 只是辅助信息，失败时记录告警但不阻断注册。
       if (body.ipv4 || subdomainPrefix) {
-        await repository.updateNodeMode(result.nodeId, {
-          accessMode: 'direct',
-          ipv4: body.ipv4,
-          subdomain: subdomainPrefix,
-        });
+        try {
+          await repository.updateNodeMode(result.nodeId, {
+            accessMode: 'direct',
+            ipv4: body.ipv4,
+            subdomain: subdomainPrefix,
+          });
+        } catch (error) {
+          logger.warn(`Registered SP node ${result.nodeId} but failed to persist connectivity metadata: ${error}`);
+        }
       }
 
       // 生成自包含 provisionCode（编码了 SP 信息，CSS 解码后直接回调 SP）

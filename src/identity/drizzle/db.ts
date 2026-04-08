@@ -339,9 +339,29 @@ function migrateSqliteColumns(sqlite: SqliteDdlExecutor): void {
     }
   };
 
-  addColumn('identity_edge_node', 'public_url', 'TEXT');
-  addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
-  addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
+  const edgeNodeColumns: Array<[string, string]> = [
+    [ 'node_type', `TEXT DEFAULT 'edge'` ],
+    [ 'subdomain', 'TEXT' ],
+    [ 'access_mode', 'TEXT' ],
+    [ 'ipv4', 'TEXT' ],
+    [ 'public_port', 'INTEGER' ],
+    [ 'public_url', 'TEXT' ],
+    [ 'service_token_hash', 'TEXT' ],
+    [ 'provision_code_hash', 'TEXT' ],
+    [ 'internal_ip', 'TEXT' ],
+    [ 'internal_port', 'INTEGER' ],
+    [ 'hostname', 'TEXT' ],
+    [ 'ipv6', 'TEXT' ],
+    [ 'version', 'TEXT' ],
+    [ 'capabilities', 'TEXT' ],
+    [ 'metadata', 'TEXT' ],
+    [ 'connectivity_status', `TEXT DEFAULT 'unknown'` ],
+    [ 'last_connectivity_check', 'INTEGER' ],
+    [ 'last_seen', 'INTEGER' ],
+  ];
+  for (const [column, type] of edgeNodeColumns) {
+    addColumn('identity_edge_node', column, type);
+  }
 
   // Usage tables: compute/token columns
   addColumn('identity_account_usage', 'compute_seconds', 'INTEGER NOT NULL DEFAULT 0');
@@ -441,13 +461,16 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
       node_type TEXT DEFAULT 'edge',
       subdomain TEXT UNIQUE,
       access_mode TEXT,
-      public_ip TEXT,
+      ipv4 TEXT,
       public_port BIGINT,
       public_url TEXT,
       service_token_hash TEXT,
       provision_code_hash TEXT,
       internal_ip TEXT,
       internal_port BIGINT,
+      hostname TEXT,
+      ipv6 TEXT,
+      version TEXT,
       capabilities JSONB,
       metadata JSONB,
       connectivity_status TEXT DEFAULT 'unknown',
@@ -480,7 +503,44 @@ async function migratePostgresColumns(pool: Pool): Promise<void> {
     await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
   };
 
-  await addColumn('identity_edge_node', 'public_url', 'TEXT');
-  await addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
-  await addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'identity_edge_node' AND column_name = 'public_ip'
+      ) AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'identity_edge_node' AND column_name = 'ipv4'
+      ) THEN
+        ALTER TABLE identity_edge_node RENAME COLUMN public_ip TO ipv4;
+      END IF;
+    END $$;
+  `);
+
+  const edgeNodeColumns: Array<[string, string]> = [
+    [ 'node_type', `TEXT DEFAULT 'edge'` ],
+    [ 'subdomain', 'TEXT' ],
+    [ 'access_mode', 'TEXT' ],
+    [ 'ipv4', 'TEXT' ],
+    [ 'public_port', 'BIGINT' ],
+    [ 'public_url', 'TEXT' ],
+    [ 'service_token_hash', 'TEXT' ],
+    [ 'provision_code_hash', 'TEXT' ],
+    [ 'internal_ip', 'TEXT' ],
+    [ 'internal_port', 'BIGINT' ],
+    [ 'hostname', 'TEXT' ],
+    [ 'ipv6', 'TEXT' ],
+    [ 'version', 'TEXT' ],
+    [ 'capabilities', 'JSONB' ],
+    [ 'metadata', 'JSONB' ],
+    [ 'connectivity_status', `TEXT DEFAULT 'unknown'` ],
+    [ 'last_connectivity_check', 'TIMESTAMPTZ' ],
+    [ 'last_seen', 'TIMESTAMPTZ' ],
+  ];
+  for (const [column, type] of edgeNodeColumns) {
+    await addColumn('identity_edge_node', column, type);
+  }
 }

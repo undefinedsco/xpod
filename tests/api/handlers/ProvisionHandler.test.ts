@@ -212,6 +212,40 @@ describe('ProvisionHandler', () => {
 
       expect(response.statusCode).toBe(500);
     });
+
+    it('should still return 201 when connectivity metadata update fails', async () => {
+      routes = {};
+      mockServer = {
+        post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+        get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+        delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
+      } as unknown as ApiServer;
+
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        baseUrl,
+        baseStorageDomain: 'undefineds.site',
+      });
+
+      mockRepo.registerSpNode.mockResolvedValue({
+        nodeId: 'node-1',
+        nodeToken: 'nt-xxx',
+        serviceToken: 'st-xxx',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
+      mockRepo.updateNodeMode.mockRejectedValue(new Error('column ipv4 does not exist'));
+
+      const request = createMockRequest({ publicUrl: 'https://sp.example.com' });
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body.nodeId).toBe('node-1');
+      expect(body.provisionCode).toBeDefined();
+      expect(body.spDomain).toBe('node-1.undefineds.site');
+    });
   });
 });
 
