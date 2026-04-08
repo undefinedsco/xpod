@@ -35,8 +35,7 @@ export class ProvisionPodCreator extends BasePodCreator {
     const provisionCode = input.settings?.provisionCode as string | undefined;
 
     if (!provisionCode) {
-      // 标准模式：委托给 BasePodCreator
-      return super.handle(input);
+      return this.handleStandardPodCreate(input);
     }
 
     // SP 模式：解码 provisionCode，回调远端 SP
@@ -99,6 +98,37 @@ export class ProvisionPodCreator extends BasePodCreator {
 
     return {
       podUrl,
+      webId,
+      podId,
+      webIdLink,
+    };
+  }
+
+  private async handleStandardPodCreate(input: PodCreatorInput): Promise<PodCreatorOutput> {
+    const totalStarted = Date.now();
+    const baseIdentifier = this.generateBaseIdentifier(input.name);
+    const webId = input.webId ?? `${baseIdentifier.path}${this.relativeWebIdPath}`;
+    const podSettings = {
+      ...input.settings,
+      base: baseIdentifier,
+      webId,
+    };
+
+    const webIdStarted = Date.now();
+    const webIdLink = await this.handleWebId(!input.webId, webId, input.accountId, podSettings);
+    const webIdElapsed = Date.now() - webIdStarted;
+
+    const podStarted = Date.now();
+    const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink);
+    const podElapsed = Date.now() - podStarted;
+    const totalElapsed = Date.now() - totalStarted;
+
+    this.provisionLogger.info(
+      `[timing] ProvisionPodCreator.standard account=${input.accountId} pod=${baseIdentifier.path} handleWebId=${webIdElapsed}ms createPod=${podElapsed}ms total=${totalElapsed}ms`,
+    );
+
+    return {
+      podUrl: baseIdentifier.path,
       webId,
       podId,
       webIdLink,
