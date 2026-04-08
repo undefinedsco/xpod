@@ -42,7 +42,7 @@ const dbInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
 
-type SqliteDdlExecutor = Pick<SqliteDatabase, 'exec'>;
+type SqliteDdlExecutor = Pick<SqliteDatabase, 'exec' | 'prepare'>;
 
 for (const oid of JSON_OIDS) {
   // Explicitly return raw string to avoid "Type Conflict" with CSS
@@ -272,7 +272,6 @@ function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
     CREATE TABLE IF NOT EXISTS identity_edge_node (
       id TEXT PRIMARY KEY,
       display_name TEXT,
-      owner_account_id TEXT,
       token_hash TEXT NOT NULL,
       account_id TEXT,
       node_type TEXT DEFAULT 'edge',
@@ -339,6 +338,13 @@ function migrateSqliteColumns(sqlite: SqliteDdlExecutor): void {
     }
   };
 
+  if (sqliteColumnExists(sqlite, 'identity_edge_node', 'owner_account_id')) {
+    try {
+      sqlite.exec('ALTER TABLE identity_edge_node DROP COLUMN owner_account_id');
+    } catch {
+      // Older SQLite runtimes may not support DROP COLUMN. Ignore and keep runtime-compatible schema.
+    }
+  }
   const edgeNodeColumns: Array<[string, string]> = [
     [ 'node_type', `TEXT DEFAULT 'edge'` ],
     [ 'subdomain', 'TEXT' ],
@@ -374,6 +380,11 @@ function migrateSqliteColumns(sqlite: SqliteDdlExecutor): void {
   addColumn('identity_pod_usage', 'compute_limit_seconds', 'INTEGER');
   addColumn('identity_pod_usage', 'token_limit_monthly', 'INTEGER');
   addColumn('identity_pod_usage', 'period_start', 'INTEGER');
+}
+
+function sqliteColumnExists(sqlite: SqliteDdlExecutor, table: string, column: string): boolean {
+  const rows = sqlite.prepare<{ name: string }>(`PRAGMA table_info(${table})`).all();
+  return rows.some((row) => row.name === column);
 }
 
 /**
@@ -455,7 +466,6 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS identity_edge_node (
       id TEXT PRIMARY KEY,
       display_name TEXT,
-      owner_account_id TEXT,
       token_hash TEXT NOT NULL,
       account_id TEXT,
       node_type TEXT DEFAULT 'edge',
@@ -503,6 +513,7 @@ async function migratePostgresColumns(pool: Pool): Promise<void> {
     await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
   };
 
+  await pool.query('ALTER TABLE identity_edge_node DROP COLUMN IF EXISTS owner_account_id');
   await pool.query(`
     DO $$
     BEGIN

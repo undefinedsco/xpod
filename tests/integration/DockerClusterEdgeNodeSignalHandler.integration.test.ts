@@ -9,6 +9,7 @@ const STANDALONE_BASE = (process.env.CSS_BASE_URL || `http://localhost:${process
 suite('EdgeNodeSignalHandler Integration', () => {
   let authFetch: typeof fetch;
   let createdNodeId: string;
+  let createdNodeToken: string;
 
   const baseUrl = `${STANDALONE_BASE}/`;
 
@@ -22,27 +23,34 @@ suite('EdgeNodeSignalHandler Integration', () => {
     authFetch = session.fetch.bind(session) as typeof fetch;
   }, 30_000);
 
-  it('should create a new node to signal against', async () => {
-    const response = await authFetch(`${baseUrl}v1/nodes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ displayName: 'Integration Test Node' }),
-    });
-
-    expect(response.status).toBe(201);
-    const data = await response.json() as { success: boolean; nodeId: string };
-    expect(data.success).toBe(true);
-    expect(data.nodeId).toBeDefined();
-
-    createdNodeId = data.nodeId;
-  });
-
-  it('should accept signal from registered node and update metadata', async () => {
-    const response = await authFetch(`${baseUrl}v1/signal`, {
+  it('should register a node to signal against', async () => {
+    const response = await fetch(`${baseUrl}provision/nodes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        nodeId: createdNodeId,
+        publicUrl: 'https://integration-signal.invalid',
+        nodeId: `integration-signal-${Date.now()}`,
+        displayName: 'Integration Test Node',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    const data = await response.json() as { nodeId: string; nodeToken: string };
+    expect(data.nodeId).toBeDefined();
+    expect(data.nodeToken).toBeDefined();
+
+    createdNodeId = data.nodeId;
+    createdNodeToken = data.nodeToken;
+  });
+
+  it('should accept signal from nodeToken-authenticated node and update metadata', async () => {
+    const response = await fetch(`${baseUrl}v1/signal`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `XpodNode ${createdNodeId}:${createdNodeToken}`,
+      },
+      body: JSON.stringify({
         version: '1.0.0',
         status: 'online',
         pods: ['https://pod1.example.com/', 'https://pod2.example.com/'],
@@ -67,33 +75,14 @@ suite('EdgeNodeSignalHandler Integration', () => {
     expect(data.metadata?.version).toBe('1.0.0');
   });
 
-  it('should verify node status via GET /v1/nodes/:id', async () => {
-    const response = await authFetch(`${baseUrl}v1/nodes/${createdNodeId}`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-
-    expect(response.status).toBe(200);
-    const data = await response.json() as {
-      nodeId: string;
-      metadata?: { status?: string };
-      lastSeen?: string;
-    };
-
-    expect(data.nodeId).toBe(createdNodeId);
-    if (data.metadata?.status) expect(data.metadata.status).toBe('online');
-    expect(data.lastSeen).toBeDefined();
-  });
-
-  it('should return 403/404 when signaling a non-owned or missing node', async () => {
-    const randomId = '00000000-0000-0000-0000-000000000000';
+  it('should return 501 for WebID-based signaling while node management is downlined', async () => {
     const response = await authFetch(`${baseUrl}v1/signal`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nodeId: randomId, status: 'online' }),
+      body: JSON.stringify({ nodeId: createdNodeId, status: 'online' }),
     });
 
-    expect([403, 404]).toContain(response.status);
+    expect(response.status).toBe(501);
   });
 
   it('should return 400 for invalid request body', async () => {
