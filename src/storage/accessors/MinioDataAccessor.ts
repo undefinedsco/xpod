@@ -98,8 +98,10 @@ export class MinioDataAccessor implements DataAccessor {
    * @param identifier - Identifier for which the data is requested.
    */
   public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
+    const started = Date.now();
     const url = new URL(identifier.path)
     const stream = await this.client.getObject(this.bucketName, url.pathname);
+    this.logDuration('getData', identifier.path, started);
     return guardStream(stream);
   }
 
@@ -122,6 +124,7 @@ export class MinioDataAccessor implements DataAccessor {
    * @param identifier - Identifier for which the metadata is requested.
    */
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
+    const started = Date.now();
     const url = new URL(identifier.path)
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     const isDirectory = identifier.path.endsWith('/');
@@ -133,10 +136,14 @@ export class MinioDataAccessor implements DataAccessor {
       throw new NotFoundHttpError();
     }
     if (!isContainerIdentifier(identifier) && !isDirectory) {
-      return this.getFileMetadata(link, stats);
+      const metadata = await this.getFileMetadata(link, stats);
+      this.logDuration('getMetadata', identifier.path, started);
+      return metadata;
     }
     if (isContainerIdentifier(identifier) && isDirectory) {
-      return this.getDirectoryMetadata(link, stats);
+      const metadata = await this.getDirectoryMetadata(link, stats);
+      this.logDuration('getMetadata', identifier.path, started);
+      return metadata;
     }
     throw new NotFoundHttpError();
   }
@@ -171,6 +178,7 @@ export class MinioDataAccessor implements DataAccessor {
    * @param metadata - Metadata to store.
    */
   public async writeDocument(identifier: ResourceIdentifier, data: Guarded<Readable>, metadata: RepresentationMetadata): Promise<void> {
+    const started = Date.now();
     const url = new URL(identifier.path);
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     const itemMetadata = this.encodeMetadata(link, metadata);
@@ -182,6 +190,7 @@ export class MinioDataAccessor implements DataAccessor {
         metadata.contentLength,
         itemMetadata || undefined,
       );
+      this.logDuration('writeDocument', identifier.path, started);
     } catch (error) {
       this.logger.error(`Error writing document: ${identifier.path} ${error}`)
       throw error;
@@ -197,6 +206,7 @@ export class MinioDataAccessor implements DataAccessor {
    * @param metadata - Metadata to store.
    */
   public async writeContainer(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
+    const started = Date.now();
     const url = new URL(identifier.path)
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     await this.client.putObject(
@@ -206,6 +216,7 @@ export class MinioDataAccessor implements DataAccessor {
       metadata.contentLength,
       this.encodeMetadata(link, metadata) || undefined,
     );
+    this.logDuration('writeContainer', identifier.path, started);
   }
 
   /**
@@ -329,5 +340,26 @@ export class MinioDataAccessor implements DataAccessor {
 
   protected decodeMetadata(link: ResourceLink, metadata: MetadataRecord): RepresentationMetadata {
     return new RepresentationMetadata(link.identifier, metadata);
+  }
+
+  private logDuration(
+    operation: string,
+    identifierPath: string,
+    started: number,
+    slowThresholdMs = 100,
+    warnThresholdMs = 1000,
+  ): void {
+    const elapsedMs = Date.now() - started;
+    if (elapsedMs < slowThresholdMs) {
+      return;
+    }
+
+    const message = `[timing] MinioDataAccessor.${operation} path=${identifierPath} took=${elapsedMs}ms`;
+    if (elapsedMs >= warnThresholdMs) {
+      this.logger.warn(message);
+      return;
+    }
+
+    this.logger.info(message);
   }
 }
