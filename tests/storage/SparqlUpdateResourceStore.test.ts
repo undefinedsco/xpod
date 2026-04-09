@@ -1,12 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { DataFactory } from 'n3';
 import { Readable } from 'stream';
 import {
-  BasicRepresentation,
   RepresentationMetadata,
   guardedStreamFrom,
 } from '@solid/community-server';
 import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore';
-import { podBootstrapContext } from '../../src/storage/PodBootstrapContext';
+
+const { namedNode, literal } = DataFactory;
 
 // Mock accessor with SPARQL capability
 const createMockAccessor = () => ({
@@ -15,7 +16,6 @@ const createMockAccessor = () => ({
   getData: vi.fn(),
   writeDocument: vi.fn(),
   writeContainer: vi.fn(),
-  writeMetadata: vi.fn().mockResolvedValue(undefined),
   deleteResource: vi.fn(),
   canHandle: vi.fn().mockResolvedValue(undefined),
 });
@@ -184,62 +184,6 @@ describe('SparqlUpdateResourceStore', () => {
       // IRIs should have angle brackets
       expect(executedQuery).toContain('<http://example.org/bob>');
       expect(executedQuery).toContain('<http://example.org/charlie>');
-    });
-  });
-
-  describe('pod bootstrap fast path', () => {
-    it('skips target metadata lookup and parent modified-date rewrite inside pod bootstrap', async () => {
-      accessor.getMetadata.mockImplementation(async(identifier: { path?: string } | undefined) => {
-        switch (identifier?.path) {
-          case 'http://localhost:3000/alice/':
-            return new RepresentationMetadata({ path: 'http://localhost:3000/alice/' });
-          default:
-            throw new Error(`unexpected metadata lookup: ${identifier?.path}`);
-        }
-      });
-
-      mockIdentifierStrategy.isRootContainer.mockImplementation(({ path }: { path: string }) => path === 'http://localhost:3000/');
-
-      const identifier = { path: 'http://localhost:3000/alice/card' };
-      const representation = new BasicRepresentation('profile', 'text/turtle');
-
-      await podBootstrapContext.run({
-        basePath: 'http://localhost:3000/alice/',
-        createdContainers: new Set([ 'http://localhost:3000/alice/' ]),
-        createdResources: new Set([ 'http://localhost:3000/alice/' ]),
-      }, async() => {
-        await store.setRepresentation(identifier, representation);
-      });
-
-      expect(accessor.writeDocument).toHaveBeenCalledTimes(1);
-      expect(accessor.writeContainer).not.toHaveBeenCalled();
-      expect(accessor.getMetadata).not.toHaveBeenCalledWith(identifier);
-      expect(accessor.getMetadata).not.toHaveBeenCalledWith({ path: 'http://localhost:3000/alice/' });
-    });
-
-    it('writes auxiliary resources directly to subject metadata during pod bootstrap', async () => {
-      mockAuxiliaryStrategy.isAuxiliaryIdentifier.mockImplementation(({ path }: { path: string }) => path.endsWith('.acr'));
-      mockAuxiliaryStrategy.getSubjectIdentifier.mockImplementation(({ path }: { path: string }) => ({
-        path: path.replace(/\.acr$/, ''),
-      }));
-
-      const identifier = { path: 'http://localhost:3000/alice/README.acr' };
-      const representation = new BasicRepresentation([], { contentType: 'internal/quads' });
-
-      await podBootstrapContext.run({
-        basePath: 'http://localhost:3000/alice/',
-        createdContainers: new Set([ 'http://localhost:3000/alice/' ]),
-        createdResources: new Set([ 'http://localhost:3000/alice/', 'http://localhost:3000/alice/README' ]),
-      }, async() => {
-        await store.setRepresentation(identifier, representation);
-      });
-
-      expect(accessor.writeMetadata).toHaveBeenCalledTimes(1);
-      expect(accessor.writeMetadata).toHaveBeenCalledWith(
-        { path: 'http://localhost:3000/alice/README' },
-        expect.any(RepresentationMetadata),
-      );
-      expect(accessor.getMetadata).not.toHaveBeenCalledWith(identifier);
     });
   });
 });

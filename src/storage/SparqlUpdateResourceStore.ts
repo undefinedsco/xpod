@@ -16,13 +16,10 @@ import {
   type IdentifierStrategy,
   type AuxiliaryStrategy,
   type Representation,
-  isContainerIdentifier,
 } from '@solid/community-server';
 import type { SparqlUpdatePatch } from '@solid/community-server';
-import { readableToString, arrayifyStream } from '@solid/community-server/dist/util/StreamUtil';
-import { updateModifiedDate } from '@solid/community-server/dist/util/ResourceUtil';
+import { readableToString } from '@solid/community-server/dist/util/StreamUtil';
 import { getLoggerFor } from 'global-logger-factory';
-import { getPodBootstrapState, isPodBootstrapPath } from './PodBootstrapContext';
 
 export interface SparqlUpdateResourceStoreOptions {
   accessor: DataAccessor;
@@ -341,104 +338,6 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
   }
 
   public override async setRepresentation(identifier: ResourceIdentifier, representation: Representation, conditions?: Conditions): Promise<ChangeMap> {
-    if (this.shouldUseBootstrapAuxiliaryFastPath(identifier, conditions)) {
-      const changes = await this.writeBootstrapAuxiliaryResource(identifier, representation);
-      this.trackBootstrapResource(identifier, false);
-      return changes;
-    }
-
-    if (this.shouldUseBootstrapWriteFastPath(identifier, conditions)) {
-      const accessor = (this as unknown as { accessor: DataAccessor }).accessor;
-      const isContainer = isContainerIdentifier(identifier);
-      if (!isContainer) {
-        await accessor.canHandle(representation);
-      }
-      const changes = await this.writeData(
-        identifier,
-        representation,
-        isContainer,
-        this.shouldCreateBootstrapAncestors(identifier),
-        false,
-      );
-      this.trackBootstrapResource(identifier, isContainer);
-      return changes;
-    }
-
     return super.setRepresentation(identifier, representation, conditions);
-  }
-
-  protected override async updateContainerModifiedDate(container: ResourceIdentifier): Promise<void> {
-    if (isPodBootstrapPath(container.path)) {
-      this.logger.debug(`[bootstrap] skip container modified date update for ${container.path}`);
-      return;
-    }
-
-    await super.updateContainerModifiedDate(container);
-  }
-
-  private async writeBootstrapAuxiliaryResource(identifier: ResourceIdentifier, representation: Representation): Promise<ChangeMap> {
-    const metadataStrategy = (this as unknown as { metadataStrategy: AuxiliaryStrategy }).metadataStrategy;
-    const accessor = (this as unknown as { accessor: DataAccessor }).accessor;
-    const subjectIdentifier = metadataStrategy.getSubjectIdentifier(identifier);
-    const metadata = new RepresentationMetadata(subjectIdentifier);
-    metadata.addQuads(await arrayifyStream(representation.data));
-    updateModifiedDate(metadata);
-    this.removeResponseMetadata(metadata);
-    await accessor.writeMetadata(subjectIdentifier, metadata);
-
-    const changes = new Map() as ChangeMap;
-    changes.set(subjectIdentifier, new RepresentationMetadata(subjectIdentifier, {
-      [SOLID_AS.activity]: AS.terms.Update,
-    }));
-    return changes;
-  }
-
-  private shouldUseBootstrapWriteFastPath(identifier: ResourceIdentifier, conditions?: Conditions): boolean {
-    if (conditions || !isPodBootstrapPath(identifier.path)) {
-      return false;
-    }
-
-    this.validateIdentifier(identifier);
-    const metadataStrategy = (this as unknown as { metadataStrategy: AuxiliaryStrategy }).metadataStrategy;
-    return !metadataStrategy.isAuxiliaryIdentifier(identifier);
-  }
-
-  private shouldUseBootstrapAuxiliaryFastPath(identifier: ResourceIdentifier, conditions?: Conditions): boolean {
-    if (conditions || !isPodBootstrapPath(identifier.path)) {
-      return false;
-    }
-
-    this.validateIdentifier(identifier);
-    const metadataStrategy = (this as unknown as { metadataStrategy: AuxiliaryStrategy }).metadataStrategy;
-    if (!metadataStrategy.isAuxiliaryIdentifier(identifier)) {
-      return false;
-    }
-
-    const subject = metadataStrategy.getSubjectIdentifier(identifier);
-    const state = getPodBootstrapState();
-    return Boolean(state?.createdResources.has(subject.path));
-  }
-
-  private shouldCreateBootstrapAncestors(identifier: ResourceIdentifier): boolean {
-    const state = getPodBootstrapState();
-    const identifierStrategy = (this as unknown as { identifierStrategy: IdentifierStrategy }).identifierStrategy;
-    if (!state || identifierStrategy.isRootContainer(identifier)) {
-      return true;
-    }
-
-    const parent = identifierStrategy.getParentContainer(identifier);
-    return !state.createdContainers.has(parent.path);
-  }
-
-  private trackBootstrapResource(identifier: ResourceIdentifier, isContainer: boolean): void {
-    const state = getPodBootstrapState();
-    if (!state) {
-      return;
-    }
-
-    state.createdResources.add(identifier.path);
-    if (isContainer) {
-      state.createdContainers.add(identifier.path);
-    }
   }
 }
