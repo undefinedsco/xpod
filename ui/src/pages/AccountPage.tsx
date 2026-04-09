@@ -139,6 +139,9 @@ export function AccountPage() {
         // Refresh controls to get updated endpoints (including new WebID)
         await refetchControls();
         await fetchData();
+        if (hasOidcPending) {
+          navigate('/.account/oidc/consent/');
+        }
       } else {
         const json = await res.json().catch(() => ({}));
         alert(json.message || 'Failed to create pod');

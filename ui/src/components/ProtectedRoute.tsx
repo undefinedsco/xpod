@@ -4,14 +4,23 @@ import { persistReturnTo } from '../utils/returnTo';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
+  allowOidcPending?: boolean;
 }
 
-export function ProtectedRoute({ children }: ProtectedRouteProps) {
+export function shouldRedirectToConsent(
+  isLoggedIn: boolean,
+  hasOidcPending: boolean,
+  allowOidcPending: boolean = false,
+): boolean {
+  return isLoggedIn && hasOidcPending && !allowOidcPending;
+}
+
+export function ProtectedRoute({ children, allowOidcPending = false }: ProtectedRouteProps) {
   const { isLoggedIn, hasOidcPending } = useAuth();
   const location = useLocation();
   
   // If logged in and there's an OIDC flow waiting, redirect to consent
-  if (isLoggedIn && hasOidcPending) {
+  if (shouldRedirectToConsent(isLoggedIn, hasOidcPending, allowOidcPending)) {
     return <Navigate to="/.account/oidc/consent/" replace />;
   }
   
