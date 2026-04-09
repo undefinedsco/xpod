@@ -15,6 +15,7 @@ const createMockAccessor = () => ({
   getData: vi.fn(),
   writeDocument: vi.fn(),
   writeContainer: vi.fn(),
+  writeMetadata: vi.fn().mockResolvedValue(undefined),
   deleteResource: vi.fn(),
   canHandle: vi.fn().mockResolvedValue(undefined),
 });
@@ -202,14 +203,43 @@ describe('SparqlUpdateResourceStore', () => {
       const identifier = { path: 'http://localhost:3000/alice/card' };
       const representation = new BasicRepresentation('profile', 'text/turtle');
 
-      await podBootstrapContext.run({ basePath: 'http://localhost:3000/alice/' }, async() => {
+      await podBootstrapContext.run({
+        basePath: 'http://localhost:3000/alice/',
+        createdContainers: new Set([ 'http://localhost:3000/alice/' ]),
+        createdResources: new Set([ 'http://localhost:3000/alice/' ]),
+      }, async() => {
         await store.setRepresentation(identifier, representation);
       });
 
       expect(accessor.writeDocument).toHaveBeenCalledTimes(1);
       expect(accessor.writeContainer).not.toHaveBeenCalled();
       expect(accessor.getMetadata).not.toHaveBeenCalledWith(identifier);
-      expect(accessor.getMetadata).toHaveBeenCalledWith({ path: 'http://localhost:3000/alice/' });
+      expect(accessor.getMetadata).not.toHaveBeenCalledWith({ path: 'http://localhost:3000/alice/' });
+    });
+
+    it('writes auxiliary resources directly to subject metadata during pod bootstrap', async () => {
+      mockAuxiliaryStrategy.isAuxiliaryIdentifier.mockImplementation(({ path }: { path: string }) => path.endsWith('.acr'));
+      mockAuxiliaryStrategy.getSubjectIdentifier.mockImplementation(({ path }: { path: string }) => ({
+        path: path.replace(/\.acr$/, ''),
+      }));
+
+      const identifier = { path: 'http://localhost:3000/alice/README.acr' };
+      const representation = new BasicRepresentation([], { contentType: 'internal/quads' });
+
+      await podBootstrapContext.run({
+        basePath: 'http://localhost:3000/alice/',
+        createdContainers: new Set([ 'http://localhost:3000/alice/' ]),
+        createdResources: new Set([ 'http://localhost:3000/alice/', 'http://localhost:3000/alice/README' ]),
+      }, async() => {
+        await store.setRepresentation(identifier, representation);
+      });
+
+      expect(accessor.writeMetadata).toHaveBeenCalledTimes(1);
+      expect(accessor.writeMetadata).toHaveBeenCalledWith(
+        { path: 'http://localhost:3000/alice/README' },
+        expect.any(RepresentationMetadata),
+      );
+      expect(accessor.getMetadata).not.toHaveBeenCalledWith(identifier);
     });
   });
 });
