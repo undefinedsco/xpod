@@ -16,10 +16,12 @@ import {
   type IdentifierStrategy,
   type AuxiliaryStrategy,
   type Representation,
+  isContainerIdentifier,
 } from '@solid/community-server';
 import type { SparqlUpdatePatch } from '@solid/community-server';
 import { readableToString } from '@solid/community-server/dist/util/StreamUtil';
 import { getLoggerFor } from 'global-logger-factory';
+import { isPodBootstrapPath } from './PodBootstrapContext';
 
 export interface SparqlUpdateResourceStoreOptions {
   accessor: DataAccessor;
@@ -338,6 +340,34 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
   }
 
   public override async setRepresentation(identifier: ResourceIdentifier, representation: Representation, conditions?: Conditions): Promise<ChangeMap> {
+    if (this.shouldUseBootstrapWriteFastPath(identifier, conditions)) {
+      const accessor = (this as unknown as { accessor: DataAccessor }).accessor;
+      const isContainer = isContainerIdentifier(identifier);
+      if (!isContainer) {
+        await accessor.canHandle(representation);
+      }
+      return this.writeData(identifier, representation, isContainer, true, false);
+    }
+
     return super.setRepresentation(identifier, representation, conditions);
+  }
+
+  protected override async updateContainerModifiedDate(container: ResourceIdentifier): Promise<void> {
+    if (isPodBootstrapPath(container.path)) {
+      this.logger.debug(`[bootstrap] skip container modified date update for ${container.path}`);
+      return;
+    }
+
+    await super.updateContainerModifiedDate(container);
+  }
+
+  private shouldUseBootstrapWriteFastPath(identifier: ResourceIdentifier, conditions?: Conditions): boolean {
+    if (conditions || !isPodBootstrapPath(identifier.path)) {
+      return false;
+    }
+
+    this.validateIdentifier(identifier);
+    const metadataStrategy = (this as unknown as { metadataStrategy: AuxiliaryStrategy }).metadataStrategy;
+    return !metadataStrategy.isAuxiliaryIdentifier(identifier);
   }
 }
