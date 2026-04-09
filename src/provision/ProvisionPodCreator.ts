@@ -144,7 +144,11 @@ export class ProvisionPodCreator extends BasePodCreator {
     webIdLink: unknown,
   ): Promise<string> {
     const basePath = (podSettings.base as { path: string }).path;
-    return podBootstrapContext.run({ basePath }, () =>
+    return podBootstrapContext.run({
+      basePath,
+      createdContainers: new Set<string>(),
+      createdResources: new Set<string>(),
+    }, () =>
       this.createPod(accountId, podSettings, overwrite, webIdLink as any));
   }
 }

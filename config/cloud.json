@@ -514,6 +514,20 @@
       }
     },
     {
+      "comment": "Cloud pod bootstrap uses repo-local templates without README resources",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PodResourcesGenerator"
+      },
+      "overrideParameters": {
+        "@type": "StaticFolderGenerator",
+        "templateFolder": "./templates/pod",
+        "resourcesGenerator": {
+          "@id": "urn:solid-server:default:TemplatedResourcesGenerator"
+        }
+      }
+    },
+    {
       "comment": "Override PodCreator with ProvisionPodCreator to support remote SP pod creation via provisionCode",
       "@type": "Override",
       "overrideInstance": {
