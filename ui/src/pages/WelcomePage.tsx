@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check } from 'lucide-react';
+import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check, User } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '../context/AuthContext';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
+import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
+import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
 
 interface WelcomePageProps {
   initialIsRegister?: boolean;
@@ -14,11 +16,13 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(initialIsRegister);
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isCancelling, setIsCancelling] = useState(false);
 
   const passwordsMatch = password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
+  const usernameError = isRegister ? getRegistrationUsernameError(username) : undefined;
 
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
@@ -46,8 +50,15 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     try {
       if (isRegister) {
         const confirm = form.get('confirmPassword') as string;
+        const normalizedUsername = normalizeRegistrationUsername(form.get('username') as string);
+        const normalizedUsernameError = getRegistrationUsernameError(normalizedUsername);
         if (password !== confirm) {
           alert('Passwords do not match');
+          setIsLoading(false);
+          return;
+        }
+        if (normalizedUsernameError) {
+          alert(normalizedUsernameError);
           setIsLoading(false);
           return;
         }
@@ -85,7 +96,36 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Auto-login failed');
 
-        // Registration complete, redirect to account page to create Pod
+        // Step 5: Create initial Pod using the requested username
+        res = await fetch(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' });
+        const accountData = await res.json().catch(() => ({}));
+        const createPodUrl = accountData.controls?.account?.pod;
+        if (!createPodUrl) throw new Error('Pod creation endpoint not found');
+
+        res = await fetch(createPodUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(buildPodCreatePayload(normalizedUsername)),
+        });
+        if (!res.ok) {
+          const podError = await res.json().catch(() => ({}));
+          throw new Error(podError.message || 'Failed to create pod');
+        }
+        clearStoredProvisionCode();
+
+        // Registration complete
+        const consentCheck = await fetch('/.account/oidc/consent/', {
+          headers: { Accept: 'application/json' },
+          credentials: 'include',
+        });
+        if (consentCheck.ok) {
+          const consentData = await consentCheck.json().catch(() => ({}));
+          if (consentData.client) {
+            window.location.href = '/.account/oidc/consent/';
+            return;
+          }
+        }
         window.location.href = '/.account/account/';
       } else {
         const res = await fetch(controls?.password?.login || '/.account/login/password/', {
@@ -159,6 +199,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
   const toggleMode = () => {
     setIsRegister(!isRegister);
+    setUsername('');
     setPassword('');
     setConfirmPassword('');
   };
@@ -257,6 +298,29 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
             <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-3">
+                {isRegister && (
+                  <div className="relative">
+                    <User className={clsx(
+                      'absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4',
+                      usernameError && username.length > 0 ? 'text-amber-500' : 'text-zinc-400',
+                    )} />
+                    <input
+                      name="username"
+                      type="text"
+                      required
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value.toLowerCase())}
+                      className={clsx(
+                        'block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors',
+                        usernameError && username.length > 0 ? 'border-amber-300 focus:border-amber-500' : 'border-zinc-200 focus:border-[#7C4DFF]',
+                      )}
+                      placeholder="Username"
+                    />
+                  </div>
+                )}
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
                   <input
@@ -301,6 +365,16 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                   </div>
                 )}
               </div>
+              {isRegister && (
+                <p className={clsx(
+                  'text-[11px] leading-relaxed',
+                  usernameError && username.length > 0 ? 'text-amber-600' : 'text-zinc-500',
+                )}>
+                  {usernameError && username.length > 0
+                    ? usernameError
+                    : 'Username becomes your first Pod URL. Use 3-63 lowercase letters, numbers, or hyphens.'}
+                </p>
+              )}
 
               {!isRegister && (
                 <div className="flex justify-end">
@@ -312,7 +386,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
               <button
                 type="submit"
-                disabled={isLoading || isCancelling}
+                disabled={isLoading || isCancelling || Boolean(isRegister && usernameError)}
                 className="w-full py-3 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
               >
                 {isLoading ? (

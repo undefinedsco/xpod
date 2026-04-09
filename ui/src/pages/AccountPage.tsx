@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
 
 /**
  * Generate API Key from client credentials.
@@ -123,17 +124,11 @@ export function AccountPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({
-          name: podName.trim(),
-          ...(() => {
-            const pc = sessionStorage.getItem('provisionCode');
-            return pc ? { settings: { provisionCode: pc } } : {};
-          })(),
-        }),
+        body: JSON.stringify(buildPodCreatePayload(podName)),
       });
       if (res.ok) {
         // Pod 创建成功后清除 provisionCode
-        sessionStorage.removeItem('provisionCode');
+        clearStoredProvisionCode();
         setPodName('');
         setShowCreatePod(false);
         // Refresh controls to get updated endpoints (including new WebID)
