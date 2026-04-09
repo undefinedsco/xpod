@@ -5,8 +5,10 @@ import {
   INTERNAL_QUADS,
   FoundHttpError,
   guardStream,
+  NotFoundHttpError,
 } from '@solid/community-server';
 import { MixDataAccessor } from '../../../src/storage/accessors/MixDataAccessor';
+import { metadataRequestContext } from '../../../src/storage/MetadataRequestContext';
 
 type ResourceIdentifier = { path: string };
 
@@ -81,5 +83,66 @@ describe('MixDataAccessor presigned redirect', () => {
     expect(stream).toBe(rdfStream);
     expect(structured.getData).toHaveBeenCalledWith(rdfId);
     expect(unstructured.getData).not.toHaveBeenCalled();
+  });
+
+  it('should cache metadata lookups within one request context', async () => {
+    const meta = new RepresentationMetadata(binaryId);
+    meta.contentType = 'image/png';
+
+    const structured = mockAccessor({
+      getMetadata: vi.fn().mockResolvedValue(meta),
+    });
+    const unstructured = mockAccessor();
+    const mix = new MixDataAccessor(structured, unstructured, false);
+
+    await metadataRequestContext.run({ metadataCache: new Map() }, async() => {
+      const first = await mix.getMetadata(binaryId);
+      const second = await mix.getMetadata(binaryId);
+
+      expect(first).not.toBe(second);
+      expect(first.contentType).toBe('image/png');
+      expect(second.contentType).toBe('image/png');
+    });
+
+    expect(structured.getMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('should cache not found metadata lookups within one request context', async () => {
+    const structured = mockAccessor({
+      getMetadata: vi.fn().mockRejectedValue(new NotFoundHttpError()),
+    });
+    const unstructured = mockAccessor();
+    const mix = new MixDataAccessor(structured, unstructured, false);
+
+    await metadataRequestContext.run({ metadataCache: new Map() }, async() => {
+      await expect(mix.getMetadata(binaryId)).rejects.toThrow(NotFoundHttpError);
+      await expect(mix.getMetadata(binaryId)).rejects.toThrow(NotFoundHttpError);
+    });
+
+    expect(structured.getMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it('should not write container markers to unstructured storage in mixed mode', async () => {
+    const structured = mockAccessor();
+    const unstructured = mockAccessor();
+    const mix = new MixDataAccessor(structured, unstructured, false, false);
+    const containerMeta = new RepresentationMetadata({ path: 'http://localhost:3000/alice/' });
+
+    await mix.writeContainer({ path: 'http://localhost:3000/alice/' }, containerMeta);
+
+    expect(structured.writeContainer).toHaveBeenCalledTimes(1);
+    expect(unstructured.writeContainer).not.toHaveBeenCalled();
+  });
+
+  it('should mirror container markers to unstructured storage by default', async () => {
+    const structured = mockAccessor();
+    const unstructured = mockAccessor();
+    const mix = new MixDataAccessor(structured, unstructured, false);
+    const containerMeta = new RepresentationMetadata({ path: 'http://localhost:3000/alice/' });
+
+    await mix.writeContainer({ path: 'http://localhost:3000/alice/' }, containerMeta);
+
+    expect(structured.writeContainer).toHaveBeenCalledTimes(1);
+    expect(unstructured.writeContainer).toHaveBeenCalledTimes(1);
   });
 });
