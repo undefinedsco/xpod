@@ -1,13 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { DataFactory } from 'n3';
 import { Readable } from 'stream';
 import {
+  BasicRepresentation,
   RepresentationMetadata,
   guardedStreamFrom,
 } from '@solid/community-server';
 import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore';
-
-const { namedNode, literal } = DataFactory;
+import { podBootstrapContext } from '../../src/storage/PodBootstrapContext';
 
 // Mock accessor with SPARQL capability
 const createMockAccessor = () => ({
@@ -184,6 +183,33 @@ describe('SparqlUpdateResourceStore', () => {
       // IRIs should have angle brackets
       expect(executedQuery).toContain('<http://example.org/bob>');
       expect(executedQuery).toContain('<http://example.org/charlie>');
+    });
+  });
+
+  describe('pod bootstrap fast path', () => {
+    it('skips target metadata lookup and parent modified-date rewrite inside pod bootstrap', async () => {
+      accessor.getMetadata.mockImplementation(async(identifier: { path?: string } | undefined) => {
+        switch (identifier?.path) {
+          case 'http://localhost:3000/alice/':
+            return new RepresentationMetadata({ path: 'http://localhost:3000/alice/' });
+          default:
+            throw new Error(`unexpected metadata lookup: ${identifier?.path}`);
+        }
+      });
+
+      mockIdentifierStrategy.isRootContainer.mockImplementation(({ path }: { path: string }) => path === 'http://localhost:3000/');
+
+      const identifier = { path: 'http://localhost:3000/alice/card' };
+      const representation = new BasicRepresentation('profile', 'text/turtle');
+
+      await podBootstrapContext.run({ basePath: 'http://localhost:3000/alice/' }, async() => {
+        await store.setRepresentation(identifier, representation);
+      });
+
+      expect(accessor.writeDocument).toHaveBeenCalledTimes(1);
+      expect(accessor.writeContainer).not.toHaveBeenCalled();
+      expect(accessor.getMetadata).not.toHaveBeenCalledWith(identifier);
+      expect(accessor.getMetadata).toHaveBeenCalledWith({ path: 'http://localhost:3000/alice/' });
     });
   });
 });
