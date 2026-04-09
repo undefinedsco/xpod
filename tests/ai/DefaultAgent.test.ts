@@ -15,12 +15,14 @@ describe('DefaultAgent', () => {
 
   beforeEach(() => {
     // 保存环境变量
+    savedEnv.DEFAULT_API_BASE = process.env.DEFAULT_API_BASE;
     savedEnv.DEFAULT_PROVIDER = process.env.DEFAULT_PROVIDER;
     savedEnv.DEFAULT_MODEL = process.env.DEFAULT_MODEL;
     savedEnv.DEFAULT_API_KEY = process.env.DEFAULT_API_KEY;
     savedEnv.CLAUDE_CODE_PATH = process.env.CLAUDE_CODE_PATH;
 
     // 清除环境变量
+    delete process.env.DEFAULT_API_BASE;
     delete process.env.DEFAULT_PROVIDER;
     delete process.env.DEFAULT_MODEL;
     delete process.env.DEFAULT_API_KEY;
@@ -42,8 +44,8 @@ describe('DefaultAgent', () => {
     it('should return default values when no env vars set', () => {
       const config = getDefaultAgentConfig();
 
-      expect(config.provider).toBe('openrouter');
-      expect(config.model).toBe('stepfun/step-3.5-flash:free');
+      expect(config.provider).toBe('undefineds');
+      expect(config.model).toBe('linx-lite');
       expect(config.apiKey).toBe('');
       expect(config.claudeCodePath).toBeUndefined();
     });
@@ -61,6 +63,14 @@ describe('DefaultAgent', () => {
       expect(config.apiKey).toBe('test-api-key');
       expect(config.claudeCodePath).toBe('/usr/local/bin/claude');
     });
+
+    it('should use DEFAULT_API_KEY when set', () => {
+      process.env.DEFAULT_API_KEY = 'gateway-service-key';
+
+      const config = getDefaultAgentConfig();
+
+      expect(config.apiKey).toBe('gateway-service-key');
+    });
   });
 
   describe('isDefaultAgentAvailable', () => {
@@ -75,6 +85,11 @@ describe('DefaultAgent', () => {
 
     it('should return true when DEFAULT_API_KEY is set', () => {
       process.env.DEFAULT_API_KEY = 'some-api-key';
+      expect(isDefaultAgentAvailable()).toBe(true);
+    });
+
+    it('should return true when DEFAULT_API_BASE is set', () => {
+      process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
       expect(isDefaultAgentAvailable()).toBe(true);
     });
   });

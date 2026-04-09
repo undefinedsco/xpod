@@ -5,14 +5,14 @@ import type { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 
 describe('VercelChatService provider config fallback', () => {
   const savedEnv: Record<string, string | undefined> = {};
+  let savedFetch: typeof globalThis.fetch | undefined;
+  let fetchMock: ReturnType<typeof vi.fn>;
   const envKeys = [
-    'DEFAULT_API_KEY',
-    'DEFAULT_PROVIDER',
     'DEFAULT_API_BASE',
+    'DEFAULT_API_KEY',
+    'DEFAULT_TIMEOUT_MS',
+    'DEFAULT_PROVIDER',
     'DEFAULT_MODEL',
-    'XPOD_AI_GATEWAY_BASE_URL',
-    'XPOD_AI_GATEWAY_API_KEY',
-    'XPOD_AI_GATEWAY_TIMEOUT_MS',
   ] as const;
 
   const solidAuth = {
@@ -28,7 +28,13 @@ describe('VercelChatService provider config fallback', () => {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
-    vi.stubGlobal('fetch', vi.fn());
+    savedFetch = globalThis.fetch;
+    fetchMock = vi.fn();
+    Object.defineProperty(globalThis, 'fetch', {
+      value: fetchMock,
+      writable: true,
+      configurable: true,
+    });
   });
 
   afterEach(() => {
@@ -40,7 +46,15 @@ describe('VercelChatService provider config fallback', () => {
       }
     }
 
-    vi.unstubAllGlobals();
+    if (savedFetch) {
+      Object.defineProperty(globalThis, 'fetch', {
+        value: savedFetch,
+        writable: true,
+        configurable: true,
+      });
+    } else {
+      delete (globalThis as { fetch?: typeof fetch }).fetch;
+    }
     vi.restoreAllMocks();
   });
 
@@ -58,7 +72,7 @@ describe('VercelChatService provider config fallback', () => {
   }
 
   function getFetchMock(): ReturnType<typeof vi.fn> {
-    return vi.mocked(fetch);
+    return fetchMock;
   }
 
   function mockAiGatewayModels(ids: string[]): void {
@@ -97,6 +111,19 @@ describe('VercelChatService provider config fallback', () => {
     expect(result.apiKey).toBe('platform-key');
   });
 
+  it('uses DEFAULT_API_BASE as platform entry', async () => {
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
+
+    const { service } = createService(undefined);
+    const getProviderConfig = (service as any).getProviderConfig.bind(service);
+    const result = await getProviderConfig({ auth: solidAuth });
+
+    expect(result.baseURL).toBe('https://ai-gateway.example.com/v1');
+    expect(result.apiKey).toBe('gateway-service-key');
+  });
+
+
   it('returns null when neither pod config nor DEFAULT_API_BASE exists', async () => {
     const { service } = createService(undefined);
     const getProviderConfig = (service as any).getProviderConfig.bind(service);
@@ -132,8 +159,8 @@ describe('VercelChatService provider config fallback', () => {
   });
 
   it('forwards platform chat completions to ai-gateway', async () => {
-    process.env.XPOD_AI_GATEWAY_BASE_URL = 'https://ai-gateway.example.com';
-    process.env.XPOD_AI_GATEWAY_API_KEY = 'gateway-service-key';
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
 
     const { service, store } = createService(undefined);
     mockAiGatewayModels(['linx', 'linx-lite']);
@@ -182,8 +209,8 @@ describe('VercelChatService provider config fallback', () => {
   });
 
   it('forwards platform chat streams to ai-gateway', async () => {
-    process.env.XPOD_AI_GATEWAY_BASE_URL = 'https://ai-gateway.example.com/v1';
-    process.env.XPOD_AI_GATEWAY_API_KEY = 'gateway-service-key';
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
 
     const { service } = createService(undefined);
     mockAiGatewayModels(['linx']);
@@ -208,8 +235,8 @@ describe('VercelChatService provider config fallback', () => {
   });
 
   it('maps platform messages requests through ai-gateway chat completions', async () => {
-    process.env.XPOD_AI_GATEWAY_BASE_URL = 'https://ai-gateway.example.com';
-    process.env.XPOD_AI_GATEWAY_API_KEY = 'gateway-service-key';
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
 
     const { service } = createService(undefined);
     mockAiGatewayModels(['linx']);
@@ -257,8 +284,8 @@ describe('VercelChatService provider config fallback', () => {
   });
 
   it('caches ai-gateway models between forwarded requests', async () => {
-    process.env.XPOD_AI_GATEWAY_BASE_URL = 'https://ai-gateway.example.com';
-    process.env.XPOD_AI_GATEWAY_API_KEY = 'gateway-service-key';
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
 
     const { service } = createService(undefined);
     mockAiGatewayModels(['linx']);
@@ -302,10 +329,8 @@ describe('VercelChatService provider config fallback', () => {
     expect(getFetchMock().mock.calls[2]?.[0]).toBe('https://ai-gateway.example.com/v1/chat/completions');
   });
 
-  it('prefers ai-gateway models and keeps platform fallback', async () => {
-    process.env.XPOD_AI_GATEWAY_BASE_URL = 'https://ai-gateway.example.com';
-    process.env.XPOD_AI_GATEWAY_API_KEY = 'gateway-service-key';
-    process.env.DEFAULT_API_BASE = 'https://platform.example.com/v1';
+  it('reuses DEFAULT_API_BASE models without duplicate platform fetch', async () => {
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
     process.env.DEFAULT_API_KEY = 'platform-key';
 
     const { service } = createService(undefined);
@@ -317,7 +342,12 @@ describe('VercelChatService provider config fallback', () => {
         headers: { 'Content-Type': 'application/json' },
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        data: [{ id: 'legacy-model', object: 'model' }],
+        id: 'chatcmpl-gateway',
+        object: 'chat.completion',
+        created: 123,
+        model: 'linx',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -325,14 +355,11 @@ describe('VercelChatService provider config fallback', () => {
 
     const result = await service.listModels(solidAuth as any);
 
-    expect(result.map((model) => model.id)).toEqual(['linx', 'legacy-model']);
+    expect(result.map((model) => model.id)).toEqual(['linx']);
 
     const [gatewayUrl, gatewayInit] = getFetchMock().mock.calls[0] as [string, RequestInit];
     expect(gatewayUrl).toBe('https://ai-gateway.example.com/v1/models');
-    expect(new Headers(gatewayInit.headers).get('authorization')).toBe('Bearer gateway-service-key');
-
-    const [platformUrl, platformInit] = getFetchMock().mock.calls[1] as [string, RequestInit];
-    expect(platformUrl).toBe('https://platform.example.com/v1/models');
-    expect(new Headers(platformInit.headers).get('authorization')).toBe('Bearer platform-key');
+    expect(new Headers(gatewayInit.headers).get('authorization')).toBe('Bearer platform-key');
+    expect(getFetchMock().mock.calls).toHaveLength(1);
   });
 });

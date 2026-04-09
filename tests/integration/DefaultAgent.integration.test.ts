@@ -32,7 +32,7 @@ describe("DefaultAgent Availability", () => {
   it("should return correct default config", () => {
     const config = getDefaultAgentConfig();
 
-    expect(config.provider).toBe(process.env.DEFAULT_PROVIDER || "openrouter");
-    expect(config.model).toBe(process.env.DEFAULT_MODEL || "stepfun/step-3.5-flash:free");
+    expect(config.provider).toBe(process.env.DEFAULT_PROVIDER || "undefineds");
+    expect(config.model).toBe(process.env.DEFAULT_MODEL || "linx-lite");
   });
 });

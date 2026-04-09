@@ -14,6 +14,14 @@ import {
   supportsResponsesApi,
   supportsMessagesApi,
 } from './provider-registry';
+import {
+  getAiGatewayApiKey,
+  getAiGatewayBaseUrl,
+  getPlatformApiBaseUrl,
+  getPlatformApiKey,
+  getPlatformDefaultModel,
+  getPlatformTimeoutMs,
+} from './platform-ai-config';
 
 // Create a proxy-aware fetch function
 function createProxyFetch(proxyUrl: string): typeof fetch {
@@ -65,24 +73,15 @@ export class VercelChatService {
   }
 
   private getAiGatewayBaseUrl(): string | null {
-    const raw = process.env.XPOD_AI_GATEWAY_BASE_URL?.trim();
-    return raw ? raw.replace(/\/$/, '') : null;
+    return getAiGatewayBaseUrl() ?? null;
   }
 
   private getAiGatewayTimeoutMs(): number {
-    const raw = process.env.XPOD_AI_GATEWAY_TIMEOUT_MS?.trim();
-    if (!raw) {
-      return 30_000;
-    }
-
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+    return getPlatformTimeoutMs();
   }
 
   private getAiGatewayApiKey(): string | null {
-    const raw = process.env.XPOD_AI_GATEWAY_API_KEY?.trim()
-      ?? process.env.AI_GATEWAY_SERVICE_API_KEY?.trim();
-    return raw || null;
+    return getAiGatewayApiKey() ?? null;
   }
 
   private toModelId(model: any): string {
@@ -148,7 +147,7 @@ export class VercelChatService {
   private buildAiGatewayUrl(path: string): string {
     const baseUrl = this.getAiGatewayBaseUrl();
     if (!baseUrl) {
-      throw new Error('XPOD_AI_GATEWAY_BASE_URL is not configured');
+      throw new Error('DEFAULT_API_BASE is not configured');
     }
 
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -176,7 +175,7 @@ export class VercelChatService {
   ): Promise<Response> {
     const apiKey = this.getAiGatewayApiKey();
     if (!apiKey) {
-      throw new Error('XPOD_AI_GATEWAY_API_KEY is not configured');
+      throw new Error('DEFAULT_API_KEY is not configured');
     }
 
     const requestHeaders = new Headers(headers);
@@ -194,9 +193,9 @@ export class VercelChatService {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
-      this.logger.warn(`AI gateway request failed: ${response.status} ${errorText}`);
+      this.logger.warn(`Platform AI request failed: ${response.status} ${errorText}`);
 
-      const error = new Error(`AI gateway error: ${response.status} ${response.statusText}`);
+      const error = new Error(`Platform AI error: ${response.status} ${response.statusText}`);
       (error as any).status = response.status;
       (error as any).headers = response.headers;
       (error as any).body = errorText;
@@ -362,10 +361,10 @@ export class VercelChatService {
     }
 
     // 平台 Provider
-    const platformBase = process.env.DEFAULT_API_BASE;
+    const platformBase = getPlatformApiBaseUrl();
     if (platformBase) {
       this.logger.info(`Provider config: baseURL=${platformBase}, proxy=none (source=platform)`);
-      return { baseURL: platformBase, apiKey: process.env.DEFAULT_API_KEY || '', proxy: undefined, credentialId: undefined };
+      return { baseURL: platformBase, apiKey: getPlatformApiKey(), proxy: undefined, credentialId: undefined };
     }
 
     this.logger.warn('No AI provider config found in Pod or DEFAULT_API_BASE');
@@ -674,7 +673,7 @@ export class VercelChatService {
     providerConfig: { baseURL: string; apiKey: string; proxy?: string; credentialId?: string },
   ): Promise<any> {
     const prompt = this.extractPromptFromResponsesBody(body);
-    const model = body?.model || process.env.DEFAULT_MODEL || 'openai/gpt-4o-mini';
+    const model = body?.model || getPlatformDefaultModel();
 
     const provider = await this.getProvider(context);
     const result = await generateText({
@@ -715,7 +714,7 @@ export class VercelChatService {
     providerConfig: { baseURL: string; apiKey: string; proxy?: string; credentialId?: string },
   ): Promise<any> {
     const prompt = this.extractPromptFromMessagesBody(body);
-    const model = body?.model || process.env.DEFAULT_MODEL || 'openai/gpt-4o-mini';
+    const model = body?.model || getPlatformDefaultModel();
 
     const coreMessages: any[] = [];
     if (body?.system) {
@@ -857,11 +856,18 @@ export class VercelChatService {
     }
 
     // 平台 Provider 模型（从 DEFAULT_API_BASE 获取）
-    const platformBase = process.env.DEFAULT_API_BASE;
-    const platformKey = process.env.DEFAULT_API_KEY;
-    if (platformBase) {
+    const platformBase = getPlatformApiBaseUrl();
+    const platformKey = getPlatformApiKey();
+    const aiGatewayBase = this.getAiGatewayBaseUrl();
+    const normalizedAiGatewayModelsUrl = aiGatewayBase
+      ? this.buildAiGatewayUrl('/v1/models')
+      : undefined;
+    const normalizedPlatformModelsUrl = platformBase
+      ? `${platformBase.replace(/\/$/, '')}/models`
+      : undefined;
+    if (platformBase && normalizedPlatformModelsUrl !== normalizedAiGatewayModelsUrl) {
       try {
-        const url = platformBase.replace(/\/$/, '') + '/models';
+        const url = normalizedPlatformModelsUrl!;
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (platformKey) {
           headers['Authorization'] = `Bearer ${platformKey}`;
