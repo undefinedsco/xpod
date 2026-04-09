@@ -24,7 +24,7 @@ export interface AdminStatus {
   uptime: number;
   env: {
     CSS_BASE_URL?: string;
-    CSS_EDITION?: string;
+    XPOD_EDITION?: string;
     CSS_PORT?: string;
   };
   configs: Array<{

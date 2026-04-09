@@ -186,7 +186,7 @@ export function registerAdminRoutes(server: ApiServer): void {
         uptime: process.uptime(),
         env: {
           CSS_BASE_URL: env.CSS_BASE_URL || process.env.CSS_BASE_URL,
-          CSS_EDITION: env.CSS_EDITION || process.env.CSS_EDITION,
+          XPOD_EDITION: env.XPOD_EDITION || process.env.XPOD_EDITION || env.CSS_EDITION || process.env.CSS_EDITION,
           CSS_PORT: env.CSS_PORT || process.env.CSS_PORT,
         },
         configs,

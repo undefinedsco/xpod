@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { Supervisor } from '../../supervisor';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from '../../runtime';
+import { createCssChildEnv, getLegacyCssEnvKeys, normalizeLegacyRuntimeEnv } from '../../runtime/env-utils';
 
 interface StartArgs {
   mode?: string;
@@ -109,11 +110,15 @@ export const startCommand: CommandModule<object, StartArgs> = {
       console.log(`  SP mode: Cloud IdP = ${idpUrl}`);
     }
 
+    const runtimeEnv = normalizeLegacyRuntimeEnv(process.env);
+    const ignoredCssEnvKeys = getLegacyCssEnvKeys(process.env);
+    if (ignoredCssEnvKeys.length > 0) {
+      console.warn(`Ignoring legacy CSS env keys for CSS child process: ${ignoredCssEnvKeys.join(', ')}`);
+    }
+
     const supervisor = new Supervisor();
     const cssBinary = require.resolve('@solid/community-server/bin/server.js');
-    const cssModuleRoot = path.dirname(require.resolve('@solid/community-server/package.json'));
-
-    const cssArgs = [cssBinary, '-c', configPath, '-m', cssModuleRoot, '-p', cssPort.toString(), '-b', baseUrl];
+    const cssArgs = [cssBinary, '-c', configPath, '-m', PACKAGE_ROOT, '-p', cssPort.toString(), '-b', baseUrl];
     if (idpUrl) {
       cssArgs.push('--idpUrl', idpUrl);
     }
@@ -123,7 +128,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
       command: childJsRuntime,
       args: cssArgs,
       env: {
-        ...process.env as Record<string, string>,
+        ...createCssChildEnv(runtimeEnv) as Record<string, string>,
         CSS_PORT: cssPort.toString(),
         CSS_BASE_URL: baseUrl,
       },
@@ -143,7 +148,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
       command: childJsRuntime,
       args: apiArgs,
       env: {
-        ...process.env as Record<string, string>,
+        ...runtimeEnv as Record<string, string>,
         API_PORT: apiPort.toString(),
         XPOD_MAIN_PORT: mainPort.toString(),
         CSS_INTERNAL_URL: `http://localhost:${cssPort}`,

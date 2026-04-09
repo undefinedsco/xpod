@@ -1,7 +1,7 @@
 # Xpod Docker Image
 #
 # 通过环境变量控制运行模式:
-#   CSS_EDITION=cloud|local
+#   XPOD_EDITION=cloud|local
 #   CSS_PORT=6300 (cloud) / 5737 (local)
 #   API_PORT=6301 (cloud) / 5738 (local)
 #
@@ -43,10 +43,10 @@ RUN mkdir -p /app/data /app/logs \
  && ln -s /app /app/node_modules/@undefineds.co/xpod
 
 ENV NODE_ENV=production
-ENV CSS_EDITION=local
+ENV XPOD_EDITION=local
 ENV CSS_PORT=5737
 ENV API_PORT=5738
 
 EXPOSE 5737 5738 6300 6301
 
-CMD ["sh", "-c", "node dist/main.js -c config/${CSS_EDITION}.json -p ${CSS_PORT}"]
+CMD ["sh", "-c", "node dist/main.js -c config/${XPOD_EDITION}.json -p ${CSS_PORT}"]

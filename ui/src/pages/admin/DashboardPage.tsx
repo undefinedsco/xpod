@@ -112,7 +112,7 @@ export function DashboardPage() {
             <Card variant="bordered">
               <CardContent>
                 <div className="text-muted-foreground text-sm mb-2">运行模式</div>
-                <div className="text-lg">{adminStatus.env.CSS_EDITION || 'local'}</div>
+                <div className="text-lg">{adminStatus.env.XPOD_EDITION || 'local'}</div>
               </CardContent>
             </Card>
             <Card variant="bordered">

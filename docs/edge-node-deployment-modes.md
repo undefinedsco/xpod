@@ -53,9 +53,9 @@
 **用户配置：**
 ```yaml
 # 边缘节点配置
-CSS_SIGNAL_ENDPOINT=https://cloud.undefineds.co/api/signal
-CSS_NODE_ID=node-xxx
-CSS_NODE_TOKEN=xxx
+XPOD_SIGNAL_ENDPOINT=https://cloud.undefineds.co/api/signal
+XPOD_NODE_ID=node-xxx
+XPOD_NODE_TOKEN=xxx
 # IPv6 自动检测，无需配置
 ```
 
@@ -83,9 +83,9 @@ CSS_NODE_TOKEN=xxx
 **用户配置：**
 ```yaml
 # 边缘节点配置
-CSS_SIGNAL_ENDPOINT=https://cloud.undefineds.co/api/signal
-CSS_NODE_ID=node-xxx
-CSS_NODE_TOKEN=xxx
+XPOD_SIGNAL_ENDPOINT=https://cloud.undefineds.co/api/signal
+XPOD_NODE_ID=node-xxx
+XPOD_NODE_TOKEN=xxx
 # 自动检测无公网 IP，启用 Tunnel
 ```
 

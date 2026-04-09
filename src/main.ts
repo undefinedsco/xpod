@@ -8,6 +8,7 @@ import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
+import { createCssChildEnv, getLegacyCssEnvKeys, normalizeLegacyRuntimeEnv } from './runtime/env-utils';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
 
@@ -264,9 +265,14 @@ async function startRuntime(options: RunOptions): Promise<void> {
   logger.info(`  - CSS (internal): http://localhost:${cssPort}`);
   logger.info(`  - API (internal): http://localhost:${apiPort}`);
 
+  const runtimeEnv = normalizeLegacyRuntimeEnv(process.env);
+  const ignoredCssEnvKeys = getLegacyCssEnvKeys(process.env);
+  if (ignoredCssEnvKeys.length > 0) {
+    logger.warn(`Ignoring legacy CSS env keys for CSS child process: ${ignoredCssEnvKeys.join(', ')}`);
+  }
+
   const supervisor = new Supervisor();
   const cssBinary = require.resolve('@solid/community-server/bin/server.js');
-  const cssModuleRoot = path.dirname(require.resolve('@solid/community-server/package.json'));
 
   supervisor.register({
     name: 'css',
@@ -274,12 +280,12 @@ async function startRuntime(options: RunOptions): Promise<void> {
     args: [
       cssBinary,
       '-c', configPath,
-      '-m', cssModuleRoot,
+      '-m', PACKAGE_ROOT,
       '-p', cssPort.toString(),
       '-b', baseUrl,
     ],
     env: {
-      ...process.env,
+      ...createCssChildEnv(runtimeEnv),
       CSS_PORT: cssPort.toString(),
       CSS_BASE_URL: baseUrl,
     },
@@ -302,7 +308,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
     command: childJsRuntime,
     args: apiArgs,
     env: {
-      ...process.env,
+      ...runtimeEnv,
       API_PORT: apiPort.toString(),
       XPOD_MAIN_PORT: mainPort.toString(),
       CSS_INTERNAL_URL: `http://localhost:${cssPort}`,

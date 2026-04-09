@@ -14,7 +14,7 @@
 
 ## 部署步骤
 1. `yarn build && yarn cloud` 启动 Cluster 控制面；确认门户和登录流程正常。
-2. 在普通用户门户的「边缘节点」入口里创建节点（会返回 `nodeId`/`nodeToken`），或通过等效 API 获取凭证。若仅做本地验证，可先在 `.env.cluster.local` 写入自定义 `CSS_NODE_ID`/`CSS_NODE_TOKEN`，然后运行 `node test-node-registration.js` 自动写入数据库并调用 `/api/signal`。
+2. 在普通用户门户的「边缘节点」入口里创建节点（会返回 `nodeId`/`nodeToken`），或通过等效 API 获取凭证。若仅做本地验证，可先在 `.env.cluster.local` 写入自定义 `XPOD_NODE_ID`/`XPOD_NODE_TOKEN`，然后运行 `node test-node-registration.js` 自动写入数据库并调用 `/api/signal`。
 3. 在节点主机上运行 Agent（参见 `docs/edge-node-agent.md` 示例），确保心跳日志显示“sent successfully”。
 4. 访问 Pod 域名，验证：
    - 直连模式：DNS 指向节点公网 IP，`accessMode=direct`。

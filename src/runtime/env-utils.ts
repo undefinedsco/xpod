@@ -1,6 +1,22 @@
 import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
 import type { RuntimePlatform } from './platform/types';
 
+const legacyEnvAliases = [
+  [ 'CSS_EDITION', 'XPOD_EDITION' ],
+  [ 'XPOD_MODE', 'XPOD_EDITION' ],
+  [ 'CSS_NODE_ID', 'XPOD_NODE_ID' ],
+  [ 'CSS_NODE_TOKEN', 'XPOD_NODE_TOKEN' ],
+  [ 'CSS_SIGNAL_ENDPOINT', 'XPOD_SIGNAL_ENDPOINT' ],
+] as const;
+
+const legacyCssChildEnvKeys = [
+  'CSS_EDITION',
+  'CSS_EDGE_AGENT_ENABLED',
+  'CSS_SIGNAL_ENDPOINT',
+  'CSS_NODE_TOKEN',
+  'CSS_NODE_PUBLIC_ADDRESS',
+] as const;
+
 export function loadEnvFile(
   envPath: string,
   platform: Pick<RuntimePlatform, 'fileExists' | 'readTextFile'> = nodeRuntimePlatform,
@@ -49,4 +65,36 @@ export function applyEnv(
       platform.setEnv(key, value);
     }
   };
+}
+
+export function normalizeLegacyRuntimeEnv(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const normalized: NodeJS.ProcessEnv = { ...baseEnv };
+
+  for (const [ legacyKey, targetKey ] of legacyEnvAliases) {
+    if (!normalized[targetKey] && normalized[legacyKey]) {
+      normalized[targetKey] = normalized[legacyKey];
+    }
+  }
+
+  return normalized;
+}
+
+export function getLegacyCssEnvKeys(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return legacyCssChildEnvKeys.filter((key) => Boolean(baseEnv[key]));
+}
+
+export function createCssChildEnv(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const normalized = normalizeLegacyRuntimeEnv(baseEnv);
+
+  for (const key of legacyCssChildEnvKeys) {
+    delete normalized[key];
+  }
+
+  return normalized;
 }
