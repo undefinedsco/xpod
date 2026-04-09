@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: xpod
-          image: ghcr.io/undefinedsco/xpod:0.2.0
+          image: ghcr.io/undefinedsco/xpod:replace-me
           imagePullPolicy: IfNotPresent
           args:
             - node
