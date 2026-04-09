@@ -4,6 +4,8 @@
 
 让 AI 成为用户 Pod 的智能管家，自主地帮助用户管理和处理数据。
 
+与外部协议和自动化生态的接入方式，见 [`docs/protocol-integration-architecture.md`](./protocol-integration-architecture.md)。
+
 ## 解决什么问题
 
 ### 传统方案的问题
