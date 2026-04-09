@@ -7,6 +7,11 @@ import {
   RepresentationMetadata,
   INTERNAL_QUADS,
   FoundHttpError,
+  NotFoundHttpError,
+  POSIX,
+  SOLID_META,
+  XSD,
+  toLiteral,
 } from '@solid/community-server';
 import type {
   Representation,
@@ -14,6 +19,7 @@ import type {
   Guarded,
   DataAccessor,
 } from '@solid/community-server';
+import { metadataRequestContext } from '../MetadataRequestContext';
 
 /**
  * MixDataAccessor - Routes data to appropriate storage based on content type
@@ -30,15 +36,18 @@ export class MixDataAccessor implements DataAccessor {
   private readonly structuredDataAccessor: DataAccessor;
   private readonly unstructuredDataAccessor: DataAccessor;
   private readonly presignedRedirectEnabled: boolean;
+  private readonly mirrorContainersToUnstructured: boolean;
 
   constructor(
     structuredDataAccessor: DataAccessor,
     unstructuredDataAccessor: DataAccessor,
     presignedRedirectEnabled = false,
+    mirrorContainersToUnstructured = true,
   ) {
     this.structuredDataAccessor = structuredDataAccessor;
     this.unstructuredDataAccessor = unstructuredDataAccessor;
     this.presignedRedirectEnabled = presignedRedirectEnabled;
+    this.mirrorContainersToUnstructured = mirrorContainersToUnstructured;
   }
 
   /**
@@ -74,16 +83,31 @@ export class MixDataAccessor implements DataAccessor {
   }
 
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
-    // Metadata is always stored in the structured accessor
-    const metadata = await this.structuredDataAccessor.getMetadata(identifier);
-
-    // For resources without explicit content type, default to RDF
-    // This includes containers (which are always RDF) and documents without contentType
-    if (!metadata.contentType) {
-      metadata.contentType = INTERNAL_QUADS;
+    const cache = metadataRequestContext.getStore()?.metadataCache;
+    const cacheKey = identifier.path;
+    const cached = cache?.get(cacheKey);
+    if (cached) {
+      if (cached.kind === 'miss') {
+        throw new NotFoundHttpError();
+      }
+      return new RepresentationMetadata(cached.metadata);
     }
 
-    return metadata;
+    try {
+      const metadata = await this.structuredDataAccessor.getMetadata(identifier);
+
+      if (!metadata.contentType) {
+        metadata.contentType = INTERNAL_QUADS;
+      }
+
+      cache?.set(cacheKey, { kind: 'hit', metadata: new RepresentationMetadata(metadata) });
+      return metadata;
+    } catch (error) {
+      if (NotFoundHttpError.isInstance(error)) {
+        cache?.set(cacheKey, { kind: 'miss' });
+      }
+      throw error;
+    }
   }
 
   public async* getChildren(identifier: ResourceIdentifier): AsyncIterableIterator<RepresentationMetadata> {
@@ -95,12 +119,11 @@ export class MixDataAccessor implements DataAccessor {
     identifier: ResourceIdentifier,
     metadata: RepresentationMetadata,
   ): Promise<void> {
-    // Container metadata goes to structured storage
-    // Also create in unstructured if it needs to store files
-    if (this.isUnstructured(metadata)) {
+    if (this.mirrorContainersToUnstructured && this.isUnstructured(metadata)) {
       await this.unstructuredDataAccessor.writeContainer(identifier, metadata);
     }
     await this.structuredDataAccessor.writeContainer(identifier, metadata);
+    this.invalidateMetadataCache(identifier);
   }
 
   public async writeDocument(
@@ -109,14 +132,18 @@ export class MixDataAccessor implements DataAccessor {
     metadata: RepresentationMetadata,
   ): Promise<void> {
     if (this.isUnstructured(metadata)) {
-      return await this.writeUnstructuredDocument(identifier, data, metadata);
+      await this.writeUnstructuredDocument(identifier, data, metadata);
+      this.invalidateMetadataCache(identifier);
+      return;
     }
-    return await this.structuredDataAccessor.writeDocument(identifier, data, metadata);
+    await this.structuredDataAccessor.writeDocument(identifier, data, metadata);
+    this.invalidateMetadataCache(identifier);
   }
 
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
     // Metadata always goes to structured storage
-    return await this.structuredDataAccessor.writeMetadata(identifier, metadata);
+    await this.structuredDataAccessor.writeMetadata(identifier, metadata);
+    this.invalidateMetadataCache(identifier);
   }
 
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
@@ -135,7 +162,8 @@ export class MixDataAccessor implements DataAccessor {
     }
     
     // Always delete from structured storage (contains metadata)
-    return await this.structuredDataAccessor.deleteResource(identifier);
+    await this.structuredDataAccessor.deleteResource(identifier);
+    this.invalidateMetadataCache(identifier);
   }
 
   /**
@@ -162,17 +190,25 @@ export class MixDataAccessor implements DataAccessor {
     // Write the actual data to unstructured storage
     await this.unstructuredDataAccessor.writeDocument(identifier, data, metadata);
     
-    // Get the metadata from unstructured storage (includes size, etc.)
-    let updatedMetadata = await this.unstructuredDataAccessor.getMetadata(identifier);
-    
-    // Filter out invalid quads
-    const removing: Quad[] = [];
-    for (const quad of updatedMetadata.quads()) {
-      if (!/^http/.test(quad.predicate.value)) {
-        removing.push(quad);
+    let updatedMetadata: RepresentationMetadata;
+    if (typeof metadata.contentLength === 'number') {
+      updatedMetadata = new RepresentationMetadata(metadata);
+      updatedMetadata.add(
+        POSIX.terms.size,
+        toLiteral(metadata.contentLength, XSD.terms.integer),
+        SOLID_META.terms.ResponseMetadata,
+      );
+    } else {
+      updatedMetadata = await this.unstructuredDataAccessor.getMetadata(identifier);
+
+      const removing: Quad[] = [];
+      for (const quad of updatedMetadata.quads()) {
+        if (!/^http/.test(quad.predicate.value)) {
+          removing.push(quad);
+        }
       }
+      updatedMetadata.removeQuads(removing);
     }
-    updatedMetadata.removeQuads(removing);
     
     // Save metadata to structured storage
     try {
@@ -183,5 +219,19 @@ export class MixDataAccessor implements DataAccessor {
       await this.unstructuredDataAccessor.deleteResource(identifier);
       throw error;
     }
+  }
+
+  private invalidateMetadataCache(identifier: ResourceIdentifier): void {
+    const cache = metadataRequestContext.getStore()?.metadataCache;
+    if (!cache) {
+      return;
+    }
+
+    const exact = identifier.path;
+    const trimmed = exact.endsWith('/') ? exact.replace(/\/+$/u, '') : exact;
+    const withSlash = exact.endsWith('/') ? exact : `${exact}/`;
+    cache.delete(exact);
+    cache.delete(trimmed);
+    cache.delete(withSlash);
   }
 }

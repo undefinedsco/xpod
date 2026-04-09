@@ -17,6 +17,7 @@ import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from './UsageRepository';
 import { createBandwidthThrottleTransform } from '../../util/stream/BandwidthThrottleTransform';
+import { isPodBootstrapPath } from '../PodBootstrapContext';
 
 interface UsageTrackingStoreOptions {
   identityDbUrl?: string;
@@ -46,6 +47,10 @@ export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends
   }
 
   public override async addResource(container: ResourceIdentifier, representation: Representation, conditions?: Conditions): Promise<ChangeMap> {
+    if (isPodBootstrapPath(container.path)) {
+      return super.addResource(container, representation, conditions);
+    }
+
     const context = await this.resolveContext(container);
     if (!context) {
       return super.addResource(container, representation, conditions);
@@ -60,6 +65,10 @@ export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends
   }
 
   public override async setRepresentation(identifier: ResourceIdentifier, representation: Representation, conditions?: Conditions): Promise<ChangeMap> {
+    if (isPodBootstrapPath(identifier.path)) {
+      return super.setRepresentation(identifier, representation, conditions);
+    }
+
     const context = await this.resolveContext(identifier);
     if (!context) {
       return super.setRepresentation(identifier, representation, conditions);
@@ -75,6 +84,10 @@ export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends
 
   public override async getRepresentation(identifier: ResourceIdentifier, preferences: RepresentationPreferences, conditions?: Conditions): Promise<Representation> {
     const representation = await super.getRepresentation(identifier, preferences, conditions);
+    if (isPodBootstrapPath(identifier.path)) {
+      return representation;
+    }
+
     const context = await this.resolveContext(identifier);
     if (!context || !representation?.data) {
       return representation;
@@ -88,6 +101,10 @@ export class UsageTrackingStore<T extends ResourceStore = ResourceStore> extends
   }
 
   public override async deleteResource(identifier: ResourceIdentifier, conditions?: Conditions): Promise<ChangeMap> {
+    if (isPodBootstrapPath(identifier.path)) {
+      return super.deleteResource(identifier, conditions);
+    }
+
     const context = await this.resolveContext(identifier);
     if (!context) {
       return super.deleteResource(identifier, conditions);

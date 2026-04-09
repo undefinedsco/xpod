@@ -14,8 +14,10 @@ import {
   type PodCreatorInput,
   type PodCreatorOutput,
   type BasePodCreatorArgs,
+  type PodSettings,
 } from '@solid/community-server';
 import { ProvisionCodeCodec } from './ProvisionCodeCodec';
+import { podBootstrapContext } from '../storage/PodBootstrapContext';
 
 export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
   /** 与 ProvisionHandler 使用相同的 baseUrl 派生签名密钥 */
@@ -92,7 +94,7 @@ export class ProvisionPodCreator extends BasePodCreator {
     };
 
     const webIdLink = await this.handleWebId(!input.webId, webId, input.accountId, podSettings);
-    const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink);
+    const podId = await this.createBootstrapPod(input.accountId, podSettings, !input.name, webIdLink);
 
     this.provisionLogger.info(`Provisioned pod ${podName} on SP ${payload.spUrl}, podUrl: ${podUrl}`);
 
@@ -119,7 +121,7 @@ export class ProvisionPodCreator extends BasePodCreator {
     const webIdElapsed = Date.now() - webIdStarted;
 
     const podStarted = Date.now();
-    const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink);
+    const podId = await this.createBootstrapPod(input.accountId, podSettings, !input.name, webIdLink);
     const podElapsed = Date.now() - podStarted;
     const totalElapsed = Date.now() - totalStarted;
 
@@ -133,5 +135,16 @@ export class ProvisionPodCreator extends BasePodCreator {
       podId,
       webIdLink,
     };
+  }
+
+  private async createBootstrapPod(
+    accountId: string,
+    podSettings: PodSettings,
+    overwrite: boolean,
+    webIdLink: unknown,
+  ): Promise<string> {
+    const basePath = (podSettings.base as { path: string }).path;
+    return podBootstrapContext.run({ basePath }, () =>
+      this.createPod(accountId, podSettings, overwrite, webIdLink as any));
   }
 }
