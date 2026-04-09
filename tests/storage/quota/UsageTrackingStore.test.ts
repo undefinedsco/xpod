@@ -36,7 +36,6 @@ vi.mock('@solid/community-server', () => {
 });
 
 import { UsageTrackingStore } from '../../../src/storage/quota/UsageTrackingStore';
-import { podBootstrapContext } from '../../../src/storage/PodBootstrapContext';
 
 type MockUsageRepo = {
   incrementUsage: ReturnType<typeof vi.fn>;
@@ -236,25 +235,5 @@ describe('UsageTrackingStore', () => {
 
     expect(usageRepo.getPodUsage).toHaveBeenCalledWith('pod-5');
     expect(usageRepo.incrementUsage).toHaveBeenCalledWith('acc-5', 'pod-5', 0, 0, Buffer.byteLength('data'));
-  });
-
-  it('Pod bootstrap 期间跳过用量查询与记账', async () => {
-    const { store, usageRepo, podLookup, baseStore } = createStore();
-    const identifier = { path: 'https://pods.example.com/frank/profile/card' } as ResourceIdentifier;
-    const representation = {
-      binary: false,
-      metadata: { contentLength: '10' },
-    } as unknown as Representation;
-
-    await podBootstrapContext.run({ basePath: 'https://pods.example.com/frank/' }, async() => {
-      await store.setRepresentation(identifier, representation);
-    });
-
-    expect(baseStore.setRepresentation).toHaveBeenCalledTimes(1);
-    expect(baseStore.getRepresentation).not.toHaveBeenCalled();
-    expect(podLookup.findByResourceIdentifier).not.toHaveBeenCalled();
-    expect(usageRepo.getPodUsage).not.toHaveBeenCalled();
-    expect(usageRepo.getAccountUsage).not.toHaveBeenCalled();
-    expect(usageRepo.incrementUsage).not.toHaveBeenCalled();
   });
 });

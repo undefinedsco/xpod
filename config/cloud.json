@@ -126,8 +126,7 @@
       "unstructuredDataAccessor": {
         "@id": "urn:undefineds:xpod:RemoteDataAccessor"
       },
-      "presignedRedirectEnabled": true,
-      "mirrorContainersToUnstructured": false
+      "presignedRedirectEnabled": true
     },
     {
       "comment": "PgQuintStore instance for QuintStoreSparqlDataAccessor (PostgreSQL backend).",
@@ -511,20 +510,6 @@
             "@id": "urn:solid-server:default:LdpHandler"
           }
         ]
-      }
-    },
-    {
-      "comment": "Cloud pod bootstrap uses repo-local templates without README resources",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:PodResourcesGenerator"
-      },
-      "overrideParameters": {
-        "@type": "StaticFolderGenerator",
-        "templateFolder": "./templates/pod",
-        "resourcesGenerator": {
-          "@id": "urn:solid-server:default:TemplatedResourcesGenerator"
-        }
       }
     },
     {
