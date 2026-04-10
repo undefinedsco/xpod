@@ -92,3 +92,4 @@ openspec/
 /test_doc_mode_*
 /test_fragment_mode_*
 /undefineds.co-xpod-*.tgz
+.omx/

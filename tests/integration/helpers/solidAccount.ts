@@ -23,6 +23,13 @@ function ensureTrailingSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
 }
 
+function sameIssuerScope(candidate: URL, fallback: URL): boolean {
+  return candidate.protocol === fallback.protocol &&
+    candidate.hostname === fallback.hostname &&
+    candidate.port === fallback.port &&
+    ensureTrailingSlash(candidate.pathname) === ensureTrailingSlash(fallback.pathname);
+}
+
 function alignToBaseOrigin(raw: string | undefined, baseUrl: string, fallbackPath: string): string {
   const base = new URL(baseUrl);
 
@@ -89,19 +96,17 @@ type DockerServiceHost = {
 function dockerServiceForBaseUrl(baseUrl: string): DockerServiceHost | null {
   const cloudPort = process.env.CLOUD_PORT || '6300';
   const cloudBPort = process.env.CLOUD_B_PORT || '6400';
-  // docker-compose.cluster.yml: cloud and cloud_b are exposed as localhost ports,
-  // but CSS may return internal service URLs in controls.
   if (baseUrl.includes(`localhost:${cloudPort}`)) {
     return {
-      hostHeader: "cloud:6300",
-      internalOrigin: "http://cloud:6300",
+      hostHeader: `cloud:${cloudPort}`,
+      internalOrigin: `http://cloud:${cloudPort}`,
       externalOrigin: `http://localhost:${cloudPort}`,
     };
   }
   if (baseUrl.includes(`localhost:${cloudBPort}`)) {
     return {
-      hostHeader: "cloud_b:6400",
-      internalOrigin: "http://cloud_b:6400",
+      hostHeader: `cloud_b:${cloudBPort}`,
+      internalOrigin: `http://cloud_b:${cloudBPort}`,
       externalOrigin: `http://localhost:${cloudBPort}`,
     };
   }
@@ -143,11 +148,7 @@ export async function discoverOidcIssuerFromWebId(webId: string, fallbackIssuer:
 
     const discoveredUrl = new URL(discoveredRaw, profileUrl);
     const fallbackUrl = new URL(fallbackIssuer);
-    if (
-      discoveredUrl.protocol !== fallbackUrl.protocol ||
-      discoveredUrl.hostname !== fallbackUrl.hostname ||
-      discoveredUrl.port !== fallbackUrl.port
-    ) {
+    if (!sameIssuerScope(discoveredUrl, fallbackUrl)) {
       return fallbackIssuer;
     }
 

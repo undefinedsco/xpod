@@ -17,6 +17,12 @@ import {
 } from '@solid/community-server';
 import { ProvisionCodeCodec } from './ProvisionCodeCodec';
 
+function joinUrlPath(baseUrl: string, relativePath: string): string {
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/u, '');
+  const normalizedRelativePath = relativePath.replace(/^\/+/u, '');
+  return `${normalizedBaseUrl}/${normalizedRelativePath}`;
+}
+
 export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
   /** 与 ProvisionHandler 使用相同的 baseUrl 派生签名密钥 */
   provisionBaseUrl?: string;
@@ -107,11 +113,14 @@ export class ProvisionPodCreator extends BasePodCreator {
   private async handleStandardPodCreate(input: PodCreatorInput): Promise<PodCreatorOutput> {
     const totalStarted = Date.now();
     const baseIdentifier = this.generateBaseIdentifier(input.name);
-    const webId = input.webId ?? `${baseIdentifier.path}${this.relativeWebIdPath}`;
+    const webId = input.webId ?? joinUrlPath(baseIdentifier.path, this.relativeWebIdPath);
+    const inputSettings = input.settings as Record<string, unknown> | undefined;
+    const oidcIssuer = typeof inputSettings?.oidcIssuer === 'string' ? inputSettings.oidcIssuer : this.baseUrl;
     const podSettings = {
-      ...input.settings,
+      ...inputSettings,
       base: baseIdentifier,
       webId,
+      oidcIssuer,
     };
 
     const webIdStarted = Date.now();

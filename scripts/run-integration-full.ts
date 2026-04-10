@@ -2,15 +2,16 @@ import path from 'node:path';
 
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { getFreePort } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 
-const CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
-const CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
-const LOCAL_PORT = Number(process.env.LOCAL_PORT || '5737');
-const STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
+const DEFAULT_CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
+const DEFAULT_CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
+const DEFAULT_LOCAL_PORT = Number(process.env.LOCAL_PORT || '5737');
+const DEFAULT_STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
 const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
 const composeArgs = ['compose', '-p', COMPOSE_PROJECT, '-f', 'docker-compose.cluster.yml'];
-const runtimeRoot = path.resolve('.test-data/full-runtime');
+const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
 const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
 const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
@@ -18,6 +19,19 @@ const defaultTargets = [
   'tests/integration/ProvisionFlow.integration.test.ts',
   'tests/integration/CloudQuotaBusinessToken.integration.test.ts',
 ];
+
+interface RuntimePorts {
+  gateway: number;
+  css: number;
+  api: number;
+}
+
+interface FullRuntimePorts {
+  cloud: RuntimePorts;
+  cloudB: RuntimePorts;
+  local: RuntimePorts;
+  standalone: RuntimePorts;
+}
 
 function runCommand(
   command: string,
@@ -86,6 +100,39 @@ async function shouldReuseExistingInfra(): Promise<boolean> {
   return postgresReady && redisReady && minioReady;
 }
 
+async function allocatePort(preferredPort: number, reserved: Set<number>, host = '127.0.0.1'): Promise<number> {
+  let candidate = preferredPort;
+  while (true) {
+    while (reserved.has(candidate) || await hasTcpService(candidate, host, 250)) {
+      candidate += 1;
+    }
+
+    const port = await getFreePort(candidate, host);
+    if (!reserved.has(port) && !await hasTcpService(port, host, 250)) {
+      reserved.add(port);
+      return port;
+    }
+    candidate = Math.max(candidate + 1, port + 1);
+  }
+}
+
+async function allocateRuntimePorts(preferredGatewayPort: number, reserved: Set<number>): Promise<RuntimePorts> {
+  const gateway = await allocatePort(preferredGatewayPort, reserved);
+  const css = await allocatePort(preferredGatewayPort + 10, reserved);
+  const api = await allocatePort(preferredGatewayPort + 11, reserved);
+  return { gateway, css, api };
+}
+
+async function resolveFullRuntimePorts(): Promise<FullRuntimePorts> {
+  const reserved = new Set<number>();
+  return {
+    cloud: await allocateRuntimePorts(DEFAULT_CLOUD_PORT, reserved),
+    cloudB: await allocateRuntimePorts(DEFAULT_CLOUD_B_PORT, reserved),
+    local: await allocateRuntimePorts(DEFAULT_LOCAL_PORT, reserved),
+    standalone: await allocateRuntimePorts(DEFAULT_STANDALONE_PORT, reserved),
+  };
+}
+
 async function waitForService(name: string, baseUrl: string, maxRetries = 90, delayMs = 2000): Promise<void> {
   const statusUrl = `${baseUrl.replace(/\/$/, '')}/service/status`;
 
@@ -116,7 +163,7 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
   throw new Error(`[full] ${name} not ready: ${statusUrl}`);
 }
 
-async function startFullRuntimes(): Promise<XpodRuntimeHandle[]> {
+async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHandle[]> {
   const runtimes: XpodRuntimeHandle[] = [];
   const commonCloudEnv = {
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
@@ -140,10 +187,10 @@ async function startFullRuntimes(): Promise<XpodRuntimeHandle[]> {
   runtimes.push(await startXpodRuntime({
     mode: 'cloud',
     transport: 'port',
-    gatewayPort: CLOUD_PORT,
-    cssPort: CLOUD_PORT + 10,
-    apiPort: CLOUD_PORT + 11,
-    baseUrl: `http://localhost:${CLOUD_PORT}/`,
+    gatewayPort: ports.cloud.gateway,
+    cssPort: ports.cloud.css,
+    apiPort: ports.cloud.api,
+    baseUrl: `http://localhost:${ports.cloud.gateway}/`,
     runtimeRoot: path.join(runtimeRoot, 'cloud'),
     rootFilePath: path.join(runtimeRoot, 'cloud', 'data'),
     sparqlEndpoint: cloudDb,
@@ -154,10 +201,10 @@ async function startFullRuntimes(): Promise<XpodRuntimeHandle[]> {
   runtimes.push(await startXpodRuntime({
     mode: 'cloud',
     transport: 'port',
-    gatewayPort: CLOUD_B_PORT,
-    cssPort: CLOUD_B_PORT + 10,
-    apiPort: CLOUD_B_PORT + 11,
-    baseUrl: `http://localhost:${CLOUD_B_PORT}/`,
+    gatewayPort: ports.cloudB.gateway,
+    cssPort: ports.cloudB.css,
+    apiPort: ports.cloudB.api,
+    baseUrl: `http://localhost:${ports.cloudB.gateway}/`,
     runtimeRoot: path.join(runtimeRoot, 'cloud_b'),
     rootFilePath: path.join(runtimeRoot, 'cloud_b', 'data'),
     sparqlEndpoint: cloudDb,
@@ -168,17 +215,17 @@ async function startFullRuntimes(): Promise<XpodRuntimeHandle[]> {
   runtimes.push(await startXpodRuntime({
     mode: 'local',
     transport: 'port',
-    gatewayPort: LOCAL_PORT,
-    cssPort: LOCAL_PORT + 10,
-    apiPort: LOCAL_PORT + 11,
-    baseUrl: `http://localhost:${LOCAL_PORT}/`,
+    gatewayPort: ports.local.gateway,
+    cssPort: ports.local.css,
+    apiPort: ports.local.api,
+    baseUrl: `http://localhost:${ports.local.gateway}/`,
     runtimeRoot: path.join(runtimeRoot, 'local'),
     rootFilePath: path.join(runtimeRoot, 'local', 'data'),
     sparqlEndpoint: path.join(runtimeRoot, 'local', 'local-managed.sqlite'),
     identityDbUrl: path.join(runtimeRoot, 'local', 'local-managed-identity.sqlite'),
     env: {
-      CSS_IDP_URL: `http://localhost:${CLOUD_PORT}`,
-      XPOD_CLOUD_API_ENDPOINT: `http://localhost:${CLOUD_PORT}`,
+      CSS_IDP_URL: `http://localhost:${ports.cloud.gateway}`,
+      XPOD_CLOUD_API_ENDPOINT: `http://localhost:${ports.cloud.gateway}`,
       XPOD_NODE_ID: 'local-managed-node',
       XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
@@ -189,10 +236,10 @@ async function startFullRuntimes(): Promise<XpodRuntimeHandle[]> {
   runtimes.push(await startXpodRuntime({
     mode: 'local',
     transport: 'port',
-    gatewayPort: STANDALONE_PORT,
-    cssPort: STANDALONE_PORT + 10,
-    apiPort: STANDALONE_PORT + 11,
-    baseUrl: `http://localhost:${STANDALONE_PORT}/`,
+    gatewayPort: ports.standalone.gateway,
+    cssPort: ports.standalone.css,
+    apiPort: ports.standalone.api,
+    baseUrl: `http://localhost:${ports.standalone.gateway}/`,
     runtimeRoot: path.join(runtimeRoot, 'standalone'),
     rootFilePath: path.join(runtimeRoot, 'standalone', 'data'),
     sparqlEndpoint: path.join(runtimeRoot, 'standalone', 'local-standalone.sqlite'),
@@ -206,20 +253,29 @@ async function startFullRuntimes(): Promise<XpodRuntimeHandle[]> {
   return runtimes;
 }
 
-async function waitForFullPorts(): Promise<void> {
+async function waitForFullPorts(ports: FullRuntimePorts): Promise<void> {
   await Promise.all([
-    waitForService('cloud', `http://localhost:${CLOUD_PORT}`),
-    waitForService('cloud_b', `http://localhost:${CLOUD_B_PORT}`),
-    waitForService('local', `http://localhost:${LOCAL_PORT}`),
-    waitForService('standalone', `http://localhost:${STANDALONE_PORT}`),
+    waitForService('cloud', `http://localhost:${ports.cloud.gateway}`),
+    waitForService('cloud_b', `http://localhost:${ports.cloudB.gateway}`),
+    waitForService('local', `http://localhost:${ports.local.gateway}`),
+    waitForService('standalone', `http://localhost:${ports.standalone.gateway}`),
   ]);
 }
 
 async function main(): Promise<void> {
   const targets = process.argv.slice(2);
   const testTargets = targets.length > 0 ? targets : defaultTargets;
+  const ports = await resolveFullRuntimePorts();
   const sharedEnv = {
-    CSS_BASE_URL: `http://localhost:${STANDALONE_PORT}`,
+    CSS_BASE_URL: `http://localhost:${ports.standalone.gateway}`,
+    CLOUD_PORT: String(ports.cloud.gateway),
+    CLOUD_API_PORT: String(ports.cloud.api),
+    CLOUD_B_PORT: String(ports.cloudB.gateway),
+    CLOUD_B_API_PORT: String(ports.cloudB.api),
+    LOCAL_PORT: String(ports.local.gateway),
+    LOCAL_API_PORT: String(ports.local.api),
+    STANDALONE_PORT: String(ports.standalone.gateway),
+    STANDALONE_API_PORT: String(ports.standalone.api),
   };
   const runtimes: XpodRuntimeHandle[] = [];
   const reuseExistingInfra = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true' || await shouldReuseExistingInfra();
@@ -236,8 +292,8 @@ async function main(): Promise<void> {
     if (startedInfra) {
       await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
     }
-    runtimes.push(...await startFullRuntimes());
-    await waitForFullPorts();
+    runtimes.push(...await startFullRuntimes(ports));
+    await waitForFullPorts(ports);
 
     await runCommand('bun', ['run', 'test:setup'], { env: sharedEnv });
 

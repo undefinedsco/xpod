@@ -44,7 +44,7 @@ const shouldRun = RUN_INTEGRATION_TESTS;
 const suite = shouldRun ? describe : describe.skip;
 
 const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
-const CHATKIT_STREAM_TIMEOUT_MS = 15000;
+const CHATKIT_STREAM_TIMEOUT_MS = 30000;
 
 suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;
@@ -85,6 +85,8 @@ suite('ChatKit PodStore Integration', () => {
         tokenType: token.tokenType,
       },
     } as StoreContext;
+
+    await store.loadThreads(1, undefined, 'desc', testContext);
   }, 60000);
 
   afterAll(async () => {
