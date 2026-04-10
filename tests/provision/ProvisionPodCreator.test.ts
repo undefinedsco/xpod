@@ -198,17 +198,16 @@ describe('ProvisionPodCreator', () => {
   });
 
   describe('without provisionCode (standard mode)', () => {
-    it('should delegate to BasePodCreator', async () => {
-      // Mock the parent handle
-      const parentResult = {
+    it('should create pod through standard mode path', async () => {
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+      const expectedResult = {
         podUrl: `${baseUrl}bob/`,
         webId: `${baseUrl}bob/profile/card#me`,
-        podId: 'pod-id-2',
-        webIdLink: 'webid-link-2',
+        podId: 'pod-id-1',
+        webIdLink: 'webid-link-1',
       };
-
-      vi.spyOn(Object.getPrototypeOf(ProvisionPodCreator.prototype), 'handle')
-        .mockResolvedValue(parentResult);
 
       const result = await creator.handle({
         name: 'bob',
@@ -216,7 +215,27 @@ describe('ProvisionPodCreator', () => {
         settings: {},
       });
 
-      expect(result).toEqual(parentResult);
+      expect(result).toEqual(expectedResult);
+      expect((creator as any).handleWebId).toHaveBeenCalledWith(
+        true,
+        `${baseUrl}bob/profile/card#me`,
+        'account-2',
+        expect.objectContaining({
+          base: { path: `${baseUrl}bob/` },
+          webId: `${baseUrl}bob/profile/card#me`,
+          oidcIssuer: baseUrl,
+        }),
+      );
+      expect((creator as any).createPod).toHaveBeenCalledWith(
+        'account-2',
+        expect.objectContaining({
+          base: { path: `${baseUrl}bob/` },
+          webId: `${baseUrl}bob/profile/card#me`,
+          oidcIssuer: baseUrl,
+        }),
+        false,
+        'webid-link-1',
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
   });
