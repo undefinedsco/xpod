@@ -5,7 +5,7 @@ import clsx from 'clsx';
 import { useAuth } from '../context/AuthContext';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
-import { completeRegistrationProvisioning } from '../utils/registration-flow';
+import { bootstrapAccountPasswordLogin, completeRegistrationProvisioning } from '../utils/registration-flow';
 
 interface WelcomePageProps {
   initialIsRegister?: boolean;
@@ -62,33 +62,14 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           setIsLoading(false);
           return;
         }
-        // Step 1: Create account
-        let res = await fetch(controls?.account?.create || '/.account/account/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({}),
+        const { loginUrl } = await bootstrapAccountPasswordLogin({
+          accountCreateUrl: controls?.account?.create || '/.account/account/',
+          email,
+          password,
+          idpIndex,
         });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to create account');
 
-        // Step 2: Fetch controls to get password.create endpoint
-        res = await fetch(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' });
-        const data = await res.json();
-        const addPasswordUrl = data.controls?.password?.create;
-        if (!addPasswordUrl) throw new Error('Password endpoint not found');
-
-        // Step 3: Set password
-        res = await fetch(addPasswordUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ email, password }),
-        });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to set password');
-
-        // Step 4: Auto-login after registration
-        const loginUrl = data.controls?.password?.login || controls?.password?.login || '/.account/login/password/';
-        res = await fetch(loginUrl, {
+        let res = await fetch(loginUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
           credentials: 'include',

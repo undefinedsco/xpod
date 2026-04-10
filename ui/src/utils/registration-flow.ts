@@ -4,11 +4,80 @@ export interface RegistrationFlowResult {
   redirectedToConsent: boolean;
 }
 
+export interface RegistrationAccountBootstrapOptions {
+  accountCreateUrl: string;
+  email: string;
+  password: string;
+  fetchImpl?: typeof fetch;
+  idpIndex: string;
+}
+
 export interface RegistrationFlowOptions {
   fetchImpl?: typeof fetch;
   idpIndex: string;
   username: string;
-  enableManagedProfile?: boolean;
+}
+
+function accountTokenHeaders(accountToken: string): HeadersInit {
+  return {
+    Accept: 'application/json',
+    Authorization: `CSS-Account-Token ${accountToken}`,
+  };
+}
+
+export async function bootstrapAccountPasswordLogin(
+  options: RegistrationAccountBootstrapOptions,
+): Promise<{ loginUrl: string }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  let res = await fetchImpl(options.accountCreateUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) {
+    throw new Error((await res.json().catch(() => ({})) as any).message || 'Failed to create account');
+  }
+
+  const accountCreateResult = await res.json().catch(() => ({})) as { authorization?: string };
+  const accountToken = typeof accountCreateResult.authorization === 'string' ? accountCreateResult.authorization : '';
+  if (!accountToken) {
+    throw new Error('Account token not returned');
+  }
+
+  res = await fetchImpl(options.idpIndex, {
+    headers: accountTokenHeaders(accountToken),
+    credentials: 'include',
+  } as RequestInit);
+  if (!res.ok) {
+    throw new Error((await res.json().catch(() => ({})) as any).message || 'Failed to load account controls');
+  }
+
+  const controls = await res.json().catch(() => ({})) as any;
+  const addPasswordUrl = controls.controls?.password?.create;
+  const loginUrl = controls.controls?.password?.login;
+  if (!addPasswordUrl) {
+    throw new Error('Password endpoint not found');
+  }
+  if (!loginUrl) {
+    throw new Error('Login endpoint not found');
+  }
+
+  res = await fetchImpl(addPasswordUrl, {
+    method: 'POST',
+    headers: {
+      ...accountTokenHeaders(accountToken),
+      'Content-Type': 'application/json',
+    },
+    credentials: 'include',
+    body: JSON.stringify({ email: options.email, password: options.password }),
+  });
+  if (!res.ok) {
+    throw new Error((await res.json().catch(() => ({})) as any).message || 'Failed to set password');
+  }
+
+  return { loginUrl };
 }
 
 export async function defaultWaitForWebIdReady(
@@ -46,25 +115,11 @@ export async function completeRegistrationProvisioning(
   options: RegistrationFlowOptions,
 ): Promise<RegistrationFlowResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const { idpIndex, username, enableManagedProfile = true } = options;
-
-  const profileRes = await fetchImpl('/api/v1/identity', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      username,
-      storageMode: 'local',
-    }),
-  });
-  if (!profileRes.ok && profileRes.status !== 409 && profileRes.status !== 404) {
-    throw new Error((await profileRes.json().catch(() => ({})) as any).message || 'Failed to create WebID profile');
-  }
+  const { idpIndex, username } = options;
 
   let res = await fetchImpl(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' } as RequestInit);
   const accountData = await res.json().catch(() => ({})) as any;
   const createPodUrl = accountData.controls?.account?.pod;
-  const linkWebIdUrl = accountData.controls?.account?.webId;
   if (!createPodUrl) {
     throw new Error('Pod creation endpoint not found');
   }
@@ -81,57 +136,7 @@ export async function completeRegistrationProvisioning(
   }
   const podCreateResult = await res.json().catch(() => ({})) as any;
   clearStoredProvisionCode();
-
-  const storageUrl =
-    typeof podCreateResult.podUrl === 'string' && podCreateResult.podUrl.length > 0
-      ? podCreateResult.podUrl
-      : undefined;
-  if (storageUrl) {
-    await fetchImpl(`/api/v1/identity/${encodeURIComponent(username)}/storage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        storageUrl,
-        storageMode: 'local',
-      }),
-    } as RequestInit).catch(() => undefined);
-  }
-
-  if (enableManagedProfile && profileRes.status !== 404 && linkWebIdUrl) {
-    const profileLookupRes = await fetchImpl(`/api/v1/identity/${encodeURIComponent(username)}`, {
-      headers: { Accept: 'application/json' },
-      credentials: 'include',
-    } as RequestInit);
-    if (!profileLookupRes.ok) {
-      throw new Error((await profileLookupRes.json().catch(() => ({})) as any).message || 'Failed to load WebID profile');
-    }
-    const profile = await profileLookupRes.json().catch(() => ({})) as any;
-    const webIdUrl = typeof profile.webidUrl === 'string' ? profile.webidUrl : '';
-    if (!webIdUrl) {
-      throw new Error('WebID profile URL missing');
-    }
-
-    const linkRes = await fetchImpl(linkWebIdUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ webId: webIdUrl }),
-    });
-    if (!linkRes.ok) {
-      throw new Error((await linkRes.json().catch(() => ({})) as any).message || 'Failed to link WebID');
-    }
-
-    const pickWebIdRes = await fetchImpl(`${idpIndex}oidc/pick-webid/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ webId: webIdUrl, remember: false }),
-    });
-    if (!pickWebIdRes.ok) {
-      throw new Error((await pickWebIdRes.json().catch(() => ({})) as any).message || 'Failed to select WebID');
-    }
-  }
+  void podCreateResult;
 
   await defaultWaitForWebIdReady(fetchImpl, idpIndex);
 

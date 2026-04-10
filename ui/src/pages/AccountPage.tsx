@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight, Router } from 'lucide-react';
+import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
 
@@ -11,6 +11,24 @@ import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
 function generateApiKey(clientId: string, clientSecret: string): string {
   const encoded = btoa(`${clientId}:${clientSecret}`);
   return `sk-${encoded}`;
+}
+
+function getAiApiBaseUrl(): string {
+  if (typeof window === 'undefined') {
+    return 'https://api.undefineds.co/v1';
+  }
+
+  const { protocol, hostname, origin } = window.location;
+
+  if (hostname.startsWith('id.')) {
+    return `${protocol}//api.${hostname.slice(3)}/v1`;
+  }
+
+  if (hostname.startsWith('api.')) {
+    return `${origin}/v1`;
+  }
+
+  return `${origin.replace(/\/$/, '')}/v1`;
 }
 
 export function AccountPage() {
@@ -31,6 +49,7 @@ export function AccountPage() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showWebIdDropdown, setShowWebIdDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const aiApiBaseUrl = getAiApiBaseUrl();
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -302,22 +321,6 @@ export function AccountPage() {
 
         <h1 className="text-2xl font-bold">Account Dashboard</h1>
 
-        <section>
-          <div className="flex justify-between items-center mb-1">
-            <h2 className="text-sm font-semibold text-zinc-700 flex items-center gap-2"><Router className="w-4 h-4 text-[#7C4DFF]" />外网接入</h2>
-            <Link to="/.account/settings/" className="flex items-center gap-1.5 px-3 py-1.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white text-xs rounded-lg transition-colors">
-              去设置
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
-          </div>
-          <p className="text-[11px] text-zinc-500 mb-3">登录后可在设置页填写隧道 / FRP 凭证，将当前节点从局域网访问升级为外网可访问，且不影响现有数据。</p>
-          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <p className="text-xs text-zinc-600 leading-6">
-              如果你现在只在局域网使用 Xpod，后续需要远程访问时，进入设置页配置隧道供应商与 Token 即可。
-            </p>
-          </div>
-        </section>
-
         {/* Pods Section */}
         <section>
           <div className="flex justify-between items-center mb-1">
@@ -409,7 +412,9 @@ export function AccountPage() {
               </button>
             )}
           </div>
-          <p className="text-[11px] text-zinc-500 mb-3">API Keys for programmatic access. Use with <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code></p>
+          <p className="text-[11px] text-zinc-500 mb-3">
+            AI API keys for model endpoints such as <code className="bg-zinc-100 px-1 py-0.5 rounded">/v1/chat/completions</code> and <code className="bg-zinc-100 px-1 py-0.5 rounded">/v1/responses</code>. Send as <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code>.
+          </p>
           
           {!controls?.account?.clientCredentials ? (
             <div className="bg-white border border-zinc-200 rounded-xl shadow-sm p-4">
@@ -519,7 +524,32 @@ export function AccountPage() {
                           </button>
                         </div>
                       </div>
-                      <p className="mt-3 text-[10px] text-zinc-400">Use the API Key with: <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code></p>
+                      <div className="mt-3 rounded-lg border border-zinc-200 bg-white p-3 text-xs">
+                        <p className="mb-2 font-medium text-zinc-700">Usage</p>
+                        <div className="space-y-2 font-mono text-[11px]">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="text-zinc-400 select-none">Base URL</span>
+                              <p className="break-all text-zinc-600">{aiApiBaseUrl}</p>
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(aiApiBaseUrl, 'baseurl')}
+                              className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0"
+                              title="Copy Base URL"
+                            >
+                              {copiedField === 'baseurl' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
+                          <div>
+                            <span className="text-zinc-400 select-none">Authorization</span>
+                            <p className="break-all text-zinc-600">Bearer {generateApiKey(newCredential.id, newCredential.secret)}</p>
+                          </div>
+                          <div>
+                            <span className="text-zinc-400 select-none">Endpoints</span>
+                            <p className="break-all text-zinc-600">/chat/completions · /responses · /models</p>
+                          </div>
+                        </div>
+                      </div>
                       <button onClick={() => setNewCredential(null)} className="mt-2 text-xs text-zinc-500 hover:text-zinc-900 font-medium">Done</button>
                     </div>
                   </div>

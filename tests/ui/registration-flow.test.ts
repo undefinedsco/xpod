@@ -1,27 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { completeRegistrationProvisioning } from '../../ui/src/utils/registration-flow';
+import { bootstrapAccountPasswordLogin, completeRegistrationProvisioning } from '../../ui/src/utils/registration-flow';
 
 describe('completeRegistrationProvisioning', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('creates profile, pod, storage link, webid link, and oidc pick before consent', async () => {
+  it('creates pod and waits for server-linked WebID before consent', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(201, { success: true }))
       .mockResolvedValueOnce(jsonResponse(200, {
         controls: {
           account: {
             pod: '/.account/account/pod',
-            webId: '/.account/account/webid',
           },
         },
       }))
       .mockResolvedValueOnce(jsonResponse(201, { podUrl: 'https://node.example/alice/' }))
-      .mockResolvedValueOnce(jsonResponse(200, { success: true }))
-      .mockResolvedValueOnce(jsonResponse(200, { webidUrl: 'https://id.example/alice/profile/card#me' }))
-      .mockResolvedValueOnce(jsonResponse(200, { success: true }))
-      .mockResolvedValueOnce(jsonResponse(200, { location: '/.account/oidc/consent/' }))
       .mockResolvedValueOnce(jsonResponse(200, { webIds: ['https://id.example/alice/profile/card#me'] }))
       .mockResolvedValueOnce(jsonResponse(200, { client: { client_id: 'linx' } }));
 
@@ -32,11 +26,53 @@ describe('completeRegistrationProvisioning', () => {
     });
 
     expect(result).toEqual({ redirectedToConsent: true });
-    expect(fetchMock).toHaveBeenCalledTimes(9);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/identity');
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/pod');
-    expect(fetchMock.mock.calls[5]?.[0]).toBe('/.account/account/webid');
-    expect(fetchMock.mock.calls[6]?.[0]).toBe('https://id.example/oidc/pick-webid/');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://id.example/');
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://id.example/oidc/pick-webid/');
+  });
+});
+
+describe('bootstrapAccountPasswordLogin', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('creates account, uses CSS account token, and resolves login endpoint', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, { authorization: 'acct-token-1' }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        controls: {
+          password: {
+            create: '/.account/password/create',
+            login: '/.account/login/password/',
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {}));
+
+    const result = await bootstrapAccountPasswordLogin({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      accountCreateUrl: '/.account/account/',
+      email: 'alice@example.com',
+      password: 'secret',
+      idpIndex: 'https://id.example/.account/',
+    });
+
+    expect(result).toEqual({ loginUrl: '/.account/login/password/' });
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'CSS-Account-Token acct-token-1',
+      },
+    });
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'CSS-Account-Token acct-token-1',
+        'Content-Type': 'application/json',
+      },
+    });
   });
 });
 
