@@ -4,8 +4,8 @@ import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check, User } f
 import clsx from 'clsx';
 import { useAuth } from '../context/AuthContext';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
-import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
+import { completeRegistrationProvisioning } from '../utils/registration-flow';
 
 interface WelcomePageProps {
   initialIsRegister?: boolean;
@@ -96,37 +96,11 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Auto-login failed');
 
-        // Step 5: Create initial Pod using the requested username
-        res = await fetch(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' });
-        const accountData = await res.json().catch(() => ({}));
-        const createPodUrl = accountData.controls?.account?.pod;
-        if (!createPodUrl) throw new Error('Pod creation endpoint not found');
-
-        res = await fetch(createPodUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(buildPodCreatePayload(normalizedUsername)),
+        const result = await completeRegistrationProvisioning({
+          idpIndex,
+          username: normalizedUsername,
         });
-        if (!res.ok) {
-          const podError = await res.json().catch(() => ({}));
-          throw new Error(podError.message || 'Failed to create pod');
-        }
-        clearStoredProvisionCode();
-
-        // Registration complete
-        const consentCheck = await fetch('/.account/oidc/consent/', {
-          headers: { Accept: 'application/json' },
-          credentials: 'include',
-        });
-        if (consentCheck.ok) {
-          const consentData = await consentCheck.json().catch(() => ({}));
-          if (consentData.client) {
-            window.location.href = '/.account/oidc/consent/';
-            return;
-          }
-        }
-        window.location.href = '/.account/account/';
+        window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/account/';
       } else {
         const res = await fetch(controls?.password?.login || '/.account/login/password/', {
           method: 'POST',
@@ -135,56 +109,42 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           body: JSON.stringify({ email, password }),
         });
         const json = await res.json().catch(() => ({}));
-        console.log('[Login] Response status:', res.status);
-        console.log('[Login] Response json:', json);
-        console.log('[Login] Location header:', res.headers.get('Location'));
         
         if (res.ok) {
           // Check if there's an OIDC flow waiting (CSS returns location to consent)
           const headerLocation = res.headers.get('Location');
-          console.log('[Login] json.location:', json.location);
-          console.log('[Login] headerLocation:', headerLocation);
           
           if (json.location) {
-            console.log('[Login] Redirecting to json.location:', json.location);
             window.location.href = json.location;
             return;
           }
           if (headerLocation) {
-            console.log('[Login] Redirecting to headerLocation:', headerLocation);
             window.location.href = headerLocation;
             return;
           }
           
           // No OIDC redirect, check for returnTo or check if OIDC consent is pending
           const returnTo = consumeReturnTo();
-          console.log('[Login] returnTo:', returnTo);
           if (returnTo) {
-            console.log('[Login] Redirecting to returnTo:', returnTo);
             window.location.href = returnTo;
             return;
           }
           
           // Check if there's an OIDC session waiting for consent
-          console.log('[Login] Checking for OIDC consent...');
           try {
             const consentCheck = await fetch('/.account/oidc/consent/', {
               headers: { Accept: 'application/json' },
               credentials: 'include',
             });
-            console.log('[Login] Consent check status:', consentCheck.status);
             if (consentCheck.ok) {
               // OIDC flow is waiting, go to consent
-              console.log('[Login] OIDC flow waiting, redirecting to consent');
               window.location.href = '/.account/oidc/consent/';
               return;
             }
-          } catch (e) {
-            console.log('[Login] Consent check error:', e);
+          } catch {
             // No OIDC flow, continue to dashboard
           }
           
-          console.log('[Login] No redirect found, going to dashboard');
           window.location.href = '/.account/account/';
         } else {
           alert(json.message || 'Login failed');

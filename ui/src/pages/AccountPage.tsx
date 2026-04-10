@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
+import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight, Router } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
 
@@ -301,6 +301,22 @@ export function AccountPage() {
         )}
 
         <h1 className="text-2xl font-bold">Account Dashboard</h1>
+
+        <section>
+          <div className="flex justify-between items-center mb-1">
+            <h2 className="text-sm font-semibold text-zinc-700 flex items-center gap-2"><Router className="w-4 h-4 text-[#7C4DFF]" />外网接入</h2>
+            <Link to="/.account/settings/" className="flex items-center gap-1.5 px-3 py-1.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white text-xs rounded-lg transition-colors">
+              去设置
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+          <p className="text-[11px] text-zinc-500 mb-3">登录后可在设置页填写隧道 / FRP 凭证，将当前节点从局域网访问升级为外网可访问，且不影响现有数据。</p>
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <p className="text-xs text-zinc-600 leading-6">
+              如果你现在只在局域网使用 Xpod，后续需要远程访问时，进入设置页配置隧道供应商与 Token 即可。
+            </p>
+          </div>
+        </section>
 
         {/* Pods Section */}
         <section>
