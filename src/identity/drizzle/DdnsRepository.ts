@@ -7,7 +7,7 @@
 import { eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
 import { getLoggerFor } from 'global-logger-factory';
-import * as pgSchema from './schema.pg';
+import { getSchema, toDbTimestamp, fromDbTimestamp } from './db';
 
 const logger = getLoggerFor('DdnsRepository');
 
@@ -49,7 +49,11 @@ export interface UpdateDdnsRecordInput {
 }
 
 export class DdnsRepository {
-  constructor(private readonly db: IdentityDatabase) {}
+  private readonly schema: ReturnType<typeof getSchema>;
+
+  constructor(private readonly db: IdentityDatabase) {
+    this.schema = getSchema(db);
+  }
 
   // ==================== Domain Pool ====================
 
@@ -63,12 +67,12 @@ export class DdnsRepository {
   ): Promise<DdnsDomain> {
     const now = new Date();
 
-    await this.db.insert(pgSchema.ddnsDomains).values({
+    await this.db.insert(this.schema.ddnsDomains).values({
       domain,
       status: 'active',
       provider,
       zoneId,
-      createdAt: now,
+      createdAt: toDbTimestamp(this.db, now),
     });
 
     logger.info(`Added domain to pool: ${domain}`);
@@ -88,15 +92,15 @@ export class DdnsRepository {
   async getActiveDomains(): Promise<DdnsDomain[]> {
     const results = await this.db
       .select()
-      .from(pgSchema.ddnsDomains)
-      .where(eq(pgSchema.ddnsDomains.status, 'active'));
+      .from(this.schema.ddnsDomains)
+      .where(eq(this.schema.ddnsDomains.status, 'active'));
 
     return results.map((row: typeof results[0]) => ({
       domain: row.domain,
       status: row.status as 'active' | 'suspended',
       provider: row.provider ?? undefined,
       zoneId: row.zoneId ?? undefined,
-      createdAt: row.createdAt,
+      createdAt: fromDbTimestamp(row.createdAt) ?? new Date(0),
     }));
   }
 
@@ -105,9 +109,9 @@ export class DdnsRepository {
    */
   async suspendDomain(domain: string): Promise<void> {
     await this.db
-      .update(pgSchema.ddnsDomains)
+      .update(this.schema.ddnsDomains)
       .set({ status: 'suspended' })
-      .where(eq(pgSchema.ddnsDomains.domain, domain));
+      .where(eq(this.schema.ddnsDomains.domain, domain));
 
     logger.info(`Suspended domain: ${domain}`);
   }
@@ -129,7 +133,7 @@ export class DdnsRepository {
     const now = new Date();
     const recordType = ipv6Address ? 'AAAA' : 'A';
 
-    await this.db.insert(pgSchema.ddnsRecords).values({
+    await this.db.insert(this.schema.ddnsRecords).values({
       subdomain,
       domain,
       ipAddress,
@@ -139,8 +143,8 @@ export class DdnsRepository {
       username,
       status: 'active',
       ttl: 60,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: toDbTimestamp(this.db, now),
+      updatedAt: toDbTimestamp(this.db, now),
     });
 
     logger.info(`Allocated subdomain: ${subdomain}.${domain}`);
@@ -166,8 +170,8 @@ export class DdnsRepository {
   async getRecord(subdomain: string): Promise<DdnsRecord | null> {
     const results = await this.db
       .select()
-      .from(pgSchema.ddnsRecords)
-      .where(eq(pgSchema.ddnsRecords.subdomain, subdomain))
+      .from(this.schema.ddnsRecords)
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain))
       .limit(1);
 
     if (results.length === 0) {
@@ -186,8 +190,8 @@ export class DdnsRepository {
       status: (row.status as 'active' | 'banned') ?? 'active',
       bannedReason: row.bannedReason ?? undefined,
       ttl: row.ttl ?? 60,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
+      createdAt: fromDbTimestamp(row.createdAt) ?? new Date(0),
+      updatedAt: fromDbTimestamp(row.updatedAt) ?? new Date(0),
     };
   }
 
@@ -208,7 +212,7 @@ export class DdnsRepository {
     }
 
     const now = new Date();
-    const updates: Record<string, unknown> = { updatedAt: now };
+    const updates: Record<string, unknown> = { updatedAt: toDbTimestamp(this.db, now) };
 
     if (input.ipAddress !== undefined) {
       updates.ipAddress = input.ipAddress;
@@ -222,9 +226,9 @@ export class DdnsRepository {
     }
 
     await this.db
-      .update(pgSchema.ddnsRecords)
+      .update(this.schema.ddnsRecords)
       .set(updates)
-      .where(eq(pgSchema.ddnsRecords.subdomain, subdomain));
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
 
     logger.info(`Updated DDNS record: ${subdomain} -> ${input.ipAddress ?? input.ipv6Address}`);
 
@@ -242,13 +246,13 @@ export class DdnsRepository {
    */
   async banSubdomain(subdomain: string, reason: string): Promise<void> {
     await this.db
-      .update(pgSchema.ddnsRecords)
+      .update(this.schema.ddnsRecords)
       .set({
         status: 'banned',
         bannedReason: reason,
-        updatedAt: new Date(),
+        updatedAt: toDbTimestamp(this.db, new Date()),
       })
-      .where(eq(pgSchema.ddnsRecords.subdomain, subdomain));
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
 
     logger.warn(`Banned subdomain: ${subdomain}, reason: ${reason}`);
   }
@@ -258,13 +262,13 @@ export class DdnsRepository {
    */
   async unbanSubdomain(subdomain: string): Promise<void> {
     await this.db
-      .update(pgSchema.ddnsRecords)
+      .update(this.schema.ddnsRecords)
       .set({
         status: 'active',
         bannedReason: null,
-        updatedAt: new Date(),
+        updatedAt: toDbTimestamp(this.db, new Date()),
       })
-      .where(eq(pgSchema.ddnsRecords.subdomain, subdomain));
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
 
     logger.info(`Unbanned subdomain: ${subdomain}`);
   }
@@ -274,8 +278,8 @@ export class DdnsRepository {
    */
   async releaseSubdomain(subdomain: string): Promise<boolean> {
     await this.db
-      .delete(pgSchema.ddnsRecords)
-      .where(eq(pgSchema.ddnsRecords.subdomain, subdomain));
+      .delete(this.schema.ddnsRecords)
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
 
     logger.info(`Released subdomain: ${subdomain}`);
     return true;
@@ -287,8 +291,8 @@ export class DdnsRepository {
   async getRecordsByUsername(username: string): Promise<DdnsRecord[]> {
     const results = await this.db
       .select()
-      .from(pgSchema.ddnsRecords)
-      .where(eq(pgSchema.ddnsRecords.username, username));
+      .from(this.schema.ddnsRecords)
+      .where(eq(this.schema.ddnsRecords.username, username));
 
     return results.map((row: typeof results[0]) => ({
       subdomain: row.subdomain,
@@ -301,8 +305,8 @@ export class DdnsRepository {
       status: (row.status as 'active' | 'banned') ?? 'active',
       bannedReason: row.bannedReason ?? undefined,
       ttl: row.ttl ?? 60,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
+      createdAt: fromDbTimestamp(row.createdAt) ?? new Date(0),
+      updatedAt: fromDbTimestamp(row.updatedAt) ?? new Date(0),
     }));
   }
 
@@ -312,8 +316,8 @@ export class DdnsRepository {
   async getRecordByNodeId(nodeId: string): Promise<DdnsRecord | null> {
     const results = await this.db
       .select()
-      .from(pgSchema.ddnsRecords)
-      .where(eq(pgSchema.ddnsRecords.nodeId, nodeId))
+      .from(this.schema.ddnsRecords)
+      .where(eq(this.schema.ddnsRecords.nodeId, nodeId))
       .limit(1);
 
     if (results.length === 0) {
@@ -332,8 +336,8 @@ export class DdnsRepository {
       status: (row.status as 'active' | 'banned') ?? 'active',
       bannedReason: row.bannedReason ?? undefined,
       ttl: row.ttl ?? 60,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
+      createdAt: fromDbTimestamp(row.createdAt) ?? new Date(0),
+      updatedAt: fromDbTimestamp(row.updatedAt) ?? new Date(0),
     };
   }
 }

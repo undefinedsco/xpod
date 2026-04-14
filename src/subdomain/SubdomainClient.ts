@@ -269,8 +269,7 @@ export class SubdomainClient {
         method: options.method,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.nodeToken}`,
-          'X-Node-Id': this.nodeId,
+          'Authorization': `XpodNode ${this.nodeId}:${this.nodeToken}`,
         },
         body: options.body,
         signal: controller.signal,

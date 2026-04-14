@@ -17,6 +17,8 @@ import { registerBusinessToken } from './business-token';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
+const OFFICIAL_CLOUD_IDENTITY_ORIGIN = 'https://id.undefineds.co';
+
 function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
 }
@@ -100,9 +102,9 @@ export function loadConfigFromEnv(): ApiContainerConfig {
 
     // OIDC Issuer (Local 托管式使用 Cloud IdP)
     // 如果配置了 XPOD_NODE_TOKEN，默认使用 Cloud IdP
-    oidcIssuer: process.env.XPOD_OIDC_ISSUER ?? process.env.CSS_OIDC_ISSUER ?? (
+    oidcIssuer: process.env.XPOD_OIDC_ISSUER ?? process.env.CSS_OIDC_ISSUER ?? process.env.CSS_IDP_URL ?? (
       process.env.XPOD_NODE_TOKEN
-        ? (process.env.XPOD_CLOUD_API_ENDPOINT ?? 'https://id.undefineds.co')
+        ? OFFICIAL_CLOUD_IDENTITY_ORIGIN
         : undefined
     ),
 

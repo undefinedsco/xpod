@@ -310,6 +310,29 @@ function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
+    CREATE TABLE IF NOT EXISTS identity_ddns_domain (
+      domain TEXT PRIMARY KEY,
+      status TEXT DEFAULT 'active',
+      provider TEXT,
+      zone_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_ddns_record (
+      subdomain TEXT PRIMARY KEY,
+      domain TEXT NOT NULL,
+      ip_address TEXT,
+      ipv6_address TEXT,
+      record_type TEXT DEFAULT 'A',
+      node_id TEXT,
+      username TEXT,
+      status TEXT DEFAULT 'active',
+      banned_reason TEXT,
+      ttl INTEGER DEFAULT 60,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
     CREATE TABLE IF NOT EXISTS identity_service_token (
       id TEXT PRIMARY KEY,
       token_hash TEXT NOT NULL UNIQUE,
