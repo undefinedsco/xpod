@@ -17,6 +17,7 @@ export interface DdnsManagerOptions {
   client: SubdomainClient;
   detector: EdgeNodeCapabilityDetector;
   subdomain: string;
+  localPort?: number;
   intervalMs?: number;
   autoAllocate?: boolean;
 
@@ -29,6 +30,7 @@ export class DdnsManager {
   private readonly client: SubdomainClient;
   private readonly detector: EdgeNodeCapabilityDetector;
   private readonly subdomain: string;
+  private readonly localPort?: number;
   private readonly intervalMs: number;
   private readonly autoAllocate: boolean;
   private readonly tunnelProvider: 'cloudflare' | 'sakura_frp' | 'none';
@@ -44,6 +46,7 @@ export class DdnsManager {
     this.client = options.client;
     this.detector = options.detector;
     this.subdomain = options.subdomain;
+    this.localPort = options.localPort;
     this.intervalMs = options.intervalMs ?? 60_000;
     this.autoAllocate = options.autoAllocate ?? true;
     this.tunnelProvider = options.tunnelProvider ?? 'none';
@@ -145,6 +148,7 @@ export class DdnsManager {
       ipv6Address: this.lastMode === 'direct' ? ipv6 : undefined,
       mode: this.lastMode === 'tunnel' ? 'tunnel' : 'direct',
       tunnelProvider: this.tunnelProvider,
+      localPort: this.localPort,
     });
 
     if (result.success) {
@@ -172,6 +176,7 @@ export class DdnsManager {
       ipv6Address: this.lastMode === 'direct' ? ipv6 : undefined,
       mode: this.lastMode === 'tunnel' ? 'tunnel' : 'direct',
       tunnelProvider: this.tunnelProvider,
+      localPort: this.localPort,
     });
 
     if (result.success) {

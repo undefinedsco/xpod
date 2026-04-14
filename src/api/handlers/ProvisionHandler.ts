@@ -17,10 +17,14 @@ import type { ServerResponse, IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
+import type { TunnelProvider, TunnelConfig } from '../../tunnel/TunnelProvider';
 import { ProvisionCodeCodec } from '../../provision/ProvisionCodeCodec';
 
 export interface ProvisionHandlerOptions {
   repository: EdgeNodeRepository;
+  ddnsRepo?: DdnsRepository;
+  tunnelProvider?: TunnelProvider;
   /** Cloud baseUrl，用于派生 provisionCode 签名密钥 */
   baseUrl: string;
   /** 节点域名根域名，如 "undefineds.site" */
@@ -53,7 +57,14 @@ export function registerProvisionRoutes(
    *   { nodeId, nodeToken, serviceToken, provisionCode, spDomain? }
    */
   server.post('/provision/nodes', async (request, response) => {
-    let body: { publicUrl?: string; nodeId?: string; displayName?: string; ipv4?: string; serviceToken?: string };
+    let body: {
+      publicUrl?: string;
+      nodeId?: string;
+      displayName?: string;
+      ipv4?: string;
+      serviceToken?: string;
+      localPort?: number;
+    };
     try {
       body = await readJsonBody(request) as any ?? {};
     } catch {
@@ -81,28 +92,30 @@ export function registerProvisionRoutes(
         serviceToken: body.serviceToken,
       });
 
-      // 预分配子域名前缀（不创建 DNS 记录，延迟到心跳健康检查通过后）
-      // DB 只存前缀，完整 FQDN 由 DnsCoordinator 的 rootDomain 拼接
-      // 用 nodeId sanitize 后做前缀（去掉非 DNS 字符，截断到 63 字符）
       const subdomainPrefix = baseStorageDomain
         ? result.nodeId.replace(/[^a-z0-9-]/gi, '').toLowerCase().slice(0, 63) || result.nodeId.split('-')[0]
         : undefined;
       const spDomain = subdomainPrefix
         ? `${subdomainPrefix}.${baseStorageDomain}`
         : undefined;
+      const tunnelState = await ensureManagedTunnelState({
+        repository,
+        nodeId: result.nodeId,
+        subdomainPrefix,
+        publicUrl: body.publicUrl,
+        localPort: body.localPort,
+        ipv4: body.ipv4,
+        ddnsRepo: options.ddnsRepo,
+        tunnelProvider: options.tunnelProvider,
+        baseStorageDomain,
+      });
 
-      // 节点注册本身不应依赖后续 connectivity 元数据写入是否成功。
-      // 这里的 mode/subdomain 只是辅助信息，失败时记录告警但不阻断注册。
       if (body.ipv4 || subdomainPrefix) {
-        try {
-          await repository.updateNodeMode(result.nodeId, {
-            accessMode: 'direct',
-            ipv4: body.ipv4,
-            subdomain: subdomainPrefix,
-          });
-        } catch (error) {
-          logger.warn(`Registered SP node ${result.nodeId} but failed to persist connectivity metadata: ${error}`);
-        }
+        await repository.updateNodeMode(result.nodeId, {
+          accessMode: tunnelState?.mode === 'tunnel' ? 'proxy' : 'direct',
+          ipv4: body.ipv4,
+          subdomain: subdomainPrefix,
+        });
       }
 
       // 生成自包含 provisionCode（编码了 SP 信息，CSS 解码后直接回调 SP）
@@ -125,6 +138,15 @@ export function registerProvisionRoutes(
       if (spDomain) {
         responseBody.spDomain = spDomain;
       }
+      if (tunnelState?.tunnelConfig?.tunnelToken) {
+        responseBody.tunnelToken = tunnelState.tunnelConfig.tunnelToken;
+      }
+      if (tunnelState?.tunnelConfig?.provider) {
+        responseBody.tunnelProvider = tunnelState.tunnelConfig.provider;
+      }
+      if (tunnelState?.tunnelConfig?.endpoint) {
+        responseBody.tunnelEndpoint = tunnelState.tunnelConfig.endpoint;
+      }
 
       sendJson(response, 201, responseBody);
     } catch (error) {
@@ -134,6 +156,124 @@ export function registerProvisionRoutes(
   }, { public: true });
 
   logger.info('Provision routes registered');
+}
+
+interface ManagedTunnelState {
+  mode: 'direct' | 'tunnel';
+  tunnelConfig?: TunnelConfig;
+}
+
+async function ensureManagedTunnelState(options: {
+  repository: EdgeNodeRepository;
+  ddnsRepo?: DdnsRepository;
+  tunnelProvider?: TunnelProvider;
+  nodeId: string;
+  subdomainPrefix?: string;
+  baseStorageDomain?: string;
+  publicUrl: string;
+  localPort?: number;
+  ipv4?: string;
+}): Promise<ManagedTunnelState | undefined> {
+  const {
+    repository,
+    ddnsRepo,
+    tunnelProvider,
+    nodeId,
+    subdomainPrefix,
+    baseStorageDomain,
+    publicUrl,
+    localPort,
+    ipv4,
+  } = options;
+
+  if (!subdomainPrefix || !baseStorageDomain) {
+    return undefined;
+  }
+
+  const mode: 'direct' | 'tunnel' = ipv4 ? 'direct' : 'tunnel';
+
+  if (ddnsRepo) {
+    const existing = await ddnsRepo.getRecord(subdomainPrefix);
+    if (!existing) {
+      await ddnsRepo.allocateSubdomain({
+        subdomain: subdomainPrefix,
+        domain: baseStorageDomain,
+        nodeId,
+        ipAddress: ipv4,
+      });
+    }
+  }
+
+  if (mode === 'direct' || !tunnelProvider || !localPort || localPort <= 0) {
+    return { mode };
+  }
+
+  const metadataRecord = await repository.getNodeMetadata(nodeId);
+  const metadata = metadataRecord?.metadata as Record<string, unknown> | null;
+  const existingTunnel = readManagedTunnelConfig(metadata);
+  if (existingTunnel && existingTunnel.subdomain === subdomainPrefix && existingTunnel.localPort === localPort) {
+    return {
+      mode,
+      tunnelConfig: existingTunnel.config,
+    };
+  }
+
+  const tunnelConfig = await tunnelProvider.setup({
+    subdomain: subdomainPrefix,
+    localPort,
+  });
+
+  await repository.mergeNodeMetadata(nodeId, {
+    managedTunnel: {
+      provider: tunnelConfig.provider,
+      tunnelId: tunnelConfig.tunnelId,
+      tunnelToken: tunnelConfig.tunnelToken,
+      endpoint: tunnelConfig.endpoint,
+      subdomain: subdomainPrefix,
+      localPort,
+      configuredAt: new Date().toISOString(),
+    },
+    publicAddress: tunnelConfig.endpoint || publicUrl,
+  });
+
+  return {
+    mode,
+    tunnelConfig,
+  };
+}
+
+function readManagedTunnelConfig(metadata: Record<string, unknown> | null): { subdomain?: string; localPort?: number; config: TunnelConfig } | undefined {
+  const raw = metadata?.managedTunnel;
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+
+  const value = raw as Record<string, unknown>;
+  const provider = value.provider;
+  const endpoint = value.endpoint;
+  const tunnelToken = value.tunnelToken;
+  const tunnelId = value.tunnelId;
+  const subdomain = typeof value.subdomain === 'string' ? value.subdomain : undefined;
+  const localPort = typeof value.localPort === 'number' ? value.localPort : undefined;
+
+  if (
+    (provider !== 'cloudflare' && provider !== 'frp' && provider !== 'sakura-frp')
+    || typeof endpoint !== 'string'
+  ) {
+    return undefined;
+  }
+
+  return {
+    subdomain,
+    localPort,
+    config: {
+      provider,
+      subdomain: subdomain ?? 'local',
+      endpoint,
+      tunnelId: typeof tunnelId === 'string' ? tunnelId : undefined,
+      tunnelToken: typeof tunnelToken === 'string' ? tunnelToken : undefined,
+    },
+  };
 }
 
 /**

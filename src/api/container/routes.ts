@@ -18,10 +18,10 @@ import { registerWebIdProfileRoutes } from '../handlers/WebIdProfileHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
-import { registerVectorRoutes } from '../handlers/VectorHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
+import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
 import { registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
@@ -87,7 +87,6 @@ function registerSharedRoutes(
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
   const chatKitStore = container.resolve('chatKitStore');
-  const vectorService = container.resolve('vectorService');
   const config = container.resolve('config') as ApiContainerConfig;
 
   registerEdgeNodeSignalRoutes(server, {
@@ -100,7 +99,6 @@ function registerSharedRoutes(
   registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
-  registerVectorRoutes(server, { vectorService });
 
   // Quota & Usage API (Business 对接)
   try {
@@ -172,7 +170,15 @@ function registerCloudRoutes(
     const config = container.resolve('config') as ApiContainerConfig;
     const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
     const baseStorageDomain = config.subdomain?.baseStorageDomain;
-    registerProvisionRoutes(server, { repository: nodeRepo, baseUrl, baseStorageDomain });
+    const ddnsRepo = container.resolve('ddnsRepo', { allowUnregistered: true }) as any;
+    const tunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true }) as any;
+    registerProvisionRoutes(server, {
+      repository: nodeRepo,
+      ddnsRepo,
+      tunnelProvider,
+      baseUrl,
+      baseStorageDomain,
+    });
     console.log(`[Cloud] Provision routes registered${baseStorageDomain ? ` (baseStorageDomain: ${baseStorageDomain})` : ''}`);
   } catch {
     console.log('[Cloud] Provision routes not registered (dependencies not available)');
@@ -186,6 +192,8 @@ function registerLocalRoutes(
   container: AwilixContainer<ApiContainerCradle>,
   server: ApiServer,
 ): void {
+  registerLinxCapabilitiesRoutes(server);
+
   // Admin API (配置管理、重启)
   registerAdminRoutes(server);
 

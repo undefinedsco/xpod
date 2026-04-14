@@ -153,9 +153,15 @@ export function registerLocalServices(
   // 托管式：有 Node Token，连接 Cloud
   // Cloud API endpoint 可以从 Token 解析或使用默认值
   const effectiveCloudApiEndpoint = cloudApiEndpoint || 'https://pods.undefineds.co';
+  const effectiveLocalPort = parseInt(process.env.XPOD_MAIN_PORT || process.env.CSS_PORT || '3000', 10);
 
   // 从 Node Token 解析用户名作为子域名 (格式: username:secret)
   const subdomain = parseSubdomainFromToken(nodeToken);
+  const tunnelProviderHint: 'cloudflare' | 'sakura_frp' | 'none' = cloudflareTunnelToken
+    ? 'cloudflare'
+    : sakuraTunnelToken
+      ? 'sakura_frp'
+      : 'none';
 
   container.register({
     subdomainClient: asFunction(() => {
@@ -175,17 +181,15 @@ export function registerLocalServices(
 
     // DDNS Manager: 自动分配和更新 DDNS
     ddnsManager: asFunction(({ subdomainClient, capabilityDetector }: ApiContainerCradle) => {
-      const tunnelProvider = cloudflareTunnelToken
-        ? 'cloudflare'
-        : (sakuraTunnelToken ? 'sakura_frp' : 'none');
-      return new DdnsManager({
-        client: subdomainClient!,
-        detector: capabilityDetector!,
-        subdomain: subdomain || nodeId || 'auto',
-        autoAllocate: true,
-        tunnelProvider,
-      });
-    }).singleton(),
+        return new DdnsManager({
+          client: subdomainClient!,
+          detector: capabilityDetector!,
+          subdomain: subdomain || nodeId || 'auto',
+          localPort: effectiveLocalPort,
+          autoAllocate: true,
+          tunnelProvider: tunnelProviderHint,
+        });
+      }).singleton(),
   });
 
   console.log('[Local] Managed mode, SubdomainClient and DdnsManager registered');

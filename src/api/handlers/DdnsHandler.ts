@@ -23,36 +23,6 @@ export interface DdnsHandlerOptions {
   defaultDomain: string;
 }
 
-type DdnsMode = 'direct' | 'tunnel';
-type DdnsTunnelProvider = 'cloudflare' | 'sakura_frp' | 'none';
-
-function pickRecordType(options: {
-  mode: DdnsMode;
-  ipAddress?: string;
-  ipv6Address?: string;
-}): 'A' | 'AAAA' | 'CNAME' {
-  if (options.mode === 'tunnel') {
-    return 'CNAME';
-  }
-  return options.ipv6Address ? 'AAAA' : 'A';
-}
-
-function pickRecordValue(options: {
-  subdomain: string;
-  mode: DdnsMode;
-  tunnelProvider?: DdnsTunnelProvider;
-  ipAddress?: string;
-  ipv6Address?: string;
-}): string | undefined {
-  if (options.mode === 'tunnel') {
-    if (options.tunnelProvider === 'cloudflare') {
-      return `${options.subdomain}.cfargotunnel.com`;
-    }
-    return undefined;
-  }
-  return options.ipv6Address ?? options.ipAddress;
-}
-
 export function registerDdnsRoutes(
   server: ApiServer,
   options: DdnsHandlerOptions,
@@ -80,8 +50,8 @@ export function registerDdnsRoutes(
         username?: string;
         ipAddress?: string;
         ipv6Address?: string;
-        mode?: DdnsMode;
-        tunnelProvider?: DdnsTunnelProvider;
+        mode?: 'direct' | 'tunnel';
+        tunnelProvider?: string;
       } | undefined;
 
       if (!payload?.subdomain) {
@@ -102,40 +72,26 @@ export function registerDdnsRoutes(
         return;
       }
 
-      const mode = payload.mode === 'tunnel' ? 'tunnel' : 'direct';
-      const recordType = pickRecordType({
-        mode,
-        ipAddress: payload.ipAddress,
-        ipv6Address: payload.ipv6Address,
-      });
-      const recordValue = pickRecordValue({
-        subdomain: payload.subdomain,
-        mode,
-        tunnelProvider: payload.tunnelProvider,
-        ipAddress: payload.ipAddress,
-        ipv6Address: payload.ipv6Address,
-      });
-
       const record = await ddnsRepo.allocateSubdomain({
         subdomain: payload.subdomain,
         domain: defaultDomain,
         nodeId: payload.nodeId,
         username: payload.username,
-        ipAddress: mode === 'direct' ? payload.ipAddress : undefined,
-        ipv6Address: mode === 'direct' ? payload.ipv6Address : undefined,
-        recordType,
+        ipAddress: payload.ipAddress,
+        ipv6Address: payload.ipv6Address,
       });
 
-      if (dnsProvider && recordValue) {
+      // 如果有 DNS Provider 且有 IP，创建 DNS 记录
+      if (dnsProvider && (payload.ipAddress || payload.ipv6Address)) {
         try {
           await dnsProvider.upsertRecord({
             domain: defaultDomain,
             subdomain: payload.subdomain,
-            type: recordType,
-            value: recordValue,
+            type: payload.ipv6Address ? 'AAAA' : 'A',
+            value: payload.ipv6Address ?? payload.ipAddress!,
             ttl: 60,
           });
-          logger.info(`Created DNS record: ${payload.subdomain}.${defaultDomain} (${recordType})`);
+          logger.info(`Created DNS record: ${payload.subdomain}.${defaultDomain}`);
         } catch (dnsError) {
           logger.error(`Failed to create DNS record: ${dnsError}`);
           // 不回滚数据库记录，DNS 可以稍后重试
@@ -151,6 +107,7 @@ export function registerDdnsRoutes(
         fqdn: `${record.subdomain}.${record.domain}`,
         ipAddress: record.ipAddress,
         ipv6Address: record.ipv6Address,
+        tunnelProvider: payload.tunnelProvider,
         createdAt: record.createdAt.toISOString(),
       });
     } catch (error) {
@@ -185,33 +142,44 @@ export function registerDdnsRoutes(
         ipAddress?: string;
         ipv6Address?: string;
         type?: string;
-        mode?: DdnsMode;
-        tunnelProvider?: DdnsTunnelProvider;
+        mode?: 'direct' | 'tunnel';
+        tunnelProvider?: string;
       } | undefined;
 
       const ipAddress = payload?.ip ?? payload?.ipAddress;
       const ipv6Address = payload?.ipv6Address;
+      const mode = payload?.mode ?? 'direct';
 
-      const mode = payload?.mode === 'tunnel' ? 'tunnel' : 'direct';
-      if (mode === 'direct' && !ipAddress && !ipv6Address) {
+      if (!ipAddress && !ipv6Address && mode !== 'tunnel') {
         sendError(response, 400, 'ip or ipv6Address is required');
         return;
       }
 
-      const recordType = pickRecordType({ mode, ipAddress, ipv6Address });
-      const recordValue = pickRecordValue({
-        subdomain,
-        mode,
-        tunnelProvider: payload?.tunnelProvider,
-        ipAddress,
-        ipv6Address,
-      });
+      if (mode === 'tunnel' && !ipAddress && !ipv6Address) {
+        const existing = await ddnsRepo.getRecord(subdomain);
+
+        if (!existing) {
+          sendError(response, 404, 'Subdomain not found');
+          return;
+        }
+
+        sendJson(response, 200, {
+          success: true,
+          subdomain: existing.subdomain,
+          domain: existing.domain,
+          fqdn: `${existing.subdomain}.${existing.domain}`,
+          ipAddress: existing.ipAddress,
+          ipv6Address: existing.ipv6Address,
+          tunnelProvider: payload?.tunnelProvider,
+          updatedAt: existing.updatedAt.toISOString(),
+        });
+        return;
+      }
 
       // 更新数据库记录
       const record = await ddnsRepo.updateRecordIp(subdomain, {
-        ipAddress: mode === 'direct' ? (ipAddress ?? null) : null,
-        ipv6Address: mode === 'direct' ? (ipv6Address ?? null) : null,
-        recordType,
+        ipAddress,
+        ipv6Address,
       });
 
       if (!record) {
@@ -219,8 +187,12 @@ export function registerDdnsRoutes(
         return;
       }
 
-      if (dnsProvider && recordValue) {
+      // 更新 DNS 记录
+      if (dnsProvider) {
         try {
+          const recordType = ipv6Address ? 'AAAA' : 'A';
+          const recordValue = ipv6Address ?? ipAddress!;
+
           await dnsProvider.upsertRecord({
             domain: record.domain,
             subdomain: record.subdomain,
@@ -242,6 +214,7 @@ export function registerDdnsRoutes(
         fqdn: `${record.subdomain}.${record.domain}`,
         ipAddress: record.ipAddress,
         ipv6Address: record.ipv6Address,
+        tunnelProvider: payload?.tunnelProvider,
         updatedAt: record.updatedAt.toISOString(),
       });
     } catch (error) {

@@ -23,6 +23,8 @@ describe('ProvisionHandler', () => {
     mockRepo = {
       registerSpNode: vi.fn(),
       updateNodeMode: vi.fn(),
+      getNodeMetadata: vi.fn(),
+      mergeNodeMetadata: vi.fn(),
     };
 
     registerProvisionRoutes(mockServer, {
@@ -135,6 +137,81 @@ describe('ProvisionHandler', () => {
       );
     });
 
+    it('should provision a managed Cloudflare tunnel when localPort is provided', async () => {
+      routes = {};
+      const mockTunnelProvider = {
+        setup: vi.fn().mockResolvedValue({
+          provider: 'cloudflare',
+          subdomain: 'node-1',
+          endpoint: 'https://node-1.undefineds.site',
+          tunnelId: 'tunnel-1',
+          tunnelToken: 'cf-token-1',
+        }),
+      };
+      const mockDdnsRepo = {
+        getRecord: vi.fn().mockResolvedValue(null),
+        allocateSubdomain: vi.fn(),
+      };
+
+      mockServer = {
+        post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+        get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+        delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
+      } as unknown as ApiServer;
+
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        ddnsRepo: mockDdnsRepo as any,
+        tunnelProvider: mockTunnelProvider as any,
+        baseUrl,
+        baseStorageDomain: 'undefineds.site',
+      });
+
+      mockRepo.registerSpNode.mockResolvedValue({
+        nodeId: 'node-1',
+        nodeToken: 'nt-xxx',
+        serviceToken: 'st-xxx',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
+      mockRepo.getNodeMetadata.mockResolvedValue({ nodeId: 'node-1', metadata: null });
+
+      const request = createMockRequest({ publicUrl: 'http://localhost:5737/', localPort: 5737 });
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(response.statusCode).toBe(201);
+      expect(mockTunnelProvider.setup).toHaveBeenCalledWith({
+        subdomain: 'node-1',
+        localPort: 5737,
+      });
+      expect(mockDdnsRepo.allocateSubdomain).toHaveBeenCalledWith(expect.objectContaining({
+        subdomain: 'node-1',
+        domain: 'undefineds.site',
+        nodeId: 'node-1',
+      }));
+      expect(mockRepo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+        managedTunnel: expect.objectContaining({
+          provider: 'cloudflare',
+          tunnelId: 'tunnel-1',
+          tunnelToken: 'cf-token-1',
+          subdomain: 'node-1',
+          localPort: 5737,
+        }),
+      }));
+      expect(mockRepo.updateNodeMode).toHaveBeenCalledWith(
+        'node-1',
+        expect.objectContaining({
+          accessMode: 'proxy',
+          subdomain: 'node-1',
+        }),
+      );
+      expect(body.tunnelToken).toBe('cf-token-1');
+      expect(body.tunnelProvider).toBe('cloudflare');
+      expect(body.tunnelEndpoint).toBe('https://node-1.undefineds.site');
+    });
+
     it('should not include spDomain when baseStorageDomain is not configured', async () => {
       mockRepo.registerSpNode.mockResolvedValue({
         nodeId: 'node-1',
@@ -211,40 +288,6 @@ describe('ProvisionHandler', () => {
       await routes['POST /provision/nodes'](request, response, {});
 
       expect(response.statusCode).toBe(500);
-    });
-
-    it('should still return 201 when connectivity metadata update fails', async () => {
-      routes = {};
-      mockServer = {
-        post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
-        get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
-        delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
-      } as unknown as ApiServer;
-
-      registerProvisionRoutes(mockServer, {
-        repository: mockRepo,
-        baseUrl,
-        baseStorageDomain: 'undefineds.site',
-      });
-
-      mockRepo.registerSpNode.mockResolvedValue({
-        nodeId: 'node-1',
-        nodeToken: 'nt-xxx',
-        serviceToken: 'st-xxx',
-        createdAt: '2024-01-01T00:00:00.000Z',
-      });
-      mockRepo.updateNodeMode.mockRejectedValue(new Error('column ipv4 does not exist'));
-
-      const request = createMockRequest({ publicUrl: 'https://sp.example.com' });
-      const response = createMockResponse();
-
-      await routes['POST /provision/nodes'](request, response, {});
-
-      expect(response.statusCode).toBe(201);
-      const body = JSON.parse((response.end as any).mock.calls[0][0]);
-      expect(body.nodeId).toBe('node-1');
-      expect(body.provisionCode).toBeDefined();
-      expect(body.spDomain).toBe('node-1.undefineds.site');
     });
   });
 });

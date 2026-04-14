@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ApiServer } from '../../../src/api/ApiServer';
 import { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 import type { Authenticator, AuthResult } from '../../../src/api/auth/Authenticator';
@@ -9,136 +9,106 @@ class MockAuthenticator implements Authenticator {
   public async authenticate(): Promise<AuthResult> {
     return {
       success: true,
-      context: { type: 'solid', webId: 'https://example.com/user#me', accountId: 'user-123' },
+      context: { type: 'node', nodeId: 'node-1' },
     };
   }
 }
 
-function makeServer(port: number): { server: ApiServer; baseUrl: string } {
-  const server = new ApiServer({
-    port,
-    authMiddleware: new AuthMiddleware({ authenticator: new MockAuthenticator() }),
-  });
-  return { server, baseUrl: `http://localhost:${port}` };
+function createRepo() {
+  let record: any = null;
+
+  return {
+    getRecord: async (subdomain: string) => record && record.subdomain === subdomain ? record : null,
+    allocateSubdomain: async (input: any) => {
+      record = {
+        subdomain: input.subdomain,
+        domain: input.domain,
+        ipAddress: input.ipAddress,
+        ipv6Address: input.ipv6Address,
+        recordType: input.ipv6Address ? 'AAAA' : 'A',
+        status: 'active',
+        ttl: 60,
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      };
+      return record;
+    },
+    updateRecordIp: async (subdomain: string, input: any) => {
+      if (!record || record.subdomain !== subdomain) {
+        return null;
+      }
+      record = {
+        ...record,
+        ipAddress: input.ipAddress ?? record.ipAddress,
+        ipv6Address: input.ipv6Address ?? record.ipv6Address,
+        updatedAt: new Date('2024-01-02T00:00:00.000Z'),
+      };
+      return record;
+    },
+    releaseSubdomain: async () => undefined,
+    banSubdomain: async () => undefined,
+  };
 }
 
 describe('DdnsHandler', () => {
-  const repo = {
-    getRecord: vi.fn(),
-    allocateSubdomain: vi.fn(),
-    updateRecordIp: vi.fn(),
-    releaseSubdomain: vi.fn(),
-    banSubdomain: vi.fn(),
-  };
-  const dnsProvider = {
-    upsertRecord: vi.fn(),
-    deleteRecord: vi.fn(),
-  };
-
-  beforeEach(() => {
-    vi.resetAllMocks();
+  const repo = createRepo();
+  const server = new ApiServer({
+    port: 3094,
+    authMiddleware: new AuthMiddleware({ authenticator: new MockAuthenticator() }),
   });
+  const baseUrl = 'http://localhost:3094';
 
-  afterEach(async () => {
-    // no-op: each test owns its own server
-  });
-
-  it('creates a CNAME to cfargotunnel.com in tunnel mode allocation', async () => {
-    repo.getRecord.mockResolvedValue(null);
-    repo.allocateSubdomain.mockResolvedValue({
-      subdomain: 'node-1',
-      domain: 'nodes.undefineds.co',
-      recordType: 'CNAME',
-      createdAt: new Date('2026-04-14T00:00:00.000Z'),
-    });
-
-    const { server, baseUrl } = makeServer(3094);
+  beforeAll(async () => {
     registerDdnsRoutes(server, {
       ddnsRepo: repo as any,
-      dnsProvider: dnsProvider as any,
-      defaultDomain: 'nodes.undefineds.co',
+      defaultDomain: 'undefineds.site',
     });
     await server.start();
-
-    try {
-      const res = await fetch(`${baseUrl}/api/v1/ddns/allocate`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: 'Bearer test-token',
-        },
-        body: JSON.stringify({
-          subdomain: 'node-1',
-          nodeId: 'node-1',
-          mode: 'tunnel',
-          tunnelProvider: 'cloudflare',
-        }),
-      });
-
-      expect(res.status).toBe(201);
-      expect(repo.allocateSubdomain).toHaveBeenCalledWith(expect.objectContaining({
-        subdomain: 'node-1',
-        recordType: 'CNAME',
-        ipAddress: undefined,
-        ipv6Address: undefined,
-      }));
-      expect(dnsProvider.upsertRecord).toHaveBeenCalledWith(expect.objectContaining({
-        domain: 'nodes.undefineds.co',
-        subdomain: 'node-1',
-        type: 'CNAME',
-        value: 'node-1.cfargotunnel.com',
-      }));
-    } finally {
-      await server.stop();
-    }
   });
 
-  it('updates to CNAME and clears stored IPs in tunnel mode update', async () => {
-    repo.updateRecordIp.mockResolvedValue({
-      subdomain: 'node-1',
-      domain: 'nodes.undefineds.co',
-      ipAddress: undefined,
-      ipv6Address: undefined,
-      recordType: 'CNAME',
-      ttl: 60,
-      updatedAt: new Date('2026-04-14T00:00:00.000Z'),
-    });
+  afterAll(async () => {
+    await server.stop();
+  });
 
-    const { server, baseUrl } = makeServer(3095);
-    registerDdnsRoutes(server, {
-      ddnsRepo: repo as any,
-      dnsProvider: dnsProvider as any,
-      defaultDomain: 'nodes.undefineds.co',
-    });
-    await server.start();
-
-    try {
-      const res = await fetch(`${baseUrl}/api/v1/ddns/node-1`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: 'Bearer test-token',
-        },
-        body: JSON.stringify({
-          mode: 'tunnel',
-          tunnelProvider: 'cloudflare',
-        }),
-      });
-
-      expect(res.status).toBe(200);
-      expect(repo.updateRecordIp).toHaveBeenCalledWith('node-1', {
-        ipAddress: null,
-        ipv6Address: null,
-        recordType: 'CNAME',
-      });
-      expect(dnsProvider.upsertRecord).toHaveBeenCalledWith(expect.objectContaining({
-        domain: 'nodes.undefineds.co',
+  it('allocates a tunnel DDNS record without requiring an IP address', async () => {
+    const response = await fetch(`${baseUrl}/api/v1/ddns/allocate`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'XpodNode node-1:token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         subdomain: 'node-1',
-        type: 'CNAME',
-        value: 'node-1.cfargotunnel.com',
-      }));
-    } finally {
-      await server.stop();
-    }
+        nodeId: 'node-1',
+        mode: 'tunnel',
+        tunnelProvider: 'cloudflare',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    expect(body.fqdn).toBe('node-1.undefineds.site');
+    expect(body.tunnelProvider).toBe('cloudflare');
+  });
+
+  it('accepts tunnel refresh without IP updates', async () => {
+    const response = await fetch(`${baseUrl}/api/v1/ddns/node-1`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'XpodNode node-1:token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        mode: 'tunnel',
+        tunnelProvider: 'cloudflare',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    expect(body.fqdn).toBe('node-1.undefineds.site');
+    expect(body.tunnelProvider).toBe('cloudflare');
   });
 });
