@@ -23,6 +23,36 @@ export interface DdnsHandlerOptions {
   defaultDomain: string;
 }
 
+type DdnsMode = 'direct' | 'tunnel';
+type DdnsTunnelProvider = 'cloudflare' | 'sakura_frp' | 'none';
+
+function pickRecordType(options: {
+  mode: DdnsMode;
+  ipAddress?: string;
+  ipv6Address?: string;
+}): 'A' | 'AAAA' | 'CNAME' {
+  if (options.mode === 'tunnel') {
+    return 'CNAME';
+  }
+  return options.ipv6Address ? 'AAAA' : 'A';
+}
+
+function pickRecordValue(options: {
+  subdomain: string;
+  mode: DdnsMode;
+  tunnelProvider?: DdnsTunnelProvider;
+  ipAddress?: string;
+  ipv6Address?: string;
+}): string | undefined {
+  if (options.mode === 'tunnel') {
+    if (options.tunnelProvider === 'cloudflare') {
+      return `${options.subdomain}.cfargotunnel.com`;
+    }
+    return undefined;
+  }
+  return options.ipv6Address ?? options.ipAddress;
+}
+
 export function registerDdnsRoutes(
   server: ApiServer,
   options: DdnsHandlerOptions,
@@ -50,6 +80,8 @@ export function registerDdnsRoutes(
         username?: string;
         ipAddress?: string;
         ipv6Address?: string;
+        mode?: DdnsMode;
+        tunnelProvider?: DdnsTunnelProvider;
       } | undefined;
 
       if (!payload?.subdomain) {
@@ -70,26 +102,40 @@ export function registerDdnsRoutes(
         return;
       }
 
+      const mode = payload.mode === 'tunnel' ? 'tunnel' : 'direct';
+      const recordType = pickRecordType({
+        mode,
+        ipAddress: payload.ipAddress,
+        ipv6Address: payload.ipv6Address,
+      });
+      const recordValue = pickRecordValue({
+        subdomain: payload.subdomain,
+        mode,
+        tunnelProvider: payload.tunnelProvider,
+        ipAddress: payload.ipAddress,
+        ipv6Address: payload.ipv6Address,
+      });
+
       const record = await ddnsRepo.allocateSubdomain({
         subdomain: payload.subdomain,
         domain: defaultDomain,
         nodeId: payload.nodeId,
         username: payload.username,
-        ipAddress: payload.ipAddress,
-        ipv6Address: payload.ipv6Address,
+        ipAddress: mode === 'direct' ? payload.ipAddress : undefined,
+        ipv6Address: mode === 'direct' ? payload.ipv6Address : undefined,
+        recordType,
       });
 
-      // 如果有 DNS Provider 且有 IP，创建 DNS 记录
-      if (dnsProvider && (payload.ipAddress || payload.ipv6Address)) {
+      if (dnsProvider && recordValue) {
         try {
           await dnsProvider.upsertRecord({
             domain: defaultDomain,
             subdomain: payload.subdomain,
-            type: payload.ipv6Address ? 'AAAA' : 'A',
-            value: payload.ipv6Address ?? payload.ipAddress!,
+            type: recordType,
+            value: recordValue,
             ttl: 60,
           });
-          logger.info(`Created DNS record: ${payload.subdomain}.${defaultDomain}`);
+          logger.info(`Created DNS record: ${payload.subdomain}.${defaultDomain} (${recordType})`);
         } catch (dnsError) {
           logger.error(`Failed to create DNS record: ${dnsError}`);
           // 不回滚数据库记录，DNS 可以稍后重试
@@ -139,20 +185,33 @@ export function registerDdnsRoutes(
         ipAddress?: string;
         ipv6Address?: string;
         type?: string;
+        mode?: DdnsMode;
+        tunnelProvider?: DdnsTunnelProvider;
       } | undefined;
 
       const ipAddress = payload?.ip ?? payload?.ipAddress;
       const ipv6Address = payload?.ipv6Address;
 
-      if (!ipAddress && !ipv6Address) {
+      const mode = payload?.mode === 'tunnel' ? 'tunnel' : 'direct';
+      if (mode === 'direct' && !ipAddress && !ipv6Address) {
         sendError(response, 400, 'ip or ipv6Address is required');
         return;
       }
 
-      // 更新数据库记录
-      const record = await ddnsRepo.updateRecordIp(subdomain, {
+      const recordType = pickRecordType({ mode, ipAddress, ipv6Address });
+      const recordValue = pickRecordValue({
+        subdomain,
+        mode,
+        tunnelProvider: payload?.tunnelProvider,
         ipAddress,
         ipv6Address,
+      });
+
+      // 更新数据库记录
+      const record = await ddnsRepo.updateRecordIp(subdomain, {
+        ipAddress: mode === 'direct' ? (ipAddress ?? null) : null,
+        ipv6Address: mode === 'direct' ? (ipv6Address ?? null) : null,
+        recordType,
       });
 
       if (!record) {
@@ -160,12 +219,8 @@ export function registerDdnsRoutes(
         return;
       }
 
-      // 更新 DNS 记录
-      if (dnsProvider) {
+      if (dnsProvider && recordValue) {
         try {
-          const recordType = ipv6Address ? 'AAAA' : 'A';
-          const recordValue = ipv6Address ?? ipAddress!;
-
           await dnsProvider.upsertRecord({
             domain: record.domain,
             subdomain: record.subdomain,

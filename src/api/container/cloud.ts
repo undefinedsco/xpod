@@ -9,6 +9,7 @@ import { asFunction, type AwilixContainer } from 'awilix';
 import type { ApiContainerCradle, ApiContainerConfig } from './types';
 
 import { TencentDnsProvider } from '../../dns/tencent/TencentDnsProvider';
+import { CloudflareDnsProvider } from '../../dns/cloudflare/CloudflareDnsProvider';
 import { CloudflareTunnelProvider } from '../../tunnel/CloudflareTunnelProvider';
 import { SubdomainService } from '../../subdomain/SubdomainService';
 import { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
@@ -61,7 +62,7 @@ export function registerCloudServices(
     cloudflareApiToken,
   } = config.subdomain!;
 
-  // DNS Provider (腾讯云或 Cloudflare)
+  // DNS Provider (腾讯云优先，否则回退到 Cloudflare)
   if (tencentDnsSecretId && tencentDnsSecretKey) {
     container.register({
       dnsProvider: asFunction(() => {
@@ -72,6 +73,15 @@ export function registerCloudServices(
       }).singleton(),
     });
     logger.info('Tencent DNS provider registered');
+  } else if (cloudflareApiToken) {
+    container.register({
+      dnsProvider: asFunction(() => {
+        return new CloudflareDnsProvider({
+          apiToken: cloudflareApiToken,
+        });
+      }).singleton(),
+    });
+    logger.info('Cloudflare DNS provider registered');
   }
 
   // Tunnel Provider (Cloudflare)

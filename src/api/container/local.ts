@@ -175,11 +175,15 @@ export function registerLocalServices(
 
     // DDNS Manager: 自动分配和更新 DDNS
     ddnsManager: asFunction(({ subdomainClient, capabilityDetector }: ApiContainerCradle) => {
+      const tunnelProvider = cloudflareTunnelToken
+        ? 'cloudflare'
+        : (sakuraTunnelToken ? 'sakura_frp' : 'none');
       return new DdnsManager({
         client: subdomainClient!,
         detector: capabilityDetector!,
         subdomain: subdomain || nodeId || 'auto',
         autoAllocate: true,
+        tunnelProvider,
       });
     }).singleton(),
   });

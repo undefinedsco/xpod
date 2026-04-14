@@ -24,7 +24,7 @@ export interface DdnsRecord {
   domain: string;
   ipAddress?: string;
   ipv6Address?: string;
-  recordType: 'A' | 'AAAA';
+  recordType: 'A' | 'AAAA' | 'CNAME';
   nodeId?: string;
   username?: string;
   status: 'active' | 'banned';
@@ -39,13 +39,15 @@ export interface CreateDdnsRecordInput {
   domain: string;
   ipAddress?: string;
   ipv6Address?: string;
+  recordType?: 'A' | 'AAAA' | 'CNAME';
   nodeId?: string;
   username?: string;
 }
 
 export interface UpdateDdnsRecordInput {
-  ipAddress?: string;
-  ipv6Address?: string;
+  ipAddress?: string | null;
+  ipv6Address?: string | null;
+  recordType?: 'A' | 'AAAA' | 'CNAME';
 }
 
 export class DdnsRepository {
@@ -131,7 +133,7 @@ export class DdnsRepository {
     }
 
     const now = new Date();
-    const recordType = ipv6Address ? 'AAAA' : 'A';
+    const recordType = input.recordType ?? (ipv6Address ? 'AAAA' : 'A');
 
     await this.db.insert(this.schema.ddnsRecords).values({
       subdomain,
@@ -184,7 +186,7 @@ export class DdnsRepository {
       domain: row.domain,
       ipAddress: row.ipAddress ?? undefined,
       ipv6Address: row.ipv6Address ?? undefined,
-      recordType: (row.recordType as 'A' | 'AAAA') ?? 'A',
+      recordType: (row.recordType as 'A' | 'AAAA' | 'CNAME') ?? 'A',
       nodeId: row.nodeId ?? undefined,
       username: row.username ?? undefined,
       status: (row.status as 'active' | 'banned') ?? 'active',
@@ -216,13 +218,18 @@ export class DdnsRepository {
 
     if (input.ipAddress !== undefined) {
       updates.ipAddress = input.ipAddress;
-      updates.recordType = 'A';
+      if (input.ipAddress !== null && input.recordType === undefined) {
+        updates.recordType = 'A';
+      }
     }
     if (input.ipv6Address !== undefined) {
       updates.ipv6Address = input.ipv6Address;
-      if (!input.ipAddress) {
+      if (input.ipv6Address !== null && !input.ipAddress && input.recordType === undefined) {
         updates.recordType = 'AAAA';
       }
+    }
+    if (input.recordType !== undefined) {
+      updates.recordType = input.recordType;
     }
 
     await this.db
@@ -234,9 +241,9 @@ export class DdnsRepository {
 
     return {
       ...existing,
-      ipAddress: input.ipAddress ?? existing.ipAddress,
-      ipv6Address: input.ipv6Address ?? existing.ipv6Address,
-      recordType: (updates.recordType as 'A' | 'AAAA') ?? existing.recordType,
+      ipAddress: input.ipAddress === undefined ? existing.ipAddress : (input.ipAddress ?? undefined),
+      ipv6Address: input.ipv6Address === undefined ? existing.ipv6Address : (input.ipv6Address ?? undefined),
+      recordType: (updates.recordType as 'A' | 'AAAA' | 'CNAME') ?? existing.recordType,
       updatedAt: now,
     };
   }
