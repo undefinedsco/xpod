@@ -526,6 +526,39 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
       display_name TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS identity_ddns_domain (
+      domain TEXT PRIMARY KEY,
+      status TEXT DEFAULT 'active',
+      provider TEXT,
+      zone_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_ddns_record (
+      subdomain TEXT PRIMARY KEY,
+      domain TEXT NOT NULL,
+      ip_address TEXT,
+      ipv6_address TEXT,
+      record_type TEXT DEFAULT 'A',
+      node_id TEXT,
+      username TEXT,
+      status TEXT DEFAULT 'active',
+      banned_reason TEXT,
+      ttl INTEGER DEFAULT 60,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_service_token (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      service_type TEXT NOT NULL,
+      service_id TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ
+    );
   `);
 
   await migratePostgresColumns(pool);
