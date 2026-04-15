@@ -60,6 +60,7 @@ export function registerProvisionRoutes(
     let body: {
       publicUrl?: string;
       nodeId?: string;
+      nodeToken?: string;
       displayName?: string;
       ipv4?: string;
       serviceToken?: string;
@@ -89,6 +90,7 @@ export function registerProvisionRoutes(
         publicUrl: body.publicUrl,
         displayName: body.displayName,
         nodeId: body.nodeId,
+        nodeToken: body.nodeToken,
         serviceToken: body.serviceToken,
       });
 

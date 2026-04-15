@@ -129,6 +129,23 @@ describe('EdgeNodeRepository', () => {
     expect(result.nodeToken).toBeDefined();
   });
 
+  it('registerSpNode 使用传入的 nodeToken 以避免重复注册时凭证漂移', async () => {
+    const { repo, execute } = createRepo();
+    execute.mockResolvedValueOnce({ rows: [] });
+
+    const result = await repo.registerSpNode({
+      publicUrl: 'https://sp.example.com',
+      nodeId: 'my-device-id',
+      nodeToken: 'stable-node-token',
+      serviceToken: 'my-token',
+    });
+
+    expect(result.nodeId).toBe('my-device-id');
+    expect(result.nodeToken).toBe('stable-node-token');
+    expect(result.serviceToken).toBe('my-token');
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it('getSpNode 返回 SP 节点信息', async () => {
     const { repo, execute } = createRepo();
     execute.mockResolvedValueOnce({

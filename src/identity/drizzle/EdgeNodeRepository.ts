@@ -610,11 +610,13 @@ export class EdgeNodeRepository {
     displayName?: string;
     /** SP 提供的设备 ID，作为 nodeId（不传则随机生成） */
     nodeId?: string;
+    /** SP 已保存的 nodeToken，重复注册时用于保留旧凭证 */
+    nodeToken?: string;
     /** SP 提供的 serviceToken，不传则随机生成 */
     serviceToken?: string;
   }): Promise<CreateSpNodeResult> {
     const nodeId = options.nodeId || randomUUID();
-    const nodeToken = randomBytes(32).toString('base64url');
+    const nodeToken = options.nodeToken || randomBytes(32).toString('base64url');
     const nodeTokenHash = createHash('sha256').update(nodeToken).digest('hex');
     const serviceToken = options.serviceToken || randomBytes(32).toString('base64url');
     const now = new Date();

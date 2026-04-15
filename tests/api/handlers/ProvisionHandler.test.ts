@@ -241,6 +241,7 @@ describe('ProvisionHandler', () => {
       const request = createMockRequest({
         publicUrl: 'https://sp.example.com',
         nodeId: 'my-device-id',
+        nodeToken: 'stable-node-token',
         serviceToken: 'my-service-token',
       });
       const response = createMockResponse();
@@ -252,6 +253,7 @@ describe('ProvisionHandler', () => {
         expect.objectContaining({
           publicUrl: 'https://sp.example.com',
           nodeId: 'my-device-id',
+          nodeToken: 'stable-node-token',
           serviceToken: 'my-service-token',
         }),
       );
@@ -259,6 +261,38 @@ describe('ProvisionHandler', () => {
       const body = JSON.parse((response.end as any).mock.calls[0][0]);
       expect(body.nodeId).toBe('my-device-id');
       expect(body.serviceToken).toBe('my-service-token');
+    });
+
+    it('should pass nodeToken through for same-node re-registration', async () => {
+      mockRepo.registerSpNode.mockResolvedValue({
+        nodeId: 'my-device-id',
+        nodeToken: 'stable-node-token',
+        serviceToken: 'my-service-token',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const request = createMockRequest({
+        publicUrl: 'https://sp.example.com',
+        nodeId: 'my-device-id',
+        nodeToken: 'stable-node-token',
+        serviceToken: 'my-service-token',
+      });
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      expect(response.statusCode).toBe(201);
+      expect(mockRepo.registerSpNode).toHaveBeenCalledWith(
+        expect.objectContaining({
+          publicUrl: 'https://sp.example.com',
+          nodeId: 'my-device-id',
+          nodeToken: 'stable-node-token',
+          serviceToken: 'my-service-token',
+        }),
+      );
+
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body.nodeToken).toBe('stable-node-token');
     });
 
     it('should reject missing publicUrl', async () => {
