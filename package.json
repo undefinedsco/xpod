@@ -205,12 +205,12 @@
     }
   },
   "optionalDependencies": {
-    "@undefineds.co/xpod-darwin-arm64": "0.2.15",
-    "@undefineds.co/xpod-darwin-x64": "0.2.15",
-    "@undefineds.co/xpod-linux-x64-gnu": "0.2.15",
-    "@undefineds.co/xpod-linux-arm64-gnu": "0.2.15",
-    "@undefineds.co/xpod-linux-x64-musl": "0.2.15",
-    "@undefineds.co/xpod-linux-arm64-musl": "0.2.15"
+    "@undefineds.co/xpod-darwin-arm64": "0.2.16",
+    "@undefineds.co/xpod-darwin-x64": "0.2.16",
+    "@undefineds.co/xpod-linux-x64-gnu": "0.2.16",
+    "@undefineds.co/xpod-linux-arm64-gnu": "0.2.16",
+    "@undefineds.co/xpod-linux-x64-musl": "0.2.16",
+    "@undefineds.co/xpod-linux-arm64-musl": "0.2.16"
   },
   "resolutions": {
     "@inrupt/solid-client-authn-browser": "^3.1.1",
