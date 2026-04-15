@@ -137,6 +137,137 @@ describe('ProvisionHandler', () => {
       );
     });
 
+    it('should provision a managed Cloudflare tunnel from client tunnelToken without cfd_tunnel API', async () => {
+      routes = {};
+      const tunnelId = '11111111-2222-4333-8444-555555555555';
+      const tokenPayload = Buffer.from(JSON.stringify({
+        a: 'account-1',
+        t: tunnelId,
+        s: 'secret',
+      })).toString('base64url');
+      const tunnelToken = `${tokenPayload}.sig`;
+      const mockDnsProvider = {
+        upsertRecord: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockDdnsRepo = {
+        getRecord: vi.fn().mockResolvedValue(null),
+        allocateSubdomain: vi.fn(),
+        updateRecordIp: vi.fn(),
+      };
+
+      mockServer = {
+        post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+        get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+        delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
+      } as unknown as ApiServer;
+
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        ddnsRepo: mockDdnsRepo as any,
+        dnsProvider: mockDnsProvider as any,
+        tunnelProvider: undefined,
+        baseUrl,
+        baseStorageDomain: 'nodes.undefineds.co',
+      });
+
+      mockRepo.registerSpNode.mockResolvedValue({
+        nodeId: 'node-1',
+        nodeToken: 'nt-xxx',
+        serviceToken: 'st-xxx',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const request = createMockRequest({
+        publicUrl: 'http://127.0.0.1:5737/',
+        localPort: 5737,
+        tunnelToken,
+      });
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(response.statusCode).toBe(201);
+      expect(mockDdnsRepo.allocateSubdomain).toHaveBeenCalledWith({
+        subdomain: 'node-1',
+        domain: 'nodes.undefineds.co',
+        nodeId: 'node-1',
+        ipAddress: `${tunnelId}.cfargotunnel.com`,
+        recordType: 'CNAME',
+      });
+      expect(mockDnsProvider.upsertRecord).toHaveBeenCalledWith({
+        domain: 'nodes.undefineds.co',
+        subdomain: 'node-1',
+        type: 'CNAME',
+        value: `${tunnelId}.cfargotunnel.com`,
+        ttl: 60,
+      });
+      expect(mockRepo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+        managedTunnel: expect.objectContaining({
+          provider: 'cloudflare',
+          tunnelId,
+          tunnelToken,
+          subdomain: 'node-1',
+          localPort: 5737,
+          source: 'client-token',
+        }),
+      }));
+      expect(mockRepo.updateNodeMode).toHaveBeenCalledWith('node-1', expect.objectContaining({
+        accessMode: 'proxy',
+        subdomain: 'node-1',
+      }));
+      expect(body.tunnelToken).toBe(tunnelToken);
+      expect(body.tunnelProvider).toBe('cloudflare');
+      expect(body.tunnelEndpoint).toBe('https://node-1.nodes.undefineds.co');
+    });
+
+    it('should reject invalid tunnelToken with 400 instead of 500', async () => {
+      routes = {};
+      const mockDnsProvider = {
+        upsertRecord: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockDdnsRepo = {
+        getRecord: vi.fn().mockResolvedValue(null),
+        allocateSubdomain: vi.fn(),
+        updateRecordIp: vi.fn(),
+      };
+
+      mockServer = {
+        post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+        get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+        delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
+      } as unknown as ApiServer;
+
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        ddnsRepo: mockDdnsRepo as any,
+        dnsProvider: mockDnsProvider as any,
+        baseUrl,
+        baseStorageDomain: 'nodes.undefineds.co',
+      });
+
+      mockRepo.registerSpNode.mockResolvedValue({
+        nodeId: 'node-1',
+        nodeToken: 'nt-xxx',
+        serviceToken: 'st-xxx',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const request = createMockRequest({
+        publicUrl: 'http://127.0.0.1:5737/',
+        localPort: 5737,
+        tunnelToken: 'not-a-valid-token',
+      });
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      expect(response.statusCode).toBe(400);
+      expect(mockDnsProvider.upsertRecord).not.toHaveBeenCalled();
+      expect(mockRepo.mergeNodeMetadata).not.toHaveBeenCalled();
+      expect(JSON.parse((response.end as any).mock.calls[0][0])).toEqual({ error: 'Invalid Cloudflare tunnel token' });
+    });
+
     it('should provision a managed Cloudflare tunnel when localPort is provided', async () => {
       routes = {};
       const mockTunnelProvider = {

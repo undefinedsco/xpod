@@ -171,10 +171,12 @@ function registerCloudRoutes(
     const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
     const baseStorageDomain = config.subdomain?.baseStorageDomain;
     const ddnsRepo = container.resolve('ddnsRepo', { allowUnregistered: true }) as any;
+    const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true }) as any;
     const tunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true }) as any;
     registerProvisionRoutes(server, {
       repository: nodeRepo,
       ddnsRepo,
+      dnsProvider,
       tunnelProvider,
       baseUrl,
       baseStorageDomain,

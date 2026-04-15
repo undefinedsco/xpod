@@ -18,12 +18,14 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
+import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider, TunnelConfig } from '../../tunnel/TunnelProvider';
 import { ProvisionCodeCodec } from '../../provision/ProvisionCodeCodec';
 
 export interface ProvisionHandlerOptions {
   repository: EdgeNodeRepository;
   ddnsRepo?: DdnsRepository;
+  dnsProvider?: DnsProvider;
   tunnelProvider?: TunnelProvider;
   /** Cloud baseUrl，用于派生 provisionCode 签名密钥 */
   baseUrl: string;
@@ -65,6 +67,7 @@ export function registerProvisionRoutes(
       ipv4?: string;
       serviceToken?: string;
       localPort?: number;
+      tunnelToken?: string;
     };
     try {
       body = await readJsonBody(request) as any ?? {};
@@ -107,7 +110,9 @@ export function registerProvisionRoutes(
         publicUrl: body.publicUrl,
         localPort: body.localPort,
         ipv4: body.ipv4,
+        tunnelToken: body.tunnelToken,
         ddnsRepo: options.ddnsRepo,
+        dnsProvider: options.dnsProvider,
         tunnelProvider: options.tunnelProvider,
         baseStorageDomain,
       });
@@ -152,6 +157,10 @@ export function registerProvisionRoutes(
 
       sendJson(response, 201, responseBody);
     } catch (error) {
+      if (error instanceof InvalidTunnelTokenError) {
+        sendJson(response, 400, { error: error.message });
+        return;
+      }
       logger.error(`Failed to register SP node: ${error}`);
       sendJson(response, 500, { error: 'Failed to register SP node' });
     }
@@ -165,9 +174,12 @@ interface ManagedTunnelState {
   tunnelConfig?: TunnelConfig;
 }
 
+class InvalidTunnelTokenError extends Error {}
+
 async function ensureManagedTunnelState(options: {
   repository: EdgeNodeRepository;
   ddnsRepo?: DdnsRepository;
+  dnsProvider?: DnsProvider;
   tunnelProvider?: TunnelProvider;
   nodeId: string;
   subdomainPrefix?: string;
@@ -175,10 +187,12 @@ async function ensureManagedTunnelState(options: {
   publicUrl: string;
   localPort?: number;
   ipv4?: string;
+  tunnelToken?: string;
 }): Promise<ManagedTunnelState | undefined> {
   const {
     repository,
     ddnsRepo,
+    dnsProvider,
     tunnelProvider,
     nodeId,
     subdomainPrefix,
@@ -186,6 +200,7 @@ async function ensureManagedTunnelState(options: {
     publicUrl,
     localPort,
     ipv4,
+    tunnelToken,
   } = options;
 
   if (!subdomainPrefix || !baseStorageDomain) {
@@ -194,6 +209,43 @@ async function ensureManagedTunnelState(options: {
 
   const mode: 'direct' | 'tunnel' = ipv4 ? 'direct' : 'tunnel';
 
+  if (mode === 'direct') {
+    if (ddnsRepo) {
+      const existing = await ddnsRepo.getRecord(subdomainPrefix);
+      if (!existing) {
+        await ddnsRepo.allocateSubdomain({
+          subdomain: subdomainPrefix,
+          domain: baseStorageDomain,
+          nodeId,
+          ipAddress: ipv4,
+        });
+      }
+    }
+
+    return { mode };
+  }
+
+  if (tunnelToken) {
+    if (!localPort || localPort <= 0) {
+      throw new InvalidTunnelTokenError('localPort is required when tunnelToken is provided');
+    }
+
+    return {
+      mode,
+      tunnelConfig: await ensureManagedTokenTunnelState({
+        repository,
+        ddnsRepo,
+        dnsProvider,
+        nodeId,
+        subdomainPrefix,
+        baseStorageDomain,
+        publicUrl,
+        localPort,
+        tunnelToken,
+      }),
+    };
+  }
+
   if (ddnsRepo) {
     const existing = await ddnsRepo.getRecord(subdomainPrefix);
     if (!existing) {
@@ -201,12 +253,11 @@ async function ensureManagedTunnelState(options: {
         subdomain: subdomainPrefix,
         domain: baseStorageDomain,
         nodeId,
-        ipAddress: ipv4,
       });
     }
   }
 
-  if (mode === 'direct' || !tunnelProvider || !localPort || localPort <= 0) {
+  if (!tunnelProvider || !localPort || localPort <= 0) {
     return { mode };
   }
 
@@ -242,6 +293,123 @@ async function ensureManagedTunnelState(options: {
     mode,
     tunnelConfig,
   };
+}
+
+async function ensureManagedTokenTunnelState(options: {
+  repository: EdgeNodeRepository;
+  ddnsRepo?: DdnsRepository;
+  dnsProvider?: DnsProvider;
+  nodeId: string;
+  subdomainPrefix: string;
+  baseStorageDomain: string;
+  publicUrl: string;
+  localPort: number;
+  tunnelToken: string;
+}): Promise<TunnelConfig> {
+  const {
+    repository,
+    ddnsRepo,
+    dnsProvider,
+    nodeId,
+    subdomainPrefix,
+    baseStorageDomain,
+    publicUrl,
+    localPort,
+    tunnelToken,
+  } = options;
+
+  const parsed = parseCloudflareTunnelToken(tunnelToken);
+  if (!parsed?.tunnelId) {
+    throw new InvalidTunnelTokenError('Invalid Cloudflare tunnel token');
+  }
+
+  const endpoint = `https://${subdomainPrefix}.${baseStorageDomain}`;
+  const cnameTarget = `${parsed.tunnelId}.cfargotunnel.com`;
+
+  if (ddnsRepo) {
+    const existing = await ddnsRepo.getRecord(subdomainPrefix);
+    if (!existing) {
+      await ddnsRepo.allocateSubdomain({
+        subdomain: subdomainPrefix,
+        domain: baseStorageDomain,
+        nodeId,
+        ipAddress: cnameTarget,
+        recordType: 'CNAME',
+      });
+    } else if (
+      existing.recordType !== 'CNAME'
+      || existing.ipAddress !== cnameTarget
+      || existing.ipv6Address
+    ) {
+      await ddnsRepo.updateRecordIp(subdomainPrefix, {
+        ipAddress: cnameTarget,
+        ipv6Address: null,
+        recordType: 'CNAME',
+      });
+    }
+  }
+
+  if (dnsProvider) {
+    await dnsProvider.upsertRecord({
+      domain: baseStorageDomain,
+      subdomain: subdomainPrefix,
+      type: 'CNAME',
+      value: cnameTarget,
+      ttl: 60,
+    });
+  }
+
+  const config: TunnelConfig = {
+    provider: 'cloudflare',
+    subdomain: subdomainPrefix,
+    endpoint,
+    tunnelId: parsed.tunnelId,
+    tunnelToken,
+  };
+
+  await repository.mergeNodeMetadata(nodeId, {
+    managedTunnel: {
+      provider: config.provider,
+      tunnelId: config.tunnelId,
+      tunnelToken: config.tunnelToken,
+      endpoint: config.endpoint,
+      subdomain: subdomainPrefix,
+      localPort,
+      configuredAt: new Date().toISOString(),
+      source: 'client-token',
+    },
+    publicAddress: endpoint || publicUrl,
+  });
+
+  return config;
+}
+
+function parseCloudflareTunnelToken(token: string): { accountId?: string; tunnelId?: string } | undefined {
+  const decoded = decodeJsonBase64UrlSegment(token) ?? decodeJsonBase64UrlSegment(token.split('.')[0] ?? '');
+  if (!decoded || typeof decoded !== 'object') {
+    return undefined;
+  }
+
+  const value = decoded as Record<string, unknown>;
+  return {
+    accountId: typeof value.a === 'string' ? value.a : undefined,
+    tunnelId: typeof value.t === 'string' ? value.t : undefined,
+  };
+}
+
+function decodeJsonBase64UrlSegment(segment: string): unknown {
+  if (!segment) {
+    return undefined;
+  }
+
+  try {
+    const normalized = segment.replace(/-/g, '+').replace(/_/g, '/');
+    const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+    const json = Buffer.from(`${normalized}${padding}`, 'base64').toString('utf8');
+    return JSON.parse(json);
+  } catch {
+    return undefined;
+  }
 }
 
 function readManagedTunnelConfig(metadata: Record<string, unknown> | null): { subdomain?: string; localPort?: number; config: TunnelConfig } | undefined {
