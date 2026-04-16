@@ -16,6 +16,7 @@ import { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
 import { EdgeNodeHealthProbeService } from '../../edge/EdgeNodeHealthProbeService';
 import { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
+import { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { getLoggerFor } from 'global-logger-factory';
 
 const logger = getLoggerFor('CloudServices');
@@ -37,8 +38,12 @@ export function registerCloudServices(
     webIdProfileRepo: asFunction(() => {
       return new WebIdProfileRepository(db, { baseUrl });
     }).singleton(),
+    podLookupRepo: asFunction(() => {
+      return new PodLookupRepository(db);
+    }).singleton(),
   });
   logger.info('WebID Profile repository registered');
+  logger.info('Pod lookup repository registered');
 
   // 注册 DDNS Repository (始终注册，用于 DDNS 服务)
   container.register({

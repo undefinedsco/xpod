@@ -74,6 +74,14 @@ export class PodLookupRepository {
   }
 
   /**
+   * List Pods for a specific account.
+   */
+  public async listByAccountId(accountId: string): Promise<PodLookupResult[]> {
+    const pods = await this.getAllPods();
+    return pods.filter((pod) => pod.accountId === accountId);
+  }
+
+  /**
    * Get migration status for a Pod from identity_pod_usage table.
    */
   public async getMigrationStatus(podId: string): Promise<PodMigrationStatus | undefined> {

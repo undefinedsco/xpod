@@ -18,6 +18,7 @@ import type { TunnelProvider } from '../../tunnel/TunnelProvider';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
 import type { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
+import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import type { ChatKitService, AiProvider } from '../chatkit';
 import type { StoreContext } from '../chatkit/store';
 import type { PodChatKitStore } from '../chatkit/pod-store';
@@ -122,6 +123,7 @@ export interface ApiContainerCradle {
   // Cloud 模式: 身份服务
   webIdProfileRepo?: WebIdProfileRepository;
   ddnsRepo?: DdnsRepository;
+  podLookupRepo?: PodLookupRepository;
 
   // 子域名相关 (可选，按 edition 注册)
   // Cloud 模式 或 Local 自管模式

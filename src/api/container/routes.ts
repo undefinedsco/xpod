@@ -133,8 +133,12 @@ function registerCloudRoutes(
   // WebID Profile 托管服务
   try {
     const profileRepo = container.resolve('webIdProfileRepo', { allowUnregistered: true });
+    const podLookupRepo = container.resolve('podLookupRepo', { allowUnregistered: true });
     if (profileRepo) {
-      registerWebIdProfileRoutes(server, { profileRepo: profileRepo as any });
+      registerWebIdProfileRoutes(server, {
+        profileRepo: profileRepo as any,
+        podLookupRepo: podLookupRepo as any,
+      });
       console.log('[Cloud] WebID Profile routes registered');
     }
   } catch {

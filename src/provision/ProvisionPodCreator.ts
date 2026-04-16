@@ -16,6 +16,7 @@ import {
   type BasePodCreatorArgs,
 } from '@solid/community-server';
 import { ProvisionCodeCodec } from './ProvisionCodeCodec';
+import type { WebIdProfileRepository } from '../identity/drizzle/WebIdProfileRepository';
 
 function joinUrlPath(baseUrl: string, relativePath: string): string {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/u, '');
@@ -26,15 +27,19 @@ function joinUrlPath(baseUrl: string, relativePath: string): string {
 export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
   /** 与 ProvisionHandler 使用相同的 baseUrl 派生签名密钥 */
   provisionBaseUrl?: string;
+  /** Optional Cloud profile repository used to reconcile solid:storage after remote provisioning */
+  webIdProfileRepo?: WebIdProfileRepository;
 }
 
 export class ProvisionPodCreator extends BasePodCreator {
   private readonly provisionLogger = getLoggerFor(this);
   private readonly codec: ProvisionCodeCodec;
+  private readonly webIdProfileRepo?: WebIdProfileRepository;
 
   public constructor(args: ProvisionPodCreatorArgs) {
     super(args);
     this.codec = new ProvisionCodeCodec(args.provisionBaseUrl ?? args.baseUrl);
+    this.webIdProfileRepo = args.webIdProfileRepo;
   }
 
   public override async handle(input: PodCreatorInput): Promise<PodCreatorOutput> {
@@ -81,7 +86,8 @@ export class ProvisionPodCreator extends BasePodCreator {
     const storageBase = payload.spDomain
       ? `https://${payload.spDomain}`
       : payload.spUrl.replace(/\/$/, '');
-    const podUrl = spResult.podUrl || `${storageBase}/${podName}/`;
+    const canonicalStorageUrl = `${storageBase}/${podName}/`;
+    const podUrl = spResult.podUrl || canonicalStorageUrl;
 
     // 3. 生成 WebID（指向 Cloud，storage 指向 SP）
     const webId = input.webId ?? `${this.baseUrl}${podName}/profile/card#me`;
@@ -99,6 +105,17 @@ export class ProvisionPodCreator extends BasePodCreator {
 
     const webIdLink = await this.handleWebId(!input.webId, webId, input.accountId, podSettings);
     const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink);
+
+    if (!input.webId && this.webIdProfileRepo) {
+      try {
+        await this.webIdProfileRepo.updateStorage(podName, {
+          storageUrl: canonicalStorageUrl,
+          storageMode: 'local',
+        });
+      } catch (error) {
+        this.provisionLogger.warn(`Failed to reconcile storage pointer for ${podName}: ${(error as Error).message}`);
+      }
+    }
 
     this.provisionLogger.info(`Provisioned pod ${podName} on SP ${payload.spUrl}, podUrl: ${podUrl}`);
 

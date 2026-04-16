@@ -14,6 +14,7 @@ describe('ProvisionPodCreator', () => {
   let mockIdentifierGenerator: any;
   let mockWebIdStore: any;
   let mockPodStore: any;
+  let mockWebIdProfileRepo: any;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -28,6 +29,13 @@ describe('ProvisionPodCreator', () => {
     mockPodStore = {
       create: vi.fn().mockResolvedValue('pod-id-1'),
     };
+    mockWebIdProfileRepo = {
+      updateStorage: vi.fn().mockResolvedValue({
+        username: 'alice',
+        storageUrl: 'https://abc123.undefineds.site/alice/',
+        storageMode: 'local',
+      }),
+    };
 
     creator = new ProvisionPodCreator({
       baseUrl,
@@ -36,6 +44,7 @@ describe('ProvisionPodCreator', () => {
       relativeWebIdPath: 'profile/card#me',
       webIdStore: mockWebIdStore,
       podStore: mockPodStore,
+      webIdProfileRepo: mockWebIdProfileRepo,
     });
   });
 
@@ -109,12 +118,40 @@ describe('ProvisionPodCreator', () => {
 
       // Should use spDomain, not spUrl
       expect(result.podUrl).toBe('https://abc123.undefineds.site/alice/');
+      expect(mockWebIdProfileRepo.updateStorage).toHaveBeenCalledWith('alice', {
+        storageUrl: 'https://abc123.undefineds.site/alice/',
+        storageMode: 'local',
+      });
 
       // But fetch should still use the real spUrl
       expect(mockFetch).toHaveBeenCalledWith(
         `${spUrl}/provision/pods`,
         expect.any(Object),
       );
+    });
+
+    it('reconciles storage pointer to canonical storage url when SP returns a local callback podUrl', async () => {
+      const provisionCode = makeProvisionCode({ spDomain: 'abc123.undefineds.site' });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ podUrl: `${spUrl}/alice/` }),
+      });
+
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+      const result = await creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode },
+      });
+
+      expect(result.podUrl).toBe(`${spUrl}/alice/`);
+      expect(mockWebIdProfileRepo.updateStorage).toHaveBeenCalledWith('alice', {
+        storageUrl: 'https://abc123.undefineds.site/alice/',
+        storageMode: 'local',
+      });
     });
 
     it('should throw on invalid provisionCode', async () => {

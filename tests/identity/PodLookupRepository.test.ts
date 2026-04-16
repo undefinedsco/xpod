@@ -132,6 +132,30 @@ describe('PodLookupRepository', () => {
     });
   });
 
+  describe('listByAccountId', () => {
+    it('returns only pods belonging to the requested account', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          accountKvRow('acc-1', {
+            'pod-1': { baseUrl: 'https://example.com/alice/', nodeId: 'node-1' },
+            'pod-2': { baseUrl: 'https://example.com/alice-2/', nodeId: 'node-2' },
+          }),
+          accountKvRow('acc-2', {
+            'pod-3': { baseUrl: 'https://example.com/bob/', nodeId: 'node-3' },
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.listByAccountId('acc-1');
+
+      expect(result).toHaveLength(2);
+      expect(result.every((pod) => pod.accountId === 'acc-1')).toBe(true);
+      expect(result.map((pod) => pod.podId)).toEqual(['pod-1', 'pod-2']);
+    });
+  });
+
   describe('getMigrationStatus', () => {
     it('returns migration status when set', async () => {
       const { db, execute } = createMockDb();

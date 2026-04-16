@@ -7,9 +7,9 @@ export function AboutPage() {
   const { isLoggedIn } = useAuth();
 
   const features = [
-    { icon: Clock, title: 'Your AI Never Stops', desc: 'Runs 24/7, even when you\'re not talking to it' },
+    { icon: Clock, title: 'Your AI Secretary Never Stops', desc: 'Runs 24/7, even when you\'re not talking to it' },
     { icon: Layers, title: 'One Place for Your Whole Life', desc: 'All your messages together in one place' },
-    { icon: Shield, title: 'One Secretary, A Thousand Agents', desc: 'Full power, full privacy' },
+    { icon: Shield, title: 'One Secretary, Many Agents', desc: 'Full power, full privacy' },
   ];
 
   return (

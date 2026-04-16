@@ -31,6 +31,26 @@ describe('completeRegistrationProvisioning', () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/account/pod');
     expect(fetchMock.mock.calls[2]?.[0]).toBe('https://id.example/oidc/pick-webid/');
   });
+
+  it('maps duplicate pod resource errors to a clear username conflict message', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, {
+        controls: {
+          account: {
+            pod: '/.account/account/pod',
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse(409, {
+        message: 'Pod creation failed: There already is a resource at https://id.example/alice/',
+      }));
+
+    await expect(completeRegistrationProvisioning({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      idpIndex: 'https://id.example/',
+      username: 'alice',
+    })).rejects.toThrow('Username is already taken. Your account was created; sign in and choose another Pod name.');
+  });
 });
 
 describe('bootstrapAccountPasswordLogin', () => {

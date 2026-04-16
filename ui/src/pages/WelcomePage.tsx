@@ -4,7 +4,11 @@ import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check, User } f
 import clsx from 'clsx';
 import { useAuth } from '../context/AuthContext';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
-import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
+import {
+  checkRegistrationUsernameAvailability,
+  getRegistrationUsernameError,
+  normalizeRegistrationUsername,
+} from '../utils/registration';
 import { bootstrapAccountPasswordLogin, completeRegistrationProvisioning } from '../utils/registration-flow';
 
 interface WelcomePageProps {
@@ -20,14 +24,59 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isCheckingUsername, setIsCheckingUsername] = useState(false);
+  const [isUsernameAvailable, setIsUsernameAvailable] = useState<boolean | null>(null);
+  const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
 
   const passwordsMatch = password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
-  const usernameError = isRegister ? getRegistrationUsernameError(username) : undefined;
+  const normalizedUsername = normalizeRegistrationUsername(username);
+  const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
 
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
     if (returnTo) persistReturnTo(returnTo);
   }, []);
+
+  useEffect(() => {
+    if (!isRegister) {
+      setIsCheckingUsername(false);
+      setIsUsernameAvailable(null);
+      setUsernameSuggestions([]);
+      return;
+    }
+
+    if (!normalizedUsername) {
+      setIsCheckingUsername(false);
+      setIsUsernameAvailable(null);
+      setUsernameSuggestions([]);
+      return;
+    }
+
+    if (usernameError) {
+      setIsCheckingUsername(false);
+      setIsUsernameAvailable(false);
+      setUsernameSuggestions([]);
+      return;
+    }
+
+    let cancelled = false;
+    setIsCheckingUsername(true);
+
+    const timer = window.setTimeout(async () => {
+      const result = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
+      if (cancelled) {
+        return;
+      }
+      setIsCheckingUsername(false);
+      setIsUsernameAvailable(result.available);
+      setUsernameSuggestions(result.suggestions);
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
   // If already logged in, redirect to dashboard
   if (isLoggedIn) {
@@ -35,9 +84,9 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   }
 
   const features = [
-    { icon: Clock, title: 'Your AI Never Stops', desc: 'Runs 24/7, even when you\'re not talking to it' },
-    { icon: Layers, title: 'One Place for Your Whole Life', desc: 'All your messages together in one place' },
-    { icon: Shield, title: 'One Secretary, A Thousand Agents', desc: 'Full power, full privacy' },
+    { icon: Clock, title: 'Your AI Secretary Never Stops', desc: 'Runs 24/7, even when you are not talking to it' },
+    { icon: Layers, title: 'All Your Pieces, In One Place', desc: 'Data, memory, and working context come back into one system' },
+    { icon: Shield, title: 'One Secretary, Many Agents', desc: 'One aligned layer can direct many agents while keeping privacy and control inside your boundary' },
   ];
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -59,6 +108,14 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         }
         if (normalizedUsernameError) {
           alert(normalizedUsernameError);
+          setIsLoading(false);
+          return;
+        }
+        const availability = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
+        if (!availability.available) {
+          setIsUsernameAvailable(false);
+          setUsernameSuggestions(availability.suggestions);
+          alert('Username is already taken');
           setIsLoading(false);
           return;
         }
@@ -143,6 +200,9 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     setUsername('');
     setPassword('');
     setConfirmPassword('');
+    setIsCheckingUsername(false);
+    setIsUsernameAvailable(null);
+    setUsernameSuggestions([]);
   };
 
   // OIDC Cancel handler
@@ -253,10 +313,16 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                       autoCorrect="off"
                       spellCheck={false}
                       value={username}
-                      onChange={(e) => setUsername(e.target.value.toLowerCase())}
+                      onChange={(e) => setUsername(e.target.value)}
                       className={clsx(
                         'block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors',
-                        usernameError && username.length > 0 ? 'border-amber-300 focus:border-amber-500' : 'border-zinc-200 focus:border-[#7C4DFF]',
+                        usernameError && username.length > 0
+                          ? 'border-amber-300 focus:border-amber-500'
+                          : isUsernameAvailable === false
+                            ? 'border-amber-300 focus:border-amber-500'
+                            : isUsernameAvailable
+                              ? 'border-emerald-300 focus:border-emerald-500'
+                              : 'border-zinc-200 focus:border-[#7C4DFF]',
                       )}
                       placeholder="Username"
                     />
@@ -309,12 +375,39 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
               {isRegister && (
                 <p className={clsx(
                   'text-[11px] leading-relaxed',
-                  usernameError && username.length > 0 ? 'text-amber-600' : 'text-zinc-500',
+                  usernameError && username.length > 0
+                    ? 'text-amber-600'
+                    : isUsernameAvailable === false
+                      ? 'text-amber-600'
+                      : isUsernameAvailable
+                        ? 'text-emerald-600'
+                        : 'text-zinc-500',
                 )}>
                   {usernameError && username.length > 0
                     ? usernameError
-                    : 'Username becomes your first Pod URL. Use 3-63 lowercase letters, numbers, or hyphens.'}
+                    : isCheckingUsername
+                      ? 'Checking username availability...'
+                      : normalizedUsername && isUsernameAvailable === false
+                        ? 'Username is already taken.'
+                        : normalizedUsername && isUsernameAvailable
+                          ? 'Username is available.'
+                          : 'Username becomes your first Pod URL. Use 3-63 lowercase letters, numbers, or hyphens.'}
                 </p>
+              )}
+
+              {isRegister && usernameSuggestions.length > 0 && !usernameError && isUsernameAvailable === false && (
+                <div className="flex flex-wrap gap-2">
+                  {usernameSuggestions.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() => setUsername(suggestion)}
+                      className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[11px] text-zinc-600 hover:border-[#7C4DFF] hover:text-[#7C4DFF]"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
               )}
 
               {!isRegister && (
@@ -327,7 +420,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
               <button
                 type="submit"
-                disabled={isLoading || isCancelling || Boolean(isRegister && usernameError)}
+                disabled={isLoading || isCancelling || Boolean(isRegister && (usernameError || isCheckingUsername || isUsernameAvailable === false))}
                 className="w-full py-3 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
               >
                 {isLoading ? (

@@ -11,11 +11,13 @@ import type { ServerResponse, IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
+import type { PodLookupRepository, PodLookupResult } from '../../identity/drizzle/PodLookupRepository';
 
 const logger = getLoggerFor('WebIdProfileHandler');
 
 export interface WebIdProfileHandlerOptions {
   profileRepo: WebIdProfileRepository;
+  podLookupRepo?: PodLookupRepository;
 }
 
 export function registerWebIdProfileRoutes(
@@ -34,7 +36,7 @@ export function registerWebIdProfileRoutes(
     const username = decodeURIComponent(params.username);
 
     try {
-      const profile = await profileRepo.get(username);
+      const profile = await resolveProfileWithStorageBackfill(username, options);
 
       if (!profile) {
         sendError(response, 404, 'Profile not found');
@@ -119,7 +121,7 @@ export function registerWebIdProfileRoutes(
     const username = decodeURIComponent(params.username);
 
     try {
-      const profile = await profileRepo.get(username);
+      const profile = await resolveProfileWithStorageBackfill(username, options);
 
       if (!profile) {
         sendError(response, 404, 'Profile not found');
@@ -205,6 +207,81 @@ export function registerWebIdProfileRoutes(
   });
 
   logger.info('WebID Profile routes registered');
+}
+
+async function resolveProfileWithStorageBackfill(
+  username: string,
+  options: WebIdProfileHandlerOptions,
+) {
+  const { profileRepo, podLookupRepo } = options;
+  const profile = await profileRepo.get(username);
+  if (!profile) {
+    return null;
+  }
+
+  if (profile.storageUrl || !profile.accountId || !podLookupRepo) {
+    return profile;
+  }
+
+  const pods = await podLookupRepo.listByAccountId(profile.accountId);
+  const storageUrl = selectStorageBackfillCandidate(username, pods);
+  if (!storageUrl) {
+    logger.warn(`Skipped storage backfill for ${username}: no unambiguous pod found for account ${profile.accountId}`);
+    return profile;
+  }
+
+  try {
+    const updated = await profileRepo.updateStorage(username, {
+      storageUrl,
+      storageMode: profile.storageMode,
+    });
+    if (updated) {
+      logger.info(`Backfilled storage for ${username}: ${storageUrl}`);
+      return updated;
+    }
+  } catch (error) {
+    logger.warn(`Failed to backfill storage for ${username}: ${error}`);
+  }
+
+  return profile;
+}
+
+function selectStorageBackfillCandidate(
+  username: string,
+  pods: PodLookupResult[],
+): string | null {
+  if (pods.length === 0) {
+    return null;
+  }
+
+  const exactMatches = pods.filter((pod) => derivePodSlug(pod.baseUrl) === username);
+  if (exactMatches.length === 1) {
+    return ensureTrailingSlash(exactMatches[0].baseUrl);
+  }
+
+  if (exactMatches.length > 1) {
+    return null;
+  }
+
+  if (pods.length === 1) {
+    return ensureTrailingSlash(pods[0].baseUrl);
+  }
+
+  return null;
+}
+
+function derivePodSlug(baseUrl: string): string | null {
+  try {
+    const parsed = new URL(baseUrl);
+    const [slug] = parsed.pathname.split('/').filter(Boolean);
+    return slug || null;
+  } catch {
+    return null;
+  }
+}
+
+function ensureTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, '') + '/';
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {

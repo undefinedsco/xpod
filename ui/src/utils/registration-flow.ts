@@ -18,6 +18,20 @@ export interface RegistrationFlowOptions {
   username: string;
 }
 
+async function readErrorMessage(response: Response): Promise<string | undefined> {
+  const json = await response.json().catch(() => undefined) as { message?: string; error?: string } | undefined;
+  return json?.message || json?.error;
+}
+
+function isUsernameConflict(message: string | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  return /There already is a resource at/i.test(message) ||
+    /Username already taken/i.test(message);
+}
+
 function accountTokenHeaders(accountToken: string): HeadersInit {
   return {
     Accept: 'application/json',
@@ -131,8 +145,11 @@ export async function completeRegistrationProvisioning(
     body: JSON.stringify(buildPodCreatePayload(username)),
   });
   if (!res.ok) {
-    const podError = await res.json().catch(() => ({}));
-    throw new Error((podError as any).message || 'Failed to create pod');
+    const message = await readErrorMessage(res);
+    if (isUsernameConflict(message)) {
+      throw new Error('Username is already taken. Your account was created; sign in and choose another Pod name.');
+    }
+    throw new Error(message || 'Failed to create pod');
   }
   const podCreateResult = await res.json().catch(() => ({})) as any;
   clearStoredProvisionCode();
