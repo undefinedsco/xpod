@@ -29,8 +29,8 @@ describe('registerRoutes vector wiring', () => {
   beforeEach(() => {
     routes = {};
     mockServer = {
-      route: vi.fn((method: string, path: string, handler: Function) => {
-        routes[`${method.toUpperCase()} ${path}`] = handler;
+      route: vi.fn((method: string, path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute(method, path, handler, options);
       }),
       get: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
         storeRoute('GET', path, handler, options);
