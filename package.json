@@ -112,12 +112,14 @@
     "build:single:standalone": "bun run build && node scripts/build-single-file.js",
     "check:abi": "node scripts/check-native-abi.cjs",
     "check:platform-package-version": "node scripts/check-platform-package-version.cjs",
+    "sync:platform-package-version": "node scripts/sync-platform-package-version.cjs",
     "publish:platforms": "node scripts/publish-platform-packages.cjs",
     "publish:local": "node scripts/publish-local.cjs",
     "publish:local:dry": "node scripts/publish-local.cjs --dry-run",
     "publish:release": "node scripts/publish-release.cjs",
     "publish:release:dry": "node scripts/publish-release.cjs --dry-run",
-    "test:setup": "dotenv -e .env.local -- bun scripts/setup-test-credentials.ts"
+    "test:setup": "dotenv -e .env.local -- bun scripts/setup-test-credentials.ts",
+    "version": "node scripts/sync-platform-package-version.cjs --stage"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
