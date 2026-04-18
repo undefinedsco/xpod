@@ -12,11 +12,12 @@ describe('completeRegistrationProvisioning', () => {
         controls: {
           account: {
             pod: '/.account/account/pod',
+            webId: '/.account/account/webid',
           },
         },
       }))
       .mockResolvedValueOnce(jsonResponse(201, { podUrl: 'https://node.example/alice/' }))
-      .mockResolvedValueOnce(jsonResponse(200, { webIds: ['https://id.example/alice/profile/card#me'] }))
+      .mockResolvedValueOnce(jsonResponse(200, { webIdLinks: { 'https://id.example/alice/profile/card#me': '/.account/account/webid/1' } }))
       .mockResolvedValueOnce(jsonResponse(200, { client: { client_id: 'linx' } }));
 
     const result = await completeRegistrationProvisioning({
@@ -29,7 +30,33 @@ describe('completeRegistrationProvisioning', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://id.example/');
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/account/pod');
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://id.example/oidc/pick-webid/');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/webid');
+  });
+
+  it('treats a visible pod record as ready even before webIdLinks catches up', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, {
+        controls: {
+          account: {
+            pod: '/.account/account/pod',
+            webId: '/.account/account/webid',
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse(201, { podUrl: 'https://node.example/alice/' }))
+      .mockResolvedValueOnce(jsonResponse(200, { webIdLinks: {} }))
+      .mockResolvedValueOnce(jsonResponse(200, { pods: { 'https://pods.example/alice/': '/.account/account/pod/1' } }))
+      .mockResolvedValueOnce(jsonResponse(200, { client: { client_id: 'linx' } }));
+
+    const result = await completeRegistrationProvisioning({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      idpIndex: 'https://id.example/',
+      username: 'alice',
+    });
+
+    expect(result).toEqual({ redirectedToConsent: true });
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/webid');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('/.account/account/pod');
   });
 
   it('maps duplicate pod resource errors to a clear username conflict message', async () => {

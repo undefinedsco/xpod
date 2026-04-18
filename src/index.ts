@@ -21,6 +21,7 @@ import { TerminalHttpHandler } from './http/terminal/TerminalHttpHandler';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
+import { WebIdProfileRepository } from './identity/drizzle/WebIdProfileRepository';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
@@ -127,6 +128,7 @@ export {
     TerminalHttpHandler,
     ReservedSuffixIdentifierGenerator,
     DrizzleIndexedStorage,
+    WebIdProfileRepository,
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
     SqliteKeyValueStorage,

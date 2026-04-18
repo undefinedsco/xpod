@@ -23,6 +23,28 @@ async function readErrorMessage(response: Response): Promise<string | undefined>
   return json?.message || json?.error;
 }
 
+interface AccountControlsResponse {
+  controls?: {
+    account?: {
+      pod?: string;
+      webId?: string;
+    };
+  };
+}
+
+interface AccountPodResponse {
+  pods?: Record<string, string>;
+}
+
+interface AccountWebIdResponse {
+  webIdLinks?: Record<string, string>;
+}
+
+interface AccountStatusEndpoints {
+  pod?: string;
+  webId?: string;
+}
+
 function isUsernameConflict(message: string | undefined): boolean {
   if (!message) {
     return false;
@@ -97,22 +119,50 @@ export async function bootstrapAccountPasswordLogin(
 export async function defaultWaitForWebIdReady(
   fetchImpl: typeof fetch,
   idpIndex: string,
+  endpoints?: AccountStatusEndpoints,
   timeoutMs = 15_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  const pickWebIdUrl = `${idpIndex}oidc/pick-webid/`;
+  let accountPodUrl = endpoints?.pod;
+  let accountWebIdUrl = endpoints?.webId;
 
   while (Date.now() < deadline) {
     try {
-      const res = await fetchImpl(pickWebIdUrl, {
-        headers: { Accept: 'application/json' },
-        credentials: 'include',
-      } as RequestInit);
-      if (res.ok) {
-        const data = await res.json().catch(() => ({})) as any;
-        const ids = Array.isArray(data.webIds) ? data.webIds : [];
-        if (ids.length > 0) {
-          return true;
+      if (!accountPodUrl && !accountWebIdUrl) {
+        const controlsRes = await fetchImpl(idpIndex, {
+          headers: { Accept: 'application/json' },
+          credentials: 'include',
+        } as RequestInit);
+        if (controlsRes.ok) {
+          const controlsData = await controlsRes.json().catch(() => ({})) as AccountControlsResponse;
+          accountPodUrl = controlsData.controls?.account?.pod;
+          accountWebIdUrl = controlsData.controls?.account?.webId;
+        }
+      }
+
+      if (accountWebIdUrl) {
+        const webIdRes = await fetchImpl(accountWebIdUrl, {
+          headers: { Accept: 'application/json' },
+          credentials: 'include',
+        } as RequestInit);
+        if (webIdRes.ok) {
+          const data = await webIdRes.json().catch(() => ({})) as AccountWebIdResponse;
+          if (Object.keys(data.webIdLinks ?? {}).length > 0) {
+            return true;
+          }
+        }
+      }
+
+      if (accountPodUrl) {
+        const podRes = await fetchImpl(accountPodUrl, {
+          headers: { Accept: 'application/json' },
+          credentials: 'include',
+        } as RequestInit);
+        if (podRes.ok) {
+          const data = await podRes.json().catch(() => ({})) as AccountPodResponse;
+          if (Object.keys(data.pods ?? {}).length > 0) {
+            return true;
+          }
         }
       }
     } catch {
@@ -155,7 +205,7 @@ export async function completeRegistrationProvisioning(
   clearStoredProvisionCode();
   void podCreateResult;
 
-  await defaultWaitForWebIdReady(fetchImpl, idpIndex);
+  await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account);
 
   const consentCheck = await fetchImpl('/.account/oidc/consent/', {
     headers: { Accept: 'application/json' },

@@ -4,7 +4,7 @@ import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
 
 // Mock global fetch
 const mockFetch = vi.fn();
-vi.stubGlobal('fetch', mockFetch);
+globalThis.fetch = mockFetch as typeof fetch;
 
 describe('ProvisionPodCreator', () => {
   const baseUrl = 'https://cloud.example.com/';
@@ -274,6 +274,17 @@ describe('ProvisionPodCreator', () => {
         'webid-link-1',
       );
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('maps duplicate resource conflicts to a pod-name conflict message', async () => {
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(creator as any, 'createPod').mockRejectedValue(new Error(`There already is a resource at ${baseUrl}bob/`));
+
+      await expect(creator.handle({
+        name: 'bob',
+        accountId: 'account-2',
+        settings: {},
+      })).rejects.toThrow('Pod name "bob" is already taken for this storage target.');
     });
   });
 });

@@ -5,7 +5,7 @@
  */
 
 import { eq } from 'drizzle-orm';
-import type { IdentityDatabase } from './db';
+import { getIdentityDatabase, type IdentityDatabase } from './db';
 import { getLoggerFor } from 'global-logger-factory';
 
 const logger = getLoggerFor('WebIdProfileRepository');
@@ -34,13 +34,21 @@ export interface UpdateStorageInput {
   storageMode?: 'cloud' | 'local' | 'custom';
 }
 
+export interface WebIdProfileRepositoryOptions {
+  baseUrl: string;
+  db?: IdentityDatabase;
+  identityDbUrl?: string;
+}
+
 export class WebIdProfileRepository {
   private readonly baseUrl: string;
+  private readonly db: IdentityDatabase;
 
-  constructor(
-    private readonly db: IdentityDatabase,
-    options: { baseUrl: string },
-  ) {
+  public constructor(options: WebIdProfileRepositoryOptions) {
+    this.db = options.db ?? getIdentityDatabaseFromOptions(options);
+    if (!options.baseUrl) {
+      throw new Error('WebIdProfileRepository requires baseUrl.');
+    }
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
   }
 
@@ -210,4 +218,12 @@ export class WebIdProfileRepository {
 
     return profile;
   }
+}
+
+function getIdentityDatabaseFromOptions(options: WebIdProfileRepositoryOptions): IdentityDatabase {
+  if (options.identityDbUrl) {
+    return getIdentityDatabase(options.identityDbUrl);
+  }
+
+  throw new Error('WebIdProfileRepository requires db or identityDbUrl.');
 }

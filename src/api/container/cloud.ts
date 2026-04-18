@@ -36,7 +36,7 @@ export function registerCloudServices(
   // 注册 WebID Profile Repository (始终注册，用于身份服务)
   container.register({
     webIdProfileRepo: asFunction(() => {
-      return new WebIdProfileRepository(db, { baseUrl });
+      return new WebIdProfileRepository({ db, baseUrl });
     }).singleton(),
     podLookupRepo: asFunction(() => {
       return new PodLookupRepository(db);

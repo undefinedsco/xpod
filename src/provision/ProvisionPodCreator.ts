@@ -14,6 +14,7 @@ import {
   type PodCreatorInput,
   type PodCreatorOutput,
   type BasePodCreatorArgs,
+  ConflictHttpError,
 } from '@solid/community-server';
 import { ProvisionCodeCodec } from './ProvisionCodeCodec';
 import type { WebIdProfileRepository } from '../identity/drizzle/WebIdProfileRepository';
@@ -29,6 +30,17 @@ export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
   provisionBaseUrl?: string;
   /** Optional Cloud profile repository used to reconcile solid:storage after remote provisioning */
   webIdProfileRepo?: WebIdProfileRepository;
+}
+
+function remapPodConflict(error: unknown, podName: string): never {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/There already is a resource at/i.test(message)) {
+    throw new ConflictHttpError(`Pod name "${podName}" is already taken for this storage target.`, {
+      cause: error instanceof Error ? error : undefined,
+    });
+  }
+
+  throw error;
 }
 
 export class ProvisionPodCreator extends BasePodCreator {
@@ -145,7 +157,15 @@ export class ProvisionPodCreator extends BasePodCreator {
     const webIdElapsed = Date.now() - webIdStarted;
 
     const podStarted = Date.now();
-    const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink);
+    let podId: string;
+    try {
+      podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink);
+    } catch (error) {
+      if (input.name) {
+        remapPodConflict(error, input.name);
+      }
+      throw error;
+    }
     const podElapsed = Date.now() - podStarted;
     const totalElapsed = Date.now() - totalStarted;
 

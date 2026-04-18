@@ -4,6 +4,43 @@ import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Co
 import { useAuth } from '../context/AuthContext';
 import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
 
+interface PodView {
+  id: string;
+  resourceUrl: string;
+  name?: string;
+}
+
+interface AccountPodResponse {
+  pods?: Record<string, string>;
+}
+
+interface AccountWebIdResponse {
+  webIdLinks?: Record<string, string>;
+}
+
+function derivePodName(storageUrl: string): string | undefined {
+  try {
+    const url = new URL(storageUrl);
+    const segments = url.pathname.split('/').filter(Boolean);
+    return segments[segments.length - 1];
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizePods(json: AccountPodResponse | undefined): PodView[] {
+  const pods = json?.pods;
+  if (!pods || typeof pods !== 'object') {
+    return [];
+  }
+
+  return Object.entries(pods).map(([storageUrl, resourceUrl]) => ({
+    id: storageUrl,
+    resourceUrl,
+    name: derivePodName(storageUrl),
+  }));
+}
+
 /**
  * Generate API Key from client credentials.
  * Format: sk-{base64(client_id:client_secret)}
@@ -36,7 +73,8 @@ export function AccountPage() {
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
-  const [pods, setPods] = useState<{ id: string; name?: string }[]>([]);
+  const [pods, setPods] = useState<PodView[]>([]);
+  const [podStateSettling, setPodStateSettling] = useState(false);
   const [showCreatePod, setShowCreatePod] = useState(false);
   const [podName, setPodName] = useState('');
   const [showLinkWebId, setShowLinkWebId] = useState(false);
@@ -74,26 +112,35 @@ export function AccountPage() {
 
   const fetchData = async () => {
     try {
+      let nextWebIds: string[] = [];
       if (controls?.account?.webId) {
         const res = await fetch(controls.account.webId, { headers: { Accept: 'application/json' }, credentials: 'include' });
         if (res.ok) {
-          const json = await res.json();
+          const json = await res.json() as AccountWebIdResponse;
           const links = json.webIdLinks || {};
-          setWebIds(Object.keys(links));
+          nextWebIds = Object.keys(links);
+          setWebIds(nextWebIds);
         } else {
           // No WebIDs yet is normal for new users
           setWebIds([]);
         }
+      } else {
+        setWebIds([]);
       }
       if (controls?.account?.pod) {
         const res = await fetch(controls.account.pod, { headers: { Accept: 'application/json' }, credentials: 'include' });
         if (res.ok) {
-          const json = await res.json();
-          const podObj = json.pods || {};
-          setPods(Object.keys(podObj).map(id => ({ id })));
+          const json = await res.json() as AccountPodResponse;
+          const nextPods = normalizePods(json);
+          setPods(nextPods);
+          setPodStateSettling(nextPods.length === 0 && nextWebIds.length > 0);
         } else {
           setPods([]);
+          setPodStateSettling(nextWebIds.length > 0);
         }
+      } else {
+        setPods([]);
+        setPodStateSettling(false);
       }
       if (controls?.account?.clientCredentials) {
         const res = await fetch(controls.account.clientCredentials, { headers: { Accept: 'application/json' }, credentials: 'include' });
@@ -197,7 +244,7 @@ export function AccountPage() {
     if (!confirm(`Delete pod ${podUrl}? This cannot be undone.`)) return;
     setIsLoading(true);
     try {
-      const res = await fetch(podUrl, { method: 'DELETE', credentials: 'include' });
+      const res = await fetch(podUrl, { method: 'DELETE', headers: { Accept: 'application/json' }, credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -345,16 +392,25 @@ export function AccountPage() {
           )}
           <div className="bg-white border border-zinc-200 rounded-xl shadow-sm">
             {pods.length === 0 ? (
-              <div className="p-4"><p className="text-xs text-zinc-500 mb-3">No Pods found. Create one to get started.</p></div>
+              <div className="p-4">
+                <p className="text-xs text-zinc-500 mb-3">
+                  {podStateSettling ? 'WebID 已存在，Pod 信息正在同步。请稍等后刷新页面。' : 'No Pods found. Create one to get started.'}
+                </p>
+              </div>
             ) : (
               <ul className="divide-y divide-zinc-100">
                 {pods.map((pod) => (
                   <li key={pod.id} className="p-3 flex items-center justify-between">
                     <div className="flex items-center gap-3 overflow-hidden">
                       <Database className="w-4 h-4 text-zinc-400 shrink-0" />
-                      <a href={pod.id} target="_blank" rel="noopener" className="text-xs font-mono text-[#7C4DFF] hover:text-[#6B3FE8] truncate">{pod.id}</a>
+                      <div className="min-w-0">
+                        <a href={pod.id} target="_blank" rel="noopener" className="text-xs font-mono text-[#7C4DFF] hover:text-[#6B3FE8] truncate block">{pod.id}</a>
+                        {pod.name && (
+                          <p className="text-[11px] text-zinc-500 truncate">Pod: {pod.name}</p>
+                        )}
+                      </div>
                     </div>
-                    <button onClick={() => handleDeletePod(pod.id)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Delete Pod">
+                    <button onClick={() => handleDeletePod(pod.resourceUrl)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Delete Pod">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </li>
