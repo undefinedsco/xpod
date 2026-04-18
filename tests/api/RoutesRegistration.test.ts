@@ -7,6 +7,13 @@ describe('registerRoutes vector wiring', () => {
   let routes: Record<string, Function>;
   let mockServer: ApiServer;
 
+  function storeRoute(method: string, path: string, handlerOrOptions: Function | { public?: boolean }, maybeOptions?: { public?: boolean }): void {
+    const handler = typeof handlerOrOptions === 'function' ? handlerOrOptions : undefined;
+    const options = typeof handlerOrOptions === 'function' ? maybeOptions : handlerOrOptions;
+    void options;
+    routes[`${method.toUpperCase()} ${path}`] = handler as Function;
+  }
+
   const baseConfig: ApiContainerConfig = {
     edition: 'cloud',
     port: 3002,
@@ -25,20 +32,20 @@ describe('registerRoutes vector wiring', () => {
       route: vi.fn((method: string, path: string, handler: Function) => {
         routes[`${method.toUpperCase()} ${path}`] = handler;
       }),
-      get: vi.fn((path: string, handler: Function) => {
-        routes[`GET ${path}`] = handler;
+      get: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('GET', path, handler, options);
       }),
-      post: vi.fn((path: string, handler: Function) => {
-        routes[`POST ${path}`] = handler;
+      post: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('POST', path, handler, options);
       }),
-      put: vi.fn((path: string, handler: Function) => {
-        routes[`PUT ${path}`] = handler;
+      put: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('PUT', path, handler, options);
       }),
-      delete: vi.fn((path: string, handler: Function) => {
-        routes[`DELETE ${path}`] = handler;
+      delete: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('DELETE', path, handler, options);
       }),
-      patch: vi.fn((path: string, handler: Function) => {
-        routes[`PATCH ${path}`] = handler;
+      patch: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('PATCH', path, handler, options);
       }),
     } as unknown as ApiServer;
   });
