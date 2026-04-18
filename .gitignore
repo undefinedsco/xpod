@@ -65,6 +65,7 @@ package-lock.json
 
 # Development scripts (personal)
 *.sh
+!scripts/run-vitest-safe.sh
 
 # Debug and analysis files
 debug-*.ts
