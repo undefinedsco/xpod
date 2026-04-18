@@ -72,6 +72,7 @@ import { DisabledOidcHandler } from './identity/oidc/DisabledOidcHandler';
 import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentityProviderHandler';
 import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
+import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
@@ -181,6 +182,7 @@ export {
   DisabledIdentityProviderHandler,
   AutoDetectOidcHandler,
   AutoDetectIdentityProviderHandler,
+  LoopbackClientIdAdapterFactory,
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,
