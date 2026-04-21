@@ -1179,6 +1179,48 @@ WHERE { ${deletePatterns.join(' ')} }
     return provider;
   }
 
+  private pushAvailableModel(
+    models: any[],
+    seenModelIds: Set<string>,
+    model: {
+      id?: string | null;
+      name?: string | null;
+      provider?: string | null;
+      ownedBy?: string | null;
+      contextWindow?: number;
+      maxTokens?: number;
+    },
+  ): void {
+    const id = typeof model.id === 'string' ? model.id.trim() : '';
+    if (!id || seenModelIds.has(id)) {
+      return;
+    }
+
+    seenModelIds.add(id);
+    const item: Record<string, unknown> = {
+      id,
+      object: 'model',
+    };
+
+    if (typeof model.name === 'string' && model.name.trim()) {
+      item.name = model.name.trim();
+    }
+    if (typeof model.provider === 'string' && model.provider.trim()) {
+      item.provider = model.provider.trim();
+    }
+    if (typeof model.ownedBy === 'string' && model.ownedBy.trim()) {
+      item.owned_by = model.ownedBy.trim();
+    }
+    if (typeof model.contextWindow === 'number' && Number.isFinite(model.contextWindow)) {
+      item.context_window = model.contextWindow;
+    }
+    if (typeof model.maxTokens === 'number' && Number.isFinite(model.maxTokens)) {
+      item.max_tokens = model.maxTokens;
+    }
+
+    models.push(item);
+  }
+
   async getAiConfig(context: StoreContext): Promise<{
     providerId: string;
     baseUrl: string;
@@ -1249,6 +1291,99 @@ WHERE { ${deletePatterns.join(' ')} }
       this.logger.warn(`Failed to read AI config from Pod: ${error}`);
       return undefined;
     }
+  }
+
+  async listAvailableModels(context: StoreContext): Promise<any[]> {
+    const db = await this.getDb(context);
+    if (!db) {
+      return [];
+    }
+
+    const config = await this.getAiConfig(context);
+    if (!config) {
+      return [];
+    }
+
+    const models: any[] = [];
+    const seenModelIds = new Set<string>();
+    const providerByKey = new Map<string, any>();
+    let providerDisplayName = config.providerId;
+
+    try {
+      const providers = await db.select().from(Provider) as any[];
+      for (const provider of providers) {
+        const uri = typeof provider?.['@id'] === 'string' ? provider['@id'] : undefined;
+        if (uri) {
+          providerByKey.set(uri, provider);
+        }
+        if (typeof provider?.id === 'string' && provider.id) {
+          providerByKey.set(provider.id, provider);
+        }
+      }
+
+      const currentProvider = providerByKey.get(config.providerId)
+        ?? providers.find((provider: any) => provider?.baseUrl === config.baseUrl);
+      if (typeof currentProvider?.displayName === 'string' && currentProvider.displayName.trim()) {
+        providerDisplayName = currentProvider.displayName.trim();
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to load providers for model listing: ${error}`);
+    }
+
+    try {
+      const { getModels } = await import('@mariozechner/pi-ai');
+      const providerModels = typeof getModels === 'function' ? getModels(config.providerId) : [];
+      for (const model of providerModels) {
+        this.pushAvailableModel(models, seenModelIds, {
+          id: model.id,
+          name: model.name || model.id,
+          provider: config.providerId,
+          ownedBy: model.provider || providerDisplayName,
+          contextWindow: model.contextWindow,
+          maxTokens: model.maxTokens,
+        });
+      }
+    } catch (error) {
+      this.logger.debug(`Failed to load provider model catalog for ${config.providerId}: ${error}`);
+    }
+
+    try {
+      const podModels = await db.select().from(Model) as any[];
+      for (const model of podModels) {
+        const providerRef = typeof model?.isProvidedBy === 'string' ? model.isProvidedBy : '';
+        const modelProvider = providerByKey.get(providerRef)
+          ?? providerByKey.get(this.extractProviderId(providerRef));
+        const modelProviderId = typeof modelProvider?.id === 'string' && modelProvider.id
+          ? modelProvider.id
+          : this.extractProviderId(providerRef);
+
+        if (modelProviderId && modelProviderId !== config.providerId && model.id !== config.defaultModel) {
+          continue;
+        }
+
+        this.pushAvailableModel(models, seenModelIds, {
+          id: model.id,
+          name: model.displayName || model.id,
+          provider: modelProviderId || config.providerId,
+          ownedBy: modelProvider?.displayName || providerDisplayName,
+          contextWindow: typeof model.contextLength === 'number' ? model.contextLength : undefined,
+          maxTokens: typeof model.maxOutputTokens === 'number' ? model.maxOutputTokens : undefined,
+        });
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to load Pod models for ${config.providerId}: ${error}`);
+    }
+
+    if (config.defaultModel) {
+      this.pushAvailableModel(models, seenModelIds, {
+        id: config.defaultModel,
+        name: config.defaultModel,
+        provider: config.providerId,
+        ownedBy: providerDisplayName,
+      });
+    }
+
+    return models;
   }
 
   /**

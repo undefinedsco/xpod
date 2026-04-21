@@ -850,6 +850,16 @@ export class VercelChatService {
       }
     };
 
+    if (_auth) {
+      try {
+        const context = this.createStoreContext(_auth);
+        const userModels = await this.store.listAvailableModels(context);
+        pushModels(userModels);
+      } catch (error) {
+        this.logger.warn(`Failed to load user Pod models: ${error}`);
+      }
+    }
+
     const aiGatewayCache = await this.getAiGatewayModelCache();
     if (aiGatewayCache) {
       pushModels(aiGatewayCache.items);
@@ -886,7 +896,6 @@ export class VercelChatService {
       }
     }
 
-    // TODO: 合并用户 Pod Providers 的模型
     return models;
   }
 

@@ -11,6 +11,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
 import type { StoreContext } from '../../src/api/chatkit/store';
+import { Provider } from '../../src/ai/schema/provider';
+import { Model } from '../../src/ai/schema/model';
+
+vi.mock('@mariozechner/pi-ai', () => ({
+  getModels: vi.fn((providerId: string) => {
+    if (providerId === 'openai') {
+      return [
+        {
+          id: 'gpt-4o-mini',
+          name: 'GPT-4o mini',
+          provider: 'OpenAI',
+          contextWindow: 128000,
+          maxTokens: 16384,
+        },
+      ];
+    }
+    return [];
+  }),
+}));
 
 // Mock Session
 vi.mock('@inrupt/solid-client-authn-node', () => ({
@@ -44,6 +63,24 @@ describe('PodChatKitStore AI Config Operations', () => {
       displayName: 'OpenAI',
       baseUrl: 'https://api.openai.com/v1',
       proxyUrl: null,
+      '@id': 'http://localhost:3000/test/settings/ai/providers.ttl#openai',
+    },
+  ];
+
+  const mockModels = [
+    {
+      id: 'gpt-4o-mini',
+      displayName: 'GPT-4o mini',
+      isProvidedBy: 'http://localhost:3000/test/settings/ai/providers.ttl#openai',
+      contextLength: 128000,
+      maxOutputTokens: 16384,
+    },
+    {
+      id: 'custom-coder',
+      displayName: 'Custom Coder',
+      isProvidedBy: 'http://localhost:3000/test/settings/ai/providers.ttl#openai',
+      contextLength: 64000,
+      maxOutputTokens: 8192,
     },
   ];
 
@@ -65,7 +102,11 @@ describe('PodChatKitStore AI Config Operations', () => {
     } as StoreContext;
 
     let selectCallIndex = 0;
-    const createSelectChain = (credentials = mockCredentials, providers = mockProviders) => ({
+    const createSelectChain = (
+      credentials = mockCredentials,
+      providers = mockProviders,
+      models = mockModels,
+    ) => ({
       from: vi.fn().mockImplementation(() => {
         selectCallIndex++;
         if (selectCallIndex === 1) {
@@ -73,7 +114,10 @@ describe('PodChatKitStore AI Config Operations', () => {
             where: vi.fn().mockResolvedValue(credentials),
           };
         }
-        return Promise.resolve(providers);
+        if (selectCallIndex === 2) {
+          return Promise.resolve(providers);
+        }
+        return Promise.resolve(models);
       }),
     });
 
@@ -349,6 +393,86 @@ describe('PodChatKitStore AI Config Operations', () => {
       await expect(
         store.recordCredentialSuccess(mockContext, 'cred-001'),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('listAvailableModels', () => {
+    it('should return empty list when no active AI config exists', async () => {
+      vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce(undefined);
+
+      const models = await store.listAvailableModels(mockContext);
+
+      expect(models).toEqual([]);
+    });
+
+    it('should return provider catalog models and pod custom models for current user', async () => {
+      vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce({
+        providerId: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-test-key',
+        credentialId: 'cred-001',
+        defaultModel: 'gpt-4o-mini',
+      });
+
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === Provider) {
+            return Promise.resolve(mockProviders);
+          }
+          if (table === Model) {
+            return Promise.resolve(mockModels);
+          }
+          return {
+            where: vi.fn().mockResolvedValue(mockCredentials),
+          };
+        }),
+      }));
+
+      const models = await store.listAvailableModels(mockContext);
+
+      expect(models.map((item: any) => item.id)).toEqual(['gpt-4o-mini', 'custom-coder']);
+      expect(models[0]).toEqual(expect.objectContaining({
+        id: 'gpt-4o-mini',
+        object: 'model',
+        provider: 'openai',
+        owned_by: 'OpenAI',
+        context_window: 128000,
+        max_tokens: 16384,
+      }));
+      expect(models[1]).toEqual(expect.objectContaining({
+        id: 'custom-coder',
+        object: 'model',
+        provider: 'openai',
+        owned_by: 'OpenAI',
+      }));
+    });
+
+    it('should include default model when it is not already present', async () => {
+      vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce({
+        providerId: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-test-key',
+        credentialId: 'cred-001',
+        defaultModel: 'fallback-model',
+      });
+
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === Provider) {
+            return Promise.resolve(mockProviders);
+          }
+          if (table === Model) {
+            return Promise.resolve(mockModels);
+          }
+          return {
+            where: vi.fn().mockResolvedValue(mockCredentials),
+          };
+        }),
+      }));
+
+      const models = await store.listAvailableModels(mockContext);
+
+      expect(models.map((item: any) => item.id)).toContain('fallback-model');
     });
   });
 });

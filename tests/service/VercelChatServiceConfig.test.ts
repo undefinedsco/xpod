@@ -61,6 +61,7 @@ describe('VercelChatService provider config fallback', () => {
   function createService(config?: { apiKey?: string; baseUrl?: string; proxyUrl?: string; credentialId?: string }) {
     const store = {
       getAiConfig: vi.fn().mockResolvedValue(config),
+      listAvailableModels: vi.fn().mockResolvedValue([]),
       recordCredentialSuccess: vi.fn().mockResolvedValue(undefined),
       updateCredentialStatus: vi.fn().mockResolvedValue(undefined),
     };
@@ -361,5 +362,75 @@ describe('VercelChatService provider config fallback', () => {
     expect(gatewayUrl).toBe('https://ai-gateway.example.com/v1/models');
     expect(new Headers(gatewayInit.headers).get('authorization')).toBe('Bearer platform-key');
     expect(getFetchMock().mock.calls).toHaveLength(1);
+  });
+
+  it('merges current user models with platform models', async () => {
+    process.env.DEFAULT_API_BASE = 'https://platform.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'platform-key';
+
+    const { service, store } = createService({
+      apiKey: 'pod-key',
+      baseUrl: 'https://api.openai.com/v1',
+      credentialId: 'cred-1',
+    });
+
+    store.listAvailableModels.mockResolvedValueOnce([
+      {
+        id: 'gpt-4o-mini',
+        object: 'model',
+        provider: 'openai',
+        owned_by: 'OpenAI',
+      },
+    ]);
+
+    getFetchMock().mockResolvedValueOnce(new Response(JSON.stringify({
+      data: [
+        { id: 'linx', object: 'model', provider: 'undefineds', owned_by: 'Platform' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const result = await service.listModels(solidAuth as any);
+
+    expect(store.listAvailableModels).toHaveBeenCalledWith(expect.objectContaining({
+      auth: solidAuth,
+      userId: solidAuth.webId,
+    }));
+    expect(result.map((model) => model.id)).toEqual(['gpt-4o-mini', 'linx']);
+  });
+
+  it('deduplicates user models against platform models', async () => {
+    process.env.DEFAULT_API_BASE = 'https://platform.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'platform-key';
+
+    const { service, store } = createService({
+      apiKey: 'pod-key',
+      baseUrl: 'https://api.openai.com/v1',
+      credentialId: 'cred-1',
+    });
+
+    store.listAvailableModels.mockResolvedValueOnce([
+      {
+        id: 'linx',
+        object: 'model',
+        provider: 'openai',
+        owned_by: 'User Pod',
+      },
+    ]);
+
+    getFetchMock().mockResolvedValueOnce(new Response(JSON.stringify({
+      data: [
+        { id: 'linx', object: 'model', provider: 'undefineds', owned_by: 'Platform' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const result = await service.listModels(solidAuth as any);
+
+    expect(result.map((model) => model.id)).toEqual(['linx']);
   });
 });
