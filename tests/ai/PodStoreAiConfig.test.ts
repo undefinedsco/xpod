@@ -14,23 +14,6 @@ import type { StoreContext } from '../../src/api/chatkit/store';
 import { Provider } from '../../src/ai/schema/provider';
 import { Model } from '../../src/ai/schema/model';
 
-vi.mock('@mariozechner/pi-ai', () => ({
-  getModels: vi.fn((providerId: string) => {
-    if (providerId === 'openai') {
-      return [
-        {
-          id: 'gpt-4o-mini',
-          name: 'GPT-4o mini',
-          provider: 'OpenAI',
-          contextWindow: 128000,
-          maxTokens: 16384,
-        },
-      ];
-    }
-    return [];
-  }),
-}));
-
 // Mock Session
 vi.mock('@inrupt/solid-client-authn-node', () => ({
   Session: vi.fn().mockImplementation(() => ({
@@ -405,7 +388,7 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(models).toEqual([]);
     });
 
-    it('should return provider catalog models and pod custom models for current user', async () => {
+    it('should return pod-defined models for current user', async () => {
       vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce({
         providerId: 'openai',
         baseUrl: 'https://api.openai.com/v1',

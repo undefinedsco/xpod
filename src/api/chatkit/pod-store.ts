@@ -40,7 +40,6 @@ import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
-import type { KnownProvider } from '@mariozechner/pi-ai';
 
 const schema = {
   chat: Chat,
@@ -1180,13 +1179,6 @@ WHERE { ${deletePatterns.join(' ')} }
     return provider;
   }
 
-  private isKnownProvider(
-    providerId: string,
-    providers: readonly KnownProvider[],
-  ): providerId is KnownProvider {
-    return providers.includes(providerId as KnownProvider);
-  }
-
   private pushAvailableModel(
     models: any[],
     seenModelIds: Set<string>,
@@ -1336,26 +1328,6 @@ WHERE { ${deletePatterns.join(' ')} }
       }
     } catch (error) {
       this.logger.warn(`Failed to load providers for model listing: ${error}`);
-    }
-
-    try {
-      const { getModels, getProviders } = await import('@mariozechner/pi-ai');
-      const knownProviders = typeof getProviders === 'function' ? getProviders() : [];
-      const providerModels = (
-        typeof getModels === 'function' && this.isKnownProvider(config.providerId, knownProviders)
-      ) ? getModels(config.providerId) : [];
-      for (const model of providerModels) {
-        this.pushAvailableModel(models, seenModelIds, {
-          id: model.id,
-          name: model.name || model.id,
-          provider: config.providerId,
-          ownedBy: model.provider || providerDisplayName,
-          contextWindow: model.contextWindow,
-          maxTokens: model.maxTokens,
-        });
-      }
-    } catch (error) {
-      this.logger.debug(`Failed to load provider model catalog for ${config.providerId}: ${error}`);
     }
 
     try {
