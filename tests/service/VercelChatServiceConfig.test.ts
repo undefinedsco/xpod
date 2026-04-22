@@ -284,6 +284,36 @@ describe('VercelChatService provider config fallback', () => {
     });
   });
 
+  it('drops unsupported vector_store_ids only when forwarding platform responses requests', async () => {
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
+
+    const { service } = createService(undefined);
+    mockAiGatewayModels(['linx-lite']);
+    getFetchMock().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'resp-gateway',
+      object: 'response',
+      status: 'completed',
+      output: [],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await service.responses({
+      model: 'linx-lite',
+      input: 'hello',
+      vector_store_ids: ['vs_123'],
+    }, solidAuth as any);
+
+    expect(getFetchMock().mock.calls[1]?.[0]).toBe('https://ai-gateway.example.com/v1/responses');
+    const [, init] = getFetchMock().mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: 'linx-lite',
+      input: 'hello',
+    });
+  });
+
   it('caches ai-gateway models between forwarded requests', async () => {
     process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
     process.env.DEFAULT_API_KEY = 'gateway-service-key';
