@@ -209,6 +209,185 @@ describe('VercelChatService provider config fallback', () => {
     expect(headers.get('authorization')).toBe('Bearer gateway-service-key');
   });
 
+  it('forwards OpenAI tool-call fields to ai-gateway chat completions', async () => {
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
+
+    const { service } = createService(undefined);
+    const toolCalls = [
+      {
+        id: 'call_1',
+        type: 'function',
+        function: {
+          name: 'bash',
+          arguments: '{"command":"pwd"}',
+        },
+      },
+    ];
+    const tools = [
+      {
+        type: 'function',
+        function: {
+          name: 'bash',
+          description: 'Run a shell command',
+          parameters: {
+            type: 'object',
+            properties: {
+              command: { type: 'string' },
+            },
+            required: ['command'],
+          },
+        },
+      },
+    ];
+
+    mockAiGatewayModels(['linx-lite']);
+    getFetchMock().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'chatcmpl-tool',
+      object: 'chat.completion',
+      created: 123,
+      model: 'linx-lite',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: toolCalls,
+        },
+        finish_reason: 'tool_calls',
+      }],
+      usage: {
+        prompt_tokens: 5,
+        completion_tokens: 1,
+        total_tokens: 6,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const result = await service.complete({
+      model: 'linx-lite',
+      stream: false,
+      messages: [
+        { role: 'user', content: 'List the current directory using the bash tool.' },
+        { role: 'assistant', content: null, tool_calls: toolCalls },
+        { role: 'tool', tool_call_id: 'call_1', content: '/tmp/project' },
+      ],
+      tools,
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+    }, solidAuth as any);
+
+    expect(result.choices[0].finish_reason).toBe('tool_calls');
+    expect(result.choices[0].message.tool_calls).toEqual(toolCalls);
+
+    const [url, init] = getFetchMock().mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('https://ai-gateway.example.com/v1/chat/completions');
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: 'linx-lite',
+      stream: false,
+      messages: [
+        { role: 'user', content: 'List the current directory using the bash tool.' },
+        { role: 'assistant', content: null, tool_calls: toolCalls },
+        { role: 'tool', tool_call_id: 'call_1', content: '/tmp/project' },
+      ],
+      tools,
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+    });
+  });
+
+  it('forwards OpenAI tool-call fields to direct provider chat completions', async () => {
+    const { service, store } = createService({
+      apiKey: 'pod-key',
+      baseUrl: 'https://provider.example.com/v1',
+      credentialId: 'cred-1',
+    });
+    const tools = [
+      {
+        type: 'function',
+        function: {
+          name: 'bash',
+          description: 'Run a shell command',
+          parameters: {
+            type: 'object',
+            properties: {
+              command: { type: 'string' },
+            },
+            required: ['command'],
+          },
+        },
+      },
+    ];
+    const toolCalls = [
+      {
+        id: 'call_1',
+        type: 'function',
+        function: {
+          name: 'bash',
+          arguments: '{"command":"pwd"}',
+        },
+      },
+    ];
+
+    getFetchMock().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'chatcmpl-provider-tool',
+      object: 'chat.completion',
+      created: 123,
+      model: 'gpt-tool',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: toolCalls,
+        },
+        finish_reason: 'tool_calls',
+      }],
+      usage: {
+        prompt_tokens: 5,
+        completion_tokens: 1,
+        total_tokens: 6,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const result = await service.complete({
+      model: 'gpt-tool',
+      stream: false,
+      messages: [
+        { role: 'user', content: 'List the current directory using the bash tool.' },
+      ],
+      tools,
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+    }, solidAuth as any);
+
+    expect(result.choices[0].finish_reason).toBe('tool_calls');
+    expect(result.choices[0].message.tool_calls).toEqual(toolCalls);
+    expect(store.recordCredentialSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({ auth: solidAuth }),
+      'cred-1',
+    );
+
+    const [url, init] = getFetchMock().mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://provider.example.com/v1/chat/completions');
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer pod-key');
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: 'gpt-tool',
+      stream: false,
+      messages: [
+        { role: 'user', content: 'List the current directory using the bash tool.' },
+      ],
+      tools,
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+    });
+  });
+
   it('forwards platform chat streams to ai-gateway', async () => {
     process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
     process.env.DEFAULT_API_KEY = 'gateway-service-key';

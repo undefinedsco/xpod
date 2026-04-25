@@ -123,6 +123,13 @@ export class VercelChatService {
     return this.aiGatewayTransport.sendStream(path, body);
   }
 
+  private getProviderChatCompletionsUrl(baseURL: string): string {
+    const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
+    return cleanBaseUrl.endsWith('/chat/completions')
+      ? cleanBaseUrl
+      : `${cleanBaseUrl}/chat/completions`;
+  }
+
   private extractTotalTokens(usage: any): number {
     if (!usage || typeof usage !== 'object') {
       return 0;
@@ -201,7 +208,7 @@ export class VercelChatService {
   }
 
   public async complete(request: ChatCompletionRequest, auth: AuthContext): Promise<ChatCompletionResponse> {
-    const { model, messages, temperature, max_tokens } = request;
+    const { model } = request;
     const context = this.createStoreContext(auth);
     const accountId = getAccountId(auth);
     if (accountId) {
@@ -223,19 +230,12 @@ export class VercelChatService {
     }
 
     try {
-      const provider = await this.getProvider(context);
-
-      const coreMessages: any[] = messages.map((m) => ({
-        role: m.role as any,
-        content: m.content,
-      }));
-
-      const result = await generateText({
-        model: provider.chat(model),
-        messages: coreMessages,
-        temperature,
-        maxTokens: max_tokens,
-      } as any);
+      const result = await this.providerHttpTransport.postJson({
+        url: this.getProviderChatCompletionsUrl(config.baseURL),
+        apiKey: config.apiKey,
+        proxy: config.proxy,
+        body: request,
+      }) as ChatCompletionResponse;
 
       // Record successful API call
       if (config?.credentialId) {
@@ -245,32 +245,12 @@ export class VercelChatService {
       }
 
       // Record token usage
-      const totalTokens = (result.usage as any)?.totalTokens ?? 0;
+      const totalTokens = this.extractTotalTokens(result.usage);
       if (accountId && totalTokens > 0) {
         this.recordTokenUsage(accountId, String(context.userId), totalTokens);
       }
 
-      return {
-        id: `chatcmpl-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: 'assistant',
-              content: result.text,
-            },
-            finish_reason: this.mapFinishReason(result.finishReason),
-          },
-        ],
-        usage: {
-          prompt_tokens: (result.usage as any).promptTokens,
-          completion_tokens: (result.usage as any).completionTokens,
-          total_tokens: (result.usage as any).totalTokens,
-        },
-      };
+      return result;
     } catch (error) {
       this.logger.error(`AI completion failed: ${error}`);
 
@@ -284,7 +264,7 @@ export class VercelChatService {
   }
 
   public async stream(request: ChatCompletionRequest, auth: AuthContext): Promise<any> {
-    const { model, messages, temperature, max_tokens } = request;
+    const { model } = request;
     const context = this.createStoreContext(auth);
 
     if (await resolveChatExecutionRoute({ model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
@@ -300,19 +280,23 @@ export class VercelChatService {
       throw err;
     }
 
-    const provider = await this.getProvider(context);
+    const response = await this.providerHttpTransport.postStream({
+      url: this.getProviderChatCompletionsUrl(config.baseURL),
+      apiKey: config.apiKey,
+      proxy: config.proxy,
+      body: request,
+      headers: {
+        Accept: 'text/event-stream',
+      },
+    });
 
-    const coreMessages: any[] = messages.map((m) => ({
-      role: m.role as any,
-      content: m.content,
-    }));
-
-    return streamText({
-      model: provider.chat(model),
-      messages: coreMessages,
-      temperature,
-      maxTokens: max_tokens,
-    } as any);
+    return {
+      toTextStreamResponse: () => new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: new Headers(response.headers),
+      }),
+    };
   }
 
   public async responses(body: any, auth: AuthContext): Promise<any> {
@@ -613,11 +597,6 @@ export class VercelChatService {
 
     return models;
   }
-
-  private mapFinishReason(reason: string): 'stop' | 'length' | 'content_filter' {
-    return reason as any;
-  }
-
   /**
    * Handle API errors and update credential status accordingly
    */
