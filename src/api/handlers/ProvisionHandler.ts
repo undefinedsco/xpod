@@ -53,7 +53,17 @@ export function registerProvisionRoutes(
    * SP 注册端点（公开，SP 启动时调用，此时用户可能还没有 Cloud 账号）
    *
    * Request:
-   *   { publicUrl: string, nodeId?: string, displayName?: string, ipv4?: string, serviceToken?: string }
+   *   {
+   *     publicUrl: string,
+   *     nodeId?: string,
+   *     displayName?: string,
+   *     ipv4?: string,
+   *     serviceToken?: string,
+   *     domainMode?: 'managed' | 'self-managed',
+   *     spDomain?: string,
+   *     localPort?: number,
+   *     tunnelToken?: string
+   *   }
    *
    * Response 201:
    *   { nodeId, nodeToken, serviceToken, provisionCode, spDomain? }
@@ -68,6 +78,9 @@ export function registerProvisionRoutes(
       serviceToken?: string;
       localPort?: number;
       tunnelToken?: string;
+      tunnelMode?: 'client';
+      domainMode?: 'managed' | 'self-managed';
+      spDomain?: string;
     };
     try {
       body = await readJsonBody(request) as any ?? {};
@@ -97,9 +110,14 @@ export function registerProvisionRoutes(
         serviceToken: body.serviceToken,
       });
 
-      const subdomainPrefix = baseStorageDomain
-        ? result.nodeId.replace(/[^a-z0-9-]/gi, '').toLowerCase().slice(0, 63) || result.nodeId.split('-')[0]
-        : undefined;
+      const domainMode = body.domainMode === 'self-managed' ? 'self-managed' : 'managed';
+      const requestedManagedDomain = normalizeRequestedManagedDomain(body.spDomain, baseStorageDomain);
+      const subdomainPrefix = resolveManagedSubdomainPrefix({
+        domainMode,
+        baseStorageDomain,
+        requestedManagedDomain,
+        nodeId: result.nodeId,
+      });
       const spDomain = subdomainPrefix
         ? `${subdomainPrefix}.${baseStorageDomain}`
         : undefined;
@@ -521,4 +539,41 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.statusCode = status;
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(data));
+}
+
+function normalizeRequestedManagedDomain(value: string | undefined, baseStorageDomain: string | undefined): string | undefined {
+  if (!value || !baseStorageDomain) {
+    return undefined;
+  }
+
+  const domain = value.trim().toLowerCase().replace(/^https?:\/\//u, '').replace(/\/.*$/u, '').replace(/\.$/u, '');
+  const suffix = `.${baseStorageDomain.toLowerCase()}`;
+  if (!domain.endsWith(suffix)) {
+    return undefined;
+  }
+
+  const prefix = domain.slice(0, -suffix.length).replace(/[^a-z0-9-]/giu, '').slice(0, 63);
+  if (!prefix) {
+    return undefined;
+  }
+
+  return `${prefix}.${baseStorageDomain}`;
+}
+
+function resolveManagedSubdomainPrefix(options: {
+  domainMode: 'managed' | 'self-managed';
+  baseStorageDomain?: string;
+  requestedManagedDomain?: string;
+  nodeId: string;
+}): string | undefined {
+  if (options.domainMode !== 'managed' || !options.baseStorageDomain) {
+    return undefined;
+  }
+
+  if (options.requestedManagedDomain) {
+    const suffix = `.${options.baseStorageDomain}`;
+    return options.requestedManagedDomain.slice(0, -suffix.length);
+  }
+
+  return options.nodeId.replace(/[^a-z0-9-]/gi, '').toLowerCase().slice(0, 63) || options.nodeId.split('-')[0];
 }

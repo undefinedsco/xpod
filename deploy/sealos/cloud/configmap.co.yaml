@@ -18,4 +18,4 @@ data:
 
   # Cloud features
   XPOD_EDGE_NODES_ENABLED: "true"
-  CSS_BASE_STORAGE_DOMAIN: undefineds.site
+  CSS_BASE_STORAGE_DOMAIN: undefineds.co
