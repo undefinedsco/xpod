@@ -6,6 +6,8 @@ interface AiGatewayModelCache {
   modelIds: Set<string>;
 }
 
+type AiGatewayTimeoutKind = 'query' | 'generation';
+
 export class AiGatewayTransport {
   private static readonly MODEL_CACHE_TTL_MS = 30_000;
   private readonly logger = getLoggerFor(this);
@@ -15,7 +17,8 @@ export class AiGatewayTransport {
   public constructor(private readonly options: {
     getBaseUrl(): string | null;
     getApiKey(): string | null;
-    getTimeoutMs(): number;
+    getQueryTimeoutMs(): number;
+    getGenerationTimeoutMs(): number;
   }) {}
 
   public async shouldHandleModel(model?: string): Promise<boolean> {
@@ -49,7 +52,7 @@ export class AiGatewayTransport {
   public async sendJson(path: string, body: unknown): Promise<any> {
     const response = await this.sendRequest(path, 'POST', body, {
       Accept: 'application/json',
-    });
+    }, 'generation');
     return response.json();
   }
 
@@ -58,7 +61,7 @@ export class AiGatewayTransport {
   }> {
     const response = await this.sendRequest(path, 'POST', body, {
       Accept: 'text/event-stream',
-    });
+    }, 'generation');
 
     return {
       toTextStreamResponse: () => new Response(response.body, {
@@ -90,7 +93,7 @@ export class AiGatewayTransport {
     this.modelCachePromise = (async() => {
       const response = await this.sendRequest('/v1/models', 'GET', undefined, {
         Accept: 'application/json',
-      });
+      }, 'query');
       const data = await response.json() as { data?: any[] };
       const items = Array.isArray(data.data) ? data.data : [];
       const cache: AiGatewayModelCache = {
@@ -116,12 +119,18 @@ export class AiGatewayTransport {
     }
   }
 
-  private createAbortSignal(): AbortSignal | undefined {
+  private getTimeoutMs(kind: AiGatewayTimeoutKind): number {
+    return kind === 'generation'
+      ? this.options.getGenerationTimeoutMs()
+      : this.options.getQueryTimeoutMs();
+  }
+
+  private createAbortSignal(kind: AiGatewayTimeoutKind): AbortSignal | undefined {
     const abortSignal = AbortSignal as typeof AbortSignal & {
       timeout?: (milliseconds: number) => AbortSignal;
     };
     return typeof abortSignal.timeout === 'function'
-      ? abortSignal.timeout(this.options.getTimeoutMs())
+      ? abortSignal.timeout(this.getTimeoutMs(kind))
       : undefined;
   }
 
@@ -130,6 +139,7 @@ export class AiGatewayTransport {
     method: 'GET' | 'POST',
     body?: unknown,
     headers?: HeadersInit,
+    timeoutKind: AiGatewayTimeoutKind = 'query',
   ): Promise<Response> {
     const apiKey = this.options.getApiKey();
     if (!apiKey) {
@@ -146,7 +156,7 @@ export class AiGatewayTransport {
       method,
       headers: requestHeaders,
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      signal: this.createAbortSignal(),
+      signal: this.createAbortSignal(timeoutKind),
     });
 
     if (!response.ok) {

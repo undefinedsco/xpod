@@ -10,6 +10,7 @@ describe('VercelChatService provider config fallback', () => {
   const envKeys = [
     'DEFAULT_API_BASE',
     'DEFAULT_API_KEY',
+    'DEFAULT_GENERATION_TIMEOUT_MS',
     'DEFAULT_TIMEOUT_MS',
     'DEFAULT_PROVIDER',
     'DEFAULT_MODEL',
@@ -83,6 +84,13 @@ describe('VercelChatService provider config fallback', () => {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }));
+  }
+
+  function spyAbortTimeout(): ReturnType<typeof vi.spyOn> {
+    return vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
+      const controller = new AbortController();
+      return controller.signal;
+    });
   }
 
   it('uses pod config first', async () => {
@@ -207,6 +215,80 @@ describe('VercelChatService provider config fallback', () => {
 
     const headers = new Headers(init.headers);
     expect(headers.get('authorization')).toBe('Bearer gateway-service-key');
+  });
+
+  it('keeps ai-gateway model queries on short timeout and generations on long timeout', async () => {
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
+
+    const abortTimeoutSpy = spyAbortTimeout();
+    const { service } = createService(undefined);
+    mockAiGatewayModels(['linx']);
+    getFetchMock().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'chatcmpl-gateway',
+      object: 'chat.completion',
+      created: 123,
+      model: 'linx',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'gateway ok' },
+        finish_reason: 'stop',
+      }],
+      usage: {
+        prompt_tokens: 5,
+        completion_tokens: 7,
+        total_tokens: 12,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await service.complete({
+      model: 'linx',
+      messages: [{ role: 'user', content: 'ping' }],
+    }, solidAuth as any);
+
+    expect(abortTimeoutSpy).toHaveBeenNthCalledWith(1, 30_000);
+    expect(abortTimeoutSpy).toHaveBeenNthCalledWith(2, 120_000);
+  });
+
+  it('allows separate env overrides for ai-gateway query and generation timeouts', async () => {
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
+    process.env.DEFAULT_TIMEOUT_MS = '45000';
+    process.env.DEFAULT_GENERATION_TIMEOUT_MS = '240000';
+
+    const abortTimeoutSpy = spyAbortTimeout();
+    const { service } = createService(undefined);
+    mockAiGatewayModels(['linx']);
+    getFetchMock().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'chatcmpl-gateway',
+      object: 'chat.completion',
+      created: 123,
+      model: 'linx',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'gateway ok' },
+        finish_reason: 'stop',
+      }],
+      usage: {
+        prompt_tokens: 5,
+        completion_tokens: 7,
+        total_tokens: 12,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await service.complete({
+      model: 'linx',
+      messages: [{ role: 'user', content: 'ping' }],
+    }, solidAuth as any);
+
+    expect(abortTimeoutSpy).toHaveBeenNthCalledWith(1, 45_000);
+    expect(abortTimeoutSpy).toHaveBeenNthCalledWith(2, 240_000);
   });
 
   it('forwards OpenAI tool-call fields to ai-gateway chat completions', async () => {

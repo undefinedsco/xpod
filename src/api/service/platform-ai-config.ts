@@ -2,7 +2,8 @@ import { getDefaultBaseUrl } from './provider-registry';
 
 const DEFAULT_PLATFORM_PROVIDER = 'undefineds';
 const DEFAULT_PLATFORM_MODEL = 'linx-lite';
-const DEFAULT_PLATFORM_TIMEOUT_MS = 30_000;
+const DEFAULT_PLATFORM_QUERY_TIMEOUT_MS = 30_000;
+const DEFAULT_PLATFORM_GENERATION_TIMEOUT_MS = 120_000;
 
 function readTrimmedEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
@@ -55,12 +56,24 @@ export function getPlatformDefaultModel(): string {
   return readTrimmedEnv('DEFAULT_MODEL') ?? DEFAULT_PLATFORM_MODEL;
 }
 
-export function getPlatformTimeoutMs(): number {
-  const raw = readTrimmedEnv('DEFAULT_TIMEOUT_MS');
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = readTrimmedEnv(name);
   if (!raw) {
-    return DEFAULT_PLATFORM_TIMEOUT_MS;
+    return fallback;
   }
 
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PLATFORM_TIMEOUT_MS;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function getPlatformQueryTimeoutMs(): number {
+  return readPositiveIntegerEnv('DEFAULT_TIMEOUT_MS', DEFAULT_PLATFORM_QUERY_TIMEOUT_MS);
+}
+
+export function getPlatformGenerationTimeoutMs(): number {
+  return readPositiveIntegerEnv('DEFAULT_GENERATION_TIMEOUT_MS', DEFAULT_PLATFORM_GENERATION_TIMEOUT_MS);
+}
+
+export function getPlatformTimeoutMs(): number {
+  return getPlatformQueryTimeoutMs();
 }

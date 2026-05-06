@@ -18,7 +18,8 @@ import {
   getPlatformApiBaseUrl,
   getPlatformApiKey,
   getPlatformDefaultModel,
-  getPlatformTimeoutMs,
+  getPlatformGenerationTimeoutMs,
+  getPlatformQueryTimeoutMs,
 } from './platform-ai-config';
 import {
   buildChatCompletionsBodyFromMessages,
@@ -60,7 +61,8 @@ export class VercelChatService {
     this.aiGatewayTransport = new AiGatewayTransport({
       getBaseUrl: () => this.getAiGatewayBaseUrl(),
       getApiKey: () => this.getAiGatewayApiKey(),
-      getTimeoutMs: () => this.getAiGatewayTimeoutMs(),
+      getQueryTimeoutMs: () => this.getAiGatewayQueryTimeoutMs(),
+      getGenerationTimeoutMs: () => this.getAiGatewayGenerationTimeoutMs(),
     });
   }
 
@@ -86,8 +88,12 @@ export class VercelChatService {
     return getAiGatewayBaseUrl() ?? null;
   }
 
-  private getAiGatewayTimeoutMs(): number {
-    return getPlatformTimeoutMs();
+  private getAiGatewayQueryTimeoutMs(): number {
+    return getPlatformQueryTimeoutMs();
+  }
+
+  private getAiGatewayGenerationTimeoutMs(): number {
+    return getPlatformGenerationTimeoutMs();
   }
 
   private getAiGatewayApiKey(): string | null {

@@ -40,6 +40,8 @@ cp example.env.cloud .env.cloud
 - `CSS_IDENTITY_DB_URL=...`
 - `CSS_MINIO_ENDPOINT/CSS_MINIO_ACCESS_KEY/CSS_MINIO_SECRET_KEY/CSS_MINIO_BUCKET_NAME`
 - `CSS_REDIS_CLIENT=rediss://...`
+- `DEFAULT_TIMEOUT_MS=30000`（ai-gateway 短查询请求，例如 `/v1/models`）
+- `DEFAULT_GENERATION_TIMEOUT_MS=120000`（ai-gateway 生成请求，例如 chat/responses/messages/stream）
 
 如果裸域给 `homepage`，不要把 `CSS_BASE_URL` 指到裸域。
 `CSS_BASE_URL` 填系统主入口 `id.*`；`pods.*` 和 `api.*` 通过 `CSS_ALLOWED_HOSTS` 放行。
