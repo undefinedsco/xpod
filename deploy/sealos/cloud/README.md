@@ -40,11 +40,20 @@ cp example.env.cloud .env.cloud
 - `CSS_IDENTITY_DB_URL=...`
 - `CSS_MINIO_ENDPOINT/CSS_MINIO_ACCESS_KEY/CSS_MINIO_SECRET_KEY/CSS_MINIO_BUCKET_NAME`
 - `CSS_REDIS_CLIENT=rediss://...`
+- `DEFAULT_API_BASE=http://ai-gateway.<namespace>.svc.cluster.local/v1`
+- `DEFAULT_API_KEY=sk-...`
 - `DEFAULT_TIMEOUT_MS=30000`（ai-gateway 短查询请求，例如 `/v1/models`）
 - `DEFAULT_GENERATION_TIMEOUT_MS=120000`（ai-gateway 生成请求，例如 chat/responses/messages/stream）
 
 如果裸域给 `homepage`，不要把 `CSS_BASE_URL` 指到裸域。
 `CSS_BASE_URL` 填系统主入口 `id.*`；`pods.*` 和 `api.*` 通过 `CSS_ALLOWED_HOSTS` 放行。
+
+其中：
+
+- `DEFAULT_API_BASE` 是 `xpod -> ai-gateway` 服务调用入口
+- `DEFAULT_API_KEY` 给 `xpod -> ai-gateway` 服务调用使用，必须是 ai-gateway / LiteLLM 里为 xpod 单独签发的 `sk-...` virtual key
+- `DEFAULT_TIMEOUT_MS` 只控制短查询请求（如 `/v1/models`），默认 30s
+- `DEFAULT_GENERATION_TIMEOUT_MS` 控制生成请求（chat/responses/messages/stream），默认 120s
 
 ## 3) 部署（Namespace + Secret + Workload）
 

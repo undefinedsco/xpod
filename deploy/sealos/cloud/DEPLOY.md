@@ -158,7 +158,20 @@ CSS_MINIO_BUCKET_NAME=xpod
 
 CLOUDFLARE_API_TOKEN=<cloudflare-dns-token>
 CLOUDFLARE_ACCOUNT_ID=<cloudflare-account-id>
+
+DEFAULT_API_BASE=http://ai-gateway.<namespace>.svc.cluster.local/v1
+DEFAULT_API_KEY=sk-<xpod-virtual-key>
+DEFAULT_TIMEOUT_MS=30000
+DEFAULT_GENERATION_TIMEOUT_MS=120000
+DEFAULT_MODEL=linx-lite
 ```
+
+说明：
+
+- `DEFAULT_API_BASE`：`xpod -> ai-gateway` 服务调用入口
+- `DEFAULT_API_KEY`：给 `xpod -> ai-gateway` 服务调用使用，必须填 ai-gateway / LiteLLM 中单独生成的 `sk-...` virtual key
+- `DEFAULT_TIMEOUT_MS`：xpod 调 ai-gateway 的短查询 timeout，例如 `/v1/models`，默认 30s
+- `DEFAULT_GENERATION_TIMEOUT_MS`：xpod 调 ai-gateway 的生成请求 timeout，例如 chat/responses/messages/stream，默认 120s
 
 ### 部署后检查
 

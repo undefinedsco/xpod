@@ -214,7 +214,7 @@ export function buildRuntimeShorthand(
       ['emailConfigPort', envValue('CSS_EMAIL_CONFIG_PORT') ?? '587'],
       ['emailConfigAuthUser', envValue('CSS_EMAIL_CONFIG_AUTH_USER') ?? ''],
       ['emailConfigAuthPass', envValue('CSS_EMAIL_CONFIG_AUTH_PASS') ?? ''],
-      ['idpUrl', envValue('CSS_IDP_URL') ?? envValue('XPOD_CLOUD_API_ENDPOINT')],
+      ['oidcIssuer', envValue('CSS_OIDC_ISSUER')],
       ['allowedHosts', envValue('CSS_ALLOWED_HOSTS')],
       ['nodeId', envValue('XPOD_NODE_ID')],
       ['nodeToken', envValue('XPOD_NODE_TOKEN')],

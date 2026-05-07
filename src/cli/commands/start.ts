@@ -98,22 +98,22 @@ export const startCommand: CommandModule<object, StartArgs> = {
     const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
 
     // SP 模式：全部通过环境变量配置（.env.local 或 --env 参数）
-    // XPOD_SERVICE_TOKEN, XPOD_NODE_ID, XPOD_NODE_TOKEN, XPOD_CLOUD_API_ENDPOINT, CSS_IDP_URL
-    const idpUrl = process.env.CSS_IDP_URL || process.env.XPOD_CLOUD_API_ENDPOINT;
+    // XPOD_SERVICE_TOKEN, XPOD_NODE_ID, XPOD_NODE_TOKEN, XPOD_CLOUD_API_ENDPOINT, CSS_OIDC_ISSUER
+    const oidcIssuer = process.env.CSS_OIDC_ISSUER;
 
     console.log('Starting xpod...');
     console.log(`  Gateway: ${baseUrl} (${argv.host}:${mainPort})`);
     console.log(`  CSS (internal): http://localhost:${cssPort}`);
     console.log(`  API (internal): http://localhost:${apiPort}`);
-    if (idpUrl) {
-      console.log(`  SP mode: Cloud IdP = ${idpUrl}`);
+    if (oidcIssuer) {
+      console.log(`  SP mode: Cloud IdP = ${oidcIssuer}`);
     }
 
     const supervisor = new Supervisor();
     const cssBinary = require.resolve('@solid/community-server/bin/server.js');
     const cssArgs = [cssBinary, '-c', configPath, '-m', PACKAGE_ROOT, '-p', cssPort.toString(), '-b', baseUrl];
-    if (idpUrl) {
-      cssArgs.push('--idpUrl', idpUrl);
+    if (oidcIssuer) {
+      cssArgs.push('--oidcIssuer', oidcIssuer);
     }
 
     supervisor.register({
@@ -146,8 +146,8 @@ export const startCommand: CommandModule<object, StartArgs> = {
         XPOD_MAIN_PORT: mainPort.toString(),
         CSS_INTERNAL_URL: `http://localhost:${cssPort}`,
         CSS_BASE_URL: baseUrl,
-        CSS_TOKEN_ENDPOINT: idpUrl
-          ? `${idpUrl.replace(/\/$/, '')}/.oidc/token`
+        CSS_TOKEN_ENDPOINT: oidcIssuer
+          ? `${oidcIssuer.replace(/\/$/, '')}/.oidc/token`
           : `${baseUrl}.oidc/token`,
       },
     });

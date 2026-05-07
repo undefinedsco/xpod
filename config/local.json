@@ -21,16 +21,16 @@
       }
     },
     {
-      "comment": "定义 idpUrl 变量（外部 IdP 基础 URL），设置后启用 SP 模式",
-      "@id": "urn:solid-server:default:variable:idpUrl",
+      "comment": "定义 oidcIssuer 变量（外部 IdP 基础 URL），设置后启用 SP 模式",
+      "@id": "urn:solid-server:default:variable:oidcIssuer",
       "@type": "Variable"
     },
     {
-      "comment": "Auto-detect OIDC Handler - 有 idpUrl 时启用 SP 模式，代理 JWKS",
+      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时启用 SP 模式，代理 JWKS",
       "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
       "@type": "AutoDetectOidcHandler",
-      "AutoDetectOidcHandler:_options_idpUrl": {
-        "@id": "urn:solid-server:default:variable:idpUrl"
+      "AutoDetectOidcHandler:_options_oidcIssuer": {
+        "@id": "urn:solid-server:default:variable:oidcIssuer"
       },
       "AutoDetectOidcHandler:_options_cacheMs": 300000
     },
@@ -52,11 +52,11 @@
       }
     },
     {
-      "comment": "Auto-detect Identity Provider Handler - 有 idpUrl 时禁用本地账户管理",
+      "comment": "Auto-detect Identity Provider Handler - 有 oidcIssuer 时禁用本地账户管理",
       "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler",
       "@type": "AutoDetectIdentityProviderHandler",
-      "AutoDetectIdentityProviderHandler:_options_idpUrl": {
-        "@id": "urn:solid-server:default:variable:idpUrl"
+      "AutoDetectIdentityProviderHandler:_options_oidcIssuer": {
+        "@id": "urn:solid-server:default:variable:oidcIssuer"
       },
       "AutoDetectIdentityProviderHandler:_options_source": {
         "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler"

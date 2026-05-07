@@ -102,7 +102,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
 
     // OIDC Issuer (Local 托管式使用 Cloud IdP)
     // 如果配置了 XPOD_NODE_TOKEN，默认使用 Cloud IdP
-    oidcIssuer: process.env.XPOD_OIDC_ISSUER ?? process.env.CSS_OIDC_ISSUER ?? process.env.CSS_IDP_URL ?? (
+    oidcIssuer: process.env.CSS_OIDC_ISSUER ?? (
       process.env.XPOD_NODE_TOKEN
         ? OFFICIAL_CLOUD_IDENTITY_ORIGIN
         : undefined

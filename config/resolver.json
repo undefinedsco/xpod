@@ -288,10 +288,10 @@
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:idpUrl",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:oidcIssuer",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "idpUrl",
+            "key": "oidcIssuer",
             "defaultValue": ""
           }
         },
