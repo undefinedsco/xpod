@@ -1,4 +1,5 @@
 import { useState, useEffect, createContext, useContext } from 'react';
+import { storedAccountTokenHeaders, clearAccountSessionToken } from '../utils/account-session';
 
 export interface Controls {
   password?: { login?: string; create?: string; forgot?: string; reset?: string };
@@ -43,7 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const checkOidcPending = async (): Promise<boolean> => {
     try {
       const res = await fetch('/.account/oidc/consent/', {
-        headers: { Accept: 'application/json' },
+        headers: storedAccountTokenHeaders(),
         credentials: 'include',
       });
       // If we get 200 and valid client info, there's an OIDC flow waiting
@@ -59,7 +60,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchControls = async () => {
     try {
-      const res = await fetch(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' });
+      const res = await fetch(idpIndex, { headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         const json = await res.json();
         
@@ -74,6 +75,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setHasOidcPending(pending);
         setControls(json.controls || {});
       } else {
+        if (res.status === 401 || res.status === 403) {
+          clearAccountSessionToken();
+          setHasOidcPending(false);
+          setControls({});
+          return;
+        }
         // If we get a 404 or other error, it might mean we are not at the right place
         // or the server is down. For now, we set an error.
         setInitError(`Failed to load configuration (Status: ${res.status})`);

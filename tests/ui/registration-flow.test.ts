@@ -63,6 +63,13 @@ describe('completeRegistrationProvisioning', () => {
         Authorization: 'CSS-Account-Token acct-token-1',
       },
     });
+    expect(fetchMock.mock.calls[4]?.[0]).toBe('/.account/oidc/consent/');
+    expect(fetchMock.mock.calls[4]?.[1]).toMatchObject({
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'CSS-Account-Token acct-token-1',
+      },
+    });
   });
 
   it('treats a visible pod record as ready even before webIdLinks catches up', async () => {

@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
+import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 
 interface PodView {
   id: string;
@@ -114,7 +115,7 @@ export function AccountPage() {
     try {
       let nextWebIds: string[] = [];
       if (controls?.account?.webId) {
-        const res = await fetch(controls.account.webId, { headers: { Accept: 'application/json' }, credentials: 'include' });
+        const res = await fetch(controls.account.webId, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountWebIdResponse;
           const links = json.webIdLinks || {};
@@ -128,7 +129,7 @@ export function AccountPage() {
         setWebIds([]);
       }
       if (controls?.account?.pod) {
-        const res = await fetch(controls.account.pod, { headers: { Accept: 'application/json' }, credentials: 'include' });
+        const res = await fetch(controls.account.pod, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountPodResponse;
           const nextPods = normalizePods(json);
@@ -143,7 +144,7 @@ export function AccountPage() {
         setPodStateSettling(false);
       }
       if (controls?.account?.clientCredentials) {
-        const res = await fetch(controls.account.clientCredentials, { headers: { Accept: 'application/json' }, credentials: 'include' });
+        const res = await fetch(controls.account.clientCredentials, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json();
           const creds = json.clientCredentials || {};
@@ -167,10 +168,11 @@ export function AccountPage() {
     try {
       const res = await fetch(controls.account.logout, {
         method: 'POST',
-        headers: { Accept: 'application/json' },
+        headers: storedAccountTokenHeaders(),
         credentials: 'include',
       });
       if (res.ok) {
+        clearAccountSessionToken();
         await refetchControls();
         navigate('/.account/');
       }
@@ -188,7 +190,7 @@ export function AccountPage() {
     try {
       const res = await fetch(controls.account.pod, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
         body: JSON.stringify(buildPodCreatePayload(podName)),
       });
@@ -221,7 +223,7 @@ export function AccountPage() {
     try {
       const res = await fetch(controls.account.webId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ webId: linkWebIdUrl.trim() }),
       });
@@ -244,7 +246,7 @@ export function AccountPage() {
     if (!confirm(`Delete pod ${podUrl}? This cannot be undone.`)) return;
     setIsLoading(true);
     try {
-      const res = await fetch(podUrl, { method: 'DELETE', headers: { Accept: 'application/json' }, credentials: 'include' });
+      const res = await fetch(podUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -264,7 +266,7 @@ export function AccountPage() {
     try {
       const res = await fetch(controls.account.clientCredentials, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ name: credentialName.trim(), webId: credentialWebId }),
       });
@@ -300,7 +302,7 @@ export function AccountPage() {
     if (!confirm('Delete this credential? This cannot be undone.')) return;
     setIsLoading(true);
     try {
-      const res = await fetch(credId, { method: 'DELETE', headers: { Accept: 'application/json' }, credentials: 'include' });
+      const res = await fetch(credId, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {

@@ -15,6 +15,7 @@ import {
   completeRegistrationProvisioning,
   loginAccountPassword,
 } from '../utils/registration-flow';
+import { storeAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 
 interface WelcomePageProps {
   initialIsRegister?: boolean;
@@ -136,6 +137,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
             loginUrl: fallbackLoginUrl,
             password,
           });
+          storeAccountSessionToken(login.accountToken);
           return login.accountToken;
         };
         if (!availability.available) {
@@ -182,6 +184,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
               idpIndex,
             });
             accountToken = bootstrap.accountToken;
+            storeAccountSessionToken(accountToken);
           } catch (err: any) {
             if (!(err instanceof RegistrationError) || err.code !== 'EMAIL_ALREADY_REGISTERED') {
               throw err;
@@ -206,6 +209,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         const json = await res.json().catch(() => ({}));
         
         if (res.ok) {
+          storeAccountSessionToken(typeof json.authorization === 'string' ? json.authorization : undefined);
           // Check if there's an OIDC flow waiting (CSS returns location to consent)
           const headerLocation = res.headers.get('Location');
           
@@ -228,7 +232,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           // Check if there's an OIDC session waiting for consent
           try {
             const consentCheck = await fetch('/.account/oidc/consent/', {
-              headers: { Accept: 'application/json' },
+              headers: storedAccountTokenHeaders(),
               credentials: 'include',
             });
             if (consentCheck.ok) {
@@ -280,7 +284,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     try {
       const res = await fetch(controls.oidc.cancel, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
       });
       const json = await res.json();

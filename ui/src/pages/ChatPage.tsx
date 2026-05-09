@@ -7,6 +7,7 @@
 import { useChatKit, ChatKit } from '@openai/chatkit-react';
 import { useAuth } from '../context/AuthContext';
 import { useState, useCallback } from 'react';
+import { storedAccountTokenHeaders } from '../utils/account-session';
 
 // 获取 API URL（默认指向 Gateway）
 const API_URL = import.meta.env.VITE_CHATKIT_API_URL || 'http://localhost:3000/chatkit';
@@ -27,6 +28,8 @@ export function ChatPage() {
     if (apiKey) {
       // 使用 API Key 认证 (sk-xxx 格式)
       headers['Authorization'] = `Bearer ${apiKey}`;
+    } else {
+      Object.assign(headers, storedAccountTokenHeaders(headers));
     }
     
     return fetch(url, { ...options, headers, credentials: 'include' });

@@ -1,4 +1,5 @@
 import { buildPodCreatePayload, clearStoredProvisionCode } from './pod';
+import { accountTokenHeaders } from './account-session';
 
 export interface RegistrationFlowResult {
   createdPod: boolean;
@@ -113,16 +114,6 @@ async function hasExistingPod(
 
   const data = await res.json().catch(() => ({})) as AccountPodResponse;
   return Object.keys(data.pods ?? {}).some((podUrl) => podUrlMatchesUsername(podUrl, username));
-}
-
-function accountTokenHeaders(accountToken?: string): HeadersInit {
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-  };
-  if (accountToken) {
-    headers.Authorization = `CSS-Account-Token ${accountToken}`;
-  }
-  return headers;
 }
 
 export async function bootstrapAccountPasswordLogin(
@@ -296,7 +287,7 @@ export async function completeRegistrationProvisioning(
   if (await hasExistingPod(fetchImpl, createPodUrl, username, accountToken)) {
     clearStoredProvisionCode();
     await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account, accountToken);
-    return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl) };
+    return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl, accountToken) };
   }
 
   res = await fetchImpl(createPodUrl, {
@@ -324,12 +315,12 @@ export async function completeRegistrationProvisioning(
 
   await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account, accountToken);
 
-  return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl) };
+  return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl, accountToken) };
 }
 
-async function hasPendingConsent(fetchImpl: typeof fetch): Promise<boolean> {
+async function hasPendingConsent(fetchImpl: typeof fetch, accountToken: string): Promise<boolean> {
   const consentCheck = await fetchImpl('/.account/oidc/consent/', {
-    headers: { Accept: 'application/json' },
+    headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
   if (consentCheck.ok) {
