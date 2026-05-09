@@ -1,6 +1,7 @@
 import { buildPodCreatePayload, clearStoredProvisionCode } from './pod';
 
 export interface RegistrationFlowResult {
+  createdPod: boolean;
   redirectedToConsent: boolean;
 }
 
@@ -13,9 +14,23 @@ export interface RegistrationAccountBootstrapOptions {
 }
 
 export interface RegistrationFlowOptions {
+  accountToken: string;
   fetchImpl?: typeof fetch;
   idpIndex: string;
   username: string;
+}
+
+export class RegistrationError extends Error {
+  public readonly code: 'EMAIL_ALREADY_REGISTERED' | 'USERNAME_ALREADY_TAKEN' | 'UNKNOWN';
+
+  public constructor(
+    message: string,
+    code: 'EMAIL_ALREADY_REGISTERED' | 'USERNAME_ALREADY_TAKEN' | 'UNKNOWN',
+  ) {
+    super(message);
+    this.name = 'RegistrationError';
+    this.code = code;
+  }
 }
 
 async function readErrorMessage(response: Response): Promise<string | undefined> {
@@ -54,16 +69,29 @@ function isUsernameConflict(message: string | undefined): boolean {
     /Username already taken/i.test(message);
 }
 
-function accountTokenHeaders(accountToken: string): HeadersInit {
-  return {
+function isDuplicateEmail(message: string | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  return /already is a login for this e-mail address/i.test(message) ||
+    /email(?: address)? is already/i.test(message) ||
+    /already registered/i.test(message);
+}
+
+function accountTokenHeaders(accountToken?: string): HeadersInit {
+  const headers: Record<string, string> = {
     Accept: 'application/json',
-    Authorization: `CSS-Account-Token ${accountToken}`,
   };
+  if (accountToken) {
+    headers.Authorization = `CSS-Account-Token ${accountToken}`;
+  }
+  return headers;
 }
 
 export async function bootstrapAccountPasswordLogin(
   options: RegistrationAccountBootstrapOptions,
-): Promise<{ loginUrl: string }> {
+): Promise<{ accountToken: string; loginUrl: string }> {
   const fetchImpl = options.fetchImpl ?? fetch;
 
   let res = await fetchImpl(options.accountCreateUrl, {
@@ -110,16 +138,24 @@ export async function bootstrapAccountPasswordLogin(
     body: JSON.stringify({ email: options.email, password: options.password }),
   });
   if (!res.ok) {
-    throw new Error((await res.json().catch(() => ({})) as any).message || 'Failed to set password');
+    const message = await readErrorMessage(res);
+    if (isDuplicateEmail(message)) {
+      throw new RegistrationError(
+        'This email is already registered. Sign in instead, or reset the password.',
+        'EMAIL_ALREADY_REGISTERED',
+      );
+    }
+    throw new Error(message || 'Failed to set password');
   }
 
-  return { loginUrl };
+  return { accountToken, loginUrl };
 }
 
 export async function defaultWaitForWebIdReady(
   fetchImpl: typeof fetch,
   idpIndex: string,
   endpoints?: AccountStatusEndpoints,
+  accountToken?: string,
   timeoutMs = 15_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -130,7 +166,7 @@ export async function defaultWaitForWebIdReady(
     try {
       if (!accountPodUrl && !accountWebIdUrl) {
         const controlsRes = await fetchImpl(idpIndex, {
-          headers: { Accept: 'application/json' },
+          headers: accountTokenHeaders(accountToken),
           credentials: 'include',
         } as RequestInit);
         if (controlsRes.ok) {
@@ -142,7 +178,7 @@ export async function defaultWaitForWebIdReady(
 
       if (accountWebIdUrl) {
         const webIdRes = await fetchImpl(accountWebIdUrl, {
-          headers: { Accept: 'application/json' },
+          headers: accountTokenHeaders(accountToken),
           credentials: 'include',
         } as RequestInit);
         if (webIdRes.ok) {
@@ -155,7 +191,7 @@ export async function defaultWaitForWebIdReady(
 
       if (accountPodUrl) {
         const podRes = await fetchImpl(accountPodUrl, {
-          headers: { Accept: 'application/json' },
+          headers: accountTokenHeaders(accountToken),
           credentials: 'include',
         } as RequestInit);
         if (podRes.ok) {
@@ -179,25 +215,34 @@ export async function completeRegistrationProvisioning(
   options: RegistrationFlowOptions,
 ): Promise<RegistrationFlowResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const { idpIndex, username } = options;
+  const { accountToken, idpIndex, username } = options;
 
-  let res = await fetchImpl(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' } as RequestInit);
+  let res = await fetchImpl(idpIndex, {
+    headers: accountTokenHeaders(accountToken),
+    credentials: 'include',
+  } as RequestInit);
   const accountData = await res.json().catch(() => ({})) as any;
   const createPodUrl = accountData.controls?.account?.pod;
   if (!createPodUrl) {
-    throw new Error('Pod creation endpoint not found');
+    throw new Error('Pod creation endpoint not found. The account API did not expose controls.account.pod.');
   }
 
   res = await fetchImpl(createPodUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: {
+      ...accountTokenHeaders(accountToken),
+      'Content-Type': 'application/json',
+    },
     credentials: 'include',
     body: JSON.stringify(buildPodCreatePayload(username)),
   });
   if (!res.ok) {
     const message = await readErrorMessage(res);
     if (isUsernameConflict(message)) {
-      throw new Error('Username is already taken. Your account was created; sign in and choose another Pod name.');
+      throw new RegistrationError(
+        'Username is already taken. Your account was created; sign in and choose another Pod name.',
+        'USERNAME_ALREADY_TAKEN',
+      );
     }
     throw new Error(message || 'Failed to create pod');
   }
@@ -205,7 +250,7 @@ export async function completeRegistrationProvisioning(
   clearStoredProvisionCode();
   void podCreateResult;
 
-  await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account);
+  await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account, accountToken);
 
   const consentCheck = await fetchImpl('/.account/oidc/consent/', {
     headers: { Accept: 'application/json' },
@@ -214,9 +259,9 @@ export async function completeRegistrationProvisioning(
   if (consentCheck.ok) {
     const consentData = await consentCheck.json().catch(() => ({})) as any;
     if (consentData.client) {
-      return { redirectedToConsent: true };
+      return { createdPod: true, redirectedToConsent: true };
     }
   }
 
-  return { redirectedToConsent: false };
+  return { createdPod: true, redirectedToConsent: false };
 }

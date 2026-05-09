@@ -22,15 +22,35 @@ describe('completeRegistrationProvisioning', () => {
 
     const result = await completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
+      accountToken: 'acct-token-1',
       idpIndex: 'https://id.example/',
       username: 'alice',
     });
 
-    expect(result).toEqual({ redirectedToConsent: true });
+    expect(result).toEqual({ createdPod: true, redirectedToConsent: true });
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://id.example/');
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'CSS-Account-Token acct-token-1',
+      },
+    });
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'CSS-Account-Token acct-token-1',
+        'Content-Type': 'application/json',
+      },
+    });
     expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/webid');
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'CSS-Account-Token acct-token-1',
+      },
+    });
   });
 
   it('treats a visible pod record as ready even before webIdLinks catches up', async () => {
@@ -50,13 +70,20 @@ describe('completeRegistrationProvisioning', () => {
 
     const result = await completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
+      accountToken: 'acct-token-1',
       idpIndex: 'https://id.example/',
       username: 'alice',
     });
 
-    expect(result).toEqual({ redirectedToConsent: true });
+    expect(result).toEqual({ createdPod: true, redirectedToConsent: true });
     expect(fetchMock.mock.calls[2]?.[0]).toBe('/.account/account/webid');
     expect(fetchMock.mock.calls[3]?.[0]).toBe('/.account/account/pod');
+    expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'CSS-Account-Token acct-token-1',
+      },
+    });
   });
 
   it('maps duplicate pod resource errors to a clear username conflict message', async () => {
@@ -74,9 +101,33 @@ describe('completeRegistrationProvisioning', () => {
 
     await expect(completeRegistrationProvisioning({
       fetchImpl: fetchMock as unknown as typeof fetch,
+      accountToken: 'acct-token-1',
       idpIndex: 'https://id.example/',
       username: 'alice',
     })).rejects.toThrow('Username is already taken. Your account was created; sign in and choose another Pod name.');
+  });
+
+  it('fails registration when authenticated account controls do not expose pod creation', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, {
+        controls: {
+          account: {},
+        },
+      }));
+
+    await expect(completeRegistrationProvisioning({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      accountToken: 'acct-token-1',
+      idpIndex: 'https://id.example/',
+      username: 'alice',
+    })).rejects.toThrow('Pod creation endpoint not found');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'CSS-Account-Token acct-token-1',
+      },
+    });
   });
 });
 
@@ -106,7 +157,7 @@ describe('bootstrapAccountPasswordLogin', () => {
       idpIndex: 'https://id.example/.account/',
     });
 
-    expect(result).toEqual({ loginUrl: '/.account/login/password/' });
+    expect(result).toEqual({ accountToken: 'acct-token-1', loginUrl: '/.account/login/password/' });
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
       headers: {
         Accept: 'application/json',
@@ -119,6 +170,34 @@ describe('bootstrapAccountPasswordLogin', () => {
         Authorization: 'CSS-Account-Token acct-token-1',
         'Content-Type': 'application/json',
       },
+    });
+  });
+
+  it('maps duplicate email errors to a stable registration error', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, { authorization: 'acct-token-1' }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        controls: {
+          password: {
+            create: '/.account/password/create',
+            login: '/.account/login/password/',
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse(400, {
+        message: 'There already is a login for this e-mail address.',
+      }));
+
+    await expect(bootstrapAccountPasswordLogin({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      accountCreateUrl: '/.account/account/',
+      email: 'alice@example.com',
+      password: 'secret',
+      idpIndex: 'https://id.example/.account/',
+    })).rejects.toMatchObject({
+      name: 'RegistrationError',
+      code: 'EMAIL_ALREADY_REGISTERED',
+      message: 'This email is already registered. Sign in instead, or reset the password.',
     });
   });
 });

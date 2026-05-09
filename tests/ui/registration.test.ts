@@ -42,6 +42,23 @@ describe('registration username helpers', () => {
     });
   });
 
+  it('does not treat failed identity lookup as an available username', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 500,
+      ok: false,
+    });
+
+    await expect(checkRegistrationUsernameAvailability(
+      'alice',
+      'https://id.example/.account/',
+      fetchMock as unknown as typeof fetch,
+    )).resolves.toEqual({
+      available: false,
+      suggestions: [],
+      error: 'Unable to verify username availability right now. Please try again.',
+    });
+  });
+
   it('returns only checked-available numeric suggestions for taken usernames', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ status: 200, ok: true })

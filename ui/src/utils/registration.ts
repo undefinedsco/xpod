@@ -5,6 +5,7 @@ export const REGISTRATION_USERNAME_PATTERN = /^[a-z0-9-]+$/;
 export interface RegistrationUsernameAvailability {
   available: boolean;
   suggestions: string[];
+  error?: string;
 }
 
 export function normalizeRegistrationUsername(username: string): string {
@@ -130,11 +131,20 @@ export async function checkRegistrationUsernameAvailability(
     return {
       available: false,
       suggestions: [],
+      error: formatError,
     };
   }
   const exists = await fetchUsernameExists(normalizedUsername, idpIndex, fetchImpl);
-  if (exists === false || exists === undefined) {
+  if (exists === false) {
     return { available: true, suggestions: [] };
+  }
+
+  if (exists === undefined) {
+    return {
+      available: false,
+      suggestions: [],
+      error: 'Unable to verify username availability right now. Please try again.',
+    };
   }
 
   return {

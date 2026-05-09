@@ -27,6 +27,10 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const [isCheckingUsername, setIsCheckingUsername] = useState(false);
   const [isUsernameAvailable, setIsUsernameAvailable] = useState<boolean | null>(null);
   const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
+  const [usernameAvailabilityError, setUsernameAvailabilityError] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const passwordsMatch = password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
   const normalizedUsername = normalizeRegistrationUsername(username);
@@ -42,6 +46,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       setIsCheckingUsername(false);
       setIsUsernameAvailable(null);
       setUsernameSuggestions([]);
+      setUsernameAvailabilityError(null);
       return;
     }
 
@@ -49,6 +54,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       setIsCheckingUsername(false);
       setIsUsernameAvailable(null);
       setUsernameSuggestions([]);
+      setUsernameAvailabilityError(null);
       return;
     }
 
@@ -56,6 +62,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       setIsCheckingUsername(false);
       setIsUsernameAvailable(false);
       setUsernameSuggestions([]);
+      setUsernameAvailabilityError(usernameError);
       return;
     }
 
@@ -70,6 +77,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       setIsCheckingUsername(false);
       setIsUsernameAvailable(result.available);
       setUsernameSuggestions(result.suggestions);
+      setUsernameAvailabilityError(result.error ?? null);
     }, 300);
 
     return () => {
@@ -92,6 +100,8 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsLoading(true);
+    setEmailError(null);
+    setFormError(null);
     const form = new FormData(e.currentTarget);
     const email = form.get('email') as string;
     const password = form.get('password') as string;
@@ -115,11 +125,17 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         if (!availability.available) {
           setIsUsernameAvailable(false);
           setUsernameSuggestions(availability.suggestions);
-          alert('Username is already taken');
+          setUsernameAvailabilityError(availability.error ?? 'Username is already taken');
           setIsLoading(false);
           return;
         }
-        const { loginUrl } = await bootstrapAccountPasswordLogin({
+        if (availability.error) {
+          setIsUsernameAvailable(false);
+          setUsernameAvailabilityError(availability.error);
+          setIsLoading(false);
+          return;
+        }
+        const { accountToken, loginUrl } = await bootstrapAccountPasswordLogin({
           accountCreateUrl: controls?.account?.create || '/.account/account/',
           email,
           password,
@@ -135,6 +151,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Auto-login failed');
 
         const result = await completeRegistrationProvisioning({
+          accountToken,
           idpIndex,
           username: normalizedUsername,
         });
@@ -185,11 +202,18 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           
           window.location.href = '/.account/account/';
         } else {
-          alert(json.message || 'Login failed');
+          setFormError(json.message || 'Login failed');
         }
       }
     } catch (err: any) {
-      alert(err.message || 'Operation failed');
+      if (err?.name === 'RegistrationError' && err.code === 'EMAIL_ALREADY_REGISTERED') {
+        setEmailError(err.message);
+      } else if (err?.name === 'RegistrationError' && err.code === 'USERNAME_ALREADY_TAKEN') {
+        setIsUsernameAvailable(false);
+        setUsernameAvailabilityError(err.message);
+      } else {
+        setFormError(err.message || 'Operation failed');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -203,6 +227,10 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     setIsCheckingUsername(false);
     setIsUsernameAvailable(null);
     setUsernameSuggestions([]);
+    setUsernameAvailabilityError(null);
+    setEmail('');
+    setEmailError(null);
+    setFormError(null);
   };
 
   // OIDC Cancel handler
@@ -298,6 +326,11 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
             </div>
 
             <form className="space-y-4" onSubmit={handleSubmit}>
+              {formError && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-[11px]">
+                  {formError}
+                </div>
+              )}
               <div className="space-y-3">
                 {isRegister && (
                   <div className="relative">
@@ -334,10 +367,36 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                     name="email"
                     type="email"
                     required
-                    className="block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm placeholder:text-zinc-400 focus:border-[#7C4DFF] focus:outline-none transition-colors"
+                    value={email}
+                    onChange={(event) => {
+                      setEmail(event.target.value);
+                      if (emailError) {
+                        setEmailError(null);
+                      }
+                    }}
+                    className={clsx(
+                      'block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors',
+                      emailError ? 'border-red-300 focus:border-red-500' : 'border-zinc-200 focus:border-[#7C4DFF]',
+                    )}
                     placeholder="Email"
                   />
                 </div>
+                {emailError && (
+                  <p className="text-[11px] leading-relaxed text-red-600">
+                    {emailError}{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRegister(false);
+                        setEmailError(null);
+                        setFormError(null);
+                      }}
+                      className="font-medium text-[#7C4DFF] hover:text-[#6B3FE8]"
+                    >
+                      Sign in
+                    </button>
+                  </p>
+                )}
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
                   <input
@@ -387,6 +446,8 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                     ? usernameError
                     : isCheckingUsername
                       ? 'Checking username availability...'
+                      : usernameAvailabilityError
+                        ? usernameAvailabilityError
                       : normalizedUsername && isUsernameAvailable === false
                         ? 'Username is already taken.'
                         : normalizedUsername && isUsernameAvailable
