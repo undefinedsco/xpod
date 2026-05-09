@@ -45,7 +45,7 @@ const SERVICES = {
     storage: 'SQLite + Cloud IdP',
     hasIdp: false, // 使用 Cloud IdP
     isSp: false,
-    idpUrl: `http://localhost:${CLOUD_PORT}`,
+    oidcIssuer: `http://localhost:${CLOUD_PORT}`,
   },
   standalone: {
     name: 'Standalone',

@@ -75,6 +75,53 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.emailConfigAuthPass).toBe('');
   });
 
+  it('should use only CSS_OIDC_ISSUER for local SP mode', async() => {
+    const state = await resolveRuntimeBootstrap('test-oidc-issuer', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/oidc-issuer',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5810,
+      cssPort: 5811,
+      apiPort: 5812,
+    }, nodeRuntimeHost);
+
+    const runtimeEnv = buildRuntimeEnv(state, {
+      mode: 'local',
+      env: {
+        CSS_OIDC_ISSUER: 'http://cloud.example',
+        XPOD_CLOUD_API_ENDPOINT: 'http://api.example',
+      },
+    });
+    const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
+
+    expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://cloud.example/.oidc/token');
+    expect(shorthand.oidcIssuer).toBe('http://cloud.example');
+  });
+
+  it('should not infer oidcIssuer from cloud API endpoint', async() => {
+    const state = await resolveRuntimeBootstrap('test-cloud-api-only', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/cloud-api-only',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5820,
+      cssPort: 5821,
+      apiPort: 5822,
+    }, nodeRuntimeHost);
+
+    const runtimeEnv = buildRuntimeEnv(state, {
+      mode: 'local',
+      env: {
+        XPOD_CLOUD_API_ENDPOINT: 'http://api.example',
+      },
+    });
+    const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
+
+    expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://127.0.0.1:5820/.oidc/token');
+    expect(shorthand.oidcIssuer).toBeUndefined();
+  });
+
   it('should resolve runtime paths and log level via injected platform', async() => {
     const ensureDir = vi.fn();
     const host = {

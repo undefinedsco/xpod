@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { Supervisor } from '../../supervisor';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from '../../runtime';
+import { oidcTokenEndpoint, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 
 interface StartArgs {
   mode?: string;
@@ -97,9 +98,8 @@ export const startCommand: CommandModule<object, StartArgs> = {
 
     const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
 
-    // SP 模式：全部通过环境变量配置（.env.local 或 --env 参数）
-    // XPOD_SERVICE_TOKEN, XPOD_NODE_ID, XPOD_NODE_TOKEN, XPOD_CLOUD_API_ENDPOINT, CSS_OIDC_ISSUER
-    const oidcIssuer = process.env.CSS_OIDC_ISSUER;
+    // SP 模式：CSS_OIDC_ISSUER 显式指定外部 IdP；Cloud API 地址不再隐式当作 issuer。
+    const oidcIssuer = resolveExternalOidcIssuer(process.env);
 
     console.log('Starting xpod...');
     console.log(`  Gateway: ${baseUrl} (${argv.host}:${mainPort})`);
@@ -146,9 +146,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
         XPOD_MAIN_PORT: mainPort.toString(),
         CSS_INTERNAL_URL: `http://localhost:${cssPort}`,
         CSS_BASE_URL: baseUrl,
-        CSS_TOKEN_ENDPOINT: oidcIssuer
-          ? `${oidcIssuer.replace(/\/$/, '')}/.oidc/token`
-          : `${baseUrl}.oidc/token`,
+        CSS_TOKEN_ENDPOINT: oidcIssuer ? oidcTokenEndpoint(oidcIssuer) : `${baseUrl}.oidc/token`,
       },
     });
 

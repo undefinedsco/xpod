@@ -3,6 +3,7 @@ import path from 'node:path';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
 import { PACKAGE_ROOT } from './package-root';
 import type { RuntimeHost } from './host/types';
+import { oidcTokenEndpoint, resolveExternalOidcIssuer } from './oidc-issuer';
 import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
 import type { RuntimePlatform } from './platform/types';
 import type { XpodRuntimeOptions, XpodRuntimePorts, XpodRuntimeSockets } from './runtime-types';
@@ -172,14 +173,23 @@ export function buildRuntimeEnv(
   options: XpodRuntimeOptions,
   envFromFile: Record<string, string | undefined> = {},
 ): Record<string, string | undefined> {
-  return {
+  const mergedEnv = {
     ...envFromFile,
     ...options.env,
+  };
+  const externalOidcIssuer = resolveExternalOidcIssuer(mergedEnv);
+
+  return {
+    ...mergedEnv,
     XPOD_ENV_PATH: state.envFilePath,
     XPOD_EDITION: state.mode,
     CSS_BASE_URL: state.baseUrl,
-    CSS_TOKEN_ENDPOINT: `${state.baseUrl}.oidc/token`,
+    CSS_TOKEN_ENDPOINT: externalOidcIssuer
+      ? oidcTokenEndpoint(externalOidcIssuer)
+      : `${state.baseUrl}.oidc/token`,
     CSS_ROOT_FILE_PATH: state.rootFilePath,
+    CSS_SPARQL_ENDPOINT: state.sparqlEndpoint,
+    SPARQL_ENDPOINT: state.sparqlEndpoint,
     CSS_IDENTITY_DB_URL: state.identityDbUrl,
     DATABASE_URL: state.identityDbUrl,
     CSS_PORT: state.ports.css !== undefined ? String(state.ports.css) : undefined,
@@ -199,6 +209,9 @@ export function buildRuntimeShorthand(
   baseEnv: Record<string, string | undefined> = nodeRuntimePlatform.baseEnv,
 ): Record<string, string | number | boolean> {
   const envValue = (key: string): string | undefined => runtimeEnv[key] ?? baseEnv[key];
+  const externalOidcIssuer = resolveExternalOidcIssuer({
+    CSS_OIDC_ISSUER: envValue('CSS_OIDC_ISSUER'),
+  });
 
   return {
     ...withDefinedEntries([
@@ -214,7 +227,7 @@ export function buildRuntimeShorthand(
       ['emailConfigPort', envValue('CSS_EMAIL_CONFIG_PORT') ?? '587'],
       ['emailConfigAuthUser', envValue('CSS_EMAIL_CONFIG_AUTH_USER') ?? ''],
       ['emailConfigAuthPass', envValue('CSS_EMAIL_CONFIG_AUTH_PASS') ?? ''],
-      ['oidcIssuer', envValue('CSS_OIDC_ISSUER')],
+      ['oidcIssuer', externalOidcIssuer],
       ['allowedHosts', envValue('CSS_ALLOWED_HOSTS')],
       ['nodeId', envValue('XPOD_NODE_ID')],
       ['nodeToken', envValue('XPOD_NODE_TOKEN')],
