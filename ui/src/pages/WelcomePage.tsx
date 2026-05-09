@@ -9,7 +9,12 @@ import {
   getRegistrationUsernameError,
   normalizeRegistrationUsername,
 } from '../utils/registration';
-import { bootstrapAccountPasswordLogin, completeRegistrationProvisioning } from '../utils/registration-flow';
+import {
+  RegistrationError,
+  bootstrapAccountPasswordLogin,
+  completeRegistrationProvisioning,
+  loginAccountPassword,
+} from '../utils/registration-flow';
 
 interface WelcomePageProps {
   initialIsRegister?: boolean;
@@ -122,7 +127,35 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           return;
         }
         const availability = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
+        const fallbackLoginUrl = controls?.password?.login || '/.account/login/password/';
+        const recoverExistingAccount = async (duplicateEmailRecovery = false): Promise<string> => {
+          const login = await loginAccountPassword({
+            duplicateEmailRecovery,
+            email,
+            fetchImpl: fetch,
+            loginUrl: fallbackLoginUrl,
+            password,
+          });
+          return login.accountToken;
+        };
         if (!availability.available) {
+          let recoveredAccountToken: string | undefined;
+          try {
+            recoveredAccountToken = await recoverExistingAccount();
+          } catch {
+            // If the credentials do not match an existing account, keep the username error.
+          }
+
+          if (recoveredAccountToken) {
+            const result = await completeRegistrationProvisioning({
+              accountToken: recoveredAccountToken,
+              idpIndex,
+              username: normalizedUsername,
+            });
+            window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/account/';
+            return;
+          }
+
           setIsUsernameAvailable(false);
           setUsernameSuggestions(availability.suggestions);
           setUsernameAvailabilityError(availability.error ?? 'Username is already taken');
@@ -135,20 +168,27 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           setIsLoading(false);
           return;
         }
-        const { accountToken, loginUrl } = await bootstrapAccountPasswordLogin({
-          accountCreateUrl: controls?.account?.create || '/.account/account/',
-          email,
-          password,
-          idpIndex,
-        });
+        let accountToken: string;
+        const recoveredAccountToken = await recoverExistingAccount().catch(() => undefined);
 
-        let res = await fetch(loginUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ email, password }),
-        });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Auto-login failed');
+        if (recoveredAccountToken) {
+          accountToken = recoveredAccountToken;
+        } else {
+          try {
+            const bootstrap = await bootstrapAccountPasswordLogin({
+              accountCreateUrl: controls?.account?.create || '/.account/account/',
+              email,
+              password,
+              idpIndex,
+            });
+            accountToken = bootstrap.accountToken;
+          } catch (err: any) {
+            if (!(err instanceof RegistrationError) || err.code !== 'EMAIL_ALREADY_REGISTERED') {
+              throw err;
+            }
+            accountToken = await recoverExistingAccount(true);
+          }
+        }
 
         const result = await completeRegistrationProvisioning({
           accountToken,

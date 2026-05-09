@@ -20,6 +20,14 @@ export interface RegistrationFlowOptions {
   username: string;
 }
 
+export interface PasswordLoginOptions {
+  duplicateEmailRecovery?: boolean;
+  email: string;
+  fetchImpl?: typeof fetch;
+  loginUrl: string;
+  password: string;
+}
+
 export class RegistrationError extends Error {
   public readonly code: 'EMAIL_ALREADY_REGISTERED' | 'USERNAME_ALREADY_TAKEN' | 'UNKNOWN';
 
@@ -77,6 +85,34 @@ function isDuplicateEmail(message: string | undefined): boolean {
   return /already is a login for this e-mail address/i.test(message) ||
     /email(?: address)? is already/i.test(message) ||
     /already registered/i.test(message);
+}
+
+function podUrlMatchesUsername(podUrl: string, username: string): boolean {
+  try {
+    const url = new URL(podUrl, 'http://xpod.local');
+    const firstSegment = url.pathname.split('/').filter(Boolean)[0];
+    return firstSegment === username;
+  } catch {
+    return false;
+  }
+}
+
+async function hasExistingPod(
+  fetchImpl: typeof fetch,
+  accountPodUrl: string,
+  username: string,
+  accountToken: string,
+): Promise<boolean> {
+  const res = await fetchImpl(accountPodUrl, {
+    headers: accountTokenHeaders(accountToken),
+    credentials: 'include',
+  } as RequestInit);
+  if (!res.ok) {
+    return false;
+  }
+
+  const data = await res.json().catch(() => ({})) as AccountPodResponse;
+  return Object.keys(data.pods ?? {}).some((podUrl) => podUrlMatchesUsername(podUrl, username));
 }
 
 function accountTokenHeaders(accountToken?: string): HeadersInit {
@@ -149,6 +185,36 @@ export async function bootstrapAccountPasswordLogin(
   }
 
   return { accountToken, loginUrl };
+}
+
+export async function loginAccountPassword(
+  options: PasswordLoginOptions,
+): Promise<{ accountToken: string }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const res = await fetchImpl(options.loginUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ email: options.email, password: options.password }),
+  });
+  if (!res.ok) {
+    const message = await readErrorMessage(res);
+    if (options.duplicateEmailRecovery) {
+      throw new RegistrationError(
+        'This email is already registered, but the password did not match. Sign in or reset the password.',
+        'EMAIL_ALREADY_REGISTERED',
+      );
+    }
+    throw new Error(message || 'Auto-login failed');
+  }
+
+  const data = await res.json().catch(() => ({})) as { authorization?: string };
+  const accountToken = typeof data.authorization === 'string' ? data.authorization : '';
+  if (!accountToken) {
+    throw new Error('Account token not returned after login');
+  }
+
+  return { accountToken };
 }
 
 export async function defaultWaitForWebIdReady(
@@ -227,6 +293,12 @@ export async function completeRegistrationProvisioning(
     throw new Error('Pod creation endpoint not found. The account API did not expose controls.account.pod.');
   }
 
+  if (await hasExistingPod(fetchImpl, createPodUrl, username, accountToken)) {
+    clearStoredProvisionCode();
+    await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account, accountToken);
+    return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl) };
+  }
+
   res = await fetchImpl(createPodUrl, {
     method: 'POST',
     headers: {
@@ -252,6 +324,10 @@ export async function completeRegistrationProvisioning(
 
   await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account, accountToken);
 
+  return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl) };
+}
+
+async function hasPendingConsent(fetchImpl: typeof fetch): Promise<boolean> {
   const consentCheck = await fetchImpl('/.account/oidc/consent/', {
     headers: { Accept: 'application/json' },
     credentials: 'include',
@@ -259,9 +335,9 @@ export async function completeRegistrationProvisioning(
   if (consentCheck.ok) {
     const consentData = await consentCheck.json().catch(() => ({})) as any;
     if (consentData.client) {
-      return { createdPod: true, redirectedToConsent: true };
+      return true;
     }
   }
 
-  return { createdPod: true, redirectedToConsent: false };
+  return false;
 }
