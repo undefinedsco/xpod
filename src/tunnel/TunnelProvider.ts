@@ -19,6 +19,9 @@ export interface TunnelConfig {
   /** 公网访问端点 (如 https://mynode.pods.undefieds.co) */
   endpoint: string;
 
+  /** 本地 origin 地址 (如 http://localhost:5737)，供隧道客户端转发 */
+  originUrl?: string;
+
   /** Cloudflare Tunnel Token (cloudflare 专用) */
   tunnelToken?: string;
 

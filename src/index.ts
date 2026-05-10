@@ -76,6 +76,7 @@ import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientId
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
+import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 // Authorization components
 import { AuthModeSelector } from './authorization/AuthModeSelector';
 export type {
@@ -187,6 +188,7 @@ export {
   // Provision exports
   ProvisionPodCreator,
   ProvisionCodeCodec,
+  LocalPodProvisioningService,
   // Authorization exports
   AuthModeSelector,
 };

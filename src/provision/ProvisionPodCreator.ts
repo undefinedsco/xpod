@@ -74,6 +74,7 @@ export class ProvisionPodCreator extends BasePodCreator {
     if (!podName) {
       throw new Error('Pod name is required for remote provisioning');
     }
+    const webId = input.webId ?? `${this.baseUrl}${podName}/profile/card#me`;
 
     // 2. 回调 SP 创建 Pod
     const callbackUrl = `${payload.spUrl.replace(/\/$/, '')}/provision/pods`;
@@ -83,7 +84,7 @@ export class ProvisionPodCreator extends BasePodCreator {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${payload.serviceToken}`,
       },
-      body: JSON.stringify({ podName }),
+      body: JSON.stringify({ podName, webId }),
     });
 
     if (!spResponse.ok) {
@@ -101,10 +102,7 @@ export class ProvisionPodCreator extends BasePodCreator {
     const canonicalStorageUrl = `${storageBase}/${podName}/`;
     const podUrl = spResult.podUrl || canonicalStorageUrl;
 
-    // 3. 生成 WebID（指向 Cloud，storage 指向 SP）
-    const webId = input.webId ?? `${this.baseUrl}${podName}/profile/card#me`;
-
-    // 4. 链接 WebID 到账户 + 在本地 PodStore 记录
+    // 3. 链接 WebID 到账户 + 在本地 PodStore 记录
     // base.path 必须在 Cloud 的 identifier space 内（CSS PodStore 会检查），
     // 所以用 Cloud 本地路径；真实的 SP storage URL 通过 podUrl 返回。
     const localBase = this.identifierGenerator.generate(podName);

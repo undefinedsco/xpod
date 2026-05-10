@@ -30,6 +30,7 @@ import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeReposito
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
+import { LocalPodProvisioningService } from '../../provision/LocalPodProvisioningService';
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime';
 
@@ -230,11 +231,26 @@ function registerLocalRoutes(
     const expectedServiceToken = process.env.XPOD_SERVICE_TOKEN;
 
     if (expectedServiceToken) {
+      const config = container.resolve('config') as ApiContainerConfig;
+      const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
+      const sparqlEndpoint = process.env.CSS_SPARQL_ENDPOINT || process.env.SPARQL_ENDPOINT;
+      const identityDbUrl = process.env.CSS_IDENTITY_DB_URL || process.env.DATABASE_URL;
+      const provisioningService = sparqlEndpoint && identityDbUrl
+        ? new LocalPodProvisioningService({
+          baseUrl,
+          rootDir,
+          sparqlEndpoint,
+          identityDbUrl,
+          oidcIssuer: process.env.CSS_OIDC_ISSUER ?? process.env.oidcIssuer ?? config.oidcIssuer,
+        })
+        : undefined;
+
       registerPodManagementRoutes(server, {
         rootDir,
         verifyServiceToken: async (token: string) => token === expectedServiceToken,
+        provisioningService,
       });
-      console.log('[Local] Pod provision routes registered (/provision/pods)');
+      console.log(`[Local] Pod provision routes registered (/provision/pods, ${provisioningService ? 'css-compatible' : 'directory-only'})`);
     } else {
       console.log('[Local] Pod provision routes not registered (XPOD_SERVICE_TOKEN not configured)');
     }

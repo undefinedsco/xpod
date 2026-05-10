@@ -104,14 +104,10 @@ export function registerLocalServices(
       }).singleton(),
 
       // Local Network Manager (Orchestrator)
-      localNetworkManager: asFunction(({ capabilityDetector, dnsCoordinator, localTunnelProvider }: ApiContainerCradle) => {
-        // Tunnel 应该指向 Gateway 端口 (通常是 3000)，而不是 API Server 端口 (3004)
-        const mainPort = parseInt(process.env.XPOD_MAIN_PORT || '3000', 10);
+      localNetworkManager: asFunction(({ capabilityDetector, dnsCoordinator }: ApiContainerCradle) => {
         return new LocalNetworkManager({
           detector: capabilityDetector!,
           dnsCoordinator: dnsCoordinator!,
-          tunnelProvider: localTunnelProvider,
-          localPort: mainPort,
         });
       }).singleton(),
 

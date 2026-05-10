@@ -90,7 +90,10 @@ describe('ProvisionPodCreator', () => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${serviceToken}`,
           },
-          body: JSON.stringify({ podName: 'alice' }),
+          body: JSON.stringify({
+            podName: 'alice',
+            webId: `${baseUrl}alice/profile/card#me`,
+          }),
         }),
       );
 
