@@ -20,6 +20,16 @@ export interface WebIdProfileHandlerOptions {
   podLookupRepo?: PodLookupRepository;
 }
 
+interface IdentityProfileResponse {
+  username: string;
+  webidUrl: string;
+  storageUrl?: string;
+  storageMode: 'cloud' | 'local' | 'custom';
+  oidcIssuer?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
 export function registerWebIdProfileRoutes(
   server: ApiServer,
   options: WebIdProfileHandlerOptions,
@@ -121,22 +131,27 @@ export function registerWebIdProfileRoutes(
     const username = decodeURIComponent(params.username);
 
     try {
-      const profile = await resolveProfileWithStorageBackfill(username, options);
+      const profile = await resolveIdentityLookup(username, options);
 
       if (!profile) {
         sendError(response, 404, 'Profile not found');
         return;
       }
 
-      sendJson(response, 200, {
+      const body: Record<string, unknown> = {
         username: profile.username,
         webidUrl: profile.webidUrl,
         storageUrl: profile.storageUrl,
         storageMode: profile.storageMode,
         oidcIssuer: profile.oidcIssuer,
-        createdAt: profile.createdAt.toISOString(),
-        updatedAt: profile.updatedAt.toISOString(),
-      });
+      };
+      if (profile.createdAt) {
+        body.createdAt = profile.createdAt.toISOString();
+      }
+      if (profile.updatedAt) {
+        body.updatedAt = profile.updatedAt.toISOString();
+      }
+      sendJson(response, 200, body);
     } catch (error) {
       logger.error(`Failed to get profile for ${username}: ${error}`);
       sendError(response, 500, 'Internal server error');
@@ -209,6 +224,54 @@ export function registerWebIdProfileRoutes(
   logger.info('WebID Profile routes registered');
 }
 
+async function resolveIdentityLookup(
+  username: string,
+  options: WebIdProfileHandlerOptions,
+): Promise<IdentityProfileResponse | null> {
+  try {
+    const profile = await resolveProfileWithStorageBackfill(username, options);
+    if (profile) {
+      return profile;
+    }
+  } catch (error) {
+    logger.warn(`Profile lookup unavailable for ${username}, falling back to Pod index: ${error}`);
+  }
+
+  return resolveProfileFromPods(username, options);
+}
+
+async function resolveProfileFromPods(
+  username: string,
+  options: WebIdProfileHandlerOptions,
+): Promise<IdentityProfileResponse | null> {
+  const { podLookupRepo } = options;
+  if (!podLookupRepo) {
+    return null;
+  }
+
+  let pods: PodLookupResult[];
+  try {
+    pods = await podLookupRepo.listAllPods();
+  } catch (error) {
+    logger.warn(`Pod index lookup unavailable for ${username}: ${error}`);
+    return null;
+  }
+
+  const match = pods.find((pod) => derivePodSlug(pod.baseUrl) === username);
+  if (!match) {
+    return null;
+  }
+
+  const storageUrl = ensureTrailingSlash(match.baseUrl);
+  return {
+    username,
+    webidUrl: `${storageUrl}profile/card#me`,
+    storageUrl,
+    storageMode: 'cloud',
+    oidcIssuer: deriveOrigin(storageUrl),
+  };
+}
+
 async function resolveProfileWithStorageBackfill(
   username: string,
   options: WebIdProfileHandlerOptions,
@@ -223,7 +286,13 @@ async function resolveProfileWithStorageBackfill(
     return profile;
   }
 
-  const pods = await podLookupRepo.listByAccountId(profile.accountId);
+  let pods: PodLookupResult[];
+  try {
+    pods = await podLookupRepo.listByAccountId(profile.accountId);
+  } catch (error) {
+    logger.warn(`Skipped storage backfill for ${username}: pod index unavailable for account ${profile.accountId}: ${error}`);
+    return profile;
+  }
   const storageUrl = selectStorageBackfillCandidate(username, pods);
   if (!storageUrl) {
     logger.warn(`Skipped storage backfill for ${username}: no unambiguous pod found for account ${profile.accountId}`);
@@ -282,6 +351,14 @@ function derivePodSlug(baseUrl: string): string | null {
 
 function ensureTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '') + '/';
+}
+
+function deriveOrigin(url: string): string | undefined {
+  try {
+    return ensureTrailingSlash(new URL(url).origin);
+  } catch {
+    return undefined;
+  }
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {

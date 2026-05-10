@@ -14,10 +14,12 @@ describe('WebIdProfileHandler', () => {
   };
   const podLookupRepo = {
     listByAccountId: vi.fn(),
+    listAllPods: vi.fn(),
   };
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    podLookupRepo.listAllPods.mockResolvedValue([]);
     routes = {};
     mockServer = {
       get: vi.fn((path, handler) => { routes[`GET ${path}`] = handler; }),
@@ -116,5 +118,40 @@ describe('WebIdProfileHandler', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse((response.end as any).mock.calls[0][0]);
     expect(body.storageUrl).toBeUndefined();
+  });
+
+  it('returns 404 for an available username when the optional profile table is unavailable', async () => {
+    profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
+    podLookupRepo.listAllPods.mockResolvedValueOnce([]);
+
+    const response = createResponse();
+    await routes['GET /api/v1/identity/:username']({} as IncomingMessage, response, { username: 'new-user' });
+
+    expect(response.statusCode).toBe(404);
+    expect(podLookupRepo.listAllPods).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((response.end as any).mock.calls[0][0]);
+    expect(body.error).toBe('Profile not found');
+  });
+
+  it('treats an existing CSS pod slug as an occupied username without requiring a profile row', async () => {
+    profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
+    podLookupRepo.listAllPods.mockResolvedValueOnce([
+      {
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://id.example/alice/',
+      },
+    ]);
+
+    const response = createResponse();
+    await routes['GET /api/v1/identity/:username']({} as IncomingMessage, response, { username: 'alice' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse((response.end as any).mock.calls[0][0]);
+    expect(body).toEqual(expect.objectContaining({
+      username: 'alice',
+      webidUrl: 'https://id.example/alice/profile/card#me',
+      storageUrl: 'https://id.example/alice/',
+    }));
   });
 });
