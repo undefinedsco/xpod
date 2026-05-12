@@ -18,7 +18,7 @@
         "@mariozechner/pi-coding-agent": "^0.55.1",
         "@solid/community-server": "8.0.0-alpha.1",
         "@undefineds.co/drizzle-solid": "^0.3.4",
-        "@undefineds.co/models": "0.2.20",
+        "@undefineds.co/models": "0.2.21",
         "abstract-level": "^1.0.4",
         "acme-client": "^5.1.3",
         "ai": "^6.0.6",
@@ -1423,7 +1423,7 @@
 
     "@undefineds.co/drizzle-solid": ["@undefineds.co/drizzle-solid@0.3.4", "", { "dependencies": { "@inrupt/solid-client": "^3.0.0", "@inrupt/solid-client-authn-node": "^3.1.1", "@inrupt/universal-fetch": "^1.0.3", "@inrupt/vocab-common-rdf": "^1.0.5", "dotenv": "^17.2.2", "drizzle-orm": "^0.28.0", "n3": "^1.26.0", "node-fetch": "^3.3.2", "sparqljs": "^3.7.3", "zod": "^4.1.8" }, "peerDependencies": { "@comunica/query-sparql-solid": "^4.0.2" }, "optionalPeers": ["@comunica/query-sparql-solid"] }, "sha512-vpbTHzTfwn8xczIfVilVlXcEonPxcUad+l7u7MyPdIm39e6lxF2iRn0gwjSQSsYj2RSRzkAgGCRHLslWJa34xw=="],
 
-    "@undefineds.co/models": ["@undefineds.co/models@0.2.20", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.9", "n3": "^1.26.0", "zod": "^3.22.4" } }, "sha512-EDpvvQ6qexx/hqphdP2jNnQMA6noNYO2tMyADcQT4fy2Vpr7mTV1GOEY8qKJvZtrOHYtlcGFOCaymZEwCvNQWg=="],
+    "@undefineds.co/models": ["@undefineds.co/models@0.2.21", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.9", "n3": "^1.26.0", "zod": "^3.22.4" } }, "sha512-nBrm1h43OjOXD2blgJ16UWz+S4EeV9jO6ATWkXy6iUyTvD0mdADBUAaLFDeXTidWl2/aHLoYYU6L745SRSvq8A=="],
 
     "@vercel/oidc": ["@vercel/oidc@3.1.0", "", {}, "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="],
 
