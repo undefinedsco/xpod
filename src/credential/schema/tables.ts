@@ -1,12 +1,12 @@
 import {
-  apiKeyCredentialTable,
-  credentialTable,
-  oauthCredentialTable,
+  apiKeyCredentialResource,
+  credentialResource,
+  oauthCredentialResource,
 } from '@undefineds.co/models';
 
-export const ApiKeyCredential = apiKeyCredentialTable as any;
-export const OAuthCredential = oauthCredentialTable as any;
-export const Credential = credentialTable as any;
+export const ApiKeyCredential = apiKeyCredentialResource as any;
+export const OAuthCredential = oauthCredentialResource as any;
+export const Credential = credentialResource as any;
 
 export type ApiKeyCredentialRow = typeof ApiKeyCredential.$inferSelect;
 export type ApiKeyCredentialInsert = typeof ApiKeyCredential.$inferInsert;
