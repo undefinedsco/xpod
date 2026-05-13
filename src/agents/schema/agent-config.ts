@@ -1,4 +1,4 @@
-import { linxSchema } from '@undefineds.co/models';
+import { agentStatusResource } from '@undefineds.co/models';
 import { createAgentSchema } from './create-agent-schema';
 
 /**
@@ -28,4 +28,4 @@ export const AgentConfig = agentConfigSchema.table('AgentConfig', {
   subjectTemplate: '#{id}',
 }) as any;
 
-export const AgentStatus = linxSchema.agentStatusTable as any;
+export const AgentStatus = agentStatusResource as any;

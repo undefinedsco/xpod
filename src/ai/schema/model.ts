@@ -1,8 +1,8 @@
 import { relations } from '@undefineds.co/drizzle-solid';
-import { aiModelTable, aiProviderTable } from '@undefineds.co/models';
+import { aiModelResource, aiProviderResource } from '@undefineds.co/models';
 
-export const Model = aiModelTable as any;
-const Provider = aiProviderTable as any;
+export const Model = aiModelResource as any;
+const Provider = aiProviderResource as any;
 
 export type ModelRow = typeof Model.$inferSelect;
 export type ModelInsert = typeof Model.$inferInsert;

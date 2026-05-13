@@ -5,7 +5,6 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
-const MODELS_PACKAGE = '@undefineds.co/models';
 
 function getNpmInvocation(args) {
   if (process.platform === 'win32') {
@@ -22,7 +21,7 @@ function getNpmInvocation(args) {
 }
 
 function getBundledLocalDependencies(repoRoot) {
-  const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE, MODELS_PACKAGE ].flatMap((name) => {
+  const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE ].flatMap((name) => {
     const sourcePackageRoot = path.join(repoRoot, 'node_modules', ...name.split('/'));
     if (!fs.existsSync(sourcePackageRoot)) {
       return [];

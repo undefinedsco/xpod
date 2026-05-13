@@ -1,0 +1,3 @@
+[submodule "packages/models"]
+	path = packages/models
+	url = git@e.coding.inwesure.com:wesure/g027/personal-models.git

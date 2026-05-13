@@ -1,5 +1,5 @@
 import { relations } from '@undefineds.co/drizzle-solid';
-import { aiProviderTable } from '@undefineds.co/models';
+import { aiProviderResource } from '@undefineds.co/models';
 import { Model } from '../../ai/schema/model';
 
 /**
@@ -10,7 +10,7 @@ export enum RuntimeKind {
   CLAUDE = 'claude',
 }
 
-export const Provider = aiProviderTable as any;
+export const Provider = aiProviderResource as any;
 
 /**
  * Provider -> Model 关系定义
