@@ -175,6 +175,11 @@ export class GatewayProxy {
       return;
     }
 
+    if (this.isWebIdProfileRoute(url) && this.targets.api) {
+      this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
+      return;
+    }
+
     // 3. CSS Routing (Default)
     if (this.targets.css) {
       const interceptedRequest = req as InterceptedRequest;
@@ -198,6 +203,12 @@ export class GatewayProxy {
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
     const segments = pathname.split('/').filter(Boolean);
     return segments.length === 1 && !segments[0].startsWith('.');
+  }
+
+  private isWebIdProfileRoute(url: string): boolean {
+    const pathname = new URL(url, 'http://localhost').pathname;
+    const segments = pathname.split('/').filter(Boolean);
+    return segments.length === 3 && segments[1] === 'profile' && segments[2] === 'card';
   }
 
   private normalizeRootMutationProxyResponse(
