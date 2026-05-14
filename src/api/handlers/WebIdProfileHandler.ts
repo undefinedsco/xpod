@@ -46,7 +46,7 @@ export function registerWebIdProfileRoutes(
     const username = decodeURIComponent(params.username);
 
     try {
-      const profile = await resolveProfileWithStorageBackfill(username, options);
+      const profile = await resolveIdentityLookup(username, options);
 
       if (!profile) {
         sendError(response, 404, 'Profile not found');

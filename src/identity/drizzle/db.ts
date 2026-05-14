@@ -269,6 +269,18 @@ function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
+    CREATE TABLE IF NOT EXISTS identity_webid_profile (
+      username TEXT PRIMARY KEY,
+      webid_url TEXT NOT NULL,
+      storage_url TEXT,
+      storage_mode TEXT DEFAULT 'cloud',
+      oidc_issuer TEXT,
+      profile_data TEXT,
+      account_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
     CREATE TABLE IF NOT EXISTS identity_edge_node (
       id TEXT PRIMARY KEY,
       display_name TEXT,
@@ -444,6 +456,25 @@ async function migratePgColumns(pool: { query: (sql: string) => Promise<any> }):
   await addColumn('identity_pod_usage', 'token_limit_monthly', 'BIGINT');
   await addColumn('identity_pod_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
 
+  // WebID profile table
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS identity_webid_profile (
+        username TEXT PRIMARY KEY,
+        webid_url TEXT NOT NULL,
+        storage_url TEXT,
+        storage_mode TEXT DEFAULT 'cloud',
+        oidc_issuer TEXT,
+        profile_data TEXT,
+        account_id TEXT,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      );
+    `);
+  } catch {
+    // Ignore if identity profile storage is unavailable.
+  }
+
   // Service token table
   try {
     await pool.query(`
@@ -483,6 +514,18 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
       egress_bytes BIGINT NOT NULL DEFAULT 0,
       storage_limit_bytes BIGINT,
       bandwidth_limit_bps BIGINT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_webid_profile (
+      username TEXT PRIMARY KEY,
+      webid_url TEXT NOT NULL,
+      storage_url TEXT,
+      storage_mode TEXT DEFAULT 'cloud',
+      oidc_issuer TEXT,
+      profile_data TEXT,
+      account_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 

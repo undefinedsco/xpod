@@ -154,4 +154,26 @@ describe('WebIdProfileHandler', () => {
       storageUrl: 'https://id.example/alice/',
     }));
   });
+
+  it('serves WebID turtle from the Pod index when the optional profile table is unavailable', async () => {
+    profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
+    profileRepo.generateProfileTurtle.mockReturnValue('TURTLE');
+    podLookupRepo.listAllPods.mockResolvedValueOnce([
+      {
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://id.example/alice/',
+      },
+    ]);
+
+    const response = createResponse();
+    await routes['GET /:username/profile/card']({} as IncomingMessage, response, { username: 'alice' });
+
+    expect(response.statusCode).toBe(200);
+    expect(profileRepo.generateProfileTurtle).toHaveBeenCalledWith(expect.objectContaining({
+      username: 'alice',
+      webidUrl: 'https://id.example/alice/profile/card#me',
+      storageUrl: 'https://id.example/alice/',
+    }));
+  });
 });
