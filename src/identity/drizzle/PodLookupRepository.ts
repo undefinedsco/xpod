@@ -6,6 +6,7 @@ export interface PodLookupResult {
   accountId: string;
   baseUrl: string;
   webId?: string;
+  webIds?: string[];
   nodeId?: string;
   edgeNodeId?: string;
 }
@@ -37,6 +38,7 @@ interface InternalKvRow {
  */
 export class PodLookupRepository {
   private readonly kvTableName: string;
+  private readonly indexedStoreTableName: string;
   private readonly usageTableName: string;
 
   public constructor(
@@ -44,6 +46,7 @@ export class PodLookupRepository {
     kvTableName?: string,
   ) {
     this.kvTableName = kvTableName ?? 'internal_kv';
+    this.indexedStoreTableName = 'identity_store';
     this.usageTableName = 'identity_pod_usage';
   }
 
@@ -88,7 +91,16 @@ export class PodLookupRepository {
     }
 
     const pods = await this.getAllPods();
-    return pods.find((pod) => normalizeWebId(pod.webId) === normalized);
+    for (const pod of pods) {
+      const matchedWebId = getPodWebIds(pod).find((candidate) => normalizeWebId(candidate) === normalized);
+      if (matchedWebId) {
+        return {
+          ...pod,
+          webId: matchedWebId,
+        };
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -187,11 +199,12 @@ export class PodLookupRepository {
     const result = await executeQuery<InternalKvRow>(this.db, sql`
       SELECT key, value FROM ${kvTableId}
       WHERE key LIKE 'accounts/data/%'
+         OR key LIKE '/.internal/accounts/data/%'
     `);
 
     const pods: PodLookupResult[] = [];
 
-    for (const row of result.rows) {
+    for (const row of result?.rows ?? []) {
       if (row.id && row.account_id && row.base_url) {
         pods.push({
           podId: String(row.id),
@@ -208,7 +221,10 @@ export class PodLookupRepository {
       }
 
       try {
-        const accountId = row.key.replace('accounts/data/', '');
+        const accountId = extractAccountIdFromAccountDataKey(row.key);
+        if (!accountId) {
+          continue;
+        }
         const data = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
 
         const podMap = (data as any)['**pod**'] || (data as any).pod || {};
@@ -227,6 +243,7 @@ export class PodLookupRepository {
               accountId,
               baseUrl: pod.baseUrl,
               webId: dedupeStrings(podWebIds)[0],
+              ...webIdsProperty(podWebIds),
               nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : undefined,
               edgeNodeId: typeof pod.edgeNodeId === 'string' ? pod.edgeNodeId : undefined,
             });
@@ -237,8 +254,102 @@ export class PodLookupRepository {
       }
     }
 
+    return mergePodLookupResults([
+      ...pods,
+      ...await this.getPodsFromIndexedStore(),
+    ]);
+  }
+
+  /**
+   * Older Xpod/CSS deployments may have used the IndexedStorage-compatible
+   * identity_store table instead of CSS's WrappedIndexedStorage JSON tree in
+   * internal_kv. Keep this as a read-only compatibility source so hosted WebID
+   * profile lookup still works after storage implementation changes.
+   */
+  private async getPodsFromIndexedStore(): Promise<PodLookupResult[]> {
+    const storeTableId = sql.identifier([this.indexedStoreTableName]);
+    let result: { rows?: Array<{ container?: string; id?: string; payload?: unknown }> } | undefined;
+    try {
+      result = await executeQuery(this.db, sql`
+        SELECT container, id, payload FROM ${storeTableId}
+        WHERE container IN ('pod', 'owner', 'webIdLink')
+      `);
+    } catch {
+      return [];
+    }
+
+    const podPayloads = new Map<string, Record<string, unknown>>();
+    const ownerWebIdsByPodId = new Map<string, string[]>();
+    const webIdsByAccountId = new Map<string, string[]>();
+
+    for (const row of result?.rows ?? []) {
+      if (!row.id || !row.container) {
+        continue;
+      }
+      const payload = parsePayloadRecord(row.payload);
+      if (!payload) {
+        continue;
+      }
+
+      if (row.container === 'pod') {
+        podPayloads.set(row.id, payload);
+        continue;
+      }
+
+      if (row.container === 'owner') {
+        const podId = stringValue(payload.podId);
+        const webId = stringValue(payload.webId);
+        if (podId && webId) {
+          appendMapValue(ownerWebIdsByPodId, podId, webId);
+        }
+        continue;
+      }
+
+      if (row.container === 'webIdLink') {
+        const accountId = stringValue(payload.accountId);
+        const webId = stringValue(payload.webId);
+        if (accountId && webId) {
+          appendMapValue(webIdsByAccountId, accountId, webId);
+        }
+      }
+    }
+
+    const pods: PodLookupResult[] = [];
+    for (const [podId, pod] of podPayloads) {
+      const baseUrl = stringValue(pod.baseUrl);
+      const accountId = stringValue(pod.accountId);
+      if (!baseUrl || !accountId) {
+        continue;
+      }
+      const podWebIds = dedupeStrings([
+        stringValue(pod.webId),
+        ...(ownerWebIdsByPodId.get(podId) ?? []),
+        ...(webIdsByAccountId.get(accountId) ?? []),
+      ].filter((value): value is string => typeof value === 'string'));
+
+      pods.push({
+        podId,
+        accountId,
+        baseUrl,
+        webId: podWebIds[0],
+        ...webIdsProperty(podWebIds),
+        nodeId: stringValue(pod.nodeId),
+        edgeNodeId: stringValue(pod.edgeNodeId),
+      });
+    }
+
     return pods;
   }
+}
+
+function extractAccountIdFromAccountDataKey(key: string): string | undefined {
+  const marker = 'accounts/data/';
+  const index = key.indexOf(marker);
+  if (index < 0) {
+    return undefined;
+  }
+  const accountId = key.slice(index + marker.length).replace(/\.json$/u, '');
+  return accountId || undefined;
 }
 
 function extractAccountWebIds(data: unknown): string[] {
@@ -293,4 +404,67 @@ function normalizeWebId(webId: string | undefined): string | undefined {
 
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function getPodWebIds(pod: PodLookupResult): string[] {
+  return dedupeStrings([
+    pod.webId,
+    ...(pod.webIds ?? []),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0));
+}
+
+function webIdsProperty(values: string[]): Pick<PodLookupResult, 'webIds'> {
+  const webIds = dedupeStrings(values);
+  return webIds.length > 1 ? { webIds } : {};
+}
+
+function mergePodLookupResults(values: PodLookupResult[]): PodLookupResult[] {
+  const byPodId = new Map<string, PodLookupResult>();
+  for (const value of values) {
+    const existing = byPodId.get(value.podId);
+    if (!existing) {
+      byPodId.set(value.podId, value);
+      continue;
+    }
+
+    const webIds = dedupeStrings([
+      ...getPodWebIds(existing),
+      ...getPodWebIds(value),
+    ]);
+    byPodId.set(value.podId, {
+      ...existing,
+      baseUrl: existing.baseUrl || value.baseUrl,
+      accountId: existing.accountId || value.accountId,
+      webId: webIds[0],
+      ...webIdsProperty(webIds),
+      nodeId: existing.nodeId ?? value.nodeId,
+      edgeNodeId: existing.edgeNodeId ?? value.edgeNodeId,
+    });
+  }
+  return [...byPodId.values()];
+}
+
+function parsePayloadRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof value === 'object' ? value as Record<string, unknown> : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function appendMapValue(map: Map<string, string[]>, key: string, value: string): void {
+  const values = map.get(key) ?? [];
+  values.push(value);
+  map.set(key, values);
 }
