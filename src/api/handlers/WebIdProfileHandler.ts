@@ -249,27 +249,18 @@ async function resolveProfileFromPods(
     return null;
   }
 
-  let pods: PodLookupResult[];
-  try {
-    pods = await podLookupRepo.listAllPods();
-  } catch (error) {
-    logger.warn(`Pod index lookup unavailable for ${username}: ${error}`);
-    return null;
+  const webidUrl = buildHostedWebIdUrl(username);
+  const webIdMatch = await tryFindPodByWebId(podLookupRepo, webidUrl, username);
+  if (webIdMatch) {
+    return profileFromPod(username, webidUrl, webIdMatch);
   }
 
-  const match = pods.find((pod) => derivePodSlug(pod.baseUrl) === username);
+  const match = await tryFindPodByStorageSlug(podLookupRepo, username);
   if (!match) {
     return null;
   }
 
-  const storageUrl = ensureTrailingSlash(match.baseUrl);
-  return {
-    username,
-    webidUrl: `${storageUrl}profile/card#me`,
-    storageUrl,
-    storageMode: 'cloud',
-    oidcIssuer: deriveOrigin(storageUrl),
-  };
+  return profileFromPod(username, buildStorageWebIdUrl(match.baseUrl), match);
 }
 
 async function resolveProfileWithStorageBackfill(
@@ -346,6 +337,77 @@ function derivePodSlug(baseUrl: string): string | null {
     return slug || null;
   } catch {
     return null;
+  }
+}
+
+async function tryFindPodByWebId(
+  podLookupRepo: PodLookupRepository,
+  webidUrl: string,
+  username: string,
+): Promise<PodLookupResult | undefined> {
+  try {
+    if (typeof podLookupRepo.findByWebId === 'function') {
+      return await podLookupRepo.findByWebId(webidUrl);
+    }
+  } catch (error) {
+    logger.warn(`WebID index lookup unavailable for ${username}: ${error}`);
+  }
+  return undefined;
+}
+
+async function tryFindPodByStorageSlug(
+  podLookupRepo: PodLookupRepository,
+  username: string,
+): Promise<PodLookupResult | undefined> {
+  try {
+    const pods = await podLookupRepo.listAllPods();
+    return pods.find((pod) => derivePodSlug(pod.baseUrl) === username);
+  } catch (error) {
+    logger.warn(`Pod index lookup unavailable for ${username}: ${error}`);
+    return undefined;
+  }
+}
+
+function profileFromPod(
+  username: string,
+  webidUrl: string,
+  pod: PodLookupResult,
+): IdentityProfileResponse {
+  const storageUrl = ensureTrailingSlash(pod.baseUrl);
+  return {
+    username,
+    webidUrl,
+    storageUrl,
+    storageMode: 'cloud',
+    oidcIssuer: deriveOrigin(webidUrl),
+  };
+}
+
+function buildHostedWebIdUrl(username: string): string {
+  return new URL(`${encodeURIComponent(username)}/profile/card#me`, getHostedIdentityBaseUrl()).toString();
+}
+
+function buildStorageWebIdUrl(storageUrl: string): string {
+  return new URL('profile/card#me', ensureTrailingSlash(storageUrl)).toString();
+}
+
+function getHostedIdentityBaseUrl(): string {
+  return ensureTrailingSlash(
+    absoluteHttpUrl(process.env.CSS_BASE_URL) ??
+    absoluteHttpUrl(process.env.BASE_URL) ??
+    'http://localhost:3000/',
+  );
+}
+
+function absoluteHttpUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
   }
 }
 

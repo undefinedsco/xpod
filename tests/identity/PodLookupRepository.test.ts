@@ -29,6 +29,22 @@ function accountKvRow(accountId: string, pods: Record<string, Record<string, unk
   };
 }
 
+function accountKvRowWithWebIds(
+  accountId: string,
+  pods: Record<string, Record<string, unknown>>,
+  webIds: Record<string, string>,
+) {
+  return {
+    key: `accounts/data/${accountId}`,
+    value: JSON.stringify({
+      '**pod**': pods,
+      '**webIdLink**': Object.fromEntries(
+        Object.entries(webIds).map(([id, webId]) => [id, { id, webId, accountId }]),
+      ),
+    }),
+  };
+}
+
 describe('PodLookupRepository', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,6 +84,60 @@ describe('PodLookupRepository', () => {
       const result = await repo.findById('non-existent');
 
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('findByWebId', () => {
+    it('returns pod info from account WebID links when storage uses a different origin', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          accountKvRowWithWebIds('acc-1', {
+            'pod-1': {
+              baseUrl: 'https://node-1.nodes.example/alice/',
+              nodeId: 'node-1',
+            },
+          }, {
+            'webid-link-1': 'https://id.example/alice/profile/card#me',
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result).toEqual({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
+        nodeId: 'node-1',
+        edgeNodeId: undefined,
+      });
+    });
+
+    it('prefers pod owner WebID links when present on the pod', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          accountKvRow('acc-1', {
+            'pod-1': {
+              baseUrl: 'https://node-1.nodes.example/alice/',
+              '**owner**': {
+                'owner-1': {
+                  webId: 'https://id.example/alice/profile/card#me',
+                },
+              },
+            },
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result?.podId).toBe('pod-1');
+      expect(result?.webId).toBe('https://id.example/alice/profile/card#me');
     });
   });
 

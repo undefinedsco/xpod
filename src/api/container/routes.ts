@@ -101,6 +101,20 @@ function registerSharedRoutes(
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
 
+  try {
+    const profileRepo = container.resolve('webIdProfileRepo', { allowUnregistered: true });
+    const podLookupRepo = container.resolve('podLookupRepo', { allowUnregistered: true });
+    if (profileRepo) {
+      registerWebIdProfileRoutes(server, {
+        profileRepo: profileRepo as any,
+        podLookupRepo: podLookupRepo as any,
+      });
+      console.log('[Shared] WebID Profile routes registered');
+    }
+  } catch {
+    console.log('[Shared] WebID Profile routes not registered (repo not available)');
+  }
+
   // Quota & Usage API (Business 对接)
   try {
     const quotaService = new DrizzleQuotaService({ identityDbUrl: config.databaseUrl });
@@ -129,21 +143,6 @@ function registerCloudRoutes(
     }
   } catch {
     console.log('[Cloud] Subdomain routes not registered (service not available)');
-  }
-
-  // WebID Profile 托管服务
-  try {
-    const profileRepo = container.resolve('webIdProfileRepo', { allowUnregistered: true });
-    const podLookupRepo = container.resolve('podLookupRepo', { allowUnregistered: true });
-    if (profileRepo) {
-      registerWebIdProfileRoutes(server, {
-        profileRepo: profileRepo as any,
-        podLookupRepo: podLookupRepo as any,
-      });
-      console.log('[Cloud] WebID Profile routes registered');
-    }
-  } catch {
-    console.log('[Cloud] WebID Profile routes not registered (repo not available)');
   }
 
   // DDNS 服务

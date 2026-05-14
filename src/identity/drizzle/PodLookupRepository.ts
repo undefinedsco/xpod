@@ -5,6 +5,7 @@ export interface PodLookupResult {
   podId: string;
   accountId: string;
   baseUrl: string;
+  webId?: string;
   nodeId?: string;
   edgeNodeId?: string;
 }
@@ -71,6 +72,23 @@ export class PodLookupRepository {
   public async findById(podId: string): Promise<PodLookupResult | undefined> {
     const pods = await this.getAllPods();
     return pods.find((p) => p.podId === podId);
+  }
+
+  /**
+   * Find Pod by a linked WebID URL.
+   *
+   * CSS account data stores WebID links separately from Pod base URLs. This is
+   * the precise lookup for IdP/SP split deployments where the WebID path does
+   * not have to match the storage base URL.
+   */
+  public async findByWebId(webId: string): Promise<PodLookupResult | undefined> {
+    const normalized = normalizeWebId(webId);
+    if (!normalized) {
+      return undefined;
+    }
+
+    const pods = await this.getAllPods();
+    return pods.find((pod) => normalizeWebId(pod.webId) === normalized);
   }
 
   /**
@@ -194,14 +212,21 @@ export class PodLookupRepository {
         const data = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
 
         const podMap = (data as any)['**pod**'] || (data as any).pod || {};
+        const webIds = extractAccountWebIds(data);
 
         for (const [podId, podData] of Object.entries(podMap)) {
           const pod = podData as Record<string, unknown>;
           if (pod.baseUrl && typeof pod.baseUrl === 'string') {
+            const podWebIds = [
+              typeof pod.webId === 'string' ? pod.webId : undefined,
+              ...extractPodOwnerWebIds(pod),
+              ...webIds,
+            ].filter((value): value is string => typeof value === 'string');
             pods.push({
               podId,
               accountId,
               baseUrl: pod.baseUrl,
+              webId: dedupeStrings(podWebIds)[0],
               nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : undefined,
               edgeNodeId: typeof pod.edgeNodeId === 'string' ? pod.edgeNodeId : undefined,
             });
@@ -214,4 +239,58 @@ export class PodLookupRepository {
 
     return pods;
   }
+}
+
+function extractAccountWebIds(data: unknown): string[] {
+  if (!data || typeof data !== 'object') {
+    return [];
+  }
+
+  const record = data as Record<string, unknown>;
+  const linkMap = record['**webIdLink**'] || record.webIdLink || {};
+  if (!linkMap || typeof linkMap !== 'object') {
+    return [];
+  }
+
+  return Object.values(linkMap as Record<string, unknown>)
+    .map((value) => {
+      if (!value || typeof value !== 'object') {
+        return undefined;
+      }
+      const webId = (value as Record<string, unknown>).webId;
+      return typeof webId === 'string' ? webId : undefined;
+    })
+    .filter((value): value is string => typeof value === 'string');
+}
+
+function extractPodOwnerWebIds(pod: Record<string, unknown>): string[] {
+  const ownerMap = pod['**owner**'] || pod.owner || {};
+  if (!ownerMap || typeof ownerMap !== 'object') {
+    return [];
+  }
+
+  return Object.values(ownerMap as Record<string, unknown>)
+    .map((value) => {
+      if (!value || typeof value !== 'object') {
+        return undefined;
+      }
+      const webId = (value as Record<string, unknown>).webId;
+      return typeof webId === 'string' ? webId : undefined;
+    })
+    .filter((value): value is string => typeof value === 'string');
+}
+
+function normalizeWebId(webId: string | undefined): string | undefined {
+  if (!webId) {
+    return undefined;
+  }
+  try {
+    return new URL(webId).toString();
+  } catch {
+    return webId;
+  }
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }

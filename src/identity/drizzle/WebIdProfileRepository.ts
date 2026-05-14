@@ -5,7 +5,7 @@
  */
 
 import { eq } from 'drizzle-orm';
-import { getIdentityDatabase, type IdentityDatabase } from './db';
+import { getIdentityDatabase, getSchema, type IdentityDatabase, type IdentitySchema } from './db';
 import { getLoggerFor } from 'global-logger-factory';
 
 const logger = getLoggerFor('WebIdProfileRepository');
@@ -45,9 +45,11 @@ export type WebIdProfileTurtleInput = Pick<WebIdProfile, 'webidUrl' | 'storageUr
 export class WebIdProfileRepository {
   private readonly baseUrl: string;
   private readonly db: IdentityDatabase;
+  private readonly schema: IdentitySchema;
 
   public constructor(options: WebIdProfileRepositoryOptions) {
     this.db = options.db ?? getIdentityDatabaseFromOptions(options);
+    this.schema = getSchema(this.db);
     if (!options.baseUrl) {
       throw new Error('WebIdProfileRepository requires baseUrl.');
     }
@@ -73,7 +75,7 @@ export class WebIdProfileRepository {
 
     const now = new Date();
 
-    await this.db.insert(this.db.schema.webidProfiles).values({
+    await this.db.insert(this.schema.webidProfiles).values({
       username,
       webidUrl,
       storageUrl: defaultStorageUrl,
@@ -106,8 +108,8 @@ export class WebIdProfileRepository {
   async get(username: string): Promise<WebIdProfile | null> {
     const results = await this.db
       .select()
-      .from(this.db.schema.webidProfiles)
-      .where(eq(this.db.schema.webidProfiles.username, username))
+      .from(this.schema.webidProfiles)
+      .where(eq(this.schema.webidProfiles.username, username))
       .limit(1);
 
     if (results.length === 0) {
@@ -148,14 +150,14 @@ export class WebIdProfileRepository {
     const now = new Date();
 
     await this.db
-      .update(this.db.schema.webidProfiles)
+      .update(this.schema.webidProfiles)
       .set({
         storageUrl,
         storageMode: storageMode ?? existing.storageMode,
         profileData,
         updatedAt: now,
       })
-      .where(eq(this.db.schema.webidProfiles.username, username));
+      .where(eq(this.schema.webidProfiles.username, username));
 
     logger.info(`Updated storage for ${username}: ${storageUrl}`);
 
@@ -173,8 +175,8 @@ export class WebIdProfileRepository {
    */
   async delete(username: string): Promise<boolean> {
     const result = await this.db
-      .delete(this.db.schema.webidProfiles)
-      .where(eq(this.db.schema.webidProfiles.username, username));
+      .delete(this.schema.webidProfiles)
+      .where(eq(this.schema.webidProfiles.username, username));
 
     // drizzle 返回的结果格式因数据库而异
     return true;

@@ -60,7 +60,8 @@ describe('registerRoutes mode wiring', () => {
       chatKitService: {},
       chatKitStore: {},
       db: {},
-      webIdProfileRepo: edition === 'cloud' ? {} : undefined,
+      webIdProfileRepo: {},
+      podLookupRepo: {},
       ddnsRepo: edition === 'cloud' ? {} : undefined,
       dnsProvider: edition === 'cloud' ? {} : undefined,
       ddnsManager: edition === 'local' ? {} : undefined,
@@ -95,6 +96,7 @@ describe('registerRoutes mode wiring', () => {
 
     expect(routes['GET /api/linx/capabilities']).toBeTypeOf('function');
     expect(routes['GET /api/admin/status']).toBeTypeOf('function');
+    expect(routes['GET /:username/profile/card']).toBeTypeOf('function');
     expect(routes['POST /provision/pods']).toBeUndefined();
   });
 });

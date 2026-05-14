@@ -15,11 +15,13 @@ describe('WebIdProfileHandler', () => {
   const podLookupRepo = {
     listByAccountId: vi.fn(),
     listAllPods: vi.fn(),
+    findByWebId: vi.fn(),
   };
 
   beforeEach(() => {
     vi.resetAllMocks();
     podLookupRepo.listAllPods.mockResolvedValue([]);
+    podLookupRepo.findByWebId.mockResolvedValue(undefined);
     routes = {};
     mockServer = {
       get: vi.fn((path, handler) => { routes[`GET ${path}`] = handler; }),
@@ -155,6 +157,39 @@ describe('WebIdProfileHandler', () => {
     }));
   });
 
+  it('serves hosted WebID turtle from the WebID index when storage lives on another origin', async () => {
+    const previousBaseUrl = process.env.CSS_BASE_URL;
+    process.env.CSS_BASE_URL = 'https://id.example/';
+    try {
+      profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
+      profileRepo.generateProfileTurtle.mockReturnValue('TURTLE');
+      podLookupRepo.findByWebId.mockResolvedValueOnce({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
+      });
+
+      const response = createResponse();
+      await routes['GET /:username/profile/card']({} as IncomingMessage, response, { username: 'alice' });
+
+      expect(response.statusCode).toBe(200);
+      expect(podLookupRepo.findByWebId).toHaveBeenCalledWith('https://id.example/alice/profile/card#me');
+      expect(profileRepo.generateProfileTurtle).toHaveBeenCalledWith(expect.objectContaining({
+        username: 'alice',
+        webidUrl: 'https://id.example/alice/profile/card#me',
+        storageUrl: 'https://node-1.nodes.example/alice/',
+        oidcIssuer: 'https://id.example/',
+      }));
+    } finally {
+      if (previousBaseUrl === undefined) {
+        delete process.env.CSS_BASE_URL;
+      } else {
+        process.env.CSS_BASE_URL = previousBaseUrl;
+      }
+    }
+  });
+
   it('serves WebID turtle from the Pod index when the optional profile table is unavailable', async () => {
     profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
     profileRepo.generateProfileTurtle.mockReturnValue('TURTLE');
@@ -175,5 +210,45 @@ describe('WebIdProfileHandler', () => {
       webidUrl: 'https://id.example/alice/profile/card#me',
       storageUrl: 'https://id.example/alice/',
     }));
+  });
+
+  it('ignores relative BASE_URL values when building hosted WebID URLs', async () => {
+    const previousBaseUrl = process.env.BASE_URL;
+    const previousCssBaseUrl = process.env.CSS_BASE_URL;
+    process.env.BASE_URL = '/';
+    delete process.env.CSS_BASE_URL;
+
+    try {
+      profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
+      profileRepo.generateProfileTurtle.mockReturnValue('TURTLE');
+      podLookupRepo.findByWebId.mockResolvedValueOnce({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'http://localhost:3000/alice/profile/card#me',
+      });
+
+      const response = createResponse();
+      await routes['GET /:username/profile/card']({} as IncomingMessage, response, { username: 'alice' });
+
+      expect(response.statusCode).toBe(200);
+      expect(podLookupRepo.findByWebId).toHaveBeenCalledWith('http://localhost:3000/alice/profile/card#me');
+      expect(profileRepo.generateProfileTurtle).toHaveBeenCalledWith(expect.objectContaining({
+        username: 'alice',
+        webidUrl: 'http://localhost:3000/alice/profile/card#me',
+        storageUrl: 'https://node-1.nodes.example/alice/',
+      }));
+    } finally {
+      if (previousBaseUrl === undefined) {
+        delete process.env.BASE_URL;
+      } else {
+        process.env.BASE_URL = previousBaseUrl;
+      }
+      if (previousCssBaseUrl === undefined) {
+        delete process.env.CSS_BASE_URL;
+      } else {
+        process.env.CSS_BASE_URL = previousCssBaseUrl;
+      }
+    }
   });
 });
