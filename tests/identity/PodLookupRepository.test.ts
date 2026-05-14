@@ -202,6 +202,44 @@ describe('PodLookupRepository', () => {
       });
     });
 
+    it('unwraps CSS key-value payload wrappers in account data rows', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          {
+            key: 'accounts/data/acc-1',
+            value: JSON.stringify({
+              key: 'accounts/data/acc-1',
+              payload: {
+                id: 'acc-1',
+                '**pod**': {
+                  'pod-1': {
+                    baseUrl: 'https://node-1.nodes.example/alice/',
+                    accountId: 'acc-1',
+                    '**owner**': {
+                      'owner-1': {
+                        webId: 'https://id.example/alice/profile/card#me',
+                      },
+                    },
+                  },
+                },
+              },
+            }),
+          },
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result).toMatchObject({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
+      });
+    });
+
     it('reads pods from DrizzleIndexedStorage identity_store rows', async () => {
       const { db, execute } = createMockDb();
       execute!
@@ -250,6 +288,53 @@ describe('PodLookupRepository', () => {
         ],
         nodeId: 'node-1',
         edgeNodeId: undefined,
+      });
+    });
+
+    it('resolves a WebID through the CSS account index when account scanning is empty', async () => {
+      const { db, execute } = createMockDb();
+      execute!
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              value: JSON.stringify(['acc-1']),
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              value: JSON.stringify({
+                key: 'accounts/data/acc-1',
+                payload: {
+                  id: 'acc-1',
+                  '**pod**': {
+                    'pod-1': {
+                      baseUrl: 'https://node-1.nodes.example/alice/',
+                      accountId: 'acc-1',
+                      '**owner**': {
+                        'owner-1': {
+                          webId: 'https://id.example/alice/profile/card#me',
+                        },
+                      },
+                    },
+                  },
+                },
+              }),
+            },
+          ],
+        });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result).toMatchObject({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
       });
     });
   });

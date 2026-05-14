@@ -20,6 +20,7 @@ describe('WebIdProfileHandler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.unstubAllGlobals();
     podLookupRepo.listAllPods.mockResolvedValue([]);
     podLookupRepo.findByWebId.mockResolvedValue(undefined);
     routes = {};
@@ -32,6 +33,10 @@ describe('WebIdProfileHandler', () => {
       profileRepo: profileRepo as any,
       podLookupRepo: podLookupRepo as any,
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   function createResponse(): ServerResponse {
@@ -248,6 +253,43 @@ describe('WebIdProfileHandler', () => {
         delete process.env.CSS_BASE_URL;
       } else {
         process.env.CSS_BASE_URL = previousCssBaseUrl;
+      }
+    }
+  });
+
+  it('serves a hosted WebID profile from the request origin when the storage root exists but account indexes are stale', async () => {
+    const previousBaseUrl = process.env.CSS_BASE_URL;
+    process.env.CSS_BASE_URL = 'https://internal.example/';
+    try {
+      profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
+      profileRepo.generateProfileTurtle.mockReturnValue('TURTLE');
+      podLookupRepo.findByWebId.mockResolvedValueOnce(undefined);
+      podLookupRepo.listAllPods.mockResolvedValueOnce([]);
+      const fetchMock = vi.fn().mockResolvedValue({ status: 401 });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const response = createResponse();
+      await routes['GET /:username/profile/card']({
+        headers: {
+          host: 'id.example',
+          'x-forwarded-proto': 'https',
+        },
+      } as unknown as IncomingMessage, response, { username: 'alice' });
+
+      expect(response.statusCode).toBe(200);
+      expect(fetchMock).toHaveBeenCalledWith('https://id.example/alice/', expect.objectContaining({
+        method: 'HEAD',
+      }));
+      expect(profileRepo.generateProfileTurtle).toHaveBeenCalledWith(expect.objectContaining({
+        username: 'alice',
+        webidUrl: 'https://id.example/alice/profile/card#me',
+        storageUrl: 'https://id.example/alice/',
+      }));
+    } finally {
+      if (previousBaseUrl === undefined) {
+        delete process.env.CSS_BASE_URL;
+      } else {
+        process.env.CSS_BASE_URL = previousBaseUrl;
       }
     }
   });

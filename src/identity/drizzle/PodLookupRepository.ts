@@ -100,7 +100,7 @@ export class PodLookupRepository {
         };
       }
     }
-    return undefined;
+    return await this.findByWebIdIndex(normalized);
   }
 
   /**
@@ -225,7 +225,7 @@ export class PodLookupRepository {
         if (!accountId) {
           continue;
         }
-        const data = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+        const data = unwrapStoredValue(typeof row.value === 'string' ? JSON.parse(row.value) : row.value);
 
         const podMap = (data as any)['**pod**'] || (data as any).pod || {};
         const webIds = extractAccountWebIds(data);
@@ -258,6 +258,98 @@ export class PodLookupRepository {
       ...pods,
       ...await this.getPodsFromIndexedStore(),
     ]);
+  }
+
+  /**
+   * Fast path for CSS WrappedIndexedStorage. WebID indexes point to the root
+   * account id, so a single indexed key plus account data row can resolve the
+   * profile without scanning all account records.
+   */
+  private async findByWebIdIndex(webId: string): Promise<PodLookupResult | undefined> {
+    const accountIds = await this.readStringArrayFromKv(`accounts/index/webIdLink/webId/${encodeURIComponent(webId)}`);
+    for (const accountId of accountIds) {
+      const account = await this.readAccountData(accountId);
+      if (!account) {
+        continue;
+      }
+      const pods = this.extractPodsFromAccountData(accountId, account);
+      const match = pods.find((pod) => getPodWebIds(pod).some((candidate) => normalizeWebId(candidate) === webId));
+      if (match) {
+        return {
+          ...match,
+          webId,
+        };
+      }
+      if (pods.length === 1) {
+        return {
+          ...pods[0],
+          webId,
+          ...webIdsProperty([webId, ...getPodWebIds(pods[0])]),
+        };
+      }
+    }
+    return undefined;
+  }
+
+  private async readAccountData(accountId: string): Promise<Record<string, unknown> | undefined> {
+    for (const key of [`accounts/data/${accountId}`, `/.internal/accounts/data/${accountId}`]) {
+      const value = await this.readKvValue(key);
+      const record = parsePayloadRecord(value);
+      if (record) {
+        return record;
+      }
+    }
+    return undefined;
+  }
+
+  private async readStringArrayFromKv(key: string): Promise<string[]> {
+    const value = await this.readKvValue(key);
+    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  }
+
+  private async readKvValue(key: string): Promise<unknown> {
+    const tableId = sql.identifier([this.kvTableName]);
+    try {
+      const result = await executeQuery<{ value?: unknown }>(this.db, sql`
+        SELECT value FROM ${tableId}
+        WHERE key = ${key}
+        LIMIT 1
+      `);
+      if (result.rows.length === 0) {
+        return undefined;
+      }
+      return parseStoredValue(result.rows[0].value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private extractPodsFromAccountData(accountId: string, data: Record<string, unknown>): PodLookupResult[] {
+    const podMap = (data as any)['**pod**'] || (data as any).pod || {};
+    const webIds = extractAccountWebIds(data);
+    const pods: PodLookupResult[] = [];
+
+    for (const [podId, podData] of Object.entries(podMap)) {
+      const pod = podData as Record<string, unknown>;
+      if (pod.baseUrl && typeof pod.baseUrl === 'string') {
+        const podWebIds = [
+          typeof pod.webId === 'string' ? pod.webId : undefined,
+          ...extractPodOwnerWebIds(pod),
+          ...webIds,
+        ].filter((value): value is string => typeof value === 'string');
+        pods.push({
+          podId,
+          accountId,
+          baseUrl: pod.baseUrl,
+          webId: dedupeStrings(podWebIds)[0],
+          ...webIdsProperty(podWebIds),
+          nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : undefined,
+          edgeNodeId: typeof pod.edgeNodeId === 'string' ? pod.edgeNodeId : undefined,
+        });
+      }
+    }
+
+    return pods;
   }
 
   /**
@@ -451,12 +543,32 @@ function parsePayloadRecord(value: unknown): Record<string, unknown> | undefined
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value) as unknown;
-      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
+      const unwrapped = unwrapStoredValue(parsed);
+      return unwrapped && typeof unwrapped === 'object' ? unwrapped as Record<string, unknown> : undefined;
     } catch {
       return undefined;
     }
   }
-  return typeof value === 'object' ? value as Record<string, unknown> : undefined;
+  const unwrapped = unwrapStoredValue(value);
+  return typeof unwrapped === 'object' ? unwrapped as Record<string, unknown> : undefined;
+}
+
+function parseStoredValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    try {
+      return unwrapStoredValue(JSON.parse(value));
+    } catch {
+      return undefined;
+    }
+  }
+  return unwrapStoredValue(value);
+}
+
+function unwrapStoredValue(value: unknown): unknown {
+  if (value && typeof value === 'object' && 'key' in value && 'payload' in value) {
+    return (value as Record<string, unknown>).payload;
+  }
+  return value;
 }
 
 function stringValue(value: unknown): string | undefined {
