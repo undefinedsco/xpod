@@ -40,6 +40,8 @@ export interface WebIdProfileRepositoryOptions {
   identityDbUrl?: string;
 }
 
+export type WebIdProfileTurtleInput = Pick<WebIdProfile, 'webidUrl' | 'storageUrl' | 'oidcIssuer'>;
+
 export class WebIdProfileRepository {
   private readonly baseUrl: string;
   private readonly db: IdentityDatabase;
@@ -181,7 +183,7 @@ export class WebIdProfileRepository {
   /**
    * 生成 WebID Profile 的 Turtle 格式
    */
-  generateProfileTurtle(profile: WebIdProfile): string {
+  generateProfileTurtle(profile: WebIdProfileTurtleInput): string {
     const { webidUrl, storageUrl, oidcIssuer } = profile;
 
     return `@prefix foaf: <http://xmlns.com/foaf/0.1/>.
