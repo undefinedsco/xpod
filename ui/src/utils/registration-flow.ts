@@ -69,13 +69,26 @@ interface AccountStatusEndpoints {
   webId?: string;
 }
 
-function isUsernameConflict(message: string | undefined): boolean {
+function extractConflictResourceUrl(message: string): string | undefined {
+  return message.match(/There already is a resource at\s+(\S+)/iu)?.[1];
+}
+
+function isUsernameConflict(message: string | undefined, username: string): boolean {
   if (!message) {
     return false;
   }
 
-  return /There already is a resource at/i.test(message) ||
-    /Username already taken/i.test(message);
+  const resourceUrl = extractConflictResourceUrl(message);
+  if (resourceUrl) {
+    return podUrlMatchesUsername(resourceUrl, username);
+  }
+
+  const podName = message.match(/Pod name "([^"]+)" is already taken/iu)?.[1];
+  if (podName) {
+    return podName === username;
+  }
+
+  return /Username already taken/i.test(message);
 }
 
 function isDuplicateEmail(message: string | undefined): boolean {
@@ -301,7 +314,7 @@ export async function completeRegistrationProvisioning(
   });
   if (!res.ok) {
     const message = await readErrorMessage(res);
-    if (isUsernameConflict(message)) {
+    if (isUsernameConflict(message, username)) {
       throw new RegistrationError(
         'Username is already taken. Your account was created; sign in and choose another Pod name.',
         'USERNAME_ALREADY_TAKEN',

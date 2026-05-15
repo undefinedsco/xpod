@@ -257,7 +257,7 @@ describe('WebIdProfileHandler', () => {
     }
   });
 
-  it('serves a hosted WebID profile from the request origin when the storage root exists but account indexes are stale', async () => {
+  it('serves a hosted WebID profile from the request origin when the storage root has Solid storage metadata but account indexes are stale', async () => {
     const previousBaseUrl = process.env.CSS_BASE_URL;
     process.env.CSS_BASE_URL = 'https://internal.example/';
     try {
@@ -265,7 +265,12 @@ describe('WebIdProfileHandler', () => {
       profileRepo.generateProfileTurtle.mockReturnValue('TURTLE');
       podLookupRepo.findByWebId.mockResolvedValueOnce(undefined);
       podLookupRepo.listAllPods.mockResolvedValueOnce([]);
-      const fetchMock = vi.fn().mockResolvedValue({ status: 401 });
+      const fetchMock = vi.fn().mockResolvedValue({
+        status: 200,
+        headers: new Headers({
+          link: '<http://www.w3.org/ns/pim/space#Storage>; rel="type", <http://www.w3.org/ns/ldp#Container>; rel="type"',
+        }),
+      });
       vi.stubGlobal('fetch', fetchMock);
 
       const response = createResponse();
@@ -285,6 +290,44 @@ describe('WebIdProfileHandler', () => {
         webidUrl: 'https://id.example/alice/profile/card#me',
         storageUrl: 'https://id.example/alice/',
       }));
+    } finally {
+      if (previousBaseUrl === undefined) {
+        delete process.env.CSS_BASE_URL;
+      } else {
+        process.env.CSS_BASE_URL = previousBaseUrl;
+      }
+    }
+  });
+
+  it('does not mark an opaque unauthorized storage probe as an occupied username', async () => {
+    const previousBaseUrl = process.env.CSS_BASE_URL;
+    process.env.CSS_BASE_URL = 'https://internal.example/';
+    try {
+      profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
+      podLookupRepo.findByWebId.mockResolvedValueOnce(undefined);
+      podLookupRepo.listAllPods.mockResolvedValueOnce([]);
+      const fetchMock = vi.fn().mockResolvedValue({
+        status: 401,
+        headers: new Headers({
+          link: '<https://id.example/new-user/.meta>; rel="describedby", <https://id.example/new-user/.acr>; rel="acl"',
+        }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const response = createResponse();
+      await routes['GET /api/v1/identity/:username']({
+        headers: {
+          host: 'id.example',
+          'x-forwarded-proto': 'https',
+        },
+      } as unknown as IncomingMessage, response, { username: 'new-user' });
+
+      expect(response.statusCode).toBe(404);
+      expect(fetchMock).toHaveBeenCalledWith('https://id.example/new-user/', expect.objectContaining({
+        method: 'HEAD',
+      }));
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body.error).toBe('Profile not found');
     } finally {
       if (previousBaseUrl === undefined) {
         delete process.env.CSS_BASE_URL;

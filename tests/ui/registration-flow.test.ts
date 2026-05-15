@@ -128,6 +128,50 @@ describe('completeRegistrationProvisioning', () => {
     })).rejects.toThrow('Username is already taken. Your account was created; sign in and choose another Pod name.');
   });
 
+  it('does not map unrelated pod creation errors to username conflicts', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, {
+        controls: {
+          account: {
+            pod: '/.account/account/pod',
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { pods: {} }))
+      .mockResolvedValueOnce(jsonResponse(400, {
+        message: 'An account needs at least 1 login method.',
+      }));
+
+    await expect(completeRegistrationProvisioning({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      accountToken: 'acct-token-1',
+      idpIndex: 'https://id.example/',
+      username: 'alice',
+    })).rejects.toThrow('An account needs at least 1 login method.');
+  });
+
+  it('does not map another pod path conflict to the current username', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, {
+        controls: {
+          account: {
+            pod: '/.account/account/pod',
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { pods: {} }))
+      .mockResolvedValueOnce(jsonResponse(409, {
+        message: 'Pod creation failed: There already is a resource at https://id.example/bob/',
+      }));
+
+    await expect(completeRegistrationProvisioning({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      accountToken: 'acct-token-1',
+      idpIndex: 'https://id.example/',
+      username: 'alice',
+    })).rejects.toThrow('Pod creation failed: There already is a resource at https://id.example/bob/');
+  });
+
   it('continues when the requested username already belongs to the logged-in account', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(200, {

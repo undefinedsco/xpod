@@ -452,7 +452,7 @@ async function probeHostedStorageRoot(storageUrl: string, username: string): Pro
       method: 'HEAD',
       signal: controller.signal,
     });
-    if ((response.status >= 200 && response.status < 400) || response.status === 401 || response.status === 403) {
+    if (isHostedStorageRootResponse(response)) {
       logger.info(`Resolved hosted WebID profile for ${username} from existing storage root: ${storageUrl}`);
       return true;
     }
@@ -463,6 +463,16 @@ async function probeHostedStorageRoot(storageUrl: string, username: string): Pro
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isHostedStorageRootResponse(response: Response): boolean {
+  if (response.status < 200 || response.status >= 400) {
+    return false;
+  }
+
+  const link = response.headers.get('link') ?? '';
+  return /<http:\/\/www\.w3\.org\/ns\/pim\/space#Storage>;\s*rel="?type"?/iu.test(link) ||
+    /<http:\/\/www\.w3\.org\/ns\/ldp#(?:Basic)?Container>;\s*rel="?type"?/iu.test(link);
 }
 
 function ensureTrailingSlash(url: string): string {
