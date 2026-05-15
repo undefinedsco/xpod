@@ -160,7 +160,7 @@
     "@inrupt/solid-client-authn-node": "^3.1.0",
     "@mariozechner/pi-coding-agent": "^0.55.1",
     "@solid/community-server": "8.0.0-alpha.1",
-    "@undefineds.co/drizzle-solid": "^0.3.4",
+    "@undefineds.co/drizzle-solid": "0.3.9",
     "@undefineds.co/models": "0.2.21",
     "abstract-level": "^1.0.4",
     "acme-client": "^5.1.3",

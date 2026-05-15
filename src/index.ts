@@ -22,6 +22,7 @@ import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificate
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
 import { WebIdProfileRepository } from './identity/drizzle/WebIdProfileRepository';
+import { ValidatingIdentityProviderHttpHandler } from './identity/ValidatingIdentityProviderHttpHandler';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
@@ -131,6 +132,7 @@ export {
     ReservedSuffixIdentifierGenerator,
     DrizzleIndexedStorage,
     WebIdProfileRepository,
+    ValidatingIdentityProviderHttpHandler,
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
     SqliteKeyValueStorage,
