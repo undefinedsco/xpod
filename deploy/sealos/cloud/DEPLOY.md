@@ -1,8 +1,8 @@
-# Xpod 云端部署指南（Sealos / R2 / Supabase / Upstash）
+# Xpod 云端部署指南（Sealos / R2 / Supabase / Redis）
 
 > 当前示例镜像：`ghcr.io/undefinedsco/xpod:0.2.1`
 >
-> 适用环境：Sealos + Cloudflare R2 + Supabase PostgreSQL + Upstash Redis
+> 适用环境：Sealos + Cloudflare R2 + Supabase PostgreSQL + Sealos 内部 Redis
 >
 > 更新时间：2026-03-28
 
@@ -19,7 +19,7 @@ Sealos App / Ingress
   ↓
 xpod (Gateway + CSS + API)
   ├─ Supabase PostgreSQL   (RDF / identity / vector)
-  ├─ Upstash Redis         (分布式锁 / 内部 KV)
+  ├─ Sealos Redis Service  (分布式锁 / 内部 KV)
   └─ Cloudflare R2         (非 RDF 文件对象存储)
 ```
 
@@ -45,16 +45,18 @@ xpod (Gateway + CSS + API)
 postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
 ```
 
-#### Upstash
+#### Redis
 
-- 创建 Redis 实例
-- 使用 TLS 连接串
-- 连接串必须以 `rediss://` 开头
+海外和境内环境默认都使用同 namespace 内的 Sealos Redis Service，由 `deploy/sealos/cloud/redis.yaml` 创建。
+
+- 确认 `redis.yaml` 已随 `kubectl apply -k deploy/sealos/cloud` 一起发布
+- 应用侧连接串使用同 namespace Service 名称
+- 默认连接串无需公网访问，也不需要 TLS
 
 示例：
 
 ```bash
-rediss://default:<password>@<database>.upstash.io:6379
+redis://redis:6379
 ```
 
 #### Cloudflare R2
@@ -149,7 +151,7 @@ CSS_LOGGING_LEVEL=info
 CSS_SPARQL_ENDPOINT=postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
 CSS_IDENTITY_DB_URL=postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
 
-CSS_REDIS_CLIENT=rediss://default:<password>@<database>.upstash.io:6379
+CSS_REDIS_CLIENT=redis://redis:6379
 
 CSS_MINIO_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 CSS_MINIO_ACCESS_KEY=<r2-access-key>
@@ -288,8 +290,9 @@ kubectl rollout status deployment/xpod-cloud -n xpod-cloud --timeout=300s
 
 ### 3. Redis 连接失败
 
-- 确认 `CSS_REDIS_CLIENT` 使用 `rediss://`
-- 确认密码未包含未转义特殊字符
+- 确认 `deploy/sealos/cloud/redis.yaml` 已发布
+- 确认 `kubectl -n xpod-cloud get svc redis` 能看到 Redis Service
+- 确认 `CSS_REDIS_CLIENT` 使用 `redis://redis:6379`
 
 ### 4. 文件上传成功但下载失败
 

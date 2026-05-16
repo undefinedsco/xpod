@@ -28,7 +28,7 @@ import {
   type ObjectIndexFields,
   type PredicateObjectDataType,
 } from './value-types';
-import { getSharedPool } from '../database/PostgresPoolManager';
+import { getSharedPool, releaseSharedPool } from '../database/PostgresPoolManager';
 
 /**
  * PostgreSQL 连接配置
@@ -233,6 +233,14 @@ export class PgQuintStore extends BaseQuintStore {
   private pglite: PGlite | null = null;
   private pgPool: any = null; // pg.Pool
   private pgOptions: PgQuintStoreOptions;
+  private sharedPoolConfig: {
+    connectionString?: string;
+    host?: string;
+    port?: number;
+    database?: string;
+    user?: string;
+    password?: string;
+  } | null = null;
 
   constructor(options: PgQuintStoreOptions) {
     super(options);
@@ -247,18 +255,20 @@ export class PgQuintStore extends BaseQuintStore {
       // 使用共享的连接池（如果提供），避免死锁
       if (this.pgOptions.pool) {
         this.pgPool = this.pgOptions.pool;
+        this.sharedPoolConfig = null;
         return new PgExecutor(this.pgPool);
       }
 
       // 使用共享连接池管理器，避免多个组件创建独立连接池
-      this.pgPool = getSharedPool({
+      this.sharedPoolConfig = {
         connectionString: this.pgOptions.connectionString,
         host: this.pgOptions.host,
         port: this.pgOptions.port,
         database: this.pgOptions.database,
         user: this.pgOptions.user,
         password: this.pgOptions.password,
-      });
+      };
+      this.pgPool = getSharedPool(this.sharedPoolConfig);
       return new PgExecutor(this.pgPool);
     } else {
       // 使用 PGLite
@@ -274,8 +284,13 @@ export class PgQuintStore extends BaseQuintStore {
       this.pglite = null;
     }
     if (this.pgPool) {
-      await this.pgPool.end();
+      if (this.sharedPoolConfig) {
+        releaseSharedPool(this.sharedPoolConfig);
+      } else {
+        await this.pgPool.end();
+      }
       this.pgPool = null;
+      this.sharedPoolConfig = null;
     }
   }
 
@@ -565,6 +580,20 @@ export class PgQuintStore extends BaseQuintStore {
     return { sql, params };
   }
 
+  override async count(pattern: QuintPattern): Promise<number> {
+    const count = await super.count(pattern);
+    return Number(count);
+  }
+
+  override async stats(): Promise<import('./types').StoreStats> {
+    const stats = await super.stats();
+    return {
+      totalCount: Number(stats.totalCount),
+      vectorCount: Number(stats.vectorCount),
+      graphCount: Number(stats.graphCount),
+    };
+  }
+
   private async ensureTypedObjectSchema(): Promise<void> {
     const statements = [
       'ALTER TABLE quints ADD COLUMN IF NOT EXISTS object_kind TEXT',
@@ -789,14 +818,14 @@ export class PgQuintStore extends BaseQuintStore {
       const predicates: Array<{ serialized: string; fields: ObjectIndexFields }> = ops.$in.map((value: any) => this.objectPredicateForOperatorValue(value, '$in', predicate));
       const placeholders = predicates.map((item) => {
         if (item.fields.objectKey === null) {
-          return `(${column('object_digest')} = ? AND ${column('object')} = ?)`;
+          return `(${column('object_kind')} = ? AND ${column('object_digest')} = ? AND ${column('object')} = ?)`;
         }
         return `(${column('object_kind')} = ? AND ${column('object_key')} = ?)`;
       }).join(' OR ');
       conditions.push(`(${placeholders})`);
       for (const item of predicates) {
         if (item.fields.objectKey === null) {
-          params.push(this.objectDigestForIndex(item.serialized, item.fields), item.serialized);
+          params.push(item.fields.objectKind, this.objectDigestForIndex(item.serialized, item.fields), item.serialized);
         } else {
           params.push(item.fields.objectKind, item.fields.objectKey);
         }
@@ -826,6 +855,21 @@ export class PgQuintStore extends BaseQuintStore {
     if (ops.$regex !== undefined) {
       const pattern = ops.$regex.replace(/\.\*/g, '%').replace(/\./g, '_');
       this.addObjectTextCondition(conditions, params, column, 'LIKE', pattern, predicate);
+    }
+    if (ops.$strStartsWith !== undefined) {
+      this.addObjectLexicalStringCondition(conditions, params, column, 'startsWith', ops.$strStartsWith);
+    }
+    if (ops.$strEndsWith !== undefined) {
+      this.addObjectLexicalStringCondition(conditions, params, column, 'endsWith', ops.$strEndsWith);
+    }
+    if (ops.$strContains !== undefined) {
+      this.addObjectLexicalStringCondition(conditions, params, column, 'contains', ops.$strContains);
+    }
+    if (ops.$strRegex !== undefined) {
+      this.addObjectLexicalStringCondition(conditions, params, column, 'regex', ops.$strRegex);
+    }
+    if (ops.$language !== undefined) {
+      this.addObjectLanguageCondition(conditions, params, column, ops.$language);
     }
     if (ops.$isNull === true) {
       conditions.push(`${column('object')} IS NULL`);
@@ -879,6 +923,8 @@ export class PgQuintStore extends BaseQuintStore {
       return;
     }
 
+    conditions.push(`${column('object_kind')} = ?`);
+    params.push(fields.objectKind);
     conditions.push(`${column('object_digest')} = ?`);
     params.push(this.objectDigestForIndex(serialized, fields));
     conditions.push(`${column('object')} = ?`);
@@ -920,6 +966,66 @@ export class PgQuintStore extends BaseQuintStore {
     }
     conditions.push(`${column('object_text')} ${sqlOperator} ?`);
     params.push(value);
+  }
+
+  private addObjectLexicalStringCondition(
+    conditions: string[],
+    params: any[],
+    column: (name: string) => string,
+    op: 'startsWith' | 'endsWith' | 'contains' | 'regex',
+    value: string,
+  ): void {
+    const lexical = this.objectLexicalSql(column);
+
+    if (op === 'startsWith') {
+      conditions.push(`(${lexical} >= ? AND ${lexical} < ?)`);
+      params.push(value, value + '\uffff');
+      return;
+    }
+
+    if (op === 'endsWith') {
+      conditions.push(`RIGHT(${lexical}, LENGTH(?)) = ?`);
+      params.push(value, value);
+      return;
+    }
+
+    if (op === 'contains') {
+      conditions.push(`POSITION(? IN ${lexical}) > 0`);
+      params.push(value);
+      return;
+    }
+
+    conditions.push(`${lexical} ~ ?`);
+    params.push(value);
+  }
+
+  private objectLexicalSql(column: (name: string) => string): string {
+    return `CASE
+      WHEN ${column('object_text')} IS NOT NULL THEN ${column('object_text')}
+      WHEN ${column('object_kind')} IN ('iri', 'blankNode') THEN ${column('object_key')}
+      WHEN ${column('object_kind')} = 'numeric' THEN split_part(${column('object')}, '${PG_SEP}', 4)
+      WHEN ${column('object_kind')} = 'dateTime' THEN split_part(${column('object')}, '${PG_SEP}', 3)
+      ELSE NULL
+    END`;
+  }
+
+  private addObjectLanguageCondition(
+    conditions: string[],
+    params: any[],
+    column: (name: string) => string,
+    lang: string,
+  ): void {
+    const languageLiteralKinds = `${column('object_kind')} IN ('text', 'longText', 'literal')`;
+
+    if (lang === '*') {
+      conditions.push(`(${languageLiteralKinds} AND ${column('object')} ~ ?)`);
+      params.push('"@[A-Za-z]+(-[A-Za-z0-9]+)*$');
+      return;
+    }
+
+    const suffix = `"@${lang.toLowerCase()}`;
+    conditions.push(`(${languageLiteralKinds} AND (RIGHT(LOWER(${column('object')}), LENGTH(?)) = ? OR LOWER(${column('object')}) LIKE ?))`);
+    params.push(suffix, suffix, `%"@${lang.toLowerCase()}-%`);
   }
 
   private objectPredicateForOperatorValue(

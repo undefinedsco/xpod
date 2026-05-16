@@ -14,7 +14,9 @@ import { PGlite } from '@electric-sql/pglite';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { DataFactory } from 'rdf-data-factory';
 import { PgQuintStore } from '../../../src/storage/quint/PgQuintStore.js';
+import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine.js';
 import type { Quint } from '../../../src/storage/quint/types.js';
+import { arrayFromStream } from '../../helpers/arrayFromStream.js';
 
 const DF = new DataFactory();
 
@@ -702,6 +704,170 @@ describe('PgQuintStore object data types', () => {
       await expect(typedStore.get({
         predicate: namedNode('http://example.org/body'),
       }, { order: ['object'] })).rejects.toThrow(/ORDER BY object is not supported for longText/);
+    } finally {
+      await typedStore.close();
+    }
+  });
+
+  it('should push down SPARQL string filters over longText object_text', async () => {
+    const typedStore = new PgQuintStore({
+      driver: 'pglite',
+      dataDir: undefined,
+      textMaxBytes: 64,
+      predicateObjectDataTypes: {
+        'http://example.org/body': 'longText',
+        'http://example.org/title': 'text',
+        'http://example.org/link': 'iri',
+      },
+    });
+    const engine = new ComunicaQuintEngine(typedStore as any, { debug: true });
+    const body = 'alpha ' + 'long body '.repeat(40) + 'needle ' + 'omega';
+
+    try {
+      await typedStore.open();
+      await typedStore.multiPut([
+        {
+          subject: namedNode('http://example.org/doc/long'),
+          predicate: namedNode('http://example.org/body'),
+          object: literal(body),
+          graph: namedNode('http://example.org/g1'),
+        },
+        {
+          subject: namedNode('http://example.org/doc/other'),
+          predicate: namedNode('http://example.org/body'),
+          object: literal('alpha without the target suffix ' + 'other '.repeat(40)),
+          graph: namedNode('http://example.org/g1'),
+        },
+        {
+          subject: namedNode('http://example.org/doc/title'),
+          predicate: namedNode('http://example.org/title'),
+          object: literal('short title needle'),
+          graph: namedNode('http://example.org/g1'),
+        },
+        {
+          subject: namedNode('http://example.org/doc/link'),
+          predicate: namedNode('http://example.org/link'),
+          object: namedNode('http://example.org/resource/needle-link'),
+          graph: namedNode('http://example.org/g1'),
+        },
+      ] as any[]);
+
+      const subjectsFor = async (filter: string): Promise<string[]> => {
+        const stream = await engine.queryBindings(`
+          SELECT ?subject WHERE {
+            GRAPH <http://example.org/g1> {
+              ?subject <http://example.org/body> ?body .
+              FILTER(${filter})
+            }
+          }
+        `);
+        const bindings = await arrayFromStream(stream);
+        return bindings.map(binding => binding.get('subject')?.value).sort();
+      };
+
+      await expect(subjectsFor('CONTAINS(STR(?body), "needle")')).resolves.toEqual([
+        'http://example.org/doc/long',
+      ]);
+      await expect(subjectsFor('STRSTARTS(STR(?body), "alpha")')).resolves.toEqual([
+        'http://example.org/doc/long',
+        'http://example.org/doc/other',
+      ]);
+      await expect(subjectsFor('STRENDS(STR(?body), "omega")')).resolves.toEqual([
+        'http://example.org/doc/long',
+      ]);
+      await expect(subjectsFor('REGEX(STR(?body), "needle\\\\s+omega$")')).resolves.toEqual([
+        'http://example.org/doc/long',
+      ]);
+
+      const titleStream = await engine.queryBindings(`
+        SELECT ?subject WHERE {
+          GRAPH <http://example.org/g1> {
+            ?subject <http://example.org/title> ?title .
+            FILTER(CONTAINS(STR(?title), "needle"))
+          }
+        }
+      `);
+      const titleBindings = await arrayFromStream(titleStream);
+      expect(titleBindings.map(binding => binding.get('subject')?.value)).toEqual([
+        'http://example.org/doc/title',
+      ]);
+
+      const iriStream = await engine.queryBindings(`
+        SELECT ?subject WHERE {
+          GRAPH <http://example.org/g1> {
+            ?subject <http://example.org/link> ?link .
+            FILTER(STRENDS(STR(?link), "/needle-link"))
+          }
+        }
+      `);
+      const iriBindings = await arrayFromStream(iriStream);
+      expect(iriBindings.map(binding => binding.get('subject')?.value)).toEqual([
+        'http://example.org/doc/link',
+      ]);
+    } finally {
+      await typedStore.close();
+    }
+  });
+
+  it('should keep SPARQL exact object matching distinct from lexical filters', async () => {
+    const typedStore = new PgQuintStore({
+      driver: 'pglite',
+      dataDir: undefined,
+      textMaxBytes: 64,
+      predicateObjectDataTypes: {
+        'http://example.org/body': 'longText',
+        'http://example.org/title': 'text',
+        'http://example.org/link': 'iri',
+      },
+    });
+    const engine = new ComunicaQuintEngine(typedStore as any, { debug: true });
+    const body = 'alpha ' + 'exact long body '.repeat(40) + 'omega';
+
+    try {
+      await typedStore.open();
+      await typedStore.multiPut([
+        {
+          subject: namedNode('http://example.org/doc/long-exact'),
+          predicate: namedNode('http://example.org/body'),
+          object: literal(body),
+          graph: namedNode('http://example.org/g1'),
+        },
+        {
+          subject: namedNode('http://example.org/doc/title-exact'),
+          predicate: namedNode('http://example.org/title'),
+          object: literal('Exact short title'),
+          graph: namedNode('http://example.org/g1'),
+        },
+        {
+          subject: namedNode('http://example.org/doc/link-exact'),
+          predicate: namedNode('http://example.org/link'),
+          object: namedNode('http://example.org/resource/exact-link'),
+          graph: namedNode('http://example.org/g1'),
+        },
+      ] as any[]);
+
+      const subjectsFor = async (predicate: string, filter: string): Promise<string[]> => {
+        const stream = await engine.queryBindings(`
+          SELECT ?subject WHERE {
+            GRAPH <http://example.org/g1> {
+              ?subject <${predicate}> ?object .
+              FILTER(?object = ${filter})
+            }
+          }
+        `);
+        const bindings = await arrayFromStream(stream);
+        return bindings.map(binding => binding.get('subject')?.value).sort();
+      };
+
+      await expect(subjectsFor('http://example.org/body', JSON.stringify(body))).resolves.toEqual([
+        'http://example.org/doc/long-exact',
+      ]);
+      await expect(subjectsFor('http://example.org/title', '"Exact short title"')).resolves.toEqual([
+        'http://example.org/doc/title-exact',
+      ]);
+      await expect(subjectsFor('http://example.org/link', '<http://example.org/resource/exact-link>')).resolves.toEqual([
+        'http://example.org/doc/link-exact',
+      ]);
     } finally {
       await typedStore.close();
     }

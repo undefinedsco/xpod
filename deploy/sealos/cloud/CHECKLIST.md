@@ -1,6 +1,6 @@
 # Xpod 云端部署 Checklist
 
-> 适用场景：xpod 运行在 Sealos，海外环境使用 Cloudflare R2、Supabase PostgreSQL、Upstash Redis。
+> 适用场景：xpod 运行在 Sealos，海外环境使用 Cloudflare R2、Supabase PostgreSQL、Sealos 内部 Redis。
 >
 > 当前示例镜像：`ghcr.io/undefinedsco/xpod:0.2.1`
 >
@@ -35,16 +35,16 @@
 postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
 ```
 
-### Upstash Redis
+### Redis
 
-- [ ] 创建 Redis 实例
-- [ ] 复制 TLS 连接串，必须使用 `rediss://`
-- [ ] 确认 Sealos 出网可访问 Upstash 域名和 6379/TLS
+- [ ] 确认 `deploy/sealos/cloud/redis.yaml` 会随 kustomize 发布
+- [ ] 确认同 namespace 内可通过 `redis` Service 访问 Redis
+- [ ] 确认应用配置使用 `redis://redis:6379`
 
 示例连接串：
 
 ```bash
-rediss://default:<password>@<database>.upstash.io:6379
+redis://redis:6379
 ```
 
 ### Cloudflare R2
@@ -105,7 +105,7 @@ CSS_LOGGING_LEVEL=info
 CSS_SPARQL_ENDPOINT=postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
 CSS_IDENTITY_DB_URL=postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
 
-CSS_REDIS_CLIENT=rediss://default:<password>@<database>.upstash.io:6379
+CSS_REDIS_CLIENT=redis://redis:6379
 
 CSS_MINIO_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 CSS_MINIO_ACCESS_KEY=<r2-access-key>

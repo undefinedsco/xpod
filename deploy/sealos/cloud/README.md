@@ -7,7 +7,7 @@
 1. 计算跑在 Sealos
 2. 对象存储用 Cloudflare R2
 3. PostgreSQL 用 Supabase
-4. Redis 用 Upstash
+4. Redis 用 Sealos 内部服务
 
 ## 1) 打镜像并推送
 
@@ -39,7 +39,7 @@ cp example.env.cloud .env.cloud
 - `CSS_SPARQL_ENDPOINT=...`
 - `CSS_IDENTITY_DB_URL=...`
 - `CSS_MINIO_ENDPOINT/CSS_MINIO_ACCESS_KEY/CSS_MINIO_SECRET_KEY/CSS_MINIO_BUCKET_NAME`
-- `CSS_REDIS_CLIENT=rediss://...`
+- `CSS_REDIS_CLIENT=redis://redis:6379`
 - `DEFAULT_API_BASE=http://ai-gateway.<namespace>.svc.cluster.local/v1`
 - `DEFAULT_API_KEY=sk-...`
 - `DEFAULT_TIMEOUT_MS=30000`（ai-gateway 短查询请求，例如 `/v1/models`）
@@ -68,6 +68,7 @@ kubectl create secret generic xpod-cloud-secret \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl apply -f deploy/sealos/cloud/configmap.yaml
+kubectl apply -f deploy/sealos/cloud/redis.yaml
 kubectl apply -f deploy/sealos/cloud/service.yaml
 kubectl apply -f deploy/sealos/cloud/deployment.yaml
 ```
