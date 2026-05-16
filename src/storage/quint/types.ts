@@ -11,6 +11,7 @@
 
 import type { Term, Quad } from '@rdfjs/types';
 import type { AsyncIterator } from 'asynciterator';
+import type { PredicateObjectDataTypes } from './value-types';
 
 /**
  * 五元组 - 扩展 RDF Quad，增加向量
@@ -113,6 +114,18 @@ export interface StoreStats {
  */
 export interface QuintStoreOptions {
   debug?: boolean;
+  /**
+   * Predicate-level RDF object data declarations.
+   *
+   * This declares schema value types, not query modes. The store derives
+   * whether exact/range/prefix/search can be pushed down from the data type.
+   */
+  predicateObjectDataTypes?: PredicateObjectDataTypes;
+  /**
+   * Maximum serialized byte length that can be indexed as text.
+   * Longer undeclared text literals are stored as longText.
+   */
+  textMaxBytes?: number;
 }
 
 /**
