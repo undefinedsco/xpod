@@ -11,11 +11,23 @@ import type { ServerResponse, IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
+import type { PodLookupRepository, PodLookupResult } from '../../identity/drizzle/PodLookupRepository';
 
 const logger = getLoggerFor('WebIdProfileHandler');
 
 export interface WebIdProfileHandlerOptions {
   profileRepo: WebIdProfileRepository;
+  podLookupRepo?: PodLookupRepository;
+}
+
+interface IdentityProfileResponse {
+  username: string;
+  webidUrl: string;
+  storageUrl?: string;
+  storageMode: 'cloud' | 'local' | 'custom';
+  oidcIssuer?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export function registerWebIdProfileRoutes(
@@ -30,11 +42,11 @@ export function registerWebIdProfileRoutes(
    * 获取 WebID Profile (Turtle 格式)
    * 这是 Solid 标准的 WebID 端点
    */
-  server.get('/:username/profile/card', async (_request, response, params) => {
+  server.get('/:username/profile/card', async (request, response, params) => {
     const username = decodeURIComponent(params.username);
 
     try {
-      const profile = await profileRepo.get(username);
+      const profile = await resolveIdentityLookup(username, options, request);
 
       if (!profile) {
         sendError(response, 404, 'Profile not found');
@@ -115,26 +127,31 @@ export function registerWebIdProfileRoutes(
    *
    * 获取 WebID Profile 信息 (JSON 格式)
    */
-  server.get('/api/v1/identity/:username', async (_request, response, params) => {
+  server.get('/api/v1/identity/:username', async (request, response, params) => {
     const username = decodeURIComponent(params.username);
 
     try {
-      const profile = await profileRepo.get(username);
+      const profile = await resolveIdentityLookup(username, options, request);
 
       if (!profile) {
         sendError(response, 404, 'Profile not found');
         return;
       }
 
-      sendJson(response, 200, {
+      const body: Record<string, unknown> = {
         username: profile.username,
         webidUrl: profile.webidUrl,
         storageUrl: profile.storageUrl,
         storageMode: profile.storageMode,
         oidcIssuer: profile.oidcIssuer,
-        createdAt: profile.createdAt.toISOString(),
-        updatedAt: profile.updatedAt.toISOString(),
-      });
+      };
+      if (profile.createdAt) {
+        body.createdAt = profile.createdAt.toISOString();
+      }
+      if (profile.updatedAt) {
+        body.updatedAt = profile.updatedAt.toISOString();
+      }
+      sendJson(response, 200, body);
     } catch (error) {
       logger.error(`Failed to get profile for ${username}: ${error}`);
       sendError(response, 500, 'Internal server error');
@@ -205,6 +222,269 @@ export function registerWebIdProfileRoutes(
   });
 
   logger.info('WebID Profile routes registered');
+}
+
+async function resolveIdentityLookup(
+  username: string,
+  options: WebIdProfileHandlerOptions,
+  request?: IncomingMessage,
+): Promise<IdentityProfileResponse | null> {
+  try {
+    const profile = await resolveProfileWithStorageBackfill(username, options);
+    if (profile) {
+      return profile;
+    }
+  } catch (error) {
+    logger.warn(`Profile lookup unavailable for ${username}, falling back to Pod index: ${error}`);
+  }
+
+  return resolveProfileFromPods(username, options, request);
+}
+
+async function resolveProfileFromPods(
+  username: string,
+  options: WebIdProfileHandlerOptions,
+  request?: IncomingMessage,
+): Promise<IdentityProfileResponse | null> {
+  const { podLookupRepo } = options;
+  const identityBaseUrl = getHostedIdentityBaseUrl(request);
+
+  if (podLookupRepo) {
+    const webidUrl = buildHostedWebIdUrl(username, identityBaseUrl);
+    const webIdMatch = await tryFindPodByWebId(podLookupRepo, webidUrl, username);
+    if (webIdMatch) {
+      return profileFromPod(username, webidUrl, webIdMatch);
+    }
+
+    const match = await tryFindPodByStorageSlug(podLookupRepo, username);
+    if (match) {
+      return profileFromPod(username, buildStorageWebIdUrl(match.baseUrl), match);
+    }
+  }
+
+  const hostedStorageUrl = new URL(`${encodeURIComponent(username)}/`, identityBaseUrl).toString();
+  if (await probeHostedStorageRoot(hostedStorageUrl, username)) {
+    return {
+      username,
+      webidUrl: buildHostedWebIdUrl(username, identityBaseUrl),
+      storageUrl: hostedStorageUrl,
+      storageMode: 'cloud',
+      oidcIssuer: deriveOrigin(identityBaseUrl),
+    };
+  }
+
+  return null;
+}
+
+async function resolveProfileWithStorageBackfill(
+  username: string,
+  options: WebIdProfileHandlerOptions,
+) {
+  const { profileRepo, podLookupRepo } = options;
+  const profile = await profileRepo.get(username);
+  if (!profile) {
+    return null;
+  }
+
+  if (profile.storageUrl || !profile.accountId || !podLookupRepo) {
+    return profile;
+  }
+
+  let pods: PodLookupResult[];
+  try {
+    pods = await podLookupRepo.listByAccountId(profile.accountId);
+  } catch (error) {
+    logger.warn(`Skipped storage backfill for ${username}: pod index unavailable for account ${profile.accountId}: ${error}`);
+    return profile;
+  }
+  const storageUrl = selectStorageBackfillCandidate(username, pods);
+  if (!storageUrl) {
+    logger.warn(`Skipped storage backfill for ${username}: no unambiguous pod found for account ${profile.accountId}`);
+    return profile;
+  }
+
+  try {
+    const updated = await profileRepo.updateStorage(username, {
+      storageUrl,
+      storageMode: profile.storageMode,
+    });
+    if (updated) {
+      logger.info(`Backfilled storage for ${username}: ${storageUrl}`);
+      return updated;
+    }
+  } catch (error) {
+    logger.warn(`Failed to backfill storage for ${username}: ${error}`);
+  }
+
+  return profile;
+}
+
+function selectStorageBackfillCandidate(
+  username: string,
+  pods: PodLookupResult[],
+): string | null {
+  if (pods.length === 0) {
+    return null;
+  }
+
+  const exactMatches = pods.filter((pod) => derivePodSlug(pod.baseUrl) === username);
+  if (exactMatches.length === 1) {
+    return ensureTrailingSlash(exactMatches[0].baseUrl);
+  }
+
+  if (exactMatches.length > 1) {
+    return null;
+  }
+
+  if (pods.length === 1) {
+    return ensureTrailingSlash(pods[0].baseUrl);
+  }
+
+  return null;
+}
+
+function derivePodSlug(baseUrl: string): string | null {
+  try {
+    const parsed = new URL(baseUrl);
+    const [slug] = parsed.pathname.split('/').filter(Boolean);
+    return slug || null;
+  } catch {
+    return null;
+  }
+}
+
+async function tryFindPodByWebId(
+  podLookupRepo: PodLookupRepository,
+  webidUrl: string,
+  username: string,
+): Promise<PodLookupResult | undefined> {
+  try {
+    if (typeof podLookupRepo.findByWebId === 'function') {
+      return await podLookupRepo.findByWebId(webidUrl);
+    }
+  } catch (error) {
+    logger.warn(`WebID index lookup unavailable for ${username}: ${error}`);
+  }
+  return undefined;
+}
+
+async function tryFindPodByStorageSlug(
+  podLookupRepo: PodLookupRepository,
+  username: string,
+): Promise<PodLookupResult | undefined> {
+  try {
+    const pods = await podLookupRepo.listAllPods();
+    return pods.find((pod) => derivePodSlug(pod.baseUrl) === username);
+  } catch (error) {
+    logger.warn(`Pod index lookup unavailable for ${username}: ${error}`);
+    return undefined;
+  }
+}
+
+function profileFromPod(
+  username: string,
+  webidUrl: string,
+  pod: PodLookupResult,
+): IdentityProfileResponse {
+  const storageUrl = ensureTrailingSlash(pod.baseUrl);
+  return {
+    username,
+    webidUrl,
+    storageUrl,
+    storageMode: 'cloud',
+    oidcIssuer: deriveOrigin(webidUrl),
+  };
+}
+
+function buildHostedWebIdUrl(username: string, identityBaseUrl = getHostedIdentityBaseUrl()): string {
+  return new URL(`${encodeURIComponent(username)}/profile/card#me`, identityBaseUrl).toString();
+}
+
+function buildStorageWebIdUrl(storageUrl: string): string {
+  return new URL('profile/card#me', ensureTrailingSlash(storageUrl)).toString();
+}
+
+function getHostedIdentityBaseUrl(request?: IncomingMessage): string {
+  return ensureTrailingSlash(
+    requestOrigin(request) ??
+    absoluteHttpUrl(process.env.CSS_BASE_URL) ??
+    absoluteHttpUrl(process.env.BASE_URL) ??
+    'http://localhost:3000/',
+  );
+}
+
+function absoluteHttpUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function requestOrigin(request: IncomingMessage | undefined): string | undefined {
+  if (!request?.headers) {
+    return undefined;
+  }
+  const host = firstHeader(request.headers['x-forwarded-host']) ?? firstHeader(request.headers.host);
+  if (!host) {
+    return undefined;
+  }
+  const proto = firstHeader(request.headers['x-forwarded-proto']) ?? 'https';
+  return absoluteHttpUrl(`${proto}://${host}`);
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
+
+async function probeHostedStorageRoot(storageUrl: string, username: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2_000);
+  try {
+    const response = await fetch(storageUrl, {
+      method: 'HEAD',
+      signal: controller.signal,
+    });
+    if (isHostedStorageRootResponse(response)) {
+      logger.info(`Resolved hosted WebID profile for ${username} from existing storage root: ${storageUrl}`);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    logger.warn(`Hosted storage root probe unavailable for ${username}: ${error}`);
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isHostedStorageRootResponse(response: Response): boolean {
+  if (response.status < 200 || response.status >= 400) {
+    return false;
+  }
+
+  const link = response.headers.get('link') ?? '';
+  return /<http:\/\/www\.w3\.org\/ns\/pim\/space#Storage>;\s*rel="?type"?/iu.test(link) ||
+    /<http:\/\/www\.w3\.org\/ns\/ldp#(?:Basic)?Container>;\s*rel="?type"?/iu.test(link);
+}
+
+function ensureTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, '') + '/';
+}
+
+function deriveOrigin(url: string): string | undefined {
+  try {
+    return ensureTrailingSlash(new URL(url).origin);
+  } catch {
+    return undefined;
+  }
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {

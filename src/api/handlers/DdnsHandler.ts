@@ -50,6 +50,8 @@ export function registerDdnsRoutes(
         username?: string;
         ipAddress?: string;
         ipv6Address?: string;
+        mode?: 'direct' | 'tunnel';
+        tunnelProvider?: string;
       } | undefined;
 
       if (!payload?.subdomain) {
@@ -105,6 +107,7 @@ export function registerDdnsRoutes(
         fqdn: `${record.subdomain}.${record.domain}`,
         ipAddress: record.ipAddress,
         ipv6Address: record.ipv6Address,
+        tunnelProvider: payload.tunnelProvider,
         createdAt: record.createdAt.toISOString(),
       });
     } catch (error) {
@@ -139,13 +142,37 @@ export function registerDdnsRoutes(
         ipAddress?: string;
         ipv6Address?: string;
         type?: string;
+        mode?: 'direct' | 'tunnel';
+        tunnelProvider?: string;
       } | undefined;
 
       const ipAddress = payload?.ip ?? payload?.ipAddress;
       const ipv6Address = payload?.ipv6Address;
+      const mode = payload?.mode ?? 'direct';
 
-      if (!ipAddress && !ipv6Address) {
+      if (!ipAddress && !ipv6Address && mode !== 'tunnel') {
         sendError(response, 400, 'ip or ipv6Address is required');
+        return;
+      }
+
+      if (mode === 'tunnel' && !ipAddress && !ipv6Address) {
+        const existing = await ddnsRepo.getRecord(subdomain);
+
+        if (!existing) {
+          sendError(response, 404, 'Subdomain not found');
+          return;
+        }
+
+        sendJson(response, 200, {
+          success: true,
+          subdomain: existing.subdomain,
+          domain: existing.domain,
+          fqdn: `${existing.subdomain}.${existing.domain}`,
+          ipAddress: existing.ipAddress,
+          ipv6Address: existing.ipv6Address,
+          tunnelProvider: payload?.tunnelProvider,
+          updatedAt: existing.updatedAt.toISOString(),
+        });
         return;
       }
 
@@ -187,6 +214,7 @@ export function registerDdnsRoutes(
         fqdn: `${record.subdomain}.${record.domain}`,
         ipAddress: record.ipAddress,
         ipv6Address: record.ipv6Address,
+        tunnelProvider: payload?.tunnelProvider,
         updatedAt: record.updatedAt.toISOString(),
       });
     } catch (error) {

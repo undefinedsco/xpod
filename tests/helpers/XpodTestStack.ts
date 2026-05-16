@@ -55,6 +55,13 @@ export class XpodTestStack {
     this.runtime = null;
   }
 
+  async runtimeFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+    if (!this.runtime) {
+      throw new Error('XpodTestStack has not been started.');
+    }
+    return this.runtime.fetch(input, init);
+  }
+
   private async waitReady(timeoutMs = 60_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     const url = new URL('/service/status', this.baseUrl).href;

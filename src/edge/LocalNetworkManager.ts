@@ -1,13 +1,10 @@
 import { getLoggerFor } from 'global-logger-factory';
 import type { EdgeNodeCapabilityDetector } from './EdgeNodeCapabilityDetector';
 import type { EdgeNodeDnsCoordinator } from './EdgeNodeDnsCoordinator';
-import type { TunnelProvider } from '../tunnel/TunnelProvider';
 
 export interface LocalNetworkManagerOptions {
   detector: EdgeNodeCapabilityDetector;
   dnsCoordinator: EdgeNodeDnsCoordinator;
-  tunnelProvider?: TunnelProvider;
-  localPort?: number;
   intervalMs?: number;
 }
 
@@ -19,29 +16,24 @@ export interface LocalNetworkManagerOptions {
  * 
  * 逻辑：
  * 1. 优先探测公网 IP (IPv6 > IPv4)。
- * 2. 如果有公网 IP -> 停止 Tunnel -> 更新 AAAA/A 记录。
- * 3. 如果无公网 IP -> 启动 Tunnel (Fallback) -> Tunnel 接管 CNAME。
+ * 2. 如果有公网 IP -> 更新 AAAA/A 记录。
+ * 3. 如果无公网 IP -> 维持本机/局域网可用，不触发隧道启停。
  */
 export class LocalNetworkManager {
   private readonly logger = getLoggerFor(this);
   private readonly detector: EdgeNodeCapabilityDetector;
   private readonly dnsCoordinator: EdgeNodeDnsCoordinator;
-  private readonly tunnelProvider?: TunnelProvider;
-  private readonly localPort: number;
   private readonly intervalMs: number;
   private interval?: NodeJS.Timeout;
   
   // 状态追踪，用于减少重复日志
   private lastState = {
     hasPublicIp: false,
-    tunnelRunning: false,
   };
 
   public constructor(options: LocalNetworkManagerOptions) {
     this.detector = options.detector;
     this.dnsCoordinator = options.dnsCoordinator;
-    this.tunnelProvider = options.tunnelProvider;
-    this.localPort = options.localPort ?? 3000;
     this.intervalMs = options.intervalMs ?? 60_000; // 默认 1 分钟
   }
 
@@ -68,11 +60,7 @@ export class LocalNetworkManager {
       this.interval = undefined;
     }
     
-    // 确保退出时关闭 Tunnel，防止僵尸进程
-    if (this.tunnelProvider?.getStatus().running) {
-      this.logger.info('Stopping tunnel before exit...');
-      await this.tunnelProvider.stop();
-    }
+    // 不管理 tunnel 生命周期
   }
 
   private async runMaintenance(): Promise<void> {
@@ -91,50 +79,28 @@ export class LocalNetworkManager {
       };
 
       const hasPublicIp = !!(metadata.ipv4 || metadata.ipv6);
-      const tunnelRunning = !!this.tunnelProvider?.getStatus().running;
       
       // 检查状态是否发生变化
-      const stateChanged = hasPublicIp !== this.lastState.hasPublicIp || 
-                           tunnelRunning !== this.lastState.tunnelRunning;
+      const stateChanged = hasPublicIp !== this.lastState.hasPublicIp;
 
       if (stateChanged) {
-        this.logger.info(`Network status changed: IP=${hasPublicIp ? 'Public' : 'Private'}, Tunnel=${tunnelRunning ? 'Running' : 'Stopped'} (IPv4=${metadata.ipv4 || 'none'}, IPv6=${metadata.ipv6 || 'none'})`);
+        this.logger.info(`Network status changed: IP=${hasPublicIp ? 'Public' : 'Private'} (IPv4=${metadata.ipv4 || 'none'}, IPv6=${metadata.ipv6 || 'none'})`);
       } else {
         // 平时仅打印一条极简的调试信息（如果级别设为 info 则每分钟一条）
-        this.logger.debug(`Status check: IP=${hasPublicIp ? 'Public' : 'Private'}, Tunnel=${tunnelRunning ? 'Running' : 'Stopped'}`);
+        this.logger.debug(`Status check: IP=${hasPublicIp ? 'Public' : 'Private'}`);
       }
 
       if (hasPublicIp) {
         // === 直连模式 ===
-        if (tunnelRunning) {
-          this.logger.info('Stopping tunnel fallback to use direct public IP...');
-          await this.tunnelProvider!.stop();
-          this.lastState.tunnelRunning = false;
-        }
-
         // 仅在 IP 变化或初次运行且有 IP 时同步 DNS
         await this.dnsCoordinator.synchronize('local-self', metadata);
 
       } else {
-        // === 隧道模式 (Fallback) ===
-        if (this.tunnelProvider) {
-          if (!tunnelRunning) {
-            this.logger.info('No public IP. Starting Cloudflare Tunnel fallback...');
-            const config = await this.tunnelProvider.setup({
-              subdomain: 'local',
-              localPort: this.localPort,
-            });
-            
-            await this.tunnelProvider.start(config);
-            this.logger.info('Tunnel fallback active.');
-            this.lastState.tunnelRunning = true;
-          }
-        }
+        this.logger.info('No public IP. Keep local and LAN routes active; tunnel is managed by the runtime provider if configured.');
       }
       
       // 更新状态追踪
       this.lastState.hasPublicIp = hasPublicIp;
-      this.lastState.tunnelRunning = !!this.tunnelProvider?.getStatus().running;
       
     } catch (error: unknown) {
       this.logger.error(`Maintenance task failed: ${(error as Error).message}`);

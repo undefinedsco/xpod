@@ -57,13 +57,15 @@ export class LocalTunnelProvider implements TunnelProvider {
   /**
    * Local 模式不需要 setup，直接返回基于 Token 的配置
    */
-  async setup(_options: TunnelSetupOptions): Promise<TunnelConfig> {
+  async setup(options: TunnelSetupOptions): Promise<TunnelConfig> {
+    const localProtocol = options.localProtocol ?? 'http';
     // Local 模式下，Tunnel 已在 Cloudflare Dashboard 创建
     // 只需要返回一个包含 Token 的配置
     const config: TunnelConfig = {
       subdomain: 'local', // 占位符，实际域名由 Cloudflare Tunnel 配置决定
       provider: 'cloudflare',
       endpoint: '', // 实际 endpoint 由 Cloudflare Tunnel 配置决定
+      originUrl: `${localProtocol}://127.0.0.1:${options.localPort}`,
       tunnelToken: this.tunnelToken,
     };
 
@@ -73,26 +75,17 @@ export class LocalTunnelProvider implements TunnelProvider {
 
   /**
    * 启动隧道客户端
-   * 如果 cloudflared 已经在运行，则跳过启动
+   * 如果当前 provider 已经启动过进程，则跳过启动
    */
   async start(config?: TunnelConfig): Promise<void> {
     // 如果没有传入 config，使用默认配置
-    const actualConfig = config ?? {
+    const actualConfig = config ?? this.currentConfig ?? {
       subdomain: 'local',
       provider: 'cloudflare' as const,
       endpoint: '',
+      originUrl: 'http://127.0.0.1:8080',
       tunnelToken: this.tunnelToken,
     };
-
-    // 检测是否已经在运行
-    const alreadyRunning = await this.isCloudflaredRunning();
-    if (alreadyRunning) {
-      this.logger.info('Already running externally, skipping start');
-      this.status = { running: true, connected: true, endpoint: actualConfig.endpoint };
-      this.currentConfig = actualConfig;
-      this.managedByUs = false;
-      return;
-    }
 
     if (this.process) {
       this.logger.info('Already running (managed by us)');
@@ -108,14 +101,19 @@ export class LocalTunnelProvider implements TunnelProvider {
     this.status = { running: true, connected: false };
     this.managedByUs = true;
 
-    this.process = spawn(this.cloudflaredPath, [
+    const args = [
       'tunnel',
       '--protocol', 'http2',
       '--no-autoupdate',
       'run',
       '--token',
       token,
-    ], {
+    ];
+    if (actualConfig.originUrl) {
+      args.push('--url', actualConfig.originUrl);
+    }
+
+    this.process = spawn(this.cloudflaredPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

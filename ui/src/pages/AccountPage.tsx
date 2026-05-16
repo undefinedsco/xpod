@@ -2,6 +2,45 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
+import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
+
+interface PodView {
+  id: string;
+  resourceUrl: string;
+  name?: string;
+}
+
+interface AccountPodResponse {
+  pods?: Record<string, string>;
+}
+
+interface AccountWebIdResponse {
+  webIdLinks?: Record<string, string>;
+}
+
+function derivePodName(storageUrl: string): string | undefined {
+  try {
+    const url = new URL(storageUrl);
+    const segments = url.pathname.split('/').filter(Boolean);
+    return segments[segments.length - 1];
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizePods(json: AccountPodResponse | undefined): PodView[] {
+  const pods = json?.pods;
+  if (!pods || typeof pods !== 'object') {
+    return [];
+  }
+
+  return Object.entries(pods).map(([storageUrl, resourceUrl]) => ({
+    id: storageUrl,
+    resourceUrl,
+    name: derivePodName(storageUrl),
+  }));
+}
 
 /**
  * Generate API Key from client credentials.
@@ -12,12 +51,31 @@ function generateApiKey(clientId: string, clientSecret: string): string {
   return `sk-${encoded}`;
 }
 
+function getAiApiBaseUrl(): string {
+  if (typeof window === 'undefined') {
+    return 'https://api.undefineds.co/v1';
+  }
+
+  const { protocol, hostname, origin } = window.location;
+
+  if (hostname.startsWith('id.')) {
+    return `${protocol}//api.${hostname.slice(3)}/v1`;
+  }
+
+  if (hostname.startsWith('api.')) {
+    return `${origin}/v1`;
+  }
+
+  return `${origin.replace(/\/$/, '')}/v1`;
+}
+
 export function AccountPage() {
   const { controls, refetchControls, hasOidcPending } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
-  const [pods, setPods] = useState<{ id: string; name?: string }[]>([]);
+  const [pods, setPods] = useState<PodView[]>([]);
+  const [podStateSettling, setPodStateSettling] = useState(false);
   const [showCreatePod, setShowCreatePod] = useState(false);
   const [podName, setPodName] = useState('');
   const [showLinkWebId, setShowLinkWebId] = useState(false);
@@ -30,6 +88,7 @@ export function AccountPage() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showWebIdDropdown, setShowWebIdDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const aiApiBaseUrl = getAiApiBaseUrl();
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -54,29 +113,38 @@ export function AccountPage() {
 
   const fetchData = async () => {
     try {
+      let nextWebIds: string[] = [];
       if (controls?.account?.webId) {
-        const res = await fetch(controls.account.webId, { headers: { Accept: 'application/json' }, credentials: 'include' });
+        const res = await fetch(controls.account.webId, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
-          const json = await res.json();
+          const json = await res.json() as AccountWebIdResponse;
           const links = json.webIdLinks || {};
-          setWebIds(Object.keys(links));
+          nextWebIds = Object.keys(links);
+          setWebIds(nextWebIds);
         } else {
           // No WebIDs yet is normal for new users
           setWebIds([]);
         }
+      } else {
+        setWebIds([]);
       }
       if (controls?.account?.pod) {
-        const res = await fetch(controls.account.pod, { headers: { Accept: 'application/json' }, credentials: 'include' });
+        const res = await fetch(controls.account.pod, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
-          const json = await res.json();
-          const podObj = json.pods || {};
-          setPods(Object.keys(podObj).map(id => ({ id })));
+          const json = await res.json() as AccountPodResponse;
+          const nextPods = normalizePods(json);
+          setPods(nextPods);
+          setPodStateSettling(nextPods.length === 0 && nextWebIds.length > 0);
         } else {
           setPods([]);
+          setPodStateSettling(nextWebIds.length > 0);
         }
+      } else {
+        setPods([]);
+        setPodStateSettling(false);
       }
       if (controls?.account?.clientCredentials) {
-        const res = await fetch(controls.account.clientCredentials, { headers: { Accept: 'application/json' }, credentials: 'include' });
+        const res = await fetch(controls.account.clientCredentials, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json();
           const creds = json.clientCredentials || {};
@@ -100,10 +168,11 @@ export function AccountPage() {
     try {
       const res = await fetch(controls.account.logout, {
         method: 'POST',
-        headers: { Accept: 'application/json' },
+        headers: storedAccountTokenHeaders(),
         credentials: 'include',
       });
       if (res.ok) {
+        clearAccountSessionToken();
         await refetchControls();
         navigate('/.account/');
       }
@@ -121,24 +190,21 @@ export function AccountPage() {
     try {
       const res = await fetch(controls.account.pod, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
-        body: JSON.stringify({
-          name: podName.trim(),
-          ...(() => {
-            const pc = sessionStorage.getItem('provisionCode');
-            return pc ? { settings: { provisionCode: pc } } : {};
-          })(),
-        }),
+        body: JSON.stringify(buildPodCreatePayload(podName)),
       });
       if (res.ok) {
         // Pod 创建成功后清除 provisionCode
-        sessionStorage.removeItem('provisionCode');
+        clearStoredProvisionCode();
         setPodName('');
         setShowCreatePod(false);
         // Refresh controls to get updated endpoints (including new WebID)
         await refetchControls();
         await fetchData();
+        if (hasOidcPending) {
+          navigate('/.account/oidc/consent/');
+        }
       } else {
         const json = await res.json().catch(() => ({}));
         alert(json.message || 'Failed to create pod');
@@ -157,7 +223,7 @@ export function AccountPage() {
     try {
       const res = await fetch(controls.account.webId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ webId: linkWebIdUrl.trim() }),
       });
@@ -180,7 +246,7 @@ export function AccountPage() {
     if (!confirm(`Delete pod ${podUrl}? This cannot be undone.`)) return;
     setIsLoading(true);
     try {
-      const res = await fetch(podUrl, { method: 'DELETE', credentials: 'include' });
+      const res = await fetch(podUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -200,7 +266,7 @@ export function AccountPage() {
     try {
       const res = await fetch(controls.account.clientCredentials, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ name: credentialName.trim(), webId: credentialWebId }),
       });
@@ -236,7 +302,7 @@ export function AccountPage() {
     if (!confirm('Delete this credential? This cannot be undone.')) return;
     setIsLoading(true);
     try {
-      const res = await fetch(credId, { method: 'DELETE', headers: { Accept: 'application/json' }, credentials: 'include' });
+      const res = await fetch(credId, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -328,16 +394,25 @@ export function AccountPage() {
           )}
           <div className="bg-white border border-zinc-200 rounded-xl shadow-sm">
             {pods.length === 0 ? (
-              <div className="p-4"><p className="text-xs text-zinc-500 mb-3">No Pods found. Create one to get started.</p></div>
+              <div className="p-4">
+                <p className="text-xs text-zinc-500 mb-3">
+                  {podStateSettling ? 'WebID 已存在，Pod 信息正在同步。请稍等后刷新页面。' : 'No Pods found. Create one to get started.'}
+                </p>
+              </div>
             ) : (
               <ul className="divide-y divide-zinc-100">
                 {pods.map((pod) => (
                   <li key={pod.id} className="p-3 flex items-center justify-between">
                     <div className="flex items-center gap-3 overflow-hidden">
                       <Database className="w-4 h-4 text-zinc-400 shrink-0" />
-                      <a href={pod.id} target="_blank" rel="noopener" className="text-xs font-mono text-[#7C4DFF] hover:text-[#6B3FE8] truncate">{pod.id}</a>
+                      <div className="min-w-0">
+                        <a href={pod.id} target="_blank" rel="noopener" className="text-xs font-mono text-[#7C4DFF] hover:text-[#6B3FE8] truncate block">{pod.id}</a>
+                        {pod.name && (
+                          <p className="text-[11px] text-zinc-500 truncate">Pod: {pod.name}</p>
+                        )}
+                      </div>
                     </div>
-                    <button onClick={() => handleDeletePod(pod.id)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Delete Pod">
+                    <button onClick={() => handleDeletePod(pod.resourceUrl)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Delete Pod">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </li>
@@ -395,7 +470,9 @@ export function AccountPage() {
               </button>
             )}
           </div>
-          <p className="text-[11px] text-zinc-500 mb-3">API Keys for programmatic access. Use with <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code></p>
+          <p className="text-[11px] text-zinc-500 mb-3">
+            AI API keys for model endpoints such as <code className="bg-zinc-100 px-1 py-0.5 rounded">/v1/chat/completions</code> and <code className="bg-zinc-100 px-1 py-0.5 rounded">/v1/responses</code>. Send as <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code>.
+          </p>
           
           {!controls?.account?.clientCredentials ? (
             <div className="bg-white border border-zinc-200 rounded-xl shadow-sm p-4">
@@ -505,7 +582,32 @@ export function AccountPage() {
                           </button>
                         </div>
                       </div>
-                      <p className="mt-3 text-[10px] text-zinc-400">Use the API Key with: <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code></p>
+                      <div className="mt-3 rounded-lg border border-zinc-200 bg-white p-3 text-xs">
+                        <p className="mb-2 font-medium text-zinc-700">Usage</p>
+                        <div className="space-y-2 font-mono text-[11px]">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="text-zinc-400 select-none">Base URL</span>
+                              <p className="break-all text-zinc-600">{aiApiBaseUrl}</p>
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(aiApiBaseUrl, 'baseurl')}
+                              className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors shrink-0"
+                              title="Copy Base URL"
+                            >
+                              {copiedField === 'baseurl' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
+                          <div>
+                            <span className="text-zinc-400 select-none">Authorization</span>
+                            <p className="break-all text-zinc-600">Bearer {generateApiKey(newCredential.id, newCredential.secret)}</p>
+                          </div>
+                          <div>
+                            <span className="text-zinc-400 select-none">Endpoints</span>
+                            <p className="break-all text-zinc-600">/chat/completions · /responses · /models</p>
+                          </div>
+                        </div>
+                      </div>
                       <button onClick={() => setNewCredential(null)} className="mt-2 text-xs text-zinc-500 hover:text-zinc-900 font-medium">Done</button>
                     </div>
                   </div>

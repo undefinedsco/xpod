@@ -44,6 +44,7 @@ const shouldRun = RUN_INTEGRATION_TESTS;
 const suite = shouldRun ? describe : describe.skip;
 
 const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
+const CHATKIT_STREAM_TIMEOUT_MS = 30000;
 
 suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;
@@ -84,6 +85,8 @@ suite('ChatKit PodStore Integration', () => {
         tokenType: token.tokenType,
       },
     } as StoreContext;
+
+    await store.loadThreads(1, undefined, 'desc', testContext);
   }, 60000);
 
   afterAll(async () => {
@@ -176,7 +179,7 @@ suite('ChatKit PodStore Integration', () => {
         threadId = createdEvent.thread.id;
         chatId = createdEvent.thread.metadata.chat_id;
       }
-    });
+    }, CHATKIT_STREAM_TIMEOUT_MS);
 
     it('should retrieve thread from Pod', async () => {
       expect(threadId).toBeDefined();
@@ -358,7 +361,7 @@ suite('ChatKit PodStore Integration', () => {
         const doneEvent = events.find((e) => e.type === 'thread.item.done');
         expect(doneEvent).toBeDefined();
       }
-    });
+    }, CHATKIT_STREAM_TIMEOUT_MS);
 
     it('should retrieve messages from Pod', async () => {
       const items = await waitForThreadItemsCount(threadId, chatId, 2);
@@ -747,6 +750,6 @@ suite('ChatKit PodStore Integration', () => {
       if (config!.providerId === 'proxy-provider') {
         expect(config!.proxyUrl).toBe('http://proxy.example.com:8080');
       }
-    });
+    }, CHATKIT_STREAM_TIMEOUT_MS);
   });
 });

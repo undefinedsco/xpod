@@ -65,6 +65,7 @@ package-lock.json
 
 # Development scripts (personal)
 *.sh
+!scripts/run-vitest-safe.sh
 
 # Debug and analysis files
 debug-*.ts
@@ -92,3 +93,4 @@ openspec/
 /test_doc_mode_*
 /test_fragment_mode_*
 /undefineds.co-xpod-*.tgz
+.omx/

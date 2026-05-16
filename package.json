@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/xpod",
-  "version": "0.2.4",
+  "version": "0.2.44",
   "description": "Xpod is an extended Community Solid Server, offering rich-feature, production-level Solid Pod and identity management.",
   "repository": "https://github.com/undefinedsco/xpod",
   "author": "developer@undefineds.co",
@@ -81,10 +81,12 @@
     "dev:cluster:down": "docker compose -f docker-compose.cluster.yml down",
     "dev:css": "dotenv -e .env.local -- community-solid-server -c config/local.json -m .",
     "watch:css": "nodemon --watch config --watch templates --watch static --watch src --ext json,ejs,html,ts,tsx --exec \"bun run build:ts && bun run build:components && bun run dev:css\"",
-    "test": "vitest --run",
-    "test:run": "vitest --run",
+    "test": "./scripts/run-vitest-safe.sh --run",
+    "test:run": "./scripts/run-vitest-safe.sh --run",
+    "test:safe": "./scripts/run-vitest-safe.sh",
+    "test:run:safe": "./scripts/run-vitest-safe.sh --run",
     "test:terminal": "bun scripts/test-terminal.ts",
-    "test:coverage": "vitest --run --coverage",
+    "test:coverage": "./scripts/run-vitest-safe.sh --run --coverage",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "test:integration": "bun run test:integration:all",
     "test:multi-node": "XPOD_RUN_INTEGRATION_TESTS=true vitest --run tests/integration/MultiNodeCluster.integration.test.ts",
@@ -94,6 +96,10 @@
     "test:storage": "vitest --run tests/storage/",
     "dev:cluster:lite": "docker compose -f docker-compose.standalone.yml up --build",
     "dev:cluster:lite:down": "docker compose -f docker-compose.standalone.yml down",
+    "doctor:dev-procs": "node scripts/dev-process-doctor.cjs scan",
+    "doctor:dev-procs:json": "node scripts/dev-process-doctor.cjs scan --json",
+    "doctor:dev-procs:cleanup": "node scripts/dev-process-doctor.cjs cleanup",
+    "doctor:vitest:cleanup": "node scripts/dev-process-doctor.cjs cleanup --type=vitest",
     "test:integration:lite": "bun scripts/run-integration-lite-local.ts",
     "test:integration:full": "bun scripts/run-integration-full.ts",
     "test:integration:all": "bun run test:integration:lite && bun run test:integration:full",
@@ -106,12 +112,14 @@
     "build:single:standalone": "bun run build && node scripts/build-single-file.js",
     "check:abi": "node scripts/check-native-abi.cjs",
     "check:platform-package-version": "node scripts/check-platform-package-version.cjs",
+    "sync:platform-package-version": "node scripts/sync-platform-package-version.cjs",
     "publish:platforms": "node scripts/publish-platform-packages.cjs",
     "publish:local": "node scripts/publish-local.cjs",
     "publish:local:dry": "node scripts/publish-local.cjs --dry-run",
     "publish:release": "node scripts/publish-release.cjs",
     "publish:release:dry": "node scripts/publish-release.cjs --dry-run",
-    "test:setup": "dotenv -e .env.local -- bun scripts/setup-test-credentials.ts"
+    "test:setup": "dotenv -e .env.local -- bun scripts/setup-test-credentials.ts",
+    "version": "node scripts/sync-platform-package-version.cjs --stage"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
@@ -152,7 +160,7 @@
     "@inrupt/solid-client-authn-node": "^3.1.0",
     "@mariozechner/pi-coding-agent": "^0.55.1",
     "@solid/community-server": "8.0.0-alpha.1",
-    "@undefineds.co/drizzle-solid": "^0.3.4",
+    "@undefineds.co/drizzle-solid": "0.3.9",
     "@undefineds.co/models": "0.2.21",
     "abstract-level": "^1.0.4",
     "acme-client": "^5.1.3",
@@ -205,12 +213,12 @@
     }
   },
   "optionalDependencies": {
-    "@undefineds.co/xpod-darwin-arm64": "0.2.4",
-    "@undefineds.co/xpod-darwin-x64": "0.2.4",
-    "@undefineds.co/xpod-linux-x64-gnu": "0.2.4",
-    "@undefineds.co/xpod-linux-arm64-gnu": "0.2.4",
-    "@undefineds.co/xpod-linux-x64-musl": "0.2.4",
-    "@undefineds.co/xpod-linux-arm64-musl": "0.2.4"
+    "@undefineds.co/xpod-darwin-arm64": "0.2.44",
+    "@undefineds.co/xpod-darwin-x64": "0.2.44",
+    "@undefineds.co/xpod-linux-x64-gnu": "0.2.44",
+    "@undefineds.co/xpod-linux-arm64-gnu": "0.2.44",
+    "@undefineds.co/xpod-linux-x64-musl": "0.2.44",
+    "@undefineds.co/xpod-linux-arm64-musl": "0.2.44"
   },
   "resolutions": {
     "@inrupt/solid-client-authn-browser": "^3.1.1",

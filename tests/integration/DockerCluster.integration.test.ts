@@ -45,7 +45,7 @@ const SERVICES = {
     storage: 'SQLite + Cloud IdP',
     hasIdp: false, // 使用 Cloud IdP
     isSp: false,
-    idpUrl: `http://localhost:${CLOUD_PORT}`,
+    oidcIssuer: `http://localhost:${CLOUD_PORT}`,
   },
   standalone: {
     name: 'Standalone',
@@ -362,7 +362,7 @@ suite('Docker Cluster Integration', () => {
 
     it('should support pod-level quota', async () => {
       // Use existing seed pod instead of creating a new one
-      const podId = 'http://localhost:5737/test/';
+      const podId = `http://localhost:${LOCAL_PORT}/test/`;
 
       // Set pod quota
       const setRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/pods/${encodeURIComponent(podId)}`, {

@@ -21,6 +21,8 @@ import { TerminalHttpHandler } from './http/terminal/TerminalHttpHandler';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
+import { WebIdProfileRepository } from './identity/drizzle/WebIdProfileRepository';
+import { ValidatingIdentityProviderHttpHandler } from './identity/ValidatingIdentityProviderHttpHandler';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
@@ -71,9 +73,11 @@ import { DisabledOidcHandler } from './identity/oidc/DisabledOidcHandler';
 import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentityProviderHandler';
 import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
+import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
+import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 // Authorization components
 import { AuthModeSelector } from './authorization/AuthModeSelector';
 export type {
@@ -127,6 +131,8 @@ export {
     TerminalHttpHandler,
     ReservedSuffixIdentifierGenerator,
     DrizzleIndexedStorage,
+    WebIdProfileRepository,
+    ValidatingIdentityProviderHttpHandler,
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
     SqliteKeyValueStorage,
@@ -179,10 +185,12 @@ export {
   DisabledIdentityProviderHandler,
   AutoDetectOidcHandler,
   AutoDetectIdentityProviderHandler,
+  LoopbackClientIdAdapterFactory,
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,
   ProvisionCodeCodec,
+  LocalPodProvisioningService,
   // Authorization exports
   AuthModeSelector,
 };

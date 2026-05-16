@@ -13,8 +13,9 @@ data:
 
   # Public entry domain (HTTPS required in production)
   CSS_BASE_URL: https://id.undefineds.co
+  # Optional OIDC issuer; if omitted, defaults to CSS_BASE_URL
   CSS_ALLOWED_HOSTS: id.undefineds.co,pods.undefineds.co,api.undefineds.co
 
   # Cloud features
   XPOD_EDGE_NODES_ENABLED: "true"
-  CSS_BASE_STORAGE_DOMAIN: undefineds.site
+  CSS_BASE_STORAGE_DOMAIN: undefineds.co

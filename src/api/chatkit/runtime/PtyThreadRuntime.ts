@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
+import { getPlatformApiBaseUrl } from '../../service/platform-ai-config';
 import { PACKAGE_ROOT } from '../../../runtime';
 import { GitWorktreeService } from './GitWorktreeService';
 import { AcpRunner } from './AcpRunner';
@@ -555,7 +556,7 @@ export class PtyThreadRuntime {
   ): Record<string, string | undefined> | undefined {
     // When agentConfig is provided, use its credentials; otherwise fall back to DEFAULT_* env vars.
     const defaultApiKey = agentConfig?.apiKey || process.env.DEFAULT_API_KEY?.trim();
-    const rawApiBase = agentConfig?.baseUrl || process.env.DEFAULT_API_BASE?.trim();
+    const rawApiBase = agentConfig?.baseUrl || getPlatformApiBaseUrl();
     const defaultModel = agentConfig?.model || process.env.DEFAULT_MODEL?.trim();
 
     // CodeBuddy ACP relies on its own local auth state, not OpenAI/Anthropic keys.

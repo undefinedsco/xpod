@@ -115,6 +115,28 @@
       }
     },
     {
+      "comment": "Validate CSS account cookies against account storage to avoid stale browser sessions after data resets.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IdentityProviderHttpHandler"
+      },
+      "overrideParameters": {
+        "@type": "ValidatingIdentityProviderHttpHandler",
+        "providerFactory": {
+          "@id": "urn:solid-server:default:IdentityProviderFactory"
+        },
+        "cookieStore": {
+          "@id": "urn:solid-server:default:CookieStore"
+        },
+        "handler": {
+          "@id": "urn:solid-server:default:InteractionHandler"
+        },
+        "accountStorage": {
+          "@id": "urn:solid-server:default:AccountStorage"
+        }
+      }
+    },
+    {
       "comment": "Override main HTML template to remove CSS default header/footer wrapper.",
       "@type": "Override",
       "overrideInstance": {

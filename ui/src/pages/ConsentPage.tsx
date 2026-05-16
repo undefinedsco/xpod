@@ -5,6 +5,7 @@ import clsx from 'clsx';
 import { useAuth } from '../context/AuthContext';
 import { CardWrapper } from '../components/CardWrapper';
 import { persistReturnTo } from '../utils/returnTo';
+import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 
 export function ConsentPage() {
   const { idpIndex, isLoggedIn, controls } = useAuth();
@@ -28,7 +29,7 @@ export function ConsentPage() {
     (async () => {
       try {
         const consentRes = await fetch(consentUrl, { 
-          headers: { Accept: 'application/json' }, 
+          headers: storedAccountTokenHeaders(), 
           credentials: 'include' 
         });
         
@@ -49,7 +50,7 @@ export function ConsentPage() {
         setCurrentWebId(consentData.webId || null);
 
         const pickRes = await fetch(pickWebIdUrl, { 
-          headers: { Accept: 'application/json' }, 
+          headers: storedAccountTokenHeaders(), 
           credentials: 'include' 
         });
         if (pickRes.ok) {
@@ -94,8 +95,9 @@ export function ConsentPage() {
   const handleSwitchAccount = async () => {
     try {
       if (controls?.account?.logout) {
-        await fetch(controls.account.logout, { method: 'POST', credentials: 'include' });
+        await fetch(controls.account.logout, { method: 'POST', headers: storedAccountTokenHeaders(), credentials: 'include' });
       }
+      clearAccountSessionToken();
       window.location.href = '/.account/login/password/';
     } catch {
       window.location.href = '/.account/login/password/';
@@ -112,7 +114,7 @@ export function ConsentPage() {
         console.log('[Consent] Cancelling...');
         const res = await fetch(cancelUrl, { 
           method: 'POST', 
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, 
+          headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }), 
           credentials: 'include',
           body: JSON.stringify({})
         });
@@ -128,7 +130,7 @@ export function ConsentPage() {
         console.log('[Consent] Picking WebID:', selectedWebId);
         const pickRes = await fetch(pickWebIdUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
           credentials: 'include',
           body: JSON.stringify({ webId: selectedWebId, remember: false })
         });
@@ -143,7 +145,7 @@ export function ConsentPage() {
 
       const consentRes = await fetch(consentUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ remember: rememberClient })
       });

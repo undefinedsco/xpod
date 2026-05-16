@@ -159,7 +159,7 @@ export class Supervisor {
     this.addLog(name, 'info', 'Service starting');
     this.updateState(name, { status: 'starting', startTime: Date.now() });
 
-    const env = { ...process.env, ...config.env };
+    const env = config.env ?? process.env;
 
     const child = spawn(config.command, config.args, {
       stdio: ['ignore', 'pipe', 'pipe'],

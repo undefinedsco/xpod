@@ -3,9 +3,16 @@ import { registerRoutes } from '../../src/api/container/routes';
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
 
-describe('registerRoutes vector wiring', () => {
+describe('registerRoutes mode wiring', () => {
   let routes: Record<string, Function>;
   let mockServer: ApiServer;
+
+  function storeRoute(method: string, path: string, handlerOrOptions: Function | { public?: boolean }, maybeOptions?: { public?: boolean }): void {
+    const handler = typeof handlerOrOptions === 'function' ? handlerOrOptions : undefined;
+    const options = typeof handlerOrOptions === 'function' ? maybeOptions : handlerOrOptions;
+    void options;
+    routes[`${method.toUpperCase()} ${path}`] = handler as Function;
+  }
 
   const baseConfig: ApiContainerConfig = {
     edition: 'cloud',
@@ -22,23 +29,23 @@ describe('registerRoutes vector wiring', () => {
   beforeEach(() => {
     routes = {};
     mockServer = {
-      route: vi.fn((method: string, path: string, handler: Function) => {
-        routes[`${method.toUpperCase()} ${path}`] = handler;
+      route: vi.fn((method: string, path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute(method, path, handler, options);
       }),
-      get: vi.fn((path: string, handler: Function) => {
-        routes[`GET ${path}`] = handler;
+      get: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('GET', path, handler, options);
       }),
-      post: vi.fn((path: string, handler: Function) => {
-        routes[`POST ${path}`] = handler;
+      post: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('POST', path, handler, options);
       }),
-      put: vi.fn((path: string, handler: Function) => {
-        routes[`PUT ${path}`] = handler;
+      put: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('PUT', path, handler, options);
       }),
-      delete: vi.fn((path: string, handler: Function) => {
-        routes[`DELETE ${path}`] = handler;
+      delete: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('DELETE', path, handler, options);
       }),
-      patch: vi.fn((path: string, handler: Function) => {
-        routes[`PATCH ${path}`] = handler;
+      patch: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('PATCH', path, handler, options);
       }),
     } as unknown as ApiServer;
   });
@@ -52,9 +59,9 @@ describe('registerRoutes vector wiring', () => {
       chatService: {},
       chatKitService: {},
       chatKitStore: {},
-      vectorService: {},
       db: {},
-      webIdProfileRepo: edition === 'cloud' ? {} : undefined,
+      webIdProfileRepo: {},
+      podLookupRepo: {},
       ddnsRepo: edition === 'cloud' ? {} : undefined,
       dnsProvider: edition === 'cloud' ? {} : undefined,
       ddnsManager: edition === 'local' ? {} : undefined,
@@ -74,19 +81,22 @@ describe('registerRoutes vector wiring', () => {
     };
   }
 
-  it('registers vector routes in cloud mode', () => {
+  it('registers cloud-only management routes in cloud mode', () => {
     registerRoutes(createContainer('cloud'));
 
-    expect(routes['GET /v1/vectors/status']).toBeTypeOf('function');
-    expect(routes['POST /v1/embeddings']).toBeTypeOf('function');
+    expect(routes['GET /:username/profile/card']).toBeTypeOf('function');
+    expect(routes['POST /api/v1/ddns/allocate']).toBeTypeOf('function');
+    expect(routes['POST /provision/nodes']).toBeTypeOf('function');
     expect(routes['GET /api/admin/status']).toBeUndefined();
+    expect(routes['GET /api/linx/capabilities']).toBeUndefined();
   });
 
-  it('registers vector routes in local mode', () => {
+  it('registers local-only admin and onboarding routes in local mode', () => {
     registerRoutes(createContainer('local'));
 
-    expect(routes['GET /v1/vectors/status']).toBeTypeOf('function');
-    expect(routes['POST /v1/embeddings']).toBeTypeOf('function');
+    expect(routes['GET /api/linx/capabilities']).toBeTypeOf('function');
     expect(routes['GET /api/admin/status']).toBeTypeOf('function');
+    expect(routes['GET /:username/profile/card']).toBeTypeOf('function');
+    expect(routes['POST /provision/pods']).toBeUndefined();
   });
 });

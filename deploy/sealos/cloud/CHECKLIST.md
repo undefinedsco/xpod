@@ -1,14 +1,23 @@
-# Xpod 0.2.0 部署 Checklist
+# Xpod 云端部署 Checklist
 
-> 适用场景：`xpod@0.2.0`，运行在 Sealos，新加坡区对象存储使用 Cloudflare R2，PostgreSQL 使用 Supabase，Redis 使用 Upstash。
+> 适用场景：xpod 运行在 Sealos，海外环境使用 Cloudflare R2、Supabase PostgreSQL、Upstash Redis。
 >
-> 更新时间：2026-03-10
+> 当前示例镜像：`ghcr.io/undefinedsco/xpod:0.2.1`
+>
+> 更新时间：2026-03-28
+
+## 0. GitHub Environment
+
+- [ ] 为 `co` / `cn` 分别创建 GitHub `environment`
+- [ ] 每个环境都配置 `KUBE_CONFIG_DATA`
+- [ ] 每个环境都配置 `SEALOS_NAMESPACE`
+- [ ] 每个环境都配置 `APP_ENV_FILE`
 
 ## 1. 发布物确认
 
-- [ ] 确认镜像标签已存在：`ghcr.io/undefinedsco/xpod:0.2.0`
+- [ ] 确认镜像标签已存在：`ghcr.io/undefinedsco/xpod:0.2.1`
 - [ ] 如走 GitHub Actions，确认 `Release` workflow 已成功推送 GHCR 镜像
-- [ ] 如首次部署，优先固定版本号 `0.2.0`，不要直接用 `latest`
+- [ ] 如首次部署，优先固定版本号 `0.2.1` 或其他不可变 tag，不要直接用 `latest`
 
 ## 2. 外部依赖准备
 
@@ -71,7 +80,7 @@ https://<account-id>.r2.cloudflarestorage.com
 推荐使用 Sealos App Launchpad 单容器部署，xpod 自带 gateway，会在容器内再拉起 CSS 和 API。
 
 - [ ] 应用名称：`xpod`
-- [ ] 镜像：`ghcr.io/undefinedsco/xpod:0.2.0`
+- [ ] 镜像：`ghcr.io/undefinedsco/xpod:0.2.1`
 - [ ] 启动命令：`node`
 - [ ] 启动参数：`dist/main.js -m cloud -p 3000 --host 0.0.0.0`
 - [ ] 容器端口：`3000`
@@ -109,7 +118,7 @@ CLOUDFLARE_ACCOUNT_ID=<cloudflare-account-id>
 
 可选变量：
 
-- `CSS_OIDC_ISSUER`：如 IdP 域名独立于 `CSS_BASE_URL`
+- `CSS_OIDC_ISSUER`：如需显式指定 issuer；不填默认与 `CSS_BASE_URL` 一致
 - `CSS_EMAIL_CONFIG_*`：开启邮件注册、找回密码时再填写
 - `CSS_REDIS_USERNAME` / `CSS_REDIS_PASSWORD`：仅在不把认证信息写入 `CSS_REDIS_CLIENT` 时使用
 
@@ -142,11 +151,11 @@ curl -i https://id.example.com/service/status
 - [ ] 变更环境变量前先导出当前配置
 - [ ] Supabase 在升级前做一次数据库备份/快照
 - [ ] R2 Bucket 不做破坏性清理
-- [ ] 若 0.2.0 启动异常，先回滚镜像，再检查数据库扩展和外部连接串
+- [ ] 若新版本启动异常，先回滚镜像，再检查数据库扩展和外部连接串
 
 ## 9. 仓库内对应文件
 
-- `deploy/sealos/cloud/env.sg.example`
-- `deploy/sealos/cloud/secret.sg.example.yaml`
+- `deploy/sealos/cloud/env.co.example`
+- `deploy/sealos/cloud/secret.co.example.yaml`
 - `deploy/sealos/cloud/deployment.yaml`
 - `deploy/sealos/cloud/README.md`

@@ -82,7 +82,6 @@ export const ddnsRecords = pgTable('identity_ddns_record', {
 
 export const edgeNodes = pgTable('identity_edge_node', {
   id: text('id').primaryKey(),
-  ownerAccountId: text('owner_account_id'),     // Owner of the node
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
   nodeType: text('node_type').default('edge'),  // 'center' | 'edge' | 'sp'

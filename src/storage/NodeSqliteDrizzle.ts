@@ -75,7 +75,10 @@ class NodeSqliteSession extends SQLiteSession<'sync', any, Record<string, unknow
   ): NodeSqlitePreparedQuery {
     const objectStatement = this.client.prepare(query.sql);
     const arrayStatement = this.client.prepare(query.sql);
-    arrayStatement.setReturnArrays(true);
+    const supportsReturnArrays = typeof (arrayStatement as StatementSync & { setReturnArrays?: (enabled: boolean) => unknown }).setReturnArrays === 'function';
+    if (supportsReturnArrays) {
+      (arrayStatement as StatementSync & { setReturnArrays: (enabled: boolean) => unknown }).setReturnArrays(true);
+    }
     return new NodeSqlitePreparedQuery(
       objectStatement,
       arrayStatement,
@@ -84,6 +87,7 @@ class NodeSqliteSession extends SQLiteSession<'sync', any, Record<string, unknow
       fields,
       executeMethod,
       isResponseInArrayMode,
+      supportsReturnArrays,
       customResultMapper,
     );
   }
@@ -144,6 +148,7 @@ class NodeSqlitePreparedQuery extends PreparedQueryBase<{
     private readonly fields: any,
     executeMethod: any,
     private readonly _isResponseInArrayMode: boolean,
+    private readonly supportsReturnArrays: boolean,
     private readonly customResultMapper?: (rows: unknown[][]) => unknown,
   ) {
     super('sync', executeMethod, query);
@@ -178,7 +183,7 @@ class NodeSqlitePreparedQuery extends PreparedQueryBase<{
     if (!fields && !customResultMapper) {
       return objectStatement.get(...params);
     }
-    const row = arrayStatement.get(...params) as unknown[] | undefined;
+    const row = this.toArrayRow(arrayStatement.get(...params));
     if (!row) {
       return undefined;
     }
@@ -191,11 +196,22 @@ class NodeSqlitePreparedQuery extends PreparedQueryBase<{
   public override values(placeholderValues?: Record<string, unknown>): unknown[][] {
     const params = fillPlaceholders(this.query.params, placeholderValues ?? {}) as any[];
     this.logger.logQuery(this.query.sql, params);
-    return this.arrayStatement.all(...params) as unknown as unknown[][];
+    const rows = this.arrayStatement.all(...params) as unknown[];
+    return rows.map((row) => this.toArrayRow(row) ?? []);
   }
 
   public isResponseInArrayMode(): boolean {
     return this._isResponseInArrayMode;
+  }
+
+  private toArrayRow(row: unknown): unknown[] | undefined {
+    if (row === undefined) {
+      return undefined;
+    }
+    if (this.supportsReturnArrays) {
+      return row as unknown[];
+    }
+    return Object.values(row as Record<string, unknown>);
   }
 }
 

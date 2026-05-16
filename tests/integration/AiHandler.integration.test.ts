@@ -86,6 +86,27 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     expect(chatService.responses).toHaveBeenCalledWith({ prompt: '我的 key 是 sk-test-12345678901234567890' }, expect.anything());
   });
 
+  it('should preserve optional vector_store_ids for downstream service handling', async () => {
+    chatService.responses.mockResolvedValue({ id: 'resp-2', object: 'response' });
+
+    const response = await fetch(baseUrl + '/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify({
+        model: 'linx-lite',
+        input: 'hello',
+        vector_store_ids: ['vs_123'],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(chatService.responses).toHaveBeenCalledWith({
+      model: 'linx-lite',
+      input: 'hello',
+      vector_store_ids: ['vs_123'],
+    }, expect.anything());
+  });
+
   it('should handle POST /v1/messages', async () => {
     chatService.messages.mockResolvedValue({ id: 'msg-1', role: 'assistant' });
 

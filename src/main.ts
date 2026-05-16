@@ -266,7 +266,6 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const supervisor = new Supervisor();
   const cssBinary = require.resolve('@solid/community-server/bin/server.js');
-  const cssModuleRoot = path.dirname(require.resolve('@solid/community-server/package.json'));
 
   supervisor.register({
     name: 'css',
@@ -274,7 +273,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
     args: [
       cssBinary,
       '-c', configPath,
-      '-m', cssModuleRoot,
+      '-m', PACKAGE_ROOT,
       '-p', cssPort.toString(),
       '-b', baseUrl,
     ],

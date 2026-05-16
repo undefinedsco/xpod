@@ -188,7 +188,7 @@ CREATE TABLE edge_node (
 
 ```bash
 # 节点标识
-CSS_NODE_ID=auto                    # 自动生成，持久化到 .node-id
+XPOD_NODE_ID=auto                   # 自动生成，持久化到 .node-id
 
 # 存储
 CSS_MINIO_ENDPOINT=cos.ap-beijing.myqcloud.com

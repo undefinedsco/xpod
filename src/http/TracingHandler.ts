@@ -2,6 +2,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import { HttpHandler, type HttpHandlerInput } from '@solid/community-server';
 import { logContext } from '../logging/LogContext';
 import { lockContext } from '../util/LockContext';
+import { metadataRequestContext } from '../storage/MetadataRequestContext';
 import crypto from 'node:crypto';
 
 /**
@@ -35,6 +36,7 @@ export class TracingHandler extends HttpHandler {
     // Enter logging context for this request
     logContext.enterWith({ requestId });
     lockContext.enterWith(new Map());
+    metadataRequestContext.enterWith({ metadataCache: new Map() });
 
     // Register finish listener to log completion
     input.response.on('finish', () => {

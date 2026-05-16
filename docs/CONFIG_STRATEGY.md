@@ -67,7 +67,7 @@ urn:solid-server:default:variable:xxx
 
 | 内部变量名 | CLI选项 | ENV变量 | 类型 | 默认值 | 说明 |
 |-----------|---------|---------|------|--------|------|
-| edition | `--edition` | CSS_EDITION | string | "server" | 版本模式：server/local |
+| edition | `--edition` | XPOD_EDITION | string | "server" | 版本模式：server/local |
 | edgeNodesEnabled | `--edgeNodesEnabled` | CSS_EDGE_NODES_ENABLED | boolean | false | 启用边缘节点 |
 
 **cli.json 配置：**
@@ -330,7 +330,7 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | 内部变量名 | ENV变量 | 提取器 | 默认值 | 可推导 |
 |-----------|---------|--------|--------|--------|
 | **CLI参数（KeyExtractor）** |
-| edition | CSS_EDITION | KeyExtractor | "server" | - |
+| edition | XPOD_EDITION | KeyExtractor | "server" | - |
 | edgeNodesEnabled | CSS_EDGE_NODES_ENABLED | KeyExtractor | false | - |
 | **数据层（EnvExtractor + CSS_前缀）** |
 | identityDbUrl | CSS_IDENTITY_DB_URL | EnvExtractor | - | - |

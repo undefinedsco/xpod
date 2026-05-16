@@ -9,11 +9,17 @@ export interface PodManagementHandlerOptions {
   verifyServiceToken: (token: string) => Promise<boolean>;
   /** 可选：限制允许的 pod 名称正则 */
   podNameRegex?: RegExp;
+  /** 可选：创建 CSS-compatible Pod 数据，而不是只创建裸目录 */
+  provisioningService?: {
+    createPod(input: CreatePodRequest): Promise<{ podUrl: string }>;
+  };
 }
 
 export interface CreatePodRequest {
   /** Pod 名称（通常是用户名） */
   podName: string;
+  /** Owner WebID，Cloud IDP + Local SP 时应为 Cloud WebID */
+  webId?: string;
   /** 可选：初始资源 */
   initialResources?: Record<string, string>;
 }
@@ -49,7 +55,7 @@ export function registerPodManagementRoutes(
   options: PodManagementHandlerOptions
 ): void {
   const logger = getLoggerFor('PodManagementHandler');
-  const { rootDir, verifyServiceToken, podNameRegex = /^[a-zA-Z0-9_-]+$/ } = options;
+  const { rootDir, verifyServiceToken, podNameRegex = /^[a-zA-Z0-9_-]+$/, provisioningService } = options;
 
   /**
    * 验证 service token
@@ -132,12 +138,14 @@ export function registerPodManagementRoutes(
 
     // 5. 创建 Pod 目录
     try {
-      await createPodDirectory(podPath, initialResources);
+      const result = provisioningService
+        ? await provisioningService.createPod(body)
+        : await createPodDirectory(podPath, initialResources).then(() => undefined);
       logger.info(`Created pod: ${podName} at ${podPath}`);
 
       // 构建 pod URL (基于请求的 host)
       const host = request.headers.host || 'localhost';
-      const podUrl = `https://${host}/${podName}/`;
+      const podUrl = result?.podUrl || `https://${host}/${podName}/`;
 
       sendJson(response, 201, {
         success: true,

@@ -80,16 +80,24 @@ async function startBackgroundServices(
   }
 
   try {
-    const localNetworkManager = container.resolve('localNetworkManager', { allowUnregistered: true });
     const localTunnelProvider = container.resolve('localTunnelProvider', { allowUnregistered: true }) as any;
 
-    if (!localNetworkManager && localTunnelProvider) {
-      logger.info('Starting Cloudflare Tunnel (standalone mode)...');
-      await localTunnelProvider.start();
-      logger.info('Cloudflare Tunnel started');
+    if (localTunnelProvider) {
+      logger.info('Starting local tunnel provider...');
+      const localPort = Number.parseInt(
+        process.env.XPOD_MAIN_PORT ?? process.env.CSS_PORT ?? process.env.PORT ?? '3000',
+        10,
+      );
+      const config = await localTunnelProvider.setup({
+        subdomain: 'local',
+        localPort: Number.isFinite(localPort) && localPort > 0 ? localPort : 3000,
+        localProtocol: 'http',
+      });
+      await localTunnelProvider.start(config);
+      logger.info('Local tunnel provider started');
     }
   } catch (error) {
-    logger.error(`Failed to start Cloudflare Tunnel: ${error}`);
+    logger.error(`Failed to start local tunnel provider: ${error}`);
   }
 }
 

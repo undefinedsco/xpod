@@ -4,7 +4,7 @@ import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
 
 // Mock global fetch
 const mockFetch = vi.fn();
-vi.stubGlobal('fetch', mockFetch);
+globalThis.fetch = mockFetch as typeof fetch;
 
 describe('ProvisionPodCreator', () => {
   const baseUrl = 'https://cloud.example.com/';
@@ -14,6 +14,7 @@ describe('ProvisionPodCreator', () => {
   let mockIdentifierGenerator: any;
   let mockWebIdStore: any;
   let mockPodStore: any;
+  let mockWebIdProfileRepo: any;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -28,6 +29,13 @@ describe('ProvisionPodCreator', () => {
     mockPodStore = {
       create: vi.fn().mockResolvedValue('pod-id-1'),
     };
+    mockWebIdProfileRepo = {
+      updateStorage: vi.fn().mockResolvedValue({
+        username: 'alice',
+        storageUrl: 'https://abc123.undefineds.site/alice/',
+        storageMode: 'local',
+      }),
+    };
 
     creator = new ProvisionPodCreator({
       baseUrl,
@@ -36,6 +44,7 @@ describe('ProvisionPodCreator', () => {
       relativeWebIdPath: 'profile/card#me',
       webIdStore: mockWebIdStore,
       podStore: mockPodStore,
+      webIdProfileRepo: mockWebIdProfileRepo,
     });
   });
 
@@ -81,7 +90,10 @@ describe('ProvisionPodCreator', () => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${serviceToken}`,
           },
-          body: JSON.stringify({ podName: 'alice' }),
+          body: JSON.stringify({
+            podName: 'alice',
+            webId: `${baseUrl}alice/profile/card#me`,
+          }),
         }),
       );
 
@@ -109,12 +121,40 @@ describe('ProvisionPodCreator', () => {
 
       // Should use spDomain, not spUrl
       expect(result.podUrl).toBe('https://abc123.undefineds.site/alice/');
+      expect(mockWebIdProfileRepo.updateStorage).toHaveBeenCalledWith('alice', {
+        storageUrl: 'https://abc123.undefineds.site/alice/',
+        storageMode: 'local',
+      });
 
       // But fetch should still use the real spUrl
       expect(mockFetch).toHaveBeenCalledWith(
         `${spUrl}/provision/pods`,
         expect.any(Object),
       );
+    });
+
+    it('reconciles storage pointer to canonical storage url when SP returns a local callback podUrl', async () => {
+      const provisionCode = makeProvisionCode({ spDomain: 'abc123.undefineds.site' });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ podUrl: `${spUrl}/alice/` }),
+      });
+
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+      const result = await creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode },
+      });
+
+      expect(result.podUrl).toBe(`${spUrl}/alice/`);
+      expect(mockWebIdProfileRepo.updateStorage).toHaveBeenCalledWith('alice', {
+        storageUrl: 'https://abc123.undefineds.site/alice/',
+        storageMode: 'local',
+      });
     });
 
     it('should throw on invalid provisionCode', async () => {
@@ -198,17 +238,16 @@ describe('ProvisionPodCreator', () => {
   });
 
   describe('without provisionCode (standard mode)', () => {
-    it('should delegate to BasePodCreator', async () => {
-      // Mock the parent handle
-      const parentResult = {
+    it('should create pod through standard mode path', async () => {
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(creator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+      const expectedResult = {
         podUrl: `${baseUrl}bob/`,
         webId: `${baseUrl}bob/profile/card#me`,
-        podId: 'pod-id-2',
-        webIdLink: 'webid-link-2',
+        podId: 'pod-id-1',
+        webIdLink: 'webid-link-1',
       };
-
-      vi.spyOn(Object.getPrototypeOf(ProvisionPodCreator.prototype), 'handle')
-        .mockResolvedValue(parentResult);
 
       const result = await creator.handle({
         name: 'bob',
@@ -216,8 +255,39 @@ describe('ProvisionPodCreator', () => {
         settings: {},
       });
 
-      expect(result).toEqual(parentResult);
+      expect(result).toEqual(expectedResult);
+      expect((creator as any).handleWebId).toHaveBeenCalledWith(
+        true,
+        `${baseUrl}bob/profile/card#me`,
+        'account-2',
+        expect.objectContaining({
+          base: { path: `${baseUrl}bob/` },
+          webId: `${baseUrl}bob/profile/card#me`,
+          oidcIssuer: baseUrl,
+        }),
+      );
+      expect((creator as any).createPod).toHaveBeenCalledWith(
+        'account-2',
+        expect.objectContaining({
+          base: { path: `${baseUrl}bob/` },
+          webId: `${baseUrl}bob/profile/card#me`,
+          oidcIssuer: baseUrl,
+        }),
+        false,
+        'webid-link-1',
+      );
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('maps duplicate resource conflicts to a pod-name conflict message', async () => {
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+      vi.spyOn(creator as any, 'createPod').mockRejectedValue(new Error(`There already is a resource at ${baseUrl}bob/`));
+
+      await expect(creator.handle({
+        name: 'bob',
+        accountId: 'account-2',
+        settings: {},
+      })).rejects.toThrow('Pod name "bob" is already taken for this storage target.');
     });
   });
 });

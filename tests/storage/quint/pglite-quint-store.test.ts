@@ -7,6 +7,10 @@
  * 3. Behavior is consistent with SQLite implementation
  */
 
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { PGlite } from '@electric-sql/pglite';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { DataFactory } from 'rdf-data-factory';
 import { PgQuintStore } from '../../../src/storage/quint/PgQuintStore.js';
@@ -156,6 +160,29 @@ describe('PgQuintStore (PGLite backend)', () => {
       expect(results[0].object.value).toBe('value1');
       // Vector should be updated to the new value
       expect(results[0].vector).toEqual([0.4, 0.5, 0.6]);
+    });
+
+    it('should store long literal objects without indexing the raw GSPO tuple', async () => {
+      const longLiteral = 'audit-context:'.repeat(500);
+      const quint: any = {
+        subject: namedNode('http://example.org/audit/entry'),
+        predicate: namedNode('http://example.org/context'),
+        object: literal(longLiteral),
+        graph: namedNode('http://example.org/.data/audits/2026/05/07.ttl'),
+      };
+
+      await store.put(quint);
+      await store.put(quint);
+
+      const results = await store.get({
+        graph: namedNode('http://example.org/.data/audits/2026/05/07.ttl'),
+        subject: namedNode('http://example.org/audit/entry'),
+        predicate: namedNode('http://example.org/context'),
+        object: literal(longLiteral),
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].object.value).toBe(longLiteral);
     });
   });
 
@@ -382,5 +409,378 @@ describe('PgQuintStore (PGLite backend)', () => {
       expect(results.length).toBe(1);
       expect(results[0].subject.termType).toBe('BlankNode');
     });
+  });
+});
+
+describe('PgQuintStore schema migration', () => {
+  it('should replace legacy raw GSPO indexes before accepting long literals', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-pg-quints-'));
+    const legacy = new PGlite(dataDir);
+    await legacy.waitReady;
+
+    await legacy.exec(`
+      CREATE TABLE quints (
+        graph TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        object TEXT NOT NULL,
+        vector TEXT,
+        PRIMARY KEY (graph, subject, predicate, object)
+      );
+
+      CREATE INDEX idx_gspo ON quints (graph, subject, predicate, object);
+    `);
+    await legacy.close();
+
+    const store = new PgQuintStore({
+      driver: 'pglite',
+      dataDir,
+    });
+
+    try {
+      await store.open();
+
+      const indexes = await (store as any).executor.query<{ indexname: string }>(`
+        SELECT indexname
+        FROM pg_indexes
+        WHERE tablename = 'quints'
+      `);
+      const indexNames = indexes.map((row) => row.indexname);
+
+      expect(indexNames).not.toContain('quints_pkey');
+      expect(indexNames).not.toContain('idx_gspo');
+      expect(indexNames).not.toContain('idx_quints_predicate_object_text');
+      expect(indexNames).not.toContain('idx_quints_quint_hash');
+      expect(indexNames).toContain('idx_quints_predicate_object_key');
+      expect(indexNames).toContain('idx_quints_predicate_object_digest');
+      expect(indexNames).toContain('idx_quints_gspo_digest');
+
+      const longLiteral = 'migrated-audit-context:'.repeat(500);
+      const quint: any = {
+        subject: namedNode('http://example.org/audit/migrated-entry'),
+        predicate: namedNode('http://example.org/context'),
+        object: literal(longLiteral),
+        graph: namedNode('http://example.org/.data/audits/2026/05/07.ttl'),
+      };
+
+      await store.put(quint);
+
+      const results = await store.get({
+        subject: namedNode('http://example.org/audit/migrated-entry'),
+        predicate: namedNode('http://example.org/context'),
+        object: literal(longLiteral),
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].object.value).toBe(longLiteral);
+    } finally {
+      await store.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should drop legacy hash indexes and avoid recreating hash storage paths', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-pg-quints-hash-'));
+    const legacy = new PGlite(dataDir);
+    await legacy.waitReady;
+
+    await legacy.exec(`
+      CREATE TABLE quints (
+        quint_hash TEXT,
+        graph_hash TEXT,
+        subject_hash TEXT,
+        predicate_hash TEXT,
+        object_hash TEXT,
+        object_kind TEXT,
+        object_key TEXT,
+        object_text TEXT,
+        graph TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        object TEXT NOT NULL,
+        vector TEXT
+      );
+
+      CREATE UNIQUE INDEX idx_quints_quint_hash ON quints (quint_hash);
+      CREATE INDEX idx_quints_graph_hash ON quints (graph_hash);
+      CREATE INDEX idx_quints_gsp_hash ON quints (graph_hash, subject_hash, predicate_hash);
+    `);
+    await legacy.close();
+
+    const store = new PgQuintStore({
+      driver: 'pglite',
+      dataDir,
+    });
+
+    try {
+      await store.open();
+
+      const indexes = await (store as any).executor.query<{ indexname: string }>(`
+        SELECT indexname
+        FROM pg_indexes
+        WHERE tablename = 'quints'
+      `);
+      const indexNames = indexes.map((row) => row.indexname);
+
+      expect(indexNames).not.toContain('idx_quints_quint_hash');
+      expect(indexNames).not.toContain('idx_quints_graph_hash');
+      expect(indexNames).not.toContain('idx_quints_gsp_hash');
+      expect(indexNames).toContain('idx_quints_gsp');
+      expect(indexNames).toContain('idx_quints_predicate_object_key');
+      expect(indexNames).toContain('idx_quints_predicate_object_digest');
+
+      const columns = await (store as any).executor.query<{ column_name: string }>(`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'quints'
+      `);
+      const columnNames = columns.map((row) => row.column_name);
+
+      expect(columnNames).not.toContain('quint_hash');
+      expect(columnNames).not.toContain('graph_hash');
+      expect(columnNames).not.toContain('subject_hash');
+      expect(columnNames).not.toContain('predicate_hash');
+      expect(columnNames).not.toContain('object_hash');
+      expect(columnNames).toContain('object_digest');
+    } finally {
+      await store.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('PgQuintStore object data types', () => {
+  it('should support text exact, prefix, range, and ordering through object_key', async () => {
+    const typedStore = new PgQuintStore({
+      driver: 'pglite',
+      dataDir: undefined,
+      textMaxBytes: 64,
+      predicateObjectDataTypes: {
+        'http://example.org/title': 'text',
+      },
+    });
+
+    try {
+      await typedStore.open();
+      await typedStore.multiPut([
+        {
+          subject: namedNode('http://example.org/doc/a'),
+          predicate: namedNode('http://example.org/title'),
+          object: literal('Alpha'),
+          graph: namedNode('http://example.org/g1'),
+        },
+        {
+          subject: namedNode('http://example.org/doc/b'),
+          predicate: namedNode('http://example.org/title'),
+          object: literal('Beta'),
+          graph: namedNode('http://example.org/g1'),
+        },
+      ] as any[]);
+
+      const exactResults = await typedStore.get({
+        predicate: namedNode('http://example.org/title'),
+        object: literal('Alpha'),
+      });
+      expect(exactResults.map((row) => row.subject.value)).toEqual(['http://example.org/doc/a']);
+
+      const prefixResults = await typedStore.get({
+        predicate: namedNode('http://example.org/title'),
+        object: { $startsWith: '"A' },
+      });
+      expect(prefixResults.map((row) => row.subject.value)).toEqual(['http://example.org/doc/a']);
+
+      const rangeResults = await typedStore.get({
+        predicate: namedNode('http://example.org/title'),
+        object: { $gt: literal('Alpha') },
+      });
+      expect(rangeResults.map((row) => row.subject.value)).toEqual(['http://example.org/doc/b']);
+
+      const orderedResults = await typedStore.get({
+        predicate: namedNode('http://example.org/title'),
+      }, { order: ['object'] });
+      expect(orderedResults.map((row) => row.object.value)).toEqual(['Alpha', 'Beta']);
+    } finally {
+      await typedStore.close();
+    }
+  });
+
+  it('should store text in object_key and longText in object_text', async () => {
+    const body = 'long body '.repeat(80);
+    const typedStore = new PgQuintStore({
+      driver: 'pglite',
+      dataDir: undefined,
+      textMaxBytes: 64,
+      predicateObjectDataTypes: {
+        'http://example.org/title': 'text',
+        'http://example.org/body': 'longText',
+      },
+    });
+
+    try {
+      await typedStore.open();
+      await typedStore.multiPut([
+        {
+          subject: namedNode('http://example.org/doc/1'),
+          predicate: namedNode('http://example.org/title'),
+          object: literal('Short title'),
+          graph: namedNode('http://example.org/g1'),
+        },
+        {
+          subject: namedNode('http://example.org/doc/1'),
+          predicate: namedNode('http://example.org/body'),
+          object: literal(body),
+          graph: namedNode('http://example.org/g1'),
+        },
+      ] as any[]);
+
+      const rows = await (typedStore as any).executor.query<{
+        predicate: string;
+        objectKind: string;
+        objectKey: string | null;
+        objectText: string | null;
+        objectDigest: string | null;
+      }>(`
+        SELECT
+          predicate,
+          object_kind as "objectKind",
+          object_key as "objectKey",
+          object_text as "objectText",
+          object_digest as "objectDigest"
+        FROM quints
+        ORDER BY predicate
+      `);
+
+      const bodyRow = rows.find((row) => row.predicate === 'http://example.org/body');
+      const titleRow = rows.find((row) => row.predicate === 'http://example.org/title');
+
+      expect(bodyRow?.objectKind).toBe('longText');
+      expect(bodyRow?.objectKey).toBeNull();
+      expect(bodyRow?.objectText).toBe(body);
+      expect(bodyRow?.objectDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(titleRow?.objectKind).toBe('text');
+      expect(titleRow?.objectKey).toContain('Short title');
+      expect(titleRow?.objectText).toBe('Short title');
+      expect(titleRow?.objectDigest).toBeNull();
+    } finally {
+      await typedStore.close();
+    }
+  });
+
+  it('should query longText with DB-side contains and reject range/order semantics', async () => {
+    const body = 'alpha '.repeat(40) + 'needle ' + 'omega '.repeat(40);
+    const typedStore = new PgQuintStore({
+      driver: 'pglite',
+      dataDir: undefined,
+      textMaxBytes: 64,
+      predicateObjectDataTypes: {
+        'http://example.org/body': 'longText',
+      },
+    });
+
+    try {
+      await typedStore.open();
+      await typedStore.put({
+        subject: namedNode('http://example.org/doc/contains'),
+        predicate: namedNode('http://example.org/body'),
+        object: literal(body),
+        graph: namedNode('http://example.org/g1'),
+      } as any);
+
+      const containsResults = await typedStore.get({
+        predicate: namedNode('http://example.org/body'),
+        object: { $contains: 'needle' },
+      });
+
+      expect(containsResults).toHaveLength(1);
+      expect(containsResults[0].subject.value).toBe('http://example.org/doc/contains');
+
+      await expect(typedStore.get({
+        predicate: namedNode('http://example.org/body'),
+        object: { $gt: literal('alpha') },
+      })).rejects.toThrow(/not supported for longText/);
+
+      await expect(typedStore.get({
+        predicate: namedNode('http://example.org/body'),
+      }, { order: ['object'] })).rejects.toThrow(/ORDER BY object is not supported for longText/);
+    } finally {
+      await typedStore.close();
+    }
+  });
+
+  it('should use object_digest only for longText upsert identity', async () => {
+    const body = 'digest body '.repeat(100);
+    const typedStore = new PgQuintStore({
+      driver: 'pglite',
+      dataDir: undefined,
+      textMaxBytes: 64,
+      predicateObjectDataTypes: {
+        'http://example.org/body': 'longText',
+      },
+    });
+
+    try {
+      await typedStore.open();
+      await typedStore.put({
+        subject: namedNode('http://example.org/doc/digest'),
+        predicate: namedNode('http://example.org/body'),
+        object: literal(body),
+        graph: namedNode('http://example.org/g1'),
+        vector: [0.1],
+      } as any);
+      await typedStore.put({
+        subject: namedNode('http://example.org/doc/digest'),
+        predicate: namedNode('http://example.org/body'),
+        object: literal(body),
+        graph: namedNode('http://example.org/g1'),
+        vector: [0.9],
+      } as any);
+
+      const results = await typedStore.get({
+        subject: namedNode('http://example.org/doc/digest'),
+        predicate: namedNode('http://example.org/body'),
+        object: literal(body),
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].vector).toEqual([0.9]);
+
+      const rows = await (typedStore as any).executor.query<{
+        objectKey: string | null;
+        objectDigest: string | null;
+      }>(`
+        SELECT object_key as "objectKey", object_digest as "objectDigest"
+        FROM quints
+        WHERE subject = 'http://example.org/doc/digest'
+      `);
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].objectKey).toBeNull();
+      expect(rows[0].objectDigest).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      await typedStore.close();
+    }
+  });
+
+  it('should reject values that violate a declared text predicate type', async () => {
+    const typedStore = new PgQuintStore({
+      driver: 'pglite',
+      dataDir: undefined,
+      textMaxBytes: 32,
+      predicateObjectDataTypes: {
+        'http://example.org/title': 'text',
+      },
+    });
+
+    try {
+      await typedStore.open();
+      await expect(typedStore.put({
+        subject: namedNode('http://example.org/doc/too-long'),
+        predicate: namedNode('http://example.org/title'),
+        object: literal('this title is intentionally longer than the declared short text limit'),
+        graph: namedNode('http://example.org/g1'),
+      } as any)).rejects.toThrow(/declared as text/);
+    } finally {
+      await typedStore.close();
+    }
   });
 });

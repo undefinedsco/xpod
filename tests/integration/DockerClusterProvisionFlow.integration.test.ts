@@ -143,6 +143,34 @@ suite('Provision Flow (IdP + SP)', () => {
       expect(body2.serviceToken).toBe('new-token');
     });
 
+    it('should preserve nodeToken when same nodeId re-registers with an existing token', async () => {
+      const nodeId = `stable-token-${Date.now().toString(36)}`;
+      const headers = { 'Content-Type': 'application/json' };
+
+      const res1 = await fetch(`${CLOUD_BASE_URL}/provision/nodes`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ publicUrl: 'http://first.example.com', nodeId }),
+      });
+      expect(res1.status).toBe(201);
+      const body1 = await res1.json() as { nodeId: string; nodeToken: string; serviceToken: string };
+
+      const res2 = await fetch(`${CLOUD_BASE_URL}/provision/nodes`, {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          publicUrl: 'http://second.example.com',
+          nodeId,
+          nodeToken: body1.nodeToken,
+          serviceToken: 'stable-service-token',
+        }),
+      });
+      expect(res2.status).toBe(201);
+      const body2 = await res2.json() as { nodeId: string; nodeToken: string; serviceToken: string };
+
+      expect(body2.nodeId).toBe(nodeId);
+      expect(body2.nodeToken).toBe(body1.nodeToken);
+      expect(body2.serviceToken).toBe('stable-service-token');
+    });
+
     it('should reject missing publicUrl', async () => {
       const res = await fetch(`${CLOUD_BASE_URL}/provision/nodes`, {
         method: 'POST',

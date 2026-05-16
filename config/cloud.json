@@ -25,7 +25,7 @@
           },
           "attemptSettings_retryCount": 10
         },
-        "expiration": 6000
+        "expiration": 30000
       }
     },
     {
@@ -327,8 +327,8 @@
           "@id": "urn:solid-server:default:ClientCredentialsStore"
         },
         "source": {
-          "@type": "ClientIdAdapterFactory",
-          "@id": "urn:undefineds:xpod:ClientIdAdapterFactory",
+          "@type": "LoopbackClientIdAdapterFactory",
+          "@id": "urn:undefineds:xpod:LoopbackClientIdAdapterFactory",
           "converter": {
             "@id": "urn:solid-server:default:RepresentationConverter"
           },

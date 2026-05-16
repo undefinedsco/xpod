@@ -8,6 +8,13 @@
  */
 
 import { getLoggerFor } from 'global-logger-factory';
+import {
+  getPlatformApiBaseUrl,
+  getPlatformApiKey,
+  getPlatformDefaultModel,
+  getPlatformProviderId,
+  hasPlatformApiConfig,
+} from '../service/platform-ai-config';
 
 /**
  * CC SDK 运行时消息结构（避免直接静态导入 ESM 包导致 CJS 启动崩溃）
@@ -119,9 +126,9 @@ export interface DefaultAgentResponse {
 export function getDefaultAgentConfig(): DefaultAgentConfig {
   return {
     claudeCodePath: process.env.CLAUDE_CODE_PATH || undefined,
-    provider: process.env.DEFAULT_PROVIDER || 'openrouter',
-    model: process.env.DEFAULT_MODEL || 'stepfun/step-3.5-flash:free',
-    apiKey: process.env.DEFAULT_API_KEY || '',
+    provider: getPlatformProviderId(),
+    model: getPlatformDefaultModel(),
+    apiKey: getPlatformApiKey(),
   };
 }
 
@@ -129,7 +136,7 @@ export function getDefaultAgentConfig(): DefaultAgentConfig {
  * 检查 Default Agent 是否可用
  */
 export function isDefaultAgentAvailable(): boolean {
-  return !!(process.env.DEFAULT_API_KEY || process.env.DEFAULT_API_BASE);
+  return hasPlatformApiConfig();
 }
 
 /**
@@ -256,7 +263,7 @@ function normalizeClaudeBaseUrl(baseUrl: string): string {
 function buildClaudeEnv(config: DefaultAgentConfig, context: DefaultAgentContext): NodeJS.ProcessEnv {
   const provider = (config.provider || '').toLowerCase();
   const model = (config.model || '').trim();
-  const baseUrl = process.env.DEFAULT_API_BASE || getDefaultBaseUrl(config.provider);
+  const baseUrl = getPlatformApiBaseUrl() || getDefaultBaseUrl(config.provider);
   const isOpenRouterLike = provider === 'openrouter' || baseUrl.includes('openrouter.ai');
 
   const env: NodeJS.ProcessEnv = {
@@ -315,7 +322,7 @@ export async function runDefaultAgent(
 ): Promise<DefaultAgentResponse> {
   const config = getDefaultAgentConfig();
 
-  if (!config.apiKey && !process.env.DEFAULT_API_BASE) {
+  if (!hasPlatformApiConfig()) {
     return {
       content: '',
       success: false,
@@ -403,7 +410,7 @@ export async function* streamDefaultAgent(
 ): AsyncGenerator<string, void, unknown> {
   const config = getDefaultAgentConfig();
 
-  if (!config.apiKey && !process.env.DEFAULT_API_BASE) {
+  if (!hasPlatformApiConfig()) {
     throw new Error('Default Agent not configured: DEFAULT_API_KEY or DEFAULT_API_BASE is required');
   }
 
