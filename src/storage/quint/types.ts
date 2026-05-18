@@ -48,6 +48,12 @@ export interface TermOperators {
   $endsWith?: string;
   $contains?: string;
   $regex?: string;
+  /** RDF term lexical string operators for STR(?object) pushdown. */
+  $strStartsWith?: string;
+  $strEndsWith?: string;
+  $strContains?: string;
+  $strRegex?: string;
+  $language?: string;
   $isNull?: boolean;
 }
 

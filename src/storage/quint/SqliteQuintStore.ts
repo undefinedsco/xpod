@@ -495,6 +495,29 @@ export class SqliteQuintStore {
           conditions.push(`${fullColumn} LIKE ?`);
           params.push(`%${ops.$contains}%`);
         }
+        if (isObject && ops.$strStartsWith !== undefined) {
+          const lexical = this.objectLexicalSql(fullColumn);
+          conditions.push(`${lexical} >= ?`);
+          conditions.push(`${lexical} < ?`);
+          params.push(ops.$strStartsWith);
+          params.push(ops.$strStartsWith + '\uffff');
+        }
+        if (isObject && ops.$strEndsWith !== undefined) {
+          conditions.push(`${this.objectLexicalSql(fullColumn)} LIKE ?`);
+          params.push(`%${ops.$strEndsWith}`);
+        }
+        if (isObject && ops.$strContains !== undefined) {
+          conditions.push(`${this.objectLexicalSql(fullColumn)} LIKE ?`);
+          params.push(`%${ops.$strContains}%`);
+        }
+        if (isObject && ops.$strRegex !== undefined) {
+          conditions.push(`${this.objectLexicalSql(fullColumn)} GLOB ?`);
+          params.push(ops.$strRegex.replace(/\.\*/g, '*').replace(/\./g, '?'));
+        }
+        if (isObject && ops.$language !== undefined) {
+          conditions.push(`lower(${fullColumn}) LIKE ?`);
+          params.push(ops.$language === '*' ? '%"@%' : `%"@${ops.$language.toLowerCase()}`);
+        }
         if (ops.$isNull === true) {
           conditions.push(`${fullColumn} IS NULL`);
         }
@@ -750,6 +773,27 @@ export class SqliteQuintStore {
           // SQLite uses GLOB as regex approximation
           conditions.push(sql`${column} GLOB ${ops.$regex.replace(/\.\*/g, '*').replace(/\./g, '?')}`);
         }
+        if (isObject && ops.$strStartsWith !== undefined) {
+          const lexical = sql.raw(this.objectLexicalSql('object'));
+          conditions.push(sql`${lexical} >= ${ops.$strStartsWith}`);
+          conditions.push(sql`${lexical} < ${ops.$strStartsWith + '\uffff'}`);
+        }
+        if (isObject && ops.$strEndsWith !== undefined) {
+          conditions.push(sql`${sql.raw(this.objectLexicalSql('object'))} LIKE ${`%${ops.$strEndsWith}`}`);
+        }
+        if (isObject && ops.$strContains !== undefined) {
+          conditions.push(sql`${sql.raw(this.objectLexicalSql('object'))} LIKE ${`%${ops.$strContains}%`}`);
+        }
+        if (isObject && ops.$strRegex !== undefined) {
+          conditions.push(sql`${sql.raw(this.objectLexicalSql('object'))} GLOB ${ops.$strRegex.replace(/\.\*/g, '*').replace(/\./g, '?')}`);
+        }
+        if (isObject && ops.$language !== undefined) {
+          conditions.push(
+            ops.$language === '*'
+              ? sql`lower(${column}) LIKE ${`%"@%`}`
+              : sql`lower(${column}) LIKE ${`%"@${ops.$language.toLowerCase()}`}`,
+          );
+        }
         if (ops.$isNull === true) {
           conditions.push(isNull(column));
         }
@@ -765,6 +809,17 @@ export class SqliteQuintStore {
     addTermConditions(quints.object, pattern.object, true);
 
     return conditions;
+  }
+
+  private objectLexicalSql(column: string): string {
+    return `CASE
+      WHEN ${column} LIKE '"%"@%' THEN substr(${column}, 2, instr(substr(${column}, 2), '"') - 1)
+      WHEN ${column} LIKE '"%"^^%' THEN substr(${column}, 2, instr(substr(${column}, 2), '"') - 1)
+      WHEN ${column} LIKE '"%"' THEN substr(${column}, 2, length(${column}) - 2)
+      WHEN ${column} LIKE 'N${SEP}%' THEN substr(${column}, length('N${SEP}') + instr(substr(${column}, length('N${SEP}') + 1), '${SEP}') + instr(substr(${column}, length('N${SEP}') + instr(substr(${column}, length('N${SEP}') + 1), '${SEP}') + 1), '${SEP}') + 1)
+      WHEN ${column} LIKE 'D${SEP}%' THEN substr(${column}, length('D${SEP}') + instr(substr(${column}, length('D${SEP}') + 1), '${SEP}') + 1)
+      ELSE ${column}
+    END`;
   }
 
   private quintToRow(quint: Quint): NewQuintRow {
