@@ -6,7 +6,10 @@
  * - 代理设置
  */
 import { drizzle } from '@undefineds.co/drizzle-solid';
-import { Provider as modelProviderTable } from '../src/ai/schema/provider';
+import { aiConfigProviderRef } from '@undefineds.co/models';
+import { Provider } from '../src/ai/schema/provider';
+import { Credential } from '../src/credential/schema/tables';
+import { CredentialStatus, ServiceType } from '../src/credential/schema/types';
 import * as dotenv from 'dotenv';
 import path from 'path';
 
@@ -65,20 +68,27 @@ async function main() {
 
     console.log(`Connecting to Pod: ${WEB_ID}`);
 
-    // Insert Google Provider
-    const googleProviderId = 'google-gemini';
+    const googleProviderId = 'google';
     console.log(`Configuring Google Provider (${googleProviderId})...`);
     console.log(`  - API Key: ${GOOGLE_KEY?.slice(0, 10)}...`);
     console.log(`  - Base URL: https://generativelanguage.googleapis.com/v1beta/openai/`);
     console.log(`  - Proxy: ${PROXY_URL}`);
 
-    await db.insert(modelProviderTable).values({
+    await db.insert(Provider).values({
       id: googleProviderId,
-      enabled: true,
-      apiKey: GOOGLE_KEY,
+      displayName: 'Google',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-      proxy: PROXY_URL,
-      updatedAt: new Date()
+      proxyUrl: PROXY_URL,
+    });
+
+    await db.insert(Credential).values({
+      id: 'google-default',
+      provider: aiConfigProviderRef(googleProviderId),
+      service: ServiceType.AI,
+      status: CredentialStatus.ACTIVE,
+      apiKey: GOOGLE_KEY,
+      label: 'Google AI Key',
+      isDefault: true,
     });
 
     console.log('✅ Google Provider configured successfully.');

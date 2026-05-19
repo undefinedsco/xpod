@@ -16,6 +16,7 @@ import type { EmbeddingService } from '../../ai/service/EmbeddingService';
 import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
 import type { AiCredential } from '../../ai/service/types';
 import type { ResourceStore, RepresentationPreferences } from '@solid/community-server';
+import { XPOD_AI, XPOD_CREDENTIAL, normalizeAIConfigProviderId } from '@undefineds.co/models';
 
 /**
  * VectorStore 定义（从 RDF 读取）
@@ -284,23 +285,23 @@ export class VectorIndexingListener implements ResourceChangeListener {
    */
   private async getAiCredential(podBaseUrl: string): Promise<AiCredential | null> {
     try {
-      // 使用 undefineds.co/ns# 命名空间，与 drizzle-solid schema 一致
       // Credential -> Provider 关联，从 Provider 获取 baseUrl 和 proxyUrl
       const query = `
-        PREFIX udfs: <https://undefineds.co/ns#>
+        PREFIX cred: <${XPOD_CREDENTIAL.NAMESPACE}>
+        PREFIX ai: <${XPOD_AI.NAMESPACE}>
         SELECT ?apiKey ?baseUrl ?providerUri ?proxyUrl WHERE {
-          ?cred a udfs:Credential ;
-                udfs:service "ai" ;
-                udfs:status "active" ;
-                udfs:apiKey ?apiKey .
-          OPTIONAL { ?cred udfs:provider ?providerUri }
+          ?cred a cred:Credential ;
+                cred:service "ai" ;
+                cred:status "active" ;
+                cred:apiKey ?apiKey .
+          OPTIONAL { ?cred cred:provider ?providerUri }
           OPTIONAL { 
-            ?cred udfs:provider ?providerUri .
-            ?providerUri udfs:baseUrl ?baseUrl .
+            ?cred cred:provider ?providerUri .
+            ?providerUri ai:baseUrl ?baseUrl .
           }
           OPTIONAL { 
-            ?cred udfs:provider ?providerUri .
-            ?providerUri udfs:proxyUrl ?proxyUrl .
+            ?cred cred:provider ?providerUri .
+            ?providerUri ai:proxyUrl ?proxyUrl .
           }
         } LIMIT 1
       `;
@@ -314,12 +315,7 @@ export class VectorIndexingListener implements ResourceChangeListener {
         const proxyUrl = binding.get('proxyUrl');
 
         if (apiKey) {
-          // 从 provider URI 提取 provider 名称（如 #google -> google）
-          let providerName = 'google';
-          if (providerUri?.value) {
-            const match = providerUri.value.match(/#([^#]+)$/);
-            if (match) providerName = match[1];
-          }
+          const providerName = normalizeAIConfigProviderId(providerUri?.value || 'google') || 'google';
           
           return {
             apiKey: apiKey.value,

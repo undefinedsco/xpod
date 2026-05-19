@@ -15,16 +15,17 @@ import {
   buildResetSparql,
   credentialId,
   maskSecret,
-  UDFS_NS,
+  AI_NS,
+  CREDENTIAL_NS,
   PROVIDER_BASE_URLS,
 } from '../../src/cli/commands/config';
 
 // These must match the drizzle-solid schema definitions exactly
-const PROVIDER_BASE_PATH = '/settings/ai/providers.ttl';
+const PROVIDER_BASE_PATH = '/settings/providers/openai.ttl';
 const CREDENTIAL_BASE_PATH = '/settings/credentials.ttl';
 
 const POD_URL = 'http://localhost:3000/alice/';
-const PROVIDER_RESOURCE = `${POD_URL}settings/ai/providers.ttl`;
+const PROVIDER_RESOURCE = `${POD_URL}settings/providers/openai.ttl`;
 const CREDENTIAL_RESOURCE = `${POD_URL}settings/credentials.ttl`;
 
 describe('config command', () => {
@@ -48,47 +49,48 @@ describe('config command', () => {
     });
   });
 
-  describe('UDFS_NS', () => {
+  describe('namespaces', () => {
     it('should match the namespace used by drizzle-solid schemas', () => {
-      expect(UDFS_NS).toBe('https://undefineds.co/ns#');
+      expect(AI_NS).toBe('https://vocab.xpod.dev/ai#');
+      expect(CREDENTIAL_NS).toBe('https://vocab.xpod.dev/credential#');
     });
   });
 
   describe('buildProviderSparql', () => {
-    it('should target the correct subject URI matching Provider schema subjectTemplate', () => {
+    it('should target the provider document URI', () => {
       const sparql = buildProviderSparql(PROVIDER_RESOURCE, 'openai');
-      // Subject must be {base}#{id} — matches podTable subjectTemplate: '#{id}'
-      expect(sparql).toContain(`<${PROVIDER_RESOURCE}#openai>`);
+      expect(sparql).toContain(`<${PROVIDER_RESOURCE}>`);
     });
 
-    it('should use udfs:Provider type matching Provider schema type', () => {
+    it('should use ai:Provider type matching Provider schema type', () => {
       const sparql = buildProviderSparql(PROVIDER_RESOURCE, 'openai');
-      expect(sparql).toContain('a udfs:Provider');
+      expect(sparql).toContain('a ai:Provider');
     });
 
-    it('should write udfs:baseUrl matching Provider schema field', () => {
+    it('should write ai:baseUrl matching Provider schema field', () => {
       const sparql = buildProviderSparql(PROVIDER_RESOURCE, 'openai');
-      expect(sparql).toContain('udfs:baseUrl');
+      expect(sparql).toContain('ai:baseUrl');
       expect(sparql).toContain(PROVIDER_BASE_URLS.openai);
     });
 
-    it('should write udfs:displayName matching Provider schema field', () => {
+    it('should write ai:displayName matching Provider schema field', () => {
       const sparql = buildProviderSparql(PROVIDER_RESOURCE, 'openai');
-      expect(sparql).toContain('udfs:displayName "Openai"');
+      expect(sparql).toContain('ai:displayName "OpenAI"');
     });
 
     it('should use correct PREFIX', () => {
       const sparql = buildProviderSparql(PROVIDER_RESOURCE, 'openai');
-      expect(sparql).toMatch(/^PREFIX udfs: <https:\/\/undefineds\.co\/ns#>/);
+      expect(sparql).toMatch(/^PREFIX ai: <https:\/\/vocab\.xpod\.dev\/ai#>/);
     });
 
     it('should handle unknown provider without baseUrl', () => {
-      const sparql = buildProviderSparql(PROVIDER_RESOURCE, 'custom-provider');
-      expect(sparql).toContain(`<${PROVIDER_RESOURCE}#custom-provider>`);
-      expect(sparql).toContain('a udfs:Provider');
-      expect(sparql).toContain('udfs:displayName "Custom-provider"');
+      const resource = `${POD_URL}settings/providers/custom-provider.ttl`;
+      const sparql = buildProviderSparql(resource, 'custom-provider');
+      expect(sparql).toContain(`<${resource}>`);
+      expect(sparql).toContain('a ai:Provider');
+      expect(sparql).toContain('ai:displayName "Custom Provider"');
       // No baseUrl for unknown provider
-      expect(sparql).not.toMatch(/udfs:baseUrl "[^"]+"/);
+      expect(sparql).not.toMatch(/ai:baseUrl "[^"]+"/);
     });
 
     it('should include DELETE for old values (upsert pattern)', () => {
@@ -98,51 +100,60 @@ describe('config command', () => {
       expect(sparql).toContain('?oldName');
       expect(sparql).toContain('OPTIONAL');
     });
+
+    it('should write default model into the provider resource when provided', () => {
+      const sparql = buildProviderSparql(PROVIDER_RESOURCE, 'openai', { model: 'gpt-4o' });
+      expect(sparql).toContain(`<${PROVIDER_RESOURCE}#gpt-4o> a ai:Model`);
+      expect(sparql).toContain(`ai:defaultModel <${PROVIDER_RESOURCE}#gpt-4o>`);
+      expect(sparql).toContain(`ai:hasModel <${PROVIDER_RESOURCE}#gpt-4o>`);
+      expect(sparql).toContain(`ai:isProvidedBy <${PROVIDER_RESOURCE}>`);
+    });
   });
 
   describe('buildCredentialSparql', () => {
-    it('should target cred-{provider} subject matching Credential schema subjectTemplate', () => {
+    it('should target the credential subject for cred-{provider}', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'openai', { apiKey: 'sk-test' });
       // Subject must be {base}#cred-{provider}
       expect(sparql).toContain(`<${CREDENTIAL_RESOURCE}#cred-openai>`);
     });
 
-    it('should use udfs:Credential type matching Credential schema type', () => {
+    it('should use cred:Credential type matching Credential schema type', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'openai', { apiKey: 'sk-test' });
-      expect(sparql).toContain('a udfs:Credential');
+      expect(sparql).toContain('a cred:Credential');
     });
 
     it('should set service=ai and status=active for getAiConfig() query', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'openai', { apiKey: 'sk-test' });
       // PodChatKitStore.getAiConfig() queries: eq(Credential.service, 'ai'), eq(Credential.status, 'active')
-      expect(sparql).toContain('udfs:service "ai"');
-      expect(sparql).toContain('udfs:status "active"');
+      expect(sparql).toContain('cred:service "ai"');
+      expect(sparql).toContain('cred:status "active"');
     });
 
     it('should link to provider URI matching Provider schema base path', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'openai', { apiKey: 'sk-test' });
       // getAiConfig() extracts providerId from cred.provider URI via extractProviderId()
-      expect(sparql).toContain(`udfs:provider <${POD_URL}settings/ai/providers.ttl#openai>`);
+      expect(sparql).toContain(`cred:provider <${POD_URL}settings/providers/openai.ttl>`);
     });
 
-    it('should write udfs:apiKey matching Credential schema field', () => {
+    it('should write cred:apiKey matching Credential schema field', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'openai', { apiKey: 'sk-test-key-123' });
-      expect(sparql).toContain('udfs:apiKey "sk-test-key-123"');
+      expect(sparql).toContain('cred:apiKey "sk-test-key-123"');
     });
 
-    it('should write udfs:defaultModel when provided', () => {
+    it('should not write model fields into credentials', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'openai', { apiKey: 'sk-test', model: 'gpt-4o' });
-      expect(sparql).toContain('udfs:defaultModel "gpt-4o"');
+      expect(sparql).not.toContain('defaultModel');
+      expect(sparql).not.toContain('gpt-4o');
     });
 
     it('should omit apiKey from SPARQL when not provided', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'openai', { model: 'gpt-4o' });
-      expect(sparql).not.toContain('udfs:apiKey');
+      expect(sparql).not.toContain('cred:apiKey');
     });
 
     it('should omit defaultModel from SPARQL when not provided', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'openai', { apiKey: 'sk-test' });
-      expect(sparql).not.toContain('udfs:defaultModel');
+      expect(sparql).not.toContain('defaultModel');
     });
 
     it('should always delete+reinsert provider link (upsert)', () => {
@@ -157,11 +168,10 @@ describe('config command', () => {
         model: 'claude-sonnet-4-20250514',
       });
       expect(sparql).toContain(`<${CREDENTIAL_RESOURCE}#cred-anthropic>`);
-      expect(sparql).toContain(`<${POD_URL}settings/ai/providers.ttl#anthropic>`);
-      expect(sparql).toContain('udfs:apiKey "sk-ant-xxx"');
-      expect(sparql).toContain('udfs:defaultModel "claude-sonnet-4-20250514"');
-      expect(sparql).toContain('udfs:service "ai"');
-      expect(sparql).toContain('udfs:status "active"');
+      expect(sparql).toContain(`<${POD_URL}settings/providers/anthropic.ttl>`);
+      expect(sparql).toContain('cred:apiKey "sk-ant-xxx"');
+      expect(sparql).toContain('cred:service "ai"');
+      expect(sparql).toContain('cred:status "active"');
     });
   });
 
@@ -180,7 +190,7 @@ describe('config command', () => {
 
   describe('schema alignment', () => {
     it('Provider resource path should match Provider schema base', () => {
-      // Provider schema: base: '/settings/ai/providers.ttl'
+      // Provider schema: base: '/settings/providers/'
       expect(PROVIDER_RESOURCE).toContain(PROVIDER_BASE_PATH);
     });
 
@@ -190,14 +200,12 @@ describe('config command', () => {
     });
 
     it('provider URI in credential should be extractable by PodChatKitStore.extractProviderId', () => {
-      // PodChatKitStore.extractProviderId does: uri.lastIndexOf('#') then slice
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'google', { apiKey: 'key' });
-      const providerUriMatch = sparql.match(/udfs:provider <([^>]+)>/);
+      const providerUriMatch = sparql.match(/cred:provider <([^>]+)>/);
       expect(providerUriMatch).not.toBeNull();
 
       const providerUri = providerUriMatch![1];
-      const hash = providerUri.lastIndexOf('#');
-      const extractedId = providerUri.slice(hash + 1);
+      const extractedId = providerUri.split('/').pop()!.replace(/\.ttl$/, '');
       expect(extractedId).toBe('google');
     });
 

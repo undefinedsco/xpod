@@ -18,6 +18,8 @@ import { registerWebIdProfileRoutes } from '../handlers/WebIdProfileHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
+import { registerInngestRoutes } from '../handlers/InngestHandler';
+import { registerRunRoutes } from '../handlers/RunHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
@@ -88,6 +90,9 @@ function registerSharedRoutes(
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
   const chatKitStore = container.resolve('chatKitStore');
+  const runExecutionBackend = container.resolve('runExecutionBackend');
+  const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
+  const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const config = container.resolve('config') as ApiContainerConfig;
 
   registerEdgeNodeSignalRoutes(server, {
@@ -100,6 +105,12 @@ function registerSharedRoutes(
   registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
+  registerRunRoutes(server, { runStore: chatKitStore });
+  registerInngestRoutes(server, {
+    backend: runExecutionBackend,
+    taskScheduler: inngestTaskScheduler,
+    runtimeConfig: inngestRuntimeConfig,
+  });
 
   try {
     const profileRepo = container.resolve('webIdProfileRepo', { allowUnregistered: true });

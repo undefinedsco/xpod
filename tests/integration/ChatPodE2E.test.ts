@@ -87,7 +87,7 @@ suite('Chat Pod E2E Integration (Real Network)', () => {
 
     await db.insert(Credential).values({
       id: 'chat-e2e-credential',
-      provider: `${account.podUrl}settings/ai/providers.ttl#${providerId}`,
+      provider: `${account.podUrl}settings/providers/${providerId}.ttl`,
       service: ServiceType.AI,
       status: CredentialStatus.ACTIVE,
       apiKey: AI_API_KEY!,

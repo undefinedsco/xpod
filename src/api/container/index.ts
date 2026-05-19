@@ -47,6 +47,7 @@ export function createApiContainer(config: ApiContainerConfig): AwilixContainer<
   // 注册配置
   container.register({
     config: asValue(config),
+    inngestRuntimeConfig: asValue(config.inngestRuntimeConfig),
   });
 
   // 注册共享服务
@@ -83,8 +84,22 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     host: process.env.API_HOST ?? '0.0.0.0',
     socketPath: process.env.API_SOCKET_PATH,
     databaseUrl: process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? '',
+    redisUrl: process.env.CSS_REDIS_CLIENT ?? process.env.REDIS_URL,
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
+    inngest: {
+      enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',
+      mode: process.env.XPOD_INNGEST_MODE === 'spawn' || process.env.XPOD_INNGEST_MODE === 'managed'
+        ? process.env.XPOD_INNGEST_MODE
+        : undefined,
+      port: process.env.XPOD_INNGEST_PORT ? parseInt(process.env.XPOD_INNGEST_PORT, 10) : undefined,
+      host: process.env.XPOD_INNGEST_HOST ?? '127.0.0.1',
+      baseUrl: process.env.XPOD_INNGEST_BASE_URL,
+      eventKey: process.env.XPOD_INNGEST_EVENT_KEY ?? process.env.INNGEST_EVENT_KEY,
+      signingKey: process.env.XPOD_INNGEST_SIGNING_KEY ?? process.env.INNGEST_SIGNING_KEY,
+      binaryPath: process.env.XPOD_INNGEST_BIN,
+      sqliteDir: process.env.XPOD_INNGEST_SQLITE_DIR,
+    },
 
     // 子域名配置 (cloud 模式)
     subdomain: {

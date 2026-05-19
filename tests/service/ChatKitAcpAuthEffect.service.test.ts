@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { InMemoryStore } from '../../src/api/chatkit/store';
 import type { AiProvider } from '../../src/api/chatkit/service';
+import { AcpRunExecutionBackend } from '../helpers/AcpRunExecutionBackend';
 
 function parseSseDataLines(chunks: Uint8Array[]): unknown[] {
   const text = Buffer.concat(chunks).toString('utf-8');
@@ -18,6 +19,8 @@ function parseSseDataLines(chunks: Uint8Array[]): unknown[] {
 }
 
 describe('ChatKitService + ACP runtime', () => {
+  const workspaceUri = `file://localhost${process.cwd()}`;
+
   it('emits runtime.auth_required client_effect with a clickable url', async () => {
     const store = new InMemoryStore();
 
@@ -30,7 +33,8 @@ describe('ChatKitService + ACP runtime', () => {
     const svc = new ChatKitService({
       store,
       aiProvider,
-      enablePtyRuntime: true,
+      enableAgentRuntime: true,
+      runExecutionBackend: new AcpRunExecutionBackend(),
     });
 
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-auth-agent.js');
@@ -39,7 +43,7 @@ describe('ChatKitService + ACP runtime', () => {
       type: 'threads.create',
       metadata: {
         runtime: {
-          workspace: { type: 'path', rootPath: process.cwd() },
+          workspace: workspaceUri,
           runner: {
             type: 'codex',
             protocol: 'acp',
@@ -79,4 +83,3 @@ describe('ChatKitService + ACP runtime', () => {
     expect(deltas.length).toBeGreaterThan(0);
   }, 20_000);
 });
-

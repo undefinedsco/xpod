@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as path from 'node:path';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
+import { AcpRunExecutionBackend } from '../helpers/AcpRunExecutionBackend';
 
 function repoRoot(): string {
   return path.resolve(__dirname, '../..');
@@ -72,7 +73,8 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
           yield 'not-used';
         },
       },
-      enablePtyRuntime: true,
+      enableAgentRuntime: true,
+      runExecutionBackend: new AcpRunExecutionBackend(),
     });
   });
 
@@ -82,14 +84,14 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
   it('Secretary(codex) delegates to ClaudeCode + CodeBuddy and aggregates results', async () => {
     const node = process.execPath;
-    const workspacePath = root;
+    const workspaceUri = `file://localhost${root}`;
 
     const secretaryEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
       params: { input: undefined },
       metadata: {
         runtime: {
-          workspace: { type: 'path', rootPath: workspacePath },
+          workspace: workspaceUri,
           runner: {
             type: 'codex',
             protocol: 'acp',
@@ -109,7 +111,7 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
       params: { input: undefined },
       metadata: {
         runtime: {
-          workspace: { type: 'path', rootPath: workspacePath },
+          workspace: workspaceUri,
           runner: {
             type: 'claude',
             protocol: 'acp',
@@ -129,7 +131,7 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
       params: { input: undefined },
       metadata: {
         runtime: {
-          workspace: { type: 'path', rootPath: workspacePath },
+          workspace: workspaceUri,
           runner: {
             type: 'codebuddy',
             protocol: 'acp',

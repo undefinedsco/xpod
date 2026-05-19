@@ -101,7 +101,7 @@ async function listApiKeys(token: string): Promise<void> {
 async function testListProviders(token: string) {
   console.log('\n--- Test: Read providers from Pod ---');
   
-  const providersUrl = `${CSS_BASE_URL}test/settings/ai/providers.ttl`;
+  const providersUrl = `${CSS_BASE_URL}test/settings/providers/openai.ttl`;
   console.log(`Fetching: ${providersUrl}`);
   
   const response = await fetch(providersUrl, {

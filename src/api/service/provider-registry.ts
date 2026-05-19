@@ -2,7 +2,7 @@
  * AI Provider capability registry.
  *
  * Single source of truth for which API protocols each known provider supports.
- * Used by VercelChatService (API proxy/conversion) and PtyThreadRuntime (agent env setup).
+ * Used by VercelChatService (API proxy/conversion) and ACP agent runtime env setup.
  *
  * TODO: replace with discovery service lookup via provider WebID
  * See: docs/issues/discovery/001-provider-capability-registry.md

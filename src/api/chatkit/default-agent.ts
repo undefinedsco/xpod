@@ -154,7 +154,7 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是 Xpod Default Agent，运行在用户
 
 ### AI 配置（最重要）
 - API Key、Provider、Model、Base URL
-- 存储位置：/settings/ai/credentials.ttl
+- 存储位置：/settings/credentials.ttl
 - 识别模式：
   - "我的 OpenAI key 是 sk-xxx"
   - "用这个 API key: xxx"

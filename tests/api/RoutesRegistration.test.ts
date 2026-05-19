@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('inngest/node', () => ({
+  serve: vi.fn(() => vi.fn((_req: unknown, res: { end?: () => void }) => res.end?.())),
+}));
+
 import { registerRoutes } from '../../src/api/container/routes';
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
@@ -47,6 +52,9 @@ describe('registerRoutes mode wiring', () => {
       patch: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
         storeRoute('PATCH', path, handler, options);
       }),
+      all: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
+        storeRoute('ALL', path, handler, options);
+      }),
     } as unknown as ApiServer;
   });
 
@@ -58,7 +66,27 @@ describe('registerRoutes mode wiring', () => {
       apiKeyStore: {},
       chatService: {},
       chatKitService: {},
-      chatKitStore: {},
+      chatKitStore: {
+        listRuns: vi.fn(),
+        loadRun: vi.fn(),
+        loadRunSteps: vi.fn(),
+      },
+      runExecutionBackend: {
+        getClient: vi.fn(() => ({ id: 'test-inngest' })),
+        agentRunFunction: {},
+      },
+      taskService: {},
+      inngestTaskScheduler: {
+        getFunctions: vi.fn(() => [{ id: 'task-due' }, { id: 'task-event' }]),
+      },
+      inngestRuntimeConfig: {
+        enabled: true,
+        durableDelivery: true,
+        baseUrl: 'http://xpod-inngest:8288',
+        eventKey: 'test-event-key',
+        signingKey: 'signkey-test',
+        functionEndpoint: 'http://xpod-api:3001/api/inngest',
+      },
       db: {},
       webIdProfileRepo: {},
       podLookupRepo: {},
@@ -87,6 +115,14 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /:username/profile/card']).toBeTypeOf('function');
     expect(routes['POST /api/v1/ddns/allocate']).toBeTypeOf('function');
     expect(routes['POST /provision/nodes']).toBeTypeOf('function');
+    expect(routes['POST /v1/tasks']).toBeUndefined();
+    expect(routes['POST /v1/tasks/materialize-due']).toBeUndefined();
+    expect(routes['POST /v1/tasks/events/:eventName']).toBeUndefined();
+    expect(routes['GET /v1/runs']).toBeTypeOf('function');
+    expect(routes['GET /v1/runs/:runId']).toBeTypeOf('function');
+    expect(routes['GET /v1/runs/:runId/steps']).toBeTypeOf('function');
+    expect(routes['ALL /api/inngest']).toBeTypeOf('function');
+    expect(routes['ALL /api/inngest/*path']).toBeTypeOf('function');
     expect(routes['GET /api/admin/status']).toBeUndefined();
     expect(routes['GET /api/linx/capabilities']).toBeUndefined();
   });
@@ -97,6 +133,9 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/linx/capabilities']).toBeTypeOf('function');
     expect(routes['GET /api/admin/status']).toBeTypeOf('function');
     expect(routes['GET /:username/profile/card']).toBeTypeOf('function');
+    expect(routes['POST /v1/tasks']).toBeUndefined();
+    expect(routes['GET /v1/runs']).toBeTypeOf('function');
+    expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['POST /provision/pods']).toBeUndefined();
   });
 });

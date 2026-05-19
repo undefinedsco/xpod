@@ -1,126 +1,133 @@
-/**
- * xpod login - OAuth login for AI providers
- *
- * Usage:
- *   xpod login codebuddy
- *   xpod login anthropic
- */
-
 import type { CommandModule } from 'yargs';
-import { loadCredentials, getClientCredentials } from '../lib/credentials-store';
-import { authenticate } from '../lib/solid-auth';
-import { loadPiAiOAuthUtils, type OAuthAuthInfo, type OAuthPrompt } from '../lib/pi-optional';
-import { saveOAuthCredential } from '../lib/oauth-credential-manager';
-import { registerCustomOAuthProviders } from '../lib/oauth-providers';
-import { promptText } from '../lib/prompt';
+import {
+  checkServer,
+  login,
+  getAccountControls,
+  createClientCredentials,
+} from '../lib/css-account';
+import { saveCredentials, getConfigPath } from '../lib/credentials-store';
+import { promptPassword, promptText } from '../lib/prompt';
 
 interface LoginArgs {
-  provider?: string;
+  url?: string;
+  email?: string;
+  password?: string;
+  'web-id'?: string;
+  name?: string;
+  output?: boolean;
 }
 
-const loginCommand: CommandModule<{}, LoginArgs> = {
-  command: 'login [provider]',
-  describe: 'Login to an AI provider (OAuth)',
+function resolveUrl(url?: string): string {
+  const raw = url || process.env.CSS_BASE_URL || 'http://localhost:3000';
+  return raw.endsWith('/') ? raw : `${raw}/`;
+}
+
+async function resolveWebId(baseUrl: string, token: string, explicitWebId?: string): Promise<string | undefined> {
+  if (explicitWebId) {
+    return explicitWebId;
+  }
+
+  const accountRes = await fetch(`${baseUrl}.account/`, {
+    headers: {
+      Accept: 'application/json',
+      Authorization: `CSS-Account-Token ${token}`,
+    },
+  });
+  if (!accountRes.ok) {
+    return undefined;
+  }
+
+  const accountData = await accountRes.json() as { webIds?: Record<string, string> };
+  const webIds = accountData.webIds;
+  if (!webIds || typeof webIds !== 'object') {
+    return undefined;
+  }
+
+  return Object.keys(webIds)[0];
+}
+
+export const loginCommandModule: CommandModule<object, LoginArgs> = {
+  command: 'login',
+  describe: 'Login to xpod/Solid and store CLI client credentials',
   builder: (yargs) =>
-    yargs.positional('provider', {
-      type: 'string',
-      description: 'Provider name (e.g., codebuddy, anthropic)',
-    }),
+    yargs
+      .option('url', {
+        alias: 'u',
+        type: 'string',
+        description: 'Server base URL',
+        default: process.env.CSS_BASE_URL || 'http://localhost:3000',
+      })
+      .option('email', { type: 'string', description: 'Account email (will prompt if not provided)' })
+      .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' })
+      .option('web-id', { type: 'string', description: 'WebID to bind credentials to' })
+      .option('name', { type: 'string', description: 'Credential label' })
+      .option('output', { type: 'boolean', default: false, description: 'Print credentials instead of saving to ~/.xpod/' }),
   handler: async (argv) => {
-    // 1. 检查 Solid credentials
-    const creds = loadCredentials();
-    if (!creds) {
-      console.error('Error: No Solid credentials found.');
-      console.error('Please run: xpod auth create-credentials');
+    const baseUrl = resolveUrl(argv.url);
+
+    if (!(await checkServer(baseUrl))) {
+      console.error(`Cannot reach server at ${baseUrl}`);
       process.exit(1);
     }
 
-    const clientCreds = getClientCredentials(creds);
-    if (!clientCreds) {
-      console.error('Error: Client credentials not found.');
-      process.exit(1);
-    }
-
-    // 2. 认证到 Pod
-    let auth;
-    try {
-      auth = await authenticate(clientCreds.clientId, clientCreds.clientSecret, creds.url);
-    } catch (error) {
-      console.error(`Error: Failed to authenticate. ${error instanceof Error ? error.message : String(error)}`);
-      process.exit(1);
-    }
-
-    const { session } = auth;
-    const podUrl = creds.url.endsWith('/') ? creds.url : `${creds.url}/`;
-
-    await registerCustomOAuthProviders();
-
-    // 3. 获取 provider
-    let providerId = argv.provider;
-    if (!providerId) {
-      console.log('Available OAuth providers:');
-      console.log('  codebuddy    - CodeBuddy (Tencent AI)');
-      console.log('  anthropic    - Anthropic (Claude Pro/Max)');
-      console.log('  github-copilot - GitHub Copilot');
-      console.log('');
-      providerId = await promptText('Enter provider name: ');
-      if (!providerId) {
-        console.error('Provider name is required');
+    let email = argv.email;
+    if (!email) {
+      email = await promptText('Email: ');
+      if (!email) {
+        console.error('Email is required');
         process.exit(1);
       }
     }
 
-    const { getOAuthProvider } = await loadPiAiOAuthUtils();
-    const provider = getOAuthProvider(providerId);
-    if (!provider) {
-      console.error(`Error: Unknown provider: ${providerId}`);
-      console.error('Available providers: codebuddy, anthropic, github-copilot');
+    let password = argv.password;
+    if (!password) {
+      password = await promptPassword('Password: ');
+      if (!password) {
+        console.error('Password is required');
+        process.exit(1);
+      }
+    }
+
+    const token = await login(email, password, baseUrl);
+    if (!token) {
+      console.error('Login failed.');
       process.exit(1);
     }
 
-    // 4. OAuth 登录
-    console.log(`\n🔐 Starting ${provider.name} OAuth login...\n`);
+    const controls = await getAccountControls(token, baseUrl);
+    if (!controls?.clientCredentials) {
+      console.error('Cannot find client credentials endpoint.');
+      process.exit(1);
+    }
 
-    try {
-      const credentials = await provider.login({
-        onAuth: (info: OAuthAuthInfo) => {
-          console.log(info.instructions || 'Please login in your browser');
-          console.log(`\nURL: ${info.url}\n`);
-        },
-        onPrompt: async (prompt: OAuthPrompt) => {
-          return await promptText(prompt.message + (prompt.placeholder ? ` (${prompt.placeholder})` : '') + ': ');
-        },
-        onProgress: (message: string) => {
-          console.log(message);
+    const webId = await resolveWebId(baseUrl, token, argv['web-id']);
+    if (!webId) {
+      console.error('No WebID found. Specify --web-id explicitly.');
+      process.exit(1);
+    }
+
+    const credential = await createClientCredentials(token, controls.clientCredentials, webId, argv.name);
+    if (!credential) {
+      console.error('Failed to create client credentials.');
+      process.exit(1);
+    }
+
+    console.log('Credentials created:');
+    console.log(`  client_id:     ${credential.id}`);
+    console.log(`  client_secret: ${credential.secret}`);
+    console.log(`  webId:         ${webId}`);
+
+    if (!argv.output) {
+      saveCredentials({
+        url: baseUrl,
+        webId,
+        authType: 'client_credentials',
+        secrets: {
+          clientId: credential.id,
+          clientSecret: credential.secret ?? '',
         },
       });
-
-      // 5. 保存到 Pod
-      const providerUri = `${podUrl}settings/ai/providers.ttl#${providerId}`;
-      await saveOAuthCredential(
-        session,
-        providerId,
-        providerUri,
-        credentials,
-        `${provider.name} OAuth`,
-      );
-
-      console.log(`\n✓ ${provider.name} credentials saved to your Pod!`);
-      console.log('You can now use the AI agent with this provider.\n');
-
-      await session.logout();
-    } catch (error) {
-      console.error(`\nError during OAuth login: ${error instanceof Error ? error.message : String(error)}`);
-      process.exit(1);
+      console.log(`\nSaved to ${getConfigPath().replace('/config.json', '/')}`);
     }
-  },
-};
-
-export const loginCommandModule: CommandModule = {
-  command: 'login',
-  describe: 'OAuth login for AI providers',
-  builder: (yargs) => yargs.command(loginCommand),
-  handler: () => {
-    // Parent command, delegate to subcommands
   },
 };

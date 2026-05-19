@@ -31,7 +31,7 @@ describe('PodChatKitStore AI Config Operations', () => {
   const mockCredentials = [
     {
       id: 'cred-001',
-      provider: 'http://localhost:3000/test/settings/ai/providers.ttl#openai',
+      provider: 'http://localhost:3000/test/settings/providers/openai.ttl',
       service: ServiceType.AI,
       status: CredentialStatus.ACTIVE,
       apiKey: 'sk-test-key',
@@ -46,7 +46,7 @@ describe('PodChatKitStore AI Config Operations', () => {
       displayName: 'OpenAI',
       baseUrl: 'https://api.openai.com/v1',
       proxyUrl: null,
-      '@id': 'http://localhost:3000/test/settings/ai/providers.ttl#openai',
+      '@id': 'http://localhost:3000/test/settings/providers/openai.ttl',
     },
   ];
 
@@ -54,14 +54,14 @@ describe('PodChatKitStore AI Config Operations', () => {
     {
       id: 'gpt-4o-mini',
       displayName: 'GPT-4o mini',
-      isProvidedBy: 'http://localhost:3000/test/settings/ai/providers.ttl#openai',
+      isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl',
       contextLength: 128000,
       maxOutputTokens: 16384,
     },
     {
       id: 'custom-coder',
       displayName: 'Custom Coder',
-      isProvidedBy: 'http://localhost:3000/test/settings/ai/providers.ttl#openai',
+      isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl',
       contextLength: 64000,
       maxOutputTokens: 8192,
     },
@@ -103,14 +103,33 @@ describe('PodChatKitStore AI Config Operations', () => {
         return Promise.resolve(models);
       }),
     });
+    const findProvider = (target: string, providers = mockProviders) => providers.find((provider) => (
+      target === provider.id
+      || target === provider['@id']
+      || target === `/settings/providers/${provider.id}.ttl`
+      || target.endsWith(`/settings/providers/${provider.id}.ttl`)
+    ));
+    const findModel = (target: string, models = mockModels) => models.find((model) => (
+      target === model.id
+      || target.endsWith(`#${model.id}`)
+    ));
 
     // Create mock db
     mockDb = {
       select: vi.fn().mockImplementation(() => createSelectChain()),
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue([]),
-      findByLocator: vi.fn().mockResolvedValue(mockCredentials[0]),
-      updateByLocator: vi.fn().mockResolvedValue(undefined),
+      findByIri: vi.fn().mockImplementation((table: any, iri: string) => {
+        if (table === Provider) return Promise.resolve(findProvider(iri));
+        if (table === Model) return Promise.resolve(findModel(iri));
+        return Promise.resolve(undefined);
+      }),
+      findById: vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === Provider) return Promise.resolve(findProvider(id));
+        if (table === Model) return Promise.resolve(findModel(id));
+        return Promise.resolve(mockCredentials.find((cred) => cred.id === id));
+      }),
+      updateById: vi.fn().mockResolvedValue(undefined),
       init: vi.fn().mockResolvedValue(undefined),
       query: {
         chat: { findFirst: vi.fn() },
@@ -123,12 +142,17 @@ describe('PodChatKitStore AI Config Operations', () => {
   });
 
   describe('extractProviderId', () => {
-    it('should extract provider ID from URI with hash', () => {
+    it('should extract provider ID from current provider resource URI', () => {
       // Access private method via any
       const extractProviderId = (store as any).extractProviderId.bind(store);
 
-      expect(extractProviderId('http://localhost:3000/test/settings/ai/providers.ttl#openai'))
+      expect(extractProviderId('http://localhost:3000/test/settings/providers/openai.ttl'))
         .toBe('openai');
+    });
+
+    it('should still extract provider ID from legacy fragment URI', () => {
+      const extractProviderId = (store as any).extractProviderId.bind(store);
+
       expect(extractProviderId('http://example.com/path/to/file.ttl#google'))
         .toBe('google');
     });
@@ -211,6 +235,18 @@ describe('PodChatKitStore AI Config Operations', () => {
           return Promise.resolve(providerWithProxy);
         }),
       }));
+      mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providerWithProxy.find((provider) => iri === provider['@id'] || iri.endsWith(`/settings/providers/${provider.id}.ttl`)));
+        }
+        return Promise.resolve(undefined);
+      });
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providerWithProxy.find((provider) => id === provider.id || id === `/settings/providers/${provider.id}.ttl`));
+        }
+        return Promise.resolve(mockCredentials.find((cred) => cred.id === id));
+      });
 
       const config = await store.getAiConfig(mockContext);
 
@@ -260,7 +296,7 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should call update with correct status', async () => {
-      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.updateCredentialStatus(
@@ -269,14 +305,14 @@ describe('PodChatKitStore AI Config Operations', () => {
         CredentialStatus.RATE_LIMITED,
       );
 
-      expect(mockDb.updateByLocator).toHaveBeenCalled();
-      expect(mockDb.updateByLocator.mock.calls[0][2]).toEqual(
+      expect(mockDb.updateById).toHaveBeenCalled();
+      expect(mockDb.updateById.mock.calls[0][2]).toEqual(
         expect.objectContaining({ status: CredentialStatus.RATE_LIMITED }),
       );
     });
 
     it('should include rateLimitResetAt when provided', async () => {
-      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const resetAt = new Date(Date.now() + 60000);
@@ -287,7 +323,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         { rateLimitResetAt: resetAt },
       );
 
-      expect(mockDb.updateByLocator.mock.calls[0][2]).toEqual(
+      expect(mockDb.updateById.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.RATE_LIMITED,
           rateLimitResetAt: resetAt,
@@ -298,8 +334,8 @@ describe('PodChatKitStore AI Config Operations', () => {
     it('should increment failCount when requested', async () => {
       const existingCred = { ...mockCredentials[0], failCount: 2 };
 
-      mockDb.findByLocator = vi.fn().mockResolvedValue(existingCred);
-      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
+      mockDb.findById = vi.fn().mockResolvedValue(existingCred);
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.updateCredentialStatus(
@@ -309,7 +345,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         { incrementFailCount: true },
       );
 
-      expect(mockDb.updateByLocator.mock.calls[0][2]).toEqual(
+      expect(mockDb.updateById.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.RATE_LIMITED,
           failCount: 3,
@@ -318,7 +354,7 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should handle errors gracefully', async () => {
-      mockDb.updateByLocator = vi.fn().mockRejectedValue(new Error('Update failed'));
+      mockDb.updateById = vi.fn().mockRejectedValue(new Error('Update failed'));
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       // Should not throw
@@ -338,13 +374,13 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should reset status and failCount on success', async () => {
-      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.recordCredentialSuccess(mockContext, 'cred-001');
 
-      expect(mockDb.updateByLocator).toHaveBeenCalled();
-      expect(mockDb.updateByLocator.mock.calls[0][2]).toEqual(
+      expect(mockDb.updateById).toHaveBeenCalled();
+      expect(mockDb.updateById.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.ACTIVE,
           failCount: 0,
@@ -354,22 +390,22 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should set lastUsedAt to current date', async () => {
-      mockDb.updateByLocator = vi.fn().mockResolvedValue(undefined);
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const beforeCall = new Date();
       await store.recordCredentialSuccess(mockContext, 'cred-001');
       const afterCall = new Date();
 
-      expect(mockDb.updateByLocator).toHaveBeenCalled();
-      const callArgs = mockDb.updateByLocator.mock.calls[0][2];
+      expect(mockDb.updateById).toHaveBeenCalled();
+      const callArgs = mockDb.updateById.mock.calls[0][2];
       expect(callArgs.lastUsedAt).toBeInstanceOf(Date);
       expect(callArgs.lastUsedAt.getTime()).toBeGreaterThanOrEqual(beforeCall.getTime());
       expect(callArgs.lastUsedAt.getTime()).toBeLessThanOrEqual(afterCall.getTime());
     });
 
     it('should handle errors gracefully', async () => {
-      mockDb.updateByLocator = vi.fn().mockRejectedValue(new Error('Update failed'));
+      mockDb.updateById = vi.fn().mockRejectedValue(new Error('Update failed'));
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       // Should not throw

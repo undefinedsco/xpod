@@ -39,22 +39,11 @@ export { BaseAgentExecutor } from './BaseAgentExecutor';
 
 // Schema
 export { Provider, ProviderRelations, RuntimeKind } from './schema/tables';
-export { AgentConfig as AgentConfigTable, AgentStatus } from './schema/agent-config';
 
-// Agent Manager
-export { AgentManager, agentManager } from './AgentManager';
-export type { AgentInstance, AgentConfig } from './AgentManager';
-
-// IndexAgent
-export { IndexAgent, indexAgent } from './IndexAgent';
-export type { IndexLevel, IndexAgentOptions } from './IndexAgent';
-
-// Agent Config (per-agent AGENT.md + .meta)
-export { parseAgentMd, AgentMetaSchema, resolveAgentConfig } from './config';
+// Agent Config (per-agent AGENTS.md + .meta)
+export { parseAgentInstructions, extractMarkdownBody, AgentMetaSchema, resolveAgentConfig } from './config';
 export type {
-  AgentFrontmatter,
   AgentMcpServerDef,
   AgentMetaRecord,
-  ParsedAgentMd,
   ResolvedAgentConfig,
 } from './config';

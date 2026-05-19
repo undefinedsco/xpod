@@ -58,247 +58,123 @@ AI 始终平衡用户的投入产出比：
 - **缓存已完成的工作**：避免重复投入
 - **根据重要程度分配资源**：收藏的、常用的值得更多投入
 
-## 核心模型
+## 当前落地模型
 
-### Task（任务）
+当前任务系统已经收敛到 Managed Agents 边界。`Run` 是这里必须完成的功能，不是附属说明:
 
-```typescript
-interface Task {
-  id: string;           // 任务 ID
-  agent: string;        // 发给哪个 AI Agent
-  message: string;      // 任务消息/上下文
-  status: TaskStatus;   // pending | running | completed | failed
-  createdAt: Date;
-  startedAt?: Date;
-  completedAt?: Date;
-  result?: unknown;
-  error?: string;
-}
+```text
+Task     # 任务式命令，和 Chat 并列
+Thread   # 观察和 steer 的会话线索
+Run      # 一次具体 Agent Runtime 执行
+RunStep # Run 的 append-only 执行事实
+Message  # 用户/Agent 可见消息
 ```
 
-### Agent（AI 代理）
+`Task` 不直接表示执行过程；执行过程是 `Run`。一次性任务、周期任务、事件任务都会 materialize 成 `Run` 后再交给 Agent Runtime。
 
-```typescript
-interface Agent {
-  name: string;                    // Agent 名称
-  description: string;             // Agent 描述
-  execute(message, context): Promise<AgentResult>;
-}
+当前实现已经把 `Run` 落为一等 Pod 资源，并接到 Chat/Task 两条入口:
+
+- Chat 调用 Agent Runtime 时先创建 `Run`，执行中追加 `RunStep`。
+- Task 创建/触发时通过 `TaskMaterializer` 创建 `Run`，再走同一个 `RunExecutionBackend`。
+- scheduled/event Task 由内部 `TaskService` / `InngestTaskScheduler` materialize，不作为公共 REST 协议暴露。
+
+### Task
+
+Pod 位置:
+
+```text
+/.data/task/index.ttl#{id}
 ```
 
-## 工作流程
+字段:
 
-```
-事件发生 → 生成消息 → 创建任务 → 路由到 Agent → AI 执行 → 存储结果
-```
+- `prompt`: 任务式命令内容。
+- `thread`: URI，观察和 steer 的 Thread。
+- `workspace`: URI，指向 workspace Container 或 `file://<runner>/...`。
+- `runner`: runner adapter 字符串，例如 `pi:pi`、`pi:codex`。
+- `status`: `active | paused | completed | failed`。
+- `triggerKind`: `once | interval | cron | event`。
+- `intervalSeconds` / `cron` / `eventName`: 触发定义。
+- `nextRunAt` / `lastRunAt`: materializer 的调度状态。
+- `authBinding`: 任务执行时使用的 Pod credential snapshot/reference，只包含 `id`、`webId`、`clientId`、状态等可持久化信息，不包含 `clientSecret` / `accessToken`。
 
-### 任务上下文
+创建 Task 时，核心 service/API 只接收已经确定的 `authBinding` 值。`existing` / `create` 这类“选择已有密钥还是新建密钥”的分支属于 UI、CLI 或命令向导的交互逻辑：交互层先调用凭据服务读取或创建 Pod credential，再把返回的 binding 作为普通字段写入 Task。Task 存储不记录用户当时选择了哪条交互路径，也不会把 secret 放进 Task、Run 或 Inngest event。
 
-AI 决策时可获取的上下文信息：
+### Run
 
-| 上下文 | 来源 | 用途 |
-|--------|------|------|
-| 消息本身 | 任务 message | 理解要做什么 |
-| Subject 状态 | `.meta` | 判断已做到什么程度 |
-| 用户行为 | LDP 查询 | 收藏、最近访问、提及频率 |
-| 文件属性 | LDP 查询 | 类型、大小、创建时间 |
-| 关联资源 | LDP 查询 | 所在目录、相关文件 |
+Pod 位置:
 
-AI 综合这些上下文，自主决定：
-- 是否需要处理
-- 处理到什么程度
-- 使用什么工具
-- 如何存储结果
-
-### 示例
-
-```
-用户上传文件
-    ↓
-message: "用户在 </docs/> 上传了文件 </docs/report.pdf>"
-    ↓
-Task { agent: "indexing", message: "..." }
-    ↓
-IndexAgent 收到消息
-    ↓
-AI 自己决定：检查文件类型、判断重要程度、选择处理深度、调用工具、存储结果
+```text
+/.data/{chat|task}/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
+/.data/{chat|task}/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{stepId}
 ```
 
-## 系统架构
+`surfaceId` 是命令来源/归档的 command surface。ChatKit 协议参数仍叫 `chat_id`，但内部持久模型统一叫 `surfaceId`。它不表示谁下发任务、谁执行任务，也不表示 runner。
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                      事件源                              │
-│  (文件变更 / 用户操作 / 定时触发 / 外部调用)              │
-└─────────────────────┬───────────────────────────────────┘
-                      │ 生成消息
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│                   TaskQueue                              │
-│  - 创建任务                                              │
-│  - 路由到 Agent                                          │
-│  - 记录状态                                              │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│               Claude Agent (via SDK)                     │
-│  - 接收消息 + System Prompt                              │
-│  - 自主决策                                              │
-│  - 调用 MCP 工具                                         │
-│  - 可写代码执行                                          │
-│  - 按规范存储                                            │
-└─────────────────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│                   MCP Servers                            │
-│  - JINA MCP (Reader/Search)                              │
-│  - File System MCP                                       │
-│  - 其他 MCP...                                           │
-└─────────────────────────────────────────────────────────┘
+`Run.id` 是相对 `/.data/` base 的资源 id，例如 `chat/default/2026/05/18/runs.ttl#run_x`，不是 `run_x` 这个 fragment/local id。`Run.task`、`Run.thread`、`Run.workspace` 都是 URI 关系。`RunStep.runId` 是本地查询/定位字段，值仍是 Run 的 base-relative resource id；语义关系使用 `RunStep.run`。
+
+`Message` / `Run` / `RunStep` 这类 append-heavy 资源最终应通过字段级 `id.default((key) => ...)` 生成完整 resource id，而不是让业务调用方传日期分桶或 locator。业务 schema 不显式写 `subjectTemplate`；省略模板就是 exact-id subject 模式，完整 `id` 不再被模板反解析。`key` 只存在于 `id.default` 的函数入参里，不进入资源 schema。`default` 只表示“调用方不传 id 时的默认生成函数”；调用方显式传 id 时，也必须传同格式完整 id。
+
+### 对外 API 边界
+
+`Task` 现在还不是著名协议，也不是已经稳定的公共资源 API。第一版不暴露 `/v1/tasks*`，只保留内部 service:
+
+- `TaskService.createTask`
+- `TaskService.listTasks`
+- `TaskService.loadTask`
+- `TaskService.materializeDueTasks`
+- `TaskService.materializeEventTasks`
+- `InngestTaskScheduler` 的 due/event function
+
+当前公共观察面只暴露 `Run`:
+
+```text
+GET /v1/runs
+GET /v1/runs/:runId
+GET /v1/runs/:runId/steps
+POST /v1/runs/:runId/cancel
 ```
 
-## MCP 配置
+行为:
 
-AI Agent 通过 MCP (Model Context Protocol) 访问外部工具。
+- `once`: 创建 `Task` 后立即创建并执行 `Run`。
+- `interval`: 创建 `Task` 并设置 `nextRunAt`；到期后由 Inngest due function 或内部 scheduler materialize 成 `Run`，再推进 `nextRunAt`。
+- `cron`: 记录 cron 表达式；当前通过每分钟 due materializer 触发，复杂 cron 解析后续增强。
+- `event`: 内部事件入口和 `xpod/task.event` 都经由 `InngestTaskScheduler` 触发匹配任务，创建 `Run`；payload 进入本次 Run prompt 和 `Run.metadata.trigger`。
 
-### 可用 MCP 服务器
+### Inngest 边界
 
-| MCP Server | 提供工具 | 说明 |
-|------------|---------|------|
-| **jina-ai/MCP** | Reader, Search | 解析 URL、网络搜索 |
-| **filesystem** | read, write, list | 文件系统操作 |
-| **bash** | execute | 命令执行（包括 Python） |
+Task 的业务事实仍在 Pod，Inngest 只是执行基础设施:
 
-### 配置示例
+```text
+xpod/task.materialize_due or cron
+  -> InngestTaskScheduler function
+  -> TaskService.materializeDueTasks
+  -> Run + RunStep + Message
 
-```json
-{
-  "mcpServers": {
-    "jina": {
-      "command": "npx",
-      "args": ["-y", "@jina-ai/mcp-server"],
-      "env": {
-        "JINA_API_KEY": "${from_pod_credentials}"
-      }
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
-    }
-  }
-}
+xpod/task.event
+  -> InngestTaskScheduler function
+  -> TaskService.materializeEventTasks
+  -> Run + RunStep + Message
 ```
 
-## Agent 规范
+第一版在 API 进程内保留内部 service bridge，但不把它定义成公共 `/v1/tasks` 协议。后续如果 Task 成为稳定跨客户端协议，再单独设计 REST/ACP/MCP 入口。out-of-process worker 要从 Pod 按 `Run`/`Task` URI 恢复状态并 claim 执行。
 
-每个 Agent 有独立的规范文档，定义：
-- 可用工具
-- 相关标准
-- 存储规范
+Task UI 不直接读 Inngest 内部状态。现阶段同进程 UI/后台逻辑通过 `TaskService` 读写 Task 定义，通过 Run API 观察执行:
 
-| Agent | 职责 | 规范文档 |
-|-------|------|---------|
-| indexing | 文档索引 | [indexing-agent.md](./indexing-agent.md) |
+- `TaskService.listTasks` / `TaskService.loadTask`: 任务定义、状态、触发配置和下一次调度时间。
+- `GET /v1/runs?commandKind=task&task=<Task URI>`: 任务产生过的执行流水。
+- `GET /v1/runs/:runId/steps`: 执行过程中的输出、tool/auth/error 等 append-only 事实。
+- `POST /v1/runs/:runId/cancel`: 写入 `Run.cancelRequestedAt` 和 `run.cancel_requested`，worker 在执行边界停止并写 `run.cancelled`。
+- 等待输入/审批不是终结态。Run 进入 `waiting_input` 后保留同一个 `Run.id`；输入或审批结果写入 Pod 后发 `xpod/run.continue_requested`，同一个 Run 被放回队列继续推进这条消息。
 
-## 为什么这样设计
+`Run` API 的过滤字段使用语义字段值，例如 `task`、`thread`、`workspace` 都传 URI；路径里的 `runId` 表示 Run 的 base-relative resource id。客户端只有 `run_x` 这种局部 template id 时，必须先通过索引/仓储解析，不把 fragment 当业务 id。
 
-### 为什么用消息而不是结构化参数？
+## 任务产品直觉
 
-消息是自然语言，AI 可以从中提取需要的信息，也可以处理我们没预料到的场景。
+当前模型保留两条产品直觉:
 
-### 为什么不做策略配置？
+- AI 仍然可以根据消息、资源 `.meta` 状态、用户行为和关联资源自主决定处理深度。
+- 当某个 AI 处理模式足够稳定和高频时，可以再固化成更便宜的工具或流程，但固化只是优化手段。
 
-- 策略配置需要用户理解复杂概念
-- 配置完后锁死，无法进化
-- AI 可以根据上下文动态决策，比静态配置更灵活
-
-### 为什么不做固化流程？
-
-- 固化流程有开发、测试、发布的完整生命周期
-- 固化后不感知 AI 能力的进化
-- 全走 AI，等跑出稳定模式后再考虑固化降本
-
-## 存储
-
-### 1. 任务存储
-
-任务本身的存储，记录"做了什么"。
-
-**位置**：`/tasks/{YYYY-MM-DD}.ttl`（按天分片）
-
-```turtle
-</tasks/2026-01-09.ttl#task-abc123> a udfs:Task ;
-    udfs:agent "indexing" ;
-    udfs:message "用户在 </docs/> 上传了文件 </docs/report.pdf>" ;
-    udfs:status "completed" ;
-    udfs:createdAt "2026-01-09T10:00:00Z"^^xsd:dateTime ;
-    udfs:completedAt "2026-01-09T10:00:05Z"^^xsd:dateTime .
-```
-
-### 2. Subject 状态存储
-
-资源（Subject）的处理状态，记录"做到了什么程度"。
-
-**位置**：资源的 `.meta` 辅助资源
-
-**作用**：
-- AI 读取状态，判断是否需要继续处理
-- 避免重复工作
-- 支持渐进式处理
-- 披露进度和中间状态
-
-**示例**：
-```turtle
-# /docs/report.pdf.meta
-
-</docs/report.pdf> udfs:indexLevel "L1" ;
-    udfs:lastIndexedAt "2026-01-09T10:00:00Z"^^xsd:dateTime ;
-    udfs:cachedMarkdown </docs/report.pdf.md> .
-```
-
-### 两者的关系
-
-| 存储 | 记录 | 用途 |
-|------|------|------|
-| 任务存储 | 做了什么（过程） | 追溯、调试、统计 |
-| Subject 状态 | 做到什么程度（状态和进度） | AI 决策依据 |
-
-AI 处理时：
-1. 读取 Subject 状态 → 判断当前程度
-2. 决定是否需要进一步处理
-3. 执行处理，更新进度
-4. 更新 Subject 状态
-5. 记录任务完成
-
-## 经验与探索的平衡
-
-### 为什么不做固化流程
-
-固化流程的问题：
-- 需要完整的开发、测试、发布生命周期
-- 一旦固化就锁死在某个认知阶段
-- AI 进化了，固化流程不感知
-- 用户得不到更好的帮助
-
-### 当前策略
-
-**全走 AI，积累经验**：
-- 现阶段所有任务都由 AI 处理
-- 让 AI 在实际场景中探索最佳处理方式
-- 积累数据，观察模式
-
-### 未来考虑
-
-当某个模式足够稳定、高频时，可以考虑固化：
-- 降低 AI 调用成本
-- 提高响应速度
-- 但要保留 AI 升级的能力
-
-**固化的前提**：
-- 模式已经跑了足够长时间
-- 用户反馈稳定正向
-- 固化后仍可被 AI 覆盖升级
-
-**本质**：固化是优化手段，不是目标。目标始终是帮助用户。
+实现上必须使用本文上半部分的 `Task / Thread / Run / RunStep / Message` 模型: `Task` 记录任务式命令定义，`Run` 记录每次执行，`RunStep` 记录执行事实。

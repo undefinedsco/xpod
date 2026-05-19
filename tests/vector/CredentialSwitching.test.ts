@@ -114,7 +114,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-123',
@@ -132,7 +132,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-123',
@@ -148,7 +148,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.INACTIVE,
           apiKey: 'key-123',
@@ -166,7 +166,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-1',
@@ -174,7 +174,7 @@ describe('Credential Switching', () => {
         },
         {
           id: 'cred2',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-2',
@@ -182,7 +182,7 @@ describe('Credential Switching', () => {
         },
         {
           id: 'cred3',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-3',
@@ -204,7 +204,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.INACTIVE,
           apiKey: 'key-inactive',
@@ -212,7 +212,7 @@ describe('Credential Switching', () => {
         },
         {
           id: 'cred2',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-active',
@@ -233,7 +233,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-1',
@@ -256,7 +256,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-1',
@@ -264,7 +264,7 @@ describe('Credential Switching', () => {
         },
         {
           id: 'cred2',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-2',
@@ -289,7 +289,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-1',
@@ -312,7 +312,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-1',
@@ -320,7 +320,7 @@ describe('Credential Switching', () => {
         },
         {
           id: 'cred2',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-2',
@@ -343,7 +343,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.RATE_LIMITED,
           apiKey: 'key-1',
@@ -365,7 +365,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred-google',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.INACTIVE, // Google 失效
           apiKey: 'google-key',
@@ -373,7 +373,7 @@ describe('Credential Switching', () => {
         },
         {
           id: 'cred-openai',
-          provider: 'providers.ttl#openai',
+          provider: 'settings/providers/openai.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'openai-key',
@@ -402,7 +402,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-1',
@@ -419,7 +419,7 @@ describe('Credential Switching', () => {
       reader.setCredentials([
         {
           id: 'cred1',
-          provider: 'providers.ttl#google',
+          provider: 'settings/providers/google.ttl',
           service: ServiceType.AI,
           status: CredentialStatus.ACTIVE,
           apiKey: 'key-1',

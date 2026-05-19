@@ -182,6 +182,8 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
     CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     XPOD_EDGE_NODES_ENABLED: 'false',
     XPOD_BUSINESS_TOKEN: 'svc-testservicetokenforintegration',
+    XPOD_INNGEST_EVENT_KEY: 'integration-event-key',
+    XPOD_INNGEST_SIGNING_KEY: 'signkey-test-integration-signing-key',
   };
 
   runtimes.push(await startXpodRuntime({

@@ -14,12 +14,8 @@
  * // 动态构建 URI
  * const custom = UDFS('CustomTerm');  // 'https://undefineds.co/ns#CustomTerm'
  *
- * // 用于 drizzle-solid
- * import { UDFS_NAMESPACE } from '@/vocab';
- * const table = podTable('Credential', {...}, {
- *   type: UDFS.Credential,
- *   namespace: UDFS_NAMESPACE,
- * });
+ * // 用于本地 adapter schema
+ * const predicate = UDFS('systemPrompt');
  * ```
  */
 

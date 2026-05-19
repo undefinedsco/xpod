@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { InMemoryStore } from '../../src/api/chatkit/store';
 import type { AiProvider } from '../../src/api/chatkit/service';
+import { AcpRunExecutionBackend } from '../helpers/AcpRunExecutionBackend';
 
 type RunnerType = 'codebuddy' | 'claude' | 'codex';
 
@@ -49,14 +50,15 @@ async function runSmoke(runner: RunnerType): Promise<{
   const svc = new ChatKitService({
     store,
     aiProvider,
-    enablePtyRuntime: true,
+    enableAgentRuntime: true,
+    runExecutionBackend: new AcpRunExecutionBackend(),
   });
 
   const req = {
     type: 'threads.create',
     metadata: {
       runtime: {
-        workspace: { type: 'path', rootPath: process.cwd() },
+        workspace: `file://localhost${process.cwd()}`,
         idleMs: 20_000,
         authWaitMs: 180_000,
         runner: { type: runner, protocol: 'acp' },

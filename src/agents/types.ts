@@ -34,7 +34,7 @@ export type McpServerConfig = {
  * - claude: @anthropic-ai/claude-agent-sdk
  *
  * 不支持的原因：
- * - OpenAI: 没有完整的 Agent SDK，Codex CLI 使用 MCP 不使用 ACP
+ * - OpenAI: 没有完整的 Agent SDK，Codex CLI 通过 ACP runner 接入，不走这里
  * - Gemini: 没有完整的 Agent SDK，CLI core 使用 MCP 不使用 ACP
  */
 export type ExecutorType = 'codebuddy' | 'claude';
@@ -70,7 +70,7 @@ export interface ProviderConfig {
   id: string;
   /** 显示名称 */
   displayName: string;
-  /** 运行时类型（来自 AgentConfig.runtimeKind，不存储在 Provider 实体） */
+  /** 运行时类型（来自 Agent .meta runtimeKind，不存储在 Provider 实体） */
   executorType: ExecutorType;
   /** API 端点 */
   baseUrl?: string;

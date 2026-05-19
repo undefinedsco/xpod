@@ -29,93 +29,80 @@ Agent Executor 是一个统一的 AI Agent 执行框架，支持多种 AI 提供
 pod:/
 └── settings/
     ├── credentials.ttl          # 凭据存储 (API Keys, Tokens)
-    └── ai/
-        └── providers.ttl        # AI 供应商配置
+    └── providers/
+        ├── openai.ttl           # AI Provider + 该 Provider 的 Model fragment
+        ├── anthropic.ttl
+        └── google.ttl
 ```
 
 ### 凭证格式 (RDF/Turtle)
 
-使用现有的 `udfs:Credential` Schema（参见 `docs/credential-schema.md`）：
+使用 `@undefineds.co/models` 中的 `credentialResource`：
 
 ```turtle
-@prefix udfs: <https://undefineds.co/ns#> .
+@prefix cred: <https://vocab.xpod.dev/credential#> .
 
 # /settings/credentials.ttl
 
 <#cred-gemini>
-  a udfs:ApiKeyCredential ;
-  udfs:provider </settings/ai/providers.ttl#gemini> ;
-  udfs:service "ai" ;
-  udfs:status "active" ;
-  udfs:apiKey "AIzaSy..." ;
-  udfs:label "我的 Gemini Key" .
+  a cred:Credential ;
+  cred:provider </settings/providers/google.ttl> ;
+  cred:service "ai" ;
+  cred:status "active" ;
+  cred:apiKey "AIzaSy..." ;
+  cred:label "我的 Gemini Key" .
 
 <#cred-openai>
-  a udfs:ApiKeyCredential ;
-  udfs:provider </settings/ai/providers.ttl#openai> ;
-  udfs:service "ai" ;
-  udfs:status "active" ;
-  udfs:apiKey "sk-..." ;
-  udfs:organizationId "org-..." .
+  a cred:Credential ;
+  cred:provider </settings/providers/openai.ttl> ;
+  cred:service "ai" ;
+  cred:status "active" ;
+  cred:apiKey "sk-..." ;
+  cred:organizationId "org-..." .
 
 <#cred-anthropic>
-  a udfs:ApiKeyCredential ;
-  udfs:provider </settings/ai/providers.ttl#anthropic> ;
-  udfs:service "ai" ;
-  udfs:status "active" ;
-  udfs:apiKey "sk-ant-..." .
+  a cred:Credential ;
+  cred:provider </settings/providers/anthropic.ttl> ;
+  cred:service "ai" ;
+  cred:status "active" ;
+  cred:apiKey "sk-ant-..." .
 
 <#cred-codebuddy>
-  a udfs:ApiKeyCredential ;
-  udfs:provider </settings/ai/providers.ttl#codebuddy> ;
-  udfs:service "ai" ;
-  udfs:status "active" ;
-  udfs:apiKey "cb-..." .
+  a cred:Credential ;
+  cred:provider </settings/providers/codebuddy.ttl> ;
+  cred:service "ai" ;
+  cred:status "active" ;
+  cred:apiKey "cb-..." .
 ```
 
 ### 供应商配置
 
 ```turtle
-@prefix udfs: <https://undefineds.co/ns#> .
+@prefix ai: <https://vocab.xpod.dev/ai#> .
 
-# /settings/ai/providers.ttl
+# /settings/providers/openai.ttl
 
-<#gemini>
-  a udfs:AiProvider ;
-  udfs:name "gemini" ;
-  udfs:displayName "Google Gemini" ;
-  udfs:baseUrl "https://generativelanguage.googleapis.com" ;
-  udfs:defaultModel "gemini-2.0-flash-exp" ;
-  udfs:enabled true .
+</settings/providers/openai.ttl>
+  a ai:Provider ;
+  ai:displayName "OpenAI" ;
+  ai:baseUrl "https://api.openai.com/v1" ;
+  ai:defaultModel </settings/providers/openai.ttl#gpt-4o> ;
+  ai:hasModel </settings/providers/openai.ttl#gpt-4o> .
 
-<#openai>
-  a udfs:AiProvider ;
-  udfs:name "openai" ;
-  udfs:displayName "OpenAI" ;
-  udfs:defaultModel "gpt-4o" ;
-  udfs:enabled true .
-
-<#anthropic>
-  a udfs:AiProvider ;
-  udfs:name "anthropic" ;
-  udfs:displayName "Anthropic Claude" ;
-  udfs:defaultModel "claude-sonnet-4-20250514" ;
-  udfs:enabled true .
-
-<#codebuddy>
-  a udfs:AiProvider ;
-  udfs:name "codebuddy" ;
-  udfs:displayName "CodeBuddy" ;
-  udfs:defaultModel "claude-sonnet-4-20250514" ;
-  udfs:enabled true .
+</settings/providers/openai.ttl#gpt-4o>
+  a ai:Model ;
+  ai:displayName "gpt-4o" ;
+  ai:modelType "chat" ;
+  ai:isProvidedBy </settings/providers/openai.ttl> ;
+  ai:status "active" .
 ```
 
 ### 现有实现
 
 项目中已有凭证读取实现：
 
-- **Schema**: `src/credential/schema/tables.ts` - 定义 `credentialTable`
-- **Reader**: `src/embedding/CredentialReaderImpl.ts` - 从 Pod 读取凭证
+- **Schema**: `@undefineds.co/models` - 定义 `credentialResource` / `aiProviderResource` / `aiModelResource`
+- **Reader**: `src/ai/service/CredentialReaderImpl.ts` - 从 Pod 读取凭证
 - **文档**: `docs/credential-schema.md` - 完整 Schema 定义
 
 ## 认证方式
@@ -320,7 +307,7 @@ interface IAgentExecutor {
 项目中已有 `CredentialReaderImpl`，可直接使用：
 
 ```typescript
-import { CredentialReaderImpl } from '../embedding/CredentialReaderImpl';
+import { CredentialReaderImpl } from '../ai/service/CredentialReaderImpl';
 
 // 读取 AI 凭证
 const credentialReader = new CredentialReaderImpl();
@@ -404,7 +391,7 @@ async function authorizeProvider(provider: string) {
 
 ```typescript
 // 后端代码
-import { CredentialReaderImpl } from '../embedding/CredentialReaderImpl';
+import { CredentialReaderImpl } from '../ai/service/CredentialReaderImpl';
 import { createExecutorFromPod } from '../agent';
 
 async function executeAgentTask(
@@ -492,7 +479,7 @@ GET /api/agent/providers
 
 ### 2. 存储安全
 
-- 凭证存储在用户 Pod 的私有目录 `.xpod/credentials/`
+- 凭证存储在用户 Pod 的 `/settings/credentials.ttl`，AI Provider 存储在 `/settings/providers/{provider}.ttl`
 - 可选：使用 Pod 的加密存储功能
 - 服务器不持久化任何凭证
 

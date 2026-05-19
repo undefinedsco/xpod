@@ -166,6 +166,18 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   executorType: 'executorType',
   /** System Prompt */
   systemPrompt: 'systemPrompt',
+  /** ACP 权限模式 */
+  permissionMode: 'permissionMode',
+  /** 允许工具 */
+  allowedTool: 'allowedTool',
+  /** 禁用工具 */
+  disallowedTool: 'disallowedTool',
+  /** Agent skill package */
+  skill: 'skill',
+  /** @deprecated Codex rules are stored under .codex/rules, not Agent Profile refs */
+  rule: 'rule',
+  /** Agent MCP server config definition */
+  mcpServer: 'mcpServer',
   /** 最大轮数 */
   maxTurns: 'maxTurns',
   /** 超时时间 */

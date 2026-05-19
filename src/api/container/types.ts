@@ -25,6 +25,10 @@ import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
+import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
+import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestService';
+import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
+import type { TaskAuthBindingService, TaskService, InngestTaskScheduler } from '../tasks';
 
 /**
  * 容器配置
@@ -46,6 +50,25 @@ export interface ApiContainerConfig {
   runtimeHost?: RuntimeHost;
   /** 数据库连接 URL */
   databaseUrl: string;
+
+  /** Redis connection URL, used by embedded infrastructure such as Inngest in cloud mode. */
+  redisUrl?: string;
+
+  /** Embedded Inngest runtime configuration. */
+  inngest?: {
+    enabled: boolean;
+    mode?: 'managed' | 'spawn';
+    port?: number;
+    host?: string;
+    baseUrl?: string;
+    eventKey?: string;
+    signingKey?: string;
+    binaryPath?: string;
+    sqliteDir?: string;
+  };
+
+  /** Resolved runtime config passed from API bootstrap after starting/locating Inngest. */
+  inngestRuntimeConfig?: EmbeddedInngestRuntimeConfig;
 
   /** CORS 允许的源 */
   corsOrigins: string[];
@@ -115,6 +138,12 @@ export interface ApiContainerCradle {
   // ChatKit 服务 (OpenAI ChatKit 协议)
   chatKitStore: PodChatKitStore;
   chatKitAiProvider: AiProvider;
+  inngestRuntimeConfig: EmbeddedInngestRuntimeConfig | undefined;
+  runAuthContextRegistry: RunAuthContextRegistry;
+  runExecutionBackend: InngestRunExecutionBackend;
+  taskAuthBindingService: TaskAuthBindingService<StoreContext>;
+  taskService: TaskService<StoreContext>;
+  inngestTaskScheduler: InngestTaskScheduler<StoreContext>;
   chatKitService: ChatKitService<StoreContext>;
   providerRegistry: ProviderRegistry;
   embeddingService: EmbeddingService;

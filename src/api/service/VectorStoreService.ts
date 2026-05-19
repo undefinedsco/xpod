@@ -1,5 +1,6 @@
 import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { aiConfigModelRef, normalizeAIConfigModelId, normalizeAIConfigProviderId, selectAIConfigCredential } from '@undefineds.co/models';
 import { randomBytes } from 'crypto';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId, isSolidAuth } from '../auth/AuthContext';
@@ -252,7 +253,7 @@ export class VectorStoreService {
       throw new Error('Failed to authenticate with Pod');
     }
 
-    const store = await db.findByLocator(VectorStore, { id });
+    const store = await db.findById(VectorStore, id);
     if (!store) {
       throw new Error(`Vector store ${id} not found`);
     }
@@ -289,7 +290,7 @@ export class VectorStoreService {
     if (request.name !== undefined) updates.name = request.name;
     if (request.chunking_strategy !== undefined) updates.chunkingStrategy = request.chunking_strategy;
 
-    await db.updateByLocator(VectorStore, { id }, updates);
+    await db.updateById(VectorStore, id, updates);
 
     return this.getVectorStore(id, auth);
   }
@@ -306,7 +307,7 @@ export class VectorStoreService {
       throw new Error('Failed to authenticate with Pod');
     }
 
-    await db.deleteByLocator(VectorStore, { id });
+    await db.deleteById(VectorStore, id);
 
     this.logger.info(`Deleted vector store ${id}`);
 
@@ -359,7 +360,7 @@ export class VectorStoreService {
     if (existingFiles.length > 0) {
       // 文件已存在，更新状态
       fileIndexId = existingFiles[0].id;
-      await db.updateByLocator(IndexedFile, { id: fileIndexId }, {
+      await db.updateById(IndexedFile, fileIndexId, {
         status: FileIndexStatus.IN_PROGRESS,
         chunkingStrategy,
         indexedAt: new Date(),
@@ -398,7 +399,7 @@ export class VectorStoreService {
       await this.upsertVector(aiConfig.embeddingModel, vectorId, embedding, accessToken);
 
       // 更新索引记录为 completed
-      await db.updateByLocator(IndexedFile, { id: fileIndexId }, {
+      await db.updateById(IndexedFile, fileIndexId, {
         status: FileIndexStatus.COMPLETED,
         usageBytes: content.length,
         lastError: null,
@@ -410,7 +411,7 @@ export class VectorStoreService {
     } catch (error) {
       // 更新索引记录为 failed
       const errorMsg = error instanceof Error ? error.message : String(error);
-      await db.updateByLocator(IndexedFile, { id: fileIndexId }, {
+      await db.updateById(IndexedFile, fileIndexId, {
         status: FileIndexStatus.FAILED,
         lastError: errorMsg,
       });
@@ -484,7 +485,7 @@ export class VectorStoreService {
     }
 
     // 删除索引记录
-    await db.deleteByLocator(IndexedFile, { id: fileRecord.id });
+    await db.deleteById(IndexedFile, fileRecord.id);
 
     this.logger.info(`Removed file index ${fileUrl}`);
     return { deleted: true };
@@ -713,11 +714,11 @@ export class VectorStoreService {
   }
 
   private extractModelId(uri: string): string {
-    const hashIndex = uri.lastIndexOf('#');
-    if (hashIndex !== -1) {
-      return uri.slice(hashIndex + 1);
-    }
-    return uri;
+    return normalizeAIConfigModelId(uri);
+  }
+
+  private modelUri(model: string, provider: string = 'openai'): string {
+    return aiConfigModelRef(provider, model);
   }
 
   private getPodBaseUrl(webId: string): string {
@@ -807,24 +808,20 @@ export class VectorStoreService {
       // 获取 provider 信息
       let baseUrl: string | undefined;
       let proxyUrl: string | undefined;
+      let provider = normalizeAIConfigProviderId(activeCred.provider || activeCred.id);
 
-      if (activeCred.provider) {
+      if (provider) {
         const providers = await db.select().from(Provider);
-        const providerByUri = new Map<string, any>();
-        for (const p of providers) {
-          const uri = (p as any)['@id'] as string | undefined;
-          if (uri) providerByUri.set(uri, p);
-          providerByUri.set(p.id, p);
-        }
-        const provider = providerByUri.get(activeCred.provider);
-        if (provider) {
-          baseUrl = provider.baseUrl || undefined;
-          proxyUrl = provider.proxyUrl || undefined;
+        const selection = selectAIConfigCredential(provider, credentials, providers);
+        if (selection) {
+          provider = selection.providerId;
+          baseUrl = selection.baseUrl;
+          proxyUrl = selection.proxyUrl;
         }
       }
 
       return {
-        provider: activeCred.id,
+        provider: provider || activeCred.id,
         apiKey: activeCred.apiKey,
         baseUrl,
         proxyUrl,
@@ -891,9 +888,7 @@ export class VectorStoreService {
     // 检查模型是否有变化
     const modelChanged = currentModel && currentModel !== newModel;
 
-    const webId = getWebId(auth) ?? getAccountId(auth) ?? '';
-    const podBaseUrl = this.getPodBaseUrl(webId);
-    const modelUri = `${podBaseUrl}settings/ai/models.ttl#${newModel}`;
+    const modelUri = this.modelUri(newModel);
 
     try {
       // 检查配置是否已存在
@@ -902,9 +897,9 @@ export class VectorStoreService {
 
       if (existingConfig) {
         // 更新现有配置
-        await db.updateByLocator(AIConfig, { id: 'config' }, {
+        await db.updateById(AIConfig, 'config', {
           embeddingModel: modelUri,
-          previousModel: modelChanged ? `${podBaseUrl}settings/ai/models.ttl#${currentModel}` : existingConfig.previousModel,
+          previousModel: modelChanged ? this.modelUri(currentModel) : existingConfig.previousModel,
           migrationStatus: modelChanged ? MigrationStatus.IN_PROGRESS : existingConfig.migrationStatus,
           migrationProgress: modelChanged ? 0 : existingConfig.migrationProgress,
           updatedAt: new Date(),
@@ -958,7 +953,7 @@ export class VectorStoreService {
 
       if (totalFiles === 0) {
         // 无文件需要迁移
-        await db.updateByLocator(AIConfig, { id: 'config' }, {
+        await db.updateById(AIConfig, 'config', {
           migrationStatus: MigrationStatus.COMPLETED,
           migrationProgress: 100,
           updatedAt: new Date(),
@@ -983,7 +978,7 @@ export class VectorStoreService {
 
         // 更新迁移进度
         const progress = Math.round(((completedFiles + failedFiles) / totalFiles) * 100);
-        await db.updateByLocator(AIConfig, { id: 'config' }, {
+        await db.updateById(AIConfig, 'config', {
           migrationProgress: progress,
           updatedAt: new Date(),
         });
@@ -991,7 +986,7 @@ export class VectorStoreService {
 
       // 标记迁移完成
       const finalStatus = failedFiles === 0 ? MigrationStatus.COMPLETED : MigrationStatus.FAILED;
-      await db.updateByLocator(AIConfig, { id: 'config' }, {
+      await db.updateById(AIConfig, 'config', {
         migrationStatus: finalStatus,
         migrationProgress: 100,
         updatedAt: new Date(),
@@ -1000,7 +995,7 @@ export class VectorStoreService {
       this.logger.info(`Migration completed: ${completedFiles} success, ${failedFiles} failed`);
     } catch (error) {
       this.logger.error(`Migration error: ${error}`);
-      await db.updateByLocator(AIConfig, { id: 'config' }, {
+      await db.updateById(AIConfig, 'config', {
         migrationStatus: MigrationStatus.FAILED,
         updatedAt: new Date(),
       });

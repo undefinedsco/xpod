@@ -9,5 +9,6 @@ export * from './ApiKeyHandler';
 export * from './SubdomainHandler';
 export * from './SubdomainClientHandler';
 export * from './ChatKitHandler';
+export * from './RunHandler';
 export * from './ProvisionHandler';
 export * from './PodManagementHandler';

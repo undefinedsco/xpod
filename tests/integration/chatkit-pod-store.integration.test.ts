@@ -11,11 +11,12 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq } from '@undefineds.co/drizzle-solid';
 
 import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import type { StoreContext } from '../../src/api/chatkit/store';
+import { RunStepType, RunStatus } from '../../src/api/runs/schema';
+import { generateRunResourceId, generateRunStepResourceId } from '../../src/api/runs/store';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
 import { getClientCredentialsToken, getConfiguredAccount, type AccountSetup } from './helpers/solidAccount';
 
@@ -72,6 +73,8 @@ suite('ChatKit PodStore Integration', () => {
       store,
       aiProvider: new MockAiProvider(),
       systemPrompt: 'You are a helpful test assistant.',
+      enableAgentRuntime: false,
+      allowDirectAiFallback: true,
     });
 
     testContext = {
@@ -209,6 +212,8 @@ suite('ChatKit PodStore Integration', () => {
         store: freshStore,
         aiProvider: new MockAiProvider(),
         systemPrompt: 'You are a helpful test assistant.',
+        enableAgentRuntime: false,
+        allowDirectAiFallback: true,
       });
       const freshContext = {
         ...testContext,
@@ -477,6 +482,163 @@ suite('ChatKit PodStore Integration', () => {
     }, 15000);
   });
 
+  describe('Run Resources', () => {
+    it('should persist Run and RunStep resources in Pod', async () => {
+      const runId = `run_integration_${Date.now()}`;
+      const stepId = `run_step_integration_${Date.now()}`;
+      const threadId = `thread_run_integration_${Date.now()}`;
+      const chatId = 'default';
+      const workspaceUri = `${podUrl}projects/run-integration/`;
+      const threadUri = `${podUrl}.data/chat/${chatId}/index.ttl#${threadId}`;
+      const createdAt = Math.floor(Date.now() / 1000);
+      const createdDate = new Date(createdAt * 1000);
+      const yyyy = String(createdDate.getUTCFullYear());
+      const MM = String(createdDate.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(createdDate.getUTCDate()).padStart(2, '0');
+      const runResourceId = generateRunResourceId({
+        key: runId,
+        commandKind: 'chat',
+        surfaceId: chatId,
+        createdAt,
+      });
+      const stepResourceId = generateRunStepResourceId({
+        key: stepId,
+        runId: runResourceId,
+        commandKind: 'chat',
+        surfaceId: chatId,
+        createdAt: createdAt + 1,
+      });
+      const runUri = `${podUrl}.data/chat/${chatId}/${yyyy}/${MM}/${dd}/runs.ttl#${runId}`;
+
+      await store.saveRun({
+        id: runResourceId,
+        surfaceId: chatId,
+        thread: threadUri,
+        workspace: workspaceUri,
+        commandKind: 'chat',
+        status: RunStatus.RUNNING,
+        runner: 'pi:codex',
+        prompt: 'persist run in pod',
+        metadata: { source: 'integration-test' },
+        createdAt,
+        startedAt: createdAt,
+        updatedAt: createdAt,
+      }, testContext);
+
+      await store.appendRunStep({
+        id: stepResourceId,
+        commandKind: 'chat',
+        surfaceId: chatId,
+        runId: runResourceId,
+        run: runUri,
+        type: RunStepType.STARTED,
+        message: 'Run started',
+        data: { workspace: workspaceUri },
+        createdAt: createdAt + 1,
+      }, testContext);
+
+      const loadedRun = await store.loadRun(runResourceId, testContext);
+      const loadedEvents = await store.loadRunSteps(runResourceId, testContext);
+
+      expect(loadedRun).toMatchObject({
+        id: runResourceId,
+        thread: threadUri,
+        workspace: workspaceUri,
+        commandKind: 'chat',
+        status: RunStatus.RUNNING,
+        runner: 'pi:codex',
+        prompt: 'persist run in pod',
+        metadata: { source: 'integration-test' },
+      });
+      expect(loadedEvents).toHaveLength(1);
+      expect(loadedEvents[0]).toMatchObject({
+        id: stepResourceId,
+        commandKind: 'chat',
+        surfaceId: chatId,
+        runId: runResourceId,
+        run: runUri,
+        type: RunStepType.STARTED,
+        message: 'Run started',
+        data: { workspace: workspaceUri },
+      });
+    }, 15000);
+
+    it('should load task RunSteps by complete base-relative Run id', async () => {
+      const runId = `run_task_integration_${Date.now()}`;
+      const stepId = `run_step_task_integration_${Date.now()}`;
+      const threadId = `thread_task_run_integration_${Date.now()}`;
+      const surfaceId = 'secretary';
+      const workspaceUri = `${podUrl}projects/task-run-integration/`;
+      const threadUri = `${podUrl}.data/task/${surfaceId}/index.ttl#${threadId}`;
+      const createdAt = Math.floor(Date.now() / 1000);
+      const createdDate = new Date(createdAt * 1000);
+      const yyyy = String(createdDate.getUTCFullYear());
+      const MM = String(createdDate.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(createdDate.getUTCDate()).padStart(2, '0');
+      const runResourceId = generateRunResourceId({
+        key: runId,
+        commandKind: 'task',
+        surfaceId,
+        createdAt,
+      });
+      const stepResourceId = generateRunStepResourceId({
+        key: stepId,
+        runId: runResourceId,
+        commandKind: 'task',
+        surfaceId,
+        createdAt: createdAt + 1,
+      });
+      const runUri = `${podUrl}.data/task/${surfaceId}/${yyyy}/${MM}/${dd}/runs.ttl#${runId}`;
+
+      await store.saveRun({
+        id: runResourceId,
+        surfaceId,
+        thread: threadUri,
+        workspace: workspaceUri,
+        commandKind: 'task',
+        status: RunStatus.RUNNING,
+        runner: 'pi:codex',
+        prompt: 'persist task run in pod',
+        metadata: { source: 'integration-test' },
+        createdAt,
+        startedAt: createdAt,
+        updatedAt: createdAt,
+      }, testContext);
+
+      await store.appendRunStep({
+        id: stepResourceId,
+        commandKind: 'task',
+        surfaceId,
+        runId: runResourceId,
+        run: runUri,
+        type: RunStepType.STARTED,
+        message: 'Task run started',
+        data: { workspace: workspaceUri },
+        createdAt: createdAt + 1,
+      }, testContext);
+
+      const loadedEvents = await store.loadRunSteps(runResourceId, testContext);
+
+      expect(loadedEvents).toHaveLength(1);
+      expect(loadedEvents[0]).toMatchObject({
+        id: stepResourceId,
+        commandKind: 'task',
+        surfaceId,
+        runId: runResourceId,
+        run: runUri,
+        type: RunStepType.STARTED,
+        message: 'Task run started',
+        data: { workspace: workspaceUri },
+      });
+    }, 15000);
+
+    it('should reject local fragment ids when loading Pod RunSteps', async () => {
+      await expect(store.loadRunSteps('#run_only_local_id', testContext))
+        .rejects
+        .toThrow('loadRunSteps requires a base-relative Run id');
+    }, 15000);
+  });
+
   describe('Thread Deletion', () => {
     it('should delete thread and all messages from Pod', async () => {
       // Create a thread
@@ -586,7 +748,7 @@ suite('ChatKit PodStore Integration', () => {
       // Create a credential
       await db.insert(Credential).values({
         id: 'cred-test-001',
-        provider: `${podUrl}settings/ai/providers.ttl#test-openai`,
+        provider: `${podUrl}settings/providers/test-openai.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-test-key-123',
@@ -600,7 +762,7 @@ suite('ChatKit PodStore Integration', () => {
       expect(config!.providerId).toBe('test-openai');
       expect(config!.baseUrl).toBe('https://api.openai.com/v1');
       expect(config!.apiKey).toBe('sk-test-key-123');
-      expect(config!.credentialId).toBe('cred-test-001');
+      expect(config!.credentialId).toBe('credentials.ttl#cred-test-001');
     });
 
     it('should use provider baseUrl', async () => {
@@ -618,7 +780,7 @@ suite('ChatKit PodStore Integration', () => {
       // Create credential
       await db.insert(Credential).values({
         id: 'cred-custom-001',
-        provider: `${podUrl}settings/ai/providers.ttl#custom-provider`,
+        provider: `${podUrl}settings/providers/custom-provider.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-custom-key',
@@ -647,7 +809,7 @@ suite('ChatKit PodStore Integration', () => {
       // Create inactive credential
       await db.insert(Credential).values({
         id: 'cred-inactive-001',
-        provider: `${podUrl}settings/ai/providers.ttl#inactive-provider`,
+        provider: `${podUrl}settings/providers/inactive-provider.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.INACTIVE,
         apiKey: 'sk-inactive-key',
@@ -667,7 +829,7 @@ suite('ChatKit PodStore Integration', () => {
       // Create a credential for status update test
       await db.insert(Credential).values({
         id: 'cred-status-test',
-        provider: `${podUrl}settings/ai/providers.ttl#test-openai`,
+        provider: `${podUrl}settings/providers/test-openai.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-status-test-key',
@@ -685,7 +847,7 @@ suite('ChatKit PodStore Integration', () => {
       );
 
       // Verify the update
-      const credential = await db.findByLocator(Credential, { id: 'cred-status-test' });
+      const credential = await db.findById(Credential, 'cred-status-test');
       expect(credential).toBeTruthy();
       expect(credential.status).toBe(CredentialStatus.RATE_LIMITED);
       expect(credential.failCount).toBe(1);
@@ -698,7 +860,7 @@ suite('ChatKit PodStore Integration', () => {
       // Create a credential with some failures
       await db.insert(Credential).values({
         id: 'cred-success-test',
-        provider: `${podUrl}settings/ai/providers.ttl#test-openai`,
+        provider: `${podUrl}settings/providers/test-openai.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.RATE_LIMITED,
         apiKey: 'sk-success-test-key',
@@ -710,7 +872,7 @@ suite('ChatKit PodStore Integration', () => {
       await store.recordCredentialSuccess(testContext, 'cred-success-test');
 
       // Verify the update
-      const credential = await db.findByLocator(Credential, { id: 'cred-success-test' });
+      const credential = await db.findById(Credential, 'cred-success-test');
       expect(credential).toBeTruthy();
       expect(credential.status).toBe(CredentialStatus.ACTIVE);
       expect(credential.failCount).toBe(0);
@@ -732,7 +894,7 @@ suite('ChatKit PodStore Integration', () => {
       // Create credential
       await db.insert(Credential).values({
         id: 'cred-proxy-001',
-        provider: `${podUrl}settings/ai/providers.ttl#proxy-provider`,
+        provider: `${podUrl}settings/providers/proxy-provider.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-proxy-key',

@@ -14,6 +14,22 @@ import type {
   StoreItemType,
 } from './types';
 import { generateId, getThreadIdFromRef, nowTimestamp } from './types';
+import {
+  buildRunResourceId,
+  buildRunStepResourceId,
+  canClaimRun,
+  isRunResourceId,
+  type RunListOptions,
+  type RunRecordData,
+  type RunStepRecordData,
+  type RunStore,
+} from '../runs/store';
+import { buildTaskResourceId, type TaskListOptions, type TaskRecordData, type TaskStore } from '../tasks/store';
+import {
+  TASK_AUTH_CREDENTIAL_SERVICE,
+  type TaskAuthBindingRepository,
+  type TaskAuthCredentialRecord,
+} from '../tasks/TaskAuthBinding';
 
 /**
  * Context type for store operations (generic)
@@ -23,7 +39,7 @@ export type StoreContext = Record<string, unknown>;
 /**
  * Abstract Store interface
  */
-export interface ChatKitStore<TContext = StoreContext> {
+export interface ChatKitStore<TContext = StoreContext> extends Partial<RunStore<TContext>> {
   // ID Generation
   generateThreadId(context: TContext): string;
   generateItemId(itemType: StoreItemType, thread: ThreadMetadata, context: TContext): string;
@@ -53,10 +69,14 @@ export interface ChatKitStore<TContext = StoreContext> {
  * Simple in-memory store for development and testing.
  * Data is lost when the server restarts.
  */
-export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TContext> {
+export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TContext>, TaskStore<TContext>, TaskAuthBindingRepository<TContext & StoreContext> {
   private threads: Map<string, ThreadMetadata> = new Map();
   private items: Map<string, Map<string, ThreadItem>> = new Map(); // threadId -> (itemId -> item)
   private attachments: Map<string, Attachment> = new Map();
+  private runs: Map<string, RunRecordData> = new Map();
+  private runSteps: Map<string, RunStepRecordData[]> = new Map();
+  private tasks: Map<string, TaskRecordData> = new Map();
+  private taskAuthCredentials: Map<string, TaskAuthCredentialRecord> = new Map();
 
   // Store per-user data using a key from context
   private getUserKey(context: TContext): string {
@@ -74,11 +94,19 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
 
   // ID Generation
   generateThreadId(_context: TContext): string {
-    return generateId('thread');
+    return `chat/default/index.ttl#${generateId('thread')}`;
   }
 
-  generateItemId(itemType: StoreItemType, _thread: ThreadMetadata, _context: TContext): string {
-    return generateId(itemType);
+  generateItemId(itemType: StoreItemType, thread: ThreadMetadata, _context: TContext): string {
+    const commandKind = thread.metadata?.commandKind === 'task' ? 'task' : 'chat';
+    const surfaceId = typeof thread.metadata?.surface_id === 'string'
+      ? thread.metadata.surface_id
+      : (typeof thread.metadata?.chat_id === 'string' ? thread.metadata.chat_id : 'default');
+    const date = new Date();
+    const yyyy = String(date.getUTCFullYear());
+    const MM = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(date.getUTCDate()).padStart(2, '0');
+    return `${commandKind}/${surfaceId}/${yyyy}/${MM}/${dd}/messages.ttl#${generateId(itemType)}`;
   }
 
   // Thread operations
@@ -231,6 +259,161 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     this.attachments.delete(attachmentId);
   }
 
+  async saveRun(run: RunRecordData, context: TContext): Promise<void> {
+    run.id = buildRunResourceId(run);
+    this.runs.set(this.getRunKey(run.id, context), { ...run });
+  }
+
+  async loadRun(runId: string, context: TContext): Promise<RunRecordData> {
+    const run = this.runs.get(this.getRunKey(runId, context));
+    if (!run) {
+      throw new Error(`Run not found: ${runId}`);
+    }
+    return { ...run };
+  }
+
+  async listRuns(options: RunListOptions, context: TContext): Promise<RunRecordData[]> {
+    const userKey = this.getUserKey(context);
+    const prefix = `${userKey}:`;
+    let runs = Array.from(this.runs.entries())
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, run]) => ({ ...run }));
+
+    if (options.task) {
+      runs = runs.filter((run) => run.task === options.task);
+    }
+    if (options.thread) {
+      runs = runs.filter((run) => run.thread === options.thread);
+    }
+    if (options.workspace) {
+      runs = runs.filter((run) => run.workspace === options.workspace);
+    }
+    if (options.commandKind) {
+      runs = runs.filter((run) => run.commandKind === options.commandKind);
+    }
+    if (options.status) {
+      runs = runs.filter((run) => run.status === options.status);
+    }
+
+    runs.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+    return runs.slice(0, options.limit ?? runs.length);
+  }
+
+  async appendRunStep(event: RunStepRecordData, context: TContext): Promise<void> {
+    if (!isRunResourceId(event.runId)) {
+      throw new Error(`RunStep runId must be a complete Run resource id: ${event.runId}`);
+    }
+    event.id = buildRunStepResourceId(event);
+    const key = this.getRunKey(event.runId, context);
+    const events = this.runSteps.get(key) ?? [];
+    events.push({ ...event });
+    this.runSteps.set(key, events);
+  }
+
+  async loadRunSteps(runId: string, context: TContext): Promise<RunStepRecordData[]> {
+    return [...(this.runSteps.get(this.getRunKey(runId, context)) ?? [])];
+  }
+
+  async claimRun(input: {
+    runId: string;
+    leaseOwner: string;
+    leaseExpiresAt: number;
+    now: number;
+  }, context: TContext): Promise<RunRecordData | undefined> {
+    const key = this.getRunKey(input.runId, context);
+    const run = this.runs.get(key);
+    if (!run || !canClaimRun(run, input)) {
+      return undefined;
+    }
+    const claimed = {
+      ...run,
+      leaseOwner: input.leaseOwner,
+      leaseExpiresAt: input.leaseExpiresAt,
+      heartbeatAt: input.now,
+      updatedAt: input.now,
+    };
+    this.runs.set(key, claimed);
+    return { ...claimed };
+  }
+
+  async saveTask(task: TaskRecordData, context: TContext): Promise<void> {
+    task.id = buildTaskResourceId(task.id);
+    this.tasks.set(this.getTaskKey(task.id, context), {
+      ...task,
+      metadata: this.withAuthBindingMetadata(task.metadata, task.authBinding),
+    });
+  }
+
+  async loadTask(taskId: string, context: TContext): Promise<TaskRecordData> {
+    const task = this.tasks.get(this.getTaskKey(taskId, context));
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+    return { ...task };
+  }
+
+  async listTasks(options: TaskListOptions, context: TContext): Promise<TaskRecordData[]> {
+    const userKey = this.getUserKey(context);
+    const prefix = `${userKey}:`;
+    const dueAt = options.dueAt ?? nowTimestamp();
+    let tasks = Array.from(this.tasks.entries())
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, task]) => ({ ...task }));
+
+    if (options.status) {
+      tasks = tasks.filter((task) => task.status === options.status);
+    }
+    if (options.triggerKind) {
+      tasks = tasks.filter((task) => task.triggerKind === options.triggerKind);
+    }
+    if (options.eventName) {
+      tasks = tasks.filter((task) => task.eventName === options.eventName);
+    }
+    if (typeof options.dueAt === 'number') {
+      tasks = tasks.filter((task) => typeof task.nextRunAt === 'number' && task.nextRunAt <= dueAt);
+    }
+
+    tasks.sort((a, b) => (a.nextRunAt ?? a.createdAt) - (b.nextRunAt ?? b.createdAt) || a.id.localeCompare(b.id));
+    return tasks.slice(0, options.limit ?? tasks.length);
+  }
+
+  async saveTaskAuthCredential(input: {
+    id: string;
+    apiKey: string;
+    displayName?: string;
+    expiresAt?: number;
+  }, context: TContext & StoreContext): Promise<TaskAuthCredentialRecord> {
+    const record: TaskAuthCredentialRecord = {
+      id: input.id,
+      service: TASK_AUTH_CREDENTIAL_SERVICE,
+      status: 'active',
+      apiKey: input.apiKey,
+      label: input.displayName,
+      oauthExpiresAt: input.expiresAt ? new Date(input.expiresAt * 1000).toISOString() : undefined,
+      createdAt: new Date().toISOString(),
+    };
+    this.taskAuthCredentials.set(this.getTaskAuthCredentialKey(input.id, context), record);
+    return { ...record };
+  }
+
+  async loadTaskAuthCredential(id: string, context: TContext & StoreContext): Promise<TaskAuthCredentialRecord | undefined> {
+    const record = this.taskAuthCredentials.get(this.getTaskAuthCredentialKey(id, context));
+    return record ? { ...record } : undefined;
+  }
+
+  private withAuthBindingMetadata(
+    metadata: Record<string, unknown> | undefined,
+    authBinding: TaskRecordData['authBinding'],
+  ): Record<string, unknown> | undefined {
+    if (!authBinding) {
+      return metadata;
+    }
+    return {
+      ...(metadata ?? {}),
+      authBinding,
+    };
+  }
+
   // Utility methods for debugging
   getStats(): { threads: number; items: number; attachments: number } {
     let totalItems = 0;
@@ -248,5 +431,21 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     this.threads.clear();
     this.items.clear();
     this.attachments.clear();
+    this.runs.clear();
+    this.runSteps.clear();
+    this.tasks.clear();
+    this.taskAuthCredentials.clear();
+  }
+
+  private getRunKey(runId: string, context: TContext): string {
+    return `${this.getUserKey(context)}:${runId}`;
+  }
+
+  private getTaskKey(taskId: string, context: TContext): string {
+    return `${this.getUserKey(context)}:${taskId}`;
+  }
+
+  private getTaskAuthCredentialKey(id: string, context: TContext): string {
+    return `${this.getUserKey(context)}:${id}`;
   }
 }

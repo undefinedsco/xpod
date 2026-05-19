@@ -15,6 +15,7 @@
 
 import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
+import { selectAIConfigCredential } from '@undefineds.co/models';
 import type { IAgentExecutor, ExecutorType, AiCredential, ProviderConfig, BaseExecutorOptions } from './types';
 import { Provider } from '../ai/schema/provider';
 import { Model } from '../ai/schema/model';
@@ -84,7 +85,7 @@ export class AgentExecutorFactory {
       const db: any = drizzle(session, { schema });
 
       // 1. 读取供应商配置
-      const provider = await db.findByLocator(Provider, { id: providerId });
+      const provider = await db.findById(Provider, providerId);
 
       if (!provider) {
         this.logger.debug(`Provider not found: ${providerId}`);
@@ -101,32 +102,28 @@ export class AgentExecutorFactory {
         return null;
       }
 
-      // 2. 读取凭证
-      const providerUri = `${podBaseUrl}settings/ai/providers.ttl#${providerId}`;
       const credentials = await db.query.credential.findMany({
         where: and(
           eq(Credential.service, ServiceType.AI),
           eq(Credential.status, CredentialStatus.ACTIVE),
-          eq(Credential.provider, providerUri),
         ),
       });
+      const providers = await db.query.provider.findMany();
+      const selection = selectAIConfigCredential(providerId, credentials, providers);
 
-      if (credentials.length === 0) {
+      if (!selection) {
         this.logger.debug(`No active credential found for provider: ${providerId}`);
         return null;
       }
 
-      // 随机选择一个凭证（负载均衡）
-      const credential = credentials[Math.floor(Math.random() * credentials.length)] as any;
-
       // 3. 构建凭证对象
       const aiCredential: AiCredential = {
-        providerId,
-        apiKey: credential.apiKey ?? '',
-        baseUrl: credential.baseUrl ?? provider.baseUrl ?? undefined,
-        proxyUrl: credential.proxyUrl ?? undefined,
-        projectId: credential.projectId ?? undefined,
-        organizationId: credential.organizationId ?? undefined,
+        providerId: selection.providerId,
+        apiKey: selection.apiKey,
+        baseUrl: selection.baseUrl,
+        proxyUrl: selection.proxyUrl,
+        projectId: (selection.credential as any).projectId ?? undefined,
+        organizationId: (selection.credential as any).organizationId ?? undefined,
       };
 
       // 4. 构建供应商配置

@@ -1,5 +1,6 @@
 import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
+import { selectAIConfigCredential } from '@undefineds.co/models';
 import { CredentialReader } from './CredentialReader';
 import type { AiCredential } from './types';
 import { Credential } from '../../credential/schema/tables';
@@ -27,34 +28,25 @@ export class CredentialReaderImpl extends CredentialReader {
       };
       const db: any = drizzle(session, { schema });
 
-      // 构建 Provider URI
-      const providerUri = `${podBaseUrl}settings/ai/providers.ttl#${providerId}`;
-
-      // 查询 credential，直接通过 provider URI 过滤
       const credentials = await db.query.credential.findMany({
         where: and(
           eq(Credential.service, ServiceType.AI),
           eq(Credential.status, CredentialStatus.ACTIVE),
-          eq(Credential.provider, providerUri),
         ),
-        with: {
-          provider: true,
-        },
       });
+      const providers = await db.query.provider.findMany();
+      const selection = selectAIConfigCredential(providerId, credentials, providers);
 
-      if (credentials.length === 0) {
+      if (!selection) {
         this.logger.debug(`No active credential found for provider: ${providerId}`);
         return null;
       }
 
-      // 随机选择一个（负载均衡）
-      const credential = credentials[Math.floor(Math.random() * credentials.length)] as any;
-
       return {
-        provider: providerId,
-        apiKey: credential.apiKey,
-        baseUrl: credential.baseUrl || credential.provider?.baseUrl || undefined,
-        proxyUrl: credential.provider?.proxyUrl || undefined,
+        provider: selection.providerId,
+        apiKey: selection.apiKey,
+        baseUrl: selection.baseUrl,
+        proxyUrl: selection.proxyUrl,
       };
     } catch (error) {
       this.logger.error(`Failed to read credential for provider ${providerId}:`, error);

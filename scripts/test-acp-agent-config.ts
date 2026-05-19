@@ -1,8 +1,8 @@
 /**
  * Real CLI smoke test for agent config passthrough.
- * Run directly: npx tsx scripts/test-acp-agent-config.ts
+ * Run directly: bun scripts/test-acp-agent-config.ts
  */
-import { PtyThreadRuntime } from '../src/api/chatkit/runtime/PtyThreadRuntime';
+import { AcpAgentRuntime } from '../src/api/chatkit/runtime/AcpAgentRuntime';
 import type { ResolvedAgentConfig } from '../src/agents/config/types';
 
 const runners = ['codebuddy', 'claude', 'codex'] as const;
@@ -24,28 +24,24 @@ const agentConfig: ResolvedAgentConfig = {
 };
 
 async function testRunner(runner: typeof runners[number]): Promise<void> {
-  const rt = new PtyThreadRuntime();
+  const rt = new AcpAgentRuntime();
   const threadId = `smoke-${runner}-${Date.now()}`;
 
   console.log(`\n=== Testing ${runner} with agentConfig ===`);
 
   try {
-    await rt.ensureStarted(threadId, {
-      workspace: { type: 'path', rootPath: process.cwd() },
-      idleMs: 30_000,
-      runner: { type: runner, protocol: 'acp' },
-      agentConfig,
-    });
-    console.log(`  [✓] ensureStarted OK`);
-  } catch (e: any) {
-    console.log(`  [✗] ensureStarted FAILED: ${e.message}`);
-    return;
-  }
-
-  try {
     let text = '';
     let sawAuth = false;
-    for await (const ev of rt.sendMessage(threadId, 'Reply with exactly: OK', { idleMs: 30_000 })) {
+    for await (const ev of rt.run({
+      threadId,
+      prompt: 'Reply with exactly: OK',
+      config: {
+        workspace: `file://localhost${process.cwd()}`,
+        idleMs: 30_000,
+        runner: { type: runner, protocol: 'acp' },
+        agentConfig,
+      },
+    })) {
       if (ev.type === 'text') text += ev.text;
       if (ev.type === 'auth_required') {
         sawAuth = true;
@@ -64,21 +60,22 @@ async function testRunner(runner: typeof runners[number]): Promise<void> {
       console.log(`  [?] No text output`);
     }
   } catch (e: any) {
-    console.log(`  [✗] sendMessage FAILED: ${e.message}`);
+    console.log(`  [✗] run FAILED: ${e.message}`);
   }
 
   // Also test without agentConfig (regression)
   const threadId2 = `smoke-${runner}-noconfig-${Date.now()}`;
   try {
-    await rt.ensureStarted(threadId2, {
-      workspace: { type: 'path', rootPath: process.cwd() },
-      idleMs: 30_000,
-      runner: { type: runner, protocol: 'acp' },
-    });
-    console.log(`  [✓] ensureStarted (no agentConfig) OK`);
-
     let text2 = '';
-    for await (const ev of rt.sendMessage(threadId2, 'Reply with exactly: OK', { idleMs: 30_000 })) {
+    for await (const ev of rt.run({
+      threadId: threadId2,
+      prompt: 'Reply with exactly: OK',
+      config: {
+        workspace: `file://localhost${process.cwd()}`,
+        idleMs: 30_000,
+        runner: { type: runner, protocol: 'acp' },
+      },
+    })) {
       if (ev.type === 'text') text2 += ev.text;
       if (ev.type === 'auth_required') {
         console.log(`  [~] auth_required (no agentConfig)`);

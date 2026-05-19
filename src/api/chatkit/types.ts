@@ -5,6 +5,8 @@
  * Based on https://github.com/openai/chatkit-python
  */
 
+import type { WorkspaceUri } from '../workspace/types';
+
 // ============================================================================
 // Generic Types
 // ============================================================================
@@ -40,6 +42,11 @@ export interface ThreadMetadata {
   id: string;
   title?: string;
   status: ThreadStatus;
+  /**
+   * Workspace Container URI selected for this thread.
+   * The Solid schema stores this as an RDF URI relation.
+   */
+  workspace?: WorkspaceUri;
   created_at: number;
   updated_at: number;
   metadata?: Record<string, unknown>;
@@ -53,7 +60,7 @@ export const DEFAULT_THREAD_CHAT_ID = 'default';
 
 export type HttpIri = `http://${string}` | `https://${string}`;
 
-export interface ThreadLocatorRef {
+export interface ThreadSurfaceRef {
   thread_id: string;
   chat_id: string;
 }
@@ -63,31 +70,40 @@ export interface ThreadIriRef {
   chat_id?: never;
 }
 
-export type ThreadRef = ThreadLocatorRef | ThreadIriRef;
+export type ThreadRef = ThreadSurfaceRef | ThreadIriRef;
 
 export function isHttpIri(value: string): value is HttpIri {
   return value.startsWith('http://') || value.startsWith('https://');
+}
+
+export function isBaseRelativeThreadResourceId(value: string): boolean {
+  return /^(chat|task)\/[^/]+\/index\.ttl#[^#]+$/.test(value);
 }
 
 export function toThreadRef(params: { thread_id: string; chat_id?: string }): ThreadRef {
   if (isHttpIri(params.thread_id)) {
     return { thread_id: params.thread_id };
   }
+  if (isBaseRelativeThreadResourceId(params.thread_id)) {
+    return { thread_id: params.thread_id, chat_id: params.chat_id ?? DEFAULT_THREAD_CHAT_ID };
+  }
   if (params.chat_id) {
     return { thread_id: params.thread_id, chat_id: params.chat_id };
   }
-  throw new Error(`chat_id is required when thread_id "${params.thread_id}" is not a full thread IRI`);
+  throw new Error(`chat_id is required when thread_id "${params.thread_id}" is not a full thread resource id`);
 }
 
 export function getThreadIdFromRef(thread: ThreadRef): string {
-  if ('chat_id' in thread) {
+  if ('chat_id' in thread || isBaseRelativeThreadResourceId(thread.thread_id)) {
     return thread.thread_id;
   }
   try {
     const url = new URL(thread.thread_id);
-    return url.hash.startsWith('#')
-      ? decodeURIComponent(url.hash.slice(1))
-      : thread.thread_id;
+    const dataIndex = url.pathname.indexOf('/.data/');
+    if (dataIndex >= 0 && url.hash) {
+      return `${url.pathname.slice(dataIndex + '/.data/'.length)}${url.hash}`;
+    }
+    return url.hash.startsWith('#') ? decodeURIComponent(url.hash.slice(1)) : thread.thread_id;
   } catch {
     return thread.thread_id;
   }
@@ -184,6 +200,7 @@ export interface ClientToolCallItem extends ThreadItemBase {
   call_id: string;
   status?: 'pending' | 'completed';
   output?: string;
+  metadata?: Record<string, unknown>;
 }
 
 // Widget
@@ -352,6 +369,7 @@ export interface ThreadsGetByIdReq extends BaseReq {
 
 export interface ThreadCreateParams {
   chat_id?: string;
+  workspace?: WorkspaceUri;
   input?: UserMessageInput;
 }
 
@@ -418,6 +436,7 @@ export interface ThreadsRetryAfterItemReq extends BaseReq {
 
 export type ThreadUpdateParams = ThreadRef & {
   title?: string;
+  workspace?: WorkspaceUri;
 };
 
 export interface ThreadsUpdateReq extends BaseReq {
@@ -725,6 +744,16 @@ export function nowTimestamp(): number {
 export function extractUserMessageText(content: UserMessageContent[]): string {
   return content
     .filter((c): c is UserMessageTextContent => c.type === 'input_text')
+    .map((c) => c.text)
+    .join('\n');
+}
+
+/**
+ * Extract text content from assistant message
+ */
+export function extractAssistantMessageText(content: AssistantMessageContent[]): string {
+  return content
+    .filter((c): c is AssistantMessageContent => c.type === 'output_text')
     .map((c) => c.text)
     .join('\n');
 }

@@ -23,6 +23,8 @@ export interface Route {
   handler: RouteHandler;
   /** If true, skip authentication */
   public?: boolean;
+  /** If true, match all methods instead of one method. */
+  allMethods?: boolean;
 }
 
 export interface ApiServerOptions {
@@ -68,6 +70,8 @@ export class ApiServer {
     options?: {
       /** If true, skip authentication for this route */
       public?: boolean;
+      /** If true, match all methods instead of one method */
+      allMethods?: boolean;
     },
   ): void {
     const { pattern, paramNames } = this.pathToRegex(path);
@@ -77,6 +81,7 @@ export class ApiServer {
       paramNames,
       handler,
       public: options?.public,
+      allMethods: options?.allMethods,
     });
     this.logger.debug(`Registered route: ${method.toUpperCase()} ${path}${options?.public ? ' (public)' : ''}`);
   }
@@ -102,6 +107,10 @@ export class ApiServer {
 
   public patch(path: string, handler: RouteHandler, options?: { public?: boolean }): void {
     this.route('PATCH', path, handler, options);
+  }
+
+  public all(path: string, handler: RouteHandler, options?: { public?: boolean }): void {
+    this.route('ALL', path, handler, { ...options, allMethods: true });
   }
 
   /**
@@ -202,7 +211,7 @@ export class ApiServer {
 
   private findRoute(method: string, path: string): { route: Route; params: Record<string, string> } | undefined {
     for (const route of this.routes) {
-      if (route.method !== method) {
+      if (!route.allMethods && route.method !== method) {
         continue;
       }
 

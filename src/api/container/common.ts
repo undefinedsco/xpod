@@ -21,6 +21,10 @@ import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
+import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
+import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
+import { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
+import { InngestTaskScheduler, TaskAuthBindingService, TaskService } from '../tasks';
 import { EmbeddingServiceImpl, ProviderRegistryImpl } from '../../ai/service';
 
 function resolveCssServiceBaseUrl(): string {
@@ -103,11 +107,69 @@ export function registerCommonServices(
       return new VercelAiProvider({ store: chatKitStore });
     }).singleton(),
 
-    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider, config }: ApiContainerCradle) => {
+    runAuthContextRegistry: asFunction(() => {
+      return new RunAuthContextRegistry();
+    }).singleton(),
+
+    taskAuthBindingService: asFunction(({ chatKitStore }: ApiContainerCradle) => {
+      return new TaskAuthBindingService({
+        repository: chatKitStore,
+      });
+    }).singleton(),
+
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry }: ApiContainerCradle) => {
+      return new InngestRunExecutionBackend({
+        baseUrl: inngestRuntimeConfig?.baseUrl,
+        eventKey: inngestRuntimeConfig?.eventKey,
+        signingKey: inngestRuntimeConfig?.signingKey,
+        durableDelivery: inngestRuntimeConfig?.durableDelivery ?? false,
+        store: chatKitStore,
+        contextRecorder: (context) => runAuthContextRegistry.remember(context),
+        contextResolver: async (data) => {
+          const fallback = runAuthContextRegistry.resolve({ webId: data.webId });
+          if (data.authBindingId && fallback) {
+            return await taskAuthBindingService.resolveRunContext(data.authBindingId, fallback) ?? fallback;
+          }
+          return fallback;
+        },
+        runtimeDriver: new PiAgentRuntimeDriver({
+          agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
+          requireSandbox: config.edition === 'cloud',
+        }),
+      });
+    }).singleton(),
+
+    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider, config, runExecutionBackend }: ApiContainerCradle) => {
       return new ChatKitService({
         store: chatKitStore,
         aiProvider: chatKitAiProvider,
-        enablePtyRuntime: config.edition === 'local',
+        enableAgentRuntime: true,
+        runExecutionBackend,
+      });
+    }).singleton(),
+
+    taskService: asFunction(({ chatKitStore, runExecutionBackend }: ApiContainerCradle) => {
+      return new TaskService({
+        store: chatKitStore,
+        executionBackend: runExecutionBackend,
+      });
+    }).singleton(),
+
+    inngestTaskScheduler: asFunction(({ runExecutionBackend, taskService, taskAuthBindingService, inngestRuntimeConfig, runAuthContextRegistry }: ApiContainerCradle) => {
+      return new InngestTaskScheduler({
+        backend: runExecutionBackend,
+        taskService,
+        getContexts: () => runAuthContextRegistry.list(),
+        recordContext: (context) => runAuthContextRegistry.remember(context),
+        resolveContext: async (data) => {
+          const fallback = runAuthContextRegistry.resolve({ webId: data.webId });
+          if (data.authBindingId && fallback) {
+            return await taskAuthBindingService.resolveRunContext(data.authBindingId, fallback) ?? fallback;
+          }
+          return fallback;
+        },
+        durableDelivery: inngestRuntimeConfig?.durableDelivery ?? false,
+        executeInline: true,
       });
     }).singleton(),
 
