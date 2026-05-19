@@ -35,6 +35,10 @@
       "types": "./dist/runtime/index.d.ts",
       "default": "./dist/runtime/index.js"
     },
+    "./api/tasks": {
+      "types": "./dist/api/tasks/index.d.ts",
+      "default": "./dist/api/tasks/index.js"
+    },
     "./test-utils": {
       "types": "./dist/test-utils/index.d.ts",
       "default": "./dist/test-utils/index.js"
