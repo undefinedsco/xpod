@@ -124,7 +124,7 @@ describe('ChatKitService + ACP tool call', () => {
     expect(doneToolOutput.item.status).toBe('completed');
     expect(doneToolOutput.item.output).toBe(JSON.stringify({ ok: true }));
     const continuedRun = await store.loadRun(runId, { userId: 'u1' });
-    expect(continuedRun.status).toBe(RunStatus.QUEUED);
+    expect(continuedRun.status).toBe(RunStatus.WAITING_INPUT);
     expect(continuedRun.metadata?.continuation).toMatchObject({
       kind: 'client_tool_output',
       itemId: toolItemId,

@@ -6,6 +6,7 @@ const mocked = vi.hoisted(() => ({
   registerRoutesMock: vi.fn(),
   getLoggerForMock: vi.fn(() => ({
     info: vi.fn(),
+    warn: vi.fn(),
     error: vi.fn(),
   })),
 }));
