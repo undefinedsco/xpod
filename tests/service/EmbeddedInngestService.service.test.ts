@@ -159,7 +159,7 @@ describe('EmbeddedInngestService', () => {
       durableDelivery: false,
       baseUrl: 'http://127.0.0.1:8288',
       eventKey: 'xpod-local-event-key',
-      signingKey: 'signkey-test-xpod-local-signing-key',
+      signingKey: '78706f642d6c6f63616c2d7369676e696e672d6b6579',
       functionEndpoint: 'http://127.0.0.1:3001/api/inngest',
     });
     expect(spawnMock).not.toHaveBeenCalled();

@@ -31,6 +31,15 @@ spec:
             - name: http
               containerPort: 3000
               protocol: TCP
+          env:
+            - name: XPOD_INNGEST_ENABLED
+              value: "true"
+            - name: XPOD_INNGEST_MODE
+              value: managed
+            - name: XPOD_INNGEST_BASE_URL
+              value: http://xpod-inngest:8288
+            - name: XPOD_API_BASE_URL
+              value: http://xpod
           envFrom:
             - configMapRef:
                 name: xpod-cloud-config

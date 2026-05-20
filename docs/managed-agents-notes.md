@@ -429,7 +429,7 @@ XPOD_INNGEST_MODE=managed|spawn     # 显式启用 Inngest；cloud 通常 manage
 XPOD_INNGEST_BASE_URL=...           # xpod API -> Inngest service；cloud/managed 启用时需要
 XPOD_API_BASE_URL=...               # 可选；覆盖 xpod 推导出的 API callback base
 XPOD_INNGEST_EVENT_KEY=...          # Inngest event key；cloud/managed 必填
-XPOD_INNGEST_SIGNING_KEY=...        # Inngest signing key；cloud/managed 必填
+XPOD_INNGEST_SIGNING_KEY=...        # Inngest signing key；cloud/managed 必填；self-hosted start 要求偶数长度 hex
 XPOD_INNGEST_BIN=...                # local spawn 时覆盖 inngest CLI 路径
 XPOD_INNGEST_SQLITE_DIR=...         # local spawn 的 Inngest SQLite/state 目录
 CSS_REDIS_CLIENT / REDIS_URL        # cloud spawn/cluster 可供 Inngest 使用的 Redis URL

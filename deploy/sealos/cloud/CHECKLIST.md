@@ -114,6 +114,9 @@ CSS_MINIO_BUCKET_NAME=xpod
 
 CLOUDFLARE_API_TOKEN=<cloudflare-dns-token>
 CLOUDFLARE_ACCOUNT_ID=<cloudflare-account-id>
+
+XPOD_INNGEST_EVENT_KEY=evt-<random>
+XPOD_INNGEST_SIGNING_KEY=<openssl-rand-hex-32>
 ```
 
 可选变量：
@@ -127,6 +130,7 @@ CLOUDFLARE_ACCOUNT_ID=<cloudflare-account-id>
 - [ ] Sealos 日志中没有 `ECONNREFUSED`、`password authentication failed`、`self-signed certificate` 等错误
 - [ ] `GET /service/status` 返回 `200`
 - [ ] 返回体中至少能看到 `css`、`api` 两个服务状态为 `running`
+- [ ] `deployment/xpod-inngest` Ready，且 `/health` 探针通过
 - [ ] 未出现 `CREATE EXTENSION IF NOT EXISTS vector` 权限报错
 - [ ] 未出现 `Invalid Redis client string` 或 `bucket does not exist`
 

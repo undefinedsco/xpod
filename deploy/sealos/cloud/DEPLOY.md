@@ -166,6 +166,9 @@ DEFAULT_API_KEY=sk-<xpod-virtual-key>
 DEFAULT_TIMEOUT_MS=30000
 DEFAULT_GENERATION_TIMEOUT_MS=120000
 DEFAULT_MODEL=linx-lite
+
+XPOD_INNGEST_EVENT_KEY=evt-<random>
+XPOD_INNGEST_SIGNING_KEY=<openssl-rand-hex-32>
 ```
 
 说明：
@@ -174,6 +177,7 @@ DEFAULT_MODEL=linx-lite
 - `DEFAULT_API_KEY`：给 `xpod -> ai-gateway` 服务调用使用，必须填 ai-gateway / LiteLLM 中单独生成的 `sk-...` virtual key
 - `DEFAULT_TIMEOUT_MS`：xpod 调 ai-gateway 的短查询 timeout，例如 `/v1/models`，默认 30s
 - `DEFAULT_GENERATION_TIMEOUT_MS`：xpod 调 ai-gateway 的生成请求 timeout，例如 chat/responses/messages/stream，默认 120s
+- `XPOD_INNGEST_EVENT_KEY` / `XPOD_INNGEST_SIGNING_KEY`：xpod API 和内部 Inngest worker 共用；signing key 必须是偶数长度 hex 字符串，可用 `openssl rand -hex 32` 生成。
 
 ### 部署后检查
 
@@ -233,6 +237,7 @@ kubectl apply -f deploy/sealos/cloud/ingress.yaml
 
 ```bash
 kubectl -n xpod-cloud get pods,svc
+kubectl -n xpod-cloud rollout status deployment/xpod-inngest --timeout=300s
 kubectl -n xpod-cloud logs deploy/xpod-cloud -f
 curl -i https://你的域名/service/status
 ```
@@ -249,8 +254,8 @@ curl -i https://你的域名/service/status
 
 - 确保 namespace 存在
 - 创建或更新 `xpod-cloud-secret`
-- 应用 `configmap + service + deployment`
-- 等待 `deployment/xpod-cloud` rollout 完成
+- 应用 `configmap + service + deployment + xpod-inngest`
+- 等待 `deployment/xpod-inngest` 和 `deployment/xpod-cloud` rollout 完成
 
 `image-tag` 必须显式填写不可变 tag，例如 `0.2.1`。
 

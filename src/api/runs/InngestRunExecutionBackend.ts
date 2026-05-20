@@ -28,6 +28,7 @@ export interface InngestRunExecutionBackendOptions {
   baseUrl?: string;
   eventKey?: string;
   signingKey?: string;
+  isDev?: boolean;
   runtimeDriver?: RunExecutionBackend;
   store?: ManagedRunStore<StoreContext>;
   managedRunWorker?: ManagedRunWorker<StoreContext>;
@@ -85,7 +86,7 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
       baseUrl: options.baseUrl,
       eventKey: options.eventKey,
       signingKey: options.signingKey,
-      isDev: true,
+      isDev: options.isDev ?? !options.durableDelivery,
     });
     this.runtimeDriver = options.runtimeDriver ?? new PiAgentRuntimeDriver();
     this.managedRunWorker = options.managedRunWorker

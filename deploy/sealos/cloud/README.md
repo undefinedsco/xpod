@@ -40,6 +40,8 @@ cp example.env.cloud .env.cloud
 - `CSS_IDENTITY_DB_URL=...`
 - `CSS_MINIO_ENDPOINT/CSS_MINIO_ACCESS_KEY/CSS_MINIO_SECRET_KEY/CSS_MINIO_BUCKET_NAME`
 - `CSS_REDIS_CLIENT=redis://redis:6379`
+- `XPOD_INNGEST_EVENT_KEY=...`
+- `XPOD_INNGEST_SIGNING_KEY=...`（偶数长度 hex 字符串，可用 `openssl rand -hex 32` 生成）
 - `DEFAULT_API_BASE=http://ai-gateway.<namespace>.svc.cluster.local/v1`
 - `DEFAULT_API_KEY=sk-...`
 - `DEFAULT_TIMEOUT_MS=30000`（ai-gateway 短查询请求，例如 `/v1/models`）
@@ -57,7 +59,7 @@ cp example.env.cloud .env.cloud
 
 ## 3) 部署（Namespace + Secret + Workload）
 
-推荐生产先发 `namespace + configmap + service + deployment`，`Ingress` 单独按真实域名和证书再发布。
+推荐生产先发 `namespace + configmap + service + deployment + xpod-inngest`，`Ingress` 单独按真实域名和证书再发布。
 
 ```bash
 kubectl create namespace xpod-cloud --dry-run=client -o yaml | kubectl apply -f -
@@ -69,6 +71,8 @@ kubectl create secret generic xpod-cloud-secret \
 
 kubectl apply -f deploy/sealos/cloud/configmap.yaml
 kubectl apply -f deploy/sealos/cloud/redis.yaml
+kubectl apply -f deploy/sealos/cloud/inngest-service.yaml
+kubectl apply -f deploy/sealos/cloud/inngest-deployment.yaml
 kubectl apply -f deploy/sealos/cloud/service.yaml
 kubectl apply -f deploy/sealos/cloud/deployment.yaml
 ```
@@ -77,6 +81,7 @@ kubectl apply -f deploy/sealos/cloud/deployment.yaml
 
 ```bash
 kubectl -n xpod-cloud get pods,svc
+kubectl -n xpod-cloud rollout status deployment/xpod-inngest --timeout=300s
 kubectl -n xpod-cloud logs deploy/xpod-cloud -f
 kubectl -n xpod-cloud rollout status deployment/xpod-cloud --timeout=300s
 curl -i https://你的域名/service/status

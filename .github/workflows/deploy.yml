@@ -88,6 +88,15 @@ jobs:
         run: |
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/configmap.yaml > /tmp/xpod-configmap.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/inngest-deployment.yaml > /tmp/xpod-inngest-deployment.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/inngest-service.yaml > /tmp/xpod-inngest-service.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
             -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${{ steps.image.outputs.image_tag }}#g" \
             deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
           sed \
@@ -98,8 +107,12 @@ jobs:
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
+          kubectl apply -f /tmp/xpod-configmap.yaml
           kubectl apply -f /tmp/xpod-service.yaml
+          kubectl apply -f /tmp/xpod-inngest-service.yaml
+          kubectl apply -f /tmp/xpod-inngest-deployment.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
+          kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout restart deployment/xpod-cloud -n "$SEALOS_NAMESPACE"
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
 
@@ -110,8 +123,11 @@ jobs:
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-inngest || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-inngest || true
           kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud --all-containers=true --tail=200 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-inngest --all-containers=true --tail=200 || true
 
   deploy-co:
     name: Deploy to .co
@@ -188,6 +204,15 @@ jobs:
         run: |
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/configmap.yaml > /tmp/xpod-configmap.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/inngest-deployment.yaml > /tmp/xpod-inngest-deployment.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
+            deploy/sealos/cloud/inngest-service.yaml > /tmp/xpod-inngest-service.yaml
+          sed \
+            -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
             -e "s#image: ghcr.io/undefinedsco/xpod:.*#image: ghcr.io/undefinedsco/xpod:${{ steps.image.outputs.image_tag }}#g" \
             deploy/sealos/cloud/deployment.yaml > /tmp/xpod-deployment.yaml
           sed \
@@ -198,8 +223,12 @@ jobs:
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
         run: |
+          kubectl apply -f /tmp/xpod-configmap.yaml
           kubectl apply -f /tmp/xpod-service.yaml
+          kubectl apply -f /tmp/xpod-inngest-service.yaml
+          kubectl apply -f /tmp/xpod-inngest-deployment.yaml
           kubectl apply -f /tmp/xpod-deployment.yaml
+          kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout restart deployment/xpod-cloud -n "$SEALOS_NAMESPACE"
           kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=300s
 
@@ -210,5 +239,8 @@ jobs:
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-inngest || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-inngest || true
           kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud --all-containers=true --tail=200 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-inngest --all-containers=true --tail=200 || true

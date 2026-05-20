@@ -122,6 +122,7 @@ export function registerCommonServices(
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
         signingKey: inngestRuntimeConfig?.signingKey,
+        isDev: inngestRuntimeConfig?.enabled ? !inngestRuntimeConfig.durableDelivery : true,
         durableDelivery: inngestRuntimeConfig?.durableDelivery ?? false,
         store: chatKitStore,
         contextRecorder: (context) => runAuthContextRegistry.remember(context),

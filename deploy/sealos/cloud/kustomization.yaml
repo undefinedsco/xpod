@@ -5,5 +5,7 @@ resources:
   - namespace.yaml
   - redis.yaml
   - configmap.yaml
+  - inngest-deployment.yaml
+  - inngest-service.yaml
   - deployment.yaml
   - service.yaml

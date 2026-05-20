@@ -69,7 +69,7 @@ export class EmbeddedInngestService {
     }
 
     const eventKey = this.options.eventKey || 'xpod-local-event-key';
-    const signingKey = this.options.signingKey || 'signkey-test-xpod-local-signing-key';
+    const signingKey = this.options.signingKey || '78706f642d6c6f63616c2d7369676e696e672d6b6579';
     const host = this.options.host || '127.0.0.1';
     const port = this.options.port ?? (mode === 'spawn' ? await getFreePort(8288, host) : 8288);
     const baseUrl = this.options.baseUrl || (mode === 'spawn' ? `http://${host}:${port}` : 'http://xpod-inngest:8288');
