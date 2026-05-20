@@ -75,7 +75,7 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.emailConfigAuthPass).toBe('');
   });
 
-  it('should use only CSS_OIDC_ISSUER for local SP mode', async() => {
+  it('should map CSS_OIDC_ISSUER to the internal CSS idpUrl shorthand', async() => {
     const state = await resolveRuntimeBootstrap('test-oidc-issuer', {
       mode: 'local',
       transport: 'port',
@@ -96,10 +96,11 @@ describe('runtime bootstrap helpers', () => {
     const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
 
     expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://cloud.example/.oidc/token');
-    expect(shorthand.oidcIssuer).toBe('http://cloud.example');
+    expect(shorthand.idpUrl).toBe('http://cloud.example');
+    expect(shorthand.oidcIssuer).toBeUndefined();
   });
 
-  it('should not infer oidcIssuer from cloud API endpoint', async() => {
+  it('should not infer idpUrl from cloud API endpoint', async() => {
     const state = await resolveRuntimeBootstrap('test-cloud-api-only', {
       mode: 'local',
       transport: 'port',
@@ -119,6 +120,7 @@ describe('runtime bootstrap helpers', () => {
     const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
 
     expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://127.0.0.1:5820/.oidc/token');
+    expect(shorthand.idpUrl).toBeUndefined();
     expect(shorthand.oidcIssuer).toBeUndefined();
   });
 

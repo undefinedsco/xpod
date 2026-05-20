@@ -8,6 +8,8 @@ import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
+import { buildApiChildEnv, buildCssArgs, buildCssChildEnv } from './runtime/css-process';
+import { resolveExternalOidcIssuer } from './runtime/oidc-issuer';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
 
@@ -266,22 +268,24 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const supervisor = new Supervisor();
   const cssBinary = require.resolve('@solid/community-server/bin/server.js');
+  const cssModuleRoot = path.dirname(require.resolve('@solid/community-server/package.json'));
+  const externalOidcIssuer = resolveExternalOidcIssuer(process.env);
+  if (externalOidcIssuer) {
+    logger.info(`  - SP mode external IdP: ${externalOidcIssuer}`);
+  }
 
   supervisor.register({
     name: 'css',
     command: childJsRuntime,
-    args: [
+    args: buildCssArgs({
       cssBinary,
-      '-c', configPath,
-      '-m', PACKAGE_ROOT,
-      '-p', cssPort.toString(),
-      '-b', baseUrl,
-    ],
-    env: {
-      ...process.env,
-      CSS_PORT: cssPort.toString(),
-      CSS_BASE_URL: baseUrl,
-    },
+      configPath,
+      cssModuleRoot,
+      cssPort,
+      baseUrl,
+      externalOidcIssuer,
+    }),
+    env: buildCssChildEnv(baseUrl, cssPort),
   });
 
   // API server: resolve the entry point dynamically
@@ -300,14 +304,13 @@ async function startRuntime(options: RunOptions): Promise<void> {
     name: 'api',
     command: childJsRuntime,
     args: apiArgs,
-    env: {
-      ...process.env,
-      API_PORT: apiPort.toString(),
-      XPOD_MAIN_PORT: mainPort.toString(),
-      CSS_INTERNAL_URL: `http://localhost:${cssPort}`,
-      CSS_BASE_URL: baseUrl,
-      CSS_TOKEN_ENDPOINT: `${baseUrl}.oidc/token`,
-    },
+    env: buildApiChildEnv({
+      apiPort,
+      mainPort,
+      cssPort,
+      baseUrl,
+      externalOidcIssuer,
+    }),
   });
 
   // Bind host: use CLI --host value; if not explicitly set, derive from the public Base URL.

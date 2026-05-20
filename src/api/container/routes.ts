@@ -251,7 +251,7 @@ function registerLocalRoutes(
           rootDir,
           sparqlEndpoint,
           identityDbUrl,
-          oidcIssuer: process.env.CSS_OIDC_ISSUER ?? process.env.oidcIssuer ?? config.oidcIssuer,
+          oidcIssuer: process.env.CSS_OIDC_ISSUER ?? config.oidcIssuer,
         })
         : undefined;
 

@@ -227,7 +227,7 @@ export function buildRuntimeShorthand(
       ['emailConfigPort', envValue('CSS_EMAIL_CONFIG_PORT') ?? '587'],
       ['emailConfigAuthUser', envValue('CSS_EMAIL_CONFIG_AUTH_USER') ?? ''],
       ['emailConfigAuthPass', envValue('CSS_EMAIL_CONFIG_AUTH_PASS') ?? ''],
-      ['oidcIssuer', externalOidcIssuer],
+      ['idpUrl', externalOidcIssuer],
       ['allowedHosts', envValue('CSS_ALLOWED_HOSTS')],
       ['nodeId', envValue('XPOD_NODE_ID')],
       ['nodeToken', envValue('XPOD_NODE_TOKEN')],

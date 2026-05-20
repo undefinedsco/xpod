@@ -295,7 +295,7 @@
         },
         {
           "@type": "YargsParameter",
-          "name": "oidcIssuer",
+          "name": "idpUrl",
           "options": {
             "type": "string",
             "hidden": true

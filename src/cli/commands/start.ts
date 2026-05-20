@@ -3,7 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import { Supervisor } from '../../supervisor';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from '../../runtime';
-import { oidcTokenEndpoint, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
+import { buildApiChildEnv, buildCssArgs, buildCssChildEnv } from '../../runtime/css-process';
+import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 
 interface StartArgs {
   mode?: string;
@@ -99,32 +100,32 @@ export const startCommand: CommandModule<object, StartArgs> = {
     const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
 
     // SP 模式：CSS_OIDC_ISSUER 显式指定外部 IdP；Cloud API 地址不再隐式当作 issuer。
-    const oidcIssuer = resolveExternalOidcIssuer(process.env);
+    const externalOidcIssuer = resolveExternalOidcIssuer(process.env);
 
     console.log('Starting xpod...');
     console.log(`  Gateway: ${baseUrl} (${argv.host}:${mainPort})`);
     console.log(`  CSS (internal): http://localhost:${cssPort}`);
     console.log(`  API (internal): http://localhost:${apiPort}`);
-    if (oidcIssuer) {
-      console.log(`  SP mode: Cloud IdP = ${oidcIssuer}`);
+    if (externalOidcIssuer) {
+      console.log(`  SP mode: Cloud IdP = ${externalOidcIssuer}`);
     }
 
     const supervisor = new Supervisor();
     const cssBinary = require.resolve('@solid/community-server/bin/server.js');
-    const cssArgs = [cssBinary, '-c', configPath, '-m', PACKAGE_ROOT, '-p', cssPort.toString(), '-b', baseUrl];
-    if (oidcIssuer) {
-      cssArgs.push('--oidcIssuer', oidcIssuer);
-    }
+    const cssArgs = buildCssArgs({
+      cssBinary,
+      configPath,
+      cssModuleRoot: PACKAGE_ROOT,
+      cssPort,
+      baseUrl,
+      externalOidcIssuer,
+    });
 
     supervisor.register({
       name: 'css',
       command: childJsRuntime,
       args: cssArgs,
-      env: {
-        ...process.env as Record<string, string>,
-        CSS_PORT: cssPort.toString(),
-        CSS_BASE_URL: baseUrl,
-      },
+      env: buildCssChildEnv(baseUrl, cssPort),
     });
 
     const isDevMode = __filename.endsWith('.ts');
@@ -140,14 +141,13 @@ export const startCommand: CommandModule<object, StartArgs> = {
       name: 'api',
       command: childJsRuntime,
       args: apiArgs,
-      env: {
-        ...process.env as Record<string, string>,
-        API_PORT: apiPort.toString(),
-        XPOD_MAIN_PORT: mainPort.toString(),
-        CSS_INTERNAL_URL: `http://localhost:${cssPort}`,
-        CSS_BASE_URL: baseUrl,
-        CSS_TOKEN_ENDPOINT: oidcIssuer ? oidcTokenEndpoint(oidcIssuer) : `${baseUrl}.oidc/token`,
-      },
+      env: buildApiChildEnv({
+        apiPort,
+        mainPort,
+        cssPort,
+        baseUrl,
+        externalOidcIssuer,
+      }),
     });
 
     const proxy = new GatewayProxy(mainPort, supervisor, '0.0.0.0', {
