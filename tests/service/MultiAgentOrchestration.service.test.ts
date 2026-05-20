@@ -88,10 +88,9 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
     const secretaryEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
-      params: { input: undefined },
+      params: { workspace: workspaceUri, input: undefined },
       metadata: {
         runtime: {
-          workspace: workspaceUri,
           runner: {
             type: 'codex',
             protocol: 'acp',
@@ -108,10 +107,9 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
     const claudeEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
-      params: { input: undefined },
+      params: { workspace: workspaceUri, input: undefined },
       metadata: {
         runtime: {
-          workspace: workspaceUri,
           runner: {
             type: 'claude',
             protocol: 'acp',
@@ -128,10 +126,9 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
     const buddyEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
-      params: { input: undefined },
+      params: { workspace: workspaceUri, input: undefined },
       metadata: {
         runtime: {
-          workspace: workspaceUri,
           runner: {
             type: 'codebuddy',
             protocol: 'acp',

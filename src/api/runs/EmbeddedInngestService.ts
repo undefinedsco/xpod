@@ -24,10 +24,10 @@ export interface EmbeddedInngestServiceOptions {
 export interface EmbeddedInngestRuntimeConfig {
   enabled: boolean;
   durableDelivery: boolean;
-  baseUrl: string;
-  eventKey: string;
-  signingKey: string;
-  functionEndpoint: string;
+  baseUrl?: string;
+  eventKey?: string;
+  signingKey?: string;
+  functionEndpoint?: string;
 }
 
 /**
@@ -54,6 +54,15 @@ export class EmbeddedInngestService {
       return this.config;
     }
 
+    if (this.options.enabled === false || !this.isConfigured()) {
+      this.config = {
+        enabled: false,
+        durableDelivery: false,
+      };
+      this.logger.info('Embedded Inngest disabled by config');
+      return this.config;
+    }
+
     const mode = this.options.mode ?? (this.options.edition === 'cloud' ? 'managed' : 'spawn');
     if ((this.options.edition === 'cloud' || mode === 'managed') && (!this.options.eventKey || !this.options.signingKey)) {
       throw new Error('Managed/cloud Inngest requires explicit eventKey and signingKey');
@@ -67,18 +76,13 @@ export class EmbeddedInngestService {
     const functionEndpoint = new URL(this.options.apiPath ?? '/api/inngest', this.options.apiBaseUrl).toString();
 
     this.config = {
-      enabled: this.options.enabled !== false,
+      enabled: true,
       durableDelivery: false,
       baseUrl,
       eventKey,
       signingKey,
       functionEndpoint,
     };
-
-    if (this.options.enabled === false) {
-      this.logger.info('Embedded Inngest disabled by config');
-      return this.config;
-    }
 
     if (mode === 'managed') {
       this.config.durableDelivery = this.config.enabled;
@@ -226,6 +230,17 @@ export class EmbeddedInngestService {
     fs.mkdirSync(sqliteDir, { recursive: true });
     env.INNGEST_SQLITE_DIR = sqliteDir;
     return env;
+  }
+
+  private isConfigured(): boolean {
+    return Boolean(
+      this.options.mode
+      || this.options.baseUrl
+      || this.options.eventKey
+      || this.options.signingKey
+      || this.options.binaryPath
+      || this.options.sqliteDir
+    );
   }
 
   private isPostgresUrl(value: string): boolean {

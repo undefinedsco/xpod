@@ -414,7 +414,8 @@ xpod.task.event
 
 部署策略:
 
-- Local 单机默认由 xpod API runtime spawn 一个内嵌 Inngest dev/server 进程，使用本地 `.inngest`/SQLite 状态即可。
+- 没有配置 Inngest 时，xpod API 不启动 Inngest、不暴露 `/api/inngest`，Chat/Run 仍走进程内 inline execution。
+- Local 单机可以显式配置 `XPOD_INNGEST_MODE=spawn`，由 xpod API runtime spawn 一个内嵌 Inngest dev/server 进程，使用本地 `.inngest`/SQLite 状态。
 - Cloud/cluster 不是每个 xpod API replica 各自 spawn 孤立 Inngest。部署层提供一个 cluster-scoped Inngest service URL，例如 `XPOD_INNGEST_BASE_URL=http://xpod-inngest:8288`。
 - Inngest 回调 xpod 的 function endpoint 固定是 `{apiBaseUrl}/api/inngest`，由 xpod 从 `XPOD_API_BASE_URL`、`CSS_BASE_URL` 或当前 API 监听地址推导；多个 xpod API replica 通过 service/LB 暴露同一个 `/api/inngest`。
 - 这个 Inngest service 属于 xpod 部署内部控制面，不是用户外接 Inngest Cloud；它在集群模式下使用共享 Postgres/Redis 形成一个逻辑 Inngest 集群。
@@ -423,18 +424,18 @@ xpod.task.event
 当前环境变量约定:
 
 ```text
-XPOD_INNGEST_ENABLED=false          # 禁用 Inngest runtime 启动；默认启用
-XPOD_INNGEST_MODE=managed|spawn     # cloud 默认 managed，local 默认 spawn
-XPOD_INNGEST_BASE_URL=...           # xpod API -> Inngest service
+XPOD_INNGEST_ENABLED=false          # 显式禁用 Inngest；未配置任何 Inngest 变量时也默认禁用
+XPOD_INNGEST_MODE=managed|spawn     # 显式启用 Inngest；cloud 通常 managed，local 通常 spawn
+XPOD_INNGEST_BASE_URL=...           # xpod API -> Inngest service；cloud/managed 启用时需要
 XPOD_API_BASE_URL=...               # 可选；覆盖 xpod 推导出的 API callback base
-XPOD_INNGEST_EVENT_KEY=...          # Inngest event key；本地可用默认值
-XPOD_INNGEST_SIGNING_KEY=...        # Inngest signing key；本地可用默认值
+XPOD_INNGEST_EVENT_KEY=...          # Inngest event key；cloud/managed 必填
+XPOD_INNGEST_SIGNING_KEY=...        # Inngest signing key；cloud/managed 必填
 XPOD_INNGEST_BIN=...                # local spawn 时覆盖 inngest CLI 路径
 XPOD_INNGEST_SQLITE_DIR=...         # local spawn 的 Inngest SQLite/state 目录
 CSS_REDIS_CLIENT / REDIS_URL        # cloud spawn/cluster 可供 Inngest 使用的 Redis URL
 ```
 
-若本地 `inngest-cli` 的 native binary 因安装脚本未执行而不可用，xpod 仍会暴露 `/api/inngest` 并让 Chat 走 inline runner，`durableDelivery=false`。这只是本地开发降级；生产/cloud 应保证 `XPOD_INNGEST_BASE_URL` 指向可用的 Inngest service。
+若本地显式启用了 `XPOD_INNGEST_MODE=spawn`，但 `inngest-cli` 的 native binary 因安装脚本未执行而不可用，xpod 会让 Chat 走 inline runner，`durableDelivery=false`。这只是本地开发降级；生产/cloud 应保证 `XPOD_INNGEST_BASE_URL` 指向可用的 Inngest service，并提供显式 event/signing key。
 
 集群模型:
 

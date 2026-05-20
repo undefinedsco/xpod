@@ -59,20 +59,20 @@ describe('ChatKitService + ACP tool call', () => {
 
     const createReq = {
       type: 'threads.create',
+      params: {
+        workspace: workspaceUri,
+        input: {
+          content: [ { type: 'input_text', text: 'hello' } ],
+        },
+      },
       metadata: {
         runtime: {
-          workspace: workspaceUri,
           runner: {
             type: 'codex',
             protocol: 'acp',
             allowCustomArgv: true,
             argv: [ 'node', agentPath ],
           },
-        },
-      },
-      params: {
-        input: {
-          content: [ { type: 'input_text', text: 'hello' } ],
         },
       },
     };
@@ -153,15 +153,15 @@ describe('ChatKitService + ACP tool call', () => {
 
     const createResult = await svc.process(JSON.stringify({
       type: 'threads.create',
-      metadata: {
-        runtime: {
-          workspace: workspaceUri,
-          runner: { type: 'codex', protocol: 'acp' },
-        },
-      },
       params: {
+        workspace: workspaceUri,
         input: {
           content: [{ type: 'input_text', text: 'needs client tool' }],
+        },
+      },
+      metadata: {
+        runtime: {
+          runner: { type: 'codex', protocol: 'acp' },
         },
       },
     }), { userId: 'u1' });

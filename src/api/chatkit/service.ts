@@ -248,7 +248,7 @@ export class ChatKitService<TContext = StoreContext> {
     const thread: ThreadMetadata = {
       id: threadId,
       status: { type: 'active' },
-      workspace: this.resolveThreadWorkspace(params.workspace, metadata),
+      workspace: this.resolveThreadWorkspace(params.workspace),
       created_at: now,
       updated_at: now,
       metadata: this.normalizeThreadMetadata(metadata, params.chat_id),
@@ -749,17 +749,8 @@ export class ChatKitService<TContext = StoreContext> {
     return Object.keys(normalized).length > 0 ? normalized : undefined;
   }
 
-  private resolveThreadWorkspace(
-    workspace: WorkspaceUri | undefined,
-    metadata: Record<string, unknown> | undefined,
-  ): WorkspaceUri | undefined {
-    if (isWorkspaceUri(workspace)) {
-      return workspace;
-    }
-    const metadataWorkspace = metadata?.workspace;
-    return isWorkspaceUri(metadataWorkspace)
-      ? metadataWorkspace
-      : undefined;
+  private resolveThreadWorkspace(workspace: WorkspaceUri | undefined): WorkspaceUri | undefined {
+    return isWorkspaceUri(workspace) ? workspace : undefined;
   }
 
   private threadRefFromParams(params: { thread_id: string; chat_id?: string }): ThreadRef {

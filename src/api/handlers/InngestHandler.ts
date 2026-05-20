@@ -12,6 +12,10 @@ export interface InngestHandlerOptions {
 }
 
 export function registerInngestRoutes(server: ApiServer, options: InngestHandlerOptions): void {
+  if (options.runtimeConfig?.enabled !== true) {
+    return;
+  }
+
   const handler = serve({
     client: options.backend.getClient(),
     functions: [

@@ -19,6 +19,38 @@ describe('EmbeddedInngestService', () => {
     spawnMock.mockReset();
   });
 
+  it('stays disabled when cloud Inngest is not configured', async () => {
+    const service = new EmbeddedInngestService({
+      edition: 'cloud',
+      apiBaseUrl: 'https://api.xpod.example',
+      databaseUrl: 'postgres://db/xpod',
+    });
+
+    const config = await service.start();
+
+    expect(config).toEqual({
+      enabled: false,
+      durableDelivery: false,
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('stays disabled when local Inngest is not configured', async () => {
+    const service = new EmbeddedInngestService({
+      edition: 'local',
+      apiBaseUrl: 'http://127.0.0.1:3001',
+      databaseUrl: 'sqlite:./identity.sqlite',
+    });
+
+    const config = await service.start();
+
+    expect(config).toEqual({
+      enabled: false,
+      durableDelivery: false,
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it('uses a deployment-provided cloud Inngest URL without spawning per API replica', async () => {
     const service = new EmbeddedInngestService({
       edition: 'cloud',
@@ -83,16 +115,24 @@ describe('EmbeddedInngestService', () => {
     await service.start();
     await service.stop();
 
-    expect(spawnMock).toHaveBeenCalledWith('node', [
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [command, args, options] = spawnMock.mock.calls[0];
+    const portIndex = args.indexOf('--port');
+    expect(command).toBe('node');
+    expect(portIndex).toBeGreaterThan(-1);
+    const port = args[portIndex + 1];
+    expect(port).toMatch(/^\d+$/);
+    expect(args).toEqual([
       'dev',
       '--no-discovery',
       '--host',
       '127.0.0.1',
       '--port',
-      '8288',
+      port,
       '-u',
       'http://127.0.0.1:3001/api/inngest',
-    ], expect.objectContaining({
+    ]);
+    expect(options).toEqual(expect.objectContaining({
       env: expect.objectContaining({
         INNGEST_BASE_URL: 'http://127.0.0.1:8288',
         INNGEST_EVENT_KEY: 'local-event-key',

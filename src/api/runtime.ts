@@ -159,7 +159,11 @@ async function startEmbeddedInngestService(
     sqliteDir: config.inngest?.sqliteDir,
   });
   const runtimeConfig = await service.start();
-  logger.info(`Inngest runtime configured: ${runtimeConfig.baseUrl}`);
+  if (runtimeConfig.enabled) {
+    logger.info(`Inngest runtime configured: ${runtimeConfig.baseUrl}`);
+  } else {
+    logger.info('Inngest runtime disabled');
+  }
   return { service, runtimeConfig };
 }
 

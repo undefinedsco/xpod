@@ -224,15 +224,15 @@ describe('Managed Agents Inngest Chat backend', () => {
 
     const result = await service.process(JSON.stringify({
       type: 'threads.create',
-      metadata: {
-        runtime: {
-          workspace: workspaceUri,
-          runner: { type: 'codex', protocol: 'acp' },
-        },
-      },
       params: {
+        workspace: workspaceUri,
         input: {
           content: [{ type: 'input_text', text: 'hello managed agents' }],
+        },
+      },
+      metadata: {
+        runtime: {
+          runner: { type: 'codex', protocol: 'acp' },
         },
       },
     }), { userId: 'u1' });
@@ -389,15 +389,15 @@ describe('Managed Agents Inngest Chat backend', () => {
 
     const result = await service.process(JSON.stringify({
       type: 'threads.create',
-      metadata: {
-        runtime: {
-          workspace: workspaceUri,
-          runner: { type: 'codex', protocol: 'pi' },
-        },
-      },
       params: {
+        workspace: workspaceUri,
         input: {
           content: [{ type: 'input_text', text: 'local fallback' }],
+        },
+      },
+      metadata: {
+        runtime: {
+          runner: { type: 'codex', protocol: 'pi' },
         },
       },
     }), { userId: 'u1' });
@@ -1262,15 +1262,15 @@ describe('Managed Agents Inngest Chat backend', () => {
 
     const result = await service.process(JSON.stringify({
       type: 'threads.create',
-      metadata: {
-        runtime: {
-          workspace: workspaceUri,
-          runner: { type: 'codex', protocol: 'acp' },
-        },
-      },
       params: {
+        workspace: workspaceUri,
         input: {
           content: [{ type: 'input_text', text: 'cancel inline' }],
+        },
+      },
+      metadata: {
+        runtime: {
+          runner: { type: 'codex', protocol: 'acp' },
         },
       },
     }), context);
@@ -1302,7 +1302,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(steps.some((step) => step.type === RunStepType.TEXT_DELTA && step.message === 'after-cancel')).toBe(false);
   });
 
-  it('requires an explicit workspace on the thread or runtime metadata', async () => {
+  it('requires an explicit workspace on the thread', async () => {
     const store = new InMemoryStore<StoreContext>();
     const driver = new WorkspaceAgentDriver();
     const backend = new InngestRunExecutionBackend({
@@ -1364,15 +1364,15 @@ describe('Managed Agents Inngest Chat backend', () => {
 
     const first = await service.process(JSON.stringify({
       type: 'threads.create',
-      metadata: {
-        runtime: {
-          workspace: workspaceUri,
-          runner: { type: 'codex', protocol: 'acp' },
-        },
-      },
       params: {
+        workspace: workspaceUri,
         input: {
           content: [{ type: 'input_text', text: 'needs client tool' }],
+        },
+      },
+      metadata: {
+        runtime: {
+          runner: { type: 'codex', protocol: 'acp' },
         },
       },
     }), context);
@@ -1439,15 +1439,15 @@ describe('Managed Agents Inngest Chat backend', () => {
 
     const first = await service.process(JSON.stringify({
       type: 'threads.create',
-      metadata: {
-        runtime: {
-          workspace: workspaceUri,
-          runner: { type: 'codex', protocol: 'acp' },
-        },
-      },
       params: {
+        workspace: workspaceUri,
         input: {
           content: [{ type: 'input_text', text: 'first' }],
+        },
+      },
+      metadata: {
+        runtime: {
+          runner: { type: 'codex', protocol: 'acp' },
         },
       },
     }), context);

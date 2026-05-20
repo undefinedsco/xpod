@@ -56,17 +56,17 @@ async function runSmoke(runner: RunnerType): Promise<{
 
   const req = {
     type: 'threads.create',
+    params: {
+      workspace: `file://localhost${process.cwd()}`,
+      input: {
+        content: [ { type: 'input_text', text: 'Please reply with a single word: OK' } ],
+      },
+    },
     metadata: {
       runtime: {
-        workspace: `file://localhost${process.cwd()}`,
         idleMs: 20_000,
         authWaitMs: 180_000,
         runner: { type: runner, protocol: 'acp' },
-      },
-    },
-    params: {
-      input: {
-        content: [ { type: 'input_text', text: 'Please reply with a single word: OK' } ],
       },
     },
   };

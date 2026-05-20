@@ -99,7 +99,7 @@ export class RunStateCenter<TContext = StoreContext> {
     const protocol = this.resolveRunnerProtocol(runtime.runner.protocol);
     const allowCustomArgv = runtime.runner.allowCustomArgv === true;
     const argv = allowCustomArgv ? runtime.runner.argv : undefined;
-    const workspace = this.resolveWorkspaceUri(runtime.workspace, thread.workspace);
+    const workspace = this.resolveWorkspaceUri(thread.workspace);
     if (!workspace) {
       throw new Error('Invalid thread runtime: workspace URI is required');
     }
@@ -130,10 +130,7 @@ export class RunStateCenter<TContext = StoreContext> {
     return 'pi';
   }
 
-  private resolveWorkspaceUri(runtimeWorkspace: unknown, threadWorkspace: AgentRuntimeConfig['workspace'] | undefined): AgentRuntimeConfig['workspace'] | undefined {
-    if (isWorkspaceUri(runtimeWorkspace)) {
-      return runtimeWorkspace;
-    }
+  private resolveWorkspaceUri(threadWorkspace: AgentRuntimeConfig['workspace'] | undefined): AgentRuntimeConfig['workspace'] | undefined {
     return isWorkspaceUri(threadWorkspace) ? threadWorkspace : undefined;
   }
 

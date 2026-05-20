@@ -41,20 +41,20 @@ describe('ChatKitService + ACP runtime', () => {
 
     const req = {
       type: 'threads.create',
+      params: {
+        workspace: workspaceUri,
+        input: {
+          content: [ { type: 'input_text', text: 'hello' } ],
+        },
+      },
       metadata: {
         runtime: {
-          workspace: workspaceUri,
           runner: {
             type: 'codex',
             protocol: 'acp',
             allowCustomArgv: true,
             argv: [ 'node', agentPath ],
           },
-        },
-      },
-      params: {
-        input: {
-          content: [ { type: 'input_text', text: 'hello' } ],
         },
       },
     };

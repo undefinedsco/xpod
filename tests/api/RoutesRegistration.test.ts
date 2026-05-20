@@ -58,7 +58,10 @@ describe('registerRoutes mode wiring', () => {
     } as unknown as ApiServer;
   });
 
-  function createContainer(edition: 'cloud' | 'local'): any {
+  function createContainer(
+    edition: 'cloud' | 'local',
+    overrides: { inngestRuntimeConfig?: unknown } = {},
+  ): any {
     const services: Record<string, unknown> = {
       apiServer: mockServer,
       config: { ...baseConfig, edition },
@@ -79,7 +82,7 @@ describe('registerRoutes mode wiring', () => {
       inngestTaskScheduler: {
         getFunctions: vi.fn(() => [{ id: 'task-due' }, { id: 'task-event' }]),
       },
-      inngestRuntimeConfig: {
+      inngestRuntimeConfig: overrides.inngestRuntimeConfig ?? {
         enabled: true,
         durableDelivery: true,
         baseUrl: 'http://xpod-inngest:8288',
@@ -137,5 +140,18 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['POST /provision/pods']).toBeUndefined();
+  });
+
+  it('does not expose the public Inngest callback route when Inngest is disabled', () => {
+    registerRoutes(createContainer('cloud', {
+      inngestRuntimeConfig: {
+        enabled: false,
+        durableDelivery: false,
+      },
+    }));
+
+    expect(routes['ALL /api/inngest']).toBeUndefined();
+    expect(routes['ALL /api/inngest/*path']).toBeUndefined();
+    expect(routes['GET /v1/runs']).toBeTypeOf('function');
   });
 });
