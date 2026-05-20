@@ -16,12 +16,17 @@ export function registerInngestRoutes(server: ApiServer, options: InngestHandler
     return;
   }
 
+  const functionEndpoint = options.runtimeConfig.functionEndpoint
+    ? new URL(options.runtimeConfig.functionEndpoint)
+    : undefined;
   const handler = serve({
     client: options.backend.getClient(),
     functions: [
       options.backend.agentRunFunction,
       ...(options.taskScheduler?.getFunctions() ?? []),
     ] as any[],
+    serveOrigin: functionEndpoint?.origin,
+    servePath: functionEndpoint?.pathname,
   });
   const routeHandler: RouteHandler = async (req, res) => {
     handler(req, res);

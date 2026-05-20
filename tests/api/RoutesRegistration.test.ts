@@ -7,6 +7,7 @@ vi.mock('inngest/node', () => ({
 import { registerRoutes } from '../../src/api/container/routes';
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
+import { serve } from 'inngest/node';
 
 describe('registerRoutes mode wiring', () => {
   let routes: Record<string, Function>;
@@ -32,6 +33,7 @@ describe('registerRoutes mode wiring', () => {
   };
 
   beforeEach(() => {
+    vi.clearAllMocks();
     routes = {};
     mockServer = {
       route: vi.fn((method: string, path: string, handler: Function, options?: { public?: boolean }) => {
@@ -126,6 +128,10 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs/:runId/steps']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest/*path']).toBeTypeOf('function');
+    expect(serve).toHaveBeenCalledWith(expect.objectContaining({
+      serveOrigin: 'http://xpod-api:3001',
+      servePath: '/api/inngest',
+    }));
     expect(routes['GET /api/admin/status']).toBeUndefined();
     expect(routes['GET /api/linx/capabilities']).toBeUndefined();
   });
