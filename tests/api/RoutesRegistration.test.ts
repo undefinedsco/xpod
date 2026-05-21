@@ -76,6 +76,7 @@ describe('registerRoutes mode wiring', () => {
         loadRun: vi.fn(),
         loadRunSteps: vi.fn(),
       },
+      matrixStore: {},
       runExecutionBackend: {
         getClient: vi.fn(() => ({ id: 'test-inngest' })),
         agentRunFunction: {},
@@ -126,6 +127,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
     expect(routes['GET /v1/runs/:runId']).toBeTypeOf('function');
     expect(routes['GET /v1/runs/:runId/steps']).toBeTypeOf('function');
+    expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
+    expect(routes['POST /_matrix/client/v3/createRoom']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest/*path']).toBeTypeOf('function');
     expect(serve).toHaveBeenCalledWith(expect.objectContaining({
@@ -144,6 +147,7 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /:username/profile/card']).toBeTypeOf('function');
     expect(routes['POST /v1/tasks']).toBeUndefined();
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
+    expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['POST /provision/pods']).toBeUndefined();
   });

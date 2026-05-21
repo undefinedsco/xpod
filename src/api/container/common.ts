@@ -21,6 +21,7 @@ import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
+import { PodMatrixStore } from '../matrix';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
 import { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
@@ -100,6 +101,18 @@ export function registerCommonServices(
     chatKitStore: asFunction(({ config }: ApiContainerCradle) => {
       return new PodChatKitStore({
         tokenEndpoint: config.cssTokenEndpoint,
+      });
+    }).singleton(),
+
+    matrixStore: asFunction(({ config }: ApiContainerCradle) => {
+      return new PodMatrixStore({
+        serverName: (() => {
+          try {
+            return new URL(process.env.CSS_BASE_URL ?? '').host || undefined;
+          } catch {
+            return undefined;
+          }
+        })(),
       });
     }).singleton(),
 

@@ -20,6 +20,7 @@ import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
 import { registerInngestRoutes } from '../handlers/InngestHandler';
 import { registerRunRoutes } from '../handlers/RunHandler';
+import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
@@ -91,6 +92,7 @@ function registerSharedRoutes(
   const chatKitService = container.resolve('chatKitService');
   const chatKitStore = container.resolve('chatKitStore');
   const runExecutionBackend = container.resolve('runExecutionBackend');
+  const matrixStore = container.resolve('matrixStore');
   const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const config = container.resolve('config') as ApiContainerConfig;
@@ -106,6 +108,7 @@ function registerSharedRoutes(
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
+  registerMatrixRoutes(server, { store: matrixStore });
   registerInngestRoutes(server, {
     backend: runExecutionBackend,
     taskScheduler: inngestTaskScheduler,

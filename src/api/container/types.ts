@@ -29,6 +29,7 @@ import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBack
 import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestService';
 import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import type { TaskAuthBindingService, TaskService, InngestTaskScheduler } from '../tasks';
+import type { PodMatrixStore } from '../matrix';
 
 /**
  * 容器配置
@@ -145,6 +146,7 @@ export interface ApiContainerCradle {
   taskService: TaskService<StoreContext>;
   inngestTaskScheduler: InngestTaskScheduler<StoreContext>;
   chatKitService: ChatKitService<StoreContext>;
+  matrixStore: PodMatrixStore;
   providerRegistry: ProviderRegistry;
   embeddingService: EmbeddingService;
   vectorService: VectorService;
