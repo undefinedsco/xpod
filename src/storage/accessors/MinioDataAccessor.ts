@@ -77,6 +77,14 @@ export class MinioDataAccessor implements DataAccessor {
     this.logger.info(`MinioDataAccessor initialized with endpoint: ${endPoint}:${port} (SSL: ${useSSL})`)
   }
 
+  private objectName(url: URL): string {
+    return url.pathname.replace(/^\/+/u, '');
+  }
+
+  private containerObjectName(url: URL): string {
+    return `${this.objectName(url).replace(/\/+$/u, '')}/.container`;
+  }
+
   /**
    * Should throw a NotImplementedHttpError if the DataAccessor does not support storing the given Representation.
    *
@@ -100,7 +108,7 @@ export class MinioDataAccessor implements DataAccessor {
   public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
     const started = Date.now();
     const url = new URL(identifier.path)
-    const stream = await this.client.getObject(this.bucketName, url.pathname);
+    const stream = await this.client.getObject(this.bucketName, this.objectName(url));
     this.logDuration('getData', identifier.path, started);
     return guardStream(stream);
   }
@@ -112,7 +120,7 @@ export class MinioDataAccessor implements DataAccessor {
    */
   public async getPresignedUrl(identifier: ResourceIdentifier, expires = 3600): Promise<string> {
     const url = new URL(identifier.path);
-    const objectKey = url.pathname.replace(/^\//, '');
+    const objectKey = this.objectName(url);
     return this.client.presignedGetObject(this.bucketName, objectKey, expires);
   }
 
@@ -128,7 +136,7 @@ export class MinioDataAccessor implements DataAccessor {
     const url = new URL(identifier.path)
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     const isDirectory = identifier.path.endsWith('/');
-    const objectName = isDirectory ? `${url.pathname}/.container` : url.pathname;
+    const objectName = isDirectory ? this.containerObjectName(url) : this.objectName(url);
     let stats: BucketItemStat;
     try {
       stats = await this.client.statObject(this.bucketName, objectName);
@@ -162,7 +170,7 @@ export class MinioDataAccessor implements DataAccessor {
    */
   public async* getChildren(identifier: ResourceIdentifier): AsyncIterableIterator<RepresentationMetadata> {
     const url = new URL(identifier.path)
-    const objects = this.client.listObjectsV2(this.bucketName, url.pathname);
+    const objects = this.client.listObjectsV2(this.bucketName, this.objectName(url));
     for await (const object of objects) {
       const metadata = await this.getMetadata(object);
       yield metadata;
@@ -185,7 +193,7 @@ export class MinioDataAccessor implements DataAccessor {
     try {
       await this.client.putObject(
         this.bucketName,
-        url.pathname,
+        this.objectName(url),
         data,
         metadata.contentLength,
         itemMetadata || undefined,
@@ -211,7 +219,7 @@ export class MinioDataAccessor implements DataAccessor {
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     await this.client.putObject(
       this.bucketName,
-      `${url.pathname}/.container`,
+      this.containerObjectName(url),
       Buffer.from(''),
       metadata.contentLength,
       this.encodeMetadata(link, metadata) || undefined,
@@ -241,7 +249,7 @@ export class MinioDataAccessor implements DataAccessor {
    */
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
     const link = new URL(identifier.path)
-    await this.client.removeObject(this.bucketName, link.pathname);
+    await this.client.removeObject(this.bucketName, this.objectName(link));
   }
 
   /**
