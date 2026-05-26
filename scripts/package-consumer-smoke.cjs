@@ -17,7 +17,8 @@ function runInIsolatedConsumerProcess(consumerDir) {
   fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
 
   try {
-    const result = spawnSync(process.execPath, [ childScriptPath ], {
+    const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+    const result = spawnSync(nodeExecutable, [ childScriptPath ], {
       cwd: consumerDir,
       stdio: 'inherit',
       env: {
