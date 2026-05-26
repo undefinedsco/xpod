@@ -4,6 +4,38 @@ import { QuintStoreSparqlDataAccessor } from '../../src/storage/accessors/QuintS
 import { MultiDomainIdentifierStrategy } from '../../src/util/identifiers/MultiDomainIdentifierStrategy';
 
 describe('QuintStoreSparqlDataAccessor host canonicalization', () => {
+  it('shares concurrent initialize calls across requests', async () => {
+    let resolveOpen!: () => void;
+    const open = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+      resolveOpen = resolve;
+    }));
+
+    const accessor = new QuintStoreSparqlDataAccessor(
+      {
+        open,
+        close: vi.fn(),
+        getByGraphPrefix: vi.fn(),
+      } as any,
+      new MultiDomainIdentifierStrategy(
+        'https://node-1.nodes.undefineds.co/',
+        ['https://id.undefineds.co/'],
+      ) as any,
+    );
+
+    const initializations = [
+      accessor.initialize(),
+      accessor.initialize(),
+      accessor.initialize(),
+    ];
+    expect(open).toHaveBeenCalledTimes(1);
+
+    resolveOpen();
+    await Promise.all(initializations);
+
+    await accessor.initialize();
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the request host in graph identifiers instead of automatically canonicalizing to the SP host', async () => {
     const accessor = new QuintStoreSparqlDataAccessor(
       {

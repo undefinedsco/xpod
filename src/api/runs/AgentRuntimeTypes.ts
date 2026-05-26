@@ -1,5 +1,5 @@
 import type { ResolvedAgentConfig } from '../../agents/config/types';
-import type { WorkspaceUri } from '../workspace/types';
+import type { WorkspaceRef } from '../workspace/types';
 
 export type RunnerProtocol = 'pi' | 'acp';
 export type AcpRunnerType = 'codebuddy' | 'claude' | 'codex';
@@ -12,16 +12,15 @@ export type WorktreeSpec =
 /**
  * Canonical workspace reference for a Run.
  *
- * This is an RDF URI reference to a workspace Container, not an execution
- * config object. Stable workspace metadata belongs on the Container .meta
- * resource. Runners resolve this URI into their own local cwd before starting
- * the Agent Loop.
+ * This is a workspace Container reference, not an execution config object.
+ * Stable workspace metadata belongs on the Container .meta resource. Runners
+ * resolve this reference into their own local cwd before starting the Agent Loop.
  */
 export interface AgentRuntimeConfig {
-  workspace: WorkspaceUri;
+  workspace: WorkspaceRef;
   /**
    * Optional execution policy for git workspaces. The workspace field still
-   * points at the repo/workspace URI; this only selects the cwd used by a run.
+   * points at the repo/workspace resource; this only selects the cwd used by a run.
    */
   worktree?: WorktreeSpec;
   /**
@@ -59,7 +58,7 @@ export type AgentRuntimeEvent =
   | { type: 'error'; message: string }
   | {
     type: 'waiting_runner';
-    workspace: WorkspaceUri;
+    workspace: WorkspaceRef;
     message: string;
   }
   | {

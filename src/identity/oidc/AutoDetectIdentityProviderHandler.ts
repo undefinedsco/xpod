@@ -7,7 +7,7 @@ import {
 
 export interface AutoDetectIdentityProviderHandlerOptions {
   /** 外部 IdP 的基础 URL，如果提供则启用 SP 模式 */
-  idpUrl?: string;
+  oidcIssuer?: string;
   /** 禁用时的消息 */
   message?: string;
   /** CSS 默认的 IdentityProviderHandler，标准模式下委托给它 */
@@ -18,23 +18,23 @@ export interface AutoDetectIdentityProviderHandlerOptions {
  * Auto-detect Identity Provider Handler
  *
  * 自动检测运行模式：
- * - 如果配置了 idpUrl -> SP 模式：禁用本地账户管理
- * - 如果没有配置 idpUrl -> 标准模式：委托给 CSS 默认 Handler
+ * - 如果配置了 oidcIssuer -> SP 模式：禁用本地账户管理
+ * - 如果没有配置 oidcIssuer -> 标准模式：委托给 CSS 默认 Handler
  */
 export class AutoDetectIdentityProviderHandler extends HttpHandler {
   private readonly logger = getLoggerFor(this);
-  private readonly idpUrl?: string;
+  private readonly oidcIssuer?: string;
   private readonly message: string;
   private readonly source?: HttpHandler;
 
   constructor(options: AutoDetectIdentityProviderHandlerOptions = {}) {
     super();
-    this.idpUrl = options.idpUrl;
+    this.oidcIssuer = options.oidcIssuer;
     this.message = options.message ?? 'Account management handled by external IdP';
     this.source = options.source;
 
-    if (this.idpUrl) {
-      this.logger.info(`SP mode enabled: ${this.message}, external IdP: ${this.idpUrl}`);
+    if (this.oidcIssuer) {
+      this.logger.info(`SP mode enabled: ${this.message}, external IdP: ${this.oidcIssuer}`);
     } else {
       this.logger.info('Standard mode enabled, delegating to source IdentityProviderHandler');
     }
@@ -54,7 +54,7 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
     }
 
     // SP 模式：接受 IdP 路径请求，在 handle 中返回 404
-    if (this.idpUrl) {
+    if (this.oidcIssuer) {
       return;
     }
 
@@ -72,7 +72,7 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
    * - 标准模式：委托给 source Handler
    */
   public override async handle(input: HttpHandlerInput): Promise<void> {
-    if (this.idpUrl) {
+    if (this.oidcIssuer) {
       const { response } = input;
       response.writeHead(404, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: this.message }));

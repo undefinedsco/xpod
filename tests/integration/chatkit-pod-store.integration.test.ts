@@ -488,8 +488,8 @@ suite('ChatKit PodStore Integration', () => {
       const stepId = `run_step_integration_${Date.now()}`;
       const threadId = `thread_run_integration_${Date.now()}`;
       const chatId = 'default';
-      const workspaceUri = `${podUrl}projects/run-integration/`;
-      const threadUri = `${podUrl}.data/chat/${chatId}/index.ttl#${threadId}`;
+      const workspaceRef = `${podUrl}projects/run-integration/`;
+      const threadResource = `${podUrl}.data/chat/${chatId}/index.ttl#${threadId}`;
       const createdAt = Math.floor(Date.now() / 1000);
       const createdDate = new Date(createdAt * 1000);
       const yyyy = String(createdDate.getUTCFullYear());
@@ -508,13 +508,13 @@ suite('ChatKit PodStore Integration', () => {
         surfaceId: chatId,
         createdAt: createdAt + 1,
       });
-      const runUri = `${podUrl}.data/chat/${chatId}/${yyyy}/${MM}/${dd}/runs.ttl#${runId}`;
+      const runResource = `${podUrl}.data/chat/${chatId}/${yyyy}/${MM}/${dd}/runs.ttl#${runId}`;
 
       await store.saveRun({
         id: runResourceId,
         surfaceId: chatId,
-        thread: threadUri,
-        workspace: workspaceUri,
+        thread: threadResource,
+        workspace: workspaceRef,
         commandKind: 'chat',
         status: RunStatus.RUNNING,
         runner: 'pi:codex',
@@ -530,10 +530,10 @@ suite('ChatKit PodStore Integration', () => {
         commandKind: 'chat',
         surfaceId: chatId,
         runId: runResourceId,
-        run: runUri,
+        run: runResource,
         type: RunStepType.STARTED,
         message: 'Run started',
-        data: { workspace: workspaceUri },
+        data: { workspace: workspaceRef },
         createdAt: createdAt + 1,
       }, testContext);
 
@@ -542,8 +542,8 @@ suite('ChatKit PodStore Integration', () => {
 
       expect(loadedRun).toMatchObject({
         id: runResourceId,
-        thread: threadUri,
-        workspace: workspaceUri,
+        thread: threadResource,
+        workspace: workspaceRef,
         commandKind: 'chat',
         status: RunStatus.RUNNING,
         runner: 'pi:codex',
@@ -556,10 +556,10 @@ suite('ChatKit PodStore Integration', () => {
         commandKind: 'chat',
         surfaceId: chatId,
         runId: runResourceId,
-        run: runUri,
+        run: runResource,
         type: RunStepType.STARTED,
         message: 'Run started',
-        data: { workspace: workspaceUri },
+        data: { workspace: workspaceRef },
       });
     }, 15000);
 
@@ -568,8 +568,8 @@ suite('ChatKit PodStore Integration', () => {
       const stepId = `run_step_task_integration_${Date.now()}`;
       const threadId = `thread_task_run_integration_${Date.now()}`;
       const surfaceId = 'secretary';
-      const workspaceUri = `${podUrl}projects/task-run-integration/`;
-      const threadUri = `${podUrl}.data/task/${surfaceId}/index.ttl#${threadId}`;
+      const workspaceRef = `${podUrl}projects/task-run-integration/`;
+      const threadResource = `${podUrl}.data/task/${surfaceId}/index.ttl#${threadId}`;
       const createdAt = Math.floor(Date.now() / 1000);
       const createdDate = new Date(createdAt * 1000);
       const yyyy = String(createdDate.getUTCFullYear());
@@ -588,13 +588,13 @@ suite('ChatKit PodStore Integration', () => {
         surfaceId,
         createdAt: createdAt + 1,
       });
-      const runUri = `${podUrl}.data/task/${surfaceId}/${yyyy}/${MM}/${dd}/runs.ttl#${runId}`;
+      const runResource = `${podUrl}.data/task/${surfaceId}/${yyyy}/${MM}/${dd}/runs.ttl#${runId}`;
 
       await store.saveRun({
         id: runResourceId,
         surfaceId,
-        thread: threadUri,
-        workspace: workspaceUri,
+        thread: threadResource,
+        workspace: workspaceRef,
         commandKind: 'task',
         status: RunStatus.RUNNING,
         runner: 'pi:codex',
@@ -610,10 +610,10 @@ suite('ChatKit PodStore Integration', () => {
         commandKind: 'task',
         surfaceId,
         runId: runResourceId,
-        run: runUri,
+        run: runResource,
         type: RunStepType.STARTED,
         message: 'Task run started',
-        data: { workspace: workspaceUri },
+        data: { workspace: workspaceRef },
         createdAt: createdAt + 1,
       }, testContext);
 
@@ -625,10 +625,10 @@ suite('ChatKit PodStore Integration', () => {
         commandKind: 'task',
         surfaceId,
         runId: runResourceId,
-        run: runUri,
+        run: runResource,
         type: RunStepType.STARTED,
         message: 'Task run started',
-        data: { workspace: workspaceUri },
+        data: { workspace: workspaceRef },
       });
     }, 15000);
 
@@ -785,6 +785,7 @@ suite('ChatKit PodStore Integration', () => {
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-custom-key',
         label: 'Custom Credential',
+        isDefault: true,
       });
 
       const config = await store.getAiConfig(testContext);

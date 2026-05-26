@@ -126,11 +126,14 @@
       "unstructuredDataAccessor": {
         "@id": "urn:undefineds:xpod:RemoteDataAccessor"
       },
-      "presignedRedirectEnabled": true
+      "presignedRedirectEnabled": true,
+      "rdfFileDataAccessor": {
+        "@id": "urn:solid-server:default:FileDataAccessor"
+      }
     },
     {
-      "comment": "PgQuintStore instance for QuintStoreSparqlDataAccessor (PostgreSQL backend).",
-      "@id": "urn:undefineds:xpod:PgQuintStore",
+      "comment": "Compatibility QuintStore instance (PostgreSQL TEXT quints for fallback and migration).",
+      "@id": "urn:undefineds:xpod:CompatibilityQuintStore",
       "@type": "PgQuintStore",
       "options_driver": "pg",
       "connectionString": {
@@ -139,12 +142,56 @@
       }
     },
     {
-      "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for cloud (with OPTIONAL optimization)",
-      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "comment": "Shared RDF write store: mirrors compatibility quints into the term-id RDF index.",
+      "@id": "urn:undefineds:xpod:QuintStore",
+      "@type": "ShadowRdfQuintStore",
+      "compatibilityStore": {
+        "@id": "urn:undefineds:xpod:CompatibilityQuintStore"
+      },
+      "index_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "autoOpen": true,
+      "autoBackfill_enabled": true,
+      "autoBackfill_clear": true,
+      "autoBackfill_batchSize": 1000
+    },
+    {
+      "comment": "RDF term-id query engine backed by the shared cloud RDF index.",
+      "@id": "urn:undefineds:xpod:SolidRdfEngine",
+      "@type": "SolidRdfEngine",
+      "index_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "compatibilityStore": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
+      "autoOpen": true
+    },
+    {
+      "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",
+      "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine",
       "@type": "QuintstoreSparqlEngine",
       "store": {
-        "@id": "urn:undefineds:xpod:PgQuintStore"
+        "@id": "urn:undefineds:xpod:QuintStore"
       }
+    },
+    {
+      "comment": "Default SPARQL engine: SELECT/ASK use SolidRdfEngine, unsupported shapes fall back to Quintstore.",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "@type": "SolidRdfSparqlEngine",
+      "rdfEngine": {
+        "@id": "urn:undefineds:xpod:SolidRdfEngine"
+      },
+      "fallback": {
+        "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine"
+      },
+      "shadowStore": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
+      "enablePrimary": true
     },
     {
       "comment": "VectorStore using PostgreSQL",
@@ -191,7 +238,7 @@
       "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
       "@type": "QuintStoreSparqlDataAccessor",
       "store": {
-        "@id": "urn:undefineds:xpod:PgQuintStore"
+        "@id": "urn:undefineds:xpod:QuintStore"
       },
       "identifierStrategy": {
         "@id": "urn:solid-server:default:IdentifierStrategy"

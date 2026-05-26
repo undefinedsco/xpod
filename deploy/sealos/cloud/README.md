@@ -33,7 +33,7 @@ cp example.env.cloud .env.cloud
 - `NODE_ENV=production`
 - `XPOD_EDITION=cloud`
 - `CSS_BASE_URL=https://id.你的域名`
-- `CSS_OIDC_ISSUER=https://id.你的域名`（可选；不填时默认跟 `CSS_BASE_URL` 一致）
+- `oidcIssuer=https://id.你的域名`（可选；不填时默认跟 `CSS_BASE_URL` 一致）
 - `CSS_ALLOWED_HOSTS=id.你的域名,pods.你的域名,api.你的域名`
 - `CSS_BASE_STORAGE_DOMAIN=你的存储根域`
 - `CSS_SPARQL_ENDPOINT=...`

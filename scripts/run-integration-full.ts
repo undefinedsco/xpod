@@ -226,7 +226,7 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
     sparqlEndpoint: path.join(runtimeRoot, 'local', 'local-managed.sqlite'),
     identityDbUrl: path.join(runtimeRoot, 'local', 'local-managed-identity.sqlite'),
     env: {
-      CSS_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}`,
+      oidcIssuer: `http://localhost:${ports.cloud.gateway}`,
       XPOD_CLOUD_API_ENDPOINT: `http://localhost:${ports.cloud.gateway}`,
       XPOD_NODE_ID: 'local-managed-node',
       XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',

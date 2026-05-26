@@ -54,6 +54,11 @@ export interface TermOperators {
   $strContains?: string;
   $strRegex?: string;
   $language?: string;
+  $notLanguage?: string;
+  $langMatches?: string;
+  $datatype?: Term;
+  $notDatatype?: Term;
+  $termType?: 'iri' | 'blank' | 'literal' | 'numeric';
   $isNull?: boolean;
 }
 
@@ -113,6 +118,18 @@ export interface StoreStats {
   totalCount: number;
   vectorCount: number;
   graphCount: number;
+  databaseBytes?: number;
+  tableBytes?: number;
+  indexBytes?: number;
+  spaceObjects?: StoreSpaceObject[];
+}
+
+export interface StoreSpaceObject {
+  name: string;
+  kind: 'table' | 'index' | 'internal' | 'unknown';
+  tableName?: string;
+  bytes: number;
+  pages: number;
 }
 
 /**

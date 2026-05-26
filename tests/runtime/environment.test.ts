@@ -70,6 +70,7 @@ describe('runtime environment session', () => {
       runtimeRoot: '/runtime-root',
       rootFilePath: '/runtime-root/data',
       sparqlEndpoint: 'sqlite:/runtime-root/quadstore.sqlite',
+      rdfIndexPath: '/runtime-root/rdf-index.sqlite',
       identityDbUrl: 'sqlite:/runtime-root/identity.sqlite',
       usageDbUrl: 'sqlite:/runtime-root/usage.sqlite',
       cssAuthMode: 'acp',

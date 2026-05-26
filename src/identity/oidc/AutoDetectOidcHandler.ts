@@ -9,7 +9,7 @@ import {
 
 export interface AutoDetectOidcHandlerOptions {
   /** 外部 IdP 的基础 URL，如果提供则启用 SP 模式 */
-  idpUrl?: string;
+  oidcIssuer?: string;
   /** 禁用原因说明 */
   message?: string;
   /** JWKS 缓存时间 (ms) */
@@ -25,14 +25,14 @@ interface JwksCache {
  * Auto-detect OIDC Handler
  *
  * 自动检测运行模式：
- * - 如果配置了 idpUrl -> SP 模式：禁用本地 OIDC，代理外部 IdP 的 JWKS
- * - 如果没有配置 idpUrl -> 标准模式：所有 OIDC 请求透传（由 CSS 默认 Handler 处理）
+ * - 如果配置了 oidcIssuer -> SP 模式：禁用本地 OIDC，代理外部 IdP 的 JWKS
+ * - 如果没有配置 oidcIssuer -> 标准模式：所有 OIDC 请求透传（由 CSS 默认 Handler 处理）
  *
  * 使用方式：在 HTTP pipeline 中替换默认的 OidcHandler
  */
 export class AutoDetectOidcHandler extends HttpHandler {
   private readonly logger = getLoggerFor(this);
-  private readonly idpUrl?: string;
+  private readonly oidcIssuer?: string;
   private readonly jwksUrl?: string;
   private readonly message: string;
   private readonly cacheMs: number;
@@ -40,13 +40,13 @@ export class AutoDetectOidcHandler extends HttpHandler {
 
   constructor(options: AutoDetectOidcHandlerOptions = {}) {
     super();
-    this.idpUrl = options.idpUrl;
-    this.jwksUrl = this.idpUrl ? `${this.idpUrl.replace(/\/$/, '')}/.oidc/jwks` : undefined;
+    this.oidcIssuer = options.oidcIssuer;
+    this.jwksUrl = this.oidcIssuer ? `${this.oidcIssuer.replace(/\/$/, '')}/.oidc/jwks` : undefined;
     this.message = options.message ?? 'OIDC disabled in storage provider mode';
     this.cacheMs = options.cacheMs ?? 300000; // 默认 5 分钟
 
-    if (this.idpUrl) {
-      this.logger.info(`SP mode enabled, external IdP: ${this.idpUrl}, JWKS: ${this.jwksUrl}`);
+    if (this.oidcIssuer) {
+      this.logger.info(`SP mode enabled, external IdP: ${this.oidcIssuer}, JWKS: ${this.jwksUrl}`);
     } else {
       this.logger.info('Standard mode enabled, OIDC requests will pass through');
     }

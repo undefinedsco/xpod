@@ -1,3 +1,7 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
@@ -15,8 +19,9 @@ import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
 import type { AiProvider } from '../../src/api/chatkit/service';
 import { generateId, nowTimestamp, toThreadRef } from '../../src/api/chatkit/types';
 import { TaskAuthBindingService } from '../../src/api/tasks';
+import { LocalSolidFS, type MaterializedWorkspace, type SolidFS, type SolidFsPrepareInput } from '../../src/solidfs';
 
-const workspaceUri = `file://localhost${process.cwd()}`;
+const workspaceRef = `file://localhost${process.cwd()}`;
 
 const {
   piSdkMock,
@@ -80,6 +85,12 @@ const {
     reload = reloadMock;
   }
 
+  const joinPath = (cwd: string, filePath: string): string => `${cwd.replace(/\/+$/u, '')}/${filePath.replace(/^\/+/u, '')}`;
+  const dirname = (filePath: string): string => {
+    const slash = filePath.lastIndexOf('/');
+    return slash <= 0 ? '/' : filePath.slice(0, slash);
+  };
+
   const piSdkMock = {
     AuthStorage: AuthStorageMock,
     DefaultResourceLoader: DefaultResourceLoaderMock,
@@ -91,6 +102,30 @@ const {
     SettingsManager: SettingsManagerMock,
     createCodingTools: createCodingToolsMock,
     createReadOnlyTools: createReadOnlyToolsMock,
+    createReadTool: vi.fn((cwd: string, options?: any) => ({
+      name: 'read',
+      cwd,
+      options,
+      execute: async (_id: string, params: { path: string }, _signal?: AbortSignal) => ({
+        content: [{
+          type: 'text',
+          text: (await options.operations.readFile(joinPath(cwd, params.path))).toString('utf8'),
+        }],
+      }),
+    })),
+    createBashTool: vi.fn((cwd: string) => ({ name: 'bash', cwd })),
+    createEditTool: vi.fn((cwd: string, options?: any) => ({ name: 'edit', cwd, options })),
+    createWriteTool: vi.fn((cwd: string, options?: any) => ({
+      name: 'write',
+      cwd,
+      options,
+      execute: async (_id: string, params: { path: string; content: string }, _signal?: AbortSignal) => {
+        const target = joinPath(cwd, params.path);
+        await options.operations.mkdir(dirname(target));
+        await options.operations.writeFile(target, params.content);
+        return { content: [{ type: 'text', text: 'written' }] };
+      },
+    })),
     createAgentSession: createAgentSessionMock,
   };
 
@@ -168,6 +203,59 @@ class SlowTextDriver implements RunExecutionBackend {
   }
 }
 
+class RecordingSolidFS implements SolidFS {
+  public prepareInputs: SolidFsPrepareInput[] = [];
+  public commits = 0;
+  public rollbacks = 0;
+  public hydrated: string[] = [];
+
+  public constructor(
+    private readonly cwd: string,
+    private readonly projection: SolidFsPrepareInput['projection'] = 'direct',
+  ) {}
+
+  public async prepare(input: SolidFsPrepareInput): Promise<MaterializedWorkspace> {
+    this.prepareInputs.push(input);
+    const projection = input.projection ?? this.projection ?? 'direct';
+    const workspace: MaterializedWorkspace = {
+      cwd: this.cwd,
+      manifest: {
+        workspace: input.workspace,
+        cwd: this.cwd,
+        projection,
+        entries: [],
+      },
+      hydrate: projection === 'hydrated-object'
+        ? async (relativePath: string) => {
+          this.hydrated.push(relativePath);
+          fs.mkdirSync(path.dirname(path.join(this.cwd, relativePath)), { recursive: true });
+          fs.writeFileSync(path.join(this.cwd, relativePath), `hydrated:${relativePath}`, 'utf8');
+          return {
+            path: relativePath,
+            source: 'object',
+            sourcePath: path.join(this.cwd, relativePath),
+            projection,
+            state: 'clean',
+          };
+        }
+        : undefined,
+      commit: async () => {
+        this.commits += 1;
+        return {
+          workspace: input.workspace,
+          cwd: this.cwd,
+          projection,
+          entries: [],
+        };
+      },
+      rollback: async () => {
+        this.rollbacks += 1;
+      },
+    };
+    return workspace;
+  }
+}
+
 function parseSseDataLines(chunks: Uint8Array[]): any[] {
   const text = Buffer.concat(chunks).toString('utf-8');
   const events: any[] = [];
@@ -225,7 +313,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const result = await service.process(JSON.stringify({
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [{ type: 'input_text', text: 'hello managed agents' }],
         },
@@ -250,8 +338,8 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(driver.inputs).toHaveLength(1);
     expect(driver.inputs[0].runId).toBe((inngestClient.sent[0] as any).data.runId);
     expect(driver.inputs[0].prompt).toBe('hello managed agents');
-    expect(driver.inputs[0].config.workspace).toBe(workspaceUri);
-    expect(assistantText(events)).toBe(`workspace:${workspaceUri}:hello managed agents`);
+    expect(driver.inputs[0].config.workspace).toBe(workspaceRef);
+    expect(assistantText(events)).toBe(`workspace:${workspaceRef}:hello managed agents`);
     expect(events.some((event) => event.type === 'thread.item.done' && event.item?.type === 'assistant_message')).toBe(true);
   });
 
@@ -268,7 +356,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       prompt: 'pending duplicate',
       conversation: [],
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         runner: { type: 'codex', protocol: 'acp' },
       },
     };
@@ -326,7 +414,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const result = await service.process(JSON.stringify({
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [{ type: 'input_text', text: 'persist run facts' }],
         },
@@ -350,7 +438,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       id: runId,
       commandKind: 'chat',
       status: RunStatus.COMPLETED,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:codex',
       prompt: 'persist run facts',
       thread: 'http://localhost/alice/.data/' + (run.metadata?.threadId as string),
@@ -363,7 +451,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       RunStepType.TEXT_DELTA,
       RunStepType.COMPLETED,
     ]);
-    expect(events[2].data).toEqual({ delta: `workspace:${workspaceUri}:` });
+    expect(events[2].data).toEqual({ delta: `workspace:${workspaceRef}:` });
   });
 
   it('continues inline execution when local durable Inngest delivery is unavailable', async () => {
@@ -390,7 +478,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const result = await service.process(JSON.stringify({
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [{ type: 'input_text', text: 'local fallback' }],
         },
@@ -409,7 +497,7 @@ describe('Managed Agents Inngest Chat backend', () => {
 
     expect(inngestClient.sent).toHaveLength(0);
     expect(driver.inputs).toHaveLength(1);
-    expect(assistantText(parseSseDataLines(chunks))).toBe(`workspace:${workspaceUri}:local fallback`);
+    expect(assistantText(parseSseDataLines(chunks))).toBe(`workspace:${workspaceRef}:local fallback`);
   });
 
   it('sends a continuation event for a paused Run without allocating a new Run id', async () => {
@@ -427,7 +515,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       prompt: 'Continue the previous run after client tool output.',
       conversation: [],
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         runner: { type: 'codex', protocol: 'acp' },
       },
       continuation: {
@@ -472,7 +560,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       prompt: 'no secret',
       conversation: [],
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         runner: { type: 'codex', protocol: 'acp' },
       },
       context: {
@@ -512,7 +600,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       prompt: 'use binding',
       conversation: [],
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         runner: { type: 'codex', protocol: 'acp' },
       },
       authBindingId: 'task-auth-existing',
@@ -569,14 +657,14 @@ describe('Managed Agents Inngest Chat backend', () => {
     const thread = {
       id: 'chat/default/index.ttl#thread_registry_restore',
       status: { type: 'active' as const },
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       created_at: now,
       updated_at: now,
       metadata: {
         chat_id: 'default',
         surface_id: 'default',
         runtime: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -601,14 +689,14 @@ describe('Managed Agents Inngest Chat backend', () => {
       commandKind: 'chat',
       surfaceId: 'default',
       thread: thread.id,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       status: RunStatus.QUEUED,
       runner: 'acp:codex',
       prompt: 'registry restore',
       metadata: {
         userMessageId: 'user_msg_registry_restore',
         runtimeConfig: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -622,7 +710,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       prompt: 'registry restore',
       conversation: [],
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         runner: { type: 'codex', protocol: 'acp' },
       },
       context,
@@ -690,7 +778,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const thread = {
       id: 'task/secretary/index.ttl#thread_auth_restore',
       status: { type: 'active' as const },
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       created_at: now,
       updated_at: now,
       metadata: {
@@ -698,7 +786,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         chat_id: 'secretary',
         surface_id: 'secretary',
         runtime: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -723,7 +811,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       commandKind: 'task',
       surfaceId: 'secretary',
       thread: thread.id,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       status: RunStatus.QUEUED,
       runner: 'acp:codex',
       prompt: 'auth restore',
@@ -732,7 +820,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         authBindingId: authBinding.id,
         userMessageId: 'user_msg_auth_restore',
         runtimeConfig: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -746,7 +834,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       prompt: 'auth restore',
       conversation: [],
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         runner: { type: 'codex', protocol: 'acp' },
       },
       authBindingId: authBinding.id,
@@ -798,14 +886,14 @@ describe('Managed Agents Inngest Chat backend', () => {
     const thread = {
       id: 'chat/default/index.ttl#thread_store_restore',
       status: { type: 'active' as const },
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       created_at: now,
       updated_at: now,
       metadata: {
         chat_id: 'default',
         surface_id: 'default',
         runtime: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -831,7 +919,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       commandKind: 'chat',
       surfaceId: 'default',
       thread: thread.id,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       status: RunStatus.QUEUED,
       runner: 'acp:codex',
       prompt: 'stored callback',
@@ -839,7 +927,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         threadId: thread.id,
         userMessageId: userMessage.id,
         runtimeConfig: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -889,7 +977,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       threadId: thread.id,
       prompt: 'stored callback',
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         runner: { type: 'codex', protocol: 'acp' },
       },
       conversation: [],
@@ -907,7 +995,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     ]);
     const items = await store.loadThreadItems(threadRef, undefined, 50, 'asc', context);
     const assistant = items.data.find((item) => item.type === 'assistant_message') as any;
-    expect(assistant?.content?.[0]?.text).toBe(`workspace:${workspaceUri}:stored callback`);
+    expect(assistant?.content?.[0]?.text).toBe(`workspace:${workspaceRef}:stored callback`);
   });
 
   it('claims a stored Run so duplicate Inngest callbacks do not execute twice', async () => {
@@ -926,14 +1014,14 @@ describe('Managed Agents Inngest Chat backend', () => {
     const thread = {
       id: 'chat/default/index.ttl#thread_claim',
       status: { type: 'active' as const },
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       created_at: now,
       updated_at: now,
       metadata: {
         chat_id: 'default',
         surface_id: 'default',
         runtime: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -958,14 +1046,14 @@ describe('Managed Agents Inngest Chat backend', () => {
       commandKind: 'chat',
       surfaceId: 'default',
       thread: thread.id,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       status: RunStatus.QUEUED,
       runner: 'acp:codex',
       prompt: 'claim once',
       metadata: {
         userMessageId: 'user_msg_claim',
         runtimeConfig: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -1007,14 +1095,14 @@ describe('Managed Agents Inngest Chat backend', () => {
     const thread = {
       id: 'chat/default/index.ttl#thread_running_recover',
       status: { type: 'active' as const },
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       created_at: now,
       updated_at: now,
       metadata: {
         chat_id: 'default',
         surface_id: 'default',
         runtime: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -1039,14 +1127,14 @@ describe('Managed Agents Inngest Chat backend', () => {
       commandKind: 'chat',
       surfaceId: 'default',
       thread: thread.id,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       status: RunStatus.RUNNING,
       runner: 'acp:codex',
       prompt: 'recover running',
       metadata: {
         userMessageId: 'user_msg_running_recover',
         runtimeConfig: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -1088,14 +1176,14 @@ describe('Managed Agents Inngest Chat backend', () => {
     const thread = {
       id: 'chat/default/index.ttl#thread_running_leased',
       status: { type: 'active' as const },
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       created_at: now,
       updated_at: now,
       metadata: {
         chat_id: 'default',
         surface_id: 'default',
         runtime: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -1120,7 +1208,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       commandKind: 'chat',
       surfaceId: 'default',
       thread: thread.id,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       status: RunStatus.RUNNING,
       runner: 'acp:codex',
       prompt: 'do not steal',
@@ -1130,7 +1218,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       metadata: {
         userMessageId: 'user_msg_running_leased',
         runtimeConfig: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -1170,14 +1258,14 @@ describe('Managed Agents Inngest Chat backend', () => {
     const thread = {
       id: 'chat/default/index.ttl#thread_cancel',
       status: { type: 'active' as const },
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       created_at: now,
       updated_at: now,
       metadata: {
         chat_id: 'default',
         surface_id: 'default',
         runtime: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -1202,14 +1290,14 @@ describe('Managed Agents Inngest Chat backend', () => {
       commandKind: 'chat',
       surfaceId: 'default',
       thread: thread.id,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       status: RunStatus.QUEUED,
       runner: 'acp:codex',
       prompt: 'cancel me',
       metadata: {
         userMessageId: 'user_msg_cancel',
         runtimeConfig: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
@@ -1263,7 +1351,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const result = await service.process(JSON.stringify({
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [{ type: 'input_text', text: 'cancel inline' }],
         },
@@ -1343,7 +1431,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const events = parseSseDataLines(chunks);
 
     expect(driver.inputs).toHaveLength(0);
-    expect(events.some((event) => event.type === 'error' && event.error?.message.includes('workspace URI is required'))).toBe(true);
+    expect(events.some((event) => event.type === 'error' && event.error?.message.includes('workspace reference is required'))).toBe(true);
   });
 
   it('projects resumed client tool output back into the assistant message and completes the same Run', async () => {
@@ -1365,7 +1453,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const first = await service.process(JSON.stringify({
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [{ type: 'input_text', text: 'needs client tool' }],
         },
@@ -1440,7 +1528,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const first = await service.process(JSON.stringify({
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [{ type: 'input_text', text: 'first' }],
         },
@@ -1478,7 +1566,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(driver.inputs[1].prompt).toBe('second');
     expect(driver.inputs[1].conversation).toEqual([
       { role: 'user', text: 'first', createdAt: expect.any(Number) },
-      { role: 'assistant', text: `workspace:${workspaceUri}:first`, createdAt: expect.any(Number) },
+      { role: 'assistant', text: `workspace:${workspaceRef}:first`, createdAt: expect.any(Number) },
     ]);
   });
 
@@ -1500,7 +1588,7 @@ describe('Managed Agents Inngest Chat backend', () => {
           prompt: 'hello',
           conversation: [],
           config: {
-            workspace: workspaceUri,
+            workspace: workspaceRef,
             runner: { type: 'codex', protocol: 'acp' },
             agentConfig: {
               id: 'agent-no-key',
@@ -1556,7 +1644,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             { role: 'assistant', text: 'previous assistant', createdAt: 11 },
           ],
           config: {
-            workspace: workspaceUri,
+            workspace: workspaceRef,
             runner: { type: 'codex', protocol: 'acp' },
           },
         })
@@ -1615,6 +1703,274 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
   });
 
+  it('materializes pi runtime workspaces through SolidFS and commits successful runs', async () => {
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalProvider = process.env.DEFAULT_PROVIDER;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-solidfs-driver-'));
+    const solidfs = new RecordingSolidFS(workdir);
+    try {
+      process.env.DEFAULT_API_KEY = 'sk-test';
+      process.env.DEFAULT_PROVIDER = 'openai';
+      process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+
+      const driver = new PiAgentRuntimeDriver({
+        piSdk: piSdkMock as any,
+        solidfs,
+        solidfsProjection: 'copy',
+      });
+      const events: AgentRuntimeEvent[] = [];
+      for await (
+        const event of driver.start({
+          runId: 'run_solidfs',
+          threadId: 'thread_solidfs',
+          prompt: 'use solidfs',
+          conversation: [],
+          config: {
+            workspace: workspaceRef,
+            runner: { type: 'pi', protocol: 'pi' },
+          },
+        })
+      ) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([]);
+      expect(solidfs.prepareInputs).toEqual([
+        {
+          workspace: workspaceRef,
+          sourcePath: process.cwd(),
+          projection: 'copy',
+          run: {
+            id: 'run_solidfs',
+            workspace: workspaceRef,
+          },
+        },
+      ]);
+      expect(createCodingToolsMock).toHaveBeenCalledWith(workdir);
+      expect(sessionManagerInMemoryMock).toHaveBeenCalledWith(workdir);
+      expect(solidfs.commits).toBe(1);
+      expect(solidfs.rollbacks).toBe(0);
+    } finally {
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalProvider === undefined) delete process.env.DEFAULT_PROVIDER;
+      else process.env.DEFAULT_PROVIDER = originalProvider;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('commits pi runtime file changes back to a real LocalSolidFS copy workspace', async () => {
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalProvider = process.env.DEFAULT_PROVIDER;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-solidfs-driver-real-'));
+    const sourceDir = path.join(root, 'source');
+    const workRoot = path.join(root, 'work');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, 'before.txt'), 'before\n', 'utf8');
+    const sourceWorkspaceRef = pathToFileURL(sourceDir).href;
+    const solidfs = new LocalSolidFS({ workRoot });
+
+    try {
+      process.env.DEFAULT_API_KEY = 'sk-test';
+      process.env.DEFAULT_PROVIDER = 'openai';
+      process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+
+      createCodingToolsMock.mockImplementationOnce((cwd: string) => [{
+        name: 'write',
+        execute: async (_id: string, params: { path: string; content: string }) => {
+          const target = path.join(cwd, params.path);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, params.content, 'utf8');
+          return { content: [{ type: 'text', text: 'written' }] };
+        },
+      }]);
+      createAgentSessionMock.mockImplementationOnce(async (options: any) => {
+        return {
+          session: {
+            agent: { replaceMessages: replaceMessagesMock },
+            subscribe: subscribeMock,
+            prompt: async () => {
+              const writeTool = options.tools.find((tool: any) => tool.name === 'write');
+              await writeTool.execute('tool_write_1', {
+                path: 'after.txt',
+                content: 'created by runtime\n',
+              });
+            },
+            dispose: disposeMock,
+          },
+        };
+      });
+
+      const driver = new PiAgentRuntimeDriver({
+        piSdk: piSdkMock as any,
+        solidfs,
+        solidfsProjection: 'copy',
+      });
+      const events: AgentRuntimeEvent[] = [];
+
+      for await (
+        const event of driver.start({
+          runId: 'run_solidfs_real_copy',
+          threadId: 'thread_solidfs_real_copy',
+          prompt: 'write a file',
+          conversation: [],
+          config: {
+            workspace: sourceWorkspaceRef,
+            runner: { type: 'pi', protocol: 'pi' },
+          },
+        })
+      ) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([]);
+      expect(fs.readFileSync(path.join(sourceDir, 'before.txt'), 'utf8')).toBe('before\n');
+      expect(fs.readFileSync(path.join(sourceDir, 'after.txt'), 'utf8')).toBe('created by runtime\n');
+
+      const nextWorkspace = await solidfs.prepare({
+        workspace: sourceWorkspaceRef,
+        projection: 'direct',
+      });
+      expect(fs.readFileSync(path.join(nextWorkspace.cwd, 'after.txt'), 'utf8')).toBe('created by runtime\n');
+    } finally {
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalProvider === undefined) delete process.env.DEFAULT_PROVIDER;
+      else process.env.DEFAULT_PROVIDER = originalProvider;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('hydrates missing object files through SolidFS before pi read tools run', async () => {
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalProvider = process.env.DEFAULT_PROVIDER;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-solidfs-driver-hydrate-'));
+    const solidfs = new RecordingSolidFS(workdir);
+    try {
+      process.env.DEFAULT_API_KEY = 'sk-test';
+      process.env.DEFAULT_PROVIDER = 'openai';
+      process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+
+      createAgentSessionMock.mockImplementationOnce(async (options: any) => {
+        const readTool = options.tools.find((tool: any) => tool.name === 'read');
+        return {
+          session: {
+            agent: { replaceMessages: replaceMessagesMock },
+            subscribe: subscribeMock,
+            prompt: async () => {
+              await readTool.execute('tool_read_1', { path: 'objects/report.txt' });
+            },
+            dispose: disposeMock,
+          },
+        };
+      });
+
+      const driver = new PiAgentRuntimeDriver({
+        piSdk: piSdkMock as any,
+        solidfs,
+        solidfsProjection: 'hydrated-object',
+      });
+      for await (
+        const _event of driver.start({
+          runId: 'run_solidfs_hydrate',
+          threadId: 'thread_solidfs_hydrate',
+          prompt: 'read object',
+          conversation: [],
+          config: {
+            workspace: workspaceRef,
+            runner: { type: 'pi', protocol: 'pi' },
+          },
+        })
+      ) {
+        // drain
+      }
+
+      expect(solidfs.hydrated).toEqual(['objects/report.txt']);
+      expect(fs.readFileSync(path.join(workdir, 'objects', 'report.txt'), 'utf8'))
+        .toBe('hydrated:objects/report.txt');
+      expect(solidfs.commits).toBe(1);
+      expect(solidfs.rollbacks).toBe(0);
+    } finally {
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalProvider === undefined) delete process.env.DEFAULT_PROVIDER;
+      else process.env.DEFAULT_PROVIDER = originalProvider;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back SolidFS workspace when pi runtime emits an error', async () => {
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalProvider = process.env.DEFAULT_PROVIDER;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-solidfs-driver-error-'));
+    const solidfs = new RecordingSolidFS(workdir);
+    try {
+      process.env.DEFAULT_API_KEY = 'sk-test';
+      process.env.DEFAULT_PROVIDER = 'openai';
+      process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+      promptMock.mockRejectedValueOnce(new Error('runtime failed'));
+
+      const driver = new PiAgentRuntimeDriver({
+        piSdk: piSdkMock as any,
+        solidfs,
+        solidfsProjection: 'copy',
+      });
+      const events: AgentRuntimeEvent[] = [];
+      for await (
+        const event of driver.start({
+          runId: 'run_solidfs_error',
+          threadId: 'thread_solidfs_error',
+          prompt: 'fail',
+          conversation: [],
+          config: {
+            workspace: workspaceRef,
+            runner: { type: 'pi', protocol: 'pi' },
+          },
+        })
+      ) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([{ type: 'error', message: 'runtime failed' }]);
+      expect(solidfs.commits).toBe(0);
+      expect(solidfs.rollbacks).toBe(1);
+    } finally {
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalProvider === undefined) delete process.env.DEFAULT_PROVIDER;
+      else process.env.DEFAULT_PROVIDER = originalProvider;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
   it('does not pause Chat runs for pi internal tool execution events', async () => {
     const originalKey = process.env.DEFAULT_API_KEY;
     const originalProvider = process.env.DEFAULT_PROVIDER;
@@ -1650,7 +2006,7 @@ describe('Managed Agents Inngest Chat backend', () => {
           prompt: 'read then answer',
           conversation: [],
           config: {
-            workspace: workspaceUri,
+            workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
           },
         })
@@ -1690,7 +2046,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         prompt: 'first',
         conversation: [],
         config: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
         },
       };
@@ -1718,6 +2074,128 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
   });
 
+  it('maps a Pod workspace reference to a local cwd and lets the managed agent read and write files there', async () => {
+    const originalCssBaseUrl = process.env.CSS_BASE_URL;
+    const originalCssRootFilePath = process.env.CSS_ROOT_FILE_PATH;
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalProvider = process.env.DEFAULT_PROVIDER;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+
+    const podRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-managed-agent-pod-'));
+    const workspaceRef = 'https://pod.example/alice/projects/demo/';
+    const mappedWorkspacePath = path.join(podRoot, 'alice/projects/demo');
+
+    try {
+      process.env.CSS_BASE_URL = 'https://pod.example/';
+      process.env.CSS_ROOT_FILE_PATH = podRoot;
+      process.env.DEFAULT_API_KEY = 'sk-test';
+      process.env.DEFAULT_PROVIDER = 'openai';
+      process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+
+      fs.mkdirSync(mappedWorkspacePath, { recursive: true });
+      fs.writeFileSync(path.join(mappedWorkspacePath, 'README.md'), 'pod workspace readme\n', 'utf8');
+
+      let activeWorkdir = '';
+      let activeSessionHandler: ((event: any) => void) | undefined;
+
+      subscribeMock.mockImplementationOnce((handler: Function) => {
+        activeSessionHandler = handler as (event: any) => void;
+        return () => undefined;
+      });
+
+      createAgentSessionMock.mockImplementationOnce(async (options: any) => {
+        activeWorkdir = options.cwd;
+        expect(activeWorkdir).toBe(mappedWorkspacePath);
+        return {
+          session: {
+            agent: { replaceMessages: replaceMessagesMock },
+            subscribe: subscribeMock,
+            prompt: async (prompt: string) => {
+              const readmePath = path.join(activeWorkdir, 'README.md');
+              const outputPath = path.join(activeWorkdir, 'managed-agent-output.txt');
+              const readme = fs.readFileSync(readmePath, 'utf8').trim();
+              fs.writeFileSync(outputPath, `processed:${readme}:${prompt}`, 'utf8');
+              activeSessionHandler?.({
+                type: 'message_update',
+                assistantMessageEvent: {
+                  type: 'text_delta',
+                  delta: `cwd:${path.basename(activeWorkdir)} read:${readme}`,
+                },
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: `cwd:${path.basename(activeWorkdir)} read:${readme}` }],
+                },
+              });
+            },
+            dispose: disposeMock,
+          },
+        };
+      });
+
+      const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
+      const backend = new InngestRunExecutionBackend({
+        client: new RecordingInngestClient() as any,
+        runtimeDriver: driver,
+        durableDelivery: false,
+        executeInline: true,
+      });
+      const service = new ChatKitService<StoreContext>({
+        store: new InMemoryStore<StoreContext>(),
+        aiProvider: {
+          async *streamResponse() {
+            throw new Error('aiProvider should not be used for managed agent runs');
+          },
+        },
+        enableAgentRuntime: true,
+        runExecutionBackend: backend,
+      });
+
+      const result = await service.process(JSON.stringify({
+        type: 'threads.create',
+        params: {
+          workspace: workspaceRef,
+          input: {
+            content: [{ type: 'input_text', text: 'operate pod workspace' }],
+          },
+        },
+        metadata: {
+          runtime: {
+            runner: { type: 'codex', protocol: 'pi' },
+          },
+        },
+      }), { userId: 'u1' });
+
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of result.type === 'streaming' ? result.stream() : []) {
+        chunks.push(chunk);
+      }
+      const events = parseSseDataLines(chunks);
+
+      expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+      expect(createCodingToolsMock).toHaveBeenCalledWith(mappedWorkspacePath);
+      expect(createReadOnlyToolsMock).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(mappedWorkspacePath, 'managed-agent-output.txt'), 'utf8'))
+        .toBe('processed:pod workspace readme:operate pod workspace');
+      expect(assistantText(events)).toBe(`cwd:demo read:pod workspace readme`);
+    } finally {
+      if (originalCssBaseUrl === undefined) delete process.env.CSS_BASE_URL;
+      else process.env.CSS_BASE_URL = originalCssBaseUrl;
+      if (originalCssRootFilePath === undefined) delete process.env.CSS_ROOT_FILE_PATH;
+      else process.env.CSS_ROOT_FILE_PATH = originalCssRootFilePath;
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalProvider === undefined) delete process.env.DEFAULT_PROVIDER;
+      else process.env.DEFAULT_PROVIDER = originalProvider;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+      fs.rmSync(podRoot, { recursive: true, force: true });
+    }
+  });
+
   it('runs the whole pi agent loop through a sandboxed worker in cloud isolation mode', async () => {
     const driver = new PiAgentRuntimeDriver({
       agentLoopIsolation: 'sandboxed-process',
@@ -1734,7 +2212,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         prompt: 'loop',
         conversation: [],
         config: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
         },
       })

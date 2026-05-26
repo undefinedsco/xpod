@@ -32,6 +32,7 @@ export interface XpodRuntimeOptions {
   runtimeRoot?: string;
   rootFilePath?: string;
   sparqlEndpoint?: string;
+  rdfIndexPath?: string;
   identityDbUrl?: string;
   usageDbUrl?: string;
   logLevel?: string;

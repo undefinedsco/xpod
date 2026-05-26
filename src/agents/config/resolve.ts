@@ -117,15 +117,15 @@ class AgentConfigResolver {
       return null;
     }
 
-    const providerUri = metaRecord.provider;
-    if (!providerUri) {
+    const providerResource = metaRecord.provider;
+    if (!providerResource) {
       logger.error(`Agent ${this.agentId} has no provider in .meta`);
       return null;
     }
 
-    const provider = await this.db.findByIri(Provider, providerUri);
+    const provider = await this.db.findByIri(Provider, providerResource);
     if (!provider) {
-      logger.error(`Provider not found: ${providerUri}`);
+      logger.error(`Provider not found: ${providerResource}`);
       return null;
     }
 
@@ -162,18 +162,18 @@ class AgentConfigResolver {
     };
   }
 
-  private async resolveCredential(credentialUri: string | undefined): Promise<{
+  private async resolveCredential(credentialResource: string | undefined): Promise<{
     apiKey: string;
     baseUrl?: string;
     proxyUrl?: string;
   }> {
-    if (!credentialUri) {
+    if (!credentialResource) {
       return { apiKey: '' };
     }
 
-    const credential = await this.db.findByIri(Credential, credentialUri);
+    const credential = await this.db.findByIri(Credential, credentialResource);
     if (!credential) {
-      logger.warn(`Credential not found: ${credentialUri}`);
+      logger.warn(`Credential not found: ${credentialResource}`);
       return { apiKey: '' };
     }
 
@@ -184,8 +184,8 @@ class AgentConfigResolver {
     };
   }
 
-  private async resolveModelName(provider: any, modelUri: string | undefined): Promise<string | undefined> {
-    const explicit = await resolveModelId(this.db, modelUri);
+  private async resolveModelName(provider: any, modelResource: string | undefined): Promise<string | undefined> {
+    const explicit = await resolveModelId(this.db, modelResource);
     if (explicit) {
       return explicit;
     }

@@ -136,8 +136,8 @@ async function ensureThread(db: any, chatId: string, threadId: string): Promise<
 async function ensureThread(db: any, chatId: string, threadId: string, webId: string): Promise<void> {
   try {
     const podBaseUrl = webId.replace('/profile/card#me', '');
-    const threadUri = `${podBaseUrl}/.data/chat/${chatId}/index.ttl#${threadId}`;
-    const thread = await db.findByIri(Thread, threadUri);
+    const threadResource = `${podBaseUrl}/.data/chat/${chatId}/index.ttl#${threadId}`;
+    const thread = await db.findByIri(Thread, threadResource);
 
     if (!thread) {
       // create thread...

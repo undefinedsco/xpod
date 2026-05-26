@@ -79,8 +79,13 @@ describe('RepresentationPartialConvertingStore Conversion Coverage', () => {
 
       await store.addResource(identifier, representation);
 
-      expect(inConverter.canHandle).toHaveBeenCalled();
-      expect(inConverter.handleSafe).toHaveBeenCalledTimes(1);
+      if (type === 'internal/quads') {
+        expect(inConverter.canHandle).not.toHaveBeenCalled();
+        expect(inConverter.handleSafe).not.toHaveBeenCalled();
+      } else {
+        expect(inConverter.canHandle).toHaveBeenCalled();
+        expect(inConverter.handleSafe).toHaveBeenCalledTimes(1);
+      }
       expect(baseStore.addResource).toHaveBeenCalledTimes(1);
     });
   });

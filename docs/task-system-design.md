@@ -111,7 +111,7 @@ Pod 位置:
 
 `surfaceId` 是命令来源/归档的 command surface。ChatKit 协议参数仍叫 `chat_id`，但内部持久模型统一叫 `surfaceId`。它不表示谁下发任务、谁执行任务，也不表示 runner。
 
-`Run.id` 是相对 `/.data/` base 的资源 id，例如 `chat/default/2026/05/18/runs.ttl#run_x`，不是 `run_x` 这个 fragment/local id。`Run.task`、`Run.thread`、`Run.workspace` 都是 URI 关系。`RunStep.runId` 是本地查询/定位字段，值仍是 Run 的 base-relative resource id；语义关系使用 `RunStep.run`。
+`Run.id` 是相对 `/.data/` base 的资源 id，例如 `chat/default/2026/05/18/runs.ttl#run_x`，不是 `run_x` 这个 fragment/local id。`Run.task`、`Run.thread`、`Run.workspace` 都是边关系。`RunStep.runId` 是本地查询/定位字段，值仍是 Run 的 base-relative resource id；语义关系使用 `RunStep.run`。
 
 `Message` / `Run` / `RunStep` 这类 append-heavy 资源最终应通过字段级 `id.default((key) => ...)` 生成完整 resource id，而不是让业务调用方传日期分桶或 locator。业务 schema 不显式写 `subjectTemplate`；省略模板就是 exact-id subject 模式，完整 `id` 不再被模板反解析。`key` 只存在于 `id.default` 的函数入参里，不进入资源 schema。`default` 只表示“调用方不传 id 时的默认生成函数”；调用方显式传 id 时，也必须传同格式完整 id。
 

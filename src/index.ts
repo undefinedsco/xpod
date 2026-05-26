@@ -7,6 +7,26 @@ import { MixDataAccessor } from './storage/accessors/MixDataAccessor';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { SubgraphQueryEngine, QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
+export type {
+  RdfIndexStats,
+  RdfIndexSpaceObject,
+  RdfIndexMetrics,
+  RdfIndexPutOptions,
+  RdfPatternQuery,
+  RdfQuadIndexOptions,
+  RdfQuadIndexScanResult,
+  RdfShadowBackfillOptions,
+  RdfShadowBackfillResult,
+  RdfShadowDiff,
+  RdfShadowScanResult,
+  RdfSourceInput,
+} from './storage/rdf/types';
+export type { RdfSparqlCompileResult } from './storage/rdf/RdfSparqlAdapter';
+export type { ShadowRdfQuintStoreOptions } from './storage/rdf/ShadowRdfQuintStore';
+export type {
+  SolidRdfSparqlEngineOptions,
+  SolidRdfSparqlFallback,
+} from './storage/rdf/SolidRdfSparqlEngine';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
@@ -50,6 +70,12 @@ import { SqliteQuintStore } from './storage/quint/SqliteQuintStore';
 import { PgQuintStore } from './storage/quint/PgQuintStore';
 import { BaseQuintStore } from './storage/quint/BaseQuintStore';
 import { QuintStore } from './storage/quint/types';
+import { RdfQuadIndex } from './storage/rdf/RdfQuadIndex';
+import { RdfSparqlAdapter } from './storage/rdf/RdfSparqlAdapter';
+import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
+import { ShadowRdfQuintStore } from './storage/rdf/ShadowRdfQuintStore';
+import { SolidRdfEngine } from './storage/rdf/SolidRdfEngine';
+import { SolidRdfSparqlEngine } from './storage/rdf/SolidRdfSparqlEngine';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
 import { SqliteVectorStore, PostgresVectorStore } from './storage/vector/index';
@@ -162,6 +188,13 @@ export {
   SqliteQuintStore,
   PgQuintStore,
   BaseQuintStore,
+  // RDF engine exports
+  RdfTermDictionary,
+  RdfQuadIndex,
+  RdfSparqlAdapter,
+  ShadowRdfQuintStore,
+  SolidRdfEngine,
+  SolidRdfSparqlEngine,
   // Vector exports
   VectorStore,
   SqliteVectorStore,

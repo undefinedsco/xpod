@@ -13,7 +13,7 @@ import { TaskAuthBindingService } from '../../src/api/tasks/TaskAuthBinding';
 import { TaskService } from '../../src/api/tasks/TaskService';
 import { TaskTriggerKind } from '../../src/api/tasks/schema';
 
-const workspaceUri = `file://localhost${process.cwd()}`;
+const workspaceRef = `file://localhost${process.cwd()}`;
 
 class RecordingInngestClient {
   public sent: unknown[] = [];
@@ -84,7 +84,7 @@ describe('Inngest Task scheduler', () => {
     const created = await taskService.createTask({
       title: 'Every minute',
       prompt: 'check status',
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:pi',
       triggerKind: TaskTriggerKind.INTERVAL,
       intervalSeconds: 60,
@@ -149,7 +149,7 @@ describe('Inngest Task scheduler', () => {
     const created = await taskService.createTask({
       title: 'On deploy',
       prompt: 'summarize deploy',
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:pi',
       triggerKind: TaskTriggerKind.EVENT,
       eventName: 'deploy.completed',
@@ -217,7 +217,7 @@ describe('Inngest Task scheduler', () => {
     await taskService.createTask({
       title: 'Cron task',
       prompt: 'cron check',
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:pi',
       triggerKind: TaskTriggerKind.CRON,
       cron: '* * * * *',

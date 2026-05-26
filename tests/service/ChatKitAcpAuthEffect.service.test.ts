@@ -19,7 +19,7 @@ function parseSseDataLines(chunks: Uint8Array[]): unknown[] {
 }
 
 describe('ChatKitService + ACP runtime', () => {
-  const workspaceUri = `file://localhost${process.cwd()}`;
+  const workspaceRef = `file://localhost${process.cwd()}`;
 
   it('emits runtime.auth_required client_effect with a clickable url', async () => {
     const store = new InMemoryStore();
@@ -42,7 +42,7 @@ describe('ChatKitService + ACP runtime', () => {
     const req = {
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [ { type: 'input_text', text: 'hello' } ],
         },

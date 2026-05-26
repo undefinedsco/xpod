@@ -17,16 +17,16 @@ import { RunStatus, XpodRunStepType as RunStepType } from '../runs/schema';
 import {
   generateRunResourceId,
   generateRunStepResourceId,
-  resolveDataResourceIri,
+  resolveDataResource,
   resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
   type RunStore,
 } from '../runs/store';
 import type { AgentRuntimeConfig, RunnerProtocol, RunnerType } from '../runs/AgentRuntimeTypes';
-import { isWorkspaceUri } from '../workspace/types';
+import { isWorkspaceRef } from '../workspace/types';
 import { TaskStatus, TaskTriggerKind } from './schema';
-import { resolveTaskResourceIri, resolveTaskUrn, type TaskRecordData } from './store';
+import { resolveTaskResource as expandTaskResource, resolveTaskUrn, type TaskRecordData } from './store';
 
 export interface MaterializedTaskRun {
   task: TaskRecordData;
@@ -225,7 +225,7 @@ export class TaskMaterializer<TContext = StoreContext> {
           commandKind: 'task',
           surface_id: task.surfaceId,
           chat_id: task.surfaceId,
-          task: this.resolveTaskUri(task, context),
+          task: this.resolveTaskResource(task, context),
           runtime: {
             workspace: task.workspace,
             runner: this.parseRunner(task.runner),
@@ -257,7 +257,7 @@ export class TaskMaterializer<TContext = StoreContext> {
         surfaceId: task.surfaceId,
         createdAt: now,
       }),
-      task: this.resolveTaskUri(task, context),
+      task: this.resolveTaskResource(task, context),
       thread: task.thread,
       workspace: task.workspace,
       commandKind: 'task',
@@ -368,7 +368,7 @@ export class TaskMaterializer<TContext = StoreContext> {
       commandKind: run.commandKind,
       surfaceId: run.surfaceId,
       runId: run.id,
-      run: this.resolveRunUri(run, context),
+      run: this.resolveRunResource(run, context),
       type,
       message: options.message,
       data: options.data,
@@ -460,8 +460,8 @@ export class TaskMaterializer<TContext = StoreContext> {
   }
 
   private buildRuntimeConfig(task: TaskRecordData): AgentRuntimeConfig {
-    if (!isWorkspaceUri(task.workspace)) {
-      throw new Error('Task workspace URI is required');
+    if (!isWorkspaceRef(task.workspace)) {
+      throw new Error('Task workspace reference is required');
     }
     return {
       workspace: task.workspace,
@@ -498,7 +498,7 @@ export class TaskMaterializer<TContext = StoreContext> {
   }
 
   private threadRefFromTask(task: TaskRecordData): ThreadRef {
-    const parsed = this.parseThreadUri(task.thread);
+    const parsed = this.parseThreadResource(task.thread);
     if (parsed) {
       return parsed;
     }
@@ -508,7 +508,7 @@ export class TaskMaterializer<TContext = StoreContext> {
     });
   }
 
-  private parseThreadUri(thread: string): ThreadRef | undefined {
+  private parseThreadResource(thread: string): ThreadRef | undefined {
     if (!/^https?:\/\//.test(thread)) {
       return undefined;
     }
@@ -548,18 +548,18 @@ export class TaskMaterializer<TContext = StoreContext> {
     return thread;
   }
 
-  private resolveTaskUri(task: TaskRecordData, context: TContext): string {
+  private resolveTaskResource(task: TaskRecordData, context: TContext): string {
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl) {
-      return resolveTaskResourceIri(podBaseUrl, task.id);
+      return expandTaskResource(podBaseUrl, task.id);
     }
     return resolveTaskUrn(task.id);
   }
 
-  private resolveRunUri(run: RunRecordData, context: TContext): string {
+  private resolveRunResource(run: RunRecordData, context: TContext): string {
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl) {
-      return resolveDataResourceIri(podBaseUrl, run.id);
+      return resolveDataResource(podBaseUrl, run.id);
     }
     return resolveRunUrn(run.id);
   }

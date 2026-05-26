@@ -387,7 +387,7 @@ XPOD_EDITION=local
 # === CSS 配置 ===
 CSS_BASE_URL=https://pod.alice.com    # 自己的域名
 CSS_PORT=5737
-CSS_OIDC_ISSUER=https://id.undefineds.co  # 可选，使用 Cloud IdP
+oidcIssuer=https://id.undefineds.co  # 可选，使用 Cloud IdP
 ```
 
 ### 9.5 隧道检测逻辑

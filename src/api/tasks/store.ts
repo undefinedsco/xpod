@@ -1,4 +1,4 @@
-import type { WorkspaceUri } from '../workspace/types';
+import type { WorkspaceRef } from '../workspace/types';
 import { taskResourceId } from '@undefineds.co/models';
 import type { TaskAuthBindingSnapshot } from './TaskAuthBinding';
 import type { TaskStatusType, TaskTriggerKindType } from './schema';
@@ -10,7 +10,7 @@ export interface TaskRecordData {
   title?: string;
   prompt: string;
   thread: string;
-  workspace: WorkspaceUri;
+  workspace: WorkspaceRef;
   runner: string;
   status: TaskStatusType;
   triggerKind: TaskTriggerKindType;
@@ -39,14 +39,24 @@ export interface TaskStore<TContext> {
   listTasks(options: TaskListOptions, context: TContext): Promise<TaskRecordData[]>;
 }
 
+export function isTaskResourceId(value: string | null | undefined): value is string {
+  return typeof value === 'string'
+    && /^index\.ttl#[^#/]+$/.test(value);
+}
+
 export function buildTaskResourceId(id: string): string {
-  if (!/^index\.ttl#[^#/]+$/.test(id)) {
+  if (!isTaskResourceId(id)) {
     throw new Error(`Task id must be a complete Task resource id under index.ttl: ${id}`);
   }
   return id;
 }
 
-export function generateTaskResourceId(key: string): string {
+export function generateTaskResourceId(input: string | {
+  key: string;
+  surfaceId: string;
+  createdAt?: number;
+}): string {
+  const key = typeof input === 'string' ? input : input.key;
   if (/^index\.ttl#[^#/]+$/.test(key)) {
     throw new Error(`Task id generator requires a local key, got resource id: ${key}`);
   }
@@ -56,7 +66,11 @@ export function generateTaskResourceId(key: string): string {
   return taskResourceId(key);
 }
 
-export function resolveTaskResourceIri(podBaseUrl: string, taskId: string): string {
+export function generateDefaultTaskResourceId(key: string): string {
+  return generateTaskResourceId(key);
+}
+
+export function resolveTaskResource(podBaseUrl: string, taskId: string): string {
   if (/^https?:\/\//.test(taskId)) {
     return taskId;
   }

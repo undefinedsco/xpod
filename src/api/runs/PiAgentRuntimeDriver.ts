@@ -3,11 +3,12 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { createInterface } from 'node:readline';
-import type { WorkspaceUri } from '../workspace/types';
+import type { WorkspaceRef } from '../workspace/types';
 import { getDefaultBaseUrl } from '../service/provider-registry';
 import { getPlatformApiBaseUrl, getPlatformApiKey, getPlatformDefaultModel, getPlatformProviderId } from '../service/platform-ai-config';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
+import { LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, type MaterializedWorkspace, type SolidFS, type SolidFsProjection } from '../../solidfs';
 import type {
   AgentRuntimeConfig,
   AgentRuntimeEvent,
@@ -17,6 +18,10 @@ import type { RunConversationMessage, RunExecutionBackend, RunExecutionInput } f
 type PiSdk = typeof import('@mariozechner/pi-coding-agent');
 type AgentSessionEvent = import('@mariozechner/pi-coding-agent').AgentSessionEvent;
 type CreateAgentSessionOptions = NonNullable<Parameters<PiSdk['createAgentSession']>[0]>;
+type PiTool = ReturnType<PiSdk['createCodingTools']>[number];
+type PiReadOperations = import('@mariozechner/pi-coding-agent').ReadOperations;
+type PiEditOperations = import('@mariozechner/pi-coding-agent').EditOperations;
+type PiWriteOperations = import('@mariozechner/pi-coding-agent').WriteOperations;
 type PiApi = string;
 type PiModel = {
   id: string;
@@ -87,6 +92,8 @@ export interface PiAgentRuntimeDriverOptions {
    */
   persistPiSessions?: boolean;
   piSdk?: PiSdk;
+  solidfs?: SolidFS;
+  solidfsProjection?: SolidFsProjection;
 }
 
 type WarmRuntime = {
@@ -104,7 +111,7 @@ type WarmRuntime = {
   modelRegistry: NonNullable<CreateAgentSessionOptions['modelRegistry']>;
   settingsManager: ReturnType<PiSdk['SettingsManager']['inMemory']>;
   resourceLoader: NonNullable<CreateAgentSessionOptions['resourceLoader']>;
-  tools: ReturnType<PiSdk['createCodingTools']>;
+  tools: PiTool[];
 };
 
 /**
@@ -119,20 +126,39 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
 
   private readonly git = new GitWorktreeService();
   private readonly warmRuntimes = new Map<string, Promise<WarmRuntime>>();
+  private readonly solidfs: SolidFS;
 
-  public constructor(private readonly options: PiAgentRuntimeDriverOptions = {}) {}
+  public constructor(private readonly options: PiAgentRuntimeDriverOptions = {}) {
+    this.solidfs = options.solidfs ?? new LocalSolidFS({
+      syncer: new PodSolidFsSyncer(),
+      hydrator: new PodSolidFsHydrator(),
+    });
+  }
 
   public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
     if (this.options.agentLoopIsolation === 'sandboxed-process') {
+      let workspace: MaterializedWorkspace | undefined;
+      let completed = false;
       try {
-        const workdir = await this.resolveWorkdir(input.threadId, input.config.workspace, input.config);
+        workspace = await this.prepareWorkspace(input);
         const runner = this.options.sandboxedLoopRunner
           ?? ((runInput, runWorkdir) => this.startSandboxedAgentLoop(runInput, runWorkdir));
-        for await (const event of runner(input, workdir)) {
+        for await (const event of runner(input, workspace.cwd)) {
           yield event;
+          if (event.type === 'error') {
+            return;
+          }
         }
+        await workspace.commit();
+        completed = true;
       } catch (error) {
         yield this.startupErrorToEvent(error);
+      } finally {
+        if (!completed) {
+          await workspace?.rollback().catch((error) => {
+            this.logWorkspaceRollbackError(error);
+          });
+        }
       }
       return;
     }
@@ -143,9 +169,13 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
   private async *startInProcess(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
     const queue = new AsyncPushQueue<AgentRuntimeEvent>();
     let session: Awaited<ReturnType<PiSdk['createAgentSession']>>['session'] | undefined;
+    let workspace: MaterializedWorkspace | undefined;
+    let completed = false;
+    let failed = false;
 
     try {
-      const runtime = await this.getWarmRuntime(input);
+      workspace = await this.prepareWorkspace(input);
+      const runtime = await this.getWarmRuntime(input, workspace);
       const sessionManager = this.createSessionManager(runtime.pi, input.runId, runtime.workdir);
       const result = await runtime.pi.createAgentSession({
         cwd: runtime.workdir,
@@ -183,11 +213,24 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       });
 
       for await (const event of queue.iterate()) {
+        if (event.type === 'error') {
+          failed = true;
+        }
         yield event;
+      }
+      if (!failed) {
+        await workspace.commit();
+        completed = true;
       }
     } catch (error) {
       session?.dispose();
       yield this.startupErrorToEvent(error);
+    } finally {
+      if (!completed) {
+        await workspace?.rollback().catch((error) => {
+          this.logWorkspaceRollbackError(error);
+        });
+      }
     }
   }
 
@@ -394,13 +437,14 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       : 'off';
   }
 
-  private resolveTools(pi: PiSdk, workdir: string, config: AgentRuntimeConfig): ReturnType<PiSdk['createCodingTools']> {
+  private resolveTools(pi: PiSdk, workspace: MaterializedWorkspace, config: AgentRuntimeConfig): PiTool[] {
+    const workdir = workspace.cwd;
     const permissionMode = config.agentConfig?.permissionMode;
     const allowed = new Set(config.agentConfig?.allowedTools?.map((tool) => tool.toLowerCase()) ?? []);
     const disallowed = new Set(config.agentConfig?.disallowedTools?.map((tool) => tool.toLowerCase()) ?? []);
     const baseTools = permissionMode === 'plan' || allowed.size > 0
-      ? pi.createReadOnlyTools(workdir)
-      : pi.createCodingTools(workdir);
+      ? this.createSolidFsReadOnlyTools(pi, workspace)
+      : this.createSolidFsCodingTools(pi, workspace);
 
     return baseTools.filter((tool) => {
       const name = tool.name.toLowerCase();
@@ -408,19 +452,19 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         return false;
       }
       return allowed.size === 0 || allowed.has(name);
-    }) as ReturnType<PiSdk['createCodingTools']>;
+    }) as PiTool[];
   }
 
-  private async getWarmRuntime(input: RunExecutionInput): Promise<WarmRuntime> {
+  private async getWarmRuntime(input: RunExecutionInput, workspace: MaterializedWorkspace): Promise<WarmRuntime> {
     const pi = await this.loadPiSdk();
-    const workdir = await this.resolveWorkdir(input.threadId, input.config.workspace, input.config);
+    const workdir = workspace.cwd;
     const key = this.warmRuntimeKey(workdir, input.config);
     const existing = this.warmRuntimes.get(key);
     if (existing) {
       return existing;
     }
 
-    const created = this.createWarmRuntime(pi, workdir, input.config).catch((error) => {
+    const created = this.createWarmRuntime(pi, workspace, input.config).catch((error) => {
       this.warmRuntimes.delete(key);
       throw error;
     });
@@ -428,7 +472,8 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     return created;
   }
 
-  private async createWarmRuntime(pi: PiSdk, workdir: string, config: AgentRuntimeConfig): Promise<WarmRuntime> {
+  private async createWarmRuntime(pi: PiSdk, workspace: MaterializedWorkspace, config: AgentRuntimeConfig): Promise<WarmRuntime> {
+    const workdir = workspace.cwd;
     const piConfig = this.resolvePiConfig(config);
     const authStorage = pi.AuthStorage.inMemory();
     authStorage.setRuntimeApiKey(piConfig.provider, piConfig.apiKey);
@@ -469,8 +514,119 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       modelRegistry,
       settingsManager,
       resourceLoader,
-      tools: this.resolveTools(pi, workdir, config),
+      tools: this.resolveTools(pi, workspace, config),
     };
+  }
+
+  private createSolidFsCodingTools(pi: PiSdk, workspace: MaterializedWorkspace): PiTool[] {
+    if (!this.canHydrateWorkspace(workspace)) {
+      return pi.createCodingTools(workspace.cwd);
+    }
+
+    return [
+      pi.createReadTool(workspace.cwd, { operations: this.createSolidFsReadOperations(workspace) }) as PiTool,
+      pi.createBashTool(workspace.cwd) as PiTool,
+      pi.createEditTool(workspace.cwd, { operations: this.createSolidFsEditOperations(workspace) }) as PiTool,
+      pi.createWriteTool(workspace.cwd, { operations: this.createSolidFsWriteOperations(workspace) }) as PiTool,
+    ];
+  }
+
+  private createSolidFsReadOnlyTools(pi: PiSdk, workspace: MaterializedWorkspace): PiTool[] {
+    if (!this.canHydrateWorkspace(workspace)) {
+      return pi.createReadOnlyTools(workspace.cwd);
+    }
+
+    return [
+      pi.createReadTool(workspace.cwd, { operations: this.createSolidFsReadOperations(workspace) }) as PiTool,
+      ...pi.createReadOnlyTools(workspace.cwd).filter((tool) => tool.name !== 'read'),
+    ];
+  }
+
+  private createSolidFsReadOperations(workspace: MaterializedWorkspace): PiReadOperations {
+    return {
+      readFile: async (absolutePath) => fs.promises.readFile(await this.ensureSolidFsPath(workspace, absolutePath)),
+      access: async (absolutePath) => {
+        await fs.promises.access(await this.ensureSolidFsPath(workspace, absolutePath), fs.constants.R_OK);
+      },
+      detectImageMimeType: async (absolutePath) => this.detectImageMimeType(await this.ensureSolidFsPath(workspace, absolutePath)),
+    };
+  }
+
+  private createSolidFsEditOperations(workspace: MaterializedWorkspace): PiEditOperations {
+    return {
+      readFile: async (absolutePath) => fs.promises.readFile(await this.ensureSolidFsPath(workspace, absolutePath)),
+      writeFile: async (absolutePath, content) => fs.promises.writeFile(await this.ensureSolidFsWritablePath(workspace, absolutePath), content, 'utf8'),
+      access: async (absolutePath) => {
+        await fs.promises.access(await this.ensureSolidFsPath(workspace, absolutePath), fs.constants.R_OK | fs.constants.W_OK);
+      },
+    };
+  }
+
+  private createSolidFsWriteOperations(workspace: MaterializedWorkspace): PiWriteOperations {
+    return {
+      writeFile: async (absolutePath, content) => fs.promises.writeFile(await this.ensureSolidFsWritablePath(workspace, absolutePath), content, 'utf8'),
+      mkdir: (dir) => fs.promises.mkdir(dir, { recursive: true }).then(() => undefined),
+    };
+  }
+
+  private async ensureSolidFsWritablePath(workspace: MaterializedWorkspace, absolutePath: string): Promise<string> {
+    try {
+      return await this.ensureSolidFsPath(workspace, absolutePath);
+    } catch (error) {
+      if (error instanceof SolidFsNotFoundError) {
+        return path.resolve(absolutePath);
+      }
+      throw error;
+    }
+  }
+
+  private async ensureSolidFsPath(workspace: MaterializedWorkspace, absolutePath: string): Promise<string> {
+    if (!this.canHydrateWorkspace(workspace)) {
+      return absolutePath;
+    }
+
+    const resolved = path.resolve(absolutePath);
+    const root = path.resolve(workspace.cwd);
+    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+      return absolutePath;
+    }
+
+    try {
+      await fs.promises.access(resolved, fs.constants.F_OK);
+      return resolved;
+    } catch {
+      const relativePath = path.relative(root, resolved);
+      await workspace.hydrate(relativePath);
+      return resolved;
+    }
+  }
+
+  private canHydrateWorkspace(workspace: MaterializedWorkspace): workspace is MaterializedWorkspace & Required<Pick<MaterializedWorkspace, 'hydrate'>> {
+    return workspace.manifest.projection === 'hydrated-object' && typeof workspace.hydrate === 'function';
+  }
+
+  private async detectImageMimeType(absolutePath: string): Promise<string | null> {
+    const handle = await fs.promises.open(absolutePath, 'r');
+    try {
+      const buffer = Buffer.alloc(12);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const header = buffer.subarray(0, bytesRead);
+      if (header.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) {
+        return 'image/jpeg';
+      }
+      if (header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+        return 'image/png';
+      }
+      if (header.subarray(0, 6).toString('ascii') === 'GIF87a' || header.subarray(0, 6).toString('ascii') === 'GIF89a') {
+        return 'image/gif';
+      }
+      if (header.subarray(0, 4).toString('ascii') === 'RIFF' && header.subarray(8, 12).toString('ascii') === 'WEBP') {
+        return 'image/webp';
+      }
+      return null;
+    } finally {
+      await handle.close();
+    }
   }
 
   private warmRuntimeKey(workdir: string, config: AgentRuntimeConfig): string {
@@ -535,40 +691,61 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     });
   }
 
-  private async resolveWorkdir(threadId: string, workspace: WorkspaceUri, config?: AgentRuntimeConfig): Promise<string> {
+  private async prepareWorkspace(input: RunExecutionInput): Promise<MaterializedWorkspace> {
+    const source = await this.resolveWorkspaceSource(input.threadId, input.config.workspace, input.config);
+    return this.solidfs.prepare({
+      run: {
+        id: input.runId,
+        workspace: input.config.workspace,
+      },
+      workspace: input.config.workspace,
+      sourcePath: source.sourcePath,
+      projection: this.options.solidfsProjection ?? 'direct',
+      context: input.context,
+    });
+  }
+
+  private async resolveWorkspaceSource(
+    threadId: string,
+    workspace: WorkspaceRef,
+    config?: AgentRuntimeConfig,
+  ): Promise<{ sourcePath?: string }> {
     const url = new URL(workspace);
-    let workdir: string;
+    let sourcePath: string | undefined;
 
     if (url.protocol === 'http:' || url.protocol === 'https:') {
       const mapped = this.mapPodUrlToLocalPath(workspace);
       if (!mapped || !fs.existsSync(mapped)) {
         throw new WaitingRunnerError(workspace, `Workspace is not mounted on this runner: ${workspace}`);
       }
-      workdir = mapped;
+      sourcePath = mapped;
     } else if (url.protocol === 'file:') {
       if (!this.canResolveFileWorkspace(url)) {
         throw new WaitingRunnerError(workspace, `Waiting for a runner that can resolve workspace ${workspace}`);
       }
-      workdir = decodeURIComponent(url.pathname);
-      if (!fs.existsSync(workdir)) {
-        throw new Error(`workspace URI does not exist on this runner: ${workspace}`);
+      sourcePath = decodeURIComponent(url.pathname);
+      if (!fs.existsSync(sourcePath)) {
+        throw new Error(`workspace reference does not exist on this runner: ${workspace}`);
       }
     } else {
-      throw new Error(`Unsupported workspace URI protocol: ${url.protocol}`);
+      throw new Error(`Unsupported workspace reference protocol: ${url.protocol}`);
     }
 
     const worktree = config?.worktree;
     if (!worktree) {
-      return workdir;
+      return { sourcePath };
     }
 
-    const repoRoot = workdir;
+    const repoRoot = sourcePath;
+    if (!repoRoot) {
+      throw new Error(`Cannot create worktree without a local workspace source: ${workspace}`);
+    }
 
     if (worktree.mode === 'existing') {
       if (!fs.existsSync(worktree.path)) {
         throw new Error(`worktree.path not found: ${worktree.path}`);
       }
-      return worktree.path;
+      return { sourcePath: worktree.path };
     }
 
     await this.git.assertGitRepo(repoRoot);
@@ -577,7 +754,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     const worktreePath = path.join(root, threadId);
 
     if (fs.existsSync(worktreePath)) {
-      return worktreePath;
+      return { sourcePath: worktreePath };
     }
 
     await this.git.createWorktree({
@@ -587,7 +764,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       branch: worktree.branch,
     });
 
-    return worktreePath;
+    return { sourcePath: worktreePath };
   }
 
   private canResolveFileWorkspace(url: URL): boolean {
@@ -690,6 +867,10 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     return { type: 'error', message: this.formatError(error) };
   }
 
+  private logWorkspaceRollbackError(error: unknown): void {
+    console.warn(`SolidFS rollback failed: ${this.formatError(error)}`);
+  }
+
   private async loadPiSdk(): Promise<PiSdk> {
     if (this.options.piSdk) {
       return this.options.piSdk;
@@ -709,7 +890,7 @@ export const PI_AGENT_WORKER_EVENT_PREFIX = 'XPOD_AGENT_EVENT ';
 
 class WaitingRunnerError extends Error {
   public constructor(
-    public readonly workspace: WorkspaceUri,
+    public readonly workspace: WorkspaceRef,
     message: string,
   ) {
     super(message);

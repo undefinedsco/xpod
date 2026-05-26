@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import { registerWebIdProfileRoutes } from '../../../src/api/handlers/WebIdProfileHandler';
@@ -6,6 +6,7 @@ import { registerWebIdProfileRoutes } from '../../../src/api/handlers/WebIdProfi
 describe('WebIdProfileHandler', () => {
   let mockServer: ApiServer;
   let routes: Record<string, Function> = {};
+  const originalFetch = globalThis.fetch;
   const profileRepo = {
     get: vi.fn(),
     updateStorage: vi.fn(),
@@ -20,7 +21,7 @@ describe('WebIdProfileHandler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.unstubAllGlobals();
+    globalThis.fetch = originalFetch;
     podLookupRepo.listAllPods.mockResolvedValue([]);
     podLookupRepo.findByWebId.mockResolvedValue(undefined);
     routes = {};
@@ -36,7 +37,7 @@ describe('WebIdProfileHandler', () => {
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    globalThis.fetch = originalFetch;
   });
 
   function createResponse(): ServerResponse {
@@ -217,6 +218,31 @@ describe('WebIdProfileHandler', () => {
     }));
   });
 
+  it('serves the linked Cloud WebID for a Local SP Pod matched by storage slug', async () => {
+    profileRepo.get.mockRejectedValueOnce(new Error('relation "identity_webid_profile" does not exist'));
+    profileRepo.generateProfileTurtle.mockReturnValue('TURTLE');
+    podLookupRepo.findByWebId.mockResolvedValueOnce(undefined);
+    podLookupRepo.listAllPods.mockResolvedValueOnce([
+      {
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'http://127.0.0.1:51091/smokepod/',
+        webId: 'https://id.undefineds.co/smokepod/profile/card#me',
+      },
+    ]);
+
+    const response = createResponse();
+    await routes['GET /:username/profile/card']({} as IncomingMessage, response, { username: 'smokepod' });
+
+    expect(response.statusCode).toBe(200);
+    expect(profileRepo.generateProfileTurtle).toHaveBeenCalledWith(expect.objectContaining({
+      username: 'smokepod',
+      webidUrl: 'https://id.undefineds.co/smokepod/profile/card#me',
+      storageUrl: 'http://127.0.0.1:51091/smokepod/',
+      oidcIssuer: 'https://id.undefineds.co/',
+    }));
+  });
+
   it('ignores relative BASE_URL values when building hosted WebID URLs', async () => {
     const previousBaseUrl = process.env.BASE_URL;
     const previousCssBaseUrl = process.env.CSS_BASE_URL;
@@ -271,7 +297,7 @@ describe('WebIdProfileHandler', () => {
           link: '<http://www.w3.org/ns/pim/space#Storage>; rel="type", <http://www.w3.org/ns/ldp#Container>; rel="type"',
         }),
       });
-      vi.stubGlobal('fetch', fetchMock);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
 
       const response = createResponse();
       await routes['GET /:username/profile/card']({
@@ -312,7 +338,7 @@ describe('WebIdProfileHandler', () => {
           link: '<https://id.example/new-user/.meta>; rel="describedby", <https://id.example/new-user/.acr>; rel="acl"',
         }),
       });
-      vi.stubGlobal('fetch', fetchMock);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
 
       const response = createResponse();
       await routes['GET /api/v1/identity/:username']({

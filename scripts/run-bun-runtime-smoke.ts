@@ -37,6 +37,45 @@ async function verifyOpenRuntime(): Promise<void> {
     if (getResponse.status !== 200 || !body.includes('hello from bun runtime smoke')) {
       throw new Error(`open runtime GET failed: ${getResponse.status}`);
     }
+
+    const rdfUrl = new URL('bun-open-runtime.ttl', account.podUrl).href;
+    const rdfBody = `
+      @prefix ex: <http://example.org/xpod-smoke#> .
+      <#subject> ex:label "runtime sparql smoke" .
+    `;
+    const rdfPutResponse = await fetch(rdfUrl, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/turtle' },
+      body: rdfBody,
+    });
+    if (![201, 204].includes(rdfPutResponse.status)) {
+      throw new Error(`open runtime RDF PUT failed: ${rdfPutResponse.status}`);
+    }
+
+    const sparqlUrl = new URL('-/sparql', account.podUrl).href;
+    const selectResponse = await fetch(sparqlUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/sparql-query',
+        accept: 'application/sparql-results+json',
+      },
+      body: `
+        PREFIX ex: <http://example.org/xpod-smoke#>
+        SELECT ?label WHERE {
+          ?subject ex:label ?label .
+        }
+      `,
+    });
+    if (selectResponse.status !== 200) {
+      throw new Error(`open runtime SPARQL SELECT failed: ${selectResponse.status} ${await selectResponse.text()}`);
+    }
+    const selectJson = await selectResponse.json() as {
+      results?: { bindings?: Array<{ label?: { value?: string } }> };
+    };
+    const labels = selectJson.results?.bindings?.map((binding) => binding.label?.value) ?? [];
+    if (!labels.includes('runtime sparql smoke')) {
+      throw new Error(`open runtime SPARQL SELECT returned unexpected labels: ${JSON.stringify(labels)}`);
+    }
   } finally {
     await stack.stop();
   }

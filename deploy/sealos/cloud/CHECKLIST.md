@@ -121,7 +121,7 @@ XPOD_INNGEST_SIGNING_KEY=<openssl-rand-hex-32>
 
 可选变量：
 
-- `CSS_OIDC_ISSUER`：如需显式指定 issuer；不填默认与 `CSS_BASE_URL` 一致
+- `oidcIssuer`：如需显式指定 issuer；不填默认与 `CSS_BASE_URL` 一致
 - `CSS_EMAIL_CONFIG_*`：开启邮件注册、找回密码时再填写
 - `CSS_REDIS_USERNAME` / `CSS_REDIS_PASSWORD`：仅在不把认证信息写入 `CSS_REDIS_CLIENT` 时使用
 

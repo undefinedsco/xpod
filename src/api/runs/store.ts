@@ -1,4 +1,4 @@
-import type { WorkspaceUri } from '../workspace/types';
+import type { WorkspaceRef } from '../workspace/types';
 import { runResourceId, runStepResourceId } from '@undefineds.co/models';
 import type { RunStatusType, RunStepTypeValue } from './schema';
 
@@ -9,7 +9,7 @@ export interface RunRecordData {
   surfaceId: string;
   task?: string;
   thread: string;
-  workspace: WorkspaceUri;
+  workspace: WorkspaceRef;
   status: RunStatusType;
   runner: string;
   prompt?: string;
@@ -43,7 +43,7 @@ export interface RunStepRecordData {
 export interface RunListOptions {
   task?: string;
   thread?: string;
-  workspace?: WorkspaceUri;
+  workspace?: WorkspaceRef;
   commandKind?: 'chat' | 'task';
   status?: RunStatusType;
   limit?: number;
@@ -197,7 +197,7 @@ export function resolveRunUrn(runId: string): string {
   return `urn:xpod:run:${encodeURIComponent(runId)}`;
 }
 
-export function resolveDataResourceIri(podBaseUrl: string, resourceId: string): string {
+export function resolveDataResource(podBaseUrl: string, resourceId: string): string {
   if (/^https?:\/\//.test(resourceId)) {
     return resourceId;
   }

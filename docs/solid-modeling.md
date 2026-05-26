@@ -1,11 +1,11 @@
 # Solid / Pod 建模约定
 
-本文档是 Xpod 共享的 Pod/RDF 建模契约。不要只依赖本地 Codex skill 里的隐含规则；涉及 `drizzle-solid` schema、Pod 资源路径、URI 字段或 `Run/Task/Chat` 这类共享模型时，都以这里为准。
+本文档是 Xpod 共享的 Pod/RDF 建模契约。不要只依赖本地 Codex skill 里的隐含规则；涉及 `drizzle-solid` schema、Pod 资源路径、关系字段或 `Run/Task/Chat` 这类共享模型时，都以这里为准。
 
 ## 核心原则
 
 - 把 Pod 当作 Linked Data graph，不要当成关系表外键集合。
-- 语义关系使用 URI 字段，例如 `thread`、`task`、`run`、`workspace`。
+- 语义关系直接使用边关系字段，例如 `thread`、`task`、`run`、`workspace`；字段名不要写成 `threadUri` / `runIri` 这种传输形态。
 - `xxxId` 只表示本地 id、查询 ergonomics 或协议入参，不偷偷承担 RDF link 语义。
 - `id` 是相对 `base` 的资源 id，不是 fragment id。例如 `chat/default/2026/05/18/runs.ttl#run_x` 才是 Run 的 `id`，`run_x` 只是生成完整资源 id 时用到的局部 key。
 - fragment/local key 只用于生成完整资源 id、局部显示或 runtime session key；进入 store/ORM 的值不能是 `run_x` 或 `#run_x`，从 Pod 回填业务记录时也不要把 `id` 截成 fragment。
@@ -23,12 +23,12 @@
 
 因此 `loadRun(id)` 接受完整的 base-relative resource id，例如 `chat/default/2026/05/18/runs.ttl#run_x`。如果 UI 只有 `run_x` 这种局部 id，必须先通过 repository/index 解析成完整资源 id；不要把 fragment 当作业务 id 传递。
 
-不要继续使用 `findByLocator` / `updateByLocator` / `deleteByLocator`。现有调用应改为 ById；天然持有完整 URI 的场景用 ByIri。业务接口不再引入 locator 概念。
+不要继续使用 `findByLocator` / `updateByLocator` / `deleteByLocator`。现有调用应改为 ById；只有协议/ORM 边界天然持有完整资源地址时才用 ByIri。业务接口不再引入 locator 概念。
 
-## URI 字段和 id 字段
+## 关系字段和 id 字段
 
-- `Run.thread`、`Run.task`、`Run.workspace`、`RunStep.run` 是 URI 关系。
-- `Thread.chat` 是 Chat 的 URI 关系；ChatKit 协议里的 `chat_id` 只在 adapter metadata/API 参数里出现，不作为 RDF 字段名。
+- `Run.thread`、`Run.task`、`Run.workspace`、`RunStep.run` 是边关系，值可以是资源引用，但字段名表达关系本身。
+- `Thread.chat` 是指向 Chat 的边关系；ChatKit 协议里的 `chat_id` 只在 adapter metadata/API 参数里出现，不作为 RDF 字段名。
 - `RunStep.runId` 是本地查询字段，值仍是 Run 的 base-relative resource id，用于快速列出某次 Run 的 steps；语义关系仍然是 `RunStep.run`。
 - `Thread.id`、`Message.id`、`Task.id`、`Run.id`、`RunStep.id` 都遵循同一规则：进入 store/ORM 的值就是完整 base-relative resource id。业务 schema 不显式写 `subjectTemplate`；省略模板就是 exact-id subject 模式。
 - `surfaceId` 表示命令从哪个 command surface/channel 产生并归档。ChatKit 边界仍叫 `chat_id`，进入 Xpod durable model 后映射为 `surfaceId`。它不是下发者、不是执行者、不是 runner，也不是 Task assignee。路径上 Chat 和 Task 共用这个槽位：
@@ -77,3 +77,41 @@ Chat 和 Task 是并列的命令形态：
 ```
 
 `Task` 定义集中放在 `/.data/task/index.ttl`；Task 产生的 thread/message/run/step 按 `task/{surfaceId}` 与 Chat 的目录结构对齐。
+
+## 共享资源 id 总表
+
+`@undefineds.co/models` 的 `solidResources` 和资源 id 生成函数是当前权威。下表覆盖 `packages/models/src/schema.ts` 里进入 `solidResources` 的共享资源；`fileResource` 这类 deprecated compatibility resource 不作为新建模契约。
+
+下表里的 `id` 都是相对各自 `base` 的完整 resource id；`{key}` 只是调用方不传 `id` 时交给 `id.default(...)` 的局部随机/自定义 key，不是持久化字段。没有 `id.default(...)` 的特殊资源会在表里单独标注。
+
+| Resource | Base | 默认 id 形状 | 完整资源地址示例 | 说明 |
+|---|---|---|---|---|
+| `solidProfileResource` | `idp:///profile/card` | 无默认；按 WebID exact IRI | `https://id.example/alice/profile/card#me` | WebID Profile 是 IdP 侧主体，不落在普通 `/.data` 目录。 |
+| `chatResource` | `/.data/chat/` | `{key}/index.ttl#this` | `/.data/chat/default/index.ttl#this` | 交互式命令面，`key` 是 chat/counterpart 槽位。 |
+| `taskResource` | `/.data/task/` | `index.ttl#{key}` | `/.data/task/index.ttl#task_1` | 任务式命令定义集中索引；执行过程另落到 thread/message/run。 |
+| `threadResource` | `/.data/` | `chat/{chatKey}/index.ttl#{key}` | `/.data/chat/default/index.ttl#thread_1` | Chat 下的具体时间线；由 `thread.chat` 推导目录。 |
+| `messageResource` | `/.data/` | `{ownerDir}/{yyyy}/{MM}/{dd}/messages.ttl#{key}` | `/.data/chat/default/2026/05/18/messages.ttl#msg_1` | ownerDir 来自 `chat` 或 `thread` 关系；Task 线程可落在 `task/{taskKey}/...`。 |
+| `runResource` | `/.data/` | `{ownerDir}/{yyyy}/{MM}/{dd}/runs.ttl#{key}` | `/.data/task/task_1/2026/05/18/runs.ttl#run_1` | ownerDir 优先 `task`，其次 `thread`/`chat`；Run 是执行状态中心。 |
+| `runStepResource` | `/.data/` | `{runDocument}#{key}` | `/.data/task/task_1/2026/05/18/runs.ttl#step_1` | 与 Run 放在同一个 `runs.ttl` 文档；语义关系是 `runStep.run`。 |
+| `scheduleResource` | `/.data/` | `{taskDir}/{yyyy}/{MM}/{dd}/schedules.ttl#{key}` | `/.data/task/task_1/2026/05/18/schedules.ttl#schedule_1` | 调度计划绑定 Task；没有 task 时落到 `schedules/...`。 |
+| `deliveryResource` | `/.data/` | `{ownerDir}/{yyyy}/{MM}/{dd}/deliveries.ttl#{key}` | `/.data/task/task_1/2026/05/18/deliveries.ttl#delivery_1` | 任务分发/投递事实，ownerDir 来自 task/chat/thread。 |
+| `automationRuleResource` | `/.data/` | `automation-rules/{key}.ttl` | `/.data/automation-rules/rule_1.ttl` | 规则/策略资源，不是一次执行。 |
+| `issueResource` | `/.data/issues/` | `{key}.ttl` | `/.data/issues/issue_1.ttl` | 用户可见事项；可关联 chat/thread/task。 |
+| `sessionResource` | `/.data/sessions/` | `{yyyy}/{MM}/{dd}/{key}.ttl` | `/.data/sessions/2026/05/18/session_1.ttl` | runtime/session 类高增长资源按日期分桶。 |
+| `approvalResource` | `/.data/approvals/` | `{yyyy}/{MM}/{dd}.ttl#{key}` | `/.data/approvals/2026/05/18.ttl#approval_1` | 一次性审批事实。 |
+| `auditResource` | `/.data/audits/` | `{yyyy}/{MM}/{dd}.ttl#{key}` | `/.data/audits/2026/05/18.ttl#audit_1` | 审计事实，高增长按日期分桶。 |
+| `agentResource` | `/.data/agents/` | `{key}.ttl` | `/.data/agents/secretary.ttl` | Agent Profile/配置；不是 runtime 实例。 |
+| `contactResource` | `/.data/contacts/` | `{key}.ttl` | `/.data/contacts/alice.ttl` | 统一联系人索引，可表示 Solid 用户、外部联系人、AI agent 或群组。 |
+| `favoriteResource` | `/.data/favorites/` | `{yyyy}/{MM}/{dd}.ttl#{key}` | `/.data/favorites/2026/05/18.ttl#favorite_1` | 收藏项是用户行为事实，按收藏时间分桶。 |
+| `inboxNotificationResource` | `/inbox/` | `{key}.ttl` | `/inbox/notice_1.ttl` | Solid inbox/activity 通知。 |
+| `settingsResource` | `/settings/` | legacy `subjectTemplate: {key}.ttl` | `/settings/ui.theme.ttl` | 用户设置仍以 `key` 作为 subject/storage key；新共享模型不要照搬这套写法。 |
+| `aiProviderResource` | `/settings/providers/` | `{key}.ttl` | `/settings/providers/anthropic.ttl` | AI provider 配置，如 baseUrl/proxy/defaultModel。 |
+| `aiModelResource` | `/settings/providers/` | `{providerDocument}#{key}` | `/settings/providers/anthropic.ttl#claude-sonnet-4` | Model 归属 Provider 文档；由 `isProvidedBy` 推导 providerDocument。 |
+| `credentialResource` | `/settings/` | `credentials.ttl#{key}` | `/settings/credentials.ttl#anthropic-default` | 密钥/令牌资源，和 Task/Run 分开；Task 只引用或绑定，不复制 secret。 |
+| `aiConfigResource` | `/settings/ai/` | `config.ttl#{key}` | `/settings/ai/config.ttl#embedding` | AI 运行配置。 |
+| `vectorStoreResource` | `/settings/ai/` | `vector-stores.ttl#{key}` | `/settings/ai/vector-stores.ttl#main` | 向量库配置。 |
+| `indexedFileResource` | `/settings/ai/` | `indexed-files/{key}.ttl` | `/settings/ai/indexed-files/file_1.ttl` | 被索引文件元数据。 |
+| `agentStatusResource` | `/settings/ai/` | `agent-status.ttl#{key}` | `/settings/ai/agent-status.ttl#secretary` | Agent 当前状态快照。 |
+| `grantResource` | `/settings/autonomy/grants/` | `{key}.ttl` | `/settings/autonomy/grants/grant_1.ttl` | 持久授权/委托策略。 |
+
+Provider、Model、Credential 这组不是 ChatKit 私有概念，也不应在 Xpod 里重复定义 schema。业务层使用 `models` 的 `aiProviderResource`、`aiModelResource`、`credentialResource` 和对应 `*ResourceId(...)` helper；`apiKeyCredentialResource` / `oauthCredentialResource` 只是 `credentialResource` 的兼容 alias，不是两套密钥资源。如果需要 UI 里让用户“选择已有密钥或新建密钥”，那只是交互流程，最终持久化仍然是 `/settings/credentials.ttl#{key}` 里的 Credential 资源，以及 Task/Run 上的语义关系或授权绑定。

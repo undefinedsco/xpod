@@ -28,7 +28,7 @@ LABEL org.opencontainers.image.source="https://github.com/undefinedsco/xpod"
 LABEL org.opencontainers.image.description="Xpod - Solid Pod Server"
 LABEL org.opencontainers.image.licenses="MIT"
 
-RUN apk add --no-cache curl
+RUN apk add --no-cache curl bubblewrap
 WORKDIR /app
 
 COPY --from=build /app/package.json ./

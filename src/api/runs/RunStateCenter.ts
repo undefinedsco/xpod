@@ -20,12 +20,12 @@ import type { AgentRuntimeConfig, RunnerProtocol, RunnerType } from './AgentRunt
 import type { AgentRuntimeEvent } from './AgentRuntimeTypes';
 import { InngestRunExecutionBackend } from './InngestRunExecutionBackend';
 import type { RunExecutionBackend } from './RunExecutionBackend';
-import { isWorkspaceUri } from '../workspace/types';
+import { isWorkspaceRef } from '../workspace/types';
 import { XpodRunStepType as RunStepType, RunStatus } from './schema';
 import {
   generateRunResourceId,
   generateRunStepResourceId,
-  resolveDataResourceIri,
+  resolveDataResource,
   resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
@@ -99,9 +99,9 @@ export class RunStateCenter<TContext = StoreContext> {
     const protocol = this.resolveRunnerProtocol(runtime.runner.protocol);
     const allowCustomArgv = runtime.runner.allowCustomArgv === true;
     const argv = allowCustomArgv ? runtime.runner.argv : undefined;
-    const workspace = this.resolveWorkspaceUri(thread.workspace);
+    const workspace = this.resolveWorkspaceRef(thread.workspace);
     if (!workspace) {
-      throw new Error('Invalid thread runtime: workspace URI is required');
+      throw new Error('Invalid thread runtime: workspace reference is required');
     }
 
     return {
@@ -130,8 +130,8 @@ export class RunStateCenter<TContext = StoreContext> {
     return 'pi';
   }
 
-  private resolveWorkspaceUri(threadWorkspace: AgentRuntimeConfig['workspace'] | undefined): AgentRuntimeConfig['workspace'] | undefined {
-    return isWorkspaceUri(threadWorkspace) ? threadWorkspace : undefined;
+  private resolveWorkspaceRef(threadWorkspace: AgentRuntimeConfig['workspace'] | undefined): AgentRuntimeConfig['workspace'] | undefined {
+    return isWorkspaceRef(threadWorkspace) ? threadWorkspace : undefined;
   }
 
   public async *startAgentRun(input: {
@@ -361,7 +361,7 @@ export class RunStateCenter<TContext = StoreContext> {
         surfaceId,
         createdAt: now,
       }),
-      thread: this.resolveThreadUri(thread, context),
+      thread: this.resolveThreadResource(thread, context),
       workspace: runtimeConfig.workspace,
       commandKind,
       surfaceId,
@@ -613,7 +613,7 @@ export class RunStateCenter<TContext = StoreContext> {
       commandKind: run.commandKind,
       surfaceId: run.surfaceId,
       runId: run.id,
-      run: this.resolveRunUri(run, context),
+      run: this.resolveRunResource(run, context),
       type,
       message: options.message,
       data: options.data,
@@ -621,7 +621,7 @@ export class RunStateCenter<TContext = StoreContext> {
     }, context);
   }
 
-  private resolveThreadUri(thread: ThreadMetadata, context: TContext): string {
+  private resolveThreadResource(thread: ThreadMetadata, context: TContext): string {
     const threadId = thread.id;
     if (/^https?:\/\//.test(threadId)) {
       return threadId;
@@ -632,17 +632,17 @@ export class RunStateCenter<TContext = StoreContext> {
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl) {
       if (threadId.includes('#') && !threadId.startsWith('#')) {
-        return resolveDataResourceIri(podBaseUrl, threadId);
+        return resolveDataResource(podBaseUrl, threadId);
       }
       return `${podBaseUrl}/.data/${commandKind}/${surfaceId}/index.ttl#${threadId}`;
     }
     return `urn:xpod:thread:${commandKind}:${encodeURIComponent(surfaceId)}:${encodeURIComponent(threadId)}`;
   }
 
-  private resolveRunUri(run: RunRecordData, context: TContext): string {
+  private resolveRunResource(run: RunRecordData, context: TContext): string {
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl) {
-      return resolveDataResourceIri(podBaseUrl, run.id);
+      return resolveDataResource(podBaseUrl, run.id);
     }
     return resolveRunUrn(run.id);
   }
@@ -703,7 +703,7 @@ export class RunStateCenter<TContext = StoreContext> {
     add(relative);
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl && relative) {
-      add(resolveDataResourceIri(podBaseUrl, relative));
+      add(resolveDataResource(podBaseUrl, relative));
     }
     return candidates;
   }
@@ -737,8 +737,8 @@ export class RunStateCenter<TContext = StoreContext> {
     if (runtimeConfig && typeof runtimeConfig === 'object') {
       return runtimeConfig as AgentRuntimeConfig;
     }
-    if (!isWorkspaceUri(run.workspace)) {
-      throw new Error('Run workspace URI is required');
+    if (!isWorkspaceRef(run.workspace)) {
+      throw new Error('Run workspace reference is required');
     }
     const [protocol, type] = run.runner.split(':');
     return {

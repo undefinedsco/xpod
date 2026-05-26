@@ -8,13 +8,13 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { RunStatus, RunStepType, type RunStatusType } from '../runs/schema';
 import {
   generateRunStepResourceId,
-  resolveDataResourceIri,
+  resolveDataResource,
   resolveRunUrn,
   type RunListOptions,
   type RunRecordData,
   type RunStore,
 } from '../runs/store';
-import { isWorkspaceUri } from '../workspace/types';
+import { isWorkspaceRef } from '../workspace/types';
 
 export interface RunHandlerOptions {
   runStore: RunStore<StoreContext>;
@@ -82,7 +82,7 @@ export function registerRunRoutes(server: ApiServer, options: RunHandlerOptions)
         commandKind: run.commandKind,
         surfaceId: run.surfaceId,
         runId: run.id,
-        run: resolveRunUri(run, context),
+        run: resolveRunResource(run, context),
         type: RunStepType.CANCEL_REQUESTED,
         message: 'Run cancellation requested',
         data: { status: run.status },
@@ -99,8 +99,8 @@ export function registerRunRoutes(server: ApiServer, options: RunHandlerOptions)
 
 function parseRunListOptions(url: URL): RunListOptions {
   const workspace = url.searchParams.get('workspace') ?? undefined;
-  if (workspace && !isWorkspaceUri(workspace)) {
-    throw new Error('workspace must be a URI');
+  if (workspace && !isWorkspaceRef(workspace)) {
+    throw new Error('workspace must be an http(s):// or file:// workspace reference');
   }
 
   return {
@@ -158,12 +158,12 @@ function buildStoreContext(request: AuthenticatedRequest): StoreContext {
   };
 }
 
-function resolveRunUri(run: RunRecordData, context: StoreContext): string {
+function resolveRunResource(run: RunRecordData, context: StoreContext): string {
   const auth = context.auth as { webId?: unknown } | undefined;
   const webId = typeof auth?.webId === 'string' ? auth.webId : undefined;
   const podBaseUrl = webId ? resolvePodBaseUrl(webId) : undefined;
   if (podBaseUrl) {
-    return resolveDataResourceIri(podBaseUrl, run.id);
+    return resolveDataResource(podBaseUrl, run.id);
   }
   return resolveRunUrn(run.id);
 }

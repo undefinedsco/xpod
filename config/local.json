@@ -21,16 +21,16 @@
       }
     },
     {
-      "comment": "定义 idpUrl 变量（外部 IdP 基础 URL），设置后启用 SP 模式",
-      "@id": "urn:solid-server:default:variable:idpUrl",
+      "comment": "定义 oidcIssuer 变量（外部 IdP 基础 URL），设置后启用 SP 模式",
+      "@id": "urn:solid-server:default:variable:oidcIssuer",
       "@type": "Variable"
     },
     {
-      "comment": "Auto-detect OIDC Handler - 有 idpUrl 时启用 SP 模式，代理 JWKS",
+      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时启用 SP 模式，代理 JWKS",
       "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
       "@type": "AutoDetectOidcHandler",
-      "AutoDetectOidcHandler:_options_idpUrl": {
-        "@id": "urn:solid-server:default:variable:idpUrl"
+      "AutoDetectOidcHandler:_options_oidcIssuer": {
+        "@id": "urn:solid-server:default:variable:oidcIssuer"
       },
       "AutoDetectOidcHandler:_options_cacheMs": 300000
     },
@@ -52,11 +52,11 @@
       }
     },
     {
-      "comment": "Auto-detect Identity Provider Handler - 有 idpUrl 时禁用本地账户管理",
+      "comment": "Auto-detect Identity Provider Handler - 有 oidcIssuer 时禁用本地账户管理",
       "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler",
       "@type": "AutoDetectIdentityProviderHandler",
-      "AutoDetectIdentityProviderHandler:_options_idpUrl": {
-        "@id": "urn:solid-server:default:variable:idpUrl"
+      "AutoDetectIdentityProviderHandler:_options_oidcIssuer": {
+        "@id": "urn:solid-server:default:variable:oidcIssuer"
       },
       "AutoDetectIdentityProviderHandler:_options_source": {
         "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler"
@@ -77,13 +77,29 @@
       "@value": "./data"
     },
     {
-      "comment": "Shared QuintStore instance (SQLite for local)",
-      "@id": "urn:undefineds:xpod:QuintStore",
+      "comment": "Compatibility QuintStore instance (SQLite TEXT quints for fallback and migration).",
+      "@id": "urn:undefineds:xpod:CompatibilityQuintStore",
       "@type": "SqliteQuintStore",
       "options_path": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }
+    },
+    {
+      "comment": "Shared RDF write store: mirrors compatibility quints into the term-id RDF index.",
+      "@id": "urn:undefineds:xpod:QuintStore",
+      "@type": "ShadowRdfQuintStore",
+      "compatibilityStore": {
+        "@id": "urn:undefineds:xpod:CompatibilityQuintStore"
+      },
+      "index_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "autoOpen": true,
+      "autoBackfill_enabled": true,
+      "autoBackfill_clear": true,
+      "autoBackfill_batchSize": 1000
     },
     {
       "comment": "VectorStore using SQLite (same db as QuintStore for JOIN)",
@@ -112,12 +128,40 @@
       }
     },
     {
-      "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for local (with OPTIONAL optimization)",
-      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "comment": "RDF term-id query engine backed by the shared local RDF index.",
+      "@id": "urn:undefineds:xpod:SolidRdfEngine",
+      "@type": "SolidRdfEngine",
+      "index_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "compatibilityStore": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
+      "autoOpen": true
+    },
+    {
+      "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",
+      "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine",
       "@type": "QuintstoreSparqlEngine",
       "store": {
         "@id": "urn:undefineds:xpod:QuintStore"
       }
+    },
+    {
+      "comment": "Default SPARQL engine: SELECT/ASK use SolidRdfEngine, unsupported shapes fall back to Quintstore.",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "@type": "SolidRdfSparqlEngine",
+      "rdfEngine": {
+        "@id": "urn:undefineds:xpod:SolidRdfEngine"
+      },
+      "fallback": {
+        "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine"
+      },
+      "shadowStore": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
+      "enablePrimary": true
     },
     {
       "comment": "Use QuintStore for RDF data and local filesystem for other content.",

@@ -47,8 +47,8 @@ import {
 } from './types';
 import { RunStateCenter, type RunStateEvent } from '../runs/RunStateCenter';
 import type { RunExecutionBackend } from '../runs/RunExecutionBackend';
-import { isWorkspaceUri } from '../workspace/types';
-import type { WorkspaceUri } from '../workspace/types';
+import { isWorkspaceRef } from '../workspace/types';
+import type { WorkspaceRef } from '../workspace/types';
 
 /**
  * AI Provider interface for direct text generation in tests/dev harnesses.
@@ -749,8 +749,8 @@ export class ChatKitService<TContext = StoreContext> {
     return Object.keys(normalized).length > 0 ? normalized : undefined;
   }
 
-  private resolveThreadWorkspace(workspace: WorkspaceUri | undefined): WorkspaceUri | undefined {
-    return isWorkspaceUri(workspace) ? workspace : undefined;
+  private resolveThreadWorkspace(workspace: WorkspaceRef | undefined): WorkspaceRef | undefined {
+    return isWorkspaceRef(workspace) ? workspace : undefined;
   }
 
   private threadRefFromParams(params: { thread_id: string; chat_id?: string }): ThreadRef {

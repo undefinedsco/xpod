@@ -199,13 +199,13 @@ describe('config command', () => {
       expect(CREDENTIAL_RESOURCE).toContain(CREDENTIAL_BASE_PATH);
     });
 
-    it('provider URI in credential should be extractable by PodChatKitStore.extractProviderId', () => {
+    it('provider resource in credential should be extractable by PodChatKitStore.extractProviderId', () => {
       const sparql = buildCredentialSparql(CREDENTIAL_RESOURCE, POD_URL, 'google', { apiKey: 'key' });
-      const providerUriMatch = sparql.match(/cred:provider <([^>]+)>/);
-      expect(providerUriMatch).not.toBeNull();
+      const providerResourceMatch = sparql.match(/cred:provider <([^>]+)>/);
+      expect(providerResourceMatch).not.toBeNull();
 
-      const providerUri = providerUriMatch![1];
-      const extractedId = providerUri.split('/').pop()!.replace(/\.ttl$/, '');
+      const providerResource = providerResourceMatch![1];
+      const extractedId = providerResource.split('/').pop()!.replace(/\.ttl$/, '');
       expect(extractedId).toBe('google');
     });
 

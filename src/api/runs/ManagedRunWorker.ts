@@ -19,13 +19,13 @@ import { RunStatus, XpodRunStepType as RunStepType } from './schema';
 import {
   canClaimRun,
   generateRunStepResourceId,
-  resolveDataResourceIri,
+  resolveDataResource,
   resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
   type RunStore,
 } from './store';
-import { isWorkspaceUri } from '../workspace/types';
+import { isWorkspaceRef } from '../workspace/types';
 
 export type ManagedRunStore<TContext = StoreContext> = ChatKitStore<TContext> & RunStore<TContext>;
 
@@ -278,8 +278,8 @@ export class ManagedRunWorker<TContext = StoreContext> {
       return fromThread;
     }
 
-    if (!isWorkspaceUri(run.workspace)) {
-      throw new Error('Run workspace URI is required');
+    if (!isWorkspaceRef(run.workspace)) {
+      throw new Error('Run workspace reference is required');
     }
     return {
       workspace: run.workspace,
@@ -305,7 +305,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
       return undefined;
     }
     const candidate = value as Partial<AgentRuntimeConfig>;
-    if (!isWorkspaceUri(candidate.workspace) || !candidate.runner) {
+    if (!isWorkspaceRef(candidate.workspace) || !candidate.runner) {
       return undefined;
     }
     const runnerType = candidate.runner.type;
@@ -461,7 +461,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
       commandKind: run.commandKind,
       surfaceId: run.surfaceId,
       runId: run.id,
-      run: this.resolveRunUri(run, context),
+      run: this.resolveRunResource(run, context),
       type,
       message: options.message,
       data: options.data,
@@ -548,10 +548,10 @@ export class ManagedRunWorker<TContext = StoreContext> {
     return thread;
   }
 
-  private resolveRunUri(run: RunRecordData, context: TContext): string {
+  private resolveRunResource(run: RunRecordData, context: TContext): string {
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl) {
-      return resolveDataResourceIri(podBaseUrl, run.id);
+      return resolveDataResource(podBaseUrl, run.id);
     }
     return resolveRunUrn(run.id);
   }

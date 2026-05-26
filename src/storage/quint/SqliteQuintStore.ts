@@ -30,6 +30,7 @@ import type {
   QuintStoreOptions,
   QueryOptions,
   StoreStats,
+  StoreSpaceObject,
   TermMatch,
   TermOperators,
   CompoundPattern,
@@ -661,7 +662,61 @@ export class SqliteQuintStore {
       totalCount: totalResult[0]?.count ?? 0,
       vectorCount: vectorResult[0]?.count ?? 0,
       graphCount: graphResult[0]?.count ?? 0,
+      ...this.sqliteSpaceStats(),
     };
+  }
+
+  private sqliteSpaceStats(): Pick<StoreStats, 'databaseBytes' | 'tableBytes' | 'indexBytes' | 'spaceObjects'> {
+    const spaceObjects = this.collectSpaceObjects();
+    const databaseBytes = this.estimateDatabaseBytes();
+    const accountedBytes = spaceObjects.reduce((sum, object) => sum + object.bytes, 0);
+    return {
+      databaseBytes: databaseBytes || accountedBytes,
+      tableBytes: sumStoreSpaceObjects(spaceObjects, 'table'),
+      indexBytes: sumStoreSpaceObjects(spaceObjects, 'index'),
+      spaceObjects,
+    };
+  }
+
+  private estimateDatabaseBytes(): number {
+    try {
+      const pageCount = this.sqlite!.prepare<{ page_count: number }>('PRAGMA page_count').get()?.page_count ?? 0;
+      const pageSize = this.sqlite!.prepare<{ page_size: number }>('PRAGMA page_size').get()?.page_size ?? 0;
+      return pageCount * pageSize;
+    } catch {
+      return 0;
+    }
+  }
+
+  private collectSpaceObjects(): StoreSpaceObject[] {
+    try {
+      const schemaRows = this.sqlite!.prepare<{ name: string; type: string; tbl_name: string }>(`
+        SELECT name, type, tbl_name
+        FROM sqlite_schema
+        WHERE type IN ('table', 'index')
+      `).all();
+      const schema = new Map(schemaRows.map((row) => [row.name, row]));
+      const rows = this.sqlite!.prepare<{ name: string; pages: number; bytes: number | null }>(`
+        SELECT name, COUNT(*) AS pages, SUM(pgsize) AS bytes
+        FROM dbstat
+        GROUP BY name
+        ORDER BY name
+      `).all();
+
+      return rows.map((row) => {
+        const object = schema.get(row.name);
+        const kind = quintSpaceObjectKind(row.name, object?.type, object?.tbl_name);
+        return {
+          name: row.name,
+          kind,
+          ...(object?.tbl_name && object.tbl_name !== row.name ? { tableName: object.tbl_name } : {}),
+          pages: row.pages,
+          bytes: row.bytes ?? 0,
+        };
+      });
+    } catch {
+      return [];
+    }
   }
 
   async clear(): Promise<void> {
@@ -840,4 +895,23 @@ export class SqliteQuintStore {
     }
     return quint;
   }
+}
+
+function sumStoreSpaceObjects(objects: StoreSpaceObject[], kind: StoreSpaceObject['kind']): number {
+  return objects
+    .filter((object) => object.kind === kind)
+    .reduce((sum, object) => sum + object.bytes, 0);
+}
+
+function quintSpaceObjectKind(name: string, schemaType?: string, tableName?: string): StoreSpaceObject['kind'] {
+  if (schemaType === 'table' && name === 'quints') {
+    return 'table';
+  }
+  if (schemaType === 'index' && (name.startsWith('idx_') || tableName === 'quints')) {
+    return 'index';
+  }
+  if (name.startsWith('sqlite_')) {
+    return 'internal';
+  }
+  return 'unknown';
 }

@@ -47,6 +47,7 @@ import {
 
 import type { QuintStore, Quint } from '../quint/types';
 import { ComunicaQuintEngine } from '../sparql/ComunicaQuintEngine';
+import type { RdfSourceInput } from '../rdf/types';
 
 const { defaultGraph, namedNode, quad, variable } = DataFactory;
 
@@ -58,6 +59,7 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
   private readonly generator: SparqlGenerator;
   private readonly baseUrl: string;
   private initialized = false;
+  private initializing: Promise<void> | null = null;
 
   public constructor(
     store: QuintStore,
@@ -77,17 +79,30 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
    * Initialize the store (open database connection)
    */
   public async initialize(): Promise<void> {
-    if (!this.initialized) {
-      await this.store.open();
-      this.initialized = true;
-      this.logger.info('QuintStore initialized');
+    if (this.initialized) {
+      return;
     }
+
+    this.initializing ??= this.initializeStore().finally(() => {
+      this.initializing = null;
+    });
+
+    await this.initializing;
+  }
+
+  private async initializeStore(): Promise<void> {
+    await this.store.open();
+    this.initialized = true;
+    this.logger.info('QuintStore initialized');
   }
 
   /**
    * Close the store
    */
   public async finalize(): Promise<void> {
+    if (this.initializing) {
+      await this.initializing.catch(() => {});
+    }
     if (this.initialized) {
       await this.store.close();
       this.initialized = false;
@@ -207,6 +222,61 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     const result = await this.sendSparqlUpdate(this.sparqlInsert(name, metadata, parent, triples));
     console.log(`[writeDocument] Completed for ${identifier.path}`);
     return result;
+  }
+
+  public async writeRdfSourceDocument(
+    identifier: ResourceIdentifier,
+    quads: Quad[],
+    metadata: RepresentationMetadata,
+    source: RdfSourceInput,
+  ): Promise<void> {
+    await this.initialize();
+
+    const sourceScopedStore = this.sourceScopedStore();
+    if (!sourceScopedStore) {
+      await this.writeDocument(identifier, guardStream(Readable.from(quads)), metadata);
+      return;
+    }
+
+    if (this.isMetadataIdentifier(identifier)) {
+      throw new ConflictHttpError('Not allowed to create NamedNodes with the metadata extension.');
+    }
+
+    const def = defaultGraph();
+    if (quads.some((triple): boolean => !def.equals(triple.graph))) {
+      throw new NotImplementedHttpError('Only triples in the default graph are supported.');
+    }
+
+    metadata.removeAll(CONTENT_TYPE_TERM);
+    const { name, parent } = this.getRelatedNames(identifier);
+    await this.replaceCompatibilityMetadata(name, metadata, parent);
+    await sourceScopedStore.replaceSource(
+      quads.map((value) => quad(value.subject, value.predicate, value.object, name)),
+      source,
+    );
+  }
+
+  public async deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void> {
+    await this.initialize();
+
+    const sourceScopedStore = this.sourceScopedStore();
+    if (!sourceScopedStore) {
+      await this.deleteResource(identifier);
+      return;
+    }
+
+    const { name, parent } = this.getRelatedNames(identifier);
+    const metaName = this.getMetadataNode(name);
+    await sourceScopedStore.deleteSource(identifier.path);
+    await this.store.del({ graph: metaName });
+    if (parent) {
+      await this.store.del({
+        graph: parent,
+        subject: parent,
+        predicate: LDP.terms.contains,
+        object: name,
+      });
+    }
   }
 
   /**
@@ -451,6 +521,44 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     } catch (error: unknown) {
       this.logger.error(`SPARQL update failed: ${createErrorMessage(error)}`);
       throw error;
+    }
+  }
+
+  private sourceScopedStore(): {
+    replaceSource(quints: Quint[], source: RdfSourceInput): Promise<void>;
+    deleteSource(source: string): Promise<number>;
+  } | undefined {
+    const store = this.store as Partial<{
+      replaceSource(quints: Quint[], source: RdfSourceInput): Promise<void>;
+      deleteSource(source: string): Promise<number>;
+    }>;
+    if (typeof store.replaceSource === 'function' && typeof store.deleteSource === 'function') {
+      return store as {
+        replaceSource(quints: Quint[], source: RdfSourceInput): Promise<void>;
+        deleteSource(source: string): Promise<number>;
+      };
+    }
+    return undefined;
+  }
+
+  private async replaceCompatibilityMetadata(
+    name: NamedNode,
+    metadata: RepresentationMetadata,
+    parent?: NamedNode,
+  ): Promise<void> {
+    const metaName = this.getMetadataNode(name);
+    await this.store.del({ graph: metaName });
+    const inserts: Quint[] = metadata.quads().map((value) => quad(
+      value.subject,
+      value.predicate,
+      value.object,
+      metaName,
+    ) as Quint);
+    if (parent) {
+      inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quint);
+    }
+    if (inserts.length > 0) {
+      await this.store.multiPut(inserts);
     }
   }
 

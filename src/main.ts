@@ -8,7 +8,7 @@ import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
-import { buildApiChildEnv, buildCssArgs, buildCssChildEnv } from './runtime/css-process';
+import { buildApiChildEnv, buildCssArgs, buildCssChildEnv, createCssChildRuntimeConfig } from './runtime/css-process';
 import { resolveExternalOidcIssuer } from './runtime/oidc-issuer';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
@@ -274,18 +274,25 @@ async function startRuntime(options: RunOptions): Promise<void> {
     logger.info(`  - SP mode external IdP: ${externalOidcIssuer}`);
   }
 
+  const cssRuntimeConfig = createCssChildRuntimeConfig({
+    configPath,
+    runtimeRoot: path.join(process.cwd(), '.xpod/runtime/legacy-css'),
+    externalOidcIssuer,
+  });
+
   supervisor.register({
     name: 'css',
     command: childJsRuntime,
     args: buildCssArgs({
       cssBinary,
-      configPath,
+      configPath: cssRuntimeConfig.configPath,
       cssModuleRoot,
       cssPort,
       baseUrl,
       externalOidcIssuer,
     }),
-    env: buildCssChildEnv(baseUrl, cssPort),
+    cwd: cssRuntimeConfig.cwd,
+    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer),
   });
 
   // API server: resolve the entry point dynamically

@@ -39,7 +39,7 @@ export {
   type RunnerType,
   type WorktreeSpec,
 } from '../runs/AgentRuntimeTypes';
-export { type WorkspaceUri } from '../workspace/types';
+export { type WorkspaceRef } from '../workspace/types';
 export {
   type RunConversationMessage,
   type RunExecutionBackend,

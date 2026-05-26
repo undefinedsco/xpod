@@ -155,6 +155,11 @@ describe('SqliteQuintStore', () => {
       expect(stats.totalCount).toBe(2);
       expect(stats.vectorCount).toBe(1);
       expect(stats.graphCount).toBe(2);
+      expect(stats.databaseBytes).toBeGreaterThan(0);
+      expect(stats.tableBytes).toBeGreaterThan(0);
+      expect(stats.indexBytes).toBeGreaterThan(0);
+      expect(stats.spaceObjects?.some((object) => object.name === 'quints' && object.kind === 'table')).toBe(true);
+      expect(stats.spaceObjects?.some((object) => object.kind === 'index' && object.tableName === 'quints')).toBe(true);
     });
   });
 

@@ -258,7 +258,7 @@ async function resolveProfileFromPods(
 
     const match = await tryFindPodByStorageSlug(podLookupRepo, username);
     if (match) {
-      return profileFromPod(username, buildStorageWebIdUrl(match.baseUrl), match);
+      return profileFromPod(username, match.webId ?? buildStorageWebIdUrl(match.baseUrl), match);
     }
   }
 
@@ -387,12 +387,13 @@ function profileFromPod(
   pod: PodLookupResult,
 ): IdentityProfileResponse {
   const storageUrl = ensureTrailingSlash(pod.baseUrl);
+  const resolvedWebId = pod.webId ?? webidUrl;
   return {
     username,
-    webidUrl,
+    webidUrl: resolvedWebId,
     storageUrl,
     storageMode: 'cloud',
-    oidcIssuer: deriveOrigin(webidUrl),
+    oidcIssuer: deriveOrigin(resolvedWebId),
   };
 }
 

@@ -48,7 +48,7 @@ import {
   extractResourceLocalId,
   isBaseRelativeResourceId,
   isRunResourceId,
-  resolveDataResourceIri,
+  resolveDataResource as expandDataResource,
   type RunListOptions,
   type RunRecordData,
   type RunStepRecordData,
@@ -75,7 +75,7 @@ import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
-import { normalizeAIConfigProviderId } from '@undefineds.co/models';
+import { normalizeAIConfigProviderId, normalizeAIConfigResourceId } from '@undefineds.co/models';
 
 const schema = {
   chat: Chat,
@@ -105,7 +105,16 @@ type QueriedMessageRecord = {
   toolName?: string | null;
   toolCallId?: string | null;
   metadata?: JsonObjectSource;
-  subjectUri?: string | null;
+  resource?: string | null;
+};
+
+type AiCredentialCandidate = {
+  id?: string | null;
+  provider?: string | null;
+  apiKey?: string | null;
+  isDefault?: boolean | string | number | null;
+  lastUsedAt?: string | Date | number | null;
+  failCount?: number | null;
 };
 
 type JsonObjectSource = string | Record<string, unknown> | null | undefined;
@@ -127,7 +136,7 @@ type ResolvedThreadRef = {
   threadId: string;
   commandKind: 'chat' | 'task';
   surfaceId: string;
-  threadUri: string;
+  thread: string;
 };
 
 type RunRecordSource = {
@@ -455,12 +464,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return match ? decodeURIComponent(match[1]) : undefined;
   }
 
-  private chatSurfaceIdFromIri(chatIri: string | null | undefined): string | undefined {
-    if (!chatIri) {
+  private chatSurfaceIdFromResource(chat: string | null | undefined): string | undefined {
+    if (!chat) {
       return undefined;
     }
     try {
-      const url = new URL(chatIri);
+      const url = new URL(chat);
       const match = url.pathname.match(/\/\.data\/chat\/([^/]+)\/index\.ttl$/);
       if (match && url.hash === '#this') {
         return decodeURIComponent(match[1]);
@@ -468,7 +477,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     } catch {
       // Fall through to base-relative parsing.
     }
-    return this.chatSurfaceIdFromResourceId(chatIri);
+    return this.chatSurfaceIdFromResourceId(chat);
   }
 
   /**
@@ -506,9 +515,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
    * 将 ThreadRecord 转为 ThreadMetadata
    * ChatKit 边界继续暴露 metadata.chat_id；内部同一值叫 surface_id。
    */
-  private threadRecordToMetadata(record: ThreadMetadataSource, chatUriMap: Map<string, string>): ThreadMetadata {
+  private threadRecordToMetadata(record: ThreadMetadataSource, chatResourceMap: Map<string, string>): ThreadMetadata {
     const commandKind = record.commandKind === 'task' ? 'task' : 'chat';
-    const surfaceId = record.surfaceId || this.resolveChatSurfaceFromUri(record.chat, chatUriMap, PodChatKitStore.DEFAULT_CHAT_ID);
+    const surfaceId = record.surfaceId || this.resolveChatSurfaceFromResource(record.chat, chatResourceMap, PodChatKitStore.DEFAULT_CHAT_ID);
     const extra = this.parseJsonObject(record.metadata);
 
     return {
@@ -688,7 +697,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return `${input.commandKind}/${input.surfaceId}/${yyyy}/${MM}/${dd}/messages.ttl#${extractResourceLocalId(input.key)}`;
   }
 
-  private resolveDataResourceUriFromId(resourceId: string, context: StoreContext): string {
+  private resolveDataResource(resourceId: string, context: StoreContext): string {
     if (/^https?:\/\//.test(resourceId)) {
       return resourceId;
     }
@@ -697,24 +706,24 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     if (!podBaseUrl) {
       throw new Error(`Cannot resolve Pod base URL for resource id: ${resourceId}`);
     }
-    return resolveDataResourceIri(podBaseUrl, resourceId);
+    return expandDataResource(podBaseUrl, resourceId);
   }
 
-  private baseRelativeIdFromSubjectUri(subjectUri: string, context: StoreContext): string {
+  private baseRelativeIdFromResource(resource: string, context: StoreContext): string {
     const podBaseUrl = this.getCachedPodBaseUrl(context)
       ?? this.derivePodBaseUrl(this.getWebId(context));
     if (podBaseUrl) {
       const dataPrefix = `${podBaseUrl.replace(/\/$/, '')}/.data/`;
-      if (subjectUri.startsWith(dataPrefix)) {
-        return subjectUri.slice(dataPrefix.length);
+      if (resource.startsWith(dataPrefix)) {
+        return resource.slice(dataPrefix.length);
       }
     }
     const marker = '/.data/';
-    const markerIndex = subjectUri.indexOf(marker);
+    const markerIndex = resource.indexOf(marker);
     if (markerIndex >= 0) {
-      return subjectUri.slice(markerIndex + marker.length);
+      return resource.slice(markerIndex + marker.length);
     }
-    return subjectUri;
+    return resource;
   }
 
   private runRecordToData(record: RunRecordSource): RunRecordData {
@@ -825,12 +834,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   /**
-   * 获取或构建 Chat IRI -> surface id 的映射缓存。
-   * drizzle-solid 的 uri().link(Chat) 字段返回完整 URI，通过 Chat 的 @id 比对还原路径槽位。
+   * 获取或构建 Chat resource -> surface id 的映射缓存。
+   * drizzle-solid 的 link(Chat) 字段返回完整资源引用，通过 Chat 的 @id 比对还原路径槽位。
    */
-  private async getChatUriMap(context: StoreContext): Promise<Map<string, string>> {
-    if ((context as any)._chatUriMap) {
-      return (context as any)._chatUriMap;
+  private async getChatResourceMap(context: StoreContext): Promise<Map<string, string>> {
+    if ((context as any)._chatResourceMap) {
+      return (context as any)._chatResourceMap;
     }
     const db = await this.getDb(context);
     const map = new Map<string, string>();
@@ -846,28 +855,28 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         // ignore
       }
     }
-    (context as any)._chatUriMap = map;
+    (context as any)._chatResourceMap = map;
     return map;
   }
 
   /**
-   * 从 Chat URI 还原 surface id。
+   * 从 Chat resource 还原 surface id。
    * 优先通过 @id 映射；若调用方本来给的是裸 ID，则原样使用。
    */
-  private resolveChatSurfaceFromUri(
-    chatUri: string | null | undefined,
-    chatUriMap: Map<string, string>,
+  private resolveChatSurfaceFromResource(
+    chat: string | null | undefined,
+    chatResourceMap: Map<string, string>,
     defaultSurfaceId: string,
   ): string {
-    if (!chatUri) return defaultSurfaceId;
-    const bare = chatUriMap.get(chatUri);
+    if (!chat) return defaultSurfaceId;
+    const bare = chatResourceMap.get(chat);
     if (bare) return bare;
-    const parsed = this.chatSurfaceIdFromIri(chatUri);
+    const parsed = this.chatSurfaceIdFromResource(chat);
     if (parsed) return parsed;
-    return chatUri.includes('/') ? defaultSurfaceId : chatUri;
+    return chat.includes('/') ? defaultSurfaceId : chat;
   }
 
-  private isAbsoluteHttpIri(value: string): boolean {
+  private isAbsoluteHttpResource(value: string): boolean {
     try {
       const url = new URL(value);
       return url.protocol === 'http:' || url.protocol === 'https:';
@@ -876,9 +885,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     }
   }
 
-  private parseThreadIri(threadIri: string): ResolvedThreadRef | null {
+  private parseThreadResource(thread: string): ResolvedThreadRef | null {
     try {
-      const url = new URL(threadIri);
+      const url = new URL(thread);
       const match = url.pathname.match(/\/\.data\/(chat|task)\/([^/]+)\/index\.ttl$/);
       const localThreadId = url.hash.startsWith('#') ? decodeURIComponent(url.hash.slice(1)) : '';
       if (!match || !localThreadId) {
@@ -890,7 +899,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         threadId: `${commandKind}/${surfaceId}/index.ttl#${localThreadId}`,
         commandKind,
         surfaceId,
-        threadUri: url.toString(),
+        thread: url.toString(),
       };
     } catch {
       return null;
@@ -901,7 +910,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return getThreadIdFromRef(thread);
   }
 
-  private parseThreadResourceId(threadId: string): Omit<ResolvedThreadRef, 'threadUri'> | null {
+  private parseThreadResourceId(threadId: string): Omit<ResolvedThreadRef, 'thread'> | null {
     const match = threadId.match(/^(chat|task)\/([^/]+)\/index\.ttl#(.+)$/);
     if (!match) {
       return null;
@@ -919,45 +928,45 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     thread: ThreadRef,
     context: StoreContext,
   ): Promise<ResolvedThreadRef> {
-    const threadIdOrIri = thread.thread_id;
-    if (this.isAbsoluteHttpIri(threadIdOrIri)) {
-      const parsed = this.parseThreadIri(threadIdOrIri);
+    const threadRef = thread.thread_id;
+    if (this.isAbsoluteHttpResource(threadRef)) {
+      const parsed = this.parseThreadResource(threadRef);
       if (!parsed) {
-        throw new Error(`Invalid thread IRI: ${threadIdOrIri}`);
+        throw new Error(`Invalid thread resource: ${threadRef}`);
       }
       this.cacheThreadSurfaceId(context, parsed.threadId, parsed.surfaceId);
       return parsed;
     }
 
-    const parsedResourceId = this.parseThreadResourceId(threadIdOrIri);
+    const parsedResourceId = this.parseThreadResourceId(threadRef);
     if (parsedResourceId) {
-      const threadUri = this.resolveDataResourceUriFromId(parsedResourceId.threadId, context);
+      const threadResource = this.resolveDataResource(parsedResourceId.threadId, context);
       this.cacheThreadSurfaceId(context, parsedResourceId.threadId, parsedResourceId.surfaceId);
       return {
         ...parsedResourceId,
-        threadUri,
+        thread: threadResource,
       };
     }
 
     if (!('chat_id' in thread) || !thread.chat_id) {
-      throw new Error(`chat_id is required when thread_id "${threadIdOrIri}" is not a full thread resource id`);
+      throw new Error(`chat_id is required when thread_id "${threadRef}" is not a full thread resource id`);
     }
 
     const surfaceId = thread.chat_id;
     const commandKind = 'chat';
     const threadId = this.generateThreadResourceId({
-      key: threadIdOrIri,
+      key: threadRef,
       commandKind,
       surfaceId,
     });
 
-    const threadUri = this.resolveDataResourceUriFromId(threadId, context);
+    const threadResource = this.resolveDataResource(threadId, context);
     this.cacheThreadSurfaceId(context, threadId, surfaceId);
     return {
       threadId,
       commandKind,
       surfaceId,
-      threadUri,
+      thread: threadResource,
     };
   }
 
@@ -1025,7 +1034,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       SELECT ?msg ?maker ?messageType ?legacyRole ?content ?messageStatus ?legacyStatus ?createdAt ?legacyCreatedAt ?toolName ?toolCallId ?metadata
       WHERE {
         ?msg a meeting:Message ;
-             sioc:has_container <${resolvedThread.threadUri}> .
+             sioc:has_container <${resolvedThread.thread}> .
         OPTIONAL { ?msg foaf:maker ?maker . }
         OPTIONAL { ?msg udfs:messageType ?messageType . }
         OPTIONAL { ?msg udfs:role ?legacyRole . }
@@ -1063,9 +1072,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     const bindings = json.results?.bindings ?? [];
     return bindings.map((binding) => ({
-      id: this.baseRelativeIdFromSubjectUri(this.parseSparqlBindingValue(binding, 'msg') ?? '', context),
+      id: this.baseRelativeIdFromResource(this.parseSparqlBindingValue(binding, 'msg') ?? '', context),
       chat: null,
-      thread: resolvedThread.threadUri,
+      thread: resolvedThread.thread,
       maker: this.parseSparqlBindingValue(binding, 'maker'),
       role: this.parseSparqlBindingValue(binding, 'messageType') ?? this.parseSparqlBindingValue(binding, 'legacyRole'),
       content: this.parseSparqlBindingValue(binding, 'content'),
@@ -1074,7 +1083,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       toolName: this.parseSparqlBindingValue(binding, 'toolName'),
       toolCallId: this.parseSparqlBindingValue(binding, 'toolCallId'),
       metadata: this.parseSparqlBindingValue(binding, 'metadata'),
-      subjectUri: this.parseSparqlBindingValue(binding, 'msg'),
+      resource: this.parseSparqlBindingValue(binding, 'msg'),
     }));
   }
 
@@ -1127,14 +1136,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     }
 
     const resolvedThread = await this.resolveThreadRef(thread, context);
-    const threadRecord = await db.findByIri(Thread, resolvedThread.threadUri) as ThreadRecord | null;
+    const threadRecord = await db.findByIri(Thread, resolvedThread.thread) as ThreadRecord | null;
 
     if (!threadRecord) {
       throw new Error(`Thread not found: ${resolvedThread.threadId}`);
     }
 
-    const chatUriMap = await this.getChatUriMap(context);
-    const metadata = this.threadRecordToMetadata(threadRecord, chatUriMap);
+    const chatResourceMap = await this.getChatResourceMap(context);
+    const metadata = this.threadRecordToMetadata(threadRecord, chatResourceMap);
     // 缓存结果
     this.cacheThreadMetadata(context, metadata);
     this.cacheThreadSurfaceId(context, metadata.id, resolvedThread.surfaceId);
@@ -1175,14 +1184,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     });
     thread.id = threadResourceId;
     this.cacheThreadSurfaceId(context, thread.id, surfaceId);
-    const threadUri = this.resolveDataResourceUriFromId(threadResourceId, context);
+    const threadResource = this.resolveDataResource(threadResourceId, context);
 
     // 检查 Thread 是否存在
-    const existing = await db.findByIri(Thread, threadUri) as ThreadRecord | null;
+    const existing = await db.findByIri(Thread, threadResource) as ThreadRecord | null;
 
     if (existing) {
       // Update
-      await db.updateByIri(Thread, threadUri, {
+      await db.updateByIri(Thread, threadResource, {
         commandKind,
         surfaceId,
         chat: commandKind === 'chat' ? this.buildChatResourceId(surfaceId) : null,
@@ -1254,10 +1263,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       const slice = threads.slice(startIndex, startIndex + limit);
       const hasMore = startIndex + limit < threads.length;
 
-      const chatUriMap = await this.getChatUriMap(context);
+      const chatResourceMap = await this.getChatResourceMap(context);
 
       return {
-        data: slice.map((t: ThreadRecord) => this.threadRecordToMetadata(t, chatUriMap)),
+        data: slice.map((t: ThreadRecord) => this.threadRecordToMetadata(t, chatResourceMap)),
         has_more: hasMore,
         after: slice.length > 0 ? slice[slice.length - 1].id : undefined,
       };
@@ -1276,7 +1285,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     // 删除关联到此 Thread 的消息
     try {
-      await db.delete(Message).where(eq(Message.thread, resolvedThread.threadUri));
+      await db.delete(Message).where(eq(Message.thread, resolvedThread.thread));
     } catch (err: any) {
       if (!err.message?.includes('404') && !err.message?.includes('Could not retrieve') && !err.message?.includes('Parse error')) {
         throw err;
@@ -1286,7 +1295,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     // 删除 Thread
     try {
-      await db.deleteByIri(Thread, resolvedThread.threadUri);
+      await db.deleteByIri(Thread, resolvedThread.thread);
     } catch (err: any) {
       if (!err.message?.includes('404') && !err.message?.includes('Could not retrieve') && !err.message?.includes('Parse error')) {
         throw err;
@@ -1408,7 +1417,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       commandKind: resolvedThread.commandKind,
       surfaceId: resolvedThread.surfaceId,
       chat: resolvedThread.commandKind === 'chat' ? this.buildChatResourceId(resolvedThread.surfaceId) : null,
-      thread: resolvedThread.threadUri,
+      thread: resolvedThread.thread,
       maker: role === MessageRole.USER ? webId : null,
       role,
       content,
@@ -1516,9 +1525,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error('No cached session for direct PATCH - call getDb first');
     }
 
-    const subjectUri = this.resolveDataResourceUriFromId(messageResourceId, context);
-    const hashIndex = subjectUri.lastIndexOf('#');
-    const resourceUrl = hashIndex >= 0 ? subjectUri.slice(0, hashIndex) : subjectUri;
+    const messageResource = this.resolveDataResource(messageResourceId, context);
+    const hashIndex = messageResource.lastIndexOf('#');
+    const resourceUrl = hashIndex >= 0 ? messageResource.slice(0, hashIndex) : messageResource;
 
     // 构建 SPARQL UPDATE：删除旧值，插入新值
     const deletePatterns: string[] = [];
@@ -1546,18 +1555,18 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     };
 
     // Content 更新
-    deletePatterns.push(`<${subjectUri}> <http://rdfs.org/sioc/ns#content> ?oldContent .`);
-    insertTriples.push(`<${subjectUri}> <http://rdfs.org/sioc/ns#content> ${escapeForSparql(content)} .`);
+    deletePatterns.push(`<${messageResource}> <http://rdfs.org/sioc/ns#content> ?oldContent .`);
+    insertTriples.push(`<${messageResource}> <http://rdfs.org/sioc/ns#content> ${escapeForSparql(content)} .`);
 
     // Status 更新
     if (status) {
-      deletePatterns.push(`<${subjectUri}> <https://undefineds.co/ns#messageStatus> ?oldStatus .`);
-      insertTriples.push(`<${subjectUri}> <https://undefineds.co/ns#messageStatus> "${status}" .`);
+      deletePatterns.push(`<${messageResource}> <https://undefineds.co/ns#messageStatus> ?oldStatus .`);
+      insertTriples.push(`<${messageResource}> <https://undefineds.co/ns#messageStatus> "${status}" .`);
     }
 
     if (metadata) {
-      deletePatterns.push(`<${subjectUri}> <https://undefineds.co/ns#metadata> ?oldMetadata .`);
-      insertTriples.push(`<${subjectUri}> <https://undefineds.co/ns#metadata> ${escapeForSparql(JSON.stringify(metadata))} .`);
+      deletePatterns.push(`<${messageResource}> <https://undefineds.co/ns#metadata> ?oldMetadata .`);
+      insertTriples.push(`<${messageResource}> <https://undefineds.co/ns#metadata> ${escapeForSparql(JSON.stringify(metadata))} .`);
     }
 
     const sparql = `
@@ -1580,10 +1589,10 @@ WHERE { ${deletePatterns.join(' ')} }
 
   private async directDeleteMessage(
     context: StoreContext,
-    subjectUri?: string | null,
+    resource?: string | null,
   ): Promise<void> {
-    if (!subjectUri) {
-      throw new Error('Cannot delete message without subject URI');
+    if (!resource) {
+      throw new Error('Cannot delete message without resource');
     }
 
     const cachedFetch = (context as any)._cachedFetch as typeof fetch | undefined;
@@ -1591,9 +1600,9 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error('No cached session for direct DELETE - call getDb first');
     }
 
-    const hashIndex = subjectUri.lastIndexOf('#');
-    const resourceUrl = hashIndex >= 0 ? subjectUri.slice(0, hashIndex) : subjectUri;
-    const sparql = `DELETE WHERE { <${subjectUri}> ?p ?o . }`;
+    const hashIndex = resource.lastIndexOf('#');
+    const resourceUrl = hashIndex >= 0 ? resource.slice(0, hashIndex) : resource;
+    const sparql = `DELETE WHERE { <${resource}> ?p ?o . }`;
 
     const response = await cachedFetch(resourceUrl, {
       method: 'PATCH',
@@ -1631,7 +1640,7 @@ WHERE { ${deletePatterns.join(' ')} }
       return;
     }
 
-    await this.directDeleteMessage(context, target.subjectUri);
+    await this.directDeleteMessage(context, target.resource);
   }
 
   // =========================================================================
@@ -1775,7 +1784,7 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error(`loadRunSteps requires a base-relative Run id: ${runId}`);
     }
 
-    // runId is a local query field; RunStep.run remains the semantic RDF URI relation.
+    // runId is a local query field; RunStep.run remains the semantic RDF relation.
     const records = await db.select().from(RunStep).where(eq(RunStep.runId, runId)) as RunStepRecord[];
     return records
       .map((record) => this.runStepRecordToData(record))
@@ -2042,7 +2051,7 @@ WHERE { ${deletePatterns.join(' ')} }
     models.push(item);
   }
 
-  private resolvePodResourceIri(context: StoreContext, resource: string): string {
+  private resolvePodResource(context: StoreContext, resource: string): string {
     if (/^https?:\/\//.test(resource)) {
       return resource;
     }
@@ -2058,14 +2067,14 @@ WHERE { ${deletePatterns.join(' ')} }
     const candidates = new Set<string>();
     candidates.add(providerRef);
     if (!/^https?:\/\//.test(providerRef)) {
-      candidates.add(this.resolvePodResourceIri(context, providerRef));
+      candidates.add(this.resolvePodResource(context, providerRef));
     }
 
     const providerId = normalizeAIConfigProviderId(providerRef);
     if (providerId) {
       candidates.add(providerId);
       candidates.add(`/settings/providers/${providerId}.ttl`);
-      candidates.add(this.resolvePodResourceIri(context, `/settings/providers/${providerId}.ttl`));
+      candidates.add(this.resolvePodResource(context, `/settings/providers/${providerId}.ttl`));
     }
 
     for (const candidate of candidates) {
@@ -2082,6 +2091,48 @@ WHERE { ${deletePatterns.join(' ')} }
     }
 
     return null;
+  }
+
+  private sortAiCredentialCandidates<T extends AiCredentialCandidate>(credentials: T[]): T[] {
+    return [...credentials].sort((left, right) => {
+      const defaultDelta = Number(this.isTruthyValue(right.isDefault)) - Number(this.isTruthyValue(left.isDefault));
+      if (defaultDelta !== 0) {
+        return defaultDelta;
+      }
+
+      const leftLastUsedAt = this.timestampValue(left.lastUsedAt);
+      const rightLastUsedAt = this.timestampValue(right.lastUsedAt);
+      if (leftLastUsedAt !== rightLastUsedAt) {
+        return leftLastUsedAt - rightLastUsedAt;
+      }
+
+      const leftFailCount = typeof left.failCount === 'number' && Number.isFinite(left.failCount) ? left.failCount : 0;
+      const rightFailCount = typeof right.failCount === 'number' && Number.isFinite(right.failCount) ? right.failCount : 0;
+      if (leftFailCount !== rightFailCount) {
+        return leftFailCount - rightFailCount;
+      }
+
+      return normalizeAIConfigResourceId(left.id ?? '')
+        .localeCompare(normalizeAIConfigResourceId(right.id ?? ''));
+    });
+  }
+
+  private isTruthyValue(value: unknown): boolean {
+    return value === true || value === 'true' || value === 1 || value === '1';
+  }
+
+  private timestampValue(value: unknown): number {
+    if (value instanceof Date) {
+      return value.getTime();
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const timestamp = Date.parse(value);
+      return Number.isFinite(timestamp) ? timestamp : 0;
+    }
+    return 0;
   }
 
   async getAiConfig(context: StoreContext): Promise<{
@@ -2110,8 +2161,8 @@ WHERE { ${deletePatterns.join(' ')} }
         return undefined;
       }
 
-      // 遍历凭据，找到有效的 Provider
-      for (const cred of credentials) {
+      // Select deterministically; RDF document serialization order is not config semantics.
+      for (const cred of this.sortAiCredentialCandidates(credentials)) {
         if (!cred.provider) continue;
 
         const provider = await this.findProviderForCredential(db, context, cred.provider);
@@ -2134,7 +2185,7 @@ WHERE { ${deletePatterns.join(' ')} }
           proxyUrl: provider.proxyUrl || undefined,
           defaultModel,
           apiKey: cred.apiKey!,
-          credentialId: cred.id,
+          credentialId: cred.id!,
         };
       }
 

@@ -3,7 +3,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
-import type { WorkspaceUri } from '../../workspace/types';
+import type { WorkspaceRef } from '../../workspace/types';
 import { getPlatformApiBaseUrl } from '../../service/platform-ai-config';
 import { PACKAGE_ROOT } from '../../../runtime';
 import { GitWorktreeService } from './GitWorktreeService';
@@ -233,7 +233,7 @@ export class AcpAgentRuntime {
       method === 'auth/authorize';
   }
 
-  private async resolveWorkdir(threadId: string, workspace: WorkspaceUri, config: AgentRuntimeConfig): Promise<string> {
+  private async resolveWorkdir(threadId: string, workspace: WorkspaceRef, config: AgentRuntimeConfig): Promise<string> {
     const url = new URL(workspace);
     if (url.protocol !== 'file:') {
       throw new Error('ACP runtime only supports file:// workspaces; use pi Agent Runtime for Pod-backed runs');
@@ -244,7 +244,7 @@ export class AcpAgentRuntime {
 
     const repoRoot = decodeURIComponent(url.pathname);
     if (!fs.existsSync(repoRoot)) {
-      throw new Error(`workspace URI does not exist on this runner: ${workspace}`);
+      throw new Error(`workspace reference does not exist on this runner: ${workspace}`);
     }
 
     const worktree = config.worktree;

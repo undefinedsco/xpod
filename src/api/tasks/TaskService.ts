@@ -6,8 +6,8 @@ import {
   nowTimestamp,
 } from '../chatkit/types';
 import type { RunExecutionBackend } from '../runs/RunExecutionBackend';
-import { resolveDataResourceIri, type RunStore } from '../runs/store';
-import { isWorkspaceUri, type WorkspaceUri } from '../workspace/types';
+import { resolveDataResource, type RunStore } from '../runs/store';
+import { isWorkspaceRef, type WorkspaceRef } from '../workspace/types';
 import { TaskMaterializer, type MaterializedTaskRun } from './TaskMaterializer';
 import { TaskStatus, TaskTriggerKind, type TaskTriggerKindType } from './schema';
 import type { TaskAuthBindingSnapshot } from './TaskAuthBinding';
@@ -17,7 +17,7 @@ export interface CreateTaskInput {
   surfaceId?: string;
   title?: string;
   prompt: string;
-  workspace: WorkspaceUri;
+  workspace: WorkspaceRef;
   runner?: string;
   triggerKind?: TaskTriggerKindType;
   cron?: string;
@@ -56,17 +56,21 @@ export class TaskService<TContext = StoreContext> {
     if (!input.prompt.trim()) {
       throw new Error('Task prompt is required');
     }
-    if (!isWorkspaceUri(input.workspace)) {
-      throw new Error('Task workspace URI is required');
+    if (!isWorkspaceRef(input.workspace)) {
+      throw new Error('Task workspace reference is required');
     }
 
     const triggerKind = input.triggerKind ?? TaskTriggerKind.ONCE;
     this.validateTrigger(input, triggerKind);
     const authBinding = this.normalizeAuthBinding(input.authBinding);
 
-    const now = nowTimestamp();
-    const taskId = generateTaskResourceId(generateId('task'));
     const surfaceId = this.normalizeSurfaceId(input.surfaceId ?? 'default');
+    const now = nowTimestamp();
+    const taskId = generateTaskResourceId({
+      key: generateId('task'),
+      surfaceId,
+      createdAt: now,
+    });
     const thread = await this.createTaskThread({
       taskId,
       surfaceId,
@@ -82,7 +86,7 @@ export class TaskService<TContext = StoreContext> {
       surfaceId,
       title: input.title,
       prompt: input.prompt,
-      thread: this.resolveThreadUri(thread, context),
+      thread: this.resolveThreadResource(thread, context),
       workspace: input.workspace,
       runner: input.runner ?? 'pi:pi',
       status: TaskStatus.ACTIVE,
@@ -183,7 +187,7 @@ export class TaskService<TContext = StoreContext> {
     taskId: string;
     surfaceId: string;
     title?: string;
-    workspace: WorkspaceUri;
+    workspace: WorkspaceRef;
     runner: string;
     metadata?: Record<string, unknown>;
     context: TContext;
@@ -262,14 +266,14 @@ export class TaskService<TContext = StoreContext> {
     return value.trim().replace(/[^A-Za-z0-9._~-]+/g, '-').replace(/^-+|-+$/g, '') || 'default';
   }
 
-  private resolveThreadUri(thread: ThreadMetadata, context: TContext): string {
+  private resolveThreadResource(thread: ThreadMetadata, context: TContext): string {
     const podBaseUrl = this.resolvePodBaseUrl(context);
     const surfaceId = typeof thread.metadata?.surface_id === 'string'
       ? thread.metadata.surface_id
       : (typeof thread.metadata?.chat_id === 'string' ? thread.metadata.chat_id : DEFAULT_THREAD_CHAT_ID);
     if (podBaseUrl) {
       if (thread.id.includes('#') && !thread.id.startsWith('#')) {
-        return resolveDataResourceIri(podBaseUrl, thread.id);
+        return resolveDataResource(podBaseUrl, thread.id);
       }
       return `${podBaseUrl}/.data/task/${surfaceId}/index.ttl#${thread.id}`;
     }

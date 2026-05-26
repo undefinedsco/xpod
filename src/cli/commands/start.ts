@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { Supervisor } from '../../supervisor';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from '../../runtime';
-import { buildApiChildEnv, buildCssArgs, buildCssChildEnv } from '../../runtime/css-process';
+import { buildApiChildEnv, buildCssArgs, buildCssChildEnv, createCssChildRuntimeConfig } from '../../runtime/css-process';
 import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 
 interface StartArgs {
@@ -99,7 +99,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
 
     const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
 
-    // SP 模式：CSS_OIDC_ISSUER 显式指定外部 IdP；Cloud API 地址不再隐式当作 issuer。
+    // SP 模式：oidcIssuer 显式指定外部 IdP；Cloud API 地址不再隐式当作 issuer。
     const externalOidcIssuer = resolveExternalOidcIssuer(process.env);
 
     console.log('Starting xpod...');
@@ -112,9 +112,14 @@ export const startCommand: CommandModule<object, StartArgs> = {
 
     const supervisor = new Supervisor();
     const cssBinary = require.resolve('@solid/community-server/bin/server.js');
+    const cssRuntimeConfig = createCssChildRuntimeConfig({
+      configPath,
+      runtimeRoot: path.join(process.cwd(), '.xpod/runtime/legacy-css'),
+      externalOidcIssuer,
+    });
     const cssArgs = buildCssArgs({
       cssBinary,
-      configPath,
+      configPath: cssRuntimeConfig.configPath,
       cssModuleRoot: PACKAGE_ROOT,
       cssPort,
       baseUrl,
@@ -125,7 +130,8 @@ export const startCommand: CommandModule<object, StartArgs> = {
       name: 'css',
       command: childJsRuntime,
       args: cssArgs,
-      env: buildCssChildEnv(baseUrl, cssPort),
+      cwd: cssRuntimeConfig.cwd,
+      env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer),
     });
 
     const isDevMode = __filename.endsWith('.ts');

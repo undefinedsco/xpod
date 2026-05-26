@@ -194,7 +194,7 @@ services:
       API_HOST: "0.0.0.0"
       CSS_PORT: "5737"
       CSS_BASE_URL: http://localhost:${LOCAL_PORT:-5737}
-      CSS_OIDC_ISSUER: http://cloud:6300
+      oidcIssuer: http://cloud:6300
       CSS_LOGGING_LEVEL: info
       CSS_SPARQL_ENDPOINT: sqlite:/app/data/local-managed.sqlite
       CSS_IDENTITY_DB_URL: sqlite:/app/data/local-managed-identity.sqlite

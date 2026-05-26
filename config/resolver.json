@@ -69,6 +69,14 @@
           }
         },
         {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:rdfIndexPath",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "rdfIndexPath",
+            "defaultValue": "./rdf-index.sqlite"
+          }
+        },
+        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:minioAccessKey",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
@@ -288,10 +296,10 @@
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:idpUrl",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:oidcIssuer",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
-            "key": "idpUrl",
+            "key": "oidcIssuer",
             "defaultValue": ""
           }
         },

@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { AcpAgentRuntime } from '../../src/api/chatkit/runtime/AcpAgentRuntime';
 
 describe('ACP Thread Runtime', () => {
-  const workspaceUri = `file://localhost${process.cwd()}`;
+  const workspaceRef = `file://localhost${process.cwd()}`;
 
   it('streams agent_message_chunk from ACP session/update notifications', async () => {
     const rt = new AcpAgentRuntime();
@@ -15,7 +15,7 @@ describe('ACP Thread Runtime', () => {
         threadId: 'thread-acp-test',
         prompt: 'hello',
         config: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           runner: {
             type: 'codex',
             protocol: 'acp',
@@ -43,7 +43,7 @@ describe('ACP Thread Runtime', () => {
         threadId: 'thread-acp-auth-test',
         prompt: 'hello',
         config: {
-          workspace: workspaceUri,
+          workspace: workspaceRef,
           idleMs: 50,
           runner: {
             type: 'codex',

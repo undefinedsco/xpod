@@ -20,12 +20,17 @@ import {
 import type { SparqlUpdatePatch } from '@solid/community-server';
 import { readableToString } from '@solid/community-server/dist/util/StreamUtil';
 import { getLoggerFor } from 'global-logger-factory';
+import {
+  LocalFirstRdfRepresentationResolver,
+  type LocalFirstRdfRepresentationResolverLike,
+} from '../solidfs/LocalFirstRdfRepresentationResolver';
 
 export interface SparqlUpdateResourceStoreOptions {
   accessor: DataAccessor;
   identifierStrategy: IdentifierStrategy;
   auxiliaryStrategy: AuxiliaryStrategy;
   metadataStrategy: AuxiliaryStrategy;
+  localFirstRdfRepresentationResolver?: LocalFirstRdfRepresentationResolverLike;
 }
 
 /**
@@ -35,13 +40,28 @@ export interface SparqlUpdateResourceStoreOptions {
 export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
   private readonly generator = new SparqlGenerator();
   private readonly parser = new SparqlParser();
+  private readonly localFirstRdfRepresentationResolver: LocalFirstRdfRepresentationResolverLike;
   protected override readonly logger = getLoggerFor(this);
 
   public constructor(options: SparqlUpdateResourceStoreOptions) {
     super(options.accessor, options.identifierStrategy, options.auxiliaryStrategy, options.metadataStrategy);
+    this.localFirstRdfRepresentationResolver = options.localFirstRdfRepresentationResolver ??
+      new LocalFirstRdfRepresentationResolver({
+        accessor: options.accessor,
+        metadataStrategy: options.metadataStrategy,
+      });
     // Check if identifierStrategy has baseUrl property (SingleRootIdentifierStrategy)
     const strategy = options.identifierStrategy as unknown as { baseUrl?: string };
     this.logger.info(`SparqlUpdateResourceStore initialized with identifierStrategy: ${options.identifierStrategy.constructor.name}, baseUrl: ${strategy.baseUrl ?? 'N/A'}`);
+  }
+
+  public override async getRepresentation(identifier: ResourceIdentifier): Promise<Representation> {
+    const localRepresentation = await this.localFirstRdfRepresentationResolver.resolve(identifier);
+    if (localRepresentation) {
+      return localRepresentation;
+    }
+
+    return super.getRepresentation(identifier);
   }
 
   // @ts-expect-error Upstream signature returns never; we return ChangeMap for successful PATCH.

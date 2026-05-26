@@ -298,45 +298,64 @@ export class PgQuintStore extends BaseQuintStore {
    * 重写 open 方法，处理 PostgreSQL 特定的语法
    */
   override async open(): Promise<void> {
-    if (this.executor) {
+    if (this.opened) {
       return;
     }
 
-    this.executor = await this.createExecutor();
+    this.opening ??= this.openOnce().finally(() => {
+      this.opening = null;
+    });
 
-    // PostgreSQL 建表语法
-    await this.executor.exec(`
-      CREATE TABLE IF NOT EXISTS quints (
-        object_kind TEXT,
-        object_key TEXT,
-        object_text TEXT,
-        object_digest TEXT,
-        graph TEXT NOT NULL,
-        subject TEXT NOT NULL,
-        predicate TEXT NOT NULL,
-        object TEXT NOT NULL,
-        vector TEXT
-      )
-    `);
+    await this.opening;
+  }
 
-    await this.ensureTypedObjectSchema();
+  protected override async openOnce(): Promise<void> {
+    const executor = await this.createExecutor();
+    this.executor = executor;
 
-    const indexes = [
-      'CREATE INDEX IF NOT EXISTS idx_quints_graph ON quints (graph)',
-      'CREATE INDEX IF NOT EXISTS idx_quints_subject ON quints (subject)',
-      'CREATE INDEX IF NOT EXISTS idx_quints_predicate ON quints (predicate)',
-      'CREATE INDEX IF NOT EXISTS idx_quints_object_key ON quints (object_kind, object_key)',
-      'CREATE INDEX IF NOT EXISTS idx_quints_predicate_object_key ON quints (predicate, object_kind, object_key)',
-      'CREATE INDEX IF NOT EXISTS idx_quints_predicate_object_digest ON quints (predicate, object_kind, object_digest)',
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_quints_gspo_key ON quints (graph, subject, predicate, object_kind, object_key) WHERE object_key IS NOT NULL',
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_quints_gspo_digest ON quints (graph, subject, predicate, object_kind, object_digest) WHERE object_digest IS NOT NULL',
-      'CREATE INDEX IF NOT EXISTS idx_quints_gsp ON quints (graph, subject, predicate)',
-      'CREATE INDEX IF NOT EXISTS idx_quints_sp ON quints (subject, predicate)',
-      'CREATE INDEX IF NOT EXISTS idx_quints_gp ON quints (graph, predicate)',
-    ];
+    try {
+      // PostgreSQL 建表语法
+      await executor.exec(`
+        CREATE TABLE IF NOT EXISTS quints (
+          object_kind TEXT,
+          object_key TEXT,
+          object_text TEXT,
+          object_digest TEXT,
+          graph TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          predicate TEXT NOT NULL,
+          object TEXT NOT NULL,
+          vector TEXT
+        )
+      `);
 
-    for (const indexSql of indexes) {
-      await this.executor.exec(indexSql);
+      await this.ensureTypedObjectSchema();
+
+      const indexes = [
+        'CREATE INDEX IF NOT EXISTS idx_quints_graph ON quints (graph)',
+        'CREATE INDEX IF NOT EXISTS idx_quints_subject ON quints (subject)',
+        'CREATE INDEX IF NOT EXISTS idx_quints_predicate ON quints (predicate)',
+        'CREATE INDEX IF NOT EXISTS idx_quints_object_key ON quints (object_kind, object_key)',
+        'CREATE INDEX IF NOT EXISTS idx_quints_predicate_object_key ON quints (predicate, object_kind, object_key)',
+        'CREATE INDEX IF NOT EXISTS idx_quints_predicate_object_digest ON quints (predicate, object_kind, object_digest)',
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_quints_gspo_key ON quints (graph, subject, predicate, object_kind, object_key) WHERE object_key IS NOT NULL',
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_quints_gspo_digest ON quints (graph, subject, predicate, object_kind, object_digest) WHERE object_digest IS NOT NULL',
+        'CREATE INDEX IF NOT EXISTS idx_quints_gsp ON quints (graph, subject, predicate)',
+        'CREATE INDEX IF NOT EXISTS idx_quints_sp ON quints (subject, predicate)',
+        'CREATE INDEX IF NOT EXISTS idx_quints_gp ON quints (graph, predicate)',
+      ];
+
+      for (const indexSql of indexes) {
+        await executor.exec(indexSql);
+      }
+      this.opened = true;
+    } catch (error) {
+      await this.closeExecutor().catch(() => {});
+      if (this.executor === executor) {
+        this.executor = null;
+      }
+      this.opened = false;
+      throw error;
     }
   }
 

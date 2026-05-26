@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Readable } from 'node:stream';
+import arrayifyStream from 'arrayify-stream';
 import {
   RepresentationMetadata,
   INTERNAL_QUADS,
@@ -83,6 +84,156 @@ describe('MixDataAccessor presigned redirect', () => {
     expect(stream).toBe(rdfStream);
     expect(structured.getData).toHaveBeenCalledWith(rdfId);
     expect(unstructured.getData).not.toHaveBeenCalled();
+  });
+
+  it('should mirror RDF writes into local file storage while updating structured store', async () => {
+    const rdfMeta = new RepresentationMetadata(rdfId);
+    rdfMeta.contentType = INTERNAL_QUADS;
+    const quads = [{
+      subject: { termType: 'NamedNode', value: 'http://example.test/s' },
+      predicate: { termType: 'NamedNode', value: 'http://example.test/p' },
+      object: { termType: 'Literal', value: 'local-first', language: '', datatype: { termType: 'NamedNode', value: 'http://www.w3.org/2001/XMLSchema#string' }},
+      graph: { termType: 'DefaultGraph', value: '' },
+    }];
+
+    const structured = mockAccessor();
+    const unstructured = mockAccessor();
+    const mix = new MixDataAccessor(structured, unstructured, false);
+
+    await mix.writeDocument(rdfId, guardStream(Readable.from(quads)), rdfMeta);
+
+    expect(unstructured.writeDocument).toHaveBeenCalledTimes(1);
+    expect(structured.writeDocument).toHaveBeenCalledTimes(1);
+    expect((unstructured.writeDocument.mock.calls[0][2] as RepresentationMetadata).contentType).toBe('text/turtle');
+    expect((structured.writeDocument.mock.calls[0][2] as RepresentationMetadata).contentType).toBe(INTERNAL_QUADS);
+    const localChunks = await arrayifyStream(unstructured.writeDocument.mock.calls[0][1]);
+    const localText = localChunks
+      .map((chunk: Buffer | Uint8Array | string) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+      .join('');
+    expect(localText).toContain('local-first');
+  });
+
+  it('should serialize line-addressable N-Quads resources using their standard format', async () => {
+    const nquadsId: ResourceIdentifier = { path: 'http://localhost:3000/alice/data/graph.nq' };
+    const rdfMeta = new RepresentationMetadata(nquadsId);
+    rdfMeta.contentType = INTERNAL_QUADS;
+    const quads = [{
+      subject: { termType: 'NamedNode', value: 'http://example.test/s' },
+      predicate: { termType: 'NamedNode', value: 'http://example.test/p' },
+      object: { termType: 'Literal', value: 'nquads-local-first', language: '', datatype: { termType: 'NamedNode', value: 'http://www.w3.org/2001/XMLSchema#string' }},
+      graph: { termType: 'NamedNode', value: 'http://example.test/g' },
+    }];
+
+    const structured = mockAccessor();
+    const unstructured = mockAccessor();
+    const mix = new MixDataAccessor(structured, unstructured, false);
+
+    await mix.writeDocument(nquadsId, guardStream(Readable.from(quads)), rdfMeta);
+
+    expect((unstructured.writeDocument.mock.calls[0][2] as RepresentationMetadata).contentType).toBe('application/n-quads');
+    const localChunks = await arrayifyStream(unstructured.writeDocument.mock.calls[0][1]);
+    const localText = localChunks
+      .map((chunk: Buffer | Uint8Array | string) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+      .join('');
+    expect(localText).toContain('<http://example.test/g>');
+    expect(localText).toContain('nquads-local-first');
+  });
+
+  it('should keep binary objects on the unstructured backend while RDF mirrors use the local file backend', async () => {
+    const binaryMeta = new RepresentationMetadata(binaryId);
+    binaryMeta.contentType = 'image/png';
+    const rdfMeta = new RepresentationMetadata(rdfId);
+    rdfMeta.contentType = INTERNAL_QUADS;
+    const quads = [{
+      subject: { termType: 'NamedNode', value: 'http://example.test/s' },
+      predicate: { termType: 'NamedNode', value: 'http://example.test/p' },
+      object: { termType: 'Literal', value: 'split-backend', language: '', datatype: { termType: 'NamedNode', value: 'http://www.w3.org/2001/XMLSchema#string' }},
+      graph: { termType: 'DefaultGraph', value: '' },
+    }];
+
+    const structured = mockAccessor();
+    const remoteObjects = mockAccessor({
+      getMetadata: vi.fn().mockResolvedValue(binaryMeta),
+    });
+    const localRdfFiles = mockAccessor();
+    const mix = new MixDataAccessor(structured, remoteObjects, false, true, localRdfFiles);
+
+    await mix.writeDocument(binaryId, guardStream(Readable.from([ Buffer.from('png') ])), binaryMeta);
+    await mix.writeDocument(rdfId, guardStream(Readable.from(quads)), rdfMeta);
+
+    expect(remoteObjects.writeDocument).toHaveBeenCalledTimes(1);
+    expect(remoteObjects.writeDocument).toHaveBeenCalledWith(binaryId, expect.anything(), binaryMeta);
+    expect(localRdfFiles.writeDocument).toHaveBeenCalledTimes(1);
+    expect(localRdfFiles.writeDocument.mock.calls[0][0]).toBe(rdfId);
+    expect((localRdfFiles.writeDocument.mock.calls[0][2] as RepresentationMetadata).contentType).toBe('text/turtle');
+    expect(structured.writeDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it('should delete RDF local file mirrors together with structured data', async () => {
+    const rdfMeta = new RepresentationMetadata(rdfId);
+    rdfMeta.contentType = INTERNAL_QUADS;
+
+    const structured = mockAccessor({
+      getMetadata: vi.fn().mockResolvedValue(rdfMeta),
+    });
+    const unstructured = mockAccessor();
+    const localRdfFiles = mockAccessor();
+    const mix = new MixDataAccessor(structured, unstructured, false, true, localRdfFiles);
+
+    await mix.deleteResource(rdfId);
+
+    expect(localRdfFiles.deleteResource).toHaveBeenCalledWith(rdfId);
+    expect(unstructured.deleteResource).not.toHaveBeenCalled();
+    expect(structured.deleteResource).toHaveBeenCalledWith(rdfId);
+  });
+
+  it('should read existing by-line RDF files without first checking structured metadata', async () => {
+    const ttlId: ResourceIdentifier = { path: 'http://localhost:3000/alice/data.ttl' };
+    const localMeta = new RepresentationMetadata(ttlId);
+    localMeta.contentType = 'text/turtle';
+    const localStream = guardStream(Readable.from([ '<#me> <https://schema.org/name> "Alice" .' ]));
+
+    const structured = mockAccessor({
+      getMetadata: vi.fn().mockRejectedValue(new Error('structured metadata should not be read first')),
+    });
+    const unstructured = mockAccessor();
+    const localRdfFiles = mockAccessor({
+      getData: vi.fn().mockResolvedValue(localStream),
+      getMetadata: vi.fn().mockResolvedValue(localMeta),
+    });
+    const mix = new MixDataAccessor(structured, unstructured, false, true, localRdfFiles);
+
+    const document = await mix.getLocalRdfDocument(ttlId);
+    const chunks = await arrayifyStream(document.data);
+    const text = chunks
+      .map((chunk: Buffer | Uint8Array | string) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+      .join('');
+
+    expect(structured.getMetadata).not.toHaveBeenCalled();
+    expect(localRdfFiles.getData).toHaveBeenCalledWith(ttlId);
+    expect(unstructured.getData).not.toHaveBeenCalled();
+    expect(document.metadata.contentType).toBe('text/turtle');
+    expect(text).toContain('Alice');
+  });
+
+  it('should still delete structured RDF data when the local mirror is already missing', async () => {
+    const rdfMeta = new RepresentationMetadata(rdfId);
+    rdfMeta.contentType = INTERNAL_QUADS;
+
+    const structured = mockAccessor({
+      getMetadata: vi.fn().mockResolvedValue(rdfMeta),
+    });
+    const unstructured = mockAccessor();
+    const localRdfFiles = mockAccessor({
+      deleteResource: vi.fn().mockRejectedValue(new NotFoundHttpError()),
+    });
+    const mix = new MixDataAccessor(structured, unstructured, false, true, localRdfFiles);
+
+    await mix.deleteResource(rdfId);
+
+    expect(localRdfFiles.deleteResource).toHaveBeenCalledWith(rdfId);
+    expect(unstructured.deleteResource).not.toHaveBeenCalled();
+    expect(structured.deleteResource).toHaveBeenCalledWith(rdfId);
   });
 
   it('should cache metadata lookups within one request context', async () => {

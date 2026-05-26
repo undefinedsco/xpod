@@ -17,6 +17,7 @@ import {
   INTERNAL_QUADS,
   APPLICATION_JSON,
 } from "@solid/community-server"
+import { isSafeRdfDocumentContentType } from './rdf/RdfContentTypes'
 
 interface RepresentationPartialConvertingStoreOptions {
   outConverter?: RepresentationConverter
@@ -66,20 +67,12 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     const contentType = representation.metadata.contentType;
     const preferencesType = Object.keys(preferences.type || {})[0];
 
-    // Whitelist: Only allow conversion for known, pure RDF formats.
-    // Everything else (HTML, Markdown, Images, random XML/JSON) is treated as a file.
-    const SAFE_RDF_TYPES = new Set([
-      'text/turtle',
-      'application/ld+json',
-      'application/n-triples',
-      'application/n-quads',
-      'application/trig',
-      'text/n3',
-      'application/rdf+xml',
-      INTERNAL_QUADS // Necessary for GET requests to convert internal quads back to public formats
-    ]);
+    if (preferences.type?.[contentType]) {
+      this.logger.debug(`Not converting ${identifier.path}: ${contentType} already satisfies preferences`);
+      return false;
+    }
 
-    if (!SAFE_RDF_TYPES.has(contentType)) {
+    if (contentType !== INTERNAL_QUADS && !isSafeRdfDocumentContentType(contentType)) {
       this.logger.debug(`Not converting ${identifier.path}: ${contentType} is not in RDF whitelist`);
       return false;
     }

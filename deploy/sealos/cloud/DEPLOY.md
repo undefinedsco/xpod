@@ -95,7 +95,7 @@ discovery.undefineds.co   -> discovery
 
 ```bash
 CSS_BASE_URL=https://id.undefineds.co
-CSS_OIDC_ISSUER=https://id.undefineds.co
+oidcIssuer=https://id.undefineds.co
 CSS_ALLOWED_HOSTS=id.undefineds.co,pods.undefineds.co,api.undefineds.co
 CSS_BASE_STORAGE_DOMAIN=undefineds.site
 ```
@@ -105,7 +105,7 @@ CSS_BASE_STORAGE_DOMAIN=undefineds.site
 - `CSS_BASE_URL` 填系统主入口 `id.*`
 - `pods.*` 和 `api.*` 通过 `CSS_ALLOWED_HOSTS` 放行
 - `CSS_BASE_STORAGE_DOMAIN` 填 Pod / edge 节点的存储根域
-- 如果 `CSS_OIDC_ISSUER` 不单独配置，默认可与 `CSS_BASE_URL` 保持一致
+- 如果 `oidcIssuer` 不单独配置，默认可与 `CSS_BASE_URL` 保持一致
 
 ## 方案一：Sealos App Launchpad
 
@@ -143,7 +143,7 @@ NODE_ENV=production
 XPOD_EDITION=cloud
 XPOD_EDGE_NODES_ENABLED=true
 CSS_BASE_URL=https://id.undefineds.co
-CSS_OIDC_ISSUER=https://id.undefineds.co
+oidcIssuer=https://id.undefineds.co
 CSS_ALLOWED_HOSTS=id.undefineds.co,pods.undefineds.co,api.undefineds.co
 CSS_BASE_STORAGE_DOMAIN=undefineds.site
 CSS_LOGGING_LEVEL=info

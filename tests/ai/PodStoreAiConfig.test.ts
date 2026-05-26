@@ -215,6 +215,67 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config!.baseUrl).toBe('https://api.openai.com/v1');
     });
 
+    it('should select the default credential before storage order', async () => {
+      const credentials = [
+        {
+          ...mockCredentials[0],
+          id: 'cred-alpha',
+          provider: 'http://localhost:3000/test/settings/providers/openai.ttl',
+          apiKey: 'sk-alpha',
+        },
+        {
+          ...mockCredentials[0],
+          id: 'cred-custom',
+          provider: 'http://localhost:3000/test/settings/providers/custom.ttl',
+          apiKey: 'sk-custom',
+          isDefault: true,
+        },
+      ];
+      const providers = [
+        ...mockProviders,
+        {
+          id: 'custom',
+          displayName: 'Custom',
+          baseUrl: 'https://custom.example.com/v1',
+          proxyUrl: null,
+          '@id': 'http://localhost:3000/test/settings/providers/custom.ttl',
+        },
+      ];
+
+      let selectCallIndex = 0;
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => {
+          selectCallIndex++;
+          if (selectCallIndex === 1) {
+            return {
+              where: vi.fn().mockResolvedValue(credentials),
+            };
+          }
+          return Promise.resolve(providers);
+        }),
+      }));
+      mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providers.find((provider) => iri === provider['@id'] || iri.endsWith(`/settings/providers/${provider.id}.ttl`)));
+        }
+        return Promise.resolve(undefined);
+      });
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providers.find((provider) => id === provider.id || id === `/settings/providers/${provider.id}.ttl`));
+        }
+        return Promise.resolve(credentials.find((cred) => cred.id === id));
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toBeDefined();
+      expect(config!.providerId).toBe('custom');
+      expect(config!.apiKey).toBe('sk-custom');
+      expect(config!.baseUrl).toBe('https://custom.example.com/v1');
+      expect(config!.credentialId).toBe('cred-custom');
+    });
+
     it('should include proxyUrl when available on provider', async () => {
       const providerWithProxy = [
         {

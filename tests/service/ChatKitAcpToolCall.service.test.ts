@@ -38,7 +38,7 @@ class RecordingClientToolBackend implements RunExecutionBackend {
 }
 
 describe('ChatKitService + ACP tool call', () => {
-  const workspaceUri = `file://localhost${process.cwd()}`;
+  const workspaceRef = `file://localhost${process.cwd()}`;
 
   it('maps ACP request to client_tool_call and records threads.add_client_tool_output', async () => {
     const store = new InMemoryStore();
@@ -60,7 +60,7 @@ describe('ChatKitService + ACP tool call', () => {
     const createReq = {
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [ { type: 'input_text', text: 'hello' } ],
         },
@@ -154,7 +154,7 @@ describe('ChatKitService + ACP tool call', () => {
     const createResult = await svc.process(JSON.stringify({
       type: 'threads.create',
       params: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         input: {
           content: [{ type: 'input_text', text: 'needs client tool' }],
         },

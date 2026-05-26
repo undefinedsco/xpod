@@ -302,19 +302,19 @@ export class SearchHttpHandler extends HttpHandler {
       const query = `
         PREFIX cred: <${XPOD_CREDENTIAL.NAMESPACE}>
         PREFIX ai: <${XPOD_AI.NAMESPACE}>
-        SELECT ?apiKey ?baseUrl ?providerUri ?proxyUrl WHERE {
+        SELECT ?apiKey ?baseUrl ?provider ?proxyUrl WHERE {
           ?cred a cred:Credential ;
                 cred:service "ai" ;
                 cred:status "active" ;
                 cred:apiKey ?apiKey .
-          OPTIONAL { ?cred cred:provider ?providerUri }
+          OPTIONAL { ?cred cred:provider ?provider }
           OPTIONAL {
-            ?cred cred:provider ?providerUri .
-            ?providerUri ai:baseUrl ?baseUrl .
+            ?cred cred:provider ?provider .
+            ?provider ai:baseUrl ?baseUrl .
           }
           OPTIONAL {
-            ?cred cred:provider ?providerUri .
-            ?providerUri ai:proxyUrl ?proxyUrl .
+            ?cred cred:provider ?provider .
+            ?provider ai:proxyUrl ?proxyUrl .
           }
         } LIMIT 1
       `;
@@ -324,11 +324,11 @@ export class SearchHttpHandler extends HttpHandler {
       for await (const binding of bindingsStream) {
         const apiKey = binding.get('apiKey');
         const baseUrl = binding.get('baseUrl');
-        const providerUri = binding.get('providerUri');
+        const provider = binding.get('provider');
         const proxyUrl = binding.get('proxyUrl');
 
         if (apiKey) {
-          const providerName = normalizeAIConfigProviderId(providerUri?.value || 'google') || 'google';
+          const providerName = normalizeAIConfigProviderId(provider?.value || 'google') || 'google';
 
           return {
             apiKey: apiKey.value,

@@ -5,11 +5,11 @@ import { TaskAuthBindingService } from '../../src/api/tasks/TaskAuthBinding';
 import { TaskStatus, TaskTriggerKind } from '../../src/api/tasks/schema';
 import { RunStepType, RunStatus } from '../../src/api/runs/schema';
 import { extractResourceLocalId } from '../../src/api/runs/store';
-import { resolveTaskResourceIri } from '../../src/api/tasks/store';
+import { resolveTaskResource } from '../../src/api/tasks/store';
 import type { RunExecutionBackend, RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
 
-const workspaceUri = `file://localhost${process.cwd()}`;
+const workspaceRef = `file://localhost${process.cwd()}`;
 
 class RecordingRunBackend implements RunExecutionBackend {
   public inputs: RunExecutionInput[] = [];
@@ -54,7 +54,7 @@ describe('Task service Run materialization', () => {
     const result = await service.createTask({
       title: 'One shot',
       prompt: 'ship this once',
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:codex',
       triggerKind: TaskTriggerKind.ONCE,
       authBinding,
@@ -65,15 +65,15 @@ describe('Task service Run materialization', () => {
       surfaceId: 'default',
       status: TaskStatus.COMPLETED,
       triggerKind: TaskTriggerKind.ONCE,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:codex',
     });
     expect(result.run).toMatchObject({
       commandKind: 'task',
       surfaceId: 'default',
-      task: resolveTaskResourceIri('http://localhost/alice', result.task.id),
+      task: resolveTaskResource('http://localhost/alice', result.task.id),
       thread: result.task.thread,
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       status: RunStatus.COMPLETED,
       prompt: 'ship this once',
     });
@@ -83,7 +83,7 @@ describe('Task service Run materialization', () => {
       prompt: 'ship this once',
       authBindingId: 'task-auth-one-shot',
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         runner: { protocol: 'pi', type: 'codex' },
       },
     });
@@ -136,7 +136,7 @@ describe('Task service Run materialization', () => {
       surfaceId: 'secretary',
       title: 'Secretary task',
       prompt: 'review the workspace',
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:codex',
       triggerKind: TaskTriggerKind.ONCE,
       authBinding,
@@ -173,7 +173,7 @@ describe('Task service Run materialization', () => {
     const created = await service.createTask({
       title: 'Every minute',
       prompt: 'check status',
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:pi',
       triggerKind: TaskTriggerKind.INTERVAL,
       intervalSeconds: 60,
@@ -189,7 +189,7 @@ describe('Task service Run materialization', () => {
     expect(materialized).toHaveLength(1);
     expect(materialized[0].run).toMatchObject({
       commandKind: 'task',
-      task: resolveTaskResourceIri('http://localhost/alice', created.task.id),
+      task: resolveTaskResource('http://localhost/alice', created.task.id),
       status: RunStatus.COMPLETED,
     });
     const after = await store.loadTask(created.task.id, context);
@@ -221,7 +221,7 @@ describe('Task service Run materialization', () => {
     const created = await service.createTask({
       title: 'On deploy',
       prompt: 'summarize deploy',
-      workspace: workspaceUri,
+      workspace: workspaceRef,
       runner: 'pi:pi',
       triggerKind: TaskTriggerKind.EVENT,
       eventName: 'deploy.completed',

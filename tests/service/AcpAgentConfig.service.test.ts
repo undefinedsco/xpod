@@ -4,7 +4,7 @@ import { AcpAgentRuntime } from '../../src/api/chatkit/runtime/AcpAgentRuntime';
 import type { ResolvedAgentConfig } from '../../src/agents/config/types';
 
 describe('ACP Agent Config Passthrough', () => {
-  const workspaceUri = `file://localhost${process.cwd()}`;
+  const workspaceRef = `file://localhost${process.cwd()}`;
   const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-config-agent.js');
 
   it('passes agentConfig fields to session/new', async () => {
@@ -45,7 +45,7 @@ describe('ACP Agent Config Passthrough', () => {
       threadId: 'thread-config-test',
       prompt: 'ping',
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         idleMs: 50,
         runner: {
           type: 'codex',
@@ -91,7 +91,7 @@ describe('ACP Agent Config Passthrough', () => {
       threadId: 'thread-config-empty',
       prompt: 'ping',
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         idleMs: 50,
         runner: {
           type: 'codex',
@@ -121,7 +121,7 @@ describe('ACP Agent Config Passthrough', () => {
       threadId: 'thread-config-none',
       prompt: 'ping',
       config: {
-        workspace: workspaceUri,
+        workspace: workspaceRef,
         idleMs: 50,
         runner: {
           type: 'codex',

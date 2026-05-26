@@ -140,14 +140,14 @@ export function buildCredentialSparql(
 ): string {
   const credId = credentialId(provider);
   const subject = `<${resourceUrl}#${credId}>`;
-  const providerUri = `<${podUrl.replace(/\/$/, '')}${aiConfigProviderRef(provider)}>`;
+  const providerResource = `<${podUrl.replace(/\/$/, '')}${aiConfigProviderRef(provider)}>`;
 
   const deletes: string[] = [];
   const inserts: string[] = [
     `${subject} a cred:Credential`,
     `cred:service "ai"`,
     `cred:status "active"`,
-    `cred:provider ${providerUri}`,
+    `cred:provider ${providerResource}`,
   ];
   const optionals: string[] = [];
 

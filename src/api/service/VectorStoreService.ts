@@ -168,35 +168,35 @@ export class VectorStoreService {
     // 生成 ID
     const id = this.generateId();
     const now = new Date();
-    const containerUri = request.url;
+    const containerResource = request.url;
 
     // 插入记录（不再存储 model，model 从全局配置获取）
     await db.insert(VectorStore).values({
       id,
-      name: request.name || this.extractContainerName(containerUri),
-      container: containerUri,
+      name: request.name || this.extractContainerName(containerResource),
+      container: containerResource,
       chunkingStrategy: request.chunking_strategy || ChunkingStrategy.AUTO,
       status: VectorStoreStatus.COMPLETED,
       createdAt: now,
       lastActiveAt: now,
     });
 
-    this.logger.info(`Created vector store ${id} for container ${containerUri}`);
+    this.logger.info(`Created vector store ${id} for container ${containerResource}`);
 
     // 尝试注册 webhook 订阅（如果配置了 webhookUrl）
     if (this.webhookUrl && accessToken) {
       try {
-        await this.subscribeToContainer(containerUri, accessToken);
-        this.logger.info(`Subscribed to container ${containerUri} for webhook notifications`);
+        await this.subscribeToContainer(containerResource, accessToken);
+        this.logger.info(`Subscribed to container ${containerResource} for webhook notifications`);
       } catch (error) {
         // 订阅失败不影响 VectorStore 创建，只记录警告
-        this.logger.warn(`Failed to subscribe to container ${containerUri}: ${error}`);
+        this.logger.warn(`Failed to subscribe to container ${containerResource}: ${error}`);
       }
     }
 
     return this.buildVectorStoreObject(id, {
-      name: request.name || this.extractContainerName(containerUri),
-      containerUrl: containerUri,
+      name: request.name || this.extractContainerName(containerResource),
+      containerUrl: containerResource,
       chunkingStrategy: request.chunking_strategy || 'auto',
       status: 'completed',
       createdAt: now,
@@ -713,11 +713,11 @@ export class VectorStoreService {
     return parts[parts.length - 1] || '';
   }
 
-  private extractModelId(uri: string): string {
-    return normalizeAIConfigModelId(uri);
+  private extractModelId(modelResource: string): string {
+    return normalizeAIConfigModelId(modelResource);
   }
 
-  private modelUri(model: string, provider: string = 'openai'): string {
+  private modelResource(model: string, provider: string = 'openai'): string {
     return aiConfigModelRef(provider, model);
   }
 
@@ -888,7 +888,7 @@ export class VectorStoreService {
     // 检查模型是否有变化
     const modelChanged = currentModel && currentModel !== newModel;
 
-    const modelUri = this.modelUri(newModel);
+    const modelResource = this.modelResource(newModel);
 
     try {
       // 检查配置是否已存在
@@ -898,8 +898,8 @@ export class VectorStoreService {
       if (existingConfig) {
         // 更新现有配置
         await db.updateById(AIConfig, 'config', {
-          embeddingModel: modelUri,
-          previousModel: modelChanged ? this.modelUri(currentModel) : existingConfig.previousModel,
+          embeddingModel: modelResource,
+          previousModel: modelChanged ? this.modelResource(currentModel) : existingConfig.previousModel,
           migrationStatus: modelChanged ? MigrationStatus.IN_PROGRESS : existingConfig.migrationStatus,
           migrationProgress: modelChanged ? 0 : existingConfig.migrationProgress,
           updatedAt: new Date(),
@@ -908,7 +908,7 @@ export class VectorStoreService {
         // 创建新配置
         await db.insert(AIConfig).values({
           id: 'config',
-          embeddingModel: modelUri,
+          embeddingModel: modelResource,
           migrationStatus: MigrationStatus.IDLE,
           migrationProgress: 0,
           updatedAt: new Date(),

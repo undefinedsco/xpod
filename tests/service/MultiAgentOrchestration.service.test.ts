@@ -84,11 +84,11 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
   it('Secretary(codex) delegates to ClaudeCode + CodeBuddy and aggregates results', async () => {
     const node = process.execPath;
-    const workspaceUri = `file://localhost${root}`;
+    const workspaceRef = `file://localhost${root}`;
 
     const secretaryEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
-      params: { workspace: workspaceUri, input: undefined },
+      params: { workspace: workspaceRef, input: undefined },
       metadata: {
         runtime: {
           runner: {
@@ -107,7 +107,7 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
     const claudeEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
-      params: { workspace: workspaceUri, input: undefined },
+      params: { workspace: workspaceRef, input: undefined },
       metadata: {
         runtime: {
           runner: {
@@ -126,7 +126,7 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
     const buddyEvents = await collectStreamingEvents(service, {
       type: 'threads.create',
-      params: { workspace: workspaceUri, input: undefined },
+      params: { workspace: workspaceRef, input: undefined },
       metadata: {
         runtime: {
           runner: {

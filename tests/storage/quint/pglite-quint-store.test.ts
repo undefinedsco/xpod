@@ -57,6 +57,32 @@ describe('PgQuintStore (PGLite backend)', () => {
   });
 
   describe('Basic Operations', () => {
+    it('should not expose the store as open until schema initialization is complete', async () => {
+      const concurrentStore = new PgQuintStore({
+        driver: 'pglite',
+        dataDir: undefined,
+      });
+
+      try {
+        await Promise.all([
+          concurrentStore.open(),
+          concurrentStore.open(),
+          concurrentStore.open(),
+        ]);
+
+        await expect(concurrentStore.get({})).resolves.toEqual([]);
+        const rows = await (concurrentStore as any).executor.query<{ exists: boolean }>(`
+          SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'quints'
+          ) as exists
+        `);
+        expect(rows[0].exists).toBe(true);
+      } finally {
+        await concurrentStore.close();
+      }
+    });
+
     it('should store and retrieve a quint', async () => {
       const quint: any = {
         subject: namedNode('http://example.org/s1'),

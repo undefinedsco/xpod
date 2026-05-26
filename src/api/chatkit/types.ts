@@ -5,7 +5,7 @@
  * Based on https://github.com/openai/chatkit-python
  */
 
-import type { WorkspaceUri } from '../workspace/types';
+import type { WorkspaceRef } from '../workspace/types';
 
 // ============================================================================
 // Generic Types
@@ -43,10 +43,10 @@ export interface ThreadMetadata {
   title?: string;
   status: ThreadStatus;
   /**
-   * Workspace Container URI selected for this thread.
-   * The Solid schema stores this as an RDF URI relation.
+   * Workspace Container selected for this thread.
+   * The Solid schema stores this as the `workspace` RDF relation.
    */
-  workspace?: WorkspaceUri;
+  workspace?: WorkspaceRef;
   created_at: number;
   updated_at: number;
   metadata?: Record<string, unknown>;
@@ -58,21 +58,21 @@ export interface Thread extends ThreadMetadata {
 
 export const DEFAULT_THREAD_CHAT_ID = 'default';
 
-export type HttpIri = `http://${string}` | `https://${string}`;
+export type HttpResource = `http://${string}` | `https://${string}`;
 
 export interface ThreadSurfaceRef {
   thread_id: string;
   chat_id: string;
 }
 
-export interface ThreadIriRef {
-  thread_id: HttpIri;
+export interface ThreadResourceRef {
+  thread_id: HttpResource;
   chat_id?: never;
 }
 
-export type ThreadRef = ThreadSurfaceRef | ThreadIriRef;
+export type ThreadRef = ThreadSurfaceRef | ThreadResourceRef;
 
-export function isHttpIri(value: string): value is HttpIri {
+export function isHttpResource(value: string): value is HttpResource {
   return value.startsWith('http://') || value.startsWith('https://');
 }
 
@@ -81,7 +81,7 @@ export function isBaseRelativeThreadResourceId(value: string): boolean {
 }
 
 export function toThreadRef(params: { thread_id: string; chat_id?: string }): ThreadRef {
-  if (isHttpIri(params.thread_id)) {
+  if (isHttpResource(params.thread_id)) {
     return { thread_id: params.thread_id };
   }
   if (isBaseRelativeThreadResourceId(params.thread_id)) {
@@ -369,7 +369,7 @@ export interface ThreadsGetByIdReq extends BaseReq {
 
 export interface ThreadCreateParams {
   chat_id?: string;
-  workspace?: WorkspaceUri;
+  workspace?: WorkspaceRef;
   input?: UserMessageInput;
 }
 
@@ -436,7 +436,7 @@ export interface ThreadsRetryAfterItemReq extends BaseReq {
 
 export type ThreadUpdateParams = ThreadRef & {
   title?: string;
-  workspace?: WorkspaceUri;
+  workspace?: WorkspaceRef;
 };
 
 export interface ThreadsUpdateReq extends BaseReq {
