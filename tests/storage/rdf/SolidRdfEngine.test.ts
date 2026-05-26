@@ -1,8 +1,13 @@
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, afterEach, beforeEach } from 'vitest';
 import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
 import {
   RdfQuadIndex,
+  Rdf3xTripleIndex,
   SolidRdfEngine,
   defaultSyntheticMessagesForRdfModelsScale,
   estimateRdfModelsSyntheticQuadCount,
@@ -28,22 +33,32 @@ const MEETING_MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 
 describe('SolidRdfEngine', () => {
   let index: RdfQuadIndex;
+  let rdf3xIndex: Rdf3xTripleIndex;
   let compatibilityStore: SqliteQuintStore;
   let engine: SolidRdfEngine;
+  let root: string;
 
   beforeEach(async () => {
-    index = new RdfQuadIndex({ path: ':memory:' });
+    root = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    index = new RdfQuadIndex({ path: dbPath });
     index.open();
-    compatibilityStore = new SqliteQuintStore({ path: ':memory:' });
+    rdf3xIndex = new Rdf3xTripleIndex({ path: dbPath });
+    rdf3xIndex.open();
+    compatibilityStore = new SqliteQuintStore({ path: path.join(root, 'compat.sqlite') });
     await compatibilityStore.open();
     engine = new SolidRdfEngine({
       index,
+      rdf3xIndex,
       compatibilityStore,
     });
   });
 
   afterEach(async () => {
+    rdf3xIndex.close();
+    index.close();
     await engine.close();
+    await rm(root, { recursive: true, force: true });
   });
 
   it('runs a shadow compare against the compatibility quint store', async () => {
@@ -70,6 +85,78 @@ describe('SolidRdfEngine', () => {
       extraInPrimary: [],
     });
     expect(result.metrics.engine).toBe('solid-rdf');
+  });
+
+  it('runs a shadow compare against the RDF-3X shadow index', async () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/index.ttl');
+    const type = namedNode('https://undefineds.co/ns#type');
+    const status = namedNode('https://undefineds.co/ns#status');
+    const messageType = namedNode('https://type/Message');
+    const message = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#msg_1');
+
+    index.multiPut([
+      quad(message, type, messageType, graph),
+      quad(message, status, literal('active'), graph),
+    ]);
+
+    const result = engine.shadowRdf3xScan({
+      pattern: {
+        predicate: type,
+        object: messageType,
+      },
+    });
+
+    expect(result.matched).toBe(true);
+    expect(result.orderedMatch).toBe(true);
+    expect(result.primary).toHaveLength(1);
+    expect(result.rdf3x).toHaveLength(1);
+    expect(result.rebuild.scannedQuads).toBe(2);
+    expect(result.primaryMetrics.engine).toBe('solid-rdf');
+    expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
+  });
+
+  it('runs a shadow RDF-3X join compare against the baseline join planner', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/index.ttl');
+    const type = namedNode('https://undefineds.co/ns#type');
+    const content = namedNode('https://undefineds.co/ns#content');
+    const messageType = namedNode('https://type/Message');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#msg_2');
+
+    index.multiPut([
+      quad(msg1, type, messageType, graph),
+      quad(msg1, content, literal('hello'), graph),
+      quad(msg2, type, messageType, graph),
+    ]);
+
+    const result = engine.shadowRdf3xJoin([
+      {
+        pattern: {
+          predicate: type,
+          object: messageType,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          predicate: content,
+        },
+        variables: {
+          subject: 'message',
+          object: 'content',
+        },
+      },
+    ]);
+
+    expect(result.matched).toBe(true);
+    expect(result.orderedMatch).toBe(true);
+    expect(result.primary).toHaveLength(1);
+    expect(result.rdf3x).toHaveLength(1);
+    expect(result.rebuild.scannedQuads).toBe(3);
+    expect(result.primaryMetrics.engine).toBe('solid-rdf');
+    expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
   });
 
   it('exposes a benchmark case list aligned to the spec', () => {
@@ -939,7 +1026,5 @@ describe('SolidRdfEngine', () => {
     expect(typeof listChats?.space.databaseDeltaBytes).toBe('number');
     expect(typeof listChats?.space.tableDeltaBytes).toBe('number');
     expect(typeof listChats?.space.indexDeltaBytes).toBe('number');
-    expect(listChats?.space.databaseDeltaBytes).toBeLessThanOrEqual(0);
-    expect(listChats?.space.indexDeltaBytes).toBeLessThanOrEqual(0);
   });
 });

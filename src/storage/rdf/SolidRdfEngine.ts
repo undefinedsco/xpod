@@ -1,8 +1,16 @@
 import type { Quad } from '@rdfjs/types';
+import { termToId } from 'n3';
 import type { QuintPattern, QuintStore } from '../quint/types';
+import { isTerm } from '../quint/types';
 import type {
+  Rdf3xShadowJoinResult,
+  Rdf3xShadowScanResult,
+  Rdf3xTripleIndexOptions,
+  Rdf3xTriplePattern,
   RdfIndexPutOptions,
   RdfPatternQuery,
+  RdfQuadJoinOptions,
+  RdfQuadJoinPattern,
   RdfQuadIndexOptions,
   RdfQuadIndexScanResult,
   RdfSourceInput,
@@ -19,9 +27,10 @@ import type {
   RdfVectorSourceInput,
 } from './types';
 import { RdfQuadIndex } from './RdfQuadIndex';
+import { Rdf3xTripleIndex } from './Rdf3xTripleIndex';
 import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
-import { RdfShadowComparator } from './RdfShadowComparator';
+import { RdfShadowComparator, diffQuads } from './RdfShadowComparator';
 import { RdfLocalQueryEngine } from './RdfLocalQueryEngine';
 import type { RdfLocalQuery, RdfLocalQueryResult } from './types';
 
@@ -29,6 +38,7 @@ export interface SolidRdfEngineOptions {
   index: RdfQuadIndex | RdfQuadIndexOptions;
   textIndex?: RdfTextIndex | RdfTextIndexOptions;
   vectorIndex?: RdfVectorIndex | RdfVectorIndexOptions;
+  rdf3xIndex?: Rdf3xTripleIndex | Rdf3xTripleIndexOptions;
   compatibilityStore?: QuintStore;
   autoOpen?: boolean;
 }
@@ -37,9 +47,11 @@ export class SolidRdfEngine {
   public readonly index: RdfQuadIndex;
   public readonly textIndex?: RdfTextIndex;
   public readonly vectorIndex?: RdfVectorIndex;
+  public readonly rdf3xIndex?: Rdf3xTripleIndex;
   private readonly ownsIndex: boolean;
   private readonly ownsTextIndex: boolean;
   private readonly ownsVectorIndex: boolean;
+  private readonly ownsRdf3xIndex: boolean;
   private readonly compatibilityStore?: QuintStore;
   private shadowComparator?: RdfShadowComparator;
   private readonly queryEngine: RdfLocalQueryEngine;
@@ -70,6 +82,15 @@ export class SolidRdfEngine {
     } else {
       this.ownsVectorIndex = false;
     }
+    if (options.rdf3xIndex instanceof Rdf3xTripleIndex) {
+      this.rdf3xIndex = options.rdf3xIndex;
+      this.ownsRdf3xIndex = false;
+    } else if (isRdf3xTripleIndexOptions(options.rdf3xIndex)) {
+      this.rdf3xIndex = new Rdf3xTripleIndex(options.rdf3xIndex);
+      this.ownsRdf3xIndex = true;
+    } else {
+      this.ownsRdf3xIndex = false;
+    }
     this.compatibilityStore = options.compatibilityStore;
     this.queryEngine = new RdfLocalQueryEngine(this.index, this.textIndex, this.vectorIndex);
     if (this.compatibilityStore) {
@@ -84,9 +105,13 @@ export class SolidRdfEngine {
     this.index.open();
     this.textIndex?.open();
     this.vectorIndex?.open();
+    this.rdf3xIndex?.open();
   }
 
   public async close(): Promise<void> {
+    if (this.ownsRdf3xIndex) {
+      this.rdf3xIndex?.close();
+    }
     if (this.ownsVectorIndex) {
       this.vectorIndex?.close();
     }
@@ -156,6 +181,52 @@ export class SolidRdfEngine {
     return this.shadowComparator.compareScan(query);
   }
 
+  public shadowRdf3xScan(query: RdfPatternQuery): Rdf3xShadowScanResult {
+    const rdf3xIndex = this.requireRdf3xIndex();
+    const rdf3xPattern = toRdf3xTriplePattern(query.pattern);
+    const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
+    const primary = this.index.scan(query.pattern, query.options);
+    const rdf3x = rdf3xIndex.scan(rdf3xPattern, query.options);
+    const diff = diffQuads(rdf3x.quads, primary.quads);
+    const orderedMatch = canonicalQuadKeys(primary.quads).join('\n') === canonicalQuadKeys(rdf3x.quads).join('\n');
+    return {
+      matched: diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
+      orderedMatch,
+      primary: primary.quads,
+      rdf3x: rdf3x.quads,
+      diff: {
+        missingFromRdf3x: diff.extraInPrimary,
+        extraInRdf3x: diff.missingFromPrimary,
+      },
+      primaryMetrics: primary.metrics,
+      rdf3xMetrics: rdf3x.metrics,
+      rebuild,
+    };
+  }
+
+  public shadowRdf3xJoin(
+    patterns: RdfQuadJoinPattern[],
+    options?: RdfQuadJoinOptions,
+  ): Rdf3xShadowJoinResult {
+    const rdf3xIndex = this.requireRdf3xIndex();
+    const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
+    const primary = this.index.joinPatterns(patterns, options);
+    const rdf3x = rdf3xIndex.joinPatterns(patterns, options);
+    const primaryKeys = primary.bindings.map(canonicalBindingKey);
+    const rdf3xKeys = rdf3x.bindings.map(canonicalBindingKey);
+    const diff = diffBindingKeys(rdf3xKeys, primaryKeys);
+    return {
+      matched: diff.missingFromRdf3x.length === 0 && diff.extraInRdf3x.length === 0,
+      orderedMatch: primaryKeys.join('\n') === rdf3xKeys.join('\n'),
+      primary: primary.bindings,
+      rdf3x: rdf3x.bindings,
+      diff,
+      primaryMetrics: primary.metrics,
+      rdf3xMetrics: rdf3x.metrics,
+      rebuild,
+    };
+  }
+
   public supportsPrimary(query: RdfPatternQuery): boolean {
     try {
       this.index.scan(query.pattern, { ...query.options, limit: 0 });
@@ -178,6 +249,13 @@ export class SolidRdfEngine {
     }
     return this.vectorIndex;
   }
+
+  private requireRdf3xIndex(): Rdf3xTripleIndex {
+    if (!this.rdf3xIndex) {
+      throw new Error('SolidRdfEngine RDF-3X shadow index is not configured');
+    }
+    return this.rdf3xIndex;
+  }
 }
 
 function isRdfTextIndexOptions(input: RdfTextIndex | RdfTextIndexOptions | undefined): input is RdfTextIndexOptions {
@@ -186,4 +264,51 @@ function isRdfTextIndexOptions(input: RdfTextIndex | RdfTextIndexOptions | undef
 
 function isRdfVectorIndexOptions(input: RdfVectorIndex | RdfVectorIndexOptions | undefined): input is RdfVectorIndexOptions {
   return input !== undefined && !(input instanceof RdfVectorIndex) && typeof input.path === 'string';
+}
+
+function isRdf3xTripleIndexOptions(input: Rdf3xTripleIndex | Rdf3xTripleIndexOptions | undefined): input is Rdf3xTripleIndexOptions {
+  return input !== undefined && !(input instanceof Rdf3xTripleIndex) && typeof input.path === 'string';
+}
+
+function canonicalQuadKeys(quads: Quad[]): string[] {
+  return quads.map((quad) => [
+    termToId(quad.graph as any),
+    termToId(quad.subject as any),
+    termToId(quad.predicate as any),
+    termToId(quad.object as any),
+  ].join('\u001f'));
+}
+
+function canonicalBindingKey(binding: Record<string, unknown>): string {
+  return Object.keys(binding)
+    .sort()
+    .map((key) => `${key}=${termToId(binding[key] as any)}`)
+    .join('\u001f');
+}
+
+function diffBindingKeys(
+  rdf3xKeys: string[],
+  primaryKeys: string[],
+): Rdf3xShadowJoinResult['diff'] {
+  const rdf3xSet = new Set(rdf3xKeys);
+  const primarySet = new Set(primaryKeys);
+  return {
+    missingFromRdf3x: Array.from(primarySet).filter((key) => !rdf3xSet.has(key)).sort(),
+    extraInRdf3x: Array.from(rdf3xSet).filter((key) => !primarySet.has(key)).sort(),
+  };
+}
+
+function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
+  const result: Rdf3xTriplePattern = {};
+  for (const key of ['graph', 'subject', 'predicate', 'object'] as const) {
+    const value = pattern[key];
+    if (!value) {
+      continue;
+    }
+    if (!isTerm(value)) {
+      throw new Error(`SolidRdfEngine RDF-3X shadow scan only supports exact ${key} terms`);
+    }
+    result[key] = value;
+  }
+  return result;
 }

@@ -695,7 +695,6 @@ export class SqliteQuintStore {
         FROM sqlite_schema
         WHERE type IN ('table', 'index')
       `).all();
-      const schema = new Map(schemaRows.map((row) => [row.name, row]));
       const rows = this.sqlite!.prepare<{ name: string; pages: number; bytes: number | null }>(`
         SELECT name, COUNT(*) AS pages, SUM(pgsize) AS bytes
         FROM dbstat
@@ -703,19 +702,52 @@ export class SqliteQuintStore {
         ORDER BY name
       `).all();
 
-      return rows.map((row) => {
-        const object = schema.get(row.name);
-        const kind = quintSpaceObjectKind(row.name, object?.type, object?.tbl_name);
-        return {
-          name: row.name,
-          kind,
-          ...(object?.tbl_name && object.tbl_name !== row.name ? { tableName: object.tbl_name } : {}),
-          pages: row.pages,
-          bytes: row.bytes ?? 0,
-        };
-      });
+      if (rows.length > 0) {
+        const schema = new Map(schemaRows.map((row) => [row.name, row]));
+        return rows.map((row) => {
+          const object = schema.get(row.name);
+          const kind = quintSpaceObjectKind(row.name, object?.type, object?.tbl_name);
+          return {
+            name: row.name,
+            kind,
+            ...(object?.tbl_name && object.tbl_name !== row.name ? { tableName: object.tbl_name } : {}),
+            pages: row.pages,
+            bytes: row.bytes ?? 0,
+          };
+        });
+      }
+
+      return this.estimateSpaceObjectsFromSchema(schemaRows);
     } catch {
-      return [];
+      try {
+        const schemaRows = this.sqlite!.prepare<{ name: string; type: string; tbl_name: string }>(`
+          SELECT name, type, tbl_name
+          FROM sqlite_schema
+          WHERE type IN ('table', 'index')
+        `).all();
+        return this.estimateSpaceObjectsFromSchema(schemaRows);
+      } catch {
+        return [];
+      }
+    }
+  }
+
+  private estimateSpaceObjectsFromSchema(schemaRows: Array<{ name: string; type: string; tbl_name: string }>): StoreSpaceObject[] {
+    const pageSize = this.estimatePageSize();
+    return schemaRows.map((object) => ({
+      name: object.name,
+      kind: quintSpaceObjectKind(object.name, object.type, object.tbl_name),
+      ...(object.tbl_name && object.tbl_name !== object.name ? { tableName: object.tbl_name } : {}),
+      pages: 1,
+      bytes: pageSize,
+    }));
+  }
+
+  private estimatePageSize(): number {
+    try {
+      return this.sqlite!.prepare<{ page_size: number }>('PRAGMA page_size').get()?.page_size ?? 4096;
+    } catch {
+      return 4096;
     }
   }
 

@@ -950,7 +950,7 @@ export class RdfQuadIndex {
       quadCount: db.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads').get()?.count ?? 0,
       sourceCount: db.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_sources').get()?.count ?? 0,
       graphCount: db.prepare<{ count: number }>('SELECT COUNT(DISTINCT graph_id) AS count FROM rdf_quads').get()?.count ?? 0,
-      databaseBytes: databaseBytes || accountedBytes,
+      databaseBytes: accountedBytes || databaseBytes,
       tableBytes: sumSpaceObjects(spaceObjects, 'table'),
       indexBytes: sumSpaceObjects(spaceObjects, 'index'),
       spaceObjects,
@@ -1155,12 +1155,25 @@ export class RdfQuadIndex {
         SELECT name, type, tbl_name
         FROM sqlite_schema
         WHERE type IN ('table', 'index')
+          AND (
+            name IN ('rdf_terms', 'rdf_sources', 'rdf_quads')
+            OR tbl_name IN ('rdf_terms', 'rdf_sources', 'rdf_quads')
+          )
       `).all();
       const schema = new Map(schemaRows.map((row) => [row.name, row]));
       try {
         const rows = db.prepare<{ name: string; pages: number; bytes: number | null }>(`
           SELECT name, COUNT(*) AS pages, SUM(pgsize) AS bytes
           FROM dbstat
+          WHERE name IN (
+            SELECT name
+            FROM sqlite_schema
+            WHERE type IN ('table', 'index')
+              AND (
+                name IN ('rdf_terms', 'rdf_sources', 'rdf_quads')
+                OR tbl_name IN ('rdf_terms', 'rdf_sources', 'rdf_quads')
+              )
+          )
           GROUP BY name
           ORDER BY name
         `).all();

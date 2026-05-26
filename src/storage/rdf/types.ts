@@ -248,6 +248,38 @@ export interface Rdf3xIndexStats {
   spaceObjects: RdfIndexSpaceObject[];
 }
 
+export interface Rdf3xShadowBindingDiff {
+  missingFromRdf3x: string[];
+  extraInRdf3x: string[];
+}
+
+export interface Rdf3xShadowQuadDiff {
+  missingFromRdf3x: string[];
+  extraInRdf3x: string[];
+}
+
+export interface Rdf3xShadowScanResult {
+  matched: boolean;
+  orderedMatch: boolean;
+  primary: Quad[];
+  rdf3x: Quad[];
+  diff: Rdf3xShadowQuadDiff;
+  primaryMetrics: RdfIndexMetrics;
+  rdf3xMetrics: Rdf3xIndexMetrics;
+  rebuild: Rdf3xRebuildResult;
+}
+
+export interface Rdf3xShadowJoinResult {
+  matched: boolean;
+  orderedMatch: boolean;
+  primary: RdfBindingRow[];
+  rdf3x: RdfBindingRow[];
+  diff: Rdf3xShadowBindingDiff;
+  primaryMetrics: RdfIndexMetrics;
+  rdf3xMetrics: Rdf3xJoinMetrics;
+  rebuild: Rdf3xRebuildResult;
+}
+
 export type RdfQuadTupleConstraint = Partial<Record<RdfQueryPatternKey, Term>>;
 
 export interface RdfQuadTupleConstraintSource {
