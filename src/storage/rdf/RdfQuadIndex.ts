@@ -1157,26 +1157,54 @@ export class RdfQuadIndex {
         WHERE type IN ('table', 'index')
       `).all();
       const schema = new Map(schemaRows.map((row) => [row.name, row]));
-      const rows = db.prepare<{ name: string; pages: number; bytes: number | null }>(`
-        SELECT name, COUNT(*) AS pages, SUM(pgsize) AS bytes
-        FROM dbstat
-        GROUP BY name
-        ORDER BY name
-      `).all();
+      try {
+        const rows = db.prepare<{ name: string; pages: number; bytes: number | null }>(`
+          SELECT name, COUNT(*) AS pages, SUM(pgsize) AS bytes
+          FROM dbstat
+          GROUP BY name
+          ORDER BY name
+        `).all();
 
-      return rows.map((row) => {
-        const object = schema.get(row.name);
-        const kind = rdfSpaceObjectKind(row.name, object?.type, object?.tbl_name);
-        return {
-          name: row.name,
-          kind,
-          ...(object?.tbl_name && object.tbl_name !== row.name ? { tableName: object.tbl_name } : {}),
-          pages: row.pages,
-          bytes: row.bytes ?? 0,
-        };
-      });
+        if (rows.length > 0) {
+          return rows.map((row) => {
+            const object = schema.get(row.name);
+            const kind = rdfSpaceObjectKind(row.name, object?.type, object?.tbl_name);
+            return {
+              name: row.name,
+              kind,
+              ...(object?.tbl_name && object.tbl_name !== row.name ? { tableName: object.tbl_name } : {}),
+              pages: row.pages,
+              bytes: row.bytes ?? 0,
+            };
+          });
+        }
+      } catch {
+        // Some SQLite builds do not expose dbstat for in-memory databases.
+      }
+
+      return this.estimateSpaceObjectsFromSchema(schemaRows);
     } catch {
       return [];
+    }
+  }
+
+  private estimateSpaceObjectsFromSchema(schemaRows: Array<{ name: string; type: string; tbl_name: string }>): RdfIndexSpaceObject[] {
+    const pageSize = this.estimatePageSize();
+    return schemaRows.map((object) => ({
+      name: object.name,
+      kind: rdfSpaceObjectKind(object.name, object.type, object.tbl_name),
+      ...(object.tbl_name && object.tbl_name !== object.name ? { tableName: object.tbl_name } : {}),
+      pages: 1,
+      bytes: pageSize,
+      estimated: true,
+    }));
+  }
+
+  private estimatePageSize(): number {
+    try {
+      return this.requireDb().prepare<{ page_size: number }>('PRAGMA page_size').get()?.page_size ?? 4096;
+    } catch {
+      return 4096;
     }
   }
 
@@ -1208,8 +1236,11 @@ export class RdfQuadIndex {
       );
 
       CREATE INDEX IF NOT EXISTS rdf_quads_spog ON rdf_quads(subject_id, predicate_id, object_id, graph_id);
+      CREATE INDEX IF NOT EXISTS rdf_quads_sopg ON rdf_quads(subject_id, object_id, predicate_id, graph_id);
+      CREATE INDEX IF NOT EXISTS rdf_quads_psog ON rdf_quads(predicate_id, subject_id, object_id, graph_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_posg ON rdf_quads(predicate_id, object_id, subject_id, graph_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_ospg ON rdf_quads(object_id, subject_id, predicate_id, graph_id);
+      CREATE INDEX IF NOT EXISTS rdf_quads_opsg ON rdf_quads(object_id, predicate_id, subject_id, graph_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_gspo ON rdf_quads(graph_id, subject_id, predicate_id, object_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_gpos ON rdf_quads(graph_id, predicate_id, object_id, subject_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_source ON rdf_quads(source_file_id);
@@ -1919,6 +1950,7 @@ export class RdfQuadIndex {
     if (has('graph_id') && has('subject_id')) return 'GSPO';
     if (has('graph_id') && has('predicate_id')) return 'GPOS';
     if (has('subject_id') && has('predicate_id')) return 'SPOG';
+    if (has('subject_id') && has('object_id')) return 'SOPG';
     if (has('predicate_id') && has('object_id')) return 'POSG';
     if (has('object_id') && has('subject_id')) return 'OSPG';
     if (has('subject_id')) return 'SPOG';

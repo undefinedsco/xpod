@@ -88,6 +88,12 @@ describe('RdfQuadIndex', () => {
       kind: 'table',
     });
     expect(stats.spaceObjects.some((object) => object.kind === 'index' && object.tableName?.startsWith('rdf_'))).toBe(true);
+    expect(objectsByName.get('rdf_quads_spog')).toMatchObject({ kind: 'index' });
+    expect(objectsByName.get('rdf_quads_sopg')).toMatchObject({ kind: 'index' });
+    expect(objectsByName.get('rdf_quads_psog')).toMatchObject({ kind: 'index' });
+    expect(objectsByName.get('rdf_quads_posg')).toMatchObject({ kind: 'index' });
+    expect(objectsByName.get('rdf_quads_ospg')).toMatchObject({ kind: 'index' });
+    expect(objectsByName.get('rdf_quads_opsg')).toMatchObject({ kind: 'index' });
   });
 
   it('reports literal datatype distribution for planner statistics', () => {

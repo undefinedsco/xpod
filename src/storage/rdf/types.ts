@@ -100,6 +100,7 @@ export interface RdfIndexSpaceObject {
   tableName?: string;
   bytes: number;
   pages: number;
+  estimated?: boolean;
 }
 
 export interface RdfLiteralDatatypeDistribution {
