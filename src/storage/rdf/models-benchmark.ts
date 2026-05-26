@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import { DataFactory } from 'n3';
 import { termToId } from 'n3';
-import type { Quad } from '@rdfjs/types';
+import type { Quad, Term } from '@rdfjs/types';
 import type { QuintPattern, QueryOptions, QuintStore, StoreStats } from '../quint/types';
 import { isTerm } from '../quint/types';
 import type {
   Rdf3xIndexMetrics,
   Rdf3xIndexStats,
+  Rdf3xNumericObjectRangePattern,
+  Rdf3xTriplePattern,
   RdfBindingRow,
   RdfIndexMetrics,
   RdfIndexStats,
@@ -16,6 +18,7 @@ import type {
 } from './types';
 import { canonicalQuadKey, diffQuads } from './RdfShadowComparator';
 import type { SolidRdfEngine } from './SolidRdfEngine';
+import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 
 const { namedNode, literal } = DataFactory;
 
@@ -1277,23 +1280,16 @@ function unsupportedRdf3xPatternReason(pattern: QuintPattern): string | undefine
     if (key === 'graph' && isGraphPrefixPattern(value)) {
       continue;
     }
+    if (key === 'object' && isSupportedRdf3xNumericObjectRangePattern(value)) {
+      continue;
+    }
     return `unsupported ${key} pattern for RDF-3X shadow`;
   }
   return undefined;
 }
 
-function rdf3xPatternFor(pattern: QuintPattern): {
-  graph?: import('@rdfjs/types').Term | { $startsWith: string };
-  subject?: import('@rdfjs/types').Term;
-  predicate?: import('@rdfjs/types').Term;
-  object?: import('@rdfjs/types').Term;
-} {
-  const result: {
-    graph?: import('@rdfjs/types').Term | { $startsWith: string };
-    subject?: import('@rdfjs/types').Term;
-    predicate?: import('@rdfjs/types').Term;
-    object?: import('@rdfjs/types').Term;
-  } = {};
+function rdf3xPatternFor(pattern: QuintPattern): Rdf3xTriplePattern {
+  const result: Rdf3xTriplePattern = {};
   for (const key of ['graph', 'subject', 'predicate', 'object'] as const) {
     const value = pattern[key];
     if (!value) {
@@ -1301,6 +1297,10 @@ function rdf3xPatternFor(pattern: QuintPattern): {
     }
     if (key === 'graph' && isGraphPrefixPattern(value)) {
       result.graph = { $startsWith: value.$startsWith };
+      continue;
+    }
+    if (key === 'object' && isSupportedRdf3xNumericObjectRangePattern(value)) {
+      result.object = value;
       continue;
     }
     if (!isTerm(value as any)) {
@@ -1316,6 +1316,39 @@ function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } 
     && typeof value === 'object'
     && '$startsWith' in value
     && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
+}
+
+function isSupportedRdf3xNumericObjectRangePattern(value: unknown): value is Rdf3xNumericObjectRangePattern {
+  if (value === null || typeof value !== 'object' || 'termType' in value) {
+    return false;
+  }
+  let hasRange = false;
+  for (const operator of ['$gt', '$gte', '$lt', '$lte'] as const) {
+    const rangeValue = (value as Rdf3xNumericObjectRangePattern)[operator];
+    if (rangeValue === undefined) {
+      continue;
+    }
+    hasRange = true;
+    if (numericRangeValue(rangeValue) === undefined) {
+      return false;
+    }
+  }
+  return hasRange;
+}
+
+function numericRangeValue(value: Term | string | number): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  if (value.termType !== 'Literal' || !isRdfNumericDatatype(value.datatype.value)) {
+    return undefined;
+  }
+  const parsed = rdfNumericValue(value.value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isSemanticallyOrdered(options?: QueryOptions): boolean {

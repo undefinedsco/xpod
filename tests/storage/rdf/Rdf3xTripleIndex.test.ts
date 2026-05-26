@@ -101,6 +101,46 @@ describe('Rdf3xTripleIndex', () => {
     expect(graphScan.metrics.queryPlan).toContain('GraphMembershipFilter');
   });
 
+  it('uses numeric semantics for typed literal range scans', () => {
+    const xsdInteger = namedNode('http://www.w3.org/2001/XMLSchema#integer');
+    const priority = namedNode('https://undefineds.co/ns#priority');
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    quadIndex.multiPut([
+      quad(namedNode('https://run/2'), priority, literal('2', xsdInteger), graph),
+      quad(namedNode('https://run/10'), priority, literal('10', xsdInteger), graph),
+      quad(namedNode('https://run/lexical'), priority, literal('9'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const baseline = quadIndex.scan({
+      graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+      predicate: priority,
+      object: { $gt: literal('9', xsdInteger) },
+    }, { order: ['subject'] });
+    const scan = rdf3x.scan({
+      graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+      predicate: priority,
+      object: { $gt: literal('9', xsdInteger) },
+    }, { order: ['subject'] });
+
+    expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
+    expect(scan.quads.map((q) => q.subject.value)).toEqual(['https://run/10']);
+    expect(scan.metrics.indexChoice).toBe('POS');
+    expect(scan.metrics.queryPlan).toContain('NumericRange(object$gt)');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_numeric ON object_numeric.id = idx.object_id');
+    expect(scan.metrics.queryPlan?.join('\n')).not.toContain('idx.object_id = ?');
+    expect(rdf3x.estimateCardinality({
+      graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+      predicate: priority,
+      object: { $gt: literal('9', xsdInteger) },
+    })).toMatchObject({
+      uniqueTriples: 1,
+      matchingQuads: 1,
+      source: 'exact-membership',
+      indexChoice: 'source-membership',
+    });
+  });
+
   it('uses projection stats for exact triple-pattern cardinality estimates', () => {
     const status = namedNode('https://undefineds.co/ns#status');
     const open = literal('open');

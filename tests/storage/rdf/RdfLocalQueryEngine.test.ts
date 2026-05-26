@@ -171,7 +171,7 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.plan).not.toContain('Sort');
     expect(result.metrics.plan).not.toContain('Limit');
     expect(result.metrics.returnedRows).toBe(1);
-    expect(result.metrics.joinedRows).toBe(2);
+    expect(result.metrics.joinedRows).toBe(1);
   });
 
   it('pushes safe required BGP filters into the SQL self-join', () => {

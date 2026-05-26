@@ -175,11 +175,18 @@ export interface Rdf3xGraphPrefixPattern {
   $startsWith: string;
 }
 
+export interface Rdf3xNumericObjectRangePattern {
+  $gt?: Term | string | number;
+  $gte?: Term | string | number;
+  $lt?: Term | string | number;
+  $lte?: Term | string | number;
+}
+
 export interface Rdf3xTriplePattern {
   graph?: Term | Rdf3xGraphPrefixPattern;
   subject?: Term;
   predicate?: Term;
-  object?: Term;
+  object?: Term | Rdf3xNumericObjectRangePattern;
 }
 
 export interface Rdf3xTripleScanOptions {

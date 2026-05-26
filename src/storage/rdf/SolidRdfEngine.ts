@@ -3,6 +3,7 @@ import { termToId } from 'n3';
 import type { QuintPattern, QuintStore } from '../quint/types';
 import { isTerm } from '../quint/types';
 import type {
+  Rdf3xNumericObjectRangePattern,
   Rdf3xShadowJoinResult,
   Rdf3xShadowScanResult,
   Rdf3xTripleIndexOptions,
@@ -310,6 +311,10 @@ function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
         result.graph = { $startsWith: value.$startsWith };
         continue;
       }
+      if (key === 'object' && isNumericObjectRangeOperator(value)) {
+        result.object = value;
+        continue;
+      }
       throw new Error(`SolidRdfEngine RDF-3X shadow scan only supports exact ${key} terms${key === 'graph' ? ' or graph $startsWith' : ''}`);
     }
     result[key] = value;
@@ -322,4 +327,11 @@ function isStartsWithOperator(value: unknown): value is { $startsWith: string } 
     && typeof value === 'object'
     && '$startsWith' in value
     && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
+}
+
+function isNumericObjectRangeOperator(value: unknown): value is Rdf3xNumericObjectRangePattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && ['$gt', '$gte', '$lt', '$lte'].some((operator) => operator in value);
 }

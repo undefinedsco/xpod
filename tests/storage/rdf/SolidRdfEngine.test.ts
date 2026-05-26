@@ -149,6 +149,34 @@ describe('SolidRdfEngine', () => {
     expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
   });
 
+  it('runs a shadow compare against the RDF-3X shadow index with numeric object ranges', () => {
+    const xsdInteger = namedNode(XSD_INTEGER);
+    const priority = namedNode(`${UDFS}priority`);
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+
+    index.multiPut([
+      quad(namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_2'), priority, literal('2', xsdInteger), graph),
+      quad(namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_10'), priority, literal('10', xsdInteger), graph),
+      quad(namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_lexical'), priority, literal('9'), graph),
+    ]);
+
+    const result = engine.shadowRdf3xScan({
+      pattern: {
+        graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+        predicate: priority,
+        object: { $gt: literal('9', xsdInteger) },
+      },
+      options: { order: ['subject'] },
+    });
+
+    expect(result.matched).toBe(true);
+    expect(result.orderedMatch).toBe(true);
+    expect(result.primary).toHaveLength(1);
+    expect(result.rdf3x.map((q) => q.subject.value)).toEqual(['https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_10']);
+    expect(result.rdf3xMetrics.indexChoice).toBe('POS');
+    expect(result.rdf3xMetrics.queryPlan?.join('\n')).toContain('NumericRange(object$gt)');
+  });
+
   it('runs a shadow RDF-3X join compare against the baseline join planner', () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/index.ttl');
     const type = namedNode('https://undefineds.co/ns#type');
@@ -1149,6 +1177,12 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
       ),
       quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode(`${UDFS}priority`),
+        literal('10', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
         namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
         namedNode(RDF_TYPE),
         namedNode(`${UDFS}Provider`),
@@ -1166,11 +1200,20 @@ describe('SolidRdfEngine', () => {
 
     expect(report.engine).toBe('rdf3x-shadow');
     expect(report.rebuild.scannedQuads).toBe(quads.length);
-    expect(report.skippedCases).toContain('runs by numeric priority');
+    expect(report.skippedCases).not.toContain('runs by numeric priority');
     expect(numericPriority).toMatchObject({
-      supported: false,
-      unsupportedReason: 'unsupported object pattern for RDF-3X shadow',
+      supported: true,
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: { indexChoice: 'POS', matchedRows: 1, returnedRows: 1 },
+      },
     });
+    expect(numericPriority?.unsupportedReason).toBeUndefined();
+    expect(numericPriority?.rdf3x?.physicalPlan).toContain('NumericRange(object$gt)');
+    expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('JOIN rdf_terms object_numeric ON object_numeric.id = idx.object_id');
     expect(listChats).toMatchObject({
       supported: true,
       matched: true,
