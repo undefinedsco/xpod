@@ -3,6 +3,7 @@ import { termToId } from 'n3';
 import type { QuintPattern, QuintStore } from '../quint/types';
 import { isTerm } from '../quint/types';
 import type {
+  Rdf3xNumericObjectRangePattern,
   Rdf3xShadowJoinResult,
   Rdf3xShadowScanResult,
   Rdf3xTripleIndexOptions,
@@ -306,9 +307,31 @@ function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
       continue;
     }
     if (!isTerm(value)) {
-      throw new Error(`SolidRdfEngine RDF-3X shadow scan only supports exact ${key} terms`);
+      if (key === 'graph' && isStartsWithOperator(value)) {
+        result.graph = { $startsWith: value.$startsWith };
+        continue;
+      }
+      if (key === 'object' && isNumericObjectRangeOperator(value)) {
+        result.object = value;
+        continue;
+      }
+      throw new Error(`SolidRdfEngine RDF-3X shadow scan only supports exact ${key} terms${key === 'graph' ? ' or graph $startsWith' : ''}`);
     }
     result[key] = value;
   }
   return result;
+}
+
+function isStartsWithOperator(value: unknown): value is { $startsWith: string } {
+  return value !== null
+    && typeof value === 'object'
+    && '$startsWith' in value
+    && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
+}
+
+function isNumericObjectRangeOperator(value: unknown): value is Rdf3xNumericObjectRangePattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && ['$gt', '$gte', '$lt', '$lte'].some((operator) => operator in value);
 }

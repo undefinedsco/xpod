@@ -101,6 +101,46 @@ describe('Rdf3xTripleIndex', () => {
     expect(graphScan.metrics.queryPlan).toContain('GraphMembershipFilter');
   });
 
+  it('uses numeric semantics for typed literal range scans', () => {
+    const xsdInteger = namedNode('http://www.w3.org/2001/XMLSchema#integer');
+    const priority = namedNode('https://undefineds.co/ns#priority');
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    quadIndex.multiPut([
+      quad(namedNode('https://run/2'), priority, literal('2', xsdInteger), graph),
+      quad(namedNode('https://run/10'), priority, literal('10', xsdInteger), graph),
+      quad(namedNode('https://run/lexical'), priority, literal('9'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const baseline = quadIndex.scan({
+      graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+      predicate: priority,
+      object: { $gt: literal('9', xsdInteger) },
+    }, { order: ['subject'] });
+    const scan = rdf3x.scan({
+      graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+      predicate: priority,
+      object: { $gt: literal('9', xsdInteger) },
+    }, { order: ['subject'] });
+
+    expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
+    expect(scan.quads.map((q) => q.subject.value)).toEqual(['https://run/10']);
+    expect(scan.metrics.indexChoice).toBe('POS');
+    expect(scan.metrics.queryPlan).toContain('NumericRange(object$gt)');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_numeric ON object_numeric.id = idx.object_id');
+    expect(scan.metrics.queryPlan?.join('\n')).not.toContain('idx.object_id = ?');
+    expect(rdf3x.estimateCardinality({
+      graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+      predicate: priority,
+      object: { $gt: literal('9', xsdInteger) },
+    })).toMatchObject({
+      uniqueTriples: 1,
+      matchingQuads: 1,
+      source: 'exact-membership',
+      indexChoice: 'source-membership',
+    });
+  });
+
   it('uses projection stats for exact triple-pattern cardinality estimates', () => {
     const status = namedNode('https://undefineds.co/ns#status');
     const open = literal('open');
@@ -127,6 +167,44 @@ describe('Rdf3xTripleIndex', () => {
     expect(rdf3x.estimateCardinality({ graph: chatGraph, predicate: status, object: open })).toMatchObject({
       uniqueTriples: 2,
       matchingQuads: 2,
+      source: 'exact-membership',
+      indexChoice: 'source-membership',
+    });
+    expect(rdf3x.estimateCardinality({
+      graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+      predicate: status,
+      object: open,
+    })).toMatchObject({
+      uniqueTriples: 2,
+      matchingQuads: 2,
+      source: 'exact-membership',
+      indexChoice: 'source-membership',
+    });
+  });
+
+  it('matches baseline scans for graph prefix membership filters without dropping triple constraints', () => {
+    const status = namedNode('https://undefineds.co/ns#status');
+    const open = literal('open');
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const message1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#m1');
+    const message2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#m2');
+
+    quadIndex.multiPut([
+      quad(message1, status, open, chatGraph),
+      quad(message1, status, open, taskGraph),
+      quad(message2, status, open, chatGraph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const prefix = 'https://pod.example/alice/.data/chat/';
+    const baseline = quadIndex.scan({ graph: { $startsWith: prefix }, predicate: status, object: open });
+    const scan = rdf3x.scan({ graph: { $startsWith: prefix }, predicate: status, object: open });
+
+    expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('GraphPrefixMembershipFilter');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('Rdf3xPermutationScan(POS)');
+    expect(rdf3x.estimateCardinality({ graph: { $startsWith: prefix }, predicate: status, object: open })).toMatchObject({
       source: 'exact-membership',
       indexChoice: 'source-membership',
     });

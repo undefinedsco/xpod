@@ -17,6 +17,7 @@ import {
   rdfModelsBenchmarkScaleTargetQuads,
   rdfModelsBenchmarkSyntheticPodCount,
   runRdfModelsBenchmark,
+  runRdfModelsRdf3xShadowBenchmark,
   runRdfModelsShadowBenchmark,
 } from '../../../src/storage/rdf';
 
@@ -115,6 +116,67 @@ describe('SolidRdfEngine', () => {
     expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
   });
 
+  it('runs a shadow compare against the RDF-3X shadow index with graph prefix filters', async () => {
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const type = namedNode('https://undefineds.co/ns#type');
+    const status = namedNode('https://undefineds.co/ns#status');
+    const messageType = namedNode('https://type/Message');
+    const message1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const message2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+    index.multiPut([
+      quad(message1, type, messageType, chatGraph),
+      quad(message1, status, literal('active'), chatGraph),
+      quad(message1, status, literal('queued'), taskGraph),
+      quad(message2, type, messageType, chatGraph),
+    ]);
+
+    const result = engine.shadowRdf3xScan({
+      pattern: {
+        graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+        predicate: status,
+        object: literal('active'),
+      },
+    });
+
+    expect(result.matched).toBe(true);
+    expect(result.orderedMatch).toBe(true);
+    expect(result.primary).toHaveLength(1);
+    expect(result.rdf3x).toHaveLength(1);
+    expect(result.rdf3xMetrics.queryPlan?.join('\n')).toContain('GraphPrefixMembershipFilter');
+    expect(result.primaryMetrics.engine).toBe('solid-rdf');
+    expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
+  });
+
+  it('runs a shadow compare against the RDF-3X shadow index with numeric object ranges', () => {
+    const xsdInteger = namedNode(XSD_INTEGER);
+    const priority = namedNode(`${UDFS}priority`);
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+
+    index.multiPut([
+      quad(namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_2'), priority, literal('2', xsdInteger), graph),
+      quad(namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_10'), priority, literal('10', xsdInteger), graph),
+      quad(namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_lexical'), priority, literal('9'), graph),
+    ]);
+
+    const result = engine.shadowRdf3xScan({
+      pattern: {
+        graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+        predicate: priority,
+        object: { $gt: literal('9', xsdInteger) },
+      },
+      options: { order: ['subject'] },
+    });
+
+    expect(result.matched).toBe(true);
+    expect(result.orderedMatch).toBe(true);
+    expect(result.primary).toHaveLength(1);
+    expect(result.rdf3x.map((q) => q.subject.value)).toEqual(['https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_10']);
+    expect(result.rdf3xMetrics.indexChoice).toBe('POS');
+    expect(result.rdf3xMetrics.queryPlan?.join('\n')).toContain('NumericRange(object$gt)');
+  });
+
   it('runs a shadow RDF-3X join compare against the baseline join planner', () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/index.ttl');
     const type = namedNode('https://undefineds.co/ns#type');
@@ -155,6 +217,54 @@ describe('SolidRdfEngine', () => {
     expect(result.primary).toHaveLength(1);
     expect(result.rdf3x).toHaveLength(1);
     expect(result.rebuild.scannedQuads).toBe(3);
+    expect(result.primaryMetrics.engine).toBe('solid-rdf');
+    expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
+  });
+
+  it('runs a shadow RDF-3X join compare with graph prefix filters', () => {
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const type = namedNode('https://undefineds.co/ns#type');
+    const content = namedNode('https://undefineds.co/ns#content');
+    const messageType = namedNode('https://type/Message');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+    index.multiPut([
+      quad(msg1, type, messageType, chatGraph),
+      quad(msg1, content, literal('hello'), chatGraph),
+      quad(msg1, content, literal('ignored'), taskGraph),
+      quad(msg2, type, messageType, chatGraph),
+    ]);
+
+    const result = engine.shadowRdf3xJoin([
+      {
+        pattern: {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          predicate: type,
+          object: messageType,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          predicate: content,
+        },
+        variables: {
+          subject: 'message',
+          object: 'content',
+        },
+      },
+    ]);
+
+    expect(result.matched).toBe(true);
+    expect(result.orderedMatch).toBe(true);
+    expect(result.primary).toHaveLength(1);
+    expect(result.rdf3x).toHaveLength(1);
+    expect(result.rdf3xMetrics.queryPlan?.join('\n')).toContain('GraphPrefixMembershipFilter');
     expect(result.primaryMetrics.engine).toBe('solid-rdf');
     expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
   });
@@ -1026,5 +1136,94 @@ describe('SolidRdfEngine', () => {
     expect(typeof listChats?.space.databaseDeltaBytes).toBe('number');
     expect(typeof listChats?.space.tableDeltaBytes).toBe('number');
     expect(typeof listChats?.space.indexDeltaBytes).toBe('number');
+  });
+
+  it('runs a models benchmark shadow report against the RDF-3X shadow index', () => {
+    const quads = [
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl#this'),
+        namedNode(RDF_TYPE),
+        namedNode('http://www.w3.org/ns/pim/meeting#LongChat'),
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/index.ttl#task_1'),
+        namedNode(RDF_TYPE),
+        namedNode(`${UDFS}Task`),
+        namedNode('https://pod.example/alice/.data/task/index.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
+        namedNode(RDF_TYPE),
+        namedNode('http://rdfs.org/sioc/ns#Thread'),
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(SIOC_HAS_MEMBER),
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(DCT_CREATED),
+        literal('2026-05-18T01:02:03.000Z'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode(`${UDFS}status`),
+        literal('queued'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode(`${UDFS}priority`),
+        literal('10', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+        namedNode(RDF_TYPE),
+        namedNode(`${UDFS}Provider`),
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+      ),
+    ];
+    engine.index.multiPut(quads);
+
+    const report = runRdfModelsRdf3xShadowBenchmark(engine, {
+      scale: 'small',
+      iterations: 2,
+    });
+    const listChats = report.cases.find((testCase) => testCase.name === 'list chats');
+    const numericPriority = report.cases.find((testCase) => testCase.name === 'runs by numeric priority');
+
+    expect(report.engine).toBe('rdf3x-shadow');
+    expect(report.rebuild.scannedQuads).toBe(quads.length);
+    expect(report.skippedCases).not.toContain('runs by numeric priority');
+    expect(numericPriority).toMatchObject({
+      supported: true,
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: { indexChoice: 'POS', matchedRows: 1, returnedRows: 1 },
+      },
+    });
+    expect(numericPriority?.unsupportedReason).toBeUndefined();
+    expect(numericPriority?.rdf3x?.physicalPlan).toContain('NumericRange(object$gt)');
+    expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('JOIN rdf_terms object_numeric ON object_numeric.id = idx.object_id');
+    expect(listChats).toMatchObject({
+      supported: true,
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: { indexChoice: 'POS', matchedRows: 1, returnedRows: 1 },
+      },
+    });
+    expect(listChats?.rdf3x?.physicalPlan.join('\n')).toContain('GraphPrefixMembershipFilter');
   });
 });
