@@ -79,7 +79,8 @@
     - `tests/ui/registration-flow.test.ts`
     - `tests/provision/ProvisionPodCreator.test.ts`
     - `tests/identity/PodLookupRepository.test.ts`
-    - `tests/api/handlers/WebIdProfileHandler.test.ts`
+    - `tests/api/handlers/PodManagementHandler.test.ts`
+    - `tests/identity/ScopedPickWebIdHandler.test.ts`
     - `tests/storage/QuintStoreSparqlDataAccessor.host-canonicalization.test.ts`
     - `tests/util/MultiDomainIdentifierStrategy.test.ts`
   - `bun run test:integration` 中 lite 路径通过

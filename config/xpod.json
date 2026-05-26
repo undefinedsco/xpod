@@ -16,8 +16,8 @@
       "@type": "Void"
     },
     {
-      "comment": "定义 idpUrl 变量（外部 IdP 基础 URL）- SP 模式必填",
-      "@id": "urn:solid-server:default:variable:idpUrl",
+      "comment": "定义 oidcIssuer 变量（外部 IdP 基础 URL）- SP 模式必填",
+      "@id": "urn:solid-server:default:variable:oidcIssuer",
       "@type": "Variable"
     },
     {
@@ -29,7 +29,7 @@
       },
       "additionalBaseUrls": [
         {
-          "@id": "urn:solid-server:default:variable:idpUrl"
+          "@id": "urn:solid-server:default:variable:oidcIssuer"
         }
       ]
     },
@@ -52,11 +52,11 @@
       }
     },
     {
-      "comment": "Auto-detect OIDC Handler - 有 idpUrl 时启用 SP 模式",
+      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时启用 SP 模式",
       "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
       "@type": "AutoDetectOidcHandler",
-      "options_idpUrl": {
-        "@id": "urn:solid-server:default:variable:idpUrl"
+      "options_oidcIssuer": {
+        "@id": "urn:solid-server:default:variable:oidcIssuer"
       },
       "options_cacheMs": 300000
     },
@@ -74,8 +74,8 @@
       "comment": "Auto-detect Identity Provider Handler",
       "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler",
       "@type": "AutoDetectIdentityProviderHandler",
-      "options_idpUrl": {
-        "@id": "urn:solid-server:default:variable:idpUrl"
+      "options_oidcIssuer": {
+        "@id": "urn:solid-server:default:variable:oidcIssuer"
       }
     },
     {

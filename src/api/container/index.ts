@@ -14,6 +14,7 @@ import { registerCommonServices } from './common';
 import { registerCloudServices } from './cloud';
 import { registerLocalServices } from './local';
 import { registerBusinessToken } from './business-token';
+import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
@@ -117,7 +118,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
 
     // OIDC Issuer (Local 托管式使用 Cloud IdP)
     // 如果配置了 XPOD_NODE_TOKEN，默认使用 Cloud IdP
-    oidcIssuer: process.env.CSS_OIDC_ISSUER ?? (
+    oidcIssuer: resolveExternalOidcIssuer(process.env) ?? (
       process.env.XPOD_NODE_TOKEN
         ? OFFICIAL_CLOUD_IDENTITY_ORIGIN
         : undefined

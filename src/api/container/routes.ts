@@ -14,7 +14,6 @@ import { registerChatRoutes } from '../handlers/ChatHandler';
 import { registerApiKeyRoutes } from '../handlers/ApiKeyHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
 import { registerSubdomainClientRoutes } from '../handlers/SubdomainClientHandler';
-import { registerWebIdProfileRoutes } from '../handlers/WebIdProfileHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
@@ -114,20 +113,6 @@ function registerSharedRoutes(
     taskScheduler: inngestTaskScheduler,
     runtimeConfig: inngestRuntimeConfig,
   });
-
-  try {
-    const profileRepo = container.resolve('webIdProfileRepo', { allowUnregistered: true });
-    const podLookupRepo = container.resolve('podLookupRepo', { allowUnregistered: true });
-    if (profileRepo) {
-      registerWebIdProfileRoutes(server, {
-        profileRepo: profileRepo as any,
-        podLookupRepo: podLookupRepo as any,
-      });
-      console.log('[Shared] WebID Profile routes registered');
-    }
-  } catch {
-    console.log('[Shared] WebID Profile routes not registered (repo not available)');
-  }
 
   // Quota & Usage API (Business 对接)
   try {
@@ -254,7 +239,7 @@ function registerLocalRoutes(
           rootDir,
           sparqlEndpoint,
           identityDbUrl,
-          oidcIssuer: process.env.CSS_OIDC_ISSUER ?? config.oidcIssuer,
+          oidcIssuer: process.env.oidcIssuer ?? config.oidcIssuer,
         })
         : undefined;
 
@@ -262,8 +247,9 @@ function registerLocalRoutes(
         rootDir,
         verifyServiceToken: async (token: string) => token === expectedServiceToken,
         provisioningService,
+        podLookupRepository: container.resolve('podLookupRepo', { allowUnregistered: true }),
       });
-      console.log(`[Local] Pod provision routes registered (/provision/pods, ${provisioningService ? 'css-compatible' : 'directory-only'})`);
+      console.log(`[Local] Pod provision routes registered (/provision/pods, /provision/webids, ${provisioningService ? 'css-compatible' : 'directory-only'})`);
     } else {
       console.log('[Local] Pod provision routes not registered (XPOD_SERVICE_TOKEN not configured)');
     }

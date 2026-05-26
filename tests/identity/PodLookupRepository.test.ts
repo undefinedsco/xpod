@@ -244,6 +244,7 @@ describe('PodLookupRepository', () => {
       const { db, execute } = createMockDb();
       execute!
         .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({
           rows: [
             {
@@ -294,6 +295,7 @@ describe('PodLookupRepository', () => {
     it('resolves a WebID through the CSS account index when account scanning is empty', async () => {
       const { db, execute } = createMockDb();
       execute!
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({
@@ -404,6 +406,7 @@ describe('PodLookupRepository', () => {
     it('returns pods from identity_store when internal_kv has no account rows', async () => {
       const { db, execute } = createMockDb();
       execute!
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({
           rows: [

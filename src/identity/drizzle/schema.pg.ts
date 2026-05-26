@@ -20,6 +20,7 @@ export const accountUsage = pgTable('identity_account_usage', {
 export const podUsage = pgTable('identity_pod_usage', {
   podId: text('pod_id').primaryKey(),
   accountId: text('account_id').notNull(),
+  storageUrl: text('storage_url'),
   storageBytes: pgBigint('storage_bytes', { mode: 'number' }).notNull().default(0),
   ingressBytes: pgBigint('ingress_bytes', { mode: 'number' }).notNull().default(0),
   egressBytes: pgBigint('egress_bytes', { mode: 'number' }).notNull().default(0),
@@ -30,22 +31,6 @@ export const podUsage = pgTable('identity_pod_usage', {
   computeLimitSeconds: pgBigint('compute_limit_seconds', { mode: 'number' }),
   tokenLimitMonthly: pgBigint('token_limit_monthly', { mode: 'number' }),
   periodStart: timestamp('period_start', { withTimezone: true, mode: 'date' }),
-  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-});
-
-/**
- * WebID Profile 托管表
- * 用于身份与存储分离架构，Cloud 托管用户的 WebID Profile
- */
-export const webidProfiles = pgTable('identity_webid_profile', {
-  username: text('username').primaryKey(),
-  webidUrl: text('webid_url').notNull(),              // https://id.undefineds.co/alice/profile/card#me
-  storageUrl: text('storage_url'),                    // https://alice.undefineds.xyz/ 或 https://pods.undefineds.co/alice/
-  storageMode: text('storage_mode').default('cloud'), // 'cloud' | 'local' | 'custom'
-  oidcIssuer: text('oidc_issuer'),                    // https://id.undefineds.co/
-  profileData: text('profile_data'), // WebID Profile 的 JSON-LD 表示 (stored as JSON string)
-  accountId: text('account_id'),                      // 关联的 CSS 账户 ID
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 

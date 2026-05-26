@@ -99,7 +99,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
 
     const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
 
-    // SP 模式：CSS_OIDC_ISSUER 显式指定外部 IdP；Cloud API 地址不再隐式当作 issuer。
+    // SP 模式：oidcIssuer 显式指定外部 IdP；Cloud API 地址不再隐式当作 issuer。
     const externalOidcIssuer = resolveExternalOidcIssuer(process.env);
 
     console.log('Starting xpod...');

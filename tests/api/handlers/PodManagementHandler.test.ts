@@ -18,6 +18,9 @@ describe('PodManagementHandler', () => {
   let routes: Record<string, Function> = {};
   const testDir = '/test/pods';
   const mockVerifyToken = vi.fn();
+  const podLookupRepository = {
+    findByWebIds: vi.fn(),
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -33,6 +36,7 @@ describe('PodManagementHandler', () => {
     registerPodManagementRoutes(mockServer, {
       rootDir: testDir,
       verifyServiceToken: mockVerifyToken,
+      podLookupRepository,
     });
   });
 
@@ -47,6 +51,10 @@ describe('PodManagementHandler', () => {
 
     it('should register GET /provision/pods/:podName', () => {
       expect(mockServer.get).toHaveBeenCalledWith('/provision/pods/:podName', expect.any(Function), { public: true });
+    });
+
+    it('should register POST /provision/webids', () => {
+      expect(mockServer.post).toHaveBeenCalledWith('/provision/webids', expect.any(Function), { public: true });
     });
   });
 
@@ -70,8 +78,8 @@ describe('PodManagementHandler', () => {
 
     it('should create pod with valid token', async () => {
       mockVerifyToken.mockResolvedValue(true);
-      vi.mocked(stat).mockRejectedValue(new Error('Not found'));
-      vi.mocked(mkdir).mockResolvedValue(undefined);
+      (stat as any).mockRejectedValue(new Error('Not found'));
+      (mkdir as any).mockResolvedValue(undefined);
 
       const request = createMockRequest({ podName: 'alice' }, 'Bearer valid_token');
       const response = createMockResponse();
@@ -115,7 +123,7 @@ describe('PodManagementHandler', () => {
 
     it('should reject duplicate pod', async () => {
       mockVerifyToken.mockResolvedValue(true);
-      vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as any);
+      (stat as any).mockResolvedValue({ isDirectory: () => true } as any);
 
       const request = createMockRequest({ podName: 'alice' }, 'Bearer valid_token');
       const response = createMockResponse();
@@ -141,8 +149,8 @@ describe('PodManagementHandler', () => {
 
     it('should delete existing pod', async () => {
       mockVerifyToken.mockResolvedValue(true);
-      vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as any);
-      vi.mocked(rm).mockResolvedValue(undefined);
+      (stat as any).mockResolvedValue({ isDirectory: () => true } as any);
+      (rm as any).mockResolvedValue(undefined);
 
       const request = createMockRequest('Bearer valid_token');
       const response = createMockResponse();
@@ -155,7 +163,7 @@ describe('PodManagementHandler', () => {
 
     it('should return 404 for non-existent pod', async () => {
       mockVerifyToken.mockResolvedValue(true);
-      vi.mocked(stat).mockRejectedValue(new Error('Not found'));
+      (stat as any).mockRejectedValue(new Error('Not found'));
 
       const request = createMockRequest('Bearer valid_token');
       const response = createMockResponse();
@@ -192,7 +200,7 @@ describe('PodManagementHandler', () => {
 
     it('should return pod info for existing pod', async () => {
       mockVerifyToken.mockResolvedValue(true);
-      vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as any);
+      (stat as any).mockResolvedValue({ isDirectory: () => true } as any);
 
       const request = createMockRequest('Bearer valid_token');
       const response = createMockResponse();
@@ -208,7 +216,7 @@ describe('PodManagementHandler', () => {
 
     it('should return 404 for non-existent pod', async () => {
       mockVerifyToken.mockResolvedValue(true);
-      vi.mocked(stat).mockRejectedValue(new Error('Not found'));
+      (stat as any).mockRejectedValue(new Error('Not found'));
 
       const request = createMockRequest('Bearer valid_token');
       const response = createMockResponse();
@@ -216,6 +224,76 @@ describe('PodManagementHandler', () => {
       await routes['GET /provision/pods/:podName'](request, response, { podName: 'nonexistent' });
 
       expect(response.statusCode).toBe(404);
+    });
+  });
+
+  describe('POST /provision/webids', () => {
+    const createMockRequest = (body: object, authHeader?: string): IncomingMessage =>
+      ({
+        headers: { authorization: authHeader },
+        setEncoding: vi.fn(),
+        on: vi.fn((event, callback) => {
+          if (event === 'data') callback(JSON.stringify(body));
+          if (event === 'end') callback();
+        }),
+      } as unknown as IncomingMessage);
+
+    const createMockResponse = (): ServerResponse =>
+      ({
+        statusCode: 0,
+        setHeader: vi.fn(),
+        end: vi.fn(),
+      } as unknown as ServerResponse);
+
+    it('returns only SP-local storage facts for requested WebIDs', async () => {
+      mockVerifyToken.mockResolvedValue(true);
+      podLookupRepository.findByWebIds.mockResolvedValue([
+        {
+          podId: 'pod-alice',
+          accountId: 'acc-1',
+          baseUrl: 'http://localhost:5737/alice/',
+          storageUrl: 'http://localhost:5737/alice/',
+          webId: 'https://id.undefineds.co/alice/profile/card#me',
+        },
+      ]);
+
+      const request = createMockRequest({
+        webIds: [
+          'https://id.undefineds.co/alice/profile/card#me',
+          'https://id.undefineds.co/bob/profile/card#me',
+        ],
+      }, 'Bearer valid_token');
+      const response = createMockResponse();
+
+      await routes['POST /provision/webids'](request, response, {});
+
+      expect(response.statusCode).toBe(200);
+      expect(podLookupRepository.findByWebIds).toHaveBeenCalledWith([
+        'https://id.undefineds.co/alice/profile/card#me',
+        'https://id.undefineds.co/bob/profile/card#me',
+      ]);
+      expect(JSON.parse((response.end as any).mock.calls[0][0])).toEqual({
+        entries: [
+          {
+            webId: 'https://id.undefineds.co/alice/profile/card#me',
+            podUrl: 'http://localhost:5737/alice/',
+            storageUrl: 'http://localhost:5737/alice/',
+          },
+        ],
+      });
+    });
+
+    it('rejects invalid service token before lookup', async () => {
+      mockVerifyToken.mockResolvedValue(false);
+      const request = createMockRequest({
+        webIds: ['https://id.undefineds.co/alice/profile/card#me'],
+      }, 'Bearer invalid_token');
+      const response = createMockResponse();
+
+      await routes['POST /provision/webids'](request, response, {});
+
+      expect(response.statusCode).toBe(401);
+      expect(podLookupRepository.findByWebIds).not.toHaveBeenCalled();
     });
   });
 });

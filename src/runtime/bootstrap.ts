@@ -210,7 +210,7 @@ export function buildRuntimeShorthand(
 ): Record<string, string | number | boolean> {
   const envValue = (key: string): string | undefined => runtimeEnv[key] ?? baseEnv[key];
   const externalOidcIssuer = resolveExternalOidcIssuer({
-    CSS_OIDC_ISSUER: envValue('CSS_OIDC_ISSUER'),
+    oidcIssuer: envValue('oidcIssuer'),
   });
 
   return {
@@ -227,7 +227,7 @@ export function buildRuntimeShorthand(
       ['emailConfigPort', envValue('CSS_EMAIL_CONFIG_PORT') ?? '587'],
       ['emailConfigAuthUser', envValue('CSS_EMAIL_CONFIG_AUTH_USER') ?? ''],
       ['emailConfigAuthPass', envValue('CSS_EMAIL_CONFIG_AUTH_PASS') ?? ''],
-      ['idpUrl', externalOidcIssuer],
+      ['oidcIssuer', externalOidcIssuer],
       ['allowedHosts', envValue('CSS_ALLOWED_HOSTS')],
       ['nodeId', envValue('XPOD_NODE_ID')],
       ['nodeToken', envValue('XPOD_NODE_TOKEN')],

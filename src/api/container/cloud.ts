@@ -14,7 +14,6 @@ import { CloudflareTunnelProvider } from '../../tunnel/CloudflareTunnelProvider'
 import { SubdomainService } from '../../subdomain/SubdomainService';
 import { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
 import { EdgeNodeHealthProbeService } from '../../edge/EdgeNodeHealthProbeService';
-import { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { getLoggerFor } from 'global-logger-factory';
@@ -30,19 +29,11 @@ export function registerCloudServices(
   const config = container.resolve('config') as ApiContainerConfig;
   const db = container.resolve('db');
 
-  // 获取 baseUrl 用于 WebID Profile
-  const baseUrl = process.env.CSS_BASE_URL || `http://localhost:${process.env.CSS_PORT || 3000}`;
-
-  // 注册 WebID Profile Repository (始终注册，用于身份服务)
   container.register({
-    webIdProfileRepo: asFunction(() => {
-      return new WebIdProfileRepository({ db, baseUrl });
-    }).singleton(),
     podLookupRepo: asFunction(() => {
       return new PodLookupRepository(db);
     }).singleton(),
   });
-  logger.info('WebID Profile repository registered');
   logger.info('Pod lookup repository registered');
 
   // 注册 DDNS Repository (始终注册，用于 DDNS 服务)

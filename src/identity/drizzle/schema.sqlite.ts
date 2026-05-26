@@ -18,6 +18,7 @@ export const accountUsage = sqliteTable('identity_account_usage', {
 export const podUsage = sqliteTable('identity_pod_usage', {
   podId: text('pod_id').primaryKey(),
   accountId: text('account_id').notNull(),
+  storageUrl: text('storage_url'),
   storageBytes: integer('storage_bytes').notNull().default(0),
   ingressBytes: integer('ingress_bytes').notNull().default(0),
   egressBytes: integer('egress_bytes').notNull().default(0),
@@ -28,22 +29,6 @@ export const podUsage = sqliteTable('identity_pod_usage', {
   computeLimitSeconds: integer('compute_limit_seconds'),
   tokenLimitMonthly: integer('token_limit_monthly'),
   periodStart: integer('period_start'),
-  updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-});
-
-/**
- * WebID Profile 托管表
- * 用于身份与存储分离架构，Cloud 托管用户的 WebID Profile
- */
-export const webidProfiles = sqliteTable('identity_webid_profile', {
-  username: text('username').primaryKey(),
-  webidUrl: text('webid_url').notNull(),              // https://id.undefineds.co/alice/profile/card#me
-  storageUrl: text('storage_url'),                    // https://alice.undefineds.xyz/ 或 https://pods.undefineds.co/alice/
-  storageMode: text('storage_mode').default('cloud'), // 'cloud' | 'local' | 'custom'
-  oidcIssuer: text('oidc_issuer'),                    // https://id.undefineds.co/
-  profileData: text('profile_data', { mode: 'json' }), // WebID Profile 的 JSON-LD 表示
-  accountId: text('account_id'),                      // 关联的 CSS 账户 ID
-  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
   updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
 

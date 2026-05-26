@@ -384,10 +384,10 @@ SAKURA_TUNNEL_TOKEN=xxx
 XPOD_EDITION=local
 # 没有 XPOD_NODE_TOKEN，表示独立运行
 
-# === CSS 配置 ===
+# === CSS / OIDC 配置 ===
 CSS_BASE_URL=https://pod.alice.com    # 自己的域名
 CSS_PORT=5737
-CSS_OIDC_ISSUER=https://id.undefineds.co  # 可选，使用 Cloud IdP
+oidcIssuer=https://id.undefineds.co   # 可选，使用外部 Cloud IdP
 ```
 
 ### 9.5 隧道检测逻辑
@@ -467,18 +467,16 @@ tests/sdk/
 ### 10.3 Phase 3: 身份服务与 DDNS ✅
 
 **新增数据表：**
-- `identity_webid_profile` - WebID Profile 托管
+- `identity_pod_usage.storage_url` - Pod canonical storage URL，供 SP-scoped lookup 使用
 - `identity_ddns_domain` - DDNS 域名池
 - `identity_ddns_record` - DDNS 记录
 
 **新增 Repository：**
-- `WebIdProfileRepository` - WebID Profile 管理
+- `PodLookupRepository` - 从 CSS account/pod facts 解析 WebID 与 SP storage 关系
 - `DdnsRepository` - DDNS 记录管理
 
 **新增 API：**
-- `GET /{username}/profile/card` - 获取 WebID Profile (Turtle)
-- `POST /api/v1/identity` - 创建 Profile
-- `POST /api/v1/identity/{username}/storage` - 更新 storage 指针
+- `POST /provision/webids` - Local SP service-token 保护的 WebID lookup，供 Cloud consent 过滤候选 Pod
 - `POST /api/v1/ddns/allocate` - 分配子域名
 - `POST /api/v1/ddns/{subdomain}` - 更新 DNS 记录
 - `DELETE /api/v1/ddns/{subdomain}` - 释放子域名
@@ -486,7 +484,7 @@ tests/sdk/
 
 ### 10.4 Phase 4: 已完成
 
-- [x] 在 Cloud 容器中注册 WebIdProfileRepository 和 DdnsRepository
+- [x] 在 Cloud/Local 容器中注册 PodLookupRepository，WebID profile/card 继续由 CSS 原生资源处理
 - [x] Local 节点启动时自动向 Cloud 注册并获取 DDNS
 - [x] Local 连接 Cloud IdP 进行认证
 - [x] 完善 Cloudflare Tunnel 集成

@@ -1,7 +1,7 @@
 export type RuntimeEnv = Record<string, string | undefined>;
 
 export const OIDC_ISSUER_ENV_KEYS = [
-  'CSS_OIDC_ISSUER',
+  'oidcIssuer',
 ] as const;
 
 function cleanEnvValue(value: string | undefined): string | undefined {
@@ -12,7 +12,7 @@ function cleanEnvValue(value: string | undefined): string | undefined {
 /**
  * Resolve the external IdP issuer used by local/SP mode.
  *
- * CSS_OIDC_ISSUER is the single supported process-level contract.
+ * oidcIssuer is the single supported process-level contract.
  * Cloud API endpoints are not identity issuers and must not implicitly
  * switch a local node into SP mode.
  */

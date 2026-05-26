@@ -16,7 +16,6 @@ import type { SubdomainClient } from '../../subdomain/SubdomainClient';
 import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider } from '../../tunnel/TunnelProvider';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
-import type { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import type { ChatKitService, AiProvider } from '../chatkit';
@@ -152,7 +151,6 @@ export interface ApiContainerCradle {
   vectorService: VectorService;
 
   // Cloud 模式: 身份服务
-  webIdProfileRepo?: WebIdProfileRepository;
   ddnsRepo?: DdnsRepository;
   podLookupRepo?: PodLookupRepository;
 

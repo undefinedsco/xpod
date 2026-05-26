@@ -3,9 +3,9 @@ import { oidcTokenEndpoint } from './oidc-issuer';
 /**
  * Build the environment for the CSS child process.
  *
- * The public process-level contract is CSS_OIDC_ISSUER. CSS itself only
- * receives the internal Components shorthand via --idpUrl; passing the env
- * through can make yargs derive an unsupported oidcIssuer argument.
+ * `oidcIssuer` is an xpod runtime shorthand, not a child process env var.
+ * Pass it explicitly through --oidcIssuer and strip inherited aliases so stale
+ * shells cannot silently switch the CSS child into a different IDP/SP mode.
  */
 export function buildCssChildEnv(
   baseUrl: string,
@@ -18,11 +18,7 @@ export function buildCssChildEnv(
     CSS_BASE_URL: baseUrl,
   } as Record<string, string>;
 
-  delete env.CSS_OIDC_ISSUER;
-  delete env.CSS_IDP_URL;
-  delete env.XPOD_OIDC_ISSUER;
   delete env.oidcIssuer;
-  delete env.idpUrl;
 
   return env;
 }
@@ -43,7 +39,7 @@ export function buildCssArgs(options: {
     '-b', options.baseUrl,
   ];
   if (options.externalOidcIssuer) {
-    args.push('--idpUrl', options.externalOidcIssuer);
+    args.push('--oidcIssuer', options.externalOidcIssuer);
   }
   return args;
 }

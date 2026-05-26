@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS identity_account_usage (
 CREATE TABLE IF NOT EXISTS identity_pod_usage (
   pod_id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
+  storage_url TEXT,
   storage_bytes INTEGER NOT NULL DEFAULT 0,
   ingress_bytes INTEGER NOT NULL DEFAULT 0,
   egress_bytes INTEGER NOT NULL DEFAULT 0,
@@ -31,19 +32,6 @@ CREATE TABLE IF NOT EXISTS identity_pod_usage (
   compute_limit_seconds INTEGER,
   token_limit_monthly INTEGER,
   period_start INTEGER,
-  updated_at INTEGER NOT NULL
-);
-
--- WebID Profile
-CREATE TABLE IF NOT EXISTS identity_webid_profile (
-  username TEXT PRIMARY KEY,
-  webid_url TEXT NOT NULL,
-  storage_url TEXT,
-  storage_mode TEXT DEFAULT 'cloud',
-  oidc_issuer TEXT,
-  profile_data TEXT,
-  account_id TEXT,
-  created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 

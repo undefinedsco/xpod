@@ -94,7 +94,6 @@ describe('registerRoutes mode wiring', () => {
         functionEndpoint: 'http://xpod-api:3001/api/inngest',
       },
       db: {},
-      webIdProfileRepo: {},
       podLookupRepo: {},
       ddnsRepo: edition === 'cloud' ? {} : undefined,
       dnsProvider: edition === 'cloud' ? {} : undefined,
@@ -118,7 +117,7 @@ describe('registerRoutes mode wiring', () => {
   it('registers cloud-only management routes in cloud mode', () => {
     registerRoutes(createContainer('cloud'));
 
-    expect(routes['GET /:username/profile/card']).toBeTypeOf('function');
+    expect(routes['GET /:username/profile/card']).toBeUndefined();
     expect(routes['POST /api/v1/ddns/allocate']).toBeTypeOf('function');
     expect(routes['POST /provision/nodes']).toBeTypeOf('function');
     expect(routes['POST /v1/tasks']).toBeUndefined();
@@ -144,7 +143,7 @@ describe('registerRoutes mode wiring', () => {
 
     expect(routes['GET /api/linx/capabilities']).toBeTypeOf('function');
     expect(routes['GET /api/admin/status']).toBeTypeOf('function');
-    expect(routes['GET /:username/profile/card']).toBeTypeOf('function');
+    expect(routes['GET /:username/profile/card']).toBeUndefined();
     expect(routes['POST /v1/tasks']).toBeUndefined();
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');

@@ -21,7 +21,6 @@ import { TerminalHttpHandler } from './http/terminal/TerminalHttpHandler';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
-import { WebIdProfileRepository } from './identity/drizzle/WebIdProfileRepository';
 import { ValidatingIdentityProviderHttpHandler } from './identity/ValidatingIdentityProviderHttpHandler';
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
@@ -74,6 +73,7 @@ import { DisabledIdentityProviderHandler } from './identity/oidc/DisabledIdentit
 import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
 import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
+import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
@@ -131,7 +131,6 @@ export {
     TerminalHttpHandler,
     ReservedSuffixIdentifierGenerator,
     DrizzleIndexedStorage,
-    WebIdProfileRepository,
     ValidatingIdentityProviderHttpHandler,
     PostgresKeyValueStorage,
     RedisKeyValueStorage,
@@ -186,6 +185,7 @@ export {
   AutoDetectOidcHandler,
   AutoDetectIdentityProviderHandler,
   LoopbackClientIdAdapterFactory,
+  ScopedPickWebIdHandler,
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,
