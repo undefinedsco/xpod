@@ -160,6 +160,94 @@ export interface RdfQuadIndexScanResult {
   metrics: RdfIndexMetrics;
 }
 
+export type Rdf3xTermKey = 'subject' | 'predicate' | 'object';
+export type Rdf3xPatternKey = 'graph' | Rdf3xTermKey;
+export type Rdf3xPermutationName = 'SPO' | 'SOP' | 'PSO' | 'POS' | 'OSP' | 'OPS';
+export type Rdf3xPairProjectionName = 'SP' | 'SO' | 'PS' | 'PO' | 'OS' | 'OP';
+export type Rdf3xTermProjectionName = 'S' | 'P' | 'O';
+
+export interface Rdf3xTripleIndexOptions {
+  path: string;
+  debug?: boolean;
+}
+
+export interface Rdf3xTriplePattern {
+  graph?: Term;
+  subject?: Term;
+  predicate?: Term;
+  object?: Term;
+}
+
+export interface Rdf3xTripleScanOptions {
+  limit?: number;
+  offset?: number;
+}
+
+export interface Rdf3xIndexMetrics {
+  engine: 'solid-rdf3x';
+  indexChoice: Rdf3xPermutationName | 'source-membership' | 'none';
+  matchedRows: number;
+  returnedRows: number;
+  durationMs: number;
+  queryPlan?: string[];
+}
+
+export interface Rdf3xTripleScanResult {
+  quads: Quad[];
+  metrics: Rdf3xIndexMetrics;
+}
+
+export interface Rdf3xJoinOptions {
+  orderBy?: RdfQuadJoinOrder[];
+  limit?: number;
+  offset?: number;
+  project?: string[];
+  distinct?: boolean;
+  countMatchedRows?: boolean;
+}
+
+export interface Rdf3xJoinMetrics {
+  engine: 'solid-rdf3x';
+  indexChoice: string;
+  matchedRows: number;
+  returnedRows: number;
+  durationMs: number;
+  queryPlan?: string[];
+}
+
+export interface Rdf3xJoinScanResult {
+  bindings: RdfBindingRow[];
+  metrics: Rdf3xJoinMetrics;
+}
+
+export interface Rdf3xRebuildResult {
+  scannedQuads: number;
+  uniqueTriples: number;
+  memberships: number;
+  projectionRows: number;
+  durationMs: number;
+}
+
+export interface Rdf3xCardinalityEstimate {
+  uniqueTriples: number;
+  matchingQuads: number;
+  source: 'projection-stat' | 'term-stat' | 'exact-triple' | 'exact-membership' | 'full-count';
+  indexChoice: Rdf3xPermutationName | 'source-membership' | 'none';
+}
+
+export interface Rdf3xIndexStats {
+  uniqueTriples: number;
+  membershipCount: number;
+  graphCount: number;
+  permutationRows: Record<Rdf3xPermutationName, number>;
+  pairProjectionRows: Record<Rdf3xPairProjectionName, number>;
+  termProjectionRows: Record<Rdf3xTermProjectionName, number>;
+  databaseBytes: number;
+  tableBytes: number;
+  indexBytes: number;
+  spaceObjects: RdfIndexSpaceObject[];
+}
+
 export type RdfQuadTupleConstraint = Partial<Record<RdfQueryPatternKey, Term>>;
 
 export interface RdfQuadTupleConstraintSource {

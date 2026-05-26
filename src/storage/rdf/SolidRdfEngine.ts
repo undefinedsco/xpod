@@ -55,7 +55,7 @@ export class SolidRdfEngine {
     if (options.textIndex instanceof RdfTextIndex) {
       this.textIndex = options.textIndex;
       this.ownsTextIndex = false;
-    } else if (options.textIndex) {
+    } else if (isRdfTextIndexOptions(options.textIndex)) {
       this.textIndex = new RdfTextIndex(options.textIndex);
       this.ownsTextIndex = true;
     } else {
@@ -64,7 +64,7 @@ export class SolidRdfEngine {
     if (options.vectorIndex instanceof RdfVectorIndex) {
       this.vectorIndex = options.vectorIndex;
       this.ownsVectorIndex = false;
-    } else if (options.vectorIndex) {
+    } else if (isRdfVectorIndexOptions(options.vectorIndex)) {
       this.vectorIndex = new RdfVectorIndex(options.vectorIndex);
       this.ownsVectorIndex = true;
     } else {
@@ -178,4 +178,12 @@ export class SolidRdfEngine {
     }
     return this.vectorIndex;
   }
+}
+
+function isRdfTextIndexOptions(input: RdfTextIndex | RdfTextIndexOptions | undefined): input is RdfTextIndexOptions {
+  return input !== undefined && !(input instanceof RdfTextIndex) && typeof input.path === 'string';
+}
+
+function isRdfVectorIndexOptions(input: RdfVectorIndex | RdfVectorIndexOptions | undefined): input is RdfVectorIndexOptions {
+  return input !== undefined && !(input instanceof RdfVectorIndex) && typeof input.path === 'string';
 }
