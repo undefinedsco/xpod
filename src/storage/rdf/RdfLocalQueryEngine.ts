@@ -288,6 +288,7 @@ export class RdfLocalQueryEngine {
         ...(requiredBgpPushdown.orderPushed ? { orderBy: query.orderBy } : {}),
         ...(requiredBgpPushdown.paginationPushed && query.limit !== undefined ? { limit: Math.max(0, query.limit) } : {}),
         ...(requiredBgpPushdown.paginationPushed && query.offset !== undefined ? { offset: Math.max(0, query.offset) } : {}),
+        ...(requiredBgpPushdown.paginationPushed ? { countMatchedRows: false } : {}),
       });
       bindings = scan.bindings;
       metrics.scannedRows += scan.metrics.matchedRows;

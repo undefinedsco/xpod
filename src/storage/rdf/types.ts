@@ -186,6 +186,7 @@ export interface RdfQuadJoinOptions {
   offset?: number;
   project?: string[];
   distinct?: boolean;
+  countMatchedRows?: boolean;
 }
 
 export interface RdfQuadJoinAggregateOptions {

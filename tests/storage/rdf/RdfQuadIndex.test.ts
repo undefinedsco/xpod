@@ -626,6 +626,51 @@ describe('RdfQuadIndex', () => {
     expect(result.metrics.queryPlan?.join('\n')).toContain('ORDER BY join_order_t0.value DESC LIMIT ? OFFSET ?');
   });
 
+  it('can skip exact pre-limit count for paginated BGP joins', () => {
+    const graph = namedNode('https://g');
+    const type = namedNode('https://p/type');
+    const created = namedNode('https://p/created');
+    const messageType = namedNode('https://type/Message');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    index.multiPut([
+      quad(msg1, type, messageType, graph),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      quad(msg2, type, messageType, graph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+    ]);
+
+    const result = index.joinPatterns([
+      {
+        pattern: {
+          predicate: type,
+          object: messageType,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          predicate: created,
+        },
+        variables: {
+          subject: 'message',
+          object: 'createdAt',
+        },
+      },
+    ], {
+      orderBy: [{ variable: 'createdAt', direction: 'desc' }],
+      limit: 1,
+      countMatchedRows: false,
+    });
+
+    expect(result.bindings).toHaveLength(1);
+    expect(result.metrics.matchedRows).toBe(1);
+    expect(result.metrics.returnedRows).toBe(1);
+    expect(result.metrics.queryPlan?.join('\n')).not.toContain('COUNT(*)');
+  });
+
   it('pushes operator filters into connected BGP joins with scoped SQL aliases', () => {
     const graph = namedNode('https://g');
     const type = namedNode('https://p/type');

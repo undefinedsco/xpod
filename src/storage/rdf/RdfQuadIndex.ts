@@ -597,6 +597,7 @@ export class RdfQuadIndex {
     let sql = `SELECT ${projection} FROM ${from}${joins.join('')}${orderClause.joins}${whereClause}${orderClause.orderBy}`;
     const sqlParams = [...params];
     const paginated = options?.limit !== undefined || options?.offset !== undefined;
+    const countMatchedRows = options?.countMatchedRows ?? true;
     if (options?.limit !== undefined) {
       sql += ' LIMIT ?';
       sqlParams.push(options.limit);
@@ -623,7 +624,7 @@ export class RdfQuadIndex {
       whereClause,
       sql,
       params: sqlParams,
-      countSql: paginated ? `SELECT COUNT(*) AS count FROM ${from}${joins.join('')}${whereClause}` : undefined,
+      countSql: paginated && countMatchedRows ? `SELECT COUNT(*) AS count FROM ${from}${joins.join('')}${whereClause}` : undefined,
       countParams: params,
       indexChoice: `JoinBGP(${indexChoices.join('>')})`,
       queryPlan,
