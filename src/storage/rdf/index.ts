@@ -70,6 +70,7 @@ export {
   type RdfModelBenchmarkRunOptions,
   type RdfModelShadowBenchmarkReport,
   type RdfModelRdf3xShadowBenchmarkReport,
+  type RdfModelRdf3xShadowJoinBenchmarkResult,
   type RdfModelRdf3xShadowBenchmarkResult,
   type RdfModelShadowBenchmarkResult,
   type RdfModelShadowBenchmarkRunOptions,

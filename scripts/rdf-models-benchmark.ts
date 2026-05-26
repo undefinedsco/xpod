@@ -122,7 +122,9 @@ async function main(): Promise<void> {
       localQueryCases: baseline.localQueryCases.length,
       shadowCases: shadow.cases.length,
       rdf3xShadowCases: rdf3xShadow.cases.length,
+      rdf3xShadowJoinCases: rdf3xShadow.joinCases.length,
       rdf3xSkippedCases: rdf3xShadow.skippedCases,
+      rdf3xSkippedJoinCases: rdf3xShadow.skippedJoinCases,
       matched: shadow.matched,
       orderedMatched: shadow.orderedMatched,
       rdf3xMatched: rdf3xShadow.matched,
@@ -142,6 +144,7 @@ async function main(): Promise<void> {
         .filter((testCase) => !testCase.matched || !testCase.orderedMatch)
         .map((testCase) => testCase.name),
       failedRdf3xCases: rdf3xShadow.failedCases,
+      failedRdf3xJoinCases: rdf3xShadow.failedJoinCases,
     });
 
     if (
@@ -404,7 +407,9 @@ function printSummary(summary: {
   localQueryCases: number;
   shadowCases: number;
   rdf3xShadowCases: number;
+  rdf3xShadowJoinCases: number;
   rdf3xSkippedCases: string[];
+  rdf3xSkippedJoinCases: string[];
   matched: boolean;
   orderedMatched: boolean;
   rdf3xMatched: boolean;
@@ -419,6 +424,7 @@ function printSummary(summary: {
   failedSpaceCases: string[];
   failedCases: string[];
   failedRdf3xCases: string[];
+  failedRdf3xJoinCases: string[];
 }): void {
   console.log('RDF models benchmark complete');
   console.log(`  scale: ${summary.options.scale}`);
@@ -435,7 +441,9 @@ function printSummary(summary: {
   console.log(`  local query cases: ${summary.localQueryCases}`);
   console.log(`  shadow cases: ${summary.shadowCases}`);
   console.log(`  rdf3x shadow cases: ${summary.rdf3xShadowCases}`);
+  console.log(`  rdf3x shadow join cases: ${summary.rdf3xShadowJoinCases}`);
   console.log(`  rdf3x skipped cases: ${summary.rdf3xSkippedCases.length}`);
+  console.log(`  rdf3x skipped join cases: ${summary.rdf3xSkippedJoinCases.length}`);
   console.log(`  shadow matched: ${summary.matched}`);
   console.log(`  shadow ordered matched: ${summary.orderedMatched}`);
   console.log(`  rdf3x shadow matched: ${summary.rdf3xMatched}`);
@@ -455,6 +463,9 @@ function printSummary(summary: {
   }
   if (summary.failedRdf3xCases.length > 0) {
     console.error(`  failed rdf3x cases: ${summary.failedRdf3xCases.join(', ')}`);
+  }
+  if (summary.failedRdf3xJoinCases.length > 0) {
+    console.error(`  failed rdf3x join cases: ${summary.failedRdf3xJoinCases.join(', ')}`);
   }
   if (summary.failedPerformanceCases.length > 0) {
     console.error(`  failed performance cases: ${summary.failedPerformanceCases.join(', ')}`);

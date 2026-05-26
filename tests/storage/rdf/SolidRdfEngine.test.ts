@@ -1197,10 +1197,18 @@ describe('SolidRdfEngine', () => {
     });
     const listChats = report.cases.find((testCase) => testCase.name === 'list chats');
     const numericPriority = report.cases.find((testCase) => testCase.name === 'runs by numeric priority');
+    const latestMessageJoin = report.joinCases.find((testCase) => testCase.name === 'latest message by thread local query');
+    const taskMaterializationJoin = report.joinCases.find((testCase) => testCase.name === 'task materialization active due local query');
 
     expect(report.engine).toBe('rdf3x-shadow');
     expect(report.rebuild.scannedQuads).toBe(quads.length);
     expect(report.skippedCases).not.toContain('runs by numeric priority');
+    expect(report.skippedJoinCases).toEqual([
+      'task materialization active due local query',
+      'message count by thread with having',
+      'message join count distinct',
+    ]);
+    expect(report.failedJoinCases).toEqual([]);
     expect(numericPriority).toMatchObject({
       supported: true,
       matched: true,
@@ -1225,5 +1233,25 @@ describe('SolidRdfEngine', () => {
       },
     });
     expect(listChats?.rdf3x?.physicalPlan.join('\n')).toContain('GraphPrefixMembershipFilter');
+    expect(latestMessageJoin).toMatchObject({
+      supported: true,
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: {
+          engine: 'solid-rdf3x',
+          matchedRows: 1,
+          returnedRows: 1,
+        },
+      },
+    });
+    expect(latestMessageJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinBGP(2)');
+    expect(latestMessageJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinLimit');
+    expect(taskMaterializationJoin).toMatchObject({
+      supported: false,
+      unsupportedReason: 'RDF-3X join shadow does not support local query filters or BIND yet',
+    });
   });
 });
