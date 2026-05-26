@@ -80,7 +80,7 @@ Chat 和 Task 是并列的命令形态：
 
 ## 共享资源 id 总表
 
-`@undefineds.co/models` 的 `solidResources` 和资源 id 生成函数是当前权威。下表覆盖 `packages/models/src/schema.ts` 里进入 `solidResources` 的共享资源；`fileResource` 这类 deprecated compatibility resource 不作为新建模契约。
+`@undefineds.co/models` 的 `solidResources` 和资源 id 生成函数是当前权威。下表覆盖 models 包里进入 `solidResources` 的共享资源；`fileResource` 这类 deprecated compatibility resource 不作为新建模契约。
 
 下表里的 `id` 都是相对各自 `base` 的完整 resource id；`{key}` 只是调用方不传 `id` 时交给 `id.default(...)` 的局部随机/自定义 key，不是持久化字段。没有 `id.default(...)` 的特殊资源会在表里单独标注。
 
