@@ -19,7 +19,6 @@ import { EdgeNodeCapabilityDetector } from '../../edge/EdgeNodeCapabilityDetecto
 import { LocalNetworkManager } from '../../edge/LocalNetworkManager';
 import { DdnsManager } from '../../edge/DdnsManager';
 import type { TunnelProvider, TunnelStatus } from '../../tunnel/TunnelProvider';
-import { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 
 /**
@@ -40,12 +39,6 @@ export function registerLocalServices(
   } = config;
 
   container.register({
-    webIdProfileRepo: asFunction(({ db }: ApiContainerCradle) => {
-      return new WebIdProfileRepository({
-        db,
-        baseUrl: process.env.CSS_BASE_URL || `http://localhost:${process.env.CSS_PORT || 3000}`,
-      });
-    }).singleton(),
     podLookupRepo: asFunction(({ db }: ApiContainerCradle) => {
       return new PodLookupRepository(db);
     }).singleton(),

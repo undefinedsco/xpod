@@ -16,7 +16,6 @@ import type { SubdomainClient } from '../../subdomain/SubdomainClient';
 import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider } from '../../tunnel/TunnelProvider';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
-import type { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import type { ChatKitService, AiProvider } from '../chatkit';
@@ -29,6 +28,7 @@ import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBack
 import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestService';
 import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import type { TaskAuthBindingService, TaskService, InngestTaskScheduler } from '../tasks';
+import type { PodMatrixStore } from '../matrix';
 
 /**
  * 容器配置
@@ -145,12 +145,12 @@ export interface ApiContainerCradle {
   taskService: TaskService<StoreContext>;
   inngestTaskScheduler: InngestTaskScheduler<StoreContext>;
   chatKitService: ChatKitService<StoreContext>;
+  matrixStore: PodMatrixStore;
   providerRegistry: ProviderRegistry;
   embeddingService: EmbeddingService;
   vectorService: VectorService;
 
   // Cloud 模式: 身份服务
-  webIdProfileRepo?: WebIdProfileRepository;
   ddnsRepo?: DdnsRepository;
   podLookupRepo?: PodLookupRepository;
 

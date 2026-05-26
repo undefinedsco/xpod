@@ -256,6 +256,7 @@ function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
     CREATE TABLE IF NOT EXISTS identity_pod_usage (
       pod_id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
+      storage_url TEXT,
       storage_bytes INTEGER NOT NULL DEFAULT 0,
       ingress_bytes INTEGER NOT NULL DEFAULT 0,
       egress_bytes INTEGER NOT NULL DEFAULT 0,
@@ -266,18 +267,6 @@ function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
       compute_limit_seconds INTEGER,
       token_limit_monthly INTEGER,
       period_start INTEGER,
-      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_webid_profile (
-      username TEXT PRIMARY KEY,
-      webid_url TEXT NOT NULL,
-      storage_url TEXT,
-      storage_mode TEXT DEFAULT 'cloud',
-      oidc_issuer TEXT,
-      profile_data TEXT,
-      account_id TEXT,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
@@ -415,6 +404,7 @@ function migrateSqliteColumns(sqlite: SqliteDdlExecutor): void {
   addColumn('identity_pod_usage', 'compute_limit_seconds', 'INTEGER');
   addColumn('identity_pod_usage', 'token_limit_monthly', 'INTEGER');
   addColumn('identity_pod_usage', 'period_start', 'INTEGER');
+  addColumn('identity_pod_usage', 'storage_url', 'TEXT');
 }
 
 function sqliteColumnExists(sqlite: SqliteDdlExecutor, table: string, column: string): boolean {
@@ -455,25 +445,7 @@ async function migratePgColumns(pool: { query: (sql: string) => Promise<any> }):
   await addColumn('identity_pod_usage', 'compute_limit_seconds', 'BIGINT');
   await addColumn('identity_pod_usage', 'token_limit_monthly', 'BIGINT');
   await addColumn('identity_pod_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
-
-  // WebID profile table
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS identity_webid_profile (
-        username TEXT PRIMARY KEY,
-        webid_url TEXT NOT NULL,
-        storage_url TEXT,
-        storage_mode TEXT DEFAULT 'cloud',
-        oidc_issuer TEXT,
-        profile_data TEXT,
-        account_id TEXT,
-        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-      );
-    `);
-  } catch {
-    // Ignore if identity profile storage is unavailable.
-  }
+  await addColumn('identity_pod_usage', 'storage_url', 'TEXT');
 
   // Service token table
   try {
@@ -509,23 +481,12 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS identity_pod_usage (
       pod_id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
+      storage_url TEXT,
       storage_bytes BIGINT NOT NULL DEFAULT 0,
       ingress_bytes BIGINT NOT NULL DEFAULT 0,
       egress_bytes BIGINT NOT NULL DEFAULT 0,
       storage_limit_bytes BIGINT,
       bandwidth_limit_bps BIGINT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_webid_profile (
-      username TEXT PRIMARY KEY,
-      webid_url TEXT NOT NULL,
-      storage_url TEXT,
-      storage_mode TEXT DEFAULT 'cloud',
-      oidc_issuer TEXT,
-      profile_data TEXT,
-      account_id TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 

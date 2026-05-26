@@ -47,13 +47,13 @@ describe('GatewayProxy WebID profile routing', () => {
     await close(css);
   });
 
-  it('routes hosted WebID profile documents to the API server', async () => {
+  it('routes hosted WebID profile documents to CSS', async () => {
     const res = await fetch(`http://127.0.0.1:${proxyPort}/ganbb/profile/card`);
 
     expect(res.status).toBe(200);
-    expect(await res.text()).toBe('api');
-    expect(seenByApi).toContain('/ganbb/profile/card');
-    expect(seenByCss).not.toContain('/ganbb/profile/card');
+    expect(await res.text()).toBe('css');
+    expect(seenByCss).toContain('/ganbb/profile/card');
+    expect(seenByApi).not.toContain('/ganbb/profile/card');
   });
 
   it('continues routing ordinary Pod resources to CSS', async () => {

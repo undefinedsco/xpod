@@ -5,6 +5,7 @@ export interface PodLookupResult {
   podId: string;
   accountId: string;
   baseUrl: string;
+  storageUrl?: string;
   webId?: string;
   webIds?: string[];
   nodeId?: string;
@@ -25,8 +26,14 @@ interface InternalKvRow {
   id?: string;
   account_id?: string;
   base_url?: string;
+  storage_url?: string;
   node_id?: string;
   edge_node_id?: string;
+}
+
+interface PodUsageRow {
+  pod_id?: string;
+  storage_url?: string | null;
 }
 
 /**
@@ -51,7 +58,7 @@ export class PodLookupRepository {
   }
 
   /**
-   * Find Pod by resource path (matches longest baseUrl prefix).
+   * Find Pod by resource path (matches longest canonical storage/base URL prefix).
    */
   public async findByResourceIdentifier(resourcePath: string): Promise<PodLookupResult | undefined> {
     const pods = await this.getAllPods();
@@ -60,9 +67,10 @@ export class PodLookupRepository {
     let bestLength = 0;
 
     for (const pod of pods) {
-      if (resourcePath.startsWith(pod.baseUrl) && pod.baseUrl.length > bestLength) {
+      const candidateBase = pod.storageUrl ?? pod.baseUrl;
+      if (resourcePath.startsWith(candidateBase) && candidateBase.length > bestLength) {
         bestMatch = pod;
-        bestLength = pod.baseUrl.length;
+        bestLength = candidateBase.length;
       }
     }
 
@@ -100,7 +108,58 @@ export class PodLookupRepository {
         };
       }
     }
-    return await this.findByWebIdIndex(normalized);
+    const indexed = await this.findByWebIdIndex(normalized);
+    if (!indexed) {
+      return undefined;
+    }
+    const usage = await this.getUsageByPodId();
+    return {
+      ...indexed,
+      storageUrl: indexed.storageUrl ?? usage.get(indexed.podId)?.storageUrl,
+    };
+  }
+
+  /**
+   * Find Pods by linked WebID URLs in one scan.
+   */
+  public async findByWebIds(webIds: string[]): Promise<PodLookupResult[]> {
+    const normalizedTargets = new Set(webIds.map(normalizeWebId).filter((value): value is string => Boolean(value)));
+    if (normalizedTargets.size === 0) {
+      return [];
+    }
+
+    const results: PodLookupResult[] = [];
+    const pods = await this.getAllPods();
+    for (const pod of pods) {
+      const matchedWebId = getPodWebIds(pod).find((candidate) => {
+        const normalized = normalizeWebId(candidate);
+        return normalized ? normalizedTargets.has(normalized) : false;
+      });
+      if (!matchedWebId) {
+        continue;
+      }
+      results.push({
+        ...pod,
+        webId: matchedWebId,
+      });
+    }
+    if (results.length < normalizedTargets.size) {
+      const seen = new Set(results.map((result) => normalizeWebId(result.webId)).filter(Boolean));
+      for (const normalized of normalizedTargets) {
+        if (seen.has(normalized)) {
+          continue;
+        }
+        const indexed = await this.findByWebIdIndex(normalized);
+        if (indexed) {
+          const usage = await this.getUsageByPodId();
+          results.push({
+            ...indexed,
+            storageUrl: indexed.storageUrl ?? usage.get(indexed.podId)?.storageUrl,
+          });
+        }
+      }
+    }
+    return results;
   }
 
   /**
@@ -109,6 +168,20 @@ export class PodLookupRepository {
   public async listByAccountId(accountId: string): Promise<PodLookupResult[]> {
     const pods = await this.getAllPods();
     return pods.filter((pod) => pod.accountId === accountId);
+  }
+
+  /**
+   * Set the canonical storage URL for a Pod in identity_pod_usage.
+   */
+  public async setStorageUrl(podId: string, accountId: string, storageUrl: string): Promise<void> {
+    const tableId = sql.identifier([this.usageTableName]);
+    await executeStatement(this.db, sql`
+      INSERT INTO ${tableId} (pod_id, account_id, storage_url)
+      VALUES (${podId}, ${accountId}, ${storageUrl})
+      ON CONFLICT (pod_id) DO UPDATE SET
+        account_id = ${accountId},
+        storage_url = ${storageUrl}
+    `);
   }
 
   /**
@@ -201,6 +274,7 @@ export class PodLookupRepository {
       WHERE key LIKE 'accounts/data/%'
          OR key LIKE '/.internal/accounts/data/%'
     `);
+    const usageByPodId = await this.getUsageByPodId();
 
     const pods: PodLookupResult[] = [];
 
@@ -210,6 +284,7 @@ export class PodLookupRepository {
           podId: String(row.id),
           accountId: String(row.account_id),
           baseUrl: String(row.base_url),
+          storageUrl: row.storage_url ? String(row.storage_url) : undefined,
           nodeId: row.node_id ? String(row.node_id) : undefined,
           edgeNodeId: row.edge_node_id ? String(row.edge_node_id) : undefined,
         });
@@ -233,6 +308,7 @@ export class PodLookupRepository {
         for (const [podId, podData] of Object.entries(podMap)) {
           const pod = podData as Record<string, unknown>;
           if (pod.baseUrl && typeof pod.baseUrl === 'string') {
+            const usage = usageByPodId.get(podId);
             const podWebIds = [
               typeof pod.webId === 'string' ? pod.webId : undefined,
               ...extractPodOwnerWebIds(pod),
@@ -242,6 +318,7 @@ export class PodLookupRepository {
               podId,
               accountId,
               baseUrl: pod.baseUrl,
+              storageUrl: stringValue(pod.storageUrl) ?? usage?.storageUrl,
               webId: dedupeStrings(podWebIds)[0],
               ...webIdsProperty(podWebIds),
               nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : undefined,
@@ -258,6 +335,27 @@ export class PodLookupRepository {
       ...pods,
       ...await this.getPodsFromIndexedStore(),
     ]);
+  }
+
+  private async getUsageByPodId(): Promise<Map<string, { storageUrl?: string }>> {
+    const tableId = sql.identifier([this.usageTableName]);
+    try {
+      const result = await executeQuery<PodUsageRow>(this.db, sql`
+        SELECT pod_id, storage_url FROM ${tableId}
+      `);
+      const byPodId = new Map<string, { storageUrl?: string }>();
+      for (const row of result.rows) {
+        if (!row.pod_id) {
+          continue;
+        }
+        byPodId.set(row.pod_id, {
+          storageUrl: row.storage_url ?? undefined,
+        });
+      }
+      return byPodId;
+    } catch {
+      return new Map();
+    }
   }
 
   /**
@@ -341,6 +439,7 @@ export class PodLookupRepository {
           podId,
           accountId,
           baseUrl: pod.baseUrl,
+          storageUrl: stringValue(pod.storageUrl),
           webId: dedupeStrings(podWebIds)[0],
           ...webIdsProperty(podWebIds),
           nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : undefined,
@@ -423,6 +522,7 @@ export class PodLookupRepository {
         podId,
         accountId,
         baseUrl,
+        storageUrl: stringValue(pod.storageUrl),
         webId: podWebIds[0],
         ...webIdsProperty(podWebIds),
         nodeId: stringValue(pod.nodeId),
@@ -526,6 +626,7 @@ function mergePodLookupResults(values: PodLookupResult[]): PodLookupResult[] {
     byPodId.set(value.podId, {
       ...existing,
       baseUrl: existing.baseUrl || value.baseUrl,
+      storageUrl: existing.storageUrl ?? value.storageUrl,
       accountId: existing.accountId || value.accountId,
       webId: webIds[0],
       ...webIdsProperty(webIds),

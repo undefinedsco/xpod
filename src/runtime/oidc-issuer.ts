@@ -12,7 +12,8 @@ function cleanEnvValue(value: string | undefined): string | undefined {
 /**
  * Resolve the external IdP issuer used by local/SP mode.
  *
- * `oidcIssuer` is the canonical xpod config/shorthand key.
+ * `oidcIssuer` is the canonical xpod config/shorthand key and the single
+ * supported process-level contract.
  * Cloud API endpoints are not identity issuers and must not implicitly
  * switch a local node into SP mode.
  */

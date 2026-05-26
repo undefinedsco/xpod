@@ -17,7 +17,8 @@ import {
   ConflictHttpError,
 } from '@solid/community-server';
 import { ProvisionCodeCodec } from './ProvisionCodeCodec';
-import type { WebIdProfileRepository } from '../identity/drizzle/WebIdProfileRepository';
+import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
+import { getIdentityDatabase } from '../identity/drizzle/db';
 
 function joinUrlPath(baseUrl: string, relativePath: string): string {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/u, '');
@@ -28,8 +29,8 @@ function joinUrlPath(baseUrl: string, relativePath: string): string {
 export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
   /** 与 ProvisionHandler 使用相同的 baseUrl 派生签名密钥 */
   provisionBaseUrl?: string;
-  /** Optional Cloud profile repository used to reconcile solid:storage after remote provisioning */
-  webIdProfileRepo?: WebIdProfileRepository;
+  /** Optional identity database connection string used to persist Pod-side storage facts. */
+  identityDbUrl?: string;
 }
 
 function remapPodConflict(error: unknown, podName: string): never {
@@ -46,12 +47,12 @@ function remapPodConflict(error: unknown, podName: string): never {
 export class ProvisionPodCreator extends BasePodCreator {
   private readonly provisionLogger = getLoggerFor(this);
   private readonly codec: ProvisionCodeCodec;
-  private readonly webIdProfileRepo?: WebIdProfileRepository;
+  private readonly podLookupRepo?: PodLookupRepository;
 
   public constructor(args: ProvisionPodCreatorArgs) {
     super(args);
     this.codec = new ProvisionCodeCodec(args.provisionBaseUrl ?? args.baseUrl);
-    this.webIdProfileRepo = args.webIdProfileRepo;
+    this.podLookupRepo = args.identityDbUrl ? new PodLookupRepository(getIdentityDatabase(args.identityDbUrl)) : undefined;
   }
 
   public override async handle(input: PodCreatorInput): Promise<PodCreatorOutput> {
@@ -106,26 +107,18 @@ export class ProvisionPodCreator extends BasePodCreator {
     // base.path 必须在 Cloud 的 identifier space 内（CSS PodStore 会检查），
     // 所以用 Cloud 本地路径；真实的 SP storage URL 通过 podUrl 返回。
     const localBase = this.identifierGenerator.generate(podName);
+    const { provisionCode: _provisionCode, ...inputSettings } = input.settings ?? {};
     const podSettings = {
-      ...input.settings,
+      ...inputSettings,
       base: localBase,
       webId,
       oidcIssuer: this.baseUrl,
+      storage: canonicalStorageUrl,
     };
 
     const webIdLink = await this.handleWebId(!input.webId, webId, input.accountId, podSettings);
     const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink);
-
-    if (!input.webId && this.webIdProfileRepo) {
-      try {
-        await this.webIdProfileRepo.updateStorage(podName, {
-          storageUrl: canonicalStorageUrl,
-          storageMode: 'local',
-        });
-      } catch (error) {
-        this.provisionLogger.warn(`Failed to reconcile storage pointer for ${podName}: ${(error as Error).message}`);
-      }
-    }
+    await this.podLookupRepo?.setStorageUrl(podId, input.accountId, canonicalStorageUrl);
 
     this.provisionLogger.info(`Provisioned pod ${podName} on SP ${payload.spUrl}, podUrl: ${podUrl}`);
 
@@ -148,6 +141,7 @@ export class ProvisionPodCreator extends BasePodCreator {
       base: baseIdentifier,
       webId,
       oidcIssuer,
+      storage: baseIdentifier.path,
     };
 
     const webIdStarted = Date.now();

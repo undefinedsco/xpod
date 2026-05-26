@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProvisionPodCreator } from '../../src/provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
+import { PodLookupRepository } from '../../src/identity/drizzle/PodLookupRepository';
 
-// Mock global fetch
 const mockFetch = vi.fn();
-globalThis.fetch = mockFetch as typeof fetch;
+const realFetch = globalThis.fetch;
 
 describe('ProvisionPodCreator', () => {
   const baseUrl = 'https://cloud.example.com/';
@@ -14,10 +14,11 @@ describe('ProvisionPodCreator', () => {
   let mockIdentifierGenerator: any;
   let mockWebIdStore: any;
   let mockPodStore: any;
-  let mockWebIdProfileRepo: any;
+  let setStorageUrlSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    globalThis.fetch = mockFetch as typeof fetch;
 
     mockIdentifierGenerator = {
       generate: vi.fn((name: string) => ({ path: `${baseUrl}${name}/` })),
@@ -29,13 +30,9 @@ describe('ProvisionPodCreator', () => {
     mockPodStore = {
       create: vi.fn().mockResolvedValue('pod-id-1'),
     };
-    mockWebIdProfileRepo = {
-      updateStorage: vi.fn().mockResolvedValue({
-        username: 'alice',
-        storageUrl: 'https://abc123.undefineds.site/alice/',
-        storageMode: 'local',
-      }),
-    };
+    setStorageUrlSpy = vi
+      .spyOn(PodLookupRepository.prototype, 'setStorageUrl')
+      .mockResolvedValue(undefined);
 
     creator = new ProvisionPodCreator({
       baseUrl,
@@ -44,8 +41,13 @@ describe('ProvisionPodCreator', () => {
       relativeWebIdPath: 'profile/card#me',
       webIdStore: mockWebIdStore,
       podStore: mockPodStore,
-      webIdProfileRepo: mockWebIdProfileRepo,
+      identityDbUrl: 'sqlite::memory:',
     });
+  });
+
+  afterEach(() => {
+    setStorageUrlSpy.mockRestore();
+    globalThis.fetch = realFetch;
   });
 
   describe('with provisionCode (SP mode)', () => {
@@ -121,10 +123,11 @@ describe('ProvisionPodCreator', () => {
 
       // Should use spDomain, not spUrl
       expect(result.podUrl).toBe('https://abc123.undefineds.site/alice/');
-      expect(mockWebIdProfileRepo.updateStorage).toHaveBeenCalledWith('alice', {
-        storageUrl: 'https://abc123.undefineds.site/alice/',
-        storageMode: 'local',
-      });
+      expect(setStorageUrlSpy).toHaveBeenCalledWith(
+        'pod-id-1',
+        'account-1',
+        'https://abc123.undefineds.site/alice/',
+      );
 
       // But fetch should still use the real spUrl
       expect(mockFetch).toHaveBeenCalledWith(
@@ -151,10 +154,11 @@ describe('ProvisionPodCreator', () => {
       });
 
       expect(result.podUrl).toBe(`${spUrl}/alice/`);
-      expect(mockWebIdProfileRepo.updateStorage).toHaveBeenCalledWith('alice', {
-        storageUrl: 'https://abc123.undefineds.site/alice/',
-        storageMode: 'local',
-      });
+      expect(setStorageUrlSpy).toHaveBeenCalledWith(
+        'pod-id-1',
+        'account-1',
+        'https://abc123.undefineds.site/alice/',
+      );
     });
 
     it('should throw on invalid provisionCode', async () => {
@@ -264,6 +268,7 @@ describe('ProvisionPodCreator', () => {
           base: { path: `${baseUrl}bob/` },
           webId: `${baseUrl}bob/profile/card#me`,
           oidcIssuer: baseUrl,
+          storage: `${baseUrl}bob/`,
         }),
       );
       expect((creator as any).createPod).toHaveBeenCalledWith(
@@ -272,6 +277,7 @@ describe('ProvisionPodCreator', () => {
           base: { path: `${baseUrl}bob/` },
           webId: `${baseUrl}bob/profile/card#me`,
           oidcIssuer: baseUrl,
+          storage: `${baseUrl}bob/`,
         }),
         false,
         'webid-link-1',

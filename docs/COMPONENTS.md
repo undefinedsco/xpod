@@ -15,6 +15,8 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
+| `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
+| `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，并把 canonical storage URL 记录到 `identity_pod_usage.storage_url` |
 
 ### Store 调用链对照
 
@@ -104,6 +106,24 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Purpose**: Account data persistence layer for clustered deployments
 - **Integration**: Replaces CSS file-based account storage in server mode
 - **Functionality**: CRUD operations for accounts, pods, and roles
+
+### ScopedPickWebIdHandler
+- **Path**: `src/identity/oidc/ScopedPickWebIdHandler.ts`
+- **Purpose**: Keep OIDC WebID selection scoped to the selected storage provider.
+- **Functionality**:
+  - Standard Cloud/Standalone login: filters linked WebIDs by Pods known to the current issuer/storage provider.
+  - Cloud IdP + Local SP login: decodes `provisionCode`, calls the Local SP `/provision/webids` endpoint with the service token, and only returns WebIDs that the Local SP can resolve.
+  - Rejects submitted WebIDs that belong to the account but are not resolvable by the current SP.
+- **Boundary**: `/{pod}/profile/card` remains CSS-native. Xpod does not proxy WebID profile documents through the API server.
+
+### ProvisionPodCreator
+- **Path**: `src/provision/ProvisionPodCreator.ts`
+- **Purpose**: Extend CSS Pod creation without replacing the account/consent flow.
+- **Functionality**:
+  - Adds `storage` to Pod resource template settings so generated profile cards include `solid:storage`.
+  - In remote provisioning, calls the selected SP `/provision/pods` endpoint and records the canonical storage URL in `identity_pod_usage.storage_url`.
+  - Removes `provisionCode` before handing settings to CSS Pod storage.
+- **Deployment**: All modes through `config/xpod.base.json`.
 
 ## Quota & Usage Management
 

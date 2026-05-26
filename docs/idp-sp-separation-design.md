@@ -479,7 +479,7 @@ export class SubdomainPodIdentifierStrategy extends BaseIdentifierStrategy {
       "@value": "https://id.undefineds.co"
     },
     {
-      "comment": "启用 WebID Profile 托管",
+        "comment": "WebID profile/card 由 CSS 原生 Pod 资源处理；不要通过 API Server 托管 profile",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:BaseHttpHandler"
@@ -493,10 +493,7 @@ export class SubdomainPodIdentifierStrategy extends BaseIdentifierStrategy {
           { "@id": "urn:solid-server:default:StorageDescriptionHandler" },
           { "@id": "urn:solid-server:default:AuthResourceHttpHandler" },
           { "@id": "urn:solid-server:default:IdentityProviderHandler" },
-          {
-            "comment": "WebID Profile Handler",
-            "@id": "urn:undefineds:xpod:WebIdProfileHandler"
-          }
+          { "@id": "urn:solid-server:default:PodResourceHandler" }
         ]
       }
     }
@@ -647,10 +644,10 @@ export class SubdomainPodIdentifierStrategy extends BaseIdentifierStrategy {
 
 ### Phase 2: IdP 端 (id.undefineds.co)
 
-1. **扩展 WebIdProfileHandler**
-   - 支持 storage 指向子域名 SP
-   - 验证节点是否注册
-   - 管理 Local Node 注册表
+1. **扩展 PickWebIdHandler**
+   - 使用 `ScopedPickWebIdHandler` 在 consent 阶段按当前 SP 过滤候选 WebID
+   - Cloud IdP + Local SP 时通过 `provisionCode` 调用 Local SP `/provision/webids`
+   - WebID profile/card 继续走 CSS 原生资源，`solid:storage` 由 Pod 模板生成
 
 2. **创建 LocalNodeService**
    - 注册 Local Node (`node1.pods.undefineds.site`)
