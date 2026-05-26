@@ -7,10 +7,12 @@ import type { Quad } from '@rdfjs/types';
 import { SqliteQuintStore } from '../src/storage/quint';
 import {
   RdfQuadIndex,
+  Rdf3xTripleIndex,
   ShadowRdfQuintStore,
   SolidRdfEngine,
   defaultSyntheticMessagesForRdfModelsScale,
   runRdfModelsBenchmark,
+  runRdfModelsRdf3xShadowBenchmark,
   runRdfModelsShadowBenchmark,
   rdfModelsBenchmarkScaleSatisfied,
   rdfModelsBenchmarkSyntheticPodCount,
@@ -52,6 +54,7 @@ interface BenchmarkPaths {
   indexDb: string;
   baselineReport: string;
   shadowReport: string;
+  rdf3xShadowReport: string;
 }
 
 async function main(): Promise<void> {
@@ -75,12 +78,21 @@ async function main(): Promise<void> {
       batchSize: 1000,
     });
 
-    const engine = new SolidRdfEngine({ index: shadowStore.index });
+    const rdf3xIndex = new Rdf3xTripleIndex({ path: paths.indexDb });
+    rdf3xIndex.open();
+    const engine = new SolidRdfEngine({
+      index: shadowStore.index,
+      rdf3xIndex,
+    });
     const baseline = runRdfModelsBenchmark(engine, {
       scale: options.scale,
       iterations: options.iterations,
     });
     const shadow = await runRdfModelsShadowBenchmark(engine, compatibilityStore, {
+      scale: options.scale,
+      iterations: options.iterations,
+    });
+    const rdf3xShadow = runRdfModelsRdf3xShadowBenchmark(engine, {
       scale: options.scale,
       iterations: options.iterations,
     });
@@ -92,6 +104,10 @@ async function main(): Promise<void> {
     await writeJson(paths.shadowReport, {
       seed: seedSummary(options, seedQuads.length, backfill),
       report: shadow,
+    });
+    await writeJson(paths.rdf3xShadowReport, {
+      seed: seedSummary(options, seedQuads.length, backfill),
+      report: rdf3xShadow,
     });
 
     printSummary({
@@ -105,8 +121,12 @@ async function main(): Promise<void> {
       baselineCases: baseline.cases.length,
       localQueryCases: baseline.localQueryCases.length,
       shadowCases: shadow.cases.length,
+      rdf3xShadowCases: rdf3xShadow.cases.length,
+      rdf3xSkippedCases: rdf3xShadow.skippedCases,
       matched: shadow.matched,
       orderedMatched: shadow.orderedMatched,
+      rdf3xMatched: rdf3xShadow.matched,
+      rdf3xOrderedMatched: rdf3xShadow.orderedMatched,
       baselinePlanMatched: baseline.planMatched,
       shadowPlanMatched: shadow.planMatched,
       shadowSpaceGateEnforced: shadow.spaceGateEnforced,
@@ -121,11 +141,14 @@ async function main(): Promise<void> {
       failedCases: shadow.cases
         .filter((testCase) => !testCase.matched || !testCase.orderedMatch)
         .map((testCase) => testCase.name),
+      failedRdf3xCases: rdf3xShadow.failedCases,
     });
 
     if (
       !shadow.matched
       || !shadow.orderedMatched
+      || !rdf3xShadow.matched
+      || !rdf3xShadow.orderedMatched
       || !baseline.planMatched
       || !shadow.planMatched
       || !shadow.performanceMatched
@@ -199,6 +222,7 @@ function createBenchmarkPaths(outDir: string): BenchmarkPaths {
     indexDb: path.join(outDir, `rdf-models-index-${runId}.sqlite`),
     baselineReport: path.join(outDir, `models-baseline-${runId}.json`),
     shadowReport: path.join(outDir, `models-shadow-${runId}.json`),
+    rdf3xShadowReport: path.join(outDir, `models-rdf3x-shadow-${runId}.json`),
   };
 }
 
@@ -379,8 +403,12 @@ function printSummary(summary: {
   baselineCases: number;
   localQueryCases: number;
   shadowCases: number;
+  rdf3xShadowCases: number;
+  rdf3xSkippedCases: string[];
   matched: boolean;
   orderedMatched: boolean;
+  rdf3xMatched: boolean;
+  rdf3xOrderedMatched: boolean;
   baselinePlanMatched: boolean;
   shadowPlanMatched: boolean;
   shadowSpaceGateEnforced: boolean;
@@ -390,6 +418,7 @@ function printSummary(summary: {
   failedPerformanceCases: string[];
   failedSpaceCases: string[];
   failedCases: string[];
+  failedRdf3xCases: string[];
 }): void {
   console.log('RDF models benchmark complete');
   console.log(`  scale: ${summary.options.scale}`);
@@ -405,19 +434,27 @@ function printSummary(summary: {
   console.log(`  baseline cases: ${summary.baselineCases}`);
   console.log(`  local query cases: ${summary.localQueryCases}`);
   console.log(`  shadow cases: ${summary.shadowCases}`);
+  console.log(`  rdf3x shadow cases: ${summary.rdf3xShadowCases}`);
+  console.log(`  rdf3x skipped cases: ${summary.rdf3xSkippedCases.length}`);
   console.log(`  shadow matched: ${summary.matched}`);
   console.log(`  shadow ordered matched: ${summary.orderedMatched}`);
+  console.log(`  rdf3x shadow matched: ${summary.rdf3xMatched}`);
+  console.log(`  rdf3x shadow ordered matched: ${summary.rdf3xOrderedMatched}`);
   console.log(`  baseline plan matched: ${summary.baselinePlanMatched}`);
   console.log(`  shadow plan matched: ${summary.shadowPlanMatched}`);
   console.log(`  shadow performance matched: ${summary.shadowPerformanceMatched}`);
   console.log(`  shadow space matched: ${summary.shadowSpaceMatched}${summary.shadowSpaceGateEnforced ? '' : ' (not enforced for this scale)'}`);
   console.log(`  baseline report: ${summary.paths.baselineReport}`);
   console.log(`  shadow report: ${summary.paths.shadowReport}`);
+  console.log(`  rdf3x shadow report: ${summary.paths.rdf3xShadowReport}`);
   if (summary.failedPlanCases.length > 0) {
     console.error(`  failed plan cases: ${summary.failedPlanCases.join(', ')}`);
   }
   if (summary.failedCases.length > 0) {
     console.error(`  failed cases: ${summary.failedCases.join(', ')}`);
+  }
+  if (summary.failedRdf3xCases.length > 0) {
+    console.error(`  failed rdf3x cases: ${summary.failedRdf3xCases.join(', ')}`);
   }
   if (summary.failedPerformanceCases.length > 0) {
     console.error(`  failed performance cases: ${summary.failedPerformanceCases.join(', ')}`);

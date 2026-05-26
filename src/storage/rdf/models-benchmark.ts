@@ -5,6 +5,8 @@ import type { Quad } from '@rdfjs/types';
 import type { QuintPattern, QueryOptions, QuintStore, StoreStats } from '../quint/types';
 import { isTerm } from '../quint/types';
 import type {
+  Rdf3xIndexMetrics,
+  Rdf3xIndexStats,
   RdfBindingRow,
   RdfIndexMetrics,
   RdfIndexStats,
@@ -197,6 +199,61 @@ export interface RdfModelShadowBenchmarkReport {
   failedPerformanceCases: string[];
   failedSpaceCases: string[];
   cases: RdfModelShadowBenchmarkResult[];
+}
+
+export interface RdfModelRdf3xShadowBenchmarkResult {
+  name: string;
+  resource: string;
+  purpose: string;
+  minScale: RdfBenchmarkScale;
+  query: {
+    pattern: JsonPattern;
+    options?: QueryOptions;
+  };
+  supported: boolean;
+  unsupportedReason?: string;
+  matched: boolean;
+  orderedMatch: boolean;
+  diff: RdfShadowDiff;
+  solidRdf: RdfModelShadowBenchmarkSide & {
+    physicalPlan: string[];
+    scannedRows: number;
+    indexChoice: string;
+    joinOrder: string[];
+    fallbackReason: string | null;
+    metrics: RdfIndexMetrics;
+    indexStats: RdfIndexStats;
+  };
+  rdf3x?: RdfModelShadowBenchmarkSide & {
+    physicalPlan: string[];
+    scannedRows: number;
+    indexChoice: string;
+    joinOrder: string[];
+    fallbackReason: string | null;
+    metrics: Rdf3xIndexMetrics;
+    indexStats: Rdf3xIndexStats;
+  };
+}
+
+export interface RdfModelRdf3xShadowBenchmarkReport {
+  engine: 'rdf3x-shadow';
+  primaryEngine: 'solid-rdf';
+  candidateEngine: 'solid-rdf3x';
+  scale: RdfBenchmarkScale;
+  iterations: number;
+  generatedAt: string;
+  matched: boolean;
+  orderedMatched: boolean;
+  skippedCases: string[];
+  failedCases: string[];
+  rebuild: {
+    scannedQuads: number;
+    uniqueTriples: number;
+    memberships: number;
+    projectionRows: number;
+    durationMs: number;
+  };
+  cases: RdfModelRdf3xShadowBenchmarkResult[];
 }
 
 type JsonPattern = Record<string, unknown>;
@@ -853,6 +910,37 @@ export async function runRdfModelsShadowBenchmark(
   };
 }
 
+export function runRdfModelsRdf3xShadowBenchmark(
+  engine: SolidRdfEngine,
+  options: RdfModelBenchmarkRunOptions = {},
+): RdfModelRdf3xShadowBenchmarkReport {
+  if (!engine.rdf3xIndex) {
+    throw new Error('runRdfModelsRdf3xShadowBenchmark requires SolidRdfEngine.rdf3xIndex');
+  }
+  const scale = options.scale ?? 'small';
+  const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
+  const cases = (options.cases ?? rdfModelsBenchmarkCases)
+    .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
+  const rebuild = engine.rdf3xIndex.rebuildFromCurrentQuads();
+  const results = cases.map((testCase) => runRdf3xShadowBenchmarkCase(engine, testCase, iterations));
+  const supportedResults = results.filter((result) => result.supported);
+
+  return {
+    engine: 'rdf3x-shadow',
+    primaryEngine: 'solid-rdf',
+    candidateEngine: 'solid-rdf3x',
+    scale,
+    iterations,
+    generatedAt: new Date().toISOString(),
+    matched: supportedResults.every((result) => result.matched),
+    orderedMatched: supportedResults.every((result) => result.orderedMatch),
+    skippedCases: results.filter((result) => !result.supported).map((result) => result.name),
+    failedCases: supportedResults.filter((result) => !result.matched || !result.orderedMatch).map((result) => result.name),
+    rebuild,
+    cases: results,
+  };
+}
+
 function runBenchmarkCase(
   engine: SolidRdfEngine,
   testCase: RdfModelBenchmarkCase,
@@ -958,6 +1046,123 @@ function runLocalQueryBenchmarkCase(
   };
 }
 
+function runRdf3xShadowBenchmarkCase(
+  engine: SolidRdfEngine,
+  testCase: RdfModelBenchmarkCase,
+  iterations: number,
+): RdfModelRdf3xShadowBenchmarkResult {
+  const baseResult = baseRdf3xShadowBenchmarkResult(testCase);
+  const unsupportedReason = unsupportedRdf3xPatternReason(testCase.query.pattern);
+  if (unsupportedReason) {
+    return {
+      ...baseResult,
+      supported: false,
+      unsupportedReason,
+      matched: false,
+      orderedMatch: false,
+      diff: {
+        missingFromPrimary: [],
+        extraInPrimary: [],
+      },
+      solidRdf: emptySolidRdfBenchmarkSide(engine),
+    };
+  }
+
+  const solidRdfDurationsMs: number[] = [];
+  const rdf3xDurationsMs: number[] = [];
+  let solidRdfQuads: Quad[] = [];
+  let rdf3xQuads: Quad[] = [];
+  let solidRdfMetrics: RdfIndexMetrics | undefined;
+  let rdf3xMetrics: Rdf3xIndexMetrics | undefined;
+
+  for (let i = 0; i < iterations; i += 1) {
+    let start = Date.now();
+    const solidRdfResult = engine.scan(testCase.query);
+    solidRdfDurationsMs.push(Math.max(0, Date.now() - start));
+    solidRdfQuads = solidRdfResult.quads;
+    solidRdfMetrics = solidRdfResult.metrics;
+
+    start = Date.now();
+    const rdf3xResult = engine.rdf3xIndex!.scan(rdf3xPatternFor(testCase.query.pattern), testCase.query.options);
+    rdf3xDurationsMs.push(Math.max(0, Date.now() - start));
+    rdf3xQuads = rdf3xResult.quads;
+    rdf3xMetrics = rdf3xResult.metrics;
+  }
+
+  const solidRdfKeys = solidRdfQuads.map(canonicalQuadKey);
+  const rdf3xKeys = rdf3xQuads.map(canonicalQuadKey);
+  const diff = diffQuads(solidRdfQuads, rdf3xQuads);
+  const orderedMatch = isSemanticallyOrdered(testCase.query.options)
+    ? rdf3xKeys.join('\n') === solidRdfKeys.join('\n')
+    : true;
+  const finalSolidRdfMetrics = solidRdfMetrics ?? {
+    engine: 'solid-rdf',
+    indexChoice: 'not-run',
+    matchedRows: 0,
+    returnedRows: 0,
+    durationMs: 0,
+  };
+  const finalRdf3xMetrics = rdf3xMetrics ?? {
+    engine: 'solid-rdf3x',
+    indexChoice: 'none',
+    matchedRows: 0,
+    returnedRows: 0,
+    durationMs: 0,
+  } satisfies Rdf3xIndexMetrics;
+
+  return {
+    ...baseResult,
+    supported: true,
+    matched: diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
+    orderedMatch,
+    diff,
+    solidRdf: {
+      ...benchmarkSide(solidRdfKeys, solidRdfDurationsMs),
+      ...benchmarkExecution(finalSolidRdfMetrics),
+      metrics: finalSolidRdfMetrics,
+      indexStats: engine.index.stats(),
+    },
+    rdf3x: {
+      ...benchmarkSide(rdf3xKeys, rdf3xDurationsMs),
+      ...rdf3xBenchmarkExecution(finalRdf3xMetrics),
+      metrics: finalRdf3xMetrics,
+      indexStats: engine.rdf3xIndex!.stats(),
+    },
+  };
+}
+
+function baseRdf3xShadowBenchmarkResult(testCase: RdfModelBenchmarkCase): Pick<
+  RdfModelRdf3xShadowBenchmarkResult,
+  'name' | 'resource' | 'purpose' | 'minScale' | 'query'
+> {
+  return {
+    name: testCase.name,
+    resource: testCase.resource,
+    purpose: testCase.purpose,
+    minScale: testCase.minScale,
+    query: {
+      pattern: serializePattern(testCase.query.pattern),
+      ...(testCase.query.options ? { options: testCase.query.options } : {}),
+    },
+  };
+}
+
+function emptySolidRdfBenchmarkSide(engine: SolidRdfEngine): RdfModelRdf3xShadowBenchmarkResult['solidRdf'] {
+  const metrics: RdfIndexMetrics = {
+    engine: 'solid-rdf',
+    indexChoice: 'not-run',
+    matchedRows: 0,
+    returnedRows: 0,
+    durationMs: 0,
+  };
+  return {
+    ...benchmarkSide([], []),
+    ...benchmarkExecution(metrics),
+    metrics,
+    indexStats: engine.index.stats(),
+  };
+}
+
 async function runShadowBenchmarkCase(
   engine: SolidRdfEngine,
   compatibilityStore: QuintStore,
@@ -1045,6 +1250,72 @@ function benchmarkExecution(metrics: RdfIndexMetrics): {
     joinOrder: [metrics.indexChoice],
     fallbackReason: null,
   };
+}
+
+function rdf3xBenchmarkExecution(metrics: Rdf3xIndexMetrics): {
+  physicalPlan: string[];
+  scannedRows: number;
+  indexChoice: string;
+  joinOrder: string[];
+  fallbackReason: string | null;
+} {
+  return {
+    physicalPlan: metrics.queryPlan ?? [],
+    scannedRows: metrics.matchedRows,
+    indexChoice: metrics.indexChoice,
+    joinOrder: [metrics.indexChoice],
+    fallbackReason: null,
+  };
+}
+
+function unsupportedRdf3xPatternReason(pattern: QuintPattern): string | undefined {
+  for (const key of ['graph', 'subject', 'predicate', 'object'] as const) {
+    const value = pattern[key];
+    if (!value || isTerm(value as any)) {
+      continue;
+    }
+    if (key === 'graph' && isGraphPrefixPattern(value)) {
+      continue;
+    }
+    return `unsupported ${key} pattern for RDF-3X shadow`;
+  }
+  return undefined;
+}
+
+function rdf3xPatternFor(pattern: QuintPattern): {
+  graph?: import('@rdfjs/types').Term | { $startsWith: string };
+  subject?: import('@rdfjs/types').Term;
+  predicate?: import('@rdfjs/types').Term;
+  object?: import('@rdfjs/types').Term;
+} {
+  const result: {
+    graph?: import('@rdfjs/types').Term | { $startsWith: string };
+    subject?: import('@rdfjs/types').Term;
+    predicate?: import('@rdfjs/types').Term;
+    object?: import('@rdfjs/types').Term;
+  } = {};
+  for (const key of ['graph', 'subject', 'predicate', 'object'] as const) {
+    const value = pattern[key];
+    if (!value) {
+      continue;
+    }
+    if (key === 'graph' && isGraphPrefixPattern(value)) {
+      result.graph = { $startsWith: value.$startsWith };
+      continue;
+    }
+    if (!isTerm(value as any)) {
+      throw new Error(`RDF-3X shadow benchmark only supports exact ${key} terms or graph prefixes`);
+    }
+    result[key] = value as import('@rdfjs/types').Term;
+  }
+  return result;
+}
+
+function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } {
+  return value !== null
+    && typeof value === 'object'
+    && '$startsWith' in value
+    && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
 }
 
 function isSemanticallyOrdered(options?: QueryOptions): boolean {

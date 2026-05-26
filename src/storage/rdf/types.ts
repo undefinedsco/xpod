@@ -171,14 +171,20 @@ export interface Rdf3xTripleIndexOptions {
   debug?: boolean;
 }
 
+export interface Rdf3xGraphPrefixPattern {
+  $startsWith: string;
+}
+
 export interface Rdf3xTriplePattern {
-  graph?: Term;
+  graph?: Term | Rdf3xGraphPrefixPattern;
   subject?: Term;
   predicate?: Term;
   object?: Term;
 }
 
 export interface Rdf3xTripleScanOptions {
+  order?: Array<'graph' | 'subject' | 'predicate' | 'object'>;
+  reverse?: boolean;
   limit?: number;
   offset?: number;
 }

@@ -306,9 +306,20 @@ function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
       continue;
     }
     if (!isTerm(value)) {
-      throw new Error(`SolidRdfEngine RDF-3X shadow scan only supports exact ${key} terms`);
+      if (key === 'graph' && isStartsWithOperator(value)) {
+        result.graph = { $startsWith: value.$startsWith };
+        continue;
+      }
+      throw new Error(`SolidRdfEngine RDF-3X shadow scan only supports exact ${key} terms${key === 'graph' ? ' or graph $startsWith' : ''}`);
     }
     result[key] = value;
   }
   return result;
+}
+
+function isStartsWithOperator(value: unknown): value is { $startsWith: string } {
+  return value !== null
+    && typeof value === 'object'
+    && '$startsWith' in value
+    && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
 }

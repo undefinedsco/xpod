@@ -130,6 +130,44 @@ describe('Rdf3xTripleIndex', () => {
       source: 'exact-membership',
       indexChoice: 'source-membership',
     });
+    expect(rdf3x.estimateCardinality({
+      graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+      predicate: status,
+      object: open,
+    })).toMatchObject({
+      uniqueTriples: 2,
+      matchingQuads: 2,
+      source: 'exact-membership',
+      indexChoice: 'source-membership',
+    });
+  });
+
+  it('matches baseline scans for graph prefix membership filters without dropping triple constraints', () => {
+    const status = namedNode('https://undefineds.co/ns#status');
+    const open = literal('open');
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const message1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#m1');
+    const message2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#m2');
+
+    quadIndex.multiPut([
+      quad(message1, status, open, chatGraph),
+      quad(message1, status, open, taskGraph),
+      quad(message2, status, open, chatGraph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const prefix = 'https://pod.example/alice/.data/chat/';
+    const baseline = quadIndex.scan({ graph: { $startsWith: prefix }, predicate: status, object: open });
+    const scan = rdf3x.scan({ graph: { $startsWith: prefix }, predicate: status, object: open });
+
+    expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('GraphPrefixMembershipFilter');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('Rdf3xPermutationScan(POS)');
+    expect(rdf3x.estimateCardinality({ graph: { $startsWith: prefix }, predicate: status, object: open })).toMatchObject({
+      source: 'exact-membership',
+      indexChoice: 'source-membership',
+    });
   });
 
   it('executes connected BGP joins from RDF-3X permutation scans', () => {
