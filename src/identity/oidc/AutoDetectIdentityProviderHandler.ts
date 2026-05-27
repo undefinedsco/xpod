@@ -6,20 +6,21 @@ import {
 } from '@solid/community-server';
 
 export interface AutoDetectIdentityProviderHandlerOptions {
-  /** 外部 IdP 的基础 URL，如果提供则启用 SP 模式 */
+  /** 外部 IdP 的基础 URL，如果提供则启用 Local SP mode. */
   oidcIssuer?: string;
-  /** 禁用时的消息 */
+  /** Message used when no source handler is available. */
   message?: string;
-  /** CSS 默认的 IdentityProviderHandler，标准模式下委托给它 */
+  /** CSS IdentityProviderHandler that owns account, consent and WebID selection routes. */
   source?: HttpHandler;
 }
 
 /**
  * Auto-detect Identity Provider Handler
  *
- * 自动检测运行模式：
- * - 如果配置了 oidcIssuer -> SP 模式：禁用本地账户管理
- * - 如果没有配置 oidcIssuer -> 标准模式：委托给 CSS 默认 Handler
+ * Local SP mode still needs the local `/.account/*` surface: CSS keeps the
+ * OIDC interaction and the scoped WebID picker here, while token validation can
+ * trust the configured external issuer. Disabling this surface makes LinX fall
+ * back to the Cloud issuer and lets Cloud Pods leak into a Local login flow.
  */
 export class AutoDetectIdentityProviderHandler extends HttpHandler {
   private readonly logger = getLoggerFor(this);
@@ -30,20 +31,20 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
   constructor(options: AutoDetectIdentityProviderHandlerOptions = {}) {
     super();
     this.oidcIssuer = options.oidcIssuer;
-    this.message = options.message ?? 'Account management handled by external IdP';
+    this.message = options.message ?? 'No source IdentityProviderHandler configured';
     this.source = options.source;
 
     if (this.oidcIssuer) {
-      this.logger.info(`SP mode enabled: ${this.message}, external IdP: ${this.oidcIssuer}`);
+      this.logger.info(`Local SP mode enabled: account and consent routes stay local, external issuer: ${this.oidcIssuer}`);
     } else {
-      this.logger.info('Standard mode enabled, delegating to source IdentityProviderHandler');
+      this.logger.info('Standard mode enabled: delegating identity routes to source IdentityProviderHandler');
     }
   }
 
   /**
    * 判断是否处理请求
-   * - SP 模式：拒绝所有 IdP 请求
-   * - 标准模式：委托给 source Handler
+   * - Local SP mode: delegate local account/consent routes to source Handler
+   * - Standard mode: delegate to source Handler
    */
   public override async canHandle(input: HttpHandlerInput): Promise<void> {
     const url = input.request.url ?? '';
@@ -53,37 +54,23 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
       throw new NotImplementedHttpError('Not an IdP request');
     }
 
-    // SP 模式：接受 IdP 路径请求，在 handle 中返回 404
-    if (this.oidcIssuer) {
-      return;
-    }
-
-    // 标准模式：委托给 source Handler
     if (this.source) {
       await this.source.canHandle(input);
     } else {
-      throw new NotImplementedHttpError('No source IdentityProviderHandler configured');
+      throw new NotImplementedHttpError(this.message);
     }
   }
 
   /**
    * 处理请求
-   * - SP 模式：不应该到达这里
-   * - 标准模式：委托给 source Handler
+   * - Local SP mode: delegate to source Handler so consent remains scoped by SP
+   * - Standard mode: delegate to source Handler
    */
   public override async handle(input: HttpHandlerInput): Promise<void> {
-    if (this.oidcIssuer) {
-      const { response } = input;
-      response.writeHead(404, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ error: this.message }));
-      return;
-    }
-
-    // 标准模式：委托给 source Handler
     if (this.source) {
       await this.source.handle(input);
     } else {
-      throw new NotImplementedHttpError('No source IdentityProviderHandler configured');
+      throw new NotImplementedHttpError(this.message);
     }
   }
 

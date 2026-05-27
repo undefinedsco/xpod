@@ -11,12 +11,12 @@
   ],
   "@graph": [
     {
-      "comment": "Xpod 统一配置 - 通过环境变量切换 Cloud/SP 模式",
+      "comment": "Xpod 统一配置 - 通过环境变量切换 Cloud/Local/Standalone 模式",
       "@id": "urn:undefineds:xpod:Config",
       "@type": "Void"
     },
     {
-      "comment": "定义 oidcIssuer 变量（外部 IdP 基础 URL）- SP 模式必填",
+      "comment": "定义 oidcIssuer 变量（外部 OIDC issuer 基础 URL）；Local 模式仍由本地提供 account/consent/SP 页面",
       "@id": "urn:solid-server:default:variable:oidcIssuer",
       "@type": "Variable"
     },
@@ -52,7 +52,7 @@
       }
     },
     {
-      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时启用 SP 模式",
+      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时代理外部 issuer 的 JWKS，其它 OIDC 路由保持 CSS 本地处理",
       "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
       "@type": "AutoDetectOidcHandler",
       "options_oidcIssuer": {
@@ -61,13 +61,20 @@
       "options_cacheMs": 300000
     },
     {
-      "comment": "Override: 使用 AutoDetectOidcHandler 替换默认 OidcHandler",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:OidcHandler"
+      "comment": "CSS 原生 IdentityProvider parsing handler，始终用于本地 account/consent/WebID 选择页面",
+      "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler",
+      "@type": "RouterHandler",
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl"
       },
-      "overrideParameters": {
-        "@id": "urn:undefineds:xpod:AutoDetectOidcHandler"
+      "targetExtractor": {
+        "@id": "urn:solid-server:default:TargetExtractor"
+      },
+      "allowedPathNames": [
+        "^/.account(/.*)?$"
+      ],
+      "handler": {
+        "@id": "urn:solid-server:default:IdentityProviderParsingHandler"
       }
     },
     {
@@ -76,6 +83,9 @@
       "@type": "AutoDetectIdentityProviderHandler",
       "options_oidcIssuer": {
         "@id": "urn:solid-server:default:variable:oidcIssuer"
+      },
+      "options_source": {
+        "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler"
       }
     },
     {
@@ -207,7 +217,7 @@
       }
     },
     {
-      "comment": "注册开关 - Cloud 模式启用，SP 模式禁用",
+      "comment": "注册开关 - Cloud/Standalone 可启用，Local 由本地 account/consent 流程决定",
       "@id": "urn:solid-server:default:variable:registration",
       "@type": "Variable"
     },
@@ -223,6 +233,10 @@
           { "@id": "urn:undefineds:xpod:TerminalHttpHandler" },
           { "@id": "urn:undefineds:xpod:AppStaticAssetHandler" },
           { "@id": "urn:solid-server:default:StaticAssetHandler" },
+          {
+            "comment": "Local 模式下代理外部 issuer JWKS；其它 OIDC 路由由 CSS 默认 OIDC handler 处理",
+            "@id": "urn:undefineds:xpod:AutoDetectOidcHandler"
+          },
           { "@id": "urn:solid-server:default:OidcHandler" },
           { "@id": "urn:solid-server:default:NotificationHttpHandler" },
           { "@id": "urn:solid-server:default:StorageDescriptionHandler" },
