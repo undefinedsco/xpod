@@ -74,6 +74,7 @@ interface Rdf3xJoinSource {
   inputIndex: number;
   alias: string;
   membershipAlias: string;
+  sourceKind: 'permutation' | 'membership';
   entry: RdfQuadJoinPattern;
   resolved: Rdf3xResolvedPattern;
   permutation: Rdf3xPermutation;
@@ -92,6 +93,7 @@ interface Rdf3xCompiledJoin {
   queryPlan: string[];
   variableColumns: Map<string, string>;
   variableAliases: Map<string, string>;
+  rowKeyExpression: string;
   unresolved?: Rdf3xPatternKey;
 }
 
@@ -529,7 +531,7 @@ export class Rdf3xTripleIndex {
         numericJoins,
         numericJoinSql,
         'RDF-3X BGP',
-        this.joinRowKeyExpression(patterns),
+        compiled.rowKeyExpression,
       );
     }).join(', ');
     const aggregateJoins = numericJoinSql.join('');
@@ -590,7 +592,6 @@ export class Rdf3xTripleIndex {
       }
       return column;
     });
-    const rowKeyExpression = this.joinRowKeyExpression(patterns);
     const aggregateColumns = options.aggregates.map((aggregate, index) => {
       const alias = `a${index}`;
       aggregateAliases.set(aggregate.as, alias);
@@ -603,7 +604,7 @@ export class Rdf3xTripleIndex {
         numericJoins,
         numericJoinSql,
         'RDF-3X BGP group aggregate',
-        rowKeyExpression,
+        compiled.rowKeyExpression,
       );
     });
     const projection = [
@@ -1036,7 +1037,7 @@ export class Rdf3xTripleIndex {
       countParams: params,
       queryPlan: [
         ...queryPlan,
-        ...(orderClause.orderBy ? [`Rdf3xJoinOrder(${(options?.order ?? []).map((entry, index) => `${options?.reverse ? 'desc' : 'asc'}:${entry}:${index}`).join(',')})`] : []),
+        ...(orderClause.orderBy ? [`Rdf3xJoinOrder(${describeScanOrder(options)})`] : []),
         ...tupleJoin.queryPlan,
         ...(pagination.sql ? ['Pagination'] : []),
       ],
@@ -1059,6 +1060,7 @@ export class Rdf3xTripleIndex {
         inputIndex,
         alias: `q${inputIndex}`,
         membershipAlias: `m${inputIndex}`,
+        sourceKind: shouldUseMembershipSource(resolved) ? 'membership' : 'permutation',
         entry,
         resolved,
         permutation,
@@ -1093,6 +1095,7 @@ export class Rdf3xTripleIndex {
           queryPlan,
           variableColumns,
           variableAliases,
+          rowKeyExpression: '',
           unresolved: source.resolved.unresolved,
         };
       }
@@ -1111,9 +1114,7 @@ export class Rdf3xTripleIndex {
         if (!variableName) {
           continue;
         }
-        const column = key === 'graph'
-          ? `${source.membershipAlias}.graph_id`
-          : `${source.alias}.${TERM_COLUMN[key]}`;
+        const column = this.joinSourceColumnRef(source, key);
         const existing = variableColumns.get(variableName);
         if (existing) {
           if (!mergeJoin.keys.has(key)) {
@@ -1179,6 +1180,7 @@ export class Rdf3xTripleIndex {
       queryPlan,
       variableColumns,
       variableAliases,
+      rowKeyExpression: this.joinRowKeyExpression(orderedSources),
     };
   }
 
@@ -1188,6 +1190,10 @@ export class Rdf3xTripleIndex {
     mergeJoin: Rdf3xMergeJoinPlan,
     indexOnly: boolean,
   ): Rdf3xJoinSourceSql {
+    if (source.sourceKind === 'membership') {
+      return this.membershipJoinSourceSql(source, first, mergeJoin);
+    }
+
     const conditions: string[] = [];
     const params: unknown[] = [];
     const queryPlan: string[] = [`Rdf3xPermutationScan(${source.permutation.name})`];
@@ -1248,6 +1254,61 @@ export class Rdf3xTripleIndex {
     };
   }
 
+  private membershipJoinSourceSql(
+    source: Rdf3xJoinSource,
+    first: boolean,
+    mergeJoin: Rdf3xMergeJoinPlan,
+  ): Rdf3xJoinSourceSql {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    const queryPlan: string[] = ['Rdf3xMembershipScan'];
+    const alias = source.membershipAlias;
+    const graphPrefixAlias = `${alias}_graph_prefix`;
+
+    for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
+      const id = source.resolved.ids[key];
+      if (id === undefined) {
+        continue;
+      }
+      conditions.push(`${this.joinSourceColumnRef(source, key)} = ?`);
+      params.push(id);
+    }
+
+    let from = first
+      ? `rdf3x_triple_membership ${alias}`
+      : ` JOIN rdf3x_triple_membership ${alias}
+          ON ${mergeJoin.conditions.length > 0 ? mergeJoin.conditions.join(' AND ') : '1 = 1'}`;
+    if (!first && mergeJoin.variables.length > 0) {
+      queryPlan.push(`Rdf3xMergeJoin(${mergeJoin.variables.map((variableName) => `?${variableName}`).join(',')})`);
+    }
+
+    if (source.resolved.ids.graph !== undefined) {
+      queryPlan.push('GraphMembershipFilter');
+    }
+    if (source.resolved.graphPrefix !== undefined) {
+      from += ` JOIN rdf_terms ${graphPrefixAlias}
+          ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
+      conditions.push(`${graphPrefixAlias}.kind = ?
+        AND ${graphPrefixAlias}.value >= ?
+        AND ${graphPrefixAlias}.value < ?`);
+      params.push('iri', source.resolved.graphPrefix, `${source.resolved.graphPrefix}\uffff`);
+      queryPlan.push('GraphPrefixMembershipFilter');
+    }
+    if (source.resolved.objectRange) {
+      const rangeAlias = `${alias}_object_range`;
+      from += ` JOIN rdf_terms ${rangeAlias}
+          ON ${rangeAlias}.id = ${alias}.object_id`;
+      this.appendObjectRangeCondition(rangeAlias, source.resolved.objectRange, conditions, params, queryPlan);
+    }
+
+    return {
+      from,
+      conditions,
+      params,
+      queryPlan,
+    };
+  }
+
   private canUseIndexOnlyJoin(
     sources: Rdf3xJoinSource[],
     options: Rdf3xJoinOptions | undefined,
@@ -1283,7 +1344,7 @@ export class Rdf3xTripleIndex {
       if (!existing) {
         continue;
       }
-      conditions.push(`${existing} = ${source.alias}.${TERM_COLUMN[key]}`);
+      conditions.push(`${existing} = ${this.joinSourceColumnRef(source, key)}`);
       keys.add(key);
       variables.add(variableName);
     }
@@ -1293,6 +1354,13 @@ export class Rdf3xTripleIndex {
       keys,
       variables: [...variables],
     };
+  }
+
+  private joinSourceColumnRef(source: Rdf3xJoinSource, key: Rdf3xPatternKey): string {
+    if (source.sourceKind === 'membership' || key === 'graph') {
+      return `${source.membershipAlias}.${PATTERN_COLUMNS[key]}`;
+    }
+    return `${source.alias}.${TERM_COLUMN[key]}`;
   }
 
   private buildTupleConstraintJoin(
@@ -1442,12 +1510,12 @@ export class Rdf3xTripleIndex {
     };
   }
 
-  private joinRowKeyExpression(patterns: RdfQuadJoinPattern[]): string {
-    return patterns.map((_, index) => [
-      `m${index}.graph_id`,
-      `q${index}.subject_id`,
-      `q${index}.predicate_id`,
-      `q${index}.object_id`,
+  private joinRowKeyExpression(sources: Rdf3xJoinSource[]): string {
+    return sources.map((source) => [
+      this.joinSourceColumnRef(source, 'graph'),
+      this.joinSourceColumnRef(source, 'subject'),
+      this.joinSourceColumnRef(source, 'predicate'),
+      this.joinSourceColumnRef(source, 'object'),
     ].join(` || ':' || `)).join(` || '|' || `);
   }
 
@@ -1583,11 +1651,11 @@ export class Rdf3xTripleIndex {
     const joins = options.order.map((termName, index) => {
       const column = ORDER_COLUMN[termName];
       const alias = `order_t${index}`;
-      const direction = options.reverse ? ' DESC' : '';
+      const direction = options.orderDirections?.[index] ?? (options.reverse ? 'desc' : 'asc');
       const columnRef = termName === 'graph' ? 'membership.graph_id' : `idx.${column}`;
       return {
         join: ` JOIN rdf_terms ${alias} ON ${alias}.id = ${columnRef}`,
-        order: `${alias}.value${direction}`,
+        order: `${alias}.value${direction === 'desc' ? ' DESC' : ''}`,
       };
     });
     return {
@@ -2323,6 +2391,10 @@ function keyForColumn(column: TripleColumn): Rdf3xTermKey {
   return 'object';
 }
 
+function shouldUseMembershipSource(resolved: Rdf3xResolvedPattern): boolean {
+  return resolved.ids.graph !== undefined || resolved.graphPrefix !== undefined;
+}
+
 function requiredTerm(termMap: Map<number, Term>, id: number): Term {
   const term = termMap.get(id);
   if (!term) {
@@ -2376,6 +2448,12 @@ function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } 
 
 function rangeSuffix(range: Rdf3xObjectRange): string {
   return `${range.min !== undefined ? (range.minInclusive ? '$gte' : '$gt') : ''}${range.max !== undefined ? (range.maxInclusive ? '$lte' : '$lt') : ''}`;
+}
+
+function describeScanOrder(options?: Rdf3xTripleScanOptions): string {
+  const order = options?.order ?? [];
+  const directions = options?.orderDirections ?? order.map(() => (options?.reverse ? 'desc' : 'asc'));
+  return order.map((entry, index) => `${directions[index] ?? 'asc'}:${entry}`).join(',');
 }
 
 function isObjectRangePattern(value: unknown): value is Rdf3xObjectRangePattern {

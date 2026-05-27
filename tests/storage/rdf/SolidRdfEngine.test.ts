@@ -558,6 +558,7 @@ describe('SolidRdfEngine', () => {
     ]);
     expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
     expect(result.metrics.plan).toContain('Rdf3xJoinBGP(2)');
+    expect(result.metrics.plan).toContain('Rdf3xMembershipScan');
     expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
     expect(result.metrics.plan).toContain('Rdf3xPrimaryJoinLimit');
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
@@ -612,6 +613,53 @@ describe('SolidRdfEngine', () => {
     expect(result.metrics.plan).toContain('Rdf3xPrimaryOrder(desc:object)');
     expect(result.metrics.plan).toContain('Rdf3xPrimaryLimit');
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+  });
+
+  it('keeps mixed-direction single-pattern ORDER and LIMIT on the RDF-3X primary path', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const created = namedNode(DCT_CREATED);
+    const msg0 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_0');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+    primaryEngine.put([
+      quad(msg0, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+      quad(msg1, created, literal('2026-05-18T00:00:02.000Z'), graph),
+    ]);
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+      ],
+      select: ['message', 'createdAt'],
+      orderBy: [
+        { variable: 'createdAt', direction: 'desc' },
+        { variable: 'message', direction: 'asc' },
+      ],
+      limit: 2,
+    });
+
+    expect(result.bindings.map((binding) => binding.message.value)).toEqual([
+      msg1.value,
+      msg2.value,
+    ]);
+    expect(result.metrics.indexChoices[0]).toBe('PSO');
+    expect(result.metrics.plan).toContain('Rdf3xPermutationScan(PSO)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryOrder(desc:object,asc:subject)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+    expect(result.metrics.plan).not.toContain('Sort');
+    expect(result.metrics.plan).not.toContain('Limit');
   });
 
   it('can opt lexical range join filters into RDF-3X primary execution', () => {

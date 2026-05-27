@@ -1297,8 +1297,7 @@ export class RdfLocalQueryEngine {
     scanOptions?: RdfQuadScanOptions,
   ): boolean {
     return Boolean(this.rdf3xPrimaryIndex)
-      && isRdf3xCompatiblePattern(pattern)
-      && !scanOptions?.orderDirections;
+      && isRdf3xCompatiblePattern(pattern);
   }
 
   private requiredBgpPushdown(
@@ -3380,6 +3379,7 @@ function toRdf3xScanOptions(options?: RdfQuadScanOptions): Rdf3xTripleScanOption
   }
   return {
     ...(options.order ? { order: options.order } : {}),
+    ...(options.orderDirections ? { orderDirections: options.orderDirections } : {}),
     ...(options.reverse ? { reverse: true } : {}),
     ...(options.limit !== undefined ? { limit: options.limit } : {}),
     ...(options.offset !== undefined ? { offset: options.offset } : {}),

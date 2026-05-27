@@ -201,6 +201,34 @@ describe('Rdf3xTripleIndex', () => {
     expect(graphScan.metrics.queryPlan).toContain('GraphMembershipFilter');
   });
 
+  it('orders scans by multiple term columns with independent directions', () => {
+    const created = namedNode('http://purl.org/dc/terms/created');
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message0 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_0');
+    const message1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const message2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    quadIndex.multiPut([
+      quad(message0, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      quad(message2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+      quad(message1, created, literal('2026-05-18T00:00:02.000Z'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const baseline = quadIndex.scan(
+      { predicate: created },
+      { order: ['object', 'subject'], orderDirections: ['desc', 'asc'], limit: 2 },
+    );
+    const scan = rdf3x.scan(
+      { predicate: created },
+      { order: ['object', 'subject'], orderDirections: ['desc', 'asc'], limit: 2 },
+    );
+
+    expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
+    expect(scan.quads.map((q) => q.subject.value)).toEqual([message1.value, message2.value]);
+    expect(scan.metrics.queryPlan).toContain('Rdf3xJoinOrder(desc:object,asc:subject)');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('ORDER BY order_t0.value DESC, order_t1.value');
+  });
+
   it('uses numeric semantics for typed literal range scans', () => {
     const xsdInteger = namedNode('http://www.w3.org/2001/XMLSchema#integer');
     const priority = namedNode('https://undefineds.co/ns#priority');
@@ -420,6 +448,64 @@ describe('Rdf3xTripleIndex', () => {
     expect(result.metrics.queryPlan?.join('\n')).toContain('Rdf3xPermutationScan(POS)');
     expect(result.metrics.queryPlan).toContain('Rdf3xMergeJoin(?message)');
     expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_pos q0\n          ON q1.subject_id = q0.subject_id');
+  });
+
+  it('uses membership sources for graph-prefixed RDF-3X joins', () => {
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    const type = namedNode('https://p/type');
+    const created = namedNode('https://p/created');
+    const messageType = namedNode('https://type/Message');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    quadIndex.multiPut([
+      quad(msg1, type, messageType, chatGraph),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+      quad(msg2, type, messageType, taskGraph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), taskGraph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const patterns = [
+      {
+        pattern: {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          predicate: type,
+          object: messageType,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          predicate: created,
+        },
+        variables: {
+          subject: 'message',
+          object: 'createdAt',
+        },
+      },
+    ];
+    const baseline = quadIndex.joinPatterns(patterns, {
+      project: ['message', 'createdAt'],
+      orderBy: [{ variable: 'createdAt', direction: 'desc' }],
+      limit: 1,
+    });
+    const result = rdf3x.joinPatterns(patterns, {
+      project: ['message', 'createdAt'],
+      orderBy: [{ variable: 'createdAt', direction: 'desc' }],
+      limit: 1,
+    });
+
+    expect(bindingKeys(result.bindings)).toEqual(bindingKeys(baseline.bindings));
+    expect(result.bindings.map((binding) => binding.message.value)).toEqual([msg1.value]);
+    expect(result.metrics.indexChoice).toBe('Rdf3xJoinBGP(source-membership>source-membership)');
+    expect(result.metrics.queryPlan?.filter((entry) => entry === 'Rdf3xMembershipScan')).toHaveLength(2);
+    expect(result.metrics.queryPlan).toContain('GraphPrefixMembershipFilter');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_triple_membership m0');
+    expect(result.metrics.queryPlan?.join('\n')).not.toContain('JOIN rdf3x_triple_membership m0\n          ON m0.subject_id');
   });
 
   it('pushes correlated tuple VALUES into RDF-3X BGP joins', () => {

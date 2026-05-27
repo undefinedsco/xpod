@@ -209,6 +209,7 @@ export interface Rdf3xTriplePattern {
 
 export interface Rdf3xTripleScanOptions {
   order?: Array<'graph' | 'subject' | 'predicate' | 'object'>;
+  orderDirections?: Array<'asc' | 'desc'>;
   reverse?: boolean;
   limit?: number;
   offset?: number;
