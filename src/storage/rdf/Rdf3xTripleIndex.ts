@@ -7,6 +7,7 @@ import { RdfTermDictionary } from './RdfTermDictionary';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 import type {
   Rdf3xCardinalityEstimate,
+  Rdf3xCountResult,
   Rdf3xIndexMetrics,
   Rdf3xIndexStats,
   Rdf3xJoinMetrics,
@@ -279,6 +280,37 @@ export class Rdf3xTripleIndex {
     return this.scanInternal(pattern, options, tupleValues);
   }
 
+  public countDistinct(pattern: Rdf3xTriplePattern, distinctKey: Rdf3xPatternKey): Rdf3xCountResult {
+    const start = Date.now();
+    const resolved = this.resolvePattern(pattern);
+    if (resolved.unresolved) {
+      return {
+        count: 0,
+        metrics: this.metrics('none', 0, 0, start, [`unresolved ${resolved.unresolved}`]),
+      };
+    }
+
+    const permutation = this.choosePermutation(resolved.ids, { objectRange: Boolean(resolved.objectRange) });
+    const compiled = this.compileDistinctCountSql(permutation, resolved, distinctKey);
+    const count = this.requireDb()
+      .prepare<{ count: number }>(compiled.sql)
+      .get(...compiled.params)?.count ?? 0;
+    return {
+      count,
+      metrics: this.metrics(
+        permutation.name,
+        count,
+        1,
+        start,
+        [
+          `Rdf3xPermutationScan(${permutation.name})`,
+          ...compiled.queryPlan,
+          compiled.sql,
+        ],
+      ),
+    };
+  }
+
   private scanInternal(
     pattern: Rdf3xTriplePattern,
     options?: Rdf3xTripleScanOptions,
@@ -312,6 +344,74 @@ export class Rdf3xTripleIndex {
           compiled.sql,
         ],
       ),
+    };
+  }
+
+  private compileDistinctCountSql(
+    permutation: Rdf3xPermutation,
+    resolved: Rdf3xResolvedPattern,
+    distinctKey: Rdf3xPatternKey,
+  ): {
+    sql: string;
+    params: unknown[];
+    queryPlan: string[];
+  } {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    const queryPlan: string[] = [`Permutation(${permutation.name})`];
+    const ids = resolved.ids;
+
+    for (const key of TERM_KEYS) {
+      const id = ids[key];
+      if (id === undefined) {
+        continue;
+      }
+      conditions.push(`idx.${TERM_COLUMN[key]} = ?`);
+      params.push(id);
+    }
+
+    if (ids.graph !== undefined) {
+      conditions.push('membership.graph_id = ?');
+      params.push(ids.graph);
+      queryPlan.push('GraphMembershipFilter');
+    }
+
+    const graphPrefixJoin = resolved.graphPrefix
+      ? ` JOIN rdf_terms graph_prefix
+          ON graph_prefix.id = membership.graph_id`
+      : '';
+    if (resolved.graphPrefix) {
+      conditions.push(`graph_prefix.kind = ?
+        AND graph_prefix.value >= ?
+        AND graph_prefix.value < ?`);
+      params.push('iri', resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
+      queryPlan.push('GraphPrefixMembershipFilter');
+    }
+
+    if (resolved.objectRange) {
+      this.appendObjectRangeCondition('object_range', resolved.objectRange, conditions, params, queryPlan);
+    }
+
+    const distinctColumn = distinctKey === 'graph'
+      ? 'membership.graph_id'
+      : `idx.${TERM_COLUMN[distinctKey]}`;
+    const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const from = `
+      FROM ${permutation.table} idx
+      JOIN rdf3x_triple_membership membership
+        ON membership.subject_id = idx.subject_id
+       AND membership.predicate_id = idx.predicate_id
+       AND membership.object_id = idx.object_id
+      ${graphPrefixJoin}
+      ${resolved.objectRange ? 'JOIN rdf_terms object_range ON object_range.id = idx.object_id' : ''}
+    `;
+    return {
+      sql: `SELECT COUNT(DISTINCT ${distinctColumn}) AS count ${from} ${whereClause}`,
+      params,
+      queryPlan: [
+        ...queryPlan,
+        `Rdf3xDistinctCount(?${distinctKey})`,
+      ],
     };
   }
 

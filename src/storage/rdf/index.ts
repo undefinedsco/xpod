@@ -81,6 +81,7 @@ export type {
   RdfIndexStats,
   RdfDerivedIndexProfile,
   Rdf3xCardinalityEstimate,
+  Rdf3xCountResult,
   Rdf3xJoinMetrics,
   Rdf3xJoinOptions,
   Rdf3xJoinScanResult,

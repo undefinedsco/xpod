@@ -36,6 +36,7 @@ import type {
   RdfQuadJoinGroupAggregateHaving,
   RdfQuadIndexScanResult,
   RdfQuadScanOptions,
+  Rdf3xPatternKey,
   Rdf3xTriplePattern,
   Rdf3xTripleScanOptions,
   Rdf3xTripleScanResult,
@@ -172,26 +173,38 @@ export class RdfLocalQueryEngine {
     let groupedAggregatePushed = false;
 
     if (countPushdown) {
-      const useRdf3xPrimary = !countPushdown.distinctKey
-        && this.canUseRdf3xPrimaryScan(countPushdown.pattern);
-      const rdf3xCountScan = useRdf3xPrimary
-        ? this.rdf3xPrimaryIndex!.scan(toRdf3xTriplePattern(countPushdown.pattern), { limit: 0 })
-        : undefined;
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryScan(countPushdown.pattern);
+      let rdf3xCount: ReturnType<Rdf3xTripleIndex['countDistinct']> | undefined;
+      if (useRdf3xPrimary) {
+        const rdf3xPattern = toRdf3xTriplePattern(countPushdown.pattern);
+        if (countPushdown.distinctKey) {
+          rdf3xCount = this.rdf3xPrimaryIndex!.countDistinct(
+            rdf3xPattern,
+            countPushdown.distinctKey as Rdf3xPatternKey,
+          );
+        } else {
+          const rdf3xCountScan = this.rdf3xPrimaryIndex!.scan(rdf3xPattern, { limit: 0 });
+          rdf3xCount = {
+            count: rdf3xCountScan.metrics.matchedRows,
+            metrics: rdf3xCountScan.metrics,
+          };
+        }
+      }
       const countEstimate = !useRdf3xPrimary && countPushdown.distinctKey
         ? this.index.countDistinct(countPushdown.pattern, countPushdown.distinctKey)
         : undefined;
-      const count = rdf3xCountScan?.metrics.matchedRows ?? countEstimate?.rows ?? this.index.count(countPushdown.pattern);
+      const count = rdf3xCount?.count ?? countEstimate?.rows ?? this.index.count(countPushdown.pattern);
       const result = countLiteral(count);
       metrics.scannedRows = count;
       metrics.joinedRows = count;
       metrics.returnedRows = 1;
       metrics.durationMs = Date.now() - start;
-      metrics.indexChoices.push(useRdf3xPrimary ? rdf3xCountScan!.metrics.indexChoice : 'count');
+      metrics.indexChoices.push(useRdf3xPrimary ? rdf3xCount!.metrics.indexChoice : 'count');
       metrics.filtersPushedDown += countPushdown.pushedDownFilters;
-      if (rdf3xCountScan) {
-        metrics.plan.push(...storagePlanMarkers(rdf3xCountScan.metrics.queryPlan));
-        metrics.plan.push(`Rdf3xPrimaryCount(${describePattern(requiredPatterns[0])})`);
-        metrics.plan.push('Aggregate(count-rdf3x-primary)');
+      if (rdf3xCount) {
+        metrics.plan.push(...storagePlanMarkers(rdf3xCount.metrics.queryPlan));
+        metrics.plan.push(`${countPushdown.distinctKey ? 'Rdf3xPrimaryCountDistinct' : 'Rdf3xPrimaryCount'}(${describePattern(requiredPatterns[0])})`);
+        metrics.plan.push(countPushdown.distinctKey ? 'Aggregate(count-distinct-rdf3x-primary)' : 'Aggregate(count-rdf3x-primary)');
       } else {
         metrics.plan.push(`IndexCount(${describePattern(requiredPatterns[0])})`);
         metrics.plan.push(countPushdown.distinctKey ? 'Aggregate(count-distinct-index)' : 'Aggregate(count-index)');

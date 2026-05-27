@@ -228,6 +228,11 @@ export interface Rdf3xTripleScanResult {
   metrics: Rdf3xIndexMetrics;
 }
 
+export interface Rdf3xCountResult {
+  count: number;
+  metrics: Rdf3xIndexMetrics;
+}
+
 export interface Rdf3xJoinOptions {
   orderBy?: RdfQuadJoinOrder[];
   limit?: number;

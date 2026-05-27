@@ -1032,6 +1032,55 @@ describe('SolidRdfEngine', () => {
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexCount('))).toBe(false);
   });
 
+  it('can opt supported single-pattern COUNT DISTINCT queries into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraphA = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const chatGraphB = namedNode('https://pod.example/alice/.data/chat/default/2026/05/19/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const created = namedNode(DCT_CREATED);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const run1 = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl#run_1');
+
+    primaryEngine.put([
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraphA),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraphB),
+      quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraphA),
+      quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
+    ]);
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+      ],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+          distinct: true,
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => binding.messageCount.value)).toEqual(['2']);
+    expect(result.count).toBe(2);
+    expect(result.metrics.indexChoices[0]).toBe('PSO');
+    expect(result.metrics.plan).toContain('Rdf3xDistinctCount(?subject)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryCountDistinct(graph:op,subject:?message,predicate:http://purl.org/dc/terms/created,object:?createdAt)');
+    expect(result.metrics.plan).toContain('Aggregate(count-distinct-rdf3x-primary)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexCount('))).toBe(false);
+  });
+
   it('can opt supported join count local queries into RDF-3X primary execution', () => {
     const primaryEngine = new SolidRdfEngine({
       index,

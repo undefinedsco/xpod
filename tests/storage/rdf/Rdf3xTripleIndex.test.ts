@@ -197,6 +197,36 @@ describe('Rdf3xTripleIndex', () => {
     });
   });
 
+  it('counts distinct pattern slots through RDF-3X permutation scans', () => {
+    const graphA = namedNode('https://pod.example/alice/.data/chat/a/messages.ttl');
+    const graphB = namedNode('https://pod.example/alice/.data/chat/b/messages.ttl');
+    const graphC = namedNode('https://pod.example/alice/.data/task/secretary/runs.ttl');
+    const created = namedNode('https://p/created');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const run1 = namedNode('https://run/1');
+
+    quadIndex.multiPut([
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graphA),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graphB),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graphB),
+      quad(run1, created, literal('2026-05-18T00:00:03.000Z'), graphC),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const result = rdf3x.countDistinct({
+      graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+      predicate: created,
+    }, 'subject');
+
+    expect(result.count).toBe(2);
+    expect(result.metrics.indexChoice).toBe('PSO');
+    expect(result.metrics.queryPlan).toContain('Rdf3xPermutationScan(PSO)');
+    expect(result.metrics.queryPlan).toContain('GraphPrefixMembershipFilter');
+    expect(result.metrics.queryPlan).toContain('Rdf3xDistinctCount(?subject)');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('COUNT(DISTINCT idx.subject_id)');
+  });
+
   it('matches baseline scans for graph prefix membership filters without dropping triple constraints', () => {
     const status = namedNode('https://undefineds.co/ns#status');
     const open = literal('open');
