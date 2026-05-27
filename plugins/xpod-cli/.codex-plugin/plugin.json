@@ -1,0 +1,40 @@
+{
+  "name": "xpod-cli",
+  "version": "0.3.15",
+  "description": "Spec-aligned Xpod CLI guidance for Solid Pod resource operations, server administration, auth, and model-boundary reviews.",
+  "author": {
+    "name": "Undefineds",
+    "email": "developer@undefineds.co",
+    "url": "https://github.com/undefinedsco"
+  },
+  "homepage": "https://github.com/undefinedsco/xpod",
+  "repository": "https://github.com/undefinedsco/xpod",
+  "license": "MIT",
+  "keywords": [
+    "xpod",
+    "solid",
+    "pod",
+    "cli",
+    "server"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Xpod CLI",
+    "shortDescription": "Design and use the spec-aligned Xpod CLI",
+    "longDescription": "Guidance for maintaining the Xpod command surface around raw Pod resources, server administration, RDF/object/secret boundaries, standardized JSON output, and safe credential handling.",
+    "developerName": "Undefineds",
+    "category": "Engineering",
+    "capabilities": [
+      "Knowledge",
+      "Workflow"
+    ],
+    "websiteURL": "https://github.com/undefinedsco/xpod",
+    "defaultPrompt": [
+      "Use $xpod-cli to review this CLI change.",
+      "Align this command with docs/cli-spec.md.",
+      "Check whether this Xpod command mixes Pod resource and model semantics."
+    ],
+    "brandColor": "#0F766E",
+    "screenshots": []
+  }
+}

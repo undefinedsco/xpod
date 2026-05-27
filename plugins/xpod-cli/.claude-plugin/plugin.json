@@ -1,0 +1,22 @@
+{
+  "name": "xpod-cli",
+  "version": "0.3.15",
+  "description": "Spec-aligned Xpod CLI guidance for Solid Pod resource operations, server administration, auth, and model-boundary reviews.",
+  "author": {
+    "name": "Undefineds",
+    "email": "developer@undefineds.co"
+  },
+  "homepage": "https://github.com/undefinedsco/xpod",
+  "repository": "https://github.com/undefinedsco/xpod",
+  "license": "MIT",
+  "keywords": [
+    "xpod",
+    "solid",
+    "pod",
+    "cli",
+    "server"
+  ],
+  "skills": [
+    "./skills/xpod-cli"
+  ]
+}
