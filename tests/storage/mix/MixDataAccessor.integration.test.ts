@@ -171,6 +171,30 @@ describe('MixDataAccessor (local profile integration)', () => {
     expect(await fileExists(rdfLink.filePath)).toBe(false);
   });
 
+  it('does not persist graph-scoped parser metadata in local RDF mirror metadata', async () => {
+    const resourceId = { path: `${baseUrl}alice/profile/card.acr` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    metadata.addQuad(
+      namedNode('http://www.w3.org/ns/auth/acl#'),
+      namedNode('http://purl.org/vocab/vann/preferredNamespacePrefix'),
+      literal('acl'),
+      namedNode('urn:npm:solid:community-server:meta:ResponseMetadata'),
+    );
+
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#card`),
+        namedNode('http://www.w3.org/ns/solid/acp#resource'),
+        namedNode(`${baseUrl}alice/profile/card`),
+      ),
+    ])), metadata);
+
+    const metaLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, true);
+    expect(await fileExists(metaLink.filePath)).toBe(false);
+  });
+
   it('refreshes the local RDF mirror after SPARQL updates', async () => {
     const resourceId = { path: `${baseUrl}alice/patchable.ttl` };
     const metadata = new RepresentationMetadata(resourceId);

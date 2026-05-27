@@ -1,8 +1,7 @@
-import type { Session } from '@inrupt/solid-client-authn-node';
+import { Session } from '@inrupt/solid-client-authn-node';
 import { getSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 import { loadSqliteVecExtension } from '../../../src/storage/vector/SqliteVecExtension';
 import { XpodTestStack } from '../../helpers/XpodTestStack';
-import { resolveTestRuntimeTransport } from '../../helpers/runtimeTransport';
 import { loginWithClientCredentials, setupAccount } from '../../integration/helpers/solidAccount';
 import { resolveSolidIntegrationConfig } from '../../http/utils/integrationEnv';
 import { createTestDir } from '../../utils/sqlite';
@@ -165,8 +164,8 @@ export async function createVectorIntegrationContext(prefix: string): Promise<Ve
     await stack.start('local', {
       open: false,
       authMode: 'acp',
-      transport: resolveTestRuntimeTransport(),
-      runtimeRoot: createTestDir(`${prefix}-runtime`),
+      transport: 'port',
+      runtimeRoot: createTestDir(`v-${prefix.replace(/[^a-z0-9]/gi, '').slice(0, 4) || 'test'}`),
       logLevel: 'warn',
     });
     baseUrl = stack.baseUrl;

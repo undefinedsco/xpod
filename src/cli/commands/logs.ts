@@ -1,4 +1,5 @@
 import type { CommandModule } from 'yargs';
+import { CliCommandError, handleCliError, writeJsonResult } from '../lib/output';
 
 interface LogsArgs {
   port: number;
@@ -6,6 +7,8 @@ interface LogsArgs {
   service?: string;
   level?: string;
   limit: number;
+  env?: string;
+  json: boolean;
 }
 
 export const logsCommand: CommandModule<object, LogsArgs> = {
@@ -24,6 +27,11 @@ export const logsCommand: CommandModule<object, LogsArgs> = {
         description: 'Gateway host',
         default: 'localhost',
       })
+      .option('env', {
+        alias: 'e',
+        type: 'string',
+        description: 'Env file path for runtime context',
+      })
       .option('service', {
         alias: 's',
         type: 'string',
@@ -40,6 +48,11 @@ export const logsCommand: CommandModule<object, LogsArgs> = {
         type: 'number',
         description: 'Number of log lines to show',
         default: 50,
+      })
+      .option('json', {
+        type: 'boolean',
+        default: false,
+        description: 'Output JSON envelope',
       }),
   handler: async (argv) => {
     const baseUrl = `http://${argv.host}:${argv.port}`;
@@ -51,8 +64,9 @@ export const logsCommand: CommandModule<object, LogsArgs> = {
     try {
       const res = await fetch(`${baseUrl}/service/logs?${params}`);
       if (!res.ok) {
-        console.error(`Failed to get logs: HTTP ${res.status}`);
-        process.exit(1);
+        throw new CliCommandError('server_logs_failed', `Failed to get logs: HTTP ${res.status}`, 1, {
+          status: res.status,
+        });
       }
 
       const logs = (await res.json()) as Array<{
@@ -61,6 +75,11 @@ export const logsCommand: CommandModule<object, LogsArgs> = {
         source: string;
         message: string;
       }>;
+
+      if (argv.json) {
+        writeJsonResult({ logs });
+        return;
+      }
 
       if (logs.length === 0) {
         console.log('No logs found.');
@@ -72,9 +91,8 @@ export const logsCommand: CommandModule<object, LogsArgs> = {
         const level = entry.level.toUpperCase().padEnd(5);
         console.log(`${ts} [${level}] [${entry.source}] ${entry.message}`);
       }
-    } catch {
-      console.error(`Cannot connect to xpod at ${baseUrl}. Is it running?`);
-      process.exit(1);
+    } catch (error) {
+      handleCliError(error instanceof Error ? error : new Error(`Cannot connect to xpod at ${baseUrl}. Is it running?`), argv.json);
     }
   },
 };
