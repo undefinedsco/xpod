@@ -310,20 +310,23 @@ export class Rdf3xTripleIndex {
       };
     }
 
+    const useMembershipSource = shouldUseMembershipSource(resolved);
     const permutation = this.choosePermutation(resolved.ids, { objectRange: Boolean(resolved.objectRange) });
-    const compiled = this.compileDistinctCountSql(permutation, resolved, distinctKey);
+    const compiled = useMembershipSource
+      ? this.compileMembershipDistinctCountSql(resolved, distinctKey)
+      : this.compileDistinctCountSql(permutation, resolved, distinctKey);
     const count = this.requireDb()
       .prepare<{ count: number }>(compiled.sql)
       .get(...compiled.params)?.count ?? 0;
     return {
       count,
       metrics: this.metrics(
-        permutation.name,
+        useMembershipSource ? 'source-membership' : permutation.name,
         count,
         1,
         start,
         [
-          `Rdf3xPermutationScan(${permutation.name})`,
+          ...(useMembershipSource ? [] : [`Rdf3xPermutationScan(${permutation.name})`]),
           ...compiled.queryPlan,
           compiled.sql,
         ],
@@ -345,8 +348,11 @@ export class Rdf3xTripleIndex {
       };
     }
 
+    const useMembershipSource = shouldUseMembershipSource(resolved);
     const permutation = this.choosePermutation(resolved.ids, { objectRange: Boolean(resolved.objectRange) });
-    const compiled = this.compileScanSql(permutation, resolved, options, tupleValues);
+    const compiled = useMembershipSource
+      ? this.compileMembershipScanSql(resolved, options, tupleValues)
+      : this.compileScanSql(permutation, resolved, options, tupleValues);
     const matchedRows = this.requireDb()
       .prepare<{ count: number }>(compiled.countSql)
       .get(...compiled.countParams)?.count ?? 0;
@@ -354,12 +360,12 @@ export class Rdf3xTripleIndex {
     return {
       quads: this.rowsToQuads(rows),
       metrics: this.metrics(
-        permutation.name,
+        useMembershipSource ? 'source-membership' : permutation.name,
         matchedRows,
         rows.length,
         start,
         [
-          `Rdf3xPermutationScan(${permutation.name})`,
+          ...(useMembershipSource ? [] : [`Rdf3xPermutationScan(${permutation.name})`]),
           ...compiled.queryPlan,
           compiled.sql,
         ],
@@ -427,6 +433,74 @@ export class Rdf3xTripleIndex {
     `;
     return {
       sql: `SELECT COUNT(DISTINCT ${distinctColumn}) AS count ${from} ${whereClause}`,
+      params,
+      queryPlan: [
+        ...queryPlan,
+        `Rdf3xDistinctCount(?${distinctKey})`,
+      ],
+    };
+  }
+
+  private compileMembershipDistinctCountSql(
+    resolved: Rdf3xResolvedPattern,
+    distinctKey: Rdf3xPatternKey,
+  ): {
+    sql: string;
+    params: unknown[];
+    queryPlan: string[];
+  } {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    const queryPlan: string[] = ['Rdf3xMembershipScan'];
+    const ids = resolved.ids;
+    const alias = 'membership';
+    const graphAlias = `${alias}_graph`;
+    const graphPrefixAlias = 'graph_prefix';
+
+    for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
+      const id = ids[key];
+      if (id === undefined) {
+        continue;
+      }
+      conditions.push(`${alias}.${PATTERN_COLUMNS[key]} = ?`);
+      params.push(id);
+    }
+
+    if (ids.graph !== undefined) {
+      queryPlan.push('GraphMembershipFilter');
+    }
+
+    const useGraphPrefixSource = resolved.graphPrefix !== undefined && ids.graph === undefined;
+    let from = useGraphPrefixSource
+      ? `${GRAPH_PROJECTION_TABLE} ${graphAlias}
+        JOIN rdf_terms ${graphPrefixAlias}
+          ON ${graphPrefixAlias}.id = ${graphAlias}.graph_id
+        JOIN rdf3x_triple_membership ${alias}
+          ON ${alias}.graph_id = ${graphAlias}.graph_id`
+      : `rdf3x_triple_membership ${alias}`;
+
+    if (resolved.graphPrefix !== undefined) {
+      if (!useGraphPrefixSource) {
+        from += ` JOIN rdf_terms ${graphPrefixAlias}
+          ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
+      }
+      conditions.push(`${graphPrefixAlias}.kind = ?
+        AND ${graphPrefixAlias}.value >= ?
+        AND ${graphPrefixAlias}.value < ?`);
+      params.push('iri', resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
+      queryPlan.push('GraphPrefixMembershipFilter');
+    }
+
+    if (resolved.objectRange) {
+      from += ` JOIN rdf_terms object_range
+        ON object_range.id = ${alias}.object_id`;
+      this.appendObjectRangeCondition('object_range', resolved.objectRange, conditions, params, queryPlan);
+    }
+
+    const distinctColumn = `${alias}.${PATTERN_COLUMNS[distinctKey]}`;
+    const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+    return {
+      sql: `SELECT COUNT(DISTINCT ${distinctColumn}) AS count FROM ${from} ${whereClause}`,
       params,
       queryPlan: [
         ...queryPlan,
@@ -1066,6 +1140,103 @@ export class Rdf3xTripleIndex {
     };
   }
 
+  private compileMembershipScanSql(
+    resolved: Rdf3xResolvedPattern,
+    options?: Rdf3xTripleScanOptions,
+    tupleValues?: RdfQuadTupleConstraintSource,
+  ): {
+    sql: string;
+    params: unknown[];
+    countSql: string;
+    countParams: unknown[];
+    queryPlan: string[];
+  } {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    const queryPlan: string[] = ['Rdf3xMembershipScan'];
+    const ids = resolved.ids;
+    const alias = 'membership';
+    const graphAlias = `${alias}_graph`;
+    const graphPrefixAlias = 'graph_prefix';
+
+    for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
+      const id = ids[key];
+      if (id === undefined) {
+        continue;
+      }
+      conditions.push(`${alias}.${PATTERN_COLUMNS[key]} = ?`);
+      params.push(id);
+    }
+
+    if (ids.graph !== undefined) {
+      queryPlan.push('GraphMembershipFilter');
+    }
+
+    const useGraphPrefixSource = resolved.graphPrefix !== undefined && ids.graph === undefined;
+    let from = useGraphPrefixSource
+      ? `${GRAPH_PROJECTION_TABLE} ${graphAlias}
+        JOIN rdf_terms ${graphPrefixAlias}
+          ON ${graphPrefixAlias}.id = ${graphAlias}.graph_id
+        JOIN rdf3x_triple_membership ${alias}
+          ON ${alias}.graph_id = ${graphAlias}.graph_id`
+      : `rdf3x_triple_membership ${alias}`;
+
+    const tupleJoin = tupleValues
+      ? this.buildTupleConstraintJoin(tupleValues, 'rdf3x_tuple_values_scan', alias, alias)
+      : { join: '', queryPlan: [] };
+    from += tupleJoin.join;
+
+    if (resolved.graphPrefix !== undefined) {
+      if (!useGraphPrefixSource) {
+        from += ` JOIN rdf_terms ${graphPrefixAlias}
+          ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
+      }
+      conditions.push(`${graphPrefixAlias}.kind = ?
+        AND ${graphPrefixAlias}.value >= ?
+        AND ${graphPrefixAlias}.value < ?`);
+      params.push('iri', resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
+      queryPlan.push('GraphPrefixMembershipFilter');
+    }
+
+    if (resolved.objectRange) {
+      from += ` JOIN rdf_terms object_range
+        ON object_range.id = ${alias}.object_id`;
+      this.appendObjectRangeCondition('object_range', resolved.objectRange, conditions, params, queryPlan);
+    }
+
+    const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const orderClause = this.buildOrderClause(options, {
+      graph: `${alias}.graph_id`,
+      subject: `${alias}.subject_id`,
+      predicate: `${alias}.predicate_id`,
+      object: `${alias}.object_id`,
+    });
+    const pagination = this.buildPagination(options);
+    return {
+      sql: `
+        SELECT
+          ${alias}.graph_id,
+          ${alias}.subject_id,
+          ${alias}.predicate_id,
+          ${alias}.object_id
+        FROM ${from}
+        ${orderClause.joins}
+        ${whereClause}
+        ${orderClause.orderBy || ` ORDER BY ${alias}.graph_id, ${alias}.subject_id, ${alias}.predicate_id, ${alias}.object_id`}
+        ${pagination.sql}
+      `,
+      params: [...params, ...pagination.params],
+      countSql: `SELECT COUNT(*) AS count FROM ${from} ${whereClause}`,
+      countParams: params,
+      queryPlan: [
+        ...queryPlan,
+        ...(orderClause.orderBy ? [`Rdf3xJoinOrder(${describeScanOrder(options)})`] : []),
+        ...tupleJoin.queryPlan,
+        ...(pagination.sql ? ['Pagination'] : []),
+      ],
+    };
+  }
+
   private compileJoinPatterns(patterns: RdfQuadJoinPattern[], options?: Rdf3xJoinOptions): Rdf3xCompiledJoin {
     const sources = patterns.map((entry, inputIndex) => {
       const resolved = this.resolveJoinPattern(entry.pattern);
@@ -1678,7 +1849,10 @@ export class Rdf3xTripleIndex {
     };
   }
 
-  private buildOrderClause(options?: Rdf3xTripleScanOptions): { joins: string; orderBy: string } {
+  private buildOrderClause(
+    options?: Rdf3xTripleScanOptions,
+    columnRefs?: Record<'graph' | Rdf3xTermKey, string>,
+  ): { joins: string; orderBy: string } {
     if (!options?.order || options.order.length === 0) {
       return { joins: '', orderBy: '' };
     }
@@ -1687,7 +1861,7 @@ export class Rdf3xTripleIndex {
       const column = ORDER_COLUMN[termName];
       const alias = `order_t${index}`;
       const direction = options.orderDirections?.[index] ?? (options.reverse ? 'desc' : 'asc');
-      const columnRef = termName === 'graph' ? 'membership.graph_id' : `idx.${column}`;
+      const columnRef = columnRefs?.[termName] ?? (termName === 'graph' ? 'membership.graph_id' : `idx.${column}`);
       return {
         join: ` JOIN rdf_terms ${alias} ON ${alias}.id = ${columnRef}`,
         order: `${alias}.value${direction === 'desc' ? ' DESC' : ''}`,

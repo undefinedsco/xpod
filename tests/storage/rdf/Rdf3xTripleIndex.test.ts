@@ -253,9 +253,13 @@ describe('Rdf3xTripleIndex', () => {
 
     expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
     expect(scan.quads.map((q) => q.subject.value)).toEqual(['https://run/10']);
-    expect(scan.metrics.indexChoice).toBe('POS');
+    expect(scan.metrics.indexChoice).toBe('source-membership');
+    expect(scan.metrics.queryPlan).toContain('Rdf3xMembershipScan');
     expect(scan.metrics.queryPlan).toContain('NumericRange(object$gt)');
-    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_range ON object_range.id = idx.object_id');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g membership_graph');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership membership');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_range');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('ON object_range.id = membership.object_id');
     expect(scan.metrics.queryPlan?.join('\n')).not.toContain('idx.object_id = ?');
     expect(rdf3x.estimateCardinality({
       graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
@@ -291,9 +295,13 @@ describe('Rdf3xTripleIndex', () => {
 
     expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
     expect(scan.quads.map((q) => q.subject.value)).toEqual(['https://schedule/due']);
-    expect(scan.metrics.indexChoice).toBe('POS');
+    expect(scan.metrics.indexChoice).toBe('source-membership');
+    expect(scan.metrics.queryPlan).toContain('Rdf3xMembershipScan');
     expect(scan.metrics.queryPlan).toContain('LexicalRange(object$lte)');
-    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_range ON object_range.id = idx.object_id');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g membership_graph');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership membership');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_range');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('ON object_range.id = membership.object_id');
   });
 
   it('uses projection stats for exact triple-pattern cardinality estimates', () => {
@@ -337,7 +345,7 @@ describe('Rdf3xTripleIndex', () => {
     });
   });
 
-  it('counts distinct pattern slots through RDF-3X permutation scans', () => {
+  it('counts distinct graph-prefixed pattern slots through RDF-3X membership scans', () => {
     const graphA = namedNode('https://pod.example/alice/.data/chat/a/messages.ttl');
     const graphB = namedNode('https://pod.example/alice/.data/chat/b/messages.ttl');
     const graphC = namedNode('https://pod.example/alice/.data/task/secretary/runs.ttl');
@@ -360,11 +368,13 @@ describe('Rdf3xTripleIndex', () => {
     }, 'subject');
 
     expect(result.count).toBe(2);
-    expect(result.metrics.indexChoice).toBe('PSO');
-    expect(result.metrics.queryPlan).toContain('Rdf3xPermutationScan(PSO)');
+    expect(result.metrics.indexChoice).toBe('source-membership');
+    expect(result.metrics.queryPlan).toContain('Rdf3xMembershipScan');
     expect(result.metrics.queryPlan).toContain('GraphPrefixMembershipFilter');
     expect(result.metrics.queryPlan).toContain('Rdf3xDistinctCount(?subject)');
-    expect(result.metrics.queryPlan?.join('\n')).toContain('COUNT(DISTINCT idx.subject_id)');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g membership_graph');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership membership');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('COUNT(DISTINCT membership.subject_id)');
   });
 
   it('matches baseline scans for graph prefix membership filters without dropping triple constraints', () => {
@@ -388,7 +398,11 @@ describe('Rdf3xTripleIndex', () => {
 
     expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
     expect(scan.metrics.queryPlan?.join('\n')).toContain('GraphPrefixMembershipFilter');
-    expect(scan.metrics.queryPlan?.join('\n')).toContain('Rdf3xPermutationScan(POS)');
+    expect(scan.metrics.indexChoice).toBe('source-membership');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('Rdf3xMembershipScan');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g membership_graph');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms graph_prefix');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership membership');
     expect(rdf3x.estimateCardinality({ graph: { $startsWith: prefix }, predicate: status, object: open })).toMatchObject({
       source: 'exact-membership',
       indexChoice: 'source-membership',

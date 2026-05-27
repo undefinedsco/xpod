@@ -173,8 +173,13 @@ describe('SolidRdfEngine', () => {
     expect(result.orderedMatch).toBe(true);
     expect(result.primary).toHaveLength(1);
     expect(result.rdf3x.map((q) => q.subject.value)).toEqual(['https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_10']);
-    expect(result.rdf3xMetrics.indexChoice).toBe('POS');
-    expect(result.rdf3xMetrics.queryPlan?.join('\n')).toContain('NumericRange(object$gt)');
+    expect(result.rdf3xMetrics.indexChoice).toBe('source-membership');
+    const plan = result.rdf3xMetrics.queryPlan?.join('\n') ?? '';
+    expect(plan).toContain('Rdf3xMembershipScan');
+    expect(plan).toContain('FROM rdf3x_stat_g');
+    expect(plan).toContain('JOIN rdf3x_triple_membership');
+    expect(plan).toContain('GraphPrefixMembershipFilter');
+    expect(plan).toContain('NumericRange(object$gt)');
   });
 
   it('runs a shadow RDF-3X join compare against the baseline join planner', () => {
@@ -606,8 +611,8 @@ describe('SolidRdfEngine', () => {
         createdAt: '2026-05-18T00:00:03.000Z',
       },
     ]);
-    expect(result.metrics.indexChoices[0]).toBe('PSO');
-    expect(result.metrics.plan).toContain('Rdf3xPermutationScan(PSO)');
+    expect(result.metrics.indexChoices[0]).toBe('source-membership');
+    expect(result.metrics.plan).toContain('Rdf3xMembershipScan');
     expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
     expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan(graph:op,subject:?message'))).toBe(true);
     expect(result.metrics.plan).toContain('Rdf3xPrimaryOrder(desc:object)');
@@ -1145,8 +1150,9 @@ describe('SolidRdfEngine', () => {
 
     expect(result.bindings.map((binding) => binding.messageCount.value)).toEqual(['2']);
     expect(result.count).toBe(2);
-    expect(result.metrics.indexChoices[0]).toBe('PSO');
-    expect(result.metrics.plan).toContain('Rdf3xPermutationScan(PSO)');
+    expect(result.metrics.indexChoices[0]).toBe('source-membership');
+    expect(result.metrics.plan).toContain('Rdf3xMembershipScan');
+    expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
     expect(result.metrics.plan).toContain('Rdf3xPrimaryCount(graph:op,subject:?message,predicate:http://purl.org/dc/terms/created,object:?createdAt)');
     expect(result.metrics.plan).toContain('Aggregate(count-rdf3x-primary)');
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexCount('))).toBe(false);
@@ -1194,7 +1200,9 @@ describe('SolidRdfEngine', () => {
 
     expect(result.bindings.map((binding) => binding.messageCount.value)).toEqual(['2']);
     expect(result.count).toBe(2);
-    expect(result.metrics.indexChoices[0]).toBe('PSO');
+    expect(result.metrics.indexChoices[0]).toBe('source-membership');
+    expect(result.metrics.plan).toContain('Rdf3xMembershipScan');
+    expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
     expect(result.metrics.plan).toContain('Rdf3xDistinctCount(?subject)');
     expect(result.metrics.plan).toContain('Rdf3xPrimaryCountDistinct(graph:op,subject:?message,predicate:http://purl.org/dc/terms/created,object:?createdAt)');
     expect(result.metrics.plan).toContain('Aggregate(count-distinct-rdf3x-primary)');
@@ -2605,12 +2613,13 @@ describe('SolidRdfEngine', () => {
       solidRdf: { returnedRows: 1 },
       rdf3x: {
         returnedRows: 1,
-        metrics: { indexChoice: 'POS', matchedRows: 1, returnedRows: 1 },
+        metrics: { indexChoice: 'source-membership', matchedRows: 1, returnedRows: 1 },
       },
     });
     expect(numericPriority?.unsupportedReason).toBeUndefined();
     expect(numericPriority?.rdf3x?.physicalPlan).toContain('NumericRange(object$gt)');
-    expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('JOIN rdf_terms object_range ON object_range.id = idx.object_id');
+    expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('JOIN rdf_terms object_range');
+    expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('ON object_range.id = membership.object_id');
     expect(listChats).toMatchObject({
       supported: true,
       matched: true,
@@ -2618,9 +2627,10 @@ describe('SolidRdfEngine', () => {
       solidRdf: { returnedRows: 1 },
       rdf3x: {
         returnedRows: 1,
-        metrics: { indexChoice: 'POS', matchedRows: 1, returnedRows: 1 },
+        metrics: { indexChoice: 'source-membership', matchedRows: 1, returnedRows: 1 },
       },
     });
+    expect(listChats?.rdf3x?.physicalPlan).toContain('Rdf3xMembershipScan');
     expect(listChats?.rdf3x?.physicalPlan.join('\n')).toContain('GraphPrefixMembershipFilter');
     expect(latestMessageJoin).toMatchObject({
       supported: true,
