@@ -77,7 +77,9 @@ export {
   type RdfModelShadowBenchmarkSide,
 } from './models-benchmark';
 export type {
+  RdfEngineStorageStats,
   RdfIndexStats,
+  RdfDerivedIndexProfile,
   Rdf3xCardinalityEstimate,
   Rdf3xJoinMetrics,
   Rdf3xJoinOptions,

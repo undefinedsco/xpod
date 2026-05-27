@@ -51,13 +51,17 @@ describe('Rdf3xTripleIndex', () => {
       scannedQuads: 4,
       uniqueTriples: 3,
       memberships: 4,
+      factsDataVersion: quadIndex.dataVersion(),
     });
     expect(rebuild.projectionRows).toBeGreaterThan(0);
+    expect(rdf3x.factsDataVersion()).toBe(quadIndex.dataVersion());
+    expect(rdf3x.isSyncedWithCurrentQuads()).toBe(true);
 
     const stats = rdf3x.stats();
     expect(stats.membershipCount).toBe(4);
     expect(stats.uniqueTriples).toBe(3);
     expect(stats.graphCount).toBe(2);
+    expect(stats.factsDataVersion).toBe(quadIndex.dataVersion());
     expect(stats.permutationRows).toEqual({
       SPO: 3,
       SOP: 3,
@@ -68,6 +72,17 @@ describe('Rdf3xTripleIndex', () => {
     });
     expect(stats.pairProjectionRows.PO).toBe(2);
     expect(stats.termProjectionRows.P).toBe(2);
+
+    quadIndex.multiPut([
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#m3'),
+        status,
+        open,
+        chatGraph,
+      ),
+    ]);
+    expect(rdf3x.factsDataVersion()).not.toBe(quadIndex.dataVersion());
+    expect(rdf3x.isSyncedWithCurrentQuads()).toBe(false);
   });
 
   it('matches baseline scans while keeping graph membership outside the triple core', () => {
@@ -127,7 +142,7 @@ describe('Rdf3xTripleIndex', () => {
     expect(scan.quads.map((q) => q.subject.value)).toEqual(['https://run/10']);
     expect(scan.metrics.indexChoice).toBe('POS');
     expect(scan.metrics.queryPlan).toContain('NumericRange(object$gt)');
-    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_numeric ON object_numeric.id = idx.object_id');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_range ON object_range.id = idx.object_id');
     expect(scan.metrics.queryPlan?.join('\n')).not.toContain('idx.object_id = ?');
     expect(rdf3x.estimateCardinality({
       graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
@@ -261,6 +276,74 @@ describe('Rdf3xTripleIndex', () => {
     expect(result.metrics.indexChoice).toBe('Rdf3xJoinBGP(PSO>POS)');
     expect(result.metrics.queryPlan?.join('\n')).toContain('Rdf3xJoinBGP(2)');
     expect(result.metrics.queryPlan?.join('\n')).toContain('Rdf3xPermutationScan(POS)');
+    expect(result.metrics.queryPlan).toContain('Rdf3xMergeJoin(?message)');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_pos q0\n          ON q1.subject_id = q0.subject_id');
+  });
+
+  it('pushes correlated tuple VALUES into RDF-3X BGP joins', () => {
+    const graph = namedNode('https://g');
+    const created = namedNode('https://p/created');
+    const status = namedNode('https://p/status');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const msg3 = namedNode('https://message/3');
+    const msg4 = namedNode('https://message/4');
+    const date1 = literal('2026-05-18T00:00:01.000Z');
+    const date2 = literal('2026-05-18T00:00:02.000Z');
+    const active = literal('active');
+    const closed = literal('closed');
+
+    quadIndex.multiPut([
+      quad(msg1, created, date1, graph),
+      quad(msg1, status, active, graph),
+      quad(msg2, created, date2, graph),
+      quad(msg2, status, closed, graph),
+      quad(msg3, created, date1, graph),
+      quad(msg3, status, closed, graph),
+      quad(msg4, created, date2, graph),
+      quad(msg4, status, active, graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const result = rdf3x.joinPatterns([
+      {
+        pattern: {
+          graph,
+          predicate: created,
+        },
+        variables: {
+          subject: 'message',
+          object: 'createdAt',
+        },
+      },
+      {
+        pattern: {
+          graph,
+          predicate: status,
+        },
+        variables: {
+          subject: 'message',
+          object: 'status',
+        },
+      },
+    ], {
+      values: [
+        {
+          variables: ['createdAt', 'status'],
+          rows: [
+            { createdAt: date1, status: closed },
+            { createdAt: date2, status: active },
+          ],
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => binding.message.value).sort()).toEqual([
+      msg3.value,
+      msg4.value,
+    ]);
+    expect(result.metrics.indexChoice).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinTupleValues(?createdAt,?status)');
   });
 
   it('uses RDF-3X cardinality stats to start joins from the narrowest pattern', () => {
@@ -330,6 +413,581 @@ describe('Rdf3xTripleIndex', () => {
     expect(result.metrics.queryPlan).toContain('Rdf3xJoinOrder(?2:POS>?0:POS>?1:PSO)');
     expect(result.metrics.queryPlan).toContain('Rdf3xJoinOrderBy(desc:createdAt)');
     expect(result.metrics.queryPlan).toContain('Rdf3xJoinLimit');
+  });
+
+  it('keeps RDF-3X join order connected after the narrowest start pattern', () => {
+    const graph = namedNode('https://g');
+    const created = namedNode('https://p/created');
+    const flag = namedNode('https://p/flag');
+    const tag = namedNode('https://p/tag');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const msg3 = namedNode('https://message/3');
+    const msg4 = namedNode('https://message/4');
+    const other1 = namedNode('https://other/1');
+    const other2 = namedNode('https://other/2');
+    quadIndex.multiPut([
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+      quad(msg3, created, literal('2026-05-18T00:00:03.000Z'), graph),
+      quad(msg4, created, literal('2026-05-18T00:00:04.000Z'), graph),
+      quad(msg1, flag, literal('selected'), graph),
+      quad(other1, tag, literal('noise'), graph),
+      quad(other2, tag, literal('noise'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const result = rdf3x.joinPatterns([
+      {
+        pattern: {
+          predicate: tag,
+          object: literal('noise'),
+        },
+        variables: {},
+      },
+      {
+        pattern: {
+          predicate: created,
+        },
+        variables: {
+          subject: 'message',
+          object: 'createdAt',
+        },
+      },
+      {
+        pattern: {
+          predicate: flag,
+          object: literal('selected'),
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+    ], {
+      project: ['message', 'createdAt'],
+      distinct: true,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      createdAt: binding.createdAt.value,
+    }))).toEqual([
+      {
+        message: 'https://message/1',
+        createdAt: '2026-05-18T00:00:01.000Z',
+      },
+    ]);
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinOrder(?2:POS>?1:PSO>?0:POS)');
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinDistinct(?message,?createdAt)');
+  });
+
+  it('uses bound-slot fanout estimates when choosing between connected RDF-3X joins', () => {
+    const graph = namedNode('https://g');
+    const flag = namedNode('https://p/flag');
+    const owner = namedNode('https://p/owner');
+    const title = namedNode('https://p/title');
+    const selected = literal('selected');
+    const msg1 = namedNode('https://message/1');
+    const rows: Quad[] = [
+      quad(msg1, flag, selected, graph),
+    ];
+
+    for (let index = 1; index <= 100; index += 1) {
+      rows.push(quad(
+        namedNode(`https://message/${index}`),
+        title,
+        literal(`title-${index}`),
+        graph,
+      ));
+    }
+    for (let index = 1; index <= 30; index += 1) {
+      rows.push(quad(
+        msg1,
+        owner,
+        namedNode(`https://owner/${index}`),
+        graph,
+      ));
+    }
+
+    quadIndex.multiPut(rows);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const result = rdf3x.joinPatterns([
+      {
+        pattern: {
+          predicate: flag,
+          object: selected,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          predicate: owner,
+        },
+        variables: {
+          subject: 'message',
+          object: 'owner',
+        },
+      },
+      {
+        pattern: {
+          predicate: title,
+        },
+        variables: {
+          subject: 'message',
+          object: 'title',
+        },
+      },
+    ], {
+      project: ['message', 'title'],
+      distinct: true,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      title: binding.title.value,
+    }))).toEqual([
+      {
+        message: 'https://message/1',
+        title: 'title-1',
+      },
+    ]);
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinOrder(?0:POS>?2:PSO>?1:PSO)');
+    expect(result.metrics.queryPlan?.filter((step) => step === 'Rdf3xMergeJoin(?message)')).toHaveLength(2);
+  });
+
+  it('uses index-only RDF-3X joins for DISTINCT term projections without graph semantics', () => {
+    const graphA = namedNode('https://g/a');
+    const graphB = namedNode('https://g/b');
+    const type = namedNode('https://p/type');
+    const title = namedNode('https://p/title');
+    const messageType = namedNode('https://type/Message');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    quadIndex.multiPut([
+      quad(msg1, type, messageType, graphA),
+      quad(msg1, type, messageType, graphB),
+      quad(msg1, title, literal('hello'), graphA),
+      quad(msg1, title, literal('hello'), graphB),
+      quad(msg2, type, messageType, graphA),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const patterns = [
+      {
+        pattern: {
+          predicate: type,
+          object: messageType,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          predicate: title,
+        },
+        variables: {
+          subject: 'message',
+          object: 'title',
+        },
+      },
+    ];
+    const baseline = quadIndex.joinPatterns(patterns, {
+      project: ['message', 'title'],
+      distinct: true,
+    });
+    const result = rdf3x.joinPatterns(patterns, {
+      project: ['message', 'title'],
+      distinct: true,
+    });
+
+    expect(bindingKeys(result.bindings)).toEqual(bindingKeys(baseline.bindings));
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      title: binding.title.value,
+    }))).toEqual([
+      {
+        message: 'https://message/1',
+        title: 'hello',
+      },
+    ]);
+    expect(result.metrics.queryPlan).toContain('Rdf3xIndexOnlyJoin');
+    expect(result.metrics.queryPlan).toContain('Rdf3xMergeJoin(?message)');
+    expect(result.metrics.queryPlan?.join('\n')).not.toContain('rdf3x_triple_membership');
+  });
+
+  it('counts connected BGP joins inside RDF-3X SQL', () => {
+    const graph = namedNode('https://g');
+    const member = namedNode('https://p/member');
+    const status = namedNode('https://p/status');
+    const thread1 = namedNode('https://thread/1');
+    const thread2 = namedNode('https://thread/2');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const msg3 = namedNode('https://message/3');
+    quadIndex.multiPut([
+      quad(msg1, member, thread1, graph),
+      quad(msg1, status, literal('open'), graph),
+      quad(msg2, member, thread1, graph),
+      quad(msg2, status, literal('open'), graph),
+      quad(msg3, member, thread2, graph),
+      quad(msg3, status, literal('open'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const patterns = [
+      {
+        pattern: {
+          predicate: member,
+        },
+        variables: {
+          subject: 'message',
+          object: 'thread',
+        },
+      },
+      {
+        pattern: {
+          predicate: status,
+          object: literal('open'),
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+    ];
+    const baseline = quadIndex.countJoinPatterns(patterns, {
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+        {
+          type: 'count',
+          as: 'distinctMessageCount',
+          variable: 'message',
+          distinct: true,
+        },
+      ],
+    });
+    const result = rdf3x.countJoinPatterns(patterns, {
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+        {
+          type: 'count',
+          as: 'distinctMessageCount',
+          variable: 'message',
+          distinct: true,
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      messageCount: binding.messageCount.value,
+      distinctMessageCount: binding.distinctMessageCount.value,
+    }))).toEqual(baseline.bindings.map((binding) => ({
+      messageCount: binding.messageCount.value,
+      distinctMessageCount: binding.distinctMessageCount.value,
+    })));
+    expect(result.metrics.indexChoice).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.matchedRows).toBe(3);
+    expect(result.metrics.returnedRows).toBe(1);
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinCount(count(?message),count:DISTINCT(?message))');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('COUNT(q0.subject_id) AS a0');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('COUNT(DISTINCT q0.subject_id) AS a1');
+  });
+
+  it('groups connected BGP joins and applies HAVING/order/limit inside RDF-3X SQL', () => {
+    const graph = namedNode('https://g');
+    const member = namedNode('https://p/member');
+    const status = namedNode('https://p/status');
+    const thread1 = namedNode('https://thread/1');
+    const thread2 = namedNode('https://thread/2');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const msg3 = namedNode('https://message/3');
+    quadIndex.multiPut([
+      quad(msg1, member, thread1, graph),
+      quad(msg1, status, literal('open'), graph),
+      quad(msg2, member, thread1, graph),
+      quad(msg2, status, literal('open'), graph),
+      quad(msg3, member, thread2, graph),
+      quad(msg3, status, literal('open'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const result = rdf3x.groupCountJoinPatterns([
+      {
+        pattern: {
+          predicate: member,
+        },
+        variables: {
+          subject: 'message',
+          object: 'thread',
+        },
+      },
+      {
+        pattern: {
+          predicate: status,
+          object: literal('open'),
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+    ], {
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+      ],
+      having: [
+        {
+          aggregate: 'messageCount',
+          operator: '$lt',
+          value: 2,
+        },
+      ],
+      orderBy: [
+        {
+          variable: 'messageCount',
+          direction: 'desc',
+        },
+      ],
+      limit: 1,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      thread: binding.thread.value,
+      messageCount: binding.messageCount.value,
+    }))).toEqual([
+      {
+        thread: 'https://thread/2',
+        messageCount: '1',
+      },
+    ]);
+    expect(result.metrics.indexChoice).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.matchedRows).toBe(3);
+    expect(result.metrics.returnedRows).toBe(1);
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinGroupCount(?thread)');
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinGroupCountHaving(messageCount$lt)');
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinGroupCountOrder(desc:messageCount)');
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinGroupCountLimit');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('GROUP BY q0.object_id HAVING a0 < ? ORDER BY a0 DESC LIMIT ?');
+  });
+
+  it('pushes numeric aggregates into RDF-3X SQL over BGP joins', () => {
+    const graph = namedNode('https://g');
+    const type = namedNode('https://p/type');
+    const score = namedNode('https://p/score');
+    const messageType = namedNode('https://type/Message');
+    const xsdInteger = namedNode('http://www.w3.org/2001/XMLSchema#integer');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const msg3 = namedNode('https://message/3');
+    quadIndex.multiPut([
+      quad(msg1, type, messageType, graph),
+      quad(msg1, score, literal('2', xsdInteger), graph),
+      quad(msg2, type, messageType, graph),
+      quad(msg2, score, literal('10', xsdInteger), graph),
+      quad(msg3, type, messageType, graph),
+      quad(msg3, score, literal('not numeric'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const result = rdf3x.aggregateJoinPatterns([
+      {
+        pattern: {
+          predicate: type,
+          object: messageType,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          predicate: score,
+        },
+        variables: {
+          subject: 'message',
+          object: 'score',
+        },
+      },
+    ], {
+      aggregates: [
+        {
+          type: 'sum',
+          as: 'sum',
+          variable: 'score',
+        },
+        {
+          type: 'avg',
+          as: 'avg',
+          variable: 'score',
+        },
+        {
+          type: 'min',
+          as: 'min',
+          variable: 'score',
+        },
+        {
+          type: 'max',
+          as: 'max',
+          variable: 'score',
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      sum: binding.sum.value,
+      sumDatatype: binding.sum.datatype.value,
+      avg: binding.avg.value,
+      min: binding.min.value,
+      max: binding.max.value,
+    }))).toEqual([
+      {
+        sum: '12',
+        sumDatatype: 'http://www.w3.org/2001/XMLSchema#decimal',
+        avg: '6',
+        min: '2',
+        max: '10',
+      },
+    ]);
+    expect(result.metrics.matchedRows).toBe(2);
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinAggregateNumeric(?score)');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('COALESCE(SUM(rdf3x_agg_numeric_t0.numeric_value), 0) AS a0');
+  });
+
+  it('groups numeric aggregates inside RDF-3X SQL over BGP joins', () => {
+    const graph = namedNode('https://g');
+    const member = namedNode('https://p/member');
+    const score = namedNode('https://p/score');
+    const xsdInteger = namedNode('http://www.w3.org/2001/XMLSchema#integer');
+    const thread1 = namedNode('https://thread/1');
+    const thread2 = namedNode('https://thread/2');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const msg3 = namedNode('https://message/3');
+    const msg4 = namedNode('https://message/4');
+    quadIndex.multiPut([
+      quad(msg1, member, thread1, graph),
+      quad(msg1, score, literal('2', xsdInteger), graph),
+      quad(msg2, member, thread1, graph),
+      quad(msg2, score, literal('10', xsdInteger), graph),
+      quad(msg3, member, thread2, graph),
+      quad(msg3, score, literal('4', xsdInteger), graph),
+      quad(msg4, member, thread2, graph),
+      quad(msg4, score, literal('not numeric'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const result = rdf3x.groupAggregateJoinPatterns([
+      {
+        pattern: {
+          predicate: member,
+        },
+        variables: {
+          subject: 'message',
+          object: 'thread',
+        },
+      },
+      {
+        pattern: {
+          predicate: score,
+        },
+        variables: {
+          subject: 'message',
+          object: 'score',
+        },
+      },
+    ], {
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+        {
+          type: 'sum',
+          as: 'sum',
+          variable: 'score',
+        },
+        {
+          type: 'avg',
+          as: 'avg',
+          variable: 'score',
+        },
+        {
+          type: 'min',
+          as: 'min',
+          variable: 'score',
+        },
+        {
+          type: 'max',
+          as: 'max',
+          variable: 'score',
+        },
+      ],
+      having: [
+        {
+          aggregate: 'sum',
+          operator: '$gte',
+          value: 4,
+        },
+      ],
+      orderBy: [
+        {
+          variable: 'sum',
+          direction: 'desc',
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      thread: binding.thread.value,
+      count: binding.messageCount.value,
+      sum: binding.sum.value,
+      sumDatatype: binding.sum.datatype.value,
+      avg: binding.avg.value,
+      min: binding.min.value,
+      max: binding.max.value,
+    }))).toEqual([
+      {
+        thread: 'https://thread/1',
+        count: '2',
+        sum: '12',
+        sumDatatype: 'http://www.w3.org/2001/XMLSchema#decimal',
+        avg: '6',
+        min: '2',
+        max: '10',
+      },
+      {
+        thread: 'https://thread/2',
+        count: '1',
+        sum: '4',
+        sumDatatype: 'http://www.w3.org/2001/XMLSchema#decimal',
+        avg: '4',
+        min: '4',
+        max: '4',
+      },
+    ]);
+    expect(result.metrics.matchedRows).toBe(3);
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinGroupAggregateNumeric(?score)');
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinGroupAggregateHaving(sum$gte)');
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinGroupAggregateOrder(desc:sum)');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('GROUP BY q0.object_id HAVING a1 >= ? ORDER BY a1 DESC');
   });
 });
 

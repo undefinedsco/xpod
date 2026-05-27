@@ -110,6 +110,7 @@ export class RdfQuadIndex {
     const db = this.requireDb();
     db.exec('DELETE FROM rdf_quads; DELETE FROM rdf_sources; DELETE FROM rdf_terms;');
     this.cardinalityCache.clear();
+    this.bumpDataVersion();
   }
 
   public put(quad: Quad, options?: RdfIndexPutOptions): void {
@@ -127,6 +128,7 @@ export class RdfQuadIndex {
       }
     })();
     this.cardinalityCache.clear();
+    this.bumpDataVersion();
   }
 
   public deleteSource(source: string): number {
@@ -142,6 +144,7 @@ export class RdfQuadIndex {
     db.prepare('DELETE FROM rdf_sources WHERE id = ?').run(row.id);
     if (result.changes > 0) {
       this.cardinalityCache.clear();
+      this.bumpDataVersion();
     }
     return result.changes;
   }
@@ -156,6 +159,7 @@ export class RdfQuadIndex {
       this.insertQuads(quads, options);
     })();
     this.cardinalityCache.clear();
+    this.bumpDataVersion();
   }
 
   private insertQuads(quads: Quad[], options?: RdfIndexPutOptions): void {
@@ -196,6 +200,9 @@ export class RdfQuadIndex {
     if (!whereClause) {
       const result = db.prepare('DELETE FROM rdf_quads').run();
       this.cardinalityCache.clear();
+      if (result.changes > 0) {
+        this.bumpDataVersion();
+      }
       return result.changes;
     }
     const sql = joins
@@ -204,8 +211,16 @@ export class RdfQuadIndex {
     const changes = db.prepare(sql).run(...params).changes;
     if (changes > 0) {
       this.cardinalityCache.clear();
+      this.bumpDataVersion();
     }
     return changes;
+  }
+
+  public dataVersion(): number {
+    const row = this.requireDb()
+      .prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'data_version'")
+      .get();
+    return Number(row?.value ?? 0) || 0;
   }
 
   public scan(pattern: QuintPattern, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
@@ -1257,7 +1272,26 @@ export class RdfQuadIndex {
       CREATE INDEX IF NOT EXISTS rdf_quads_gspo ON rdf_quads(graph_id, subject_id, predicate_id, object_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_gpos ON rdf_quads(graph_id, predicate_id, object_id, subject_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_source ON rdf_quads(source_file_id);
+
+      CREATE TABLE IF NOT EXISTS rdf_index_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
+    this.requireDb().prepare(`
+      INSERT OR IGNORE INTO rdf_index_metadata (key, value)
+      SELECT 'data_version', '1'
+      WHERE EXISTS (SELECT 1 FROM rdf_quads LIMIT 1)
+    `).run();
+  }
+
+  private bumpDataVersion(): void {
+    this.requireDb().prepare(`
+      INSERT INTO rdf_index_metadata (key, value)
+      VALUES ('data_version', '1')
+      ON CONFLICT (key)
+      DO UPDATE SET value = CAST(value AS INTEGER) + 1
+    `).run();
   }
 
   private upsertSource(source: RdfSourceInput): number {

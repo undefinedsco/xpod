@@ -1,6 +1,6 @@
 import { DataFactory, termToId } from 'n3';
 import type { Term } from '@rdfjs/types';
-import type { QueryOptions, QuintPattern, TermMatch } from '../quint/types';
+import type { QuintPattern, TermMatch } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfQuadIndex } from './RdfQuadIndex';
 import { Rdf3xTripleIndex } from './Rdf3xTripleIndex';
@@ -34,7 +34,11 @@ import type {
   RdfExistsQueryGroup,
   RdfQueryVariable,
   RdfQuadJoinGroupAggregateHaving,
+  RdfQuadIndexScanResult,
   RdfQuadScanOptions,
+  Rdf3xTriplePattern,
+  Rdf3xTripleScanOptions,
+  Rdf3xTripleScanResult,
 } from './types';
 
 const TERM_KEYS: RdfQueryPatternKey[] = ['graph', 'subject', 'predicate', 'object'];
@@ -57,6 +61,7 @@ type CompiledJoinPattern = { pattern: CompiledPattern; variables: Partial<Record
 
 interface RequiredBgpPushdown {
   patterns: CompiledJoinPattern[];
+  values?: RdfValuesBindingSource[];
   reorderPlan?: string;
   orderPushed: boolean;
   paginationPushed: boolean;
@@ -116,6 +121,12 @@ interface ValuesRequiredSource {
 }
 
 type RequiredSource = PatternRequiredSource | TextRequiredSource | VectorRequiredSource | ValuesRequiredSource;
+type PatternScanBackend = 'index' | 'rdf3x' | 'mixed' | 'none';
+
+interface PatternJoinResult {
+  bindings: RdfBindingRow[];
+  scanBackend: PatternScanBackend;
+}
 
 export class RdfLocalQueryEngine {
   public constructor(
@@ -161,19 +172,30 @@ export class RdfLocalQueryEngine {
     let groupedAggregatePushed = false;
 
     if (countPushdown) {
-      const countEstimate = countPushdown.distinctKey
+      const useRdf3xPrimary = !countPushdown.distinctKey
+        && this.canUseRdf3xPrimaryScan(countPushdown.pattern);
+      const rdf3xCountScan = useRdf3xPrimary
+        ? this.rdf3xPrimaryIndex!.scan(toRdf3xTriplePattern(countPushdown.pattern), { limit: 0 })
+        : undefined;
+      const countEstimate = !useRdf3xPrimary && countPushdown.distinctKey
         ? this.index.countDistinct(countPushdown.pattern, countPushdown.distinctKey)
         : undefined;
-      const count = countEstimate?.rows ?? this.index.count(countPushdown.pattern);
+      const count = rdf3xCountScan?.metrics.matchedRows ?? countEstimate?.rows ?? this.index.count(countPushdown.pattern);
       const result = countLiteral(count);
       metrics.scannedRows = count;
       metrics.joinedRows = count;
       metrics.returnedRows = 1;
       metrics.durationMs = Date.now() - start;
-      metrics.indexChoices.push('count');
+      metrics.indexChoices.push(useRdf3xPrimary ? rdf3xCountScan!.metrics.indexChoice : 'count');
       metrics.filtersPushedDown += countPushdown.pushedDownFilters;
-      metrics.plan.push(`IndexCount(${describePattern(requiredPatterns[0])})`);
-      metrics.plan.push(countPushdown.distinctKey ? 'Aggregate(count-distinct-index)' : 'Aggregate(count-index)');
+      if (rdf3xCountScan) {
+        metrics.plan.push(...storagePlanMarkers(rdf3xCountScan.metrics.queryPlan));
+        metrics.plan.push(`Rdf3xPrimaryCount(${describePattern(requiredPatterns[0])})`);
+        metrics.plan.push('Aggregate(count-rdf3x-primary)');
+      } else {
+        metrics.plan.push(`IndexCount(${describePattern(requiredPatterns[0])})`);
+        metrics.plan.push(countPushdown.distinctKey ? 'Aggregate(count-distinct-index)' : 'Aggregate(count-index)');
+      }
       return {
         bindings: [{ [countPushdown.as]: result }],
         count,
@@ -182,7 +204,12 @@ export class RdfLocalQueryEngine {
     }
 
     if (joinCountPushdown) {
-      const scan = this.index.countJoinPatterns(joinCountPushdown.patterns, {
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(joinCountPushdown.patterns);
+      const scan = useRdf3xPrimary
+        ? this.rdf3xPrimaryIndex!.countJoinPatterns(joinCountPushdown.patterns, {
+          aggregates,
+        })
+        : this.index.countJoinPatterns(joinCountPushdown.patterns, {
         aggregates,
       });
       const firstAggregate = aggregates[0];
@@ -193,11 +220,11 @@ export class RdfLocalQueryEngine {
       metrics.durationMs = Date.now() - start;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += joinCountPushdown.pushedDownFilters;
-      if (joinCountPushdown.reorderPlan) {
+      if (!useRdf3xPrimary && joinCountPushdown.reorderPlan) {
         metrics.plan.push(joinCountPushdown.reorderPlan);
       }
       metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
-      metrics.plan.push(`IndexJoinCount(${joinCountPushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
+      metrics.plan.push(`${useRdf3xPrimary ? 'Rdf3xPrimaryJoinCount' : 'IndexJoinCount'}(${joinCountPushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
       metrics.plan.push(aggregatePlan(aggregates, false));
       metrics.plan.push(aggregates.some((aggregate) => aggregate.distinct)
         ? 'Aggregate(join-count-distinct-index)'
@@ -210,7 +237,12 @@ export class RdfLocalQueryEngine {
     }
 
     if (joinBasicAggregatePushdown) {
-      const scan = this.index.aggregateJoinPatterns(joinBasicAggregatePushdown.patterns, {
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(joinBasicAggregatePushdown.patterns);
+      const scan = useRdf3xPrimary
+        ? this.rdf3xPrimaryIndex!.aggregateJoinPatterns(joinBasicAggregatePushdown.patterns, {
+          aggregates,
+        })
+        : this.index.aggregateJoinPatterns(joinBasicAggregatePushdown.patterns, {
         aggregates,
       });
       metrics.scannedRows = scan.metrics.matchedRows;
@@ -219,11 +251,11 @@ export class RdfLocalQueryEngine {
       metrics.durationMs = Date.now() - start;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += joinBasicAggregatePushdown.pushedDownFilters;
-      if (joinBasicAggregatePushdown.reorderPlan) {
+      if (!useRdf3xPrimary && joinBasicAggregatePushdown.reorderPlan) {
         metrics.plan.push(joinBasicAggregatePushdown.reorderPlan);
       }
       metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
-      metrics.plan.push(`IndexJoinAggregate(${joinBasicAggregatePushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
+      metrics.plan.push(`${useRdf3xPrimary ? 'Rdf3xPrimaryJoinAggregate' : 'IndexJoinAggregate'}(${joinBasicAggregatePushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
       metrics.plan.push(aggregatePlan(aggregates, false));
       metrics.plan.push(aggregates.length > 1
         ? 'Aggregate(join-basic-multi-index)'
@@ -237,31 +269,35 @@ export class RdfLocalQueryEngine {
     const remainingSources = buildRequiredSources(requiredPatterns, query);
     const requiredBgpPushdown = this.requiredBgpPushdown(query, requiredPatterns, requiredFilters);
     if (groupAggregatePushdown) {
-      const scan = groupAggregatePushdown.countOnly
-        ? this.index.groupCountJoinPatterns(groupAggregatePushdown.patterns, {
-          groupBy: query.groupBy ?? [],
-          aggregates,
-          ...(groupAggregatePushdown.having ? { having: groupAggregatePushdown.having } : {}),
-          ...(groupAggregatePushdown.orderPushed ? { orderBy: query.orderBy } : {}),
-          ...(groupAggregatePushdown.paginationPushed && query.limit !== undefined ? { limit: Math.max(0, query.limit) } : {}),
-          ...(groupAggregatePushdown.paginationPushed && query.offset !== undefined ? { offset: Math.max(0, query.offset) } : {}),
-        })
-        : this.index.groupAggregateJoinPatterns(groupAggregatePushdown.patterns, {
+      const rdf3xGroupAggregatePatterns = groupAggregatePushdown.countOnly
+        ? groupAggregatePushdown.patterns
+        : stripRdf3xNumericAggregateGuards(groupAggregatePushdown.patterns, aggregates);
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(rdf3xGroupAggregatePatterns);
+      const groupOptions = {
         groupBy: query.groupBy ?? [],
         aggregates,
         ...(groupAggregatePushdown.having ? { having: groupAggregatePushdown.having } : {}),
         ...(groupAggregatePushdown.orderPushed ? { orderBy: query.orderBy } : {}),
         ...(groupAggregatePushdown.paginationPushed && query.limit !== undefined ? { limit: Math.max(0, query.limit) } : {}),
         ...(groupAggregatePushdown.paginationPushed && query.offset !== undefined ? { offset: Math.max(0, query.offset) } : {}),
-      });
-      const groupPlanPrefix = groupAggregatePushdown.countOnly ? 'IndexGroupCount' : 'IndexGroupAggregate';
+      };
+      const scan = groupAggregatePushdown.countOnly
+        ? useRdf3xPrimary
+          ? this.rdf3xPrimaryIndex!.groupCountJoinPatterns(rdf3xGroupAggregatePatterns, groupOptions)
+          : this.index.groupCountJoinPatterns(groupAggregatePushdown.patterns, groupOptions)
+        : useRdf3xPrimary
+          ? this.rdf3xPrimaryIndex!.groupAggregateJoinPatterns(rdf3xGroupAggregatePatterns, groupOptions)
+          : this.index.groupAggregateJoinPatterns(groupAggregatePushdown.patterns, groupOptions);
+      const groupPlanPrefix = useRdf3xPrimary
+        ? groupAggregatePushdown.countOnly ? 'Rdf3xPrimaryGroupCount' : 'Rdf3xPrimaryGroupAggregate'
+        : groupAggregatePushdown.countOnly ? 'IndexGroupCount' : 'IndexGroupAggregate';
       bindings = scan.bindings;
       metrics.scannedRows += scan.metrics.matchedRows;
       metrics.joinedRows = scan.metrics.matchedRows;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += groupAggregatePushdown.pushedDownFilters;
       metrics.filtersPushedDown += groupAggregatePushdown.pushedDownHaving;
-      if (groupAggregatePushdown.reorderPlan) {
+      if (!useRdf3xPrimary && groupAggregatePushdown.reorderPlan) {
         metrics.plan.push(groupAggregatePushdown.reorderPlan);
       }
       metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
@@ -288,6 +324,7 @@ export class RdfLocalQueryEngine {
       const scanOptions = {
         ...(requiredBgpPushdown.project ? { project: requiredBgpPushdown.project } : {}),
         ...(requiredBgpPushdown.distinctPushed ? { distinct: true } : {}),
+        ...(requiredBgpPushdown.values ? { values: requiredBgpPushdown.values } : {}),
         ...(requiredBgpPushdown.orderPushed ? { orderBy: query.orderBy } : {}),
         ...(requiredBgpPushdown.paginationPushed && query.limit !== undefined ? { limit: Math.max(0, query.limit) } : {}),
         ...(requiredBgpPushdown.paginationPushed && query.offset !== undefined ? { offset: Math.max(0, query.offset) } : {}),
@@ -799,7 +836,7 @@ export class RdfLocalQueryEngine {
   ): RdfBindingRow[] {
     switch (source.kind) {
       case 'pattern': {
-        const bindings = this.joinPattern(
+        const result = this.joinPattern(
           input,
           source,
           filters,
@@ -807,14 +844,15 @@ export class RdfLocalQueryEngine {
           false,
           singleScanPushdown?.options,
         );
-        metrics.plan.push(`IndexScan(${describePattern(source.pattern)})`);
+        const scanPlan = requiredSourceScanPlan(result.scanBackend);
+        metrics.plan.push(`${scanPlan}(${describePattern(source.pattern)})`);
         if (singleScanPushdown?.orderPushed) {
-          metrics.plan.push(`IndexOrder(${describeScanOrder(singleScanPushdown.options)})`);
+          metrics.plan.push(`${scanPlanOrder(scanPlan)}(${describeScanOrder(singleScanPushdown.options)})`);
         }
         if (singleScanPushdown?.paginationPushed) {
-          metrics.plan.push('IndexLimit');
+          metrics.plan.push(scanPlanLimit(scanPlan));
         }
-        return bindings;
+        return result.bindings;
       }
       case 'text': {
         const bindings = this.joinTextSearch(input, source, metrics);
@@ -858,10 +896,17 @@ export class RdfLocalQueryEngine {
           return [binding];
         }
       }
-      for (const pattern of optionalGroup.patterns) {
-        matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, optionalFilters, metrics, true);
-        if (matches.length === 0) {
-          return [binding];
+      const grouped = (optionalGroup.values?.length ?? 0) === 0
+        ? this.joinPatternGroupRdf3x(matches, optionalGroup.patterns, optionalFilters, metrics, true)
+        : undefined;
+      if (grouped) {
+        matches = grouped.bindings;
+      } else {
+        for (const pattern of optionalGroup.patterns) {
+          matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, optionalFilters, metrics, true).bindings;
+          if (matches.length === 0) {
+            return [binding];
+          }
         }
       }
       for (const unionGroup of optionalGroup.unions ?? []) {
@@ -930,10 +975,17 @@ export class RdfLocalQueryEngine {
         if (matches.length === 0) {
           continue;
         }
-        for (const pattern of branch.patterns) {
-          matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, branchFilters, metrics, false);
-          if (matches.length === 0) {
-            break;
+        const grouped = (branch.values?.length ?? 0) === 0
+          ? this.joinPatternGroupRdf3x(matches, branch.patterns, branchFilters, metrics, false)
+          : undefined;
+        if (grouped) {
+          matches = grouped.bindings;
+        } else {
+          for (const pattern of branch.patterns) {
+            matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, branchFilters, metrics, false).bindings;
+            if (matches.length === 0) {
+              break;
+            }
           }
         }
         if (matches.length === 0) {
@@ -996,10 +1048,17 @@ export class RdfLocalQueryEngine {
     for (const binding of input) {
       let matches: RdfBindingRow[] = [binding];
       matches = this.applyDependentValues(matches, minusGroup.values, metrics, 'Minus');
-      for (const pattern of minusGroup.patterns) {
-        matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, filters, metrics, false);
-        if (matches.length === 0) {
-          break;
+      const grouped = (minusGroup.values?.length ?? 0) === 0
+        ? this.joinPatternGroupRdf3x(matches, minusGroup.patterns, filters, metrics, false)
+        : undefined;
+      if (grouped) {
+        matches = grouped.bindings;
+      } else {
+        for (const pattern of minusGroup.patterns) {
+          matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, filters, metrics, false).bindings;
+          if (matches.length === 0) {
+            break;
+          }
         }
       }
       if (matches.length > 0) {
@@ -1042,10 +1101,17 @@ export class RdfLocalQueryEngine {
     for (const binding of input) {
       let matches: RdfBindingRow[] = [binding];
       matches = this.applyDependentValues(matches, existsGroup.values, metrics, 'Exists');
-      for (const pattern of existsGroup.patterns) {
-        matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, filters, metrics, false);
-        if (matches.length === 0) {
-          break;
+      const grouped = (existsGroup.values?.length ?? 0) === 0
+        ? this.joinPatternGroupRdf3x(matches, existsGroup.patterns, filters, metrics, false)
+        : undefined;
+      if (grouped) {
+        matches = grouped.bindings;
+      } else {
+        for (const pattern of existsGroup.patterns) {
+          matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, filters, metrics, false).bindings;
+          if (matches.length === 0) {
+            break;
+          }
         }
       }
       if (matches.length > 0) {
@@ -1078,15 +1144,88 @@ export class RdfLocalQueryEngine {
     return output;
   }
 
+  private joinPatternGroupRdf3x(
+    input: RdfBindingRow[],
+    patterns: RdfQueryPattern[],
+    filters: RdfQueryFilter[],
+    metrics: RdfLocalQueryMetrics,
+    optional: boolean,
+  ): PatternJoinResult | undefined {
+    if (!this.rdf3xPrimaryIndex || patterns.length < 2) {
+      return undefined;
+    }
+
+    const compiledByBinding = input.map((binding) => {
+      const compiled = patterns.map((pattern) => this.compileJoinPatternForBinding(pattern, binding, filters));
+      return {
+        binding,
+        patterns: compiled,
+      };
+    });
+    if (compiledByBinding.some((entry) => (
+      entry.patterns.some((pattern) => !pattern)
+        || !this.canUseRdf3xPrimaryJoin(entry.patterns as CompiledJoinPattern[])
+    ))) {
+      return undefined;
+    }
+
+    const output: RdfBindingRow[] = [];
+    for (const entry of compiledByBinding) {
+      const compiled = entry.patterns as CompiledJoinPattern[];
+      const scan = this.rdf3xPrimaryIndex.joinPatterns(compiled);
+      metrics.scannedRows += scan.metrics.matchedRows;
+      metrics.indexChoices.push(scan.metrics.indexChoice);
+      metrics.filtersPushedDown += uniqueNumbers(compiled.flatMap((pattern) => pattern.pattern.pushedDownFilterIndexes)).length;
+      metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
+      const remainingFilters = filtersWithoutIndexes(
+        filters,
+        uniqueNumbers(compiled.flatMap((pattern) => pattern.pattern.pushedDownFilterIndexes)),
+      );
+      const before = output.length;
+      for (const row of scan.bindings) {
+        const next = mergeBindingRows(entry.binding, row);
+        if (next && this.matchesNewlyBoundFilters(next, entry.binding, remainingFilters)) {
+          output.push(next);
+        }
+      }
+      if (optional && output.length === before) {
+        output.push(entry.binding);
+      }
+    }
+
+    return {
+      bindings: output,
+      scanBackend: 'rdf3x',
+    };
+  }
+
+  private compileJoinPatternForBinding(
+    pattern: RdfQueryPattern,
+    binding: RdfBindingRow,
+    filters: RdfQueryFilter[],
+  ): CompiledJoinPattern | undefined {
+    const variables: Partial<Record<RdfQueryPatternKey, string>> = {};
+    for (const key of TERM_KEYS) {
+      const value = pattern[key];
+      if (isVariable(value) && !binding[value.variable]) {
+        variables[key] = value.variable;
+      }
+    }
+
+    const compiled = this.compilePattern(pattern, binding, filters);
+    return compiled ? { pattern: compiled, variables } : undefined;
+  }
+
   private joinPattern(
     input: RdfBindingRow[],
     source: PatternRequiredSource,
     filters: RdfQueryFilter[],
     metrics: RdfLocalQueryMetrics,
     optional: boolean,
-    scanOptions?: QueryOptions,
-  ): RdfBindingRow[] {
+    scanOptions?: RdfQuadScanOptions,
+  ): PatternJoinResult {
     const output: RdfBindingRow[] = [];
+    const backends = new Set<Exclude<PatternScanBackend, 'mixed' | 'none'>>();
     const { pattern } = source;
 
     for (const binding of input) {
@@ -1098,9 +1237,8 @@ export class RdfLocalQueryEngine {
         continue;
       }
       const tupleValues = this.tupleValuesForBinding(source, binding);
-      const scan = tupleValues
-        ? this.index.scanWithTupleConstraints(compiled, tupleValues, scanOptions)
-        : this.index.scan(compiled, scanOptions);
+      const scan = this.scanCompiledPattern(compiled, tupleValues, scanOptions);
+      backends.add(scan.metrics.engine === 'solid-rdf3x' ? 'rdf3x' : 'index');
       metrics.scannedRows += scan.metrics.matchedRows;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += compiled.pushedDownFilters;
@@ -1115,7 +1253,39 @@ export class RdfLocalQueryEngine {
       }
     }
 
-    return output;
+    return {
+      bindings: output,
+      scanBackend: backends.size === 0
+        ? 'none'
+        : backends.size === 1
+          ? [...backends][0]
+          : 'mixed',
+    };
+  }
+
+  private scanCompiledPattern(
+    compiled: CompiledPattern,
+    tupleValues: RdfQuadTupleConstraintSource | undefined,
+    scanOptions?: RdfQuadScanOptions,
+  ): RdfQuadIndexScanResult | Rdf3xTripleScanResult {
+    if (this.canUseRdf3xPrimaryScan(compiled, scanOptions)) {
+      const rdf3xPattern = toRdf3xTriplePattern(compiled);
+      return tupleValues
+        ? this.rdf3xPrimaryIndex!.scanWithTupleConstraints(rdf3xPattern, tupleValues, toRdf3xScanOptions(scanOptions))
+        : this.rdf3xPrimaryIndex!.scan(rdf3xPattern, toRdf3xScanOptions(scanOptions));
+    }
+    return tupleValues
+      ? this.index.scanWithTupleConstraints(compiled, tupleValues, scanOptions)
+      : this.index.scan(compiled, scanOptions);
+  }
+
+  private canUseRdf3xPrimaryScan(
+    pattern: QuintPattern,
+    scanOptions?: RdfQuadScanOptions,
+  ): boolean {
+    return Boolean(this.rdf3xPrimaryIndex)
+      && isRdf3xCompatiblePattern(pattern)
+      && !scanOptions?.orderDirections;
   }
 
   private requiredBgpPushdown(
@@ -1125,7 +1295,6 @@ export class RdfLocalQueryEngine {
   ): RequiredBgpPushdown | undefined {
     if (
       requiredPatterns.length < 1
-      || (query.values?.length ?? 0) > 0
       || (query.textSearch?.length ?? 0) > 0
       || (query.vectorSearch?.length ?? 0) > 0
       || (query.unions?.length ?? 0) > 0
@@ -1142,6 +1311,12 @@ export class RdfLocalQueryEngine {
     }
 
     if (!this.canPushRequiredBgpFilters(requiredPatterns, filters)) {
+      return undefined;
+    }
+    const values = query.values?.length
+      ? this.requiredBgpValuesPushdown(query.values, requiredPatterns)
+      : undefined;
+    if ((query.values?.length ?? 0) > 0 && !values) {
       return undefined;
     }
 
@@ -1166,9 +1341,13 @@ export class RdfLocalQueryEngine {
     if (compiled.some((entry) => !entry)) {
       return undefined;
     }
+    if (values && !this.canUseRdf3xPrimaryJoin(compiled as CompiledJoinPattern[])) {
+      return undefined;
+    }
     const reordered = this.reorderJoinPatterns(requiredPatterns, compiled as CompiledJoinPattern[], filters);
     return {
       patterns: reordered.patterns,
+      ...(values ? { values } : {}),
       ...(reordered.reorderPlan ? { reorderPlan: reordered.reorderPlan } : {}),
       orderPushed,
       paginationPushed: query.limit !== undefined || query.offset !== undefined,
@@ -1176,6 +1355,25 @@ export class RdfLocalQueryEngine {
       ...(distinctProject ? { project: distinctProject } : {}),
       pushedDownFilters: filters.length,
     };
+  }
+
+  private requiredBgpValuesPushdown(
+    values: RdfValuesBindingSource[],
+    requiredPatterns: RdfQueryPattern[],
+  ): RdfValuesBindingSource[] | undefined {
+    const visibleVariables = new Set(requiredPatterns.flatMap((pattern) => variablesInPattern(pattern)));
+    for (const source of values) {
+      if (source.variables.length === 0 || new Set(source.variables).size !== source.variables.length) {
+        return undefined;
+      }
+      if (source.variables.some((variableName) => !visibleVariables.has(variableName))) {
+        return undefined;
+      }
+      if (source.rows.some((row) => source.variables.some((variableName) => !row[variableName]))) {
+        return undefined;
+      }
+    }
+    return values;
   }
 
   private requiredBgpDistinctProject(
@@ -2568,6 +2766,10 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function uniqueNumbers(values: number[]): number[] {
+  return [...new Set(values)];
+}
+
 function filtersWithoutIndexes(filters: RdfQueryFilter[], indexes: number[]): RdfQueryFilter[] {
   if (indexes.length === 0) {
     return filters;
@@ -2587,6 +2789,18 @@ function joinValuesSource(input: RdfBindingRow[], source: RdfValuesBindingSource
     }
   }
   return output;
+}
+
+function mergeBindingRows(left: RdfBindingRow, right: RdfBindingRow): RdfBindingRow | null {
+  const next = { ...left };
+  for (const [variableName, term] of Object.entries(right)) {
+    const existing = next[variableName];
+    if (existing && !sameTerm(existing, term)) {
+      return null;
+    }
+    next[variableName] = term;
+  }
+  return next;
 }
 
 function mergeTupleValuesBinding(
@@ -3099,6 +3313,135 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
       || entry.startsWith('JoinGroupAggregateHaving(')
       || entry.startsWith('JoinGroupAggregateNumeric(')
   ));
+}
+
+function requiredSourceScanPlan(backend: PatternScanBackend): 'IndexScan' | 'Rdf3xPrimaryScan' | 'MixedScan' {
+  switch (backend) {
+    case 'rdf3x':
+      return 'Rdf3xPrimaryScan';
+    case 'mixed':
+      return 'MixedScan';
+    case 'index':
+    case 'none':
+      return 'IndexScan';
+    default: {
+      const exhaustive: never = backend;
+      throw new Error(`Unsupported RDF required source scan backend: ${exhaustive}`);
+    }
+  }
+}
+
+function scanPlanOrder(plan: ReturnType<typeof requiredSourceScanPlan>): 'IndexOrder' | 'Rdf3xPrimaryOrder' | 'MixedOrder' {
+  switch (plan) {
+    case 'Rdf3xPrimaryScan':
+      return 'Rdf3xPrimaryOrder';
+    case 'MixedScan':
+      return 'MixedOrder';
+    case 'IndexScan':
+      return 'IndexOrder';
+    default: {
+      const exhaustive: never = plan;
+      throw new Error(`Unsupported RDF scan plan for order marker: ${exhaustive}`);
+    }
+  }
+}
+
+function scanPlanLimit(plan: ReturnType<typeof requiredSourceScanPlan>): 'IndexLimit' | 'Rdf3xPrimaryLimit' | 'MixedLimit' {
+  switch (plan) {
+    case 'Rdf3xPrimaryScan':
+      return 'Rdf3xPrimaryLimit';
+    case 'MixedScan':
+      return 'MixedLimit';
+    case 'IndexScan':
+      return 'IndexLimit';
+    default: {
+      const exhaustive: never = plan;
+      throw new Error(`Unsupported RDF scan plan for limit marker: ${exhaustive}`);
+    }
+  }
+}
+
+function toRdf3xScanOptions(options?: RdfQuadScanOptions): Rdf3xTripleScanOptions | undefined {
+  if (!options) {
+    return undefined;
+  }
+  return {
+    ...(options.order ? { order: options.order } : {}),
+    ...(options.reverse ? { reverse: true } : {}),
+    ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    ...(options.offset !== undefined ? { offset: options.offset } : {}),
+  };
+}
+
+function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
+  const result: Rdf3xTriplePattern = {};
+  for (const key of TERM_KEYS) {
+    const value = pattern[key];
+    if (!value) {
+      continue;
+    }
+    if (isTerm(value as any)) {
+      result[key] = value as Term;
+      continue;
+    }
+    if (key === 'graph' && isGraphPrefixPattern(value)) {
+      result.graph = value;
+      continue;
+    }
+    if (key === 'object' && isRdf3xNumericRangePattern(value)) {
+      result.object = value;
+      continue;
+    }
+    throw new Error(`RDF-3X primary scan cannot compile unsupported ${key} pattern`);
+  }
+  return result;
+}
+
+function stripRdf3xNumericAggregateGuards(
+  patterns: CompiledJoinPattern[],
+  aggregates: RdfQueryAggregate[],
+): CompiledJoinPattern[] {
+  const numericVariables = new Set(aggregates
+    .filter((aggregate) => aggregate.type !== 'count')
+    .map((aggregate) => aggregate.variable)
+    .filter((variableName): variableName is string => Boolean(variableName)));
+  if (numericVariables.size === 0) {
+    return patterns;
+  }
+
+  return patterns.map((entry) => {
+    let changed = false;
+    const pattern: CompiledPattern = {
+      ...entry.pattern,
+      pushedDownFilters: entry.pattern.pushedDownFilters,
+      pushedDownFilterIndexes: [...entry.pattern.pushedDownFilterIndexes],
+    };
+
+    for (const key of TERM_KEYS) {
+      const variableName = entry.variables[key];
+      if (!variableName || !numericVariables.has(variableName)) {
+        continue;
+      }
+      const value = pattern[key];
+      if (!value || isTerm(value as any) || typeof value !== 'object') {
+        continue;
+      }
+      if ((value as { $termType?: unknown }).$termType !== 'numeric') {
+        continue;
+      }
+
+      const stripped = { ...(value as Record<string, unknown>) };
+      delete stripped.$termType;
+      if (Object.keys(stripped).length === 0) {
+        delete pattern[key];
+      } else {
+        pattern[key] = stripped as TermMatch;
+      }
+      changed = true;
+    }
+
+    return changed ? { pattern, variables: entry.variables } : entry;
+  });
 }
 
 function isRdf3xCompatiblePattern(pattern: QuintPattern): boolean {

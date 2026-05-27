@@ -47,6 +47,8 @@ export interface RdfQuadIndexOptions {
   debug?: boolean;
 }
 
+export type RdfDerivedIndexProfile = 'baseline' | 'rdf3x';
+
 export interface RdfShadowAutoBackfillOptions {
   enabled?: boolean;
   clear?: boolean;
@@ -92,6 +94,20 @@ export interface RdfIndexStats {
   serializedTermTextBytes: number;
   literalDatatypeDistribution: RdfLiteralDatatypeDistribution[];
   cardinalityDistributions: RdfCardinalityDistributions;
+}
+
+export interface RdfEngineStorageStats {
+  derivedIndexProfile: RdfDerivedIndexProfile;
+  facts: RdfIndexStats;
+  rdf3x?: {
+    stats: Rdf3xIndexStats;
+    syncedWithFacts: boolean;
+  };
+  factsBytes: number;
+  derivedBytes: number;
+  totalBytes: number;
+  derivedToFactsRatio: number;
+  totalToFactsRatio: number;
 }
 
 export interface RdfIndexSpaceObject {
@@ -182,11 +198,13 @@ export interface Rdf3xNumericObjectRangePattern {
   $lte?: Term | string | number;
 }
 
+export type Rdf3xObjectRangePattern = Rdf3xNumericObjectRangePattern;
+
 export interface Rdf3xTriplePattern {
   graph?: Term | Rdf3xGraphPrefixPattern;
   subject?: Term;
   predicate?: Term;
-  object?: Term | Rdf3xNumericObjectRangePattern;
+  object?: Term | Rdf3xObjectRangePattern;
 }
 
 export interface Rdf3xTripleScanOptions {
@@ -217,6 +235,7 @@ export interface Rdf3xJoinOptions {
   project?: string[];
   distinct?: boolean;
   countMatchedRows?: boolean;
+  values?: RdfValuesBindingSource[];
 }
 
 export interface Rdf3xJoinMetrics {
@@ -238,6 +257,7 @@ export interface Rdf3xRebuildResult {
   uniqueTriples: number;
   memberships: number;
   projectionRows: number;
+  factsDataVersion: number;
   durationMs: number;
 }
 
@@ -252,6 +272,7 @@ export interface Rdf3xIndexStats {
   uniqueTriples: number;
   membershipCount: number;
   graphCount: number;
+  factsDataVersion: number;
   permutationRows: Record<Rdf3xPermutationName, number>;
   pairProjectionRows: Record<Rdf3xPairProjectionName, number>;
   termProjectionRows: Record<Rdf3xTermProjectionName, number>;

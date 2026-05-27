@@ -8,6 +8,8 @@ import type {
   Rdf3xShadowScanResult,
   Rdf3xTripleIndexOptions,
   Rdf3xTriplePattern,
+  RdfDerivedIndexProfile,
+  RdfEngineStorageStats,
   RdfIndexPutOptions,
   RdfPatternQuery,
   RdfQuadJoinOptions,
@@ -37,6 +39,7 @@ import type { RdfLocalQuery, RdfLocalQueryResult } from './types';
 
 export interface SolidRdfEngineOptions {
   index: RdfQuadIndex | RdfQuadIndexOptions;
+  derivedIndexProfile?: RdfDerivedIndexProfile;
   textIndex?: RdfTextIndex | RdfTextIndexOptions;
   vectorIndex?: RdfVectorIndex | RdfVectorIndexOptions;
   rdf3xIndex?: Rdf3xTripleIndex | Rdf3xTripleIndexOptions;
@@ -50,6 +53,7 @@ export class SolidRdfEngine {
   public readonly textIndex?: RdfTextIndex;
   public readonly vectorIndex?: RdfVectorIndex;
   public readonly rdf3xIndex?: Rdf3xTripleIndex;
+  public readonly derivedIndexProfile: RdfDerivedIndexProfile;
   private readonly ownsIndex: boolean;
   private readonly ownsTextIndex: boolean;
   private readonly ownsVectorIndex: boolean;
@@ -59,8 +63,11 @@ export class SolidRdfEngine {
   private shadowComparator?: RdfShadowComparator;
   private readonly queryEngine: RdfLocalQueryEngine;
   private rdf3xDirty = true;
+  private rdf3xDataVersion: number | undefined;
 
   public constructor(options: SolidRdfEngineOptions) {
+    const indexOptions = isRdfQuadIndexOptions(options.index) ? options.index : undefined;
+    this.derivedIndexProfile = resolveDerivedIndexProfile(options, indexOptions);
     if (options.index instanceof RdfQuadIndex) {
       this.index = options.index;
       this.ownsIndex = false;
@@ -86,19 +93,33 @@ export class SolidRdfEngine {
     } else {
       this.ownsVectorIndex = false;
     }
+    let autoConfiguredRdf3xPrimary = false;
     if (options.rdf3xIndex instanceof Rdf3xTripleIndex) {
       this.rdf3xIndex = options.rdf3xIndex;
       this.ownsRdf3xIndex = false;
     } else if (isRdf3xTripleIndexOptions(options.rdf3xIndex)) {
       this.rdf3xIndex = new Rdf3xTripleIndex(options.rdf3xIndex);
       this.ownsRdf3xIndex = true;
+    } else if (shouldAutoConfigureRdf3xIndex(this.derivedIndexProfile, options, indexOptions)) {
+      this.rdf3xIndex = new Rdf3xTripleIndex({
+        path: indexOptions.path,
+        debug: indexOptions.debug,
+      });
+      this.ownsRdf3xIndex = true;
+      autoConfiguredRdf3xPrimary = true;
     } else {
       this.ownsRdf3xIndex = false;
     }
-    if (options.rdf3xPrimary && !this.rdf3xIndex) {
-      throw new Error('SolidRdfEngine rdf3xPrimary requires an rdf3xIndex');
+    if (this.derivedIndexProfile === 'baseline' && this.rdf3xIndex) {
+      throw new Error('SolidRdfEngine derivedIndexProfile=baseline cannot materialize an rdf3xIndex');
     }
-    this.rdf3xPrimary = Boolean(options.rdf3xPrimary);
+    if (this.derivedIndexProfile === 'rdf3x' && !this.rdf3xIndex) {
+      throw new Error('SolidRdfEngine derivedIndexProfile=rdf3x requires an rdf3xIndex or a file-backed index option');
+    }
+    if (options.rdf3xPrimary && !this.rdf3xIndex) {
+      throw new Error('SolidRdfEngine rdf3xPrimary requires an rdf3xIndex or a file-backed index option');
+    }
+    this.rdf3xPrimary = options.rdf3xPrimary ?? autoConfiguredRdf3xPrimary;
     this.compatibilityStore = options.compatibilityStore;
     this.queryEngine = new RdfLocalQueryEngine(
       this.index,
@@ -260,6 +281,29 @@ export class SolidRdfEngine {
     }
   }
 
+  public storageStats(): RdfEngineStorageStats {
+    const facts = this.index.stats();
+    const rdf3x = this.rdf3xIndex
+      ? {
+          stats: this.rdf3xIndex.stats(),
+          syncedWithFacts: this.rdf3xIndex.isSyncedWithCurrentQuads(),
+        }
+      : undefined;
+    const factsBytes = facts.databaseBytes;
+    const derivedBytes = rdf3x?.stats.databaseBytes ?? 0;
+    const totalBytes = factsBytes + derivedBytes;
+    return {
+      derivedIndexProfile: this.derivedIndexProfile,
+      facts,
+      ...(rdf3x ? { rdf3x } : {}),
+      factsBytes,
+      derivedBytes,
+      totalBytes,
+      derivedToFactsRatio: byteRatio(derivedBytes, factsBytes),
+      totalToFactsRatio: byteRatio(totalBytes, factsBytes),
+    };
+  }
+
   private requireTextIndex(): RdfTextIndex {
     if (!this.textIndex) {
       throw new Error('SolidRdfEngine text index is not configured');
@@ -288,11 +332,22 @@ export class SolidRdfEngine {
   }
 
   private refreshRdf3xPrimary(): void {
-    if (!this.rdf3xPrimary || !this.rdf3xDirty) {
+    if (!this.rdf3xPrimary) {
       return;
     }
-    this.requireRdf3xIndex().rebuildFromCurrentQuads();
+    const dataVersion = this.index.dataVersion();
+    const rdf3xIndex = this.requireRdf3xIndex();
+    if (!this.rdf3xDirty && this.rdf3xDataVersion === dataVersion) {
+      return;
+    }
+    if (rdf3xIndex.factsDataVersion() === dataVersion) {
+      this.rdf3xDirty = false;
+      this.rdf3xDataVersion = dataVersion;
+      return;
+    }
+    const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
     this.rdf3xDirty = false;
+    this.rdf3xDataVersion = rebuild.factsDataVersion;
   }
 }
 
@@ -306,6 +361,44 @@ function isRdfVectorIndexOptions(input: RdfVectorIndex | RdfVectorIndexOptions |
 
 function isRdf3xTripleIndexOptions(input: Rdf3xTripleIndex | Rdf3xTripleIndexOptions | undefined): input is Rdf3xTripleIndexOptions {
   return input !== undefined && !(input instanceof Rdf3xTripleIndex) && typeof input.path === 'string';
+}
+
+function isRdfQuadIndexOptions(input: RdfQuadIndex | RdfQuadIndexOptions): input is RdfQuadIndexOptions {
+  return !(input instanceof RdfQuadIndex) && typeof input.path === 'string';
+}
+
+function resolveDerivedIndexProfile(
+  options: SolidRdfEngineOptions,
+  indexOptions: RdfQuadIndexOptions | undefined,
+): RdfDerivedIndexProfile {
+  if (options.derivedIndexProfile) {
+    return options.derivedIndexProfile;
+  }
+  if (options.rdf3xIndex !== undefined || options.rdf3xPrimary === true) {
+    return 'rdf3x';
+  }
+  if (options.rdf3xPrimary === false) {
+    return 'baseline';
+  }
+  return indexOptions !== undefined && indexOptions.path !== ':memory:' ? 'rdf3x' : 'baseline';
+}
+
+function shouldAutoConfigureRdf3xIndex(
+  profile: RdfDerivedIndexProfile,
+  options: SolidRdfEngineOptions,
+  indexOptions: RdfQuadIndexOptions | undefined,
+): indexOptions is RdfQuadIndexOptions {
+  return profile === 'rdf3x'
+    && options.rdf3xIndex === undefined
+    && indexOptions !== undefined
+    && indexOptions.path !== ':memory:';
+}
+
+function byteRatio(numerator: number, denominator: number): number {
+  if (denominator <= 0) {
+    return numerator <= 0 ? 1 : Number.POSITIVE_INFINITY;
+  }
+  return numerator / denominator;
 }
 
 function canonicalQuadKeys(quads: Quad[]): string[] {

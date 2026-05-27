@@ -18,6 +18,7 @@ import {
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
   type RdfBenchmarkScale,
+  type RdfEngineStorageStats,
 } from '../src/storage/rdf';
 
 const { namedNode, literal, quad } = DataFactory;
@@ -145,6 +146,7 @@ async function main(): Promise<void> {
         .map((testCase) => testCase.name),
       failedRdf3xCases: rdf3xShadow.failedCases,
       failedRdf3xJoinCases: rdf3xShadow.failedJoinCases,
+      storage: rdf3xShadow.storage,
     });
 
     if (
@@ -425,6 +427,7 @@ function printSummary(summary: {
   failedCases: string[];
   failedRdf3xCases: string[];
   failedRdf3xJoinCases: string[];
+  storage: RdfEngineStorageStats;
 }): void {
   console.log('RDF models benchmark complete');
   console.log(`  scale: ${summary.options.scale}`);
@@ -452,6 +455,10 @@ function printSummary(summary: {
   console.log(`  shadow plan matched: ${summary.shadowPlanMatched}`);
   console.log(`  shadow performance matched: ${summary.shadowPerformanceMatched}`);
   console.log(`  shadow space matched: ${summary.shadowSpaceMatched}${summary.shadowSpaceGateEnforced ? '' : ' (not enforced for this scale)'}`);
+  console.log(`  storage profile: ${summary.storage.derivedIndexProfile}`);
+  console.log(`  storage facts bytes: ${summary.storage.factsBytes}`);
+  console.log(`  storage derived bytes: ${summary.storage.derivedBytes}`);
+  console.log(`  storage total/facts ratio: ${formatRatio(summary.storage.totalToFactsRatio)}`);
   console.log(`  baseline report: ${summary.paths.baselineReport}`);
   console.log(`  shadow report: ${summary.paths.shadowReport}`);
   console.log(`  rdf3x shadow report: ${summary.paths.rdf3xShadowReport}`);
@@ -473,6 +480,10 @@ function printSummary(summary: {
   if (summary.failedSpaceCases.length > 0) {
     console.error(`  failed space cases: ${summary.failedSpaceCases.join(', ')}`);
   }
+}
+
+function formatRatio(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(2) : 'Infinity';
 }
 
 function printHelp(): void {
