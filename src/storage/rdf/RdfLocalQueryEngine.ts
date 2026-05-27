@@ -3,6 +3,7 @@ import type { Term } from '@rdfjs/types';
 import type { QueryOptions, QuintPattern, TermMatch } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfQuadIndex } from './RdfQuadIndex';
+import { Rdf3xTripleIndex } from './Rdf3xTripleIndex';
 import type { RdfTextIndex } from './RdfTextIndex';
 import type { RdfVectorIndex } from './RdfVectorIndex';
 import { isFiniteNumericLexical, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
@@ -121,6 +122,7 @@ export class RdfLocalQueryEngine {
     private readonly index: RdfQuadIndex,
     private readonly textIndex?: RdfTextIndex,
     private readonly vectorIndex?: RdfVectorIndex,
+    private readonly rdf3xPrimaryIndex?: Rdf3xTripleIndex,
   ) {}
 
   public query(query: RdfLocalQuery): RdfLocalQueryResult {
@@ -282,31 +284,35 @@ export class RdfLocalQueryEngine {
       remainingSources.splice(0, remainingSources.length);
       groupedAggregatePushed = true;
     } else if (requiredBgpPushdown) {
-      const scan = this.index.joinPatterns(requiredBgpPushdown.patterns, {
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(requiredBgpPushdown.patterns);
+      const scanOptions = {
         ...(requiredBgpPushdown.project ? { project: requiredBgpPushdown.project } : {}),
         ...(requiredBgpPushdown.distinctPushed ? { distinct: true } : {}),
         ...(requiredBgpPushdown.orderPushed ? { orderBy: query.orderBy } : {}),
         ...(requiredBgpPushdown.paginationPushed && query.limit !== undefined ? { limit: Math.max(0, query.limit) } : {}),
         ...(requiredBgpPushdown.paginationPushed && query.offset !== undefined ? { offset: Math.max(0, query.offset) } : {}),
         ...(requiredBgpPushdown.paginationPushed ? { countMatchedRows: false } : {}),
-      });
+      };
+      const scan = useRdf3xPrimary
+        ? this.rdf3xPrimaryIndex!.joinPatterns(requiredBgpPushdown.patterns, scanOptions)
+        : this.index.joinPatterns(requiredBgpPushdown.patterns, scanOptions);
       bindings = scan.bindings;
       metrics.scannedRows += scan.metrics.matchedRows;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += requiredBgpPushdown.pushedDownFilters;
-      if (requiredBgpPushdown.reorderPlan) {
+      if (!useRdf3xPrimary && requiredBgpPushdown.reorderPlan) {
         metrics.plan.push(requiredBgpPushdown.reorderPlan);
       }
       metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
-      metrics.plan.push(`IndexJoin(${requiredBgpPushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
+      metrics.plan.push(`${useRdf3xPrimary ? 'Rdf3xPrimaryJoin' : 'IndexJoin'}(${requiredBgpPushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
       if (requiredBgpPushdown.orderPushed) {
-        metrics.plan.push(`IndexJoinOrder(${describeQueryOrder(query.orderBy ?? [])})`);
+        metrics.plan.push(`${useRdf3xPrimary ? 'Rdf3xPrimaryJoinOrder' : 'IndexJoinOrder'}(${describeQueryOrder(query.orderBy ?? [])})`);
       }
       if (requiredBgpPushdown.distinctPushed) {
-        metrics.plan.push(`IndexJoinDistinct(${(requiredBgpPushdown.project ?? []).map((variableName) => `?${variableName}`).join(',')})`);
+        metrics.plan.push(`${useRdf3xPrimary ? 'Rdf3xPrimaryJoinDistinct' : 'IndexJoinDistinct'}(${(requiredBgpPushdown.project ?? []).map((variableName) => `?${variableName}`).join(',')})`);
       }
       if (requiredBgpPushdown.paginationPushed) {
-        metrics.plan.push('IndexJoinLimit');
+        metrics.plan.push(useRdf3xPrimary ? 'Rdf3xPrimaryJoinLimit' : 'IndexJoinLimit');
       }
       remainingSources.splice(0, remainingSources.length);
     }
@@ -1283,6 +1289,12 @@ export class RdfLocalQueryEngine {
 
     const compiled = this.compilePattern(pattern, {}, filters);
     return compiled ? { pattern: compiled, variables } : undefined;
+  }
+
+  private canUseRdf3xPrimaryJoin(patterns: CompiledJoinPattern[]): boolean {
+    return Boolean(this.rdf3xPrimaryIndex)
+      && patterns.length > 0
+      && patterns.every((entry) => isRdf3xCompatiblePattern(entry.pattern));
   }
 
   private tupleValuesForBinding(
@@ -3067,6 +3079,9 @@ function describeQueryOrder(orderBy: NonNullable<RdfLocalQuery['orderBy']>): str
 function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
   return (queryPlan ?? []).filter((entry) => (
     entry.startsWith('TextSearch(')
+      || entry.startsWith('Rdf3x')
+      || entry === 'GraphMembershipFilter'
+      || entry === 'GraphPrefixMembershipFilter'
       || entry.startsWith('LexicalRange(')
       || entry.startsWith('NumericRange(')
       || entry.startsWith('PrefixRange(')
@@ -3084,6 +3099,66 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
       || entry.startsWith('JoinGroupAggregateHaving(')
       || entry.startsWith('JoinGroupAggregateNumeric(')
   ));
+}
+
+function isRdf3xCompatiblePattern(pattern: QuintPattern): boolean {
+  return TERM_KEYS.every((key) => {
+    const value = pattern[key];
+    if (!value || isTerm(value as any)) {
+      return true;
+    }
+    if (key === 'graph' && isGraphPrefixPattern(value)) {
+      return true;
+    }
+    if (key === 'object' && isRdf3xNumericRangePattern(value)) {
+      return true;
+    }
+    return false;
+  });
+}
+
+function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } {
+  return value !== null
+    && typeof value === 'object'
+    && Object.keys(value).length === 1
+    && '$startsWith' in value
+    && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
+}
+
+function isRdf3xNumericRangePattern(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || 'termType' in value) {
+    return false;
+  }
+  const operators = ['$gt', '$gte', '$lt', '$lte'] as const;
+  if (Object.keys(value).some((key) => !operators.includes(key as typeof operators[number]))) {
+    return false;
+  }
+  let hasRange = false;
+  for (const operator of operators) {
+    const rangeValue = (value as Record<string, unknown>)[operator];
+    if (rangeValue === undefined) {
+      continue;
+    }
+    hasRange = true;
+    if (rdf3xNumericRangeValue(rangeValue) === undefined) {
+      return false;
+    }
+  }
+  return hasRange;
+}
+
+function rdf3xNumericRangeValue(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  if (isTerm(value as any)) {
+    return isRdfNumericTerm(value as Term) ? rdfNumericValue((value as Term).value) : undefined;
+  }
+  return undefined;
 }
 
 function bindTextSearchResult(

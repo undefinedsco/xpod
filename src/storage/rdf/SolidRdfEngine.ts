@@ -40,6 +40,7 @@ export interface SolidRdfEngineOptions {
   textIndex?: RdfTextIndex | RdfTextIndexOptions;
   vectorIndex?: RdfVectorIndex | RdfVectorIndexOptions;
   rdf3xIndex?: Rdf3xTripleIndex | Rdf3xTripleIndexOptions;
+  rdf3xPrimary?: boolean;
   compatibilityStore?: QuintStore;
   autoOpen?: boolean;
 }
@@ -53,9 +54,11 @@ export class SolidRdfEngine {
   private readonly ownsTextIndex: boolean;
   private readonly ownsVectorIndex: boolean;
   private readonly ownsRdf3xIndex: boolean;
+  private readonly rdf3xPrimary: boolean;
   private readonly compatibilityStore?: QuintStore;
   private shadowComparator?: RdfShadowComparator;
   private readonly queryEngine: RdfLocalQueryEngine;
+  private rdf3xDirty = true;
 
   public constructor(options: SolidRdfEngineOptions) {
     if (options.index instanceof RdfQuadIndex) {
@@ -92,8 +95,17 @@ export class SolidRdfEngine {
     } else {
       this.ownsRdf3xIndex = false;
     }
+    if (options.rdf3xPrimary && !this.rdf3xIndex) {
+      throw new Error('SolidRdfEngine rdf3xPrimary requires an rdf3xIndex');
+    }
+    this.rdf3xPrimary = Boolean(options.rdf3xPrimary);
     this.compatibilityStore = options.compatibilityStore;
-    this.queryEngine = new RdfLocalQueryEngine(this.index, this.textIndex, this.vectorIndex);
+    this.queryEngine = new RdfLocalQueryEngine(
+      this.index,
+      this.textIndex,
+      this.vectorIndex,
+      this.rdf3xPrimary ? this.rdf3xIndex : undefined,
+    );
     if (this.compatibilityStore) {
       this.shadowComparator = new RdfShadowComparator(this.index, this.compatibilityStore);
     }
@@ -129,18 +141,28 @@ export class SolidRdfEngine {
 
   public put(quads: Quad | Quad[], options?: RdfIndexPutOptions): void {
     this.index.multiPut(Array.isArray(quads) ? quads : [quads], options);
+    this.markRdf3xDirty();
   }
 
   public replaceSource(quads: Quad[], source: RdfSourceInput): void {
     this.index.replaceSource(quads, source);
+    this.markRdf3xDirty();
   }
 
   public deleteSource(source: string): number {
-    return this.index.deleteSource(source);
+    const changes = this.index.deleteSource(source);
+    if (changes > 0) {
+      this.markRdf3xDirty();
+    }
+    return changes;
   }
 
   public delete(pattern: QuintPattern): number {
-    return this.index.delete(pattern);
+    const changes = this.index.delete(pattern);
+    if (changes > 0) {
+      this.markRdf3xDirty();
+    }
+    return changes;
   }
 
   public scan(query: RdfPatternQuery): RdfQuadIndexScanResult {
@@ -148,6 +170,7 @@ export class SolidRdfEngine {
   }
 
   public query(query: RdfLocalQuery): RdfLocalQueryResult {
+    this.refreshRdf3xPrimary();
     return this.queryEngine.query(query);
   }
 
@@ -256,6 +279,20 @@ export class SolidRdfEngine {
       throw new Error('SolidRdfEngine RDF-3X shadow index is not configured');
     }
     return this.rdf3xIndex;
+  }
+
+  private markRdf3xDirty(): void {
+    if (this.rdf3xIndex) {
+      this.rdf3xDirty = true;
+    }
+  }
+
+  private refreshRdf3xPrimary(): void {
+    if (!this.rdf3xPrimary || !this.rdf3xDirty) {
+      return;
+    }
+    this.requireRdf3xIndex().rebuildFromCurrentQuads();
+    this.rdf3xDirty = false;
   }
 }
 

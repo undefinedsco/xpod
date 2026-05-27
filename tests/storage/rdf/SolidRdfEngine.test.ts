@@ -269,6 +269,113 @@ describe('SolidRdfEngine', () => {
     expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
   });
 
+  it('can opt supported required BGP local queries into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const type = namedNode(RDF_TYPE);
+    const created = namedNode(DCT_CREATED);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+    primaryEngine.put([
+      quad(msg1, type, messageType, chatGraph),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+      quad(msg2, type, messageType, chatGraph),
+      quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
+      quad(msg2, created, literal('ignored'), taskGraph),
+    ]);
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+      ],
+      select: ['message', 'createdAt'],
+      orderBy: [{ variable: 'createdAt', direction: 'desc' }],
+      limit: 1,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      createdAt: binding.createdAt.value,
+    }))).toEqual([
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+        createdAt: '2026-05-18T00:00:03.000Z',
+      },
+    ]);
+    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.plan).toContain('Rdf3xJoinBGP(2)');
+    expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryJoinLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('keeps unsupported filters on the default term-id primary path when RDF-3X primary is enabled', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const type = namedNode(RDF_TYPE);
+    const content = namedNode(`${UDFS}content`);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+    primaryEngine.put([
+      quad(msg1, type, messageType, graph),
+      quad(msg1, content, literal('hello from RDF-3X'), graph),
+      quad(msg2, type, messageType, graph),
+      quad(msg2, content, literal('other'), graph),
+    ]);
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+        {
+          subject: { variable: 'message' },
+          predicate: content,
+          object: { variable: 'content' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$contains',
+          value: 'RDF-3X',
+        },
+      ],
+      select: ['message', 'content'],
+    });
+
+    expect(result.bindings).toHaveLength(1);
+    expect(result.bindings[0].message.value).toBe(msg1.value);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin'))).toBe(false);
+  });
+
   it('exposes a benchmark case list aligned to the spec', () => {
     expect(rdfModelsBenchmarkCaseNames()).toEqual([
       'list chats',
