@@ -5,17 +5,19 @@ import type { Quad } from '@rdfjs/types';
 import { DataFactory } from 'n3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Rdf3xTripleIndex, RdfQuadIndex } from '../../../src/storage/rdf';
+import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 
 const { namedNode, literal, quad } = DataFactory;
 
 describe('Rdf3xTripleIndex', () => {
   let root: string;
+  let dbPath: string;
   let quadIndex: RdfQuadIndex;
   let rdf3x: Rdf3xTripleIndex;
 
   beforeEach(async () => {
     root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf3x-'));
-    const dbPath = path.join(root, 'rdf.sqlite');
+    dbPath = path.join(root, 'rdf.sqlite');
     quadIndex = new RdfQuadIndex({ path: dbPath });
     rdf3x = new Rdf3xTripleIndex({ path: dbPath });
     quadIndex.open();
@@ -83,6 +85,89 @@ describe('Rdf3xTripleIndex', () => {
     ]);
     expect(rdf3x.factsDataVersion()).not.toBe(quadIndex.dataVersion());
     expect(rdf3x.isSyncedWithCurrentQuads()).toBe(false);
+  });
+
+  it('stores derived RDF-3X tables without rowid primary-key autoindexes', () => {
+    const status = namedNode('https://undefineds.co/ns#status');
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    quadIndex.multiPut([
+      quad(namedNode('https://run/1'), status, literal('open'), graph),
+      quad(namedNode('https://run/2'), status, literal('closed'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      const tables = db.prepare<{ name: string; wr: number }>(`
+        SELECT name, wr
+        FROM pragma_table_list
+        WHERE name LIKE 'rdf3x_%'
+          AND type = 'table'
+      `).all();
+      expect(tables.length).toBeGreaterThan(0);
+      expect(tables.every((table) => table.wr === 1)).toBe(true);
+
+      const indexes = db.prepare<{ name: string; tbl_name: string }>(`
+        SELECT name, tbl_name
+        FROM sqlite_schema
+        WHERE type = 'index'
+          AND (name LIKE 'rdf3x_%' OR tbl_name LIKE 'rdf3x_%')
+        ORDER BY name
+      `).all();
+      expect(indexes.map((index) => index.name)).not.toContain('rdf3x_membership_gspo');
+      expect(indexes.map((index) => index.name)).not.toContain('sqlite_autoindex_rdf3x_spo_1');
+      expect(indexes.map((index) => index.name)).toEqual([
+        'rdf3x_membership_source',
+        'rdf3x_membership_spo',
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('drops legacy rowid RDF-3X derived tables before recreating the compact schema', async () => {
+    rdf3x.close();
+    quadIndex.close();
+
+    const legacyPath = path.join(root, 'legacy-rdf.sqlite');
+    const db = createSqliteRuntime().openDatabase(legacyPath);
+    db.exec(`
+      CREATE TABLE rdf3x_spo (
+        subject_id INTEGER NOT NULL,
+        predicate_id INTEGER NOT NULL,
+        object_id INTEGER NOT NULL,
+        PRIMARY KEY (subject_id, predicate_id, object_id)
+      );
+      CREATE TABLE rdf3x_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      INSERT INTO rdf3x_spo (subject_id, predicate_id, object_id) VALUES (1, 2, 3);
+      INSERT INTO rdf3x_metadata (key, value) VALUES ('facts_data_version', '99');
+    `);
+    db.close();
+
+    const migrated = new Rdf3xTripleIndex({ path: legacyPath });
+    migrated.open();
+    try {
+      expect(migrated.factsDataVersion()).toBe(0);
+      const verifyDb = createSqliteRuntime().openDatabase(legacyPath);
+      try {
+        const tables = verifyDb.prepare<{ name: string; wr: number }>(`
+          SELECT name, wr
+          FROM pragma_table_list
+          WHERE name LIKE 'rdf3x_%'
+            AND type = 'table'
+        `).all();
+        expect(tables.length).toBeGreaterThan(0);
+        expect(tables.every((table) => table.wr === 1)).toBe(true);
+        expect(verifyDb.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf3x_spo').get()?.count).toBe(0);
+      } finally {
+        verifyDb.close();
+      }
+    } finally {
+      migrated.close();
+    }
   });
 
   it('matches baseline scans while keeping graph membership outside the triple core', () => {

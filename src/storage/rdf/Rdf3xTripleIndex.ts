@@ -164,6 +164,20 @@ const TERM_PROJECTIONS: Rdf3xTermProjection[] = [
   { name: 'O', table: 'rdf3x_stat_o', column: 'object_id' },
 ];
 
+const RDF3X_DERIVED_TABLES = [
+  'rdf3x_triple_membership',
+  'rdf3x_metadata',
+  ...PERMUTATIONS.map((permutation) => permutation.table),
+  ...PAIR_PROJECTIONS.map((projection) => projection.table),
+  ...TERM_PROJECTIONS.map((projection) => projection.table),
+];
+
+const RDF3X_DERIVED_INDEXES = [
+  'rdf3x_membership_gspo',
+  'rdf3x_membership_spo',
+  'rdf3x_membership_source',
+];
+
 export class Rdf3xTripleIndex {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
@@ -761,13 +775,15 @@ export class Rdf3xTripleIndex {
   }
 
   private initializeSchema(): void {
+    this.dropLegacyRowidTables();
+
     const permutationTables = PERMUTATIONS.map((permutation) => `
       CREATE TABLE IF NOT EXISTS ${permutation.table} (
         ${permutation.columns[0]} INTEGER NOT NULL,
         ${permutation.columns[1]} INTEGER NOT NULL,
         ${permutation.columns[2]} INTEGER NOT NULL,
         PRIMARY KEY (${permutation.columns.join(', ')})
-      );
+      ) WITHOUT ROWID;
     `).join('\n');
 
     const pairProjectionTables = PAIR_PROJECTIONS.map((projection) => `
@@ -779,7 +795,7 @@ export class Rdf3xTripleIndex {
         min_${projection.remainder} INTEGER,
         max_${projection.remainder} INTEGER,
         PRIMARY KEY (${projection.columns.join(', ')})
-      );
+      ) WITHOUT ROWID;
     `).join('\n');
 
     const termProjectionTables = TERM_PROJECTIONS.map((projection) => `
@@ -787,7 +803,7 @@ export class Rdf3xTripleIndex {
         ${projection.column} INTEGER NOT NULL PRIMARY KEY,
         triple_count INTEGER NOT NULL,
         membership_count INTEGER NOT NULL
-      );
+      ) WITHOUT ROWID;
     `).join('\n');
 
     this.requireDb().exec(`
@@ -799,10 +815,8 @@ export class Rdf3xTripleIndex {
         source_file_id INTEGER,
         source_line_no INTEGER,
         PRIMARY KEY (graph_id, subject_id, predicate_id, object_id)
-      );
+      ) WITHOUT ROWID;
 
-      CREATE INDEX IF NOT EXISTS rdf3x_membership_gspo
-        ON rdf3x_triple_membership(graph_id, subject_id, predicate_id, object_id);
       CREATE INDEX IF NOT EXISTS rdf3x_membership_spo
         ON rdf3x_triple_membership(subject_id, predicate_id, object_id);
       CREATE INDEX IF NOT EXISTS rdf3x_membership_source
@@ -811,12 +825,33 @@ export class Rdf3xTripleIndex {
       CREATE TABLE IF NOT EXISTS rdf3x_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
-      );
+      ) WITHOUT ROWID;
 
       ${permutationTables}
       ${pairProjectionTables}
       ${termProjectionTables}
     `);
+  }
+
+  private dropLegacyRowidTables(): void {
+    const db = this.requireDb();
+    try {
+      const rows = db.prepare<{ name: string; wr: number }>(`
+        SELECT name, wr
+        FROM pragma_table_list
+        WHERE name IN (${RDF3X_DERIVED_TABLES.map(() => '?').join(', ')})
+      `).all(...RDF3X_DERIVED_TABLES);
+      if (!rows.some((row) => row.wr === 0)) {
+        return;
+      }
+    } catch {
+      return;
+    }
+
+    db.exec([
+      ...RDF3X_DERIVED_INDEXES.map((index) => `DROP INDEX IF EXISTS ${index};`),
+      ...RDF3X_DERIVED_TABLES.map((table) => `DROP TABLE IF EXISTS ${table};`),
+    ].join('\n'));
   }
 
   private clearRdf3xTables(): void {
