@@ -504,7 +504,9 @@ describe('Rdf3xTripleIndex', () => {
     expect(result.metrics.indexChoice).toBe('Rdf3xJoinBGP(source-membership>source-membership)');
     expect(result.metrics.queryPlan?.filter((entry) => entry === 'Rdf3xMembershipScan')).toHaveLength(2);
     expect(result.metrics.queryPlan).toContain('GraphPrefixMembershipFilter');
-    expect(result.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_triple_membership m0');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g m0_graph');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms m0_graph_prefix');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership m0');
     expect(result.metrics.queryPlan?.join('\n')).not.toContain('JOIN rdf3x_triple_membership m0\n          ON m0.subject_id');
   });
 

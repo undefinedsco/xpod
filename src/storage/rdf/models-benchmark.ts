@@ -669,6 +669,7 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     query: {
       patterns: [
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(SIOC_HAS_MEMBER),
           object: namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
@@ -811,6 +812,7 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     query: {
       patterns: [
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(SIOC_HAS_MEMBER),
           object: { variable: 'thread' },
@@ -848,11 +850,13 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     query: {
       patterns: [
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(SIOC_HAS_MEMBER),
           object: { variable: 'thread' },
         },
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(`${UDFS}score`),
           object: { variable: 'score' },
@@ -909,11 +913,13 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     query: {
       patterns: [
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(RDF_TYPE),
           object: namedNode(`${MEETING}Message`),
         },
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(SIOC_HAS_MEMBER),
           object: { variable: 'thread' },

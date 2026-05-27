@@ -166,9 +166,12 @@ const TERM_PROJECTIONS: Rdf3xTermProjection[] = [
   { name: 'O', table: 'rdf3x_stat_o', column: 'object_id' },
 ];
 
+const GRAPH_PROJECTION_TABLE = 'rdf3x_stat_g';
+
 const RDF3X_DERIVED_TABLES = [
   'rdf3x_triple_membership',
   'rdf3x_metadata',
+  GRAPH_PROJECTION_TABLE,
   ...PERMUTATIONS.map((permutation) => permutation.table),
   ...PAIR_PROJECTIONS.map((projection) => projection.table),
   ...TERM_PROJECTIONS.map((projection) => projection.table),
@@ -258,6 +261,7 @@ export class Rdf3xTripleIndex {
       for (const projection of TERM_PROJECTIONS) {
         this.rebuildTermProjection(projection);
       }
+      this.rebuildGraphProjection();
 
       this.setFactsDataVersion(factsDataVersion);
     })();
@@ -709,9 +713,7 @@ export class Rdf3xTripleIndex {
     return {
       uniqueTriples: this.rowCount('rdf3x_spo'),
       membershipCount: this.rowCount('rdf3x_triple_membership'),
-      graphCount: this.requireDb()
-        .prepare<{ count: number }>('SELECT COUNT(DISTINCT graph_id) AS count FROM rdf3x_triple_membership')
-        .get()?.count ?? 0,
+      graphCount: this.rowCount(GRAPH_PROJECTION_TABLE),
       factsDataVersion: this.factsDataVersion(),
       permutationRows: Object.fromEntries(PERMUTATIONS.map((permutation) => [
         permutation.name,
@@ -823,6 +825,11 @@ export class Rdf3xTripleIndex {
       CREATE INDEX IF NOT EXISTS rdf3x_membership_source
         ON rdf3x_triple_membership(source_file_id);
 
+      CREATE TABLE IF NOT EXISTS ${GRAPH_PROJECTION_TABLE} (
+        graph_id INTEGER NOT NULL PRIMARY KEY,
+        membership_count INTEGER NOT NULL
+      ) WITHOUT ROWID;
+
       CREATE TABLE IF NOT EXISTS rdf3x_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -860,6 +867,7 @@ export class Rdf3xTripleIndex {
     db.exec([
       ...PAIR_PROJECTIONS.map((projection) => `DELETE FROM ${projection.table};`),
       ...TERM_PROJECTIONS.map((projection) => `DELETE FROM ${projection.table};`),
+      `DELETE FROM ${GRAPH_PROJECTION_TABLE};`,
       'DELETE FROM rdf3x_triple_membership;',
       ...PERMUTATIONS.map((permutation) => `DELETE FROM ${permutation.table};`),
     ].join('\n'));
@@ -952,6 +960,20 @@ export class Rdf3xTripleIndex {
         GROUP BY ${projection.column}
       ) member
         ON member.${projection.column} = triple.${projection.column}
+    `).run();
+  }
+
+  private rebuildGraphProjection(): void {
+    this.requireDb().prepare(`
+      INSERT INTO ${GRAPH_PROJECTION_TABLE} (
+        graph_id,
+        membership_count
+      )
+      SELECT
+        graph_id,
+        COUNT(*) AS membership_count
+      FROM rdf3x_triple_membership
+      GROUP BY graph_id
     `).run();
   }
 
@@ -1263,7 +1285,9 @@ export class Rdf3xTripleIndex {
     const params: unknown[] = [];
     const queryPlan: string[] = ['Rdf3xMembershipScan'];
     const alias = source.membershipAlias;
+    const graphAlias = `${alias}_graph`;
     const graphPrefixAlias = `${alias}_graph_prefix`;
+    const useGraphPrefixSource = first && source.resolved.graphPrefix !== undefined && source.resolved.ids.graph === undefined;
 
     for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
       const id = source.resolved.ids[key];
@@ -1274,10 +1298,19 @@ export class Rdf3xTripleIndex {
       params.push(id);
     }
 
-    let from = first
-      ? `rdf3x_triple_membership ${alias}`
-      : ` JOIN rdf3x_triple_membership ${alias}
-          ON ${mergeJoin.conditions.length > 0 ? mergeJoin.conditions.join(' AND ') : '1 = 1'}`;
+    let from = '';
+    if (useGraphPrefixSource) {
+      from = `${GRAPH_PROJECTION_TABLE} ${graphAlias}
+          JOIN rdf_terms ${graphPrefixAlias}
+            ON ${graphPrefixAlias}.id = ${graphAlias}.graph_id
+          JOIN rdf3x_triple_membership ${alias}
+            ON ${alias}.graph_id = ${graphAlias}.graph_id`;
+    } else {
+      from = first
+        ? `rdf3x_triple_membership ${alias}`
+        : ` JOIN rdf3x_triple_membership ${alias}
+            ON ${mergeJoin.conditions.length > 0 ? mergeJoin.conditions.join(' AND ') : '1 = 1'}`;
+    }
     if (!first && mergeJoin.variables.length > 0) {
       queryPlan.push(`Rdf3xMergeJoin(${mergeJoin.variables.map((variableName) => `?${variableName}`).join(',')})`);
     }
@@ -1286,8 +1319,10 @@ export class Rdf3xTripleIndex {
       queryPlan.push('GraphMembershipFilter');
     }
     if (source.resolved.graphPrefix !== undefined) {
-      from += ` JOIN rdf_terms ${graphPrefixAlias}
-          ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
+      if (!useGraphPrefixSource) {
+        from += ` JOIN rdf_terms ${graphPrefixAlias}
+            ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
+      }
       conditions.push(`${graphPrefixAlias}.kind = ?
         AND ${graphPrefixAlias}.value >= ?
         AND ${graphPrefixAlias}.value < ?`);
@@ -1992,19 +2027,17 @@ export class Rdf3xTripleIndex {
   }
 
   private estimateResolvedMembershipCardinality(resolved: Rdf3xResolvedPattern): Rdf3xCardinalityEstimate {
-    const { joins, whereClause, params } = this.buildMembershipWhere(resolved);
+    const { from, whereClause, params } = this.buildMembershipWhere(resolved);
     const matchingQuads = this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count
-      FROM rdf3x_triple_membership
-      ${joins}
+      FROM ${from}
       ${whereClause}
     `).get(...params)?.count ?? 0;
     const uniqueTriples = this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count
       FROM (
         SELECT DISTINCT subject_id, predicate_id, object_id
-        FROM rdf3x_triple_membership
-        ${joins}
+        FROM ${from}
         ${whereClause}
       ) distinct_triples
     `).get(...params)?.count ?? 0;
@@ -2016,10 +2049,11 @@ export class Rdf3xTripleIndex {
     };
   }
 
-  private buildMembershipWhere(resolved: Rdf3xResolvedPattern): { joins: string; whereClause: string; params: unknown[] } {
+  private buildMembershipWhere(resolved: Rdf3xResolvedPattern): { from: string; whereClause: string; params: unknown[] } {
     const ids = resolved.ids;
     const conditions: string[] = [];
     const params: unknown[] = [];
+    const useGraphPrefixSource = resolved.graphPrefix !== undefined && ids.graph === undefined;
     for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
       const id = ids[key];
       if (id === undefined) {
@@ -2028,10 +2062,17 @@ export class Rdf3xTripleIndex {
       conditions.push(`${PATTERN_COLUMNS[key]} = ?`);
       params.push(id);
     }
-    const joins = resolved.graphPrefix !== undefined
-      ? ` JOIN rdf_terms membership_graph_prefix
-          ON membership_graph_prefix.id = rdf3x_triple_membership.graph_id`
-      : '';
+    let from = 'rdf3x_triple_membership';
+    if (useGraphPrefixSource) {
+      from = `${GRAPH_PROJECTION_TABLE} membership_graph
+        JOIN rdf_terms membership_graph_prefix
+          ON membership_graph_prefix.id = membership_graph.graph_id
+        JOIN rdf3x_triple_membership
+          ON rdf3x_triple_membership.graph_id = membership_graph.graph_id`;
+    } else if (resolved.graphPrefix !== undefined) {
+      from += ` JOIN rdf_terms membership_graph_prefix
+        ON membership_graph_prefix.id = rdf3x_triple_membership.graph_id`;
+    }
     if (resolved.graphPrefix !== undefined) {
       conditions.push(`membership_graph_prefix.kind = ?
         AND membership_graph_prefix.value >= ?
@@ -2040,7 +2081,7 @@ export class Rdf3xTripleIndex {
     }
     return {
       whereClause: conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '',
-      joins,
+      from,
       params,
     };
   }
@@ -2104,7 +2145,7 @@ export class Rdf3xTripleIndex {
       return 0;
     }
 
-    const { joins, whereClause, params } = this.buildMembershipWhere({
+    const { from, whereClause, params } = this.buildMembershipWhere({
       ids: resolved.ids,
       ...(resolved.graphPrefix !== undefined ? { graphPrefix: resolved.graphPrefix } : {}),
     });
@@ -2127,8 +2168,7 @@ export class Rdf3xTripleIndex {
       SELECT COUNT(*) AS count
       FROM (
         SELECT DISTINCT ${projection}
-        FROM rdf3x_triple_membership
-        ${joins}
+        FROM ${from}
         ${rangeJoin}
         ${combinedWhereClause}
       ) distinct_bound_tuples
@@ -2140,7 +2180,7 @@ export class Rdf3xTripleIndex {
     if (!range) {
       return this.estimateMembershipCardinality(resolved.ids);
     }
-    const { joins, whereClause, params } = this.buildMembershipWhere({
+    const { from, whereClause, params } = this.buildMembershipWhere({
       ids: resolved.ids,
       ...(resolved.graphPrefix !== undefined ? { graphPrefix: resolved.graphPrefix } : {}),
     });
@@ -2153,8 +2193,7 @@ export class Rdf3xTripleIndex {
       : ` WHERE ${rangeConditions.join(' AND ')}`;
     const matchingQuads = this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count
-      FROM rdf3x_triple_membership
-      ${joins}
+      FROM ${from}
       JOIN rdf_terms object_range ON object_range.id = rdf3x_triple_membership.object_id
       ${membershipWhere}
     `).get(...params, ...rangeParams)?.count ?? 0;
@@ -2162,8 +2201,7 @@ export class Rdf3xTripleIndex {
       SELECT COUNT(*) AS count
       FROM (
         SELECT DISTINCT subject_id, predicate_id, object_id
-        FROM rdf3x_triple_membership
-        ${joins}
+        FROM ${from}
         JOIN rdf_terms object_range ON object_range.id = rdf3x_triple_membership.object_id
         ${membershipWhere}
       ) distinct_triples
