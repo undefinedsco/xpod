@@ -523,6 +523,7 @@ export class ComunicaQuintEngine {
     _context?: QueryContext
   ): Promise<Bindings[]> {
     const bindings: Bindings[] = [];
+    const savedOptimizeParams = this.currentOptimizeParams;
 
     const mockContext = {
       get: <V>() => undefined as V | undefined,
@@ -530,10 +531,22 @@ export class ComunicaQuintEngine {
       has: () => false,
     };
 
-    const stream = this.querySource.queryBindings(coreOperation, mockContext as any, undefined);
-    
-    for await (const binding of stream) {
-      bindings.push(binding);
+    try {
+      if (savedOptimizeParams) {
+        this.currentOptimizeParams = {
+          ...savedOptimizeParams,
+          limit: undefined,
+          offset: undefined,
+        };
+      }
+
+      const stream = this.querySource.queryBindings(coreOperation, mockContext as any, undefined);
+
+      for await (const binding of stream) {
+        bindings.push(binding);
+      }
+    } finally {
+      this.currentOptimizeParams = savedOptimizeParams;
     }
 
     return bindings;
