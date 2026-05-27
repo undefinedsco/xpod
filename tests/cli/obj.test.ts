@@ -6,6 +6,7 @@ import {
   buildDescriptorObjectQuery,
   buildDescriptorPatchSparql,
   buildDescriptorUpsertSparql,
+  extractReservedWhereSelectors,
   redactDescriptorObject,
 } from '../../src/cli/commands/obj';
 
@@ -82,5 +83,22 @@ describe('obj command helpers', () => {
     expect(query).toContain(`?subject a <${credentialDescriptor.class}>`);
     expect(query).toContain('<https://vocab.xpod.dev/credential#status> "active"');
     expect(query).toContain('LIMIT 25');
+  });
+
+  it('keeps reserved selector fields out of descriptor field filters', () => {
+    expect(extractReservedWhereSelectors({
+      subject: 'settings/credentials.ttl#cred',
+      resource: 'settings/credentials.ttl',
+      status: 'active',
+    })).toEqual({
+      subject: 'settings/credentials.ttl#cred',
+      resource: 'settings/credentials.ttl',
+      where: { status: 'active' },
+    });
+  });
+
+  it('rejects non-string reserved selector fields', () => {
+    expect(() => extractReservedWhereSelectors({ subject: 123 }))
+      .toThrow('Reserved selector field "subject" must be a string.');
   });
 });

@@ -340,6 +340,40 @@ function parseWhere(where?: string): Record<string, unknown> {
   return where ? parseJsonObject(where, 'invalid_where') : {};
 }
 
+export function extractReservedWhereSelectors(where: Record<string, unknown>): {
+  where: Record<string, unknown>;
+  subject?: string;
+  resource?: string;
+  path?: string;
+} {
+  const filters = { ...where };
+  const selectors: { subject?: string; resource?: string; path?: string } = {};
+
+  for (const key of [ 'subject', 'resource', 'path' ] as const) {
+    const value = filters[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string') {
+      throw new CliCommandError('invalid_where', `Reserved selector field "${key}" must be a string.`, 2);
+    }
+    selectors[key] = value;
+    delete filters[key];
+  }
+
+  return { where: filters, ...selectors };
+}
+
+function applyReservedSelector(
+  current: string | undefined,
+  reserved: string | undefined,
+  key: 'subject' | 'resource' | 'path',
+): string | undefined {
+  if (!reserved) return current;
+  if (current && current !== reserved) {
+    throw new CliCommandError('selector_conflict', `Conflicting ${key} selectors were provided.`, 2);
+  }
+  return reserved;
+}
+
 function parseRelations(input?: string[]): Record<string, string> {
   const relations: Record<string, string> = {};
   for (const item of input ?? []) {
@@ -406,6 +440,21 @@ async function resolveObjectSelector(context: CliAuthContext, argv: ObjSelectorA
     if (kind === 'path' && !path) path = argv.selector;
   }
 
+  const parsedWhere = parseWhere(argv.where);
+  if (argv.status !== undefined) {
+    parsedWhere.status = argv.status;
+  }
+  const {
+    where,
+    subject: whereSubject,
+    resource: whereResource,
+    path: wherePath,
+  } = extractReservedWhereSelectors(parsedWhere);
+
+  subject = applyReservedSelector(subject, whereSubject, 'subject');
+  resource = applyReservedSelector(resource, whereResource, 'resource');
+  path = applyReservedSelector(path, wherePath, 'path');
+
   const subjectUrl = subject ? resolveResourceTarget(context, subject).resourceUrl : undefined;
   const resourceUrl = resource
     ? resolveResourceTarget(context, documentResourceInput(resource)).resourceUrl
@@ -423,11 +472,6 @@ async function resolveObjectSelector(context: CliAuthContext, argv: ObjSelectorA
 
   if (!descriptor) {
     throw new CliCommandError('schema_required', 'Object selectors require --schema, a schema selector, or an exact subject with an inferable RDF type.', 2);
-  }
-
-  const where = parseWhere(argv.where);
-  if (argv.status !== undefined) {
-    where.status = argv.status;
   }
 
   return {
