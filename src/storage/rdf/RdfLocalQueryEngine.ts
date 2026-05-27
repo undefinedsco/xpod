@@ -3401,7 +3401,7 @@ function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
       result.graph = value;
       continue;
     }
-    if (key === 'object' && isRdf3xNumericRangePattern(value)) {
+    if (key === 'object' && isRdf3xObjectRangePattern(value)) {
       result.object = value;
       continue;
     }
@@ -3466,7 +3466,7 @@ function isRdf3xCompatiblePattern(pattern: QuintPattern): boolean {
     if (key === 'graph' && isGraphPrefixPattern(value)) {
       return true;
     }
-    if (key === 'object' && isRdf3xNumericRangePattern(value)) {
+    if (key === 'object' && isRdf3xObjectRangePattern(value)) {
       return true;
     }
     return false;
@@ -3481,7 +3481,7 @@ function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } 
     && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
 }
 
-function isRdf3xNumericRangePattern(value: unknown): boolean {
+function isRdf3xObjectRangePattern(value: unknown): boolean {
   if (value === null || typeof value !== 'object' || 'termType' in value) {
     return false;
   }
@@ -3496,25 +3496,24 @@ function isRdf3xNumericRangePattern(value: unknown): boolean {
       continue;
     }
     hasRange = true;
-    if (rdf3xNumericRangeValue(rangeValue) === undefined) {
+    if (!isRdf3xObjectRangeValue(rangeValue)) {
       return false;
     }
   }
   return hasRange;
 }
 
-function rdf3xNumericRangeValue(value: unknown): number | undefined {
+function isRdf3xObjectRangeValue(value: unknown): boolean {
   if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : undefined;
+    return Number.isFinite(value);
   }
   if (typeof value === 'string') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    return true;
   }
   if (isTerm(value as any)) {
-    return isRdfNumericTerm(value as Term) ? rdfNumericValue((value as Term).value) : undefined;
+    return true;
   }
-  return undefined;
+  return false;
 }
 
 function bindTextSearchResult(

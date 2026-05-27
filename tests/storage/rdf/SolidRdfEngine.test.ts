@@ -614,6 +614,78 @@ describe('SolidRdfEngine', () => {
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
   });
 
+  it('can opt lexical range join filters into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl');
+    const type = namedNode(RDF_TYPE);
+    const status = namedNode(`${UDFS}status`);
+    const nextRunAt = namedNode(`${UDFS}nextRunAt`);
+    const scheduleType = namedNode(`${UDFS}Schedule`);
+    const due = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_due');
+    const later = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_later');
+
+    primaryEngine.put([
+      quad(due, type, scheduleType, graph),
+      quad(due, status, literal('active'), graph),
+      quad(due, nextRunAt, literal('2026-05-18T01:00:00.000Z'), graph),
+      quad(later, type, scheduleType, graph),
+      quad(later, status, literal('active'), graph),
+      quad(later, nextRunAt, literal('2026-05-18T02:00:00.000Z'), graph),
+    ]);
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+          subject: { variable: 'schedule' },
+          predicate: type,
+          object: scheduleType,
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+          subject: { variable: 'schedule' },
+          predicate: status,
+          object: literal('active'),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+          subject: { variable: 'schedule' },
+          predicate: nextRunAt,
+          object: { variable: 'nextRunAt' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'nextRunAt',
+          operator: '$lte',
+          value: literal('2026-05-18T01:30:00.000Z'),
+        },
+      ],
+      select: ['schedule', 'nextRunAt'],
+      orderBy: [{ variable: 'nextRunAt', direction: 'asc' }],
+      limit: 100,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      schedule: binding.schedule.value,
+      nextRunAt: binding.nextRunAt.value,
+    }))).toEqual([
+      {
+        schedule: due.value,
+        nextRunAt: '2026-05-18T01:00:00.000Z',
+      },
+    ]);
+    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.plan).toContain('Rdf3xJoinBGP(3)');
+    expect(result.metrics.plan).toContain('LexicalRange(object$lte)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryJoinLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
   it('can opt same-pattern tuple VALUES scans into RDF-3X primary execution', () => {
     const primaryEngine = new SolidRdfEngine({
       index,
@@ -2431,6 +2503,24 @@ describe('SolidRdfEngine', () => {
         namedNode(`${UDFS}Provider`),
         namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
       ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_1'),
+        namedNode(RDF_TYPE),
+        namedNode(`${UDFS}Schedule`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_1'),
+        namedNode(`${UDFS}status`),
+        literal('active'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_1'),
+        namedNode(`${UDFS}nextRunAt`),
+        literal('2026-05-18T01:00:00.000Z'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl'),
+      ),
     ];
     engine.index.multiPut(quads);
 
@@ -2458,9 +2548,7 @@ describe('SolidRdfEngine', () => {
     expect(report.storage.derivedBytes).toBeGreaterThan(0);
     expect(report.storage.totalBytes).toBe(report.storage.factsBytes + report.storage.derivedBytes);
     expect(report.skippedCases).not.toContain('runs by numeric priority');
-    expect(report.skippedJoinCases).toEqual([
-      'task materialization active due local query',
-    ]);
+    expect(report.skippedJoinCases).not.toContain('task materialization active due local query');
     expect(report.failedJoinCases).toEqual([]);
     expect(numericPriority).toMatchObject({
       supported: true,
@@ -2503,9 +2591,20 @@ describe('SolidRdfEngine', () => {
     expect(latestMessageJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinBGP(2)');
     expect(latestMessageJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinLimit');
     expect(taskMaterializationJoin).toMatchObject({
-      supported: false,
-      unsupportedReason: 'unsupported object pattern for RDF-3X shadow',
+      supported: true,
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: {
+          engine: 'solid-rdf3x',
+          returnedRows: 1,
+        },
+      },
     });
+    expect(taskMaterializationJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinBGP(3)');
+    expect(taskMaterializationJoin?.rdf3x?.physicalPlan).toContain('LexicalRange(object$lte)');
     expect(messageCountByThread).toMatchObject({
       supported: true,
       matched: true,

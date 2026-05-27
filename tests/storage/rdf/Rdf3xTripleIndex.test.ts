@@ -156,6 +156,33 @@ describe('Rdf3xTripleIndex', () => {
     });
   });
 
+  it('uses lexical semantics for non-numeric object range scans', () => {
+    const nextRunAt = namedNode('https://undefineds.co/ns#nextRunAt');
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl');
+    quadIndex.multiPut([
+      quad(namedNode('https://schedule/due'), nextRunAt, literal('2026-05-18T01:00:00.000Z'), graph),
+      quad(namedNode('https://schedule/later'), nextRunAt, literal('2026-05-18T02:00:00.000Z'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const baseline = quadIndex.scan({
+      graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+      predicate: nextRunAt,
+      object: { $lte: literal('2026-05-18T01:30:00.000Z') },
+    }, { order: ['subject'] });
+    const scan = rdf3x.scan({
+      graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+      predicate: nextRunAt,
+      object: { $lte: literal('2026-05-18T01:30:00.000Z') },
+    }, { order: ['subject'] });
+
+    expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
+    expect(scan.quads.map((q) => q.subject.value)).toEqual(['https://schedule/due']);
+    expect(scan.metrics.indexChoice).toBe('POS');
+    expect(scan.metrics.queryPlan).toContain('LexicalRange(object$lte)');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_range ON object_range.id = idx.object_id');
+  });
+
   it('uses projection stats for exact triple-pattern cardinality estimates', () => {
     const status = namedNode('https://undefineds.co/ns#status');
     const open = literal('open');

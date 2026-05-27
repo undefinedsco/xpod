@@ -3,7 +3,7 @@ import { termToId } from 'n3';
 import type { QuintPattern, QuintStore } from '../quint/types';
 import { isTerm } from '../quint/types';
 import type {
-  Rdf3xNumericObjectRangePattern,
+  Rdf3xObjectRangePattern,
   Rdf3xShadowJoinResult,
   Rdf3xShadowScanResult,
   Rdf3xTripleIndexOptions,
@@ -441,7 +441,7 @@ function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
         result.graph = { $startsWith: value.$startsWith };
         continue;
       }
-      if (key === 'object' && isNumericObjectRangeOperator(value)) {
+      if (key === 'object' && isObjectRangeOperator(value)) {
         result.object = value;
         continue;
       }
@@ -459,7 +459,7 @@ function isStartsWithOperator(value: unknown): value is { $startsWith: string } 
     && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
 }
 
-function isNumericObjectRangeOperator(value: unknown): value is Rdf3xNumericObjectRangePattern {
+function isObjectRangeOperator(value: unknown): value is Rdf3xObjectRangePattern {
   return value !== null
     && typeof value === 'object'
     && !('termType' in value)

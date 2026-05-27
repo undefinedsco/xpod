@@ -8,7 +8,7 @@ import type {
   Rdf3xJoinMetrics,
   Rdf3xIndexMetrics,
   Rdf3xIndexStats,
-  Rdf3xNumericObjectRangePattern,
+  Rdf3xObjectRangePattern,
   Rdf3xTriplePattern,
   RdfBindingRow,
   RdfEngineStorageStats,
@@ -1871,7 +1871,7 @@ function unsupportedRdf3xPatternReason(pattern: QuintPattern): string | undefine
     if (key === 'graph' && isGraphPrefixPattern(value)) {
       continue;
     }
-    if (key === 'object' && isSupportedRdf3xNumericObjectRangePattern(value)) {
+    if (key === 'object' && isSupportedRdf3xObjectRangePattern(value)) {
       continue;
     }
     return `unsupported ${key} pattern for RDF-3X shadow`;
@@ -1890,7 +1890,7 @@ function rdf3xPatternFor(pattern: QuintPattern): Rdf3xTriplePattern {
       result.graph = { $startsWith: value.$startsWith };
       continue;
     }
-    if (key === 'object' && isSupportedRdf3xNumericObjectRangePattern(value)) {
+    if (key === 'object' && isSupportedRdf3xObjectRangePattern(value)) {
       result.object = value;
       continue;
     }
@@ -1909,22 +1909,32 @@ function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } 
     && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
 }
 
-function isSupportedRdf3xNumericObjectRangePattern(value: unknown): value is Rdf3xNumericObjectRangePattern {
+function isSupportedRdf3xObjectRangePattern(value: unknown): value is Rdf3xObjectRangePattern {
   if (value === null || typeof value !== 'object' || 'termType' in value) {
     return false;
   }
   let hasRange = false;
   for (const operator of ['$gt', '$gte', '$lt', '$lte'] as const) {
-    const rangeValue = (value as Rdf3xNumericObjectRangePattern)[operator];
+    const rangeValue = (value as Rdf3xObjectRangePattern)[operator];
     if (rangeValue === undefined) {
       continue;
     }
     hasRange = true;
-    if (numericRangeValue(rangeValue) === undefined) {
+    if (!isSupportedRdf3xObjectRangeValue(rangeValue)) {
       return false;
     }
   }
   return hasRange;
+}
+
+function isSupportedRdf3xObjectRangeValue(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isFinite(value);
+  }
+  if (typeof value === 'string') {
+    return true;
+  }
+  return isTerm(value as any);
 }
 
 function numericRangeValue(value: Term | string | number | boolean): number | undefined {

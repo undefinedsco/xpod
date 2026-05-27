@@ -191,14 +191,14 @@ export interface Rdf3xGraphPrefixPattern {
   $startsWith: string;
 }
 
-export interface Rdf3xNumericObjectRangePattern {
+export interface Rdf3xObjectRangePattern {
   $gt?: Term | string | number;
   $gte?: Term | string | number;
   $lt?: Term | string | number;
   $lte?: Term | string | number;
 }
 
-export type Rdf3xObjectRangePattern = Rdf3xNumericObjectRangePattern;
+export type Rdf3xNumericObjectRangePattern = Rdf3xObjectRangePattern;
 
 export interface Rdf3xTriplePattern {
   graph?: Term | Rdf3xGraphPrefixPattern;
