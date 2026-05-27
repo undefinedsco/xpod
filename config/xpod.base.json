@@ -28,40 +28,27 @@
         "requestedModes"
       ],
       "source": {
-        "@type": "AuxiliaryReader",
-        "reader": {
-          "@type": "PathBasedReader",
-          "defaultReader": {
-            "@type": "AuthAuxiliaryReader",
-            "reader": {
-              "@type": "OwnerPermissionReader",
-              "reader": {
-                "@type": "ReadDeleteReader",
-                "reader": {
-                  "@type": "PolicyEngineReader",
-                  "engine": {
-                    "@id": "urn:solidlab:policy-engine:PolicyEngine"
-                  }
-                }
-              }
-            }
-          }
-        }
+        "@id": "urn:solid-server:default:AuxiliaryReader"
       }
     },
     {
       "comment": "Override default permission reader so tests can switch auth mode with a parameter.",
-      "@id": "urn:solid-server:default:PermissionReader",
-      "@type": "AuthModeSelector",
-      "authMode": {
-        "@id": "urn:solid-server:default:variable:authMode",
-        "@type": "Variable"
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PermissionReader"
       },
-      "acpReader": {
-        "@id": "urn:undefineds:xpod:AcpPermissionReader"
-      },
-      "aclReader": {
-        "@id": "urn:undefineds:xpod:AcpPermissionReader"
+      "overrideParameters": {
+        "@type": "AuthModeSelector",
+        "authMode": {
+          "@id": "urn:solid-server:default:variable:authMode",
+          "@type": "Variable"
+        },
+        "acpReader": {
+          "@id": "urn:undefineds:xpod:AcpPermissionReader"
+        },
+        "aclReader": {
+          "@id": "urn:undefineds:xpod:AcpPermissionReader"
+        }
       }
     },
     {
@@ -128,6 +115,48 @@
       }
     },
     {
+      "comment": "Validate CSS account cookies against account storage to avoid stale browser sessions after data resets.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IdentityProviderHttpHandler"
+      },
+      "overrideParameters": {
+        "@type": "ValidatingIdentityProviderHttpHandler",
+        "providerFactory": {
+          "@id": "urn:solid-server:default:IdentityProviderFactory"
+        },
+        "cookieStore": {
+          "@id": "urn:solid-server:default:CookieStore"
+        },
+        "handler": {
+          "@id": "urn:solid-server:default:InteractionHandler"
+        },
+        "accountStorage": {
+          "@id": "urn:solid-server:default:AccountStorage"
+        }
+      }
+    },
+    {
+      "comment": "Scope OIDC WebID choices to Pods known by the current storage provider.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PickWebIdHandler"
+      },
+      "overrideParameters": {
+        "@type": "ScopedPickWebIdHandler",
+        "webIdStore": {
+          "@id": "urn:solid-server:default:WebIdStore"
+        },
+        "providerFactory": {
+          "@id": "urn:solid-server:default:IdentityProviderFactory"
+        },
+        "identityDbUrl": {
+          "@id": "urn:solid-server:default:variable:identityDbUrl",
+          "@type": "Variable"
+        }
+      }
+    },
+    {
       "comment": "Override main HTML template to remove CSS default header/footer wrapper.",
       "@type": "Override",
       "overrideInstance": {
@@ -137,6 +166,36 @@
         "@type": "StaticTemplateEngine",
         "templateEngine": { "@id": "urn:solid-server:default:TemplateEngine" },
         "template": "./templates/main.html.ejs"
+      }
+    },
+    {
+      "comment": "Override Pod resources templates to keep CSS-native profile/card while adding the Solid storage binding.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PodResourcesGenerator"
+      },
+      "overrideParameters": {
+        "@type": "StaticFolderGenerator",
+        "templateFolder": "./templates/pod",
+        "resourcesGenerator": {
+          "@id": "urn:solid-server:default:TemplatedResourcesGenerator"
+        }
+      }
+    },
+    {
+      "comment": "Override PodCreator so every local/cloud Pod creation sets the Solid storage binding before CSS renders profile/card.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:PodCreator"
+      },
+      "overrideParameters": {
+        "@type": "ProvisionPodCreator",
+        "baseUrl": { "@id": "urn:solid-server:default:variable:baseUrl" },
+        "identifierGenerator": { "@id": "urn:solid-server:default:IdentifierGenerator" },
+        "relativeWebIdPath": "/profile/card#me",
+        "webIdStore": { "@id": "urn:solid-server:default:WebIdStore" },
+        "podStore": { "@id": "urn:solid-server:default:PodStore" },
+        "identityDbUrl": { "@id": "urn:solid-server:default:variable:identityDbUrl" }
       }
     },
     {

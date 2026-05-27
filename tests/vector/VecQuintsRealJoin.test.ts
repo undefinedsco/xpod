@@ -2,16 +2,19 @@
  * 真实的 Vec + Quints SQL JOIN 测试
  *
  * 测试在同一个 SQLite 数据库中，vec0 虚拟表与 quints 表的真实 SQL JOIN
- * - 使用原生 SQLite 运行时直接操作同一个数据库
+ * - 使用统一 SQLite runtime 直接操作同一个数据库
  * - 验证 sqlite-vec 的 vec0 表可以与普通表 JOIN
  * - 测试子图过滤 + 向量搜索的 SQL 查询
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createSqliteDatabase, type SqliteDatabase } from '../../src/storage/SqliteCompat';
+import { getSqliteRuntime, type SqliteDatabase } from '../../src/storage/SqliteRuntime';
+import { loadSqliteVecExtension } from '../../src/storage/vector/SqliteVecExtension';
+import { cleanupSqliteFiles, getTestDbPath } from '../utils/sqlite';
 
 describe.skip('Real SQL JOIN: vec0 + quints', () => {
   let db: SqliteDatabase;
+  let dbPath: string;
   const testDimension = 768;
   const vecTableName = 'vec_test_join';
 
@@ -26,10 +29,11 @@ describe.skip('Real SQL JOIN: vec0 + quints', () => {
   }
 
   beforeAll(async () => {
-    db = createSqliteDatabase(':memory:');
+    dbPath = getTestDbPath('vec-quints-real-join');
+    db = getSqliteRuntime().openDatabase(dbPath);
 
-    const sqliteVec = require('sqlite-vec') as { getLoadablePath: () => string };
-    db.loadExtension(sqliteVec.getLoadablePath());
+    // 加载 sqlite-vec 扩展
+    loadSqliteVecExtension(db);
 
     // 创建 quints 表
     db.exec(`
@@ -87,6 +91,7 @@ describe.skip('Real SQL JOIN: vec0 + quints', () => {
 
   afterAll(() => {
     db.close();
+    cleanupSqliteFiles(dbPath);
   });
 
   describe('Basic vec0 Search', () => {

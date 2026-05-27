@@ -90,7 +90,7 @@ export function registerSubdomainClientRoutes(
       return;
     }
 
-    const { subdomain, localPort, publicIp } = body as Record<string, unknown>;
+    const { subdomain, localPort, ipv4 } = body as Record<string, unknown>;
 
     if (!subdomain || typeof subdomain !== 'string') {
       sendJson(response, 400, { error: 'Missing "subdomain" field' });
@@ -106,7 +106,7 @@ export function registerSubdomainClientRoutes(
       const result = await client.register({
         subdomain,
         localPort,
-        publicIp: typeof publicIp === 'string' ? publicIp : undefined,
+        ipv4: typeof ipv4 === 'string' ? ipv4 : undefined,
       });
       sendJson(response, 201, result);
     } catch (error) {

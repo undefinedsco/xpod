@@ -146,8 +146,8 @@
           "@id": "urn:solid-server:default:ClientCredentialsStore"
         },
         "source": {
-          "@type": "ClientIdAdapterFactory",
-          "@id": "urn:undefineds:xpod:ClientIdAdapterFactory",
+          "@type": "LoopbackClientIdAdapterFactory",
+          "@id": "urn:undefineds:xpod:LoopbackClientIdAdapterFactory",
           "converter": {
             "@id": "urn:solid-server:default:RepresentationConverter"
           },

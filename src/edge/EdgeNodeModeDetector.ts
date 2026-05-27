@@ -2,7 +2,7 @@ import { getLoggerFor } from 'global-logger-factory';
 
 export interface NodeRegistrationInfo {
   nodeId: string;
-  publicIp?: string;
+  ipv4?: string;
   publicIpv6?: string;
   publicPort?: number;
   capabilities: NodeCapabilities;
@@ -57,14 +57,14 @@ export class EdgeNodeModeDetector {
     const supportsProxy = supportedModes.has('proxy');
 
     // Prefer direct if supported and has public IP (IPv6 or IPv4)
-    const hasPublicIp = Boolean(nodeInfo.publicIp || nodeInfo.publicIpv6);
+    const hasPublicIp = Boolean(nodeInfo.ipv4 || nodeInfo.publicIpv6);
     let connectivityTest: { success: boolean; latencyMs?: number; error?: string } | undefined;
 
     if (supportsDirect && hasPublicIp) {
       // 优先测试 IPv6 连通性
-      const ipToTest = nodeInfo.publicIpv6 ?? nodeInfo.publicIp!;
+      const ipToTest = nodeInfo.publicIpv6 ?? nodeInfo.ipv4!;
       const port = nodeInfo.publicPort ?? 443;
-      
+
       connectivityTest = await this.testDirectConnectivity(ipToTest, port);
 
       if (connectivityTest.success) {
@@ -76,14 +76,14 @@ export class EdgeNodeModeDetector {
           connectivityTest,
         };
       }
-      
+
       // 如果 IPv6 测试失败且有 IPv4，尝试 IPv4
-      if (nodeInfo.publicIpv6 && nodeInfo.publicIp) {
+      if (nodeInfo.publicIpv6 && nodeInfo.ipv4) {
         this.logger.debug(`IPv6 connectivity failed for ${nodeInfo.nodeId}, trying IPv4...`);
-        connectivityTest = await this.testDirectConnectivity(nodeInfo.publicIp, port);
-        
+        connectivityTest = await this.testDirectConnectivity(nodeInfo.ipv4, port);
+
         if (connectivityTest.success) {
-          this.logger.info(`Node ${nodeInfo.nodeId} is directly reachable via IPv4 at ${nodeInfo.publicIp}:${port}`);
+          this.logger.info(`Node ${nodeInfo.nodeId} is directly reachable via IPv4 at ${nodeInfo.ipv4}:${port}`);
           return {
             accessMode: 'direct',
             reason: 'Direct connectivity test passed (IPv4 fallback)',
@@ -204,12 +204,12 @@ export class EdgeNodeModeDetector {
   public async recheckMode(currentMode: string, nodeInfo: NodeRegistrationInfo): Promise<ModeDetectionResult | null> {
     // Only recheck if currently in proxy mode and public IP is available
     const supportedModes = this.extractSupportedModes(nodeInfo.capabilities);
-    if (currentMode !== 'proxy' || !nodeInfo.publicIp || !supportedModes.has('direct')) {
+    if (currentMode !== 'proxy' || !nodeInfo.ipv4 || !supportedModes.has('direct')) {
       return null;
     }
 
     const connectivityTest = await this.testDirectConnectivity(
-      nodeInfo.publicIp,
+      nodeInfo.ipv4,
       nodeInfo.publicPort ?? 443
     );
 

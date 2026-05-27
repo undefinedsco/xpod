@@ -1,22 +1,22 @@
 /**
  * Agent Config Module
  *
- * Per-agent configuration system based on:
- * - AGENT.md: user-editable markdown (system prompt + skills + MCP servers)
- * - .meta: server-side TTL (provider/credential/model references)
+ * Per-agent configuration system based on a Pod-hosted Agent Profile:
+ * - AGENTS.md: user-editable plain Markdown guidance
+ * - .meta: RDF runtime config and refs to shared skill documents
  */
 
 // Types
 export type {
-  AgentFrontmatter,
   AgentMcpServerDef,
+  AgentRuntimeKind,
   AgentMetaRecord,
-  ParsedAgentMd,
+  ResolvedAgentSkill,
   ResolvedAgentConfig,
 } from './types';
 
 // Parser
-export { parseAgentMd } from './parse-agent-md';
+export { parseAgentInstructions, extractMarkdownBody } from './parse-agent-instructions';
 
 // Schema
 export { AgentMetaSchema } from './agent-meta-schema';

@@ -16,12 +16,9 @@ spec:
       labels:
         app: xpod-cloud
     spec:
-      # If you are using a private registry, create an imagePullSecret and reference it here.
-      # imagePullSecrets:
-      #   - name: regcred
       containers:
         - name: xpod
-          image: ghcr.io/undefinedsco/xpod:latest
+          image: ghcr.io/undefinedsco/xpod:replace-me
           imagePullPolicy: IfNotPresent
           args:
             - node
@@ -34,12 +31,24 @@ spec:
             - name: http
               containerPort: 3000
               protocol: TCP
+          env:
+            - name: XPOD_INNGEST_ENABLED
+              value: "true"
+            - name: XPOD_INNGEST_MODE
+              value: managed
+            - name: XPOD_INNGEST_BASE_URL
+              value: http://xpod-inngest:8288
+            - name: XPOD_API_BASE_URL
+              value: http://xpod
           envFrom:
+            - configMapRef:
+                name: xpod-cloud-config
+                optional: true
             - secretRef:
                 name: xpod-cloud-secret
           readinessProbe:
             httpGet:
-              path: /api/ready
+              path: /service/status
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
@@ -47,7 +56,7 @@ spec:
             failureThreshold: 6
           livenessProbe:
             httpGet:
-              path: /_gateway/status
+              path: /service/status
               port: http
             initialDelaySeconds: 30
             periodSeconds: 15
@@ -55,7 +64,7 @@ spec:
             failureThreshold: 5
           startupProbe:
             httpGet:
-              path: /_gateway/status
+              path: /service/status
               port: http
             periodSeconds: 10
             timeoutSeconds: 3
@@ -63,10 +72,10 @@ spec:
           resources:
             requests:
               cpu: 500m
-              memory: 1Gi
+              memory: 512Mi
             limits:
-              cpu: "2"
-              memory: 4Gi
+              cpu: 500m
+              memory: 512Mi
           volumeMounts:
             - name: xpod-logs
               mountPath: /app/logs

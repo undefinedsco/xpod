@@ -1,29 +1,32 @@
 /**
  * Agent Config Resolver
  *
- * Reads /agents/{agentId}/AGENT.md + /agents/{agentId}/.meta from Pod,
- * resolves provider/credential/model URIs, and assembles a ResolvedAgentConfig.
- *
- * Flow:
- * 1. Fetch AGENT.md → parse frontmatter + body
- * 2. Query .meta TTL → get provider/credential/model URIs
- * 3. Resolve URIs → AgentProvider, Credential, Model records
- * 4. Fetch skills (if any) → concatenate prompt content
- * 5. Convert MCP server defs → McpServerConfig map
- * 6. Return ResolvedAgentConfig
+ * Reads a Pod-hosted Agent Profile:
+ * - /agents/{agentId}/AGENTS.md is plain Markdown guidance.
+ * - /agents/{agentId}/.meta#config is RDF runtime config.
+ * - Skill refs point at shared SKILL.md documents in Pod storage.
+ * - MCP servers are structured config entries, not mcp/*.json files.
  */
 
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
-import { parseAgentMd } from './parse-agent-md';
+import { drizzle } from '@undefineds.co/drizzle-solid';
+import type { PodTable } from '@undefineds.co/drizzle-solid';
 import { AgentMetaSchema } from './agent-meta-schema';
-import { AgentProvider } from '../schema/tables';
+import { extractMarkdownBody, parseAgentInstructions } from './parse-agent-instructions';
+import { Provider } from '../../ai/schema/provider';
 import { Credential } from '../../credential/schema/tables';
 import { Model } from '../../ai/schema/model';
-import type { ResolvedAgentConfig, AgentMcpServerDef } from './types';
+import type {
+  AgentMcpServerDef,
+  AgentMetaRecord,
+  AgentRuntimeKind,
+  ResolvedAgentConfig,
+  ResolvedAgentSkill,
+} from './types';
 import type { McpServerConfig } from '../types';
 
 const logger = getLoggerFor('AgentConfigResolver');
+const AGENT_META_RESOURCE_ID = '.meta#config';
 
 interface ResolveContext {
   podBaseUrl: string;
@@ -31,195 +34,307 @@ interface ResolveContext {
   webId?: string;
 }
 
+interface AgentResourceLoaderOptions extends ResolveContext {
+  agentId: string;
+}
+
+interface AgentProfileResources {
+  instructions: string;
+  skills: ResolvedAgentSkill[];
+  skillsContent?: string;
+}
+
+function isRuntimeKind(value: string | undefined): value is AgentRuntimeKind {
+  return value === 'codebuddy' || value === 'claude' || value === 'codex';
+}
+
+function createPodDb(ctx: ResolveContext, agentId: string): any {
+  const agentMeta = createAgentMetaTable(agentId);
+  return drizzle({
+    info: {
+      isLoggedIn: true,
+      webId: ctx.webId,
+    },
+    fetch: ctx.authenticatedFetch,
+  } as any, {
+    schema: {
+      agentConfig: agentMeta,
+      provider: Provider,
+      credential: Credential,
+      model: Model,
+    },
+  });
+}
+
+async function resolveModelId(
+  db: any,
+  modelRef: string | null | undefined,
+): Promise<string | undefined> {
+  if (!modelRef) {
+    return undefined;
+  }
+
+  const modelRecord = await db.findByIri(Model, modelRef);
+  return modelRecord?.id ?? undefined;
+}
+
 /**
  * Resolve a complete agent config from Pod storage.
  *
- * @param agentId - Agent folder name (e.g. 'secretary')
+ * @param agentId - Agent folder name, for example "secretary"
  * @param ctx - Pod access context
- * @returns Fully resolved config, or null if agent not found / disabled
+ * @returns Fully resolved config, or null if agent is missing / disabled / invalid
  */
 export async function resolveAgentConfig(
   agentId: string,
   ctx: ResolveContext,
 ): Promise<ResolvedAgentConfig | null> {
-  const { podBaseUrl, authenticatedFetch, webId } = ctx;
-
-  // 1. Fetch AGENT.md
-  const agentMdUrl = new URL(`/agents/${agentId}/AGENT.md`, podBaseUrl).href;
-  const mdResponse = await authenticatedFetch(agentMdUrl);
-  if (!mdResponse.ok) {
-    logger.warn(`AGENT.md not found for ${agentId}: ${mdResponse.status}`);
-    return null;
-  }
-  const mdContent = await mdResponse.text();
-  const { frontmatter, body: systemPrompt } = parseAgentMd(mdContent);
-
-  // 2. Query .meta
-  const metaTable = AgentMetaSchema.table('AgentMeta', {
-    base: `/agents/${agentId}/.meta`,
-  });
-
-  const session = {
-    info: { isLoggedIn: true, webId },
-    fetch: authenticatedFetch,
-  };
-  const db: any = drizzle(session, {
-    schema: {
-      agentMeta: metaTable,
-      agentProvider: AgentProvider,
-      credential: Credential,
-      model: Model,
-    },
-  });
-
-  const metaRecord = await db.query.agentMeta.findFirst();
-  if (!metaRecord) {
-    logger.warn(`.meta not found for agent ${agentId}`);
-    return null;
-  }
-
-  if (metaRecord.enabled === 'false') {
-    logger.debug(`Agent ${agentId} is disabled`);
-    return null;
-  }
-
-  // 3. Resolve provider
-  const providerUri = metaRecord.provider;
-  if (!providerUri) {
-    logger.error(`Agent ${agentId} has no provider in .meta`);
-    return null;
-  }
-  const providerId = providerUri.split('#').pop();
-  if (!providerId) {
-    logger.error(`Invalid provider URI: ${providerUri}`);
-    return null;
-  }
-
-  const provider = await db.findByLocator(AgentProvider, { id: providerId });
-  if (!provider) {
-    logger.error(`Provider not found: ${providerId}`);
-    return null;
-  }
-
-  // 4. Resolve credential
-  const credentialUri = metaRecord.credential;
-  let apiKey = '';
-  let baseUrl = provider.baseUrl ?? undefined;
-  let proxyUrl: string | undefined;
-
-  if (credentialUri) {
-    const credentialId = credentialUri.split('#').pop();
-    if (credentialId) {
-      const cred = await db.findByLocator(Credential, { id: credentialId });
-      if (cred) {
-        apiKey = (cred as any).apiKey ?? '';
-        baseUrl = (cred as any).baseUrl ?? baseUrl;
-        proxyUrl = (cred as any).proxyUrl ?? undefined;
-      }
-    }
-  }
-
-  // 5. Resolve model
-  let modelName = provider.defaultModel ?? undefined;
-  const modelUri = metaRecord.model;
-  if (modelUri) {
-    const modelId = modelUri.split('#').pop();
-    if (modelId) {
-      const modelRecord = await db.findByLocator(Model, { id: modelId });
-      if (modelRecord) {
-        modelName = modelRecord.id;
-      }
-    }
-  }
-
-  // 6. Resolve skills
-  const skillsContent = await resolveSkills(
-    frontmatter.skills ?? [],
-    podBaseUrl,
+  const db = createPodDb(ctx, agentId);
+  return new AgentConfigResolver(
     agentId,
-    authenticatedFetch,
-  );
-
-  // 7. Convert MCP server defs
-  const mcpServers = convertMcpServers(frontmatter['mcp-servers'] ?? []);
-
-  // 8. Assemble
-  return {
-    id: agentId,
-    displayName: metaRecord.displayName ?? frontmatter.name ?? agentId,
-    description: frontmatter.description,
-    systemPrompt,
-    executorType: provider.executorType as ResolvedAgentConfig['executorType'],
-    apiKey,
-    baseUrl,
-    proxyUrl,
-    model: modelName,
-    maxTurns: frontmatter['max-turns'],
-    allowedTools: Array.isArray(frontmatter['allowed-tools'])
-      ? frontmatter['allowed-tools']
-      : undefined,
-    disallowedTools: Array.isArray(frontmatter['disallowed-tools'])
-      ? frontmatter['disallowed-tools']
-      : undefined,
-    permissionMode: frontmatter['permission-mode'],
-    mcpServers,
-    skillsContent: skillsContent || undefined,
-    enabled: metaRecord.enabled !== 'false',
-  };
+    db,
+    db.schema?.agentConfig ?? createAgentMetaTable(agentId),
+    new PodAgentResourceLoader({ agentId, ...ctx }),
+  ).resolve();
 }
 
-/**
- * Resolve skill URIs to concatenated prompt content.
- *
- * Skills can be:
- * - Absolute: /skills/drizzle-solid → fetch /skills/drizzle-solid/SKILL.md
- * - Relative: ./skills/custom → fetch /agents/{agentId}/skills/custom/SKILL.md
- */
-async function resolveSkills(
-  skillRefs: string[],
-  podBaseUrl: string,
-  agentId: string,
-  authenticatedFetch: typeof fetch,
-): Promise<string> {
-  if (skillRefs.length === 0) return '';
+class AgentConfigResolver {
+  public constructor(
+    private readonly agentId: string,
+    private readonly db: any,
+    private readonly metaTable: PodTable,
+    private readonly resources: PodAgentResourceLoader,
+  ) {}
 
-  const parts: string[] = [];
+  public async resolve(): Promise<ResolvedAgentConfig | null> {
+    const metaRecord = await this.db.findById(this.metaTable, AGENT_META_RESOURCE_ID) as AgentMetaRecord | null;
+    if (!metaRecord) {
+      logger.warn(`Agent config not found for ${this.agentId}: ${AGENT_META_RESOURCE_ID}`);
+      return null;
+    }
 
-  for (const ref of skillRefs) {
-    const skillPath = ref.startsWith('./')
-      ? `/agents/${agentId}/${ref.slice(2)}/SKILL.md`
-      : `${ref}/SKILL.md`;
+    if (metaRecord.enabled === 'false') {
+      return null;
+    }
 
-    const url = new URL(skillPath, podBaseUrl).href;
-    try {
-      const res = await authenticatedFetch(url);
-      if (res.ok) {
-        const content = await res.text();
-        // Parse SKILL.md — extract body (skip frontmatter)
-        const { body } = parseAgentMd(content);
-        if (body) {
-          parts.push(body);
-        }
-      } else {
-        logger.warn(`Skill not found: ${ref} (${res.status})`);
+    const providerResource = metaRecord.provider;
+    if (!providerResource) {
+      logger.error(`Agent ${this.agentId} has no provider in .meta`);
+      return null;
+    }
+
+    const provider = await this.db.findByIri(Provider, providerResource);
+    if (!provider) {
+      logger.error(`Provider not found: ${providerResource}`);
+      return null;
+    }
+
+    const runtimeKind = metaRecord.runtimeKind;
+    if (!isRuntimeKind(runtimeKind)) {
+      logger.error(`Agent ${this.agentId} has invalid runtimeKind: ${runtimeKind ?? '(missing)'}`);
+      return null;
+    }
+
+    const profileResources = await this.resources.load(toStringArray(metaRecord.skills));
+    const credential = await this.resolveCredential(metaRecord.credential);
+    const modelName = await this.resolveModelName(provider, metaRecord.model);
+    const mcpServers = AgentMcpConfig.fromMeta(metaRecord.mcpServers).toRuntimeConfig();
+    const systemPrompt = profileResources.instructions || metaRecord.instructions || '';
+
+    return {
+      id: this.agentId,
+      displayName: metaRecord.name ?? this.agentId,
+      description: metaRecord.description,
+      systemPrompt,
+      executorType: runtimeKind,
+      apiKey: credential.apiKey,
+      baseUrl: credential.baseUrl ?? provider.baseUrl ?? undefined,
+      proxyUrl: credential.proxyUrl,
+      model: modelName,
+      maxTurns: metaRecord.maxTurns,
+      allowedTools: toStringArray(metaRecord.allowedTools),
+      disallowedTools: toStringArray(metaRecord.disallowedTools),
+      permissionMode: metaRecord.permissionMode,
+      mcpServers,
+      skillsContent: profileResources.skillsContent,
+      skills: profileResources.skills,
+      enabled: true,
+    };
+  }
+
+  private async resolveCredential(credentialResource: string | undefined): Promise<{
+    apiKey: string;
+    baseUrl?: string;
+    proxyUrl?: string;
+  }> {
+    if (!credentialResource) {
+      return { apiKey: '' };
+    }
+
+    const credential = await this.db.findByIri(Credential, credentialResource);
+    if (!credential) {
+      logger.warn(`Credential not found: ${credentialResource}`);
+      return { apiKey: '' };
+    }
+
+    return {
+      apiKey: (credential as any).apiKey ?? '',
+      baseUrl: (credential as any).baseUrl ?? undefined,
+      proxyUrl: (credential as any).proxyUrl ?? undefined,
+    };
+  }
+
+  private async resolveModelName(provider: any, modelResource: string | undefined): Promise<string | undefined> {
+    const explicit = await resolveModelId(this.db, modelResource);
+    if (explicit) {
+      return explicit;
+    }
+    return resolveModelId(this.db, provider.defaultModel ?? provider.hasModel);
+  }
+}
+
+function createAgentMetaTable(agentId: string): any {
+  return AgentMetaSchema.table('AgentMeta', {
+    base: `/agents/${agentId}/.meta`,
+    subjectTemplate: '#{id}',
+  });
+}
+
+class PodAgentResourceLoader {
+  private readonly skillRefs: AgentSkillRefResolver;
+
+  public readonly agentId: string;
+  public readonly podBaseUrl: string;
+  public readonly authenticatedFetch: typeof fetch;
+
+  public constructor(options: AgentResourceLoaderOptions) {
+    this.agentId = options.agentId;
+    this.podBaseUrl = options.podBaseUrl;
+    this.authenticatedFetch = options.authenticatedFetch;
+    this.skillRefs = new AgentSkillRefResolver(options.agentId);
+  }
+
+  public async load(skillRefs: string[]): Promise<AgentProfileResources> {
+    const instructions = await this.fetchAgentInstructions();
+    const skills = await this.resolveSkillRefs(skillRefs);
+    const skillsContent = skills
+      .map((skill) => extractMarkdownBody(skill.content))
+      .filter(Boolean)
+      .join('\n\n---\n\n');
+    return { instructions, skills, skillsContent: skillsContent || undefined };
+  }
+
+  private async fetchAgentInstructions(): Promise<string> {
+    const agentsMdUrl = new URL(`/agents/${this.agentId}/AGENTS.md`, this.podBaseUrl).href;
+    const response = await this.authenticatedFetch(agentsMdUrl);
+    if (!response.ok) {
+      logger.warn(`AGENTS.md not found for ${this.agentId}: ${response.status}, fallback to Pod metadata`);
+      return '';
+    }
+
+    return parseAgentInstructions(await response.text());
+  }
+
+  private async resolveSkillRefs(refs: string[]): Promise<ResolvedAgentSkill[]> {
+    const skills: ResolvedAgentSkill[] = [];
+
+    for (const ref of refs) {
+      const skill = await this.resolveSkillRef(ref);
+      if (skill) {
+        skills.push(skill);
       }
-    } catch (err) {
-      logger.warn(`Failed to fetch skill ${ref}:`, err);
+    }
+
+    return skills;
+  }
+
+  private async resolveSkillRef(ref: string): Promise<ResolvedAgentSkill | undefined> {
+    const resolvedPath = this.skillRefs.resolvePath(ref);
+    const url = new URL(resolvedPath, this.podBaseUrl).href;
+
+    try {
+      const response = await this.authenticatedFetch(url);
+      if (!response.ok) {
+        logger.warn(`Agent skill ref not found: ${ref} (${response.status})`);
+        return undefined;
+      }
+
+      const content = (await response.text()).trim();
+      if (!content) {
+        return undefined;
+      }
+
+      return {
+        name: this.skillRefs.resolveName(ref, resolvedPath),
+        content,
+      };
+    } catch (error) {
+      logger.warn(`Failed to fetch agent skill ref ${ref}:`, error);
+      return undefined;
+    }
+  }
+}
+
+class AgentMcpConfig {
+  public static fromMeta(value: AgentMetaRecord['mcpServers']): AgentMcpConfig {
+    return new AgentMcpConfig(this.toMcpServerDefs(value));
+  }
+
+  private static toMcpServerDefs(value: AgentMetaRecord['mcpServers']): AgentMcpServerDef[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const defs: AgentMcpServerDef[] = [];
+    for (const item of value) {
+      const parsed = AgentMcpConfig.parseMcpServerDef(item);
+      if (parsed) {
+        defs.push(parsed);
+      }
+    }
+    return defs;
+  }
+
+  private static parseMcpServerDef(value: unknown): AgentMcpServerDef | undefined {
+    if (AgentMcpConfig.isAgentMcpServerDef(value)) {
+      return value;
+    }
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      return undefined;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed.startsWith('{')) {
+      logger.warn(`Ignoring MCP server file ref '${value}'. Store structured MCP config in .meta instead.`);
+      return undefined;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      return AgentMcpConfig.isAgentMcpServerDef(parsed) ? parsed : undefined;
+    } catch (error) {
+      logger.warn('Invalid MCP server JSON in .meta:', error);
+      return undefined;
     }
   }
 
-  return parts.join('\n\n---\n\n');
-}
+  private static isAgentMcpServerDef(value: unknown): value is AgentMcpServerDef {
+    return Boolean(value && typeof value === 'object' && typeof (value as AgentMcpServerDef).name === 'string');
+  }
 
-/**
- * Convert AGENT.md MCP server definitions to McpServerConfig map.
- */
-function convertMcpServers(
-  defs: AgentMcpServerDef[],
-): Record<string, McpServerConfig> {
-  const result: Record<string, McpServerConfig> = {};
+  private constructor(private readonly defs: AgentMcpServerDef[]) {}
 
-  for (const def of defs) {
+  public toRuntimeConfig(): Record<string, McpServerConfig> {
+    const result: Record<string, McpServerConfig> = {};
+
+    for (const def of this.defs) {
+      result[def.name] = this.toRuntimeServerConfig(def);
+    }
+
+    return result;
+  }
+
+  private toRuntimeServerConfig(def: AgentMcpServerDef): McpServerConfig {
     const config: McpServerConfig = {};
 
     if (def.transport) {
@@ -236,8 +351,69 @@ function convertMcpServers(
     if (def.url) config.url = def.url;
     if (def.headers) config.headers = def.headers;
 
-    result[def.name] = config;
+    return config;
+  }
+}
+
+class AgentSkillRefResolver {
+  public constructor(private readonly agentId: string) {}
+
+  public resolvePath(ref: string): string {
+    const normalized = this.normalizePackageRef(ref);
+    if (normalized.startsWith('/')) {
+      if (this.hasKnownMarkdownExtension(normalized)) {
+        return normalized;
+      }
+      return `${normalized}/SKILL.md`;
+    }
+
+    const relative = normalized.startsWith('.codex/skills/') || normalized.startsWith('skills/')
+      ? normalized
+      : `skills/${normalized}`;
+    if (this.hasKnownMarkdownExtension(relative)) {
+      return `/agents/${this.agentId}/${relative}`;
+    }
+    return `/agents/${this.agentId}/${relative}/SKILL.md`;
   }
 
-  return result;
+  public resolveName(ref: string, resolvedPath: string): string {
+    const raw = this.normalizePackageRef(ref).replace(/\/$/, '');
+    if (raw.endsWith('/SKILL.md')) {
+      return this.sanitizeSkillName(raw.split('/').slice(-2, -1)[0] ?? 'skill');
+    }
+
+    const withoutPrefix = raw
+      .replace(/^\/+/, '')
+      .replace(/^\.codex\/skills\//, '')
+      .replace(/^skills\//, '');
+    if (withoutPrefix && !this.hasKnownMarkdownExtension(withoutPrefix)) {
+      return this.sanitizeSkillName(withoutPrefix.split('/').filter(Boolean).pop() ?? withoutPrefix);
+    }
+
+    const segments = resolvedPath.split('/').filter(Boolean);
+    const skillIndex = segments.lastIndexOf('SKILL.md');
+    return this.sanitizeSkillName(skillIndex > 0 ? segments[skillIndex - 1] : 'skill');
+  }
+
+  private normalizePackageRef(ref: string): string {
+    return ref.replace(/^\.\/+/, '').replace(/^\/+agents\/[^/]+\//, '/');
+  }
+
+  private sanitizeSkillName(name: string): string {
+    return name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'skill';
+  }
+
+  private hasKnownMarkdownExtension(path: string): boolean {
+    return /\.(md|markdown)$/i.test(path);
+  }
+}
+
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    return [value];
+  }
+  return [];
 }

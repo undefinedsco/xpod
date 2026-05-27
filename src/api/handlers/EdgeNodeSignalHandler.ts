@@ -5,7 +5,7 @@ import type { ApiServer } from '../ApiServer';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
 import type { EdgeNodeHealthProbeService } from '../../edge/EdgeNodeHealthProbeService';
-import { isNodeAuth, getNodeId, getWebId } from '../auth/AuthContext';
+import { isNodeAuth, getNodeId } from '../auth/AuthContext';
 
 export interface EdgeNodeSignalHandlerOptions {
   repository: EdgeNodeRepository;
@@ -47,32 +47,8 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
       // nodeToken 认证：nodeId 来自认证结果，无需 owner 检查
       nodeId = getNodeId(auth)!;
     } else {
-      // WebID 认证：从 body 读 nodeId，检查 owner
-      const webId = getWebId(auth);
-      if (!webId) {
-        sendJson(response, 400, { error: 'Cannot determine user' });
-        return;
-      }
-      nodeId = typeof payload.nodeId === 'string' ? payload.nodeId.trim() : '';
-      if (!nodeId) {
-        sendJson(response, 400, { error: 'nodeId is required' });
-        return;
-      }
-      try {
-        const owner = await repo.getNodeOwner(nodeId);
-        if (!owner) {
-          sendJson(response, 404, { error: 'Node not found' });
-          return;
-        }
-        if (owner !== webId) {
-          sendJson(response, 403, { error: 'Access denied' });
-          return;
-        }
-      } catch (error) {
-        logger.error(`Failed to validate node access: ${error}`);
-        sendJson(response, 500, { error: 'Failed to validate node access' });
-        return;
-      }
+      sendJson(response, 501, { error: 'WebID/API-key based node signaling is temporarily unavailable' });
+      return;
     }
 
     const now = new Date();
@@ -82,14 +58,14 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
       const existing = await repo.getNodeMetadata(nodeId);
       let metadata = mergeMetadata(existing?.metadata ?? {}, payload, now);
 
-      // 从 DB connectivity 列注入 subdomain/publicIp，供 dnsCoordinator 使用
+      // 从 DB connectivity 列注入 subdomain/ipv4，供 dnsCoordinator 使用
       const connectivityInfo = await repo.getNodeConnectivityInfo(nodeId);
       if (connectivityInfo) {
         if (connectivityInfo.subdomain && !metadata.subdomain) {
           metadata.subdomain = connectivityInfo.subdomain;
         }
-        if (connectivityInfo.publicIp && !metadata.publicIp) {
-          metadata.publicIp = connectivityInfo.publicIp;
+        if (connectivityInfo.ipv4 && !metadata.ipv4) {
+          metadata.ipv4 = connectivityInfo.ipv4;
         }
         if (connectivityInfo.connectivityStatus && !metadata.connectivityStatus) {
           metadata.connectivityStatus = connectivityInfo.connectivityStatus;
@@ -134,7 +110,10 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
         metadata,
       });
     } catch (error) {
-      logger.error(`Signal handling error for node ${nodeId}: ${error}`);
+      logger.error(`Signal handling error for node ${nodeId}:`, error);
+      if (error instanceof Error) {
+        logger.error(`Stack trace: ${error.stack}`);
+      }
       sendJson(response, 500, { error: 'Failed to process signal' });
     }
   });

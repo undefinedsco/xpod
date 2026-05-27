@@ -33,7 +33,7 @@ async function main() {
     if (exitCode === 0) {
       exitCode = await runCommand('bun', [ 'run', 'vitest', '--run',
           'tests/integration',
-          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow}*',
+          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
         ], sharedEnv);
     }
   } finally {

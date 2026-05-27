@@ -277,7 +277,12 @@ export class QuintQuerySource implements IQuerySource {
       if (compoundResult) {
         return compoundResult;
       }
-      // Fall back to single pattern execution if compound query not applicable
+      // Compound query not applicable (e.g. inverse patterns with different subject vars).
+      // Fall back to per-pattern execution with in-memory hash join.
+      const multiResult = await this.executeMultiPatternJoin(patterns, filter);
+      if (multiResult) {
+        return multiResult;
+      }
     }
 
     const variables = extractVariables(pattern);
@@ -787,6 +792,164 @@ export class QuintQuerySource implements IQuerySource {
 
     // Convert CompoundResult to Bindings
     return this.compoundResultsToBindings(results, patterns);
+  }
+
+  /**
+   * Execute multiple patterns individually and hash-join results on shared variables.
+   * Used when compound query is not applicable (e.g. inverse patterns with different subject vars).
+   */
+  private async executeMultiPatternJoin(
+    patterns: Algebra.Pattern[],
+    filter: Algebra.Expression | null = null
+  ): Promise<Bindings[] | null> {
+    if (!patterns || patterns.length < 2) return null;
+
+    if (this.debug) {
+      console.log(`[QuintQuerySource] executeMultiPatternJoin: ${patterns.length} patterns, hasFilter=${!!filter}`);
+    }
+
+    // If there's a FILTER like ?subject = <uri>, extract the bound value
+    // so we can push it down to individual pattern queries
+    const filterBindings = this.extractFilterBindings(filter);
+
+    // Execute each pattern individually and collect bindings
+    const patternBindings: Bindings[][] = [];
+    for (let i = 0; i < patterns.length; i++) {
+      const p = patterns[i];
+      const vars = extractVariables(p);
+
+      // Try to apply filter bindings to this pattern
+      let quintPattern: QuintPattern;
+      const pushdown: PushdownFilters = {};
+      if (filterBindings) {
+        // Check if any variable in this pattern matches a filter binding
+        for (const [varName, termValue] of Object.entries(filterBindings)) {
+          if (p.subject?.termType === 'Variable' && p.subject.value === varName) {
+            pushdown['subject'] = { $eq: termValue };
+          } else if (p.object?.termType === 'Variable' && p.object.value === varName) {
+            pushdown['object'] = { $eq: termValue };
+          }
+        }
+      }
+
+      if (Object.keys(pushdown).length > 0) {
+        quintPattern = this.patternBuilder.buildQuintPattern(p, pushdown);
+      } else {
+        quintPattern = this.patternBuilder.buildBasePattern(p);
+      }
+
+      const quads = await this.store.get(quintPattern);
+      const bindings = this.quadsToBindings(quads, vars, p);
+      if (this.debug) {
+        console.log(`[QuintQuerySource] Pattern ${i}: ${bindings.length} results, vars=[${vars.map(v => v.value)}]`);
+      }
+      patternBindings.push(bindings);
+    }
+
+    // Iteratively hash-join all pattern results
+    let result = patternBindings[0];
+    for (let i = 1; i < patternBindings.length; i++) {
+      result = this.hashJoinBindings(result, patternBindings[i]);
+      if (this.debug) {
+        console.log(`[QuintQuerySource] After join with pattern ${i}: ${result.length} results`);
+      }
+      if (result.length === 0) break;
+    }
+
+    // Apply remaining in-memory filter if needed
+    if (filter && result.length > 0) {
+      result = await this.expressionEvaluator.evaluateFilterTree(filter, result, patterns[0]);
+    }
+
+    return result;
+  }
+
+  /**
+   * Extract simple equality bindings from a FILTER expression.
+   * E.g. FILTER(?subject = <uri>) -> { subject: "uri" }
+   */
+  private extractFilterBindings(filter: Algebra.Expression | null): Record<string, string> | null {
+    if (!filter) return null;
+
+    const bindings: Record<string, string> = {};
+
+    const extract = (expr: Algebra.Expression): void => {
+      if (!expr) return;
+
+      if (expr.expressionType === 'operator' && (expr as Algebra.OperatorExpression).operator === '=') {
+        const args = (expr as Algebra.OperatorExpression).args || [];
+        if (args.length === 2) {
+          let varName: string | null = null;
+          let value: string | null = null;
+
+          for (const arg of args) {
+            if (arg.expressionType === 'term' && (arg as Algebra.TermExpression).term?.termType === 'Variable') {
+              varName = ((arg as Algebra.TermExpression).term as Variable).value;
+            } else if (arg.expressionType === 'term' && (arg as Algebra.TermExpression).term?.termType === 'NamedNode') {
+              value = ((arg as Algebra.TermExpression).term as Term).value;
+            }
+          }
+
+          if (varName && value) {
+            bindings[varName] = value;
+          }
+        }
+      } else if (expr.expressionType === 'operator' && (expr as Algebra.OperatorExpression).operator === '&&') {
+        for (const arg of ((expr as Algebra.OperatorExpression).args || [])) {
+          extract(arg);
+        }
+      }
+    };
+
+    extract(filter);
+    return Object.keys(bindings).length > 0 ? bindings : null;
+  }
+
+  /**
+   * Hash-join two binding arrays on all shared variables.
+   */
+  private hashJoinBindings(left: Bindings[], right: Bindings[]): Bindings[] {
+    if (left.length === 0 || right.length === 0) return [];
+
+    // Find shared variables
+    const leftVars = new Set<string>();
+    for (const k of left[0].keys()) leftVars.add(k.value);
+    const rightVars = new Set<string>();
+    for (const k of right[0].keys()) rightVars.add(k.value);
+    const sharedVars = [...leftVars].filter(v => rightVars.has(v));
+
+    if (sharedVars.length === 0) {
+      // No shared variables — cartesian product
+      return this.cartesianJoin(left, right);
+    }
+
+    // Build hash index on right side using shared vars as key
+    const rightIndex = new Map<string, Bindings[]>();
+    for (const binding of right) {
+      const key = sharedVars.map(v => {
+        const t = binding.get(dataFactory.variable(v));
+        return t ? t.value : '';
+      }).join('\0');
+      if (!rightIndex.has(key)) rightIndex.set(key, []);
+      rightIndex.get(key)!.push(binding);
+    }
+
+    // Probe with left side
+    const results: Bindings[] = [];
+    for (const leftBinding of left) {
+      const key = sharedVars.map(v => {
+        const t = leftBinding.get(dataFactory.variable(v));
+        return t ? t.value : '';
+      }).join('\0');
+      const matches = rightIndex.get(key);
+      if (matches) {
+        for (const rightBinding of matches) {
+          const merged = this.mergeBindings(leftBinding, rightBinding);
+          if (merged) results.push(merged);
+        }
+      }
+    }
+    return results;
   }
 
   /**

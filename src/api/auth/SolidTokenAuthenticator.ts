@@ -90,6 +90,7 @@ export class SolidTokenAuthenticator implements Authenticator {
         clientId,
         accessToken: rawToken?.trim(),
         tokenType: scheme === 'DPoP' ? 'DPoP' : 'Bearer',
+        dpopProof: dpopHeader?.trim(),
       };
 
       this.logger.debug(`Authenticated Solid token for webId: ${webId}`);

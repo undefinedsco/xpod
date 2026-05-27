@@ -12,14 +12,14 @@ import path from 'path';
 import type { Finalizable, Initializable } from '@solid/community-server';
 import { VectorStore, hashModelId } from './VectorStore';
 import type { VectorRecord, VectorSearchOptions, VectorSearchResult, VectorStoreOptions } from './types';
-import { createSqliteDatabase, type SqliteDatabase } from '../SqliteCompat';
-import { getVecExtensionPath, initBunSQLite } from './VectorStoreInit';
+import { getSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
+import { loadSqliteVecExtension } from './SqliteVecExtension';
 
 export class SqliteVectorStore extends VectorStore implements Initializable, Finalizable {
   /** @ignored */
   private db: SqliteDatabase | null = null;
   private readonly filename: string;
-  private backend: 'sqlite-vec' | 'plain' = 'sqlite-vec';
+  private readonly sqliteRuntime = getSqliteRuntime();
 
   public constructor(options: VectorStoreOptions) {
     super();
@@ -44,7 +44,22 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
 
   public override async open(): Promise<void> {
     if (this.db) return;
-    this.db = this.createDatabase();
+
+    // 确保目录存在
+    if (this.filename !== ':memory:') {
+      const dir = path.dirname(this.filename);
+      if (dir && dir !== '.' && !fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    }
+
+    this.db = this.sqliteRuntime.openDatabase(this.filename);
+    loadSqliteVecExtension(this.db);
+
+    if (this.filename !== ':memory:') {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('busy_timeout = 5000');
+    }
   }
 
   public override async close(): Promise<void> {
@@ -54,37 +69,24 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     }
   }
 
-  private createDatabase(): SqliteDatabase {
-    if (this.filename !== ':memory:') {
-      const dir = path.dirname(this.filename);
-      if (dir && dir !== '.' && !fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-    }
-
-    initBunSQLite();
-    const db = createSqliteDatabase(this.filename);
-    try {
-      const extensionPath = getVecExtensionPath() ?? (() => {
-        const sqliteVec = require('sqlite-vec') as { getLoadablePath: () => string };
-        return sqliteVec.getLoadablePath();
-      })();
-      db.loadExtension(extensionPath);
-      this.backend = 'sqlite-vec';
-    } catch {
-      this.backend = 'plain';
-    }
-
-    if (this.filename !== ':memory:') {
-      db.pragma('journal_mode = WAL');
-      db.pragma('busy_timeout = 5000');
-    }
-    return db;
-  }
-
   private ensureOpen(): SqliteDatabase {
     if (!this.db) {
-      this.db = this.createDatabase();
+      // 懒初始化：如果尚未打开，则自动打开
+      // 确保目录存在
+      if (this.filename !== ':memory:') {
+        const dir = path.dirname(this.filename);
+        if (dir && dir !== '.' && !fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+      }
+
+      this.db = this.sqliteRuntime.openDatabase(this.filename);
+      loadSqliteVecExtension(this.db);
+
+      if (this.filename !== ':memory:') {
+        this.db.pragma('journal_mode = WAL');
+        this.db.pragma('busy_timeout = 5000');
+      }
     }
     return this.db;
   }
@@ -114,19 +116,11 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     const db = this.ensureOpen();
     const tableName = this.getTableName(modelId);
 
-    if (this.backend === 'sqlite-vec') {
-      db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS ${tableName} USING vec0(
-          embedding float[${this.getDimension()}]
-        )
-      `);
-      return;
-    }
-
+    // 使用 sqlite-vec 的 vec0 虚拟表
+    // rowid 作为主键，与 quints 表的 rowid 对应
     db.exec(`
-      CREATE TABLE IF NOT EXISTS ${tableName} (
-        id INTEGER PRIMARY KEY,
-        embedding TEXT NOT NULL
+      CREATE VIRTUAL TABLE IF NOT EXISTS ${tableName} USING vec0(
+        embedding float[${this.getDimension()}]
       )
     `);
   }
@@ -157,7 +151,13 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
 
     try {
       const rows = db
-        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'vec_%'`)
+        .prepare(`
+          SELECT name
+          FROM sqlite_master
+          WHERE type = 'table'
+            AND name LIKE 'vec_%'
+            AND sql LIKE '%USING vec0%'
+        `)
         .all() as { name: string }[];
       return rows.map((r) => r.name);
     } catch {
@@ -173,20 +173,16 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     const db = this.ensureOpen();
     const tableName = this.getTableName(modelId);
 
-    if (this.backend === 'sqlite-vec') {
-      const bigId = BigInt(Math.floor(id));
-      db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(bigId);
-      db.prepare(
-        `INSERT INTO ${tableName} (rowid, embedding) VALUES (?, ?)`
-      ).run(bigId, JSON.stringify(embedding));
-      return;
-    }
+    // 转换为 BigInt 以确保 sqlite-vec 识别为整数
+    const bigId = BigInt(Math.floor(id));
 
-    db.prepare(`
-      INSERT INTO ${tableName} (id, embedding)
-      VALUES (?, ?)
-      ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding
-    `).run(id, JSON.stringify(embedding));
+    // sqlite-vec 不支持 UPDATE，需要先删除再插入
+    db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(bigId);
+
+    // 使用 rowid 作为主键插入向量
+    db.prepare(
+      `INSERT INTO ${tableName} (rowid, embedding) VALUES (?, ?)`
+    ).run(bigId, JSON.stringify(embedding));
   }
 
   public override async batchUpsertVectors(modelId: string, records: { id: number; embedding: number[] }[]): Promise<void> {
@@ -197,20 +193,14 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
 
     const transaction = db.transaction((recs: typeof records) => {
       for (const rec of recs) {
-        if (this.backend === 'sqlite-vec') {
-          const bigId = BigInt(Math.floor(rec.id));
-          db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(bigId);
-          db.prepare(
-            `INSERT INTO ${tableName} (rowid, embedding) VALUES (?, ?)`
-          ).run(bigId, JSON.stringify(rec.embedding));
-          continue;
-        }
+        // 转换为 BigInt 以确保 sqlite-vec 识别为整数
+        const bigId = BigInt(Math.floor(rec.id));
 
-        db.prepare(`
-          INSERT INTO ${tableName} (id, embedding)
-          VALUES (?, ?)
-          ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding
-        `).run(rec.id, JSON.stringify(rec.embedding));
+        // sqlite-vec 不支持 UPDATE，需要先删除再插入
+        db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(bigId);
+        db.prepare(
+          `INSERT INTO ${tableName} (rowid, embedding) VALUES (?, ?)`
+        ).run(bigId, JSON.stringify(rec.embedding));
       }
     });
 
@@ -222,10 +212,7 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     const tableName = this.getTableName(modelId);
 
     try {
-      const sql = this.backend === 'sqlite-vec'
-        ? `SELECT rowid, embedding FROM ${tableName} WHERE rowid = ?`
-        : `SELECT id as rowid, embedding FROM ${tableName} WHERE id = ?`;
-      const row = db.prepare(sql).get(id) as any;
+      const row = db.prepare(`SELECT rowid, embedding FROM ${tableName} WHERE rowid = ?`).get(id) as any;
       return row ? this.rowToVector(row) : null;
     } catch {
       return null;
@@ -236,10 +223,7 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     const db = this.ensureOpen();
     const tableName = this.getTableName(modelId);
 
-    const sql = this.backend === 'sqlite-vec'
-      ? `DELETE FROM ${tableName} WHERE rowid = ?`
-      : `DELETE FROM ${tableName} WHERE id = ?`;
-    db.prepare(sql).run(id);
+    db.prepare(`DELETE FROM ${tableName} WHERE rowid = ?`).run(id);
   }
 
   public override async batchDeleteVectors(modelId: string, ids: number[]): Promise<void> {
@@ -249,10 +233,7 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     const tableName = this.getTableName(modelId);
 
     const placeholders = ids.map(() => '?').join(',');
-    const sql = this.backend === 'sqlite-vec'
-      ? `DELETE FROM ${tableName} WHERE rowid IN (${placeholders})`
-      : `DELETE FROM ${tableName} WHERE id IN (${placeholders})`;
-    db.prepare(sql).run(...ids);
+    db.prepare(`DELETE FROM ${tableName} WHERE rowid IN (${placeholders})`).run(...ids);
   }
 
   public override async search(modelId: string, queryEmbedding: number[], options: VectorSearchOptions = {}): Promise<VectorSearchResult[]> {
@@ -262,24 +243,6 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     const tableName = this.getTableName(modelId);
 
     try {
-      if (this.backend === 'plain') {
-        const rows = db
-          .prepare(`SELECT id as rowid, embedding FROM ${tableName}`)
-          .all() as Array<{ rowid: number; embedding: string }>;
-
-        return rows
-          .map((row) => {
-            const embedding = this.deserializeEmbedding(row.embedding);
-            const distance = this.computeDistance(queryEmbedding, embedding);
-            const score = Math.max(0, Math.min(1, 1 - (distance * distance) / 2));
-            return { id: row.rowid, distance, score };
-          })
-          .filter((row) => !excludeIds?.has(row.id))
-          .filter((row) => threshold === undefined || row.score >= threshold)
-          .sort((left, right) => left.distance - right.distance)
-          .slice(0, limit);
-      }
-
       // 使用 sqlite-vec 的近似最近邻搜索
       // 注意：sqlite-vec 要求在 MATCH 中使用 k=? 参数
       const sql = `
@@ -313,7 +276,8 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
 
       return results.slice(0, limit);
     } catch (e) {
-      throw new Error(`${this.backend} vector search failed: ${e}`);
+      // sqlite-vec 扩展不可用时抛出错误
+      throw new Error(`sqlite-vec search failed: ${e}`);
     }
   }
 
@@ -323,6 +287,7 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
 
   public override async countVectors(modelId: string): Promise<number> {
     const db = this.ensureOpen();
+
     for (const tableName of this.getCountTableCandidates(modelId)) {
       try {
         const row = db.prepare(`SELECT COUNT(*) as count FROM ${tableName}`).get() as any;
@@ -345,11 +310,9 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     const { limit = 1000, afterId } = options;
 
     try {
-      const idColumn = this.backend === 'sqlite-vec' ? 'rowid' : 'id';
-      const selectColumn = this.backend === 'sqlite-vec' ? 'rowid' : 'id as rowid';
       const sql = afterId !== undefined
-        ? `SELECT ${selectColumn} FROM ${tableName} WHERE ${idColumn} > ? ORDER BY ${idColumn} LIMIT ?`
-        : `SELECT ${selectColumn} FROM ${tableName} ORDER BY ${idColumn} LIMIT ?`;
+        ? `SELECT rowid FROM ${tableName} WHERE rowid > ? ORDER BY rowid LIMIT ?`
+        : `SELECT rowid FROM ${tableName} ORDER BY rowid LIMIT ?`;
       const params = afterId !== undefined ? [afterId, limit] : [limit];
       const rows = db.prepare(sql).all(...params) as any[];
       return rows.map((r) => r.rowid);
@@ -370,26 +333,13 @@ export class SqliteVectorStore extends VectorStore implements Initializable, Fin
     };
   }
 
-  private deserializeEmbedding(blob: Buffer | Uint8Array | string): number[] {
-    if (typeof blob === 'string') {
-      return JSON.parse(blob) as number[];
-    }
-
+  private deserializeEmbedding(blob: Buffer | Uint8Array): number[] {
+    // sqlite-vec 返回的是 float32 buffer
     const buffer = Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
     const embedding: number[] = [];
     for (let i = 0; i < buffer.length; i += 4) {
       embedding.push(buffer.readFloatLE(i));
     }
     return embedding;
-  }
-
-  private computeDistance(left: number[], right: number[]): number {
-    let sum = 0;
-    const length = Math.min(left.length, right.length);
-    for (let index = 0; index < length; index++) {
-      const delta = left[index] - right[index];
-      sum += delta * delta;
-    }
-    return Math.sqrt(sum);
   }
 }

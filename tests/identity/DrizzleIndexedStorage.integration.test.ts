@@ -98,5 +98,54 @@ suite('DrizzleIndexedStorage integration (SQLite)', () => {
       const wrongType = await storage.get(testType, session.id);
       expect(wrongType).toBeUndefined();
     });
+
+    it('finds records by indexed string fields', async () => {
+      await storage.defineType(testType, {
+        email: 'string',
+        passwordHash: 'string',
+        verified: 'boolean',
+      });
+      await storage.createIndex(testType, 'email');
+
+      await storage.create(testType, {
+        email: 'a@example.com',
+        passwordHash: 'hash-a',
+        verified: true,
+      });
+      const target = await storage.create(testType, {
+        email: 'b@example.com',
+        passwordHash: 'hash-b',
+        verified: false,
+      });
+
+      const matches = await storage.find(testType, { email: 'b@example.com' });
+
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.id).toBe(target.id);
+      expect(matches[0]?.email).toBe('b@example.com');
+    });
+
+    it('finds records by boolean fields without cross-type leakage', async () => {
+      const sessionType = 'session_bool';
+      await storage.defineType(sessionType, {
+        active: 'boolean',
+        email: 'string?',
+      });
+      await storage.createIndex(sessionType, 'active');
+
+      const target = await storage.create(sessionType, { active: true });
+      await storage.create(sessionType, { active: false });
+      await storage.create(testType, {
+        email: 'bool@example.com',
+        passwordHash: 'hash-bool',
+        verified: true,
+      });
+
+      const matches = await storage.find(sessionType, { active: true });
+
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.id).toBe(target.id);
+      expect(matches[0]?.active).toBe(true);
+    });
   });
 });

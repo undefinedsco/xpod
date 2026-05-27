@@ -1,5 +1,4 @@
 import { pgTable, text, timestamp } from 'drizzle-orm/pg-core';
-import { jsonb } from 'drizzle-orm/pg-core/columns/jsonb';
 import { bigint as pgBigint } from 'drizzle-orm/pg-core/columns/bigint';
 import { integer } from 'drizzle-orm/pg-core/columns/integer';
 
@@ -10,34 +9,29 @@ export const accountUsage = pgTable('identity_account_usage', {
   egressBytes: pgBigint('egress_bytes', { mode: 'number' }).notNull().default(0),
   storageLimitBytes: pgBigint('storage_limit_bytes', { mode: 'number' }),
   bandwidthLimitBps: pgBigint('bandwidth_limit_bps', { mode: 'number' }),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  computeSeconds: pgBigint('compute_seconds', { mode: 'number' }).notNull().default(0),
+  tokensUsed: pgBigint('tokens_used', { mode: 'number' }).notNull().default(0),
+  computeLimitSeconds: pgBigint('compute_limit_seconds', { mode: 'number' }),
+  tokenLimitMonthly: pgBigint('token_limit_monthly', { mode: 'number' }),
+  periodStart: timestamp('period_start', { withTimezone: true, mode: 'date' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 export const podUsage = pgTable('identity_pod_usage', {
   podId: text('pod_id').primaryKey(),
   accountId: text('account_id').notNull(),
+  storageUrl: text('storage_url'),
   storageBytes: pgBigint('storage_bytes', { mode: 'number' }).notNull().default(0),
   ingressBytes: pgBigint('ingress_bytes', { mode: 'number' }).notNull().default(0),
   egressBytes: pgBigint('egress_bytes', { mode: 'number' }).notNull().default(0),
   storageLimitBytes: pgBigint('storage_limit_bytes', { mode: 'number' }),
   bandwidthLimitBps: pgBigint('bandwidth_limit_bps', { mode: 'number' }),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-/**
- * WebID Profile 托管表
- * 用于身份与存储分离架构，Cloud 托管用户的 WebID Profile
- */
-export const webidProfiles = pgTable('identity_webid_profile', {
-  username: text('username').primaryKey(),
-  webidUrl: text('webid_url').notNull(),              // https://id.undefineds.co/alice/profile/card#me
-  storageUrl: text('storage_url'),                    // https://alice.undefineds.xyz/ 或 https://pods.undefineds.co/alice/
-  storageMode: text('storage_mode').default('cloud'), // 'cloud' | 'local' | 'custom'
-  oidcIssuer: text('oidc_issuer'),                    // https://id.undefineds.co/
-  profileData: jsonb('profile_data'),                 // WebID Profile 的 JSON-LD 表示
-  accountId: text('account_id'),                      // 关联的 CSS 账户 ID
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  computeSeconds: pgBigint('compute_seconds', { mode: 'number' }).notNull().default(0),
+  tokensUsed: pgBigint('tokens_used', { mode: 'number' }).notNull().default(0),
+  computeLimitSeconds: pgBigint('compute_limit_seconds', { mode: 'number' }),
+  tokenLimitMonthly: pgBigint('token_limit_monthly', { mode: 'number' }),
+  periodStart: timestamp('period_start', { withTimezone: true, mode: 'date' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 /**
@@ -49,7 +43,7 @@ export const ddnsDomains = pgTable('identity_ddns_domain', {
   status: text('status').default('active'),           // 'active' | 'suspended'
   provider: text('provider'),                         // 'cloudflare' | 'tencent'
   zoneId: text('zone_id'),                            // DNS Zone ID
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 /**
@@ -67,32 +61,36 @@ export const ddnsRecords = pgTable('identity_ddns_record', {
   status: text('status').default('active'),           // 'active' | 'banned'
   bannedReason: text('banned_reason'),
   ttl: integer('ttl').default(60),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 export const edgeNodes = pgTable('identity_edge_node', {
   id: text('id').primaryKey(),
-  ownerAccountId: text('owner_account_id'),     // Owner of the node
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
   nodeType: text('node_type').default('edge'),  // 'center' | 'edge' | 'sp'
   subdomain: text('subdomain').unique(),
   accessMode: text('access_mode'),
-  publicIp: text('public_ip'),
+  ipv4: text('ipv4'),                          // IPv4 地址
   publicPort: pgBigint('public_port', { mode: 'number' }),
   publicUrl: text('public_url'),                // SP 的公网地址 (e.g. https://sp.example)
   serviceTokenHash: text('service_token_hash'), // Cloud → SP 回调认证 token (明文)
   provisionCodeHash: text('provision_code_hash'), // bind 时用户传入的配对码 (hash)
   internalIp: text('internal_ip'),              // Internal network IP
   internalPort: pgBigint('internal_port', { mode: 'number' }),
-  capabilities: jsonb('capabilities'),
-  metadata: jsonb('metadata'),
+  // Extracted from metadata
+  hostname: text('hostname'),                   // 节点主机名
+  ipv6: text('ipv6'),                          // IPv6 地址
+  version: text('version'),                    // Agent 版本
+  // JSON fields
+  capabilities: text('capabilities'),           // JSON string: 能力列表
+  metadata: text('metadata'),                   // JSON string: 复杂对象 (tunnel, certificate, metrics)
   connectivityStatus: text('connectivity_status').default('unknown'),
-  lastConnectivityCheck: timestamp('last_connectivity_check', { withTimezone: true }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  lastSeen: timestamp('last_seen', { withTimezone: true }),
+  lastConnectivityCheck: timestamp('last_connectivity_check', { withTimezone: true, mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  lastSeen: timestamp('last_seen', { withTimezone: true, mode: 'date' }),
 });
 
 export const edgeNodePods = pgTable('identity_edge_node_pod', {
@@ -105,5 +103,19 @@ export const apiClientCredentials = pgTable('identity_api_client_credentials', {
   webId: text('web_id').notNull(),
   accountId: text('account_id').notNull(),
   displayName: text('display_name'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+/**
+ * Service Token 表
+ * 用于服务间认证 (Business, Local SP, Cloud, Compute)
+ */
+export const serviceTokens = pgTable('identity_service_token', {
+  id: text('id').primaryKey(),
+  tokenHash: text('token_hash').notNull().unique(),
+  serviceType: text('service_type').notNull(), // 'local' | 'business' | 'cloud' | 'compute'
+  serviceId: text('service_id').notNull(),
+  scopes: text('scopes').notNull(), // JSON array: ["quota:write","usage:read"]
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
 });

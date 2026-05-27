@@ -4,6 +4,19 @@
 
 Xpod provides built-in usage tracking and quota enforcement. For advanced management features (billing, alerts, reports), integrate with external services.
 
+对当前 `hosted preview` 口径，免费账号额度优先由 `xpod` 自己提供，不依赖 `billing`：
+
+- `XPOD_DEFAULT_*`：免费账号默认额度
+- 本地管理员覆写：`/v1/quota/*`
+- 外部 entitlement：可选；适合未来商业化或人工支持关系
+
+最终优先级：
+
+1. 本地自定义配额
+2. 外部 entitlement
+3. `XPOD_DEFAULT_*` 默认值
+4. `null`（不限制）
+
 ## What's Tracked
 
 ### Storage Usage
@@ -32,16 +45,24 @@ Xpod provides built-in usage tracking and quota enforcement. For advanced manage
 
 ### Configuration
 
-In `config/extensions.cloud.json`:
-```json
-{
-  "options_defaultAccountStorageLimitBytes": 10737418240,
-  "options_defaultAccountBandwidthLimitBps": 10485760
-}
+Recommended cloud env baseline:
+
+```env
+XPOD_DEFAULT_STORAGE_LIMIT_BYTES=5368709120
+XPOD_DEFAULT_BANDWIDTH_LIMIT_BPS=5242880
+XPOD_DEFAULT_TOKEN_LIMIT_MONTHLY=250000
 ```
 
-- Storage limit: 10 GB default
-- Bandwidth limit: 10 MiB/s default (set to 0 to disable)
+- `XPOD_DEFAULT_STORAGE_LIMIT_BYTES`：免费账号默认存储上限
+- `XPOD_DEFAULT_BANDWIDTH_LIMIT_BPS`：免费账号默认带宽上限
+- `XPOD_DEFAULT_TOKEN_LIMIT_MONTHLY`：免费账号默认月度模型 token 上限
+- `XPOD_DEFAULT_COMPUTE_LIMIT_SECONDS`：可选；如果不承诺计算额度，可不设置
+
+说明：
+
+- `0` 表示显式限制为 0，不是“不限额”
+- 留空才表示继续回退
+- 手工 donation / supporter entitlement 可以把四个额度字段都留空，让账号继续继承免费档
 
 ## Quota Admin API
 
@@ -66,8 +87,8 @@ For production management, integrate with external services:
 
 ### Billing Integration
 - Query `identity_account_usage` / `identity_pod_usage` tables periodically
-- Export to billing system (Stripe, custom solution)
-- Calculate costs based on storage + bandwidth
+- Export to billing system or donation/support system if needed
+- 当前免费档建议直接由 `XPOD_DEFAULT_*` 控制，不要求 `billing` 参与基线额度分发
 
 ### Monitoring & Alerts
 - Connect to Prometheus/Grafana for metrics visualization

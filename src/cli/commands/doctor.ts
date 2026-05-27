@@ -89,7 +89,7 @@ export const doctorCommand: CommandModule<object, DoctorArgs> = {
     results.push(checkPortAvailable(3000));
     results.push(await checkServerReachable(argv.url));
     results.push(checkFileExists('.env.local', '.env.local found'));
-    results.push(checkFileExists('.env.server', '.env.server found'));
+    results.push(checkFileExists('.env.cloud', '.env.cloud found'));
     results.push(checkFileExists('config/local.json', 'config/local.json found'));
     results.push(checkFileExists('config/cloud.json', 'config/cloud.json found'));
     results.push(checkFileExists('node_modules', 'node_modules/ exists'));

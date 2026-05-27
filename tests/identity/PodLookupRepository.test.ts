@@ -29,6 +29,29 @@ function accountKvRow(accountId: string, pods: Record<string, Record<string, unk
   };
 }
 
+function internalAccountKvRow(accountId: string, pods: Record<string, Record<string, unknown>>) {
+  return {
+    key: `/.internal/accounts/data/${accountId}`,
+    value: JSON.stringify({ '**pod**': pods }),
+  };
+}
+
+function accountKvRowWithWebIds(
+  accountId: string,
+  pods: Record<string, Record<string, unknown>>,
+  webIds: Record<string, string>,
+) {
+  return {
+    key: `accounts/data/${accountId}`,
+    value: JSON.stringify({
+      '**pod**': pods,
+      '**webIdLink**': Object.fromEntries(
+        Object.entries(webIds).map(([id, webId]) => [id, { id, webId, accountId }]),
+      ),
+    }),
+  };
+}
+
 describe('PodLookupRepository', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,6 +91,253 @@ describe('PodLookupRepository', () => {
       const result = await repo.findById('non-existent');
 
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('findByWebId', () => {
+    it('returns pod info from account WebID links when storage uses a different origin', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          accountKvRowWithWebIds('acc-1', {
+            'pod-1': {
+              baseUrl: 'https://node-1.nodes.example/alice/',
+              nodeId: 'node-1',
+            },
+          }, {
+            'webid-link-1': 'https://id.example/alice/profile/card#me',
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result).toEqual({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
+        nodeId: 'node-1',
+        edgeNodeId: undefined,
+      });
+    });
+
+    it('matches a non-first WebID link for the same account', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          accountKvRowWithWebIds('acc-1', {
+            'pod-1': {
+              baseUrl: 'https://node-1.nodes.example/alice/',
+              nodeId: 'node-1',
+            },
+          }, {
+            'webid-link-1': 'https://id.example/alice/profile/card#old',
+            'webid-link-2': 'https://id.example/alice/profile/card#me',
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result?.podId).toBe('pod-1');
+      expect(result?.webId).toBe('https://id.example/alice/profile/card#me');
+      expect(result?.webIds).toEqual([
+        'https://id.example/alice/profile/card#old',
+        'https://id.example/alice/profile/card#me',
+      ]);
+    });
+
+    it('prefers pod owner WebID links when present on the pod', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          accountKvRow('acc-1', {
+            'pod-1': {
+              baseUrl: 'https://node-1.nodes.example/alice/',
+              '**owner**': {
+                'owner-1': {
+                  webId: 'https://id.example/alice/profile/card#me',
+                },
+              },
+            },
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result?.podId).toBe('pod-1');
+      expect(result?.webId).toBe('https://id.example/alice/profile/card#me');
+    });
+
+    it('reads account data stored under the CSS internal namespace', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          internalAccountKvRow('acc-1', {
+            'pod-1': {
+              baseUrl: 'https://node-1.nodes.example/alice/',
+              '**owner**': {
+                'owner-1': {
+                  webId: 'https://id.example/alice/profile/card#me',
+                },
+              },
+            },
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result).toMatchObject({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
+      });
+    });
+
+    it('unwraps CSS key-value payload wrappers in account data rows', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          {
+            key: 'accounts/data/acc-1',
+            value: JSON.stringify({
+              key: 'accounts/data/acc-1',
+              payload: {
+                id: 'acc-1',
+                '**pod**': {
+                  'pod-1': {
+                    baseUrl: 'https://node-1.nodes.example/alice/',
+                    accountId: 'acc-1',
+                    '**owner**': {
+                      'owner-1': {
+                        webId: 'https://id.example/alice/profile/card#me',
+                      },
+                    },
+                  },
+                },
+              },
+            }),
+          },
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result).toMatchObject({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
+      });
+    });
+
+    it('reads pods from DrizzleIndexedStorage identity_store rows', async () => {
+      const { db, execute } = createMockDb();
+      execute!
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              container: 'pod',
+              id: 'pod-1',
+              payload: {
+                accountId: 'acc-1',
+                baseUrl: 'https://node-1.nodes.example/alice/',
+                nodeId: 'node-1',
+              },
+            },
+            {
+              container: 'owner',
+              id: 'owner-1',
+              payload: {
+                podId: 'pod-1',
+                webId: 'https://id.example/alice/profile/card#me',
+              },
+            },
+            {
+              container: 'webIdLink',
+              id: 'webid-link-1',
+              payload: {
+                accountId: 'acc-1',
+                webId: 'https://id.example/alice/profile/card#secondary',
+              },
+            },
+          ],
+        });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result).toEqual({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
+        webIds: [
+          'https://id.example/alice/profile/card#me',
+          'https://id.example/alice/profile/card#secondary',
+        ],
+        nodeId: 'node-1',
+        edgeNodeId: undefined,
+      });
+    });
+
+    it('resolves a WebID through the CSS account index when account scanning is empty', async () => {
+      const { db, execute } = createMockDb();
+      execute!
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              value: JSON.stringify(['acc-1']),
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              value: JSON.stringify({
+                key: 'accounts/data/acc-1',
+                payload: {
+                  id: 'acc-1',
+                  '**pod**': {
+                    'pod-1': {
+                      baseUrl: 'https://node-1.nodes.example/alice/',
+                      accountId: 'acc-1',
+                      '**owner**': {
+                        'owner-1': {
+                          webId: 'https://id.example/alice/profile/card#me',
+                        },
+                      },
+                    },
+                  },
+                },
+              }),
+            },
+          ],
+        });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('https://id.example/alice/profile/card#me');
+
+      expect(result).toMatchObject({
+        podId: 'pod-1',
+        accountId: 'acc-1',
+        baseUrl: 'https://node-1.nodes.example/alice/',
+        webId: 'https://id.example/alice/profile/card#me',
+      });
     });
   });
 
@@ -123,12 +393,79 @@ describe('PodLookupRepository', () => {
 
     it('returns empty array when no pods', async () => {
       const { db, execute } = createMockDb();
-      execute!.mockResolvedValueOnce({ rows: [] });
+      execute!
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
 
       const repo = new PodLookupRepository(db);
       const result = await repo.listAllPods();
 
       expect(result).toEqual([]);
+    });
+
+    it('returns pods from identity_store when internal_kv has no account rows', async () => {
+      const { db, execute } = createMockDb();
+      execute!
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              container: 'pod',
+              id: 'pod-1',
+              payload: JSON.stringify({
+                accountId: 'acc-1',
+                baseUrl: 'https://node-1.nodes.example/alice/',
+              }),
+            },
+            {
+              container: 'webIdLink',
+              id: 'webid-link-1',
+              payload: JSON.stringify({
+                accountId: 'acc-1',
+                webId: 'https://id.example/alice/profile/card#me',
+              }),
+            },
+          ],
+        });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.listAllPods();
+
+      expect(result).toEqual([
+        {
+          podId: 'pod-1',
+          accountId: 'acc-1',
+          baseUrl: 'https://node-1.nodes.example/alice/',
+          webId: 'https://id.example/alice/profile/card#me',
+          nodeId: undefined,
+          edgeNodeId: undefined,
+        },
+      ]);
+    });
+  });
+
+  describe('listByAccountId', () => {
+    it('returns only pods belonging to the requested account', async () => {
+      const { db, execute } = createMockDb();
+      execute!.mockResolvedValueOnce({
+        rows: [
+          accountKvRow('acc-1', {
+            'pod-1': { baseUrl: 'https://example.com/alice/', nodeId: 'node-1' },
+            'pod-2': { baseUrl: 'https://example.com/alice-2/', nodeId: 'node-2' },
+          }),
+          accountKvRow('acc-2', {
+            'pod-3': { baseUrl: 'https://example.com/bob/', nodeId: 'node-3' },
+          }),
+        ],
+      });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.listByAccountId('acc-1');
+
+      expect(result).toHaveLength(2);
+      expect(result.every((pod) => pod.accountId === 'acc-1')).toBe(true);
+      expect(result.map((pod) => pod.podId)).toEqual(['pod-1', 'pod-2']);
     });
   });
 

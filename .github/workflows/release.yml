@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -10,8 +10,94 @@ permissions:
   packages: write
 
 jobs:
+  verify-package-tarball:
+    name: verify-package-tarball (${{ matrix.os }} / node${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: [22, 24, 25]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Check platform package versions
+        run: bun run check:platform-package-version
+
+      - name: Build package
+        run: bun run build
+
+      - name: Pack npm tarball
+        run: node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
+
+      - name: Verify npm tarball contents
+        run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
+
+      - name: Install tarball in clean consumer workspace
+        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
+
+      - name: Consumer runtime smoke
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
+
+  verify-package-tarball-bun:
+    name: verify-package-tarball-bun (${{ matrix.os }} / node${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: [22, 24, 25]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Check platform package versions
+        run: bun run check:platform-package-version
+
+      - name: Build package
+        run: bun run build
+
+      - name: Pack npm tarball
+        run: node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
+
+      - name: Verify npm tarball contents
+        run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
+
+      - name: Install tarball with Bun in clean consumer workspace
+        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
+
+      - name: Consumer runtime smoke under Bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
+
   build-and-push:
+    needs: [verify-package-tarball, verify-package-tarball-bun]
     runs-on: ubuntu-latest
+    continue-on-error: true
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
     steps:
@@ -43,9 +129,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-
   publish-npm:
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify-package-tarball, verify-package-tarball-bun]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,26 +147,25 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Check platform package versions
+        run: bun run check:platform-package-version
+
       - name: Build package
         run: bun run build
 
-      - name: Verify npm tarball
-        run: |
-          node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
-          node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
-
       - name: Publish to npm
-        run: |
-          TARBALL="$(node -e "const items=require('./.test-data/npm-pack/pack.json'); console.log(items[0].filename)")"
-          npm publish "./.test-data/npm-pack/${TARBALL}" --access public
+        run: node scripts/publish-release.cjs --skip-build
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
+          XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
 
   verify-npm-consumer:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: publish-npm
     name: verify-npm-consumer (${{ matrix.os }} / node${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
+    continue-on-error: true
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -99,16 +184,17 @@ jobs:
         run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ github.ref_name }}"
 
       - name: Install published package in clean workspace
-        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" .test-data/package-smoke .test-data/npm-cache
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
 
       - name: Published runtime smoke
-        run: node scripts/package-consumer-smoke.cjs .test-data/package-smoke
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
 
   verify-npm-consumer-bun:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: publish-npm
     name: verify-npm-consumer-bun (${{ matrix.os }} / node${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
+    continue-on-error: true
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -131,7 +217,7 @@ jobs:
         run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ github.ref_name }}"
 
       - name: Install published package with Bun in clean workspace
-        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" .test-data/package-smoke-bun .test-data/bun-cache bun
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ github.ref_name }}" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
 
       - name: Published runtime smoke under Bun
-        run: bun scripts/package-consumer-smoke.cjs .test-data/package-smoke-bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"

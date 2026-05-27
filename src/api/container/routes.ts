@@ -14,17 +14,25 @@ import { registerChatRoutes } from '../handlers/ChatHandler';
 import { registerApiKeyRoutes } from '../handlers/ApiKeyHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
 import { registerSubdomainClientRoutes } from '../handlers/SubdomainClientHandler';
-import { registerWebIdProfileRoutes } from '../handlers/WebIdProfileHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
+import { registerInngestRoutes } from '../handlers/InngestHandler';
+import { registerRunRoutes } from '../handlers/RunHandler';
+import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
+import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
 import { registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
+import { registerQuotaRoutes } from '../handlers/QuotaHandler';
+import { registerUsageRoutes } from '../handlers/UsageHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
+import { UsageRepository } from '../../storage/quota/UsageRepository';
+import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
+import { LocalPodProvisioningService } from '../../provision/LocalPodProvisioningService';
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime';
 
@@ -82,6 +90,12 @@ function registerSharedRoutes(
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
   const chatKitStore = container.resolve('chatKitStore');
+  const runExecutionBackend = container.resolve('runExecutionBackend');
+  const matrixStore = container.resolve('matrixStore');
+  const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
+  const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
+  const config = container.resolve('config') as ApiContainerConfig;
+
   registerEdgeNodeSignalRoutes(server, {
     repository: nodeRepo,
     dnsCoordinator: container.resolve('dnsCoordinator', { allowUnregistered: true }) as any,
@@ -92,6 +106,24 @@ function registerSharedRoutes(
   registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
+  registerRunRoutes(server, { runStore: chatKitStore });
+  registerMatrixRoutes(server, { store: matrixStore });
+  registerInngestRoutes(server, {
+    backend: runExecutionBackend,
+    taskScheduler: inngestTaskScheduler,
+    runtimeConfig: inngestRuntimeConfig,
+  });
+
+  // Quota & Usage API (Business 对接)
+  try {
+    const quotaService = new DrizzleQuotaService({ identityDbUrl: config.databaseUrl });
+    const usageRepo = new UsageRepository(container.resolve('db'));
+    registerQuotaRoutes(server, { quotaService, usageRepo });
+    registerUsageRoutes(server, { usageRepo });
+    console.log('[Shared] Quota & Usage routes registered');
+  } catch (error) {
+    console.log(`[Shared] Quota & Usage routes not registered: ${error}`);
+  }
 }
 
 /**
@@ -110,17 +142,6 @@ function registerCloudRoutes(
     }
   } catch {
     console.log('[Cloud] Subdomain routes not registered (service not available)');
-  }
-
-  // WebID Profile 托管服务
-  try {
-    const profileRepo = container.resolve('webIdProfileRepo', { allowUnregistered: true });
-    if (profileRepo) {
-      registerWebIdProfileRoutes(server, { profileRepo: profileRepo as any });
-      console.log('[Cloud] WebID Profile routes registered');
-    }
-  } catch {
-    console.log('[Cloud] WebID Profile routes not registered (repo not available)');
   }
 
   // DDNS 服务
@@ -152,7 +173,17 @@ function registerCloudRoutes(
     const config = container.resolve('config') as ApiContainerConfig;
     const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
     const baseStorageDomain = config.subdomain?.baseStorageDomain;
-    registerProvisionRoutes(server, { repository: nodeRepo, baseUrl, baseStorageDomain });
+    const ddnsRepo = container.resolve('ddnsRepo', { allowUnregistered: true }) as any;
+    const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true }) as any;
+    const tunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true }) as any;
+    registerProvisionRoutes(server, {
+      repository: nodeRepo,
+      ddnsRepo,
+      dnsProvider,
+      tunnelProvider,
+      baseUrl,
+      baseStorageDomain,
+    });
     console.log(`[Cloud] Provision routes registered${baseStorageDomain ? ` (baseStorageDomain: ${baseStorageDomain})` : ''}`);
   } catch {
     console.log('[Cloud] Provision routes not registered (dependencies not available)');
@@ -166,6 +197,8 @@ function registerLocalRoutes(
   container: AwilixContainer<ApiContainerCradle>,
   server: ApiServer,
 ): void {
+  registerLinxCapabilitiesRoutes(server);
+
   // Admin API (配置管理、重启)
   registerAdminRoutes(server);
 
@@ -196,11 +229,27 @@ function registerLocalRoutes(
     const expectedServiceToken = process.env.XPOD_SERVICE_TOKEN;
 
     if (expectedServiceToken) {
+      const config = container.resolve('config') as ApiContainerConfig;
+      const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
+      const sparqlEndpoint = process.env.CSS_SPARQL_ENDPOINT || process.env.SPARQL_ENDPOINT;
+      const identityDbUrl = process.env.CSS_IDENTITY_DB_URL || process.env.DATABASE_URL;
+      const provisioningService = sparqlEndpoint && identityDbUrl
+        ? new LocalPodProvisioningService({
+          baseUrl,
+          rootDir,
+          sparqlEndpoint,
+          identityDbUrl,
+          oidcIssuer: process.env.oidcIssuer ?? config.oidcIssuer,
+        })
+        : undefined;
+
       registerPodManagementRoutes(server, {
         rootDir,
         verifyServiceToken: async (token: string) => token === expectedServiceToken,
+        provisioningService,
+        podLookupRepository: container.resolve('podLookupRepo', { allowUnregistered: true }),
       });
-      console.log('[Local] Pod provision routes registered (/provision/pods)');
+      console.log(`[Local] Pod provision routes registered (/provision/pods, /provision/webids, ${provisioningService ? 'css-compatible' : 'directory-only'})`);
     } else {
       console.log('[Local] Pod provision routes not registered (XPOD_SERVICE_TOKEN not configured)');
     }

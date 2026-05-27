@@ -5,7 +5,7 @@
 - 心跳中的 `tunnel.client` 提供 frpc 运行状态（`running`/`inactive`/`error`），后续可以扩展成报告 RTT、重连次数等指标（当前标记为 TODO）。
 
 ## 手动压测流程（建议）
-1. 启动 cluster（`yarn server`）和有代表性的 Edge Node（`XPOD_EDGE_NODES_ENABLED=true`，并开启 frp）。
+1. 启动 cluster（`yarn cloud`）和有代表性的 Edge Node（`XPOD_EDGE_NODES_ENABLED=true`，并开启 frp）。
 2. 使用 `wrk`/`bombardier` 等工具打到 Pod 的域名，分别在直连模式与 proxy 模式下记录带宽/延迟。
 3. 对比 `UsageTrackingStore` 的写入量与压力工具的统计，确保误差在预期范围内。
 4. 将采集结果记录在 PR 描述里，特别是直连/隧道切换的延迟（期望 <30s）。

@@ -91,7 +91,7 @@ undefieds.co                           ← 根域名
 
 ```bash
 # .env
-CSS_EDITION=local
+XPOD_EDITION=local
 
 # Cloud API 认证 (调用 api.undefieds.co)
 XPOD_CLOUD_API_ENDPOINT=https://api.undefieds.co
@@ -119,7 +119,7 @@ CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoixxxxxxxxx
 
 ```bash
 # .env
-CSS_EDITION=local
+XPOD_EDITION=local
 
 # 外部访问地址
 CSS_BASE_URL=https://my-pod.example.com
@@ -143,7 +143,7 @@ Cloud 模式运行在 `api.undefieds.co`，持有所有密钥：
 
 ```bash
 # .env
-CSS_EDITION=cloud
+XPOD_EDITION=cloud
 
 # 启用子域名功能
 XPOD_SUBDOMAIN_ENABLED=true

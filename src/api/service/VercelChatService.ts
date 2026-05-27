@@ -7,11 +7,34 @@ import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { StoreContext } from '../chatkit/store';
 import { type AuthContext, getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
 import { CredentialStatus } from '../../credential/schema/types';
+import type { UsageRepository } from '../../storage/quota/UsageRepository';
+import type { QuotaService } from '../../quota/QuotaService';
 import {
   getDefaultBaseUrl,
-  supportsResponsesApi,
-  supportsMessagesApi,
 } from './provider-registry';
+import {
+  getAiGatewayApiKey,
+  getAiGatewayBaseUrl,
+  getPlatformApiBaseUrl,
+  getPlatformApiKey,
+  getPlatformDefaultModel,
+  getPlatformGenerationTimeoutMs,
+  getPlatformQueryTimeoutMs,
+} from './platform-ai-config';
+import {
+  buildChatCompletionsBodyFromMessages,
+  extractPromptFromMessagesBody,
+  extractPromptFromResponsesBody,
+  mapChatCompletionToMessagesResponse,
+  sanitizeAiGatewayResponsesBody,
+} from './chat-protocol-adapters';
+import { AiGatewayTransport } from './ai-gateway-transport';
+import { ProviderHttpTransport } from './provider-http-transport';
+import {
+  resolveChatExecutionRoute,
+  resolveMessagesProviderRoute,
+  resolveResponsesProviderRoute,
+} from './chat-routing';
 
 // Create a proxy-aware fetch function
 function createProxyFetch(proxyUrl: string): typeof fetch {
@@ -19,11 +42,36 @@ function createProxyFetch(proxyUrl: string): typeof fetch {
   return (url, init) => fetch(url, { ...init, dispatcher: agent } as any);
 }
 
+interface ProviderConfig {
+  baseURL: string;
+  apiKey: string;
+  proxy?: string;
+  credentialId?: string;
+}
+
 export class VercelChatService {
   private readonly logger = getLoggerFor(this);
+  private usageRepo?: UsageRepository;
+  private quotaService?: QuotaService;
+  private readonly aiGatewayTransport: AiGatewayTransport;
+  private readonly providerHttpTransport = new ProviderHttpTransport();
 
   public constructor(private readonly store: PodChatKitStore) {
     this.logger.info('Initializing VercelChatService with Pod-based config support');
+    this.aiGatewayTransport = new AiGatewayTransport({
+      getBaseUrl: () => this.getAiGatewayBaseUrl(),
+      getApiKey: () => this.getAiGatewayApiKey(),
+      getQueryTimeoutMs: () => this.getAiGatewayQueryTimeoutMs(),
+      getGenerationTimeoutMs: () => this.getAiGatewayGenerationTimeoutMs(),
+    });
+  }
+
+  /**
+   * Set optional usage tracking dependencies (injected after construction)
+   */
+  public setUsageTracking(usageRepo: UsageRepository, quotaService: QuotaService): void {
+    this.usageRepo = usageRepo;
+    this.quotaService = quotaService;
   }
 
   /**
@@ -36,15 +84,87 @@ export class VercelChatService {
     };
   }
 
+  private getAiGatewayBaseUrl(): string | null {
+    return getAiGatewayBaseUrl() ?? null;
+  }
 
+  private getAiGatewayQueryTimeoutMs(): number {
+    return getPlatformQueryTimeoutMs();
+  }
 
+  private getAiGatewayGenerationTimeoutMs(): number {
+    return getPlatformGenerationTimeoutMs();
+  }
 
-  private async getProviderConfig(context: StoreContext): Promise<{
-    baseURL: string;
-    apiKey: string;
-    proxy?: string;
-    credentialId?: string;
-  } | null> {
+  private getAiGatewayApiKey(): string | null {
+    return getAiGatewayApiKey() ?? null;
+  }
+
+  private async shouldUseAiGateway(model?: string): Promise<boolean> {
+    return this.aiGatewayTransport.shouldHandleModel(model);
+  }
+
+  private toModelId(model: any): string {
+    return typeof model?.id === 'string' ? model.id : JSON.stringify(model);
+  }
+
+  private pushModelsWithDedup(models: any[], seenModelIds: Set<string>, items: any[]): void {
+    for (const model of items) {
+      const modelId = this.toModelId(model);
+      if (seenModelIds.has(modelId)) {
+        continue;
+      }
+      seenModelIds.add(modelId);
+      models.push(model);
+    }
+  }
+
+  private async forwardAiGatewayJson(path: string, body: unknown, _auth: AuthContext): Promise<any> {
+    return this.aiGatewayTransport.sendJson(path, body);
+  }
+
+  private async forwardAiGatewayStream(path: string, body: unknown, _auth: AuthContext): Promise<{
+    toTextStreamResponse: () => Response;
+  }> {
+    return this.aiGatewayTransport.sendStream(path, body);
+  }
+
+  private getProviderChatCompletionsUrl(baseURL: string): string {
+    const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
+    return cleanBaseUrl.endsWith('/chat/completions')
+      ? cleanBaseUrl
+      : `${cleanBaseUrl}/chat/completions`;
+  }
+
+  private extractTotalTokens(usage: any): number {
+    if (!usage || typeof usage !== 'object') {
+      return 0;
+    }
+
+    if (typeof usage.total_tokens === 'number') {
+      return usage.total_tokens;
+    }
+    if (typeof usage.totalTokens === 'number') {
+      return usage.totalTokens;
+    }
+    if (typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number') {
+      return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+    }
+    if (typeof usage.prompt_tokens === 'number' || typeof usage.completion_tokens === 'number') {
+      return (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
+    }
+
+    return 0;
+  }
+
+  private recordForwardedUsage(accountId: string | undefined, podId: string, payload: any): void {
+    const totalTokens = this.extractTotalTokens(payload?.usage);
+    if (accountId && totalTokens > 0) {
+      this.recordTokenUsage(accountId, podId, totalTokens);
+    }
+  }
+
+  private async getProviderConfig(context: StoreContext): Promise<ProviderConfig | null> {
     let config: Awaited<ReturnType<PodChatKitStore['getAiConfig']>> | undefined;
     try {
       config = await this.store.getAiConfig(context);
@@ -63,10 +183,10 @@ export class VercelChatService {
     }
 
     // 平台 Provider
-    const platformBase = process.env.DEFAULT_API_BASE;
+    const platformBase = getPlatformApiBaseUrl();
     if (platformBase) {
       this.logger.info(`Provider config: baseURL=${platformBase}, proxy=none (source=platform)`);
-      return { baseURL: platformBase, apiKey: process.env.DEFAULT_API_KEY || '', proxy: undefined, credentialId: undefined };
+      return { baseURL: platformBase, apiKey: getPlatformApiKey(), proxy: undefined, credentialId: undefined };
     }
 
     this.logger.warn('No AI provider config found in Pod or DEFAULT_API_BASE');
@@ -94,10 +214,21 @@ export class VercelChatService {
   }
 
   public async complete(request: ChatCompletionRequest, auth: AuthContext): Promise<ChatCompletionResponse> {
-    const { model, messages, temperature, max_tokens } = request;
+    const { model } = request;
     const context = this.createStoreContext(auth);
-    const config = await this.getProviderConfig(context);
+    const accountId = getAccountId(auth);
+    if (accountId) {
+      await this.checkTokenQuota(accountId);
+    }
 
+    if (await resolveChatExecutionRoute({ model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
+      this.logger.info(`Forwarding chat completion for model ${model} to ai-gateway`);
+      const result = await this.forwardAiGatewayJson('/v1/chat/completions', request, auth) as ChatCompletionResponse;
+      this.recordForwardedUsage(accountId, String(context.userId), result);
+      return result;
+    }
+
+    const config = await this.getProviderConfig(context);
     if (!config) {
       const err = new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
       (err as any).code = 'model_not_configured';
@@ -105,19 +236,12 @@ export class VercelChatService {
     }
 
     try {
-      const provider = await this.getProvider(context);
-
-      const coreMessages: any[] = messages.map((m) => ({
-        role: m.role as any,
-        content: m.content,
-      }));
-
-      const result = await generateText({
-        model: provider.chat(model),
-        messages: coreMessages,
-        temperature,
-        maxTokens: max_tokens,
-      } as any);
+      const result = await this.providerHttpTransport.postJson({
+        url: this.getProviderChatCompletionsUrl(config.baseURL),
+        apiKey: config.apiKey,
+        proxy: config.proxy,
+        body: request,
+      }) as ChatCompletionResponse;
 
       // Record successful API call
       if (config?.credentialId) {
@@ -126,27 +250,13 @@ export class VercelChatService {
         });
       }
 
-      return {
-        id: `chatcmpl-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: 'assistant',
-              content: result.text,
-            },
-            finish_reason: this.mapFinishReason(result.finishReason),
-          },
-        ],
-        usage: {
-          prompt_tokens: (result.usage as any).promptTokens,
-          completion_tokens: (result.usage as any).completionTokens,
-          total_tokens: (result.usage as any).totalTokens,
-        },
-      };
+      // Record token usage
+      const totalTokens = this.extractTotalTokens(result.usage);
+      if (accountId && totalTokens > 0) {
+        this.recordTokenUsage(accountId, String(context.userId), totalTokens);
+      }
+
+      return result;
     } catch (error) {
       this.logger.error(`AI completion failed: ${error}`);
 
@@ -160,8 +270,14 @@ export class VercelChatService {
   }
 
   public async stream(request: ChatCompletionRequest, auth: AuthContext): Promise<any> {
-    const { model, messages, temperature, max_tokens } = request;
+    const { model } = request;
     const context = this.createStoreContext(auth);
+
+    if (await resolveChatExecutionRoute({ model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
+      this.logger.info(`Forwarding chat stream for model ${model} to ai-gateway`);
+      return this.forwardAiGatewayStream('/v1/chat/completions', request, auth);
+    }
+
     const config = await this.getProviderConfig(context);
 
     if (!config) {
@@ -170,25 +286,37 @@ export class VercelChatService {
       throw err;
     }
 
-    const provider = await this.getProvider(context);
+    const response = await this.providerHttpTransport.postStream({
+      url: this.getProviderChatCompletionsUrl(config.baseURL),
+      apiKey: config.apiKey,
+      proxy: config.proxy,
+      body: request,
+      headers: {
+        Accept: 'text/event-stream',
+      },
+    });
 
-    const coreMessages: any[] = messages.map((m) => ({
-      role: m.role as any,
-      content: m.content,
-    }));
-
-    return streamText({
-      model: provider.chat(model),
-      messages: coreMessages,
-      temperature,
-      maxTokens: max_tokens,
-    } as any);
+    return {
+      toTextStreamResponse: () => new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: new Headers(response.headers),
+      }),
+    };
   }
 
   public async responses(body: any, auth: AuthContext): Promise<any> {
     const context = this.createStoreContext(auth);
     const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
+
+    if (await resolveChatExecutionRoute({ model: body?.model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
+      this.logger.info(`Forwarding responses request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
+      const sanitizedBody = sanitizeAiGatewayResponsesBody(body);
+      const result = await this.forwardAiGatewayJson('/v1/responses', sanitizedBody, auth);
+      this.recordForwardedUsage(accountId, String(context.userId), result);
+      return result;
+    }
 
     const providerConfig = await this.getProviderConfig(context);
     if (!providerConfig) {
@@ -200,7 +328,7 @@ export class VercelChatService {
     const { baseURL } = providerConfig;
 
     // Only OpenAI natively supports /v1/responses; all others go through Chat Completions
-    if (!supportsResponsesApi(baseURL)) {
+    if (resolveResponsesProviderRoute(baseURL) === 'chat-fallback') {
       this.logger.info(`Provider ${baseURL} does not support Responses API, converting to Chat Completions for ${displayName} (acc: ${accountId})`);
       return this.responsesViaCompletions(body, context, providerConfig);
     }
@@ -213,42 +341,31 @@ export class VercelChatService {
 
     this.logger.info(`Proxying responses request to ${url} for ${displayName} (acc: ${accountId}), proxy: ${proxy || 'none'}`);
 
-    const fetchFn = proxy ? createProxyFetch(proxy) : fetch;
-
     try {
-      const response = await fetchFn(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
+      const result = await this.providerHttpTransport.postJson({
+        url,
+        apiKey,
+        proxy,
+        body,
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        this.logger.error(`Responses API failed: ${response.status} ${errorText}`);
-
-        // Handle error and update credential status
+      if (credentialId) {
+        this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
+      }
+      return result;
+    } catch (error) {
+      const status = (error as any)?.status;
+      const headers = (error as any)?.headers;
+      const bodyText = (error as any)?.body;
+      if (typeof status === 'number') {
+        this.logger.error(`Responses API failed: ${status} ${bodyText ?? ''}`);
         if (credentialId) {
           await this.handleApiError(
-            { status: response.status, headers: response.headers },
+            { status, headers },
             context,
             credentialId,
           );
         }
-
-        throw new Error(`Provider error: ${response.statusText}`);
-      }
-
-      // Record successful API call
-      if (credentialId) {
-        this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
-      }
-
-      return response.json();
-    } catch (error) {
-      if (credentialId && !(error instanceof Error && error.message.startsWith('Provider error'))) {
+      } else if (credentialId) {
         await this.handleApiError(error, context, credentialId);
       }
       throw error;
@@ -260,6 +377,15 @@ export class VercelChatService {
     const displayName = getDisplayName(auth) || context.userId;
     const accountId = getAccountId(auth);
 
+    if (await resolveChatExecutionRoute({ model: body?.model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
+      this.logger.info(`Forwarding messages request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
+      const completionBody = buildChatCompletionsBodyFromMessages(body);
+      const completion = await this.forwardAiGatewayJson('/v1/chat/completions', completionBody, auth);
+      const result = mapChatCompletionToMessagesResponse(body, completion);
+      this.recordForwardedUsage(accountId, String(context.userId), result);
+      return result;
+    }
+
     const providerConfig = await this.getProviderConfig(context);
     if (!providerConfig) {
       const err = new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
@@ -270,7 +396,7 @@ export class VercelChatService {
     const { baseURL } = providerConfig;
 
     // Only Anthropic natively supports /v1/messages; all others go through Chat Completions
-    if (!supportsMessagesApi(baseURL)) {
+    if (resolveMessagesProviderRoute(baseURL) === 'chat-fallback') {
       this.logger.info(`Provider ${baseURL} does not support Messages API, converting to Chat Completions for ${displayName} (acc: ${accountId})`);
       return this.messagesViaCompletions(body, context, providerConfig);
     }
@@ -283,44 +409,35 @@ export class VercelChatService {
 
     this.logger.info(`Proxying messages request to ${url} for ${displayName} (acc: ${accountId}), proxy: ${proxy || 'none'}`);
 
-    const fetchFn = proxy ? createProxyFetch(proxy) : fetch;
-
     try {
-      const response = await fetchFn(url, {
-        method: 'POST',
+      const result = await this.providerHttpTransport.postJson({
+        url,
+        apiKey,
+        proxy,
+        body,
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify(body),
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        this.logger.error(`Messages API failed: ${response.status} ${errorText}`);
-
-        // Handle error and update credential status
+      if (credentialId) {
+        this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
+      }
+      return result;
+    } catch (error) {
+      const status = (error as any)?.status;
+      const headers = (error as any)?.headers;
+      const bodyText = (error as any)?.body;
+      if (typeof status === 'number') {
+        this.logger.error(`Messages API failed: ${status} ${bodyText ?? ''}`);
         if (credentialId) {
           await this.handleApiError(
-            { status: response.status, headers: response.headers },
+            { status, headers },
             context,
             credentialId,
           );
         }
-
-        throw new Error(`Provider error: ${response.statusText}`);
-      }
-
-      // Record successful API call
-      if (credentialId) {
-        this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
-      }
-
-      return response.json();
-    } catch (error) {
-      if (credentialId && !(error instanceof Error && error.message.startsWith('Provider error'))) {
+      } else if (credentialId) {
         await this.handleApiError(error, context, credentialId);
       }
       throw error;
@@ -335,8 +452,8 @@ export class VercelChatService {
     context: StoreContext,
     providerConfig: { baseURL: string; apiKey: string; proxy?: string; credentialId?: string },
   ): Promise<any> {
-    const prompt = this.extractPromptFromResponsesBody(body);
-    const model = body?.model || process.env.DEFAULT_MODEL || 'openai/gpt-4o-mini';
+    const prompt = extractPromptFromResponsesBody(body);
+    const model = body?.model || getPlatformDefaultModel();
 
     const provider = await this.getProvider(context);
     const result = await generateText({
@@ -376,8 +493,8 @@ export class VercelChatService {
     context: StoreContext,
     providerConfig: { baseURL: string; apiKey: string; proxy?: string; credentialId?: string },
   ): Promise<any> {
-    const prompt = this.extractPromptFromMessagesBody(body);
-    const model = body?.model || process.env.DEFAULT_MODEL || 'openai/gpt-4o-mini';
+    const prompt = extractPromptFromMessagesBody(body);
+    const model = body?.model || getPlatformDefaultModel();
 
     const coreMessages: any[] = [];
     if (body?.system) {
@@ -434,79 +551,38 @@ export class VercelChatService {
     };
   }
 
-  private extractPromptFromResponsesBody(body: any): string {
-    if (!body || typeof body !== 'object') {
-      return '';
-    }
-
-    if (typeof body.input === 'string') {
-      return body.input;
-    }
-
-    if (typeof body.prompt === 'string') {
-      return body.prompt;
-    }
-
-    if (Array.isArray(body.input)) {
-      const textParts: string[] = [];
-      for (const item of body.input) {
-        if (item && typeof item === 'object') {
-          const candidate = (item as any).content;
-          if (typeof candidate === 'string') {
-            textParts.push(candidate);
-          } else if (Array.isArray(candidate)) {
-            for (const part of candidate) {
-              if (part && typeof part === 'object' && typeof (part as any).text === 'string') {
-                textParts.push((part as any).text);
-              }
-            }
-          }
-        }
-      }
-      if (textParts.length > 0) {
-        return textParts.join('\n');
-      }
-    }
-
-    return '';
-  }
-
-  private extractPromptFromMessagesBody(body: any): string {
-    if (!body || typeof body !== 'object') {
-      return '';
-    }
-
-    if (typeof body.content === 'string') {
-      return body.content;
-    }
-
-    if (Array.isArray(body.messages)) {
-      const lastUser = [...body.messages].reverse().find((item: any) => item?.role === 'user');
-      if (lastUser) {
-        if (typeof lastUser.content === 'string') {
-          return lastUser.content;
-        }
-        if (Array.isArray(lastUser.content)) {
-          return lastUser.content
-            .filter((part: any) => part && typeof part === 'object' && typeof part.text === 'string')
-            .map((part: any) => part.text)
-            .join('\n');
-        }
-      }
-    }
-
-    return '';
-  }
-
   public async listModels(_auth?: AuthContext): Promise<any[]> {
     const models: any[] = [];
+    const seenModelIds = new Set<string>();
+
+    if (_auth) {
+      try {
+        const context = this.createStoreContext(_auth);
+        const userModels = await this.store.listAvailableModels(context);
+        this.pushModelsWithDedup(models, seenModelIds, userModels);
+      } catch (error) {
+        this.logger.warn(`Failed to load user Pod models: ${error}`);
+      }
+    }
+
+    const aiGatewayModels = await this.aiGatewayTransport.listModels();
+    if (aiGatewayModels) {
+      this.pushModelsWithDedup(models, seenModelIds, aiGatewayModels);
+    }
 
     // 平台 Provider 模型（从 DEFAULT_API_BASE 获取）
-    const platformBase = process.env.DEFAULT_API_BASE;
-    const platformKey = process.env.DEFAULT_API_KEY;
-    if (platformBase) {
+    const platformBase = getPlatformApiBaseUrl();
+    const platformKey = getPlatformApiKey();
+    const aiGatewayBase = this.getAiGatewayBaseUrl();
+    const normalizedAiGatewayModelsUrl = aiGatewayBase
+      ? this.aiGatewayTransport.buildUrl('/v1/models')
+      : undefined;
+    const normalizedPlatformModelsUrl = platformBase
+      ? `${platformBase.replace(/\/$/, '')}/models`
+      : undefined;
+    if (platformBase && normalizedPlatformModelsUrl !== normalizedAiGatewayModelsUrl) {
       try {
-        const url = platformBase.replace(/\/$/, '') + '/models';
+        const url = normalizedPlatformModelsUrl!;
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (platformKey) {
           headers['Authorization'] = `Bearer ${platformKey}`;
@@ -514,8 +590,8 @@ export class VercelChatService {
         const resp = await fetch(url, { headers });
         if (resp.ok) {
           const data = await resp.json() as { data?: any[] };
-          if (data.data) {
-            models.push(...data.data);
+          if (Array.isArray(data.data)) {
+            this.pushModelsWithDedup(models, seenModelIds, data.data);
           }
         } else {
           this.logger.warn(`Failed to fetch platform models: ${resp.status}`);
@@ -525,14 +601,8 @@ export class VercelChatService {
       }
     }
 
-    // TODO: 合并用户 Pod Providers 的模型
     return models;
   }
-
-  private mapFinishReason(reason: string): 'stop' | 'length' | 'content_filter' {
-    return reason as any;
-  }
-
   /**
    * Handle API errors and update credential status accordingly
    */
@@ -614,5 +684,49 @@ export class VercelChatService {
     }
 
     return { statusCode: 0 };
+  }
+
+  /**
+   * Check if account has remaining token quota
+   */
+  private async checkTokenQuota(accountId: string): Promise<void> {
+    if (!this.quotaService || !this.usageRepo) {
+      return; // No quota enforcement if not configured
+    }
+
+    try {
+      const quota = await this.quotaService.getAccountQuota(accountId);
+      if (!quota.tokenLimitMonthly) {
+        return; // No limit set
+      }
+
+      const usage = await this.usageRepo.getAccountUsage(accountId);
+      const tokensUsed = usage?.tokensUsed ?? 0;
+
+      if (tokensUsed >= quota.tokenLimitMonthly) {
+        const err = new Error('Token quota exceeded for this month');
+        (err as any).code = 'quota_exceeded';
+        throw err;
+      }
+    } catch (error) {
+      if ((error as any).code === 'quota_exceeded') {
+        throw error;
+      }
+      // Log but don't block on quota check errors
+      this.logger.warn(`Token quota check failed: ${error}`);
+    }
+  }
+
+  /**
+   * Record token usage (fire-and-forget)
+   */
+  private recordTokenUsage(accountId: string, podId: string, tokens: number): void {
+    if (!this.usageRepo) {
+      return;
+    }
+
+    this.usageRepo.incrementTokenUsage(accountId, podId, tokens).catch((err) => {
+      this.logger.warn(`Failed to record token usage: ${err}`);
+    });
   }
 }

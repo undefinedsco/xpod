@@ -17,7 +17,7 @@
 import type { Algebra } from 'sparqlalgebrajs';
 import { DataFactory } from 'rdf-data-factory';
 
-import type { TermOperators } from '../quint/types';
+import type { OperatorValue, TermOperators } from '../quint/types';
 import { fpEncode, NUMERIC_TYPES, DATETIME_TYPE, SEP, serializeObject } from '../quint/serialization';
 import { 
   extractVariable, 
@@ -25,7 +25,8 @@ import {
   extractLiteralValue, 
   extractLiteral, 
   extractTerm,
-  isVariableInPattern 
+  isVariableInPattern,
+  getVariablePosition,
 } from './AlgebraUtils';
 
 const dataFactory = new DataFactory();
@@ -232,21 +233,23 @@ export class FilterPushdownExtractor {
     }
 
     // STRSTARTS, STRENDS, CONTAINS
-    // Database stores serialized literals like "Alice" (with quotes)
-    // So we adjust the search pattern accordingly:
-    // - STRSTARTS('A') -> $startsWith: '"A' (add leading quote)
-    // - STRENDS('e') -> $endsWith: 'e"' (add trailing quote)
-    // - CONTAINS('x') -> $contains: 'x' (quotes don't affect middle content)
+    // Subject/predicate/graph columns store raw IRI strings. Object string
+    // operators are explicit lexical STR(?object) pushdowns so the store can
+    // route text literals to object_text and IRIs/blank nodes to object_key.
     if (['strstarts', 'strends', 'contains'].includes(op) && expr.args.length === 2) {
       const varName = extractStrVariable(expr.args[0]);
       const value = extractLiteralValue(expr.args[1]);
       if (varName && value && isVariableInPattern(varName, pattern)) {
+        const position = getVariablePosition(varName, pattern);
+        const startsWithOp = position === 'object' ? '$strStartsWith' : '$startsWith';
+        const endsWithOp = position === 'object' ? '$strEndsWith' : '$endsWith';
+        const containsOp = position === 'object' ? '$strContains' : '$contains';
         if (op === 'strstarts') {
-          filters[varName] = { $startsWith: '"' + value };
+          filters[varName] = { [startsWithOp]: value };
         } else if (op === 'strends') {
-          filters[varName] = { $endsWith: value + '"' };
+          filters[varName] = { [endsWithOp]: value };
         } else {
-          filters[varName] = { $contains: value };
+          filters[varName] = { [containsOp]: value };
         }
         return filters;
       }
@@ -257,7 +260,10 @@ export class FilterPushdownExtractor {
       const varName = extractStrVariable(expr.args[0]);
       const regexPattern = extractLiteralValue(expr.args[1]);
       if (varName && regexPattern && isVariableInPattern(varName, pattern)) {
-        filters[varName] = { $regex: regexPattern };
+        const position = getVariablePosition(varName, pattern);
+        filters[varName] = position === 'object'
+          ? { $strRegex: regexPattern }
+          : { $regex: regexPattern };
         return filters;
       }
     }
@@ -361,7 +367,6 @@ export class FilterPushdownExtractor {
     }
 
     // LANGMATCHES(LANG(?x), "en") - language tagged literals end with @lang"
-    // Serialization format: "value"@en
     if (op === 'langmatches' && expr.args.length === 2) {
       const langExpr = expr.args[0] as Algebra.Expression;
       const langPattern = expr.args[1];
@@ -373,6 +378,15 @@ export class FilterPushdownExtractor {
         const varName = extractVariable((langExpr as Algebra.OperatorExpression).args[0]);
         
         if (varName && isVariableInPattern(varName, pattern)) {
+          const position = getVariablePosition(varName, pattern);
+          if (position === 'object') {
+            if (langPattern.termType === 'Literal') {
+              const lang = langPattern.value.toLowerCase();
+              filters[varName] = { $language: lang };
+              return filters;
+            }
+          }
+
           // Get the language pattern
           if (langPattern.termType === 'Literal') {
             const lang = langPattern.value.toLowerCase();
@@ -399,7 +413,7 @@ export class FilterPushdownExtractor {
   private extractComparison(
     expr: Algebra.OperatorExpression,
     op: string
-  ): { varName: string; op: string; value: string } | null {
+  ): { varName: string; op: string; value: OperatorValue } | null {
     const [left, right] = expr.args;
 
     // ?var op literal
@@ -426,7 +440,7 @@ export class FilterPushdownExtractor {
     const rightTerm = extractTerm(right);
     if (leftVarForTerm && rightTerm && (op === '=' || op === '!=')) {
       const filterOp = op === '=' ? '$eq' : '$ne';
-      return { varName: leftVarForTerm, op: filterOp, value: serializeObject(rightTerm) };
+      return { varName: leftVarForTerm, op: filterOp, value: rightTerm };
     }
 
     return null;

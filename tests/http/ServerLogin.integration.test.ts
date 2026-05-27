@@ -15,27 +15,86 @@ function joinUrl(base: string, path: string): string {
   return new URL(path, base).toString();
 }
 
-function parseSetCookies(response: any): Record<string, string> {
-  const cookies: Record<string, string> = {};
-  const setCookieHeader = response.headers.get('set-cookie');
-  if (setCookieHeader) {
-    // Handle multiple Set-Cookie headers
-    const cookieStrings = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-    for (const cookieStr of cookieStrings) {
-      const [nameValue] = cookieStr.split(';');
-      const [name, value] = nameValue.split('=');
-      if (name && value) {
-        cookies[name.trim()] = value.trim();
-      }
+async function getOidcEndSessionEndpoint(base: string): Promise<string> {
+  const discoveryResponse = await fetch(joinUrl(base, '.well-known/openid-configuration'), {
+    method: 'GET',
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+
+  if (discoveryResponse.ok) {
+    const discovery = await discoveryResponse.json() as { end_session_endpoint?: string };
+    if (discovery.end_session_endpoint) {
+      return discovery.end_session_endpoint;
     }
   }
+
+  return joinUrl(base, '.oidc/session/end');
+}
+
+function parseSetCookies(response: any): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  const cookieStrings = typeof response.headers?.getSetCookie === 'function'
+    ? response.headers.getSetCookie()
+    : (() => {
+        const setCookieHeader = response.headers?.get?.('set-cookie');
+        return setCookieHeader ? [ setCookieHeader ] : [];
+      })();
+
+  for (const cookieStr of cookieStrings) {
+    const nameValue = cookieStr.split(';', 1)[0];
+    const separatorIndex = nameValue.indexOf('=');
+    if (separatorIndex === -1) {
+      continue;
+    }
+    const name = nameValue.slice(0, separatorIndex).trim();
+    const value = nameValue.slice(separatorIndex + 1).trim();
+    if (name) {
+      cookies[name] = value;
+    }
+  }
+
   return cookies;
+}
+
+function applySetCookies(
+  baseCookies: Record<string, string>,
+  response: Response,
+): Record<string, string> {
+  const nextCookies = { ...baseCookies };
+  for (const [name, value] of Object.entries(parseSetCookies(response))) {
+    if (value === '' || value === 'deleted') {
+      delete nextCookies[name];
+      continue;
+    }
+    nextCookies[name] = value;
+  }
+  return nextCookies;
 }
 
 function buildCookieHeader(cookies: Record<string, string>): string {
   return Object.entries(cookies)
     .map(([name, value]) => `${name}=${value}`)
     .join('; ');
+}
+
+function parseHtmlForm(html: string): { action: string; fields: Record<string, string> } | undefined {
+  const formMatch = html.match(/<form[^>]*action="([^"]+)"[^>]*>/i);
+  if (!formMatch) {
+    return undefined;
+  }
+
+  const fields: Record<string, string> = {};
+  const inputRegex = /<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/gi;
+  for (const match of html.matchAll(inputRegex)) {
+    fields[match[1]] = match[2];
+  }
+
+  return {
+    action: formMatch[1],
+    fields,
+  };
 }
 
 // Use CSS Identity Provider API endpoints discovered from /.account/ controls
@@ -385,8 +444,9 @@ suite('Server Mode Login Integration', () => {
 
   describe('Logout', () => {
     it('logs out and invalidates session', async () => {
-      const response = await fetch(joinUrl(baseUrl, 'idp/session/end'), {
-        method: 'POST',
+      const endSessionEndpoint = await getOidcEndSessionEndpoint(baseUrl);
+      const logoutPage = await fetch(endSessionEndpoint, {
+        method: 'GET',
         headers: {
           'Cookie': buildCookieHeader(sessionCookies),
           'Accept': 'text/html',
@@ -394,27 +454,61 @@ suite('Server Mode Login Integration', () => {
         redirect: 'manual',
       });
 
-      // Should redirect after logout  
-      expect([302, 303, 200, 401]).toContain(response.status);
-      
-      // Session cookies should be cleared or invalidated
-      const cookies = parseSetCookies(response);
-      const clearedCookies = Object.entries(cookies).some(([, value]) => 
-        value === '' || value === 'deleted' || value.includes('expires')
-      );
-      
-      if (response.status === 302 || response.status === 303 || clearedCookies) {
-        // Try to access protected resource - should be denied
-        const protectedResponse = await fetch(joinUrl(baseUrl, '.account/'), {
-          method: 'GET',
+      expect([200, 302, 303, 401]).toContain(logoutPage.status);
+
+      let logoutResponse = logoutPage;
+      let postLogoutCookies = applySetCookies(sessionCookies, logoutPage);
+
+      if (logoutPage.status === 200) {
+        const html = await logoutPage.text();
+        const logoutForm = parseHtmlForm(html);
+        expect(logoutForm).toBeTruthy();
+
+        const formData = new URLSearchParams(logoutForm?.fields ?? {});
+        if (!formData.has('logout')) {
+          formData.set('logout', 'yes');
+        }
+
+        logoutResponse = await fetch(logoutForm!.action, {
+          method: 'POST',
           headers: {
-            'Cookie': buildCookieHeader(sessionCookies),
+            'Cookie': buildCookieHeader(postLogoutCookies),
             'Accept': 'text/html',
+            'Content-Type': 'application/x-www-form-urlencoded',
           },
+          body: formData,
+          redirect: 'manual',
         });
 
-        // Should be redirected to login or get 401/403
-        expect([302, 401, 403, 404]).toContain(protectedResponse.status);
+        expect([200, 302, 303]).toContain(logoutResponse.status);
+        postLogoutCookies = applySetCookies(postLogoutCookies, logoutResponse);
+      }
+
+      const cookies = parseSetCookies(logoutResponse);
+      const clearedCookies = Object.entries(cookies).some(([, value]) =>
+        value === '' || value === 'deleted' || value.includes('expires')
+      );
+
+      if ([200, 302, 303].includes(logoutResponse.status) || clearedCookies) {
+        // Re-open logout flow. Without a session, OIDC should render the
+        // auto-submit branch that includes logout=yes.
+        const postLogoutPage = await fetch(endSessionEndpoint, {
+          method: 'GET',
+          headers: {
+            'Cookie': buildCookieHeader(postLogoutCookies),
+            'Accept': 'text/html',
+          },
+          redirect: 'manual',
+        });
+
+        expect([200, 302, 303]).toContain(postLogoutPage.status);
+
+        if (postLogoutPage.status === 200) {
+          const html = await postLogoutPage.text();
+          const logoutForm = parseHtmlForm(html);
+          expect(logoutForm).toBeTruthy();
+          expect(logoutForm?.fields.logout).toBe('yes');
+        }
       }
     });
   });

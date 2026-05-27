@@ -3,7 +3,7 @@
  */
 import { promises as fs } from 'fs';
 import path from 'path';
-import { createSqliteDatabase } from '../storage/SqliteCompat';
+import { getSqliteRuntime } from '../storage/SqliteRuntime';
 
 export interface SeedPodOptions {
   rootFilePath: string;
@@ -17,7 +17,8 @@ export async function seedPod(options: SeedPodOptions): Promise<void> {
   await fs.mkdir(rootFilePath, { recursive: true });
 
   const sparqlDbPath = path.join(rootFilePath, 'sparql.db');
-  const db = createSqliteDatabase(sparqlDbPath);
+  const sqliteRuntime = getSqliteRuntime();
+  const db = sqliteRuntime.openDatabase(sparqlDbPath);
 
   // 创建 quints 表（如果不存在）
   db.exec(`

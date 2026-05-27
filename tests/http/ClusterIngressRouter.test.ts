@@ -138,7 +138,7 @@ describe('ClusterIngressRouter', () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'node1',
         accessMode: 'direct',
-        publicIp: '203.0.113.10',
+        ipv4: '203.0.113.10',
         publicPort: 443,
       });
 
@@ -160,7 +160,7 @@ describe('ClusterIngressRouter', () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'node1',
         accessMode: 'direct',
-        publicIp: '203.0.113.10',
+        ipv4: '203.0.113.10',
         publicPort: 8443,
       });
 
@@ -192,7 +192,7 @@ describe('ClusterIngressRouter', () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'node1',
         accessMode: 'proxy',
-        publicIp: null,
+        ipv4: null,
       });
       
       (mockRepository.getNodeMetadata as any).mockResolvedValue({
@@ -222,7 +222,7 @@ describe('ClusterIngressRouter', () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'node1',
         accessMode: 'proxy',
-        publicIp: null,
+        ipv4: null,
       });
       
       (mockRepository.getNodeMetadata as any).mockResolvedValue({
@@ -252,7 +252,7 @@ describe('ClusterIngressRouter', () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'node1',
         accessMode: 'direct',
-        publicIp: '203.0.113.10',
+        ipv4: '203.0.113.10',
         publicPort: 443,
       });
 
@@ -275,7 +275,7 @@ describe('ClusterIngressRouter', () => {
       (mockRepository.getNodeConnectivityInfo as any).mockResolvedValue({
         nodeId: 'myapp',
         accessMode: 'direct',
-        publicIp: '198.51.100.20',
+        ipv4: '198.51.100.20',
         publicPort: 443,
       });
 

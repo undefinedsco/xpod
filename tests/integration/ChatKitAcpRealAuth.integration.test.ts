@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { InMemoryStore } from '../../src/api/chatkit/store';
 import type { AiProvider } from '../../src/api/chatkit/service';
+import { AcpRunExecutionBackend } from '../helpers/AcpRunExecutionBackend';
 
 function tryParseSseEvent(line: string): any | null {
   const trimmed = line.trim();
@@ -35,22 +36,23 @@ describe('ChatKitService + ACP real auth flow', () => {
     const svc = new ChatKitService({
       store,
       aiProvider,
-      enablePtyRuntime: true,
+      enableAgentRuntime: true,
+      runExecutionBackend: new AcpRunExecutionBackend(),
     });
 
     const req = {
       type: 'threads.create',
+      params: {
+        workspace: `file://localhost${process.cwd()}`,
+        input: {
+          content: [ { type: 'input_text', text: '请只回复 OK' } ],
+        },
+      },
       metadata: {
         runtime: {
-          workspace: { type: 'path', rootPath: process.cwd() },
           idleMs: 15_000,
           authWaitMs: 180_000,
           runner: { type: 'codebuddy', protocol: 'acp' },
-        },
-      },
-      params: {
-        input: {
-          content: [ { type: 'input_text', text: '请只回复 OK' } ],
         },
       },
     };

@@ -1,9 +1,21 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check } from 'lucide-react';
+import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check, User } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '../context/AuthContext';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
+import {
+  checkRegistrationUsernameAvailability,
+  getRegistrationUsernameError,
+  normalizeRegistrationUsername,
+} from '../utils/registration';
+import {
+  RegistrationError,
+  bootstrapAccountPasswordLogin,
+  completeRegistrationProvisioning,
+  loginAccountPassword,
+} from '../utils/registration-flow';
+import { storeAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 
 interface WelcomePageProps {
   initialIsRegister?: boolean;
@@ -14,16 +26,71 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(initialIsRegister);
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isCheckingUsername, setIsCheckingUsername] = useState(false);
+  const [isUsernameAvailable, setIsUsernameAvailable] = useState<boolean | null>(null);
+  const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
+  const [usernameAvailabilityError, setUsernameAvailabilityError] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const passwordsMatch = password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
+  const normalizedUsername = normalizeRegistrationUsername(username);
+  const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
 
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
     if (returnTo) persistReturnTo(returnTo);
   }, []);
+
+  useEffect(() => {
+    if (!isRegister) {
+      setIsCheckingUsername(false);
+      setIsUsernameAvailable(null);
+      setUsernameSuggestions([]);
+      setUsernameAvailabilityError(null);
+      return;
+    }
+
+    if (!normalizedUsername) {
+      setIsCheckingUsername(false);
+      setIsUsernameAvailable(null);
+      setUsernameSuggestions([]);
+      setUsernameAvailabilityError(null);
+      return;
+    }
+
+    if (usernameError) {
+      setIsCheckingUsername(false);
+      setIsUsernameAvailable(false);
+      setUsernameSuggestions([]);
+      setUsernameAvailabilityError(usernameError);
+      return;
+    }
+
+    let cancelled = false;
+    setIsCheckingUsername(true);
+
+    const timer = window.setTimeout(async () => {
+      const result = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
+      if (cancelled) {
+        return;
+      }
+      setIsCheckingUsername(false);
+      setIsUsernameAvailable(result.available);
+      setUsernameSuggestions(result.suggestions);
+      setUsernameAvailabilityError(result.error ?? null);
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
   // If already logged in, redirect to dashboard
   if (isLoggedIn) {
@@ -31,14 +98,16 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   }
 
   const features = [
-    { icon: Clock, title: 'Your AI Never Stops', desc: 'Runs 24/7, even when you\'re not talking to it' },
-    { icon: Layers, title: 'One Place for Your Whole Life', desc: 'All your messages together in one place' },
-    { icon: Shield, title: 'One Secretary, A Thousand Agents', desc: 'Full power, full privacy' },
+    { icon: Clock, title: 'Your AI Secretary Never Stops', desc: 'Runs 24/7, even when you are not talking to it' },
+    { icon: Layers, title: 'All Your Pieces, In One Place', desc: 'Data, memory, and working context come back into one system' },
+    { icon: Shield, title: 'One Secretary, Many Agents', desc: 'One aligned layer can direct many agents while keeping privacy and control inside your boundary' },
   ];
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsLoading(true);
+    setEmailError(null);
+    setFormError(null);
     const form = new FormData(e.currentTarget);
     const email = form.get('email') as string;
     const password = form.get('password') as string;
@@ -46,47 +115,90 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     try {
       if (isRegister) {
         const confirm = form.get('confirmPassword') as string;
+        const normalizedUsername = normalizeRegistrationUsername(form.get('username') as string);
+        const normalizedUsernameError = getRegistrationUsernameError(normalizedUsername);
         if (password !== confirm) {
           alert('Passwords do not match');
           setIsLoading(false);
           return;
         }
-        // Step 1: Create account
-        let res = await fetch(controls?.account?.create || '/.account/account/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({}),
+        if (normalizedUsernameError) {
+          alert(normalizedUsernameError);
+          setIsLoading(false);
+          return;
+        }
+        const availability = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
+        const fallbackLoginUrl = controls?.password?.login || '/.account/login/password/';
+        const recoverExistingAccount = async (duplicateEmailRecovery = false): Promise<string> => {
+          const login = await loginAccountPassword({
+            duplicateEmailRecovery,
+            email,
+            fetchImpl: fetch,
+            loginUrl: fallbackLoginUrl,
+            password,
+          });
+          storeAccountSessionToken(login.accountToken);
+          return login.accountToken;
+        };
+        if (!availability.available) {
+          let recoveredAccountToken: string | undefined;
+          try {
+            recoveredAccountToken = await recoverExistingAccount();
+          } catch {
+            // If the credentials do not match an existing account, keep the username error.
+          }
+
+          if (recoveredAccountToken) {
+            const result = await completeRegistrationProvisioning({
+              accountToken: recoveredAccountToken,
+              idpIndex,
+              username: normalizedUsername,
+            });
+            window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/account/';
+            return;
+          }
+
+          setIsUsernameAvailable(false);
+          setUsernameSuggestions(availability.suggestions);
+          setUsernameAvailabilityError(availability.error ?? 'Username is already taken');
+          setIsLoading(false);
+          return;
+        }
+        if (availability.error) {
+          setIsUsernameAvailable(false);
+          setUsernameAvailabilityError(availability.error);
+          setIsLoading(false);
+          return;
+        }
+        let accountToken: string;
+        const recoveredAccountToken = await recoverExistingAccount().catch(() => undefined);
+
+        if (recoveredAccountToken) {
+          accountToken = recoveredAccountToken;
+        } else {
+          try {
+            const bootstrap = await bootstrapAccountPasswordLogin({
+              accountCreateUrl: controls?.account?.create || '/.account/account/',
+              email,
+              password,
+              idpIndex,
+            });
+            accountToken = bootstrap.accountToken;
+            storeAccountSessionToken(accountToken);
+          } catch (err: any) {
+            if (!(err instanceof RegistrationError) || err.code !== 'EMAIL_ALREADY_REGISTERED') {
+              throw err;
+            }
+            accountToken = await recoverExistingAccount(true);
+          }
+        }
+
+        const result = await completeRegistrationProvisioning({
+          accountToken,
+          idpIndex,
+          username: normalizedUsername,
         });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to create account');
-
-        // Step 2: Fetch controls to get password.create endpoint
-        res = await fetch(idpIndex, { headers: { Accept: 'application/json' }, credentials: 'include' });
-        const data = await res.json();
-        const addPasswordUrl = data.controls?.password?.create;
-        if (!addPasswordUrl) throw new Error('Password endpoint not found');
-
-        // Step 3: Set password
-        res = await fetch(addPasswordUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ email, password }),
-        });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to set password');
-
-        // Step 4: Auto-login after registration
-        const loginUrl = data.controls?.password?.login || controls?.password?.login || '/.account/login/password/';
-        res = await fetch(loginUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ email, password }),
-        });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Auto-login failed');
-
-        // Registration complete, redirect to account page to create Pod
-        window.location.href = '/.account/account/';
+        window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/account/';
       } else {
         const res = await fetch(controls?.password?.login || '/.account/login/password/', {
           method: 'POST',
@@ -95,63 +207,57 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           body: JSON.stringify({ email, password }),
         });
         const json = await res.json().catch(() => ({}));
-        console.log('[Login] Response status:', res.status);
-        console.log('[Login] Response json:', json);
-        console.log('[Login] Location header:', res.headers.get('Location'));
         
         if (res.ok) {
+          storeAccountSessionToken(typeof json.authorization === 'string' ? json.authorization : undefined);
           // Check if there's an OIDC flow waiting (CSS returns location to consent)
           const headerLocation = res.headers.get('Location');
-          console.log('[Login] json.location:', json.location);
-          console.log('[Login] headerLocation:', headerLocation);
           
           if (json.location) {
-            console.log('[Login] Redirecting to json.location:', json.location);
             window.location.href = json.location;
             return;
           }
           if (headerLocation) {
-            console.log('[Login] Redirecting to headerLocation:', headerLocation);
             window.location.href = headerLocation;
             return;
           }
           
           // No OIDC redirect, check for returnTo or check if OIDC consent is pending
           const returnTo = consumeReturnTo();
-          console.log('[Login] returnTo:', returnTo);
           if (returnTo) {
-            console.log('[Login] Redirecting to returnTo:', returnTo);
             window.location.href = returnTo;
             return;
           }
           
           // Check if there's an OIDC session waiting for consent
-          console.log('[Login] Checking for OIDC consent...');
           try {
             const consentCheck = await fetch('/.account/oidc/consent/', {
-              headers: { Accept: 'application/json' },
+              headers: storedAccountTokenHeaders(),
               credentials: 'include',
             });
-            console.log('[Login] Consent check status:', consentCheck.status);
             if (consentCheck.ok) {
               // OIDC flow is waiting, go to consent
-              console.log('[Login] OIDC flow waiting, redirecting to consent');
               window.location.href = '/.account/oidc/consent/';
               return;
             }
-          } catch (e) {
-            console.log('[Login] Consent check error:', e);
+          } catch {
             // No OIDC flow, continue to dashboard
           }
           
-          console.log('[Login] No redirect found, going to dashboard');
           window.location.href = '/.account/account/';
         } else {
-          alert(json.message || 'Login failed');
+          setFormError(json.message || 'Login failed');
         }
       }
     } catch (err: any) {
-      alert(err.message || 'Operation failed');
+      if (err?.name === 'RegistrationError' && err.code === 'EMAIL_ALREADY_REGISTERED') {
+        setEmailError(err.message);
+      } else if (err?.name === 'RegistrationError' && err.code === 'USERNAME_ALREADY_TAKEN') {
+        setIsUsernameAvailable(false);
+        setUsernameAvailabilityError(err.message);
+      } else {
+        setFormError(err.message || 'Operation failed');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -159,8 +265,16 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
   const toggleMode = () => {
     setIsRegister(!isRegister);
+    setUsername('');
     setPassword('');
     setConfirmPassword('');
+    setIsCheckingUsername(false);
+    setIsUsernameAvailable(null);
+    setUsernameSuggestions([]);
+    setUsernameAvailabilityError(null);
+    setEmail('');
+    setEmailError(null);
+    setFormError(null);
   };
 
   // OIDC Cancel handler
@@ -170,7 +284,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     try {
       const res = await fetch(controls.oidc.cancel, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
       });
       const json = await res.json();
@@ -256,17 +370,77 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
             </div>
 
             <form className="space-y-4" onSubmit={handleSubmit}>
+              {formError && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 text-[11px]">
+                  {formError}
+                </div>
+              )}
               <div className="space-y-3">
+                {isRegister && (
+                  <div className="relative">
+                    <User className={clsx(
+                      'absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4',
+                      usernameError && username.length > 0 ? 'text-amber-500' : 'text-zinc-400',
+                    )} />
+                    <input
+                      name="username"
+                      type="text"
+                      required
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className={clsx(
+                        'block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors',
+                        usernameError && username.length > 0
+                          ? 'border-amber-300 focus:border-amber-500'
+                          : isUsernameAvailable === false
+                            ? 'border-amber-300 focus:border-amber-500'
+                            : isUsernameAvailable
+                              ? 'border-emerald-300 focus:border-emerald-500'
+                              : 'border-zinc-200 focus:border-[#7C4DFF]',
+                      )}
+                      placeholder="Username"
+                    />
+                  </div>
+                )}
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
                   <input
                     name="email"
                     type="email"
                     required
-                    className="block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-sm placeholder:text-zinc-400 focus:border-[#7C4DFF] focus:outline-none transition-colors"
+                    value={email}
+                    onChange={(event) => {
+                      setEmail(event.target.value);
+                      if (emailError) {
+                        setEmailError(null);
+                      }
+                    }}
+                    className={clsx(
+                      'block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors',
+                      emailError ? 'border-red-300 focus:border-red-500' : 'border-zinc-200 focus:border-[#7C4DFF]',
+                    )}
                     placeholder="Email"
                   />
                 </div>
+                {emailError && (
+                  <p className="text-[11px] leading-relaxed text-red-600">
+                    {emailError}{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRegister(false);
+                        setEmailError(null);
+                        setFormError(null);
+                      }}
+                      className="font-medium text-[#7C4DFF] hover:text-[#6B3FE8]"
+                    >
+                      Sign in
+                    </button>
+                  </p>
+                )}
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
                   <input
@@ -301,6 +475,45 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                   </div>
                 )}
               </div>
+              {isRegister && (
+                <p className={clsx(
+                  'text-[11px] leading-relaxed',
+                  usernameError && username.length > 0
+                    ? 'text-amber-600'
+                    : isUsernameAvailable === false
+                      ? 'text-amber-600'
+                      : isUsernameAvailable
+                        ? 'text-emerald-600'
+                        : 'text-zinc-500',
+                )}>
+                  {usernameError && username.length > 0
+                    ? usernameError
+                    : isCheckingUsername
+                      ? 'Checking username availability...'
+                      : usernameAvailabilityError
+                        ? usernameAvailabilityError
+                      : normalizedUsername && isUsernameAvailable === false
+                        ? 'Username is already taken.'
+                        : normalizedUsername && isUsernameAvailable
+                          ? 'Username is available.'
+                          : 'Username becomes your first Pod URL. Use 3-63 lowercase letters, numbers, or hyphens.'}
+                </p>
+              )}
+
+              {isRegister && usernameSuggestions.length > 0 && !usernameError && isUsernameAvailable === false && (
+                <div className="flex flex-wrap gap-2">
+                  {usernameSuggestions.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() => setUsername(suggestion)}
+                      className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[11px] text-zinc-600 hover:border-[#7C4DFF] hover:text-[#7C4DFF]"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {!isRegister && (
                 <div className="flex justify-end">
@@ -312,7 +525,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
               <button
                 type="submit"
-                disabled={isLoading || isCancelling}
+                disabled={isLoading || isCancelling || Boolean(isRegister && (usernameError || isCheckingUsername || isUsernameAvailable === false))}
                 className="w-full py-3 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
               >
                 {isLoading ? (

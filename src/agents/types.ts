@@ -34,7 +34,7 @@ export type McpServerConfig = {
  * - claude: @anthropic-ai/claude-agent-sdk
  *
  * 不支持的原因：
- * - OpenAI: 没有完整的 Agent SDK，Codex CLI 使用 MCP 不使用 ACP
+ * - OpenAI: 没有完整的 Agent SDK，Codex CLI 通过 ACP runner 接入，不走这里
  * - Gemini: 没有完整的 Agent SDK，CLI core 使用 MCP 不使用 ACP
  */
 export type ExecutorType = 'codebuddy' | 'claude';
@@ -63,18 +63,18 @@ export interface AiCredential {
 }
 
 /**
- * 供应商配置（从 Pod 读取）
+ * 供应商配置（Pod Provider + Agent runtime 的组合视图）
  */
 export interface ProviderConfig {
   /** 供应商 ID */
   id: string;
   /** 显示名称 */
   displayName: string;
-  /** 执行器类型（SDK 类型） */
+  /** 运行时类型（来自 Agent .meta runtimeKind，不存储在 Provider 实体） */
   executorType: ExecutorType;
   /** API 端点 */
   baseUrl?: string;
-  /** 默认模型 URI */
+  /** 默认模型 ID */
   defaultModel?: string;
   /** 是否启用 */
   enabled: boolean;

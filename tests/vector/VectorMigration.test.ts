@@ -28,7 +28,7 @@ describe.skip('Vector Migration', () => {
   }
 
   beforeAll(async () => {
-    store = new SqliteVectorStore(':memory:' as any);
+    store = new SqliteVectorStore({ connectionString: ':memory:' });
     await store.open();
 
     // 准备旧模型的数据

@@ -39,6 +39,8 @@ describe('ChatKit Service', () => {
       store,
       aiProvider: new MockAiProvider(),
       systemPrompt: 'You are a helpful test assistant.',
+      enableAgentRuntime: false,
+      allowDirectAiFallback: true,
     });
   });
 

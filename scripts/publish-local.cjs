@@ -2,6 +2,17 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
+const { applyPlatformOptionalDependencies } = require('./platform-binaries.cjs');
+const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org';
+
+function readNonEmptyEnv(key) {
+  const value = process.env[key];
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 function buildLocalVersion(currentVersion) {
   const [core] = currentVersion.split('-');
@@ -16,12 +27,13 @@ function run(command, extraEnv = {}) {
   });
 }
 
-function capture(command, extraEnv = {}) {
-  return execSync(command, {
-    encoding: 'utf8',
-    stdio: [ 'ignore', 'pipe', 'inherit' ],
-    env: { ...process.env, ...extraEnv },
-  });
+function readPackMetadata(packJsonPath) {
+  const items = JSON.parse(fs.readFileSync(packJsonPath, 'utf8'));
+  const pack = Array.isArray(items) ? items[0] : items;
+  if (!pack?.filename) {
+    throw new Error(`No tarball filename found in ${packJsonPath}`);
+  }
+  return pack;
 }
 
 function main() {
@@ -32,29 +44,36 @@ function main() {
 
   const nextVersion = buildLocalVersion(packageJson.version);
   packageJson.version = nextVersion;
+  applyPlatformOptionalDependencies(packageJson, nextVersion);
 
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n');
   console.log(`[publish:local] version bumped to ${nextVersion}`);
 
   const dryRun = process.argv.includes('--dry-run') || process.env.XPOD_PUBLISH_DRY_RUN === 'true';
-  const publishRegistry = process.env.XPOD_NPM_REGISTRY || 'https://registry.npmjs.org';
+  const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY') || OFFICIAL_NPM_REGISTRY;
 
   try {
     run('bun run build');
+
     const npmCacheDir = path.join(repoRoot, '.test-data', 'npm-cache');
     const packDir = path.join(repoRoot, '.test-data', 'npm-pack');
     fs.mkdirSync(npmCacheDir, { recursive: true });
     fs.rmSync(packDir, { recursive: true, force: true });
     fs.mkdirSync(packDir, { recursive: true });
+
     const npmEnv = {
       npm_config_cache: npmCacheDir,
       npm_config_registry: publishRegistry,
     };
-    const packJsonRaw = capture(`npm pack --json --silent --pack-destination ${JSON.stringify(packDir)}`, npmEnv);
+
+    run(`node scripts/run-npm-pack.cjs ${JSON.stringify(packDir)} ${JSON.stringify(npmCacheDir)}`, npmEnv);
+
     const packJsonPath = path.join(packDir, 'pack.json');
-    fs.writeFileSync(packJsonPath, packJsonRaw);
     run(`node scripts/check-pack-json.cjs ${JSON.stringify(packJsonPath)}`);
-    const pack = JSON.parse(packJsonRaw)[0];
+
+    run(`node scripts/publish-platform-packages.cjs --tag=local${dryRun ? ' --dry-run' : ''}`, npmEnv);
+
+    const pack = readPackMetadata(packJsonPath);
     const tarballPath = path.join(packDir, pack.filename);
     run(`npm publish ${JSON.stringify(tarballPath)} --registry ${publishRegistry} --tag local --access public${dryRun ? ' --dry-run' : ''}`, npmEnv);
   } catch (error) {

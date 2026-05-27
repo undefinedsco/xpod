@@ -66,7 +66,7 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   Provider: 'Provider',
   /** AI 模型 */
   Model: 'Model',
-  /** Agent 供应商（指定 executorType） */
+  /** @deprecated 旧 AgentProvider 名义，当前统一收敛到 Provider */
   AgentProvider: 'AgentProvider',
   /** Agent 配置 */
   AgentConfig: 'AgentConfig',
@@ -158,12 +158,26 @@ export const UDFS = createNamespace('udfs', 'https://undefineds.co/ns#', {
   hasModel: 'hasModel',
   /** 默认模型 */
   defaultModel: 'defaultModel',
+  /** 运行时类型 (claude, codebuddy) */
+  runtimeKind: 'runtimeKind',
 
   // --- Agent 属性 ---
-  /** 执行器类型 (claude, openai, gemini, codebuddy) */
+  /** @deprecated 运行时应使用 runtimeKind */
   executorType: 'executorType',
   /** System Prompt */
   systemPrompt: 'systemPrompt',
+  /** ACP 权限模式 */
+  permissionMode: 'permissionMode',
+  /** 允许工具 */
+  allowedTool: 'allowedTool',
+  /** 禁用工具 */
+  disallowedTool: 'disallowedTool',
+  /** Agent skill package */
+  skill: 'skill',
+  /** @deprecated Codex rules are stored under .codex/rules, not Agent Profile refs */
+  rule: 'rule',
+  /** Agent MCP server config definition */
+  mcpServer: 'mcpServer',
   /** 最大轮数 */
   maxTurns: 'maxTurns',
   /** 超时时间 */

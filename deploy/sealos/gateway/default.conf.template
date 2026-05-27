@@ -1,0 +1,187 @@
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  '' close;
+}
+
+server {
+  listen 8080 default_server;
+  server_name _;
+  access_log off;
+
+  location = /healthz {
+    default_type text/plain;
+    return 200 'ok';
+  }
+
+  location / {
+    return 404;
+  }
+}
+
+server {
+  listen ${HOMEPAGE_PORT};
+  server_name _;
+  client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+
+  location = /healthz {
+    default_type text/plain;
+    return 200 'ok';
+  }
+
+  location / {
+    proxy_pass ${HOMEPAGE_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_redirect off;
+    proxy_buffering off;
+  }
+}
+
+server {
+  listen ${ID_PORT};
+  server_name _;
+  client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+
+  location = /healthz {
+    default_type text/plain;
+    return 200 'ok';
+  }
+
+  location / {
+    proxy_pass ${ID_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_redirect off;
+    proxy_buffering off;
+  }
+}
+
+server {
+  listen ${PODS_PORT};
+  server_name _;
+  client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+
+  location = /healthz {
+    default_type text/plain;
+    return 200 'ok';
+  }
+
+  location / {
+    proxy_pass ${PODS_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_redirect off;
+    proxy_buffering off;
+  }
+}
+
+server {
+  listen ${API_PORT};
+  server_name _;
+  client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+
+  location = /healthz {
+    default_type text/plain;
+    return 200 'ok';
+  }
+
+  location / {
+    proxy_pass ${API_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_redirect off;
+    proxy_buffering off;
+  }
+}
+
+server {
+  listen ${DISCOVERY_PORT};
+  server_name _;
+  client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+
+  location = /healthz {
+    default_type text/plain;
+    return 200 'ok';
+  }
+
+  location / {
+    proxy_pass ${DISCOVERY_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_redirect off;
+    proxy_buffering off;
+  }
+}
+
+server {
+  listen ${BILLING_PORT};
+  server_name _;
+  client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+
+  location = /healthz {
+    default_type text/plain;
+    return 200 'ok';
+  }
+
+  location / {
+    proxy_pass ${BILLING_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_redirect off;
+    proxy_buffering off;
+  }
+}

@@ -12,6 +12,7 @@
  * - Client Credentials (Basic Auth with client_id:client_secret): for edge nodes and third-party backends
  */
 
+import '../runtime/configure-drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import { startApiService } from './runtime';
 
@@ -19,10 +20,8 @@ async function main(): Promise<void> {
   const logger = getLoggerFor('Main');
   const service = await startApiService();
 
-  // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Stopping API Service (${signal})...`);
-
     await service.stop();
     process.exit(0);
   };

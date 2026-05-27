@@ -9,6 +9,7 @@ Pod 内数据的读写**第一优先级使用 drizzle-solid** 进行操作：
 2. **绕过前先报告**：如遇 drizzle-solid 无法解决的问题，**第一时间整理 issue 报告**，记录问题场景、复现步骤和根因分析
 3. **持续改进**：通过 issue 驱动 drizzle-solid 的迭代，持续提高其易用性和健壮性
 4. **临时绕过**：仅在 issue 已记录且确实阻塞开发时，才考虑使用原生 SPARQL 或其他方式绕过
+5. **建模规则**：Pod/RDF schema、URI 字段、日期分桶和 exact id 操作必须遵守 [`docs/solid-modeling.md`](docs/solid-modeling.md)。
 
 ## Project Structure & Module Organization
 Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/` with two main entry points: `local.json` for development and `cloud.json` for production. Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` handle storage smoke tests such as `node scripts/testInsert.js`.
@@ -163,6 +164,11 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 - **Pod 配置位置**：`modelProviderTable` schema，字段包括 `baseUrl`、`apiKey`、`proxy`、`defaultModel` 等。
 - **回退顺序**：Pod 配置 > 环境变量（仅用于开发/测试兜底） > 默认值（如 Ollama localhost）。
 - **代理配置**：用户在配置 AI provider 时一并填写 `proxyUrl`，代码中**不要为代理添加环境变量支持**。
+
+### 生态集成原则
+- **优先对接生态，不重复造轮子**：通用基础设施能力优先复用成熟生态；Xpod 优先提供兼容 API、Backend、Adapter 或 Provider，而不是 Fork 或重写对方内核。
+- **优先封装知名协议 API 以降低迁移成本**：如生态已形成稳定主流协议，优先在 Pod 边界提供兼容 API，让外部系统可用熟悉协议接入 Xpod。
+- **协议插件作为次一级扩展机制**：非一等原生能力应通过协议插件或带路径前缀的兼容入口提供支持，并保持产品抽象独立于具体后端。
 
 ## Package Manager
 - **主线使用 bun**：根目录默认使用 Bun 管理依赖并执行脚本。

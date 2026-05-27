@@ -10,13 +10,16 @@ import { getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
  */
 export interface ChatCompletionRequest {
   model: string;
-  messages: Array<{
-    role: 'system' | 'user' | 'assistant';
-    content: string;
+  messages: Array<Record<string, unknown> & {
+    role: string;
+    content?: unknown;
   }>;
   temperature?: number;
   max_tokens?: number;
   stream?: boolean;
+  tools?: unknown[];
+  tool_choice?: unknown;
+  [key: string]: unknown;
 }
 
 /**
@@ -31,9 +34,10 @@ export interface ChatCompletionResponse {
     index: number;
     message: {
       role: 'assistant';
-      content: string;
+      content: string | null;
+      tool_calls?: unknown[];
     };
-    finish_reason: 'stop' | 'length' | 'content_filter';
+    finish_reason: 'stop' | 'length' | 'content_filter' | 'tool_calls' | null;
   }>;
   usage: {
     prompt_tokens: number;
@@ -135,15 +139,13 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
     try {
       const messages = payload.messages as ChatCompletionRequest['messages'];
       const completionRequest: ChatCompletionRequest = {
+        ...payload,
         model: payload.model as string,
         messages,
-        temperature: typeof payload.temperature === 'number' ? payload.temperature : undefined,
-        max_tokens: typeof payload.max_tokens === 'number' ? payload.max_tokens : undefined,
-        stream: payload.stream === true,
       };
 
       // Handle streaming
-      if (completionRequest.stream) {
+      if (completionRequest.stream === true) {
         const streamResult = await chatService.stream(completionRequest, auth);
         // Vercel AI SDK v6 uses toTextStreamResponse (not toDataStreamResponse)
         const webResponse = streamResult.toTextStreamResponse();

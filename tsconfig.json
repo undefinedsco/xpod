@@ -10,6 +10,7 @@
     "module": "CommonJS",
     "resolveJsonModule": true,
     "moduleResolution": "node",
+    "preserveSymlinks": true,
     "skipLibCheck": true,
     "strict": true,
     "strictFunctionTypes": true,

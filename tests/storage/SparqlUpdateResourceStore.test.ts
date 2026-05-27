@@ -1,9 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { DataFactory } from 'n3';
 import { Readable } from 'stream';
+import arrayifyStream from 'arrayify-stream';
 import {
+  BasicRepresentation,
   RepresentationMetadata,
   guardedStreamFrom,
+  guardStream,
 } from '@solid/community-server';
 import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore';
 
@@ -32,6 +35,7 @@ const mockAuxiliaryStrategy = {
   getAuxiliaryIdentifiers: vi.fn().mockReturnValue([]),
   getAuxiliaryIdentifier: vi.fn(),
   getSubjectIdentifier: vi.fn(),
+  addMetadata: vi.fn().mockResolvedValue(undefined),
   isRequiredInRoot: vi.fn().mockReturnValue(false),
   usesOwnAuthorization: vi.fn().mockReturnValue(false),
   validate: vi.fn(),
@@ -184,6 +188,69 @@ describe('SparqlUpdateResourceStore', () => {
       // IRIs should have angle brackets
       expect(executedQuery).toContain('<http://example.org/bob>');
       expect(executedQuery).toContain('<http://example.org/charlie>');
+    });
+  });
+
+  describe('local-first RDF reads', () => {
+    it('delegates to the local-first RDF resolver before the normal store path', async () => {
+      const identifier = { path: 'http://localhost:3000/alice/data.ttl' };
+      const localMetadata = new RepresentationMetadata(identifier);
+      localMetadata.contentType = 'text/turtle';
+      const localData = guardStream(Readable.from([ '<#me> <https://schema.org/name> "Alice" .\n' ]));
+      const localFirstRdfRepresentationResolver = {
+        resolve: vi.fn().mockResolvedValue(new BasicRepresentation(localData, localMetadata)),
+      };
+      accessor = {
+        ...createMockAccessor(),
+        getData: vi.fn().mockRejectedValue(new Error('normal getData should not be used')),
+      };
+      store = new SparqlUpdateResourceStore({
+        accessor: accessor as any,
+        identifierStrategy: mockIdentifierStrategy as any,
+        auxiliaryStrategy: mockAuxiliaryStrategy as any,
+        metadataStrategy: mockAuxiliaryStrategy as any,
+        localFirstRdfRepresentationResolver,
+      });
+
+      const representation = await store.getRepresentation(identifier);
+      const chunks = await arrayifyStream(representation.data as any);
+      const text = chunks
+        .map((chunk: Buffer | Uint8Array | string) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+        .join('');
+
+      expect(localFirstRdfRepresentationResolver.resolve).toHaveBeenCalledWith(identifier);
+      expect(accessor.getData).not.toHaveBeenCalled();
+      expect(representation.metadata.contentType).toBe('text/turtle');
+      expect(representation.binary).toBe(true);
+      expect(text).toContain('Alice');
+    });
+
+    it('falls back to the normal store path when the local-first resolver does not resolve', async () => {
+      const identifier = { path: 'http://localhost:3000/alice/photo.png' };
+      const binaryMetadata = new RepresentationMetadata(identifier);
+      binaryMetadata.contentType = 'image/png';
+      const binaryData = guardStream(Readable.from([ Buffer.from('png') ]));
+      const localFirstRdfRepresentationResolver = {
+        resolve: vi.fn().mockResolvedValue(undefined),
+      };
+      accessor = {
+        ...createMockAccessor(),
+        getMetadata: vi.fn().mockResolvedValue(binaryMetadata),
+        getData: vi.fn().mockResolvedValue(binaryData),
+      };
+      store = new SparqlUpdateResourceStore({
+        accessor: accessor as any,
+        identifierStrategy: mockIdentifierStrategy as any,
+        auxiliaryStrategy: mockAuxiliaryStrategy as any,
+        metadataStrategy: mockAuxiliaryStrategy as any,
+        localFirstRdfRepresentationResolver,
+      });
+
+      const representation = await store.getRepresentation(identifier);
+
+      expect(localFirstRdfRepresentationResolver.resolve).toHaveBeenCalledWith(identifier);
+      expect(accessor.getData).toHaveBeenCalledWith(identifier);
+      expect(representation.metadata.contentType).toBe('image/png');
     });
   });
 });

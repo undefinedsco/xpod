@@ -148,7 +148,7 @@ describe('ClusterWebSocketConfigurator', () => {
       mockRepository.getNodeConnectivityInfo = vi.fn().mockResolvedValue({
         nodeId: 'node1',
         accessMode: 'direct',
-        publicIp: '1.2.3.4',
+        ipv4: '1.2.3.4',
         publicPort: 443,
       });
 
@@ -169,7 +169,7 @@ describe('ClusterWebSocketConfigurator', () => {
       mockRepository.getNodeConnectivityInfo = vi.fn().mockResolvedValue({
         nodeId: 'node1',
         accessMode: 'direct',
-        publicIp: '1.2.3.4',
+        ipv4: '1.2.3.4',
         publicPort: 8443,
       });
 

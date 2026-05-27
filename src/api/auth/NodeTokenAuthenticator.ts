@@ -19,14 +19,13 @@ export class NodeTokenAuthenticator implements Authenticator {
     const auth = request.headers.authorization;
     // 支持两种格式:
     // 1. XpodNode nodeId:token
-    // 2. Bearer username:secret (带 X-Node-Id 头)
+    // 2. Bearer <raw-node-token> (带 X-Node-Id 头)
+    // 3. Bearer username:secret / base64(username:secret) (兼容旧格式，带 X-Node-Id 头)
     if (auth?.startsWith('XpodNode ')) {
       return true;
     }
     if (auth?.startsWith('Bearer ') && request.headers['x-node-id']) {
-      const token = auth.slice(7).trim();
-      // Node Token 包含 ':'，不是 JWT
-      return token.includes(':') || this.isBase64NodeToken(token);
+      return true;
     }
     return false;
   }
@@ -47,17 +46,15 @@ export class NodeTokenAuthenticator implements Authenticator {
       nodeId = credentials.slice(0, colonIndex);
       token = credentials.slice(colonIndex + 1);
     } else {
-      // 格式: Bearer username:secret (带 X-Node-Id 头)
+      // 格式: Bearer <raw-node-token> (带 X-Node-Id 头)
+      // 兼容旧的 username:secret / base64(username:secret) 形式。
       nodeId = request.headers['x-node-id'] as string;
-      token = auth.slice(7).trim();
-
-      // 尝试从 token 解析 username
-      const parsed = this.parseNodeToken(token);
-      if (!parsed) {
-        return { success: false, error: 'Invalid node token format' };
+      const bearerToken = auth.slice(7).trim();
+      if (!bearerToken) {
+        return { success: false, error: 'Empty node token' };
       }
-      // 使用解析出的完整 token
-      token = parsed.token;
+      const parsed = this.parseNodeToken(bearerToken);
+      token = parsed?.token ?? bearerToken;
     }
 
     try {

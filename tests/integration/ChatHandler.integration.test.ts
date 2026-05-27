@@ -134,6 +134,57 @@ describe('ChatHandler Integration', () => {
     expect(chatService.stream).toHaveBeenCalled();
   });
 
+  it('should preserve OpenAI tool-call fields at the chat completions boundary', async () => {
+    const toolCalls = [
+      {
+        id: 'call_1',
+        type: 'function',
+        function: {
+          name: 'bash',
+          arguments: '{"command":"pwd"}',
+        },
+      },
+    ];
+    const tools = [
+      {
+        type: 'function',
+        function: {
+          name: 'bash',
+          description: 'Run a shell command',
+          parameters: {
+            type: 'object',
+            properties: {
+              command: { type: 'string' },
+            },
+            required: ['command'],
+          },
+        },
+      },
+    ];
+    const body = {
+      model: 'xpod-default',
+      stream: false,
+      messages: [
+        { role: 'user', content: 'List the current directory using the bash tool.' },
+        { role: 'assistant', content: null, tool_calls: toolCalls },
+        { role: 'tool', tool_call_id: 'call_1', content: '/tmp/project' },
+      ],
+      tools,
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+    };
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(200);
+    expect(chatService.complete).toHaveBeenCalledOnce();
+    expect(chatService.complete.mock.calls[0]?.[0]).toEqual(body);
+  });
+
   it('should list models', async () => {
     const response = await fetch(`${baseUrl}/v1/models`, {
       headers: { 'Authorization': 'Bearer test-token' },
@@ -182,4 +233,3 @@ describe('ChatHandler without service', () => {
     expect(data.error).toBe('Chat service not configured');
   });
 });
-

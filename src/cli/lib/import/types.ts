@@ -70,6 +70,7 @@ export type DbType = 'postgres' | 'sqlite';
 export interface DbSource {
   type: DbType;
   connectionString: string;
+  encryption?: unknown;
 }
 
 // ============================================

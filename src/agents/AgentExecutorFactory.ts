@@ -1,22 +1,24 @@
 /**
  * Agent Executor Factory
  *
- * 从 Pod 读取凭证和供应商配置，创建对应的 Agent 执行器。
+ * 从 Pod 读取凭证和 Provider 配置，创建对应的 Agent 执行器。
  *
  * 支持的执行器类型：
  * - codebuddy: CodeBuddy Agent SDK
  * - claude: Claude Agent SDK
  *
  * 使用流程：
- * 1. 从 Pod 读取 AgentProvider 配置
+ * 1. 从 Pod 读取 Provider 配置
  * 2. 从 Pod 读取对应的 Credential
- * 3. 根据 executorType 创建对应的执行器实例
+ * 3. 根据 runtimeKind 创建对应的执行器实例
  */
 
 import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
+import { selectAIConfigCredential } from '@undefineds.co/models';
 import type { IAgentExecutor, ExecutorType, AiCredential, ProviderConfig, BaseExecutorOptions } from './types';
-import { AgentProvider } from './schema/tables';
+import { Provider } from '../ai/schema/provider';
+import { Model } from '../ai/schema/model';
 import { Credential } from '../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../credential/schema/types';
 
@@ -25,8 +27,9 @@ import { ClaudeExecutor } from './ClaudeExecutor';
 import { CodeBuddyExecutor } from './CodeBuddyExecutor';
 
 const schema = {
-  agentProvider: AgentProvider,
+  provider: Provider,
   credential: Credential,
+  model: Model,
 };
 
 /**
@@ -41,6 +44,15 @@ export const SUPPORTED_EXECUTOR_TYPES: ExecutorType[] = ['codebuddy', 'claude'];
  */
 export class AgentExecutorFactory {
   private readonly logger = getLoggerFor(this);
+
+  private async resolveModelId(db: any, modelRef: string | null | undefined): Promise<string | undefined> {
+    if (!modelRef) {
+      return undefined;
+    }
+
+    const model = await db.findByIri(Model, modelRef);
+    return model?.id ?? undefined;
+  }
 
   /**
    * 检查执行器类型是否支持
@@ -61,6 +73,7 @@ export class AgentExecutorFactory {
   public async create(
     podBaseUrl: string,
     providerId: string,
+    runtimeKind: ExecutorType,
     authenticatedFetch: typeof fetch,
     webId?: string,
   ): Promise<IAgentExecutor | null> {
@@ -72,64 +85,60 @@ export class AgentExecutorFactory {
       const db: any = drizzle(session, { schema });
 
       // 1. 读取供应商配置
-      const provider = await db.findByLocator(AgentProvider, { id: providerId });
+      const provider = await db.findById(Provider, providerId);
 
       if (!provider) {
-        this.logger.debug(`Agent provider not found: ${providerId}`);
+        this.logger.debug(`Provider not found: ${providerId}`);
         return null;
       }
 
       if (provider.enabled !== 'true') {
-        this.logger.debug(`Agent provider is disabled: ${providerId}`);
+        this.logger.debug(`Provider is disabled: ${providerId}`);
         return null;
       }
 
-      // 检查执行器类型是否支持
-      if (!this.isSupported(provider.executorType)) {
-        this.logger.warn(`Unsupported executor type: ${provider.executorType}. Only 'codebuddy' and 'claude' are supported.`);
+      if (!this.isSupported(runtimeKind)) {
+        this.logger.warn(`Unsupported runtime kind: ${runtimeKind}. Only 'codebuddy' and 'claude' are supported.`);
         return null;
       }
 
-      // 2. 读取凭证
-      const providerUri = `${podBaseUrl}settings/ai/agent-providers.ttl#${providerId}`;
       const credentials = await db.query.credential.findMany({
         where: and(
           eq(Credential.service, ServiceType.AI),
           eq(Credential.status, CredentialStatus.ACTIVE),
-          eq(Credential.provider, providerUri),
         ),
       });
+      const providers = await db.query.provider.findMany();
+      const selection = selectAIConfigCredential(providerId, credentials, providers);
 
-      if (credentials.length === 0) {
-        this.logger.debug(`No active credential found for agent provider: ${providerId}`);
+      if (!selection) {
+        this.logger.debug(`No active credential found for provider: ${providerId}`);
         return null;
       }
 
-      // 随机选择一个凭证（负载均衡）
-      const credential = credentials[Math.floor(Math.random() * credentials.length)] as any;
-
       // 3. 构建凭证对象
       const aiCredential: AiCredential = {
-        providerId,
-        apiKey: credential.apiKey ?? '',
-        baseUrl: credential.baseUrl ?? provider.baseUrl ?? undefined,
-        proxyUrl: credential.proxyUrl ?? undefined,
-        projectId: credential.projectId ?? undefined,
-        organizationId: credential.organizationId ?? undefined,
+        providerId: selection.providerId,
+        apiKey: selection.apiKey,
+        baseUrl: selection.baseUrl,
+        proxyUrl: selection.proxyUrl,
+        projectId: (selection.credential as any).projectId ?? undefined,
+        organizationId: (selection.credential as any).organizationId ?? undefined,
       };
 
       // 4. 构建供应商配置
+      const defaultModel = await this.resolveModelId(db, provider.defaultModel ?? provider.hasModel);
       const providerConfig: ProviderConfig = {
         id: provider.id,
         displayName: provider.displayName ?? provider.id,
-        executorType: provider.executorType as ExecutorType,
+        executorType: runtimeKind,
         baseUrl: provider.baseUrl ?? undefined,
-        defaultModel: provider.defaultModel ?? undefined,
+        defaultModel,
         enabled: provider.enabled === 'true',
       };
 
       // 5. 创建执行器
-      return this.createExecutor(provider.executorType as ExecutorType, {
+      return this.createExecutor(runtimeKind, {
         providerId,
         credential: aiCredential,
         providerConfig,
@@ -146,6 +155,7 @@ export class AgentExecutorFactory {
   public async listProviders(
     podBaseUrl: string,
     authenticatedFetch: typeof fetch,
+    runtimeKind: ExecutorType,
     webId?: string,
   ): Promise<ProviderConfig[]> {
     try {
@@ -155,18 +165,18 @@ export class AgentExecutorFactory {
       };
       const db: any = drizzle(session, { schema });
 
-      const providers = await db.query.agentProvider.findMany();
+      const providers = await db.query.provider.findMany();
 
-      return providers.map((p: typeof providers[number]) => ({
+      return Promise.all(providers.map(async (p: typeof providers[number]) => ({
         id: p.id,
         displayName: p.displayName ?? p.id,
-        executorType: p.executorType as ExecutorType,
+        executorType: runtimeKind,
         baseUrl: p.baseUrl ?? undefined,
-        defaultModel: p.defaultModel ?? undefined,
+        defaultModel: await this.resolveModelId(db, p.defaultModel ?? p.hasModel),
         enabled: p.enabled === 'true',
-      }));
+      })));
     } catch (error) {
-      this.logger.error('Failed to list agent providers:', error);
+      this.logger.error('Failed to list providers:', error);
       return [];
     }
   }
@@ -177,22 +187,27 @@ export class AgentExecutorFactory {
   public async listEnabledProviders(
     podBaseUrl: string,
     authenticatedFetch: typeof fetch,
+    runtimeKind: ExecutorType,
     webId?: string,
   ): Promise<ProviderConfig[]> {
-    const providers = await this.listProviders(podBaseUrl, authenticatedFetch, webId);
+    const providers = await this.listProviders(podBaseUrl, authenticatedFetch, runtimeKind, webId);
     return providers.filter((p) => p.enabled);
   }
 
   /**
-   * 列出所有支持的供应商（executorType 受支持且已启用）
+   * 列出所有支持的供应商（runtimeKind 受支持且已启用）
    */
   public async listSupportedProviders(
     podBaseUrl: string,
     authenticatedFetch: typeof fetch,
+    runtimeKind: ExecutorType,
     webId?: string,
   ): Promise<ProviderConfig[]> {
-    const providers = await this.listEnabledProviders(podBaseUrl, authenticatedFetch, webId);
-    return providers.filter((p) => this.isSupported(p.executorType));
+    if (!this.isSupported(runtimeKind)) {
+      return [];
+    }
+
+    return this.listEnabledProviders(podBaseUrl, authenticatedFetch, runtimeKind, webId);
   }
 
   /**

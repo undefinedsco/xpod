@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { CardWrapper } from '../components/CardWrapper';
 import { LoadingScreen } from '../components/LoadingScreen';
+import { storedAccountTokenHeaders } from '../utils/account-session';
 
 export function LoginSelectPage() {
   const { controls, isLoggedIn } = useAuth();
@@ -18,7 +19,7 @@ export function LoginSelectPage() {
     (async () => {
       try {
         if (controls?.main?.logins) {
-          const res = await fetch(controls.main.logins, { headers: { Accept: 'application/json' }, credentials: 'include' });
+          const res = await fetch(controls.main.logins, { headers: storedAccountTokenHeaders(), credentials: 'include' });
           const json = await res.json();
           const entries = Object.entries(json.logins || {}) as [string, string][];
           if (entries.length === 1) {

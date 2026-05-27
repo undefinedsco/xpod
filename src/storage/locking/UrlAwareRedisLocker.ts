@@ -1,5 +1,9 @@
 import Redis from 'ioredis';
 import { RedisLocker } from '@solid/community-server';
+import {
+  attachRedisClientErrorHandler,
+  isIgnorableRedisShutdownError,
+} from '../redis/RedisClientLifecycle';
 
 const REDIS_LUA_SCRIPTS: Record<string, string> = (() => {
   try {
@@ -26,6 +30,8 @@ export interface UrlAwareRedisLockerOptions {
  * 替换掉父类构造函数中创建的（会报错的）连接。
  */
 export class UrlAwareRedisLocker extends RedisLocker {
+  private shuttingDown: boolean;
+
   constructor(options: UrlAwareRedisLockerOptions = {}) {
     const redisClient = options.redisClient ?? '127.0.0.1:6379';
     const attemptSettings = {
@@ -61,6 +67,28 @@ export class UrlAwareRedisLocker extends RedisLocker {
       (this as any).redisLock = redis;
     } else {
       super(redisClient, attemptSettings, redisSettings);
+    }
+
+    this.shuttingDown = false;
+    attachRedisClientErrorHandler((this as any).redis as Redis, {
+      logger: this.logger,
+      label: 'UrlAwareRedisLocker',
+      isShuttingDown: (): boolean => this.shuttingDown,
+    });
+  }
+
+  public override async finalize(): Promise<void> {
+    this.shuttingDown = true;
+    const redis = (this as any).redis as Redis;
+
+    try {
+      await super.finalize();
+    } catch (error: unknown) {
+      if (!isIgnorableRedisShutdownError(error)) {
+        throw error;
+      }
+    } finally {
+      redis.disconnect(false);
     }
   }
 }

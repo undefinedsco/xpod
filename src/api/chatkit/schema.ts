@@ -1,218 +1,37 @@
-/**
- * ChatKit Pod Schema
- *
- * 数据模型对齐:
- * - Chat (meeting:LongChat) - 对话容器（微信中间栏）
- * - Thread (sioc:Thread) - ChatKit thread，作为 Chat 的 fragment
- * - Message (meeting:Message) - ChatKit item，放在 Chat 下
- *
- * 存储结构:
- * /.data/chat/{chatId}/
- *   index.ttl
- *     #this                           # Chat 元数据
- *     #{threadId}                     # Thread (fragment, ChatKit thread)
- *   {yyyy}/{MM}/{dd}/messages.ttl
- *     #{msgId}                        # Message (ChatKit item)
- *
- * 映射关系:
- * - 微信中间栏 Chat 列表 → Chat
- * - ChatKit Thread → Thread (Chat 的 fragment)
- * - ChatKit ThreadItem → Message
- *
- * 注意：Agent 配置（model, systemPrompt）不在 Chat 中，应该在单独的 Agent 表中
- *
- * RDF 示例:
- * ```turtle
- * # /.data/chat/workspace-1/index.ttl
- * @prefix meeting: <http://www.w3.org/ns/pim/meeting#> .
- * @prefix sioc: <http://rdfs.org/sioc/ns#> .
- * @prefix dc: <http://purl.org/dc/terms/> .
- * @prefix foaf: <http://xmlns.com/foaf/0.1/> .
- * @prefix udfs: <https://undefineds.co/ns#> .
- *
- * <#this> a meeting:LongChat ;
- *     dc:title "工作区" ;
- *     dc:author <https://user.pod/profile/card#me> ;
- *     udfs:status "active" .
- *
- * <#thread-1> a sioc:Thread ;
- *     sioc:has_parent <#this> ;
- *     dc:title "关于代码重构的讨论" ;
- *     udfs:status "active" ;
- *     dc:created "2024-01-15T10:00:00Z"^^xsd:dateTime .
- *
- * # /.data/chat/workspace-1/2024/01/15/messages.ttl
- * <#msg-1> a meeting:Message ;
- *     sioc:has_container <../../../index.ttl#thread-1> ;
- *     foaf:maker <https://user.pod/profile/card#me> ;
- *     udfs:role "user" ;
- *     sioc:content "Hello" ;
- *     dc:created "2024-01-15T10:00:00Z"^^xsd:dateTime .
- *
- * <#msg-2> a meeting:Message ;
- *     sioc:has_container <../../../index.ttl#thread-1> ;
- *     foaf:maker </.data/agents/claude.ttl#this> ;
- *     udfs:role "assistant" ;
- *     sioc:content "Hi there!" ;
- *     udfs:status "completed" ;
- *     dc:created "2024-01-15T10:00:01Z"^^xsd:dateTime .
- * ```
- */
-
-import { podTable, string, datetime, uri } from '@undefineds.co/drizzle-solid';
-import { Meeting, SIOC, FOAF, WF } from '../../vocab';
-import { UDFS_NAMESPACE } from '../../vocab';
-
-// ============================================================================
-// Chat Schema (meeting:LongChat) - 对话容器
-// ============================================================================
+import {
+  ChatStatus,
+  MessageRole,
+  MessageStatus,
+  chatResource,
+  messageResource,
+  threadResource,
+  type ChatRow,
+  type ChatStatusType,
+  type MessageRoleType,
+  type MessageRow,
+  type MessageStatusType,
+  type ThreadRow,
+  type ThreadStatusType,
+} from '@undefineds.co/models';
 
 /**
- * Chat - 对话容器
+ * ChatKit adapter schema exports.
  *
- * 对应微信中间栏的 Chat 列表，可以是群聊或私聊
- *
- * 注意：Agent 配置（model, systemPrompt）不在这里，应该在单独的 Agent 表中
- *
- * 存储位置: /.data/chat/{chatId}/index.ttl#this
+ * ChatKit is a protocol/adaptation layer in xpod. Durable Pod resources are
+ * owned by @undefineds.co/models; this file only preserves local import names.
  */
-export const Chat = podTable(
-  'Chat',
-  {
-    id: string('id').primaryKey(),
-    title: string('title'),
-    author: uri('author'),
-    participants: uri('participants').array().predicate(WF.participant),
-    status: string('status'),
-    createdAt: datetime('createdAt'),
-    updatedAt: datetime('updatedAt'),
-  },
-  {
-    base: '/.data/chat/',
-    type: Meeting.LongChat,
-    namespace: UDFS_NAMESPACE,
-    subjectTemplate: '{id}/index.ttl#this',
-    sparqlEndpoint: '/.data/chat/-/sparql',
-  },
-);
+export const Chat = chatResource;
+export const Thread = threadResource;
+export const Message = messageResource;
 
-// ============================================================================
-// Thread Schema (sioc:Thread) - ChatKit thread
-// ============================================================================
+export { ChatStatus, MessageRole, MessageStatus };
 
-/**
- * Thread - ChatKit 的 thread（对话线程）
- *
- * 作为 Chat 的 fragment，与 Chat 元数据存储在同一文件。
- * 对应 ChatKit 的 Thread 概念，是一次完整的对话。
- *
- * 存储位置: /.data/chat/{chatId}/index.ttl#{id}
- */
-export const Thread = podTable(
-  'Thread',
-  {
-    id: string('id').primaryKey(),
-    chatId: uri('chatId').predicate(SIOC.has_parent).link(Chat),
-    title: string('title'),
-    status: string('status'),
-    /** 工作目录路径，可变（运行时可切换） */
-    workspace: string('workspace'),
-    /**
-     * JSON string for extended metadata (e.g., xpod runtime hints).
-     * Note: drizzle-solid stores this as an RDF literal.
-     */
-    metadata: string('metadata'),
-    createdAt: datetime('createdAt'),
-    updatedAt: datetime('updatedAt'),
-  },
-  {
-    base: '/.data/chat/',
-    type: SIOC.Thread,
-    namespace: UDFS_NAMESPACE,
-    subjectTemplate: '{chatId}/index.ttl#{id}',
-    sparqlEndpoint: '/.data/chat/-/sparql',
-  },
-);
-
-// ============================================================================
-// Message Schema (meeting:Message) - ChatKit item
-// ============================================================================
-
-/**
- * Message - ChatKit 的 ThreadItem（单条消息）
- *
- * 放在 Chat 下，通过 thread 关联到 Thread。
- * 对应 ChatKit 的 ThreadItem 概念。
- *
- * 存储位置: /.data/chat/{chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}
- * 按日期分组存储，避免独立文件导致的 SPARQL OPTIONAL 查询失败问题
- */
-export const Message = podTable(
-  'Message',
-  {
-    id: string('id').primaryKey(),
-    // chat 是真实 Chat 关联；写入时仍可传 bare chat ID，由 .link(Chat) 负责解析完整 URI。
-    chat: uri('chat').predicate(WF.message).link(Chat),
-    // thread 是真实 Thread 关联；写入时可传完整 URI，读取时会按 Thread 模板还原成 bare ID。
-    thread: uri('thread').predicate(SIOC.has_container).link(Thread),
-    maker: uri('maker').predicate(FOAF.maker),
-    role: string('role'),
-    content: string('content').predicate(SIOC.content),
-    status: string('status'),
-    createdAt: datetime('createdAt'),
-
-    // 工具调用字段（方便 SPARQL 查询和索引）
-    toolName: string('toolName'),
-    toolCallId: string('toolCallId'),
-
-    // 详细信息（JSON 字符串，存储复杂数据）
-    metadata: string('metadata'),
-  },
-  {
-    base: '/.data/chat/',
-    type: Meeting.Message,
-    namespace: UDFS_NAMESPACE,
-    subjectTemplate: '{chat}/{yyyy}/{MM}/{dd}/messages.ttl#{id}',
-    sparqlEndpoint: '/.data/chat/-/sparql',
-  },
-);
-
-// ============================================================================
-// Types
-// ============================================================================
-
-export type ChatRecord = typeof Chat.$inferSelect;
-export type ThreadRecord = typeof Thread.$inferSelect;
-export type MessageRecord = typeof Message.$inferSelect;
-
-export const ChatStatus = {
-  ACTIVE: 'active',
-  ARCHIVED: 'archived',
-  DELETED: 'deleted',
-} as const;
-
-export type ChatStatusType = (typeof ChatStatus)[keyof typeof ChatStatus];
-
-export const ThreadStatus = {
-  ACTIVE: 'active',
-  LOCKED: 'locked',
-  CLOSED: 'closed',
-} as const;
-
-export type ThreadStatusType = (typeof ThreadStatus)[keyof typeof ThreadStatus];
-
-export const MessageRole = {
-  USER: 'user',
-  ASSISTANT: 'assistant',
-  SYSTEM: 'system',
-} as const;
-
-export type MessageRoleType = (typeof MessageRole)[keyof typeof MessageRole];
-
-export const MessageStatus = {
-  IN_PROGRESS: 'in_progress',
-  COMPLETED: 'completed',
-  INCOMPLETE: 'incomplete',
-} as const;
-
-export type MessageStatusType = (typeof MessageStatus)[keyof typeof MessageStatus];
+export type ChatRecord = ChatRow;
+export type ThreadRecord = ThreadRow;
+export type MessageRecord = MessageRow;
+export type {
+  ChatStatusType,
+  MessageRoleType,
+  MessageStatusType,
+  ThreadStatusType,
+};

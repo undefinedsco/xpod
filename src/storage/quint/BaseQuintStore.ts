@@ -2,7 +2,7 @@
  * BaseQuintStore - 统一的 QuintStore 抽象基类
  * 
  * 支持：
- * - SQLite (via node:sqlite / bun:sqlite + drizzle-orm)
+ * - SQLite (via pluggable SQLite runtime + drizzle-orm)
  * - PGLite (via @electric-sql/pglite + drizzle-orm)
  * - PostgreSQL (via pg + drizzle-orm) - 未来
  * 
@@ -20,10 +20,9 @@ import {
   parseVector,
   termToId,
   serializeObject,
-  deserializeObject,
   fpEncode,
-  isSerializedObjectValue,
   SEP,
+  isSerializedObjectValue,
 } from './serialization';
 import type {
   Quint,
@@ -65,6 +64,8 @@ export interface SqlExecutor {
 export abstract class BaseQuintStore extends QuintStore {
   protected options: QuintStoreOptions;
   protected executor: SqlExecutor | null = null;
+  protected opened = false;
+  protected opening: Promise<void> | null = null;
 
   constructor(options: QuintStoreOptions) {
     super();
@@ -83,48 +84,71 @@ export abstract class BaseQuintStore extends QuintStore {
   // ============================================
 
   async open(): Promise<void> {
-    if (this.executor) {
-      return; // 幂等
+    if (this.opened) {
+      return;
     }
 
-    this.executor = await this.createExecutor();
+    this.opening ??= this.openOnce().finally(() => {
+      this.opening = null;
+    });
 
-    // 创建表和索引
-    await this.executor.exec(`
-      CREATE TABLE IF NOT EXISTS quints (
-        graph TEXT NOT NULL,
-        subject TEXT NOT NULL,
-        predicate TEXT NOT NULL,
-        object TEXT NOT NULL,
-        vector TEXT,
-        PRIMARY KEY (graph, subject, predicate, object)
-      )
-    `);
+    await this.opening;
+  }
 
-    // 创建索引（分开执行，避免某些数据库不支持多语句）
-    const indexes = [
-      'CREATE INDEX IF NOT EXISTS idx_spog ON quints (subject, predicate, object, graph)',
-      'CREATE INDEX IF NOT EXISTS idx_ogsp ON quints (object, graph, subject, predicate)',
-      'CREATE INDEX IF NOT EXISTS idx_gspo ON quints (graph, subject, predicate, object)',
-      'CREATE INDEX IF NOT EXISTS idx_sopg ON quints (subject, object, predicate, graph)',
-      'CREATE INDEX IF NOT EXISTS idx_pogs ON quints (predicate, object, graph, subject)',
-      'CREATE INDEX IF NOT EXISTS idx_gpos ON quints (graph, predicate, object, subject)',
-    ];
+  protected async openOnce(): Promise<void> {
+    const executor = await this.createExecutor();
+    this.executor = executor;
 
-    for (const indexSql of indexes) {
-      await this.executor.exec(indexSql);
+    try {
+      // 创建表和索引
+      await executor.exec(`
+        CREATE TABLE IF NOT EXISTS quints (
+          graph TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          predicate TEXT NOT NULL,
+          object TEXT NOT NULL,
+          vector TEXT,
+          PRIMARY KEY (graph, subject, predicate, object)
+        )
+      `);
+
+      // 创建索引（分开执行，避免某些数据库不支持多语句）
+      const indexes = [
+        'CREATE INDEX IF NOT EXISTS idx_spog ON quints (subject, predicate, object, graph)',
+        'CREATE INDEX IF NOT EXISTS idx_ogsp ON quints (object, graph, subject, predicate)',
+        'CREATE INDEX IF NOT EXISTS idx_gspo ON quints (graph, subject, predicate, object)',
+        'CREATE INDEX IF NOT EXISTS idx_sopg ON quints (subject, object, predicate, graph)',
+        'CREATE INDEX IF NOT EXISTS idx_pogs ON quints (predicate, object, graph, subject)',
+        'CREATE INDEX IF NOT EXISTS idx_gpos ON quints (graph, predicate, object, subject)',
+      ];
+
+      for (const indexSql of indexes) {
+        await executor.exec(indexSql);
+      }
+      this.opened = true;
+    } catch (error) {
+      await this.closeExecutor().catch(() => {});
+      if (this.executor === executor) {
+        this.executor = null;
+      }
+      this.opened = false;
+      throw error;
     }
   }
 
   async close(): Promise<void> {
+    if (this.opening) {
+      await this.opening.catch(() => {});
+    }
     if (this.executor) {
       await this.closeExecutor();
       this.executor = null;
     }
+    this.opened = false;
   }
 
   protected ensureOpen(): void {
-    if (!this.executor) {
+    if (!this.opened || !this.executor) {
       throw new Error('Store not open. Call open() first.');
     }
   }
@@ -677,6 +701,33 @@ export abstract class BaseQuintStore extends QuintStore {
   }
 
   protected deserializeObject(value: string): Term {
-    return deserializeObject(value);
+    if (value.startsWith('"')) {
+      const match = value.match(/^"([^"]*)"(?:@([a-zA-Z-]+)|\^\^<([^>]+)>)?$/);
+      if (match) {
+        const [, lexical, lang, datatype] = match;
+        if (lang) {
+          return DataFactory.literal(lexical, lang);
+        }
+        if (datatype) {
+          return DataFactory.literal(lexical, DataFactory.namedNode(datatype));
+        }
+        return DataFactory.literal(lexical);
+      }
+    }
+    
+    if (value.startsWith('N\u0000')) {
+      const parts = value.split('\u0000');
+      const datatype = parts[2];
+      const originalValue = parts[3];
+      return DataFactory.literal(originalValue, DataFactory.namedNode(datatype));
+    }
+    
+    if (value.startsWith('D\u0000')) {
+      const parts = value.split('\u0000');
+      const originalValue = parts[2];
+      return DataFactory.literal(originalValue, DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#dateTime'));
+    }
+    
+    return DataFactory.namedNode(value);
   }
 }

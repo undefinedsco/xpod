@@ -26,7 +26,7 @@ describe.skip('VectorStore CRUD', () => {
 
   beforeAll(async () => {
     // 使用内存 SQLite
-    store = new SqliteVectorStore(':memory:' as any);
+    store = new SqliteVectorStore({ connectionString: ':memory:' });
     await store.open();
   });
 

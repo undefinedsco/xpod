@@ -2,12 +2,12 @@
  * Unified database connector for PostgreSQL and SQLite.
  *
  * Provides a common async-iterable interface over query results.
- * Encrypted SQLite is currently unsupported.
+ * Encrypted SQLite support is stubbed for future implementation.
  */
 
 import { Client as PgClient } from 'pg';
 import type { DbConnection, DbSource, Row } from './types';
-import { createReadonlySqliteDatabase } from '../../../storage/SqliteCompat';
+import { getSqliteRuntime } from '../../../storage/SqliteRuntime';
 
 /**
  * Connect to a database and return a unified DbConnection.
@@ -17,6 +17,12 @@ export async function connectDb(source: DbSource): Promise<DbConnection> {
     case 'postgres':
       return connectPostgres(source.connectionString);
     case 'sqlite':
+      if (source.encryption) {
+        throw new Error(
+          'Encrypted SQLite is not yet supported. ' +
+          'Add an encrypted SQLite runtime backend before enabling this path.',
+        );
+      }
       return connectSqlite(source.connectionString);
     default:
       throw new Error(`Unsupported database type: ${source.type}`);
@@ -49,12 +55,12 @@ async function connectPostgres(connectionString: string): Promise<DbConnection> 
 // ============================================
 
 async function connectSqlite(filePath: string): Promise<DbConnection> {
-  const db = createReadonlySqliteDatabase(filePath);
+  const sqliteRuntime = getSqliteRuntime();
+  const db = sqliteRuntime.openDatabase(filePath, { readonly: true });
 
   return {
     async *query(sql: string): AsyncIterable<Row> {
-      const stmt = db.prepare(sql);
-      for (const row of stmt.iterate()) {
+      for (const row of db.prepare(sql).iterate()) {
         yield row as Row;
       }
     },

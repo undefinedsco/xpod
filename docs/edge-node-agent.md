@@ -28,11 +28,11 @@ import { EdgeNodeAgent } from '@undefineds/xpod';
 
 const agent = new EdgeNodeAgent();
 await agent.start({
-  signalEndpoint: process.env.CSS_SIGNAL_ENDPOINT!,
-  nodeId: process.env.CSS_NODE_ID!,
-  nodeToken: process.env.CSS_NODE_TOKEN!,
-  baseUrl: process.env.CSS_NODE_BASE_URL,
-  publicAddress: process.env.CSS_NODE_PUBLIC_ADDRESS,
+  signalEndpoint: process.env.XPOD_SIGNAL_ENDPOINT!,
+  nodeId: process.env.XPOD_NODE_ID!,
+  nodeToken: process.env.XPOD_NODE_TOKEN!,
+  baseUrl: process.env.CSS_BASE_URL,
+  publicAddress: process.env.XPOD_NODE_PUBLIC_ADDRESS,
   pods: process.env.CSS_NODE_PODS?.split(','),
   includeSystemMetrics: true,
   metadata: {
@@ -82,7 +82,7 @@ await agent.start({
 - Heartbeat 默认 30 秒发送一次，可通过 `intervalMs` 调整频率。
 - 若节点拥有多个 Pod，`pods` 数组可列出多个 baseUrl；缺失时仍可通过控制面 API 感知 Pod 实际列表。
 - `metadata.dns` 与 `metadata.certificate.dns01` 字段可以在心跳期间动态更新，以便控制面及时刷新 DNS/TXT 记录（当 `acme.mode=local` 时仍旧适用）。
-- 启用控制面自动化需在 cluster 端设置 `CSS_EDGE_NODES_ENABLED=true`，并按需提供 `CSS_XPOD_TENCENT_DNS_TOKEN_ID`/`CSS_XPOD_TENCENT_DNS_TOKEN` 等变量（详见《edge-node-control-plane》）；DNS 根域名自动复用 CSS `baseUrl`。
+- 启用控制面自动化需在 cluster 端设置 `CSS_EDGE_NODES_ENABLED=true`，并按需提供 `CSS_TENCENT_DNS_TOKEN_ID`/`CSS_TENCENT_DNS_TOKEN` 等变量（详见《edge-node-control-plane》）；DNS 根域名自动复用 CSS `baseUrl`。
 - FRP 隧道信息会在心跳响应的 `metadata.tunnel.config` 中返回（包含 `serverHost`、`serverPort`、`token`、`proxyName`、`remotePort`）。若在 Agent 中启用 `frp` 配置，将自动生成 `frpc.ini` 并守护 `frpc` 进程；未配置时可自行处理或保持直连。
 - Agent 会在心跳的 `tunnel.client` 字段中汇报 frpc 运行状态（`running/inactive/error`、进程 PID、最近更新及故障信息），Cluster 侧可据此监控隧道健康。
 - TODO：后续将在该字段补充更细的带宽/延迟指标，方便观察隧道性能。

@@ -8,6 +8,7 @@ import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import type { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
 import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import type { VercelChatService } from '../service/VercelChatService';
 import type { SubdomainService } from '../../subdomain/SubdomainService';
@@ -15,11 +16,19 @@ import type { SubdomainClient } from '../../subdomain/SubdomainClient';
 import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider } from '../../tunnel/TunnelProvider';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
-import type { WebIdProfileRepository } from '../../identity/drizzle/WebIdProfileRepository';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
+import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import type { ChatKitService, AiProvider } from '../chatkit';
 import type { StoreContext } from '../chatkit/store';
 import type { PodChatKitStore } from '../chatkit/pod-store';
+import type { RuntimeHost } from '../../runtime/host/types';
+import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
+import type { VectorService } from '../service/VectorService';
+import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
+import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestService';
+import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
+import type { TaskAuthBindingService, TaskService, InngestTaskScheduler } from '../tasks';
+import type { PodMatrixStore } from '../matrix';
 
 /**
  * 容器配置
@@ -37,8 +46,29 @@ export interface ApiContainerConfig {
   /** API Server Unix socket 路径 */
   socketPath?: string;
 
+  /** Runtime host implementation */
+  runtimeHost?: RuntimeHost;
   /** 数据库连接 URL */
   databaseUrl: string;
+
+  /** Redis connection URL, used by embedded infrastructure such as Inngest in cloud mode. */
+  redisUrl?: string;
+
+  /** Embedded Inngest runtime configuration. */
+  inngest?: {
+    enabled: boolean;
+    mode?: 'managed' | 'spawn';
+    port?: number;
+    host?: string;
+    baseUrl?: string;
+    eventKey?: string;
+    signingKey?: string;
+    binaryPath?: string;
+    sqliteDir?: string;
+  };
+
+  /** Resolved runtime config passed from API bootstrap after starting/locating Inngest. */
+  inngestRuntimeConfig?: EmbeddedInngestRuntimeConfig;
 
   /** CORS 允许的源 */
   corsOrigins: string[];
@@ -99,6 +129,7 @@ export interface ApiContainerCradle {
 
   // 仓库
   nodeRepo: EdgeNodeRepository;
+  serviceTokenRepo: ServiceTokenRepository;
   apiKeyStore: DrizzleClientCredentialsStore;
 
   // 业务服务
@@ -107,11 +138,21 @@ export interface ApiContainerCradle {
   // ChatKit 服务 (OpenAI ChatKit 协议)
   chatKitStore: PodChatKitStore;
   chatKitAiProvider: AiProvider;
+  inngestRuntimeConfig: EmbeddedInngestRuntimeConfig | undefined;
+  runAuthContextRegistry: RunAuthContextRegistry;
+  runExecutionBackend: InngestRunExecutionBackend;
+  taskAuthBindingService: TaskAuthBindingService<StoreContext>;
+  taskService: TaskService<StoreContext>;
+  inngestTaskScheduler: InngestTaskScheduler<StoreContext>;
   chatKitService: ChatKitService<StoreContext>;
+  matrixStore: PodMatrixStore;
+  providerRegistry: ProviderRegistry;
+  embeddingService: EmbeddingService;
+  vectorService: VectorService;
 
   // Cloud 模式: 身份服务
-  webIdProfileRepo?: WebIdProfileRepository;
   ddnsRepo?: DdnsRepository;
+  podLookupRepo?: PodLookupRepository;
 
   // 子域名相关 (可选，按 edition 注册)
   // Cloud 模式 或 Local 自管模式

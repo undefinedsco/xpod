@@ -49,7 +49,6 @@ export class EdgeNodeDnsCoordinator {
 
     const ipv6 = this.extractString(metadata.ipv6);
     const ipv4 = this.extractString(metadata.ipv4);
-    const publicIp = this.extractString(metadata.publicIp);
     const publicAddress = this.extractString(metadata.publicAddress);
 
     // IPv6 优先
@@ -58,7 +57,7 @@ export class EdgeNodeDnsCoordinator {
       recordType = 'AAAA';
       this.logger.debug(`Node ${nodeId} 使用 IPv6 地址: ${ipv6}`);
     } else {
-      target = publicIp ?? ipv4 ?? publicAddress;
+      target = ipv4 ?? publicAddress;
     }
 
     if (!target && hints?.target) {

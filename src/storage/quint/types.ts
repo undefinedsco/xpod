@@ -11,6 +11,7 @@
 
 import type { Term, Quad } from '@rdfjs/types';
 import type { AsyncIterator } from 'asynciterator';
+import type { PredicateObjectDataTypes } from './value-types';
 
 /**
  * 五元组 - 扩展 RDF Quad，增加向量
@@ -47,6 +48,17 @@ export interface TermOperators {
   $endsWith?: string;
   $contains?: string;
   $regex?: string;
+  /** RDF term lexical string operators for STR(?object) pushdown. */
+  $strStartsWith?: string;
+  $strEndsWith?: string;
+  $strContains?: string;
+  $strRegex?: string;
+  $language?: string;
+  $notLanguage?: string;
+  $langMatches?: string;
+  $datatype?: Term;
+  $notDatatype?: Term;
+  $termType?: 'iri' | 'blank' | 'literal' | 'numeric';
   $isNull?: boolean;
 }
 
@@ -106,6 +118,18 @@ export interface StoreStats {
   totalCount: number;
   vectorCount: number;
   graphCount: number;
+  databaseBytes?: number;
+  tableBytes?: number;
+  indexBytes?: number;
+  spaceObjects?: StoreSpaceObject[];
+}
+
+export interface StoreSpaceObject {
+  name: string;
+  kind: 'table' | 'index' | 'internal' | 'unknown';
+  tableName?: string;
+  bytes: number;
+  pages: number;
 }
 
 /**
@@ -113,6 +137,18 @@ export interface StoreStats {
  */
 export interface QuintStoreOptions {
   debug?: boolean;
+  /**
+   * Predicate-level RDF object data declarations.
+   *
+   * This declares schema value types, not query modes. The store derives
+   * whether exact/range/prefix/search can be pushed down from the data type.
+   */
+  predicateObjectDataTypes?: PredicateObjectDataTypes;
+  /**
+   * Maximum serialized byte length that can be indexed as text.
+   * Longer undeclared text literals are stored as longText.
+   */
+  textMaxBytes?: number;
 }
 
 /**

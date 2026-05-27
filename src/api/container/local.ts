@@ -19,6 +19,7 @@ import { EdgeNodeCapabilityDetector } from '../../edge/EdgeNodeCapabilityDetecto
 import { LocalNetworkManager } from '../../edge/LocalNetworkManager';
 import { DdnsManager } from '../../edge/DdnsManager';
 import type { TunnelProvider, TunnelStatus } from '../../tunnel/TunnelProvider';
+import { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 
 /**
  * 注册 Local 模式专属服务
@@ -36,6 +37,12 @@ export function registerLocalServices(
     sakuraTunnelToken,
     subdomain: subdomainConfig,
   } = config;
+
+  container.register({
+    podLookupRepo: asFunction(({ db }: ApiContainerCradle) => {
+      return new PodLookupRepository(db);
+    }).singleton(),
+  });
 
   // 1. 注册 Tunnel Provider (优先 Cloudflare，其次 SakuraFRP)
   if (cloudflareTunnelToken) {
@@ -104,14 +111,10 @@ export function registerLocalServices(
       }).singleton(),
 
       // Local Network Manager (Orchestrator)
-      localNetworkManager: asFunction(({ capabilityDetector, dnsCoordinator, localTunnelProvider }: ApiContainerCradle) => {
-        // Tunnel 应该指向 Gateway 端口 (通常是 3000)，而不是 API Server 端口 (3004)
-        const mainPort = parseInt(process.env.XPOD_MAIN_PORT || '3000', 10);
+      localNetworkManager: asFunction(({ capabilityDetector, dnsCoordinator }: ApiContainerCradle) => {
         return new LocalNetworkManager({
           detector: capabilityDetector!,
           dnsCoordinator: dnsCoordinator!,
-          tunnelProvider: localTunnelProvider,
-          localPort: mainPort,
         });
       }).singleton(),
 
@@ -153,9 +156,15 @@ export function registerLocalServices(
   // 托管式：有 Node Token，连接 Cloud
   // Cloud API endpoint 可以从 Token 解析或使用默认值
   const effectiveCloudApiEndpoint = cloudApiEndpoint || 'https://pods.undefineds.co';
+  const effectiveLocalPort = parseInt(process.env.XPOD_MAIN_PORT || process.env.CSS_PORT || '3000', 10);
 
   // 从 Node Token 解析用户名作为子域名 (格式: username:secret)
   const subdomain = parseSubdomainFromToken(nodeToken);
+  const tunnelProviderHint: 'cloudflare' | 'sakura_frp' | 'none' = cloudflareTunnelToken
+    ? 'cloudflare'
+    : sakuraTunnelToken
+      ? 'sakura_frp'
+      : 'none';
 
   container.register({
     subdomainClient: asFunction(() => {
@@ -175,13 +184,15 @@ export function registerLocalServices(
 
     // DDNS Manager: 自动分配和更新 DDNS
     ddnsManager: asFunction(({ subdomainClient, capabilityDetector }: ApiContainerCradle) => {
-      return new DdnsManager({
-        client: subdomainClient!,
-        detector: capabilityDetector!,
-        subdomain: subdomain || nodeId || 'auto',
-        autoAllocate: true,
-      });
-    }).singleton(),
+        return new DdnsManager({
+          client: subdomainClient!,
+          detector: capabilityDetector!,
+          subdomain: subdomain || nodeId || 'auto',
+          localPort: effectiveLocalPort,
+          autoAllocate: true,
+          tunnelProvider: tunnelProviderHint,
+        });
+      }).singleton(),
   });
 
   console.log('[Local] Managed mode, SubdomainClient and DdnsManager registered');

@@ -16,6 +16,7 @@ export interface SolidAuthContext {
   displayName?: string;
   accessToken?: string;
   tokenType?: 'Bearer' | 'DPoP';
+  dpopProof?: string;
   /** Whether this was authenticated via API Key (client credentials) */
   viaApiKey?: boolean;
 }
@@ -26,7 +27,14 @@ export interface NodeAuthContext {
   accountId?: string;
 }
 
-export type AuthContext = SolidAuthContext | NodeAuthContext;
+export interface ServiceAuthContext {
+  type: 'service';
+  serviceType: 'local' | 'business' | 'cloud' | 'compute';
+  serviceId: string;
+  scopes: string[];
+}
+
+export type AuthContext = SolidAuthContext | NodeAuthContext | ServiceAuthContext;
 
 export function isSolidAuth(ctx: AuthContext): ctx is SolidAuthContext {
   return ctx.type === 'solid';
@@ -54,9 +62,26 @@ export function getDisplayName(ctx: AuthContext): string | undefined {
  * Get accountId from auth context (if available)
  */
 export function getAccountId(ctx: AuthContext): string | undefined {
-  return ctx.accountId;
+  if (ctx.type === 'solid') {
+    return ctx.accountId;
+  }
+  if (ctx.type === 'node') {
+    return ctx.accountId;
+  }
+  return undefined;
 }
 
 export function getNodeId(ctx: AuthContext): string | undefined {
   return ctx.type === 'node' ? ctx.nodeId : undefined;
+}
+
+export function isServiceAuth(ctx: AuthContext): ctx is ServiceAuthContext {
+  return ctx.type === 'service';
+}
+
+/**
+ * Check if a service auth context has the required scope
+ */
+export function hasScope(ctx: AuthContext, scope: string): boolean {
+  return ctx.type === 'service' && ctx.scopes.includes(scope);
 }

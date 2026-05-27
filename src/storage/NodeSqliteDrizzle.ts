@@ -10,7 +10,6 @@ import {
   SQLiteTransaction,
 } from 'drizzle-orm/sqlite-core';
 import { fillPlaceholders, sql } from 'drizzle-orm/sql/sql';
-import { isConfig } from 'drizzle-orm/utils';
 
 const { mapResultRow } = require('drizzle-orm/utils') as {
   mapResultRow: (fields: any, row: any, joinsNotNullableMap: any) => any;
@@ -24,6 +23,26 @@ type NodeSqliteClientConfig = {
 
 function getDatabaseSyncCtor(): typeof DatabaseSync {
   return require('node:sqlite').DatabaseSync as typeof DatabaseSync;
+}
+
+function looksLikeDatabaseClient(value: unknown): boolean {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return typeof (value as DatabaseSync).prepare === 'function';
+}
+
+function isDrizzleConfig(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || looksLikeDatabaseClient(value)) {
+    return false;
+  }
+
+  return 'connection' in value
+    || 'client' in value
+    || 'schema' in value
+    || 'logger' in value
+    || 'casing' in value;
 }
 
 class NodeSqliteDatabase extends BaseSQLiteDatabase<'sync', any, Record<string, never>> {
@@ -56,7 +75,10 @@ class NodeSqliteSession extends SQLiteSession<'sync', any, Record<string, unknow
   ): NodeSqlitePreparedQuery {
     const objectStatement = this.client.prepare(query.sql);
     const arrayStatement = this.client.prepare(query.sql);
-    arrayStatement.setReturnArrays(true);
+    const supportsReturnArrays = typeof (arrayStatement as StatementSync & { setReturnArrays?: (enabled: boolean) => unknown }).setReturnArrays === 'function';
+    if (supportsReturnArrays) {
+      (arrayStatement as StatementSync & { setReturnArrays: (enabled: boolean) => unknown }).setReturnArrays(true);
+    }
     return new NodeSqlitePreparedQuery(
       objectStatement,
       arrayStatement,
@@ -65,6 +87,7 @@ class NodeSqliteSession extends SQLiteSession<'sync', any, Record<string, unknow
       fields,
       executeMethod,
       isResponseInArrayMode,
+      supportsReturnArrays,
       customResultMapper,
     );
   }
@@ -125,6 +148,7 @@ class NodeSqlitePreparedQuery extends PreparedQueryBase<{
     private readonly fields: any,
     executeMethod: any,
     private readonly _isResponseInArrayMode: boolean,
+    private readonly supportsReturnArrays: boolean,
     private readonly customResultMapper?: (rows: unknown[][]) => unknown,
   ) {
     super('sync', executeMethod, query);
@@ -159,7 +183,7 @@ class NodeSqlitePreparedQuery extends PreparedQueryBase<{
     if (!fields && !customResultMapper) {
       return objectStatement.get(...params);
     }
-    const row = arrayStatement.get(...params) as unknown[] | undefined;
+    const row = this.toArrayRow(arrayStatement.get(...params));
     if (!row) {
       return undefined;
     }
@@ -172,16 +196,27 @@ class NodeSqlitePreparedQuery extends PreparedQueryBase<{
   public override values(placeholderValues?: Record<string, unknown>): unknown[][] {
     const params = fillPlaceholders(this.query.params, placeholderValues ?? {}) as any[];
     this.logger.logQuery(this.query.sql, params);
-    return this.arrayStatement.all(...params) as unknown as unknown[][];
+    const rows = this.arrayStatement.all(...params) as unknown[];
+    return rows.map((row) => this.toArrayRow(row) ?? []);
   }
 
   public isResponseInArrayMode(): boolean {
     return this._isResponseInArrayMode;
   }
+
+  private toArrayRow(row: unknown): unknown[] | undefined {
+    if (row === undefined) {
+      return undefined;
+    }
+    if (this.supportsReturnArrays) {
+      return row as unknown[];
+    }
+    return Object.values(row as Record<string, unknown>);
+  }
 }
 
 function constructNodeSqliteDb(client: DatabaseSync, config: NodeSqliteDrizzleConfig = {}): any {
-  const dialect = new SQLiteSyncDialect({ casing: config.casing });
+  const dialect = new SQLiteSyncDialect();
   const logger = config.logger === true
     ? new DefaultLogger()
     : config.logger === false
@@ -212,7 +247,7 @@ export function drizzleNodeSqlite(...params: any[]): any {
     return constructNodeSqliteDb(instance, params[1]);
   }
 
-  if (isConfig(params[0])) {
+  if (isDrizzleConfig(params[0])) {
     const { connection, client, ...drizzleConfig } = params[0];
     if (client) {
       return constructNodeSqliteDb(client, drizzleConfig);

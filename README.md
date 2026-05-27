@@ -1,82 +1,149 @@
 # Xpod: The Agent OS
 
-**Xpod is the Semantic File System for AI Agents.**
+Xpod is a **local-first Pod runtime for agents**.
 
-As explored in recent research (Manus, Claude Code, AGFS), the most effective interface for Agents is not a complex set of APIs, but a **File System**.
+It turns a Solid Pod into a runtime surface for data, identity, memory, sidecar capabilities, and AI APIs, all exposed through stable web interfaces.
 
-Following the Unix philosophy of *"Everything is a file"*, Xpod abstracts the complex world into a unified resource hierarchy accessible via standard protocols (HTTP/Solid).
+Xpod is the runtime itself. Internally it is built from Community Solid Server plus an API layer behind one gateway, but those are implementation details, not separate product boundaries.
 
-This is achieved through **Pods** (Personal Online Data stores)—portable web containers that act like a **"USB Drive for your Agent"**. A Pod encapsulates an Agent's entire digital life: its identity, memory, and skills.
+## What Xpod Provides
 
-**Xpod comes with a built-in Base Agent** that runs natively within this environment, ready to navigate, read, and execute Skills out of the box.
+- **Pod-native runtime**: a Pod is not only storage, but the runtime envelope around identity, memory, tools, and sessions
+- **Standard web surface**: HTTP, Solid, linked data, and stable URLs are the native interface
+- **Local-first execution**: agents run near user-owned data instead of pushing everything into remote app silos
+- **Multiple runtime shapes**: embed Xpod as a library, run it as a localhost service, or deploy it in the cloud
+- **AI-ready services**: sidecar APIs and OpenAI-compatible APIs are available on the same runtime surface
 
-## Installation
+## Runtime Shapes
 
-Ensure you have [Bun](https://bun.sh/) and [Node.js 22+](https://nodejs.org/) installed.
-Bun is the primary package manager and task runner; Xpod currently targets Node 22+ and keeps the engine range open through `<27` for upcoming Node 26 compatibility.
+### Embedded runtime
 
-If you are using the published npm package as an end user, Node alone is still enough at runtime. Bun is only the source-build/dev mainline.
+Start the full Xpod stack inside your own process.
 
-Current SQLite mainline uses native runtimes (`node:sqlite` / `bun:sqlite`). Encrypted SQLite is not supported in the current mainline.
+This is the lightest mode for CI, integration tests, and app-embedded scenarios. On Unix, Xpod can run over a local socket, so no TCP port is required.
+
+### Local daemon
+
+Run Xpod as a localhost HTTP service for a desktop app, tray process, or multiple local apps on the same machine.
+
+In this shape, Xpod is still the same runtime, just exposed over `127.0.0.1` so external processes can connect to it.
+
+### Cloud deployment
+
+Run Xpod as a hosted multi-user runtime with production dependencies such as PostgreSQL, Redis, and MinIO.
+
+This shape is suitable for managed Pod hosting, quota enforcement, and cloud-edge coordination.
+
+## Interfaces
+
+### Pod and Solid surface
+
+Xpod extends Community Solid Server and keeps Pod resources, WebID identity, and access control at the core.
+
+### Sidecar APIs
+
+Xpod exposes runtime capabilities alongside Pod resources through sidecar paths such as:
+
+- `/-/sparql`
+- `/-/vector`
+- `/-/terminal` (planned)
+
+### AI APIs
+
+Xpod also exposes AI-facing APIs for apps and agents, including:
+
+- `/v1/chat/completions`
+- `/v1/responses`
+- `/v1/messages`
+- `/v1/models`
+- `/v1/chatkit`
+
+## Deployment Profiles
+
+### `local`
+
+Best for personal use, development, local agents, and app integration.
+
+- SQLite + local disk
+- no Redis or MinIO required
+- good fit for embedded runtime and localhost daemon usage
+
+### `cloud`
+
+Best for hosted, multi-user, and production deployment.
+
+- PostgreSQL + MinIO + Redis
+- quota and usage infrastructure
+- node coordination, DNS, and reachability support
+
+See `docs/deployment-modes.md` for more detail.
+
+## Quick Start
+
+### Requirements
+
+- Bun 1.3+
+- Node.js 22+
+
+If you are building from source, Bun is the main package manager and task runner. If you are only consuming the published npm package, Node is still enough at runtime.
+
+### Install
 
 ```bash
 bun install
 bun run build
 ```
 
+### ABI note
 
-## Single-File Build & Local npm Release
+Xpod currently expects Node in `>=22 <27` for Node-based runtime and packaging paths. `.nvmrc` helps humans, but non-interactive shells, IDE tasks, AI runtimes, or CI subprocesses may still pick the wrong `node` from `PATH`.
 
-- Build a single-file CLI entry (Node 22–26 target):
-  ```bash
-  bun run build:single
-  ```
-  Output: `.artifacts/xpod-single.cjs` (standalone artifact, not included in the npm package).
+Before local startup or integration tests, run:
 
-- Create a local-tag npm publish (auto bumps to `-local.<timestamp>`):
-  ```bash
-  bun run publish:local
-  ```
-
-- Dry-run publish (no real upload, package.json auto-restored):
-  ```bash
-  bun run publish:local:dry
-  ```
-
-- Publish stable release (`latest` tag by default):
-  ```bash
-  bun run publish:release
-  ```
-
-- Dry-run stable release publish:
-  ```bash
-  bun run publish:release:dry
-  ```
-
-## Quick Start
-
-| Mode | Command | Description |
-| --- | --- | --- |
-| Local | `bun run local` | SQLite + local disk, no external dependencies |
-| Cloud | `bun run cloud` | PostgreSQL + MinIO + Redis, production ready |
-| Dev | `bun run dev` | Alias for local mode |
-
-Configure environment:
 ```bash
-cp example.env .env.local     # For local/dev
-cp example.env .env.cloud     # For cloud/production
+nvm use
+bun run check:abi
 ```
 
-Visit [http://localhost:3000/](http://localhost:3000/) after startup.
+If you hit native module or `NODE_MODULE_VERSION` errors, reinstall dependencies under the same Node major:
 
-See [docs/deployment-modes.md](docs/deployment-modes.md) for detailed profile comparison and cloud-edge coordination.
+```bash
+nvm use
+bun install --force
+```
 
-## Library Mode for Tests
+### Run locally
 
-If you want to start the full Xpod stack inside your test process, you can import it as a library instead of spawning the CLI.
+```bash
+cp example.env .env.local
+bun run local
+```
+
+Visit `http://localhost:3000/` after startup.
+
+### Run in cloud mode
+
+```bash
+cp example.env .env.cloud
+bun run cloud
+```
+
+## Hosted Preview and Support
+
+- `xpod` Cloud 当前按 `hosted preview` 提供免费账号基线，不承诺正式订阅套餐
+- 免费账号额度直接由 `XPOD_DEFAULT_*` 控制，不通过 `billing plan` 下发
+- 当前支持方式是手工捐款与 supporter 认领，不是自动开通的资源升级档
+- supporter 记录只表达支持关系与非资源权益，不会自动提高存储、带宽或模型额度
+- 对外口径与支持说明可放在 `https://undefineds.co/zh-CN/support/` 与 `https://undefineds.co/en/support/`
+
+## Library Mode
+
+If you want the full Xpod stack inside your own process, import it as a library instead of spawning the CLI.
+
+### In-process runtime without a TCP port
 
 ```ts
-import { startXpodRuntime } from '@undefineds.co/xpod';
+import { startXpodRuntime } from '@undefineds.co/xpod/runtime';
 
 const runtime = await startXpodRuntime({
   mode: 'local',
@@ -90,7 +157,11 @@ console.log(await res.json());
 await runtime.stop();
 ```
 
-For the lightest test setup, use the test helper export:
+On Unix, `transport: 'socket'` keeps the full Xpod runtime in-process without binding a TCP port. This is the preferred shape for CI and integration tests.
+
+Use `open`, `authMode`, `apiOpen`, and related runtime options to tune authentication behavior for tests or embedded app flows.
+
+### No-auth test helper
 
 ```ts
 import { startNoAuthXpod } from '@undefineds.co/xpod/test-utils';
@@ -100,26 +171,22 @@ console.log(xpod.baseUrl);
 await xpod.stop();
 ```
 
-Notes:
-- In socket mode, the logical base URL is `http://localhost/`, but real traffic goes through a Unix socket.
-- Under Bun or Windows, prefer `transport: 'port'` unless you explicitly need socket transport.
-- This mode is ideal for CI and integration tests that should avoid external port conflicts.
-- Docker/cluster integration tests should still use real service startup.
+This helper is the lightest downstream path for integration tests that only need an open local stack.
 
 ### Using Xpod from a downstream project
 
-Install Xpod as a dev dependency in your test project:
+Install Xpod as a dev dependency:
 
 ```bash
 bun add -d @undefineds.co/xpod
 ```
 
 Recommended entry points:
-- `@undefineds.co/xpod` — full runtime API (`startXpodRuntime`)
-- `@undefineds.co/xpod/test-utils` — lightest no-auth helper (`startNoAuthXpod`)
-- `@undefineds.co/xpod/runtime` — runtime-only subpath if you want to avoid the broader root entry
 
-A minimal `vitest` example in a downstream repo:
+- `@undefineds.co/xpod/runtime` — full runtime API (`startXpodRuntime`)
+- `@undefineds.co/xpod/test-utils` — lightest no-auth helper (`startNoAuthXpod`)
+
+A minimal `vitest` example:
 
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -127,13 +194,13 @@ import { startNoAuthXpod } from '@undefineds.co/xpod/test-utils';
 
 let xpod: Awaited<ReturnType<typeof startNoAuthXpod>>;
 
-afterAll(async() => {
-  await xpod?.stop();
-});
-
 beforeAll(async() => {
   xpod = await startNoAuthXpod();
 }, 60_000);
+
+afterAll(async() => {
+  await xpod?.stop();
+});
 
 describe('xpod integration', () => {
   it('starts in-process', async() => {
@@ -143,195 +210,100 @@ describe('xpod integration', () => {
 });
 ```
 
-If you need more control in a downstream repo, use `startXpodRuntime` directly:
+Keep Docker/full integration tests on real services. Use library mode for lite and app-embedded test paths.
+
+### Localhost gateway for external apps
 
 ```ts
-import { startXpodRuntime } from '@undefineds.co/xpod';
+import { startXpodRuntime } from '@undefineds.co/xpod/runtime';
 
 const runtime = await startXpodRuntime({
   mode: 'local',
-  open: true,
   transport: 'socket',
-  runtimeRoot: './.test-data/xpod-runtime',
+  bindHost: '127.0.0.1',
+  baseUrl: 'http://127.0.0.1:5710/',
+  gatewayPort: 5710,
 });
 
-// use runtime.baseUrl / runtime.fetch / runtime.sockets here
-await runtime.stop();
+console.log(runtime.baseUrl); // http://127.0.0.1:5710/
 ```
 
-Typical downstream use cases:
-- Use `startNoAuthXpod()` for CI-friendly integration tests that only need an open local stack.
-- Use `startXpodRuntime()` when you need auth mode, custom storage paths, or explicit runtime options.
-- Keep Docker/cluster tests on real services; use library mode for local/lite test paths.
+Use this shape when Xpod needs to behave as a shared local service. External apps connect over HTTP to the localhost gateway, while internal CSS/API traffic stays on Unix sockets.
+
+If Unix sockets are unavailable, switch to `transport: 'port'` to run the internal services on TCP ports too.
 
 ## Testing
 
 ```bash
-# Local in-process integration path
 bun run test:integration:lite
-
-# Full integration path with real postgres/redis/minio
 bun run test:integration:full
-
-# Bun runtime smoke
 bun run test:bun:runtime
 ```
 
-Notes:
-- `test:integration:lite` starts Xpod in-process and refreshes test credentials before running `vitest`.
-- `test:bun:runtime` is the current Bun gate; it covers open runtime plus auth+vector flow.
-- If `sqlite-vec` cannot be loaded under Bun, vector search falls back to the plain SQLite implementation.
+- `test:integration:lite` starts Xpod in-process and runs the light integration path
+- `test:integration:full` keeps the real service stack for PostgreSQL / Redis / MinIO dependent paths
+- `test:bun:runtime` is the Bun runtime smoke gate
 
 ## Single-File Packaging
 
-Build a self-extracting single-file launcher:
+### Node launcher
+
+Build a self-extracting launcher:
 
 ```bash
 bun run build:single:standalone
 ```
 
-Output file: `.artifacts/xpod-single.cjs`
+Output file:
 
-Run it directly (requires Node.js):
+- `.artifacts/xpod-single.cjs`
+
+Run it directly with Node:
 
 ```bash
 node .artifacts/xpod-single.cjs --mode local
 ```
 
-On first start, it extracts runtime files to cache (default `~/.xpod/single-file-cache/`; override with `XPOD_SINGLE_CACHE_DIR`) and reuses that cache on subsequent launches.
+### Bun native binary
 
-## Deployment Strategies
+Build the Bun single-file binary:
 
-Xpod supports two primary deployment models, functioning like a Personal OS or a Multi-User Mainframe:
+```bash
+bun run build:single:bun
+```
 
-1.  **Self-Hosted (Personal OS)**: Run Xpod on your laptop (`bun run local`) or private server. You have exclusive control over the hardware and kernel. Ideal for personal agents and maximum privacy.
-2.  **Managed Hosting (Multi-User OS)**: Deploy Xpod as a shared server (`bun run cloud`) hosting thousands of Pods. Similar to a Unix mainframe with many users (`/home/alice`, `/home/bob`), Xpod strictly enforces isolation between Pods using WebIDs and ACLs. Users share infrastructure but retain ownership of their data and can migrate their Pods to other instances.
+Output file:
 
-## The "Everything is a Resource" Architecture
+- `dist/xpod-bun`
 
-Xpod **leverages** the **W3C Solid Protocol** to construct a comprehensive **Runtime Environment for Agents**:
+Run it directly:
 
-### 1. File System as Memory
-Instead of opaque bytes, Xpod's file system is **Semantic**.
-- **Memory vs Context**: The entire Pod is your **Memory** (Total Knowledge). When an Agent enters a folder (e.g., `/projects/xpod/`), that folder becomes its **Context**. Navigating the file system naturally switches the Agent's attention scope.
-- **Universal Context**: In traditional systems, data is locked in proprietary formats. In Xpod, all data (Emails, Tasks, Notes) is stored in **RDF**—a universal data model. This allows Agents to understand and link data from any source without custom parsers.
-- **Universal Interface**: One protocol to rule them all. Agents use standard HTTP methods (`GET`, `PUT`, `DELETE`) to access everything—Memory, Files, Skills, and I/O. This drastically simplifies Agent design, as they don't need to learn thousands of different APIs.
-- **Smarter Agents**: Because Context is universally understood and accessible via a single protocol, Agents have a holistic view of your life and can connect dots between different domains effortlessly, leading to unprecedented intelligence.
+```bash
+dist/xpod-bun --mode local --port 5710
+```
 
-### 2. Identity as Path (`/profile/card#me`)
-Identity is not a database row, but a **URI**.
-- **WebID**: Every Agent has a globally unique ID (e.g., `https://pod.xpod.io/agent-alice/profile#me`).
-- **Access Control (ACL)**: Permissions are managed like file system attributes (Read/Write/Control), but applied to web resources.
+On supported Unix platforms, `npm install @undefineds.co/xpod` can also resolve a matching optional platform package for the native `xpod` binary.
 
-### 3. Virtual Resources (Dynamic Context)
-Not all resources are static files. Xpod supports **Virtual Resources** where the path is a key to a dynamic strategy.
-- **Implicit Graphs as Folders**: A path like `/threads/{id}/` or `/-/search?q=Entity` may not exist on disk. instead, it dynamically aggregates related messages via graph or vector retrieval, presenting them as a folder.
-- **API as File**: External capabilities are mapped to paths. Reading `/weather/current` triggers an API call; writing to `/inbox/` triggers a message delivery pipeline.
-- **Benefit**: Agents interact with complex, dynamic systems using the same simple file operations (`GET`/`PUT`) used for static memory.
+## Architecture at a Glance
 
-### 4. Security as Attributes (`chmod`)
-Xpod implements a fine-grained permission model tailored for Agents.
-- **WAC/ACP**: Access Control Lists (ACLs) determine which Agent (WebID) can Read, Write, or Append to any resource.
-- **Trust Chains**: Agents can form groups and delegate permissions, enabling secure multi-agent collaboration.
+Xpod is one runtime with a unified gateway and several internal planes:
 
-### 5. Terminal & Skills (`/bin/*`)
-Xpod provides the runtime interfaces for Agent execution and interaction.
-- **`/-/terminal`** (Roadmap): A resource-based console. Agents listen to `/agents/{id}/stdin` and write to `/agents/{id}/stdout`, enabling interaction purely through file operations.
-- **Skills (Composable Capabilities)**: Xpod is the ideal runtime for Skills, enabling them to be:
-    - **Composable**: Skills interact via the standardized file system. The output of one Agent (an RDF graph or file) is immediately available as input for another.
-    - **Portable**: Built on Web Standards (JS/WASM + Markdown), Skills run consistently across Local, Server, or Edge Xpod instances.
-    - **Efficient**: Xpod's RDF indexing allows Skills to retrieve precise facts without loading massive files into the Context Window.
-    - **Powerful**: Unlike cloud agents trapped in sandboxes, Xpod Skills have **Root Access** to your digital life. They can access your full history, local files, and private devices, acting as a true Digital Butler rather than just a Chatbot.
+- **Pod / data plane**: Pod resources, RDF storage, access control, and standard Solid handling
+- **API / control plane**: AI-facing APIs, admin APIs, sidecar capabilities, and coordination services
+- **Agent runtime plane**: sessions, tasks, tool access, and long-running agent behavior near the Pod
 
-### 6. Network & Federation (Cloud-Edge Architecture)
-Xpod introduces a robust distributed architecture on top of standard Solid protocols.
-- **Control Plane (The Cloud)**: The Xpod Server acts as a coordinator, providing DNS, TLS certificates, and Tunneling services. It ensures your Agent is discoverable and reachable from the global internet.
-- **Data Plane (The Edge)**: Your Local Xpod holds the actual data and runs the Agents. It connects to the Cloud for reachability but executes Skills locally, ensuring data never leaves your physical control.
+In implementation terms, CSS and the API service are internal parts of Xpod's runtime.
 
-### 7. Dual-Process Architecture (CSS + API Server)
+## Typical Use Cases
 
-Xpod runs as two cooperating processes behind a single gateway:
-
-| Process | Port | Responsibility |
-|---------|------|----------------|
-| **CSS** (Solid Server) | 3000 | LDP resource access, OIDC auth, SPARQL, WebSocket notifications |
-| **API Server** | 3001 | Node management, heartbeat/DNS sync, quota, API Keys, AI chat |
-
-- **CSS** handles everything related to the Solid protocol — it's the kernel of the Pod file system.
-- **API Server** handles management APIs that don't belong in the Solid request chain.
-- Both share the same PostgreSQL database (server mode) or SQLite (local mode).
-
-**Auth methods**: Solid Token (DPoP/Bearer), API Key (`sk-*`), Node Token (`XpodNode nodeId:token`).
-
-**API Server routes**:
-
-| Route | Description | Mode |
-|-------|-------------|------|
-| `POST /v1/signal` | Edge node heartbeat → health check → DNS sync | Shared |
-| `/v1/nodes/*` | Node CRUD | Shared |
-| `/v1/keys/*` | API Key management | Shared |
-| `/v1/chat/completions` | OpenAI-compatible chat (SSE streaming) | Shared |
-| `/v1/responses` | OpenAI Responses API | Shared |
-| `/v1/messages` | Anthropic/OpenAI Threads compatible | Shared |
-| `/v1/models` | List available models | Shared |
-| `POST /v1/chatkit` | ChatKit protocol endpoint (streaming) | Shared |
-| `/v1/chatkit/threads/*` | ChatKit REST API (threads CRUD, items) | Shared |
-| `/v1/subdomains/*` | Subdomain allocation | Cloud |
-| `/v1/ddns/*` | Dynamic DNS management | Cloud |
-| `/v1/webid-profile/*` | WebID Profile hosting | Cloud |
-| `/provision/nodes` | SP registration | Cloud |
-| `/provision/pods` | Pod creation (SP callback) | Local |
-| `/admin/*` | Local config & restart | Local |
-
-Key components:
-- `EdgeNodeSignalHandler` (API Server) — receives heartbeats, triggers health checks and DNS synchronization
-- `EdgeNodeSignalClient` (local/edge) — sends periodic heartbeats with system metrics, network info, and tunnel status
-
-## Privacy & Compliance (GDPR)
-
-Xpod is designed for the post-GDPR world, where **Data Sovereignty** is paramount.
-
-- **Data Ownership**: Unlike SaaS platforms where data is locked in silos, Xpod stores data in **User-Owned Pods**. You physically possess your data (on your disk or your chosen server).
-- **Code Moves to Data**: Computation happens **locally** next to the data. This "Local-First" architecture minimizes data leakage and cross-border transfer risks.
-- **Granular Consent**: WAC/ACP Access Control Lists allow users to grant Agents access only to specific resources (e.g., "Read `/photos/` but not `/documents/`").
-- **Right to be Forgotten**: Deleting a resource in Xpod is a true physical deletion, ensuring compliance with erasure requests.
-
-## Roadmap
-
-- [x] DB-Based Identity Provider
-- [x] Fine-Grained Pod Capacity Management
-- [x] SPARQL 1.1 via LDP (sparql-update)
-- [x] Sidecar API: SPARQL (`/-/sparql`)
-- [x] Sidecar API: Vector (`/-/vector`)
-- [x] Cloud-Edge Cluster Architecture
-- [x] API Server (dual-process architecture, separated from CSS)
-- [x] Multi-Auth: Solid Token / API Key / Node Token
-- [x] Edge Node Heartbeat + Health Check + DNS Sync
-- [x] SP Provision & Pod Management
-- [x] AI API: Chat Completions, Responses, Messages, Models (OpenAI-compatible, SSE streaming)
-- [x] ChatKit API (conversation management)
-- [x] Subdomain & DDNS Management
-- [ ] Sidecar API: Terminal (`/-/terminal`)
-- [ ] Rate Limiting
-- [ ] Attribute-Based Access Control (ABAC)
-- [ ] Feature Store (Federated Learning)
+- **Personal Agent OS**: run your own AI-native Pod locally with your data, memory, and tools
+- **Desktop or local app backend**: expose one localhost runtime that multiple apps can share
+- **Backend for AI-native Solid apps**: combine Pod-native data, identity, and AI services in one runtime
+- **Managed Pod platform**: host many users on shared infrastructure while preserving Pod isolation
 
 ## Documentation
 
-- [docs/COMPONENTS.md](docs/COMPONENTS.md) - Components.js reference and configuration patterns
-- [docs/api-service-design.md](docs/api-service-design.md) - API Server architecture, routes, and auth design
-- [docs/deployment-modes.md](docs/deployment-modes.md) - Deployment profiles (local, cloud)
-- [docs/admin-guide.md](docs/admin-guide.md) - Admin initialization, roles, and reserved names
-- [docs/edge-cluster-architecture.md](docs/edge-cluster-architecture.md) - Cloud-edge coordination and routing
-- [docs/edge-node-deployment-modes.md](docs/edge-node-deployment-modes.md) - Edge node deployment scenarios
-- [docs/sidecar-api.md](docs/sidecar-api.md) - Sidecar API pattern (`/-/{service}`)
-- [docs/sparql-support.md](docs/sparql-support.md) - SPARQL 1.1 support details
-- [docs/vector-api-server-guide.md](docs/vector-api-server-guide.md) - Vector search API guide
-
-## Contributing
-
-Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) to understand how to contribute to the project.
-
-## License
-
-Xpod is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+- `docs/deployment-modes.md` — local vs cloud deployment
+- `docs/architecture.md` — system architecture overview
+- `docs/COMPONENTS.md` — component overrides and architecture extensions
+- `docs/sidecar-api.md` — sidecar API patterns

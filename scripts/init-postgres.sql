@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS identity_account_usage (
     egress_bytes BIGINT NOT NULL DEFAULT 0,
     storage_limit_bytes BIGINT,
     bandwidth_limit_bps BIGINT,
+    compute_seconds BIGINT NOT NULL DEFAULT 0,
+    tokens_used BIGINT NOT NULL DEFAULT 0,
+    compute_limit_seconds BIGINT,
+    token_limit_monthly BIGINT,
+    period_start TIMESTAMP WITH TIME ZONE,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
@@ -100,7 +105,23 @@ CREATE TABLE IF NOT EXISTS identity_pod_usage (
     egress_bytes BIGINT NOT NULL DEFAULT 0,
     storage_limit_bytes BIGINT,
     bandwidth_limit_bps BIGINT,
+    compute_seconds BIGINT NOT NULL DEFAULT 0,
+    tokens_used BIGINT NOT NULL DEFAULT 0,
+    compute_limit_seconds BIGINT,
+    token_limit_monthly BIGINT,
+    period_start TIMESTAMP WITH TIME ZONE,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- Service Token 表
+CREATE TABLE IF NOT EXISTS identity_service_token (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    service_type TEXT NOT NULL,
+    service_id TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE
 );
 
 -- 创建索引

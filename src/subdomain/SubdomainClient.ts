@@ -32,7 +32,7 @@ export interface SubdomainRegistrationResult {
   subdomain: string;
   fullDomain: string;
   mode: 'direct' | 'tunnel';
-  publicIp?: string;
+  ipv4?: string;
   tunnelProvider?: string;
   tunnelEndpoint?: string;
   registeredAt: string;
@@ -43,7 +43,7 @@ export interface SubdomainInfo {
   subdomain: string;
   fullDomain: string;
   mode: 'direct' | 'tunnel';
-  publicIp?: string;
+  ipv4?: string;
   tunnelProvider?: string;
   tunnelEndpoint?: string;
   registeredAt: string;
@@ -57,6 +57,9 @@ export interface DdnsAllocationResult {
   fqdn: string;
   ipAddress?: string;
   ipv6Address?: string;
+  tunnelProvider?: string;
+  tunnelToken?: string;
+  tunnelEndpoint?: string;
   createdAt: string;
 }
 
@@ -67,6 +70,9 @@ export interface DdnsUpdateResult {
   fqdn: string;
   ipAddress?: string;
   ipv6Address?: string;
+  tunnelProvider?: string;
+  tunnelToken?: string;
+  tunnelEndpoint?: string;
   updatedAt: string;
 }
 
@@ -79,6 +85,7 @@ export interface DdnsRecordInfo {
   recordType: string;
   status: string;
   ttl: number;
+  tunnelProvider?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -117,7 +124,7 @@ export class SubdomainClient {
   async register(options: {
     subdomain: string;
     localPort: number;
-    publicIp?: string;
+    ipv4?: string;
   }): Promise<SubdomainRegistrationResult> {
     const url = `${this.cloudApiEndpoint}/register`;
     const response = await this.fetch(url, {
@@ -125,7 +132,7 @@ export class SubdomainClient {
       body: JSON.stringify({
         subdomain: options.subdomain,
         localPort: options.localPort,
-        publicIp: options.publicIp,
+        ipv4: options.ipv4,
         nodeId: this.nodeId,
       }),
     });
@@ -195,6 +202,7 @@ export class SubdomainClient {
     ipv6Address?: string;
     mode?: 'direct' | 'tunnel';
     tunnelProvider?: string;
+    localPort?: number;
   }): Promise<DdnsAllocationResult> {
     const url = `${this.cloudApiEndpoint}/api/v1/ddns/allocate`;
     const response = await this.fetch(url, {
@@ -206,6 +214,7 @@ export class SubdomainClient {
         ipv6Address: options.ipv6Address,
         mode: options.mode,
         tunnelProvider: options.tunnelProvider,
+        localPort: options.localPort,
       }),
     });
     return response as DdnsAllocationResult;
@@ -219,6 +228,7 @@ export class SubdomainClient {
     ipv6Address?: string;
     mode?: 'direct' | 'tunnel';
     tunnelProvider?: string;
+    localPort?: number;
   }): Promise<DdnsUpdateResult> {
     const url = `${this.cloudApiEndpoint}/api/v1/ddns/${encodeURIComponent(subdomain)}`;
     const response = await this.fetch(url, {
@@ -228,6 +238,7 @@ export class SubdomainClient {
         ipv6Address: options.ipv6Address,
         mode: options.mode,
         tunnelProvider: options.tunnelProvider,
+        localPort: options.localPort,
       }),
     });
     return response as DdnsUpdateResult;
@@ -269,8 +280,7 @@ export class SubdomainClient {
         method: options.method,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.nodeToken}`,
-          'X-Node-Id': this.nodeId,
+          'Authorization': `XpodNode ${this.nodeId}:${this.nodeToken}`,
         },
         body: options.body,
         signal: controller.signal,

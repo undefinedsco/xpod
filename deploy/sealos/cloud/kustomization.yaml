@@ -3,6 +3,9 @@ kind: Kustomization
 namespace: xpod-cloud
 resources:
   - namespace.yaml
+  - redis.yaml
+  - configmap.yaml
+  - inngest-deployment.yaml
+  - inngest-service.yaml
   - deployment.yaml
   - service.yaml
-  - ingress.yaml

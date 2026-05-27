@@ -5,6 +5,10 @@ import type {
   KeyValueStorage,
 } from '@solid/community-server';
 import { getLoggerFor } from 'global-logger-factory';
+import {
+  attachRedisClientErrorHandler,
+  closeRedisClient,
+} from '../redis/RedisClientLifecycle';
 
 export interface RedisKeyValueStorageOptions {
   client: string;
@@ -24,6 +28,7 @@ export class RedisKeyValueStorage<T = unknown> implements
   private readonly client: Redis;
   private readonly prefix: string;
   private readonly scanCount: number;
+  private shuttingDown = false;
 
   public constructor(options: RedisKeyValueStorageOptions) {
     if (!options.client) {
@@ -32,6 +37,11 @@ export class RedisKeyValueStorage<T = unknown> implements
     this.prefix = options.namespace ?? 'css:kv:';
     this.scanCount = options.scanCount ?? 100;
     this.client = this.createClient(options);
+    attachRedisClientErrorHandler(this.client, {
+      logger: this.logger,
+      label: 'RedisKeyValueStorage',
+      isShuttingDown: (): boolean => this.shuttingDown,
+    });
   }
 
   public async initialize(): Promise<void> {
@@ -39,8 +49,10 @@ export class RedisKeyValueStorage<T = unknown> implements
   }
 
   public async finalize(): Promise<void> {
-    await this.client.quit().catch((error: unknown) => {
-      this.logger.warn(`Failed to close Redis connection: ${error}`);
+    this.shuttingDown = true;
+    await closeRedisClient(this.client, {
+      logger: this.logger,
+      label: 'RedisKeyValueStorage',
     });
   }
 

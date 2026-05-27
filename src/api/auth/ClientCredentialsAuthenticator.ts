@@ -7,8 +7,19 @@ import type { SolidAuthContext } from './AuthContext';
  * Interface for token cache
  */
 export interface TokenCache {
-  get(clientId: string): Promise<{ token: string; webId: string; expiresAt: Date } | undefined>;
-  set(clientId: string, token: string, webId: string, expiresAt: Date): Promise<void>;
+  get(clientId: string): Promise<{
+    token: string;
+    tokenType?: 'Bearer' | 'DPoP';
+    webId: string;
+    expiresAt: Date;
+  } | undefined>;
+  set(
+    clientId: string,
+    token: string,
+    webId: string,
+    expiresAt: Date,
+    tokenType?: 'Bearer' | 'DPoP',
+  ): Promise<void>;
 }
 
 export interface ClientCredentialsAuthenticatorOptions {
@@ -108,6 +119,8 @@ export class ClientCredentialsAuthenticator implements Authenticator {
               accountId: cached.webId,
               clientId,
               clientSecret,
+              accessToken: cached.token,
+              tokenType: cached.tokenType ?? 'Bearer',
               viaApiKey: true,
             },
           };
@@ -115,17 +128,23 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       }
 
       // Exchange for token at CSS endpoint
-      console.log(`[ClientCredentialsAuthenticator] Exchanging credentials at ${this.tokenEndpoint}`);
+      this.logger.debug(`Exchanging client credentials at ${this.tokenEndpoint}`);
       const tokenResult = await this.exchangeForToken(clientId, clientSecret);
-      console.log(`[ClientCredentialsAuthenticator] Token exchange result: success=${tokenResult.success}, webId=${tokenResult.webId}, error=${tokenResult.error}`);
+      this.logger.debug(`Token exchange result: success=${tokenResult.success}, webId=${tokenResult.webId}, error=${tokenResult.error}`);
       
-      if (!tokenResult.success || !tokenResult.webId) {
+      if (!tokenResult.success || !tokenResult.webId || !tokenResult.token) {
         return { success: false, error: tokenResult.error || 'Token exchange failed' };
       }
 
       // Cache the token
       if (this.tokenCache && tokenResult.expiresAt) {
-        await this.tokenCache.set(clientId, tokenResult.token!, tokenResult.webId, tokenResult.expiresAt);
+        await this.tokenCache.set(
+          clientId,
+          tokenResult.token!,
+          tokenResult.webId,
+          tokenResult.expiresAt,
+          tokenResult.tokenType,
+        );
       }
 
       const context: SolidAuthContext = {
@@ -134,13 +153,14 @@ export class ClientCredentialsAuthenticator implements Authenticator {
         accountId: tokenResult.webId,
         clientId,
         clientSecret,
+        accessToken: tokenResult.token,
+        tokenType: tokenResult.tokenType ?? 'Bearer',
         viaApiKey: true,
       };
 
       this.logger.debug(`Authenticated API Key for webId: ${tokenResult.webId}`);
       return { success: true, context };
     } catch (error) {
-      console.error(`[ClientCredentialsAuthenticator] API Key authentication error:`, error);
       this.logger.error(`API Key authentication error: ${error}`);
       return { success: false, error: 'Authentication failed' };
     }
@@ -149,6 +169,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
   private async exchangeForToken(clientId: string, clientSecret: string): Promise<{
     success: boolean;
     token?: string;
+    tokenType?: 'Bearer' | 'DPoP';
     webId?: string;
     expiresAt?: Date;
     error?: string;
@@ -206,6 +227,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       return {
         success: true,
         token: data.access_token,
+        tokenType: data.token_type?.toUpperCase() === 'DPOP' ? 'DPoP' : 'Bearer',
         webId,
         expiresAt,
       };

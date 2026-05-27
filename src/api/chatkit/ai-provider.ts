@@ -16,6 +16,7 @@ import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId } from '../auth/AuthContext';
 import { CredentialStatus } from '../../credential/schema/types';
 import { getDefaultBaseUrl } from '../service/provider-registry';
+import { getPlatformApiBaseUrl, getPlatformApiKey, getPlatformDefaultModel } from '../service/platform-ai-config';
 
 // Create a proxy-aware fetch function
 function createProxyFetch(proxyUrl: string): typeof fetch {
@@ -65,7 +66,7 @@ export class VercelAiProvider implements AiProvider {
       throw new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
     }
 
-    const model = options?.model ?? config.defaultModel ?? process.env.DEFAULT_MODEL ?? 'stepfun/step-3.5-flash:free';
+    const model = options?.model ?? config.defaultModel ?? getPlatformDefaultModel();
 
     this.logger.debug(`Streaming response for ${userId}, model: ${model}`);
 
@@ -187,16 +188,17 @@ Model: ${model}
         baseURL: config.baseUrl || getDefaultBaseUrl(),
         apiKey: config.apiKey,
         proxy: config.proxyUrl,
+        defaultModel: config.defaultModel,
         credentialId: config.credentialId,
       };
     }
 
     // 2. 平台 Provider
-    const platformBase = process.env.DEFAULT_API_BASE;
+    const platformBase = getPlatformApiBaseUrl();
     if (platformBase) {
       return {
         baseURL: platformBase,
-        apiKey: process.env.DEFAULT_API_KEY || '',
+        apiKey: getPlatformApiKey(),
       };
     }
 

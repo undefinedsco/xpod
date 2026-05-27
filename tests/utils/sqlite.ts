@@ -9,7 +9,7 @@
  */
 import path from 'node:path';
 import fs from 'node:fs';
-import { createSqliteDatabase, type SqliteDatabase } from '../../src/storage/SqliteCompat';
+import { getSqliteRuntime, type SqliteDatabase } from '../../src/storage/SqliteRuntime';
 
 /**
  * Root directory for all test data files.
@@ -117,12 +117,13 @@ export function createMemoryDbUrl(prefix = 'test'): string {
 
 /**
  * Generate a unique in-memory connection string for Drizzle/identity database.
- * Uses the named in-memory SQLite format used by the current runtime.
+ * Uses :memory: format compatible with the current SQLite runtime.
  *
  * @param prefix - Optional prefix for identification
  * @returns A sqlite::memory: connection string
  */
 export function createMemoryIdentityDbUrl(prefix = 'identity'): string {
+  // Keep each test isolated with a unique named in-memory database
   const uniqueId = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
   return `sqlite::memory:${uniqueId}`;
 }
@@ -133,7 +134,8 @@ export function createMemoryIdentityDbUrl(prefix = 'identity'): string {
  * @returns A new in-memory Database instance
  */
 export function createMemoryDatabase(): SqliteDatabase {
-  return createSqliteDatabase(':memory:');
+  const sqliteRuntime = getSqliteRuntime();
+  return sqliteRuntime.openDatabase(':memory:');
 }
 
 /**
@@ -143,7 +145,17 @@ export function createMemoryDatabase(): SqliteDatabase {
  * @returns A Database instance with WAL mode and busy_timeout configured
  */
 export function createIntegrationDatabase(filename: string): SqliteDatabase {
-  const db = createSqliteDatabase(filename);
+  const sqliteRuntime = getSqliteRuntime();
+  const db = sqliteRuntime.openDatabase(filename);
   applyIntegrationPragmas(db);
   return db;
+}
+
+export function cleanupSqliteFiles(filename: string): void {
+  for (const suffix of ['', '-shm', '-wal']) {
+    const target = `${filename}${suffix}`;
+    if (fs.existsSync(target)) {
+      fs.unlinkSync(target);
+    }
+  }
 }

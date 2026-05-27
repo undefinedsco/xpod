@@ -2,7 +2,7 @@
 
 ## 问题描述
 
-在使用 drizzle-solid 0.2.10 查询 Message 数据时，`db.select().from(Message).where(eq(Message.threadId, threadUri))` 返回 0 条记录，但数据确实存在于 Pod 中。
+在使用 drizzle-solid 0.2.10 查询 Message 数据时，`db.select().from(Message).where(eq(Message.thread, threadResource))` 返回 0 条记录，但数据确实存在于 Pod 中。
 
 ## 根因分析
 

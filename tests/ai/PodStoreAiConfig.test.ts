@@ -11,6 +11,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
 import type { StoreContext } from '../../src/api/chatkit/store';
+import { Provider } from '../../src/ai/schema/provider';
+import { Model } from '../../src/ai/schema/model';
 
 // Mock Session
 vi.mock('@inrupt/solid-client-authn-node', () => ({
@@ -29,7 +31,7 @@ describe('PodChatKitStore AI Config Operations', () => {
   const mockCredentials = [
     {
       id: 'cred-001',
-      provider: 'http://localhost:3000/test/settings/ai/providers.ttl#openai',
+      provider: 'http://localhost:3000/test/settings/providers/openai.ttl',
       service: ServiceType.AI,
       status: CredentialStatus.ACTIVE,
       apiKey: 'sk-test-key',
@@ -44,6 +46,24 @@ describe('PodChatKitStore AI Config Operations', () => {
       displayName: 'OpenAI',
       baseUrl: 'https://api.openai.com/v1',
       proxyUrl: null,
+      '@id': 'http://localhost:3000/test/settings/providers/openai.ttl',
+    },
+  ];
+
+  const mockModels = [
+    {
+      id: 'gpt-4o-mini',
+      displayName: 'GPT-4o mini',
+      isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl',
+      contextLength: 128000,
+      maxOutputTokens: 16384,
+    },
+    {
+      id: 'custom-coder',
+      displayName: 'Custom Coder',
+      isProvidedBy: 'http://localhost:3000/test/settings/providers/openai.ttl',
+      contextLength: 64000,
+      maxOutputTokens: 8192,
     },
   ];
 
@@ -65,7 +85,11 @@ describe('PodChatKitStore AI Config Operations', () => {
     } as StoreContext;
 
     let selectCallIndex = 0;
-    const createSelectChain = (credentials = mockCredentials, providers = mockProviders) => ({
+    const createSelectChain = (
+      credentials = mockCredentials,
+      providers = mockProviders,
+      models = mockModels,
+    ) => ({
       from: vi.fn().mockImplementation(() => {
         selectCallIndex++;
         if (selectCallIndex === 1) {
@@ -73,17 +97,39 @@ describe('PodChatKitStore AI Config Operations', () => {
             where: vi.fn().mockResolvedValue(credentials),
           };
         }
-        return Promise.resolve(providers);
+        if (selectCallIndex === 2) {
+          return Promise.resolve(providers);
+        }
+        return Promise.resolve(models);
       }),
     });
+    const findProvider = (target: string, providers = mockProviders) => providers.find((provider) => (
+      target === provider.id
+      || target === provider['@id']
+      || target === `/settings/providers/${provider.id}.ttl`
+      || target.endsWith(`/settings/providers/${provider.id}.ttl`)
+    ));
+    const findModel = (target: string, models = mockModels) => models.find((model) => (
+      target === model.id
+      || target.endsWith(`#${model.id}`)
+    ));
 
     // Create mock db
     mockDb = {
       select: vi.fn().mockImplementation(() => createSelectChain()),
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue([]),
-      update: vi.fn().mockReturnThis(),
-      set: vi.fn().mockReturnThis(),
+      findByIri: vi.fn().mockImplementation((table: any, iri: string) => {
+        if (table === Provider) return Promise.resolve(findProvider(iri));
+        if (table === Model) return Promise.resolve(findModel(iri));
+        return Promise.resolve(undefined);
+      }),
+      findById: vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === Provider) return Promise.resolve(findProvider(id));
+        if (table === Model) return Promise.resolve(findModel(id));
+        return Promise.resolve(mockCredentials.find((cred) => cred.id === id));
+      }),
+      updateById: vi.fn().mockResolvedValue(undefined),
       init: vi.fn().mockResolvedValue(undefined),
       query: {
         chat: { findFirst: vi.fn() },
@@ -96,12 +142,17 @@ describe('PodChatKitStore AI Config Operations', () => {
   });
 
   describe('extractProviderId', () => {
-    it('should extract provider ID from URI with hash', () => {
+    it('should extract provider ID from current provider resource URI', () => {
       // Access private method via any
       const extractProviderId = (store as any).extractProviderId.bind(store);
 
-      expect(extractProviderId('http://localhost:3000/test/settings/ai/providers.ttl#openai'))
+      expect(extractProviderId('http://localhost:3000/test/settings/providers/openai.ttl'))
         .toBe('openai');
+    });
+
+    it('should still extract provider ID from legacy fragment URI', () => {
+      const extractProviderId = (store as any).extractProviderId.bind(store);
+
       expect(extractProviderId('http://example.com/path/to/file.ttl#google'))
         .toBe('google');
     });
@@ -164,6 +215,67 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config!.baseUrl).toBe('https://api.openai.com/v1');
     });
 
+    it('should select the default credential before storage order', async () => {
+      const credentials = [
+        {
+          ...mockCredentials[0],
+          id: 'cred-alpha',
+          provider: 'http://localhost:3000/test/settings/providers/openai.ttl',
+          apiKey: 'sk-alpha',
+        },
+        {
+          ...mockCredentials[0],
+          id: 'cred-custom',
+          provider: 'http://localhost:3000/test/settings/providers/custom.ttl',
+          apiKey: 'sk-custom',
+          isDefault: true,
+        },
+      ];
+      const providers = [
+        ...mockProviders,
+        {
+          id: 'custom',
+          displayName: 'Custom',
+          baseUrl: 'https://custom.example.com/v1',
+          proxyUrl: null,
+          '@id': 'http://localhost:3000/test/settings/providers/custom.ttl',
+        },
+      ];
+
+      let selectCallIndex = 0;
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => {
+          selectCallIndex++;
+          if (selectCallIndex === 1) {
+            return {
+              where: vi.fn().mockResolvedValue(credentials),
+            };
+          }
+          return Promise.resolve(providers);
+        }),
+      }));
+      mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providers.find((provider) => iri === provider['@id'] || iri.endsWith(`/settings/providers/${provider.id}.ttl`)));
+        }
+        return Promise.resolve(undefined);
+      });
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providers.find((provider) => id === provider.id || id === `/settings/providers/${provider.id}.ttl`));
+        }
+        return Promise.resolve(credentials.find((cred) => cred.id === id));
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toBeDefined();
+      expect(config!.providerId).toBe('custom');
+      expect(config!.apiKey).toBe('sk-custom');
+      expect(config!.baseUrl).toBe('https://custom.example.com/v1');
+      expect(config!.credentialId).toBe('cred-custom');
+    });
+
     it('should include proxyUrl when available on provider', async () => {
       const providerWithProxy = [
         {
@@ -184,6 +296,18 @@ describe('PodChatKitStore AI Config Operations', () => {
           return Promise.resolve(providerWithProxy);
         }),
       }));
+      mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providerWithProxy.find((provider) => iri === provider['@id'] || iri.endsWith(`/settings/providers/${provider.id}.ttl`)));
+        }
+        return Promise.resolve(undefined);
+      });
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providerWithProxy.find((provider) => id === provider.id || id === `/settings/providers/${provider.id}.ttl`));
+        }
+        return Promise.resolve(mockCredentials.find((cred) => cred.id === id));
+      });
 
       const config = await store.getAiConfig(mockContext);
 
@@ -233,10 +357,7 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should call update with correct status', async () => {
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.updateCredentialStatus(
@@ -245,17 +366,14 @@ describe('PodChatKitStore AI Config Operations', () => {
         CredentialStatus.RATE_LIMITED,
       );
 
-      expect(mockDb.update).toHaveBeenCalled();
-      expect(setMock).toHaveBeenCalledWith(
+      expect(mockDb.updateById).toHaveBeenCalled();
+      expect(mockDb.updateById.mock.calls[0][2]).toEqual(
         expect.objectContaining({ status: CredentialStatus.RATE_LIMITED }),
       );
     });
 
     it('should include rateLimitResetAt when provided', async () => {
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const resetAt = new Date(Date.now() + 60000);
@@ -266,7 +384,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         { rateLimitResetAt: resetAt },
       );
 
-      expect(setMock).toHaveBeenCalledWith(
+      expect(mockDb.updateById.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.RATE_LIMITED,
           rateLimitResetAt: resetAt,
@@ -277,15 +395,8 @@ describe('PodChatKitStore AI Config Operations', () => {
     it('should increment failCount when requested', async () => {
       const existingCred = { ...mockCredentials[0], failCount: 2 };
 
-      mockDb.select = vi.fn().mockImplementation(() => ({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([existingCred]),
-        }),
-      }));
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.findById = vi.fn().mockResolvedValue(existingCred);
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.updateCredentialStatus(
@@ -295,7 +406,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         { incrementFailCount: true },
       );
 
-      expect(setMock).toHaveBeenCalledWith(
+      expect(mockDb.updateById.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.RATE_LIMITED,
           failCount: 3,
@@ -304,11 +415,7 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should handle errors gracefully', async () => {
-      mockDb.update = vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockRejectedValue(new Error('Update failed')),
-        }),
-      });
+      mockDb.updateById = vi.fn().mockRejectedValue(new Error('Update failed'));
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       // Should not throw
@@ -328,16 +435,13 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should reset status and failCount on success', async () => {
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       await store.recordCredentialSuccess(mockContext, 'cred-001');
 
-      expect(mockDb.update).toHaveBeenCalled();
-      expect(setMock).toHaveBeenCalledWith(
+      expect(mockDb.updateById).toHaveBeenCalled();
+      expect(mockDb.updateById.mock.calls[0][2]).toEqual(
         expect.objectContaining({
           status: CredentialStatus.ACTIVE,
           failCount: 0,
@@ -347,35 +451,108 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
 
     it('should set lastUsedAt to current date', async () => {
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
-      });
-      mockDb.update = vi.fn().mockReturnValue({ set: setMock });
+      mockDb.updateById = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       const beforeCall = new Date();
       await store.recordCredentialSuccess(mockContext, 'cred-001');
       const afterCall = new Date();
 
-      expect(setMock).toHaveBeenCalled();
-      const callArgs = setMock.mock.calls[0][0];
+      expect(mockDb.updateById).toHaveBeenCalled();
+      const callArgs = mockDb.updateById.mock.calls[0][2];
       expect(callArgs.lastUsedAt).toBeInstanceOf(Date);
       expect(callArgs.lastUsedAt.getTime()).toBeGreaterThanOrEqual(beforeCall.getTime());
       expect(callArgs.lastUsedAt.getTime()).toBeLessThanOrEqual(afterCall.getTime());
     });
 
     it('should handle errors gracefully', async () => {
-      mockDb.update = vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockRejectedValue(new Error('Update failed')),
-        }),
-      });
+      mockDb.updateById = vi.fn().mockRejectedValue(new Error('Update failed'));
       vi.spyOn(store as any, 'getDb').mockResolvedValue(mockDb);
 
       // Should not throw
       await expect(
         store.recordCredentialSuccess(mockContext, 'cred-001'),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('listAvailableModels', () => {
+    it('should return empty list when no active AI config exists', async () => {
+      vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce(undefined);
+
+      const models = await store.listAvailableModels(mockContext);
+
+      expect(models).toEqual([]);
+    });
+
+    it('should return pod-defined models for current user', async () => {
+      vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce({
+        providerId: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-test-key',
+        credentialId: 'cred-001',
+        defaultModel: 'gpt-4o-mini',
+      });
+
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === Provider) {
+            return Promise.resolve(mockProviders);
+          }
+          if (table === Model) {
+            return Promise.resolve(mockModels);
+          }
+          return {
+            where: vi.fn().mockResolvedValue(mockCredentials),
+          };
+        }),
+      }));
+
+      const models = await store.listAvailableModels(mockContext);
+
+      expect(models.map((item: any) => item.id)).toEqual(['gpt-4o-mini', 'custom-coder']);
+      expect(models[0]).toEqual(expect.objectContaining({
+        id: 'gpt-4o-mini',
+        object: 'model',
+        provider: 'openai',
+        owned_by: 'OpenAI',
+        context_window: 128000,
+        max_tokens: 16384,
+      }));
+      expect(models[1]).toEqual(expect.objectContaining({
+        id: 'custom-coder',
+        object: 'model',
+        provider: 'openai',
+        owned_by: 'OpenAI',
+      }));
+    });
+
+    it('should include default model when it is not already present', async () => {
+      vi.spyOn(store, 'getAiConfig').mockResolvedValueOnce({
+        providerId: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-test-key',
+        credentialId: 'cred-001',
+        defaultModel: 'fallback-model',
+      });
+
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === Provider) {
+            return Promise.resolve(mockProviders);
+          }
+          if (table === Model) {
+            return Promise.resolve(mockModels);
+          }
+          return {
+            where: vi.fn().mockResolvedValue(mockCredentials),
+          };
+        }),
+      }));
+
+      const models = await store.listAvailableModels(mockContext);
+
+      expect(models.map((item: any) => item.id)).toContain('fallback-model');
     });
   });
 });

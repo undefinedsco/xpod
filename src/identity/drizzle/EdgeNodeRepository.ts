@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
-import { executeStatement, executeQuery, isDatabaseSqlite, toDbTimestamp, fromDbTimestamp } from './db';
+import { executeStatement, executeQuery, toDbTimestamp, fromDbTimestamp } from './db';
 import { edgeNodes } from './schema';
 
 export interface EdgeNodeSummary {
@@ -57,43 +57,23 @@ export class EdgeNodeRepository {
   public constructor(private readonly db: IdentityDatabase) {}
 
   public async listNodes(): Promise<EdgeNodeSummary[]> {
-    // Use different COUNT syntax for SQLite vs PostgreSQL
-    const isSqlite = isDatabaseSqlite(this.db);
-    const result = isSqlite
-      ? await executeQuery(this.db, sql`
-          SELECT en.id,
-                 en.display_name,
-                 en.node_type,
-                 en.created_at,
-                 en.updated_at,
-                 en.last_seen,
-                 en.metadata,
-                 COALESCE(pods.count, 0) AS pod_count
-          FROM identity_edge_node en
-          LEFT JOIN (
-            SELECT node_id, COUNT(*) AS count
-            FROM identity_edge_node_pod
-            GROUP BY node_id
-          ) pods ON pods.node_id = en.id
-          ORDER BY en.created_at ASC
-        `)
-      : await executeQuery(this.db, sql`
-          SELECT en.id,
-                 en.display_name,
-                 en.node_type,
-                 en.created_at,
-                 en.updated_at,
-                 en.last_seen,
-                 en.metadata,
-                 COALESCE(pods.count, 0) AS pod_count
-          FROM identity_edge_node en
-          LEFT JOIN (
-            SELECT node_id, COUNT(*)::integer AS count
-            FROM identity_edge_node_pod
-            GROUP BY node_id
-          ) pods ON pods.node_id = en.id
-          ORDER BY en.created_at ASC
-        `);
+    const result = await executeQuery(this.db, sql`
+      SELECT en.id,
+             en.display_name,
+             en.node_type,
+             en.created_at,
+             en.updated_at,
+             en.last_seen,
+             en.metadata,
+             COALESCE(pods.count, 0) AS pod_count
+      FROM identity_edge_node en
+      LEFT JOIN (
+        SELECT node_id, COUNT(*) AS count
+        FROM identity_edge_node_pod
+        GROUP BY node_id
+      ) pods ON pods.node_id = en.id
+      ORDER BY en.created_at ASC
+    `);
 
     return result.rows.map((row: any): EdgeNodeSummary => {
       const createdAt = fromDbTimestamp(row.created_at);
@@ -112,7 +92,7 @@ export class EdgeNodeRepository {
     });
   }
 
-  public async createNode(displayName?: string, accountId?: string): Promise<CreateEdgeNodeResult> {
+  public async createNode(displayName?: string, _accountId?: string): Promise<CreateEdgeNodeResult> {
     const nodeId = randomUUID();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -120,8 +100,8 @@ export class EdgeNodeRepository {
     const ts = toDbTimestamp(this.db, now);
 
     await executeStatement(this.db, sql`
-      INSERT INTO identity_edge_node (id, display_name, owner_account_id, token_hash, created_at, updated_at)
-      VALUES (${nodeId}, ${displayName ?? null}, ${accountId ?? null}, ${tokenHash}, ${ts}, ${ts})
+      INSERT INTO identity_edge_node (id, display_name, token_hash, created_at, updated_at)
+      VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${ts}, ${ts})
     `);
 
     return {
@@ -132,21 +112,10 @@ export class EdgeNodeRepository {
   }
 
   /**
-   * Get the owner account ID of a node.
+   * Node/account 关系待产品化后单独建模；当前阶段不再在节点表上持久化账号归属。
    */
-  public async getNodeOwner(nodeId: string): Promise<string | undefined> {
-    const result = await executeQuery(this.db, sql`
-      SELECT owner_account_id
-      FROM identity_edge_node
-      WHERE id = ${nodeId}
-      LIMIT 1
-    `);
-    
-    if (result.rows.length === 0) {
-      return undefined;
-    }
-    
-    return result.rows[0].owner_account_id ? String(result.rows[0].owner_account_id) : undefined;
+  public async getNodeOwner(_nodeId: string): Promise<string | undefined> {
+    return undefined;
   }
 
   public async getNodeSecret(nodeId: string): Promise<EdgeNodeSecret | undefined> {
@@ -172,30 +141,19 @@ export class EdgeNodeRepository {
   public async updateNodeHeartbeat(nodeId: string, metadata: Record<string, unknown> | null, timestamp: Date): Promise<void> {
     const payload = metadata == null ? null : JSON.stringify(metadata);
     const ts = toDbTimestamp(this.db, timestamp);
-    const isSqlite = isDatabaseSqlite(this.db);
 
-    if (isSqlite) {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET metadata = ${payload},
-            last_seen = ${ts},
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    } else {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET metadata = ${payload}::jsonb,
-            last_seen = ${ts},
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    }
+    await executeStatement(this.db, sql`
+      UPDATE identity_edge_node
+      SET metadata = ${payload},
+          last_seen = ${ts},
+          updated_at = ${ts}
+      WHERE id = ${nodeId}
+    `);
   }
 
   public async updateNodeMode(nodeId: string, options: {
     accessMode: 'direct' | 'proxy';
-    publicIp?: string;
+    ipv4?: string;
     publicPort?: number;
     subdomain?: string;
     connectivityStatus?: 'unknown' | 'reachable' | 'unreachable';
@@ -204,63 +162,47 @@ export class EdgeNodeRepository {
     const capabilitiesPayload = options.capabilities ? JSON.stringify(options.capabilities) : null;
     const now = new Date();
     const ts = toDbTimestamp(this.db, now);
-    const isSqlite = isDatabaseSqlite(this.db);
 
-    if (isSqlite) {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET access_mode = ${options.accessMode},
-            public_ip = ${options.publicIp ?? null},
-            public_port = ${options.publicPort ?? null},
-            subdomain = ${options.subdomain ?? null},
-            connectivity_status = ${options.connectivityStatus ?? 'unknown'},
-            capabilities = ${capabilitiesPayload},
-            last_connectivity_check = ${ts},
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    } else {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET access_mode = ${options.accessMode},
-            public_ip = ${options.publicIp ?? null},
-            public_port = ${options.publicPort ?? null},
-            subdomain = ${options.subdomain ?? null},
-            connectivity_status = ${options.connectivityStatus ?? 'unknown'},
-            capabilities = ${capabilitiesPayload}::jsonb,
-            last_connectivity_check = ${ts},
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    }
+    await executeStatement(this.db, sql`
+      UPDATE identity_edge_node
+      SET access_mode = ${options.accessMode},
+          ipv4 = ${options.ipv4 ?? null},
+          public_port = ${options.publicPort ?? null},
+          subdomain = ${options.subdomain ?? null},
+          connectivity_status = ${options.connectivityStatus ?? 'unknown'},
+          capabilities = ${capabilitiesPayload},
+          last_connectivity_check = ${ts},
+          updated_at = ${ts}
+      WHERE id = ${nodeId}
+    `);
   }
 
   public async getNodeConnectivityInfo(nodeId: string): Promise<{
     nodeId: string;
     accessMode?: string;
-    publicIp?: string;
+    ipv4?: string;
     publicPort?: number;
     subdomain?: string;
     connectivityStatus?: string;
     lastConnectivityCheck?: Date;
   } | undefined> {
     const result = await executeQuery(this.db, sql`
-      SELECT id, access_mode, public_ip, public_port, subdomain, 
+      SELECT id, access_mode, ipv4, public_port, subdomain,
              connectivity_status, last_connectivity_check
       FROM identity_edge_node
       WHERE id = ${nodeId}
       LIMIT 1
     `);
-    
+
     if (result.rows.length === 0) {
       return undefined;
     }
-    
+
     const row = result.rows[0] as any;
     return {
       nodeId: String(row.id),
       accessMode: row.access_mode ? String(row.access_mode) : undefined,
-      publicIp: row.public_ip ? String(row.public_ip) : undefined,
+      ipv4: row.ipv4 ? String(row.ipv4) : undefined,
       publicPort: row.public_port ? Number(row.public_port) : undefined,
       subdomain: row.subdomain ? String(row.subdomain) : undefined,
       connectivityStatus: row.connectivity_status ? String(row.connectivity_status) : undefined,
@@ -269,26 +211,23 @@ export class EdgeNodeRepository {
   }
 
   public async mergeNodeMetadata(nodeId: string, patch: Record<string, unknown>): Promise<void> {
-    const payload = JSON.stringify(patch);
-    const isSqlite = isDatabaseSqlite(this.db);
+    // Read current metadata
+    const current = await this.getNodeMetadata(nodeId);
+    if (!current) {
+      throw new Error(`Node ${nodeId} not found`);
+    }
+
+    // Merge in application layer
+    const merged = { ...(current.metadata ?? {}), ...patch };
+    const payload = JSON.stringify(merged);
     const ts = toDbTimestamp(this.db, new Date());
 
-    if (isSqlite) {
-      // SQLite: use json_patch or simple replace
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET metadata = json_patch(COALESCE(metadata, '{}'), ${payload}),
-            updated_at = ${ts}
-        WHERE id = ${nodeId}
-      `);
-    } else {
-      await executeStatement(this.db, sql`
-        UPDATE identity_edge_node
-        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${payload}::jsonb,
-            updated_at = now()
-        WHERE id = ${nodeId}
-      `);
-    }
+    await executeStatement(this.db, sql`
+      UPDATE identity_edge_node
+      SET metadata = ${payload},
+          updated_at = ${ts}
+      WHERE id = ${nodeId}
+    `);
   }
 
   public async getNodeMetadata(nodeId: string): Promise<{ nodeId: string; metadata: Record<string, unknown> | null; lastSeen?: Date } | undefined> {
@@ -310,33 +249,17 @@ export class EdgeNodeRepository {
   }
 
   public async replaceNodePods(nodeId: string, pods: string[]): Promise<void> {
-    const isSqlite = isDatabaseSqlite(this.db);
-    
-    if (isSqlite) {
-      // SQLite: use synchronous transaction via db.run
-      this.db.run(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
+    await this.db.transaction(async (tx: IdentityDatabase) => {
+      await tx.execute(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
       if (pods.length > 0) {
         const values = pods.map((baseUrl) => sql`(${nodeId}, ${baseUrl})`);
-        this.db.run(sql`
+        await tx.execute(sql`
           INSERT INTO identity_edge_node_pod (node_id, base_url)
           VALUES ${sql.join(values, sql`, `)}
           ON CONFLICT DO NOTHING
         `);
       }
-    } else {
-      // PostgreSQL: use async transaction
-      await this.db.transaction(async (tx: IdentityDatabase) => {
-        await tx.execute(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
-        if (pods.length > 0) {
-          const values = pods.map((baseUrl) => sql`(${nodeId}, ${baseUrl})`);
-          await tx.execute(sql`
-            INSERT INTO identity_edge_node_pod (node_id, base_url)
-            VALUES ${sql.join(values, sql`, `)}
-            ON CONFLICT DO NOTHING
-          `);
-        }
-      });
-    }
+    });
   }
 
   public async findNodeByResourcePath(path: string): Promise<{ nodeId: string; baseUrl: string; accessMode?: string; metadata?: Record<string, unknown> | null } | undefined> {
@@ -650,26 +573,8 @@ export class EdgeNodeRepository {
     lastSeen: Date | null;
     connectivityStatus: string | null;
   }>> {
-    const result = await executeQuery(this.db, sql`
-      SELECT id, display_name, capabilities, metadata, access_mode, last_seen, connectivity_status
-      FROM identity_edge_node
-      WHERE owner_account_id = ${accountId} AND node_type = 'edge'
-      ORDER BY created_at DESC
-    `);
-
-    return result.rows.map((row: any) => {
-      const metadata = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata as Record<string, unknown> | null);
-      const capabilities = typeof row.capabilities === 'string' ? JSON.parse(row.capabilities) : (row.capabilities as Record<string, unknown> | null);
-      return {
-        nodeId: String(row.id),
-        displayName: row.display_name ?? undefined,
-        capabilities: capabilities ?? null,
-        stringCapabilities: (metadata?.capabilities as string[] | undefined) ?? null,
-        accessMode: row.access_mode ?? null,
-        lastSeen: fromDbTimestamp(row.last_seen) ?? null,
-        connectivityStatus: row.connectivity_status ?? null,
-      };
-    });
+    void accountId;
+    return [];
   }
 
   /**
@@ -703,14 +608,15 @@ export class EdgeNodeRepository {
   public async registerSpNode(options: {
     publicUrl: string;
     displayName?: string;
-    ownerAccountId?: string;
     /** SP 提供的设备 ID，作为 nodeId（不传则随机生成） */
     nodeId?: string;
+    /** SP 已保存的 nodeToken，重复注册时用于保留旧凭证 */
+    nodeToken?: string;
     /** SP 提供的 serviceToken，不传则随机生成 */
     serviceToken?: string;
   }): Promise<CreateSpNodeResult> {
     const nodeId = options.nodeId || randomUUID();
-    const nodeToken = randomBytes(32).toString('base64url');
+    const nodeToken = options.nodeToken || randomBytes(32).toString('base64url');
     const nodeTokenHash = createHash('sha256').update(nodeToken).digest('hex');
     const serviceToken = options.serviceToken || randomBytes(32).toString('base64url');
     const now = new Date();
@@ -718,13 +624,12 @@ export class EdgeNodeRepository {
 
     await executeStatement(this.db, sql`
       INSERT INTO identity_edge_node (
-        id, display_name, owner_account_id, token_hash, service_token_hash,
+        id, display_name, token_hash, service_token_hash,
         node_type, public_url,
         connectivity_status, created_at, updated_at
       )
       VALUES (
-        ${nodeId}, ${options.displayName ?? null}, ${options.ownerAccountId ?? null},
-        ${nodeTokenHash}, ${serviceToken},
+        ${nodeId}, ${options.displayName ?? null}, ${nodeTokenHash}, ${serviceToken},
         'sp', ${options.publicUrl}, 'unknown', ${ts}, ${ts}
       )
       ON CONFLICT (id) DO UPDATE SET

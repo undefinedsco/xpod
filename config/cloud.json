@@ -25,7 +25,7 @@
           },
           "attemptSettings_retryCount": 10
         },
-        "expiration": 6000
+        "expiration": 30000
       }
     },
     {
@@ -83,12 +83,11 @@
       ]
     },
     {
-      "comment": "Default quota limits (in-memory overrides)",
+      "comment": "Quota service backed by identity DB, falls back to env defaults then unlimited",
       "@id": "urn:undefineds:xpod:QuotaService",
-      "@type": "DefaultQuotaService",
-      "DefaultQuotaService:_options_defaultAccountQuotaBytes": {
-        "@type": "Literal",
-        "value": 10737418240
+      "@type": "DrizzleQuotaService",
+      "DrizzleQuotaService:_options_identityDbUrl": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl"
       }
     },
     {
@@ -127,11 +126,14 @@
       "unstructuredDataAccessor": {
         "@id": "urn:undefineds:xpod:RemoteDataAccessor"
       },
-      "presignedRedirectEnabled": true
+      "presignedRedirectEnabled": true,
+      "rdfFileDataAccessor": {
+        "@id": "urn:solid-server:default:FileDataAccessor"
+      }
     },
     {
-      "comment": "PgQuintStore instance for QuintStoreSparqlDataAccessor (PostgreSQL backend).",
-      "@id": "urn:undefineds:xpod:PgQuintStore",
+      "comment": "Compatibility QuintStore instance (PostgreSQL TEXT quints for fallback and migration).",
+      "@id": "urn:undefineds:xpod:CompatibilityQuintStore",
       "@type": "PgQuintStore",
       "options_driver": "pg",
       "connectionString": {
@@ -140,12 +142,56 @@
       }
     },
     {
-      "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for cloud (with OPTIONAL optimization)",
-      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "comment": "Shared RDF write store: mirrors compatibility quints into the term-id RDF index.",
+      "@id": "urn:undefineds:xpod:QuintStore",
+      "@type": "ShadowRdfQuintStore",
+      "compatibilityStore": {
+        "@id": "urn:undefineds:xpod:CompatibilityQuintStore"
+      },
+      "index_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "autoOpen": true,
+      "autoBackfill_enabled": true,
+      "autoBackfill_clear": true,
+      "autoBackfill_batchSize": 1000
+    },
+    {
+      "comment": "RDF term-id query engine backed by the shared cloud RDF index.",
+      "@id": "urn:undefineds:xpod:SolidRdfEngine",
+      "@type": "SolidRdfEngine",
+      "index_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "compatibilityStore": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
+      "autoOpen": true
+    },
+    {
+      "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",
+      "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine",
       "@type": "QuintstoreSparqlEngine",
       "store": {
-        "@id": "urn:undefineds:xpod:PgQuintStore"
+        "@id": "urn:undefineds:xpod:QuintStore"
       }
+    },
+    {
+      "comment": "Default SPARQL engine: SELECT/ASK use SolidRdfEngine, unsupported shapes fall back to Quintstore.",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "@type": "SolidRdfSparqlEngine",
+      "rdfEngine": {
+        "@id": "urn:undefineds:xpod:SolidRdfEngine"
+      },
+      "fallback": {
+        "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine"
+      },
+      "shadowStore": {
+        "@id": "urn:undefineds:xpod:QuintStore"
+      },
+      "enablePrimary": true
     },
     {
       "comment": "VectorStore using PostgreSQL",
@@ -192,7 +238,7 @@
       "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
       "@type": "QuintStoreSparqlDataAccessor",
       "store": {
-        "@id": "urn:undefineds:xpod:PgQuintStore"
+        "@id": "urn:undefineds:xpod:QuintStore"
       },
       "identifierStrategy": {
         "@id": "urn:solid-server:default:IdentifierStrategy"
@@ -328,8 +374,8 @@
           "@id": "urn:solid-server:default:ClientCredentialsStore"
         },
         "source": {
-          "@type": "ClientIdAdapterFactory",
-          "@id": "urn:undefineds:xpod:ClientIdAdapterFactory",
+          "@type": "LoopbackClientIdAdapterFactory",
+          "@id": "urn:undefineds:xpod:LoopbackClientIdAdapterFactory",
           "converter": {
             "@id": "urn:solid-server:default:RepresentationConverter"
           },
@@ -511,21 +557,6 @@
             "@id": "urn:solid-server:default:LdpHandler"
           }
         ]
-      }
-    },
-    {
-      "comment": "Override PodCreator with ProvisionPodCreator to support remote SP pod creation via provisionCode",
-      "@type": "Override",
-      "overrideInstance": {
-        "@id": "urn:solid-server:default:PodCreator"
-      },
-      "overrideParameters": {
-        "@type": "ProvisionPodCreator",
-        "baseUrl": { "@id": "urn:solid-server:default:variable:baseUrl" },
-        "identifierGenerator": { "@id": "urn:solid-server:default:IdentifierGenerator" },
-        "relativeWebIdPath": "/profile/card#me",
-        "webIdStore": { "@id": "urn:solid-server:default:WebIdStore" },
-        "podStore": { "@id": "urn:solid-server:default:PodStore" }
       }
     },
     {

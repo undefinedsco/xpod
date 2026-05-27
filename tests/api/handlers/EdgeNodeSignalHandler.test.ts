@@ -43,7 +43,6 @@ function createMockResponse(): ServerResponse & { _body: () => any } {
 
 function createMockRepo(overrides: Record<string, any> = {}) {
   return {
-    getNodeOwner: vi.fn().mockResolvedValue('https://example.com/profile/card#me'),
     getNodeMetadata: vi.fn().mockResolvedValue({ nodeId: 'node-1', metadata: {} }),
     getNodeConnectivityInfo: vi.fn().mockResolvedValue(null),
     updateNodeHeartbeat: vi.fn().mockResolvedValue(undefined),
@@ -88,34 +87,31 @@ describe('EdgeNodeSignalHandler', () => {
       expect(res.statusCode).toBe(401);
     });
 
-    it('WebID 认证 + owner 匹配 → 200', async () => {
+    it('WebID 认证当前返回 501', async () => {
       const handler = register();
       const auth: SolidAuthContext = { type: 'solid', webId: 'https://example.com/profile/card#me' };
       const req = createMockRequest({ nodeId: 'node-1' }, auth);
       const res = createMockResponse();
       await handler(req, res, {});
-      expect(res.statusCode).toBe(200);
-      expect(repo.getNodeOwner).toHaveBeenCalledWith('node-1');
+      expect(res.statusCode).toBe(501);
     });
 
-    it('WebID 认证 + owner 不匹配 → 403', async () => {
+    it('非 nodeToken 认证当前返回 501', async () => {
       const handler = register();
       const auth: SolidAuthContext = { type: 'solid', webId: 'https://other.com/profile/card#me' };
       const req = createMockRequest({ nodeId: 'node-1' }, auth);
       const res = createMockResponse();
       await handler(req, res, {});
-      expect(res.statusCode).toBe(403);
+      expect(res.statusCode).toBe(501);
     });
 
-    it('nodeToken 认证 → 跳过 owner 检查，直接 200', async () => {
+    it('nodeToken 认证 → 跳过账号关系检查，直接 200', async () => {
       const handler = register();
       const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
       const req = createMockRequest({}, auth);
       const res = createMockResponse();
       await handler(req, res, {});
       expect(res.statusCode).toBe(200);
-      // nodeToken 认证不需要检查 owner
-      expect(repo.getNodeOwner).not.toHaveBeenCalled();
     });
 
     it('nodeToken 认证使用 auth.nodeId 而非 body.nodeId', async () => {
@@ -133,10 +129,10 @@ describe('EdgeNodeSignalHandler', () => {
   // ── connectivity info 注入 ──
 
   describe('connectivity info 注入', () => {
-    it('从 DB 注入 subdomain 和 publicIp', async () => {
+    it('从 DB 注入 subdomain 和 ipv4', async () => {
       repo.getNodeConnectivityInfo.mockResolvedValue({
         subdomain: 'alice',
-        publicIp: '1.2.3.4',
+        ipv4: '1.2.3.4',
         connectivityStatus: 'reachable',
       });
       const handler = register();
@@ -147,7 +143,7 @@ describe('EdgeNodeSignalHandler', () => {
       expect(res.statusCode).toBe(200);
       const body = res._body();
       expect(body.metadata.subdomain).toBe('alice');
-      expect(body.metadata.publicIp).toBe('1.2.3.4');
+      expect(body.metadata.ipv4).toBe('1.2.3.4');
     });
   });
 

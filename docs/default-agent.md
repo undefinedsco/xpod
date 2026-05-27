@@ -257,8 +257,9 @@ DEFAULT_API_KEY=                                 # 默认 API Key（必填）
 
 ### AI 配置
 - API Key、Provider、Model、Base URL
-- 存储位置：/settings/ai/
-- 词汇表：自定义 xpod:AiProvider, xpod:AiCredential
+- Provider/Model 存储位置：/settings/providers/{provider}.ttl
+- Credential 存储位置：/settings/credentials.ttl#{id}
+- 词汇表：共享 AI Provider / Credential / Model 模型
 
 ### 联系人
 - 姓名、邮箱、电话、WebID

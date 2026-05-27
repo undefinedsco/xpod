@@ -8,8 +8,9 @@
  */
 
 import { Session } from '@inrupt/solid-client-authn-node';
-import { drizzle } from 'drizzle-solid';
-import { eq, and } from 'drizzle-solid';
+import { drizzle } from '@undefineds.co/drizzle-solid';
+import { eq, and } from '@undefineds.co/drizzle-solid';
+import { aiConfigModelRef, aiConfigProviderRef } from '@undefineds.co/models';
 import { config as loadEnv } from 'dotenv';
 
 // 加载环境变量
@@ -17,15 +18,16 @@ loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.local' });
 
 // Schema 定义
 import { credentialTable } from '../src/credential/schema/tables';
-import { providerTable, modelTable } from '../src/embedding/schema/tables';
+import { Provider } from '../src/ai/schema/provider';
+import { Model } from '../src/ai/schema/model';
 import { ServiceType, CredentialStatus } from '../src/credential/schema/types';
-import { ModelType } from '../src/embedding/schema/types';
+import { ModelType } from '../src/ai/schema/types';
 
 // 构建 schema 对象
 const schema = {
   credential: credentialTable,
-  provider: providerTable,
-  model: modelTable,
+  provider: Provider,
+  model: Model,
 };
 
 const baseUrl = process.env.XPOD_LOCAL_BASE_URL ?? 'http://localhost:3000/';
@@ -65,12 +67,13 @@ async function main() {
 
   const authenticatedFetch = session.fetch.bind(session);
   const db = drizzle(session, { schema });
+  const podUrl = session.info.webId!.replace(/profile\/card#me$/, '');
 
   try {
     // 2. 确保设置目录存在
     console.log('2. Ensuring settings directories exist...');
-    await ensureContainer(authenticatedFetch, `${baseUrl}settings/`);
-    await ensureContainer(authenticatedFetch, `${baseUrl}settings/ai/`);
+    await ensureContainer(authenticatedFetch, `${podUrl}settings/`);
+    await ensureContainer(authenticatedFetch, `${podUrl}settings/providers/`);
     console.log('   Done\n');
 
     // 3. 写入测试数据
@@ -79,10 +82,12 @@ async function main() {
     // 写入 Provider
     console.log('   - Writing provider (openai)...');
     try {
-      await db.insert(providerTable).values({
+      await db.insert(Provider).values({
         id: 'openai',
-        providerId: 'openai',
+        displayName: 'OpenAI',
         baseUrl: 'https://api.openai.com/v1',
+        defaultModel: aiConfigModelRef('openai', 'text-embedding-3-small'),
+        hasModel: aiConfigModelRef('openai', 'text-embedding-3-small'),
       });
     } catch (e) {
       // 可能已存在，忽略
@@ -92,13 +97,12 @@ async function main() {
     // 写入 Model
     console.log('   - Writing model (text-embedding-3-small)...');
     try {
-      await db.insert(modelTable).values({
+      await db.insert(Model).values({
         id: 'text-embedding-3-small',
-        modelId: 'text-embedding-3-small',
         displayName: 'OpenAI Text Embedding 3 Small',
         modelType: ModelType.EMBEDDING,
         dimension: 1536,
-        providerId: 'openai',
+        isProvidedBy: aiConfigProviderRef('openai'),
       });
     } catch (e) {
       console.log('     (may already exist)');
@@ -109,7 +113,7 @@ async function main() {
     try {
       await db.insert(credentialTable).values({
         id: 'test-openai-key',
-        provider: 'openai',
+        provider: aiConfigProviderRef('openai'),
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
         apiKey: 'sk-test-key-placeholder',
@@ -125,20 +129,20 @@ async function main() {
     console.log('4. Reading data from Pod...\n');
 
     // 读取 Providers
-    console.log('   --- Providers (/settings/ai/providers.ttl) ---');
-    const providers = await db.select().from(providerTable);
+    console.log('   --- Providers (/settings/providers/{id}.ttl) ---');
+    const providers = await db.select().from(Provider);
     if (providers.length === 0) {
       console.log('   (empty)');
     } else {
       for (const p of providers) {
-        console.log(`   - ${p.id}: ${p.providerId} @ ${p.baseUrl}`);
+        console.log(`   - ${p.id}: ${p.displayName ?? p.id} @ ${p.baseUrl}`);
       }
     }
     console.log();
 
     // 读取 Models
-    console.log('   --- Models (/settings/ai/models.ttl) ---');
-    const models = await db.select().from(modelTable);
+    console.log('   --- Models (/settings/providers/{provider}.ttl#{id}) ---');
+    const models = await db.select().from(Model);
     if (models.length === 0) {
       console.log('   (empty)');
     } else {
@@ -171,7 +175,7 @@ async function main() {
       .from(credentialTable)
       .where(
         and(
-          eq(credentialTable.provider, 'openai'),
+          eq(credentialTable.provider, aiConfigProviderRef('openai')),
           eq(credentialTable.service, ServiceType.AI),
           eq(credentialTable.status, CredentialStatus.ACTIVE),
         ),
@@ -183,11 +187,11 @@ async function main() {
     console.log('   Query: Embedding models');
     const embeddingModels = await db
       .select()
-      .from(modelTable)
-      .where(eq(modelTable.modelType, ModelType.EMBEDDING));
+      .from(Model)
+      .where(eq(Model.modelType, ModelType.EMBEDDING));
     console.log(`   Result: ${embeddingModels.length} model(s) found`);
     for (const m of embeddingModels) {
-      console.log(`     - ${m.modelId} (provider: ${m.providerId})`);
+      console.log(`     - ${m.id} (provider: ${m.isProvidedBy})`);
     }
     console.log();
 

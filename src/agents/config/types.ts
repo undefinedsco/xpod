@@ -1,21 +1,19 @@
 /**
  * Agent Configuration Types
  *
- * Two-layer config model:
- * - AGENT.md: user-editable markdown with YAML frontmatter (skills, MCP servers, tools)
- * - .meta: server-side TTL document (provider, credential, model references)
+ * Pod-hosted Agent Profile model:
+ * - AGENTS.md: user-editable plain Markdown guidance
+ * - .meta: RDF runtime config and references to shared skill documents
  *
- * The resolver combines both into a ResolvedAgentConfig ready for PtyThreadRuntime.
+ * The resolver combines both into a ResolvedAgentConfig ready for an Agent Runtime.
  */
 
 import type { McpServerConfig, ExecutorType } from '../types';
 
-// ============================================
-// AGENT.md Frontmatter (parsed from YAML)
-// ============================================
+export type AgentRuntimeKind = ExecutorType | 'codex';
 
 /**
- * MCP server definition in AGENT.md frontmatter
+ * MCP server definition stored as structured RDF/JSON-like fields on .meta.
  */
 export interface AgentMcpServerDef {
   name: string;
@@ -27,28 +25,7 @@ export interface AgentMcpServerDef {
   headers?: Record<string, string>;
 }
 
-/**
- * Parsed AGENT.md frontmatter
- */
-export interface AgentFrontmatter {
-  name?: string;
-  description?: string;
-  'max-turns'?: number;
-  'allowed-tools'?: string[] | string;
-  'disallowed-tools'?: string[] | string;
-  skills?: string[];
-  'mcp-servers'?: AgentMcpServerDef[];
-  'permission-mode'?: string;
-}
-
-/**
- * Full parsed AGENT.md result
- */
-export interface ParsedAgentMd {
-  frontmatter: AgentFrontmatter;
-  /** Markdown body = system prompt */
-  body: string;
-}
+export type AgentMcpServerInput = string | AgentMcpServerDef;
 
 // ============================================
 // .meta (server-side, resolved from Pod TTL)
@@ -60,14 +37,30 @@ export interface ParsedAgentMd {
 export interface AgentMetaRecord {
   /** Agent ID (folder name) */
   id: string;
-  displayName?: string;
-  /** URI ref → AgentProvider */
+  name?: string;
+  description?: string;
+  instructions?: string;
+  /** URI ref → Provider */
   provider?: string;
+  /** Runtime class selection */
+  runtimeKind?: AgentRuntimeKind;
   /** URI ref → Credential */
   credential?: string;
   /** URI ref → Model */
   model?: string;
-  enabled?: boolean;
+  enabled?: string;
+  maxTurns?: number;
+  timeout?: number;
+  /** ACP permission mode */
+  permissionMode?: string;
+  /** Tool names allowed without extra prompt-time negotiation */
+  allowedTools?: string[];
+  /** Tool names disabled for this agent */
+  disallowedTools?: string[];
+  /** Skill refs, for example skills/solid-modeling, .codex/skills/local, or /skills/shared */
+  skills?: string[];
+  /** Structured MCP server definitions; file refs are intentionally unsupported. */
+  mcpServers?: AgentMcpServerInput[];
 }
 
 // ============================================
@@ -76,32 +69,31 @@ export interface AgentMetaRecord {
 
 /**
  * Fully resolved agent configuration.
- * Combines AGENT.md + .meta + resolved Pod references.
- * Ready to be passed to PtyThreadRuntime / ACP session.
+ * Combines AGENTS.md + .meta + resolved Pod references.
+ * Ready to be passed to Agent Runtime / ACP session.
  */
 export interface ResolvedAgentConfig {
   /** Agent ID (folder name) */
   id: string;
-  /** Display name (from .meta or frontmatter) */
+  /** Display name (from .meta) */
   displayName: string;
-  /** Description (from frontmatter) */
+  /** Description (from .meta) */
   description?: string;
-  /** System prompt (AGENT.md body) */
+  /** System prompt (AGENTS.md body or .meta fallback) */
   systemPrompt: string;
 
   // --- Resolved from .meta ---
-  /** Executor type (from AgentProvider) */
-  executorType: ExecutorType;
+  /** Executor type (from Agent .meta runtimeKind) */
+  executorType: AgentRuntimeKind;
   /** API key (from Credential) */
   apiKey: string;
-  /** API base URL (from Credential or AgentProvider) */
+  /** API base URL (from Credential or Provider) */
   baseUrl?: string;
   /** Proxy URL */
   proxyUrl?: string;
   /** Model name (resolved from Model URI) */
   model?: string;
 
-  // --- From AGENT.md frontmatter ---
   /** Max conversation turns */
   maxTurns?: number;
   /** Allowed tools list */
@@ -110,11 +102,18 @@ export interface ResolvedAgentConfig {
   disallowedTools?: string[];
   /** Permission mode */
   permissionMode?: string;
-  /** MCP servers (converted from frontmatter defs) */
+  /** MCP servers resolved from .meta structured definitions */
   mcpServers: Record<string, McpServerConfig>;
-  /** Resolved skill contents (concatenated markdown) */
+  /** Resolved skill contents (concatenated Markdown for runtimes without native skill loading) */
   skillsContent?: string;
+  /** Resolved skill documents; runtime projectors choose their own native layout */
+  skills: ResolvedAgentSkill[];
 
   /** Whether agent is enabled */
   enabled: boolean;
+}
+
+export interface ResolvedAgentSkill {
+  name: string;
+  content: string;
 }

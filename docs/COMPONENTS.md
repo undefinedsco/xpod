@@ -10,11 +10,13 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 |-------------|--------------|----------|
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
-| `FileDataAccessor` | `MixDataAccessor` | 混合存储：RDF 结构化数据走 Quadstore，非结构化文件走 FileSystem/MinIO |
+| `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
 | `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
+| `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
+| `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，并把 canonical storage URL 记录到 `identity_pod_usage.storage_url` |
 
 ### Store 调用链对照
 
@@ -28,8 +30,9 @@ Xpod 等位替换后:
 MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
   → LockingResourceStore → PatchingStore → RepresentationPartialConvertingStore [替换]
     → SparqlUpdateResourceStore [替换] → MixDataAccessor [替换]
-                                           ├─ QuadstoreSparqlDataAccessor (RDF)
-                                           └─ FileDataAccessor/MinioDataAccessor (非RDF)
+                                           ├─ rdfFileDataAccessor → FileDataAccessor (.ttl/.jsonld 权威文件)
+                                           ├─ unstructuredDataAccessor → FileDataAccessor/RemoteDataAccessor (普通对象内容)
+                                           └─ structuredDataAccessor → QuadstoreSparqlDataAccessor (RDF/SPARQL 索引)
 ```
 
 ## Table of Contents
@@ -46,9 +49,11 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 ### MixDataAccessor
 - **Path**: `src/storage/accessors/MixDataAccessor.ts`
 - **Purpose**: Unified storage interface combining structured and unstructured data access
-- **Functionality**: Routes structured resources (RDF, JSON-LD) to Quadstore, unstructured files to MinIO/FileSystem
-- **Configuration**: Uses `sparqlEndpoint` for structured data, `unstructuredDataAccessor` for files
-- **Deployment**: All modes (local uses FileDataAccessor, server uses MinioDataAccessor)
+- **Functionality**: Keeps line-addressable RDF resources (`.ttl`, `.jsonld`) as real local files first, then parses them into the structured RDF index; routes binary/object content to MinIO/FileSystem
+- **Configuration**: Uses `rdfFileDataAccessor` for RDF authority files, `unstructuredDataAccessor` for ordinary object content, and `structuredDataAccessor` for RDF/SPARQL index state
+- **Deployment**: All modes. Local can let `rdfFileDataAccessor` default to the same `FileDataAccessor`; cloud pins `rdfFileDataAccessor` to `FileDataAccessor` while `unstructuredDataAccessor` points at `RemoteDataAccessor`
+
+`MixDataAccessor.getData()` intentionally keeps CSS's internal RDF contract by returning `internal/quads` for RDF resources. User-facing HTTP reads and SolidFS/tool reads use the explicit local RDF path (`getLocalRdfDocument()` through `SparqlUpdateResourceStore`) so `cat`, `rg`, `grep`, and editors operate on real `.ttl` / `.jsonld` files instead of hidden DB rows.
 
 ### MinioDataAccessor
 - **Path**: `src/storage/accessors/MinioDataAccessor.ts`
@@ -63,15 +68,15 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 
 ### QuadstoreSparqlDataAccessor
 - **Path**: `src/storage/accessors/QuadstoreSparqlDataAccessor.ts`
-- **Purpose**: SPARQL query capabilities over RDF data stored in relational databases
+- **Purpose**: SPARQL query capabilities over the derived RDF index stored in relational databases
 - **Environment Variables**: `CSS_SPARQL_ENDPOINT` (supports SQLite, PostgreSQL, MySQL)
-- **Functionality**: Converts RDF resources to quads for database storage, supports SPARQL queries
+- **Functionality**: Stores parsed quads as query/index state, supports SPARQL queries
 - **Deployment**: All modes (SQLite locally, PostgreSQL in server)
 
 ### RepresentationPartialConvertingStore
 - **Path**: `src/storage/RepresentationPartialConvertingStore.ts`
 - **Purpose**: Content-type conversion for storage compatibility
-- **Functionality**: Converts incoming representations to quads for quadstore-backed resources
+- **Functionality**: Converts incoming RDF representations to quads for the CSS internal store path while skipping unnecessary conversions when the representation already satisfies requested preferences
 - **Integration**: Used in ResourceStore chains for both local and server modes
 
 ### UsageTrackingStore
@@ -101,6 +106,24 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Purpose**: Account data persistence layer for clustered deployments
 - **Integration**: Replaces CSS file-based account storage in server mode
 - **Functionality**: CRUD operations for accounts, pods, and roles
+
+### ScopedPickWebIdHandler
+- **Path**: `src/identity/oidc/ScopedPickWebIdHandler.ts`
+- **Purpose**: Keep OIDC WebID selection scoped to the selected storage provider.
+- **Functionality**:
+  - Standard Cloud/Standalone login: filters linked WebIDs by Pods known to the current issuer/storage provider.
+  - Cloud IdP + Local SP login: decodes `provisionCode`, calls the Local SP `/provision/webids` endpoint with the service token, and only returns WebIDs that the Local SP can resolve.
+  - Rejects submitted WebIDs that belong to the account but are not resolvable by the current SP.
+- **Boundary**: `/{pod}/profile/card` remains CSS-native. Xpod does not proxy WebID profile documents through the API server.
+
+### ProvisionPodCreator
+- **Path**: `src/provision/ProvisionPodCreator.ts`
+- **Purpose**: Extend CSS Pod creation without replacing the account/consent flow.
+- **Functionality**:
+  - Adds `storage` to Pod resource template settings so generated profile cards include `solid:storage`.
+  - In remote provisioning, calls the selected SP `/provision/pods` endpoint and records the canonical storage URL in `identity_pod_usage.storage_url`.
+  - Removes `provisionCode` before handing settings to CSS Pod storage.
+- **Deployment**: All modes through `config/xpod.base.json`.
 
 ## Quota & Usage Management
 

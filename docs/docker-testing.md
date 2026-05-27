@@ -17,7 +17,7 @@
   - 启动或复用本地 `postgres` / `redis` / `minio`
   - 以 runtime 方式拉起 cloud / cloud_b / local / standalone
   - 自动执行 `bun run test:setup`
-  - 只执行 full 目标用例：`DockerCluster` / `MultiNodeCluster` / `ProvisionFlow`
+  - 只执行 full 目标用例：`DockerCluster` / `MultiNodeCluster` / `ProvisionFlow` / `CloudQuotaBusinessToken`
 
 适用场景：发布前验证、跨节点/集群改动验证。
 

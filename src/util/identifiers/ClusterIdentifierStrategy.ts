@@ -13,6 +13,22 @@ export interface ClusterIdentifierStrategyOptions {
   allowedHosts?: string[] | string;
 }
 
+const SERVER_ROOT_SEGMENTS = new Set([
+  '.account',
+  '.oidc',
+  '.well-known',
+  'admin',
+  'api',
+  'app',
+  'auth',
+  'dashboard',
+  'login',
+  'logout',
+  'provision',
+  'register',
+  'settings',
+]);
+
 /**
  * Identifier strategy that accepts both the primary cluster host and any
  * node subdomain under the same base domain.
@@ -78,7 +94,23 @@ export class ClusterIdentifierStrategy extends BaseIdentifierStrategy {
     try {
       const target = new URL(identifier.path);
       if (target.hostname.toLowerCase() === this.baseHost) {
-        return ensureTrailingSlash(target.href) === this.baseUrl;
+        if (ensureTrailingSlash(target.href) === this.baseUrl) {
+          return true;
+        }
+
+        const basePath = new URL(this.baseUrl).pathname;
+        if (!target.pathname.endsWith('/')) {
+          return false;
+        }
+
+        const pathname = ensureTrailingSlash(target.pathname);
+        if (!pathname.startsWith(basePath)) {
+          return false;
+        }
+
+        const relative = pathname.slice(basePath.length).replace(/^\/+/, '');
+        const segments = relative.split('/').filter(Boolean);
+        return segments.length === 1 && !SERVER_ROOT_SEGMENTS.has(segments[0].toLowerCase());
       }
       return target.pathname === '/' || target.pathname === '';
     } catch {

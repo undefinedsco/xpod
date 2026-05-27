@@ -19,9 +19,10 @@ import {
   serializeObject,
   deserializeObject,
   fpEncode,
-  isSerializedObjectValue,
   SEP,
+  isSerializedObjectValue,
 } from './serialization';
+import { getSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type {
   Quint,
   QuintPattern,
@@ -29,6 +30,7 @@ import type {
   QuintStoreOptions,
   QueryOptions,
   StoreStats,
+  StoreSpaceObject,
   TermMatch,
   TermOperators,
   CompoundPattern,
@@ -36,20 +38,19 @@ import type {
   OperatorValue,
 } from './types';
 import { isTerm } from './types';
-import { createDrizzleSqliteDatabase, type DrizzleDb } from '../DrizzleCompat';
-import type { SqliteDatabase } from '../SqliteCompat';
+
+const SQLITE_UNBOUNDED_LIMIT = Number.MAX_SAFE_INTEGER;
 
 export interface SqliteQuintStoreOptions extends QuintStoreOptions {
   /** SQLite database file path, use ':memory:' for in-memory database */
   path: string;
 }
 
-const SQLITE_OFFSET_WITHOUT_LIMIT = Number.MAX_SAFE_INTEGER;
-
 export class SqliteQuintStore {
   private sqlite: SqliteDatabase | null = null;
-  private db: DrizzleDb | null = null;
+  private db: any | null = null;
   private options: SqliteQuintStoreOptions;
+  private readonly sqliteRuntime = getSqliteRuntime();
 
   constructor(options: SqliteQuintStoreOptions) {
     // Handle sqlite: prefix
@@ -80,9 +81,8 @@ export class SqliteQuintStore {
       }
     }
     
-    const handle = createDrizzleSqliteDatabase(dbPath);
-    this.sqlite = handle.sqlite;
-    this.db = handle.db;
+    this.sqlite = this.sqliteRuntime.openDatabase(dbPath);
+    this.db = this.sqliteRuntime.createDrizzleDatabase(this.sqlite);
 
     // Create table and indexes
     this.sqlite.exec(`
@@ -135,12 +135,13 @@ export class SqliteQuintStore {
       query = query.orderBy(sql.raw(`${orderCol} ${direction}`)) as any;
     }
 
-    if (options?.limit) {
+    if (options?.limit !== undefined) {
       query = query.limit(options.limit) as any;
     }
-    if (options?.offset) {
-      if (!options?.limit) {
-        query = query.limit(SQLITE_OFFSET_WITHOUT_LIMIT) as any;
+    if (options?.offset !== undefined) {
+      // SQLite requires LIMIT when using OFFSET
+      if (options?.limit === undefined) {
+        query = query.limit(SQLITE_UNBOUNDED_LIMIT) as any;
       }
       query = query.offset(options.offset) as any;
     }
@@ -372,8 +373,7 @@ export class SqliteQuintStore {
     }
     if (options?.offset) {
       if (!options?.limit) {
-        sql += ` LIMIT ?`;
-        params.push(SQLITE_OFFSET_WITHOUT_LIMIT);
+        sql += ` LIMIT -1`;
       }
       sql += ` OFFSET ?`;
       params.push(options.offset);
@@ -424,7 +424,6 @@ export class SqliteQuintStore {
         return value;
       }
       
-      // String value
       if (isObject) {
         if (isSerializedObjectValue(value)) {
           return value;
@@ -496,6 +495,29 @@ export class SqliteQuintStore {
         if (ops.$contains !== undefined) {
           conditions.push(`${fullColumn} LIKE ?`);
           params.push(`%${ops.$contains}%`);
+        }
+        if (isObject && ops.$strStartsWith !== undefined) {
+          const lexical = this.objectLexicalSql(fullColumn);
+          conditions.push(`${lexical} >= ?`);
+          conditions.push(`${lexical} < ?`);
+          params.push(ops.$strStartsWith);
+          params.push(ops.$strStartsWith + '\uffff');
+        }
+        if (isObject && ops.$strEndsWith !== undefined) {
+          conditions.push(`${this.objectLexicalSql(fullColumn)} LIKE ?`);
+          params.push(`%${ops.$strEndsWith}`);
+        }
+        if (isObject && ops.$strContains !== undefined) {
+          conditions.push(`${this.objectLexicalSql(fullColumn)} LIKE ?`);
+          params.push(`%${ops.$strContains}%`);
+        }
+        if (isObject && ops.$strRegex !== undefined) {
+          conditions.push(`${this.objectLexicalSql(fullColumn)} GLOB ?`);
+          params.push(ops.$strRegex.replace(/\.\*/g, '*').replace(/\./g, '?'));
+        }
+        if (isObject && ops.$language !== undefined) {
+          conditions.push(`lower(${fullColumn}) LIKE ?`);
+          params.push(ops.$language === '*' ? '%"@%' : `%"@${ops.$language.toLowerCase()}`);
         }
         if (ops.$isNull === true) {
           conditions.push(`${fullColumn} IS NULL`);
@@ -640,7 +662,93 @@ export class SqliteQuintStore {
       totalCount: totalResult[0]?.count ?? 0,
       vectorCount: vectorResult[0]?.count ?? 0,
       graphCount: graphResult[0]?.count ?? 0,
+      ...this.sqliteSpaceStats(),
     };
+  }
+
+  private sqliteSpaceStats(): Pick<StoreStats, 'databaseBytes' | 'tableBytes' | 'indexBytes' | 'spaceObjects'> {
+    const spaceObjects = this.collectSpaceObjects();
+    const databaseBytes = this.estimateDatabaseBytes();
+    const accountedBytes = spaceObjects.reduce((sum, object) => sum + object.bytes, 0);
+    return {
+      databaseBytes: databaseBytes || accountedBytes,
+      tableBytes: sumStoreSpaceObjects(spaceObjects, 'table'),
+      indexBytes: sumStoreSpaceObjects(spaceObjects, 'index'),
+      spaceObjects,
+    };
+  }
+
+  private estimateDatabaseBytes(): number {
+    try {
+      const pageCount = this.sqlite!.prepare<{ page_count: number }>('PRAGMA page_count').get()?.page_count ?? 0;
+      const pageSize = this.sqlite!.prepare<{ page_size: number }>('PRAGMA page_size').get()?.page_size ?? 0;
+      return pageCount * pageSize;
+    } catch {
+      return 0;
+    }
+  }
+
+  private collectSpaceObjects(): StoreSpaceObject[] {
+    try {
+      const schemaRows = this.sqlite!.prepare<{ name: string; type: string; tbl_name: string }>(`
+        SELECT name, type, tbl_name
+        FROM sqlite_schema
+        WHERE type IN ('table', 'index')
+      `).all();
+      const rows = this.sqlite!.prepare<{ name: string; pages: number; bytes: number | null }>(`
+        SELECT name, COUNT(*) AS pages, SUM(pgsize) AS bytes
+        FROM dbstat
+        GROUP BY name
+        ORDER BY name
+      `).all();
+
+      if (rows.length > 0) {
+        const schema = new Map(schemaRows.map((row) => [row.name, row]));
+        return rows.map((row) => {
+          const object = schema.get(row.name);
+          const kind = quintSpaceObjectKind(row.name, object?.type, object?.tbl_name);
+          return {
+            name: row.name,
+            kind,
+            ...(object?.tbl_name && object.tbl_name !== row.name ? { tableName: object.tbl_name } : {}),
+            pages: row.pages,
+            bytes: row.bytes ?? 0,
+          };
+        });
+      }
+
+      return this.estimateSpaceObjectsFromSchema(schemaRows);
+    } catch {
+      try {
+        const schemaRows = this.sqlite!.prepare<{ name: string; type: string; tbl_name: string }>(`
+          SELECT name, type, tbl_name
+          FROM sqlite_schema
+          WHERE type IN ('table', 'index')
+        `).all();
+        return this.estimateSpaceObjectsFromSchema(schemaRows);
+      } catch {
+        return [];
+      }
+    }
+  }
+
+  private estimateSpaceObjectsFromSchema(schemaRows: Array<{ name: string; type: string; tbl_name: string }>): StoreSpaceObject[] {
+    const pageSize = this.estimatePageSize();
+    return schemaRows.map((object) => ({
+      name: object.name,
+      kind: quintSpaceObjectKind(object.name, object.type, object.tbl_name),
+      ...(object.tbl_name && object.tbl_name !== object.name ? { tableName: object.tbl_name } : {}),
+      pages: 1,
+      bytes: pageSize,
+    }));
+  }
+
+  private estimatePageSize(): number {
+    try {
+      return this.sqlite!.prepare<{ page_size: number }>('PRAGMA page_size').get()?.page_size ?? 4096;
+    } catch {
+      return 4096;
+    }
   }
 
   async clear(): Promise<void> {
@@ -752,6 +860,27 @@ export class SqliteQuintStore {
           // SQLite uses GLOB as regex approximation
           conditions.push(sql`${column} GLOB ${ops.$regex.replace(/\.\*/g, '*').replace(/\./g, '?')}`);
         }
+        if (isObject && ops.$strStartsWith !== undefined) {
+          const lexical = sql.raw(this.objectLexicalSql('object'));
+          conditions.push(sql`${lexical} >= ${ops.$strStartsWith}`);
+          conditions.push(sql`${lexical} < ${ops.$strStartsWith + '\uffff'}`);
+        }
+        if (isObject && ops.$strEndsWith !== undefined) {
+          conditions.push(sql`${sql.raw(this.objectLexicalSql('object'))} LIKE ${`%${ops.$strEndsWith}`}`);
+        }
+        if (isObject && ops.$strContains !== undefined) {
+          conditions.push(sql`${sql.raw(this.objectLexicalSql('object'))} LIKE ${`%${ops.$strContains}%`}`);
+        }
+        if (isObject && ops.$strRegex !== undefined) {
+          conditions.push(sql`${sql.raw(this.objectLexicalSql('object'))} GLOB ${ops.$strRegex.replace(/\.\*/g, '*').replace(/\./g, '?')}`);
+        }
+        if (isObject && ops.$language !== undefined) {
+          conditions.push(
+            ops.$language === '*'
+              ? sql`lower(${column}) LIKE ${`%"@%`}`
+              : sql`lower(${column}) LIKE ${`%"@${ops.$language.toLowerCase()}`}`,
+          );
+        }
         if (ops.$isNull === true) {
           conditions.push(isNull(column));
         }
@@ -767,6 +896,17 @@ export class SqliteQuintStore {
     addTermConditions(quints.object, pattern.object, true);
 
     return conditions;
+  }
+
+  private objectLexicalSql(column: string): string {
+    return `CASE
+      WHEN ${column} LIKE '"%"@%' THEN substr(${column}, 2, instr(substr(${column}, 2), '"') - 1)
+      WHEN ${column} LIKE '"%"^^%' THEN substr(${column}, 2, instr(substr(${column}, 2), '"') - 1)
+      WHEN ${column} LIKE '"%"' THEN substr(${column}, 2, length(${column}) - 2)
+      WHEN ${column} LIKE 'N${SEP}%' THEN substr(${column}, length('N${SEP}') + instr(substr(${column}, length('N${SEP}') + 1), '${SEP}') + instr(substr(${column}, length('N${SEP}') + instr(substr(${column}, length('N${SEP}') + 1), '${SEP}') + 1), '${SEP}') + 1)
+      WHEN ${column} LIKE 'D${SEP}%' THEN substr(${column}, length('D${SEP}') + instr(substr(${column}, length('D${SEP}') + 1), '${SEP}') + 1)
+      ELSE ${column}
+    END`;
   }
 
   private quintToRow(quint: Quint): NewQuintRow {
@@ -787,4 +927,23 @@ export class SqliteQuintStore {
     }
     return quint;
   }
+}
+
+function sumStoreSpaceObjects(objects: StoreSpaceObject[], kind: StoreSpaceObject['kind']): number {
+  return objects
+    .filter((object) => object.kind === kind)
+    .reduce((sum, object) => sum + object.bytes, 0);
+}
+
+function quintSpaceObjectKind(name: string, schemaType?: string, tableName?: string): StoreSpaceObject['kind'] {
+  if (schemaType === 'table' && name === 'quints') {
+    return 'table';
+  }
+  if (schemaType === 'index' && (name.startsWith('idx_') || tableName === 'quints')) {
+    return 'index';
+  }
+  if (name.startsWith('sqlite_')) {
+    return 'internal';
+  }
+  return 'unknown';
 }

@@ -55,8 +55,7 @@ suite('Standalone Integration', () => {
       const discoveredIssuer = await discoverOidcIssuerFromWebId(creds!.webId, STANDALONE.baseUrl);
       expect(discoveredIssuer).toBe(STANDALONE_BASE + '/');
 
-      const session = await loginWithClientCredentials(creds!);
-
+      const session = await loginWithClientCredentials(creds! as any);
       expect(session.info.isLoggedIn).toBe(true);
       expect(session.info.webId).toBe(creds!.webId);
 

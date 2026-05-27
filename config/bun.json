@@ -12,7 +12,7 @@
   ],
   "@graph": [
     {
-      "comment": "Bun runtime profile - uses BunQuintStore and BunVectorStore instead of better-sqlite3 based stores",
+      "comment": "Bun runtime profile - uses BunQuintStore and BunVectorStore instead of Node SQLite stores",
       "@id": "urn:undefineds:xpod:QuintStore",
       "@type": "BunQuintStore",
       "path": {

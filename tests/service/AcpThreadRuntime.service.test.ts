@@ -1,25 +1,29 @@
 import * as path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { PtyThreadRuntime } from '../../src/api/chatkit/runtime/PtyThreadRuntime';
+import { AcpAgentRuntime } from '../../src/api/chatkit/runtime/AcpAgentRuntime';
 
 describe('ACP Thread Runtime', () => {
+  const workspaceRef = `file://localhost${process.cwd()}`;
+
   it('streams agent_message_chunk from ACP session/update notifications', async () => {
-    const rt = new PtyThreadRuntime();
-    const repoPath = process.cwd();
-    const workdir = process.cwd();
+    const rt = new AcpAgentRuntime();
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-echo-agent.js');
 
-    await rt.ensureStarted('thread-acp-test', {
-      workspace: { type: 'path', rootPath: workdir },
-      runner: {
-        type: 'codex',
-        protocol: 'acp',
-        argv: [ 'node', agentPath ],
-      },
-    });
-
     let out = '';
-    for await (const ev of rt.sendMessage('thread-acp-test', 'hello', { idleMs: 50 })) {
+    for await (
+      const ev of rt.run({
+        threadId: 'thread-acp-test',
+        prompt: 'hello',
+        config: {
+          workspace: workspaceRef,
+          runner: {
+            type: 'codex',
+            protocol: 'acp',
+            argv: [ 'node', agentPath ],
+          },
+        },
+      })
+    ) {
       if (ev.type === 'text') {
         out += ev.text;
       }
@@ -29,22 +33,26 @@ describe('ACP Thread Runtime', () => {
   }, 20_000);
 
   it('surfaces auth_required events with an auth URL', async () => {
-    const rt = new PtyThreadRuntime();
-    const workdir = process.cwd();
+    const rt = new AcpAgentRuntime();
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-auth-agent.js');
-
-    await rt.ensureStarted('thread-acp-auth-test', {
-      workspace: { type: 'path', rootPath: workdir },
-      runner: {
-        type: 'codex',
-        protocol: 'acp',
-        argv: [ 'node', agentPath ],
-      },
-    });
 
     let sawAuth = false;
     let out = '';
-    for await (const ev of rt.sendMessage('thread-acp-auth-test', 'hello', { idleMs: 50 })) {
+    for await (
+      const ev of rt.run({
+        threadId: 'thread-acp-auth-test',
+        prompt: 'hello',
+        config: {
+          workspace: workspaceRef,
+          idleMs: 50,
+          runner: {
+            type: 'codex',
+            protocol: 'acp',
+            argv: [ 'node', agentPath ],
+          },
+        },
+      })
+    ) {
       if (ev.type === 'auth_required') {
         expect(ev.url).toBe('https://example.com/login');
         sawAuth = true;

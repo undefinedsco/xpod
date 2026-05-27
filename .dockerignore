@@ -3,9 +3,12 @@
 
 # 构建需要的文件
 !package.json
+!bun.lock
 !yarn.lock
 !tsconfig.json
+!scripts/patch-jose.js
 !src/
+!ui/
 !config/
 !static/
 !templates/

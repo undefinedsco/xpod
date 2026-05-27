@@ -15,7 +15,7 @@ const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 // Business env vars (preferred):
 // - DEFAULT_API_KEY / DEFAULT_API_BASE / DEFAULT_MODEL
 const AI_API_KEY = process.env.DEFAULT_API_KEY;
-const AI_MODEL = process.env.DEFAULT_MODEL || 'stepfun/step-3.5-flash:free';
+const AI_MODEL = process.env.DEFAULT_MODEL || 'linx-lite';
 
 function resolveDefaultBaseUrl(provider?: string): string {
   const normalized = (provider || 'openrouter').toLowerCase();
@@ -87,7 +87,7 @@ suite('Chat Pod E2E Integration (Real Network)', () => {
 
     await db.insert(Credential).values({
       id: 'chat-e2e-credential',
-      provider: `${account.podUrl}settings/ai/providers.ttl#${providerId}`,
+      provider: `${account.podUrl}settings/providers/${providerId}.ttl`,
       service: ServiceType.AI,
       status: CredentialStatus.ACTIVE,
       apiKey: AI_API_KEY!,

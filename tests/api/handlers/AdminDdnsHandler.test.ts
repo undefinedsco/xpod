@@ -171,4 +171,32 @@ describe('AdminDdnsHandler', () => {
       expect(body.ipv4).toBeNull();
     });
   });
+
+  describe('with DdnsManager - tunnel mode status from local cloudflare token', () => {
+    let server: ApiServer;
+    let baseUrl: string;
+
+    beforeAll(async () => {
+      ({ server, baseUrl } = makeServer(3096));
+      registerAdminDdnsRoutes(server, {
+        ddnsManager: createMockDdnsManager({
+          allocated: true,
+          fqdn: 'node-1.nodes.undefineds.co',
+          mode: 'tunnel',
+          tunnelProvider: 'cloudflare',
+        }),
+      });
+      await server.start();
+    });
+    afterAll(async () => { await server.stop(); });
+
+    it('keeps reporting cloudflare provider for managed local status', async () => {
+      const res = await fetch(`${baseUrl}/api/admin/ddns`);
+      const body = await res.json();
+      expect(body.fqdn).toBe('node-1.nodes.undefineds.co');
+      expect(body.mode).toBe('tunnel');
+      expect(body.tunnelProvider).toBe('cloudflare');
+      expect(body.baseUrl).toBe('https://node-1.nodes.undefineds.co/');
+    });
+  });
 });

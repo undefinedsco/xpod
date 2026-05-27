@@ -1,20 +1,37 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
-const net = require('node:net');
 const { spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
 
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close((error) => error ? reject(error) : resolve(port));
+function getConsumerDir() {
+  if (process.env.XPOD_CONSUMER_SMOKE_CHILD === '1') {
+    return process.cwd();
+  }
+  return path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
+}
+
+function runInIsolatedConsumerProcess(consumerDir) {
+  const childScriptPath = path.join(consumerDir, '.xpod-package-consumer-smoke.cjs');
+  fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
+
+  try {
+    const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+    const result = spawnSync(nodeExecutable, [ childScriptPath ], {
+      cwd: consumerDir,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        XPOD_CONSUMER_SMOKE_CHILD: '1',
+      },
     });
-  });
+    if (result.status !== 0) {
+      throw new Error(`consumer smoke child exited with code ${result.status ?? 1}`);
+    }
+  } finally {
+    fs.rmSync(childScriptPath, { force: true });
+  }
 }
 
 function runCli(consumerDir, requireFromConsumer) {
@@ -25,28 +42,67 @@ function runCli(consumerDir, requireFromConsumer) {
     throw new Error('Missing xpod bin entry');
   }
   const binPath = path.resolve(path.dirname(packageJsonPath), binRelative);
-  const result = spawnSync(process.execPath, [ binPath, '--help' ], {
+  const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+  const result = spawnSync(nodeExecutable, [ binPath, '--help' ], {
     cwd: consumerDir,
     encoding: 'utf8',
     stdio: [ 'ignore', 'pipe', 'pipe' ],
-    env: process.env,
+    env: {
+      ...process.env,
+      XPOD_PREFER_JS_CLI: 'true',
+    },
   });
   if (result.status !== 0) {
     throw new Error(`xpod --help failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }
 }
 
+function shouldRetryRemove(error) {
+  return Boolean(error && typeof error === 'object' && [
+    'EBUSY',
+    'ENOTEMPTY',
+    'EPERM',
+  ].includes(error.code));
+}
+
+async function removeRuntimeRoot(runtimeRoot) {
+  const maxAttempts = process.platform === 'win32' ? 8 : 2;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      fs.rmSync(runtimeRoot, {
+        recursive: true,
+        force: true,
+      });
+      return;
+    } catch (error) {
+      const finalAttempt = attempt === maxAttempts;
+      if (!shouldRetryRemove(error)) {
+        throw error;
+      }
+      if (finalAttempt) {
+        if (process.platform === 'win32') {
+          console.warn(`[consumer-smoke] cleanup skipped for busy runtime root: ${runtimeRoot} (${error.code})`);
+          return;
+        }
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 200));
+    }
+  }
+}
+
 async function main() {
-  const consumerDir = path.resolve(process.cwd(), process.argv[2] || '.test-data/package-smoke');
+  const consumerDir = getConsumerDir();
+  if (process.env.XPOD_CONSUMER_SMOKE_CHILD !== '1') {
+    runInIsolatedConsumerProcess(consumerDir);
+    return;
+  }
+
   const requireFromConsumer = createRequire(path.join(consumerDir, 'package.json'));
 
-  const root = requireFromConsumer('@undefineds.co/xpod');
   const runtime = requireFromConsumer('@undefineds.co/xpod/runtime');
   const testUtils = requireFromConsumer('@undefineds.co/xpod/test-utils');
-
-  if (typeof root.startXpodRuntime !== 'function') {
-    throw new Error('Missing startXpodRuntime export from root entry');
-  }
   if (typeof runtime.startXpodRuntime !== 'function') {
     throw new Error('Missing startXpodRuntime export from runtime entry');
   }
@@ -57,16 +113,20 @@ async function main() {
   runCli(consumerDir, requireFromConsumer);
 
   const previousCwd = process.cwd();
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-smoke-'));
+  const transport = process.env.XPOD_TEST_TRANSPORT || process.env.XPOD_SMOKE_TRANSPORT || 'port';
   let xpod;
 
   try {
     process.chdir(consumerDir);
-    const port = await getFreePort();
-    xpod = await testUtils.startNoAuthXpod({
-      port,
+    xpod = await runtime.startXpodRuntime({
+      mode: 'local',
+      open: true,
+      transport,
+      runtimeRoot,
       logLevel: 'error',
     });
-    const response = await fetch(new URL('/service/status', xpod.baseUrl));
+    const response = await xpod.fetch('/service/status');
     if (!response.ok) {
       throw new Error(`Unexpected status from installed package runtime: ${response.status}`);
     }
@@ -75,6 +135,7 @@ async function main() {
       await xpod.stop();
     }
     process.chdir(previousCwd);
+    await removeRuntimeRoot(runtimeRoot);
   }
 
   console.log(`[consumer-smoke] ok: ${consumerDir}`);

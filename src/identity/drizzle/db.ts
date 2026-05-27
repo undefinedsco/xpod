@@ -1,19 +1,27 @@
 import { Pool, types } from 'pg';
 import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
-import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { SQL } from 'drizzle-orm/sql';
 import * as pgSchema from './schema.pg';
 import * as sqliteSchema from './schema.sqlite';
-import path from 'node:path';
-import fs from 'node:fs';
 import { getSharedPool, releaseSharedPool } from '../../storage/database/PostgresPoolManager';
-import { createDrizzleSqliteDatabase } from '../../storage/DrizzleCompat';
-import type { SqliteDatabase } from '../../storage/SqliteCompat';
+import { getSqliteRuntime, type SqliteDatabase } from '../../storage/SqliteRuntime';
 
 // Use 'any' to allow both PostgreSQL and SQLite database instances
 // The actual type depends on the connection string at runtime
 export type IdentityDatabase = any;
 export type IdentitySchema = typeof pgSchema | typeof sqliteSchema;
+
+/**
+ * Get the appropriate schema for the given database connection.
+ * This provides a unified abstraction layer over PG and SQLite schemas.
+ *
+ * @example
+ * const schema = getSchema(db);
+ * await db.select().from(schema.accountUsage).where(eq(schema.accountUsage.accountId, id));
+ */
+export function getSchema(db: IdentityDatabase): typeof pgSchema | typeof sqliteSchema {
+  return isDatabaseSqlite(db) ? sqliteSchema : pgSchema;
+}
 
 /**
  * Standardized query result format across databases.
@@ -33,6 +41,8 @@ const dbCache = new Map<string, CachedConnection>();
 const dbInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
+
+type SqliteDdlExecutor = Pick<SqliteDatabase, 'exec' | 'prepare'>;
 
 for (const oid of JSON_OIDS) {
   // Explicitly return raw string to avoid "Type Conflict" with CSS
@@ -60,20 +70,17 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
   if (isSqliteUrl(connectionString)) {
     const filename = connectionString.replace('sqlite:', '');
     const isMemory = filename === ':memory:' || filename.startsWith(':memory:');
-    if (!isMemory) {
-      const directory = path.dirname(filename);
-      if (directory && !fs.existsSync(directory)) {
-        fs.mkdirSync(directory, { recursive: true });
-      }
-    }
-    const { sqlite, db } = createDrizzleSqliteDatabase(isMemory ? ':memory:' : filename);
+    const sqliteRuntime = getSqliteRuntime();
+    const sqlite = sqliteRuntime.openDatabase(isMemory ? ':memory:' : filename);
+
     if (!isMemory) {
       sqlite.pragma('journal_mode = WAL');
       sqlite.pragma('busy_timeout = 5000');
       sqlite.pragma('synchronous = NORMAL');
     }
 
-    // Create tables if they don't exist
+    const db = sqliteRuntime.createDrizzleDatabase(sqlite);
+
     ensureSqliteTables(sqlite);
 
     dbInitPromises.set(db as object, Promise.resolve());
@@ -89,8 +96,14 @@ export function getIdentityDatabase(connectionString: string): IdentityDatabase 
   // PostgreSQL: use shared pool to avoid connection exhaustion and deadlocks
   const pool = getSharedPool({ connectionString });
   const db = drizzlePg(pool);
-  const initPromise = ensurePostgresTables(pool);
+  const initPromise = (async(): Promise<void> => {
+    await ensurePostgresTables(pool);
+    await migratePgColumns(pool);
+  })();
   dbInitPromises.set(db as object, initPromise);
+  initPromise.catch((err) => {
+    console.error(`[IdentityDB] PG migration failed: ${err}`);
+  });
   dbCache.set(connectionString, {
     db,
     schema: pgSchema,
@@ -139,7 +152,9 @@ export async function closeAllIdentityConnections(): Promise<void> {
  * PostgreSQL drizzle has `execute()` method but no `all()` method.
  */
 export function isDatabaseSqlite(db: IdentityDatabase): boolean {
-  // SQLite drizzle has `all` method, PostgreSQL drizzle has `execute` method
+  if ((db as any)?.$xpodSqliteRuntime) {
+    return true;
+  }
   return typeof db.all === 'function' && typeof db.execute !== 'function';
 }
 
@@ -221,7 +236,7 @@ export function fromDbTimestamp(value: unknown): Date | undefined {
 /**
  * Ensure SQLite tables exist (simple DDL for local/dev mode).
  */
-function ensureSqliteTables(sqlite: SqliteDatabase): void {
+function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS identity_account_usage (
       account_id TEXT PRIMARY KEY,
@@ -230,36 +245,49 @@ function ensureSqliteTables(sqlite: SqliteDatabase): void {
       egress_bytes INTEGER NOT NULL DEFAULT 0,
       storage_limit_bytes INTEGER,
       bandwidth_limit_bps INTEGER,
+      compute_seconds INTEGER NOT NULL DEFAULT 0,
+      tokens_used INTEGER NOT NULL DEFAULT 0,
+      compute_limit_seconds INTEGER,
+      token_limit_monthly INTEGER,
+      period_start INTEGER,
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
     CREATE TABLE IF NOT EXISTS identity_pod_usage (
       pod_id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
+      storage_url TEXT,
       storage_bytes INTEGER NOT NULL DEFAULT 0,
       ingress_bytes INTEGER NOT NULL DEFAULT 0,
       egress_bytes INTEGER NOT NULL DEFAULT 0,
       storage_limit_bytes INTEGER,
       bandwidth_limit_bps INTEGER,
+      compute_seconds INTEGER NOT NULL DEFAULT 0,
+      tokens_used INTEGER NOT NULL DEFAULT 0,
+      compute_limit_seconds INTEGER,
+      token_limit_monthly INTEGER,
+      period_start INTEGER,
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
     CREATE TABLE IF NOT EXISTS identity_edge_node (
       id TEXT PRIMARY KEY,
       display_name TEXT,
-      owner_account_id TEXT,
       token_hash TEXT NOT NULL,
       account_id TEXT,
       node_type TEXT DEFAULT 'edge',
       subdomain TEXT UNIQUE,
       access_mode TEXT,
-      public_ip TEXT,
+      ipv4 TEXT,
       public_port INTEGER,
       public_url TEXT,
       service_token_hash TEXT,
       provision_code_hash TEXT,
       internal_ip TEXT,
       internal_port INTEGER,
+      hostname TEXT,
+      ipv6 TEXT,
+      version TEXT,
       capabilities TEXT,
       metadata TEXT,
       connectivity_status TEXT DEFAULT 'unknown',
@@ -282,6 +310,39 @@ function ensureSqliteTables(sqlite: SqliteDatabase): void {
       display_name TEXT,
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
+
+    CREATE TABLE IF NOT EXISTS identity_ddns_domain (
+      domain TEXT PRIMARY KEY,
+      status TEXT DEFAULT 'active',
+      provider TEXT,
+      zone_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_ddns_record (
+      subdomain TEXT PRIMARY KEY,
+      domain TEXT NOT NULL,
+      ip_address TEXT,
+      ipv6_address TEXT,
+      record_type TEXT DEFAULT 'A',
+      node_id TEXT,
+      username TEXT,
+      status TEXT DEFAULT 'active',
+      banned_reason TEXT,
+      ttl INTEGER DEFAULT 60,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_service_token (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      service_type TEXT NOT NULL,
+      service_id TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      expires_at INTEGER
+    );
   `);
 
   // Migrate existing tables: add new columns if missing
@@ -292,7 +353,7 @@ function ensureSqliteTables(sqlite: SqliteDatabase): void {
  * Add columns that may be missing from older databases.
  * SQLite ALTER TABLE ADD COLUMN is idempotent-safe via try/catch.
  */
-function migrateSqliteColumns(sqlite: SqliteDatabase): void {
+function migrateSqliteColumns(sqlite: SqliteDdlExecutor): void {
   const addColumn = (table: string, column: string, type: string): void => {
     try {
       sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
@@ -301,22 +362,107 @@ function migrateSqliteColumns(sqlite: SqliteDatabase): void {
     }
   };
 
-  addColumn('identity_edge_node', 'account_id', 'TEXT');
-  addColumn('identity_edge_node', 'node_type', "TEXT DEFAULT 'edge'");
-  addColumn('identity_edge_node', 'subdomain', 'TEXT');
-  addColumn('identity_edge_node', 'access_mode', 'TEXT');
-  addColumn('identity_edge_node', 'public_ip', 'TEXT');
-  addColumn('identity_edge_node', 'public_port', 'INTEGER');
-  addColumn('identity_edge_node', 'public_url', 'TEXT');
-  addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
-  addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
-  addColumn('identity_edge_node', 'internal_ip', 'TEXT');
-  addColumn('identity_edge_node', 'internal_port', 'INTEGER');
-  addColumn('identity_edge_node', 'capabilities', 'TEXT');
-  addColumn('identity_edge_node', 'metadata', 'TEXT');
-  addColumn('identity_edge_node', 'connectivity_status', "TEXT DEFAULT 'unknown'");
-  addColumn('identity_edge_node', 'last_connectivity_check', 'INTEGER');
-  addColumn('identity_edge_node', 'last_seen', 'INTEGER');
+  if (sqliteColumnExists(sqlite, 'identity_edge_node', 'owner_account_id')) {
+    try {
+      sqlite.exec('ALTER TABLE identity_edge_node DROP COLUMN owner_account_id');
+    } catch {
+      // Older SQLite runtimes may not support DROP COLUMN. Ignore and keep runtime-compatible schema.
+    }
+  }
+  const edgeNodeColumns: Array<[string, string]> = [
+    [ 'node_type', `TEXT DEFAULT 'edge'` ],
+    [ 'subdomain', 'TEXT' ],
+    [ 'access_mode', 'TEXT' ],
+    [ 'ipv4', 'TEXT' ],
+    [ 'public_port', 'INTEGER' ],
+    [ 'public_url', 'TEXT' ],
+    [ 'service_token_hash', 'TEXT' ],
+    [ 'provision_code_hash', 'TEXT' ],
+    [ 'internal_ip', 'TEXT' ],
+    [ 'internal_port', 'INTEGER' ],
+    [ 'hostname', 'TEXT' ],
+    [ 'ipv6', 'TEXT' ],
+    [ 'version', 'TEXT' ],
+    [ 'capabilities', 'TEXT' ],
+    [ 'metadata', 'TEXT' ],
+    [ 'connectivity_status', `TEXT DEFAULT 'unknown'` ],
+    [ 'last_connectivity_check', 'INTEGER' ],
+    [ 'last_seen', 'INTEGER' ],
+  ];
+  for (const [column, type] of edgeNodeColumns) {
+    addColumn('identity_edge_node', column, type);
+  }
+
+  // Usage tables: compute/token columns
+  addColumn('identity_account_usage', 'compute_seconds', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_account_usage', 'tokens_used', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_account_usage', 'compute_limit_seconds', 'INTEGER');
+  addColumn('identity_account_usage', 'token_limit_monthly', 'INTEGER');
+  addColumn('identity_account_usage', 'period_start', 'INTEGER');
+  addColumn('identity_pod_usage', 'compute_seconds', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_pod_usage', 'tokens_used', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_pod_usage', 'compute_limit_seconds', 'INTEGER');
+  addColumn('identity_pod_usage', 'token_limit_monthly', 'INTEGER');
+  addColumn('identity_pod_usage', 'period_start', 'INTEGER');
+  addColumn('identity_pod_usage', 'storage_url', 'TEXT');
+}
+
+function sqliteColumnExists(sqlite: SqliteDdlExecutor, table: string, column: string): boolean {
+  const rows = sqlite.prepare<{ name: string }>(`PRAGMA table_info(${table})`).all();
+  return rows.some((row) => row.name === column);
+}
+
+/**
+ * Add columns that may be missing from older PostgreSQL databases.
+ * Uses IF NOT EXISTS via information_schema check + ALTER TABLE.
+ */
+async function migratePgColumns(pool: { query: (sql: string) => Promise<any> }): Promise<void> {
+  const addColumn = async (table: string, column: string, type: string): Promise<void> => {
+    try {
+      await pool.query(
+        `DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = '${table}' AND column_name = '${column}'
+          ) THEN
+            ALTER TABLE ${table} ADD COLUMN ${column} ${type};
+          END IF;
+        END $$;`,
+      );
+    } catch {
+      // Ignore errors (table might not exist yet)
+    }
+  };
+
+  // Usage tables: compute/token columns
+  await addColumn('identity_account_usage', 'compute_seconds', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_account_usage', 'tokens_used', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_account_usage', 'compute_limit_seconds', 'BIGINT');
+  await addColumn('identity_account_usage', 'token_limit_monthly', 'BIGINT');
+  await addColumn('identity_account_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
+  await addColumn('identity_pod_usage', 'compute_seconds', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_pod_usage', 'tokens_used', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_pod_usage', 'compute_limit_seconds', 'BIGINT');
+  await addColumn('identity_pod_usage', 'token_limit_monthly', 'BIGINT');
+  await addColumn('identity_pod_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
+  await addColumn('identity_pod_usage', 'storage_url', 'TEXT');
+
+  // Service token table
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS identity_service_token (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        service_type TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        scopes TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMP WITH TIME ZONE
+      );
+    `);
+  } catch {
+    // Ignore if already exists
+  }
 }
 
 
@@ -335,6 +481,7 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS identity_pod_usage (
       pod_id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
+      storage_url TEXT,
       storage_bytes BIGINT NOT NULL DEFAULT 0,
       ingress_bytes BIGINT NOT NULL DEFAULT 0,
       egress_bytes BIGINT NOT NULL DEFAULT 0,
@@ -346,19 +493,21 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS identity_edge_node (
       id TEXT PRIMARY KEY,
       display_name TEXT,
-      owner_account_id TEXT,
       token_hash TEXT NOT NULL,
       account_id TEXT,
       node_type TEXT DEFAULT 'edge',
       subdomain TEXT UNIQUE,
       access_mode TEXT,
-      public_ip TEXT,
+      ipv4 TEXT,
       public_port BIGINT,
       public_url TEXT,
       service_token_hash TEXT,
       provision_code_hash TEXT,
       internal_ip TEXT,
       internal_port BIGINT,
+      hostname TEXT,
+      ipv6 TEXT,
+      version TEXT,
       capabilities JSONB,
       metadata JSONB,
       connectivity_status TEXT DEFAULT 'unknown',
@@ -381,6 +530,39 @@ async function ensurePostgresTables(pool: Pool): Promise<void> {
       display_name TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS identity_ddns_domain (
+      domain TEXT PRIMARY KEY,
+      status TEXT DEFAULT 'active',
+      provider TEXT,
+      zone_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_ddns_record (
+      subdomain TEXT PRIMARY KEY,
+      domain TEXT NOT NULL,
+      ip_address TEXT,
+      ipv6_address TEXT,
+      record_type TEXT DEFAULT 'A',
+      node_id TEXT,
+      username TEXT,
+      status TEXT DEFAULT 'active',
+      banned_reason TEXT,
+      ttl INTEGER DEFAULT 60,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS identity_service_token (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      service_type TEXT NOT NULL,
+      service_id TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ
+    );
   `);
 
   await migratePostgresColumns(pool);
@@ -391,20 +573,45 @@ async function migratePostgresColumns(pool: Pool): Promise<void> {
     await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
   };
 
-  await addColumn('identity_edge_node', 'account_id', 'TEXT');
-  await addColumn('identity_edge_node', 'node_type', "TEXT DEFAULT 'edge'");
-  await addColumn('identity_edge_node', 'subdomain', 'TEXT');
-  await addColumn('identity_edge_node', 'access_mode', 'TEXT');
-  await addColumn('identity_edge_node', 'public_ip', 'TEXT');
-  await addColumn('identity_edge_node', 'public_port', 'BIGINT');
-  await addColumn('identity_edge_node', 'public_url', 'TEXT');
-  await addColumn('identity_edge_node', 'service_token_hash', 'TEXT');
-  await addColumn('identity_edge_node', 'provision_code_hash', 'TEXT');
-  await addColumn('identity_edge_node', 'internal_ip', 'TEXT');
-  await addColumn('identity_edge_node', 'internal_port', 'BIGINT');
-  await addColumn('identity_edge_node', 'capabilities', 'JSONB');
-  await addColumn('identity_edge_node', 'metadata', 'JSONB');
-  await addColumn('identity_edge_node', 'connectivity_status', "TEXT DEFAULT 'unknown'");
-  await addColumn('identity_edge_node', 'last_connectivity_check', 'TIMESTAMPTZ');
-  await addColumn('identity_edge_node', 'last_seen', 'TIMESTAMPTZ');
+  await pool.query('ALTER TABLE identity_edge_node DROP COLUMN IF EXISTS owner_account_id');
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'identity_edge_node' AND column_name = 'public_ip'
+      ) AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'identity_edge_node' AND column_name = 'ipv4'
+      ) THEN
+        ALTER TABLE identity_edge_node RENAME COLUMN public_ip TO ipv4;
+      END IF;
+    END $$;
+  `);
+
+  const edgeNodeColumns: Array<[string, string]> = [
+    [ 'node_type', `TEXT DEFAULT 'edge'` ],
+    [ 'subdomain', 'TEXT' ],
+    [ 'access_mode', 'TEXT' ],
+    [ 'ipv4', 'TEXT' ],
+    [ 'public_port', 'BIGINT' ],
+    [ 'public_url', 'TEXT' ],
+    [ 'service_token_hash', 'TEXT' ],
+    [ 'provision_code_hash', 'TEXT' ],
+    [ 'internal_ip', 'TEXT' ],
+    [ 'internal_port', 'BIGINT' ],
+    [ 'hostname', 'TEXT' ],
+    [ 'ipv6', 'TEXT' ],
+    [ 'version', 'TEXT' ],
+    [ 'capabilities', 'JSONB' ],
+    [ 'metadata', 'JSONB' ],
+    [ 'connectivity_status', `TEXT DEFAULT 'unknown'` ],
+    [ 'last_connectivity_check', 'TIMESTAMPTZ' ],
+    [ 'last_seen', 'TIMESTAMPTZ' ],
+  ];
+  for (const [column, type] of edgeNodeColumns) {
+    await addColumn('identity_edge_node', column, type);
+  }
 }

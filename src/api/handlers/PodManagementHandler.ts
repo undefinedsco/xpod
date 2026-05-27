@@ -1,6 +1,7 @@
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
+import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 
 export interface PodManagementHandlerOptions {
   /** Pod 存储根目录 */
@@ -9,11 +10,19 @@ export interface PodManagementHandlerOptions {
   verifyServiceToken: (token: string) => Promise<boolean>;
   /** 可选：限制允许的 pod 名称正则 */
   podNameRegex?: RegExp;
+  /** 可选：创建 CSS-compatible Pod 数据，而不是只创建裸目录 */
+  provisioningService?: {
+    createPod(input: CreatePodRequest): Promise<{ podUrl: string }>;
+  };
+  /** SP-local Pod lookup used by Cloud consent to scope account WebIDs. */
+  podLookupRepository?: Pick<PodLookupRepository, 'findByWebIds'>;
 }
 
 export interface CreatePodRequest {
   /** Pod 名称（通常是用户名） */
   podName: string;
+  /** Owner WebID，Cloud IDP + Local SP 时应为 Cloud WebID */
+  webId?: string;
   /** 可选：初始资源 */
   initialResources?: Record<string, string>;
 }
@@ -27,6 +36,18 @@ export interface CreatePodResponse {
 export interface DeletePodResponse {
   success: boolean;
   message: string;
+}
+
+interface LookupWebIdsRequest {
+  webIds?: unknown;
+}
+
+interface LookupWebIdsResponse {
+  entries: Array<{
+    webId: string;
+    podUrl: string;
+    storageUrl: string;
+  }>;
 }
 
 /**
@@ -49,7 +70,7 @@ export function registerPodManagementRoutes(
   options: PodManagementHandlerOptions
 ): void {
   const logger = getLoggerFor('PodManagementHandler');
-  const { rootDir, verifyServiceToken, podNameRegex = /^[a-zA-Z0-9_-]+$/ } = options;
+  const { rootDir, verifyServiceToken, podNameRegex = /^[a-zA-Z0-9_-]+$/, provisioningService, podLookupRepository } = options;
 
   /**
    * 验证 service token
@@ -132,12 +153,14 @@ export function registerPodManagementRoutes(
 
     // 5. 创建 Pod 目录
     try {
-      await createPodDirectory(podPath, initialResources);
+      const result = provisioningService
+        ? await provisioningService.createPod(body)
+        : await createPodDirectory(podPath, initialResources).then(() => undefined);
       logger.info(`Created pod: ${podName} at ${podPath}`);
 
       // 构建 pod URL (基于请求的 host)
       const host = request.headers.host || 'localhost';
-      const podUrl = `https://${host}/${podName}/`;
+      const podUrl = result?.podUrl || `https://${host}/${podName}/`;
 
       sendJson(response, 201, {
         success: true,
@@ -149,6 +172,61 @@ export function registerPodManagementRoutes(
       sendJson(response, 500, { error: 'Internal Server Error', message: 'Failed to create pod' });
     }
   }, { public: true }); // Service token auth handled internally
+
+  /**
+   * POST /provision/webids
+   *
+   * Lookup account-linked WebIDs against this SP's Pod facts. Cloud OIDC uses
+   * this during Cloud IDP + Local SP consent so the picker cannot offer Pods
+   * from a different storage provider.
+   */
+  server.post('/provision/webids', async (request, response) => {
+    if (!await authenticate(request)) {
+      sendJson(response, 401, { error: 'Unauthorized', message: 'Invalid or missing service token' });
+      return;
+    }
+
+    if (!podLookupRepository) {
+      sendJson(response, 503, { error: 'Unavailable', message: 'Pod lookup repository is not configured' });
+      return;
+    }
+
+    let body: LookupWebIdsRequest;
+    try {
+      body = await readJsonBody(request) as LookupWebIdsRequest;
+    } catch {
+      sendJson(response, 400, { error: 'Bad Request', message: 'Invalid JSON body' });
+      return;
+    }
+
+    if (!Array.isArray(body.webIds) || body.webIds.some((webId) => typeof webId !== 'string')) {
+      sendJson(response, 400, { error: 'Bad Request', message: 'webIds must be a string array' });
+      return;
+    }
+
+    try {
+      const webIds = body.webIds as string[];
+      const pods = await podLookupRepository.findByWebIds(webIds);
+      const entries = pods
+        .map((pod) => {
+          const webId = resolveMatchedWebId(pod.webId, pod.webIds, webIds);
+          const storageUrl = ensureTrailingSlash(pod.storageUrl ?? pod.baseUrl);
+          return webId
+            ? {
+              webId,
+              podUrl: storageUrl,
+              storageUrl,
+            }
+            : undefined;
+        })
+        .filter((entry): entry is LookupWebIdsResponse['entries'][number] => Boolean(entry));
+
+      sendJson(response, 200, { entries });
+    } catch (error) {
+      logger.error(`Failed to lookup provisioned WebIDs: ${(error as Error).message}`);
+      sendJson(response, 500, { error: 'Internal Server Error', message: 'Failed to lookup provisioned WebIDs' });
+    }
+  }, { public: true });
 
   /**
    * DELETE /provision/pods/:podName
@@ -279,6 +357,27 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.statusCode = status;
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(data));
+}
+
+function resolveMatchedWebId(webId: string | undefined, webIds: string[] | undefined, requested: string[]): string | undefined {
+  const candidates = [
+    webId,
+    ...(webIds ?? []),
+  ].filter((value): value is string => typeof value === 'string');
+  const requestedSet = new Set(requested.map(normalizeUrl));
+  return candidates.find((candidate) => requestedSet.has(normalizeUrl(candidate)));
+}
+
+function normalizeUrl(value: string): string {
+  try {
+    return new URL(value).toString();
+  } catch {
+    return value;
+  }
+}
+
+function ensureTrailingSlash(url: string): string {
+  return url.replace(/\/+$/u, '') + '/';
 }
 
 /**
