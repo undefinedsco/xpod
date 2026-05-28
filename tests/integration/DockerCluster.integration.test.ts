@@ -136,11 +136,12 @@ suite('Docker Cluster Integration', () => {
       expect(JSON.stringify(localJwks)).toBe(JSON.stringify(cloudJwks));
     });
 
-    it('Local should not handle account (SP mode)', async () => {
-      // Local 模式使用 Cloud IdP，本地不应处理账户
+    it('Local should keep account routes local in SP mode', async () => {
+      // Local 模式使用 Cloud IdP 验 token，但 account/consent 入口仍必须留在本地 SP，
+      // 避免登录流程跳到 Cloud Pod 选择面。
       const res = await fetch(`${SERVICES.local.baseUrl}/.account/`, { redirect: 'manual' });
-      // SP 模式下应返回 404 (不处理账户) 或重定向到 Cloud IdP
-      expect([302, 404]).toContain(res.status);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('location')).toBeNull();
     });
   });
 
