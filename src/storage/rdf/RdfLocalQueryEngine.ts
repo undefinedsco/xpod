@@ -178,14 +178,17 @@ export class RdfLocalQueryEngine {
     let groupedAggregatePushed = false;
 
     if (countPushdown) {
-      const useRdf3xPrimary = this.canUseRdf3xPrimaryScan(countPushdown.pattern);
+      const distinctKeys = countPushdown.distinctKeys ?? [];
+      const distinctKey = distinctKeys.length === 1 ? distinctKeys[0] : undefined;
+      const distinctTupleKeys = distinctKeys.length > 1 ? distinctKeys : undefined;
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryScan(countPushdown.pattern) && !distinctTupleKeys;
       let rdf3xCount: ReturnType<Rdf3xIndex['countDistinct']> | undefined;
       if (useRdf3xPrimary) {
         const rdf3xPattern = toRdf3xTriplePattern(countPushdown.pattern);
-        if (countPushdown.distinctKey) {
+        if (distinctKey) {
           rdf3xCount = this.rdf3xPrimaryIndex!.countDistinct(
             rdf3xPattern,
-            countPushdown.distinctKey as Rdf3xPatternKey,
+            distinctKey as Rdf3xPatternKey,
           );
         } else {
           const rdf3xCountScan = this.rdf3xPrimaryIndex!.scan(rdf3xPattern, { limit: 0 });
@@ -195,8 +198,10 @@ export class RdfLocalQueryEngine {
           };
         }
       }
-      const countEstimate = !useRdf3xPrimary && countPushdown.distinctKey
-        ? this.index.countDistinct(countPushdown.pattern, countPushdown.distinctKey)
+      const countEstimate = !useRdf3xPrimary && distinctTupleKeys
+        ? this.index.countDistinctTuple(countPushdown.pattern, distinctTupleKeys)
+        : !useRdf3xPrimary && distinctKey
+        ? this.index.countDistinct(countPushdown.pattern, distinctKey)
         : undefined;
       const count = rdf3xCount?.count ?? countEstimate?.rows ?? this.index.count(countPushdown.pattern);
       const result = countLiteral(count);
@@ -208,11 +213,11 @@ export class RdfLocalQueryEngine {
       metrics.filtersPushedDown += countPushdown.pushedDownFilters;
       if (rdf3xCount) {
         metrics.plan.push(...storagePlanMarkers(rdf3xCount.metrics.queryPlan));
-        metrics.plan.push(`${countPushdown.distinctKey ? 'Rdf3xPrimaryCountDistinct' : 'Rdf3xPrimaryCount'}(${describePattern(requiredPatterns[0])})`);
-        metrics.plan.push(countPushdown.distinctKey ? 'Aggregate(count-distinct-rdf3x-primary)' : 'Aggregate(count-rdf3x-primary)');
+        metrics.plan.push(`${distinctKey ? 'Rdf3xPrimaryCountDistinct' : 'Rdf3xPrimaryCount'}(${describePattern(requiredPatterns[0])})`);
+        metrics.plan.push(distinctKey ? 'Aggregate(count-distinct-rdf3x-primary)' : 'Aggregate(count-rdf3x-primary)');
       } else {
         metrics.plan.push(`IndexCount(${describePattern(requiredPatterns[0])})`);
-        metrics.plan.push(countPushdown.distinctKey ? 'Aggregate(count-distinct-index)' : 'Aggregate(count-index)');
+        metrics.plan.push(distinctTupleKeys ? 'Aggregate(count-distinct-tuple-index)' : distinctKey ? 'Aggregate(count-distinct-index)' : 'Aggregate(count-index)');
       }
       return {
         bindings: [{ [countPushdown.as]: result }],
@@ -1912,7 +1917,7 @@ export class RdfLocalQueryEngine {
     query: RdfLocalQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
-  ): { as: string; pattern: QuintPattern; distinctKey?: RdfQueryPatternKey; pushedDownFilters: number } | undefined {
+  ): { as: string; pattern: QuintPattern; distinctKeys?: RdfQueryPatternKey[]; pushedDownFilters: number } | undefined {
     const aggregates = queryAggregates(query);
     if (
       aggregates.length !== 1
@@ -1942,10 +1947,10 @@ export class RdfLocalQueryEngine {
     if (aggregate.variable && !variablesInPattern(pattern).includes(aggregate.variable)) {
       return undefined;
     }
-    const distinctKey = aggregate.distinct
-      ? this.distinctCountKey(pattern, aggregate.variable)
+    const distinctKeys = aggregate.distinct
+      ? this.distinctCountKeys(pattern, aggregate.variable)
       : undefined;
-    if (aggregate.distinct && !distinctKey) {
+    if (aggregate.distinct && (!distinctKeys || distinctKeys.length === 0)) {
       return undefined;
     }
     if (!this.canPushAllFiltersForPattern(pattern, filters)) {
@@ -1957,7 +1962,7 @@ export class RdfLocalQueryEngine {
       ? {
           as: aggregate.as,
           pattern: compiled,
-          distinctKey,
+          distinctKeys,
           pushedDownFilters: compiled.pushedDownFilters,
         }
       : undefined;
@@ -2209,15 +2214,19 @@ export class RdfLocalQueryEngine {
     return compiled;
   }
 
-  private distinctCountKey(pattern: RdfQueryPattern, variableName?: string): RdfQueryPatternKey | undefined {
-    if (!variableName) {
-      return undefined;
+  private distinctCountKeys(pattern: RdfQueryPattern, variableName?: string): RdfQueryPatternKey[] | undefined {
+    if (variableName) {
+      const keys = TERM_KEYS.filter((key) => {
+        const value = pattern[key];
+        return isVariable(value) && value.variable === variableName;
+      });
+      return keys.length === 1 ? keys : undefined;
     }
     const keys = TERM_KEYS.filter((key) => {
       const value = pattern[key];
-      return isVariable(value) && value.variable === variableName;
+      return isVariable(value);
     });
-    return keys.length === 1 ? keys[0] : undefined;
+    return uniquePatternKeys(keys);
   }
 
   private scanOrderForPattern(
@@ -3736,4 +3745,8 @@ function aggregatePlan(aggregates: RdfQueryAggregate[], grouped: boolean): strin
   return aggregates.some((aggregate) => aggregate.distinct)
     ? 'Aggregate(count-multi-distinct)'
     : 'Aggregate(count-multi)';
+}
+
+function uniquePatternKeys(values: RdfQueryPatternKey[]): RdfQueryPatternKey[] {
+  return TERM_KEYS.filter((key) => values.includes(key));
 }

@@ -837,6 +837,9 @@ describe('RdfSparqlAdapter', () => {
     const countAll = adapter.compile(`
       SELECT (COUNT(*) AS ?count) WHERE { ?s ?p ?o }
     `, BASE);
+    const countDistinctAll = adapter.compile(`
+      SELECT (COUNT(DISTINCT *) AS ?count) WHERE { ?s ?p ?o }
+    `, BASE);
     const countDistinct = adapter.compile(`
       SELECT (COUNT(DISTINCT ?s) AS ?count) WHERE { ?s ?p ?o }
     `, BASE);
@@ -846,6 +849,12 @@ describe('RdfSparqlAdapter', () => {
       as: 'count',
       variable: undefined,
       distinct: false,
+    });
+    expect(countDistinctAll.query.aggregate).toEqual({
+      type: 'count',
+      as: 'count',
+      variable: undefined,
+      distinct: true,
     });
     expect(countDistinct.query.aggregate).toEqual({
       type: 'count',

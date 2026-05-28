@@ -2560,6 +2560,39 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.filtersPushedDown).toBe(1);
   });
 
+  it('pushes COUNT DISTINCT star as a solution-tuple count', () => {
+    const firstGraph = namedNode('https://pod.example/alice/.data/rdf/distinct-star-a.ttl');
+    const secondGraph = namedNode('https://pod.example/alice/.data/rdf/distinct-star-b.ttl');
+    const subject = namedNode('https://pod.example/alice/.data/rdf/distinct-star.ttl#subject');
+    const status = namedNode('https://undefineds.co/ns#status');
+    engine.put([
+      quad(subject, status, literal('same'), firstGraph),
+      quad(subject, status, literal('same'), secondGraph),
+    ]);
+
+    const result = engine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/rdf/' },
+          subject: rdfVar('subject'),
+          predicate: status,
+          object: rdfVar('status'),
+        },
+      ],
+      aggregate: {
+        type: 'count',
+        as: 'count',
+        distinct: true,
+      },
+    });
+
+    expect(result.count).toBe(1);
+    expect(result.bindings[0].count.value).toBe('1');
+    expect(result.metrics.plan).toContain('IndexCount(graph:op,subject:?subject,predicate:https://undefineds.co/ns#status,object:?status)');
+    expect(result.metrics.plan).toContain('Aggregate(count-distinct-tuple-index)');
+    expect(result.metrics.plan).not.toContain('Aggregate(count-distinct)');
+  });
+
   it('does not push COUNT DISTINCT when one variable spans multiple term slots', () => {
     const result = engine.query({
       patterns: [

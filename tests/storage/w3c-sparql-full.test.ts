@@ -1088,6 +1088,39 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
     expect(engine.getMetrics().lastPrimary?.plan).toContain('Aggregate(join-basic-multi-index)');
   });
 
+  it('covers COUNT DISTINCT star over merged local graphs without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    rdfEngine.put([
+      q(`${GRAPH}#alice`, STATUS, literal('active')),
+      quad(
+        namedNode(`${GRAPH}#alice`),
+        namedNode(STATUS),
+        literal('active'),
+        namedNode(NAMED_GRAPH),
+      ),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT (COUNT(DISTINCT *) AS ?count) WHERE {
+        ?person <${STATUS}> ?status .
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => binding.get('count')?.value)).toEqual(['1']);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      fallbackCount: 0,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 1,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('Aggregate(count-distinct-tuple-index)');
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
   it('covers grouped guarded numeric aggregates without fallback', async () => {
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
     rdfEngine.put([
