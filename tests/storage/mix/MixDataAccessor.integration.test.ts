@@ -1244,6 +1244,64 @@ WHERE {
     ]);
   });
 
+  it('applies USING NAMED updates that read multiple RDF authority files and write one target file', async () => {
+    const resourceId = { path: `${baseUrl}alice/using-named-update.ttl` };
+    const otherResourceId = { path: `${baseUrl}alice/using-named-other.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#first`),
+        namedNode('https://schema.org/name'),
+        literal('using named target')
+      )
+    ])), metadata);
+    const otherMetadata = new RepresentationMetadata(otherResourceId);
+    otherMetadata.contentType = 'internal/quads';
+    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${otherResourceId.path}#second`),
+        namedNode('https://schema.org/name'),
+        literal('using named other')
+      )
+    ])), otherMetadata);
+    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
+
+    await accessor.executeSparqlUpdate(`
+INSERT {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/mentionsGraph> ?g .
+  }
+}
+USING NAMED <${resourceId.path}>
+USING NAMED <${otherResourceId.path}>
+WHERE {
+  GRAPH ?g {
+    ?subject <https://schema.org/name> ?old .
+  }
+}
+`.trim(), resourceId.path);
+
+    expect(structuredUpdateSpy).not.toHaveBeenCalled();
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain(resourceId.path);
+    expect(localRdf).toContain(otherResourceId.path);
+
+    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
+    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
+    expect(otherLocalRdf).toContain('using named other');
+    expect(otherLocalRdf).not.toContain('mentionsGraph');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => `${quad.subject.value} ${quad.predicate.value} ${quad.object.value}`).sort()).toEqual([
+      `${otherResourceId.path}#second https://schema.org/mentionsGraph ${otherResourceId.path}`,
+      `${resourceId.path}#first https://schema.org/mentionsGraph ${resourceId.path}`,
+      `${resourceId.path}#first https://schema.org/name using named target`,
+    ]);
+  });
+
   it('rejects SERVICE updates before the structured accessor fallback path', async () => {
     const resourceId = { path: `${baseUrl}alice/service-update.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
