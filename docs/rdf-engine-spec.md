@@ -835,7 +835,7 @@ bun run test:w3c
 
 这个入口只用于阶段 1/2 的 baseline 和 shadow comparison，不切换 `/-/sparql` 主路径。
 
-`bun run test:w3c` 先落为第一版目标子集，不尝试一次性跑完整 W3C SPARQL suite。当前子集覆盖 embedded primary path 已声明支持的 SELECT BGP / OPTIONAL / OPTIONAL 内 VALUES / FILTER / VALUES / VALUES `UNDEF` / BIND / UNION / MINUS / FILTER EXISTS / FILTER NOT EXISTS / dependent group 内受控 UNION / ORDER / LIMIT、`FROM` / `FROM NAMED` dataset scope、固定长度 property path、GROUP BY COUNT / HAVING、ASK、基础 CONSTRUCT、受控 DESCRIBE、scoped `INSERT DATA` / `DELETE DATA`，以及 query-backed `DELETE/INSERT WHERE` update；每个 case 都断言不会走 compatibility fallback。后续扩大 SPARQL 子集时，先把新增能力补进这个入口，再调整对应 fallback 边界。
+`bun run test:w3c` 先落为第一版目标子集，不尝试一次性跑完整 W3C SPARQL suite。当前子集覆盖 embedded primary path 已声明支持的 SELECT BGP / OPTIONAL / OPTIONAL 内 VALUES / FILTER / VALUES / VALUES `UNDEF` / BIND / UNION（含 branch-local required BGP 后执行 nested UNION）/ MINUS / FILTER EXISTS / FILTER NOT EXISTS / dependent group 内受控 UNION / ORDER / LIMIT、`FROM` / `FROM NAMED` dataset scope、固定长度 property path、GROUP BY COUNT / HAVING、ASK、基础 CONSTRUCT、受控 DESCRIBE、scoped `INSERT DATA` / `DELETE DATA`，以及 query-backed `DELETE/INSERT WHERE` update；每个 case 都断言不会走 compatibility fallback。后续扩大 SPARQL 子集时，先把新增能力补进这个入口，再调整对应 fallback 边界。
 
 ### Shadow Replacement Protocol
 
@@ -955,7 +955,7 @@ compare(A, B)
 - `SolidRdfSparqlEngine` 已接到 `/-/sparql` 默认引擎：受支持的 SELECT/ASK/CONSTRUCT/constructGraph/listGraphs/简单 queryVoid 走 embedded `SolidRdfEngine` primary path；未覆盖能力继续有 fallback reason 和计数。
 - `SERVICE` federation 已作为禁用能力从普通 fallback 中拆出：`RdfSparqlAdapter` 会抛 `DisabledSparqlFeatureError`，`SolidRdfSparqlEngine` 和 `MixDataAccessor` 不会把它转给 compatibility engine，防止 server-owned Pod 查询隐式触发 remote federation。
 - `SolidRdfSparqlEngine.getMetrics()` 已记录 primary/fallback 次数、总次数、fallback rate、耗时、fallback reason、扫描行数、返回行数、plan 和 index choices；`assertFallbackBudget(...)` 可对全局或指定 operation 设定最大 fallback count/rate，作为 benchmark window / W3C subset 的 no-regression gate。
-- `bun run test:w3c` 已补上可执行的第一版 W3C 目标子集入口，覆盖当前 embedded primary path 的 SELECT/ASK/CONSTRUCT/DESCRIBE、`FROM` / `FROM NAMED` dataset scope、VALUES/VALUES `UNDEF`/OPTIONAL 内 VALUES/UNION/MINUS/property path、GROUP BY/HAVING、scoped DATA update 和 query-backed update smoke cases，并把 no-fallback budget gate 作为测试断言。
+- `bun run test:w3c` 已补上可执行的第一版 W3C 目标子集入口，覆盖当前 embedded primary path 的 SELECT/ASK/CONSTRUCT/DESCRIBE、`FROM` / `FROM NAMED` dataset scope、VALUES/VALUES `UNDEF`/OPTIONAL 内 VALUES/UNION（含 branch-local required BGP 后执行 nested UNION）/MINUS/property path、GROUP BY/HAVING、scoped DATA update 和 query-backed update smoke cases，并把 no-fallback budget gate 作为测试断言。
 
 阶段 2：LocalQueryEngine
 

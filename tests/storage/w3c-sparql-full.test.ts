@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataFactory } from 'n3';
-import { SqliteQuintStore } from '../../src/storage/quint';
-import { QuintstoreSparqlEngine } from '../../src/storage/sparql/CompatibilitySparqlEngine';
+import type { SparqlEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
 import {
   RdfQuadIndex,
   SolidRdfEngine,
@@ -25,8 +24,7 @@ const STATUS = 'https://undefineds.co/ns#status';
 
 describe('SolidRdfSparqlEngine W3C target subset', () => {
   let rdfEngine: SolidRdfEngine;
-  let compatibilityStore: SqliteQuintStore;
-  let fallback: QuintstoreSparqlEngine;
+  let fallback: SparqlEngine;
   let engine: SolidRdfSparqlEngine;
 
   beforeEach(async () => {
@@ -34,8 +32,7 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
       index: new RdfQuadIndex({ path: ':memory:' }),
       autoOpen: true,
     });
-    compatibilityStore = new SqliteQuintStore({ path: ':memory:' });
-    fallback = new QuintstoreSparqlEngine(compatibilityStore);
+    fallback = createUnusedFallback();
     engine = new SolidRdfSparqlEngine(
       rdfEngine,
       fallback,
@@ -597,6 +594,62 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
       },
     });
     expect(engine.getMetrics().lastPrimary?.plan).toContain('UnionValues(?person,?value)');
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
+  it('covers branch-local required patterns before nested UNION without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+
+    const stream = await engine.queryBindings(`
+      SELECT ?person ?value WHERE {
+        {
+          ?person a <${PERSON}> .
+          {
+            ?person <${NAME}> ?value .
+          }
+          UNION
+          {
+            ?person <${KNOWS}> ?value .
+          }
+          FILTER(?value != <${GRAPH}#bob>)
+        }
+        UNION
+        {
+          ?person <${AGE}> ?value .
+        }
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      person: binding.get('person')?.value,
+      value: binding.get('value')?.value,
+    })).sort((left, right) => `${left.person}:${left.value}`.localeCompare(`${right.person}:${right.value}`))).toEqual([
+      {
+        person: `${GRAPH}#alice`,
+        value: '13',
+      },
+      {
+        person: `${GRAPH}#alice`,
+        value: 'Alice',
+      },
+      {
+        person: `${GRAPH}#bob`,
+        value: 'Bob',
+      },
+    ]);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      totalCount: 1,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 3,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan.some((entry) => entry.startsWith('UnionNested('))).toBe(true);
     expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
@@ -1420,4 +1473,19 @@ function q(
     object,
     namedNode(graph),
   );
+}
+
+function createUnusedFallback(): SparqlEngine {
+  const fail = vi.fn(async () => {
+    throw new Error('W3C target subset should not use fallback SPARQL engine');
+  });
+  return {
+    queryBindings: fail,
+    queryQuads: fail,
+    queryBoolean: fail,
+    queryVoid: fail,
+    constructGraph: fail,
+    listGraphs: fail,
+    close: vi.fn(async () => undefined),
+  };
 }
