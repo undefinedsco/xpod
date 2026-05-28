@@ -24,4 +24,27 @@ describe('embedded RDF component imports', () => {
     expect(index).not.toContain('ComunicaQuintEngine');
     expect(index).not.toContain('QuintEngine');
   });
+
+  it('keeps server profile DefaultSparqlEngine fallback opt-in', () => {
+    const profilePaths = [
+      'config/local.json',
+      'config/cloud.json',
+      'config/bun.json',
+      'config/xpod.json',
+    ];
+
+    for (const profilePath of profilePaths) {
+      const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
+      const graph = profile['@graph'] as Record<string, unknown>[];
+      const defaultEngine = graph.find((node) => node['@id'] === 'urn:undefineds:xpod:DefaultSparqlEngine');
+
+      expect(defaultEngine, `${profilePath} should define DefaultSparqlEngine`).toBeTruthy();
+      expect(defaultEngine?.['@type']).toBe('SolidRdfSparqlEngine');
+      expect(defaultEngine?.rdfEngine).toEqual({ '@id': 'urn:undefineds:xpod:SolidRdfEngine' });
+      expect(defaultEngine).not.toHaveProperty('fallback');
+      expect(defaultEngine).not.toHaveProperty('shadowStore');
+      expect(Object.keys(defaultEngine ?? {}).some((key) => key.includes('SolidRdfSparqlEngine_fallback'))).toBe(false);
+      expect(JSON.stringify(defaultEngine)).not.toContain('CompatibilitySparqlEngine');
+    }
+  });
 });
