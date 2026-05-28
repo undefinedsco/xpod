@@ -21,12 +21,12 @@
       }
     },
     {
-      "comment": "定义 oidcIssuer 变量（外部 IdP 基础 URL），设置后启用 SP 模式",
+      "comment": "定义 oidcIssuer 变量（外部 OIDC issuer 基础 URL），设置后本地仍提供 account/consent/SP 页面",
       "@id": "urn:solid-server:default:variable:oidcIssuer",
       "@type": "Variable"
     },
     {
-      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时启用 SP 模式，代理 JWKS",
+      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时代理外部 issuer 的 JWKS，其它 OIDC 路由保持 CSS 本地处理",
       "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
       "@type": "AutoDetectOidcHandler",
       "AutoDetectOidcHandler:_options_oidcIssuer": {
@@ -35,7 +35,7 @@
       "AutoDetectOidcHandler:_options_cacheMs": 300000
     },
     {
-      "comment": "原始 IdentityProviderHandler 实例（用于标准模式委托）",
+      "comment": "CSS 原生 IdentityProvider parsing handler，始终用于本地 account/consent/WebID 选择页面",
       "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler",
       "@type": "RouterHandler",
       "baseUrl": {
@@ -52,7 +52,7 @@
       }
     },
     {
-      "comment": "Auto-detect Identity Provider Handler - 有 oidcIssuer 时禁用本地账户管理",
+      "comment": "Auto-detect Identity Provider Handler - 有 oidcIssuer 时仍委托本地 account/consent，避免 Local 登录漏到 Cloud Pod",
       "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler",
       "@type": "AutoDetectIdentityProviderHandler",
       "AutoDetectIdentityProviderHandler:_options_oidcIssuer": {
@@ -315,7 +315,7 @@
             "@id": "urn:solid-server:default:StaticAssetHandler"
           },
           {
-            "comment": "SP 模式下代理 JWKS，标准模式下透传",
+            "comment": "Local 模式下代理外部 issuer JWKS；其它 OIDC 路由由 CSS 默认 OIDC handler 处理",
             "@id": "urn:undefineds:xpod:AutoDetectOidcHandler"
           },
           {

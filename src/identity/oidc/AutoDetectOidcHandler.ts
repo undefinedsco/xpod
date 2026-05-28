@@ -8,9 +8,9 @@ import {
 } from '@solid/community-server';
 
 export interface AutoDetectOidcHandlerOptions {
-  /** 外部 IdP 的基础 URL，如果提供则启用 SP 模式 */
+  /** External OIDC issuer base URL used as the trust source for Local SP mode. */
   oidcIssuer?: string;
-  /** 禁用原因说明 */
+  /** Explanation used when this handler declines non-JWKS OIDC routes. */
   message?: string;
   /** JWKS 缓存时间 (ms) */
   cacheMs?: number;
@@ -25,8 +25,12 @@ interface JwksCache {
  * Auto-detect OIDC Handler
  *
  * 自动检测运行模式：
- * - 如果配置了 oidcIssuer -> SP 模式：禁用本地 OIDC，代理外部 IdP 的 JWKS
+ * - 如果配置了 oidcIssuer -> Local SP 模式：只代理外部 issuer 的 JWKS
  * - 如果没有配置 oidcIssuer -> 标准模式：所有 OIDC 请求透传（由 CSS 默认 Handler 处理）
+ *
+ * 注意：Local SP 模式不能禁用本地 account/consent。OIDC 交互页面和
+ * scoped WebID picker 必须继续由本地 CSS 提供，否则 Local 登录会退回
+ * Cloud consent 并暴露 Cloud Pod。
  *
  * 使用方式：在 HTTP pipeline 中替换默认的 OidcHandler
  */
@@ -42,11 +46,11 @@ export class AutoDetectOidcHandler extends HttpHandler {
     super();
     this.oidcIssuer = options.oidcIssuer;
     this.jwksUrl = this.oidcIssuer ? `${this.oidcIssuer.replace(/\/$/, '')}/.oidc/jwks` : undefined;
-    this.message = options.message ?? 'OIDC disabled in storage provider mode';
+    this.message = options.message ?? 'OIDC route handled by local CSS OIDC handler';
     this.cacheMs = options.cacheMs ?? 300000; // 默认 5 分钟
 
     if (this.oidcIssuer) {
-      this.logger.info(`SP mode enabled, external IdP: ${this.oidcIssuer}, JWKS: ${this.jwksUrl}`);
+      this.logger.info(`Local SP mode enabled, external issuer: ${this.oidcIssuer}, JWKS: ${this.jwksUrl}`);
     } else {
       this.logger.info('Standard mode enabled, OIDC requests will pass through');
     }
@@ -54,7 +58,7 @@ export class AutoDetectOidcHandler extends HttpHandler {
 
   /**
    * 判断是否处理请求
-   * - SP 模式：只处理 JWKS 请求，其他 OIDC 请求返回 501
+   * - Local SP 模式：只处理 JWKS 请求，其他 OIDC 请求透传给 CSS 本地 OIDC handler
    * - 标准模式：不处理任何请求（透传给 CSS 默认 Handler）
    */
   public override async canHandle({ request }: HttpHandlerInput): Promise<void> {
@@ -70,10 +74,10 @@ export class AutoDetectOidcHandler extends HttpHandler {
       throw new NotImplementedHttpError('Pass through to default OIDC handler');
     }
 
-    // SP 模式：只有 JWKS 请求可以处理
+    // Local SP 模式：只有 JWKS 请求由这里处理，其它 OIDC 路由交给 CSS 本地 handler
     if (!this.isJwksPath(url)) {
       throw new NotImplementedHttpError(
-        `External IdP mode: ${this.message}. Authentication handled by external IdP.`
+        `Local SP mode: ${this.message}.`
       );
     }
   }
