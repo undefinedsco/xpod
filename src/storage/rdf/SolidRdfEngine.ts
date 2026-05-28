@@ -66,7 +66,6 @@ export class SolidRdfEngine {
   private readonly rdf3xPrimary: boolean;
   private readonly compatibilityStore?: QuintStore;
   private shadowComparator?: RdfShadowComparator;
-  private readonly queryEngine: RdfLocalQueryEngine;
   private rdf3xDirty = true;
   private rdf3xDataVersion: number | undefined;
 
@@ -127,12 +126,6 @@ export class SolidRdfEngine {
     }
     this.rdf3xPrimary = options.rdf3xPrimary ?? autoConfiguredRdf3xPrimary;
     this.compatibilityStore = options.compatibilityStore;
-    this.queryEngine = new RdfLocalQueryEngine(
-      this.index,
-      this.textIndex,
-      this.vectorIndex,
-      this.rdf3xPrimary ? this.rdf3xIndex : undefined,
-    );
     if (this.compatibilityStore) {
       this.shadowComparator = new RdfShadowComparator(this.index, this.compatibilityStore);
     }
@@ -205,8 +198,17 @@ export class SolidRdfEngine {
   }
 
   public query(query: RdfLocalQuery): RdfLocalQueryResult {
-    this.refreshRdf3xPrimary();
-    return this.queryEngine.query(query);
+    const rdf3xReady = this.isRdf3xPrimaryReady();
+    const result = new RdfLocalQueryEngine(
+      this.index,
+      this.textIndex,
+      this.vectorIndex,
+      rdf3xReady ? this.rdf3xIndex : undefined,
+    ).query(query);
+    if (this.rdf3xPrimary && this.rdf3xIndex && !rdf3xReady) {
+      result.metrics.plan.unshift('Rdf3xPrimaryStaleFallback');
+    }
+    return result;
   }
 
   public refreshDerivedIndexes(): RdfDerivedIndexRefreshResult {
@@ -355,11 +357,8 @@ export class SolidRdfEngine {
     }
   }
 
-  private refreshRdf3xPrimary(): void {
-    if (!this.rdf3xPrimary) {
-      return;
-    }
-    this.refreshRdf3xDerivedIndex();
+  private isRdf3xPrimaryReady(): boolean {
+    return Boolean(this.rdf3xPrimary && this.rdf3xIndex?.isSyncedWithCurrentQuads());
   }
 
   private refreshRdf3xDerivedIndex(factsDataVersion = this.index.dataVersion()): RdfDerivedIndexRefreshResult['rdf3x'] {

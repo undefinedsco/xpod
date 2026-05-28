@@ -299,6 +299,7 @@ describe('SolidRdfEngine', () => {
         quad(msg2, type, messageType, graph),
         quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), graph),
       ]);
+      autoEngine.refreshDerivedIndexes();
 
       const result = autoEngine.query({
         patterns: [
@@ -454,6 +455,7 @@ describe('SolidRdfEngine', () => {
         quad(msg2, type, messageType, graph),
         quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
       ]);
+      autoEngine.refreshDerivedIndexes();
       autoEngine.query({
         patterns: [
           {
@@ -569,7 +571,7 @@ describe('SolidRdfEngine', () => {
     }
   });
 
-  it('refreshes auto-configured RDF-3X primary after external quad-index writes', async () => {
+  it('does not refresh auto-configured RDF-3X primary on query after external quad-index writes', async () => {
     const autoRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-auto-external-'));
     const dbPath = path.join(autoRoot, 'rdf.sqlite');
     const autoEngine = new SolidRdfEngine({
@@ -601,6 +603,30 @@ describe('SolidRdfEngine', () => {
       externalIndex.multiPut([
         quad(message, namedNode(RDF_TYPE), namedNode(MEETING_MESSAGE), graph),
       ]);
+
+      const staleResult = autoEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: namedNode(RDF_TYPE),
+            object: namedNode(MEETING_MESSAGE),
+          },
+        ],
+        select: ['message'],
+      });
+
+      expect(staleResult.bindings.map((binding) => binding.message.value)).toEqual([
+        'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_external',
+      ]);
+      expect(staleResult.metrics.plan).toContain('Rdf3xPrimaryStaleFallback');
+      expect(staleResult.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(true);
+      expect(staleResult.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(false);
+
+      const refresh = autoEngine.refreshDerivedIndexes();
+      expect(refresh.rdf3x).toMatchObject({
+        refreshed: true,
+        syncedWithFacts: true,
+      });
 
       const result = autoEngine.query({
         patterns: [
@@ -694,6 +720,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
       quad(msg2, created, literal('ignored'), taskGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -750,6 +777,7 @@ describe('SolidRdfEngine', () => {
       quad(msg1, content, literal('hello'), chatGraph),
       quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -797,6 +825,7 @@ describe('SolidRdfEngine', () => {
       quad(msg1, content, literal('hello'), chatGraph),
       quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -844,6 +873,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
       quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -894,6 +924,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
       quad(msg1, created, literal('2026-05-18T00:00:02.000Z'), graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -946,6 +977,7 @@ describe('SolidRdfEngine', () => {
       quad(later, status, literal('active'), graph),
       quad(later, nextRunAt, literal('2026-05-18T02:00:00.000Z'), graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1014,6 +1046,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
       quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1080,6 +1113,7 @@ describe('SolidRdfEngine', () => {
       quad(msg4, created, date2, chatGraph),
       quad(msg4, status, active, chatGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1153,6 +1187,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, type, messageType, chatGraph),
       quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), chatGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1227,6 +1262,7 @@ describe('SolidRdfEngine', () => {
       quad(msg3, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
       quad(msg3, status, literal('ignored'), chatGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [],
@@ -1314,6 +1350,7 @@ describe('SolidRdfEngine', () => {
       quad(msg3, type, messageType, chatGraph),
       quad(msg3, status, literal('active'), chatGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1387,6 +1424,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
       quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1435,6 +1473,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraphA),
       quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1486,6 +1525,7 @@ describe('SolidRdfEngine', () => {
       quad(thread, member, msg2, graph),
       quad(msg2, type, messageType, graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1540,6 +1580,7 @@ describe('SolidRdfEngine', () => {
       quad(msg3, type, messageType, graph),
       quad(msg3, score, literal('not numeric'), graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1607,6 +1648,7 @@ describe('SolidRdfEngine', () => {
       quad(thread2, member, msg3, graph),
       quad(msg3, type, messageType, graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1687,6 +1729,7 @@ describe('SolidRdfEngine', () => {
       quad(msg4, member, thread2, graph),
       quad(msg4, score, literal('not numeric'), graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1780,6 +1823,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, type, messageType, graph),
       quad(msg2, content, literal('other'), graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -1832,6 +1876,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, priority, literal('10', namedNode(XSD_INTEGER)), graph),
       quad(msg3, priority, literal('9'), graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const languageResult = primaryEngine.query({
       patterns: [
