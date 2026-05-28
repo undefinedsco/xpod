@@ -56,15 +56,15 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
   protected readonly logger = getLoggerFor(this);
   private readonly publicEndpoint: string;
   private readonly identifierStrategy: IdentifierStrategy;
-  private readonly engine: CompatibilityEngine;
+  private readonly engine: Promise<CompatibilityEngine>;
   private readonly generator: SparqlGenerator;
 
   public constructor(endpoint: string, identifierStrategy: IdentifierStrategy) {
     this.publicEndpoint = this.getPublicEndpoint(endpoint);
     this.identifierStrategy = identifierStrategy;
     this.generator = new Generator();
-    const { QuintEngine } = require('../sparql/QuintEngine') as typeof import('../sparql/QuintEngine');
-    this.engine = new QuintEngine({ endpoint });
+    this.engine = import('../sparql/QuintEngine')
+      .then(({ QuintEngine }) => new QuintEngine({ endpoint }));
   }
 
   /**
@@ -385,7 +385,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
     try {
       await this.waitForStoreReady();
       const start = Date.now();
-      const result = await this.engine.queryQuads(query);
+      const result = await (await this.engine).queryQuads(query);
       const end = Date.now();
       logger.verbose(`SPARQL CONSTRUCT query success. cost time: ${end - start}ms`);
       const readable = new Readable({ objectMode: true, read() {} });
@@ -424,7 +424,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
     try {
       await this.waitForStoreReady();
       const start = Date.now();
-      await this.engine.queryVoid(query);
+      await (await this.engine).queryVoid(query);
       const end = Date.now();
       this.logger.verbose(`SPARQL UPDATE query success. cost time: ${end - start}ms`);
     } catch (error: unknown) {
@@ -439,7 +439,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
   public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
     this.logger.verbose(`Executing SPARQL UPDATE on ${this.publicEndpoint}: ${query}`);
     await this.waitForStoreReady();
-    await this.engine.queryVoid(query, { baseIRI: baseIri });
+    await (await this.engine).queryVoid(query, { baseIRI: baseIri });
   }
 
   /**
@@ -448,7 +448,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
   public async executeSparqlSelect(query: string): Promise<Record<string, string>[]> {
     this.logger.verbose(`Executing SPARQL SELECT on ${this.publicEndpoint}: ${query}`);
     await this.waitForStoreReady();
-    const bindingsStream = await this.engine.queryBindings(query);
+    const bindingsStream = await (await this.engine).queryBindings(query);
     const results: Record<string, string>[] = [];
     const iterable = bindingsStream as unknown as AsyncIterable<Map<string, unknown>>;
     for await (const binding of iterable) {
@@ -469,7 +469,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
   public async executeSparqlAsk(query: string): Promise<boolean> {
     this.logger.verbose(`Executing SPARQL ASK on ${this.publicEndpoint}: ${query}`);
     await this.waitForStoreReady();
-    return this.engine.queryBoolean(query);
+    return (await this.engine).queryBoolean(query);
   }
 
   /**
@@ -478,7 +478,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
   public async executeSparqlConstruct(query: string): Promise<Guarded<Readable>> {
     this.logger.verbose(`Executing SPARQL CONSTRUCT on ${this.publicEndpoint}: ${query}`);
     await this.waitForStoreReady();
-    const result = await this.engine.queryQuads(query);
+    const result = await (await this.engine).queryQuads(query);
     const readable = new Readable({ objectMode: true, read() {} });
 
     // Register event listeners once, outside of read() to avoid memory leak
@@ -499,7 +499,7 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Wait for the store to be ready.
    */
   private async waitForStoreReady(): Promise<void> {
-    await this.engine.open();
+    await (await this.engine).open();
   }
 
 
@@ -507,6 +507,6 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Closes the underlying store.
    */
   public async close(): Promise<void> {
-    await this.engine.close();
+    await (await this.engine).close();
   }
 }

@@ -5,8 +5,8 @@ import type { QuintStore } from '../quint/types';
 
 type CompatibilityModule = typeof import('./CompatibilitySparqlEngineImpl');
 
-function loadCompatibilityModule(): CompatibilityModule {
-  return require('./CompatibilitySparqlEngineImpl') as CompatibilityModule;
+async function loadCompatibilityModule(): Promise<CompatibilityModule> {
+  return import('./CompatibilitySparqlEngineImpl');
 }
 
 /**
@@ -17,39 +17,39 @@ function loadCompatibilityModule(): CompatibilityModule {
  * component type does not load the compatibility implementation.
  */
 export class QuadstoreSparqlEngine implements SparqlEngine {
-  private readonly delegate: SparqlEngine;
+  private readonly delegate: Promise<SparqlEngine>;
 
   public constructor(endpoint: string) {
-    const { QuadstoreSparqlEngine } = loadCompatibilityModule();
-    this.delegate = new QuadstoreSparqlEngine(endpoint);
+    this.delegate = loadCompatibilityModule()
+      .then(({ QuadstoreSparqlEngine }) => new QuadstoreSparqlEngine(endpoint));
   }
 
   public async queryBindings(query: string, basePath: string): Promise<any> {
-    return this.delegate.queryBindings(query, basePath);
+    return (await this.delegate).queryBindings(query, basePath);
   }
 
   public async queryQuads(query: string, basePath: string): Promise<any> {
-    return this.delegate.queryQuads(query, basePath);
+    return (await this.delegate).queryQuads(query, basePath);
   }
 
   public async queryBoolean(query: string, basePath: string): Promise<boolean> {
-    return this.delegate.queryBoolean(query, basePath);
+    return (await this.delegate).queryBoolean(query, basePath);
   }
 
   public async queryVoid(query: string, basePath: string): Promise<void> {
-    await this.delegate.queryVoid(query, basePath);
+    await (await this.delegate).queryVoid(query, basePath);
   }
 
   public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
-    return this.delegate.constructGraph(graph, basePath);
+    return (await this.delegate).constructGraph(graph, basePath);
   }
 
   public async listGraphs(basePath: string): Promise<Set<string>> {
-    return this.delegate.listGraphs(basePath);
+    return (await this.delegate).listGraphs(basePath);
   }
 
   public async close(): Promise<void> {
-    await this.delegate.close();
+    await (await this.delegate).close();
   }
 }
 
@@ -57,38 +57,38 @@ export class QuadstoreSparqlEngine implements SparqlEngine {
  * Comunica-backed compatibility engine component.
  */
 export class QuintstoreSparqlEngine implements SparqlEngine {
-  private readonly delegate: SparqlEngine;
+  private readonly delegate: Promise<SparqlEngine>;
 
   public constructor(store: QuintStore) {
-    const { QuintstoreSparqlEngine } = loadCompatibilityModule();
-    this.delegate = new QuintstoreSparqlEngine(store);
+    this.delegate = loadCompatibilityModule()
+      .then(({ QuintstoreSparqlEngine }) => new QuintstoreSparqlEngine(store));
   }
 
   public async queryBindings(query: string, basePath: string): Promise<any> {
-    return this.delegate.queryBindings(query, basePath);
+    return (await this.delegate).queryBindings(query, basePath);
   }
 
   public async queryQuads(query: string, basePath: string): Promise<any> {
-    return this.delegate.queryQuads(query, basePath);
+    return (await this.delegate).queryQuads(query, basePath);
   }
 
   public async queryBoolean(query: string, basePath: string): Promise<boolean> {
-    return this.delegate.queryBoolean(query, basePath);
+    return (await this.delegate).queryBoolean(query, basePath);
   }
 
   public async queryVoid(query: string, basePath: string): Promise<void> {
-    await this.delegate.queryVoid(query, basePath);
+    await (await this.delegate).queryVoid(query, basePath);
   }
 
   public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
-    return this.delegate.constructGraph(graph, basePath);
+    return (await this.delegate).constructGraph(graph, basePath);
   }
 
   public async listGraphs(basePath: string): Promise<Set<string>> {
-    return this.delegate.listGraphs(basePath);
+    return (await this.delegate).listGraphs(basePath);
   }
 
   public async close(): Promise<void> {
-    await this.delegate.close();
+    await (await this.delegate).close();
   }
 }
