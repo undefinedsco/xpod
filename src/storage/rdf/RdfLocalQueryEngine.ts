@@ -134,6 +134,11 @@ interface PatternJoinResult {
   scanBackend: PatternScanBackend;
 }
 
+interface RequiredSourceEstimate {
+  rows: number;
+  costRows: number;
+}
+
 export class RdfLocalQueryEngine {
   public constructor(
     private readonly index: RdfQuadIndex,
@@ -549,16 +554,19 @@ export class RdfLocalQueryEngine {
       const sourceVariables = variablesInRequiredSource(source);
       const connected = sourceVariables.length === 0
         || sourceVariables.some((variableName) => boundVariables.has(variableName));
+      const estimate = this.estimateSource(source, bindings, filters, metrics);
       return {
         index,
         disconnectedPenalty: hasBoundVariables && !connected ? 1 : 0,
-        estimatedRows: this.estimateSourceRows(source, bindings, filters, metrics),
+        estimatedRows: estimate.rows,
+        estimatedCostRows: estimate.costRows,
         rank: this.sourceRank(source, sampleBinding),
       };
     });
 
     choices.sort((left, right) => (
       left.disconnectedPenalty - right.disconnectedPenalty
+        || left.estimatedCostRows - right.estimatedCostRows
         || left.estimatedRows - right.estimatedRows
         || left.rank - right.rank
         || left.index - right.index
@@ -653,29 +661,26 @@ export class RdfLocalQueryEngine {
       .map((slot) => ({ key: slot.key, variable: slot.value.variable }));
   }
 
-  private estimateSourceRows(
+  private estimateSource(
     source: RequiredSource,
     bindings: RdfBindingRow[],
     filters: RdfQueryFilter[],
     metrics: RdfLocalQueryMetrics,
-  ): number {
+  ): RequiredSourceEstimate {
     if (source.kind === 'pattern') {
-      if (source.tupleValues) {
-        return this.estimateTuplePatternRows(source, bindings, filters, metrics);
-      }
-      return this.estimatePatternRows(source.pattern, bindings, filters, metrics);
+      const rows = source.tupleValues
+        ? this.estimateTuplePatternRows(source, bindings, filters, metrics)
+        : this.estimatePatternRows(source.pattern, bindings, filters, metrics);
+      return { rows, costRows: rows };
     }
     if (source.kind === 'values') {
-      return source.source.rows.length * Math.max(1, bindings.length);
+      const rows = source.source.rows.length * Math.max(1, bindings.length);
+      return { rows, costRows: rows };
     }
 
     const sample = (bindings.length > 0 ? bindings : [{}]).slice(0, PLANNER_SAMPLE_BINDINGS);
     if (!this.searchSourceHasBoundVariables(source, sample)) {
-      metrics.searchCardinalityEstimates = (metrics.searchCardinalityEstimates ?? 0) + 1;
-      const estimate = source.kind === 'text'
-        ? this.estimateTextSearchRows(source)
-        : this.estimateVectorSearchRows(source);
-      return estimate * Math.max(1, bindings.length);
+      return this.estimateUnboundSearchSource(source, bindings, metrics);
     }
 
     const sourceVariable = source.pattern.source;
@@ -683,10 +688,14 @@ export class RdfLocalQueryEngine {
       ? this.estimateSearchRowsByBoundSource(source, sample, metrics)
       : undefined;
     if (boundSourceEstimate !== undefined) {
-      if (bindings.length > sample.length && sample.length > 0) {
-        return Math.ceil(boundSourceEstimate * (bindings.length / sample.length));
-      }
-      return boundSourceEstimate;
+      const rows = bindings.length > sample.length && sample.length > 0
+        ? Math.ceil(boundSourceEstimate * (bindings.length / sample.length))
+        : boundSourceEstimate;
+      return { rows, costRows: rows };
+    }
+
+    if (hasSearchWindow(source)) {
+      return this.estimateUnboundSearchSource(source, bindings, metrics);
     }
 
     const results = source.kind === 'text'
@@ -706,9 +715,36 @@ export class RdfLocalQueryEngine {
     }
 
     if (bindings.length > sample.length && sample.length > 0) {
-      return Math.ceil(rows * (bindings.length / sample.length));
+      const estimatedRows = Math.ceil(rows * (bindings.length / sample.length));
+      return { rows: estimatedRows, costRows: estimatedRows };
     }
-    return rows;
+    return { rows, costRows: rows };
+  }
+
+  private estimateUnboundSearchSource(
+    source: TextRequiredSource | VectorRequiredSource,
+    bindings: RdfBindingRow[],
+    metrics: RdfLocalQueryMetrics,
+  ): RequiredSourceEstimate {
+    metrics.searchCardinalityEstimates = (metrics.searchCardinalityEstimates ?? 0) + 1;
+    const rows = source.kind === 'text'
+      ? this.estimateTextSearchRows(source)
+      : this.estimateVectorSearchRows(source);
+    const bindingCount = Math.max(1, bindings.length);
+    if (!hasSearchWindow(source)) {
+      const estimatedRows = rows * bindingCount;
+      return { rows: estimatedRows, costRows: estimatedRows };
+    }
+
+    metrics.searchCardinalityEstimates = (metrics.searchCardinalityEstimates ?? 0) + 1;
+    const candidateRows = source.kind === 'text'
+      ? this.estimateTextSearchRows(source, undefined, false)
+      : this.estimateVectorSearchRows(source, undefined, false);
+    const estimatedRows = rows * bindingCount;
+    return {
+      rows: estimatedRows,
+      costRows: candidateRows + estimatedRows,
+    };
   }
 
   private estimateTuplePatternRows(
@@ -791,19 +827,19 @@ export class RdfLocalQueryEngine {
     return sawBoundSource ? rows : undefined;
   }
 
-  private estimateTextSearchRows(source: TextRequiredSource, exactSource?: string): number {
+  private estimateTextSearchRows(source: TextRequiredSource, exactSource?: string, includeWindow = true): number {
     if (!this.textIndex) {
       throw new Error('RdfLocalQuery textSearch requires a configured RdfTextIndex');
     }
-    const options = this.textSearchOptions(source.pattern, exactSource);
+    const options = this.textSearchOptions(source.pattern, exactSource, includeWindow);
     return options ? this.textIndex.estimateSearchCardinality(options).rows : 0;
   }
 
-  private estimateVectorSearchRows(source: VectorRequiredSource, exactSource?: string): number {
+  private estimateVectorSearchRows(source: VectorRequiredSource, exactSource?: string, includeWindow = true): number {
     if (!this.vectorIndex) {
       throw new Error('RdfLocalQuery vectorSearch requires a configured RdfVectorIndex');
     }
-    const options = this.vectorSearchOptions(source.pattern, exactSource);
+    const options = this.vectorSearchOptions(source.pattern, exactSource, includeWindow);
     return options ? this.vectorIndex.estimateSearchCardinality(options).rows : 0;
   }
 
@@ -1739,19 +1775,19 @@ export class RdfLocalQueryEngine {
     return results;
   }
 
-  private textSearchOptions(pattern: RdfTextSearchPattern, exactSource?: string): RdfTextSearchOptions {
+  private textSearchOptions(pattern: RdfTextSearchPattern, exactSource?: string, includeWindow = true): RdfTextSearchOptions {
     return {
       query: pattern.query,
       source: exactSource,
       workspace: pattern.scope?.workspace,
       sourcePrefix: pattern.scope?.sourcePrefix,
-      limit: pattern.limit,
-      offset: pattern.offset,
+      limit: includeWindow ? pattern.limit : undefined,
+      offset: includeWindow ? pattern.offset : undefined,
       orderBy: pattern.orderBy,
     };
   }
 
-  private vectorSearchOptions(pattern: RdfVectorSearchPattern, exactSource?: string): RdfVectorSearchOptions {
+  private vectorSearchOptions(pattern: RdfVectorSearchPattern, exactSource?: string, includeWindow = true): RdfVectorSearchOptions {
     return {
       embedding: pattern.embedding,
       metric: pattern.metric,
@@ -1759,8 +1795,8 @@ export class RdfLocalQueryEngine {
       source: exactSource,
       workspace: pattern.scope?.workspace,
       sourcePrefix: pattern.scope?.sourcePrefix,
-      limit: pattern.limit,
-      offset: pattern.offset,
+      limit: includeWindow ? pattern.limit : undefined,
+      offset: includeWindow ? pattern.offset : undefined,
       threshold: pattern.threshold,
       orderBy: pattern.orderBy,
     };

@@ -4315,6 +4315,66 @@ describe('RdfLocalQueryEngine', () => {
     }
   });
 
+  it('uses pre-window text candidate counts when ranking source-local top-K searches', async () => {
+    const textEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const selectedA = namedNode('https://pod.example/alice/projects/demo/selected-a.md');
+    const selectedB = namedNode('https://pod.example/alice/projects/demo/selected-b.md');
+
+    try {
+      textEngine.put([
+        quad(selectedA, namedNode(RDF_TYPE), docType, selectedA),
+        quad(selectedB, namedNode(RDF_TYPE), docType, selectedB),
+      ]);
+      for (const source of [
+        selectedA,
+        selectedB,
+        ...Array.from({ length: 8 }, (_, index) => namedNode(`https://pod.example/alice/projects/demo/broad-${index}.md`)),
+      ]) {
+        textEngine.indexTextSource({
+          source: source.value,
+          workspace: 'https://pod.example/alice/projects/demo/',
+          localPath: source.value.slice(source.value.lastIndexOf('/') + 1),
+          contentType: 'text/markdown',
+        }, '# Note\n\nManaged runtime handoff.\n');
+      }
+
+      const result = textEngine.query({
+        textSearch: [
+          {
+            query: 'managed runtime',
+            scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+            source: 'source',
+            content: 'snippet',
+            limit: 1,
+          },
+        ],
+        patterns: [
+          {
+            graph: rdfVar('source'),
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      const indexPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('IndexScan('));
+      const textPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('TextSearch('));
+      expect(indexPlan).toBeGreaterThanOrEqual(0);
+      expect(textPlan).toBeGreaterThan(indexPlan);
+      expect(result.metrics.searchCardinalityEstimates).toBeGreaterThanOrEqual(2);
+    } finally {
+      await textEngine.close();
+    }
+  });
+
   it('applies textSearch explicit ordering before the source-local window', async () => {
     const textEngine = new SolidRdfEngine({
       index: { path: ':memory:' },
@@ -4651,6 +4711,78 @@ describe('RdfLocalQueryEngine', () => {
       expect(termToId(joinedWindow.bindings[0].source as any)).toBe(highScore.value);
       expect(joinedWindow.metrics.plan).toContain('Limit');
       expect(joinedWindow.metrics.plan.some((entry) => entry.includes('limit:1'))).toBe(false);
+    } finally {
+      await vectorEngine.close();
+    }
+  });
+
+  it('uses pre-window vector candidate counts when ranking source-local top-K searches', async () => {
+    const vectorEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const selectedA = namedNode('https://pod.example/alice/projects/demo/selected-vector-a.md');
+    const selectedB = namedNode('https://pod.example/alice/projects/demo/selected-vector-b.md');
+
+    try {
+      vectorEngine.put([
+        quad(selectedA, namedNode(RDF_TYPE), docType, selectedA),
+        quad(selectedB, namedNode(RDF_TYPE), docType, selectedB),
+      ]);
+      for (const [index, source] of [
+        selectedA,
+        selectedB,
+        ...Array.from({ length: 8 }, (_, itemIndex) => namedNode(`https://pod.example/alice/projects/demo/broad-vector-${itemIndex}.md`)),
+      ].entries()) {
+        vectorEngine.indexVectorSource({
+          source: source.value,
+          workspace: 'https://pod.example/alice/projects/demo/',
+          localPath: source.value.slice(source.value.lastIndexOf('/') + 1),
+          contentType: 'text/markdown',
+        }, [
+          {
+            chunkKey: `chunk-${index}`,
+            ordinal: 0,
+            level: 1,
+            content: 'Managed runtime vector candidate.',
+            startOffset: 0,
+            endOffset: 33,
+            embedding: [1, 0],
+            model: 'test-embed',
+          },
+        ]);
+      }
+
+      const result = vectorEngine.query({
+        vectorSearch: [
+          {
+            embedding: [1, 0],
+            vectorModel: 'test-embed',
+            scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+            source: 'source',
+            content: 'snippet',
+            limit: 1,
+          },
+        ],
+        patterns: [
+          {
+            graph: rdfVar('source'),
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      const indexPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('IndexScan('));
+      const vectorPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('VectorSearch('));
+      expect(indexPlan).toBeGreaterThanOrEqual(0);
+      expect(vectorPlan).toBeGreaterThan(indexPlan);
+      expect(result.metrics.searchCardinalityEstimates).toBeGreaterThanOrEqual(2);
     } finally {
       await vectorEngine.close();
     }
