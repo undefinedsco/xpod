@@ -220,7 +220,12 @@ export interface Rdf3xObjectRangePattern {
 
 export type Rdf3xNumericObjectRangePattern = Rdf3xObjectRangePattern;
 
-export interface Rdf3xObjectOperatorPattern extends Rdf3xObjectRangePattern, Rdf3xTermMetadataPattern {}
+export interface Rdf3xObjectTextSearchPattern {
+  $contains?: string;
+  $endsWith?: string;
+}
+
+export interface Rdf3xObjectOperatorPattern extends Rdf3xObjectRangePattern, Rdf3xObjectTextSearchPattern, Rdf3xTermMetadataPattern {}
 
 export interface Rdf3xTriplePattern {
   graph?: Term | Rdf3xGraphPrefixPattern | Rdf3xTermInPattern | Rdf3xTermNotInPattern | Rdf3xTermMetadataPattern;

@@ -24,6 +24,7 @@ import {
 const { namedNode, literal, quad } = DataFactory;
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
+const SIOC_CONTENT = 'http://rdfs.org/sioc/ns#content';
 const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
 const UDFS = 'https://undefineds.co/ns#';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
@@ -1672,7 +1673,7 @@ describe('SolidRdfEngine', () => {
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexGroupAggregate('))).toBe(false);
   });
 
-  it('keeps unsupported filters on the RdfQuadIndex fallback when RDF-3X primary is enabled', () => {
+  it('keeps object text filters on the RDF-3X primary path', () => {
     const primaryEngine = new SolidRdfEngine({
       index,
       rdf3xIndex,
@@ -1717,8 +1718,9 @@ describe('SolidRdfEngine', () => {
 
     expect(result.bindings).toHaveLength(1);
     expect(result.bindings[0].message.value).toBe(msg1.value);
-    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(true);
-    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin'))).toBe(false);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin'))).toBe(true);
+    expect(result.metrics.plan).toContain('TextSearch(object$contains)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
   });
 
   it('keeps term metadata filters on the RDF-3X primary path', () => {
@@ -2550,6 +2552,12 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
       ),
       quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(SIOC_CONTENT),
+        literal('alpha searchable note'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
         namedNode(DCT_CREATED),
         literal('2026-05-18T01:00:00.000Z'),
@@ -2785,6 +2793,12 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
       ),
       quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(SIOC_CONTENT),
+        literal('alpha searchable note'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
         namedNode(`${UDFS}status`),
         literal('queued'),
@@ -2824,7 +2838,7 @@ describe('SolidRdfEngine', () => {
     engine.index.multiPut(quads);
 
     const report = runRdfModelsRdf3xShadowBenchmark(engine, {
-      scale: 'small',
+      scale: 'medium',
       iterations: 1,
     });
     const listChats = report.cases.find((testCase) => testCase.name === 'list chats');
@@ -2834,6 +2848,7 @@ describe('SolidRdfEngine', () => {
     const messageCountByThread = report.joinCases.find((testCase) => testCase.name === 'message count by thread with having');
     const messageScoreByThread = report.joinCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
     const messageJoinCount = report.joinCases.find((testCase) => testCase.name === 'message join count distinct');
+    const searchMessages = report.cases.find((testCase) => testCase.name === 'search message literals');
 
     expect(report.engine).toBe('rdf3x-shadow');
     expect(report.rebuild.scannedQuads).toBe(quads.length);
@@ -2847,6 +2862,7 @@ describe('SolidRdfEngine', () => {
     expect(report.storage.derivedBytes).toBeGreaterThan(0);
     expect(report.storage.totalBytes).toBe(report.storage.factsBytes + report.storage.derivedBytes);
     expect(report.skippedCases).not.toContain('runs by numeric priority');
+    expect(report.skippedCases).not.toContain('search message literals');
     expect(report.skippedJoinCases).not.toContain('task materialization active due local query');
     expect(report.failedJoinCases).toEqual([]);
     expect(numericPriority).toMatchObject({
@@ -2863,6 +2879,17 @@ describe('SolidRdfEngine', () => {
     expect(numericPriority?.rdf3x?.physicalPlan).toContain('NumericRange(object$gt)');
     expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('JOIN rdf_terms object_range');
     expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('ON object_range.id = membership.object_id');
+    expect(searchMessages).toMatchObject({
+      supported: true,
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: { indexChoice: 'source-membership', matchedRows: 1, returnedRows: 1 },
+      },
+    });
+    expect(searchMessages?.rdf3x?.physicalPlan).toContain('TextSearch(object$contains)');
     expect(listChats).toMatchObject({
       supported: true,
       matched: true,

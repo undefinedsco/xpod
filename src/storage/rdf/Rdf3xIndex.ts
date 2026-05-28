@@ -15,6 +15,7 @@ import type {
   Rdf3xJoinOptions,
   Rdf3xJoinScanResult,
   Rdf3xObjectRangePattern,
+  Rdf3xObjectTextSearchPattern,
   Rdf3xPairProjectionName,
   Rdf3xPatternKey,
   Rdf3xPermutationName,
@@ -133,12 +134,18 @@ interface Rdf3xResolvedTermFilter {
   langMatches?: string;
   datatype?: Rdf3xResolvedDatatypeFilter;
   notDatatype?: Rdf3xResolvedDatatypeFilter;
+  textSearches?: Rdf3xTextSearch[];
 }
 
 type Rdf3xResolvedDatatypeFilter =
   | { kind: 'id'; id: number }
   | { kind: 'xsd-string' }
   | { kind: 'unknown' };
+
+interface Rdf3xTextSearch {
+  operator: '$contains' | '$endsWith';
+  value: string;
+}
 
 type Rdf3xAggregateValueType = 'integer' | 'decimal';
 
@@ -2708,7 +2715,7 @@ export class Rdf3xIndex {
 
   private resolveOperatorPattern(
     key: Rdf3xPatternKey,
-    pattern: Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern>,
+    pattern: Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xObjectTextSearchPattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern>,
   ): {
     graphPrefix?: string;
     idSet?: number[];
@@ -2759,7 +2766,7 @@ export class Rdf3xIndex {
     return result;
   }
 
-  private resolveTermMetadataFilter(pattern: Rdf3xTermMetadataPattern): Rdf3xResolvedTermFilter | undefined {
+  private resolveTermMetadataFilter(pattern: Rdf3xTermMetadataPattern & Partial<Rdf3xObjectTextSearchPattern>): Rdf3xResolvedTermFilter | undefined {
     const filter: Rdf3xResolvedTermFilter = {};
     if (pattern.$termType !== undefined) {
       filter.termType = pattern.$termType;
@@ -2779,7 +2786,22 @@ export class Rdf3xIndex {
     if (pattern.$notDatatype !== undefined) {
       filter.notDatatype = this.resolveDatatypeFilter(pattern.$notDatatype);
     }
+    const textSearches = this.resolveTextSearchFilter(pattern);
+    if (textSearches) {
+      filter.textSearches = textSearches;
+    }
     return Object.keys(filter).length > 0 ? filter : undefined;
+  }
+
+  private resolveTextSearchFilter(pattern: Partial<Rdf3xObjectTextSearchPattern>): Rdf3xTextSearch[] | undefined {
+    const searches: Rdf3xTextSearch[] = [];
+    if (pattern.$contains !== undefined) {
+      searches.push({ operator: '$contains', value: pattern.$contains });
+    }
+    if (pattern.$endsWith !== undefined) {
+      searches.push({ operator: '$endsWith', value: pattern.$endsWith });
+    }
+    return searches.length > 0 ? searches : undefined;
   }
 
   private resolveDatatypeFilter(datatype: Term): Rdf3xResolvedDatatypeFilter {
@@ -2963,6 +2985,42 @@ export class Rdf3xIndex {
     if (filter.notDatatype !== undefined) {
       this.appendDatatypeCondition(key, alias, '$notDatatype', filter.notDatatype, conditions, params);
       queryPlan?.push(`Datatype(${key}$notDatatype)`);
+    }
+    for (const search of filter.textSearches ?? []) {
+      this.appendTextSearchCondition(key, alias, search, conditions, params, queryPlan);
+    }
+  }
+
+  private appendTextSearchCondition(
+    key: Rdf3xPatternKey,
+    alias: string,
+    search: Rdf3xTextSearch,
+    conditions: string[],
+    params: unknown[],
+    queryPlan?: string[],
+  ): void {
+    const kinds = termKindsForPatternKey(key);
+    const kindPlaceholders = kinds.map(() => '?').join(', ');
+    const normalized = search.value.toLowerCase();
+    switch (search.operator) {
+      case '$contains':
+        conditions.push(`${alias}.kind IN (${kindPlaceholders})
+          AND ${alias}.normalized_text LIKE ? ESCAPE '\\'
+          AND instr(${alias}.value, ?) > 0`);
+        params.push(...kinds, `%${escapeLikePattern(normalized)}%`, search.value);
+        queryPlan?.push(`TextSearch(${key}$contains)`);
+        return;
+      case '$endsWith':
+        conditions.push(`${alias}.kind IN (${kindPlaceholders})
+          AND ${alias}.normalized_text LIKE ? ESCAPE '\\'
+          AND substr(${alias}.value, -length(?)) = ?`);
+        params.push(...kinds, `%${escapeLikePattern(normalized)}`, search.value, search.value);
+        queryPlan?.push(`TextSearch(${key}$endsWith)`);
+        return;
+      default: {
+        const exhaustive: never = search.operator;
+        throw new Error(`Unsupported RDF-3X text search operator: ${exhaustive}`);
+      }
     }
   }
 
@@ -3287,13 +3345,13 @@ function isTermNotInPattern(value: unknown): value is Rdf3xTermNotInPattern {
     && ((value as { $notIn: unknown[] }).$notIn).every(isRdfTerm);
 }
 
-function isOperatorPattern(value: unknown): value is Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern> {
+function isOperatorPattern(value: unknown): value is Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xObjectTextSearchPattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern> {
   return value !== null && typeof value === 'object' && !('termType' in value);
 }
 
 function isSupportedOperatorPattern(
   key: Rdf3xPatternKey,
-  value: Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern>,
+  value: Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xObjectTextSearchPattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern>,
 ): boolean {
   const allowed = new Set<string>([
     '$in',
@@ -3305,7 +3363,7 @@ function isSupportedOperatorPattern(
     '$datatype',
     '$notDatatype',
     ...(key === 'graph' ? ['$startsWith'] : []),
-    ...(key === 'object' ? ['$gt', '$gte', '$lt', '$lte'] : []),
+    ...(key === 'object' ? ['$gt', '$gte', '$lt', '$lte', '$contains', '$endsWith'] : []),
   ]);
   if (Object.keys(value).some((operator) => !allowed.has(operator))) {
     return false;
@@ -3339,6 +3397,11 @@ function isSupportedOperatorPattern(
     for (const rangeOperator of ['$gt', '$gte', '$lt', '$lte'] as const) {
       const rangeValue = value[rangeOperator];
       if (rangeValue !== undefined && !isRdf3xObjectRangeValue(rangeValue)) {
+        return false;
+      }
+    }
+    for (const textOperator of ['$contains', '$endsWith'] as const) {
+      if (value[textOperator] !== undefined && typeof value[textOperator] !== 'string') {
         return false;
       }
     }

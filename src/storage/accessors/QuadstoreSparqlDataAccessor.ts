@@ -35,10 +35,18 @@ import {
   LDP,
   createErrorMessage,
 } from '@solid/community-server';
-import { QuintEngine } from '../sparql/QuintEngine';
 
 
 const { defaultGraph, namedNode, quad, variable } = DataFactory;
+
+interface CompatibilityEngine {
+  open(): Promise<void>;
+  close(): Promise<void>;
+  queryBindings(query: string, context?: unknown): Promise<any>;
+  queryBoolean(query: string, context?: unknown): Promise<boolean>;
+  queryQuads(query: string, context?: unknown): Promise<any>;
+  queryVoid(query: string, context?: unknown): Promise<void>;
+}
 
 /**
  * @deprecated Compatibility wrapper preserved for older configs.
@@ -48,13 +56,14 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
   protected readonly logger = getLoggerFor(this);
   private readonly publicEndpoint: string;
   private readonly identifierStrategy: IdentifierStrategy;
-  private readonly engine: QuintEngine;
+  private readonly engine: CompatibilityEngine;
   private readonly generator: SparqlGenerator;
 
   public constructor(endpoint: string, identifierStrategy: IdentifierStrategy) {
     this.publicEndpoint = this.getPublicEndpoint(endpoint);
     this.identifierStrategy = identifierStrategy;
     this.generator = new Generator();
+    const { QuintEngine } = require('../sparql/QuintEngine') as typeof import('../sparql/QuintEngine');
     this.engine = new QuintEngine({ endpoint });
   }
 
@@ -377,14 +386,14 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
       });
       result.on(
         'data',
-        (chunk) => {
+        (chunk: Quad) => {
           readable.push(chunk);
         }
       );
       result.on('end', () => {
         readable.push(null);
       });
-      result.on('error', (error) => {
+      result.on('error', (error: Error) => {
         logger.error(`SPARQL CONSTRUCT stream error: ${error}`);
         readable.emit('error', error);
       });
@@ -465,13 +474,13 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
     const readable = new Readable({ objectMode: true, read() {} });
 
     // Register event listeners once, outside of read() to avoid memory leak
-    result.on('data', (quad): void => {
+    result.on('data', (quad: Quad): void => {
       readable.push(quad);
     });
     result.on('end', (): void => {
       readable.push(null);
     });
-    result.on('error', (error): void => {
+    result.on('error', (error: Error): void => {
       readable.emit('error', error);
     });
 

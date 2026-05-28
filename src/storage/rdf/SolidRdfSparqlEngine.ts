@@ -1,9 +1,7 @@
 import { ArrayIterator } from 'asynciterator';
 import type { AsyncIterator } from 'asynciterator';
-import type { Bindings } from '@comunica/types';
-import type { DefaultGraph, Quad, Quad_Object, Term } from '@rdfjs/types';
+import type { DefaultGraph, Quad, Quad_Object, Term, Variable } from '@rdfjs/types';
 import { DataFactory as RdfDataFactory } from 'rdf-data-factory';
-import { BindingsFactory } from '@comunica/utils-bindings-factory';
 import { termToId } from 'n3';
 import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
 import { DisabledSparqlFeatureError, RdfSparqlAdapter, UnsupportedSparqlQueryError } from './RdfSparqlAdapter';
@@ -65,7 +63,7 @@ export interface SolidRdfSparqlFallbackBudget {
   operations?: SolidRdfSparqlOperation[];
 }
 
-type BindingsStream = AsyncIterator<Bindings> & {
+type BindingsStream = AsyncIterator<RdfBindings> & {
   metadata?: () => Promise<{ variables: import('@rdfjs/types').Variable[] }>;
 };
 
@@ -80,7 +78,6 @@ const rdfDataFactory = new RdfDataFactory();
 
 export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly adapter = new RdfSparqlAdapter();
-  private readonly bindingsFactory = new (BindingsFactory as any)(rdfDataFactory);
   private readonly rdfEngine: SolidRdfEngine;
   private readonly fallback?: SparqlEngine;
   private readonly shadowStore?: ShadowRdfQuintStore;
@@ -363,14 +360,14 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     return iterator;
   }
 
-  private bindings(binding: RdfBindingRow, variables: string[]): Bindings {
-    const entries: [import('@rdfjs/types').Variable, import('@rdfjs/types').Term][] = variables
+  private bindings(binding: RdfBindingRow, variables: string[]): RdfBindings {
+    const entries: [Variable, Term][] = variables
       .map((variableName) => {
         const term = binding[variableName];
-        return term ? [rdfDataFactory.variable(variableName), term] : null;
+        return term ? [rdfDataFactory.variable(variableName) as Variable, term] : null;
       })
-      .filter((entry): entry is [import('@rdfjs/types').Variable, import('@rdfjs/types').Term] => entry !== null);
-    return this.bindingsFactory.bindings(entries);
+      .filter((entry): entry is [Variable, Term] => entry !== null);
+    return new RdfBindings(entries);
   }
 
   private async fallbackWith<T>(
@@ -562,6 +559,31 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     return created;
   }
 
+}
+
+class RdfBindings extends Map<Variable, Term> {
+  private readonly byName = new Map<string, Term>();
+
+  public constructor(entries: [Variable, Term][]) {
+    super(entries);
+    for (const [ variable, term ] of entries) {
+      this.byName.set(variable.value, term);
+    }
+  }
+
+  public override get(key: string | Variable): Term | undefined {
+    if (typeof key === 'string') {
+      return this.byName.get(key);
+    }
+    return this.byName.get(key.value) ?? super.get(key);
+  }
+
+  public override has(key: string | Variable): boolean {
+    if (typeof key === 'string') {
+      return this.byName.has(key);
+    }
+    return this.byName.has(key.value) || super.has(key);
+  }
 }
 
 function inferVariables(bindings: RdfBindingRow[]): string[] {

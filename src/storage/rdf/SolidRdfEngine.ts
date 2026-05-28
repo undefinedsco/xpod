@@ -4,6 +4,7 @@ import type { QuintPattern, QuintStore } from '../quint/types';
 import { isTerm } from '../quint/types';
 import type {
   Rdf3xObjectOperatorPattern,
+  Rdf3xObjectTextSearchPattern,
   Rdf3xShadowJoinResult,
   Rdf3xShadowScanResult,
   Rdf3xTermInPattern,
@@ -505,7 +506,7 @@ function isRdf3xCompatibleOperatorPattern(
     '$datatype',
     '$notDatatype',
     ...(key === 'graph' ? ['$startsWith'] : []),
-    ...(key === 'object' ? ['$gt', '$gte', '$lt', '$lte'] : []),
+    ...(key === 'object' ? ['$gt', '$gte', '$lt', '$lte', '$contains', '$endsWith'] : []),
   ]);
   if (Object.keys(value).length === 0 || Object.keys(value).some((operator) => !allowed.has(operator))) {
     return false;
@@ -526,6 +527,9 @@ function isRdf3xCompatibleOperatorPattern(
     for (const rangeOperator of ['$gt', '$gte', '$lt', '$lte']) {
       const rangeValue = operators[rangeOperator];
       if (rangeValue !== undefined && !isRdf3xObjectRangeValue(rangeValue)) return false;
+    }
+    for (const textOperator of ['$contains', '$endsWith'] satisfies Array<keyof Rdf3xObjectTextSearchPattern>) {
+      if (operators[textOperator] !== undefined && typeof operators[textOperator] !== 'string') return false;
     }
   }
   return true;

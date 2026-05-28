@@ -8,7 +8,9 @@ import type {
   Rdf3xJoinMetrics,
   Rdf3xIndexMetrics,
   Rdf3xIndexStats,
+  Rdf3xObjectOperatorPattern,
   Rdf3xObjectRangePattern,
+  Rdf3xObjectTextSearchPattern,
   Rdf3xTermInPattern,
   Rdf3xTermNotInPattern,
   Rdf3xTriplePattern,
@@ -1895,7 +1897,7 @@ function unsupportedRdf3xPatternReason(pattern: QuintPattern): string | undefine
     if (isRdf3xTermNotInPattern(value)) {
       continue;
     }
-    if (key === 'object' && isSupportedRdf3xObjectRangePattern(value)) {
+    if (key === 'object' && isSupportedRdf3xObjectOperatorPattern(value)) {
       continue;
     }
     return `unsupported ${key} pattern for RDF-3X shadow`;
@@ -1922,7 +1924,7 @@ function rdf3xPatternFor(pattern: QuintPattern): Rdf3xTriplePattern {
       result[key] = value;
       continue;
     }
-    if (key === 'object' && isSupportedRdf3xObjectRangePattern(value)) {
+    if (key === 'object' && isSupportedRdf3xObjectOperatorPattern(value)) {
       result.object = value;
       continue;
     }
@@ -1961,22 +1963,32 @@ function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } 
     && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
 }
 
-function isSupportedRdf3xObjectRangePattern(value: unknown): value is Rdf3xObjectRangePattern {
+function isSupportedRdf3xObjectOperatorPattern(value: unknown): value is Rdf3xObjectOperatorPattern {
   if (value === null || typeof value !== 'object' || 'termType' in value) {
     return false;
   }
-  let hasRange = false;
+  let hasOperator = false;
   for (const operator of ['$gt', '$gte', '$lt', '$lte'] as const) {
     const rangeValue = (value as Rdf3xObjectRangePattern)[operator];
     if (rangeValue === undefined) {
       continue;
     }
-    hasRange = true;
+    hasOperator = true;
     if (!isSupportedRdf3xObjectRangeValue(rangeValue)) {
       return false;
     }
   }
-  return hasRange;
+  for (const operator of ['$contains', '$endsWith'] satisfies Array<keyof Rdf3xObjectTextSearchPattern>) {
+    const textValue = (value as Rdf3xObjectTextSearchPattern)[operator];
+    if (textValue === undefined) {
+      continue;
+    }
+    hasOperator = true;
+    if (typeof textValue !== 'string') {
+      return false;
+    }
+  }
+  return hasOperator;
 }
 
 function isSupportedRdf3xObjectRangeValue(value: unknown): boolean {

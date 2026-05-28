@@ -46,16 +46,21 @@ import {
 } from '@solid/community-server';
 
 import type { QuintStore, Quint } from '../quint/types';
-import { ComunicaQuintEngine } from '../sparql/ComunicaQuintEngine';
 import type { RdfSourceInput } from '../rdf/types';
 
 const { defaultGraph, namedNode, quad, variable } = DataFactory;
+
+interface CompatibilityEngine {
+  queryBindings(query: string, context?: unknown): Promise<any>;
+  queryQuads(query: string, context?: unknown): Promise<any>;
+  queryVoid(query: string, context?: unknown): Promise<void>;
+}
 
 export class QuintStoreSparqlDataAccessor implements DataAccessor {
   protected readonly logger = getLoggerFor(this);
   private readonly identifierStrategy: IdentifierStrategy;
   private readonly store: QuintStore;
-  private readonly engine: ComunicaQuintEngine;
+  private readonly engine: CompatibilityEngine;
   private readonly generator: SparqlGenerator;
   private readonly baseUrl: string;
   private initialized = false;
@@ -68,6 +73,7 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     this.store = store;
     this.identifierStrategy = identifierStrategy;
     this.generator = new Generator();
+    const { ComunicaQuintEngine } = require('../sparql/ComunicaQuintEngine') as typeof import('../sparql/ComunicaQuintEngine');
     this.engine = new ComunicaQuintEngine(this.store);
     // Get baseUrl from identifierStrategy
     const strategy = identifierStrategy as unknown as { baseUrl?: string };

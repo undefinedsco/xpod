@@ -392,6 +392,36 @@ describe('Rdf3xIndex', () => {
     expect(combinedScan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms scan_term_filter_object');
   });
 
+  it('pushes object text search filters into RDF-3X membership scans', () => {
+    const content = namedNode('http://rdfs.org/sioc/ns#content');
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const otherGraph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const msg3 = namedNode('https://message/3');
+    quadIndex.multiPut([
+      quad(msg1, content, literal('alpha searchable note'), graph),
+      quad(msg2, content, literal('alpha other note'), graph),
+      quad(msg3, content, literal('alpha searchable task'), otherGraph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const pattern = {
+      graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+      predicate: content,
+      object: { $contains: 'searchable' },
+    };
+    const baseline = quadIndex.scan(pattern, { order: ['subject'] });
+    const scan = rdf3x.scan(pattern, { order: ['subject'] });
+
+    expect(quadKeys(scan.quads)).toEqual(quadKeys(baseline.quads));
+    expect(scan.quads.map((q) => q.subject.value)).toEqual([msg1.value]);
+    expect(scan.metrics.indexChoice).toBe('source-membership');
+    expect(scan.metrics.queryPlan).toContain('TextSearch(object$contains)');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms membership_scan_term_filter_object');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('normalized_text LIKE');
+  });
+
   it('uses projection stats for exact triple-pattern cardinality estimates', () => {
     const status = namedNode('https://undefineds.co/ns#status');
     const open = literal('open');

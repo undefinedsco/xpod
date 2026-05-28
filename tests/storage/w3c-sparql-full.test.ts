@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../src/storage/quint';
-import { QuintstoreSparqlEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
+import { QuintstoreSparqlEngine } from '../../src/storage/sparql/CompatibilitySparqlEngine';
 import {
   RdfQuadIndex,
   SolidRdfEngine,

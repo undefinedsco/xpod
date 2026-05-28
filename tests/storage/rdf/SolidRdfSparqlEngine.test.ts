@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
-import { QuintstoreSparqlEngine } from '../../../src/storage/sparql/SubgraphQueryEngine';
+import { QuintstoreSparqlEngine } from '../../../src/storage/sparql/CompatibilitySparqlEngine';
 import {
   DisabledSparqlFeatureError,
   RdfQuadIndex,

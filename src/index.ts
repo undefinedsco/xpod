@@ -6,7 +6,8 @@ import { QuintStoreSparqlDataAccessor } from './storage/accessors/QuintStoreSpar
 import { SolidRdfDataAccessor } from './storage/accessors/SolidRdfDataAccessor';
 import { MixDataAccessor } from './storage/accessors/MixDataAccessor';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
-import { SubgraphQueryEngine, QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/SubgraphQueryEngine';
+import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
+import { QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/CompatibilitySparqlEngine';
 export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 export type {
   RdfIndexStats,
@@ -108,6 +109,7 @@ import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 // Authorization components
 import { AuthModeSelector } from './authorization/AuthModeSelector';
+
 export type {
   DnsProvider,
   ListDnsRecordsInput,

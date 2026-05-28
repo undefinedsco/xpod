@@ -5,23 +5,24 @@
  * on a resource, which is required for Terminal access.
  */
 import { getLoggerFor } from 'global-logger-factory';
-import { SubgraphQueryEngine, QuadstoreSparqlEngine } from '../storage/sparql/SubgraphQueryEngine';
+import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
 
 export class AclPermissionService {
   protected readonly logger = getLoggerFor(this);
-  private engine?: SubgraphQueryEngine;
+  private engine?: Promise<SubgraphQueryEngine>;
   private readonly sparqlEndpoint?: string;
 
   public constructor(sparqlEndpoint?: string) {
     this.sparqlEndpoint = sparqlEndpoint;
   }
 
-  private getEngine(): SubgraphQueryEngine {
+  protected getEngine(): Promise<SubgraphQueryEngine> {
     if (!this.engine) {
       if (!this.sparqlEndpoint) {
         throw new Error('SPARQL endpoint not configured');
       }
-      this.engine = new SubgraphQueryEngine(new QuadstoreSparqlEngine(this.sparqlEndpoint));
+      this.engine = import('../storage/sparql/CompatibilitySparqlEngine')
+        .then(({ QuadstoreSparqlEngine }) => new SubgraphQueryEngine(new QuadstoreSparqlEngine(this.sparqlEndpoint!)));
     }
     return this.engine;
   }
@@ -39,7 +40,7 @@ export class AclPermissionService {
    * @returns true if user has Control permission
    */
   public async hasControlPermission(userId: string, resourceUrl: string): Promise<boolean> {
-    const engine = this.getEngine();
+    const engine = await this.getEngine();
 
     // Normalize resource URL (remove trailing slash for consistency)
     const normalizedResource = resourceUrl.endsWith('/')
@@ -97,7 +98,7 @@ export class AclPermissionService {
    * @returns Array of resource URLs with Control permission
    */
   public async getControlledResources(userId: string, basePath: string): Promise<string[]> {
-    const engine = this.getEngine();
+    const engine = await this.getEngine();
 
     const query = `
       PREFIX acl: <http://www.w3.org/ns/auth/acl#>

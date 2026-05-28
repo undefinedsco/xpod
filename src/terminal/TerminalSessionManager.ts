@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import { TerminalSession } from './TerminalSession';
-import { AclPermissionService } from './AclPermissionService';
+import type { AclPermissionService } from './AclPermissionService';
 import type { SessionConfig, Session, EnvRef, CreateSessionRequest } from './types';
 import { isTrustedAgent, TRUSTED_AGENTS } from './types';
 
@@ -41,14 +41,15 @@ export class TerminalSessionManager {
   private readonly sessions = new Map<string, TerminalSession>();
   private readonly userSessions = new Map<string, Set<string>>();
   private readonly options: TerminalSessionManagerOptions;
-  private readonly aclService?: AclPermissionService;
+  private readonly aclService?: Promise<AclPermissionService>;
 
   constructor(options: Partial<TerminalSessionManagerOptions> = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
 
     // Initialize ACL service if SPARQL endpoint is provided
     if (this.options.sparqlEndpoint) {
-      this.aclService = new AclPermissionService(this.options.sparqlEndpoint);
+      this.aclService = import('./AclPermissionService')
+        .then(({ AclPermissionService }) => new AclPermissionService(this.options.sparqlEndpoint));
     }
   }
 
@@ -95,7 +96,7 @@ export class TerminalSessionManager {
       return false;
     }
 
-    return this.aclService.hasControlPermission(userId, resourceUrl);
+    return (await this.aclService).hasControlPermission(userId, resourceUrl);
   }
 
   /**

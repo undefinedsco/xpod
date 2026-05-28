@@ -1,14 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock the SubgraphQueryEngine and QuadstoreSparqlEngine
-vi.mock('../../src/storage/sparql/SubgraphQueryEngine', () => ({
-  SubgraphQueryEngine: vi.fn().mockImplementation(() => ({
-    queryBoolean: vi.fn(),
-    queryBindings: vi.fn(),
-  })),
-  QuadstoreSparqlEngine: vi.fn().mockImplementation(() => ({})),
-}));
-
 // Mock the logger
 vi.mock('global-logger-factory', () => ({
   getLoggerFor: () => ({
@@ -20,11 +11,26 @@ vi.mock('global-logger-factory', () => ({
 }));
 
 import { AclPermissionService } from '../../src/terminal/AclPermissionService';
-import { SubgraphQueryEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
+import type { SubgraphQueryEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
+
+interface MockAclEngine {
+  queryBoolean: ReturnType<typeof vi.fn>;
+  queryBindings: ReturnType<typeof vi.fn>;
+}
+
+class TestAclPermissionService extends AclPermissionService {
+  public constructor(private readonly mockEngine: MockAclEngine) {
+    super(undefined);
+  }
+
+  protected override async getEngine(): Promise<SubgraphQueryEngine> {
+    return this.mockEngine as unknown as SubgraphQueryEngine;
+  }
+}
 
 describe('AclPermissionService', () => {
   let service: AclPermissionService;
-  let mockEngine: { queryBoolean: ReturnType<typeof vi.fn>; queryBindings: ReturnType<typeof vi.fn> };
+  let mockEngine: MockAclEngine;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -32,8 +38,7 @@ describe('AclPermissionService', () => {
       queryBoolean: vi.fn(),
       queryBindings: vi.fn(),
     };
-    (SubgraphQueryEngine as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => mockEngine);
-    service = new AclPermissionService('sqlite:/test.db');
+    service = new TestAclPermissionService(mockEngine);
   });
 
   describe('hasControlPermission', () => {
