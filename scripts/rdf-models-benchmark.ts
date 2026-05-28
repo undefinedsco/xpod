@@ -326,6 +326,7 @@ function seedAgentContactFavoriteQuads(quads: Quad[]): void {
 function seedCanonicalMessages(quads: Quad[]): void {
   const thread = `${DATA}/chat/default/index.ttl#thread_1`;
   const graph = `${DATA}/chat/default/2026/05/18/messages.ttl`;
+  const scores = ['2', '10', '4'];
 
   for (let index = 0; index < 3; index += 1) {
     const message = `${graph}#msg_${index + 1}`;
@@ -335,6 +336,7 @@ function seedCanonicalMessages(quads: Quad[]): void {
       q(message, SIOC_HAS_MEMBER, iri(thread), graph),
       q(message, DCT_CREATED, literal(timestamp), graph),
       q(message, DCT_MODIFIED, literal(timestamp), graph),
+      q(message, `${UDFS}score`, literal(scores[index], namedNode(XSD_INTEGER)), graph),
       q(message, SIOC_CONTENT, literal(`canonical message ${index + 1}`), graph),
     );
   }

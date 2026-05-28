@@ -2939,8 +2939,44 @@ describe('SolidRdfEngine', () => {
       ),
       quad(
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode(`${UDFS}workspace`),
+        namedNode('file://macbook.local/Users/alice/project/'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode(DCT_CREATED),
+        literal('2026-05-18T01:00:00.000Z'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
         namedNode(`${UDFS}priority`),
         literal('10', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#step_1'),
+        namedNode(RDF_TYPE),
+        namedNode(`${UDFS}RunStep`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#step_1'),
+        namedNode(`${UDFS}run`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#step_2'),
+        namedNode(RDF_TYPE),
+        namedNode(`${UDFS}RunStep`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#step_2'),
+        namedNode(`${UDFS}run`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
       ),
       quad(

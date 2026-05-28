@@ -70,6 +70,7 @@ export interface RdfModelLocalQueryBenchmarkCase {
   resource: string;
   purpose: string;
   minScale: RdfBenchmarkScale;
+  minReturnedRows?: number;
   query: RdfLocalQuery;
   expectedPlan: string[];
 }
@@ -851,6 +852,7 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     resource: 'message',
     purpose: 'grouped numeric message score aggregate stays inside SQL/RDF-3X GROUP BY',
     minScale: 'small',
+    minReturnedRows: 1,
     query: {
       patterns: [
         {
@@ -1171,7 +1173,7 @@ function runLocalQueryBenchmarkCase(
     filtersApplied: 0,
     filtersPushedDown: 0,
   };
-  const missingPlan = missingExpectedLocalQueryPlan(testCase, finalMetrics);
+  const missingPlan = missingExpectedLocalQueryPlan(testCase, finalMetrics, keys.length);
 
   return {
     name: testCase.name,
@@ -1260,11 +1262,12 @@ function runRdf3xShadowBenchmarkCase(
     returnedRows: 0,
     durationMs: 0,
   } satisfies Rdf3xIndexMetrics;
+  const rdf3xPlanResolved = !hasUnresolvedPlan(finalRdf3xMetrics.queryPlan ?? []);
 
   return {
     ...baseResult,
     supported: true,
-    matched: diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
+    matched: rdf3xPlanResolved && diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
     orderedMatch,
     diff,
     solidRdf: {
@@ -1345,11 +1348,17 @@ function runRdf3xShadowJoinBenchmarkCase(
     returnedRows: 0,
     durationMs: 0,
   } satisfies Rdf3xJoinMetrics;
+  const plansResolved = !hasUnresolvedPlan(finalSolidRdfMetrics.queryPlan ?? [])
+    && !hasUnresolvedPlan(finalRdf3xMetrics.queryPlan ?? []);
+  const minimumRowsMatched = returnedRowsMeetMinimum(testCase, rdf3xKeys.length);
 
   return {
     ...baseRdf3xShadowJoinBenchmarkResult(testCase),
     supported: true,
-    matched: diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
+    matched: plansResolved
+      && minimumRowsMatched
+      && diff.missingFromPrimary.length === 0
+      && diff.extraInPrimary.length === 0,
     orderedMatch,
     diff,
     solidRdf: {
@@ -2117,7 +2126,10 @@ function ratio(candidate: number, baseline: number): number {
 }
 
 function missingExpectedPlan(testCase: RdfModelBenchmarkCase, metrics: RdfIndexMetrics): string[] {
-  return testCase.expectedPlan.filter((label) => !matchesExpectedPlanLabel(label, testCase, metrics));
+  return [
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedPlanLabel(label, testCase, metrics)),
+    ...unresolvedPlanFailures(metrics.queryPlan ?? []),
+  ];
 }
 
 function matchesExpectedPlanLabel(label: string, testCase: RdfModelBenchmarkCase, metrics: RdfIndexMetrics): boolean {
@@ -2162,8 +2174,33 @@ function matchesExpectedPlanLabel(label: string, testCase: RdfModelBenchmarkCase
 function missingExpectedLocalQueryPlan(
   testCase: RdfModelLocalQueryBenchmarkCase,
   metrics: RdfLocalQueryMetrics,
+  returnedRows: number,
 ): string[] {
-  return testCase.expectedPlan.filter((label) => !matchesExpectedLocalQueryPlanLabel(label, metrics));
+  return [
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedLocalQueryPlanLabel(label, metrics)),
+    ...unresolvedPlanFailures(metrics.plan),
+    ...minimumReturnedRowsFailures(testCase, returnedRows),
+  ];
+}
+
+function unresolvedPlanFailures(plan: readonly string[]): string[] {
+  return hasUnresolvedPlan(plan) ? ['resolved-terms'] : [];
+}
+
+function hasUnresolvedPlan(plan: readonly string[]): boolean {
+  return plan.some((entry) => /\bunresolved\b/i.test(entry));
+}
+
+function minimumReturnedRowsFailures(
+  testCase: RdfModelLocalQueryBenchmarkCase,
+  returnedRows: number,
+): string[] {
+  const minimum = testCase.minReturnedRows ?? 0;
+  return returnedRows >= minimum ? [] : [`min-rows:${minimum}`];
+}
+
+function returnedRowsMeetMinimum(testCase: RdfModelLocalQueryBenchmarkCase, returnedRows: number): boolean {
+  return minimumReturnedRowsFailures(testCase, returnedRows).length === 0;
 }
 
 function matchesExpectedLocalQueryPlanLabel(label: string, metrics: RdfLocalQueryMetrics): boolean {
