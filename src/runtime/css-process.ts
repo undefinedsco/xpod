@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { oidcTokenEndpoint } from './oidc-issuer';
 
 /**
@@ -40,12 +41,20 @@ function isExternalOidcPollutionKey(key: string): boolean {
 }
 
 function toImportSpecifier(fromFilePath: string, toFilePath: string): string {
+  if (pathNeedsEscapedFileUrl(fromFilePath) || pathNeedsEscapedFileUrl(toFilePath)) {
+    return pathToFileURL(toFilePath).href;
+  }
+
   const fromDirectory = path.dirname(fromFilePath);
   const relativePath = path.relative(fromDirectory, toFilePath).replace(/\\/g, '/');
   if (relativePath.startsWith('./') || relativePath.startsWith('../')) {
     return relativePath;
   }
   return `./${relativePath}`;
+}
+
+function pathNeedsEscapedFileUrl(filePath: string): boolean {
+  return /\s/.test(filePath);
 }
 
 export function createCssChildRuntimeConfig(options: {
