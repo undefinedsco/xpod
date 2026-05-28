@@ -153,6 +153,7 @@ const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
 const OBJECT_RANGE_KINDS: RdfTermKind[] = ['iri', 'literal', 'blank'];
+const RDF3X_INDEX_SCHEMA_VERSION = 1;
 
 const TERM_COLUMN: Record<Rdf3xTermKey, TripleColumn> = {
   subject: 'subject_id',
@@ -949,6 +950,7 @@ export class Rdf3xIndex {
   private initializeSchema(): void {
     this.dropMaterializedFactCopies();
     this.dropLegacyRowidTables();
+    this.prepareSchemaVersion();
 
     const pairProjectionTables = PAIR_PROJECTIONS.map((projection) => `
       CREATE TABLE IF NOT EXISTS ${projection.table} (
@@ -984,6 +986,7 @@ export class Rdf3xIndex {
       ${pairProjectionTables}
       ${termProjectionTables}
     `);
+    this.setMetadataValue('schema_version', String(RDF3X_INDEX_SCHEMA_VERSION));
   }
 
   private dropMaterializedFactCopies(): void {
@@ -1033,6 +1036,34 @@ export class Rdf3xIndex {
     ].join('\n'));
   }
 
+  private prepareSchemaVersion(): void {
+    this.ensureMetadataTable();
+    const row = this.requireDb()
+      .prepare<{ value: string }>("SELECT value FROM rdf3x_metadata WHERE key = 'schema_version'")
+      .get();
+    if (!row || row.value === String(RDF3X_INDEX_SCHEMA_VERSION)) {
+      return;
+    }
+    this.dropRdf3xSchema();
+    this.ensureMetadataTable();
+  }
+
+  private ensureMetadataTable(): void {
+    this.requireDb().exec(`
+      CREATE TABLE IF NOT EXISTS rdf3x_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      ) WITHOUT ROWID;
+    `);
+  }
+
+  private dropRdf3xSchema(): void {
+    this.requireDb().exec([
+      ...RDF3X_DERIVED_INDEXES.map((index) => `DROP INDEX IF EXISTS ${index};`),
+      ...RDF3X_DERIVED_TABLES.map((table) => `DROP TABLE IF EXISTS ${table};`),
+    ].join('\n'));
+  }
+
   private currentFactsDataVersion(): number {
     try {
       const row = this.requireDb()
@@ -1051,6 +1082,15 @@ export class Rdf3xIndex {
       ON CONFLICT (key)
       DO UPDATE SET value = excluded.value
     `).run(String(version));
+  }
+
+  private setMetadataValue(key: string, value: string): void {
+    this.requireDb().prepare(`
+      INSERT INTO rdf3x_metadata (key, value)
+      VALUES (?, ?)
+      ON CONFLICT (key)
+      DO UPDATE SET value = excluded.value
+    `).run(key, value);
   }
 
   private rebuildPairProjection(projection: Rdf3xPairProjection): void {

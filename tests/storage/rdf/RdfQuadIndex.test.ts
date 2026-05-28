@@ -97,6 +97,70 @@ describe('RdfQuadIndex', () => {
     expect(objectsByName.get('rdf_quads_opsg')).toMatchObject({ kind: 'index' });
   });
 
+  it('records the facts index schema version on open', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-version-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    try {
+      fileIndex.open();
+      fileIndex.close();
+
+      const db = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        expect(db.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+      } finally {
+        db.close();
+      }
+    } finally {
+      fileIndex.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('drops local RDF facts when the facts index schema version is incompatible', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-reset-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    try {
+      fileIndex.open();
+      fileIndex.multiPut([
+        quad(namedNode('https://s/1'), namedNode('https://p/status'), literal('open'), namedNode('https://g')),
+      ]);
+      expect(fileIndex.stats().quadCount).toBe(1);
+      fileIndex.close();
+
+      const db = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        db.prepare("UPDATE rdf_index_metadata SET value = '0' WHERE key = 'schema_version'").run();
+      } finally {
+        db.close();
+      }
+
+      const reopened = new RdfQuadIndex({ path: dbPath });
+      try {
+        reopened.open();
+        expect(reopened.stats()).toMatchObject({
+          termCount: 0,
+          quadCount: 0,
+          sourceCount: 0,
+        });
+        expect(reopened.dataVersion()).toBe(0);
+      } finally {
+        reopened.close();
+      }
+
+      const verifyDb = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        expect(verifyDb.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+      } finally {
+        verifyDb.close();
+      }
+    } finally {
+      fileIndex.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it('keeps long literal payloads out of term dictionary b-tree keys', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-long-object-'));
     const dbPath = path.join(root, 'rdf.sqlite');

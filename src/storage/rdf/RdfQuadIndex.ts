@@ -38,6 +38,7 @@ import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
+const RDF_QUAD_INDEX_SCHEMA_VERSION = 1;
 
 type IndexedColumn = 'graph_id' | 'subject_id' | 'predicate_id' | 'object_id';
 type PatternKey = 'graph' | 'subject' | 'predicate' | 'object';
@@ -95,6 +96,7 @@ export class RdfQuadIndex {
     }
 
     this.db = this.sqliteRuntime.openDatabase(this.options.path);
+    this.prepareSchemaVersion();
     this.dictionary = new RdfTermDictionary(this.db);
     this.dictionary.initialize();
     this.initializeSchema();
@@ -1285,6 +1287,47 @@ export class RdfQuadIndex {
     `).run();
   }
 
+  private prepareSchemaVersion(): void {
+    this.ensureMetadataTable();
+    const db = this.requireDb();
+    const row = db
+      .prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'")
+      .get();
+    if (row && row.value !== String(RDF_QUAD_INDEX_SCHEMA_VERSION)) {
+      this.dropIndexSchema();
+      this.ensureMetadataTable();
+    }
+    this.setMetadataValue('schema_version', String(RDF_QUAD_INDEX_SCHEMA_VERSION));
+  }
+
+  private ensureMetadataTable(): void {
+    this.requireDb().exec(`
+      CREATE TABLE IF NOT EXISTS rdf_index_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+  }
+
+  private dropIndexSchema(): void {
+    const db = this.requireDb();
+    const foreignKeys = db.prepare<{ foreign_keys: number }>('PRAGMA foreign_keys').get()?.foreign_keys ?? 0;
+    db.exec('PRAGMA foreign_keys = OFF;');
+    try {
+      db.exec(`
+        DROP TABLE IF EXISTS rdf_quads;
+        DROP TABLE IF EXISTS rdf_sources;
+        DROP TABLE IF EXISTS rdf_terms;
+        DROP TABLE IF EXISTS rdf_index_metadata;
+      `);
+    } finally {
+      if (foreignKeys) {
+        db.exec('PRAGMA foreign_keys = ON;');
+      }
+    }
+    this.cardinalityCache.clear();
+  }
+
   private bumpDataVersion(): void {
     this.requireDb().prepare(`
       INSERT INTO rdf_index_metadata (key, value)
@@ -1292,6 +1335,15 @@ export class RdfQuadIndex {
       ON CONFLICT (key)
       DO UPDATE SET value = CAST(value AS INTEGER) + 1
     `).run();
+  }
+
+  private setMetadataValue(key: string, value: string): void {
+    this.requireDb().prepare(`
+      INSERT INTO rdf_index_metadata (key, value)
+      VALUES (?, ?)
+      ON CONFLICT (key)
+      DO UPDATE SET value = excluded.value
+    `).run(key, value);
   }
 
   private upsertSource(source: RdfSourceInput): number {

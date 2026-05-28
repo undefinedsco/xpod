@@ -30,6 +30,15 @@ describe('Rdf3xIndex', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('records the derived RDF-3X schema version on open', () => {
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      expect(db.prepare<{ value: string }>("SELECT value FROM rdf3x_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+    } finally {
+      db.close();
+    }
+  });
+
   it('rebuilds RDF-3X stats from the current quad baseline', () => {
     const status = namedNode('https://undefineds.co/ns#status');
     const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
@@ -85,6 +94,61 @@ describe('Rdf3xIndex', () => {
     ]);
     expect(rdf3x.factsDataVersion()).not.toBe(quadIndex.dataVersion());
     expect(rdf3x.isSyncedWithCurrentQuads()).toBe(false);
+  });
+
+  it('drops derived RDF-3X stats when the derived schema version is incompatible', () => {
+    const status = namedNode('https://undefineds.co/ns#status');
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    quadIndex.multiPut([
+      quad(namedNode('https://message/1'), status, literal('open'), graph),
+      quad(namedNode('https://message/2'), status, literal('open'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+    expect(rdf3x.stats().membershipCount).toBe(2);
+    rdf3x.close();
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      db.prepare("UPDATE rdf3x_metadata SET value = '0' WHERE key = 'schema_version'").run();
+    } finally {
+      db.close();
+    }
+
+    const reopened = new Rdf3xIndex({ path: dbPath });
+    try {
+      reopened.open();
+      expect(reopened.factsDataVersion()).toBe(0);
+      expect(reopened.isSyncedWithCurrentQuads()).toBe(false);
+      expect(reopened.stats()).toMatchObject({
+        membershipCount: 2,
+        uniqueTriples: 2,
+        graphCount: 0,
+        factsDataVersion: 0,
+        pairProjectionRows: {
+          SP: 0,
+          SO: 0,
+          PS: 0,
+          PO: 0,
+          OS: 0,
+          OP: 0,
+        },
+        termProjectionRows: {
+          S: 0,
+          P: 0,
+          O: 0,
+        },
+      });
+
+      const rebuild = reopened.rebuildFromCurrentQuads();
+      expect(rebuild).toMatchObject({
+        scannedQuads: 2,
+        memberships: 2,
+        factsDataVersion: quadIndex.dataVersion(),
+      });
+      expect(reopened.isSyncedWithCurrentQuads()).toBe(true);
+    } finally {
+      reopened.close();
+    }
   });
 
   it('stores RDF-3X stats without materialized fact-copy tables', () => {
