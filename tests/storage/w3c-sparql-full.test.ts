@@ -106,6 +106,55 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
     expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
+  it('covers OPTIONAL GRAPH variable scope without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+
+    const stream = await engine.queryBindings(`
+      SELECT ?person ?name ?ageGraph ?age WHERE {
+        ?person <${NAME}> ?name .
+        OPTIONAL {
+          GRAPH ?ageGraph {
+            ?person <${AGE}> ?age .
+          }
+        }
+      }
+      ORDER BY ?person
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      person: binding.get('person')?.value,
+      name: binding.get('name')?.value,
+      ageGraph: binding.get('ageGraph')?.value ?? null,
+      age: binding.get('age')?.value ?? null,
+    }))).toEqual([
+      {
+        person: `${GRAPH}#alice`,
+        name: 'Alice',
+        ageGraph: GRAPH,
+        age: '13',
+      },
+      {
+        person: `${GRAPH}#bob`,
+        name: 'Bob',
+        ageGraph: null,
+        age: null,
+      },
+    ]);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      totalCount: 1,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 2,
+      },
+    });
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
   it('covers FROM and FROM NAMED dataset scopes without fallback', async () => {
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
     rdfEngine.put([

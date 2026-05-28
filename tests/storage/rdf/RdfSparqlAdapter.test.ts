@@ -692,6 +692,42 @@ describe('RdfSparqlAdapter', () => {
     expect(termToId(compiled.query.patterns[0].predicate as any)).toBe(RDF_TYPE);
   });
 
+  it('keeps OPTIONAL GRAPH ?g scoped inside the optional group', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?g ?content WHERE {
+        ?message a <${MESSAGE}> .
+        OPTIONAL {
+          GRAPH ?g {
+            ?message <${CONTENT}> ?content .
+          }
+        }
+      }
+    `, BASE);
+
+    expect(compiled.query.patterns).toHaveLength(1);
+    expect(compiled.query.filters).toEqual([]);
+    expect(compiled.query.optional).toHaveLength(1);
+    const optional = compiled.query.optional?.[0];
+    expect(Array.isArray(optional)).toBe(false);
+    expect(optional).toMatchObject({
+      patterns: [
+        {
+          graph: { variable: 'g' },
+          subject: { variable: 'message' },
+          object: { variable: 'content' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'g',
+          operator: '$startsWith',
+          value: BASE,
+        },
+      ],
+    });
+    expect(termToId((optional as any).patterns[0].predicate as any)).toBe(CONTENT);
+  });
+
   it('compiles controlled MINUS anti-joins into local query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message WHERE {
@@ -3853,10 +3889,6 @@ describe('RdfSparqlAdapter', () => {
   });
 
   it('falls back for unsupported SPARQL shapes instead of returning partial results', () => {
-    expect(() => adapter.compile(`
-      SELECT ?s WHERE { OPTIONAL { GRAPH ?g { ?s ?p ?o } } }
-    `, BASE)).toThrow(UnsupportedSparqlQueryError);
-
     expect(() => adapter.compile(`
       SELECT ?message WHERE {
         VALUES ?message { <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_1> }

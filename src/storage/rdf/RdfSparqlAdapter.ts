@@ -1111,21 +1111,21 @@ export class RdfSparqlAdapter {
       return;
     }
     if (pattern.name.termType === 'Variable') {
-      if (optional) {
-        throw new UnsupportedSparqlQueryError('OPTIONAL GRAPH variable scope fallback to compatibility engine');
-      }
-      if (namedGraphScope) {
-        state.query.filters?.push({
+      const graphScopeFilter: RdfQueryFilter = namedGraphScope
+        ? {
           variable: pattern.name.value,
           operator: '$in',
           values: this.graphScopeFilterValues(namedGraphScope),
-        });
-      } else {
-        state.query.filters?.push({
+        }
+        : {
           variable: pattern.name.value,
           operator: '$startsWith',
           value: state.basePath,
-        });
+        };
+      if (optional) {
+        state.addOptionalFilters([graphScopeFilter]);
+      } else {
+        state.query.filters?.push(graphScopeFilter);
       }
     }
     this.compilePatterns(pattern.patterns, graph, state, optional, namedGraphScope);
