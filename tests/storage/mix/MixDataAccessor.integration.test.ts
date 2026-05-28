@@ -1188,7 +1188,7 @@ WHERE {
     expect(localRdf).not.toContain('unsupported after');
   });
 
-  it('rejects multi-USING updates that cannot be applied to one RDF authority file', async () => {
+  it('applies multi-USING updates that read multiple RDF authority files and write one target file', async () => {
     const resourceId = { path: `${baseUrl}alice/multi-using-update.ttl` };
     const otherResourceId = { path: `${baseUrl}alice/multi-using-other.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
@@ -1201,9 +1201,18 @@ WHERE {
         literal('multi using before')
       )
     ])), metadata);
+    const otherMetadata = new RepresentationMetadata(otherResourceId);
+    otherMetadata.contentType = 'internal/quads';
+    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${otherResourceId.path}#second`),
+        namedNode('https://schema.org/name'),
+        literal('multi using other')
+      )
+    ])), otherMetadata);
     const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
 
-    await expect(accessor.executeSparqlUpdate(`
+    await accessor.executeSparqlUpdate(`
 INSERT {
   GRAPH <${resourceId.path}> {
     ?subject <https://schema.org/name> "multi using after" .
@@ -1214,13 +1223,25 @@ USING <${otherResourceId.path}>
 WHERE {
   ?subject <https://schema.org/name> ?old .
 }
-`.trim(), resourceId.path)).rejects.toThrow(UnsupportedSparqlQueryError);
+`.trim(), resourceId.path);
 
-    expect(structuredUpdateSpy).toHaveBeenCalledTimes(1);
+    expect(structuredUpdateSpy).not.toHaveBeenCalled();
     const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
     const localRdf = await readFile(rdfLink.filePath, 'utf8');
     expect(localRdf).toContain('multi using before');
-    expect(localRdf).not.toContain('multi using after');
+    expect(localRdf.match(/multi using after/g)?.length).toBe(2);
+
+    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
+    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
+    expect(otherLocalRdf).toContain('multi using other');
+    expect(otherLocalRdf).not.toContain('multi using after');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
+      'multi using after',
+      'multi using after',
+      'multi using before',
+    ]);
   });
 
   it('rejects SERVICE updates before the structured accessor fallback path', async () => {
