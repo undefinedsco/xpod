@@ -4648,6 +4648,79 @@ describe('SolidRdfSparqlEngine', () => {
     ]));
   });
 
+  it('applies graph-variable update templates constrained by explicit graph filters', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const targetGraph = 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl';
+    const namedGraph = 'https://pod.example/alice/.data/chat/default/2026/05/19/messages.ttl';
+    const msg1 = `${targetGraph}#msg_1`;
+    const msg2 = `${namedGraph}#msg_2`;
+    await engine.queryVoid(`
+      INSERT DATA {
+        GRAPH <${namedGraph}> {
+          <${msg2}> <${CONTENT}> "explicit graph filter before" .
+        }
+      }
+    `, BASE);
+
+    await engine.queryVoid(`
+      DELETE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH ?g {
+          ?message <${CONTENT}> "explicit graph filter rewritten" .
+        }
+      }
+      WHERE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+        FILTER(?g IN (<${targetGraph}>, <${namedGraph}>))
+      }
+    `, BASE);
+    const updateMetric = engine.getMetrics().lastPrimary;
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${targetGraph}> {
+          <${msg1}> <${CONTENT}> "explicit graph filter rewritten" .
+        }
+        GRAPH <${namedGraph}> {
+          <${msg2}> <${CONTENT}> "explicit graph filter rewritten" .
+        }
+      }
+    `, BASE)).resolves.toBe(true);
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${targetGraph}> {
+          <${msg1}> <${CONTENT}> "hello" .
+        }
+        GRAPH <${namedGraph}> {
+          <${msg2}> <${CONTENT}> "explicit graph filter before" .
+        }
+      }
+    `, BASE)).resolves.toBe(false);
+
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+    expect(updateMetric?.plan).toEqual(expect.arrayContaining([
+      'UpdateDelta',
+      'delete:2',
+      'insert:2',
+    ]));
+  });
+
   it('executes nested OPTIONAL groups on the embedded primary path', async () => {
     const onFallback = vi.fn();
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');

@@ -515,6 +515,7 @@ export class RdfSparqlAdapter {
     state.assertBindVariablesSafe();
     state.assertValuesVariablesBoundByRequiredPatterns();
     state.assertDependentGroupsShareRequiredVariables();
+    this.assertFiniteUpdateGraphVariables(state.query, basePath, label);
     if (state.query.patterns.length === 0 && (state.query.unions?.length ?? 0) === 0) {
       throw new UnsupportedSparqlQueryError(`${label} without required graph BGP patterns fallback to compatibility engine`);
     }
@@ -691,9 +692,6 @@ export class RdfSparqlAdapter {
       switch (pattern.type) {
         case 'graph':
           if (pattern.name.termType === 'Variable') {
-            if (!namedGraph) {
-              throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
-            }
           } else if (pattern.name.termType !== 'NamedNode') {
             throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
           } else if (!pattern.name.value.startsWith(basePath)) {
@@ -725,6 +723,70 @@ export class RdfSparqlAdapter {
           break;
       }
     }
+  }
+
+  private assertFiniteUpdateGraphVariables(query: RdfQueryGraphScope, basePath: string, label: string): void {
+    const unboundedVariables = new Set<string>();
+    this.collectUnboundedUpdateGraphVariables(query, basePath, new Set(), unboundedVariables);
+    if (unboundedVariables.size > 0) {
+      throw new UnsupportedSparqlQueryError(`${label} GRAPH variables require finite named graph filters fallback to compatibility engine`);
+    }
+  }
+
+  private collectUnboundedUpdateGraphVariables(
+    query: RdfQueryGraphScope,
+    basePath: string,
+    inheritedFiniteVariables: ReadonlySet<string>,
+    unboundedVariables: Set<string>,
+  ): void {
+    const finiteVariables = new Set(inheritedFiniteVariables);
+    this.collectFiniteGraphFilterVariablesFromFilters(query.filters ?? [], finiteVariables, basePath);
+
+    for (const pattern of query.patterns) {
+      if (pattern.graph && isCompiledVariable(pattern.graph) && !finiteVariables.has(pattern.graph.variable)) {
+        unboundedVariables.add(pattern.graph.variable);
+      }
+    }
+    for (const optional of query.optional ?? []) {
+      this.collectUnboundedUpdateGraphVariables(
+        Array.isArray(optional) ? { patterns: optional } : optional,
+        basePath,
+        finiteVariables,
+        unboundedVariables,
+      );
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectUnboundedUpdateGraphVariables(branch, basePath, finiteVariables, unboundedVariables);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectUnboundedUpdateGraphVariables(minus, basePath, finiteVariables, unboundedVariables);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectUnboundedUpdateGraphVariables(exists, basePath, finiteVariables, unboundedVariables);
+    }
+  }
+
+  private collectFiniteGraphFilterVariablesFromFilters(
+    filters: readonly RdfQueryFilter[],
+    finiteVariables: Set<string>,
+    basePath: string,
+  ): void {
+    for (const filter of filters) {
+      const values = filter.values ?? (filter.value ? [filter.value] : []);
+      if (
+        (filter.operator === '$eq' || filter.operator === '$sameTerm' || filter.operator === '$in')
+          && values.length > 0
+          && values.every((value) => this.isBasePathNamedNodeFilterValue(value, basePath))
+      ) {
+        finiteVariables.add(filter.variable);
+      }
+    }
+  }
+
+  private isBasePathNamedNodeFilterValue(value: unknown, basePath: string): boolean {
+    return this.isNamedNodeFilterValue(value) && (value as Term).value.startsWith(basePath);
   }
 
   private compileUpdateGraphQuads(

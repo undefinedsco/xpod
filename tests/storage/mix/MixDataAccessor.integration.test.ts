@@ -1364,6 +1364,67 @@ WHERE {
     expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['graph variable after']);
   });
 
+  it('applies explicit-filter GRAPH variable updates to multiple local RDF authority files', async () => {
+    const resourceId = { path: `${baseUrl}alice/graph-variable-filter-update.ttl` };
+    const otherResourceId = { path: `${baseUrl}alice/graph-variable-filter-other.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#first`),
+        namedNode('https://schema.org/name'),
+        literal('graph variable filter before')
+      )
+    ])), metadata);
+    const otherMetadata = new RepresentationMetadata(otherResourceId);
+    otherMetadata.contentType = 'internal/quads';
+    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${otherResourceId.path}#second`),
+        namedNode('https://schema.org/name'),
+        literal('graph variable filter other before')
+      )
+    ])), otherMetadata);
+    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
+
+    await accessor.executeSparqlUpdate(`
+DELETE {
+  GRAPH ?g {
+    ?subject <https://schema.org/name> ?old .
+  }
+}
+INSERT {
+  GRAPH ?g {
+    ?subject <https://schema.org/name> "graph variable filter after" .
+  }
+}
+WHERE {
+  GRAPH ?g {
+    ?subject <https://schema.org/name> ?old .
+  }
+  FILTER(?g IN (<${resourceId.path}>, <${otherResourceId.path}>))
+}
+`.trim(), resourceId.path);
+
+    expect(structuredUpdateSpy).not.toHaveBeenCalled();
+
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('graph variable filter after');
+    expect(localRdf).not.toContain('graph variable filter before');
+
+    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
+    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
+    expect(otherLocalRdf).toContain('graph variable filter after');
+    expect(otherLocalRdf).not.toContain('graph variable filter other before');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => quad.object.value)).toEqual(['graph variable filter after']);
+    const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
+    expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['graph variable filter after']);
+  });
+
   it('applies query-backed updates that write multiple local RDF authority files', async () => {
     const resourceId = { path: `${baseUrl}alice/multi-target-update.ttl` };
     const otherResourceId = { path: `${baseUrl}alice/multi-target-other.ttl` };
