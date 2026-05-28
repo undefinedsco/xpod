@@ -6,7 +6,9 @@
 !bun.lock
 !yarn.lock
 !tsconfig.json
+!.componentsjs-generator-config.json
 !scripts/patch-jose.js
+!scripts/check-components-runtime-metadata.cjs
 !src/
 !ui/
 !config/

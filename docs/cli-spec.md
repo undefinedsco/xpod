@@ -35,7 +35,7 @@ Top-level `list`, `get`, `put`, `mkdir`, `delete`, `head`, and `patch` are raw
 Pod resource operations. They are filesystem-like for stable resource paths and
 HTTP-aware for content negotiation, etags, and status reporting, but xpod does
 not provide a `curl` compatibility command or accept arbitrary curl flags. These
-commands must not parse business models, infer descriptor-backed paths, or apply
+commands must not parse business models, infer model-backed paths, or apply
 application semantics. Model-aware operations belong under `obj`; graph-level
 operations belong under `rdf`.
 
@@ -45,29 +45,33 @@ operations belong under `rdf`.
 xpod server start --foreground
 ```
 
-## Boundary With `udfs`
+## Boundary With `udfs` And Models
 
-`udfs` from `@undefineds.co/models` is the schema/model contract CLI.
+`@undefineds.co/models` owns durable shared model semantics. `udfs` may expose
+schema/model discovery and authoring workflows for that package, but `xpod`
+must only consume the shared model catalog/resource APIs.
 
 Use `udfs` for:
 
-- listing known model descriptors;
+- listing known model definitions;
 - discovering classes and predicates;
 - searching model definitions;
-- validating descriptor-backed mutations;
+- validating model-backed mutations;
 - future schema/model authoring if the models package owns it.
 
 Use `xpod` for:
 
 - authenticated raw Pod resource operations;
 - RDF graph operations over concrete resources, subjects, and triples;
-- descriptor-backed object transport using shared model descriptors;
+- model-backed object transport using the shared model catalog;
 - import/export from the user's Pod root;
 - secret-safe writes;
 - local/server xpod administration.
 
-xpod may call or vendor `@undefineds.co/models` descriptors, but it must not
-fork the model registry or create a second schema-authoring surface.
+xpod may consume compatibility descriptor-style metadata exported by
+`@undefineds.co/models`, but it must treat it as derived interop metadata. It
+must not fork the model registry, invent fallback schemas, hardcode product
+paths, or create a second schema-authoring surface.
 
 Product code that already has an in-process model session should use
 `@undefineds.co/models` plus `drizzle-solid` directly. The `xpod` command line
@@ -125,7 +129,7 @@ policy layers:
     "operationId": "op_123",
     "webId": "https://id.example/alice/profile/card#me",
     "podRoot": "https://pod.example/alice/",
-    "summary": "Patch one descriptor-backed object",
+    "summary": "Patch one model-backed object",
     "risk": "normal",
     "resources": [
       {
@@ -202,7 +206,7 @@ xpod list <container-path> [--depth 1] [--json]
 Rules:
 
 - These commands are raw resource operations only. They must not interpret
-  descriptor-backed object semantics.
+  model-backed object semantics.
 - Relative paths resolve against the selected Pod root.
 - Absolute URLs are allowed, but output must still report effective WebID, Pod
   root, base IRI, and resource URL when `--json` is used.
@@ -239,111 +243,118 @@ xpod rdf classes [--schema <schema-uri>]
 xpod rdf predicates [--schema <schema-uri>] [--field <field>]
 ```
 
-`rdf classes` and `rdf predicates` may delegate to `udfs` or models descriptors
+`rdf classes` and `rdf predicates` may delegate to `udfs` or the models catalog
 for known schemas. The command name stays under `rdf` because RDF defines the
 graph layer; the model registry remains owned by `@undefineds.co/models`.
 
 RDF mutations should support stale-write protection with `--if-match` whenever
 the target resource exposes an etag. Query commands must be read-only.
 
-## Object Exchange
+## Model-Backed Objects
 
-xpod should support two stable resource exchange formats:
+`xpod obj` is the CLI surface for model-backed Pod objects. It must not define
+business schemas itself. All durable model semantics come from
+`@undefineds.co/models`.
 
-- file-to-file: copy or transform bytes/resources without interpreting model
-  semantics;
-- file-to-json-list: export RDF/model-backed objects into JSONL for agents,
-  scripts, import review, or offline processing.
+`@undefineds.co/models` is the authority for RDF classes and predicates,
+resource schemas, id/default functions, storage/resource resolution rules,
+required fields and field types, secret field markers, writable fields,
+validation rules, and interop metadata needed by generic tools.
+
+xpod is responsible only for resolving auth and the effective Pod root, loading
+the model catalog from `@undefineds.co/models`, accepting JSON/JSONL/stdin/file
+input, validating through the shared model API, reading and writing Pod
+resources, and returning stable machine-readable results.
+
+xpod must not invent fallback schemas, hardcode product paths, or maintain a
+parallel descriptor table. Existing PodModelDescriptor-style APIs may be
+consumed temporarily only as a compatibility catalog exported by
+`@undefineds.co/models`; they must be treated as derived interop metadata, not
+as an independent schema definition.
+
+### Model Catalog
+
+`xpod obj` consumes a generated or derived model catalog exported by
+`@undefineds.co/models`. The catalog is an interop view over the real
+schemas/resources. It may include CLI or AI hints, but those hints must not
+duplicate or override schema facts.
+
+Allowed catalog content:
+
+- `classUri`
+- `resourceKind`
+- `fields`
+- `predicates`
+- `required`
+- `secret`
+- `array`
+- `storage`
+- `idDefault`
+- `validation`
+- `examples`
+- `accessNeeds`
+- `mergePolicy`
+
+Disallowed catalog content:
+
+- hand-written duplicate business fields
+- xpod-local RDF predicates
+- xpod-local storage conventions
+- xpod-local schema validation
+
+If a model is missing from the catalog, `xpod obj` returns `schema_unknown`
+instead of guessing.
+
+### Commands
 
 Required commands:
 
 ```bash
-xpod obj export <selector> --format jsonl --out <file>
-xpod obj import <file.jsonl> --dry-run
-xpod obj import <file.jsonl> --commit
+xpod obj list
+xpod obj describe <class-or-kind>
+xpod obj validate --class <uri|kind> --input <json|file|->
+xpod obj import --class <uri|kind> --input <json|jsonl|file|->
+xpod obj export --class <uri|kind> [--where <json>] [--format json|jsonl] [--out <file>]
 ```
 
-Selectors must be precise enough for model-backed control objects. At minimum,
-they must support schema URI, subject/resource URI, path, status, relation
-filters, limit, and inclusion of revision/etag metadata. This lets portable
-agents inspect and update workflow objects without guessing Pod paths or writing
-raw Turtle.
+Rules:
 
-Ergonomic command aliases may be added on top of import/export, but they must
-still use the same model descriptors and output contract:
+- `obj list` lists model-backed object types from `@undefineds.co/models`.
+- `obj describe` prints the model catalog entry for a class or resource kind.
+- `obj validate` validates input through `@undefineds.co/models` and returns
+  the planned resource target without writing.
+- `obj import` imports one or more objects. Batch results must preserve input
+  order.
+- `obj export` exports objects by model class or resource kind. Filtering must
+  use model fields or RDF predicates known to `@undefineds.co/models`.
 
-```bash
-xpod obj get --schema <schema-uri> --subject <subject-or-id>
-xpod obj list --schema <schema-uri> [--where <json>] [--limit <n>]
-xpod obj upsert --schema <schema-uri> --from <file.jsonl|-> --dry-run
-xpod obj upsert --schema <schema-uri> --from <file.jsonl|-> --commit
-xpod obj patch --subject <subject> --set <json> [--if-match <etag>] --dry-run
-xpod obj patch --subject <subject> --set <json> [--if-match <etag>] --commit
-xpod obj link --subject <subject> --predicate <uri-or-field> --object <uri> --dry-run
-xpod obj link --subject <subject> --predicate <uri-or-field> --object <uri> --commit
-xpod obj delete --subject <subject> [--if-match <etag>] --dry-run
-xpod obj delete --subject <subject> [--if-match <etag>] --commit
-```
+Storage resolution is delegated to `@undefineds.co/models`:
 
-Each JSONL row should be self-describing:
+1. If input provides a canonical base-relative `id`, treat it as exact.
+2. Otherwise call the model id/default function.
+3. If the model requires an existing Pod registration/type index entry, resolve
+   through that registration.
+4. If no storage target can be resolved, return `storage_unresolved`.
 
-```json
-{"op":"upsert","schema":"https://undefineds.co/ns#Credential","match":{"service":"ai","providerId":"openai","secretType":"api-key"},"set":{"label":"OpenAI"}}
-```
+xpod must not derive paths from class names, resource kinds, or timestamps
+unless that logic comes from the model package.
 
-Multiple classes may appear in one JSONL file. xpod validates each row through
-the shared model descriptors when a `schema` is present. Rows without `schema`
-are treated as raw resource or RDF-level operations and must declare an
-explicit path or subject.
+### Object Output Codes
 
-Each exported row should include the resolved `subject` and, when available,
-`etag` or revision metadata. Mutating rows may include `ifMatch` so control
-planes can reject stale worker results instead of overwriting newer Pod state.
+`xpod obj` uses the standard JSON envelope and these stable error codes:
 
-Reverse sync from Pod to business-specific behavior should be evented, not
-hardcoded into xpod. xpod emits changed resources/JSON rows; the caller or
-framework decides how to turn them into app-specific actions.
+- `auth_required`
+- `schema_unknown`
+- `storage_unresolved`
+- `validation_failed`
+- `access_denied`
+- `conflict`
+- `unsupported_model`
+- `write_failed`
 
-Required watch command:
-
-```bash
-xpod obj watch <selector> --format jsonl
-xpod obj watch <selector> --format jsonl --since <cursor>
-```
-
-`watch` streams changed rows with stable item `index`, `code`, `subject`,
-schema, revision/etag when available, and change kind. It is a transport for
-Pod changes, not a product-specific controller.
-
-When no durable cursor is available, xpod must say so in the stream metadata
-and include enough subject/etag/change metadata for callers to reconcile with a
-fresh `obj list`.
-
-## Descriptor-Backed Objects
-
-xpod must not define business models, RDF predicates, URI templates, lifecycle
-state machines, field aliases, relation direction, status vocabularies,
-fingerprints, or closure semantics. Those belong to `@undefineds.co/models`.
-
-xpod only provides a descriptor-backed object transport: given a schema
-descriptor and a subject, selector, relation filter, or JSONL row, it validates
-and reads/writes the corresponding Pod resources.
-
-Descriptor-backed objects must be queryable by descriptor fields and URI
-relations, not only by broad path scans. Portable agents need a generic lookup
-surface like:
-
-```bash
-xpod obj list --schema <schema-uri-or-alias> --where '{"status":"active"}'
-xpod obj list --schema <schema-uri-or-alias> --where '{"subject":"<resource-uri>"}'
-xpod obj list --schema <schema-uri-or-alias> --where '{"<relationField>":"<resource-uri>"}'
-xpod obj list --schema <schema-uri-or-alias> --where '{"fingerprint":"<stable-fingerprint>"}'
-```
-
-xpod should accept only descriptor-known fields unless the caller is
-intentionally using raw RDF commands. If a class is missing from
-`@undefineds.co/models`, xpod should report `schema_unknown` rather than
-inventing a private path, predicate, or fallback object type.
+Batch success or partial failure uses `code: "batch_completed"` and returns one
+result per input item with stable `index`, `ok`, `code`, and resource metadata
+when available.
 
 ## Secrets
 
@@ -365,7 +376,7 @@ Rules:
   handle.
 - Secret values must not be printed by default.
 - Secret fields must be redacted in structured output.
-- Secret resources may use the same descriptor-backed model resources as
+- Secret resources may use the same model-backed resources as
   ordinary credential objects. The descriptor still owns the durable schema.
 
 ## Server Administration
@@ -408,5 +419,5 @@ is retained for compatibility, it may only alias `xpod server config`.
 - xpod does not own product-specific secretary, workflow, or controller logic.
 - xpod does not replace `udfs` as the model/schema CLI.
 - xpod does not add approval/grant policy. Approval and grant objects are just
-  descriptor-backed objects from xpod's perspective.
+  model-backed objects from xpod's perspective.
 - xpod does not provide a curl compatibility surface.
