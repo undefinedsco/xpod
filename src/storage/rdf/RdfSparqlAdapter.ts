@@ -2292,6 +2292,10 @@ export class RdfSparqlAdapter {
         value: false,
       }];
     }
+    const termTest = this.compileTermTestFilter(operator, expression);
+    if (termTest) {
+      return [this.negateTermTestFilter(termTest)];
+    }
     if (operator === '||') {
       const filter = this.compileOrFilter(expression);
       return [{
@@ -2450,6 +2454,23 @@ export class RdfSparqlAdapter {
         return '$notRegex';
       default:
         throw new UnsupportedSparqlQueryError(`FILTER !${operator} fallback to compatibility engine`);
+    }
+  }
+
+  private negateTermTestFilter(filter: RdfQueryFilter): RdfQueryFilter {
+    switch (filter.operator) {
+      case '$termType':
+        return {
+          ...filter,
+          operator: '$notTermType',
+        };
+      case '$sameTerm':
+        return {
+          ...filter,
+          operator: '$notSameTerm',
+        };
+      default:
+        throw new UnsupportedSparqlQueryError(`FILTER !${filter.operator} fallback to compatibility engine`);
     }
   }
 

@@ -1801,6 +1801,68 @@ describe('SolidRdfSparqlEngine', () => {
     expect(engine.getMetrics().lastPrimary?.plan).not.toContain('Filter(?message$termType,?message$termType,?count$termType,?count$termType,?message$sameTerm,?count$datatype)');
   });
 
+  it('executes negated RDF term-test FILTER functions on the embedded primary path', async () => {
+    const onFallback = vi.fn();
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const msg1 = `${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_1`;
+    const msg2 = `${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_2`;
+    rdfEngine.put([
+      quad(
+        namedNode(msg1),
+        namedNode(DCT_CREATED),
+        literal('7', namedNode(XSD_INTEGER)),
+        graph,
+      ),
+      quad(
+        namedNode(msg2),
+        namedNode(DCT_CREATED),
+        namedNode(`${BASE}.data/chat/default/2026/05/18/messages.ttl#linked`),
+        graph,
+      ),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?message ?value WHERE {
+        ?message <${DCT_CREATED}> ?value .
+        FILTER(!isLiteral(?message))
+        FILTER(!isLiteral(?value))
+        FILTER(!isBlank(?value))
+        FILTER(!isNumeric(?value))
+        FILTER(!sameTerm(?message, <${msg1}>))
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      message: binding.get('message')?.value,
+      value: binding.get('value')?.value,
+    }))).toEqual([
+      {
+        message: msg2,
+        value: `${BASE}.data/chat/default/2026/05/18/messages.ttl#linked`,
+      },
+    ]);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 1,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('Filter(?message$notTermType,?value$notTermType,?value$notTermType,?value$notTermType,?message$notSameTerm)');
+  });
+
   it('executes case-normalized string FILTER functions on the embedded primary path', async () => {
     const onFallback = vi.fn();
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
@@ -3861,6 +3923,67 @@ describe('SolidRdfSparqlEngine', () => {
         GRAPH <${graph}> {
           <${msg1}> <${CONTENT}> "negated filter rewritten" .
           <${msg2}> <${CONTENT}> "skip second" .
+        }
+      }
+    `, BASE)).resolves.toBe(true);
+
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+    expect(updateMetric?.plan).toEqual(expect.arrayContaining([
+      'UpdateDelta',
+      'delete:1',
+      'insert:1',
+    ]));
+  });
+
+  it('applies DELETE/INSERT WHERE with negated term-test filters on the embedded update delta path', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const graph = 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl';
+    const msg1 = `${graph}#msg_1`;
+    const msg2 = `${graph}#msg_2`;
+    await engine.queryVoid(`
+      INSERT DATA {
+        GRAPH <${graph}> {
+          <${msg2}> <${CONTENT}> "term-test second" .
+        }
+      }
+    `, BASE);
+
+    await engine.queryVoid(`
+      DELETE {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> "negated term-test rewritten" .
+        }
+      }
+      WHERE {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> ?old .
+        }
+        FILTER(!isNumeric(?old))
+        FILTER(!sameTerm(?message, <${msg2}>))
+      }
+    `, BASE);
+    const updateMetric = engine.getMetrics().lastPrimary;
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${graph}> {
+          <${msg1}> <${CONTENT}> "negated term-test rewritten" .
+          <${msg2}> <${CONTENT}> "term-test second" .
         }
       }
     `, BASE)).resolves.toBe(true);

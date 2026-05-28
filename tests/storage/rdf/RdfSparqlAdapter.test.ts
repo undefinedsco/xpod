@@ -1188,6 +1188,51 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
+  it('compiles safely negated RDF term-test FILTER functions', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content ?thread WHERE {
+        ?message <${CONTENT}> ?content .
+        ?message <${HAS_MEMBER}> ?thread .
+        FILTER(!isIRI(?content))
+        FILTER(!isLiteral(?message))
+        FILTER(!isNumeric(?content))
+        FILTER(!sameTerm(?message, <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_2>))
+        FILTER(!sameTerm(?message, ?thread))
+      }
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([
+      {
+        variable: 'content',
+        operator: '$notTermType',
+        value: 'iri',
+      },
+      {
+        variable: 'message',
+        operator: '$notTermType',
+        value: 'literal',
+      },
+      {
+        variable: 'content',
+        operator: '$notTermType',
+        value: 'numeric',
+      },
+      {
+        variable: 'message',
+        operator: '$notSameTerm',
+        value: expect.objectContaining({
+          termType: 'NamedNode',
+          value: `${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_2`,
+        }),
+      },
+      {
+        variable: 'message',
+        operator: '$notSameTerm',
+        variable2: 'thread',
+      },
+    ]);
+  });
+
   it('compiles FROM and FROM NAMED dataset scope into local graph constraints', () => {
     const defaultGraphA = `${BASE}.data/chat/default/2026/05/18/messages.ttl`;
     const defaultGraphB = `${BASE}.data/chat/default/2026/05/19/messages.ttl`;

@@ -131,6 +131,91 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.plan.some((entry) => entry.startsWith('TextSearch('))).toBe(false);
   });
 
+  it('applies safely negated term-test filters as local post-filters', () => {
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: rdfVar('predicate'),
+          object: rdfVar('value'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'value',
+          operator: '$notTermType',
+          value: 'literal',
+        },
+        {
+          variable: 'value',
+          operator: '$notSameTerm',
+          value: thread,
+        },
+      ],
+      select: ['message', 'value'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: termToId(binding.message as any),
+      value: termToId(binding.value as any),
+    }))).toEqual([
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+        value: MEETING_MESSAGE,
+      },
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+        value: MEETING_MESSAGE,
+      },
+    ]);
+    expect(result.metrics.plan).toContain('Filter(?value$notTermType,?value$notSameTerm)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('applies negated sameTerm filters between variables', () => {
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('left'),
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: rdfVar('thread'),
+        },
+        {
+          subject: rdfVar('right'),
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: rdfVar('thread'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'left',
+          operator: '$notSameTerm',
+          variable2: 'right',
+        },
+      ],
+      select: ['left', 'right'],
+      orderBy: [{ variable: 'left' }, { variable: 'right' }],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      left: termToId(binding.left as any),
+      right: termToId(binding.right as any),
+    }))).toEqual([
+      {
+        left: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+        right: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+      },
+      {
+        left: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+        right: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+      },
+    ]);
+    expect(result.metrics.plan).toContain('Filter(?left$notSameTerm)');
+  });
+
   it('pushes safe required BGP joins into the RDF quad index', () => {
     const result = engine.query({
       patterns: [

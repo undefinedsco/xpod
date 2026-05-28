@@ -2625,9 +2625,15 @@ export class RdfLocalQueryEngine {
       }
       case '$termType':
         return typeof filter.value === 'string' && matchesTermType(value, filter.value);
+      case '$notTermType':
+        return typeof filter.value === 'string' && !matchesTermType(value, filter.value);
       case '$sameTerm': {
         const right = filter.variable2 ? binding[filter.variable2] : filter.value;
         return Boolean(right && isTerm(right as any) && sameTerm(value, right as Term));
+      }
+      case '$notSameTerm': {
+        const right = filter.variable2 ? binding[filter.variable2] : filter.value;
+        return Boolean(right && isTerm(right as any) && !sameTerm(value, right as Term));
       }
       case '$lang':
         return typeof filter.value === 'string'

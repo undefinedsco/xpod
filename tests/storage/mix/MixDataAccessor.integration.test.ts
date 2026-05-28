@@ -1296,6 +1296,59 @@ WHERE {
     ]);
   });
 
+  it('applies negated term-test updates to local RDF authority files', async () => {
+    const resourceId = { path: `${baseUrl}alice/negated-term-test-update.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#first`),
+        namedNode('https://schema.org/name'),
+        literal('term first')
+      ),
+      quad(
+        namedNode(`${resourceId.path}#second`),
+        namedNode('https://schema.org/name'),
+        literal('term second')
+      )
+    ])), metadata);
+    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
+
+    await accessor.executeSparqlUpdate(`
+DELETE {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> ?old .
+  }
+}
+INSERT {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> "negated term-test after" .
+  }
+}
+WHERE {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> ?old .
+  }
+  FILTER(!isNumeric(?old))
+  FILTER(!sameTerm(?subject, <${resourceId.path}#second>))
+}
+`.trim(), resourceId.path);
+
+    expect(structuredUpdateSpy).not.toHaveBeenCalled();
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('negated term-test after');
+    expect(localRdf).toContain('term second');
+    expect(localRdf).not.toContain('term first');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
+      'negated term-test after',
+      'term second',
+    ]);
+  });
+
   it('applies USING NAMED updates that read multiple RDF authority files and write one target file', async () => {
     const resourceId = { path: `${baseUrl}alice/using-named-update.ttl` };
     const otherResourceId = { path: `${baseUrl}alice/using-named-other.ttl` };
