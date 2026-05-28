@@ -192,6 +192,14 @@ export class SolidRdfEngine {
     return changes;
   }
 
+  public applyDelta(deletes: QuintPattern[], inserts: Quad[], options?: RdfIndexPutOptions): { deletedRows: number; insertedRows: number } {
+    const result = this.index.applyDelta(deletes, inserts, options);
+    if (result.deletedRows > 0 || result.insertedRows > 0) {
+      this.markRdf3xDirty();
+    }
+    return result;
+  }
+
   public scan(query: RdfPatternQuery): RdfQuadIndexScanResult {
     return this.index.scan(query.pattern, query.options);
   }

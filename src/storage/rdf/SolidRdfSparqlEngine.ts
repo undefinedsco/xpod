@@ -4,6 +4,7 @@ import type { DefaultGraph, Quad, Quad_Object, Term, Variable } from '@rdfjs/typ
 import { DataFactory as RdfDataFactory } from 'rdf-data-factory';
 import { termToId } from 'n3';
 import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
+import type { QuintPattern } from '../quint/types';
 import { DisabledSparqlFeatureError, RdfSparqlAdapter, UnsupportedSparqlQueryError } from './RdfSparqlAdapter';
 import type { ShadowRdfQuintStore } from './ShadowRdfQuintStore';
 import type { SolidRdfEngine } from './SolidRdfEngine';
@@ -181,48 +182,26 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       let computedInserts = 0;
       for (const operation of delta.operations) {
         if (operation.type === 'delete') {
-          for (const quad of operation.quads) {
-            deletedRows += this.rdfEngine.delete({
-              graph: quad.graph,
-              subject: quad.subject,
-              predicate: quad.predicate,
-              object: quad.object,
-            });
-          }
+          deletedRows += this.rdfEngine.applyDelta(operation.quads.map(quadToPattern), []).deletedRows;
         } else if (operation.type === 'insert') {
-          this.rdfEngine.put(operation.quads);
+          this.rdfEngine.applyDelta([], operation.quads);
         } else if (operation.type === 'insertDeleteWhere') {
           const result = this.rdfEngine.query(operation.query);
           const deletes = this.adapter.materializeDeleteWhere(operation.deletes, result.bindings);
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
           computedDeletes += deletes.length;
           computedInserts += inserts.length;
-          for (const quad of deletes) {
-            deletedRows += this.rdfEngine.delete({
-              graph: quad.graph,
-              subject: quad.subject,
-              predicate: quad.predicate,
-              object: quad.object,
-            });
-          }
-          this.rdfEngine.put(inserts);
+          deletedRows += this.rdfEngine.applyDelta(deletes.map(quadToPattern), inserts).deletedRows;
         } else if (operation.type === 'insertWhere') {
           const result = this.rdfEngine.query(operation.query);
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
           computedInserts += inserts.length;
-          this.rdfEngine.put(inserts);
+          this.rdfEngine.applyDelta([], inserts);
         } else {
           const result = this.rdfEngine.query(operation.query);
           const quads = this.adapter.materializeDeleteWhere(operation.template, result.bindings);
           computedDeletes += quads.length;
-          for (const quad of quads) {
-            deletedRows += this.rdfEngine.delete({
-              graph: quad.graph,
-              subject: quad.subject,
-              predicate: quad.predicate,
-              object: quad.object,
-            });
-          }
+          deletedRows += this.rdfEngine.applyDelta(quads.map(quadToPattern), []).deletedRows;
         }
       }
       this.recordPrimary('queryVoid', start, {
@@ -644,6 +623,15 @@ function ratio(numerator: number, denominator: number): number {
 
 function implicitUpdateDefaultGraph(basePath: string): string | undefined {
   return basePath.endsWith('/') ? undefined : basePath;
+}
+
+function quadToPattern(quad: Quad): QuintPattern {
+  return {
+    graph: quad.graph,
+    subject: quad.subject,
+    predicate: quad.predicate,
+    object: quad.object,
+  };
 }
 
 function escapeIri(value: string): string {

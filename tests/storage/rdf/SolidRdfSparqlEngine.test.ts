@@ -3721,6 +3721,7 @@ describe('SolidRdfSparqlEngine', () => {
         }
       }
     `, BASE);
+    const beforeUpdateVersion = index.dataVersion();
 
     await engine.queryVoid(`
       DELETE {
@@ -3740,6 +3741,7 @@ describe('SolidRdfSparqlEngine', () => {
       }
     `, BASE);
     const updateMetric = engine.getMetrics().lastPrimary;
+    expect(index.dataVersion()).toBe(beforeUpdateVersion + 1);
 
     await expect(engine.queryBoolean(`
       ASK {

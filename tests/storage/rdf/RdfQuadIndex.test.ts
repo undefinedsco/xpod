@@ -61,6 +61,38 @@ describe('RdfQuadIndex', () => {
     expect(index.stats().termCount).toBeGreaterThan(4);
   });
 
+  it('applies mixed RDF deltas in one facts data version step', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const content = namedNode('http://rdfs.org/sioc/ns#content');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const old1 = quad(msg1, content, literal('old one'), graph);
+    const old2 = quad(msg2, content, literal('old two'), graph);
+
+    index.multiPut([old1, old2]);
+    const beforeDeltaVersion = index.dataVersion();
+
+    const result = index.applyDelta(
+      [
+        { graph, subject: msg1, predicate: content, object: literal('old one') },
+        { graph, subject: msg2, predicate: content, object: literal('old two') },
+      ],
+      [
+        quad(msg1, content, literal('new one'), graph),
+        quad(msg2, content, literal('new two'), graph),
+      ],
+    );
+
+    expect(result).toEqual({
+      deletedRows: 2,
+      insertedRows: 2,
+    });
+    expect(index.dataVersion()).toBe(beforeDeltaVersion + 1);
+    expect(index.scan({ graph, predicate: content, object: literal('old one') }).quads).toHaveLength(0);
+    expect(index.scan({ graph, predicate: content, object: literal('new one') }).quads).toHaveLength(1);
+    expect(index.scan({ graph, predicate: content, object: literal('new two') }).quads).toHaveLength(1);
+  });
+
   it('reports RDF table and index space separately for benchmark gates', () => {
     index.multiPut([
       quad(namedNode('https://s/1'), namedNode('https://p/type'), namedNode('https://type/Message'), namedNode('https://g/chat')),

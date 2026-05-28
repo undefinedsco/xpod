@@ -123,7 +123,7 @@ export class RdfQuadIndex {
   public replaceSource(quads: Quad[], source: RdfSourceInput): void {
     const db = this.requireDb();
     db.transaction(() => {
-      this.deleteSource(source.source);
+      this.deleteSourceInternal(source.source);
       if (quads.length > 0) {
         this.insertQuads(quads, { source });
       } else {
@@ -135,6 +135,15 @@ export class RdfQuadIndex {
   }
 
   public deleteSource(source: string): number {
+    const result = this.deleteSourceInternal(source);
+    if (result > 0) {
+      this.cardinalityCache.clear();
+      this.bumpDataVersion();
+    }
+    return result;
+  }
+
+  private deleteSourceInternal(source: string): number {
     const db = this.requireDb();
     const row = db
       .prepare<{ id: number }>('SELECT id FROM rdf_sources WHERE source = ?')
@@ -145,10 +154,6 @@ export class RdfQuadIndex {
 
     const result = db.prepare('DELETE FROM rdf_quads WHERE source_file_id = ?').run(row.id);
     db.prepare('DELETE FROM rdf_sources WHERE id = ?').run(row.id);
-    if (result.changes > 0) {
-      this.cardinalityCache.clear();
-      this.bumpDataVersion();
-    }
     return result.changes;
   }
 
@@ -198,25 +203,50 @@ export class RdfQuadIndex {
   }
 
   public delete(pattern: QuintPattern): number {
-    const db = this.requireDb();
-    const { joins, whereClause, params } = this.buildWhereClause(pattern, false);
-    if (!whereClause) {
-      const result = db.prepare('DELETE FROM rdf_quads').run();
-      this.cardinalityCache.clear();
-      if (result.changes > 0) {
-        this.bumpDataVersion();
-      }
-      return result.changes;
-    }
-    const sql = joins
-      ? `DELETE FROM rdf_quads WHERE rowid IN (SELECT rdf_quads.rowid FROM rdf_quads${joins}${whereClause})`
-      : `DELETE FROM rdf_quads${whereClause}`;
-    const changes = db.prepare(sql).run(...params).changes;
+    const changes = this.deleteInternal(pattern);
     if (changes > 0) {
       this.cardinalityCache.clear();
       this.bumpDataVersion();
     }
     return changes;
+  }
+
+  public applyDelta(deletes: QuintPattern[], inserts: Quad[], options?: RdfIndexPutOptions): { deletedRows: number; insertedRows: number } {
+    if (deletes.length === 0 && inserts.length === 0) {
+      return { deletedRows: 0, insertedRows: 0 };
+    }
+
+    const db = this.requireDb();
+    let deletedRows = 0;
+    db.transaction(() => {
+      for (const pattern of deletes) {
+        deletedRows += this.deleteInternal(pattern);
+      }
+      if (inserts.length > 0) {
+        this.insertQuads(inserts, options);
+      }
+    })();
+    if (deletedRows > 0 || inserts.length > 0) {
+      this.cardinalityCache.clear();
+      this.bumpDataVersion();
+    }
+    return {
+      deletedRows,
+      insertedRows: inserts.length,
+    };
+  }
+
+  private deleteInternal(pattern: QuintPattern): number {
+    const db = this.requireDb();
+    const { joins, whereClause, params } = this.buildWhereClause(pattern, false);
+    if (!whereClause) {
+      const result = db.prepare('DELETE FROM rdf_quads').run();
+      return result.changes;
+    }
+    const sql = joins
+      ? `DELETE FROM rdf_quads WHERE rowid IN (SELECT rdf_quads.rowid FROM rdf_quads${joins}${whereClause})`
+      : `DELETE FROM rdf_quads${whereClause}`;
+    return db.prepare(sql).run(...params).changes;
   }
 
   public dataVersion(): number {
