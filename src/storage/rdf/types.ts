@@ -448,6 +448,8 @@ export type RdfBindExpression =
   | { type: 'stringLength'; variable: string }
   | { type: 'lowerCase'; expression: RdfBindExpression }
   | { type: 'upperCase'; expression: RdfBindExpression }
+  | { type: 'coalesce'; expressions: RdfBindExpression[] }
+  | { type: 'if'; condition: RdfQueryFilter[]; then: RdfBindExpression; else: RdfBindExpression }
   | {
     type: 'substring';
     expression: RdfBindExpression;
@@ -455,7 +457,9 @@ export type RdfBindExpression =
     length?: RdfBindExpression;
   }
   | { type: 'concat'; expressions: RdfBindExpression[] }
-  | { type: 'iri'; expression: RdfBindExpression; base: string };
+  | { type: 'iri'; expression: RdfBindExpression; base: string }
+  | { type: 'strdt'; lexical: RdfBindExpression; datatype: RdfBindExpression }
+  | { type: 'strlang'; lexical: RdfBindExpression; language: RdfBindExpression };
 
 export interface RdfQueryBind {
   variable: string;

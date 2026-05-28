@@ -1538,6 +1538,73 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.plan).toContain('Bind(?lowerContent:=LCASE("HeLLo"),?upperContent:=UCASE(STR(?content)))');
   });
 
+  it('evaluates COALESCE, IF, STRDT, and STRLANG BIND expressions after required joins', () => {
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      binds: [
+        {
+          variable: 'fallbackContent',
+          expression: {
+            type: 'coalesce',
+            expressions: [
+              { type: 'variable', variable: 'missing' },
+              { type: 'stringValue', variable: 'content' },
+              { type: 'term', term: literal('fallback') },
+            ],
+          },
+        },
+        {
+          variable: 'branchContent',
+          expression: {
+            type: 'if',
+            condition: [
+              {
+                variable: 'missing',
+                operator: '$bound',
+                value: false,
+              },
+            ],
+            then: { type: 'stringValue', variable: 'content' },
+            else: { type: 'term', term: literal('missing') },
+          },
+        },
+        {
+          variable: 'typedContent',
+          expression: {
+            type: 'strdt',
+            lexical: { type: 'stringValue', variable: 'content' },
+            datatype: {
+              type: 'term',
+              term: namedNode('http://www.w3.org/2001/XMLSchema#string'),
+            },
+          },
+        },
+        {
+          variable: 'localizedContent',
+          expression: {
+            type: 'strlang',
+            lexical: { type: 'stringValue', variable: 'content' },
+            language: { type: 'term', term: literal('en') },
+          },
+        },
+      ],
+      select: ['fallbackContent', 'branchContent', 'typedContent', 'localizedContent'],
+    });
+
+    expect(result.bindings).toHaveLength(1);
+    expect(result.bindings[0].fallbackContent.value).toBe('hello');
+    expect(result.bindings[0].branchContent.value).toBe('hello');
+    expect(result.bindings[0].typedContent).toEqual(literal('hello', namedNode('http://www.w3.org/2001/XMLSchema#string')));
+    expect(result.bindings[0].localizedContent).toEqual(literal('hello', 'en'));
+    expect(result.metrics.plan).toContain('Bind(?fallbackContent:=COALESCE(?missing,STR(?content),"fallback"),?branchContent:=IF(?missing$bound,STR(?content),"missing"),?typedContent:=STRDT(STR(?content),http://www.w3.org/2001/XMLSchema#string),?localizedContent:=STRLANG(STR(?content),"en"))');
+  });
+
   it('counts distinct bindings after joins', () => {
     const result = engine.query({
       patterns: [

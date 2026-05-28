@@ -331,6 +331,79 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
     expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
+  it('covers COALESCE, IF, STRDT, and STRLANG expression aliases without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+
+    const stream = await engine.queryBindings(`
+      SELECT ?person ?safeName ?personKey ?typedName ?localizedName WHERE {
+        ?person <${NAME}> ?name .
+        BIND(COALESCE(STR(?name), "unknown") AS ?safeName)
+        BIND(IF(BOUND(?name), STR(?person), "missing") AS ?personKey)
+        BIND(STRDT(STR(?name), <http://www.w3.org/2001/XMLSchema#string>) AS ?typedName)
+        BIND(STRLANG(STR(?name), "en") AS ?localizedName)
+      }
+      ORDER BY ?person
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      person: binding.get('person')?.value,
+      safeName: binding.get('safeName')?.value,
+      personKey: binding.get('personKey')?.value,
+      typedName: {
+        value: binding.get('typedName')?.value,
+        datatype: binding.get('typedName')?.termType === 'Literal'
+          ? binding.get('typedName')?.datatype.value
+          : undefined,
+      },
+      localizedName: {
+        value: binding.get('localizedName')?.value,
+        language: binding.get('localizedName')?.termType === 'Literal'
+          ? binding.get('localizedName')?.language
+          : undefined,
+      },
+    }))).toEqual([
+      {
+        person: `${GRAPH}#alice`,
+        safeName: 'Alice',
+        personKey: `${GRAPH}#alice`,
+        typedName: {
+          value: 'Alice',
+          datatype: 'http://www.w3.org/2001/XMLSchema#string',
+        },
+        localizedName: {
+          value: 'Alice',
+          language: 'en',
+        },
+      },
+      {
+        person: `${GRAPH}#bob`,
+        safeName: 'Bob',
+        personKey: `${GRAPH}#bob`,
+        typedName: {
+          value: 'Bob',
+          datatype: 'http://www.w3.org/2001/XMLSchema#string',
+        },
+        localizedName: {
+          value: 'Bob',
+          language: 'en',
+        },
+      },
+    ]);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      totalCount: 1,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 2,
+      },
+    });
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
   it('covers BIND inside OPTIONAL without fallback', async () => {
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
 
@@ -1166,25 +1239,40 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
       INSERT {
         GRAPH <${GRAPH}> {
           ?person <${STATUS}> "minor" .
+          ?person <${LABEL}> ?statusLabel .
         }
       }
       WHERE {
         GRAPH <${GRAPH}> {
           ?person <${STATUS}> ?oldStatus .
           ?person <${AGE}> ?age .
+          BIND(STRLANG(STR(?oldStatus), "en") AS ?statusLabel)
           FILTER(?age >= 13)
         }
       }
     `, BASE);
 
     const stream = await engine.queryBindings(`
-      SELECT ?status WHERE {
+      SELECT ?status ?label WHERE {
         <${GRAPH}#alice> <${STATUS}> ?status .
+        <${GRAPH}#alice> <${LABEL}> ?label .
       }
     `, BASE);
     const results = await arrayFromStream(stream);
 
-    expect(results.map((binding) => binding.get('status')?.value)).toEqual(['minor']);
+    expect(results.map((binding) => ({
+      status: binding.get('status')?.value,
+      label: binding.get('label')?.value,
+      labelLanguage: binding.get('label')?.termType === 'Literal'
+        ? binding.get('label')?.language
+        : undefined,
+    }))).toEqual([
+      {
+        status: 'minor',
+        label: 'queued',
+        labelLanguage: 'en',
+      },
+    ]);
     expect(fallbackSpy).not.toHaveBeenCalled();
     expect(engine.getMetrics()).toMatchObject({
       fallbackCount: 0,

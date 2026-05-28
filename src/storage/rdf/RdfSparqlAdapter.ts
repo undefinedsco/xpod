@@ -1230,6 +1230,22 @@ export class RdfSparqlAdapter {
         expression: this.compileBindExpression(this.expressionArg(normalized.args[0]), basePath),
       };
     }
+    if (operator === 'coalesce') {
+      return {
+        type: 'coalesce',
+        expressions: normalized.args.map((arg: Expression | Pattern) => (
+          this.compileBindExpression(this.expressionArg(arg), basePath)
+        )),
+      };
+    }
+    if (operator === 'if') {
+      return {
+        type: 'if',
+        condition: this.compileFilter(this.expressionArg(normalized.args[0])),
+        then: this.compileBindExpression(this.expressionArg(normalized.args[1]), basePath),
+        else: this.compileBindExpression(this.expressionArg(normalized.args[2]), basePath),
+      };
+    }
     if (operator === 'substr' || operator === 'substring') {
       return {
         type: 'substring',
@@ -1253,6 +1269,20 @@ export class RdfSparqlAdapter {
         type: 'iri',
         expression: this.compileBindExpression(this.expressionArg(normalized.args[0]), basePath),
         base: basePath,
+      };
+    }
+    if (operator === 'strdt') {
+      return {
+        type: 'strdt',
+        lexical: this.compileBindExpression(this.expressionArg(normalized.args[0]), basePath),
+        datatype: this.compileBindExpression(this.expressionArg(normalized.args[1]), basePath),
+      };
+    }
+    if (operator === 'strlang') {
+      return {
+        type: 'strlang',
+        lexical: this.compileBindExpression(this.expressionArg(normalized.args[0]), basePath),
+        language: this.compileBindExpression(this.expressionArg(normalized.args[1]), basePath),
       };
     }
 
@@ -3121,6 +3151,14 @@ function variablesInBindExpression(expression: RdfBindExpression): string[] {
     case 'lowerCase':
     case 'upperCase':
       return variablesInBindExpression(expression.expression);
+    case 'coalesce':
+      return unique(expression.expressions.flatMap((item) => variablesInBindExpression(item)));
+    case 'if':
+      return unique([
+        ...variablesInFilters(expression.condition),
+        ...variablesInBindExpression(expression.then),
+        ...variablesInBindExpression(expression.else),
+      ]);
     case 'substring':
       return unique([
         ...variablesInBindExpression(expression.expression),
@@ -3131,11 +3169,28 @@ function variablesInBindExpression(expression: RdfBindExpression): string[] {
       return unique(expression.expressions.flatMap((item) => variablesInBindExpression(item)));
     case 'iri':
       return variablesInBindExpression(expression.expression);
+    case 'strdt':
+      return unique([
+        ...variablesInBindExpression(expression.lexical),
+        ...variablesInBindExpression(expression.datatype),
+      ]);
+    case 'strlang':
+      return unique([
+        ...variablesInBindExpression(expression.lexical),
+        ...variablesInBindExpression(expression.language),
+      ]);
     default: {
       const exhaustive: never = expression;
       return exhaustive;
     }
   }
+}
+
+function variablesInFilters(filters: RdfQueryFilter[]): string[] {
+  return unique(filters.flatMap((filter) => [
+    filter.variable,
+    filter.variable2,
+  ].filter((value): value is string => Boolean(value))));
 }
 
 function assertOptionalBindVariablesSafe(

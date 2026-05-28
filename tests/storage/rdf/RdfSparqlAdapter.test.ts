@@ -593,6 +593,86 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
+  it('compiles standard COALESCE, IF, STRDT, and STRLANG BIND expressions into local query shape', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?fallback ?branch ?typed ?localized WHERE {
+        ?message <${CONTENT}> ?content .
+        BIND(COALESCE(STR(?content), "fallback") AS ?fallback)
+        BIND(IF(BOUND(?content), STR(?message), "missing") AS ?branch)
+        BIND(STRDT(STR(?content), <${XSD_INTEGER}>) AS ?typed)
+        BIND(STRLANG(STR(?content), "en") AS ?localized)
+      }
+    `, BASE);
+
+    expect(compiled.query.binds).toEqual([
+      {
+        variable: 'fallback',
+        expression: {
+          type: 'coalesce',
+          expressions: [
+            { type: 'stringValue', variable: 'content' },
+            {
+              type: 'term',
+              term: expect.objectContaining({
+                termType: 'Literal',
+                value: 'fallback',
+              }),
+            },
+          ],
+        },
+      },
+      {
+        variable: 'branch',
+        expression: {
+          type: 'if',
+          condition: [
+            {
+              variable: 'content',
+              operator: '$bound',
+              value: true,
+            },
+          ],
+          then: { type: 'stringValue', variable: 'message' },
+          else: {
+            type: 'term',
+            term: expect.objectContaining({
+              termType: 'Literal',
+              value: 'missing',
+            }),
+          },
+        },
+      },
+      {
+        variable: 'typed',
+        expression: {
+          type: 'strdt',
+          lexical: { type: 'stringValue', variable: 'content' },
+          datatype: {
+            type: 'term',
+            term: expect.objectContaining({
+              termType: 'NamedNode',
+              value: XSD_INTEGER,
+            }),
+          },
+        },
+      },
+      {
+        variable: 'localized',
+        expression: {
+          type: 'strlang',
+          lexical: { type: 'stringValue', variable: 'content' },
+          language: {
+            type: 'term',
+            term: expect.objectContaining({
+              termType: 'Literal',
+              value: 'en',
+            }),
+          },
+        },
+      },
+    ]);
+  });
+
   it('keeps GRAPH ?g bound to local Pod graph scope', () => {
     const compiled = adapter.compile(`
       SELECT ?g ?message WHERE {

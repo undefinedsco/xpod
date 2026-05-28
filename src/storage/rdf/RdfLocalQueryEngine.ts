@@ -1797,6 +1797,19 @@ export class RdfLocalQueryEngine {
         const value = this.evaluateBindExpression(expression.expression, binding);
         return value ? DataFactory.literal(value.value.toLocaleUpperCase('en-US')) as Term : undefined;
       }
+      case 'coalesce': {
+        for (const item of expression.expressions) {
+          const value = this.evaluateBindExpression(item, binding);
+          if (value) {
+            return value;
+          }
+        }
+        return undefined;
+      }
+      case 'if':
+        return this.matchesFilters(binding, expression.condition)
+          ? this.evaluateBindExpression(expression.then, binding)
+          : this.evaluateBindExpression(expression.else, binding);
       case 'substring': {
         const value = this.evaluateBindExpression(expression.expression, binding);
         const startTerm = this.evaluateBindExpression(expression.start, binding);
@@ -1826,6 +1839,22 @@ export class RdfLocalQueryEngine {
         } catch {
           return undefined;
         }
+      }
+      case 'strdt': {
+        const lexical = this.evaluateBindExpression(expression.lexical, binding);
+        const datatype = this.evaluateBindExpression(expression.datatype, binding);
+        if (!lexical || !datatype || datatype.termType !== 'NamedNode') {
+          return undefined;
+        }
+        return DataFactory.literal(lexical.value, DataFactory.namedNode(datatype.value)) as Term;
+      }
+      case 'strlang': {
+        const lexical = this.evaluateBindExpression(expression.lexical, binding);
+        const language = this.evaluateBindExpression(expression.language, binding);
+        if (!lexical || !language) {
+          return undefined;
+        }
+        return DataFactory.literal(lexical.value, language.value) as Term;
       }
       default: {
         const exhaustive: never = expression;
@@ -3313,6 +3342,10 @@ function describeBindExpression(expression: RdfBindExpression): string {
       return `LCASE(${describeBindExpression(expression.expression)})`;
     case 'upperCase':
       return `UCASE(${describeBindExpression(expression.expression)})`;
+    case 'coalesce':
+      return `COALESCE(${expression.expressions.map(describeBindExpression).join(',')})`;
+    case 'if':
+      return `IF(${expression.condition.map(describeFilter).join('&')},${describeBindExpression(expression.then)},${describeBindExpression(expression.else)})`;
     case 'substring':
       return `SUBSTR(${[
         describeBindExpression(expression.expression),
@@ -3323,6 +3356,10 @@ function describeBindExpression(expression: RdfBindExpression): string {
       return `CONCAT(${expression.expressions.map(describeBindExpression).join(',')})`;
     case 'iri':
       return `IRI(${describeBindExpression(expression.expression)})`;
+    case 'strdt':
+      return `STRDT(${describeBindExpression(expression.lexical)},${describeBindExpression(expression.datatype)})`;
+    case 'strlang':
+      return `STRLANG(${describeBindExpression(expression.lexical)},${describeBindExpression(expression.language)})`;
     default: {
       const exhaustive: never = expression;
       return JSON.stringify(exhaustive);
