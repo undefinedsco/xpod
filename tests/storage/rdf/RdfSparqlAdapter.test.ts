@@ -1250,6 +1250,72 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
+  it('compiles language and datatype membership filters as local post-filters', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(LANG(?content) IN ("en", "zh"))
+        FILTER(LANG(?content) NOT IN ("fr"))
+        FILTER(DATATYPE(?content) IN (<http://www.w3.org/2001/XMLSchema#string>, <${XSD_INTEGER}>))
+        FILTER(DATATYPE(?content) NOT IN (<http://www.w3.org/2001/XMLSchema#boolean>))
+        FILTER(!(LANG(?content) IN ("de")))
+        FILTER(!(DATATYPE(?content) NOT IN (<http://www.w3.org/2001/XMLSchema#string>)))
+      }
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([
+      {
+        variable: 'content',
+        operator: '$langIn',
+        values: ['en', 'zh'],
+      },
+      {
+        variable: 'content',
+        operator: '$notLangIn',
+        values: ['fr'],
+      },
+      {
+        variable: 'content',
+        operator: '$datatypeIn',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: 'http://www.w3.org/2001/XMLSchema#string',
+          }),
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: XSD_INTEGER,
+          }),
+        ],
+      },
+      {
+        variable: 'content',
+        operator: '$notDatatypeIn',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: 'http://www.w3.org/2001/XMLSchema#boolean',
+          }),
+        ],
+      },
+      {
+        variable: 'content',
+        operator: '$notLangIn',
+        values: ['de'],
+      },
+      {
+        variable: 'content',
+        operator: '$datatypeIn',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: 'http://www.w3.org/2001/XMLSchema#string',
+          }),
+        ],
+      },
+    ]);
+  });
+
   it('compiles FROM and FROM NAMED dataset scope into local graph constraints', () => {
     const defaultGraphA = `${BASE}.data/chat/default/2026/05/18/messages.ttl`;
     const defaultGraphB = `${BASE}.data/chat/default/2026/05/19/messages.ttl`;

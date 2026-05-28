@@ -1097,6 +1097,74 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.plan).not.toContain('Language(object$notLangMatches)');
   });
 
+  it('applies language and datatype membership filters as local post-filters', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    engine.put([
+      quad(namedNode(`${graph.value}#msg_en`), namedNode(SIOC_CONTENT), literal('howdy', 'en-US'), graph),
+      quad(namedNode(`${graph.value}#msg_fr`), namedNode(SIOC_CONTENT), literal('bonjour', 'fr'), graph),
+    ]);
+
+    const langResult = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$langIn',
+          values: ['en-us', 'zh'],
+        },
+        {
+          variable: 'content',
+          operator: '$notLangIn',
+          values: ['fr'],
+        },
+      ],
+      select: ['message'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(langResult.bindings.map((binding) => termToId(binding.message as any))).toEqual([
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_en',
+    ]);
+    expect(langResult.metrics.filtersPushedDown).toBe(0);
+    expect(langResult.metrics.plan).toContain('Filter(?content$langIn,?content$notLangIn)');
+
+    const datatypeResult = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$datatypeIn',
+          values: [namedNode('http://www.w3.org/2001/XMLSchema#string')],
+        },
+        {
+          variable: 'content',
+          operator: '$notDatatypeIn',
+          values: [namedNode(XSD_INTEGER)],
+        },
+      ],
+      select: ['message'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(datatypeResult.bindings.map((binding) => termToId(binding.message as any))).toEqual([
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+    ]);
+    expect(datatypeResult.metrics.filtersPushedDown).toBe(0);
+    expect(datatypeResult.metrics.plan).toContain('Filter(?content$datatypeIn,?content$notDatatypeIn)');
+  });
+
   it('applies string-length filters after scan without pushing them into the term index', () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');

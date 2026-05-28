@@ -486,10 +486,14 @@ export type RdfQueryFilterOperator =
   | '$notSameTerm'
   | '$lang'
   | '$notLang'
+  | '$langIn'
+  | '$notLangIn'
   | '$langMatches'
   | '$notLangMatches'
   | '$datatype'
-  | '$notDatatype';
+  | '$notDatatype'
+  | '$datatypeIn'
+  | '$notDatatypeIn';
 
 export type RdfQueryFilterValue = Term | string | number | boolean;
 

@@ -1886,6 +1886,14 @@ export class RdfSparqlAdapter {
       if (!Array.isArray(values)) {
         throw new UnsupportedSparqlQueryError('FILTER IN tuple fallback to compatibility engine');
       }
+      const functionFilter = this.compileFunctionInFilter(
+        this.expressionArg(expression.args[0]),
+        values,
+        operator === 'notin',
+      );
+      if (functionFilter) {
+        return [functionFilter];
+      }
       const operand = this.stringOperandVariable(this.expressionArg(expression.args[0]));
       return [{
         variable: operand.variable,
@@ -2172,6 +2180,36 @@ export class RdfSparqlAdapter {
     return null;
   }
 
+  private compileFunctionInFilter(
+    functionExpression: Expression,
+    values: Expression[],
+    negated: boolean,
+  ): RdfQueryFilter | null {
+    if (!isOperationExpression(functionExpression)) {
+      return null;
+    }
+    const functionOperator = functionExpression.operator.toLowerCase();
+    if (functionOperator === 'lang') {
+      return {
+        variable: this.expressionVariable(this.expressionArg(functionExpression.args[0])),
+        operator: negated ? '$notLangIn' : '$langIn',
+        values: values.map((value) => this.literalString(value)),
+      };
+    }
+    if (functionOperator === 'datatype') {
+      const datatypeValues = values.map((value) => this.filterValue(value));
+      if (datatypeValues.some((value) => !isNamedNodeTerm(value))) {
+        throw new UnsupportedSparqlQueryError('DATATYPE FILTER values must be IRIs locally');
+      }
+      return {
+        variable: this.expressionVariable(this.expressionArg(functionExpression.args[0])),
+        operator: negated ? '$notDatatypeIn' : '$datatypeIn',
+        values: datatypeValues,
+      };
+    }
+    return null;
+  }
+
   private stringLengthVariableOrUndefined(expression: Expression): string | undefined {
     const normalized = this.normalizeFunctionCallExpression(expression);
     if (!isOperationExpression(normalized) || normalized.operator.toLowerCase() !== 'strlen') {
@@ -2320,6 +2358,14 @@ export class RdfSparqlAdapter {
       const values = expression.args[1];
       if (!Array.isArray(values)) {
         throw new UnsupportedSparqlQueryError('FILTER negated IN tuple fallback to compatibility engine');
+      }
+      const functionFilter = this.compileFunctionInFilter(
+        this.expressionArg(expression.args[0]),
+        values,
+        operator === 'in',
+      );
+      if (functionFilter) {
+        return [functionFilter];
       }
       const operand = this.stringOperandVariable(this.expressionArg(expression.args[0]));
       return [{

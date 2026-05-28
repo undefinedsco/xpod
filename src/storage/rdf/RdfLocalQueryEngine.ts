@@ -2643,6 +2643,12 @@ export class RdfLocalQueryEngine {
         return typeof filter.value === 'string'
           && value.termType === 'Literal'
           && value.language !== filter.value;
+      case '$langIn':
+        return value.termType === 'Literal'
+          && (filter.values ?? []).some((candidate) => typeof candidate === 'string' && value.language === candidate);
+      case '$notLangIn':
+        return value.termType === 'Literal'
+          && !(filter.values ?? []).some((candidate) => typeof candidate === 'string' && value.language === candidate);
       case '$langMatches':
         return typeof filter.value === 'string'
           && value.termType === 'Literal'
@@ -2659,6 +2665,12 @@ export class RdfLocalQueryEngine {
         return filter.value !== undefined
           && value.termType === 'Literal'
           && !sameTermOrLexical(value.datatype, filter.value);
+      case '$datatypeIn':
+        return value.termType === 'Literal'
+          && (filter.values ?? []).some((candidate) => sameTermOrLexical(value.datatype, candidate));
+      case '$notDatatypeIn':
+        return value.termType === 'Literal'
+          && !(filter.values ?? []).some((candidate) => sameTermOrLexical(value.datatype, candidate));
       default: {
         const exhaustive: never = filter.operator;
         throw new Error(`Unsupported RDF local query filter operator: ${exhaustive}`);

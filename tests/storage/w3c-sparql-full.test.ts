@@ -827,6 +827,50 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
     expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
+  it('covers language and datatype membership filters without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    rdfEngine.put([
+      q(`${GRAPH}#alice`, LABEL, literal('Ally', 'en')),
+      q(`${GRAPH}#bob`, LABEL, literal('Robert', 'fr')),
+      q(`${GRAPH}#bob`, AGE, literal('21', namedNode(XSD_INTEGER))),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?person ?label ?age WHERE {
+        ?person <${LABEL}> ?label .
+        ?person <${AGE}> ?age .
+        FILTER(LANG(?label) IN ("en", "zh"))
+        FILTER(LANG(?label) NOT IN ("fr"))
+        FILTER(DATATYPE(?age) IN (<${XSD_INTEGER}>))
+        FILTER(DATATYPE(?age) NOT IN (<http://www.w3.org/2001/XMLSchema#string>))
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      person: binding.get('person')?.value,
+      label: binding.get('label')?.value,
+      age: binding.get('age')?.value,
+    }))).toEqual([
+      {
+        person: `${GRAPH}#alice`,
+        label: 'Ally',
+        age: '13',
+      },
+    ]);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      fallbackCount: 0,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 1,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('Filter(?label$langIn,?label$notLangIn,?age$datatypeIn,?age$notDatatypeIn)');
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
   it('covers grouped COUNT/HAVING and DESCRIBE without fallback', async () => {
     const bindingsFallbackSpy = vi.spyOn(fallback, 'queryBindings');
     const quadsFallbackSpy = vi.spyOn(fallback, 'queryQuads');
