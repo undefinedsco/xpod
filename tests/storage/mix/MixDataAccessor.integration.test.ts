@@ -1302,6 +1302,75 @@ WHERE {
     ]);
   });
 
+  it('applies query-backed updates that write multiple local RDF authority files', async () => {
+    const resourceId = { path: `${baseUrl}alice/multi-target-update.ttl` };
+    const otherResourceId = { path: `${baseUrl}alice/multi-target-other.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#first`),
+        namedNode('https://schema.org/name'),
+        literal('multi target before')
+      )
+    ])), metadata);
+    const otherMetadata = new RepresentationMetadata(otherResourceId);
+    otherMetadata.contentType = 'internal/quads';
+    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${otherResourceId.path}#second`),
+        namedNode('https://schema.org/name'),
+        literal('multi target other before')
+      )
+    ])), otherMetadata);
+    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
+
+    await accessor.executeSparqlUpdate(`
+DELETE {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
+  }
+}
+INSERT {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> "multi target after" .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> "multi target other after" .
+  }
+}
+WHERE {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
+  }
+}
+`.trim(), resourceId.path);
+
+    expect(structuredUpdateSpy).not.toHaveBeenCalled();
+
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('multi target after');
+    expect(localRdf).not.toContain('multi target before');
+
+    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
+    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
+    expect(otherLocalRdf).toContain('multi target other after');
+    expect(otherLocalRdf).not.toContain('multi target other before');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => quad.object.value)).toEqual(['multi target after']);
+    const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
+    expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['multi target other after']);
+  });
+
   it('rejects SERVICE updates before the structured accessor fallback path', async () => {
     const resourceId = { path: `${baseUrl}alice/service-update.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
