@@ -111,7 +111,6 @@ interface Rdf3xCompiledJoin {
   queryPlan: string[];
   variableColumns: Map<string, string>;
   variableAliases: Map<string, string>;
-  rowKeyExpression: string;
   unresolved?: Rdf3xPatternKey;
 }
 
@@ -683,7 +682,6 @@ export class Rdf3xIndex {
         numericJoins,
         numericJoinSql,
         'RDF-3X BGP',
-        compiled.rowKeyExpression,
       );
     }).join(', ');
     const aggregateJoins = numericJoinSql.join('');
@@ -756,7 +754,6 @@ export class Rdf3xIndex {
         numericJoins,
         numericJoinSql,
         'RDF-3X BGP group aggregate',
-        compiled.rowKeyExpression,
       );
     });
     const projection = [
@@ -1463,7 +1460,6 @@ export class Rdf3xIndex {
           queryPlan,
           variableColumns,
           variableAliases,
-          rowKeyExpression: '',
           unresolved: source.resolved.unresolved,
         };
       }
@@ -1548,7 +1544,6 @@ export class Rdf3xIndex {
       queryPlan,
       variableColumns,
       variableAliases,
-      rowKeyExpression: this.joinRowKeyExpression(orderedSources),
     };
   }
 
@@ -1964,15 +1959,6 @@ export class Rdf3xIndex {
     };
   }
 
-  private joinRowKeyExpression(sources: Rdf3xJoinSource[]): string {
-    return sources.map((source) => [
-      this.joinSourceColumnRef(source, 'graph'),
-      this.joinSourceColumnRef(source, 'subject'),
-      this.joinSourceColumnRef(source, 'predicate'),
-      this.joinSourceColumnRef(source, 'object'),
-    ].join(` || ':' || `)).join(` || '|' || `);
-  }
-
   private buildJoinAggregateColumn(
     aggregate: RdfQueryAggregate,
     alias: string,
@@ -1981,11 +1967,10 @@ export class Rdf3xIndex {
     numericJoins: Map<string, string>,
     numericJoinSql: string[],
     errorPrefix: string,
-    rowKeyExpression: string,
   ): string {
     if (aggregate.type === 'count' && !aggregate.variable) {
       aggregateTypes.set(aggregate.as, 'integer');
-      return `${aggregate.distinct ? `COUNT(DISTINCT ${rowKeyExpression})` : 'COUNT(*)'} AS ${alias}`;
+      return `${aggregate.distinct ? `COUNT(DISTINCT ${joinSolutionMappingKeyExpression(variableColumns, aggregate.distinctVariables, errorPrefix)})` : 'COUNT(*)'} AS ${alias}`;
     }
     if (!aggregate.variable) {
       throw new Error(`${errorPrefix} ${aggregate.type} aggregate requires a bound variable`);
@@ -3480,6 +3465,28 @@ function sumSpaceObjects(objects: RdfIndexSpaceObject[], kind: RdfIndexSpaceObje
 function uniquePatternKeys(values: Rdf3xPatternKey[]): Rdf3xPatternKey[] {
   return (['graph', 'subject', 'predicate', 'object'] as Rdf3xPatternKey[])
     .filter((key) => values.includes(key));
+}
+
+function uniqueVariableNames(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function joinSolutionMappingKeyExpression(
+  variableColumns: Map<string, string>,
+  variables: string[] | undefined,
+  errorPrefix: string,
+): string {
+  const variableNames = uniqueVariableNames(variables ?? [...variableColumns.keys()]);
+  if (variableNames.length === 0) {
+    return '1';
+  }
+  return variableNames.map((variableName) => {
+    const column = variableColumns.get(variableName);
+    if (!column) {
+      throw new Error(`${errorPrefix} COUNT(DISTINCT *) cannot read unbound variable: ${variableName}`);
+    }
+    return column;
+  }).join(` || ':' || `);
 }
 
 function rdf3xSpaceObjectKind(name: string, schemaType?: string, tableName?: string): RdfIndexSpaceObject['kind'] {

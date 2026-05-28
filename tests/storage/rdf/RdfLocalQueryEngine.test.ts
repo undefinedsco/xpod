@@ -1635,6 +1635,49 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
   });
 
+  it('pushes joined COUNT DISTINCT star as a solution-tuple count', () => {
+    const firstGraph = namedNode('https://pod.example/alice/.data/rdf/join-distinct-star-a.ttl');
+    const secondGraph = namedNode('https://pod.example/alice/.data/rdf/join-distinct-star-b.ttl');
+    const message = namedNode('https://pod.example/alice/.data/rdf/join-distinct-star.ttl#message');
+    const thread = namedNode('https://pod.example/alice/.data/rdf/join-distinct-star.ttl#thread');
+    const status = namedNode('https://undefineds.co/ns#status');
+    engine.put([
+      quad(message, namedNode(SIOC_HAS_MEMBER), thread, firstGraph),
+      quad(message, status, literal('same'), firstGraph),
+      quad(message, namedNode(SIOC_HAS_MEMBER), thread, secondGraph),
+      quad(message, status, literal('same'), secondGraph),
+    ]);
+
+    const result = engine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/rdf/' },
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: rdfVar('thread'),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/rdf/' },
+          subject: rdfVar('message'),
+          predicate: status,
+          object: rdfVar('status'),
+        },
+      ],
+      aggregate: {
+        type: 'count',
+        as: 'count',
+        distinct: true,
+        distinctVariables: ['message', 'thread', 'status'],
+      },
+    });
+
+    expect(result.count).toBe(1);
+    expect(result.bindings[0].count.value).toBe('1');
+    expect(result.metrics.plan).toContain('Aggregate(join-count-distinct-index)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoinCount('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.includes('rowid'))).toBe(false);
+  });
+
   it('reorders SQL self-join COUNT patterns before aggregate pushdown', () => {
     const result = engine.query({
       patterns: [

@@ -1578,6 +1578,7 @@ export class RdfSparqlAdapter {
 
     const variables: string[] = [];
     const visibleVariables = visibleSelectVariables(query);
+    state.setVisibleSolutionVariables(visibleVariables);
     for (const variable of query.variables) {
       if (isSelectVariableTerm(variable)) {
         variables.push(variable.value);
@@ -1638,6 +1639,9 @@ export class RdfSparqlAdapter {
       as,
       variable,
       distinct: aggregate.distinct,
+      ...(type === 'count' && aggregate.distinct && !variable
+        ? { distinctVariables: state.visibleSolutionVariables }
+        : {}),
     };
   }
 
@@ -1796,6 +1800,9 @@ export class RdfSparqlAdapter {
       as: state.nextHavingAggregateVariable(),
       variable,
       distinct: expression.distinct,
+      ...(type === 'count' && expression.distinct && !variable
+        ? { distinctVariables: state.visibleSolutionVariables }
+        : {}),
     };
     localQuery.aggregates = [...(localQuery.aggregates ?? []), hiddenAggregate];
     return hiddenAggregate.as;
@@ -2626,11 +2633,16 @@ class CompileState {
   private groupVariableIndex = 0;
   private orderVariableIndex = 0;
   private havingAggregateVariableIndex = 0;
+  public visibleSolutionVariables: string[] | undefined;
 
   public constructor(
     public readonly basePath: string,
     private readonly skipMinusSharedVariableCheck = false,
   ) {}
+
+  public setVisibleSolutionVariables(variables: string[]): void {
+    this.visibleSolutionVariables = variables;
+  }
 
   public addPattern(pattern: RdfQueryPattern, optional: boolean): void {
     if (optional) {

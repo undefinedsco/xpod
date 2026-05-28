@@ -351,7 +351,6 @@ export class RdfQuadIndex {
         numericJoins,
         numericJoinSql,
         'RDF BGP',
-        this.joinRowKeyExpression(patterns),
       );
     }).join(', ');
     const aggregateJoins = numericJoinSql.join('');
@@ -438,7 +437,6 @@ export class RdfQuadIndex {
         numericJoins,
         numericJoinSql,
         'RDF BGP group aggregate',
-        '__row_key',
       );
     });
     const projection = [
@@ -453,15 +451,12 @@ export class RdfQuadIndex {
       ...aggregateColumns,
     ].join(', ');
     const groupBy = groupColumns.join(', ');
-    const rowKeyExpression = this.joinRowKeyExpression(patterns);
     const aggregateJoins = numericJoinSql.join('');
     const havingClause = this.buildGroupAggregateHavingClause(options.having, aggregateSqlAliases);
     const orderScope = this.buildGroupAggregateOrderScope(options, compiled.variableColumns, aggregateSqlAliases);
     const fromSql = `${compiled.from}${compiled.joins}${aggregateJoins}${compiled.whereClause}`;
     const sourceFromSql = `${compiled.from}${compiled.joins}${aggregateJoins}${orderScope.joins}${compiled.whereClause}`;
-    const sourceSql = aggregateColumns.some((entry) => entry.includes('__row_key'))
-      ? `SELECT ${projection.replace(/__row_key/g, rowKeyExpression)} FROM ${sourceFromSql} GROUP BY ${groupBy}${havingClause.sql}`
-      : `SELECT ${projection} FROM ${sourceFromSql} GROUP BY ${groupBy}${havingClause.sql}`;
+    const sourceSql = `SELECT ${projection} FROM ${sourceFromSql} GROUP BY ${groupBy}${havingClause.sql}`;
     const orderClause = orderScope.orderBy;
     let sql = `${sourceSql}${orderClause}`;
     const params = [...compiled.params, ...havingClause.params];
@@ -706,10 +701,6 @@ export class RdfQuadIndex {
     };
   }
 
-  private joinRowKeyExpression(patterns: RdfQuadJoinPattern[]): string {
-    return patterns.map((_, index) => `q${index}.rowid`).join(` || ':' || `);
-  }
-
   private buildJoinAggregateColumn(
     aggregate: RdfQueryAggregate,
     alias: string,
@@ -718,11 +709,10 @@ export class RdfQuadIndex {
     numericJoins: Map<string, string>,
     numericJoinSql: string[],
     errorPrefix: string,
-    rowKeyExpression: string,
   ): string {
     if (aggregate.type === 'count' && !aggregate.variable) {
       aggregateTypes.set(aggregate.as, 'integer');
-      return `${aggregate.distinct ? `COUNT(DISTINCT ${rowKeyExpression})` : 'COUNT(*)'} AS ${alias}`;
+      return `${aggregate.distinct ? `COUNT(DISTINCT ${joinSolutionMappingKeyExpression(variableColumns, aggregate.distinctVariables, errorPrefix)})` : 'COUNT(*)'} AS ${alias}`;
     }
     if (!aggregate.variable) {
       throw new Error(`${errorPrefix} ${aggregate.type} aggregate requires a bound variable`);
@@ -2396,4 +2386,26 @@ function uniqueNumbers(values: number[]): number[] {
 
 function uniquePatternKeys(values: PatternKey[]): PatternKey[] {
   return TERM_KEYS.filter((key) => values.includes(key));
+}
+
+function uniqueVariableNames(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function joinSolutionMappingKeyExpression(
+  variableColumns: Map<string, string>,
+  variables: string[] | undefined,
+  errorPrefix: string,
+): string {
+  const variableNames = uniqueVariableNames(variables ?? [...variableColumns.keys()]);
+  if (variableNames.length === 0) {
+    return '1';
+  }
+  return variableNames.map((variableName) => {
+    const column = variableColumns.get(variableName);
+    if (!column) {
+      throw new Error(`${errorPrefix} COUNT(DISTINCT *) cannot read unbound variable: ${variableName}`);
+    }
+    return column;
+  }).join(` || ':' || `);
 }

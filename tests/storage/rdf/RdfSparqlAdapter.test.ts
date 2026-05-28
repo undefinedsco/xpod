@@ -855,6 +855,7 @@ describe('RdfSparqlAdapter', () => {
       as: 'count',
       variable: undefined,
       distinct: true,
+      distinctVariables: ['s', 'p', 'o'],
     });
     expect(countDistinct.query.aggregate).toEqual({
       type: 'count',
@@ -862,6 +863,20 @@ describe('RdfSparqlAdapter', () => {
       variable: 's',
       distinct: true,
     });
+
+    const countDistinctPath = adapter.compile(`
+      SELECT (COUNT(DISTINCT *) AS ?count) WHERE {
+        ?message <${HAS_MEMBER}>/<${CONTENT}> ?content .
+      }
+    `, BASE);
+    expect(countDistinctPath.query.aggregate).toMatchObject({
+      type: 'count',
+      as: 'count',
+      variable: undefined,
+      distinct: true,
+      distinctVariables: ['message', 'content'],
+    });
+    expect(countDistinctPath.query.aggregate?.distinctVariables).not.toContain('__rdf_path_1');
   });
 
   it('compiles guarded numeric aggregate projections into local aggregate aliases', () => {

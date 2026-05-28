@@ -1306,6 +1306,56 @@ describe('Rdf3xIndex', () => {
     expect(result.metrics.queryPlan?.join('\n')).toContain('COUNT(DISTINCT q0.subject_id) AS a1');
   });
 
+  it('counts distinct star over connected BGP joins by solution tuple', () => {
+    const graphA = namedNode('https://g/a');
+    const graphB = namedNode('https://g/b');
+    const member = namedNode('https://p/member');
+    const status = namedNode('https://p/status');
+    const message = namedNode('https://message/1');
+    const thread = namedNode('https://thread/1');
+    quadIndex.multiPut([
+      quad(message, member, thread, graphA),
+      quad(message, status, literal('open'), graphA),
+      quad(message, member, thread, graphB),
+      quad(message, status, literal('open'), graphB),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const patterns = [
+      {
+        pattern: {
+          graph: { $startsWith: 'https://g/' },
+          subject: message,
+          predicate: member,
+        },
+        variables: { object: 'thread' },
+      },
+      {
+        pattern: {
+          graph: { $startsWith: 'https://g/' },
+          subject: message,
+          predicate: status,
+        },
+        variables: { object: 'status' },
+      },
+    ];
+    const result = rdf3x.countJoinPatterns(patterns, {
+      aggregates: [
+        {
+          type: 'count',
+          as: 'count',
+          distinct: true,
+          distinctVariables: ['thread', 'status'],
+        },
+      ],
+    });
+
+    expect(result.bindings[0].count.value).toBe('1');
+    expect(result.metrics.queryPlan).toContain('Rdf3xJoinCount(count:DISTINCT(*))');
+    expect(result.metrics.queryPlan?.join('\n')).toMatch(/COUNT\(DISTINCT [qm]0\.object_id \|\| ':' \|\| [qm]1\.object_id\)/);
+    expect(result.metrics.queryPlan?.join('\n')).not.toContain('rowid');
+  });
+
   it('groups connected BGP joins and applies HAVING/order/limit inside RDF-3X SQL', () => {
     const graph = namedNode('https://g');
     const member = namedNode('https://p/member');

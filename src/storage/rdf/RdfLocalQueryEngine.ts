@@ -1948,7 +1948,7 @@ export class RdfLocalQueryEngine {
       return undefined;
     }
     const distinctKeys = aggregate.distinct
-      ? this.distinctCountKeys(pattern, aggregate.variable)
+      ? this.distinctCountKeys(pattern, aggregate.variable, aggregate.distinctVariables)
       : undefined;
     if (aggregate.distinct && (!distinctKeys || distinctKeys.length === 0)) {
       return undefined;
@@ -2214,13 +2214,28 @@ export class RdfLocalQueryEngine {
     return compiled;
   }
 
-  private distinctCountKeys(pattern: RdfQueryPattern, variableName?: string): RdfQueryPatternKey[] | undefined {
+  private distinctCountKeys(
+    pattern: RdfQueryPattern,
+    variableName?: string,
+    distinctVariables?: string[],
+  ): RdfQueryPatternKey[] | undefined {
     if (variableName) {
       const keys = TERM_KEYS.filter((key) => {
         const value = pattern[key];
         return isVariable(value) && value.variable === variableName;
       });
       return keys.length === 1 ? keys : undefined;
+    }
+    if (distinctVariables) {
+      const keys: RdfQueryPatternKey[] = [];
+      for (const distinctVariable of distinctVariables) {
+        const key = termKeyForVariable(pattern, distinctVariable);
+        if (!key) {
+          return undefined;
+        }
+        keys.push(key);
+      }
+      return uniquePatternKeys(keys);
     }
     const keys = TERM_KEYS.filter((key) => {
       const value = pattern[key];
@@ -2351,12 +2366,17 @@ export class RdfLocalQueryEngine {
     return next;
   }
 
-  private countBindings(bindings: RdfBindingRow[], variable?: string, distinct?: boolean): number {
+  private countBindings(
+    bindings: RdfBindingRow[],
+    variable?: string,
+    distinct?: boolean,
+    distinctVariables?: string[],
+  ): number {
     if (!distinct) {
       return variable ? bindings.filter((binding) => binding[variable]).length : bindings.length;
     }
     if (!variable) {
-      return new Set(bindings.map((binding) => bindingKey(binding))).size;
+      return new Set(bindings.map((binding) => bindingKey(binding, distinctVariables))).size;
     }
     return new Set(
       bindings
@@ -2374,7 +2394,7 @@ export class RdfLocalQueryEngine {
     let firstCount = 0;
     aggregates.forEach((aggregate, index) => {
       const count = aggregate.type === 'count'
-        ? this.countBindings(bindings, aggregate.variable, aggregate.distinct)
+        ? this.countBindings(bindings, aggregate.variable, aggregate.distinct, aggregate.distinctVariables)
         : 0;
       if (index === 0) {
         firstCount = count;
@@ -2426,7 +2446,12 @@ export class RdfLocalQueryEngine {
 
   private aggregateLiteral(bindings: RdfBindingRow[], aggregate: RdfQueryAggregate): Term | undefined {
     if (aggregate.type === 'count') {
-      return countLiteral(this.countBindings(bindings, aggregate.variable, aggregate.distinct));
+      return countLiteral(this.countBindings(
+        bindings,
+        aggregate.variable,
+        aggregate.distinct,
+        aggregate.distinctVariables,
+      ));
     }
     const values = this.numericAggregateValues(bindings, aggregate.variable, aggregate.distinct);
     if (values.length === 0) {
@@ -3194,10 +3219,13 @@ function compareBindings(
   return 0;
 }
 
-function bindingKey(binding: RdfBindingRow): string {
-  return Object.keys(binding)
+function bindingKey(binding: RdfBindingRow, variables?: string[]): string {
+  return [...(variables ?? Object.keys(binding))]
     .sort()
-    .map((key) => `${key}=${termToId(binding[key] as any)}`)
+    .map((key) => {
+      const term = binding[key];
+      return `${key}=${term ? termToId(term as any) : '__UNBOUND__'}`;
+    })
     .join('\u001f');
 }
 

@@ -439,6 +439,7 @@ export interface RdfQueryAggregate {
   as: string;
   variable?: string;
   distinct?: boolean;
+  distinctVariables?: string[];
 }
 
 export type RdfBindExpression =
