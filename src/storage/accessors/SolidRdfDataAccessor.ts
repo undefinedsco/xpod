@@ -201,10 +201,14 @@ export class SolidRdfDataAccessor implements DataAccessor {
 
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
     await this.initialize();
-    const { name } = this.getRelatedNames(identifier);
+    const { name, parent } = this.getRelatedNames(identifier);
     const metaName = this.getMetadataNode(name);
     this.rdfEngine.delete({ graph: metaName });
-    this.rdfEngine.put(this.toGraphQuads(metaName, metadata.quads()));
+    const inserts = this.toGraphQuads(metaName, metadata.quads());
+    if (parent) {
+      inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
+    }
+    this.rdfEngine.put(inserts);
   }
 
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
