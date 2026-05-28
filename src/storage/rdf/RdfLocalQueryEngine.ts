@@ -2595,17 +2595,33 @@ export class RdfLocalQueryEngine {
         const text = filterStringValue(value, comparisonValue);
         return typeof filter.value === 'string' && text.startsWith(filter.value);
       }
+      case '$notStartsWith': {
+        const text = filterStringValue(value, comparisonValue);
+        return typeof filter.value === 'string' && !text.startsWith(filter.value);
+      }
       case '$contains': {
         const text = filterStringValue(value, comparisonValue);
         return typeof filter.value === 'string' && text.includes(filter.value);
+      }
+      case '$notContains': {
+        const text = filterStringValue(value, comparisonValue);
+        return typeof filter.value === 'string' && !text.includes(filter.value);
       }
       case '$endsWith': {
         const text = filterStringValue(value, comparisonValue);
         return typeof filter.value === 'string' && text.endsWith(filter.value);
       }
+      case '$notEndsWith': {
+        const text = filterStringValue(value, comparisonValue);
+        return typeof filter.value === 'string' && !text.endsWith(filter.value);
+      }
       case '$regex': {
         const text = filterStringValue(value, comparisonValue);
         return typeof filter.value === 'string' && new RegExp(filter.value, filter.flags).test(text);
+      }
+      case '$notRegex': {
+        const text = filterStringValue(value, comparisonValue);
+        return typeof filter.value === 'string' && !new RegExp(filter.value, filter.flags).test(text);
       }
       case '$termType':
         return typeof filter.value === 'string' && matchesTermType(value, filter.value);

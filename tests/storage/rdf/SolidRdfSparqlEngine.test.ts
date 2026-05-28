@@ -331,6 +331,46 @@ describe('SolidRdfSparqlEngine', () => {
     expect(engine.getMetrics().lastPrimary?.plan).toContain('Filter(?content$bound)');
   });
 
+  it('executes negated string filters on the embedded primary path', async () => {
+    const onFallback = vi.fn();
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    rdfEngine.put([
+      quad(namedNode(`${graph.value}#msg_skip`), namedNode(CONTENT), literal('skip this'), graph),
+      quad(namedNode(`${graph.value}#msg_draft`), namedNode(CONTENT), literal('draft note'), graph),
+      quad(namedNode(`${graph.value}#msg_tmp`), namedNode(CONTENT), literal('keep tmp'), graph),
+      quad(namedNode(`${graph.value}#msg_old`), namedNode(CONTENT), literal('old note'), graph),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(!CONTAINS(STR(?content), "skip"))
+        FILTER(!STRSTARTS(STR(?content), "draft"))
+        FILTER(!STRENDS(STR(?content), "tmp"))
+        FILTER(!REGEX(STR(?content), "^old", "i"))
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => binding.get('content')?.value)).toEqual(['hello']);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+    });
+    expect(engine.getMetrics().lastPrimary?.plan.some((entry) => entry.includes('$notContains'))).toBe(true);
+  });
+
   it('executes FILTER inside OPTIONAL on the embedded primary path', async () => {
     const onFallback = vi.fn();
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
@@ -3771,6 +3811,66 @@ describe('SolidRdfSparqlEngine', () => {
       'UpdateDelta',
       'delete:2',
       'insert:2',
+    ]));
+  });
+
+  it('applies DELETE/INSERT WHERE with negated string filters on the embedded update delta path', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const graph = 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl';
+    const msg1 = `${graph}#msg_1`;
+    const msg2 = `${graph}#msg_2`;
+    await engine.queryVoid(`
+      INSERT DATA {
+        GRAPH <${graph}> {
+          <${msg2}> <${CONTENT}> "skip second" .
+        }
+      }
+    `, BASE);
+
+    await engine.queryVoid(`
+      DELETE {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> "negated filter rewritten" .
+        }
+      }
+      WHERE {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> ?old .
+        }
+        FILTER(!CONTAINS(STR(?old), "skip"))
+      }
+    `, BASE);
+    const updateMetric = engine.getMetrics().lastPrimary;
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${graph}> {
+          <${msg1}> <${CONTENT}> "negated filter rewritten" .
+          <${msg2}> <${CONTENT}> "skip second" .
+        }
+      }
+    `, BASE)).resolves.toBe(true);
+
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+    expect(updateMetric?.plan).toEqual(expect.arrayContaining([
+      'UpdateDelta',
+      'delete:1',
+      'insert:1',
     ]));
   });
 

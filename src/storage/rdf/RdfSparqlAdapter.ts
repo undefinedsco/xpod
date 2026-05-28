@@ -2319,6 +2319,19 @@ export class RdfSparqlAdapter {
       }];
     }
 
+    const stringOperator = this.stringFilter(operator);
+    if (stringOperator) {
+      const [left, right, flags] = expression.args;
+      const leftOperand = this.stringOperandVariable(this.expressionArg(left));
+      return [{
+        variable: leftOperand.variable,
+        operator: this.negatedStringFilter(stringOperator),
+        operand: leftOperand.operand,
+        value: this.literalString(this.expressionArg(right)),
+        flags: operator === 'regex' && flags ? this.literalString(this.expressionArg(flags)) : undefined,
+      }];
+    }
+
     throw new UnsupportedSparqlQueryError(`FILTER !${operator} fallback to compatibility engine`);
   }
 
@@ -2422,6 +2435,21 @@ export class RdfSparqlAdapter {
         return '$regex';
       default:
         return null;
+    }
+  }
+
+  private negatedStringFilter(operator: RdfQueryFilterOperator): RdfQueryFilterOperator {
+    switch (operator) {
+      case '$startsWith':
+        return '$notStartsWith';
+      case '$contains':
+        return '$notContains';
+      case '$endsWith':
+        return '$notEndsWith';
+      case '$regex':
+        return '$notRegex';
+      default:
+        throw new UnsupportedSparqlQueryError(`FILTER !${operator} fallback to compatibility engine`);
     }
   }
 

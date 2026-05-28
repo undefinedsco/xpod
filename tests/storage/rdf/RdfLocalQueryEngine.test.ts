@@ -79,6 +79,58 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.indexChoices.length).toBeGreaterThan(0);
   });
 
+  it('applies safely negated string filters as local post-filters', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    engine.put([
+      quad(namedNode(`${graph.value}#msg_skip`), namedNode(SIOC_CONTENT), literal('skip this'), graph),
+      quad(namedNode(`${graph.value}#msg_draft`), namedNode(SIOC_CONTENT), literal('draft note'), graph),
+      quad(namedNode(`${graph.value}#msg_tmp`), namedNode(SIOC_CONTENT), literal('keep tmp'), graph),
+      quad(namedNode(`${graph.value}#msg_old`), namedNode(SIOC_CONTENT), literal('old note'), graph),
+    ]);
+
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$notContains',
+          operand: 'stringValue',
+          value: 'skip',
+        },
+        {
+          variable: 'content',
+          operator: '$notStartsWith',
+          operand: 'stringValue',
+          value: 'draft',
+        },
+        {
+          variable: 'content',
+          operator: '$notEndsWith',
+          operand: 'stringValue',
+          value: 'tmp',
+        },
+        {
+          variable: 'content',
+          operator: '$notRegex',
+          operand: 'stringValue',
+          value: '^old',
+          flags: 'i',
+        },
+      ],
+      select: ['content'],
+    });
+
+    expect(result.bindings.map((binding) => binding.content.value)).toEqual(['hello']);
+    expect(result.metrics.plan.some((entry) => entry.includes('$notContains'))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('TextSearch('))).toBe(false);
+  });
+
   it('pushes safe required BGP joins into the RDF quad index', () => {
     const result = engine.query({
       patterns: [

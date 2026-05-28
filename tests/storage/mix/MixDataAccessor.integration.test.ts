@@ -1244,6 +1244,58 @@ WHERE {
     ]);
   });
 
+  it('applies negated string-filter updates to local RDF authority files', async () => {
+    const resourceId = { path: `${baseUrl}alice/negated-string-filter-update.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#first`),
+        namedNode('https://schema.org/name'),
+        literal('keep before')
+      ),
+      quad(
+        namedNode(`${resourceId.path}#second`),
+        namedNode('https://schema.org/name'),
+        literal('skip before')
+      )
+    ])), metadata);
+    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
+
+    await accessor.executeSparqlUpdate(`
+DELETE {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> ?old .
+  }
+}
+INSERT {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> "negated string filter after" .
+  }
+}
+WHERE {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> ?old .
+  }
+  FILTER(!CONTAINS(STR(?old), "skip"))
+}
+`.trim(), resourceId.path);
+
+    expect(structuredUpdateSpy).not.toHaveBeenCalled();
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('negated string filter after');
+    expect(localRdf).toContain('skip before');
+    expect(localRdf).not.toContain('keep before');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
+      'negated string filter after',
+      'skip before',
+    ]);
+  });
+
   it('applies USING NAMED updates that read multiple RDF authority files and write one target file', async () => {
     const resourceId = { path: `${baseUrl}alice/using-named-update.ttl` };
     const otherResourceId = { path: `${baseUrl}alice/using-named-other.ttl` };

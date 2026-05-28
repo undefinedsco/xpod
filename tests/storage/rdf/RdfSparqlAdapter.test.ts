@@ -116,6 +116,49 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
+  it('compiles safely negated string filters into local post-filters', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(!CONTAINS(STR(?content), "skip"))
+        FILTER(!STRSTARTS(STR(?content), "draft"))
+        FILTER(!STRENDS(STR(?content), "tmp"))
+        FILTER(!REGEX(STR(?content), "^old", "i"))
+      }
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([
+      {
+        variable: 'content',
+        operator: '$notContains',
+        operand: 'stringValue',
+        value: 'skip',
+        flags: undefined,
+      },
+      {
+        variable: 'content',
+        operator: '$notStartsWith',
+        operand: 'stringValue',
+        value: 'draft',
+        flags: undefined,
+      },
+      {
+        variable: 'content',
+        operator: '$notEndsWith',
+        operand: 'stringValue',
+        value: 'tmp',
+        flags: undefined,
+      },
+      {
+        variable: 'content',
+        operator: '$notRegex',
+        operand: 'stringValue',
+        value: '^old',
+        flags: 'i',
+      },
+    ]);
+  });
+
   it('compiles standard XPath string-length filters as explicit local post-filters', () => {
     const compiled = adapter.compile(`
       PREFIX fn: <http://www.w3.org/2005/xpath-functions#>
