@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -94,6 +95,131 @@ describe('RdfQuadIndex', () => {
     expect(objectsByName.get('rdf_quads_posg')).toMatchObject({ kind: 'index' });
     expect(objectsByName.get('rdf_quads_ospg')).toMatchObject({ kind: 'index' });
     expect(objectsByName.get('rdf_quads_opsg')).toMatchObject({ kind: 'index' });
+  });
+
+  it('keeps long literal payloads out of term dictionary b-tree keys', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-long-object-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    const content = `title\n${'Long object payload '.repeat(2_000)}`;
+    try {
+      fileIndex.open();
+      fileIndex.multiPut([
+        quad(namedNode('https://message/long'), namedNode('http://rdfs.org/sioc/ns#content'), literal(content), namedNode('https://g')),
+      ]);
+
+      const results = fileIndex.scan({
+        predicate: namedNode('http://rdfs.org/sioc/ns#content'),
+        object: literal(content),
+      });
+      expect(results.quads).toHaveLength(1);
+    } finally {
+      fileIndex.close();
+    }
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      const schemaRows = db.prepare<{ name: string; sql: string | null }>(`
+        SELECT name, sql
+        FROM sqlite_schema
+        WHERE tbl_name = 'rdf_terms'
+           OR name LIKE 'rdf_terms%'
+        ORDER BY name
+      `).all();
+      const names = schemaRows.map((row) => row.name);
+      const schemaSql = schemaRows.map((row) => row.sql ?? '').join('\n');
+      const literalRow = db.prepare<{ value_head: string; value_length: number }>(`
+        SELECT value_head, length(value) AS value_length
+        FROM rdf_terms
+        WHERE kind = 'literal'
+          AND length(value) > 1000
+      `).get();
+
+      expect(names).toContain('rdf_terms_identity_hash');
+      expect(names).toContain('rdf_terms_kind_value_head');
+      expect(names).not.toContain('rdf_terms_hash');
+      expect(names).not.toContain('rdf_terms_kind_value');
+      expect(names).not.toContain('rdf_terms_normalized_text');
+      expect(schemaSql).not.toContain('UNIQUE (kind, value, datatype_id, lang)');
+      expect(literalRow?.value_length).toBe(content.length);
+      expect(literalRow?.value_head.length).toBeLessThanOrEqual(256);
+    } finally {
+      db.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('migrates legacy raw term value indexes to hash and fixed-head indexes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-term-migration-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const longValue = 'legacy long literal '.repeat(2_000);
+    const hash = createHash('sha256')
+      .update('literal')
+      .update('\0')
+      .update(longValue)
+      .update('\0')
+      .update('')
+      .update('\0')
+      .update('')
+      .digest('hex');
+    const sqlite = createSqliteRuntime();
+    const legacyDb = sqlite.openDatabase(dbPath);
+    try {
+      legacyDb.exec(`
+        CREATE TABLE rdf_terms (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          value TEXT NOT NULL,
+          datatype_id INTEGER,
+          lang TEXT,
+          hash TEXT NOT NULL,
+          normalized_text TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          UNIQUE (kind, value, datatype_id, lang)
+        );
+        CREATE INDEX rdf_terms_hash ON rdf_terms (hash);
+        CREATE INDEX rdf_terms_kind_value ON rdf_terms (kind, value);
+        CREATE INDEX rdf_terms_normalized_text ON rdf_terms (normalized_text);
+      `);
+      legacyDb.prepare(`
+        INSERT INTO rdf_terms (kind, value, datatype_id, lang, hash, normalized_text)
+        VALUES ('literal', ?, NULL, NULL, ?, ?)
+      `).run(longValue, hash, longValue.toLowerCase());
+    } finally {
+      legacyDb.close();
+    }
+
+    const migrated = new RdfQuadIndex({ path: dbPath });
+    try {
+      migrated.open();
+    } finally {
+      migrated.close();
+    }
+
+    const verifyDb = sqlite.openDatabase(dbPath);
+    try {
+      const names = verifyDb.prepare<{ name: string }>(`
+        SELECT name
+        FROM sqlite_schema
+        WHERE tbl_name = 'rdf_terms'
+           OR name LIKE 'rdf_terms%'
+        ORDER BY name
+      `).all().map((row) => row.name);
+      const tableSql = verifyDb.prepare<{ sql: string }>("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'rdf_terms'").get()?.sql ?? '';
+      const row = verifyDb.prepare<{ id: number; value_head: string; numeric_value: number | null }>('SELECT id, value_head, numeric_value FROM rdf_terms').get();
+
+      expect(tableSql).not.toContain('UNIQUE (kind, value, datatype_id, lang)');
+      expect(names).toContain('rdf_terms_identity_hash');
+      expect(names).toContain('rdf_terms_kind_value_head');
+      expect(names).not.toContain('rdf_terms_hash');
+      expect(names).not.toContain('rdf_terms_kind_value');
+      expect(names).not.toContain('rdf_terms_normalized_text');
+      expect(row).toMatchObject({ id: 1, numeric_value: null });
+      expect(row?.value_head).toBe(longValue.slice(0, 256));
+    } finally {
+      verifyDb.close();
+      await rm(root, { force: true, recursive: true });
+    }
   });
 
   it('reports literal datatype distribution for planner statistics', () => {

@@ -4,22 +4,22 @@ import path from 'node:path';
 import type { Quad } from '@rdfjs/types';
 import { DataFactory } from 'n3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Rdf3xTripleIndex, RdfQuadIndex } from '../../../src/storage/rdf';
+import { Rdf3xIndex, RdfQuadIndex } from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 
 const { namedNode, literal, quad } = DataFactory;
 
-describe('Rdf3xTripleIndex', () => {
+describe('Rdf3xIndex', () => {
   let root: string;
   let dbPath: string;
   let quadIndex: RdfQuadIndex;
-  let rdf3x: Rdf3xTripleIndex;
+  let rdf3x: Rdf3xIndex;
 
   beforeEach(async () => {
     root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf3x-'));
     dbPath = path.join(root, 'rdf.sqlite');
     quadIndex = new RdfQuadIndex({ path: dbPath });
-    rdf3x = new Rdf3xTripleIndex({ path: dbPath });
+    rdf3x = new Rdf3xIndex({ path: dbPath });
     quadIndex.open();
     rdf3x.open();
   });
@@ -30,7 +30,7 @@ describe('Rdf3xTripleIndex', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('rebuilds independent RDF-3X permutation tables from the current quad baseline', () => {
+  it('rebuilds RDF-3X stats from the current quad baseline', () => {
     const status = namedNode('https://undefineds.co/ns#status');
     const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
     const messageType = namedNode('https://type/Message');
@@ -87,7 +87,7 @@ describe('Rdf3xTripleIndex', () => {
     expect(rdf3x.isSyncedWithCurrentQuads()).toBe(false);
   });
 
-  it('stores derived RDF-3X tables without rowid primary-key autoindexes', () => {
+  it('stores RDF-3X stats without materialized fact-copy tables', () => {
     const status = namedNode('https://undefineds.co/ns#status');
     const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
     quadIndex.multiPut([
@@ -106,6 +106,8 @@ describe('Rdf3xTripleIndex', () => {
       `).all();
       expect(tables.length).toBeGreaterThan(0);
       expect(tables.every((table) => table.wr === 1)).toBe(true);
+      expect(tables.map((table) => table.name)).not.toContain('rdf3x_spo');
+      expect(tables.map((table) => table.name)).not.toContain('rdf3x_triple_membership');
 
       const indexes = db.prepare<{ name: string; tbl_name: string }>(`
         SELECT name, tbl_name
@@ -116,16 +118,48 @@ describe('Rdf3xTripleIndex', () => {
       `).all();
       expect(indexes.map((index) => index.name)).not.toContain('rdf3x_membership_gspo');
       expect(indexes.map((index) => index.name)).not.toContain('sqlite_autoindex_rdf3x_spo_1');
-      expect(indexes.map((index) => index.name)).toEqual([
-        'rdf3x_membership_source',
-        'rdf3x_membership_spo',
-      ]);
+      expect(indexes.map((index) => index.name)).toEqual([]);
     } finally {
       db.close();
     }
   });
 
-  it('drops legacy rowid RDF-3X derived tables before recreating the compact schema', async () => {
+  it('stores long object terms through integer ids in the shared quad facts index', () => {
+    const content = `heading\n${'Long RDF object payload '.repeat(2_000)}`;
+    const predicate = namedNode('http://rdfs.org/sioc/ns#content');
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const subject = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#m-long');
+    quadIndex.multiPut([
+      quad(subject, predicate, literal(content), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const scan = rdf3x.scan({ predicate, object: literal(content) });
+    expect(scan.quads).toHaveLength(1);
+    expect(scan.quads[0].object.value).toBe(content);
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      const factsSql = db.prepare<{ sql: string }>("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'rdf_quads'").get()?.sql ?? '';
+      const indexSql = db.prepare<{ sql: string }>("SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'rdf_quads_posg'").get()?.sql ?? '';
+      const row = db.prepare<{ object_id_type: string; object_length: number }>(`
+        SELECT typeof(facts.object_id) AS object_id_type, length(term.value) AS object_length
+        FROM rdf_quads facts
+        JOIN rdf_terms term ON term.id = facts.object_id
+      `).get();
+      expect(factsSql).toContain('object_id INTEGER NOT NULL');
+      expect(indexSql).toContain('object_id');
+      expect(indexSql).not.toContain('value');
+      expect(row).toMatchObject({
+        object_id_type: 'integer',
+        object_length: content.length,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('drops legacy materialized RDF-3X fact copies before recreating stats', async () => {
     rdf3x.close();
     quadIndex.close();
 
@@ -147,7 +181,7 @@ describe('Rdf3xTripleIndex', () => {
     `);
     db.close();
 
-    const migrated = new Rdf3xTripleIndex({ path: legacyPath });
+    const migrated = new Rdf3xIndex({ path: legacyPath });
     migrated.open();
     try {
       expect(migrated.factsDataVersion()).toBe(0);
@@ -161,7 +195,7 @@ describe('Rdf3xTripleIndex', () => {
         `).all();
         expect(tables.length).toBeGreaterThan(0);
         expect(tables.every((table) => table.wr === 1)).toBe(true);
-        expect(verifyDb.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf3x_spo').get()?.count).toBe(0);
+        expect(tables.map((table) => table.name)).not.toContain('rdf3x_spo');
       } finally {
         verifyDb.close();
       }
@@ -257,7 +291,7 @@ describe('Rdf3xTripleIndex', () => {
     expect(scan.metrics.queryPlan).toContain('Rdf3xMembershipScan');
     expect(scan.metrics.queryPlan).toContain('NumericRange(object$gt)');
     expect(scan.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g membership_graph');
-    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership membership');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_quads AS membership');
     expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_range');
     expect(scan.metrics.queryPlan?.join('\n')).toContain('ON object_range.id = membership.object_id');
     expect(scan.metrics.queryPlan?.join('\n')).not.toContain('idx.object_id = ?');
@@ -299,9 +333,63 @@ describe('Rdf3xTripleIndex', () => {
     expect(scan.metrics.queryPlan).toContain('Rdf3xMembershipScan');
     expect(scan.metrics.queryPlan).toContain('LexicalRange(object$lte)');
     expect(scan.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g membership_graph');
-    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership membership');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_quads AS membership');
     expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms object_range');
     expect(scan.metrics.queryPlan?.join('\n')).toContain('ON object_range.id = membership.object_id');
+  });
+
+  it('pushes term metadata filters into RDF-3X scans', () => {
+    const xsdInteger = namedNode('http://www.w3.org/2001/XMLSchema#integer');
+    const label = namedNode('https://undefineds.co/ns#label');
+    const priority = namedNode('https://undefineds.co/ns#priority');
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    const msg3 = namedNode('https://message/3');
+    const msg4 = namedNode('https://message/4');
+    quadIndex.multiPut([
+      quad(msg1, label, literal('hello', 'en'), graph),
+      quad(msg2, label, literal('hello', 'en-US'), graph),
+      quad(msg3, label, literal('bonjour', 'fr'), graph),
+      quad(msg4, label, namedNode('https://label/resource'), graph),
+      quad(msg1, priority, literal('5', xsdInteger), graph),
+      quad(msg2, priority, literal('10', xsdInteger), graph),
+      quad(msg3, priority, literal('9'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const languagePattern = {
+      predicate: label,
+      object: { $termType: 'literal', $langMatches: 'en' },
+    } as const;
+    const languageBaseline = quadIndex.scan(languagePattern);
+    const languageScan = rdf3x.scan(languagePattern);
+    expect(quadKeys(languageScan.quads)).toEqual(quadKeys(languageBaseline.quads));
+    expect(languageScan.quads.map((q) => q.subject.value).sort()).toEqual([msg1.value, msg2.value]);
+    expect(languageScan.metrics.queryPlan).toContain('TermType(object:literal)');
+    expect(languageScan.metrics.queryPlan).toContain('Language(object$langMatches)');
+
+    const datatypePattern = {
+      predicate: priority,
+      object: { $datatype: xsdInteger },
+    };
+    const datatypeBaseline = quadIndex.scan(datatypePattern);
+    const datatypeScan = rdf3x.scan(datatypePattern);
+    expect(quadKeys(datatypeScan.quads)).toEqual(quadKeys(datatypeBaseline.quads));
+    expect(datatypeScan.quads.map((q) => q.subject.value).sort()).toEqual([msg1.value, msg2.value]);
+    expect(datatypeScan.metrics.queryPlan).toContain('Datatype(object$datatype)');
+
+    const combinedPattern = {
+      predicate: priority,
+      object: { $termType: 'numeric', $gte: literal('9', xsdInteger) },
+    } as const;
+    const combinedBaseline = quadIndex.scan(combinedPattern);
+    const combinedScan = rdf3x.scan(combinedPattern);
+    expect(quadKeys(combinedScan.quads)).toEqual(quadKeys(combinedBaseline.quads));
+    expect(combinedScan.quads.map((q) => q.subject.value)).toEqual([msg2.value]);
+    expect(combinedScan.metrics.queryPlan).toContain('TermType(object:numeric)');
+    expect(combinedScan.metrics.queryPlan).toContain('NumericRange(object$gte)');
+    expect(combinedScan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms scan_term_filter_object');
   });
 
   it('uses projection stats for exact triple-pattern cardinality estimates', () => {
@@ -373,7 +461,7 @@ describe('Rdf3xTripleIndex', () => {
     expect(result.metrics.queryPlan).toContain('GraphPrefixMembershipFilter');
     expect(result.metrics.queryPlan).toContain('Rdf3xDistinctCount(?subject)');
     expect(result.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g membership_graph');
-    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership membership');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_quads AS membership');
     expect(result.metrics.queryPlan?.join('\n')).toContain('COUNT(DISTINCT membership.subject_id)');
   });
 
@@ -402,11 +490,62 @@ describe('Rdf3xTripleIndex', () => {
     expect(scan.metrics.queryPlan?.join('\n')).toContain('Rdf3xMembershipScan');
     expect(scan.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g membership_graph');
     expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms graph_prefix');
-    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership membership');
+    expect(scan.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_quads AS membership');
     expect(rdf3x.estimateCardinality({ graph: { $startsWith: prefix }, predicate: status, object: open })).toMatchObject({
       source: 'exact-membership',
       indexChoice: 'source-membership',
     });
+  });
+
+  it('pushes exact term IN constraints into RDF-3X scans', () => {
+    const graph = namedNode('https://g');
+    const type = namedNode('https://p/type');
+    const content = namedNode('https://p/content');
+    const created = namedNode('https://p/created');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    quadIndex.multiPut([
+      quad(msg1, type, namedNode('https://type/Message'), graph),
+      quad(msg1, content, literal('hello'), graph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const pattern = {
+      predicate: { $in: [content, created] },
+    };
+    const baseline = quadIndex.scan(pattern);
+    const result = rdf3x.scan(pattern);
+
+    expect(quadKeys(result.quads)).toEqual(quadKeys(baseline.quads));
+    expect(result.metrics.indexChoice).toBe('PSO');
+    expect(result.metrics.queryPlan).toContain('TermIn(predicate)');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('rdf_quads AS idx INDEXED BY rdf_quads_psog');
+  });
+
+  it('pushes exact term NOT IN constraints into RDF-3X scans', () => {
+    const graph = namedNode('https://g');
+    const type = namedNode('https://p/type');
+    const content = namedNode('https://p/content');
+    const created = namedNode('https://p/created');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    quadIndex.multiPut([
+      quad(msg1, type, namedNode('https://type/Message'), graph),
+      quad(msg1, content, literal('hello'), graph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const pattern = {
+      predicate: { $notIn: [type] },
+    };
+    const baseline = quadIndex.scan(pattern);
+    const result = rdf3x.scan(pattern);
+
+    expect(quadKeys(result.quads)).toEqual(quadKeys(baseline.quads));
+    expect(result.metrics.queryPlan).toContain('TermNotIn(predicate)');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('NOT IN');
   });
 
   it('executes connected BGP joins from RDF-3X permutation scans', () => {
@@ -461,7 +600,132 @@ describe('Rdf3xTripleIndex', () => {
     expect(result.metrics.queryPlan?.join('\n')).toContain('Rdf3xJoinBGP(2)');
     expect(result.metrics.queryPlan?.join('\n')).toContain('Rdf3xPermutationScan(POS)');
     expect(result.metrics.queryPlan).toContain('Rdf3xMergeJoin(?message)');
-    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_pos q0\n          ON q1.subject_id = q0.subject_id');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_quads AS q0 INDEXED BY rdf_quads_posg\n          ON q1.subject_id = q0.subject_id');
+  });
+
+  it('pushes exact term IN constraints into RDF-3X BGP joins', () => {
+    const graph = namedNode('https://g');
+    const type = namedNode('https://p/type');
+    const content = namedNode('https://p/content');
+    const created = namedNode('https://p/created');
+    const messageType = namedNode('https://type/Message');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    quadIndex.multiPut([
+      quad(msg1, type, messageType, graph),
+      quad(msg1, content, literal('hello'), graph),
+      quad(msg2, type, messageType, graph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const patterns = [
+      {
+        pattern: {
+          predicate: type,
+          object: messageType,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          predicate: { $in: [content, created] },
+        },
+        variables: {
+          subject: 'message',
+          predicate: 'predicate',
+          object: 'value',
+        },
+      },
+    ];
+
+    const baseline = quadIndex.joinPatterns(patterns);
+    const result = rdf3x.joinPatterns(patterns);
+
+    expect(bindingKeys(result.bindings)).toEqual(bindingKeys(baseline.bindings));
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      predicate: binding.predicate.value,
+      value: binding.value.value,
+    }))).toEqual([
+      {
+        message: 'https://message/1',
+        predicate: content.value,
+        value: 'hello',
+      },
+      {
+        message: 'https://message/2',
+        predicate: created.value,
+        value: '2026-05-18T00:00:02.000Z',
+      },
+    ]);
+    expect(result.metrics.indexChoice).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.queryPlan).toContain('TermIn(predicate)');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('Rdf3xPermutationScan(PSO)');
+  });
+
+  it('pushes exact term NOT IN constraints into RDF-3X BGP joins', () => {
+    const graph = namedNode('https://g');
+    const type = namedNode('https://p/type');
+    const content = namedNode('https://p/content');
+    const created = namedNode('https://p/created');
+    const messageType = namedNode('https://type/Message');
+    const msg1 = namedNode('https://message/1');
+    const msg2 = namedNode('https://message/2');
+    quadIndex.multiPut([
+      quad(msg1, type, messageType, graph),
+      quad(msg1, content, literal('hello'), graph),
+      quad(msg2, type, messageType, graph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+    ]);
+    rdf3x.rebuildFromCurrentQuads();
+
+    const patterns = [
+      {
+        pattern: {
+          predicate: type,
+          object: messageType,
+        },
+        variables: {
+          subject: 'message',
+        },
+      },
+      {
+        pattern: {
+          predicate: { $notIn: [type] },
+        },
+        variables: {
+          subject: 'message',
+          predicate: 'predicate',
+          object: 'value',
+        },
+      },
+    ];
+
+    const baseline = quadIndex.joinPatterns(patterns);
+    const result = rdf3x.joinPatterns(patterns);
+
+    expect(bindingKeys(result.bindings)).toEqual(bindingKeys(baseline.bindings));
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      predicate: binding.predicate.value,
+      value: binding.value.value,
+    }))).toEqual([
+      {
+        message: 'https://message/1',
+        predicate: content.value,
+        value: 'hello',
+      },
+      {
+        message: 'https://message/2',
+        predicate: created.value,
+        value: '2026-05-18T00:00:02.000Z',
+      },
+    ]);
+    expect(result.metrics.indexChoice).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.queryPlan).toContain('TermNotIn(predicate)');
   });
 
   it('uses membership sources for graph-prefixed RDF-3X joins', () => {
@@ -520,8 +784,8 @@ describe('Rdf3xTripleIndex', () => {
     expect(result.metrics.queryPlan).toContain('GraphPrefixMembershipFilter');
     expect(result.metrics.queryPlan?.join('\n')).toContain('FROM rdf3x_stat_g m0_graph');
     expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_terms m0_graph_prefix');
-    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf3x_triple_membership m0');
-    expect(result.metrics.queryPlan?.join('\n')).not.toContain('JOIN rdf3x_triple_membership m0\n          ON m0.subject_id');
+    expect(result.metrics.queryPlan?.join('\n')).toContain('JOIN rdf_quads AS m0');
+    expect(result.metrics.queryPlan?.join('\n')).not.toContain('JOIN rdf_quads AS m0\n          ON m0.subject_id');
   });
 
   it('pushes correlated tuple VALUES into RDF-3X BGP joins', () => {

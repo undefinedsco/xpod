@@ -13,7 +13,7 @@ import type { RdfBindingRow, RdfLocalQueryResult, RdfQueryTermPattern } from './
 
 export interface SolidRdfSparqlEngineOptions {
   rdfEngine: SolidRdfEngine;
-  fallback: SparqlEngine;
+  fallback?: SparqlEngine;
   shadowStore?: ShadowRdfQuintStore;
   enablePrimary?: boolean;
   onFallback?: (reason: SolidRdfSparqlFallback) => void;
@@ -82,7 +82,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly adapter = new RdfSparqlAdapter();
   private readonly bindingsFactory = new (BindingsFactory as any)(rdfDataFactory);
   private readonly rdfEngine: SolidRdfEngine;
-  private readonly fallback: SparqlEngine;
+  private readonly fallback?: SparqlEngine;
   private readonly shadowStore?: ShadowRdfQuintStore;
   private readonly enablePrimary: boolean;
   private readonly onFallback?: (reason: SolidRdfSparqlFallback) => void;
@@ -92,7 +92,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
 
   public constructor(
     rdfEngine: SolidRdfEngine,
-    fallback: SparqlEngine,
+    fallback?: SparqlEngine,
     shadowStore?: ShadowRdfQuintStore,
     enablePrimary = true,
     onFallback?: (reason: SolidRdfSparqlFallback) => void,
@@ -107,14 +107,14 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   public async queryBindings(query: string, basePath: string): Promise<BindingsStream> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryBindings', 'primary disabled', () => this.fallback.queryBindings(query, basePath));
+      return this.fallbackWith('queryBindings', 'primary disabled', (fallback) => fallback.queryBindings(query, basePath));
     }
 
     const start = Date.now();
     try {
       const compiled = this.adapter.compile(query, basePath);
       if (compiled.queryType !== 'SELECT') {
-        return this.fallbackWith('queryBindings', `compiled ${compiled.queryType} cannot produce bindings`, () => this.fallback.queryBindings(query, basePath));
+        return this.fallbackWith('queryBindings', `compiled ${compiled.queryType} cannot produce bindings`, (fallback) => fallback.queryBindings(query, basePath));
       }
       const result = await this.rdfEngine.query(compiled.query);
       this.recordPrimary('queryBindings', start, result);
@@ -123,21 +123,21 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryBindings', fallbackReason(error), () => this.fallback.queryBindings(query, basePath));
+      return this.fallbackWith('queryBindings', fallbackReason(error), (fallback) => fallback.queryBindings(query, basePath));
     }
   }
 
   public async queryBoolean(query: string, basePath: string): Promise<boolean> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryBoolean', 'primary disabled', () => this.fallback.queryBoolean(query, basePath));
+      return this.fallbackWith('queryBoolean', 'primary disabled', (fallback) => fallback.queryBoolean(query, basePath));
     }
 
     const start = Date.now();
     try {
       const compiled = this.adapter.compile(query, basePath);
       if (compiled.queryType !== 'ASK') {
-        return this.fallbackWith('queryBoolean', `compiled ${compiled.queryType} cannot produce boolean`, () => this.fallback.queryBoolean(query, basePath));
+        return this.fallbackWith('queryBoolean', `compiled ${compiled.queryType} cannot produce boolean`, (fallback) => fallback.queryBoolean(query, basePath));
       }
       const result = await this.rdfEngine.query(compiled.query);
       this.recordPrimary('queryBoolean', start, result);
@@ -146,14 +146,14 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryBoolean', fallbackReason(error), () => this.fallback.queryBoolean(query, basePath));
+      return this.fallbackWith('queryBoolean', fallbackReason(error), (fallback) => fallback.queryBoolean(query, basePath));
     }
   }
 
   public async queryQuads(query: string, basePath: string): Promise<any> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryQuads', 'primary disabled', () => this.fallback.queryQuads(query, basePath));
+      return this.fallbackWith('queryQuads', 'primary disabled', (fallback) => fallback.queryQuads(query, basePath));
     }
 
     const start = Date.now();
@@ -164,19 +164,21 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryQuads', fallbackReason(error), () => this.fallback.queryQuads(query, basePath));
+      return this.fallbackWith('queryQuads', fallbackReason(error), (fallback) => fallback.queryQuads(query, basePath));
     }
   }
 
   public async queryVoid(query: string, basePath: string): Promise<void> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryVoid', 'primary disabled', () => this.fallback.queryVoid(query, basePath));
+      return this.fallbackWith('queryVoid', 'primary disabled', (fallback) => fallback.queryVoid(query, basePath));
     }
 
     const start = Date.now();
     try {
-      const delta = this.adapter.compileUpdateDelta(query, basePath);
+      const delta = this.adapter.compileUpdateDelta(query, basePath, {
+        defaultGraph: implicitUpdateDefaultGraph(basePath),
+      });
       let deletedRows = 0;
       let computedDeletes = 0;
       let computedInserts = 0;
@@ -245,14 +247,14 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryVoid', fallbackReason(error), () => this.fallback.queryVoid(query, basePath));
+      return this.fallbackWith('queryVoid', fallbackReason(error), (fallback) => fallback.queryVoid(query, basePath));
     }
   }
 
   public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('constructGraph', 'primary disabled', () => this.fallback.constructGraph(graph, basePath));
+      return this.fallbackWith('constructGraph', 'primary disabled', (fallback) => fallback.constructGraph(graph, basePath));
     }
     if (!graph.startsWith(basePath)) {
       return new ArrayIterator([] as Quad[]);
@@ -269,14 +271,14 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('constructGraph', fallbackReason(error), () => this.fallback.constructGraph(graph, basePath));
+      return this.fallbackWith('constructGraph', fallbackReason(error), (fallback) => fallback.constructGraph(graph, basePath));
     }
   }
 
   public async listGraphs(basePath: string): Promise<Set<string>> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('listGraphs', 'primary disabled', () => this.fallback.listGraphs(basePath));
+      return this.fallbackWith('listGraphs', 'primary disabled', (fallback) => fallback.listGraphs(basePath));
     }
 
     const start = Date.now();
@@ -296,13 +298,13 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('listGraphs', fallbackReason(error), () => this.fallback.listGraphs(basePath));
+      return this.fallbackWith('listGraphs', fallbackReason(error), (fallback) => fallback.listGraphs(basePath));
     }
   }
 
   public async close(): Promise<void> {
     await this.rdfEngine.close();
-    await this.fallback.close();
+    await this.fallback?.close();
   }
 
   public getMetrics(): SolidRdfSparqlMetricsSnapshot {
@@ -374,12 +376,15 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   private async fallbackWith<T>(
     operation: SolidRdfSparqlOperation,
     reason: string,
-    run: () => Promise<T>,
+    run: (fallback: SparqlEngine) => Promise<T>,
   ): Promise<T> {
+    if (!this.fallback) {
+      throw new UnsupportedSparqlQueryError(`No compatibility SPARQL fallback configured for ${operation}: ${reason}`);
+    }
     this.onFallback?.({ operation, reason });
     const start = Date.now();
     try {
-      return await run();
+      return await run(this.fallback);
     } finally {
       this.recordFallback(operation, reason, Date.now() - start);
     }
@@ -613,6 +618,10 @@ function operationCountSnapshot(
 
 function ratio(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : numerator / denominator;
+}
+
+function implicitUpdateDefaultGraph(basePath: string): string | undefined {
+  return basePath.endsWith('/') ? undefined : basePath;
 }
 
 function escapeIri(value: string): string {

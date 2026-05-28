@@ -3,11 +3,12 @@ import { dirname } from 'node:path';
 import { DataFactory } from 'n3';
 import type { Quad, Term } from '@rdfjs/types';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
-import { RdfTermDictionary } from './RdfTermDictionary';
+import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 import type {
   Rdf3xCardinalityEstimate,
   Rdf3xCountResult,
+  Rdf3xGraphPrefixPattern,
   Rdf3xIndexMetrics,
   Rdf3xIndexStats,
   Rdf3xJoinMetrics,
@@ -19,8 +20,12 @@ import type {
   Rdf3xPermutationName,
   Rdf3xRebuildResult,
   Rdf3xTermKey,
+  Rdf3xTermInPattern,
+  Rdf3xTermMetadataPattern,
+  Rdf3xTermNotInPattern,
   Rdf3xTermProjectionName,
-  Rdf3xTripleIndexOptions,
+  Rdf3xTermTypePatternValue,
+  Rdf3xIndexOptions,
   Rdf3xTriplePattern,
   Rdf3xTripleScanOptions,
   Rdf3xTripleScanResult,
@@ -39,7 +44,7 @@ type TripleColumn = 'subject_id' | 'predicate_id' | 'object_id';
 
 interface Rdf3xPermutation {
   name: Rdf3xPermutationName;
-  table: string;
+  indexName: string;
   columns: TripleColumn[];
 }
 
@@ -58,6 +63,9 @@ interface Rdf3xTermProjection {
 
 interface Rdf3xResolvedPattern {
   ids: Partial<Record<Rdf3xPatternKey, number>>;
+  idSets?: Partial<Record<Rdf3xPatternKey, number[]>>;
+  excludedIdSets?: Partial<Record<Rdf3xPatternKey, number[]>>;
+  termFilters?: Partial<Record<Rdf3xPatternKey, Rdf3xResolvedTermFilter>>;
   graphPrefix?: string;
   objectRange?: Rdf3xObjectRange;
   unresolved?: Rdf3xPatternKey;
@@ -118,10 +126,25 @@ interface Rdf3xObjectRange {
   maxInclusive?: boolean;
 }
 
+interface Rdf3xResolvedTermFilter {
+  termType?: Rdf3xTermTypePatternValue;
+  language?: string;
+  notLanguage?: string;
+  langMatches?: string;
+  datatype?: Rdf3xResolvedDatatypeFilter;
+  notDatatype?: Rdf3xResolvedDatatypeFilter;
+}
+
+type Rdf3xResolvedDatatypeFilter =
+  | { kind: 'id'; id: number }
+  | { kind: 'xsd-string' }
+  | { kind: 'unknown' };
+
 type Rdf3xAggregateValueType = 'integer' | 'decimal';
 
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
+const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
 const OBJECT_RANGE_KINDS: RdfTermKind[] = ['iri', 'literal', 'blank'];
 
 const TERM_COLUMN: Record<Rdf3xTermKey, TripleColumn> = {
@@ -141,14 +164,15 @@ const PATTERN_COLUMNS: Record<Rdf3xPatternKey, 'graph_id' | TripleColumn> = {
 };
 
 const TERM_KEYS: Rdf3xTermKey[] = ['subject', 'predicate', 'object'];
+const RDF_FACTS_TABLE = 'rdf_quads';
 
 const PERMUTATIONS: Rdf3xPermutation[] = [
-  { name: 'SPO', table: 'rdf3x_spo', columns: ['subject_id', 'predicate_id', 'object_id'] },
-  { name: 'SOP', table: 'rdf3x_sop', columns: ['subject_id', 'object_id', 'predicate_id'] },
-  { name: 'PSO', table: 'rdf3x_pso', columns: ['predicate_id', 'subject_id', 'object_id'] },
-  { name: 'POS', table: 'rdf3x_pos', columns: ['predicate_id', 'object_id', 'subject_id'] },
-  { name: 'OSP', table: 'rdf3x_osp', columns: ['object_id', 'subject_id', 'predicate_id'] },
-  { name: 'OPS', table: 'rdf3x_ops', columns: ['object_id', 'predicate_id', 'subject_id'] },
+  { name: 'SPO', indexName: 'rdf_quads_spog', columns: ['subject_id', 'predicate_id', 'object_id'] },
+  { name: 'SOP', indexName: 'rdf_quads_sopg', columns: ['subject_id', 'object_id', 'predicate_id'] },
+  { name: 'PSO', indexName: 'rdf_quads_psog', columns: ['predicate_id', 'subject_id', 'object_id'] },
+  { name: 'POS', indexName: 'rdf_quads_posg', columns: ['predicate_id', 'object_id', 'subject_id'] },
+  { name: 'OSP', indexName: 'rdf_quads_ospg', columns: ['object_id', 'subject_id', 'predicate_id'] },
+  { name: 'OPS', indexName: 'rdf_quads_opsg', columns: ['object_id', 'predicate_id', 'subject_id'] },
 ];
 
 const PAIR_PROJECTIONS: Rdf3xPairProjection[] = [
@@ -169,12 +193,20 @@ const TERM_PROJECTIONS: Rdf3xTermProjection[] = [
 const GRAPH_PROJECTION_TABLE = 'rdf3x_stat_g';
 
 const RDF3X_DERIVED_TABLES = [
-  'rdf3x_triple_membership',
   'rdf3x_metadata',
   GRAPH_PROJECTION_TABLE,
-  ...PERMUTATIONS.map((permutation) => permutation.table),
   ...PAIR_PROJECTIONS.map((projection) => projection.table),
   ...TERM_PROJECTIONS.map((projection) => projection.table),
+];
+
+const RDF3X_MATERIALIZED_FACT_COPY_TABLES = [
+  'rdf3x_triple_membership',
+  'rdf3x_spo',
+  'rdf3x_sop',
+  'rdf3x_pso',
+  'rdf3x_pos',
+  'rdf3x_osp',
+  'rdf3x_ops',
 ];
 
 const RDF3X_DERIVED_INDEXES = [
@@ -183,12 +215,12 @@ const RDF3X_DERIVED_INDEXES = [
   'rdf3x_membership_source',
 ];
 
-export class Rdf3xTripleIndex {
+export class Rdf3xIndex {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
   private dictionary: RdfTermDictionary | null = null;
 
-  public constructor(private readonly options: Rdf3xTripleIndexOptions) {}
+  public constructor(private readonly options: Rdf3xIndexOptions) {}
 
   public open(): void {
     if (this.db) {
@@ -227,33 +259,6 @@ export class Rdf3xTripleIndex {
 
     db.transaction(() => {
       this.clearRdf3xTables();
-      db.prepare(`
-        INSERT INTO rdf3x_triple_membership (
-          graph_id,
-          subject_id,
-          predicate_id,
-          object_id,
-          source_file_id,
-          source_line_no
-        )
-        SELECT
-          graph_id,
-          subject_id,
-          predicate_id,
-          object_id,
-          source_file_id,
-          source_line_no
-        FROM rdf_quads
-      `).run();
-
-      for (const permutation of PERMUTATIONS) {
-        db.prepare(`
-          INSERT OR IGNORE INTO ${permutation.table} (${permutation.columns.join(', ')})
-          SELECT DISTINCT ${permutation.columns.join(', ')}
-          FROM rdf_quads
-        `).run();
-      }
-
       for (const projection of PAIR_PROJECTIONS) {
         this.rebuildPairProjection(projection);
       }
@@ -311,7 +316,11 @@ export class Rdf3xTripleIndex {
     }
 
     const useMembershipSource = shouldUseMembershipSource(resolved);
-    const permutation = this.choosePermutation(resolved.ids, { objectRange: Boolean(resolved.objectRange) });
+    const permutation = this.choosePermutation(resolved.ids, {
+      idSets: resolved.idSets,
+      objectRange: Boolean(resolved.objectRange),
+      termFilters: resolved.termFilters,
+    });
     const compiled = useMembershipSource
       ? this.compileMembershipDistinctCountSql(resolved, distinctKey)
       : this.compileDistinctCountSql(permutation, resolved, distinctKey);
@@ -349,7 +358,11 @@ export class Rdf3xTripleIndex {
     }
 
     const useMembershipSource = shouldUseMembershipSource(resolved);
-    const permutation = this.choosePermutation(resolved.ids, { objectRange: Boolean(resolved.objectRange) });
+    const permutation = this.choosePermutation(resolved.ids, {
+      idSets: resolved.idSets,
+      objectRange: Boolean(resolved.objectRange),
+      termFilters: resolved.termFilters,
+    });
     const compiled = useMembershipSource
       ? this.compileMembershipScanSql(resolved, options, tupleValues)
       : this.compileScanSql(permutation, resolved, options, tupleValues);
@@ -395,39 +408,73 @@ export class Rdf3xTripleIndex {
       conditions.push(`idx.${TERM_COLUMN[key]} = ?`);
       params.push(id);
     }
+    this.appendResolvedIdSetConditions(
+      resolved,
+      TERM_KEYS,
+      (key) => `idx.${TERM_COLUMN[key as Rdf3xTermKey]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
+    this.appendResolvedExcludedIdSetConditions(
+      resolved,
+      TERM_KEYS,
+      (key) => `idx.${TERM_COLUMN[key as Rdf3xTermKey]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
 
     if (ids.graph !== undefined) {
-      conditions.push('membership.graph_id = ?');
+      conditions.push('idx.graph_id = ?');
       params.push(ids.graph);
       queryPlan.push('GraphMembershipFilter');
     }
+    this.appendResolvedExcludedIdSetConditions(
+      resolved,
+      ['graph'],
+      () => 'idx.graph_id',
+      conditions,
+      params,
+      queryPlan,
+    );
 
     const graphPrefixJoin = resolved.graphPrefix
       ? ` JOIN rdf_terms graph_prefix
-          ON graph_prefix.id = membership.graph_id`
+          ON graph_prefix.id = idx.graph_id`
       : '';
     if (resolved.graphPrefix) {
       conditions.push(`graph_prefix.kind = ?
+        AND graph_prefix.value_head >= ?
+        AND graph_prefix.value_head < ?
         AND graph_prefix.value >= ?
         AND graph_prefix.value < ?`);
-      params.push('iri', resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
+      params.push('iri', rdfTermValueHead(resolved.graphPrefix), `${rdfTermValueHead(resolved.graphPrefix)}\uffff`, resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
       queryPlan.push('GraphPrefixMembershipFilter');
     }
 
     if (resolved.objectRange) {
       this.appendObjectRangeCondition('object_range', resolved.objectRange, conditions, params, queryPlan);
     }
+    const termFilterJoins: string[] = [];
+    this.appendTermFilterJoinsAndConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `idx.${PATTERN_COLUMNS[key]}`,
+      termFilterJoins,
+      conditions,
+      params,
+      queryPlan,
+      'distinct_term_filter',
+    );
 
     const distinctColumn = distinctKey === 'graph'
-      ? 'membership.graph_id'
+      ? 'idx.graph_id'
       : `idx.${TERM_COLUMN[distinctKey]}`;
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
     const from = `
-      FROM ${permutation.table} idx
-      JOIN rdf3x_triple_membership membership
-        ON membership.subject_id = idx.subject_id
-       AND membership.predicate_id = idx.predicate_id
-       AND membership.object_id = idx.object_id
+      FROM ${this.permutationSource(permutation, 'idx')}
+      ${termFilterJoins.join('')}
       ${graphPrefixJoin}
       ${resolved.objectRange ? 'JOIN rdf_terms object_range ON object_range.id = idx.object_id' : ''}
     `;
@@ -465,19 +512,38 @@ export class Rdf3xTripleIndex {
       conditions.push(`${alias}.${PATTERN_COLUMNS[key]} = ?`);
       params.push(id);
     }
+    this.appendResolvedIdSetConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
+    this.appendResolvedExcludedIdSetConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
 
     if (ids.graph !== undefined) {
       queryPlan.push('GraphMembershipFilter');
     }
 
-    const useGraphPrefixSource = resolved.graphPrefix !== undefined && ids.graph === undefined;
+    const useGraphPrefixSource = resolved.graphPrefix !== undefined
+      && ids.graph === undefined
+      && !resolved.idSets?.graph?.length
+      && !resolved.excludedIdSets?.graph?.length;
     let from = useGraphPrefixSource
       ? `${GRAPH_PROJECTION_TABLE} ${graphAlias}
         JOIN rdf_terms ${graphPrefixAlias}
           ON ${graphPrefixAlias}.id = ${graphAlias}.graph_id
-        JOIN rdf3x_triple_membership ${alias}
+        JOIN ${this.factSource(alias)}
           ON ${alias}.graph_id = ${graphAlias}.graph_id`
-      : `rdf3x_triple_membership ${alias}`;
+      : this.factSource(alias);
 
     if (resolved.graphPrefix !== undefined) {
       if (!useGraphPrefixSource) {
@@ -485,9 +551,11 @@ export class Rdf3xTripleIndex {
           ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
       }
       conditions.push(`${graphPrefixAlias}.kind = ?
+        AND ${graphPrefixAlias}.value_head >= ?
+        AND ${graphPrefixAlias}.value_head < ?
         AND ${graphPrefixAlias}.value >= ?
         AND ${graphPrefixAlias}.value < ?`);
-      params.push('iri', resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
+      params.push('iri', rdfTermValueHead(resolved.graphPrefix), `${rdfTermValueHead(resolved.graphPrefix)}\uffff`, resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
       queryPlan.push('GraphPrefixMembershipFilter');
     }
 
@@ -496,6 +564,18 @@ export class Rdf3xTripleIndex {
         ON object_range.id = ${alias}.object_id`;
       this.appendObjectRangeCondition('object_range', resolved.objectRange, conditions, params, queryPlan);
     }
+    const termFilterJoins: string[] = [];
+    this.appendTermFilterJoinsAndConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      termFilterJoins,
+      conditions,
+      params,
+      queryPlan,
+      'membership_distinct_term_filter',
+    );
+    from += termFilterJoins.join('');
 
     const distinctColumn = `${alias}.${PATTERN_COLUMNS[distinctKey]}`;
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
@@ -752,8 +832,12 @@ export class Rdf3xTripleIndex {
       };
     }
 
-    if (resolved.objectRange) {
+    if (resolved.objectRange || hasResolvedTermFilters(resolved)) {
       return this.estimateObjectRangeCardinality(resolved);
+    }
+
+    if (hasResolvedIdSets(resolved) || hasResolvedExcludedIdSets(resolved)) {
+      return this.estimateResolvedMembershipCardinality(resolved);
     }
 
     if (resolved.ids.graph !== undefined || resolved.graphPrefix !== undefined) {
@@ -761,7 +845,10 @@ export class Rdf3xTripleIndex {
     }
 
     const termIds = TERM_KEYS.filter((key) => resolved.ids[key] !== undefined);
-    const permutation = this.choosePermutation(resolved.ids);
+    const permutation = this.choosePermutation(resolved.ids, {
+      idSets: resolved.idSets,
+      termFilters: resolved.termFilters,
+    });
     if (termIds.length === 3) {
       return this.estimateExactTriple(resolved.ids, permutation.name);
     }
@@ -773,8 +860,8 @@ export class Rdf3xTripleIndex {
     }
 
     return {
-      uniqueTriples: this.rowCount('rdf3x_spo'),
-      matchingQuads: this.rowCount('rdf3x_triple_membership'),
+      uniqueTriples: this.uniqueTripleCount(),
+      matchingQuads: this.rowCount(RDF_FACTS_TABLE),
       source: 'full-count',
       indexChoice: permutation.name,
     };
@@ -784,14 +871,15 @@ export class Rdf3xTripleIndex {
     const spaceObjects = this.collectSpaceObjects();
     const accountedBytes = spaceObjects.reduce((sum, object) => sum + object.bytes, 0);
     const databaseBytes = accountedBytes || this.estimateDatabaseBytes();
+    const uniqueTriples = this.uniqueTripleCount();
     return {
-      uniqueTriples: this.rowCount('rdf3x_spo'),
-      membershipCount: this.rowCount('rdf3x_triple_membership'),
+      uniqueTriples,
+      membershipCount: this.rowCount(RDF_FACTS_TABLE),
       graphCount: this.rowCount(GRAPH_PROJECTION_TABLE),
       factsDataVersion: this.factsDataVersion(),
       permutationRows: Object.fromEntries(PERMUTATIONS.map((permutation) => [
         permutation.name,
-        this.rowCount(permutation.table),
+        uniqueTriples,
       ])) as Record<Rdf3xPermutationName, number>,
       pairProjectionRows: Object.fromEntries(PAIR_PROJECTIONS.map((projection) => [
         projection.name,
@@ -852,16 +940,8 @@ export class Rdf3xTripleIndex {
   }
 
   private initializeSchema(): void {
+    this.dropMaterializedFactCopies();
     this.dropLegacyRowidTables();
-
-    const permutationTables = PERMUTATIONS.map((permutation) => `
-      CREATE TABLE IF NOT EXISTS ${permutation.table} (
-        ${permutation.columns[0]} INTEGER NOT NULL,
-        ${permutation.columns[1]} INTEGER NOT NULL,
-        ${permutation.columns[2]} INTEGER NOT NULL,
-        PRIMARY KEY (${permutation.columns.join(', ')})
-      ) WITHOUT ROWID;
-    `).join('\n');
 
     const pairProjectionTables = PAIR_PROJECTIONS.map((projection) => `
       CREATE TABLE IF NOT EXISTS ${projection.table} (
@@ -884,21 +964,6 @@ export class Rdf3xTripleIndex {
     `).join('\n');
 
     this.requireDb().exec(`
-      CREATE TABLE IF NOT EXISTS rdf3x_triple_membership (
-        graph_id INTEGER NOT NULL,
-        subject_id INTEGER NOT NULL,
-        predicate_id INTEGER NOT NULL,
-        object_id INTEGER NOT NULL,
-        source_file_id INTEGER,
-        source_line_no INTEGER,
-        PRIMARY KEY (graph_id, subject_id, predicate_id, object_id)
-      ) WITHOUT ROWID;
-
-      CREATE INDEX IF NOT EXISTS rdf3x_membership_spo
-        ON rdf3x_triple_membership(subject_id, predicate_id, object_id);
-      CREATE INDEX IF NOT EXISTS rdf3x_membership_source
-        ON rdf3x_triple_membership(source_file_id);
-
       CREATE TABLE IF NOT EXISTS ${GRAPH_PROJECTION_TABLE} (
         graph_id INTEGER NOT NULL PRIMARY KEY,
         membership_count INTEGER NOT NULL
@@ -909,10 +974,26 @@ export class Rdf3xTripleIndex {
         value TEXT NOT NULL
       ) WITHOUT ROWID;
 
-      ${permutationTables}
       ${pairProjectionTables}
       ${termProjectionTables}
     `);
+  }
+
+  private dropMaterializedFactCopies(): void {
+    const db = this.requireDb();
+    const rows = db.prepare<{ name: string; type: string }>(`
+      SELECT name, type
+      FROM sqlite_schema
+      WHERE name IN (${RDF3X_MATERIALIZED_FACT_COPY_TABLES.map(() => '?').join(', ')})
+    `).all(...RDF3X_MATERIALIZED_FACT_COPY_TABLES);
+    db.exec(RDF3X_DERIVED_INDEXES.map((index) => `DROP INDEX IF EXISTS ${index};`).join('\n'));
+    for (const row of rows) {
+      if (row.type === 'view') {
+        db.exec(`DROP VIEW IF EXISTS ${row.name};`);
+      } else if (row.type === 'table') {
+        db.exec(`DROP TABLE IF EXISTS ${row.name};`);
+      }
+    }
   }
 
   private dropLegacyRowidTables(): void {
@@ -942,8 +1023,6 @@ export class Rdf3xTripleIndex {
       ...PAIR_PROJECTIONS.map((projection) => `DELETE FROM ${projection.table};`),
       ...TERM_PROJECTIONS.map((projection) => `DELETE FROM ${projection.table};`),
       `DELETE FROM ${GRAPH_PROJECTION_TABLE};`,
-      'DELETE FROM rdf3x_triple_membership;',
-      ...PERMUTATIONS.map((permutation) => `DELETE FROM ${permutation.table};`),
     ].join('\n'));
   }
 
@@ -989,10 +1068,10 @@ export class Rdf3xTripleIndex {
         SELECT
           ${left},
           ${right},
-          COUNT(*) AS triple_count,
+          COUNT(DISTINCT ${projection.remainder}) AS triple_count,
           MIN(${projection.remainder}) AS min_remainder,
           MAX(${projection.remainder}) AS max_remainder
-        FROM rdf3x_spo
+        FROM ${RDF_FACTS_TABLE}
         GROUP BY ${left}, ${right}
       ) triple
       LEFT JOIN (
@@ -1000,7 +1079,7 @@ export class Rdf3xTripleIndex {
           ${left},
           ${right},
           COUNT(*) AS membership_count
-        FROM rdf3x_triple_membership
+        FROM ${RDF_FACTS_TABLE}
         GROUP BY ${left}, ${right}
       ) member
         ON member.${left} = triple.${left}
@@ -1023,14 +1102,17 @@ export class Rdf3xTripleIndex {
         SELECT
           ${projection.column},
           COUNT(*) AS triple_count
-        FROM rdf3x_spo
+        FROM (
+          SELECT DISTINCT subject_id, predicate_id, object_id
+          FROM ${RDF_FACTS_TABLE}
+        ) distinct_triples
         GROUP BY ${projection.column}
       ) triple
       LEFT JOIN (
         SELECT
           ${projection.column},
           COUNT(*) AS membership_count
-        FROM rdf3x_triple_membership
+        FROM ${RDF_FACTS_TABLE}
         GROUP BY ${projection.column}
       ) member
         ON member.${projection.column} = triple.${projection.column}
@@ -1046,7 +1128,7 @@ export class Rdf3xTripleIndex {
       SELECT
         graph_id,
         COUNT(*) AS membership_count
-      FROM rdf3x_triple_membership
+      FROM ${RDF_FACTS_TABLE}
       GROUP BY graph_id
     `).run();
   }
@@ -1076,41 +1158,80 @@ export class Rdf3xTripleIndex {
       conditions.push(`idx.${TERM_COLUMN[key]} = ?`);
       params.push(id);
     }
+    this.appendResolvedIdSetConditions(
+      resolved,
+      TERM_KEYS,
+      (key) => `idx.${TERM_COLUMN[key as Rdf3xTermKey]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
+    this.appendResolvedExcludedIdSetConditions(
+      resolved,
+      TERM_KEYS,
+      (key) => `idx.${TERM_COLUMN[key as Rdf3xTermKey]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
 
     if (ids.graph !== undefined) {
-      conditions.push('membership.graph_id = ?');
+      conditions.push('idx.graph_id = ?');
       params.push(ids.graph);
       queryPlan.push('GraphMembershipFilter');
     }
+    this.appendResolvedExcludedIdSetConditions(
+      resolved,
+      ['graph'],
+      () => 'idx.graph_id',
+      conditions,
+      params,
+      queryPlan,
+    );
 
     const graphPrefixJoin = resolved.graphPrefix
       ? ` JOIN rdf_terms graph_prefix
-          ON graph_prefix.id = membership.graph_id`
+          ON graph_prefix.id = idx.graph_id`
       : '';
     const tupleJoin = tupleValues
-      ? this.buildTupleConstraintJoin(tupleValues, 'rdf3x_tuple_values_scan', 'idx', 'membership')
+      ? this.buildTupleConstraintJoin(tupleValues, 'rdf3x_tuple_values_scan', 'idx', 'idx')
       : { join: '', queryPlan: [] };
     if (resolved.graphPrefix) {
       conditions.push(`graph_prefix.kind = ?
+        AND graph_prefix.value_head >= ?
+        AND graph_prefix.value_head < ?
         AND graph_prefix.value >= ?
         AND graph_prefix.value < ?`);
-      params.push('iri', resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
+      params.push('iri', rdfTermValueHead(resolved.graphPrefix), `${rdfTermValueHead(resolved.graphPrefix)}\uffff`, resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
       queryPlan.push('GraphPrefixMembershipFilter');
     }
 
     if (resolved.objectRange) {
       this.appendObjectRangeCondition('object_range', resolved.objectRange, conditions, params, queryPlan);
     }
+    const termFilterJoins: string[] = [];
+    this.appendTermFilterJoinsAndConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `idx.${PATTERN_COLUMNS[key]}`,
+      termFilterJoins,
+      conditions,
+      params,
+      queryPlan,
+      'scan_term_filter',
+    );
 
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
-    const orderClause = this.buildOrderClause(options);
+    const orderClause = this.buildOrderClause(options, {
+      graph: 'idx.graph_id',
+      subject: 'idx.subject_id',
+      predicate: 'idx.predicate_id',
+      object: 'idx.object_id',
+    });
     const from = `
-      FROM ${permutation.table} idx
-      JOIN rdf3x_triple_membership membership
-        ON membership.subject_id = idx.subject_id
-       AND membership.predicate_id = idx.predicate_id
-       AND membership.object_id = idx.object_id
+      FROM ${this.permutationSource(permutation, 'idx')}
       ${tupleJoin.join}
+      ${termFilterJoins.join('')}
       ${graphPrefixJoin}
       ${resolved.objectRange ? 'JOIN rdf_terms object_range ON object_range.id = idx.object_id' : ''}
     `;
@@ -1118,14 +1239,14 @@ export class Rdf3xTripleIndex {
     return {
       sql: `
         SELECT
-          membership.graph_id,
+          idx.graph_id,
           idx.subject_id,
           idx.predicate_id,
           idx.object_id
         ${from}
         ${orderClause.joins}
         ${whereClause}
-        ${orderClause.orderBy || ` ORDER BY ${permutation.columns.map((column) => `idx.${column}`).join(', ')}, membership.graph_id`}
+        ${orderClause.orderBy || ` ORDER BY ${permutation.columns.map((column) => `idx.${column}`).join(', ')}, idx.graph_id`}
         ${pagination.sql}
       `,
       params: [...params, ...pagination.params],
@@ -1167,19 +1288,38 @@ export class Rdf3xTripleIndex {
       conditions.push(`${alias}.${PATTERN_COLUMNS[key]} = ?`);
       params.push(id);
     }
+    this.appendResolvedIdSetConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
+    this.appendResolvedExcludedIdSetConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
 
     if (ids.graph !== undefined) {
       queryPlan.push('GraphMembershipFilter');
     }
 
-    const useGraphPrefixSource = resolved.graphPrefix !== undefined && ids.graph === undefined;
+    const useGraphPrefixSource = resolved.graphPrefix !== undefined
+      && ids.graph === undefined
+      && !resolved.idSets?.graph?.length
+      && !resolved.excludedIdSets?.graph?.length;
     let from = useGraphPrefixSource
       ? `${GRAPH_PROJECTION_TABLE} ${graphAlias}
         JOIN rdf_terms ${graphPrefixAlias}
           ON ${graphPrefixAlias}.id = ${graphAlias}.graph_id
-        JOIN rdf3x_triple_membership ${alias}
+        JOIN ${this.factSource(alias)}
           ON ${alias}.graph_id = ${graphAlias}.graph_id`
-      : `rdf3x_triple_membership ${alias}`;
+      : this.factSource(alias);
 
     const tupleJoin = tupleValues
       ? this.buildTupleConstraintJoin(tupleValues, 'rdf3x_tuple_values_scan', alias, alias)
@@ -1192,9 +1332,11 @@ export class Rdf3xTripleIndex {
           ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
       }
       conditions.push(`${graphPrefixAlias}.kind = ?
+        AND ${graphPrefixAlias}.value_head >= ?
+        AND ${graphPrefixAlias}.value_head < ?
         AND ${graphPrefixAlias}.value >= ?
         AND ${graphPrefixAlias}.value < ?`);
-      params.push('iri', resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
+      params.push('iri', rdfTermValueHead(resolved.graphPrefix), `${rdfTermValueHead(resolved.graphPrefix)}\uffff`, resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
       queryPlan.push('GraphPrefixMembershipFilter');
     }
 
@@ -1203,6 +1345,18 @@ export class Rdf3xTripleIndex {
         ON object_range.id = ${alias}.object_id`;
       this.appendObjectRangeCondition('object_range', resolved.objectRange, conditions, params, queryPlan);
     }
+    const termFilterJoins: string[] = [];
+    this.appendTermFilterJoinsAndConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      termFilterJoins,
+      conditions,
+      params,
+      queryPlan,
+      'membership_scan_term_filter',
+    );
+    from += termFilterJoins.join('');
 
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
     const orderClause = this.buildOrderClause(options, {
@@ -1240,7 +1394,11 @@ export class Rdf3xTripleIndex {
   private compileJoinPatterns(patterns: RdfQuadJoinPattern[], options?: Rdf3xJoinOptions): Rdf3xCompiledJoin {
     const sources = patterns.map((entry, inputIndex) => {
       const resolved = this.resolveJoinPattern(entry.pattern);
-      const permutation = this.choosePermutation(resolved.ids, { objectRange: Boolean(resolved.objectRange) });
+      const permutation = this.choosePermutation(resolved.ids, {
+        idSets: resolved.idSets,
+        objectRange: Boolean(resolved.objectRange),
+        termFilters: resolved.termFilters,
+      });
       const estimate = resolved.unresolved
         ? {
           uniqueTriples: 0,
@@ -1401,35 +1559,61 @@ export class Rdf3xTripleIndex {
       conditions.push(`${alias}.${TERM_COLUMN[key]} = ?`);
       params.push(id);
     }
+    this.appendResolvedIdSetConditions(
+      source.resolved,
+      TERM_KEYS,
+      (key) => `${alias}.${TERM_COLUMN[key as Rdf3xTermKey]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
+    this.appendResolvedExcludedIdSetConditions(
+      source.resolved,
+      TERM_KEYS,
+      (key) => `${alias}.${TERM_COLUMN[key as Rdf3xTermKey]}`,
+      conditions,
+      params,
+      queryPlan,
+    );
 
     let from = first
-      ? `${source.permutation.table} ${alias}${indexOnly ? '' : `
-        JOIN rdf3x_triple_membership ${source.membershipAlias}
-          ON ${source.membershipAlias}.subject_id = ${alias}.subject_id
-         AND ${source.membershipAlias}.predicate_id = ${alias}.predicate_id
-         AND ${source.membershipAlias}.object_id = ${alias}.object_id`}`
-      : ` JOIN ${source.permutation.table} ${alias}
-          ON ${mergeJoin.conditions.length > 0 ? mergeJoin.conditions.join(' AND ') : '1 = 1'}${indexOnly ? '' : `
-        JOIN rdf3x_triple_membership ${source.membershipAlias}
-          ON ${source.membershipAlias}.subject_id = ${alias}.subject_id
-         AND ${source.membershipAlias}.predicate_id = ${alias}.predicate_id
-         AND ${source.membershipAlias}.object_id = ${alias}.object_id`}`;
+      ? this.permutationSource(source.permutation, alias)
+      : ` JOIN ${this.permutationSource(source.permutation, alias)}
+          ON ${mergeJoin.conditions.length > 0 ? mergeJoin.conditions.join(' AND ') : '1 = 1'}`;
     if (!first && mergeJoin.variables.length > 0) {
       queryPlan.push(`Rdf3xMergeJoin(${mergeJoin.variables.map((variableName) => `?${variableName}`).join(',')})`);
     }
 
     if (source.resolved.ids.graph !== undefined) {
-      conditions.push(`${source.membershipAlias}.graph_id = ?`);
+      conditions.push(`${alias}.graph_id = ?`);
       params.push(source.resolved.ids.graph);
       queryPlan.push('GraphMembershipFilter');
     }
+    this.appendResolvedIdSetConditions(
+      source.resolved,
+      ['graph'],
+      () => `${alias}.graph_id`,
+      conditions,
+      params,
+      queryPlan,
+    );
+    this.appendResolvedExcludedIdSetConditions(
+      source.resolved,
+      ['graph'],
+      () => `${alias}.graph_id`,
+      conditions,
+      params,
+      queryPlan,
+    );
     if (source.resolved.graphPrefix !== undefined) {
       from += ` JOIN rdf_terms ${graphPrefixAlias}
-          ON ${graphPrefixAlias}.id = ${source.membershipAlias}.graph_id`;
+          ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
       conditions.push(`${graphPrefixAlias}.kind = ?
+        AND ${graphPrefixAlias}.value_head >= ?
+        AND ${graphPrefixAlias}.value_head < ?
         AND ${graphPrefixAlias}.value >= ?
         AND ${graphPrefixAlias}.value < ?`);
-      params.push('iri', source.resolved.graphPrefix, `${source.resolved.graphPrefix}\uffff`);
+      params.push('iri', rdfTermValueHead(source.resolved.graphPrefix), `${rdfTermValueHead(source.resolved.graphPrefix)}\uffff`, source.resolved.graphPrefix, `${source.resolved.graphPrefix}\uffff`);
       queryPlan.push('GraphPrefixMembershipFilter');
     }
     if (source.resolved.objectRange) {
@@ -1438,6 +1622,18 @@ export class Rdf3xTripleIndex {
           ON ${alias}.id = ${source.alias}.object_id`;
       this.appendObjectRangeCondition(alias, source.resolved.objectRange, conditions, params, queryPlan);
     }
+    const termFilterJoins: string[] = [];
+    this.appendTermFilterJoinsAndConditions(
+      source.resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => this.joinSourceColumnRef(source, key),
+      termFilterJoins,
+      conditions,
+      params,
+      queryPlan,
+      `${source.alias}_term_filter`,
+    );
+    from += termFilterJoins.join('');
 
     return {
       from,
@@ -1458,7 +1654,11 @@ export class Rdf3xTripleIndex {
     const alias = source.membershipAlias;
     const graphAlias = `${alias}_graph`;
     const graphPrefixAlias = `${alias}_graph_prefix`;
-    const useGraphPrefixSource = first && source.resolved.graphPrefix !== undefined && source.resolved.ids.graph === undefined;
+    const useGraphPrefixSource = first
+      && source.resolved.graphPrefix !== undefined
+      && source.resolved.ids.graph === undefined
+      && !source.resolved.idSets?.graph?.length
+      && !source.resolved.excludedIdSets?.graph?.length;
 
     for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
       const id = source.resolved.ids[key];
@@ -1468,18 +1668,34 @@ export class Rdf3xTripleIndex {
       conditions.push(`${this.joinSourceColumnRef(source, key)} = ?`);
       params.push(id);
     }
+    this.appendResolvedIdSetConditions(
+      source.resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => this.joinSourceColumnRef(source, key),
+      conditions,
+      params,
+      queryPlan,
+    );
+    this.appendResolvedExcludedIdSetConditions(
+      source.resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => this.joinSourceColumnRef(source, key),
+      conditions,
+      params,
+      queryPlan,
+    );
 
     let from = '';
     if (useGraphPrefixSource) {
       from = `${GRAPH_PROJECTION_TABLE} ${graphAlias}
           JOIN rdf_terms ${graphPrefixAlias}
             ON ${graphPrefixAlias}.id = ${graphAlias}.graph_id
-          JOIN rdf3x_triple_membership ${alias}
+          JOIN ${this.factSource(alias)}
             ON ${alias}.graph_id = ${graphAlias}.graph_id`;
     } else {
       from = first
-        ? `rdf3x_triple_membership ${alias}`
-        : ` JOIN rdf3x_triple_membership ${alias}
+        ? this.factSource(alias)
+        : ` JOIN ${this.factSource(alias)}
             ON ${mergeJoin.conditions.length > 0 ? mergeJoin.conditions.join(' AND ') : '1 = 1'}`;
     }
     if (!first && mergeJoin.variables.length > 0) {
@@ -1495,9 +1711,11 @@ export class Rdf3xTripleIndex {
             ON ${graphPrefixAlias}.id = ${alias}.graph_id`;
       }
       conditions.push(`${graphPrefixAlias}.kind = ?
+        AND ${graphPrefixAlias}.value_head >= ?
+        AND ${graphPrefixAlias}.value_head < ?
         AND ${graphPrefixAlias}.value >= ?
         AND ${graphPrefixAlias}.value < ?`);
-      params.push('iri', source.resolved.graphPrefix, `${source.resolved.graphPrefix}\uffff`);
+      params.push('iri', rdfTermValueHead(source.resolved.graphPrefix), `${rdfTermValueHead(source.resolved.graphPrefix)}\uffff`, source.resolved.graphPrefix, `${source.resolved.graphPrefix}\uffff`);
       queryPlan.push('GraphPrefixMembershipFilter');
     }
     if (source.resolved.objectRange) {
@@ -1506,6 +1724,18 @@ export class Rdf3xTripleIndex {
           ON ${rangeAlias}.id = ${alias}.object_id`;
       this.appendObjectRangeCondition(rangeAlias, source.resolved.objectRange, conditions, params, queryPlan);
     }
+    const termFilterJoins: string[] = [];
+    this.appendTermFilterJoinsAndConditions(
+      source.resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => this.joinSourceColumnRef(source, key),
+      termFilterJoins,
+      conditions,
+      params,
+      queryPlan,
+      `${alias}_term_filter`,
+    );
+    from += termFilterJoins.join('');
 
     return {
       from,
@@ -1528,6 +1758,9 @@ export class Rdf3xTripleIndex {
     return sources.every((source) => (
       !source.resolved.unresolved
       && source.resolved.ids.graph === undefined
+      && !source.resolved.idSets?.graph?.length
+      && !source.resolved.excludedIdSets?.graph?.length
+      && !source.resolved.termFilters?.graph
       && source.resolved.graphPrefix === undefined
       && !source.entry.variables.graph
     ));
@@ -1563,10 +1796,8 @@ export class Rdf3xTripleIndex {
   }
 
   private joinSourceColumnRef(source: Rdf3xJoinSource, key: Rdf3xPatternKey): string {
-    if (source.sourceKind === 'membership' || key === 'graph') {
-      return `${source.membershipAlias}.${PATTERN_COLUMNS[key]}`;
-    }
-    return `${source.alias}.${TERM_COLUMN[key]}`;
+    const alias = source.sourceKind === 'membership' ? source.membershipAlias : source.alias;
+    return `${alias}.${PATTERN_COLUMNS[key]}`;
   }
 
   private buildTupleConstraintJoin(
@@ -1982,8 +2213,11 @@ export class Rdf3xTripleIndex {
 
   private estimateResolvedCardinality(resolved: Rdf3xResolvedPattern): Rdf3xCardinalityEstimate {
     const ids = resolved.ids;
-    if (resolved.objectRange) {
+    if (resolved.objectRange || hasResolvedTermFilters(resolved)) {
       return this.estimateObjectRangeCardinality(resolved);
+    }
+    if (hasResolvedIdSets(resolved) || hasResolvedExcludedIdSets(resolved)) {
+      return this.estimateResolvedMembershipCardinality(resolved);
     }
     const termIds = TERM_KEYS.filter((key) => ids[key] !== undefined);
     if (ids.graph !== undefined || resolved.graphPrefix !== undefined) {
@@ -1999,15 +2233,22 @@ export class Rdf3xTripleIndex {
       return this.estimateTermProjection(ids, this.choosePermutation(ids).name);
     }
     return {
-      uniqueTriples: this.rowCount('rdf3x_spo'),
-      matchingQuads: this.rowCount('rdf3x_triple_membership'),
+      uniqueTriples: this.uniqueTripleCount(),
+      matchingQuads: this.rowCount(RDF_FACTS_TABLE),
       source: 'full-count',
-      indexChoice: this.choosePermutation(ids, { objectRange: Boolean(resolved.objectRange) }).name,
+      indexChoice: this.choosePermutation(ids, {
+        idSets: resolved.idSets,
+        objectRange: Boolean(resolved.objectRange),
+        termFilters: resolved.termFilters,
+      }).name,
     };
   }
 
   private resolveJoinPattern(pattern: QuintPattern): Rdf3xResolvedPattern {
     const ids: Partial<Record<Rdf3xPatternKey, number>> = {};
+    const idSets: Partial<Record<Rdf3xPatternKey, number[]>> = {};
+    const excludedIdSets: Partial<Record<Rdf3xPatternKey, number[]>> = {};
+    const termFilters: Partial<Record<Rdf3xPatternKey, Rdf3xResolvedTermFilter>> = {};
     let graphPrefix: string | undefined;
     let objectRange: Rdf3xObjectRange | undefined;
     for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
@@ -2019,25 +2260,55 @@ export class Rdf3xTripleIndex {
         graphPrefix = match.$startsWith;
         continue;
       }
+      if (isTermInPattern(match)) {
+        const resolvedIds = this.resolveTermInIds(match);
+        if (resolvedIds.length === 0) {
+          return { ids, idSets, excludedIdSets, graphPrefix, objectRange, unresolved: key };
+        }
+        idSets[key] = resolvedIds;
+        continue;
+      }
+      if (isTermNotInPattern(match)) {
+        const resolvedIds = this.resolveTermNotInIds(match);
+        if (resolvedIds.length > 0) {
+          excludedIdSets[key] = resolvedIds;
+        }
+        continue;
+      }
+      if (isOperatorPattern(match)) {
+        const resolved = this.resolveOperatorPattern(key, match);
+        if (resolved.unresolved) {
+          return { ids, idSets, excludedIdSets, termFilters, graphPrefix, objectRange, unresolved: key };
+        }
+        if (resolved.graphPrefix !== undefined) graphPrefix = resolved.graphPrefix;
+        if (resolved.idSet) idSets[key] = resolved.idSet;
+        if (resolved.excludedIdSet) excludedIdSets[key] = resolved.excludedIdSet;
+        if (resolved.objectRange) objectRange = resolved.objectRange;
+        if (resolved.termFilter) termFilters[key] = resolved.termFilter;
+        continue;
+      }
       if (key === 'object' && isObjectRangePattern(match)) {
         const resolvedRange = this.resolveObjectRange(match);
         if (!resolvedRange) {
-          return { ids, graphPrefix, objectRange: resolvedRange, unresolved: key };
+          return { ids, idSets, excludedIdSets, termFilters, graphPrefix, objectRange: resolvedRange, unresolved: key };
         }
         objectRange = resolvedRange;
         continue;
       }
       if (!isRdfTerm(match)) {
-        return { ids, graphPrefix, unresolved: key };
+        return { ids, idSets, excludedIdSets, termFilters, graphPrefix, unresolved: key };
       }
       const id = this.requireDictionary().find(match);
       if (id === undefined) {
-        return { ids, graphPrefix, unresolved: key };
+        return { ids, idSets, excludedIdSets, termFilters, graphPrefix, unresolved: key };
       }
       ids[key] = id;
     }
     return {
       ids,
+      ...(Object.keys(idSets).length > 0 ? { idSets } : {}),
+      ...(Object.keys(excludedIdSets).length > 0 ? { excludedIdSets } : {}),
+      ...(Object.keys(termFilters).length > 0 ? { termFilters } : {}),
       ...(graphPrefix !== undefined ? { graphPrefix } : {}),
       ...(objectRange !== undefined ? { objectRange } : {}),
     };
@@ -2123,14 +2394,18 @@ export class Rdf3xTripleIndex {
   ): Rdf3xCardinalityEstimate {
     const row = this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count
-      FROM rdf3x_spo
-      WHERE subject_id = ?
-        AND predicate_id = ?
-        AND object_id = ?
+      FROM (
+        SELECT 1
+        FROM ${RDF_FACTS_TABLE}
+        WHERE subject_id = ?
+          AND predicate_id = ?
+          AND object_id = ?
+        LIMIT 1
+      ) exact_triple
     `).get(ids.subject, ids.predicate, ids.object);
     const membership = this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count
-      FROM rdf3x_triple_membership
+      FROM ${RDF_FACTS_TABLE}
       WHERE subject_id = ?
         AND predicate_id = ?
         AND object_id = ?
@@ -2227,32 +2502,64 @@ export class Rdf3xTripleIndex {
     const ids = resolved.ids;
     const conditions: string[] = [];
     const params: unknown[] = [];
-    const useGraphPrefixSource = resolved.graphPrefix !== undefined && ids.graph === undefined;
+    const alias = 'membership';
+    const useGraphPrefixSource = resolved.graphPrefix !== undefined
+      && ids.graph === undefined
+      && !resolved.idSets?.graph?.length
+      && !resolved.excludedIdSets?.graph?.length;
     for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
       const id = ids[key];
       if (id === undefined) {
         continue;
       }
-      conditions.push(`${PATTERN_COLUMNS[key]} = ?`);
+      conditions.push(`${alias}.${PATTERN_COLUMNS[key]} = ?`);
       params.push(id);
     }
-    let from = 'rdf3x_triple_membership';
+    this.appendResolvedIdSetConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      conditions,
+      params,
+    );
+    this.appendResolvedExcludedIdSetConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      conditions,
+      params,
+    );
+    let from = this.factSource(alias);
     if (useGraphPrefixSource) {
       from = `${GRAPH_PROJECTION_TABLE} membership_graph
         JOIN rdf_terms membership_graph_prefix
           ON membership_graph_prefix.id = membership_graph.graph_id
-        JOIN rdf3x_triple_membership
-          ON rdf3x_triple_membership.graph_id = membership_graph.graph_id`;
+        JOIN ${this.factSource(alias)}
+          ON ${alias}.graph_id = membership_graph.graph_id`;
     } else if (resolved.graphPrefix !== undefined) {
       from += ` JOIN rdf_terms membership_graph_prefix
-        ON membership_graph_prefix.id = rdf3x_triple_membership.graph_id`;
+        ON membership_graph_prefix.id = ${alias}.graph_id`;
     }
     if (resolved.graphPrefix !== undefined) {
       conditions.push(`membership_graph_prefix.kind = ?
+        AND membership_graph_prefix.value_head >= ?
+        AND membership_graph_prefix.value_head < ?
         AND membership_graph_prefix.value >= ?
         AND membership_graph_prefix.value < ?`);
-      params.push('iri', resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
+      params.push('iri', rdfTermValueHead(resolved.graphPrefix), `${rdfTermValueHead(resolved.graphPrefix)}\uffff`, resolved.graphPrefix, `${resolved.graphPrefix}\uffff`);
     }
+    const termFilterJoins: string[] = [];
+    this.appendTermFilterJoinsAndConditions(
+      resolved,
+      ['graph', ...TERM_KEYS],
+      (key) => `${alias}.${PATTERN_COLUMNS[key]}`,
+      termFilterJoins,
+      conditions,
+      params,
+      undefined,
+      'membership_estimate_term_filter',
+    );
+    from += termFilterJoins.join('');
     return {
       whereClause: conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '',
       from,
@@ -2269,8 +2576,55 @@ export class Rdf3xTripleIndex {
     ));
   }
 
+  private appendResolvedIdSetConditions(
+    resolved: Rdf3xResolvedPattern,
+    keys: Rdf3xPatternKey[],
+    columnForKey: (key: Rdf3xPatternKey) => string,
+    conditions: string[],
+    params: unknown[],
+    queryPlan?: string[],
+  ): void {
+    for (const key of keys) {
+      const ids = resolved.idSets?.[key];
+      if (!ids || ids.length === 0) {
+        continue;
+      }
+      conditions.push(`${columnForKey(key)} IN (${ids.map(() => '?').join(', ')})`);
+      params.push(...ids);
+      queryPlan?.push(`TermIn(${key})`);
+      if (key === 'graph') {
+        queryPlan?.push('GraphMembershipFilter');
+      }
+    }
+  }
+
+  private appendResolvedExcludedIdSetConditions(
+    resolved: Rdf3xResolvedPattern,
+    keys: Rdf3xPatternKey[],
+    columnForKey: (key: Rdf3xPatternKey) => string,
+    conditions: string[],
+    params: unknown[],
+    queryPlan?: string[],
+  ): void {
+    for (const key of keys) {
+      const ids = resolved.excludedIdSets?.[key];
+      if (!ids || ids.length === 0) {
+        continue;
+      }
+      conditions.push(`${columnForKey(key)} NOT IN (${ids.map(() => '?').join(', ')})`);
+      params.push(...ids);
+      queryPlan?.push(`TermNotIn(${key})`);
+      if (key === 'graph') {
+        queryPlan?.push('GraphMembershipFilter');
+      }
+    }
+  }
+
   private resolvePattern(pattern: Rdf3xTriplePattern): Rdf3xResolvedPattern {
     const ids: Partial<Record<Rdf3xPatternKey, number>> = {};
+    const idSets: Partial<Record<Rdf3xPatternKey, number[]>> = {};
+    const excludedIdSets: Partial<Record<Rdf3xPatternKey, number[]>> = {};
+    const termFilters: Partial<Record<Rdf3xPatternKey, Rdf3xResolvedTermFilter>> = {};
     let graphPrefix: string | undefined;
     let objectRange: Rdf3xObjectRange | undefined;
     for (const key of ['graph', ...TERM_KEYS] as Rdf3xPatternKey[]) {
@@ -2282,32 +2636,161 @@ export class Rdf3xTripleIndex {
         graphPrefix = term.$startsWith;
         continue;
       }
+      if (isTermInPattern(term)) {
+        const resolvedIds = this.resolveTermInIds(term);
+        if (resolvedIds.length === 0) {
+          return { ids, idSets, graphPrefix, objectRange, unresolved: key };
+        }
+        idSets[key] = resolvedIds;
+        continue;
+      }
+      if (isTermNotInPattern(term)) {
+        const resolvedIds = this.resolveTermNotInIds(term);
+        if (resolvedIds.length > 0) {
+          excludedIdSets[key] = resolvedIds;
+        }
+        continue;
+      }
+      if (isOperatorPattern(term)) {
+        const resolved = this.resolveOperatorPattern(key, term);
+        if (resolved.unresolved) {
+          return { ids, idSets, termFilters, graphPrefix, objectRange, unresolved: key };
+        }
+        if (resolved.graphPrefix !== undefined) graphPrefix = resolved.graphPrefix;
+        if (resolved.idSet) idSets[key] = resolved.idSet;
+        if (resolved.excludedIdSet) excludedIdSets[key] = resolved.excludedIdSet;
+        if (resolved.objectRange) objectRange = resolved.objectRange;
+        if (resolved.termFilter) termFilters[key] = resolved.termFilter;
+        continue;
+      }
       if (key === 'object' && isObjectRangePattern(term)) {
         const resolvedRange = this.resolveObjectRange(term);
         if (!resolvedRange) {
-          return { ids, graphPrefix, objectRange: resolvedRange, unresolved: key };
+          return { ids, idSets, termFilters, graphPrefix, objectRange: resolvedRange, unresolved: key };
         }
         objectRange = resolvedRange;
         continue;
       }
       if (key === 'graph' && !isRdfTerm(term)) {
-        return { ids, graphPrefix, unresolved: key };
+        return { ids, idSets, termFilters, graphPrefix, unresolved: key };
       }
       if (key !== 'graph' && !isRdfTerm(term)) {
-        return { ids, graphPrefix, unresolved: key };
+        return { ids, idSets, termFilters, graphPrefix, unresolved: key };
       }
       const rdfTerm = term as Term;
       const id = this.requireDictionary().find(rdfTerm);
       if (id === undefined) {
-        return { ids, graphPrefix, unresolved: key };
+        return { ids, idSets, termFilters, graphPrefix, unresolved: key };
       }
       ids[key] = id;
     }
     return {
       ids,
+      ...(Object.keys(idSets).length > 0 ? { idSets } : {}),
+      ...(Object.keys(excludedIdSets).length > 0 ? { excludedIdSets } : {}),
+      ...(Object.keys(termFilters).length > 0 ? { termFilters } : {}),
       ...(graphPrefix !== undefined ? { graphPrefix } : {}),
       ...(objectRange !== undefined ? { objectRange } : {}),
     };
+  }
+
+  private resolveTermInIds(pattern: Rdf3xTermInPattern): number[] {
+    return uniqueNumbers(pattern.$in
+      .map((term) => this.requireDictionary().find(term))
+      .filter((id): id is number => id !== undefined));
+  }
+
+  private resolveTermNotInIds(pattern: Rdf3xTermNotInPattern): number[] {
+    return uniqueNumbers(pattern.$notIn
+      .map((term) => this.requireDictionary().find(term))
+      .filter((id): id is number => id !== undefined));
+  }
+
+  private resolveOperatorPattern(
+    key: Rdf3xPatternKey,
+    pattern: Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern>,
+  ): {
+    graphPrefix?: string;
+    idSet?: number[];
+    excludedIdSet?: number[];
+    objectRange?: Rdf3xObjectRange;
+    termFilter?: Rdf3xResolvedTermFilter;
+    unresolved?: boolean;
+  } {
+    if (!isSupportedOperatorPattern(key, pattern)) {
+      return { unresolved: true };
+    }
+
+    const result: {
+      graphPrefix?: string;
+      idSet?: number[];
+      excludedIdSet?: number[];
+      objectRange?: Rdf3xObjectRange;
+      termFilter?: Rdf3xResolvedTermFilter;
+      unresolved?: boolean;
+    } = {};
+    if (key === 'graph' && pattern.$startsWith !== undefined) {
+      result.graphPrefix = pattern.$startsWith;
+    }
+    if (pattern.$in !== undefined) {
+      const resolvedIds = this.resolveTermInIds({ $in: pattern.$in });
+      if (resolvedIds.length === 0) {
+        return { unresolved: true };
+      }
+      result.idSet = resolvedIds;
+    }
+    if (pattern.$notIn !== undefined) {
+      const resolvedIds = this.resolveTermNotInIds({ $notIn: pattern.$notIn });
+      if (resolvedIds.length > 0) {
+        result.excludedIdSet = resolvedIds;
+      }
+    }
+    if (key === 'object' && hasObjectRangeOperator(pattern)) {
+      const objectRange = this.resolveObjectRange(pattern);
+      if (!objectRange) {
+        return { unresolved: true };
+      }
+      result.objectRange = objectRange;
+    }
+    const termFilter = this.resolveTermMetadataFilter(pattern);
+    if (termFilter) {
+      result.termFilter = termFilter;
+    }
+    return result;
+  }
+
+  private resolveTermMetadataFilter(pattern: Rdf3xTermMetadataPattern): Rdf3xResolvedTermFilter | undefined {
+    const filter: Rdf3xResolvedTermFilter = {};
+    if (pattern.$termType !== undefined) {
+      filter.termType = pattern.$termType;
+    }
+    if (pattern.$language !== undefined) {
+      filter.language = pattern.$language;
+    }
+    if (pattern.$notLanguage !== undefined) {
+      filter.notLanguage = pattern.$notLanguage;
+    }
+    if (pattern.$langMatches !== undefined) {
+      filter.langMatches = pattern.$langMatches;
+    }
+    if (pattern.$datatype !== undefined) {
+      filter.datatype = this.resolveDatatypeFilter(pattern.$datatype);
+    }
+    if (pattern.$notDatatype !== undefined) {
+      filter.notDatatype = this.resolveDatatypeFilter(pattern.$notDatatype);
+    }
+    return Object.keys(filter).length > 0 ? filter : undefined;
+  }
+
+  private resolveDatatypeFilter(datatype: Term): Rdf3xResolvedDatatypeFilter {
+    if (datatype.termType !== 'NamedNode') {
+      return { kind: 'unknown' };
+    }
+    if (datatype.value === XSD_STRING) {
+      return { kind: 'xsd-string' };
+    }
+    const id = this.requireDictionary().find(datatype);
+    return id === undefined ? { kind: 'unknown' } : { kind: 'id', id };
   }
 
   private countDistinctResolvedMembershipTuple(
@@ -2321,13 +2804,15 @@ export class Rdf3xTripleIndex {
 
     const { from, whereClause, params } = this.buildMembershipWhere({
       ids: resolved.ids,
+      ...(resolved.idSets !== undefined ? { idSets: resolved.idSets } : {}),
+      ...(resolved.excludedIdSets !== undefined ? { excludedIdSets: resolved.excludedIdSets } : {}),
       ...(resolved.graphPrefix !== undefined ? { graphPrefix: resolved.graphPrefix } : {}),
     });
     const rangeConditions: string[] = [];
     const rangeParams: unknown[] = [];
     const rangePlan: string[] = [];
     const rangeJoin = resolved.objectRange
-      ? ' JOIN rdf_terms fanout_object_range ON fanout_object_range.id = rdf3x_triple_membership.object_id'
+      ? ' JOIN rdf_terms fanout_object_range ON fanout_object_range.id = membership.object_id'
       : '';
     if (resolved.objectRange) {
       this.appendObjectRangeCondition('fanout_object_range', resolved.objectRange, rangeConditions, rangeParams, rangePlan);
@@ -2336,7 +2821,7 @@ export class Rdf3xTripleIndex {
       ? `${whereClause || ' WHERE 1 = 1'} AND ${rangeConditions.join(' AND ')}`
       : whereClause;
     const projection = distinctKeys
-      .map((key) => `rdf3x_triple_membership.${PATTERN_COLUMNS[key]}`)
+      .map((key) => `membership.${PATTERN_COLUMNS[key]}`)
       .join(', ');
     return this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count
@@ -2352,10 +2837,12 @@ export class Rdf3xTripleIndex {
   private estimateObjectRangeCardinality(resolved: Rdf3xResolvedPattern): Rdf3xCardinalityEstimate {
     const range = resolved.objectRange;
     if (!range) {
-      return this.estimateMembershipCardinality(resolved.ids);
+      return this.estimateResolvedMembershipCardinality(resolved);
     }
     const { from, whereClause, params } = this.buildMembershipWhere({
       ids: resolved.ids,
+      ...(resolved.idSets !== undefined ? { idSets: resolved.idSets } : {}),
+      ...(resolved.excludedIdSets !== undefined ? { excludedIdSets: resolved.excludedIdSets } : {}),
       ...(resolved.graphPrefix !== undefined ? { graphPrefix: resolved.graphPrefix } : {}),
     });
     const rangeConditions: string[] = [];
@@ -2368,7 +2855,7 @@ export class Rdf3xTripleIndex {
     const matchingQuads = this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count
       FROM ${from}
-      JOIN rdf_terms object_range ON object_range.id = rdf3x_triple_membership.object_id
+      JOIN rdf_terms object_range ON object_range.id = membership.object_id
       ${membershipWhere}
     `).get(...params, ...rangeParams)?.count ?? 0;
     const uniqueTriples = this.requireDb().prepare<{ count: number }>(`
@@ -2376,7 +2863,7 @@ export class Rdf3xTripleIndex {
       FROM (
         SELECT DISTINCT subject_id, predicate_id, object_id
         FROM ${from}
-        JOIN rdf_terms object_range ON object_range.id = rdf3x_triple_membership.object_id
+        JOIN rdf_terms object_range ON object_range.id = membership.object_id
         ${membershipWhere}
       ) distinct_triples
     `).get(...params, ...rangeParams)?.count ?? 0;
@@ -2422,6 +2909,142 @@ export class Rdf3xTripleIndex {
       params.push(range.max);
     }
     queryPlan.push(`LexicalRange(object${rangeSuffix(range)})`);
+  }
+
+  private appendTermFilterJoinsAndConditions(
+    resolved: Rdf3xResolvedPattern,
+    keys: Rdf3xPatternKey[],
+    columnForKey: (key: Rdf3xPatternKey) => string,
+    joins: string[],
+    conditions: string[],
+    params: unknown[],
+    queryPlan?: string[],
+    aliasPrefix = 'term_filter',
+  ): void {
+    for (const key of keys) {
+      const filter = resolved.termFilters?.[key];
+      if (!filter) {
+        continue;
+      }
+      const alias = `${aliasPrefix}_${key}`;
+      joins.push(` JOIN rdf_terms ${alias} ON ${alias}.id = ${columnForKey(key)}`);
+      this.appendTermFilterCondition(key, alias, filter, conditions, params, queryPlan);
+    }
+  }
+
+  private appendTermFilterCondition(
+    key: Rdf3xPatternKey,
+    alias: string,
+    filter: Rdf3xResolvedTermFilter,
+    conditions: string[],
+    params: unknown[],
+    queryPlan?: string[],
+  ): void {
+    if (filter.termType !== undefined) {
+      this.appendTermTypeCondition(key, alias, filter.termType, conditions, params);
+      queryPlan?.push(`TermType(${key}:${filter.termType})`);
+    }
+    if (filter.language !== undefined) {
+      this.appendLanguageCondition(key, alias, '$language', filter.language, conditions, params);
+      queryPlan?.push(`Language(${key}$language)`);
+    }
+    if (filter.notLanguage !== undefined) {
+      this.appendLanguageCondition(key, alias, '$notLanguage', filter.notLanguage, conditions, params);
+      queryPlan?.push(`Language(${key}$notLanguage)`);
+    }
+    if (filter.langMatches !== undefined) {
+      this.appendLanguageCondition(key, alias, '$langMatches', filter.langMatches, conditions, params);
+      queryPlan?.push(`Language(${key}$langMatches)`);
+    }
+    if (filter.datatype !== undefined) {
+      this.appendDatatypeCondition(key, alias, '$datatype', filter.datatype, conditions, params);
+      queryPlan?.push(`Datatype(${key}$datatype)`);
+    }
+    if (filter.notDatatype !== undefined) {
+      this.appendDatatypeCondition(key, alias, '$notDatatype', filter.notDatatype, conditions, params);
+      queryPlan?.push(`Datatype(${key}$notDatatype)`);
+    }
+  }
+
+  private appendTermTypeCondition(
+    key: Rdf3xPatternKey,
+    alias: string,
+    termType: Rdf3xTermTypePatternValue,
+    conditions: string[],
+    params: unknown[],
+  ): void {
+    const possibleKinds = termKindsForPatternKey(key);
+    if (termType === 'numeric') {
+      conditions.push(possibleKinds.includes('literal')
+        ? `${alias}.kind = 'literal' AND ${alias}.numeric_value IS NOT NULL`
+        : '1 = 0');
+      return;
+    }
+    if (!possibleKinds.includes(termType)) {
+      conditions.push('1 = 0');
+      return;
+    }
+    conditions.push(`${alias}.kind = ?`);
+    params.push(termType);
+  }
+
+  private appendLanguageCondition(
+    key: Rdf3xPatternKey,
+    alias: string,
+    operator: '$language' | '$notLanguage' | '$langMatches',
+    language: string,
+    conditions: string[],
+    params: unknown[],
+  ): void {
+    if (!termKindsForPatternKey(key).includes('literal')) {
+      conditions.push('1 = 0');
+      return;
+    }
+    if (operator === '$language') {
+      conditions.push(`${alias}.kind = 'literal' AND COALESCE(${alias}.lang, '') = ?`);
+      params.push(language);
+      return;
+    }
+    if (operator === '$notLanguage') {
+      conditions.push(`${alias}.kind = 'literal' AND COALESCE(${alias}.lang, '') != ?`);
+      params.push(language);
+      return;
+    }
+    if (language === '*') {
+      conditions.push(`${alias}.kind = 'literal' AND ${alias}.lang IS NOT NULL AND ${alias}.lang != ''`);
+      return;
+    }
+    conditions.push(`${alias}.kind = 'literal'
+      AND (lower(${alias}.lang) = lower(?) OR lower(${alias}.lang) LIKE lower(?) ESCAPE '\\')`);
+    params.push(language, `${escapeLikePattern(language)}-%`);
+  }
+
+  private appendDatatypeCondition(
+    key: Rdf3xPatternKey,
+    alias: string,
+    operator: '$datatype' | '$notDatatype',
+    datatype: Rdf3xResolvedDatatypeFilter,
+    conditions: string[],
+    params: unknown[],
+  ): void {
+    if (!termKindsForPatternKey(key).includes('literal')) {
+      conditions.push('1 = 0');
+      return;
+    }
+    if (datatype.kind === 'xsd-string') {
+      conditions.push(operator === '$datatype'
+        ? `${alias}.kind = 'literal' AND ${alias}.lang IS NULL AND ${alias}.datatype_id IS NULL`
+        : `${alias}.kind = 'literal' AND NOT (${alias}.lang IS NULL AND ${alias}.datatype_id IS NULL)`);
+      return;
+    }
+    if (datatype.kind === 'unknown') {
+      conditions.push(operator === '$datatype' ? '1 = 0' : `${alias}.kind = 'literal'`);
+      return;
+    }
+    conditions.push(operator === '$datatype'
+      ? `${alias}.kind = 'literal' AND ${alias}.datatype_id = ?`
+      : `${alias}.kind = 'literal' AND (${alias}.datatype_id IS NULL OR ${alias}.datatype_id != ?)`);
+    params.push(datatype.id);
   }
 
   private resolveObjectRange(match: Rdf3xObjectRangePattern): Rdf3xObjectRange | undefined {
@@ -2487,10 +3110,16 @@ export class Rdf3xTripleIndex {
 
   private choosePermutation(
     ids: Partial<Record<Rdf3xPatternKey, number>>,
-    constraints?: { objectRange?: boolean },
+    constraints?: {
+      idSets?: Partial<Record<Rdf3xPatternKey, number[]>>;
+      objectRange?: boolean;
+      termFilters?: Partial<Record<Rdf3xPatternKey, Rdf3xResolvedTermFilter>>;
+    },
   ): Rdf3xPermutation {
-    const has = (key: Rdf3xTermKey): boolean => ids[key] !== undefined;
-    const hasObjectConstraint = has('object') || Boolean(constraints?.objectRange);
+    const has = (key: Rdf3xTermKey): boolean => ids[key] !== undefined || Boolean(constraints?.idSets?.[key]?.length);
+    const hasObjectConstraint = has('object')
+      || Boolean(constraints?.objectRange)
+      || Boolean(constraints?.termFilters?.object);
     if (has('subject') && has('predicate')) return this.permutation('SPO');
     if (has('subject') && hasObjectConstraint) return this.permutation('SOP');
     if (has('predicate') && has('subject')) return this.permutation('PSO');
@@ -2525,6 +3154,24 @@ export class Rdf3xTripleIndex {
       requiredTerm(termMap, row.object_id) as any,
       requiredTerm(termMap, row.graph_id) as any,
     ));
+  }
+
+  private permutationSource(permutation: Rdf3xPermutation, alias: string): string {
+    return `${RDF_FACTS_TABLE} AS ${alias} INDEXED BY ${permutation.indexName}`;
+  }
+
+  private factSource(alias: string): string {
+    return `${RDF_FACTS_TABLE} AS ${alias}`;
+  }
+
+  private uniqueTripleCount(): number {
+    return this.requireDb().prepare<{ count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM (
+        SELECT DISTINCT subject_id, predicate_id, object_id
+        FROM ${RDF_FACTS_TABLE}
+      ) distinct_triples
+    `).get()?.count ?? 0;
   }
 
   private rowCount(table: string): number {
@@ -2584,14 +3231,14 @@ export class Rdf3xTripleIndex {
 
   private requireDb(): SqliteDatabase {
     if (!this.db) {
-      throw new Error('Rdf3xTripleIndex is not open');
+      throw new Error('Rdf3xIndex is not open');
     }
     return this.db;
   }
 
   private requireDictionary(): RdfTermDictionary {
     if (!this.dictionary) {
-      throw new Error('Rdf3xTripleIndex is not open');
+      throw new Error('Rdf3xIndex is not open');
     }
     return this.dictionary;
   }
@@ -2604,7 +3251,10 @@ function keyForColumn(column: TripleColumn): Rdf3xTermKey {
 }
 
 function shouldUseMembershipSource(resolved: Rdf3xResolvedPattern): boolean {
-  return resolved.ids.graph !== undefined || resolved.graphPrefix !== undefined;
+  return resolved.ids.graph !== undefined
+    || Boolean(resolved.idSets?.graph?.length)
+    || Boolean(resolved.excludedIdSets?.graph?.length)
+    || resolved.graphPrefix !== undefined;
 }
 
 function requiredTerm(termMap: Map<number, Term>, id: number): Term {
@@ -2617,6 +3267,127 @@ function requiredTerm(termMap: Map<number, Term>, id: number): Term {
 
 function isRdfTerm(value: unknown): value is Term {
   return value !== null && typeof value === 'object' && 'termType' in value;
+}
+
+function isTermInPattern(value: unknown): value is Rdf3xTermInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $in?: unknown }).$in)
+    && ((value as { $in: unknown[] }).$in).every(isRdfTerm);
+}
+
+function isTermNotInPattern(value: unknown): value is Rdf3xTermNotInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $notIn?: unknown }).$notIn)
+    && ((value as { $notIn: unknown[] }).$notIn).every(isRdfTerm);
+}
+
+function isOperatorPattern(value: unknown): value is Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern> {
+  return value !== null && typeof value === 'object' && !('termType' in value);
+}
+
+function isSupportedOperatorPattern(
+  key: Rdf3xPatternKey,
+  value: Rdf3xTermMetadataPattern & Partial<Rdf3xObjectRangePattern & Rdf3xGraphPrefixPattern & Rdf3xTermInPattern & Rdf3xTermNotInPattern>,
+): boolean {
+  const allowed = new Set<string>([
+    '$in',
+    '$notIn',
+    '$termType',
+    '$language',
+    '$notLanguage',
+    '$langMatches',
+    '$datatype',
+    '$notDatatype',
+    ...(key === 'graph' ? ['$startsWith'] : []),
+    ...(key === 'object' ? ['$gt', '$gte', '$lt', '$lte'] : []),
+  ]);
+  if (Object.keys(value).some((operator) => !allowed.has(operator))) {
+    return false;
+  }
+  if (value.$in !== undefined && (!Array.isArray(value.$in) || !value.$in.every(isRdfTerm) || value.$in.length === 0)) {
+    return false;
+  }
+  if (value.$notIn !== undefined && (!Array.isArray(value.$notIn) || !value.$notIn.every(isRdfTerm) || value.$notIn.length === 0)) {
+    return false;
+  }
+  if (value.$startsWith !== undefined && typeof value.$startsWith !== 'string') {
+    return false;
+  }
+  if (value.$termType !== undefined && !['iri', 'blank', 'literal', 'numeric'].includes(value.$termType)) {
+    return false;
+  }
+  for (const languageOperator of ['$language', '$notLanguage', '$langMatches'] as const) {
+    if (value[languageOperator] !== undefined && typeof value[languageOperator] !== 'string') {
+      return false;
+    }
+  }
+  for (const datatypeOperator of ['$datatype', '$notDatatype'] as const) {
+    if (value[datatypeOperator] !== undefined) {
+      const datatype = value[datatypeOperator];
+      if (!isRdfTerm(datatype) || datatype.termType !== 'NamedNode') {
+        return false;
+      }
+    }
+  }
+  if (key === 'object') {
+    for (const rangeOperator of ['$gt', '$gte', '$lt', '$lte'] as const) {
+      const rangeValue = value[rangeOperator];
+      if (rangeValue !== undefined && !isRdf3xObjectRangeValue(rangeValue)) {
+        return false;
+      }
+    }
+  }
+  return Object.keys(value).length > 0;
+}
+
+function hasObjectRangeOperator(value: Partial<Rdf3xObjectRangePattern>): boolean {
+  return value.$gt !== undefined
+    || value.$gte !== undefined
+    || value.$lt !== undefined
+    || value.$lte !== undefined;
+}
+
+function termKindsForPatternKey(key: Rdf3xPatternKey): RdfTermKind[] {
+  switch (key) {
+    case 'object':
+      return ['iri', 'literal', 'blank'];
+    case 'subject':
+      return ['iri', 'blank'];
+    case 'graph':
+      return ['iri', 'default_graph'];
+    case 'predicate':
+      return ['iri'];
+    default: {
+      const exhaustive: never = key;
+      throw new Error(`Unsupported RDF-3X pattern key: ${exhaustive}`);
+    }
+  }
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+function hasResolvedIdSets(resolved: Rdf3xResolvedPattern): boolean {
+  return Object.values(resolved.idSets ?? {}).some((ids) => (ids?.length ?? 0) > 0);
+}
+
+function hasResolvedExcludedIdSets(resolved: Rdf3xResolvedPattern): boolean {
+  return Object.values(resolved.excludedIdSets ?? {}).some((ids) => (ids?.length ?? 0) > 0);
+}
+
+function hasResolvedTermFilters(resolved: Rdf3xResolvedPattern): boolean {
+  return Object.values(resolved.termFilters ?? {}).some(Boolean);
+}
+
+function uniqueNumbers(values: number[]): number[] {
+  return [...new Set(values)];
 }
 
 function pairProjectionRowTotal(rows: Record<Rdf3xPairProjectionName, number>): number {
@@ -2654,6 +3425,7 @@ function rdf3xSpaceObjectKind(name: string, schemaType?: string, tableName?: str
 function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } {
   return value !== null
     && typeof value === 'object'
+    && Object.keys(value).length === 1
     && '$startsWith' in value
     && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
 }
@@ -2673,4 +3445,14 @@ function isObjectRangePattern(value: unknown): value is Rdf3xObjectRangePattern 
     && typeof value === 'object'
     && !('termType' in value)
     && ['$gt', '$gte', '$lt', '$lte'].some((operator) => operator in value);
+}
+
+function isRdf3xObjectRangeValue(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isFinite(value);
+  }
+  if (typeof value === 'string') {
+    return true;
+  }
+  return isRdfTerm(value);
 }

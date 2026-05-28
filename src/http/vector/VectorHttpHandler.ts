@@ -113,6 +113,10 @@ interface DeleteRequest {
 }
 
 interface VectorHttpHandlerOptions {
+  vectorStore: VectorStore;
+  credentialsExtractor: CredentialsExtractor;
+  permissionReader: PermissionReader;
+  authorizer: Authorizer;
   sidecarPath?: string;
 }
 
@@ -125,18 +129,12 @@ export class VectorHttpHandler extends HttpHandler {
   private readonly authorizer: Authorizer;
   private readonly sidecarPath: string;
 
-  public constructor(
-    vectorStore: VectorStore,
-    credentialsExtractor: CredentialsExtractor,
-    permissionReader: PermissionReader,
-    authorizer: Authorizer,
-    options: VectorHttpHandlerOptions = {},
-  ) {
+  public constructor(options: VectorHttpHandlerOptions) {
     super();
-    this.vectorStore = vectorStore;
-    this.credentialsExtractor = credentialsExtractor;
-    this.permissionReader = permissionReader;
-    this.authorizer = authorizer;
+    this.vectorStore = options.vectorStore;
+    this.credentialsExtractor = options.credentialsExtractor;
+    this.permissionReader = options.permissionReader;
+    this.authorizer = options.authorizer;
     this.sidecarPath = options.sidecarPath ?? '/-/vector';
   }
 

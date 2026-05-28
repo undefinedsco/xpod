@@ -3,7 +3,7 @@ import type { Term } from '@rdfjs/types';
 import type { QuintPattern, TermMatch } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfQuadIndex } from './RdfQuadIndex';
-import { Rdf3xTripleIndex } from './Rdf3xTripleIndex';
+import { Rdf3xIndex } from './Rdf3xIndex';
 import type { RdfTextIndex } from './RdfTextIndex';
 import type { RdfVectorIndex } from './RdfVectorIndex';
 import { isFiniteNumericLexical, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
@@ -37,6 +37,10 @@ import type {
   RdfQuadIndexScanResult,
   RdfQuadScanOptions,
   Rdf3xPatternKey,
+  Rdf3xObjectOperatorPattern,
+  Rdf3xTermInPattern,
+  Rdf3xTermMetadataPattern,
+  Rdf3xTermNotInPattern,
   Rdf3xTriplePattern,
   Rdf3xTripleScanOptions,
   Rdf3xTripleScanResult,
@@ -134,7 +138,7 @@ export class RdfLocalQueryEngine {
     private readonly index: RdfQuadIndex,
     private readonly textIndex?: RdfTextIndex,
     private readonly vectorIndex?: RdfVectorIndex,
-    private readonly rdf3xPrimaryIndex?: Rdf3xTripleIndex,
+    private readonly rdf3xPrimaryIndex?: Rdf3xIndex,
   ) {}
 
   public query(query: RdfLocalQuery): RdfLocalQueryResult {
@@ -174,7 +178,7 @@ export class RdfLocalQueryEngine {
 
     if (countPushdown) {
       const useRdf3xPrimary = this.canUseRdf3xPrimaryScan(countPushdown.pattern);
-      let rdf3xCount: ReturnType<Rdf3xTripleIndex['countDistinct']> | undefined;
+      let rdf3xCount: ReturnType<Rdf3xIndex['countDistinct']> | undefined;
       if (useRdf3xPrimary) {
         const rdf3xPattern = toRdf3xTriplePattern(countPushdown.pattern);
         if (countPushdown.distinctKey) {
@@ -3397,12 +3401,16 @@ function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
       result[key] = value as Term;
       continue;
     }
-    if (key === 'graph' && isGraphPrefixPattern(value)) {
-      result.graph = value;
+    if (isRdf3xTermInPattern(value)) {
+      result[key] = value;
       continue;
     }
-    if (key === 'object' && isRdf3xObjectRangePattern(value)) {
-      result.object = value;
+    if (isRdf3xTermNotInPattern(value)) {
+      result[key] = value;
+      continue;
+    }
+    if (isRdf3xCompatibleOperatorPattern(key, value)) {
+      result[key] = value as Rdf3xTriplePattern[typeof key];
       continue;
     }
     throw new Error(`RDF-3X primary scan cannot compile unsupported ${key} pattern`);
@@ -3463,44 +3471,80 @@ function isRdf3xCompatiblePattern(pattern: QuintPattern): boolean {
     if (!value || isTerm(value as any)) {
       return true;
     }
-    if (key === 'graph' && isGraphPrefixPattern(value)) {
+    if (isRdf3xTermInPattern(value)) {
       return true;
     }
-    if (key === 'object' && isRdf3xObjectRangePattern(value)) {
+    if (isRdf3xTermNotInPattern(value)) {
+      return true;
+    }
+    if (isRdf3xCompatibleOperatorPattern(key, value)) {
       return true;
     }
     return false;
   });
 }
 
-function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } {
+function isRdf3xTermInPattern(value: unknown): value is Rdf3xTermInPattern {
   return value !== null
     && typeof value === 'object'
+    && !('termType' in value)
     && Object.keys(value).length === 1
-    && '$startsWith' in value
-    && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
+    && Array.isArray((value as { $in?: unknown }).$in)
+    && ((value as { $in: unknown[] }).$in).length > 0
+    && ((value as { $in: unknown[] }).$in).every((entry) => isTerm(entry as any));
 }
 
-function isRdf3xObjectRangePattern(value: unknown): boolean {
+function isRdf3xTermNotInPattern(value: unknown): value is Rdf3xTermNotInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $notIn?: unknown }).$notIn)
+    && ((value as { $notIn: unknown[] }).$notIn).length > 0
+    && ((value as { $notIn: unknown[] }).$notIn).every((entry) => isTerm(entry as any));
+}
+
+function isRdf3xCompatibleOperatorPattern(
+  key: Rdf3xPatternKey,
+  value: unknown,
+): value is Rdf3xTermMetadataPattern | Rdf3xObjectOperatorPattern {
   if (value === null || typeof value !== 'object' || 'termType' in value) {
     return false;
   }
-  const operators = ['$gt', '$gte', '$lt', '$lte'] as const;
-  if (Object.keys(value).some((key) => !operators.includes(key as typeof operators[number]))) {
+  const allowed = new Set<string>([
+    '$in',
+    '$notIn',
+    '$termType',
+    '$language',
+    '$notLanguage',
+    '$langMatches',
+    '$datatype',
+    '$notDatatype',
+    ...(key === 'graph' ? ['$startsWith'] : []),
+    ...(key === 'object' ? ['$gt', '$gte', '$lt', '$lte'] : []),
+  ]);
+  if (Object.keys(value).length === 0 || Object.keys(value).some((operator) => !allowed.has(operator))) {
     return false;
   }
-  let hasRange = false;
-  for (const operator of operators) {
-    const rangeValue = (value as Record<string, unknown>)[operator];
-    if (rangeValue === undefined) {
-      continue;
-    }
-    hasRange = true;
-    if (!isRdf3xObjectRangeValue(rangeValue)) {
-      return false;
+  const operators = value as Record<string, unknown>;
+  if (operators.$in !== undefined && !isRdf3xTermInPattern({ $in: operators.$in })) return false;
+  if (operators.$notIn !== undefined && !isRdf3xTermNotInPattern({ $notIn: operators.$notIn })) return false;
+  if (operators.$startsWith !== undefined && typeof operators.$startsWith !== 'string') return false;
+  if (operators.$termType !== undefined && !['iri', 'blank', 'literal', 'numeric'].includes(operators.$termType as string)) return false;
+  for (const languageOperator of ['$language', '$notLanguage', '$langMatches']) {
+    if (operators[languageOperator] !== undefined && typeof operators[languageOperator] !== 'string') return false;
+  }
+  for (const datatypeOperator of ['$datatype', '$notDatatype']) {
+    const datatype = operators[datatypeOperator];
+    if (datatype !== undefined && (!isTerm(datatype as any) || (datatype as Term).termType !== 'NamedNode')) return false;
+  }
+  if (key === 'object') {
+    for (const rangeOperator of ['$gt', '$gte', '$lt', '$lte']) {
+      const rangeValue = operators[rangeOperator];
+      if (rangeValue !== undefined && !isRdf3xObjectRangeValue(rangeValue)) return false;
     }
   }
-  return hasRange;
+  return true;
 }
 
 function isRdf3xObjectRangeValue(value: unknown): boolean {

@@ -7,7 +7,7 @@ import type { Quad } from '@rdfjs/types';
 import { SqliteQuintStore } from '../src/storage/quint';
 import {
   RdfQuadIndex,
-  Rdf3xTripleIndex,
+  Rdf3xIndex,
   ShadowRdfQuintStore,
   SolidRdfEngine,
   defaultSyntheticMessagesForRdfModelsScale,
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
       batchSize: 1000,
     });
 
-    const rdf3xIndex = new Rdf3xTripleIndex({ path: paths.indexDb });
+    const rdf3xIndex = new Rdf3xIndex({ path: paths.indexDb });
     rdf3xIndex.open();
     const engine = new SolidRdfEngine({
       index: shadowStore.index,

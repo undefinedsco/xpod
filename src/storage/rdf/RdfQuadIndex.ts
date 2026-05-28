@@ -5,7 +5,7 @@ import type { Quad, Term } from '@rdfjs/types';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type { QueryOptions, QuintPattern, TermOperators } from '../quint/types';
 import { isTerm } from '../quint/types';
-import { RdfTermDictionary } from './RdfTermDictionary';
+import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
 import type {
   RdfCardinalityEstimate,
   RdfCardinalityDistributions,
@@ -1839,9 +1839,11 @@ export class RdfQuadIndex {
     return {
       join: ` JOIN rdf_terms ${alias} ON ${alias}.id = ${this.scopedQuadColumn(column, scope)}`,
       sql: `${alias}.kind IN (${kind.map(() => '?').join(', ')})
+        AND ${alias}.value_head >= ?
+        AND ${alias}.value_head < ?
         AND ${alias}.value >= ?
         AND ${alias}.value < ?`,
-      params: [...kind, prefix, `${prefix}\uffff`],
+      params: [...kind, rdfTermValueHead(prefix), `${rdfTermValueHead(prefix)}\uffff`, prefix, `${prefix}\uffff`],
     };
   }
 

@@ -3,6 +3,7 @@ import { RepresentationPartialConvertingStore } from './storage/RepresentationPa
 import { MinioDataAccessor } from './storage/accessors/MinioDataAccessor';
 import { QuadstoreSparqlDataAccessor } from './storage/accessors/QuadstoreSparqlDataAccessor';
 import { QuintStoreSparqlDataAccessor } from './storage/accessors/QuintStoreSparqlDataAccessor';
+import { SolidRdfDataAccessor } from './storage/accessors/SolidRdfDataAccessor';
 import { MixDataAccessor } from './storage/accessors/MixDataAccessor';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { SubgraphQueryEngine, QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/SubgraphQueryEngine';
@@ -70,6 +71,7 @@ import { PgQuintStore } from './storage/quint/PgQuintStore';
 import { BaseQuintStore } from './storage/quint/BaseQuintStore';
 import { QuintStore } from './storage/quint/types';
 import { RdfQuadIndex } from './storage/rdf/RdfQuadIndex';
+import { Rdf3xIndex } from './storage/rdf/Rdf3xIndex';
 import { RdfSparqlAdapter } from './storage/rdf/RdfSparqlAdapter';
 import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
 import { ShadowRdfQuintStore } from './storage/rdf/ShadowRdfQuintStore';
@@ -138,6 +140,7 @@ export {
     MinioDataAccessor, 
     QuadstoreSparqlDataAccessor,
     QuintStoreSparqlDataAccessor,
+    SolidRdfDataAccessor,
     MixDataAccessor,
     ConfigurableLoggerFactory,
     SparqlUpdateResourceStore,
@@ -190,6 +193,7 @@ export {
   // RDF engine exports
   RdfTermDictionary,
   RdfQuadIndex,
+  Rdf3xIndex,
   RdfSparqlAdapter,
   ShadowRdfQuintStore,
   SolidRdfEngine,

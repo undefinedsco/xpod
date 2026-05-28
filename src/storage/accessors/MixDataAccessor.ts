@@ -87,7 +87,7 @@ export interface SourceScopedStructuredRdfAccessor {
 /**
  * MixDataAccessor - Routes data to appropriate storage based on content type
  * 
- * - RDF data (internal/quads) -> structuredDataAccessor (Quadstore or QuintStore)
+ * - RDF data (internal/quads) -> structuredDataAccessor (Solid RDF engine by default)
  * - RDF file mirrors (.ttl/.jsonld) -> rdfFileDataAccessor (local FileSystem)
  * - Other data (binary, text, etc.) -> unstructuredDataAccessor (FileSystem, Minio, etc.)
  * 
@@ -283,8 +283,8 @@ export class MixDataAccessor implements DataAccessor {
    * Execute SPARQL UPDATE.
    *
    * Supported embedded deltas patch the local RDF authority file first and then
-   * rebuild the structured RDF index. Unsupported shapes keep using the
-   * compatibility accessor until the embedded engine covers them.
+   * rebuild the structured RDF index. The structured accessor decides whether
+   * unsupported shapes have an explicitly configured compatibility path.
    */
   public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
     if (baseIri) {
@@ -318,7 +318,9 @@ export class MixDataAccessor implements DataAccessor {
     query: string,
     identifier: ResourceIdentifier,
   ): Promise<void> {
-    const delta = this.rdfSparqlAdapter.compileUpdateDelta(query, identifier.path);
+    const delta = this.rdfSparqlAdapter.compileUpdateDelta(query, identifier.path, {
+      defaultGraph: identifier.path,
+    });
     this.assertLocalRdfDeltaTargetsGraph(delta.operations, identifier.path);
     const existingText = await this.readLocalRdfTextOrEmpty(identifier);
     const graph = DataFactory.namedNode(identifier.path);
@@ -621,9 +623,17 @@ export class MixDataAccessor implements DataAccessor {
   }
 
   private async getExistingLocalRdfMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
-    const metadata = await this.rdfFileDataAccessor.getMetadata(identifier);
-    metadata.contentType = this.localRdfContentType(identifier);
-    return metadata;
+    try {
+      const metadata = await this.rdfFileDataAccessor.getMetadata(identifier);
+      metadata.contentType = this.localRdfContentType(identifier);
+      return metadata;
+    } catch (error) {
+      if (NotFoundHttpError.isInstance(error)) {
+        throw error;
+      }
+      this.logger.warn(`Ignoring unreadable local RDF metadata for ${identifier.path}: ${error instanceof Error ? error.message : String(error)}`);
+      return this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier));
+    }
   }
 
   private createLocalRdfMetadata(
@@ -631,6 +641,12 @@ export class MixDataAccessor implements DataAccessor {
     metadata: RepresentationMetadata,
   ): RepresentationMetadata {
     const localMetadata = new RepresentationMetadata(metadata);
+    localMetadata.removeQuads(localMetadata.quads(
+      null,
+      null,
+      null,
+      SOLID_META.terms.ResponseMetadata,
+    ));
     localMetadata.contentType = this.localRdfContentType(identifier);
     return localMetadata;
   }

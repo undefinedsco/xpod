@@ -7,7 +7,7 @@ export {
   rdfNumericValue,
 } from './RdfTermSemantics';
 export { RdfQuadIndex } from './RdfQuadIndex';
-export { Rdf3xTripleIndex } from './Rdf3xTripleIndex';
+export { Rdf3xIndex } from './Rdf3xIndex';
 export { RdfTextIndex } from './RdfTextIndex';
 export { RdfVectorIndex } from './RdfVectorIndex';
 export {
@@ -87,13 +87,19 @@ export type {
   Rdf3xJoinScanResult,
   Rdf3xIndexMetrics,
   Rdf3xIndexStats,
+  Rdf3xObjectOperatorPattern,
+  Rdf3xObjectRangePattern,
   Rdf3xPairProjectionName,
   Rdf3xPatternKey,
   Rdf3xPermutationName,
   Rdf3xRebuildResult,
   Rdf3xTermKey,
+  Rdf3xTermInPattern,
+  Rdf3xTermMetadataPattern,
+  Rdf3xTermNotInPattern,
   Rdf3xTermProjectionName,
-  Rdf3xTripleIndexOptions,
+  Rdf3xTermTypePatternValue,
+  Rdf3xIndexOptions,
   Rdf3xTriplePattern,
   Rdf3xTripleScanOptions,
   Rdf3xTripleScanResult,

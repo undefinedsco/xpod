@@ -8,12 +8,15 @@ import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 interface RdfTermIdentity {
   kind: RdfTermKind;
   value: string;
+  valueHead: string;
   datatypeId: number | null;
   lang: string | null;
   normalizedText: string | null;
   numericValue: number | null;
   hash: string;
 }
+
+export const RDF_TERM_VALUE_HEAD_LENGTH = 256;
 
 const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
 const RDF_LANG_STRING = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString';
@@ -25,27 +28,17 @@ export class RdfTermDictionary {
   public constructor(private readonly db: SqliteDatabase) {}
 
   public initialize(): void {
+    this.ensureSafeTermTableSchema();
+    this.dropUnsafeRawTextIndexes();
+    this.ensureValueHeadColumn();
+    this.ensureNumericValueColumn();
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS rdf_terms (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        kind TEXT NOT NULL,
-        value TEXT NOT NULL,
-        datatype_id INTEGER,
-        lang TEXT,
-        hash TEXT NOT NULL,
-        normalized_text TEXT,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-        UNIQUE (kind, value, datatype_id, lang)
-      );
-
-      CREATE INDEX IF NOT EXISTS rdf_terms_hash ON rdf_terms (hash);
-      CREATE INDEX IF NOT EXISTS rdf_terms_kind_value ON rdf_terms (kind, value);
+      CREATE UNIQUE INDEX IF NOT EXISTS rdf_terms_identity_hash ON rdf_terms (hash);
+      CREATE INDEX IF NOT EXISTS rdf_terms_kind_value_head ON rdf_terms (kind, value_head);
       CREATE INDEX IF NOT EXISTS rdf_terms_kind_datatype ON rdf_terms (kind, datatype_id);
       CREATE INDEX IF NOT EXISTS rdf_terms_kind_lang ON rdf_terms (kind, lang);
-      CREATE INDEX IF NOT EXISTS rdf_terms_normalized_text ON rdf_terms (normalized_text);
+      CREATE INDEX IF NOT EXISTS rdf_terms_kind_numeric_value ON rdf_terms (kind, numeric_value);
     `);
-    this.ensureNumericValueColumn();
-    this.db.exec('CREATE INDEX IF NOT EXISTS rdf_terms_kind_numeric_value ON rdf_terms (kind, numeric_value);');
     this.backfillNumericValues();
   }
 
@@ -64,18 +57,29 @@ export class RdfTermDictionary {
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO rdf_terms (kind, value, datatype_id, lang, hash, normalized_text, numeric_value)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO rdf_terms (kind, value, value_head, datatype_id, lang, hash, normalized_text, numeric_value)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const result = stmt.run(
-      identity.kind,
-      identity.value,
-      identity.datatypeId,
-      identity.lang,
-      identity.hash,
-      identity.normalizedText,
-      identity.numericValue,
-    );
+    let result;
+    try {
+      result = stmt.run(
+        identity.kind,
+        identity.value,
+        identity.valueHead,
+        identity.datatypeId,
+        identity.lang,
+        identity.hash,
+        identity.normalizedText,
+        identity.numericValue,
+      );
+    } catch (error) {
+      const raced = this.findId(identity);
+      if (raced !== undefined) {
+        this.termCache.set(cacheKey, raced);
+        return raced;
+      }
+      throw error;
+    }
     const id = Number(result.lastInsertRowid);
     this.termCache.set(cacheKey, id);
     this.idCache.set(id, term);
@@ -153,14 +157,18 @@ export class RdfTermDictionary {
       return [];
     }
     const rows = this.db
-      .prepare<{ id: number }>(`
-        SELECT id FROM rdf_terms
+      .prepare<{ id: number; value: string }>(`
+        SELECT id, value FROM rdf_terms
         WHERE kind IN (${kinds.map(() => '?').join(', ')})
+          AND value_head >= ?
+          AND value_head < ?
           AND value >= ?
           AND value < ?
       `)
-      .all(...kinds, prefix, `${prefix}\uffff`);
-    return rows.map((row) => row.id);
+      .all(...kinds, rdfTermValueHead(prefix), `${rdfTermValueHead(prefix)}\uffff`, prefix, `${prefix}\uffff`);
+    return rows
+      .filter((row) => row.value.startsWith(prefix))
+      .map((row) => row.id);
   }
 
   public idsByNormalizedTextContains(kind: RdfTermKind | RdfTermKind[], text: string): number[] {
@@ -223,50 +231,10 @@ export class RdfTermDictionary {
   }
 
   private findId(identity: RdfTermIdentity): number | undefined {
-    const row = identity.datatypeId === null && identity.lang === null
-      ? this.db
-          .prepare<{ id: number }>(`
-            SELECT id FROM rdf_terms
-            WHERE kind = ?
-              AND value = ?
-              AND datatype_id IS NULL
-              AND lang IS NULL
-            LIMIT 1
-          `)
-          .get(identity.kind, identity.value)
-      : identity.datatypeId === null
-        ? this.db
-            .prepare<{ id: number }>(`
-              SELECT id FROM rdf_terms
-              WHERE kind = ?
-                AND value = ?
-                AND datatype_id IS NULL
-                AND lang = ?
-              LIMIT 1
-            `)
-            .get(identity.kind, identity.value, identity.lang)
-        : identity.lang === null
-          ? this.db
-              .prepare<{ id: number }>(`
-                SELECT id FROM rdf_terms
-                WHERE kind = ?
-                  AND value = ?
-                  AND datatype_id = ?
-                  AND lang IS NULL
-                LIMIT 1
-              `)
-              .get(identity.kind, identity.value, identity.datatypeId)
-          : this.db
-              .prepare<{ id: number }>(`
-                SELECT id FROM rdf_terms
-                WHERE kind = ?
-                  AND value = ?
-                  AND datatype_id = ?
-                  AND lang = ?
-                LIMIT 1
-              `)
-              .get(identity.kind, identity.value, identity.datatypeId, identity.lang);
-    return row?.id;
+    const rows = this.db
+      .prepare<RdfTermRow>('SELECT * FROM rdf_terms WHERE hash = ?')
+      .all(identity.hash);
+    return rows.find((row) => this.rowMatchesIdentity(row, identity))?.id;
   }
 
   private toIdentity(term: Term): RdfTermIdentity {
@@ -322,6 +290,7 @@ export class RdfTermDictionary {
     return {
       kind,
       value,
+      valueHead: rdfTermValueHead(value),
       datatypeId,
       lang,
       normalizedText: normalizedText ? normalizedText.toLowerCase() : null,
@@ -338,9 +307,105 @@ export class RdfTermDictionary {
     return Number.isFinite(numeric) ? numeric : null;
   }
 
+  private ensureSafeTermTableSchema(): void {
+    const table = this.db
+      .prepare<{ sql: string | null }>("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'rdf_terms'")
+      .get();
+    if (!table) {
+      this.createSafeTermTable('rdf_terms');
+      return;
+    }
+
+    const columns = this.termTableColumns();
+    const hasRawUniqueConstraint = table.sql?.includes('UNIQUE (kind, value, datatype_id, lang)') ?? false;
+    if (!hasRawUniqueConstraint && columns.has('value_head') && columns.has('numeric_value')) {
+      return;
+    }
+
+    const foreignKeys = this.db.prepare<{ foreign_keys: number }>('PRAGMA foreign_keys').get()?.foreign_keys ?? 0;
+    this.db.exec('PRAGMA foreign_keys = OFF;');
+    try {
+      this.db.transaction(() => {
+        this.db.exec('DROP TABLE IF EXISTS rdf_terms_next;');
+        this.createSafeTermTable('rdf_terms_next');
+        this.db.exec(`
+          INSERT INTO rdf_terms_next (
+            id,
+            kind,
+            value,
+            value_head,
+            datatype_id,
+            lang,
+            hash,
+            normalized_text,
+            numeric_value,
+            created_at
+          )
+          SELECT
+            id,
+            kind,
+            value,
+            substr(value, 1, ${RDF_TERM_VALUE_HEAD_LENGTH}),
+            datatype_id,
+            lang,
+            hash,
+            normalized_text,
+            ${columns.has('numeric_value') ? 'numeric_value' : 'NULL'},
+            created_at
+          FROM rdf_terms;
+        `);
+        this.db.exec(`
+          DROP TABLE rdf_terms;
+          ALTER TABLE rdf_terms_next RENAME TO rdf_terms;
+        `);
+      })();
+    } finally {
+      if (foreignKeys) {
+        this.db.exec('PRAGMA foreign_keys = ON;');
+      }
+    }
+  }
+
+  private createSafeTermTable(name: string): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS ${name} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        value TEXT NOT NULL,
+        value_head TEXT NOT NULL,
+        datatype_id INTEGER,
+        lang TEXT,
+        hash TEXT NOT NULL,
+        normalized_text TEXT,
+        numeric_value REAL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+    `);
+  }
+
+  private dropUnsafeRawTextIndexes(): void {
+    this.db.exec(`
+      DROP INDEX IF EXISTS rdf_terms_hash;
+      DROP INDEX IF EXISTS rdf_terms_kind_value;
+      DROP INDEX IF EXISTS rdf_terms_normalized_text;
+    `);
+  }
+
+  private ensureValueHeadColumn(): void {
+    const columns = this.termTableColumns();
+    if (!columns.has('value_head')) {
+      this.db.exec('ALTER TABLE rdf_terms ADD COLUMN value_head TEXT;');
+    }
+    this.db.exec(`
+      UPDATE rdf_terms
+      SET value_head = substr(value, 1, ${RDF_TERM_VALUE_HEAD_LENGTH})
+      WHERE value_head IS NULL;
+    `);
+  }
+
   private ensureNumericValueColumn(): void {
-    const columns = this.db.prepare<{ name: string }>('PRAGMA table_info(rdf_terms)').all();
-    if (columns.some((column) => column.name === 'numeric_value')) {
+    const columns = this.termTableColumns();
+    if (columns.has('numeric_value')) {
       return;
     }
     this.db.exec('ALTER TABLE rdf_terms ADD COLUMN numeric_value REAL;');
@@ -377,6 +442,17 @@ export class RdfTermDictionary {
     ].join('\u001f');
   }
 
+  private rowMatchesIdentity(row: RdfTermRow, identity: RdfTermIdentity): boolean {
+    return row.kind === identity.kind
+      && row.value === identity.value
+      && row.datatype_id === identity.datatypeId
+      && row.lang === identity.lang;
+  }
+
+  private termTableColumns(): Set<string> {
+    return new Set(this.db.prepare<{ name: string }>('PRAGMA table_info(rdf_terms)').all().map((column) => column.name));
+  }
+
   private rowToTerm(row: RdfTermRow): Term {
     switch (row.kind) {
       case 'iri':
@@ -401,6 +477,10 @@ export class RdfTermDictionary {
         throw new Error(`Unsupported RDF term kind in dictionary row: ${(row as RdfTermRow).kind}`);
     }
   }
+}
+
+export function rdfTermValueHead(value: string): string {
+  return value.slice(0, RDF_TERM_VALUE_HEAD_LENGTH);
 }
 
 function normalizeSearchText(value: string): string {

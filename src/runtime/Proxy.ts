@@ -7,6 +7,14 @@ import type { RuntimeHost, RuntimeListenEndpoint } from './host/types';
 
 type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean };
 
+interface RootMutationForbiddenBody {
+  name: 'ForbiddenHttpError';
+  message: string;
+  statusCode: 403;
+  errorCode: 'H403';
+  details: { cause: 'root-container-write' };
+}
+
 // CORS configuration matching CSS CorsHandler defaults
 const CORS_CONFIG = {
   methods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'],
@@ -177,6 +185,11 @@ export class GatewayProxy {
 
     // 3. CSS Routing (Default)
     if (this.targets.css) {
+      if (this.shouldRejectRootResourceMutation(req)) {
+        this.writeRootMutationForbidden(res);
+        return;
+      }
+
       const interceptedRequest = req as InterceptedRequest;
       interceptedRequest.__xpodInspectRootMutation = this.shouldInspectRootMutation(req);
       this.proxy.web(req, res, {
@@ -200,6 +213,26 @@ export class GatewayProxy {
     return segments.length === 1 && !segments[0].startsWith('.');
   }
 
+  private shouldRejectRootResourceMutation(req: http.IncomingMessage): boolean {
+    const method = (req.method ?? 'GET').toUpperCase();
+    if (![ 'POST', 'PUT', 'PATCH', 'DELETE' ].includes(method)) {
+      return false;
+    }
+
+    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    const segments = pathname.split('/').filter(Boolean);
+    return segments.length === 1 && !segments[0].startsWith('.') && !pathname.endsWith('/');
+  }
+
+  private writeRootMutationForbidden(res: http.ServerResponse): void {
+    const body = Buffer.from(JSON.stringify(this.createRootMutationForbiddenBody()));
+    res.writeHead(403, {
+      'Content-Type': 'application/json',
+      'Content-Length': String(body.byteLength),
+    });
+    res.end(body);
+  }
+
   private normalizeRootMutationProxyResponse(
     proxyRes: http.IncomingMessage,
     body: Buffer,
@@ -218,13 +251,7 @@ export class GatewayProxy {
       bodyText.includes('Cannot obtain the parent of') &&
       bodyText.includes('because it is a root container')
     ) {
-      const normalizedBody = Buffer.from(JSON.stringify({
-        name: 'ForbiddenHttpError',
-        message: 'Write to server root is not allowed.',
-        statusCode: 403,
-        errorCode: 'H403',
-        details: { cause: 'root-container-write' },
-      }));
+      const normalizedBody = Buffer.from(JSON.stringify(this.createRootMutationForbiddenBody()));
       delete headers['content-length'];
       delete headers['transfer-encoding'];
       headers['content-type'] = 'application/json';
@@ -235,6 +262,16 @@ export class GatewayProxy {
     delete headers['transfer-encoding'];
     headers['content-length'] = String(body.byteLength);
     return { statusCode, headers, body };
+  }
+
+  private createRootMutationForbiddenBody(): RootMutationForbiddenBody {
+    return {
+      name: 'ForbiddenHttpError',
+      message: 'Write to server root is not allowed.',
+      statusCode: 403,
+      errorCode: 'H403',
+      details: { cause: 'root-container-write' },
+    };
   }
 
   private sanitizeProxyResponseHeaders(req: http.IncomingMessage, proxyRes: http.IncomingMessage): void {

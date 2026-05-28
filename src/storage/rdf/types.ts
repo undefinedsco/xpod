@@ -7,6 +7,7 @@ export interface RdfTermRow {
   id: number;
   kind: RdfTermKind;
   value: string;
+  value_head: string;
   datatype_id: number | null;
   lang: string | null;
   hash: string;
@@ -182,13 +183,32 @@ export type Rdf3xPermutationName = 'SPO' | 'SOP' | 'PSO' | 'POS' | 'OSP' | 'OPS'
 export type Rdf3xPairProjectionName = 'SP' | 'SO' | 'PS' | 'PO' | 'OS' | 'OP';
 export type Rdf3xTermProjectionName = 'S' | 'P' | 'O';
 
-export interface Rdf3xTripleIndexOptions {
+export interface Rdf3xIndexOptions {
   path: string;
   debug?: boolean;
 }
 
 export interface Rdf3xGraphPrefixPattern {
   $startsWith: string;
+}
+
+export interface Rdf3xTermInPattern {
+  $in: Term[];
+}
+
+export interface Rdf3xTermNotInPattern {
+  $notIn: Term[];
+}
+
+export type Rdf3xTermTypePatternValue = 'iri' | 'blank' | 'literal' | 'numeric';
+
+export interface Rdf3xTermMetadataPattern {
+  $termType?: Rdf3xTermTypePatternValue;
+  $language?: string;
+  $notLanguage?: string;
+  $langMatches?: string;
+  $datatype?: Term;
+  $notDatatype?: Term;
 }
 
 export interface Rdf3xObjectRangePattern {
@@ -200,11 +220,13 @@ export interface Rdf3xObjectRangePattern {
 
 export type Rdf3xNumericObjectRangePattern = Rdf3xObjectRangePattern;
 
+export interface Rdf3xObjectOperatorPattern extends Rdf3xObjectRangePattern, Rdf3xTermMetadataPattern {}
+
 export interface Rdf3xTriplePattern {
-  graph?: Term | Rdf3xGraphPrefixPattern;
-  subject?: Term;
-  predicate?: Term;
-  object?: Term | Rdf3xObjectRangePattern;
+  graph?: Term | Rdf3xGraphPrefixPattern | Rdf3xTermInPattern | Rdf3xTermNotInPattern | Rdf3xTermMetadataPattern;
+  subject?: Term | Rdf3xTermInPattern | Rdf3xTermNotInPattern | Rdf3xTermMetadataPattern;
+  predicate?: Term | Rdf3xTermInPattern | Rdf3xTermNotInPattern | Rdf3xTermMetadataPattern;
+  object?: Term | Rdf3xObjectOperatorPattern | Rdf3xTermInPattern | Rdf3xTermNotInPattern;
 }
 
 export interface Rdf3xTripleScanOptions {

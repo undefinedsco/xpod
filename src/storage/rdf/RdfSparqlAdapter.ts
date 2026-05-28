@@ -151,6 +151,10 @@ export interface RdfSparqlUpdateDelta {
   deletes: Quad[];
 }
 
+export interface RdfSparqlUpdateCompileOptions {
+  defaultGraph?: string | NamedNode;
+}
+
 export class UnsupportedSparqlQueryError extends Error {
   public constructor(message: string) {
     super(message);
@@ -217,7 +221,11 @@ export class RdfSparqlAdapter {
     };
   }
 
-  public compileUpdateDelta(query: string | SparqlQuery, basePath: string): RdfSparqlUpdateDelta {
+  public compileUpdateDelta(
+    query: string | SparqlQuery,
+    basePath: string,
+    options: RdfSparqlUpdateCompileOptions = {},
+  ): RdfSparqlUpdateDelta {
     const parsed = typeof query === 'string'
       ? new Parser({ baseIRI: basePath }).parse(query)
       : query;
@@ -226,6 +234,7 @@ export class RdfSparqlAdapter {
       throw new UnsupportedSparqlQueryError('Only SPARQL UPDATE can compile into update delta');
     }
 
+    const defaultGraph = this.compileUpdateDefaultGraph(options.defaultGraph, basePath);
     const operations: RdfSparqlUpdateDeltaOperation[] = [];
     for (const update of (parsed as Update).updates) {
       if (!('updateType' in update)) {
@@ -239,7 +248,7 @@ export class RdfSparqlAdapter {
           }
           operations.push({
             type: 'insert',
-            quads: this.compileUpdateGraphQuads(update.insert, basePath),
+            quads: this.compileUpdateGraphQuads(update.insert, basePath, defaultGraph),
           });
           break;
         case 'delete':
@@ -248,17 +257,17 @@ export class RdfSparqlAdapter {
           }
           operations.push({
             type: 'delete',
-            quads: this.compileUpdateGraphQuads(update.delete, basePath),
+            quads: this.compileUpdateGraphQuads(update.delete, basePath, defaultGraph),
           });
           break;
         case 'deletewhere':
           if (update.graph) {
             throw new UnsupportedSparqlQueryError('SPARQL UPDATE WITH/default graph scope fallback to compatibility engine');
           }
-          operations.push(this.compileDeleteWhere(update.delete, basePath));
+          operations.push(this.compileDeleteWhere(update.delete, basePath, defaultGraph));
           break;
         case 'insertdelete':
-          operations.push(this.compileInsertDeleteWhere(update, basePath));
+          operations.push(this.compileInsertDeleteWhere(update, basePath, defaultGraph));
           break;
         default:
           throw new UnsupportedSparqlQueryError('Unsupported SPARQL UPDATE operation fallback to compatibility engine');
@@ -291,8 +300,12 @@ export class RdfSparqlAdapter {
     return { operations, inserts, deletes };
   }
 
-  private compileDeleteWhere(items: Array<GraphQuads | BgpPattern>, basePath: string): RdfSparqlDeleteWhereOperation {
-    const template = this.compileGraphQuadsTemplate(items, basePath, 'DELETE WHERE');
+  private compileDeleteWhere(
+    items: Array<GraphQuads | BgpPattern>,
+    basePath: string,
+    defaultGraph?: NamedNode,
+  ): RdfSparqlDeleteWhereOperation {
+    const template = this.compileGraphQuadsTemplate(items, basePath, 'DELETE WHERE', defaultGraph);
     return {
       type: 'deleteWhere',
       query: this.queryFromUpdateTemplate(template, 'DELETE WHERE'),
@@ -303,6 +316,7 @@ export class RdfSparqlAdapter {
   private compileInsertDeleteWhere(
     update: Extract<Update['updates'][number], { updateType: 'insertdelete' }>,
     basePath: string,
+    defaultGraph?: NamedNode,
   ): RdfSparqlInsertDeleteWhereOperation | RdfSparqlInsertWhereOperation | RdfSparqlDeleteWhereOperation {
     const hasInsertTemplate = (update.insert?.length ?? 0) > 0;
     const hasDeleteTemplate = (update.delete?.length ?? 0) > 0;
@@ -314,7 +328,7 @@ export class RdfSparqlAdapter {
       : hasInsertTemplate
       ? 'INSERT WHERE'
       : 'DELETE WHERE';
-    const withGraph = this.compileWithGraph(update.graph, basePath, label);
+    const withGraph = this.compileWithGraph(update.graph, basePath, label) ?? defaultGraph;
     const using = this.compileUsingDatasetScope(update.using, basePath, label);
     const queryDefaultGraph = using.hasUsing
       ? using.defaultGraph ?? this.impossibleGraph(basePath)
@@ -405,7 +419,9 @@ export class RdfSparqlAdapter {
     basePath: string,
   ): RdfQueryDatasetScope {
     if (!from) {
-      return {};
+      return {
+        defaultGraph: this.compileImplicitQueryDefaultGraph(basePath),
+      };
     }
 
     const defaultGraphs = from.default ?? [];
@@ -415,11 +431,15 @@ export class RdfSparqlAdapter {
         ? this.compileQueryDatasetGraphs(defaultGraphs, basePath, 'FROM')
         : namedGraphs.length > 0
         ? this.impossibleGraph(basePath)
-        : undefined,
+        : this.compileImplicitQueryDefaultGraph(basePath),
       namedGraph: namedGraphs.length > 0
         ? this.compileQueryDatasetGraphs(namedGraphs, basePath, 'FROM NAMED')
         : undefined,
     };
+  }
+
+  private compileImplicitQueryDefaultGraph(basePath: string): RdfQueryTermPattern {
+    return implicitQueryDefaultGraph(basePath);
   }
 
   private compileQueryDatasetGraphs(
@@ -524,7 +544,7 @@ export class RdfSparqlAdapter {
         throw new UnsupportedSparqlQueryError(`${label} graph outside basePath fallback to compatibility engine`);
       }
       const state = new CompileState(basePath);
-      for (const triple of item.triples) {
+      for (const triple of this.updateTemplateTriples(item)) {
         if (!isSimpleTerm(triple.predicate)) {
           throw new UnsupportedSparqlQueryError(`${label} property path templates fallback to compatibility engine`);
         }
@@ -543,6 +563,15 @@ export class RdfSparqlAdapter {
       }
     }
     return template;
+  }
+
+  private updateTemplateTriples(item: GraphQuads | BgpPattern): Triple[] {
+    if ('triples' in item && Array.isArray(item.triples)) {
+      return item.triples;
+    }
+    const patterns = (item as unknown as { patterns?: Pattern[] }).patterns ?? [];
+    return patterns.flatMap((pattern): Triple[] =>
+      pattern.type === 'bgp' ? pattern.triples : []);
   }
 
   private assertSafeUpdateTemplatePattern(pattern: RdfQueryPattern, label: string): void {
@@ -602,11 +631,21 @@ export class RdfSparqlAdapter {
     }
   }
 
-  private compileUpdateGraphQuads(items: Array<GraphQuads | BgpPattern>, basePath: string): Quad[] {
+  private compileUpdateGraphQuads(
+    items: Array<GraphQuads | BgpPattern>,
+    basePath: string,
+    defaultGraph?: NamedNode,
+  ): Quad[] {
     const quads: Quad[] = [];
     for (const item of items) {
       if (item.type !== 'graph') {
-        throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph fallback to compatibility engine');
+        if (!defaultGraph) {
+          throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph fallback to compatibility engine');
+        }
+        for (const triple of item.triples) {
+          quads.push(this.compileUpdateTriple(triple, defaultGraph));
+        }
+        continue;
       }
       if (item.name.termType !== 'NamedNode') {
         throw new UnsupportedSparqlQueryError('SPARQL UPDATE GRAPH variables fallback to compatibility engine');
@@ -614,11 +653,24 @@ export class RdfSparqlAdapter {
       if (!item.name.value.startsWith(basePath)) {
         throw new UnsupportedSparqlQueryError('SPARQL UPDATE graph outside basePath fallback to compatibility engine');
       }
-      for (const triple of item.triples) {
+      for (const triple of this.updateTemplateTriples(item)) {
         quads.push(this.compileUpdateTriple(triple, item.name));
       }
     }
     return quads;
+  }
+
+  private compileUpdateDefaultGraph(defaultGraph: string | NamedNode | undefined, basePath: string): NamedNode | undefined {
+    if (!defaultGraph) {
+      return undefined;
+    }
+    const graph = typeof defaultGraph === 'string'
+      ? DataFactory.namedNode(defaultGraph)
+      : defaultGraph;
+    if (basePath && !graph.value.startsWith(basePath)) {
+      throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph outside basePath fallback to compatibility engine');
+    }
+    return graph;
   }
 
   private compileUpdateTriple(triple: Triple, graph: NamedNode): Quad {
@@ -2498,7 +2550,7 @@ class CompileState {
   }
 
   private scopePattern(pattern: RdfQueryPattern): RdfQueryPattern {
-    return pattern.graph ? pattern : { ...pattern, graph: { $startsWith: this.basePath } };
+    return pattern.graph ? pattern : { ...pattern, graph: implicitQueryDefaultGraph(this.basePath) };
   }
 
   private currentOptionalFrame(): OptionalFrame {
@@ -2512,6 +2564,12 @@ class CompileState {
   private peekOptionalFrame(): OptionalFrame | undefined {
     return this.optionalStack[this.optionalStack.length - 1];
   }
+}
+
+function implicitQueryDefaultGraph(basePath: string): RdfQueryTermPattern {
+  return basePath.endsWith('/')
+    ? { $startsWith: basePath }
+    : DataFactory.namedNode(basePath) as unknown as Term;
 }
 
 function isVariableTerm(value: Variable | Expression): value is VariableTerm {

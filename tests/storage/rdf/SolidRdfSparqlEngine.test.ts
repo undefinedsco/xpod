@@ -11,6 +11,7 @@ import {
   ShadowRdfQuintStore,
   SolidRdfEngine,
   SolidRdfSparqlEngine,
+  UnsupportedSparqlQueryError,
 } from '../../../src/storage/rdf';
 import { arrayFromStream } from '../../helpers/arrayFromStream';
 
@@ -129,6 +130,55 @@ describe('SolidRdfSparqlEngine', () => {
       fallbackRate: 0,
     });
     expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
+  it('scopes implicit default graph reads exactly for resource base paths', async () => {
+    const onFallback = vi.fn();
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const graph = 'https://pod.example/alice/.data/chat/default/index.ttl';
+    const prefixSibling = 'https://pod.example/alice/.data/chat/default/index.ttl.bak';
+    rdfEngine.put([
+      quad(
+        namedNode(`${graph}#msg_resource`),
+        namedNode(CONTENT),
+        literal('exact graph'),
+        namedNode(graph),
+      ),
+      quad(
+        namedNode(`${prefixSibling}#msg_sibling`),
+        namedNode(CONTENT),
+        literal('sibling graph'),
+        namedNode(prefixSibling),
+      ),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+      }
+      ORDER BY ?message
+    `, graph);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      message: binding.get('message')?.value,
+      content: binding.get('content')?.value,
+    }))).toEqual([
+      {
+        message: `${graph}#msg_resource`,
+        content: 'exact graph',
+      },
+    ]);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(fallbackSpy).not.toHaveBeenCalled();
   });
 
   it('executes local ASK queries', async () => {
@@ -3607,6 +3657,49 @@ describe('SolidRdfSparqlEngine', () => {
     });
   });
 
+  it('uses implicit SPARQL UPDATE default graph only for exact resource base paths', async () => {
+    const onFallback = vi.fn();
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      undefined,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const resourceGraph = `${BASE}.data/chat/default/index.ttl`;
+    const subject = `${resourceGraph}#msg_default_graph`;
+    await engine.queryVoid(`
+      INSERT DATA {
+        <${subject}> <${CONTENT}> "resource default graph" .
+      }
+    `, resourceGraph);
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${resourceGraph}> {
+          <${subject}> <${CONTENT}> "resource default graph" .
+        }
+      }
+    `, BASE)).resolves.toBe(true);
+
+    const containerBase = `${BASE}.data/chat/default/`;
+    await expect(engine.queryVoid(`
+      INSERT DATA {
+        <${containerBase}#msg_container_default_graph> <${CONTENT}> "container default graph" .
+      }
+    `, containerBase)).rejects.toThrow('No compatibility SPARQL fallback configured for queryVoid');
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${containerBase}> {
+          <${containerBase}#msg_container_default_graph> <${CONTENT}> "container default graph" .
+        }
+      }
+    `, BASE)).resolves.toBe(false);
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
   it('applies DELETE/INSERT WHERE on the embedded update delta path', async () => {
     const onFallback = vi.fn();
     const voidSpy = vi.spyOn(fallback, 'queryVoid');
@@ -4600,6 +4693,36 @@ describe('SolidRdfSparqlEngine', () => {
         fallbackRate: 1,
       }),
     ]));
+  });
+
+  it('rejects unsupported shapes when no compatibility fallback is configured', async () => {
+    const onFallback = vi.fn();
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      undefined,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    await expect(engine.queryQuads(`
+      DESCRIBE ?message WHERE {
+        OPTIONAL {
+          ?message a <${MESSAGE}> .
+        }
+      }
+    `, BASE)).rejects.toThrow(UnsupportedSparqlQueryError);
+
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toEqual({
+      primaryCount: 0,
+      fallbackCount: 0,
+      totalCount: 0,
+      fallbackRate: 0,
+      operationCounts: [],
+      lastPrimary: undefined,
+      lastFallback: undefined,
+    });
   });
 
   it('can reset primary and fallback metrics for bounded benchmark windows', async () => {

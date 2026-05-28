@@ -52,6 +52,26 @@ describe('RdfSparqlAdapter', () => {
     expect(compiled.query.offset).toBe(2);
   });
 
+  it('compiles implicit default graph reads as exact graph scope for resource base paths', () => {
+    const graph = `${BASE}.data/chat/default/index.ttl`;
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+      }
+    `, graph);
+
+    expect(compiled.query.patterns).toEqual([
+      expect.objectContaining({
+        graph: expect.objectContaining({
+          termType: 'NamedNode',
+          value: graph,
+        }),
+        subject: { variable: 'message' },
+        object: { variable: 'content' },
+      }),
+    ]);
+  });
+
   it('compiles standard XPath function-call string filters into local query shape', () => {
     const compiled = adapter.compile(`
       PREFIX fn: <http://www.w3.org/2005/xpath-functions#>
@@ -2119,6 +2139,216 @@ describe('RdfSparqlAdapter', () => {
             value: CONTENT,
           }),
           object: { variable: 'content' },
+        },
+      ],
+    });
+  });
+
+  it('compiles drizzle-solid graph pattern update templates', () => {
+    const graph = `${BASE}.data/settings/credentials.ttl`;
+    const subject = `${graph}#cred-status-test`;
+    const update = {
+      type: 'update',
+      prefixes: {},
+      updates: [
+        {
+          updateType: 'insertdelete',
+          delete: [
+            {
+              type: 'graph',
+              name: { termType: 'NamedNode', value: graph },
+              patterns: [
+                {
+                  type: 'bgp',
+                  triples: [
+                    {
+                      subject: { termType: 'NamedNode', value: subject },
+                      predicate: { termType: 'NamedNode', value: CONTENT },
+                      object: { termType: 'Variable', value: 'old_status' },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          insert: [],
+          where: [
+            {
+              type: 'graph',
+              name: { termType: 'NamedNode', value: graph },
+              patterns: [
+                {
+                  type: 'bgp',
+                  triples: [
+                    {
+                      subject: { termType: 'NamedNode', value: subject },
+                      predicate: { termType: 'NamedNode', value: CONTENT },
+                      object: { termType: 'Variable', value: 'old_status' },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          updateType: 'insert',
+          insert: [
+            {
+              type: 'graph',
+              name: { termType: 'NamedNode', value: graph },
+              patterns: [
+                {
+                  type: 'bgp',
+                  triples: [
+                    {
+                      subject: { termType: 'NamedNode', value: subject },
+                      predicate: { termType: 'NamedNode', value: CONTENT },
+                      object: {
+                        termType: 'Literal',
+                        value: 'active',
+                        language: '',
+                        datatype: {
+                          termType: 'NamedNode',
+                          value: 'http://www.w3.org/2001/XMLSchema#string',
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const delta = adapter.compileUpdateDelta(update as any, BASE);
+
+    expect(delta.operations).toHaveLength(2);
+    expect(delta.operations[0]).toMatchObject({
+      type: 'deleteWhere',
+      template: [
+        {
+          graph: expect.objectContaining({ value: graph }),
+          subject: expect.objectContaining({ value: subject }),
+          predicate: expect.objectContaining({ value: CONTENT }),
+          object: { variable: 'old_status' },
+        },
+      ],
+    });
+    expect(delta.operations[1]).toMatchObject({
+      type: 'insert',
+      quads: [
+        {
+          graph: expect.objectContaining({ value: graph }),
+          subject: expect.objectContaining({ value: subject }),
+          predicate: expect.objectContaining({ value: CONTENT }),
+          object: expect.objectContaining({ value: 'active' }),
+        },
+      ],
+    });
+  });
+
+  it('compiles default graph SPARQL UPDATE only when a write target graph is provided', () => {
+    const graph = `${BASE}.data/chat/default/index.ttl`;
+    expect(() => adapter.compileUpdateDelta(`
+      DELETE WHERE {
+        <${graph}#msg_1> <${CONTENT}> ?content .
+      }
+    `, BASE)).toThrow(UnsupportedSparqlQueryError);
+
+    const delta = adapter.compileUpdateDelta(`
+      DELETE WHERE {
+        <${graph}#msg_1> <${CONTENT}> ?content .
+      }
+    `, BASE, { defaultGraph: graph });
+
+    expect(delta.operations).toHaveLength(1);
+    expect(delta.operations[0]).toMatchObject({
+      type: 'deleteWhere',
+      query: {
+        patterns: [
+          {
+            graph: expect.objectContaining({
+              termType: 'NamedNode',
+              value: graph,
+            }),
+            subject: expect.objectContaining({
+              termType: 'NamedNode',
+              value: `${graph}#msg_1`,
+            }),
+            predicate: expect.objectContaining({
+              termType: 'NamedNode',
+              value: CONTENT,
+            }),
+            object: { variable: 'content' },
+          },
+        ],
+      },
+      template: [
+        {
+          graph: expect.objectContaining({
+            termType: 'NamedNode',
+            value: graph,
+          }),
+          subject: expect.objectContaining({
+            termType: 'NamedNode',
+            value: `${graph}#msg_1`,
+          }),
+          object: { variable: 'content' },
+        },
+      ],
+    });
+  });
+
+  it('compiles default graph DELETE/INSERT WHERE against the explicit write target graph', () => {
+    const graph = `${BASE}.data/chat/default/index.ttl`;
+    const delta = adapter.compileUpdateDelta(`
+      DELETE {
+        <${graph}#msg_1> <${CONTENT}> ?old .
+      }
+      INSERT {
+        <${graph}#msg_1> <${CONTENT}> "changed" .
+      }
+      WHERE {
+        <${graph}#msg_1> <${CONTENT}> ?old .
+      }
+    `, BASE, { defaultGraph: graph });
+
+    expect(delta.operations).toHaveLength(1);
+    expect(delta.operations[0]).toMatchObject({
+      type: 'insertDeleteWhere',
+      query: {
+        patterns: [
+          {
+            graph: expect.objectContaining({
+              termType: 'NamedNode',
+              value: graph,
+            }),
+            object: { variable: 'old' },
+          },
+        ],
+      },
+      deletes: [
+        {
+          graph: expect.objectContaining({
+            termType: 'NamedNode',
+            value: graph,
+          }),
+          object: { variable: 'old' },
+        },
+      ],
+      inserts: [
+        {
+          graph: expect.objectContaining({
+            termType: 'NamedNode',
+            value: graph,
+          }),
+          object: expect.objectContaining({
+            termType: 'Literal',
+            value: 'changed',
+          }),
         },
       ],
     });

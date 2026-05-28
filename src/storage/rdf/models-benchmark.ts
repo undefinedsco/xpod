@@ -9,6 +9,8 @@ import type {
   Rdf3xIndexMetrics,
   Rdf3xIndexStats,
   Rdf3xObjectRangePattern,
+  Rdf3xTermInPattern,
+  Rdf3xTermNotInPattern,
   Rdf3xTriplePattern,
   RdfBindingRow,
   RdfEngineStorageStats,
@@ -1771,6 +1773,16 @@ function rdf3xBenchmarkPushdownFilter(
           return undefined;
         }
         return { pattern: filter.value as Term, filterIndexes: [index] };
+      case '$in':
+        if (!filter.values?.length || filter.values.some((value) => !isTerm(value as any))) {
+          return undefined;
+        }
+        return { pattern: { $in: filter.values as Term[] }, filterIndexes: [index] };
+      case '$notIn':
+        if (!filter.values?.length || filter.values.some((value) => !isTerm(value as any))) {
+          return undefined;
+        }
+        return { pattern: { $notIn: filter.values as Term[] }, filterIndexes: [index] };
       case '$gt':
       case '$gte':
       case '$lt':
@@ -1877,6 +1889,12 @@ function unsupportedRdf3xPatternReason(pattern: QuintPattern): string | undefine
     if (key === 'graph' && isGraphPrefixPattern(value)) {
       continue;
     }
+    if (isRdf3xTermInPattern(value)) {
+      continue;
+    }
+    if (isRdf3xTermNotInPattern(value)) {
+      continue;
+    }
     if (key === 'object' && isSupportedRdf3xObjectRangePattern(value)) {
       continue;
     }
@@ -1896,6 +1914,14 @@ function rdf3xPatternFor(pattern: QuintPattern): Rdf3xTriplePattern {
       result.graph = { $startsWith: value.$startsWith };
       continue;
     }
+    if (isRdf3xTermInPattern(value)) {
+      result[key] = value;
+      continue;
+    }
+    if (isRdf3xTermNotInPattern(value)) {
+      result[key] = value;
+      continue;
+    }
     if (key === 'object' && isSupportedRdf3xObjectRangePattern(value)) {
       result.object = value;
       continue;
@@ -1906,6 +1932,26 @@ function rdf3xPatternFor(pattern: QuintPattern): Rdf3xTriplePattern {
     result[key] = value as import('@rdfjs/types').Term;
   }
   return result;
+}
+
+function isRdf3xTermInPattern(value: unknown): value is Rdf3xTermInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $in?: unknown }).$in)
+    && ((value as { $in: unknown[] }).$in).length > 0
+    && ((value as { $in: unknown[] }).$in).every((entry) => isTerm(entry as any));
+}
+
+function isRdf3xTermNotInPattern(value: unknown): value is Rdf3xTermNotInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $notIn?: unknown }).$notIn)
+    && ((value as { $notIn: unknown[] }).$notIn).length > 0
+    && ((value as { $notIn: unknown[] }).$notIn).every((entry) => isTerm(entry as any));
 }
 
 function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } {

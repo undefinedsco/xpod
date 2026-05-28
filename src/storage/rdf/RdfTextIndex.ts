@@ -40,6 +40,8 @@ interface TextSearchPredicate {
   indexChoice: 'text-normalized-scan' | 'text-term-posting';
 }
 
+const RDF_TEXT_TERM_MAX_INDEX_LENGTH = 256;
+
 export class RdfTextIndex {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
@@ -309,7 +311,7 @@ export class RdfTextIndex {
 
       CREATE TABLE IF NOT EXISTS rdf_text_terms (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        term TEXT NOT NULL,
+        term TEXT NOT NULL CHECK (length(term) <= ${RDF_TEXT_TERM_MAX_INDEX_LENGTH}),
         source_id INTEGER NOT NULL,
         chunk_id INTEGER NOT NULL,
         occurrences INTEGER NOT NULL,
@@ -322,10 +324,12 @@ export class RdfTextIndex {
       CREATE INDEX IF NOT EXISTS rdf_text_sources_workspace ON rdf_text_sources(workspace);
       CREATE INDEX IF NOT EXISTS rdf_text_sources_source ON rdf_text_sources(source);
       CREATE INDEX IF NOT EXISTS rdf_text_chunks_source ON rdf_text_chunks(source_id, ordinal);
-      CREATE INDEX IF NOT EXISTS rdf_text_chunks_normalized ON rdf_text_chunks(normalized_text);
+      DELETE FROM rdf_text_terms WHERE length(term) > ${RDF_TEXT_TERM_MAX_INDEX_LENGTH};
       CREATE INDEX IF NOT EXISTS rdf_text_terms_term ON rdf_text_terms(term);
       CREATE INDEX IF NOT EXISTS rdf_text_terms_source_term ON rdf_text_terms(source_id, term);
       CREATE INDEX IF NOT EXISTS rdf_text_terms_chunk ON rdf_text_terms(chunk_id);
+
+      DROP INDEX IF EXISTS rdf_text_chunks_normalized;
     `);
     this.backfillTermPostings();
   }
@@ -564,6 +568,9 @@ function insertTermOccurrences(
   normalizedText: string,
 ): void {
   for (const [term, occurrences] of termOccurrences(normalizedText)) {
+    if (term.length > RDF_TEXT_TERM_MAX_INDEX_LENGTH) {
+      continue;
+    }
     insertTerm.run(term, sourceId, chunkId, occurrences);
   }
 }
@@ -577,7 +584,8 @@ function termOccurrences(normalizedText: string): Map<string, number> {
 }
 
 function buildTextSearchPredicate(query: string): TextSearchPredicate {
-  const terms = [...new Set(tokenizeNormalizedText(query))];
+  const terms = [...new Set(tokenizeNormalizedText(query))]
+    .filter((term) => term.length <= RDF_TEXT_TERM_MAX_INDEX_LENGTH);
   const phraseCondition = "chunk.normalized_text LIKE ? ESCAPE '\\'";
   const phrasePattern = `%${escapeLikePattern(query)}%`;
   if (terms.length === 0) {

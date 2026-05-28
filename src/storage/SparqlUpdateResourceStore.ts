@@ -12,6 +12,8 @@ import {
   AS,
   SOLID_AS,
   BadRequestHttpError,
+  ForbiddenHttpError,
+  HttpError,
   type DataAccessor,
   type IdentifierStrategy,
   type AuxiliaryStrategy,
@@ -24,6 +26,7 @@ import {
   LocalFirstRdfRepresentationResolver,
   type LocalFirstRdfRepresentationResolverLike,
 } from '../solidfs/LocalFirstRdfRepresentationResolver';
+import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from './rdf/RdfSparqlAdapter';
 
 export interface SparqlUpdateResourceStoreOptions {
   accessor: DataAccessor;
@@ -95,7 +98,17 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
     }
 
     this.logger.debug(`Applying SPARQL PATCH to ${identifier.path}: ${sparqlUpdate}`);
-    await accessor.executeSparqlUpdate(sparqlUpdate, identifier.path);
+    try {
+      await accessor.executeSparqlUpdate(sparqlUpdate, identifier.path);
+    } catch (error: unknown) {
+      if (error instanceof DisabledSparqlFeatureError) {
+        throw new ForbiddenHttpError(error.message, { cause: error });
+      }
+      if (error instanceof UnsupportedSparqlQueryError) {
+        throw new BadRequestHttpError(error.message, { cause: error });
+      }
+      throw error;
+    }
 
     // PATCH does not affect containment; mark the target resource as updated.
     const changes = new Map() as ChangeMap;
@@ -156,12 +169,56 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
       }));
     };
 
+    const triplesFromTemplateBlock = (item: any): any[] => {
+      if (Array.isArray(item?.triples)) {
+        return item.triples;
+      }
+      if (!Array.isArray(item?.patterns)) {
+        return [];
+      }
+      return item.patterns.flatMap((pattern: any): any[] =>
+        pattern?.type === 'bgp' && Array.isArray(pattern.triples) ? pattern.triples : []);
+    };
+
+    const rewriteQuadBlocks = (items?: any[]): any[] | undefined => {
+      if (!items) return items;
+      return items.flatMap((item: any): any[] => {
+        if (item?.type === 'graph') {
+          assertGraphAllowed(item.name);
+          const targetGraph = item.name ?? graph;
+          return [{
+            ...item,
+            name: targetGraph,
+            triples: rewriteTriples(triplesFromTemplateBlock(item), targetGraph),
+            patterns: undefined,
+          }];
+        }
+        if (item?.type === 'bgp') {
+          return [{
+            type: 'graph',
+            name: graph,
+            triples: rewriteTriples(item.triples, graph),
+          }];
+        }
+        return [{
+          type: 'graph',
+          name: graph,
+          triples: rewriteTriples([ item ], graph),
+        }];
+      });
+    };
+
     const rewritePattern = (pattern: any): any => {
       if (pattern.type === 'bgp') {
-        return { ...pattern, triples: rewriteTriples(pattern.triples) };
+        return { ...pattern, triples: rewriteTriples(pattern.triples, graph) };
       }
       if (pattern.type === 'graph') {
-        return { ...pattern, patterns: pattern.patterns?.map(rewritePattern) ?? [] };
+        assertGraphAllowed(pattern.name);
+        return {
+          ...pattern,
+          name: pattern.name ?? graph,
+          patterns: pattern.patterns?.map(rewritePattern) ?? [],
+        };
       }
       if (pattern.type === 'group') {
         return { ...pattern, patterns: pattern.patterns?.map(rewritePattern) ?? [] };
@@ -190,28 +247,25 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
       return pattern;
     };
 
-    const toGraphQuads = (items?: any[]): GraphQuads[] | undefined => {
-      if (!items) return items;
-      return items.map((item: any): GraphQuads => {
-        if (item?.type === 'graph') {
-          assertGraphAllowed(item.name);
+    const rewriteWherePatterns = (patterns?: any[]): any[] =>
+      (patterns ?? []).map((pattern: any): any => {
+        if (pattern?.type === 'bgp') {
           return {
-            ...item,
-            name: item.name ?? graph,
-            triples: rewriteTriples(item.triples, item.name ?? graph),
+            type: 'graph',
+            name: graph,
+            patterns: [{
+              ...pattern,
+              triples: rewriteTriples(pattern.triples, graph),
+            }],
           };
         }
-        // Treat as plain quad
-        return {
-          type: 'graph',
-          name: graph,
-          triples: rewriteTriples([ item ], graph),
-        };
+        return rewritePattern(pattern);
       });
-    };
+
+    const toGraphQuads = (items?: any[]): GraphQuads[] | undefined =>
+      rewriteQuadBlocks(items) as GraphQuads[] | undefined;
 
     try {
-      console.log(`[normalizeGraphs] Input SPARQL (first 500 chars): ${updateText.slice(0, 500)}`);
       const parsed = this.parser.parse(updateText) as unknown as SparqlUpdate;
 
       // Explicitly reject SPARQL Queries (SELECT, ASK, CONSTRUCT) in PATCH
@@ -225,8 +279,16 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
           const entries = op[key];
           if (!entries) return [];
           if (Array.isArray(entries)) {
-            return entries.flatMap((entry: any): any[] =>
-              entry.triples ? entry.triples : (entry.quads ?? []));
+            return entries.flatMap((entry: any): any[] => {
+              if (entry?.type === 'graph') {
+                assertGraphAllowed(entry.name);
+                return (entry.triples ?? []).map((triple: any): any => ({
+                  ...triple,
+                  graph: entry.name ?? graph,
+                }));
+              }
+              return entry.triples ? entry.triples : (entry.quads ?? []);
+            });
           }
           return [];
         });
@@ -308,25 +370,29 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
 
       parsed.updates = parsed.updates.map((op: any): UpdateOperation => {
         switch (op.updateType) {
+          case 'deletewhere':
+            return {
+              ...op,
+              delete: toGraphQuads(op.delete),
+            };
           case 'deleteinsert':
           case 'insertdelete':
             return {
               ...op,
               delete: toGraphQuads(op.delete),
               insert: toGraphQuads(op.insert),
-              where: op.where && op.where.length > 0 ? [ { type: 'graph', name: graph, patterns: op.where.map(rewritePattern) } ] : [],
+              where: rewriteWherePatterns(op.where),
             };
           case 'delete':
-          case 'insert': {
-            const deleteQuads = toGraphQuads(op.delete) ?? [];
-            const insertQuads = toGraphQuads(op.insert) ?? [];
             return {
-              updateType: 'insertdelete',
-              delete: deleteQuads,
-              insert: insertQuads,
-              where: op.where && op.where.length > 0 ? [ { type: 'graph', name: graph, patterns: op.where.map(rewritePattern) } ] : [],
+              ...op,
+              delete: toGraphQuads(op.delete),
             };
-          }
+          case 'insert':
+            return {
+              ...op,
+              insert: toGraphQuads(op.insert),
+            };
           default:
             return op;
         }
@@ -335,10 +401,11 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
       this.logger.verbose(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalized}`);
       return normalized;
     } catch (error: unknown) {
-      console.log(`[normalizeGraphs] Parse FAILED for ${identifier.path}: ${error}`);
-      console.log(`[normalizeGraphs] Input was: ${updateText.slice(0, 300)}`);
+      if (HttpError.isInstance(error)) {
+        throw error;
+      }
+      this.logger.debug(`Could not parse SPARQL UPDATE for ${identifier.path}; applying default graph text fallback: ${error}`);
       const fallbackResult = wrapDefaultGraph(updateText);
-      console.log(`[normalizeGraphs] Fallback result: ${fallbackResult.slice(0, 300)}`);
       return fallbackResult;
     }
   }
