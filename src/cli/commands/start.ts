@@ -12,6 +12,7 @@ interface StartArgs {
   env?: string;
   port: number;
   host: string;
+  foreground?: boolean;
 }
 
 const childJsRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined'
@@ -74,6 +75,11 @@ export const startCommand: CommandModule<object, StartArgs> = {
         type: 'string',
         description: 'Gateway host',
         default: 'localhost',
+      })
+      .option('foreground', {
+        type: 'boolean',
+        default: true,
+        description: 'Run in the foreground',
       }),
   handler: async (argv) => {
     if (argv.env) {

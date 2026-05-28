@@ -16,7 +16,7 @@ const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:
 const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
-  'tests/integration/ProvisionFlow.integration.test.ts',
+  'tests/integration/DockerClusterProvisionFlow.integration.test.ts',
   'tests/integration/CloudQuotaBusinessToken.integration.test.ts',
 ];
 

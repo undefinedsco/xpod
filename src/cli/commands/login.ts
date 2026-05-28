@@ -4,9 +4,11 @@ import {
   login,
   getAccountControls,
   createClientCredentials,
+  getAccountData,
 } from '../lib/css-account';
 import { saveCredentials, getConfigPath } from '../lib/credentials-store';
 import { promptPassword, promptText } from '../lib/prompt';
+import { CliCommandError, handleCliError } from '../lib/output';
 
 interface LoginArgs {
   url?: string;
@@ -22,28 +24,25 @@ function resolveUrl(url?: string): string {
   return raw.endsWith('/') ? raw : `${raw}/`;
 }
 
-async function resolveWebId(baseUrl: string, token: string, explicitWebId?: string): Promise<string | undefined> {
+async function resolveWebId(baseUrl: string, token: string, explicitWebId?: string): Promise<string> {
   if (explicitWebId) {
     return explicitWebId;
   }
 
-  const accountRes = await fetch(`${baseUrl}.account/`, {
-    headers: {
-      Accept: 'application/json',
-      Authorization: `CSS-Account-Token ${token}`,
-    },
-  });
-  if (!accountRes.ok) {
-    return undefined;
+  const accountData = await getAccountData(token, baseUrl);
+  const webIds = accountData ? Object.keys(accountData.webIds) : [];
+  if (webIds.length === 1 && webIds[0]) {
+    return webIds[0];
   }
-
-  const accountData = await accountRes.json() as { webIds?: Record<string, string> };
-  const webIds = accountData.webIds;
-  if (!webIds || typeof webIds !== 'object') {
-    return undefined;
+  if (webIds.length > 1) {
+    throw new CliCommandError(
+      'webid_ambiguous',
+      'Multiple WebIDs are configured. Re-run with --web-id to select the acting identity.',
+      2,
+      { webIds },
+    );
   }
-
-  return Object.keys(webIds)[0];
+  throw new CliCommandError('webid_missing', 'No WebID found. Specify --web-id explicitly.', 2);
 }
 
 export const loginCommandModule: CommandModule<object, LoginArgs> = {
@@ -61,7 +60,7 @@ export const loginCommandModule: CommandModule<object, LoginArgs> = {
       .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' })
       .option('web-id', { type: 'string', description: 'WebID to bind credentials to' })
       .option('name', { type: 'string', description: 'Credential label' })
-      .option('output', { type: 'boolean', default: false, description: 'Print credentials instead of saving to ~/.xpod/' }),
+      .option('output', { type: 'boolean', default: false, description: 'Do not save credentials; print non-secret metadata only' }),
   handler: async (argv) => {
     const baseUrl = resolveUrl(argv.url);
 
@@ -100,22 +99,14 @@ export const loginCommandModule: CommandModule<object, LoginArgs> = {
       process.exit(1);
     }
 
-    const webId = await resolveWebId(baseUrl, token, argv['web-id']);
-    if (!webId) {
-      console.error('No WebID found. Specify --web-id explicitly.');
-      process.exit(1);
-    }
+    const webId = await resolveWebId(baseUrl, token, argv['web-id'])
+      .catch((error) => handleCliError(error, false));
 
     const credential = await createClientCredentials(token, controls.clientCredentials, webId, argv.name);
     if (!credential) {
       console.error('Failed to create client credentials.');
       process.exit(1);
     }
-
-    console.log('Credentials created:');
-    console.log(`  client_id:     ${credential.id}`);
-    console.log(`  client_secret: ${credential.secret}`);
-    console.log(`  webId:         ${webId}`);
 
     if (!argv.output) {
       saveCredentials({
@@ -128,6 +119,10 @@ export const loginCommandModule: CommandModule<object, LoginArgs> = {
         },
       });
       console.log(`\nSaved to ${getConfigPath().replace('/config.json', '/')}`);
+    } else {
+      console.log('Credentials created.');
     }
+    console.log(`  client_id: ${credential.id}`);
+    console.log(`  webId:     ${webId}`);
   },
 };

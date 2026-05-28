@@ -284,9 +284,9 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
    */
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
     await this.initialize();
-    const { name } = this.getRelatedNames(identifier);
+    const { name, parent } = this.getRelatedNames(identifier);
     const metaName = this.getMetadataNode(name);
-    return this.sendSparqlUpdate(this.sparqlInsertMetadata(metaName, metadata));
+    return this.sendSparqlUpdate(this.sparqlInsertMetadata(metaName, metadata, parent, name));
   }
 
   /**
@@ -443,12 +443,25 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     };
   }
 
-  private sparqlInsertMetadata(metaName: NamedNode, metadata: RepresentationMetadata): Update {
+  private sparqlInsertMetadata(
+    metaName: NamedNode,
+    metadata: RepresentationMetadata,
+    parent?: NamedNode,
+    name?: NamedNode,
+  ): Update {
     const metaGraphs: GraphQuads = {
       type: 'graph',
       name: metaName,
       triples: metadata.quads() as Quad[],
     };
+    const insert: GraphQuads[] = [metaGraphs];
+    if (parent && name) {
+      insert.push({
+        type: 'graph',
+        name: parent,
+        triples: [quad(parent, LDP.terms.contains, name)],
+      });
+    }
 
     const deleteOp: InsertDeleteOperation = {
       updateType: 'deletewhere',
@@ -457,7 +470,7 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
 
     const insertOp: InsertDeleteOperation = {
       updateType: 'insert',
-      insert: [metaGraphs],
+      insert,
     };
 
     return {
