@@ -96,7 +96,7 @@ Runtime 进程本身不拥有长期状态。长期事实在 Pod:
 | xpod CLI agent mode | 用 `@mariozechner/pi-coding-agent` 做本地交互 agent | 清理；CLI 只保留运维功能 |
 | `ChatKit` thread-bound runtime | 按 threadId 在内存里维护 ACP runner 进程 | 已改成 `RunStateCenter` + 无状态 runner adapter 方向 |
 
-`xpod login` 应表示 xpod/Solid 登录或凭据建立，不表示 AI provider OAuth 登录。AI provider 配置仍应写入用户 Pod，主要通过配置 API/UI 或 `xpod config` 运维命令完成，不复用 pi 的 login/OAuth registry。
+`xpod login` 应表示 xpod/Solid 登录或凭据建立，不表示 AI provider OAuth 登录。AI provider 配置仍应写入用户 Pod，主要通过配置 API/UI 或 descriptor-backed object/secret 操作完成，不复用 pi 的 login/OAuth registry，也不占用顶层 `xpod config`。
 
 当前已落地的代码边界:
 

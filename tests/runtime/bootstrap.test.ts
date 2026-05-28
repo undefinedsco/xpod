@@ -61,7 +61,7 @@ describe('runtime bootstrap helpers', () => {
       mode: 'cloud',
       edgeNodesEnabled: true,
       centerRegistrationEnabled: true,
-    }, state);
+    }, state, {});
 
     expect(runtimeEnv.CSS_BASE_URL).toBe('http://127.0.0.1:5710/');
     expect(runtimeEnv.API_PORT).toBe('5712');
@@ -186,6 +186,37 @@ describe('runtime bootstrap helpers', () => {
     expect(parsed.import).toEqual([
       '../package/config/local.json',
       '../package/config/runtime-open.json',
+    ]);
+  });
+
+  it('should escape Components config imports when runtime paths contain spaces', () => {
+    const writeTextFile = vi.fn();
+    const ensureDir = vi.fn();
+    const joinPath = (...segments: string[]): string => {
+      if (segments[0] === PACKAGE_ROOT) {
+        return path.posix.join('/Users/alice/Application Support/@undefineds.co/xpod', ...segments.slice(1));
+      }
+      return path.posix.join(...segments);
+    };
+    const runtimeConfigPath = createCssRuntimeConfig({
+      id: 'space-path',
+      mode: 'local',
+      runtimeRoot: '/Users/alice/Application Support/@linx/local/runtimes/xpod',
+    } as any, true, {
+      dirname: (filePath: string): string => path.posix.dirname(filePath),
+      ensureDir,
+      joinPath,
+      writeTextFile,
+    });
+
+    expect(runtimeConfigPath).toBe('/Users/alice/Application Support/@linx/local/runtimes/xpod/css-runtime.config.json');
+    expect(writeTextFile).toHaveBeenCalledTimes(1);
+
+    const [, content] = writeTextFile.mock.calls[0];
+    const parsed = JSON.parse(content);
+    expect(parsed.import).toEqual([
+      'file:///Users/alice/Application%20Support/@undefineds.co/xpod/config/local.json',
+      'file:///Users/alice/Application%20Support/@undefineds.co/xpod/config/runtime-open.json',
     ]);
   });
 

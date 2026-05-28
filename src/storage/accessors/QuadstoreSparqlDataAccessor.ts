@@ -168,10 +168,10 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * Reads the metadata and stores it.
    */
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
-    const { name } = this.getRelatedNames(identifier);
+    const { name, parent } = this.getRelatedNames(identifier);
     const metaName = this.getMetadataNode(name);
 
-    return this.sendSparqlUpdate(this.sparqlInsertMetadata(metaName, metadata));
+    return this.sendSparqlUpdate(this.sparqlInsertMetadata(metaName, metadata, parent, name));
   }
 
   /**
@@ -289,9 +289,17 @@ export class QuadstoreSparqlDataAccessor implements DataAccessor {
    * @param metaName - Name of the metadata resource to update.
    * @param metadata - New metadata of the resource.
    */
-  private sparqlInsertMetadata(metaName: NamedNode, metadata: RepresentationMetadata): Update {
+  private sparqlInsertMetadata(
+    metaName: NamedNode,
+    metadata: RepresentationMetadata,
+    parent?: NamedNode,
+    name?: NamedNode,
+  ): Update {
     // Insert new metadata and containment triple
     const insert: GraphQuads[] = [ this.sparqlUpdateGraph(metaName, metadata.quads()) ];
+    if (parent && name) {
+      insert.push(this.sparqlUpdateGraph(parent, [ quad(parent, LDP.terms.contains, name) ]));
+    }
 
     // Necessary updates: delete metadata and insert new data
     const updates: UpdateOperation[] = [

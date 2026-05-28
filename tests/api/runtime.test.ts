@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiContainerConfig } from '../../src/api/container';
 
 const mocked = vi.hoisted(() => ({
@@ -32,6 +32,13 @@ vi.mock('../../src/logging/ConfigurableLoggerFactory', () => ({
 import { startApiService } from '../../src/api/runtime';
 
 describe('startApiService background services', () => {
+  const savedEnv: Record<string, string | undefined> = {};
+  const envKeysToManage = [
+    'XPOD_MAIN_PORT',
+    'CSS_PORT',
+    'PORT',
+  ];
+
   const config: ApiContainerConfig = {
     edition: 'local',
     port: 3001,
@@ -43,6 +50,20 @@ describe('startApiService background services', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    for (const key of envKeysToManage) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of envKeysToManage) {
+      if (savedEnv[key] !== undefined) {
+        process.env[key] = savedEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
   });
 
   it('starts the local tunnel provider even when local network manager is registered', async() => {

@@ -13,6 +13,8 @@ describe('VercelAiProvider', () => {
   const envKeysToManage = [
     'DEFAULT_API_KEY',
     'DEFAULT_API_BASE',
+    'DEFAULT_PROVIDER',
+    'DEFAULT_MODEL',
   ];
 
   beforeEach(() => {

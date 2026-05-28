@@ -69,7 +69,6 @@ import { PodRoutingHttpHandler } from './http/PodRoutingHttpHandler';
 import { ReactAppViewHandler } from './identity/ReactAppViewHandler';
 import { SqliteQuintStore } from './storage/quint/SqliteQuintStore';
 import { PgQuintStore } from './storage/quint/PgQuintStore';
-import { BaseQuintStore } from './storage/quint/BaseQuintStore';
 import { QuintStore } from './storage/quint/types';
 import { RdfQuadIndex } from './storage/rdf/RdfQuadIndex';
 import { Rdf3xIndex } from './storage/rdf/Rdf3xIndex';
@@ -191,7 +190,6 @@ export {
   QuintStore,
   SqliteQuintStore,
   PgQuintStore,
-  BaseQuintStore,
   // RDF engine exports
   RdfTermDictionary,
   RdfQuadIndex,

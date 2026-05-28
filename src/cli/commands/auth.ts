@@ -3,20 +3,26 @@ import {
   checkServer,
   login,
   getAccountControls,
+  getAccountData,
   createClientCredentials,
   listClientCredentials,
   revokeClientCredential,
 } from '../lib/css-account';
 import { saveCredentials, clearCredentials, getConfigPath } from '../lib/credentials-store';
 import { promptPassword, promptText } from '../lib/prompt';
+import { getStoredAuthStatus } from '../lib/auth-context';
+import { CliCommandError, handleCliError, writeJsonResult } from '../lib/output';
 
 interface AuthArgs {
   url: string;
+  json?: boolean;
 }
 
 interface LoginArgs extends AuthArgs {
   email?: string;
   password?: string;
+  issuer?: string;
+  'web-id'?: string;
 }
 
 interface CreateCredentialsArgs extends AuthArgs {
@@ -43,19 +49,47 @@ function resolveUrl(url: string): string {
   return raw.endsWith('/') ? raw : `${raw}/`;
 }
 
+async function resolveExplicitWebId(input: {
+  token: string;
+  baseUrl: string;
+  explicitWebId?: string;
+}): Promise<string> {
+  if (input.explicitWebId) {
+    return input.explicitWebId;
+  }
+
+  const accountData = await getAccountData(input.token, input.baseUrl);
+  const webIds = accountData ? Object.keys(accountData.webIds) : [];
+  if (webIds.length === 1 && webIds[0]) {
+    return webIds[0];
+  }
+  if (webIds.length > 1) {
+    throw new CliCommandError(
+      'webid_ambiguous',
+      'Multiple WebIDs are configured. Re-run with --web-id to select the acting identity.',
+      2,
+      { webIds },
+    );
+  }
+  throw new CliCommandError('webid_missing', 'No WebID found. Specify --web-id explicitly.', 2);
+}
+
 const loginCommand: CommandModule<AuthArgs, LoginArgs> = {
   command: 'login',
-  describe: 'Login and get an account token',
+  describe: 'Login and store CLI client credentials',
   builder: (yargs) =>
     yargs
+      .option('issuer', { type: 'string', description: 'Issuer/base URL alias for --url' })
       .option('email', { type: 'string', description: 'Account email (will prompt if not provided)' })
-      .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' }),
+      .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' })
+      .option('web-id', { type: 'string', description: 'WebID to bind credentials to when multiple identities exist' })
+      .option('json', { type: 'boolean', default: false, description: 'Output JSON envelope' }),
   handler: async (argv) => {
-    const baseUrl = resolveUrl(argv.url);
+    const baseUrl = resolveUrl(argv.issuer ?? argv.url);
 
     if (!(await checkServer(baseUrl))) {
-      console.error(`Cannot reach server at ${baseUrl}`);
-      process.exit(1);
+      const error = new Error(`Cannot reach server at ${baseUrl}`);
+      handleCliError(error, argv.json === true, 'server_unreachable');
     }
 
     // Prompt for email if not provided
@@ -80,12 +114,43 @@ const loginCommand: CommandModule<AuthArgs, LoginArgs> = {
 
     const token = await login(email, password, baseUrl);
     if (!token) {
-      console.error('Login failed. Check email/password.');
-      process.exit(1);
+      handleCliError(new Error('Login failed. Check email/password.'), argv.json === true, 'auth_failed');
     }
 
-    console.log('Login successful.');
-    console.log(`Token: ${token}`);
+    const controls = await getAccountControls(token, baseUrl);
+    if (!controls?.clientCredentials) {
+      handleCliError(new Error('Cannot find client credentials endpoint.'), argv.json === true, 'credentials_endpoint_missing');
+    }
+
+    const webId = await resolveExplicitWebId({
+      token,
+      baseUrl,
+      explicitWebId: argv['web-id'],
+    }).catch((error) => handleCliError(error, argv.json === true));
+
+    const cred = await createClientCredentials(token, controls.clientCredentials, webId, 'xpod-cli');
+    if (!cred) {
+      handleCliError(new Error('Failed to create credentials.'), argv.json === true, 'credentials_create_failed');
+    }
+
+    saveCredentials({
+      url: baseUrl,
+      webId,
+      authType: 'client_credentials',
+      secrets: {
+        clientId: cred.id,
+        clientSecret: cred.secret ?? '',
+      },
+    });
+
+    const data = { baseUrl, webId, configPath: getConfigPath() };
+    if (argv.json) {
+      writeJsonResult(data);
+      return;
+    }
+    console.log('Login successful. Credentials saved.');
+    console.log(`  webId: ${webId}`);
+    console.log(`  config: ${getConfigPath().replace('/config.json', '/')}`);
   },
 };
 
@@ -98,7 +163,7 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
       .option('password', { type: 'string', description: 'Account password (will prompt securely if not provided)' })
       .option('web-id', { type: 'string', description: 'WebID to bind credentials to' })
       .option('name', { type: 'string', description: 'Credential label' })
-      .option('output', { type: 'boolean', default: false, description: 'Print credentials to terminal instead of saving to ~/.xpod/' }),
+      .option('output', { type: 'boolean', default: false, description: 'Do not save credentials; print non-secret metadata only' }),
   handler: async (argv) => {
     const baseUrl = resolveUrl(argv.url);
 
@@ -139,29 +204,15 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
       process.exit(1);
     }
 
-    // Determine WebID: explicit flag > first pod's profile
-    let webId = argv['web-id'];
-    if (!webId) {
-      // Try to discover from account info
-      const accountRes = await fetch(`${baseUrl}.account/`, {
-        headers: {
-          Accept: 'application/json',
-          Authorization: `CSS-Account-Token ${token}`,
-        },
+    let webId: string;
+    try {
+      webId = await resolveExplicitWebId({
+        token,
+        baseUrl,
+        explicitWebId: argv['web-id'],
       });
-      if (accountRes.ok) {
-        const accountData = (await accountRes.json()) as { webIds?: Record<string, string> };
-        const webIds = accountData.webIds;
-        if (webIds && typeof webIds === 'object') {
-          const firstUrl = Object.keys(webIds)[0];
-          if (firstUrl) webId = firstUrl;
-        }
-      }
-    }
-
-    if (!webId) {
-      console.error('No WebID found. Specify --web-id explicitly.');
-      process.exit(1);
+    } catch (error) {
+      handleCliError(error, false);
     }
 
     const cred = await createClientCredentials(token, controls.clientCredentials, webId, argv.name);
@@ -169,11 +220,6 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
       console.error('Failed to create credentials.');
       process.exit(1);
     }
-
-    console.log('Credentials created:');
-    console.log(`  client_id:     ${cred.id}`);
-    console.log(`  client_secret: ${cred.secret}`);
-    console.log(`  webId:         ${webId}`);
 
     if (!argv.output) {
       saveCredentials({
@@ -188,7 +234,11 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
       console.log(`\nSaved to ${getConfigPath().replace('/config.json', '/')}`);
       console.log('\n✓ Setup complete! You can now use xpod commands without entering password.');
       console.log('  Example: xpod backup export');
+    } else {
+      console.log('Credentials created.');
     }
+    console.log(`  client_id: ${cred.id}`);
+    console.log(`  webId:     ${webId}`);
   },
 };
 
@@ -302,10 +352,56 @@ const revokeCommand: CommandModule<AuthArgs, RevokeArgs> = {
 const logoutCommand: CommandModule<AuthArgs, AuthArgs> = {
   command: 'logout',
   describe: 'Remove stored credentials from ~/.xpod/',
-  builder: (yargs) => yargs,
-  handler: async () => {
+  builder: (yargs) => yargs.option('json', { type: 'boolean', default: false, description: 'Output JSON envelope' }),
+  handler: async (argv) => {
     clearCredentials();
+    if (argv.json) {
+      writeJsonResult({ authenticated: false });
+      return;
+    }
     console.log('Credentials removed.');
+  },
+};
+
+const statusCommand: CommandModule<AuthArgs, AuthArgs> = {
+  command: 'status',
+  describe: 'Show stored authentication status',
+  builder: (yargs) => yargs.option('json', { type: 'boolean', default: false, description: 'Output JSON envelope' }),
+  handler: async (argv) => {
+    const status = getStoredAuthStatus(argv.url);
+    if (argv.json) {
+      writeJsonResult(status);
+      return;
+    }
+    if (!status.authenticated) {
+      console.log('Not authenticated. Run `xpod auth login`.');
+      return;
+    }
+    console.log('Authenticated.');
+    console.log(`  webId:   ${status.webId}`);
+    console.log(`  podRoot: ${status.podRoot}`);
+    console.log(`  server:  ${status.baseUrl}`);
+  },
+};
+
+const whoamiCommand: CommandModule<AuthArgs, AuthArgs> = {
+  command: 'whoami',
+  describe: 'Show acting WebID and Pod root',
+  builder: (yargs) => yargs.option('json', { type: 'boolean', default: false, description: 'Output JSON envelope' }),
+  handler: async (argv) => {
+    const status = getStoredAuthStatus(argv.url);
+    if (!status.authenticated) {
+      if (argv.json) {
+        handleCliError(new CliCommandError('auth_required', 'No credentials found. Run `xpod auth login` first.', 2), true);
+      }
+      console.log('Not authenticated. Run `xpod auth login`.');
+      return;
+    }
+    if (argv.json) {
+      writeJsonResult(status);
+      return;
+    }
+    console.log(status.webId);
   },
 };
 
@@ -320,9 +416,11 @@ export const authCommand: CommandModule<object, AuthArgs> = {
         description: 'Server base URL',
         default: process.env.CSS_BASE_URL || 'http://localhost:3000',
       })
+      .command(statusCommand)
       .command(loginCommand)
       .command(createCredentialsCommand)
       .command(logoutCommand)
+      .command(whoamiCommand)
       .command(listCommand)
       .command(revokeCommand)
       .demandCommand(1, 'Please specify an auth subcommand'),

@@ -1026,12 +1026,9 @@ export class MixDataAccessor implements DataAccessor {
     metadata: RepresentationMetadata,
   ): RepresentationMetadata {
     const localMetadata = new RepresentationMetadata(metadata);
-    localMetadata.removeQuads(localMetadata.quads(
-      null,
-      null,
-      null,
-      SOLID_META.terms.ResponseMetadata,
-    ));
+    const graphScopedQuads = localMetadata.quads()
+      .filter((quad) => quad.graph.termType !== 'DefaultGraph');
+    localMetadata.removeQuads(graphScopedQuads);
     localMetadata.contentType = this.localRdfContentType(identifier);
     return localMetadata;
   }

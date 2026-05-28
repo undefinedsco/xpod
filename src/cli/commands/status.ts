@@ -1,9 +1,11 @@
 import type { CommandModule } from 'yargs';
+import { CliCommandError, handleCliError, writeJsonResult } from '../lib/output';
 
 interface StatusArgs {
   port: number;
   host: string;
   json: boolean;
+  env?: string;
 }
 
 export const statusCommand: CommandModule<object, StatusArgs> = {
@@ -22,6 +24,11 @@ export const statusCommand: CommandModule<object, StatusArgs> = {
         description: 'Gateway host',
         default: 'localhost',
       })
+      .option('env', {
+        alias: 'e',
+        type: 'string',
+        description: 'Env file path for runtime context',
+      })
       .option('json', {
         type: 'boolean',
         description: 'Output as JSON',
@@ -33,8 +40,9 @@ export const statusCommand: CommandModule<object, StatusArgs> = {
     try {
       const res = await fetch(`${baseUrl}/service/status`);
       if (!res.ok) {
-        console.error(`Failed to get status: HTTP ${res.status}`);
-        process.exit(1);
+        throw new CliCommandError('server_status_failed', `Failed to get status: HTTP ${res.status}`, 1, {
+          status: res.status,
+        });
       }
 
       const statuses = (await res.json()) as Array<{
@@ -47,7 +55,16 @@ export const statusCommand: CommandModule<object, StatusArgs> = {
       }>;
 
       if (argv.json) {
-        console.log(JSON.stringify(statuses, null, 2));
+        const running = statuses.some((svc) => svc.status === 'running');
+        const ready = statuses.length > 0 && statuses.every((svc) => svc.status === 'running');
+        writeJsonResult({
+          schemaVersion: '1.0',
+          running,
+          ready,
+          baseUrl: `${baseUrl}/`,
+          port: argv.port,
+          services: statuses,
+        });
         return;
       }
 
@@ -73,9 +90,8 @@ export const statusCommand: CommandModule<object, StatusArgs> = {
         const restarts = svc.restartCount > 0 ? ` restarts=${svc.restartCount}` : '';
         console.log(`${icon} ${svc.name.padEnd(8)} ${svc.status}${pid}${uptime}${restarts}`);
       }
-    } catch {
-      console.error(`Cannot connect to xpod at ${baseUrl}. Is it running?`);
-      process.exit(1);
+    } catch (error) {
+      handleCliError(error instanceof Error ? error : new Error(`Cannot connect to xpod at ${baseUrl}. Is it running?`), argv.json);
     }
   },
 };

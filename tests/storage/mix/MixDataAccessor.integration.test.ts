@@ -108,6 +108,12 @@ describe('MixDataAccessor (local profile integration)', () => {
     await mkdir(path.dirname(jsonLink.filePath), { recursive: true });
     await accessor.writeDocument(jsonId, jsonStream, jsonMetadata);
 
+    const aliceChildren: string[] = [];
+    for await (const child of accessor.getChildren({ path: `${baseUrl}alice/` })) {
+      aliceChildren.push(child.identifier.value);
+    }
+    expect(aliceChildren).toContain(jsonId.path);
+
     // For unstructured files, metadata is stored in structuredAccessor with contentType
     // The MixDataAccessor should preserve the content type
     const jsonStoredMetadata = await accessor.getMetadata(jsonId);
@@ -122,6 +128,11 @@ describe('MixDataAccessor (local profile integration)', () => {
     await accessor.deleteResource(jsonId);
     expect(await fileExists(jsonLink.filePath)).toBe(false);
     await expect(accessor.getMetadata(jsonId)).rejects.toBeInstanceOf(NotFoundHttpError);
+    const aliceChildrenAfterDelete: string[] = [];
+    for await (const child of accessor.getChildren({ path: `${baseUrl}alice/` })) {
+      aliceChildrenAfterDelete.push(child.identifier.value);
+    }
+    expect(aliceChildrenAfterDelete).not.toContain(jsonId.path);
 
     for (const pathValue of containerPaths.slice().reverse()) {
       const containerId = { path: pathValue };
@@ -169,6 +180,30 @@ describe('MixDataAccessor (local profile integration)', () => {
 
     await accessor.deleteResource(resourceId);
     expect(await fileExists(rdfLink.filePath)).toBe(false);
+  });
+
+  it('does not persist graph-scoped parser metadata in local RDF mirror metadata', async () => {
+    const resourceId = { path: `${baseUrl}alice/profile/card.acr` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    metadata.addQuad(
+      namedNode('http://www.w3.org/ns/auth/acl#'),
+      namedNode('http://purl.org/vocab/vann/preferredNamespacePrefix'),
+      literal('acl'),
+      namedNode('urn:npm:solid:community-server:meta:ResponseMetadata'),
+    );
+
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#card`),
+        namedNode('http://www.w3.org/ns/solid/acp#resource'),
+        namedNode(`${baseUrl}alice/profile/card`),
+      ),
+    ])), metadata);
+
+    const metaLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, true);
+    expect(await fileExists(metaLink.filePath)).toBe(false);
   });
 
   it('refreshes the local RDF mirror after SPARQL updates', async () => {
