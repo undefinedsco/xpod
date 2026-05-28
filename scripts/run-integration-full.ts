@@ -12,7 +12,7 @@ const DEFAULT_STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
 const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
 const composeArgs = ['compose', '-p', COMPOSE_PROJECT, '-f', 'docker-compose.cluster.yml'];
 const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
-const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
+const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@127.0.0.1:5432/xpod';
 const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
@@ -100,6 +100,18 @@ async function shouldReuseExistingInfra(): Promise<boolean> {
   return postgresReady && redisReady && minioReady;
 }
 
+async function waitForInfraReady(maxRetries = 60, delayMs = 1000): Promise<void> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (await shouldReuseExistingInfra()) {
+      console.log('[full] postgres/redis/minio ready.');
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  throw new Error('[full] postgres/redis/minio did not become ready in time');
+}
+
 async function allocatePort(preferredPort: number, reserved: Set<number>, host = '127.0.0.1'): Promise<number> {
   let candidate = preferredPort;
   while (true) {
@@ -167,10 +179,10 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
   const runtimes: XpodRuntimeHandle[] = [];
   const commonCloudEnv = {
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
-    CSS_REDIS_CLIENT: 'localhost:6379',
+    CSS_REDIS_CLIENT: '127.0.0.1:6379',
     CSS_REDIS_USERNAME: '',
     CSS_REDIS_PASSWORD: '',
-    CSS_MINIO_ENDPOINT: 'http://localhost:9000',
+    CSS_MINIO_ENDPOINT: 'http://127.0.0.1:9000',
     CSS_MINIO_ACCESS_KEY: 'minioadmin',
     CSS_MINIO_SECRET_KEY: 'minioadmin',
     CSS_MINIO_BUCKET_NAME: 'xpod',
@@ -293,6 +305,7 @@ async function main(): Promise<void> {
   try {
     if (startedInfra) {
       await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
+      await waitForInfraReady();
     }
     runtimes.push(...await startFullRuntimes(ports));
     await waitForFullPorts(ports);

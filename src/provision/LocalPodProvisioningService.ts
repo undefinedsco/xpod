@@ -6,6 +6,7 @@ import type { Quad } from '@rdfjs/types';
 import { getLoggerFor } from 'global-logger-factory';
 import { quadToRow } from '../storage/quint/serialization';
 import { getSqliteRuntime, type SqliteDatabase } from '../storage/SqliteRuntime';
+import { buildModelTypeIndexEntries, modelPrivateTypeIndexUrl } from './model-type-index';
 
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const LDP = 'http://www.w3.org/ns/ldp#';
@@ -161,6 +162,7 @@ export class LocalPodProvisioningService {
   private async createPodFiles(podName: string, initialResources?: Record<string, string>): Promise<void> {
     const podPath = path.join(this.rootDir, podName);
     await fs.mkdir(path.join(podPath, 'profile'), { recursive: true });
+    await fs.mkdir(path.join(podPath, 'settings'), { recursive: true });
 
     if (!initialResources) {
       return;
@@ -205,12 +207,15 @@ export class LocalPodProvisioningService {
     const root = this.baseUrl;
     const profileUrl = iri(podUrl, 'profile/');
     const cardUrl = iri(podUrl, 'profile/card');
+    const settingsUrl = iri(podUrl, 'settings/');
+    const privateTypeIndexUrl = modelPrivateTypeIndexUrl(podUrl);
     const rootAcrUrl = iri(podUrl, '.acr');
     const cardAcrUrl = iri(podUrl, 'profile/card.acr');
     const rootGraph = namedNode(root);
     const podGraph = namedNode(podUrl);
     const profileGraph = namedNode(profileUrl);
     const cardGraph = namedNode(cardUrl);
+    const privateTypeIndexGraph = namedNode(privateTypeIndexUrl);
     const rootAcrGraph = namedNode(rootAcrUrl);
     const cardAcrGraph = namedNode(cardAcrUrl);
     const out: Quad[] = [];
@@ -244,14 +249,18 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(root), namedNode(`${LDP}contains`), namedNode(podUrl), rootGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(rootAcrUrl), podGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(profileUrl), podGraph));
+    out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(settingsUrl), podGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardUrl), profileGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardAcrUrl), profileGraph));
+    out.push(quad(namedNode(settingsUrl), namedNode(`${LDP}contains`), namedNode(privateTypeIndexUrl), namedNode(settingsUrl)));
 
     addContainerMeta(root);
     addContainerMeta(podUrl, true);
     addContainerMeta(profileUrl);
+    addContainerMeta(settingsUrl);
     addDocumentMeta(rootAcrUrl);
     addDocumentMeta(cardUrl);
+    addDocumentMeta(privateTypeIndexUrl);
     addDocumentMeta(cardAcrUrl);
 
     out.push(quad(namedNode(cardUrl), namedNode(`${RDF}type`), namedNode(`${FOAF}PersonalProfileDocument`), cardGraph));
@@ -259,11 +268,33 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(cardUrl), namedNode(`${FOAF}primaryTopic`), namedNode(webId), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${RDF}type`), namedNode(`${FOAF}Person`), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${SOLID}oidcIssuer`), namedNode(oidcIssuer), cardGraph));
+    out.push(quad(namedNode(webId), namedNode(`${SOLID}storage`), namedNode(podUrl), cardGraph));
+    out.push(quad(namedNode(webId), namedNode(`${SOLID}privateTypeIndex`), namedNode(privateTypeIndexUrl), cardGraph));
+
+    this.addPrivateTypeIndexQuads(out, privateTypeIndexGraph, privateTypeIndexUrl, podUrl);
 
     this.addRootAcrQuads(out, rootAcrGraph, rootAcrUrl, podUrl, webId);
     this.addPublicReadAcrQuads(out, cardAcrGraph, cardAcrUrl, cardUrl);
 
     return out;
+  }
+
+  private addPrivateTypeIndexQuads(out: Quad[], graph: ReturnType<typeof namedNode>, typeIndexUrl: string, podUrl: string): void {
+    out.push(
+      quad(namedNode(typeIndexUrl), namedNode(`${RDF}type`), namedNode(`${SOLID}TypeIndex`), graph),
+      quad(namedNode(typeIndexUrl), namedNode(`${RDF}type`), namedNode(`${SOLID}UnlistedDocument`), graph),
+      quad(namedNode(typeIndexUrl), namedNode(`${FOAF}name`), literal('Private Type Index'), graph),
+    );
+
+    for (const entry of buildModelTypeIndexEntries(podUrl)) {
+      const registration = namedNode(`${typeIndexUrl}#${entry.registrationId}`);
+      out.push(
+        quad(registration, namedNode(`${RDF}type`), namedNode(`${SOLID}TypeRegistration`), graph),
+        quad(registration, namedNode(`${SOLID}forClass`), namedNode(entry.rdfClass), graph),
+        quad(registration, namedNode(`${SOLID}instanceContainer`), namedNode(entry.instanceContainer), graph),
+        quad(registration, namedNode(`${FOAF}name`), literal(entry.name), graph),
+      );
+    }
   }
 
   private addRootAcrQuads(out: Quad[], graph: ReturnType<typeof namedNode>, acrUrl: string, podUrl: string, webId: string): void {

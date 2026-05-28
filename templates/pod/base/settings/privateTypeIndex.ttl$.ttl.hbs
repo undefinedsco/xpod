@@ -1,0 +1,15 @@
+@prefix foaf: <http://xmlns.com/foaf/0.1/>.
+@prefix solid: <http://www.w3.org/ns/solid/terms#>.
+
+<>
+    a solid:TypeIndex, solid:UnlistedDocument;
+    foaf:name "Private Type Index".
+
+{{#each xpodTypeIndexEntries}}
+<#{{registrationId}}>
+    a solid:TypeRegistration;
+    solid:forClass <{{rdfClass}}>;
+    solid:instanceContainer <{{instanceContainer}}>;
+    foaf:name "{{name}}".
+
+{{/each}}

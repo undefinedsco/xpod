@@ -10,6 +10,15 @@ import {
 import { requireAuthContext, type CliAuthContext } from '../lib/auth-context';
 import { CliCommandError, handleCliError, writeJsonItems, writeJsonResult } from '../lib/output';
 import {
+  type ModelTypeIndexEntry,
+  buildModelTypeIndexInsertData,
+  buildModelTypeIndexJsonLdDocument,
+  buildProfileTypeIndexInsertData,
+  modelPrivateTypeIndexUrl,
+  renderModelTypeIndexTurtle,
+  resolveModelTypeIndexEntries,
+} from '../../provision/model-type-index';
+import {
   ensureOk,
   fetchResource,
   readBodyFile,
@@ -32,6 +41,13 @@ interface ObjImportArgs extends ObjArgs {
 interface ObjUpsertArgs extends ObjArgs {
   schema: string;
   from: string;
+  'dry-run'?: boolean;
+  commit?: boolean;
+}
+
+interface ObjRegisterArgs extends ObjArgs {
+  'pod-root'?: string;
+  'type-index'?: string;
   'dry-run'?: boolean;
   commit?: boolean;
 }
@@ -258,6 +274,31 @@ function sparqlIri(value: string): string {
     throw new CliCommandError('invalid_uri', `Expected an absolute URI: ${value}`, 2);
   }
   return `<${value.replace(/[<>]/gu, '')}>`;
+}
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith('/') ? value : `${value}/`;
+}
+
+function resolvePodRootOption(context: CliAuthContext, podRoot?: string): string {
+  if (!podRoot) {
+    return ensureTrailingSlash(context.podRoot);
+  }
+  const resolved = /^https?:\/\//iu.test(podRoot)
+    ? new URL(podRoot).toString()
+    : resolveResourceTarget(context, podRoot).resourceUrl;
+  return ensureTrailingSlash(resolved);
+}
+
+function containerUrlForResource(resourceUrl: string): string {
+  const url = new URL(resourceUrl);
+  const path = url.pathname.endsWith('/')
+    ? url.pathname
+    : url.pathname.slice(0, url.pathname.lastIndexOf('/') + 1);
+  url.pathname = path || '/';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
 }
 
 function sparqlValue(value: unknown, field?: PodModelFieldDescriptor): string {
@@ -958,6 +999,136 @@ async function executeRows(input: {
   return items;
 }
 
+async function ensureContainerResource(context: CliAuthContext, containerUrl: string): Promise<Record<string, unknown>> {
+  const target = resolveResourceTarget(context, ensureTrailingSlash(containerUrl));
+  const head = await fetchResource(context, target, { method: 'HEAD' });
+  if (head.ok) {
+    return {
+      action: 'already_exists',
+      ...responseData(target, head),
+    };
+  }
+  if (head.status !== 404) {
+    ensureOk(head, 'container_check_failed', `Failed to check container ${containerUrl}`);
+  }
+
+  const created = await fetchResource(context, target, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'text/turtle',
+      'Link': '<http://www.w3.org/ns/ldp#BasicContainer>; rel="type"',
+    },
+    body: '',
+  });
+  ensureOk(created, 'container_create_failed', `Failed to create container ${containerUrl}`);
+  return {
+    action: 'created',
+    ...responseData(target, created),
+  };
+}
+
+async function writeOrPatchTypeIndex(input: {
+  context: CliAuthContext;
+  typeIndexUrl: string;
+  entries: ModelTypeIndexEntry[];
+}): Promise<Record<string, unknown>> {
+  const target = resolveResourceTarget(input.context, input.typeIndexUrl);
+  const head = await fetchResource(input.context, target, { method: 'HEAD' });
+  if (head.ok) {
+    const patch = await fetchResource(input.context, target, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/sparql-update' },
+      body: buildModelTypeIndexInsertData(input.typeIndexUrl, input.entries),
+    });
+    ensureOk(patch, 'type_index_patch_failed', `Failed to patch TypeIndex ${input.typeIndexUrl}`);
+    return {
+      action: 'patched',
+      ...responseData(target, patch),
+    };
+  }
+  if (head.status !== 404) {
+    ensureOk(head, 'type_index_check_failed', `Failed to check TypeIndex ${input.typeIndexUrl}`);
+  }
+
+  const created = await fetchResource(input.context, target, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/turtle' },
+    body: renderModelTypeIndexTurtle(input.entries),
+  });
+  ensureOk(created, 'type_index_create_failed', `Failed to create TypeIndex ${input.typeIndexUrl}`);
+  return {
+    action: 'created',
+    ...responseData(target, created),
+  };
+}
+
+async function patchProfileTypeIndex(input: {
+  context: CliAuthContext;
+  podRoot: string;
+  typeIndexUrl: string;
+}): Promise<Record<string, unknown>> {
+  const target = resolveResourceTarget(input.context, documentResourceInput(input.context.webId));
+  const response = await fetchResource(input.context, target, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/sparql-update' },
+    body: buildProfileTypeIndexInsertData({
+      webId: input.context.webId,
+      podRoot: input.podRoot,
+      privateTypeIndex: input.typeIndexUrl,
+    }),
+  });
+  ensureOk(response, 'profile_patch_failed', `Failed to link TypeIndex from profile ${input.context.webId}`);
+  return {
+    action: 'patched',
+    ...responseData(target, response),
+  };
+}
+
+async function executeRegisterCommand(argv: ObjRegisterArgs): Promise<Record<string, unknown>> {
+  const context = await requireAuthContext(argv);
+  const podRoot = resolvePodRootOption(context, argv['pod-root']);
+  const privateTypeIndex = argv['type-index']
+    ? resolveResourceTarget({ ...context, podRoot, baseIri: podRoot }, argv['type-index']).resourceUrl
+    : modelPrivateTypeIndexUrl(podRoot);
+  const registrationResolution = resolveModelTypeIndexEntries(podRoot);
+  const entries = registrationResolution.entries;
+  const typeIndexContainer = containerUrlForResource(privateTypeIndex);
+
+  const plan = {
+    webId: context.webId,
+    podRoot,
+    privateTypeIndex,
+    registrationSource: registrationResolution.source,
+    registrations: entries,
+    typeIndexJsonLd: buildModelTypeIndexJsonLdDocument(privateTypeIndex, entries),
+    operations: [
+      { method: 'PUT', resourceUrl: typeIndexContainer, whenMissing: true },
+      { method: 'PUT_OR_PATCH', resourceUrl: privateTypeIndex },
+      { method: 'PATCH', resourceUrl: documentResourceInput(context.webId) },
+    ],
+  };
+
+  if (argv['dry-run']) {
+    return { plan };
+  }
+
+  const operations = [
+    await ensureContainerResource(context, typeIndexContainer),
+    await writeOrPatchTypeIndex({ context, typeIndexUrl: privateTypeIndex, entries }),
+    await patchProfileTypeIndex({ context, podRoot, typeIndexUrl: privateTypeIndex }),
+  ];
+
+  return {
+    webId: context.webId,
+    podRoot,
+    privateTypeIndex,
+    registrationSource: registrationResolution.source,
+    registrationCount: entries.length,
+    registrations: entries,
+    operations,
+  };
+}
+
 function printItems(items: ItemResult[]): void {
   for (const item of items) {
     console.log(`${item.index}\t${item.ok ? item.code : `ERROR ${item.code}`}\t${String(item.subject ?? item.resourceUrl ?? item.message ?? '')}`);
@@ -1022,6 +1193,34 @@ const upsertCommand: CommandModule<object, ObjUpsertArgs> = {
       }
       printItems(items);
       if (!items.every((item) => item.ok)) process.exit(1);
+    } catch (error) {
+      handleCliError(error, argv.json);
+    }
+  },
+};
+
+const registerCommand: CommandModule<object, ObjRegisterArgs> = {
+  command: 'register',
+  describe: 'Register @undefineds.co/models resources in the private TypeIndex',
+  builder: (yargs) =>
+    objOptions<ObjRegisterArgs>(yargs)
+      .option('pod-root', { type: 'string', description: 'Pod storage root to register. Defaults to the authenticated WebID-derived Pod root.' })
+      .option('type-index', { type: 'string', description: 'Private TypeIndex URL/path. Defaults to settings/privateTypeIndex.ttl under the Pod root.' })
+      .option('dry-run', { type: 'boolean', description: 'Validate and print the registration plan without writing' })
+      .option('commit', { type: 'boolean', description: 'Create/patch the TypeIndex and link it from the profile' })
+      .check(mutationModeCheck),
+  handler: async (argv) => {
+    try {
+      const data = await executeRegisterCommand(argv);
+      if (argv.json) {
+        writeJsonResult(data, argv['dry-run'] ? 'plan_ready' : 'registered');
+        return;
+      }
+      if (argv['dry-run']) {
+        console.log(JSON.stringify(data.plan, null, 2));
+        return;
+      }
+      console.log(`REGISTER ${String(data.registrationCount)} model types -> ${String(data.privateTypeIndex)}`);
     } catch (error) {
       handleCliError(error, argv.json);
     }
@@ -1264,6 +1463,7 @@ export const objCommand: CommandModule<object, ObjArgs> = {
       .command(getCommand)
       .command(listCommand)
       .command(upsertCommand)
+      .command(registerCommand)
       .command(patchCommand)
       .command(linkCommand)
       .command(deleteCommand)

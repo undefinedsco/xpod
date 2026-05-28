@@ -150,6 +150,7 @@
           "name": "emailConfigAuthPass",
           "options": {
             "type": "string",
+            "default": "",
             "hidden": true
           }
         },

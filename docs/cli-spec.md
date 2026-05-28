@@ -281,6 +281,13 @@ as an independent schema definition.
 schemas/resources. It may include CLI or AI hints, but those hints must not
 duplicate or override schema facts.
 
+The durable registration/catalog facts should be data, not xpod-owned TypeScript
+schema logic. JSON-LD is the preferred exchange form for model interop catalogs
+because it preserves RDF terms directly. xpod may serialize the resulting Pod
+TypeIndex as Turtle, JSON-LD, or SPARQL Update depending on the target resource,
+but every `solid:forClass`, `solid:instanceContainer`, storage rule, and field
+fact must come from the `@undefineds.co/models` catalog.
+
 Allowed catalog content:
 
 - `classUri`
@@ -291,6 +298,8 @@ Allowed catalog content:
 - `secret`
 - `array`
 - `storage`
+- `typeIndexRegistrations`
+- `instanceContainerPath`
 - `idDefault`
 - `validation`
 - `examples`
@@ -317,6 +326,7 @@ xpod obj describe <class-or-kind>
 xpod obj validate --class <uri|kind> --input <json|file|->
 xpod obj import --class <uri|kind> --input <json|jsonl|file|->
 xpod obj export --class <uri|kind> [--where <json>] [--format json|jsonl] [--out <file>]
+xpod obj register [--pod-root <url>] [--dry-run|--commit]
 ```
 
 Rules:
@@ -329,6 +339,13 @@ Rules:
   order.
 - `obj export` exports objects by model class or resource kind. Filtering must
   use model fields or RDF predicates known to `@undefineds.co/models`.
+- `obj register` is an idempotent repair/bootstrap command for existing Pods.
+  It creates or patches the private TypeIndex from every model registration
+  exported by `@undefineds.co/models` and links it from the WebID profile. It
+  must not make profile registration the only discovery path for Xpod model
+  data. The normal source is the `@undefineds.co/models/interop` JSON-LD model
+  TypeIndex catalog; deriving registrations from `solidResources` is only a
+  compatibility path for older model package versions.
 
 ### Read Discovery
 
