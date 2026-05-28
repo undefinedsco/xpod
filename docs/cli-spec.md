@@ -16,7 +16,8 @@ The CLI is split by authority and semantic layer:
 xpod get <path-or-url>
 xpod put <path-or-url> --from <file> [--content-type <type>] [--if-match <etag>]
 xpod patch <path-or-url> --from <file> [--content-type <type>] [--if-match <etag>]
-xpod delete <path-or-url> [--if-match <etag>]
+xpod mkdir <container-path> [--parents]
+xpod delete <path-or-url> [--if-match <etag>] [--recursive]
 xpod head <path-or-url>
 xpod list <container-path> [--depth 1]
 
@@ -30,12 +31,13 @@ xpod obj ...
 xpod secret ...
 ```
 
-Top-level `get`, `put`, `patch`, `delete`, `head`, and `list` are raw Pod
-resource operations. They are curl-like in spirit, but xpod does not provide a
-`curl` compatibility command or accept arbitrary curl flags. These commands must
-not parse business models, infer descriptor-backed paths, or apply application
-semantics. Model-aware operations belong under `obj`; graph-level operations
-belong under `rdf`.
+Top-level `list`, `get`, `put`, `mkdir`, `delete`, `head`, and `patch` are raw
+Pod resource operations. They are filesystem-like for stable resource paths and
+HTTP-aware for content negotiation, etags, and status reporting, but xpod does
+not provide a `curl` compatibility command or accept arbitrary curl flags. These
+commands must not parse business models, infer descriptor-backed paths, or apply
+application semantics. Model-aware operations belong under `obj`; graph-level
+operations belong under `rdf`.
 
 `run` is not a CLI concept. Foreground startup, if needed, is expressed as:
 
@@ -191,7 +193,8 @@ Required commands:
 xpod get <path-or-url> [--accept <type>] [--out <file>] [--json]
 xpod put <path-or-url> --from <local-file> [--content-type <type>] [--if-match <etag>] [--json]
 xpod patch <path-or-url> --from <local-file> [--content-type <type>] [--if-match <etag>] [--json]
-xpod delete <path-or-url> [--if-match <etag>] [--json]
+xpod mkdir <container-path> [--parents] [--json]
+xpod delete <path-or-url> [--if-match <etag>] [--recursive] [--json]
 xpod head <path-or-url> [--json]
 xpod list <container-path> [--depth 1] [--json]
 ```
@@ -203,10 +206,23 @@ Rules:
 - Relative paths resolve against the selected Pod root.
 - Absolute URLs are allowed, but output must still report effective WebID, Pod
   root, base IRI, and resource URL when `--json` is used.
+- Container paths are canonicalized to Solid container resources. A user may
+  pass `notes` or `notes/`, but JSON output must report the effective container
+  URL with a trailing slash.
 - `put`, `patch`, and `delete` should support stale-write protection with
   `--if-match` whenever the target resource exposes an etag.
 - `list` is a container resource listing. It may parse LDP containment metadata
   but must not interpret business classes.
+- `mkdir` creates an LDP container, not an application folder object.
+  `--parents` may create missing ancestor containers and should report every
+  created or already-existing container in JSON output.
+- `delete` removes one resource by default. Deleting a non-empty container
+  requires `--recursive`; without it, the command must fail with a
+  machine-readable code instead of silently deleting contained resources.
+- File-system-style aliases may be provided for human ergonomics, but the
+  canonical script and agent surface remains the explicit commands above:
+  `ls -> list`, `rm -> delete`, `rmdir -> delete` for empty containers, and
+  `stat -> head`.
 
 ## RDF
 

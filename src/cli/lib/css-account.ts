@@ -29,13 +29,42 @@ function resolveBaseUrl(url?: string): string {
   return raw.endsWith('/') ? raw : `${raw}/`;
 }
 
+function accountTokenHeaders(token: string): Record<string, string> {
+  return {
+    Accept: 'application/json',
+    Authorization: `CSS-Account-Token ${token}`,
+  };
+}
+
+async function fetchWebIdLinks(token: string, webIdUrl?: string): Promise<Record<string, string>> {
+  if (!webIdUrl) {
+    return {};
+  }
+
+  try {
+    const res = await fetch(webIdUrl, {
+      headers: accountTokenHeaders(token),
+    });
+    if (!res.ok) return {};
+    const data = (await res.json()) as {
+      webIds?: Record<string, string>;
+      webIdLinks?: Record<string, string>;
+    };
+    return data.webIds ?? data.webIdLinks ?? {};
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Check if the CSS server is reachable.
  */
 export async function checkServer(baseUrl?: string): Promise<boolean> {
+  const base = resolveBaseUrl(baseUrl);
   try {
-    const res = await fetch(`${resolveBaseUrl(baseUrl)}.account/`, {
+    const res = await fetch(`${base}.well-known/openid-configuration`, {
       headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5_000),
     });
     return res.ok;
   } catch {
@@ -131,13 +160,15 @@ export async function getAccountData(
       webIds?: Record<string, string>;
       clientCredentials?: Record<string, string>;
     };
+    const webIds = data.webIds ?? await fetchWebIdLinks(token, data.controls?.account?.webId);
     return {
       controls: {
         pod: data.controls?.account?.pod,
         clientCredentials: data.controls?.account?.clientCredentials,
+        webId: data.controls?.account?.webId ? [ data.controls.account.webId ] : undefined,
       },
       pods: data.pods ?? {},
-      webIds: data.webIds ?? {},
+      webIds,
       clientCredentials: data.clientCredentials ?? {},
     };
   } catch {

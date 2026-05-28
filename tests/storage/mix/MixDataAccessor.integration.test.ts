@@ -108,6 +108,12 @@ describe('MixDataAccessor (local profile integration)', () => {
     await mkdir(path.dirname(jsonLink.filePath), { recursive: true });
     await accessor.writeDocument(jsonId, jsonStream, jsonMetadata);
 
+    const aliceChildren: string[] = [];
+    for await (const child of accessor.getChildren({ path: `${baseUrl}alice/` })) {
+      aliceChildren.push(child.identifier.value);
+    }
+    expect(aliceChildren).toContain(jsonId.path);
+
     // For unstructured files, metadata is stored in structuredAccessor with contentType
     // The MixDataAccessor should preserve the content type
     const jsonStoredMetadata = await accessor.getMetadata(jsonId);
@@ -122,6 +128,11 @@ describe('MixDataAccessor (local profile integration)', () => {
     await accessor.deleteResource(jsonId);
     expect(await fileExists(jsonLink.filePath)).toBe(false);
     await expect(accessor.getMetadata(jsonId)).rejects.toBeInstanceOf(NotFoundHttpError);
+    const aliceChildrenAfterDelete: string[] = [];
+    for await (const child of accessor.getChildren({ path: `${baseUrl}alice/` })) {
+      aliceChildrenAfterDelete.push(child.identifier.value);
+    }
+    expect(aliceChildrenAfterDelete).not.toContain(jsonId.path);
 
     for (const pathValue of containerPaths.slice().reverse()) {
       const containerId = { path: pathValue };
