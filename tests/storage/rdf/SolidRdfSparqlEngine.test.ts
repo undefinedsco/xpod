@@ -5060,6 +5060,72 @@ describe('SolidRdfSparqlEngine', () => {
     ]));
   });
 
+  it('applies graph-variable update templates constrained by VALUES rows', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const targetGraph = 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl';
+    const namedGraph = 'https://pod.example/alice/.data/chat/default/2026/05/19/messages.ttl';
+    const msg1 = `${targetGraph}#msg_1`;
+    const msg2 = `${namedGraph}#msg_2`;
+    await engine.queryVoid(`
+      INSERT DATA {
+        GRAPH <${namedGraph}> {
+          <${msg2}> <${CONTENT}> "values graph before" .
+        }
+      }
+    `, BASE);
+
+    await engine.queryVoid(`
+      DELETE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH ?g {
+          ?message <${CONTENT}> "values graph rewritten" .
+        }
+      }
+      WHERE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+        VALUES (?g ?message) {
+          (<${targetGraph}> <${msg1}>)
+          (<${namedGraph}> <${msg2}>)
+        }
+      }
+    `, BASE);
+    const updateMetric = engine.getMetrics().lastPrimary;
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${targetGraph}> {
+          <${msg1}> <${CONTENT}> "values graph rewritten" .
+        }
+        GRAPH <${namedGraph}> {
+          <${msg2}> <${CONTENT}> "values graph rewritten" .
+        }
+      }
+    `, BASE)).resolves.toBe(true);
+
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+    expect(updateMetric?.plan).toEqual(expect.arrayContaining([
+      'UpdateDelta',
+      'delete:2',
+      'insert:2',
+    ]));
+  });
+
   it('executes nested OPTIONAL groups on the embedded primary path', async () => {
     const onFallback = vi.fn();
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');

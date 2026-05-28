@@ -98,6 +98,7 @@ interface RdfUpdateTemplateOptions {
 
 interface RdfQueryGraphScope {
   patterns: RdfQueryPattern[];
+  values?: RdfValuesBindingSource[];
   filters?: RdfQueryFilter[];
   optional?: RdfLocalQuery['optional'];
   unions?: RdfLocalQuery['unions'];
@@ -629,6 +630,9 @@ export class RdfSparqlAdapter {
     graphVariables: Set<string>,
     constrainedVariables: Set<string>,
   ): void {
+    this.collectFiniteGraphValueVariables(query.values ?? [], graphVariables, constrainedVariables, (value) => (
+      this.isNamedNodeFilterValue(value)
+    ));
     for (const filter of query.filters ?? []) {
       if (!graphVariables.has(filter.variable)) {
         continue;
@@ -740,6 +744,9 @@ export class RdfSparqlAdapter {
     unboundedVariables: Set<string>,
   ): void {
     const finiteVariables = new Set(inheritedFiniteVariables);
+    this.collectFiniteGraphValueVariables(query.values ?? [], undefined, finiteVariables, (value) => (
+      this.isBasePathNamedNodeFilterValue(value, basePath)
+    ));
     this.collectFiniteGraphFilterVariablesFromFilters(query.filters ?? [], finiteVariables, basePath);
 
     for (const pattern of query.patterns) {
@@ -787,6 +794,27 @@ export class RdfSparqlAdapter {
 
   private isBasePathNamedNodeFilterValue(value: unknown, basePath: string): boolean {
     return this.isNamedNodeFilterValue(value) && (value as Term).value.startsWith(basePath);
+  }
+
+  private collectFiniteGraphValueVariables(
+    sources: readonly RdfValuesBindingSource[],
+    graphVariables: ReadonlySet<string> | undefined,
+    finiteVariables: Set<string>,
+    isSafeValue: (value: unknown) => boolean,
+  ): void {
+    for (const source of sources) {
+      if (source.rows.length === 0) {
+        continue;
+      }
+      for (const variable of source.variables) {
+        if (graphVariables && !graphVariables.has(variable)) {
+          continue;
+        }
+        if (source.rows.every((row) => isSafeValue(row[variable]))) {
+          finiteVariables.add(variable);
+        }
+      }
+    }
   }
 
   private compileUpdateGraphQuads(

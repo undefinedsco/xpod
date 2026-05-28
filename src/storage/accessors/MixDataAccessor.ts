@@ -46,6 +46,7 @@ import type {
   RdfQueryPattern,
   RdfQueryTermPattern,
   RdfSourceInput,
+  RdfValuesBindingSource,
 } from '../rdf/types';
 import { metadataRequestContext } from '../MetadataRequestContext';
 
@@ -562,6 +563,7 @@ export class MixDataAccessor implements DataAccessor {
   private collectQueryGraphTerms(
     query: RdfLocalQuery | {
       patterns: RdfQueryPattern[];
+      values?: RdfValuesBindingSource[];
       optional?: RdfLocalQuery['optional'];
       unions?: RdfLocalQuery['unions'];
       minus?: RdfLocalQuery['minus'];
@@ -597,6 +599,7 @@ export class MixDataAccessor implements DataAccessor {
 
   private collectGraphVariableFilterTerms(
     query: RdfLocalQuery | {
+      values?: RdfValuesBindingSource[];
       filters?: RdfLocalQuery['filters'];
       optional?: RdfLocalQuery['optional'];
       unions?: RdfLocalQuery['unions'];
@@ -619,6 +622,7 @@ export class MixDataAccessor implements DataAccessor {
         }
       }
     }
+    this.collectGraphVariableValueTerms(query.values ?? [], graphVariables, graphTerms);
     for (const optional of query.optional ?? []) {
       if (!Array.isArray(optional)) {
         this.collectGraphVariableFilterTerms(optional, graphVariables, graphTerms);
@@ -639,6 +643,7 @@ export class MixDataAccessor implements DataAccessor {
 
   private collectGraphVariableFilterIris(
     query: RdfLocalQuery | {
+      values?: RdfValuesBindingSource[];
       filters?: RdfLocalQuery['filters'];
       optional?: RdfLocalQuery['optional'];
       unions?: RdfLocalQuery['unions'];
@@ -663,6 +668,7 @@ export class MixDataAccessor implements DataAccessor {
         }
       }
     }
+    this.collectGraphVariableValueIris(query.values ?? [], variable, values);
     for (const optional of query.optional ?? []) {
       if (!Array.isArray(optional)) {
         this.collectGraphVariableFilterIris(optional, variable, values);
@@ -678,6 +684,44 @@ export class MixDataAccessor implements DataAccessor {
     }
     for (const exists of query.exists ?? []) {
       this.collectGraphVariableFilterIris(exists, variable, values);
+    }
+  }
+
+  private collectGraphVariableValueTerms(
+    sources: readonly RdfValuesBindingSource[],
+    graphVariables: Set<string>,
+    graphTerms: RdfQueryTermPattern[],
+  ): void {
+    for (const source of sources) {
+      for (const variable of source.variables) {
+        if (!graphVariables.has(variable)) {
+          continue;
+        }
+        for (const row of source.rows) {
+          const value = row[variable];
+          if (value) {
+            graphTerms.push(value);
+          }
+        }
+      }
+    }
+  }
+
+  private collectGraphVariableValueIris(
+    sources: readonly RdfValuesBindingSource[],
+    variable: string,
+    values: Set<string>,
+  ): void {
+    for (const source of sources) {
+      if (!source.variables.includes(variable)) {
+        continue;
+      }
+      for (const row of source.rows) {
+        const value = row[variable];
+        if (value) {
+          this.addGraphFilterValueIri(value, values);
+        }
+      }
     }
   }
 
