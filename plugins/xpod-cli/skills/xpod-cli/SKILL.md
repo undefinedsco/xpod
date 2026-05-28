@@ -38,6 +38,10 @@ or agent-facing workflows that depend on the CLI.
   validation, writable fields, secret markers, and filterable fields to
   `@undefineds.co/models`. If an explicit base-relative `id` is present, treat
   it as exact.
+- `obj list`, `obj get`, and `obj export` must discover readable resources
+  through the model catalog/resource API first. For Data Interop, ShapeTree, or
+  TypeRegistration-backed models, use that registration path; return
+  `storage_unresolved` instead of falling back to a full-Pod RDF class scan.
 - Use `xpod secret ...` only for secret-safe plans, writes, metadata, and
   revocation. Never print secret values by default.
 

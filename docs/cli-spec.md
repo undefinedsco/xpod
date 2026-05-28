@@ -330,6 +330,23 @@ Rules:
 - `obj export` exports objects by model class or resource kind. Filtering must
   use model fields or RDF predicates known to `@undefineds.co/models`.
 
+### Read Discovery
+
+`xpod obj list`, `obj get`, and `obj export` must resolve readable data
+locations through the model catalog/resource API before reading object data.
+When a model declares Solid Data Interop, ShapeTree, TypeRegistration, or other
+registration-backed storage, xpod must use that discovery path and read only
+the resolved locations.
+
+The CLI may issue SPARQL, LDP, or raw resource reads as the final transport, but
+the set of candidate resources must come from `@undefineds.co/models` and its
+underlying discovery/storage rules. A full-Pod SPARQL scan by RDF class is not a
+valid fallback unless the model catalog explicitly declares that discovery mode.
+
+If discovery requires a registration and no matching registration can be found,
+return `storage_unresolved`. If the requested model is not in the catalog,
+return `schema_unknown`.
+
 ### Storage Resolution
 
 Storage resolution is delegated to `@undefineds.co/models`:
@@ -342,6 +359,11 @@ Storage resolution is delegated to `@undefineds.co/models`:
 
 xpod must not derive paths from class names, resource kinds, or timestamps
 unless that logic comes from the model package.
+
+Compatibility implementations that read or write by PodModelDescriptor fields
+without resolving the model's current discovery/storage contract are acceptable
+only for models whose compatibility catalog explicitly declares that descriptor
+mode. They are not compliant for Data Interop-backed resources.
 
 ### Object Output Contract
 
