@@ -31,8 +31,9 @@ or agent-facing workflows that depend on the CLI.
 - Top-level `xpod config` must not mean Pod, AI, or model configuration. If it
   exists temporarily, it may only alias `xpod server config`.
 - Use `xpod rdf ...` for graph/resource/subject/triple operations.
-- Use `xpod obj ...` for descriptor-backed object transport, delegating model
-  semantics to `@undefineds.co/models`.
+- Use `xpod obj ...` for model-backed object transport. Its catalog must be
+  exported or derived from `@undefineds.co/models`; xpod must not maintain a
+  product descriptor table or invent fallback schemas.
 - Use `xpod secret ...` only for secret-safe plans, writes, metadata, and
   revocation. Never print secret values by default.
 
@@ -53,8 +54,9 @@ or agent-facing workflows that depend on the CLI.
 - Register command modules in `src/cli/index.ts` and keep root help from
   swallowing subcommand help.
 - Keep raw resource helpers separate from RDF/model/secret helpers.
-- Validate descriptor-backed object work through `@undefineds.co/models`
-  descriptors; report `schema_unknown` instead of inventing fallback schemas.
+- Validate model-backed object work through `@undefineds.co/models` catalog or
+  resource APIs; report `schema_unknown` or `storage_unresolved` instead of
+  deriving paths or schemas inside xpod.
 - Use `drizzle-solid` or shared model APIs for business resources when code is
   in-process. Keep xpod CLI as the external human/script/agent tool surface.
 - Update tests with the command-surface change. Existing AI-specific

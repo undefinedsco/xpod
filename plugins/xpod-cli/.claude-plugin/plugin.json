@@ -1,6 +1,6 @@
 {
   "name": "xpod-cli",
-  "version": "0.3.18",
+  "version": "0.3.19",
   "description": "Spec-aligned Xpod CLI guidance for Solid Pod resource operations, server administration, auth, and model-boundary reviews.",
   "author": {
     "name": "Undefineds",
