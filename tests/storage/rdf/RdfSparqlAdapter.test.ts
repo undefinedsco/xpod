@@ -3023,6 +3023,65 @@ describe('RdfSparqlAdapter', () => {
     });
   });
 
+  it('compiles finite GRAPH variable update templates', () => {
+    const namedGraphA = `${BASE}.data/chat/default/a.ttl`;
+    const namedGraphB = `${BASE}.data/chat/default/b.ttl`;
+    const delta = adapter.compileUpdateDelta(`
+      DELETE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH ?g {
+          ?message <${CONTENT}> "rewritten by graph var" .
+        }
+      }
+      USING NAMED <${namedGraphA}>
+      USING NAMED <${namedGraphB}>
+      WHERE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+    `, BASE);
+
+    const operation = delta.operations[0];
+    expect(operation.type).toBe('insertDeleteWhere');
+    if (operation.type !== 'insertDeleteWhere') {
+      throw new Error(`Unexpected operation type: ${operation.type}`);
+    }
+    expect(operation.query.filters).toEqual([
+      {
+        variable: 'g',
+        operator: '$in',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: namedGraphA,
+          }),
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: namedGraphB,
+          }),
+        ],
+      },
+    ]);
+    expect(operation.deletes[0]).toMatchObject({
+      graph: { variable: 'g' },
+      subject: { variable: 'message' },
+      object: { variable: 'old' },
+    });
+    expect(operation.inserts[0]).toMatchObject({
+      graph: { variable: 'g' },
+      subject: { variable: 'message' },
+      object: expect.objectContaining({
+        termType: 'Literal',
+        value: 'rewritten by graph var',
+      }),
+    });
+  });
+
   it('rejects update shapes that cannot be safely applied as embedded deltas', () => {
     expect(() => adapter.compileUpdateDelta(`
       INSERT DATA {

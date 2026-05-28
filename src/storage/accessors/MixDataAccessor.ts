@@ -474,16 +474,22 @@ export class MixDataAccessor implements DataAccessor {
   ): string[] {
     const graphIris = new Set<string>();
     for (const operation of operations) {
-      const graphTerms = operation.type === 'deleteWhere'
-        ? operation.template.map((item) => item.graph)
-        : operation.type === 'insertDeleteWhere'
-        ? [
-            ...operation.deletes.map((item) => item.graph),
-            ...operation.inserts.map((item) => item.graph),
-          ]
-        : operation.type === 'insertWhere'
-        ? operation.inserts.map((item) => item.graph)
-        : operation.quads.map((quad) => quad.graph);
+      if (operation.type === 'deleteWhere') {
+        this.addWritableTemplateGraphIris(operation.template.map((item) => item.graph), operation.query, graphIris);
+        continue;
+      }
+      if (operation.type === 'insertDeleteWhere') {
+        this.addWritableTemplateGraphIris([
+          ...operation.deletes.map((item) => item.graph),
+          ...operation.inserts.map((item) => item.graph),
+        ], operation.query, graphIris);
+        continue;
+      }
+      if (operation.type === 'insertWhere') {
+        this.addWritableTemplateGraphIris(operation.inserts.map((item) => item.graph), operation.query, graphIris);
+        continue;
+      }
+      const graphTerms = operation.quads.map((quad) => quad.graph);
       for (const graph of graphTerms) {
         this.addWritableNamedGraphIri(graph, graphIris);
       }
@@ -492,6 +498,35 @@ export class MixDataAccessor implements DataAccessor {
       throw new UnsupportedSparqlQueryError('Embedded local RDF update requires explicit local RDF graph write targets');
     }
     return [...graphIris];
+  }
+
+  private addWritableTemplateGraphIris(
+    graphs: RdfQueryTermPattern[],
+    query: RdfLocalQuery,
+    graphIris: Set<string>,
+  ): void {
+    for (const graph of graphs) {
+      if (this.isQueryVariable(graph)) {
+        this.addWritableGraphVariableIris(query, graph.variable, graphIris);
+        continue;
+      }
+      this.addWritableNamedGraphIri(graph, graphIris);
+    }
+  }
+
+  private addWritableGraphVariableIris(
+    query: RdfLocalQuery,
+    variable: string,
+    graphIris: Set<string>,
+  ): void {
+    const values = new Set<string>();
+    this.collectGraphVariableFilterIris(query, variable, values);
+    if (values.size === 0) {
+      throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports finite GRAPH variable write targets');
+    }
+    for (const value of values) {
+      this.addWritableNamedGraphIri(DataFactory.namedNode(value) as unknown as Term, graphIris);
+    }
   }
 
   private localRdfWriteGraphIri(graph: Term, writableGraphs: Set<string>): string {
@@ -600,6 +635,57 @@ export class MixDataAccessor implements DataAccessor {
     for (const exists of query.exists ?? []) {
       this.collectGraphVariableFilterTerms(exists, graphVariables, graphTerms);
     }
+  }
+
+  private collectGraphVariableFilterIris(
+    query: RdfLocalQuery | {
+      filters?: RdfLocalQuery['filters'];
+      optional?: RdfLocalQuery['optional'];
+      unions?: RdfLocalQuery['unions'];
+      minus?: RdfLocalQuery['minus'];
+      exists?: RdfLocalQuery['exists'];
+    },
+    variable: string,
+    values: Set<string>,
+  ): void {
+    for (const filter of query.filters ?? []) {
+      if (filter.variable !== variable) {
+        continue;
+      }
+      if ((filter.operator === '$eq' || filter.operator === '$sameTerm') && filter.value && this.isRdfTerm(filter.value)) {
+        this.addGraphFilterValueIri(filter.value, values);
+      }
+      if (filter.operator === '$in') {
+        for (const value of filter.values ?? []) {
+          if (this.isRdfTerm(value)) {
+            this.addGraphFilterValueIri(value, values);
+          }
+        }
+      }
+    }
+    for (const optional of query.optional ?? []) {
+      if (!Array.isArray(optional)) {
+        this.collectGraphVariableFilterIris(optional, variable, values);
+      }
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectGraphVariableFilterIris(branch, variable, values);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectGraphVariableFilterIris(minus, variable, values);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectGraphVariableFilterIris(exists, variable, values);
+    }
+  }
+
+  private addGraphFilterValueIri(value: Term, values: Set<string>): void {
+    if (value.termType !== 'NamedNode') {
+      throw new UnsupportedSparqlQueryError('Embedded local RDF update GRAPH variable write targets must be named graph documents');
+    }
+    values.add(value.value);
   }
 
   private addNamedGraphIris(graph: RdfQueryTermPattern | Term, graphIris: Set<string>): void {

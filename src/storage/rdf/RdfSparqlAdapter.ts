@@ -92,6 +92,19 @@ interface OptionalFrame {
   exists: RdfExistsQueryGroup[];
 }
 
+interface RdfUpdateTemplateOptions {
+  graphVariables?: ReadonlySet<string>;
+}
+
+interface RdfQueryGraphScope {
+  patterns: RdfQueryPattern[];
+  filters?: RdfQueryFilter[];
+  optional?: RdfLocalQuery['optional'];
+  unions?: RdfLocalQuery['unions'];
+  minus?: RdfLocalQuery['minus'];
+  exists?: RdfLocalQuery['exists'];
+}
+
 export interface RdfSparqlCompileResult {
   query: RdfLocalQuery;
   variables: string[];
@@ -340,14 +353,15 @@ export class RdfSparqlAdapter {
       defaultGraph: queryDefaultGraph,
       namedGraph: queryNamedGraph,
     });
+    const graphVariables = this.safeUpdateTemplateGraphVariables(query);
     const inserts = hasInsertTemplate
-      ? this.compileGraphQuadsTemplate(update.insert ?? [], basePath, 'INSERT template', withGraph)
+      ? this.compileGraphQuadsTemplate(update.insert ?? [], basePath, 'INSERT template', withGraph, { graphVariables })
       : [];
     if (hasInsertTemplate && inserts.length === 0) {
       throw new UnsupportedSparqlQueryError(`${label} without INSERT template fallback to compatibility engine`);
     }
     const deletes = hasDeleteTemplate
-      ? this.compileGraphQuadsTemplate(update.delete ?? [], basePath, 'DELETE template', withGraph)
+      ? this.compileGraphQuadsTemplate(update.delete ?? [], basePath, 'DELETE template', withGraph, { graphVariables })
       : [];
     if (hasDeleteTemplate && deletes.length === 0) {
       throw new UnsupportedSparqlQueryError(`${label} without DELETE template fallback to compatibility engine`);
@@ -528,19 +542,26 @@ export class RdfSparqlAdapter {
     basePath: string,
     label: string,
     defaultGraph?: RdfQueryTermPattern,
+    options: RdfUpdateTemplateOptions = {},
   ): RdfSparqlUpdateTemplate[] {
     const template: RdfSparqlUpdateTemplate[] = [];
     for (const item of items) {
       let graph = defaultGraph;
       if (item.type === 'graph') {
-        if (item.name.termType !== 'NamedNode') {
+        if (item.name.termType === 'Variable') {
+          if (!options.graphVariables?.has(item.name.value)) {
+            throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
+          }
+          graph = rdfVar(item.name.value);
+        } else if (item.name.termType !== 'NamedNode') {
           throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
+        } else {
+          graph = this.compileGraphTerm(item.name, basePath) ?? undefined;
         }
-        graph = this.compileGraphTerm(item.name, basePath) ?? undefined;
       } else if (!graph) {
         throw new UnsupportedSparqlQueryError(`${label} default graph fallback to compatibility engine`);
       }
-      if (!graph || graph === null || isCompiledVariable(graph)) {
+      if (!graph || graph === null) {
         throw new UnsupportedSparqlQueryError(`${label} graph outside basePath fallback to compatibility engine`);
       }
       const state = new CompileState(basePath);
@@ -563,6 +584,81 @@ export class RdfSparqlAdapter {
       }
     }
     return template;
+  }
+
+  private safeUpdateTemplateGraphVariables(query: RdfLocalQuery): ReadonlySet<string> {
+    const graphVariables = new Set<string>();
+    this.collectQueryGraphVariables(query, graphVariables);
+    if (graphVariables.size === 0) {
+      return graphVariables;
+    }
+
+    const constrainedVariables = new Set<string>();
+    this.collectFiniteGraphFilterVariables(query, graphVariables, constrainedVariables);
+    return constrainedVariables;
+  }
+
+  private collectQueryGraphVariables(
+    query: RdfQueryGraphScope,
+    graphVariables: Set<string>,
+  ): void {
+    for (const pattern of query.patterns) {
+      if (pattern.graph && isCompiledVariable(pattern.graph)) {
+        graphVariables.add(pattern.graph.variable);
+      }
+    }
+    for (const optional of query.optional ?? []) {
+      this.collectQueryGraphVariables(Array.isArray(optional) ? { patterns: optional } : optional, graphVariables);
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectQueryGraphVariables(branch, graphVariables);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectQueryGraphVariables(minus, graphVariables);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectQueryGraphVariables(exists, graphVariables);
+    }
+  }
+
+  private collectFiniteGraphFilterVariables(
+    query: RdfQueryGraphScope,
+    graphVariables: Set<string>,
+    constrainedVariables: Set<string>,
+  ): void {
+    for (const filter of query.filters ?? []) {
+      if (!graphVariables.has(filter.variable)) {
+        continue;
+      }
+      const values = filter.values ?? (filter.value ? [filter.value] : []);
+      if (
+        (filter.operator === '$eq' || filter.operator === '$sameTerm' || filter.operator === '$in')
+          && values.length > 0
+          && values.every((value) => this.isNamedNodeFilterValue(value))
+      ) {
+        constrainedVariables.add(filter.variable);
+      }
+    }
+    for (const optional of query.optional ?? []) {
+      this.collectFiniteGraphFilterVariables(Array.isArray(optional) ? { patterns: optional } : optional, graphVariables, constrainedVariables);
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectFiniteGraphFilterVariables(branch, graphVariables, constrainedVariables);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectFiniteGraphFilterVariables(minus, graphVariables, constrainedVariables);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectFiniteGraphFilterVariables(exists, graphVariables, constrainedVariables);
+    }
+  }
+
+  private isNamedNodeFilterValue(value: unknown): boolean {
+    return Boolean(value && typeof value === 'object' && 'termType' in value && (value as Term).termType === 'NamedNode');
   }
 
   private updateTemplateTriples(item: GraphQuads | BgpPattern): Triple[] {
