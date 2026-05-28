@@ -61,6 +61,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
     this.initializing ??= Promise.resolve()
       .then(() => {
         this.rdfEngine.open();
+        this.rdfEngine.refreshDerivedIndexes();
         this.initialized = true;
       })
       .finally(() => {

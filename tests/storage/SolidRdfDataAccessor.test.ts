@@ -141,6 +141,42 @@ describe('SolidRdfDataAccessor', () => {
     expect(engine.storageStats().facts.sourceCount).toBe(0);
   });
 
+  it('refreshes derived RDF indexes during initialization', async () => {
+    const localEngine = new SolidRdfEngine({
+      index: { path: path.join(workDir, 'derived-refresh.sqlite') },
+    });
+    const localAccessor = new SolidRdfDataAccessor(localEngine, new SimpleIdentifierStrategy(baseUrl));
+    const { literal, namedNode, quad } = DataFactory;
+    const graph = namedNode(`${baseUrl}alice/derived.ttl`);
+
+    localEngine.open();
+    localEngine.put([
+      quad(namedNode(`${graph.value}#message`), namedNode('https://schema.org/name'), literal('refresh me'), graph),
+      quad(namedNode(`${graph.value}#message`), namedNode('https://schema.org/dateCreated'), literal('2026-05-18'), graph),
+    ]);
+
+    expect(localEngine.storageStats().rdf3x).toMatchObject({
+      syncedWithFacts: false,
+      stats: {
+        factsDataVersion: 0,
+      },
+    });
+
+    try {
+      await localAccessor.initialize();
+
+      expect(localEngine.storageStats().rdf3x).toMatchObject({
+        syncedWithFacts: true,
+        stats: {
+          membershipCount: 2,
+          factsDataVersion: localEngine.index.dataVersion(),
+        },
+      });
+    } finally {
+      await localAccessor.finalize().catch(() => {});
+    }
+  });
+
   it('executes scoped SPARQL UPDATE through SolidRdfEngine only', async () => {
     const id = { path: `${baseUrl}alice/patch.ttl` };
     const metadata = new RepresentationMetadata(id);

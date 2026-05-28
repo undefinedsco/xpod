@@ -13,6 +13,7 @@ import type {
   Rdf3xIndexOptions,
   Rdf3xTriplePattern,
   RdfDerivedIndexProfile,
+  RdfDerivedIndexRefreshResult,
   RdfEngineStorageStats,
   RdfIndexPutOptions,
   RdfPatternQuery,
@@ -200,6 +201,16 @@ export class SolidRdfEngine {
     return this.queryEngine.query(query);
   }
 
+  public refreshDerivedIndexes(): RdfDerivedIndexRefreshResult {
+    const factsDataVersion = this.index.dataVersion();
+    const rdf3x = this.refreshRdf3xDerivedIndex(factsDataVersion);
+    return {
+      derivedIndexProfile: this.derivedIndexProfile,
+      factsDataVersion,
+      ...(rdf3x ? { rdf3x } : {}),
+    };
+  }
+
   public indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void {
     this.requireTextIndex().indexText(source, text, chunks);
   }
@@ -340,19 +351,44 @@ export class SolidRdfEngine {
     if (!this.rdf3xPrimary) {
       return;
     }
-    const dataVersion = this.index.dataVersion();
-    const rdf3xIndex = this.requireRdf3xIndex();
-    if (!this.rdf3xDirty && this.rdf3xDataVersion === dataVersion) {
-      return;
+    this.refreshRdf3xDerivedIndex();
+  }
+
+  private refreshRdf3xDerivedIndex(factsDataVersion = this.index.dataVersion()): RdfDerivedIndexRefreshResult['rdf3x'] {
+    if (!this.rdf3xIndex) {
+      return undefined;
     }
-    if (rdf3xIndex.factsDataVersion() === dataVersion) {
+    const dataVersion = factsDataVersion;
+    if (!this.rdf3xDirty && this.rdf3xDataVersion === dataVersion) {
+      return {
+        refreshed: false,
+        previousFactsDataVersion: dataVersion,
+        factsDataVersion: dataVersion,
+        syncedWithFacts: true,
+      };
+    }
+    const rdf3xIndex = this.rdf3xIndex;
+    const previousFactsDataVersion = rdf3xIndex.factsDataVersion();
+    if (previousFactsDataVersion === dataVersion) {
       this.rdf3xDirty = false;
       this.rdf3xDataVersion = dataVersion;
-      return;
+      return {
+        refreshed: false,
+        previousFactsDataVersion,
+        factsDataVersion: dataVersion,
+        syncedWithFacts: true,
+      };
     }
     const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
     this.rdf3xDirty = false;
     this.rdf3xDataVersion = rebuild.factsDataVersion;
+    return {
+      refreshed: true,
+      previousFactsDataVersion,
+      factsDataVersion: rebuild.factsDataVersion,
+      syncedWithFacts: rdf3xIndex.factsDataVersion() === this.index.dataVersion(),
+      rebuild,
+    };
   }
 }
 

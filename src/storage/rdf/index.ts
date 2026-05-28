@@ -78,6 +78,7 @@ export {
 } from './models-benchmark';
 export type {
   RdfEngineStorageStats,
+  RdfDerivedIndexRefreshResult,
   RdfIndexStats,
   RdfDerivedIndexProfile,
   Rdf3xCardinalityEstimate,

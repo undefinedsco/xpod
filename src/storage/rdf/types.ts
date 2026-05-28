@@ -111,6 +111,18 @@ export interface RdfEngineStorageStats {
   totalToFactsRatio: number;
 }
 
+export interface RdfDerivedIndexRefreshResult {
+  derivedIndexProfile: RdfDerivedIndexProfile;
+  factsDataVersion: number;
+  rdf3x?: {
+    refreshed: boolean;
+    previousFactsDataVersion: number;
+    factsDataVersion: number;
+    syncedWithFacts: boolean;
+    rebuild?: Rdf3xRebuildResult;
+  };
+}
+
 export interface RdfIndexSpaceObject {
   name: string;
   kind: 'table' | 'index' | 'internal' | 'unknown';

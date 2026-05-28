@@ -350,6 +350,89 @@ describe('SolidRdfEngine', () => {
     }
   });
 
+  it('refreshes RDF-3X derived indexes through the maintenance API before queries', async () => {
+    const autoRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-refresh-derived-'));
+    const autoEngine = new SolidRdfEngine({
+      index: { path: path.join(autoRoot, 'rdf.sqlite') },
+      autoOpen: true,
+    });
+
+    try {
+      const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+      const type = namedNode(RDF_TYPE);
+      const created = namedNode(DCT_CREATED);
+      const messageType = namedNode(MEETING_MESSAGE);
+      const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+
+      autoEngine.put([
+        quad(msg1, type, messageType, graph),
+        quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      ]);
+
+      expect(autoEngine.storageStats().rdf3x).toMatchObject({
+        syncedWithFacts: false,
+        stats: {
+          factsDataVersion: 0,
+        },
+      });
+
+      const first = autoEngine.refreshDerivedIndexes();
+      const dataVersion = autoEngine.index.dataVersion();
+      expect(first).toMatchObject({
+        derivedIndexProfile: 'rdf3x',
+        factsDataVersion: dataVersion,
+        rdf3x: {
+          refreshed: true,
+          previousFactsDataVersion: 0,
+          factsDataVersion: dataVersion,
+          syncedWithFacts: true,
+          rebuild: {
+            scannedQuads: 2,
+            memberships: 2,
+          },
+        },
+      });
+
+      const second = autoEngine.refreshDerivedIndexes();
+      expect(second).toEqual({
+        derivedIndexProfile: 'rdf3x',
+        factsDataVersion: dataVersion,
+        rdf3x: {
+          refreshed: false,
+          previousFactsDataVersion: dataVersion,
+          factsDataVersion: dataVersion,
+          syncedWithFacts: true,
+        },
+      });
+
+      const result = autoEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: type,
+            object: messageType,
+          },
+        ],
+        select: ['message'],
+      });
+
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([
+        'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+      ]);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(true);
+      expect(autoEngine.storageStats().rdf3x).toMatchObject({
+        syncedWithFacts: true,
+        stats: {
+          membershipCount: 2,
+          factsDataVersion: dataVersion,
+        },
+      });
+    } finally {
+      await autoEngine.close();
+      await rm(autoRoot, { recursive: true, force: true });
+    }
+  });
+
   it('keeps facts and RDF-3X derived storage accounting scoped to their own SQLite objects', async () => {
     const autoRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-storage-stats-'));
     const autoEngine = new SolidRdfEngine({
@@ -446,6 +529,11 @@ describe('SolidRdfEngine', () => {
         quad(msg1, type, messageType, graph),
         quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
       ]);
+
+      expect(baselineEngine.refreshDerivedIndexes()).toEqual({
+        derivedIndexProfile: 'baseline',
+        factsDataVersion: baselineEngine.index.dataVersion(),
+      });
 
       const result = baselineEngine.query({
         patterns: [
