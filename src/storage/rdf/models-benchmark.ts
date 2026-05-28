@@ -11,6 +11,7 @@ import type {
   Rdf3xObjectOperatorPattern,
   Rdf3xObjectRangePattern,
   Rdf3xObjectTextSearchPattern,
+  Rdf3xPermutationName,
   Rdf3xTermInPattern,
   Rdf3xTermNotInPattern,
   Rdf3xTriplePattern,
@@ -230,6 +231,9 @@ export interface RdfModelRdf3xShadowBenchmarkResult {
     pattern: JsonPattern;
     options?: QueryOptions;
   };
+  expectedPlan: string[];
+  planMatched: boolean;
+  missingPlan: string[];
   supported: boolean;
   unsupportedReason?: string;
   matched: boolean;
@@ -261,6 +265,9 @@ export interface RdfModelRdf3xShadowJoinBenchmarkResult {
   purpose: string;
   minScale: RdfBenchmarkScale;
   query: JsonPattern;
+  expectedPlan: string[];
+  planMatched: boolean;
+  missingPlan: string[];
   supported: boolean;
   unsupportedReason?: string;
   matched: boolean;
@@ -295,10 +302,12 @@ export interface RdfModelRdf3xShadowBenchmarkReport {
   generatedAt: string;
   matched: boolean;
   orderedMatched: boolean;
+  planMatched: boolean;
   skippedCases: string[];
   skippedJoinCases: string[];
   failedCases: string[];
   failedJoinCases: string[];
+  failedPlanCases: string[];
   rebuild: {
     scannedQuads: number;
     uniqueTriples: number;
@@ -1069,6 +1078,10 @@ export function runRdfModelsRdf3xShadowBenchmark(
   const joinResults = localQueryCases.map((testCase) => runRdf3xShadowJoinBenchmarkCase(engine, testCase, iterations));
   const supportedResults = results.filter((result) => result.supported);
   const supportedJoinResults = joinResults.filter((result) => result.supported);
+  const failedPlanCases = [
+    ...supportedResults.filter((result) => !result.planMatched).map((result) => result.name),
+    ...supportedJoinResults.filter((result) => !result.planMatched).map((result) => result.name),
+  ];
 
   return {
     engine: 'rdf3x-shadow',
@@ -1081,12 +1094,14 @@ export function runRdfModelsRdf3xShadowBenchmark(
       && supportedJoinResults.every((result) => result.matched),
     orderedMatched: supportedResults.every((result) => result.orderedMatch)
       && supportedJoinResults.every((result) => result.orderedMatch),
+    planMatched: failedPlanCases.length === 0,
     skippedCases: results.filter((result) => !result.supported).map((result) => result.name),
     skippedJoinCases: joinResults.filter((result) => !result.supported).map((result) => result.name),
     failedCases: supportedResults.filter((result) => !result.matched || !result.orderedMatch).map((result) => result.name),
     failedJoinCases: supportedJoinResults
       .filter((result) => !result.matched || !result.orderedMatch)
       .map((result) => result.name),
+    failedPlanCases,
     rebuild,
     storage: engine.storageStats(),
     cases: results,
@@ -1211,6 +1226,8 @@ function runRdf3xShadowBenchmarkCase(
       ...baseResult,
       supported: false,
       unsupportedReason,
+      planMatched: false,
+      missingPlan: [unsupportedReason],
       matched: false,
       orderedMatch: false,
       diff: {
@@ -1262,12 +1279,15 @@ function runRdf3xShadowBenchmarkCase(
     returnedRows: 0,
     durationMs: 0,
   } satisfies Rdf3xIndexMetrics;
-  const rdf3xPlanResolved = !hasUnresolvedPlan(finalRdf3xMetrics.queryPlan ?? []);
+  const missingPlan = missingExpectedRdf3xPlan(testCase, finalRdf3xMetrics);
+  const planMatched = missingPlan.length === 0;
 
   return {
     ...baseResult,
     supported: true,
-    matched: rdf3xPlanResolved && diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
+    planMatched,
+    missingPlan,
+    matched: planMatched && diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
     orderedMatch,
     diff,
     solidRdf: {
@@ -1296,6 +1316,8 @@ function runRdf3xShadowJoinBenchmarkCase(
       ...baseRdf3xShadowJoinBenchmarkResult(testCase),
       supported: false,
       unsupportedReason,
+      planMatched: false,
+      missingPlan: [unsupportedReason],
       matched: false,
       orderedMatch: false,
       diff: {
@@ -1348,15 +1370,18 @@ function runRdf3xShadowJoinBenchmarkCase(
     returnedRows: 0,
     durationMs: 0,
   } satisfies Rdf3xJoinMetrics;
-  const plansResolved = !hasUnresolvedPlan(finalSolidRdfMetrics.queryPlan ?? [])
-    && !hasUnresolvedPlan(finalRdf3xMetrics.queryPlan ?? []);
-  const minimumRowsMatched = returnedRowsMeetMinimum(testCase, rdf3xKeys.length);
+  const missingPlan = [
+    ...missingExpectedRdf3xJoinPlan(testCase, finalRdf3xMetrics, rdf3xKeys.length),
+    ...unresolvedPlanFailures(finalSolidRdfMetrics.queryPlan ?? []).map((label) => `solid-rdf:${label}`),
+  ];
+  const planMatched = missingPlan.length === 0;
 
   return {
     ...baseRdf3xShadowJoinBenchmarkResult(testCase),
     supported: true,
-    matched: plansResolved
-      && minimumRowsMatched
+    planMatched,
+    missingPlan,
+    matched: planMatched
       && diff.missingFromPrimary.length === 0
       && diff.extraInPrimary.length === 0,
     orderedMatch,
@@ -1422,7 +1447,7 @@ function runRdf3xJoinShape(
 
 function baseRdf3xShadowBenchmarkResult(testCase: RdfModelBenchmarkCase): Pick<
   RdfModelRdf3xShadowBenchmarkResult,
-  'name' | 'resource' | 'purpose' | 'minScale' | 'query'
+  'name' | 'resource' | 'purpose' | 'minScale' | 'query' | 'expectedPlan'
 > {
   return {
     name: testCase.name,
@@ -1433,6 +1458,7 @@ function baseRdf3xShadowBenchmarkResult(testCase: RdfModelBenchmarkCase): Pick<
       pattern: serializePattern(testCase.query.pattern),
       ...(testCase.query.options ? { options: testCase.query.options } : {}),
     },
+    expectedPlan: [...testCase.expectedPlan],
   };
 }
 
@@ -1575,7 +1601,7 @@ function rdf3xJoinBenchmarkExecution(metrics: Rdf3xJoinMetrics): {
 
 function baseRdf3xShadowJoinBenchmarkResult(testCase: RdfModelLocalQueryBenchmarkCase): Pick<
   RdfModelRdf3xShadowJoinBenchmarkResult,
-  'name' | 'resource' | 'purpose' | 'minScale' | 'query'
+  'name' | 'resource' | 'purpose' | 'minScale' | 'query' | 'expectedPlan'
 > {
   return {
     name: testCase.name,
@@ -1583,6 +1609,7 @@ function baseRdf3xShadowJoinBenchmarkResult(testCase: RdfModelLocalQueryBenchmar
     purpose: testCase.purpose,
     minScale: testCase.minScale,
     query: serializeLocalQuery(testCase.query),
+    expectedPlan: [...testCase.expectedPlan],
   };
 }
 
@@ -2171,6 +2198,72 @@ function matchesExpectedPlanLabel(label: string, testCase: RdfModelBenchmarkCase
   }
 }
 
+function missingExpectedRdf3xPlan(testCase: RdfModelBenchmarkCase, metrics: Rdf3xIndexMetrics): string[] {
+  return [
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedRdf3xPlanLabel(label, testCase, metrics)),
+    ...unresolvedPlanFailures(metrics.queryPlan ?? []),
+  ];
+}
+
+function matchesExpectedRdf3xPlanLabel(
+  label: string,
+  testCase: RdfModelBenchmarkCase,
+  metrics: Rdf3xIndexMetrics,
+): boolean {
+  const pattern = testCase.query.pattern;
+  const planText = (metrics.queryPlan ?? []).join('\n');
+  switch (label) {
+    case 'graph-scope':
+      return Boolean(pattern.graph)
+        && (metrics.indexChoice === 'source-membership'
+          || planText.includes('GraphPrefixMembershipFilter')
+          || planText.includes('GraphMembershipFilter'));
+    case 'type-filter':
+      return isTerm(pattern.predicate as any)
+        && termToId(pattern.predicate as any) === RDF_TYPE
+        && Boolean(pattern.object)
+        && metrics.indexChoice !== 'none';
+    case 'predicate-filter':
+      return Boolean(pattern.predicate) && metrics.indexChoice !== 'none';
+    case 'predicate-object-filter':
+      return Boolean(pattern.predicate) && Boolean(pattern.object) && metrics.indexChoice !== 'none';
+    case 'predicate-object-range-filter':
+      return Boolean(pattern.predicate)
+        && (planText.includes('NumericRange(') || planText.includes('LexicalRange('));
+    case 'limit':
+      return testCase.query.options?.limit !== undefined
+        && (planText.includes('Pagination') || planText.includes('LIMIT'));
+    case 'order':
+      return Boolean(testCase.query.options?.order?.length)
+        && (planText.includes('ORDER BY') || planText.includes('Rdf3xJoinOrder('));
+    case 'text-index':
+      return planText.includes('TextSearch(');
+    case 'rdf-subject-join':
+      return planText.includes('TextSearch(')
+        && metrics.indexChoice !== 'none'
+        && metrics.matchedRows >= metrics.returnedRows;
+    case 'SPOG':
+      return matchesRdf3xPermutation(metrics, 'SPO');
+    case 'POSG':
+      return matchesRdf3xPermutation(metrics, 'POS');
+    case 'OSPG':
+      return matchesRdf3xPermutation(metrics, 'OSP');
+    case 'GSPO':
+      return matchesExpectedRdf3xPlanLabel('graph-scope', testCase, metrics)
+        && matchesRdf3xPermutation(metrics, 'SPO');
+    case 'GPOS':
+      return matchesExpectedRdf3xPlanLabel('graph-scope', testCase, metrics)
+        && matchesRdf3xPermutation(metrics, 'POS');
+    default:
+      return false;
+  }
+}
+
+function matchesRdf3xPermutation(metrics: Rdf3xIndexMetrics, permutation: Rdf3xPermutationName): boolean {
+  const planText = (metrics.queryPlan ?? []).join('\n');
+  return metrics.indexChoice === permutation || planText.includes(`Rdf3xPermutationScan(${permutation})`);
+}
+
 function missingExpectedLocalQueryPlan(
   testCase: RdfModelLocalQueryBenchmarkCase,
   metrics: RdfLocalQueryMetrics,
@@ -2197,10 +2290,6 @@ function minimumReturnedRowsFailures(
 ): string[] {
   const minimum = testCase.minReturnedRows ?? 0;
   return returnedRows >= minimum ? [] : [`min-rows:${minimum}`];
-}
-
-function returnedRowsMeetMinimum(testCase: RdfModelLocalQueryBenchmarkCase, returnedRows: number): boolean {
-  return minimumReturnedRowsFailures(testCase, returnedRows).length === 0;
 }
 
 function matchesExpectedLocalQueryPlanLabel(label: string, metrics: RdfLocalQueryMetrics): boolean {
@@ -2239,6 +2328,50 @@ function matchesExpectedLocalQueryPlanLabel(label: string, metrics: RdfLocalQuer
       return planText.includes('Aggregate(join-count-distinct-index)')
         && planText.includes('IndexJoinCount(')
         && !planText.includes('\nIndexScan(');
+    default:
+      return false;
+  }
+}
+
+function missingExpectedRdf3xJoinPlan(
+  testCase: RdfModelLocalQueryBenchmarkCase,
+  metrics: Rdf3xJoinMetrics,
+  returnedRows: number,
+): string[] {
+  return [
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedRdf3xJoinPlanLabel(label, metrics)),
+    ...unresolvedPlanFailures(metrics.queryPlan ?? []),
+    ...minimumReturnedRowsFailures(testCase, returnedRows),
+  ];
+}
+
+function matchesExpectedRdf3xJoinPlanLabel(label: string, metrics: Rdf3xJoinMetrics): boolean {
+  const planText = (metrics.queryPlan ?? []).join('\n');
+  switch (label) {
+    case 'group-count-index':
+      return planText.includes('Rdf3xJoinGroupCount(');
+    case 'group-aggregate-index':
+      return planText.includes('Rdf3xJoinGroupAggregate(')
+        || planText.includes('Rdf3xJoinGroupAggregateNumeric(');
+    case 'having-pushdown':
+      return planText.includes('Rdf3xJoinGroupCountHaving(')
+        || planText.includes('Rdf3xJoinGroupAggregateHaving(');
+    case 'order':
+      return planText.includes('Rdf3xJoinGroupCountOrder(')
+        || planText.includes('Rdf3xJoinGroupAggregateOrder(');
+    case 'limit':
+      return planText.includes('Rdf3xJoinGroupCountLimit')
+        || planText.includes('Rdf3xJoinGroupAggregateLimit');
+    case 'join-index':
+      return planText.includes('Rdf3xJoinBGP(');
+    case 'join-order-pushdown':
+      return planText.includes('Rdf3xJoinOrder(');
+    case 'join-limit-pushdown':
+      return planText.includes('Rdf3xJoinLimit');
+    case 'range-filter-pushdown':
+      return planText.includes('LexicalRange(') || planText.includes('NumericRange(');
+    case 'join-count-index':
+      return planText.includes('Rdf3xJoinCount(');
     default:
       return false;
   }

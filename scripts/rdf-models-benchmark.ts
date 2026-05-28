@@ -132,6 +132,7 @@ async function main(): Promise<void> {
       rdf3xOrderedMatched: rdf3xShadow.orderedMatched,
       baselinePlanMatched: baseline.planMatched,
       shadowPlanMatched: shadow.planMatched,
+      rdf3xPlanMatched: rdf3xShadow.planMatched,
       shadowSpaceGateEnforced: shadow.spaceGateEnforced,
       shadowPerformanceMatched: shadow.performanceMatched,
       shadowSpaceMatched: shadow.spaceMatched,
@@ -139,6 +140,7 @@ async function main(): Promise<void> {
         ...baseline.failedPlanCases,
         ...shadow.failedPlanCases,
       ])],
+      failedRdf3xPlanCases: rdf3xShadow.failedPlanCases,
       failedPerformanceCases: shadow.failedPerformanceCases,
       failedSpaceCases: shadow.failedSpaceCases,
       failedCases: shadow.cases
@@ -156,6 +158,7 @@ async function main(): Promise<void> {
       || !rdf3xShadow.orderedMatched
       || !baseline.planMatched
       || !shadow.planMatched
+      || !rdf3xShadow.planMatched
       || !shadow.performanceMatched
       || !shadow.spaceMatched
       || !rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length)
@@ -420,10 +423,12 @@ function printSummary(summary: {
   rdf3xOrderedMatched: boolean;
   baselinePlanMatched: boolean;
   shadowPlanMatched: boolean;
+  rdf3xPlanMatched: boolean;
   shadowSpaceGateEnforced: boolean;
   shadowPerformanceMatched: boolean;
   shadowSpaceMatched: boolean;
   failedPlanCases: string[];
+  failedRdf3xPlanCases: string[];
   failedPerformanceCases: string[];
   failedSpaceCases: string[];
   failedCases: string[];
@@ -455,6 +460,7 @@ function printSummary(summary: {
   console.log(`  rdf3x shadow ordered matched: ${summary.rdf3xOrderedMatched}`);
   console.log(`  baseline plan matched: ${summary.baselinePlanMatched}`);
   console.log(`  shadow plan matched: ${summary.shadowPlanMatched}`);
+  console.log(`  rdf3x plan matched: ${summary.rdf3xPlanMatched}`);
   console.log(`  shadow performance matched: ${summary.shadowPerformanceMatched}`);
   console.log(`  shadow space matched: ${summary.shadowSpaceMatched}${summary.shadowSpaceGateEnforced ? '' : ' (not enforced for this scale)'}`);
   console.log(`  storage profile: ${summary.storage.derivedIndexProfile}`);
@@ -466,6 +472,9 @@ function printSummary(summary: {
   console.log(`  rdf3x shadow report: ${summary.paths.rdf3xShadowReport}`);
   if (summary.failedPlanCases.length > 0) {
     console.error(`  failed plan cases: ${summary.failedPlanCases.join(', ')}`);
+  }
+  if (summary.failedRdf3xPlanCases.length > 0) {
+    console.error(`  failed rdf3x plan cases: ${summary.failedRdf3xPlanCases.join(', ')}`);
   }
   if (summary.failedCases.length > 0) {
     console.error(`  failed cases: ${summary.failedCases.join(', ')}`);

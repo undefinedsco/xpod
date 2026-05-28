@@ -24,6 +24,7 @@ import {
 const { namedNode, literal, quad } = DataFactory;
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
+const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
 const SIOC_CONTENT = 'http://rdfs.org/sioc/ns#content';
 const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
 const UDFS = 'https://undefineds.co/ns#';
@@ -2986,6 +2987,54 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
       ),
       quad(
+        namedNode('https://pod.example/alice/.data/task/default/index.ttl#thread_1'),
+        namedNode(RDF_TYPE),
+        namedNode('http://rdfs.org/sioc/ns#Thread'),
+        namedNode('https://pod.example/alice/.data/task/default/index.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_2'),
+        namedNode(`${UDFS}status`),
+        literal('running'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(DCT_MODIFIED),
+        literal('2026-05-18T01:03:00.000Z'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/settings/models/claude.ttl'),
+        namedNode(`${UDFS}isProvidedBy`),
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+        namedNode('https://pod.example/alice/settings/models/claude.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/settings/credentials/anthropic.ttl'),
+        namedNode(`${UDFS}provider`),
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+        namedNode('https://pod.example/alice/settings/credentials/anthropic.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/agents/secretary.ttl#this'),
+        namedNode(RDF_TYPE),
+        namedNode(FOAF_AGENT),
+        namedNode('https://pod.example/alice/.data/agents/secretary.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/contacts/secretary.ttl'),
+        namedNode(RDF_TYPE),
+        namedNode(VCARD_INDIVIDUAL),
+        namedNode('https://pod.example/alice/.data/contacts/secretary.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/favorites/2026/05/18.ttl#favorite_1'),
+        namedNode(RDF_TYPE),
+        namedNode(SCHEMA_CREATIVE_WORK),
+        namedNode('https://pod.example/alice/.data/favorites/2026/05/18.ttl'),
+      ),
+      quad(
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_1'),
         namedNode(RDF_TYPE),
         namedNode(`${UDFS}Schedule`),
@@ -3033,9 +3082,19 @@ describe('SolidRdfEngine', () => {
     expect(report.skippedCases).not.toContain('runs by numeric priority');
     expect(report.skippedCases).not.toContain('search message literals');
     expect(report.skippedJoinCases).not.toContain('task materialization active due local query');
+    expect(report.planMatched).toBe(true);
+    expect(report.failedPlanCases).toEqual([]);
     expect(report.failedJoinCases).toEqual([]);
+    expect([...report.cases, ...report.joinCases]
+      .filter((testCase) => testCase.supported)
+      .every((testCase) => testCase.planMatched && testCase.missingPlan.length === 0)).toBe(true);
+    expect([...report.cases, ...report.joinCases]
+      .flatMap((testCase) => testCase.rdf3x?.physicalPlan ?? [])
+      .some((entry) => /\bunresolved\b/i.test(entry))).toBe(false);
     expect(numericPriority).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
@@ -3050,6 +3109,8 @@ describe('SolidRdfEngine', () => {
     expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('ON object_range.id = membership.object_id');
     expect(searchMessages).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
@@ -3061,6 +3122,8 @@ describe('SolidRdfEngine', () => {
     expect(searchMessages?.rdf3x?.physicalPlan).toContain('TextSearch(object$contains)');
     expect(listChats).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
@@ -3073,6 +3136,8 @@ describe('SolidRdfEngine', () => {
     expect(listChats?.rdf3x?.physicalPlan.join('\n')).toContain('GraphPrefixMembershipFilter');
     expect(latestMessageJoin).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
@@ -3089,6 +3154,8 @@ describe('SolidRdfEngine', () => {
     expect(latestMessageJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinLimit');
     expect(taskMaterializationJoin).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
@@ -3104,6 +3171,8 @@ describe('SolidRdfEngine', () => {
     expect(taskMaterializationJoin?.rdf3x?.physicalPlan).toContain('LexicalRange(object$lte)');
     expect(messageCountByThread).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
@@ -3119,6 +3188,8 @@ describe('SolidRdfEngine', () => {
     expect(messageCountByThread?.rdf3x?.physicalPlan).toContain('Rdf3xJoinGroupCountHaving(count$gt)');
     expect(messageScoreByThread).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
@@ -3134,6 +3205,8 @@ describe('SolidRdfEngine', () => {
     expect(messageScoreByThread?.rdf3x?.physicalPlan).toContain('Rdf3xJoinGroupAggregateHaving(scoreTotal$gt)');
     expect(messageJoinCount).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       rdf3x: {
