@@ -330,18 +330,51 @@ Rules:
 - `obj export` exports objects by model class or resource kind. Filtering must
   use model fields or RDF predicates known to `@undefineds.co/models`.
 
+### Read Discovery
+
+`xpod obj list`, `obj get`, and `obj export` must resolve readable data
+locations through the model catalog/resource API before reading object data.
+Discovery is model-owned, not profile-only.
+
+Read location resolution order:
+
+1. If the command provides an exact subject, resource, or canonical
+   base-relative `id`, resolve it through the model's exact-target rules.
+2. Otherwise use model-declared canonical storage, resource indexes, repository
+   metadata, or enumerable storage roots exported by `@undefineds.co/models`.
+3. If, and only if, the model declares Solid Data Interop, ShapeTree,
+   TypeRegistration, or another registration-backed storage mode as required,
+   resolve through that profile/registration path.
+4. If no readable location can be resolved, return `storage_unresolved`.
+
+Existing Xpod model resources do not become unreadable merely because they have
+not been registered in the user's profile. They are readable only when the
+models package supplies a canonical resource location, exact id resolution, or
+another enumerable storage rule.
+
+The CLI may issue SPARQL, LDP, or raw resource reads as the final transport, but
+the set of candidate resources must come from `@undefineds.co/models` and its
+underlying discovery/storage rules. A full-Pod SPARQL scan by RDF class is not a
+valid fallback unless the model catalog explicitly declares that discovery mode.
+If the requested model is not in the catalog, return `schema_unknown`.
+
 ### Storage Resolution
 
 Storage resolution is delegated to `@undefineds.co/models`:
 
 1. If input provides a canonical base-relative `id`, treat it as exact.
 2. Otherwise call the model id/default function.
-3. If the model requires an existing Pod registration/type index entry, resolve
-   through that registration.
+3. If the model explicitly requires an existing Pod registration/type index
+   entry, resolve through that registration.
 4. If no storage target can be resolved, return `storage_unresolved`.
 
 xpod must not derive paths from class names, resource kinds, or timestamps
 unless that logic comes from the model package.
+
+Compatibility implementations that read or write by PodModelDescriptor fields
+without resolving the model's current discovery/storage contract are acceptable
+only for models whose compatibility catalog explicitly declares that descriptor
+mode. They are not compliant for Data Interop-backed resources.
 
 ### Object Output Contract
 
