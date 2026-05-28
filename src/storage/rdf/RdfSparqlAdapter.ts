@@ -2296,6 +2296,13 @@ export class RdfSparqlAdapter {
     if (termTest) {
       return [this.negateTermTestFilter(termTest)];
     }
+    if (operator === 'langmatches') {
+      const filter = this.compileLangMatchesFilter(expression);
+      return [{
+        ...filter,
+        operator: '$notLangMatches',
+      }];
+    }
     if (operator === '||') {
       const filter = this.compileOrFilter(expression);
       return [{

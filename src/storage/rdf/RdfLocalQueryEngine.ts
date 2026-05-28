@@ -2647,6 +2647,10 @@ export class RdfLocalQueryEngine {
         return typeof filter.value === 'string'
           && value.termType === 'Literal'
           && langMatches(value.language, filter.value);
+      case '$notLangMatches':
+        return typeof filter.value === 'string'
+          && value.termType === 'Literal'
+          && !langMatches(value.language, filter.value);
       case '$datatype':
         return filter.value !== undefined
           && value.termType === 'Literal'

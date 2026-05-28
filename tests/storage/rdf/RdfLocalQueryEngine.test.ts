@@ -1062,6 +1062,41 @@ describe('RdfLocalQueryEngine', () => {
     expect(wildcardResult.metrics.plan).toContain('Language(object$langMatches)');
   });
 
+  it('applies negated LANGMATCHES filters as local post-filters', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    engine.put([
+      quad(namedNode(`${graph.value}#msg_en`), namedNode(SIOC_CONTENT), literal('howdy', 'en-US'), graph),
+      quad(namedNode(`${graph.value}#msg_fr`), namedNode(SIOC_CONTENT), literal('bonjour', 'fr'), graph),
+    ]);
+
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$notLangMatches',
+          value: 'en',
+        },
+      ],
+      select: ['message'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(result.bindings.map((binding) => termToId(binding.message as any))).toEqual([
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_fr',
+    ]);
+    expect(result.metrics.filtersPushedDown).toBe(0);
+    expect(result.metrics.plan).toContain('Filter(?content$notLangMatches)');
+    expect(result.metrics.plan).not.toContain('Language(object$notLangMatches)');
+  });
+
   it('applies string-length filters after scan without pushing them into the term index', () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');

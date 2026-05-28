@@ -1233,6 +1233,23 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
+  it('compiles safely negated LANGMATCHES filters as local post-filters', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(!LANGMATCHES(LANG(?content), "en"))
+      }
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([
+      {
+        variable: 'content',
+        operator: '$notLangMatches',
+        value: 'en',
+      },
+    ]);
+  });
+
   it('compiles FROM and FROM NAMED dataset scope into local graph constraints', () => {
     const defaultGraphA = `${BASE}.data/chat/default/2026/05/18/messages.ttl`;
     const defaultGraphB = `${BASE}.data/chat/default/2026/05/19/messages.ttl`;

@@ -2117,6 +2117,59 @@ describe('SolidRdfSparqlEngine', () => {
     expect(engine.getMetrics().lastPrimary?.plan).not.toContain('Filter(?content$langMatches)');
   });
 
+  it('executes negated LANGMATCHES FILTER on the embedded primary path', async () => {
+    const onFallback = vi.fn();
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    rdfEngine.put([
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_en'),
+        namedNode(CONTENT),
+        literal('howdy', 'en-US'),
+        graph,
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_fr'),
+        namedNode(CONTENT),
+        literal('bonjour', 'fr'),
+        graph,
+      ),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(!LANGMATCHES(LANG(?content), "en"))
+      }
+      ORDER BY ?message
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => binding.get('message')?.value)).toEqual([
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_fr',
+    ]);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 2,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('Filter(?content$notLangMatches)');
+    expect(engine.getMetrics().lastPrimary?.plan).not.toContain('Language(object$notLangMatches)');
+  });
+
   it('executes STRSTARTS over IRI object bindings on the embedded primary path', async () => {
     const onFallback = vi.fn();
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
@@ -3994,6 +4047,69 @@ describe('SolidRdfSparqlEngine', () => {
       'UpdateDelta',
       'delete:1',
       'insert:1',
+    ]));
+  });
+
+  it('applies DELETE/INSERT WHERE with negated LANGMATCHES filters on the embedded update delta path', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const graph = 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl';
+    const msg1 = `${graph}#msg_1`;
+    const msgEn = `${graph}#msg_en`;
+    const msgFr = `${graph}#msg_fr`;
+    await engine.queryVoid(`
+      INSERT DATA {
+        GRAPH <${graph}> {
+          <${msgEn}> <${CONTENT}> "howdy"@en-US .
+          <${msgFr}> <${CONTENT}> "bonjour"@fr .
+        }
+      }
+    `, BASE);
+
+    await engine.queryVoid(`
+      DELETE {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> "negated langmatches rewritten" .
+        }
+      }
+      WHERE {
+        GRAPH <${graph}> {
+          ?message <${CONTENT}> ?old .
+        }
+        FILTER(!LANGMATCHES(LANG(?old), "en"))
+      }
+    `, BASE);
+    const updateMetric = engine.getMetrics().lastPrimary;
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${graph}> {
+          <${msg1}> <${CONTENT}> "negated langmatches rewritten" .
+          <${msgFr}> <${CONTENT}> "negated langmatches rewritten" .
+          <${msgEn}> <${CONTENT}> "howdy"@en-US .
+        }
+      }
+    `, BASE)).resolves.toBe(true);
+
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+    expect(updateMetric?.plan).toEqual(expect.arrayContaining([
+      'UpdateDelta',
+      'delete:2',
+      'insert:2',
     ]));
   });
 

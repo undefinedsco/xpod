@@ -487,6 +487,7 @@ export type RdfQueryFilterOperator =
   | '$lang'
   | '$notLang'
   | '$langMatches'
+  | '$notLangMatches'
   | '$datatype'
   | '$notDatatype';
 

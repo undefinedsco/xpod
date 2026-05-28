@@ -1349,6 +1349,65 @@ WHERE {
     ]);
   });
 
+  it('applies negated LANGMATCHES updates to local RDF authority files', async () => {
+    const resourceId = { path: `${baseUrl}alice/negated-langmatches-update.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#untagged`),
+        namedNode('https://schema.org/name'),
+        literal('untagged before')
+      ),
+      quad(
+        namedNode(`${resourceId.path}#english`),
+        namedNode('https://schema.org/name'),
+        literal('english before', 'en-US')
+      ),
+      quad(
+        namedNode(`${resourceId.path}#french`),
+        namedNode('https://schema.org/name'),
+        literal('french before', 'fr')
+      )
+    ])), metadata);
+    const structuredUpdateSpy = vi.spyOn(structuredAccessor, 'executeSparqlUpdate');
+
+    await accessor.executeSparqlUpdate(`
+DELETE {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> ?old .
+  }
+}
+INSERT {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> "negated langmatches after" .
+  }
+}
+WHERE {
+  GRAPH <${resourceId.path}> {
+    ?subject <https://schema.org/name> ?old .
+  }
+  FILTER(!LANGMATCHES(LANG(?old), "en"))
+}
+`.trim(), resourceId.path);
+
+    expect(structuredUpdateSpy).not.toHaveBeenCalled();
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('negated langmatches after');
+    expect(localRdf).toContain('english before');
+    expect(localRdf).not.toContain('untagged before');
+    expect(localRdf).not.toContain('french before');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => quad.object.value).sort()).toEqual([
+      'english before',
+      'negated langmatches after',
+      'negated langmatches after',
+    ]);
+  });
+
   it('applies USING NAMED updates that read multiple RDF authority files and write one target file', async () => {
     const resourceId = { path: `${baseUrl}alice/using-named-update.ttl` };
     const otherResourceId = { path: `${baseUrl}alice/using-named-other.ttl` };
