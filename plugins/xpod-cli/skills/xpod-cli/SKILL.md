@@ -39,9 +39,12 @@ or agent-facing workflows that depend on the CLI.
   `@undefineds.co/models`. If an explicit base-relative `id` is present, treat
   it as exact.
 - `obj list`, `obj get`, and `obj export` must discover readable resources
-  through the model catalog/resource API first. For Data Interop, ShapeTree, or
-  TypeRegistration-backed models, use that registration path; return
-  `storage_unresolved` instead of falling back to a full-Pod RDF class scan.
+  through the model catalog/resource API first. Profile registration is not the
+  only discovery source: exact ids, canonical model storage, resource indexes,
+  and enumerable storage roots may all be models-owned read paths. For Data
+  Interop, ShapeTree, or TypeRegistration-backed models, use the registration
+  path only when the model declares it; return `storage_unresolved` instead of
+  falling back to a full-Pod RDF class scan.
 - Use `xpod secret ...` only for secret-safe plans, writes, metadata, and
   revocation. Never print secret values by default.
 
