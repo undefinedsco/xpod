@@ -1389,6 +1389,48 @@ describe('RdfQuadIndex', () => {
     expect(index.scan({}).quads).toHaveLength(1);
   });
 
+  it('keeps source refresh retries idempotent after reopening the persisted facts index', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-retry-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const source = {
+      source: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl',
+      workspace: 'https://pod.example/alice/.data/chat/default/',
+      localPath: '.data/chat/default/2026/05/18/messages.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'v1',
+    };
+    const value = quad(
+      namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+      namedNode('http://rdfs.org/sioc/ns#content'),
+      literal('retry-safe message'),
+      namedNode(source.source),
+    );
+
+    let persisted = new RdfQuadIndex({ path: dbPath });
+
+    try {
+      persisted.open();
+      persisted.replaceSource([value], source);
+      persisted.close();
+
+      persisted = new RdfQuadIndex({ path: dbPath });
+      persisted.open();
+      persisted.replaceSource([value], source);
+
+      expect(persisted.count({ graph: namedNode(source.source) })).toBe(1);
+      expect(persisted.scan({ graph: namedNode(source.source) }).quads.map((q) => q.object.value)).toEqual([
+        'retry-safe message',
+      ]);
+      expect(persisted.stats()).toMatchObject({
+        quadCount: 1,
+        sourceCount: 1,
+      });
+    } finally {
+      persisted.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('replaces quads for one source without leaving stale statements', () => {
     const source = {
         source: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl',
