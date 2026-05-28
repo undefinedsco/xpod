@@ -34,6 +34,10 @@ or agent-facing workflows that depend on the CLI.
 - Use `xpod obj ...` for model-backed object transport. Its catalog must be
   exported or derived from `@undefineds.co/models`; xpod must not maintain a
   product descriptor table or invent fallback schemas.
+- `xpod obj` must delegate storage resolution, id/default behavior,
+  validation, writable fields, secret markers, and filterable fields to
+  `@undefineds.co/models`. If an explicit base-relative `id` is present, treat
+  it as exact.
 - Use `xpod secret ...` only for secret-safe plans, writes, metadata, and
   revocation. Never print secret values by default.
 
@@ -57,6 +61,8 @@ or agent-facing workflows that depend on the CLI.
 - Validate model-backed object work through `@undefineds.co/models` catalog or
   resource APIs; report `schema_unknown` or `storage_unresolved` instead of
   deriving paths or schemas inside xpod.
+- Preserve input order in `obj import` batch results and return per-item
+  `index`, `ok`, `code`, and resource metadata when available.
 - Use `drizzle-solid` or shared model APIs for business resources when code is
   in-process. Keep xpod CLI as the external human/script/agent tool surface.
 - Update tests with the command-surface change. Existing AI-specific
