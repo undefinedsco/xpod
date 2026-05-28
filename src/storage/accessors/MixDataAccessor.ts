@@ -85,6 +85,18 @@ export interface SourceScopedStructuredRdfAccessor {
   deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void>;
 }
 
+interface LocalRdfGraphState {
+  quads: Quad[];
+  existed: boolean;
+}
+
+interface LocalRdfAuthorityPatch {
+  identifier: ResourceIdentifier;
+  previousQuads: Quad[];
+  previousExists: boolean;
+  nextQuads: Quad[];
+}
+
 /**
  * MixDataAccessor - Routes data to appropriate storage based on content type
  * 
@@ -326,17 +338,20 @@ export class MixDataAccessor implements DataAccessor {
       defaultGraph: identifier.path,
     });
     const writableGraphIris = this.localRdfDeltaWriteGraphIris(delta.operations);
-    const graphQuads = await this.loadLocalRdfDeltaGraphs(delta.operations, writableGraphIris);
+    const graphStates = await this.loadLocalRdfDeltaGraphs(delta.operations, writableGraphIris);
+    const graphQuads = new Map([...graphStates].map(([ graphIri, state ]) => [graphIri, state.quads]));
     const nextQuadsByGraph = this.applyLocalRdfDelta(graphQuads, delta.operations, writableGraphIris);
-    const writtenIdentifiers: ResourceIdentifier[] = [];
-    for (const graphIri of writableGraphIris) {
-      const graphIdentifier = { path: graphIri };
-      const authorityQuads = (nextQuadsByGraph.get(graphIri) ?? []).map((quad) => this.toDefaultGraphQuad(quad));
-      await this.writeLocalRdfAuthority(graphIdentifier, authorityQuads);
-      await this.writeStructuredRdfIndex(graphIdentifier, authorityQuads, new RepresentationMetadata(graphIdentifier));
-      writtenIdentifiers.push(graphIdentifier);
-    }
-    return writtenIdentifiers;
+    const patches = writableGraphIris.map((graphIri): LocalRdfAuthorityPatch => {
+      const previous = graphStates.get(graphIri);
+      return {
+        identifier: { path: graphIri },
+        previousQuads: previous?.quads ?? [],
+        previousExists: previous?.existed ?? false,
+        nextQuads: nextQuadsByGraph.get(graphIri) ?? [],
+      };
+    });
+    await this.writeLocalRdfAuthorityPatches(patches);
+    return patches.map((patch) => patch.identifier);
   }
 
   private applyLocalRdfDelta(
@@ -405,23 +420,23 @@ export class MixDataAccessor implements DataAccessor {
   private async loadLocalRdfDeltaGraphs(
     operations: RdfSparqlUpdateDeltaOperation[],
     writableGraphIris: readonly string[],
-  ): Promise<Map<string, Quad[]>> {
+  ): Promise<Map<string, LocalRdfGraphState>> {
     const graphIris = this.localRdfDeltaGraphIris(operations, writableGraphIris);
-    const graphQuads = new Map<string, Quad[]>();
+    const graphStates = new Map<string, LocalRdfGraphState>();
     for (const graphIri of graphIris) {
       const graphIdentifier = { path: graphIri };
       if (!this.isByLineRdfIdentifier(graphIdentifier)) {
         throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports by-line local RDF graph documents');
       }
-      const existingText = await this.readLocalRdfTextOrEmpty(graphIdentifier);
+      const existing = await this.readLocalRdfState(graphIdentifier);
       const graph = DataFactory.namedNode(graphIri);
-      const quads = existingText.length > 0
-        ? await this.parseLocalRdf(graphIdentifier, existingText, this.localRdfContentType(graphIdentifier))
+      const quads = existing.text.length > 0
+        ? await this.parseLocalRdf(graphIdentifier, existing.text, this.localRdfContentType(graphIdentifier))
           .then((items) => items.map((quad) => this.toGraphQuad(quad, graph)))
         : [];
-      graphQuads.set(graphIri, quads);
+      graphStates.set(graphIri, { quads, existed: existing.existed });
     }
-    return graphQuads;
+    return graphStates;
   }
 
   private localRdfDeltaGraphIris(
@@ -629,17 +644,23 @@ export class MixDataAccessor implements DataAccessor {
     return Boolean(value && typeof value === 'object' && 'termType' in value);
   }
 
-  private async readLocalRdfTextOrEmpty(identifier: ResourceIdentifier): Promise<string> {
+  private async readLocalRdfState(identifier: ResourceIdentifier): Promise<{ text: string; existed: boolean }> {
     try {
-      return await this.readStreamText(await this.rdfFileDataAccessor.getData(identifier));
+      return {
+        text: await this.readStreamText(await this.rdfFileDataAccessor.getData(identifier)),
+        existed: true,
+      };
     } catch (error) {
       if (NotFoundHttpError.isInstance(error)) {
         await this.refreshLocalRdfMirror(identifier);
         try {
-          return await this.readStreamText(await this.rdfFileDataAccessor.getData(identifier));
+          return {
+            text: await this.readStreamText(await this.rdfFileDataAccessor.getData(identifier)),
+            existed: true,
+          };
         } catch (retryError) {
           if (NotFoundHttpError.isInstance(retryError)) {
-            return '';
+            return { text: '', existed: false };
           }
           throw retryError;
         }
@@ -655,6 +676,52 @@ export class MixDataAccessor implements DataAccessor {
       guardStream(Readable.from([ await this.serializeQuadsForLocalFile(identifier, quads) ])),
       this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier)),
     );
+  }
+
+  private async writeLocalRdfAuthorityPatches(patches: LocalRdfAuthorityPatch[]): Promise<void> {
+    const applied: LocalRdfAuthorityPatch[] = [];
+    try {
+      for (const patch of patches) {
+        let localAuthorityWritten = false;
+        try {
+          const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
+          await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
+          localAuthorityWritten = true;
+          await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+          applied.push(patch);
+        } catch (error) {
+          if (localAuthorityWritten) {
+            applied.push(patch);
+          }
+          throw error;
+        }
+      }
+    } catch (error) {
+      await this.rollbackLocalRdfAuthorityPatches(applied);
+      throw error;
+    }
+  }
+
+  private async rollbackLocalRdfAuthorityPatches(patches: LocalRdfAuthorityPatch[]): Promise<void> {
+    const failures: string[] = [];
+    for (const patch of patches.slice().reverse()) {
+      try {
+        if (patch.previousExists) {
+          const authorityQuads = patch.previousQuads.map((quad) => this.toDefaultGraphQuad(quad));
+          await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
+          await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+        } else {
+          await this.deleteRdfFileResourceIfPresent(patch.identifier);
+          await this.deleteLocalRdfIndex(patch.identifier);
+        }
+        this.invalidateMetadataCache(patch.identifier);
+      } catch (rollbackError) {
+        failures.push(`${patch.identifier.path}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+    }
+    if (failures.length > 0) {
+      this.logger.warn(`Failed to fully roll back local RDF authority patch: ${failures.join('; ')}`);
+    }
   }
 
   private toDefaultGraphQuad(quad: Quad): Quad {

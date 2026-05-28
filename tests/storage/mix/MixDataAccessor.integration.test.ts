@@ -1371,6 +1371,83 @@ WHERE {
     expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['multi target other after']);
   });
 
+  it('rolls back multi-target local RDF authority patches when index refresh fails', async () => {
+    const resourceId = { path: `${baseUrl}alice/multi-target-rollback.ttl` };
+    const otherResourceId = { path: `${baseUrl}alice/multi-target-rollback-other.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+    await accessor.writeDocument(resourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${resourceId.path}#first`),
+        namedNode('https://schema.org/name'),
+        literal('rollback before')
+      )
+    ])), metadata);
+    const otherMetadata = new RepresentationMetadata(otherResourceId);
+    otherMetadata.contentType = 'internal/quads';
+    await accessor.writeDocument(otherResourceId, guardStream(Readable.from([
+      quad(
+        namedNode(`${otherResourceId.path}#second`),
+        namedNode('https://schema.org/name'),
+        literal('rollback other before')
+      )
+    ])), otherMetadata);
+
+    const originalWrite = structuredAccessor.writeRdfSourceDocument.bind(structuredAccessor);
+    let writeCalls = 0;
+    vi.spyOn(structuredAccessor, 'writeRdfSourceDocument').mockImplementation(async (...args) => {
+      writeCalls += 1;
+      if (writeCalls === 2) {
+        throw new Error('simulated index refresh failure');
+      }
+      return originalWrite(...args);
+    });
+
+    await expect(accessor.executeSparqlUpdate(`
+DELETE {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
+  }
+}
+INSERT {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> "rollback after" .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> "rollback other after" .
+  }
+}
+WHERE {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
+  }
+}
+`.trim(), resourceId.path)).rejects.toThrow('simulated index refresh failure');
+
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('rollback before');
+    expect(localRdf).not.toContain('rollback after');
+
+    const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
+    const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
+    expect(otherLocalRdf).toContain('rollback other before');
+    expect(otherLocalRdf).not.toContain('rollback other after');
+
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads.map((quad) => quad.object.value)).toEqual(['rollback before']);
+    const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
+    expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['rollback other before']);
+    expect(writeCalls).toBeGreaterThanOrEqual(4);
+  });
+
   it('rejects SERVICE updates before the structured accessor fallback path', async () => {
     const resourceId = { path: `${baseUrl}alice/service-update.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
