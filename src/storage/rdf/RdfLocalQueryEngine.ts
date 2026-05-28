@@ -1050,6 +1050,16 @@ export class RdfLocalQueryEngine {
         if (matches.length === 0) {
           continue;
         }
+        for (const unionGroup of branch.unions ?? []) {
+          matches = this.joinUnionGroup(matches, unionGroup.branches, branchFilters, metrics);
+          metrics.plan.push(`UnionNested(${unionGroup.branches.map((nestedBranch) => nestedBranch.patterns.map(describePattern).join(',')).join('|')})`);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+        if (matches.length === 0) {
+          continue;
+        }
         if ((branch.binds?.length ?? 0) > 0) {
           matches = this.applyBinds(matches, branch.binds ?? []);
           metrics.plan.push(`UnionBind(${(branch.binds ?? []).map(describeBind).join(',')})`);

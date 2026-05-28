@@ -3288,6 +3288,86 @@ describe('SolidRdfSparqlEngine', () => {
     expect(engine.getMetrics().lastPrimary?.plan.some((entry) => entry.startsWith('Union('))).toBe(true);
   });
 
+  it('executes UNION branches that keep required patterns before nested UNION groups', async () => {
+    const onFallback = vi.fn();
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    rdfEngine.put([
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(DCT_CREATED),
+        literal('2026-05-18T00:00:01.000Z'),
+        graph,
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2'),
+        namedNode(DCT_CREATED),
+        literal('2026-05-18T00:00:02.000Z'),
+        graph,
+      ),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?message ?value WHERE {
+        {
+          ?message a <${MESSAGE}> .
+          { ?message <${CONTENT}> ?value }
+          UNION
+          { ?message <${DCT_CREATED}> ?value }
+        }
+        UNION
+        { ?message <${HAS_MEMBER}> ?value }
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+    const rows = results.map((binding) => ({
+      message: binding.get('message')?.value,
+      value: binding.get('value')?.value,
+    }));
+
+    expect(rows).toEqual(expect.arrayContaining([
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+        value: 'hello',
+      },
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+        value: '2026-05-18T00:00:01.000Z',
+      },
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+        value: 'https://pod.example/alice/.data/chat/default/index.ttl#thread_1',
+      },
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+        value: '2026-05-18T00:00:02.000Z',
+      },
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+        value: 'https://pod.example/alice/.data/chat/default/index.ttl#thread_1',
+      },
+    ]));
+    expect(rows).toHaveLength(5);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 5,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan.some((entry) => entry.startsWith('UnionNested('))).toBe(true);
+  });
+
   it('executes UNION inside OPTIONAL on the embedded primary path', async () => {
     const onFallback = vi.fn();
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');

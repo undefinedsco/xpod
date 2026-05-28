@@ -1004,15 +1004,13 @@ export class RdfSparqlAdapter {
     this.compilePatterns(this.unionBranchPatterns(branch), graph, branchState, false, namedGraphScope);
     branchState.assertBindVariablesSafe();
     branchState.assertValuesVariablesBoundByRequiredPatterns();
-    if (branchState.query.unions?.length) {
-      throw new UnsupportedSparqlQueryError('Nested UNION fallback to compatibility engine');
-    }
-    if (branchState.query.patterns.length === 0) {
+    if (branchState.query.patterns.length === 0 && (branchState.query.unions?.length ?? 0) === 0) {
       throw new UnsupportedSparqlQueryError('UNION branch without required BGP fallback to compatibility engine');
     }
     return [{
       patterns: branchState.query.patterns,
       ...(branchState.query.values?.length ? { values: branchState.query.values } : {}),
+      ...(branchState.query.unions?.length ? { unions: branchState.query.unions } : {}),
       ...(branchState.query.optional?.length ? { optional: branchState.query.optional } : {}),
       ...(branchState.query.binds?.length ? { binds: branchState.query.binds } : {}),
       ...(branchState.query.filters?.length ? { filters: branchState.query.filters } : {}),
@@ -2828,6 +2826,9 @@ class CompileState {
         for (const variableName of variablesInPatterns(branch.patterns)) {
           bound.add(variableName);
         }
+        for (const variableName of variablesInUnionGroups(branch.unions ?? [])) {
+          bound.add(variableName);
+        }
         for (const bind of branch.binds ?? []) {
           for (const dependency of variablesInBindExpression(bind.expression)) {
             if (!bound.has(dependency)) {
@@ -3140,6 +3141,7 @@ function variablesInUnionGroups(unions: RdfUnionQueryGroup[]): string[] {
     unionGroup.branches.flatMap((branch) => [
       ...variablesInPatterns(branch.patterns),
       ...variablesInValuesSources(branch.values ?? []),
+      ...variablesInUnionGroups(branch.unions ?? []),
       ...((branch.binds ?? []).map((bind) => bind.variable)),
     ])
   )));
@@ -3254,6 +3256,9 @@ function assertOptionalBindVariablesSafe(
       for (const variableName of variablesInValuesSources(branch.values ?? [])) {
         branchBound.add(variableName);
       }
+      for (const variableName of variablesInUnionGroups(branch.unions ?? [])) {
+        branchBound.add(variableName);
+      }
       for (const bind of branch.binds ?? []) {
         assertBindDependenciesBound(bind, branchBound);
         branchBound.add(bind.variable);
@@ -3314,7 +3319,17 @@ function queryBindsVariableInRequiredShape(query: RdfLocalQuery, variableName: s
     return false;
   }
   return (query.unions ?? []).every((group) => (
-    group.branches.every((branch) => patternsBindVariable(branch.patterns, variableName))
+    group.branches.every((branch) => unionBranchBindsVariable(branch, variableName))
+  ));
+}
+
+function unionBranchBindsVariable(branch: RdfUnionQueryBranch, variableName: string): boolean {
+  if (patternsBindVariable(branch.patterns, variableName)) {
+    return true;
+  }
+  const unions = branch.unions ?? [];
+  return unions.length > 0 && unions.every((group) => (
+    group.branches.every((nestedBranch) => unionBranchBindsVariable(nestedBranch, variableName))
   ));
 }
 

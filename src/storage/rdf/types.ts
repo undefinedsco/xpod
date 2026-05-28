@@ -609,6 +609,7 @@ export interface RdfLocalQuery {
 export interface RdfUnionQueryBranch {
   patterns: RdfQueryPattern[];
   values?: RdfValuesBindingSource[];
+  unions?: RdfUnionQueryGroup[];
   optional?: Array<RdfQueryPattern[] | RdfOptionalQueryGroup>;
   binds?: RdfQueryBind[];
   filters?: RdfQueryFilter[];

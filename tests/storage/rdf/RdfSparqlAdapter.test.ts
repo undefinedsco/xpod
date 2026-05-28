@@ -1909,6 +1909,32 @@ describe('RdfSparqlAdapter', () => {
     expect(termToId(compiled.query.unions?.[0].branches[2].patterns[0].object as any)).toBe(MESSAGE);
   });
 
+  it('keeps branch-local required patterns before nested UNION groups', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?value WHERE {
+        {
+          ?message a <${MESSAGE}> .
+          { ?message <${CONTENT}> ?value }
+          UNION
+          { ?message <${HAS_MEMBER}> ?value }
+        }
+        UNION
+        { ?message <${CONTENT}> ?value }
+      }
+      ORDER BY ?message
+    `, BASE);
+
+    const branches = compiled.query.unions?.[0].branches ?? [];
+    expect(branches).toHaveLength(2);
+    expect(branches[0].patterns).toHaveLength(1);
+    expect(termToId(branches[0].patterns[0].predicate as any)).toBe(RDF_TYPE);
+    expect(termToId(branches[0].patterns[0].object as any)).toBe(MESSAGE);
+    expect(branches[0].unions?.[0].branches).toHaveLength(2);
+    expect(termToId(branches[0].unions?.[0].branches[0].patterns[0].predicate as any)).toBe(CONTENT);
+    expect(termToId(branches[0].unions?.[0].branches[1].patterns[0].predicate as any)).toBe(HAS_MEMBER);
+    expect(termToId(branches[1].patterns[0].predicate as any)).toBe(CONTENT);
+  });
+
   it('compiles UNION branches with local filters and trailing VALUES', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?value WHERE {
