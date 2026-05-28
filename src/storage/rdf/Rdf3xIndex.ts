@@ -5,6 +5,15 @@ import type { Quad, Term } from '@rdfjs/types';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
+import {
+  RDF3X_DERIVED_INDEXES,
+  RDF3X_DERIVED_TABLES,
+  RDF3X_GRAPH_PROJECTION_TABLE,
+  RDF3X_PAIR_PROJECTION_TABLE_BY_NAME,
+  RDF3X_TERM_PROJECTION_TABLE_BY_NAME,
+  dropRdf3xDerivedSchemaObjects,
+  dropRdf3xMaterializedFactCopies,
+} from './Rdf3xSchema';
 import type {
   Rdf3xCardinalityEstimate,
   Rdf3xCountResult,
@@ -184,44 +193,21 @@ const PERMUTATIONS: Rdf3xPermutation[] = [
 ];
 
 const PAIR_PROJECTIONS: Rdf3xPairProjection[] = [
-  { name: 'SP', table: 'rdf3x_stat_sp', columns: ['subject_id', 'predicate_id'], remainder: 'object_id' },
-  { name: 'SO', table: 'rdf3x_stat_so', columns: ['subject_id', 'object_id'], remainder: 'predicate_id' },
-  { name: 'PS', table: 'rdf3x_stat_ps', columns: ['predicate_id', 'subject_id'], remainder: 'object_id' },
-  { name: 'PO', table: 'rdf3x_stat_po', columns: ['predicate_id', 'object_id'], remainder: 'subject_id' },
-  { name: 'OS', table: 'rdf3x_stat_os', columns: ['object_id', 'subject_id'], remainder: 'predicate_id' },
-  { name: 'OP', table: 'rdf3x_stat_op', columns: ['object_id', 'predicate_id'], remainder: 'subject_id' },
+  { name: 'SP', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.SP, columns: ['subject_id', 'predicate_id'], remainder: 'object_id' },
+  { name: 'SO', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.SO, columns: ['subject_id', 'object_id'], remainder: 'predicate_id' },
+  { name: 'PS', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.PS, columns: ['predicate_id', 'subject_id'], remainder: 'object_id' },
+  { name: 'PO', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.PO, columns: ['predicate_id', 'object_id'], remainder: 'subject_id' },
+  { name: 'OS', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.OS, columns: ['object_id', 'subject_id'], remainder: 'predicate_id' },
+  { name: 'OP', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.OP, columns: ['object_id', 'predicate_id'], remainder: 'subject_id' },
 ];
 
 const TERM_PROJECTIONS: Rdf3xTermProjection[] = [
-  { name: 'S', table: 'rdf3x_stat_s', column: 'subject_id' },
-  { name: 'P', table: 'rdf3x_stat_p', column: 'predicate_id' },
-  { name: 'O', table: 'rdf3x_stat_o', column: 'object_id' },
+  { name: 'S', table: RDF3X_TERM_PROJECTION_TABLE_BY_NAME.S, column: 'subject_id' },
+  { name: 'P', table: RDF3X_TERM_PROJECTION_TABLE_BY_NAME.P, column: 'predicate_id' },
+  { name: 'O', table: RDF3X_TERM_PROJECTION_TABLE_BY_NAME.O, column: 'object_id' },
 ];
 
-const GRAPH_PROJECTION_TABLE = 'rdf3x_stat_g';
-
-const RDF3X_DERIVED_TABLES = [
-  'rdf3x_metadata',
-  GRAPH_PROJECTION_TABLE,
-  ...PAIR_PROJECTIONS.map((projection) => projection.table),
-  ...TERM_PROJECTIONS.map((projection) => projection.table),
-];
-
-const RDF3X_MATERIALIZED_FACT_COPY_TABLES = [
-  'rdf3x_triple_membership',
-  'rdf3x_spo',
-  'rdf3x_sop',
-  'rdf3x_pso',
-  'rdf3x_pos',
-  'rdf3x_osp',
-  'rdf3x_ops',
-];
-
-const RDF3X_DERIVED_INDEXES = [
-  'rdf3x_membership_gspo',
-  'rdf3x_membership_spo',
-  'rdf3x_membership_source',
-];
+const GRAPH_PROJECTION_TABLE = RDF3X_GRAPH_PROJECTION_TABLE;
 
 export class Rdf3xIndex {
   private readonly sqliteRuntime = createSqliteRuntime();
@@ -990,20 +976,7 @@ export class Rdf3xIndex {
   }
 
   private dropMaterializedFactCopies(): void {
-    const db = this.requireDb();
-    const rows = db.prepare<{ name: string; type: string }>(`
-      SELECT name, type
-      FROM sqlite_schema
-      WHERE name IN (${RDF3X_MATERIALIZED_FACT_COPY_TABLES.map(() => '?').join(', ')})
-    `).all(...RDF3X_MATERIALIZED_FACT_COPY_TABLES);
-    db.exec(RDF3X_DERIVED_INDEXES.map((index) => `DROP INDEX IF EXISTS ${index};`).join('\n'));
-    for (const row of rows) {
-      if (row.type === 'view') {
-        db.exec(`DROP VIEW IF EXISTS ${row.name};`);
-      } else if (row.type === 'table') {
-        db.exec(`DROP TABLE IF EXISTS ${row.name};`);
-      }
-    }
+    dropRdf3xMaterializedFactCopies(this.requireDb());
   }
 
   private dropLegacyRowidTables(): void {
@@ -1058,10 +1031,7 @@ export class Rdf3xIndex {
   }
 
   private dropRdf3xSchema(): void {
-    this.requireDb().exec([
-      ...RDF3X_DERIVED_INDEXES.map((index) => `DROP INDEX IF EXISTS ${index};`),
-      ...RDF3X_DERIVED_TABLES.map((table) => `DROP TABLE IF EXISTS ${table};`),
-    ].join('\n'));
+    dropRdf3xDerivedSchemaObjects(this.requireDb());
   }
 
   private currentFactsDataVersion(): number {

@@ -150,8 +150,9 @@ join 顺序，不能因为某个查询临时在线新增一套物化结构。这
   数据库；权威内容来自 SolidFS 文件或可回放的 Pod 数据，不通过动态索引迁移保证兼容。
   当前 facts 层在 `rdf_index_metadata.schema_version` 记录 schema version，RDF-3X
   派生层在 `rdf3x_metadata.schema_version` 记录 schema version；已有 version 与代码
-  不一致时直接丢弃对应本地索引状态并重建表。首次引入该 metadata 时，缺失 version
-  只采用当前 version，避免把同 schema 的现有库误判为不可兼容。
+  不一致时直接丢弃对应本地索引状态并重建表；facts 层 schema 不兼容时也会清掉同库
+  `rdf3x_*` 派生对象，避免旧 facts 对应的 stats 在新 facts 表旁边残留。首次引入该
+  metadata 时，缺失 version 只采用当前 version，避免把同 schema 的现有库误判为不可兼容。
 
 ## 空间预算
 

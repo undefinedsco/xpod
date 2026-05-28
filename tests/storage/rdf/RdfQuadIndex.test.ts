@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, afterEach, beforeEach } from 'vitest';
 import { DataFactory } from 'n3';
-import { RdfQuadIndex } from '../../../src/storage/rdf';
+import { Rdf3xIndex, RdfQuadIndex } from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 
 const { namedNode, literal, quad } = DataFactory;
@@ -152,6 +152,64 @@ describe('RdfQuadIndex', () => {
       const verifyDb = createSqliteRuntime().openDatabase(dbPath);
       try {
         expect(verifyDb.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+      } finally {
+        verifyDb.close();
+      }
+    } finally {
+      fileIndex.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('drops colocated RDF-3X derived state when the facts index schema version is incompatible', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-rdf3x-reset-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    try {
+      fileIndex.open();
+      fileIndex.multiPut([
+        quad(namedNode('https://s/1'), namedNode('https://p/status'), literal('open'), namedNode('https://g')),
+      ]);
+      fileIndex.close();
+
+      const derived = new Rdf3xIndex({ path: dbPath });
+      try {
+        derived.open();
+        derived.rebuildFromCurrentQuads();
+        expect(derived.stats().graphCount).toBe(1);
+      } finally {
+        derived.close();
+      }
+
+      const db = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        const rdf3xObjectCount = db
+          .prepare<{ count: number }>("SELECT COUNT(*) AS count FROM sqlite_schema WHERE name LIKE 'rdf3x_%'")
+          .get()?.count;
+        expect(rdf3xObjectCount).toBeGreaterThan(0);
+        db.prepare("UPDATE rdf_index_metadata SET value = '0' WHERE key = 'schema_version'").run();
+      } finally {
+        db.close();
+      }
+
+      const reopened = new RdfQuadIndex({ path: dbPath });
+      try {
+        reopened.open();
+        expect(reopened.stats().quadCount).toBe(0);
+      } finally {
+        reopened.close();
+      }
+
+      const verifyDb = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        const rdf3xObjects = verifyDb.prepare<{ name: string }>(`
+          SELECT name
+          FROM sqlite_schema
+          WHERE name LIKE 'rdf3x_%'
+             OR tbl_name LIKE 'rdf3x_%'
+          ORDER BY name
+        `).all();
+        expect(rdf3xObjects).toEqual([]);
       } finally {
         verifyDb.close();
       }

@@ -6,6 +6,7 @@ import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type { QueryOptions, QuintPattern, TermOperators } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
+import { dropRdf3xDerivedSchemaObjects } from './Rdf3xSchema';
 import type {
   RdfCardinalityEstimate,
   RdfCardinalityDistributions,
@@ -1315,11 +1316,21 @@ export class RdfQuadIndex {
     db.exec('PRAGMA foreign_keys = OFF;');
     try {
       db.exec(`
+        DROP INDEX IF EXISTS rdf_quads_spog;
+        DROP INDEX IF EXISTS rdf_quads_sopg;
+        DROP INDEX IF EXISTS rdf_quads_psog;
+        DROP INDEX IF EXISTS rdf_quads_posg;
+        DROP INDEX IF EXISTS rdf_quads_ospg;
+        DROP INDEX IF EXISTS rdf_quads_opsg;
+        DROP INDEX IF EXISTS rdf_quads_gspo;
+        DROP INDEX IF EXISTS rdf_quads_gpos;
+        DROP INDEX IF EXISTS rdf_quads_source;
         DROP TABLE IF EXISTS rdf_quads;
         DROP TABLE IF EXISTS rdf_sources;
         DROP TABLE IF EXISTS rdf_terms;
         DROP TABLE IF EXISTS rdf_index_metadata;
       `);
+      dropRdf3xDerivedSchemaObjects(db);
     } finally {
       if (foreignKeys) {
         db.exec('PRAGMA foreign_keys = ON;');
