@@ -256,6 +256,8 @@ the target resource exposes an etag. Query commands must be read-only.
 business schemas itself. All durable model semantics come from
 `@undefineds.co/models`.
 
+### Authority
+
 `@undefineds.co/models` is the authority for RDF classes and predicates,
 resource schemas, id/default functions, storage/resource resolution rules,
 required fields and field types, secret field markers, writable fields,
@@ -328,6 +330,8 @@ Rules:
 - `obj export` exports objects by model class or resource kind. Filtering must
   use model fields or RDF predicates known to `@undefineds.co/models`.
 
+### Storage Resolution
+
 Storage resolution is delegated to `@undefineds.co/models`:
 
 1. If input provides a canonical base-relative `id`, treat it as exact.
@@ -339,7 +343,7 @@ Storage resolution is delegated to `@undefineds.co/models`:
 xpod must not derive paths from class names, resource kinds, or timestamps
 unless that logic comes from the model package.
 
-### Object Output Codes
+### Object Output Contract
 
 `xpod obj` uses the standard JSON envelope and these stable error codes:
 
@@ -352,9 +356,53 @@ unless that logic comes from the model package.
 - `unsupported_model`
 - `write_failed`
 
+Single-item success:
+
+```json
+{
+  "ok": true,
+  "code": "ok",
+  "data": {},
+  "warnings": []
+}
+```
+
 Batch success or partial failure uses `code: "batch_completed"` and returns one
 result per input item with stable `index`, `ok`, `code`, and resource metadata
-when available.
+when available. Results must preserve input order:
+
+```json
+{
+  "ok": true,
+  "code": "batch_completed",
+  "data": [
+    {
+      "index": 0,
+      "ok": true,
+      "code": "ok",
+      "resource": "settings/providers.ttl#openai"
+    },
+    {
+      "index": 1,
+      "ok": false,
+      "code": "validation_failed",
+      "message": "Field provider is required"
+    }
+  ],
+  "warnings": []
+}
+```
+
+Errors use the same envelope and never guess missing schemas:
+
+```json
+{
+  "ok": false,
+  "code": "schema_unknown",
+  "message": "No model schema is registered for credentialProvider",
+  "warnings": []
+}
+```
 
 ## Secrets
 
