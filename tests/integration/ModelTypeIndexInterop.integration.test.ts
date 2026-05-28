@@ -3,6 +3,7 @@ import { Parser } from 'n3';
 import { buildModelTypeIndexEntries } from '../../src/provision/model-type-index';
 import {
   getConfiguredAccount,
+  loginWithClientCredentials,
   setupAccount,
 } from './helpers/solidAccount';
 
@@ -40,7 +41,8 @@ suite('Model TypeIndex data interop', () => {
     expect(typeIndexUrl).toBe(`${account!.podUrl}settings/privateTypeIndex.ttl`);
     expect(storageUrl).toBe(account!.podUrl);
 
-    const typeIndexResponse = await fetch(typeIndexUrl, {
+    const session = await loginWithClientCredentials(account!);
+    const typeIndexResponse = await session.fetch(typeIndexUrl, {
       headers: { Accept: 'text/turtle' },
     });
     expect(typeIndexResponse.status).toBe(200);
