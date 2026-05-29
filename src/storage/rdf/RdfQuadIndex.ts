@@ -5,7 +5,8 @@ import type { Quad, Term } from '@rdfjs/types';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type { QueryOptions, QuintPattern, TermOperators } from '../quint/types';
 import { isTerm } from '../quint/types';
-import { RdfTermDictionary } from './RdfTermDictionary';
+import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
+import { dropRdf3xDerivedSchemaObjects } from './Rdf3xSchema';
 import type {
   RdfCardinalityEstimate,
   RdfCardinalityDistributions,
@@ -38,6 +39,7 @@ import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
+const RDF_QUAD_INDEX_SCHEMA_VERSION = 1;
 
 type IndexedColumn = 'graph_id' | 'subject_id' | 'predicate_id' | 'object_id';
 type PatternKey = 'graph' | 'subject' | 'predicate' | 'object';
@@ -95,6 +97,7 @@ export class RdfQuadIndex {
     }
 
     this.db = this.sqliteRuntime.openDatabase(this.options.path);
+    this.prepareSchemaVersion();
     this.dictionary = new RdfTermDictionary(this.db);
     this.dictionary.initialize();
     this.initializeSchema();
@@ -110,6 +113,7 @@ export class RdfQuadIndex {
     const db = this.requireDb();
     db.exec('DELETE FROM rdf_quads; DELETE FROM rdf_sources; DELETE FROM rdf_terms;');
     this.cardinalityCache.clear();
+    this.bumpDataVersion();
   }
 
   public put(quad: Quad, options?: RdfIndexPutOptions): void {
@@ -119,7 +123,7 @@ export class RdfQuadIndex {
   public replaceSource(quads: Quad[], source: RdfSourceInput): void {
     const db = this.requireDb();
     db.transaction(() => {
-      this.deleteSource(source.source);
+      this.deleteSourceInternal(source.source);
       if (quads.length > 0) {
         this.insertQuads(quads, { source });
       } else {
@@ -127,9 +131,19 @@ export class RdfQuadIndex {
       }
     })();
     this.cardinalityCache.clear();
+    this.bumpDataVersion();
   }
 
   public deleteSource(source: string): number {
+    const result = this.deleteSourceInternal(source);
+    if (result > 0) {
+      this.cardinalityCache.clear();
+      this.bumpDataVersion();
+    }
+    return result;
+  }
+
+  private deleteSourceInternal(source: string): number {
     const db = this.requireDb();
     const row = db
       .prepare<{ id: number }>('SELECT id FROM rdf_sources WHERE source = ?')
@@ -140,9 +154,6 @@ export class RdfQuadIndex {
 
     const result = db.prepare('DELETE FROM rdf_quads WHERE source_file_id = ?').run(row.id);
     db.prepare('DELETE FROM rdf_sources WHERE id = ?').run(row.id);
-    if (result.changes > 0) {
-      this.cardinalityCache.clear();
-    }
     return result.changes;
   }
 
@@ -156,6 +167,7 @@ export class RdfQuadIndex {
       this.insertQuads(quads, options);
     })();
     this.cardinalityCache.clear();
+    this.bumpDataVersion();
   }
 
   private insertQuads(quads: Quad[], options?: RdfIndexPutOptions): void {
@@ -191,21 +203,57 @@ export class RdfQuadIndex {
   }
 
   public delete(pattern: QuintPattern): number {
+    const changes = this.deleteInternal(pattern);
+    if (changes > 0) {
+      this.cardinalityCache.clear();
+      this.bumpDataVersion();
+    }
+    return changes;
+  }
+
+  public applyDelta(deletes: QuintPattern[], inserts: Quad[], options?: RdfIndexPutOptions): { deletedRows: number; insertedRows: number } {
+    if (deletes.length === 0 && inserts.length === 0) {
+      return { deletedRows: 0, insertedRows: 0 };
+    }
+
+    const db = this.requireDb();
+    let deletedRows = 0;
+    db.transaction(() => {
+      for (const pattern of deletes) {
+        deletedRows += this.deleteInternal(pattern);
+      }
+      if (inserts.length > 0) {
+        this.insertQuads(inserts, options);
+      }
+    })();
+    if (deletedRows > 0 || inserts.length > 0) {
+      this.cardinalityCache.clear();
+      this.bumpDataVersion();
+    }
+    return {
+      deletedRows,
+      insertedRows: inserts.length,
+    };
+  }
+
+  private deleteInternal(pattern: QuintPattern): number {
     const db = this.requireDb();
     const { joins, whereClause, params } = this.buildWhereClause(pattern, false);
     if (!whereClause) {
       const result = db.prepare('DELETE FROM rdf_quads').run();
-      this.cardinalityCache.clear();
       return result.changes;
     }
     const sql = joins
       ? `DELETE FROM rdf_quads WHERE rowid IN (SELECT rdf_quads.rowid FROM rdf_quads${joins}${whereClause})`
       : `DELETE FROM rdf_quads${whereClause}`;
-    const changes = db.prepare(sql).run(...params).changes;
-    if (changes > 0) {
-      this.cardinalityCache.clear();
-    }
-    return changes;
+    return db.prepare(sql).run(...params).changes;
+  }
+
+  public dataVersion(): number {
+    const row = this.requireDb()
+      .prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'data_version'")
+      .get();
+    return Number(row?.value ?? 0) || 0;
   }
 
   public scan(pattern: QuintPattern, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
@@ -303,7 +351,6 @@ export class RdfQuadIndex {
         numericJoins,
         numericJoinSql,
         'RDF BGP',
-        this.joinRowKeyExpression(patterns),
       );
     }).join(', ');
     const aggregateJoins = numericJoinSql.join('');
@@ -390,7 +437,6 @@ export class RdfQuadIndex {
         numericJoins,
         numericJoinSql,
         'RDF BGP group aggregate',
-        '__row_key',
       );
     });
     const projection = [
@@ -405,15 +451,12 @@ export class RdfQuadIndex {
       ...aggregateColumns,
     ].join(', ');
     const groupBy = groupColumns.join(', ');
-    const rowKeyExpression = this.joinRowKeyExpression(patterns);
     const aggregateJoins = numericJoinSql.join('');
     const havingClause = this.buildGroupAggregateHavingClause(options.having, aggregateSqlAliases);
     const orderScope = this.buildGroupAggregateOrderScope(options, compiled.variableColumns, aggregateSqlAliases);
     const fromSql = `${compiled.from}${compiled.joins}${aggregateJoins}${compiled.whereClause}`;
     const sourceFromSql = `${compiled.from}${compiled.joins}${aggregateJoins}${orderScope.joins}${compiled.whereClause}`;
-    const sourceSql = aggregateColumns.some((entry) => entry.includes('__row_key'))
-      ? `SELECT ${projection.replace(/__row_key/g, rowKeyExpression)} FROM ${sourceFromSql} GROUP BY ${groupBy}${havingClause.sql}`
-      : `SELECT ${projection} FROM ${sourceFromSql} GROUP BY ${groupBy}${havingClause.sql}`;
+    const sourceSql = `SELECT ${projection} FROM ${sourceFromSql} GROUP BY ${groupBy}${havingClause.sql}`;
     const orderClause = orderScope.orderBy;
     let sql = `${sourceSql}${orderClause}`;
     const params = [...compiled.params, ...havingClause.params];
@@ -658,10 +701,6 @@ export class RdfQuadIndex {
     };
   }
 
-  private joinRowKeyExpression(patterns: RdfQuadJoinPattern[]): string {
-    return patterns.map((_, index) => `q${index}.rowid`).join(` || ':' || `);
-  }
-
   private buildJoinAggregateColumn(
     aggregate: RdfQueryAggregate,
     alias: string,
@@ -670,11 +709,10 @@ export class RdfQuadIndex {
     numericJoins: Map<string, string>,
     numericJoinSql: string[],
     errorPrefix: string,
-    rowKeyExpression: string,
   ): string {
     if (aggregate.type === 'count' && !aggregate.variable) {
       aggregateTypes.set(aggregate.as, 'integer');
-      return `${aggregate.distinct ? `COUNT(DISTINCT ${rowKeyExpression})` : 'COUNT(*)'} AS ${alias}`;
+      return `${aggregate.distinct ? `COUNT(DISTINCT ${joinSolutionMappingKeyExpression(variableColumns, aggregate.distinctVariables, errorPrefix)})` : 'COUNT(*)'} AS ${alias}`;
     }
     if (!aggregate.variable) {
       throw new Error(`${errorPrefix} ${aggregate.type} aggregate requires a bound variable`);
@@ -1257,7 +1295,86 @@ export class RdfQuadIndex {
       CREATE INDEX IF NOT EXISTS rdf_quads_gspo ON rdf_quads(graph_id, subject_id, predicate_id, object_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_gpos ON rdf_quads(graph_id, predicate_id, object_id, subject_id);
       CREATE INDEX IF NOT EXISTS rdf_quads_source ON rdf_quads(source_file_id);
+
+      CREATE TABLE IF NOT EXISTS rdf_index_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
+    this.requireDb().prepare(`
+      INSERT OR IGNORE INTO rdf_index_metadata (key, value)
+      SELECT 'data_version', '1'
+      WHERE EXISTS (SELECT 1 FROM rdf_quads LIMIT 1)
+    `).run();
+  }
+
+  private prepareSchemaVersion(): void {
+    this.ensureMetadataTable();
+    const db = this.requireDb();
+    const row = db
+      .prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'")
+      .get();
+    if (row && row.value !== String(RDF_QUAD_INDEX_SCHEMA_VERSION)) {
+      this.dropIndexSchema();
+      this.ensureMetadataTable();
+    }
+    this.setMetadataValue('schema_version', String(RDF_QUAD_INDEX_SCHEMA_VERSION));
+  }
+
+  private ensureMetadataTable(): void {
+    this.requireDb().exec(`
+      CREATE TABLE IF NOT EXISTS rdf_index_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+  }
+
+  private dropIndexSchema(): void {
+    const db = this.requireDb();
+    const foreignKeys = db.prepare<{ foreign_keys: number }>('PRAGMA foreign_keys').get()?.foreign_keys ?? 0;
+    db.exec('PRAGMA foreign_keys = OFF;');
+    try {
+      db.exec(`
+        DROP INDEX IF EXISTS rdf_quads_spog;
+        DROP INDEX IF EXISTS rdf_quads_sopg;
+        DROP INDEX IF EXISTS rdf_quads_psog;
+        DROP INDEX IF EXISTS rdf_quads_posg;
+        DROP INDEX IF EXISTS rdf_quads_ospg;
+        DROP INDEX IF EXISTS rdf_quads_opsg;
+        DROP INDEX IF EXISTS rdf_quads_gspo;
+        DROP INDEX IF EXISTS rdf_quads_gpos;
+        DROP INDEX IF EXISTS rdf_quads_source;
+        DROP TABLE IF EXISTS rdf_quads;
+        DROP TABLE IF EXISTS rdf_sources;
+        DROP TABLE IF EXISTS rdf_terms;
+        DROP TABLE IF EXISTS rdf_index_metadata;
+      `);
+      dropRdf3xDerivedSchemaObjects(db);
+    } finally {
+      if (foreignKeys) {
+        db.exec('PRAGMA foreign_keys = ON;');
+      }
+    }
+    this.cardinalityCache.clear();
+  }
+
+  private bumpDataVersion(): void {
+    this.requireDb().prepare(`
+      INSERT INTO rdf_index_metadata (key, value)
+      VALUES ('data_version', '1')
+      ON CONFLICT (key)
+      DO UPDATE SET value = CAST(value AS INTEGER) + 1
+    `).run();
+  }
+
+  private setMetadataValue(key: string, value: string): void {
+    this.requireDb().prepare(`
+      INSERT INTO rdf_index_metadata (key, value)
+      VALUES (?, ?)
+      ON CONFLICT (key)
+      DO UPDATE SET value = excluded.value
+    `).run(key, value);
   }
 
   private upsertSource(source: RdfSourceInput): number {
@@ -1805,9 +1922,11 @@ export class RdfQuadIndex {
     return {
       join: ` JOIN rdf_terms ${alias} ON ${alias}.id = ${this.scopedQuadColumn(column, scope)}`,
       sql: `${alias}.kind IN (${kind.map(() => '?').join(', ')})
+        AND ${alias}.value_head >= ?
+        AND ${alias}.value_head < ?
         AND ${alias}.value >= ?
         AND ${alias}.value < ?`,
-      params: [...kind, prefix, `${prefix}\uffff`],
+      params: [...kind, rdfTermValueHead(prefix), `${rdfTermValueHead(prefix)}\uffff`, prefix, `${prefix}\uffff`],
     };
   }
 
@@ -2267,4 +2386,26 @@ function uniqueNumbers(values: number[]): number[] {
 
 function uniquePatternKeys(values: PatternKey[]): PatternKey[] {
   return TERM_KEYS.filter((key) => values.includes(key));
+}
+
+function uniqueVariableNames(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function joinSolutionMappingKeyExpression(
+  variableColumns: Map<string, string>,
+  variables: string[] | undefined,
+  errorPrefix: string,
+): string {
+  const variableNames = uniqueVariableNames(variables ?? [...variableColumns.keys()]);
+  if (variableNames.length === 0) {
+    return '1';
+  }
+  return variableNames.map((variableName) => {
+    const column = variableColumns.get(variableName);
+    if (!column) {
+      throw new Error(`${errorPrefix} COUNT(DISTINCT *) cannot read unbound variable: ${variableName}`);
+    }
+    return column;
+  }).join(` || ':' || `);
 }

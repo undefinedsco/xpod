@@ -65,6 +65,29 @@ describe('CSS child process env and args', () => {
     });
   });
 
+  it('escapes legacy CSS runtime config imports when runtime paths contain spaces', () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod css runtime-'));
+    const configDir = path.join(runtimeRoot, 'Application Support', '@undefineds.co', 'xpod');
+    fs.mkdirSync(configDir, { recursive: true });
+    const configPath = path.join(configDir, 'config', 'local.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, '{"@graph":[]}', 'utf-8');
+
+    const runtimeConfig = createCssChildRuntimeConfig({
+      configPath,
+      runtimeRoot,
+    });
+
+    const parsed = JSON.parse(fs.readFileSync(runtimeConfig.configPath, 'utf-8')) as {
+      import?: string[]
+    };
+    expect(parsed.import).toEqual([
+      expect.stringMatching(/^file:\/\//),
+    ]);
+    expect(parsed.import?.[0]).toContain('Application%20Support');
+    expect(parsed.import?.[0]).not.toContain('Application Support');
+  });
+
   it('generates a legacy CSS runtime config without package settings when external oidcIssuer is absent', () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-css-runtime-'));
     const configPath = path.join(runtimeRoot, 'local.json');

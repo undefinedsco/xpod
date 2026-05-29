@@ -52,6 +52,26 @@ describe('RdfSparqlAdapter', () => {
     expect(compiled.query.offset).toBe(2);
   });
 
+  it('compiles implicit default graph reads as exact graph scope for resource base paths', () => {
+    const graph = `${BASE}.data/chat/default/index.ttl`;
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+      }
+    `, graph);
+
+    expect(compiled.query.patterns).toEqual([
+      expect.objectContaining({
+        graph: expect.objectContaining({
+          termType: 'NamedNode',
+          value: graph,
+        }),
+        subject: { variable: 'message' },
+        object: { variable: 'content' },
+      }),
+    ]);
+  });
+
   it('compiles standard XPath function-call string filters into local query shape', () => {
     const compiled = adapter.compile(`
       PREFIX fn: <http://www.w3.org/2005/xpath-functions#>
@@ -92,6 +112,49 @@ describe('RdfSparqlAdapter', () => {
         operand: 'stringValue',
         value: '^h',
         flags: undefined,
+      },
+    ]);
+  });
+
+  it('compiles safely negated string filters into local post-filters', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(!CONTAINS(STR(?content), "skip"))
+        FILTER(!STRSTARTS(STR(?content), "draft"))
+        FILTER(!STRENDS(STR(?content), "tmp"))
+        FILTER(!REGEX(STR(?content), "^old", "i"))
+      }
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([
+      {
+        variable: 'content',
+        operator: '$notContains',
+        operand: 'stringValue',
+        value: 'skip',
+        flags: undefined,
+      },
+      {
+        variable: 'content',
+        operator: '$notStartsWith',
+        operand: 'stringValue',
+        value: 'draft',
+        flags: undefined,
+      },
+      {
+        variable: 'content',
+        operator: '$notEndsWith',
+        operand: 'stringValue',
+        value: 'tmp',
+        flags: undefined,
+      },
+      {
+        variable: 'content',
+        operator: '$notRegex',
+        operand: 'stringValue',
+        value: '^old',
+        flags: 'i',
       },
     ]);
   });
@@ -530,6 +593,86 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
+  it('compiles standard COALESCE, IF, STRDT, and STRLANG BIND expressions into local query shape', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?fallback ?branch ?typed ?localized WHERE {
+        ?message <${CONTENT}> ?content .
+        BIND(COALESCE(STR(?content), "fallback") AS ?fallback)
+        BIND(IF(BOUND(?content), STR(?message), "missing") AS ?branch)
+        BIND(STRDT(STR(?content), <${XSD_INTEGER}>) AS ?typed)
+        BIND(STRLANG(STR(?content), "en") AS ?localized)
+      }
+    `, BASE);
+
+    expect(compiled.query.binds).toEqual([
+      {
+        variable: 'fallback',
+        expression: {
+          type: 'coalesce',
+          expressions: [
+            { type: 'stringValue', variable: 'content' },
+            {
+              type: 'term',
+              term: expect.objectContaining({
+                termType: 'Literal',
+                value: 'fallback',
+              }),
+            },
+          ],
+        },
+      },
+      {
+        variable: 'branch',
+        expression: {
+          type: 'if',
+          condition: [
+            {
+              variable: 'content',
+              operator: '$bound',
+              value: true,
+            },
+          ],
+          then: { type: 'stringValue', variable: 'message' },
+          else: {
+            type: 'term',
+            term: expect.objectContaining({
+              termType: 'Literal',
+              value: 'missing',
+            }),
+          },
+        },
+      },
+      {
+        variable: 'typed',
+        expression: {
+          type: 'strdt',
+          lexical: { type: 'stringValue', variable: 'content' },
+          datatype: {
+            type: 'term',
+            term: expect.objectContaining({
+              termType: 'NamedNode',
+              value: XSD_INTEGER,
+            }),
+          },
+        },
+      },
+      {
+        variable: 'localized',
+        expression: {
+          type: 'strlang',
+          lexical: { type: 'stringValue', variable: 'content' },
+          language: {
+            type: 'term',
+            term: expect.objectContaining({
+              termType: 'Literal',
+              value: 'en',
+            }),
+          },
+        },
+      },
+    ]);
+  });
+
   it('keeps GRAPH ?g bound to local Pod graph scope', () => {
     const compiled = adapter.compile(`
       SELECT ?g ?message WHERE {
@@ -547,6 +690,42 @@ describe('RdfSparqlAdapter', () => {
       value: BASE,
     });
     expect(termToId(compiled.query.patterns[0].predicate as any)).toBe(RDF_TYPE);
+  });
+
+  it('keeps OPTIONAL GRAPH ?g scoped inside the optional group', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?g ?content WHERE {
+        ?message a <${MESSAGE}> .
+        OPTIONAL {
+          GRAPH ?g {
+            ?message <${CONTENT}> ?content .
+          }
+        }
+      }
+    `, BASE);
+
+    expect(compiled.query.patterns).toHaveLength(1);
+    expect(compiled.query.filters).toEqual([]);
+    expect(compiled.query.optional).toHaveLength(1);
+    const optional = compiled.query.optional?.[0];
+    expect(Array.isArray(optional)).toBe(false);
+    expect(optional).toMatchObject({
+      patterns: [
+        {
+          graph: { variable: 'g' },
+          subject: { variable: 'message' },
+          object: { variable: 'content' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'g',
+          operator: '$startsWith',
+          value: BASE,
+        },
+      ],
+    });
+    expect(termToId((optional as any).patterns[0].predicate as any)).toBe(CONTENT);
   });
 
   it('compiles controlled MINUS anti-joins into local query shape', () => {
@@ -658,6 +837,9 @@ describe('RdfSparqlAdapter', () => {
     const countAll = adapter.compile(`
       SELECT (COUNT(*) AS ?count) WHERE { ?s ?p ?o }
     `, BASE);
+    const countDistinctAll = adapter.compile(`
+      SELECT (COUNT(DISTINCT *) AS ?count) WHERE { ?s ?p ?o }
+    `, BASE);
     const countDistinct = adapter.compile(`
       SELECT (COUNT(DISTINCT ?s) AS ?count) WHERE { ?s ?p ?o }
     `, BASE);
@@ -668,12 +850,33 @@ describe('RdfSparqlAdapter', () => {
       variable: undefined,
       distinct: false,
     });
+    expect(countDistinctAll.query.aggregate).toEqual({
+      type: 'count',
+      as: 'count',
+      variable: undefined,
+      distinct: true,
+      distinctVariables: ['s', 'p', 'o'],
+    });
     expect(countDistinct.query.aggregate).toEqual({
       type: 'count',
       as: 'count',
       variable: 's',
       distinct: true,
     });
+
+    const countDistinctPath = adapter.compile(`
+      SELECT (COUNT(DISTINCT *) AS ?count) WHERE {
+        ?message <${HAS_MEMBER}>/<${CONTENT}> ?content .
+      }
+    `, BASE);
+    expect(countDistinctPath.query.aggregate).toMatchObject({
+      type: 'count',
+      as: 'count',
+      variable: undefined,
+      distinct: true,
+      distinctVariables: ['message', 'content'],
+    });
+    expect(countDistinctPath.query.aggregate?.distinctVariables).not.toContain('__rdf_path_1');
   });
 
   it('compiles guarded numeric aggregate projections into local aggregate aliases', () => {
@@ -1121,6 +1324,134 @@ describe('RdfSparqlAdapter', () => {
           termType: 'NamedNode',
           value: XSD_INTEGER,
         }),
+      },
+    ]);
+  });
+
+  it('compiles safely negated RDF term-test FILTER functions', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content ?thread WHERE {
+        ?message <${CONTENT}> ?content .
+        ?message <${HAS_MEMBER}> ?thread .
+        FILTER(!isIRI(?content))
+        FILTER(!isLiteral(?message))
+        FILTER(!isNumeric(?content))
+        FILTER(!sameTerm(?message, <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_2>))
+        FILTER(!sameTerm(?message, ?thread))
+      }
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([
+      {
+        variable: 'content',
+        operator: '$notTermType',
+        value: 'iri',
+      },
+      {
+        variable: 'message',
+        operator: '$notTermType',
+        value: 'literal',
+      },
+      {
+        variable: 'content',
+        operator: '$notTermType',
+        value: 'numeric',
+      },
+      {
+        variable: 'message',
+        operator: '$notSameTerm',
+        value: expect.objectContaining({
+          termType: 'NamedNode',
+          value: `${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_2`,
+        }),
+      },
+      {
+        variable: 'message',
+        operator: '$notSameTerm',
+        variable2: 'thread',
+      },
+    ]);
+  });
+
+  it('compiles safely negated LANGMATCHES filters as local post-filters', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(!LANGMATCHES(LANG(?content), "en"))
+      }
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([
+      {
+        variable: 'content',
+        operator: '$notLangMatches',
+        value: 'en',
+      },
+    ]);
+  });
+
+  it('compiles language and datatype membership filters as local post-filters', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(LANG(?content) IN ("en", "zh"))
+        FILTER(LANG(?content) NOT IN ("fr"))
+        FILTER(DATATYPE(?content) IN (<http://www.w3.org/2001/XMLSchema#string>, <${XSD_INTEGER}>))
+        FILTER(DATATYPE(?content) NOT IN (<http://www.w3.org/2001/XMLSchema#boolean>))
+        FILTER(!(LANG(?content) IN ("de")))
+        FILTER(!(DATATYPE(?content) NOT IN (<http://www.w3.org/2001/XMLSchema#string>)))
+      }
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([
+      {
+        variable: 'content',
+        operator: '$langIn',
+        values: ['en', 'zh'],
+      },
+      {
+        variable: 'content',
+        operator: '$notLangIn',
+        values: ['fr'],
+      },
+      {
+        variable: 'content',
+        operator: '$datatypeIn',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: 'http://www.w3.org/2001/XMLSchema#string',
+          }),
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: XSD_INTEGER,
+          }),
+        ],
+      },
+      {
+        variable: 'content',
+        operator: '$notDatatypeIn',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: 'http://www.w3.org/2001/XMLSchema#boolean',
+          }),
+        ],
+      },
+      {
+        variable: 'content',
+        operator: '$notLangIn',
+        values: ['de'],
+      },
+      {
+        variable: 'content',
+        operator: '$datatypeIn',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: 'http://www.w3.org/2001/XMLSchema#string',
+          }),
+        ],
       },
     ]);
   });
@@ -1576,6 +1907,32 @@ describe('RdfSparqlAdapter', () => {
     expect(termToId(compiled.query.unions?.[0].branches[1].patterns[0].predicate as any)).toBe(HAS_MEMBER);
     expect(termToId(compiled.query.unions?.[0].branches[2].patterns[0].predicate as any)).toBe(RDF_TYPE);
     expect(termToId(compiled.query.unions?.[0].branches[2].patterns[0].object as any)).toBe(MESSAGE);
+  });
+
+  it('keeps branch-local required patterns before nested UNION groups', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?value WHERE {
+        {
+          ?message a <${MESSAGE}> .
+          { ?message <${CONTENT}> ?value }
+          UNION
+          { ?message <${HAS_MEMBER}> ?value }
+        }
+        UNION
+        { ?message <${CONTENT}> ?value }
+      }
+      ORDER BY ?message
+    `, BASE);
+
+    const branches = compiled.query.unions?.[0].branches ?? [];
+    expect(branches).toHaveLength(2);
+    expect(branches[0].patterns).toHaveLength(1);
+    expect(termToId(branches[0].patterns[0].predicate as any)).toBe(RDF_TYPE);
+    expect(termToId(branches[0].patterns[0].object as any)).toBe(MESSAGE);
+    expect(branches[0].unions?.[0].branches).toHaveLength(2);
+    expect(termToId(branches[0].unions?.[0].branches[0].patterns[0].predicate as any)).toBe(CONTENT);
+    expect(termToId(branches[0].unions?.[0].branches[1].patterns[0].predicate as any)).toBe(HAS_MEMBER);
+    expect(termToId(branches[1].patterns[0].predicate as any)).toBe(CONTENT);
   });
 
   it('compiles UNION branches with local filters and trailing VALUES', () => {
@@ -2119,6 +2476,216 @@ describe('RdfSparqlAdapter', () => {
             value: CONTENT,
           }),
           object: { variable: 'content' },
+        },
+      ],
+    });
+  });
+
+  it('compiles drizzle-solid graph pattern update templates', () => {
+    const graph = `${BASE}.data/settings/credentials.ttl`;
+    const subject = `${graph}#cred-status-test`;
+    const update = {
+      type: 'update',
+      prefixes: {},
+      updates: [
+        {
+          updateType: 'insertdelete',
+          delete: [
+            {
+              type: 'graph',
+              name: { termType: 'NamedNode', value: graph },
+              patterns: [
+                {
+                  type: 'bgp',
+                  triples: [
+                    {
+                      subject: { termType: 'NamedNode', value: subject },
+                      predicate: { termType: 'NamedNode', value: CONTENT },
+                      object: { termType: 'Variable', value: 'old_status' },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          insert: [],
+          where: [
+            {
+              type: 'graph',
+              name: { termType: 'NamedNode', value: graph },
+              patterns: [
+                {
+                  type: 'bgp',
+                  triples: [
+                    {
+                      subject: { termType: 'NamedNode', value: subject },
+                      predicate: { termType: 'NamedNode', value: CONTENT },
+                      object: { termType: 'Variable', value: 'old_status' },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          updateType: 'insert',
+          insert: [
+            {
+              type: 'graph',
+              name: { termType: 'NamedNode', value: graph },
+              patterns: [
+                {
+                  type: 'bgp',
+                  triples: [
+                    {
+                      subject: { termType: 'NamedNode', value: subject },
+                      predicate: { termType: 'NamedNode', value: CONTENT },
+                      object: {
+                        termType: 'Literal',
+                        value: 'active',
+                        language: '',
+                        datatype: {
+                          termType: 'NamedNode',
+                          value: 'http://www.w3.org/2001/XMLSchema#string',
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const delta = adapter.compileUpdateDelta(update as any, BASE);
+
+    expect(delta.operations).toHaveLength(2);
+    expect(delta.operations[0]).toMatchObject({
+      type: 'deleteWhere',
+      template: [
+        {
+          graph: expect.objectContaining({ value: graph }),
+          subject: expect.objectContaining({ value: subject }),
+          predicate: expect.objectContaining({ value: CONTENT }),
+          object: { variable: 'old_status' },
+        },
+      ],
+    });
+    expect(delta.operations[1]).toMatchObject({
+      type: 'insert',
+      quads: [
+        {
+          graph: expect.objectContaining({ value: graph }),
+          subject: expect.objectContaining({ value: subject }),
+          predicate: expect.objectContaining({ value: CONTENT }),
+          object: expect.objectContaining({ value: 'active' }),
+        },
+      ],
+    });
+  });
+
+  it('compiles default graph SPARQL UPDATE only when a write target graph is provided', () => {
+    const graph = `${BASE}.data/chat/default/index.ttl`;
+    expect(() => adapter.compileUpdateDelta(`
+      DELETE WHERE {
+        <${graph}#msg_1> <${CONTENT}> ?content .
+      }
+    `, BASE)).toThrow(UnsupportedSparqlQueryError);
+
+    const delta = adapter.compileUpdateDelta(`
+      DELETE WHERE {
+        <${graph}#msg_1> <${CONTENT}> ?content .
+      }
+    `, BASE, { defaultGraph: graph });
+
+    expect(delta.operations).toHaveLength(1);
+    expect(delta.operations[0]).toMatchObject({
+      type: 'deleteWhere',
+      query: {
+        patterns: [
+          {
+            graph: expect.objectContaining({
+              termType: 'NamedNode',
+              value: graph,
+            }),
+            subject: expect.objectContaining({
+              termType: 'NamedNode',
+              value: `${graph}#msg_1`,
+            }),
+            predicate: expect.objectContaining({
+              termType: 'NamedNode',
+              value: CONTENT,
+            }),
+            object: { variable: 'content' },
+          },
+        ],
+      },
+      template: [
+        {
+          graph: expect.objectContaining({
+            termType: 'NamedNode',
+            value: graph,
+          }),
+          subject: expect.objectContaining({
+            termType: 'NamedNode',
+            value: `${graph}#msg_1`,
+          }),
+          object: { variable: 'content' },
+        },
+      ],
+    });
+  });
+
+  it('compiles default graph DELETE/INSERT WHERE against the explicit write target graph', () => {
+    const graph = `${BASE}.data/chat/default/index.ttl`;
+    const delta = adapter.compileUpdateDelta(`
+      DELETE {
+        <${graph}#msg_1> <${CONTENT}> ?old .
+      }
+      INSERT {
+        <${graph}#msg_1> <${CONTENT}> "changed" .
+      }
+      WHERE {
+        <${graph}#msg_1> <${CONTENT}> ?old .
+      }
+    `, BASE, { defaultGraph: graph });
+
+    expect(delta.operations).toHaveLength(1);
+    expect(delta.operations[0]).toMatchObject({
+      type: 'insertDeleteWhere',
+      query: {
+        patterns: [
+          {
+            graph: expect.objectContaining({
+              termType: 'NamedNode',
+              value: graph,
+            }),
+            object: { variable: 'old' },
+          },
+        ],
+      },
+      deletes: [
+        {
+          graph: expect.objectContaining({
+            termType: 'NamedNode',
+            value: graph,
+          }),
+          object: { variable: 'old' },
+        },
+      ],
+      inserts: [
+        {
+          graph: expect.objectContaining({
+            termType: 'NamedNode',
+            value: graph,
+          }),
+          object: expect.objectContaining({
+            termType: 'Literal',
+            value: 'changed',
+          }),
         },
       ],
     });
@@ -2793,6 +3360,207 @@ describe('RdfSparqlAdapter', () => {
     });
   });
 
+  it('compiles finite GRAPH variable update templates', () => {
+    const namedGraphA = `${BASE}.data/chat/default/a.ttl`;
+    const namedGraphB = `${BASE}.data/chat/default/b.ttl`;
+    const delta = adapter.compileUpdateDelta(`
+      DELETE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH ?g {
+          ?message <${CONTENT}> "rewritten by graph var" .
+        }
+      }
+      USING NAMED <${namedGraphA}>
+      USING NAMED <${namedGraphB}>
+      WHERE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+    `, BASE);
+
+    const operation = delta.operations[0];
+    expect(operation.type).toBe('insertDeleteWhere');
+    if (operation.type !== 'insertDeleteWhere') {
+      throw new Error(`Unexpected operation type: ${operation.type}`);
+    }
+    expect(operation.query.filters).toEqual([
+      {
+        variable: 'g',
+        operator: '$in',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: namedGraphA,
+          }),
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: namedGraphB,
+          }),
+        ],
+      },
+    ]);
+    expect(operation.deletes[0]).toMatchObject({
+      graph: { variable: 'g' },
+      subject: { variable: 'message' },
+      object: { variable: 'old' },
+    });
+    expect(operation.inserts[0]).toMatchObject({
+      graph: { variable: 'g' },
+      subject: { variable: 'message' },
+      object: expect.objectContaining({
+        termType: 'Literal',
+        value: 'rewritten by graph var',
+      }),
+    });
+  });
+
+  it('compiles GRAPH variable update templates constrained by explicit graph filters', () => {
+    const namedGraphA = `${BASE}.data/chat/default/a.ttl`;
+    const namedGraphB = `${BASE}.data/chat/default/b.ttl`;
+    const delta = adapter.compileUpdateDelta(`
+      DELETE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH ?g {
+          ?message <${CONTENT}> "rewritten by explicit graph filter" .
+        }
+      }
+      WHERE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+        FILTER(?g IN (<${namedGraphA}>, <${namedGraphB}>))
+      }
+    `, BASE);
+
+    const operation = delta.operations[0];
+    expect(operation.type).toBe('insertDeleteWhere');
+    if (operation.type !== 'insertDeleteWhere') {
+      throw new Error(`Unexpected operation type: ${operation.type}`);
+    }
+    expect(operation.query.filters).toEqual(expect.arrayContaining([
+      {
+        variable: 'g',
+        operator: '$startsWith',
+        value: BASE,
+      },
+      {
+        variable: 'g',
+        operator: '$in',
+        values: [
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: namedGraphA,
+          }),
+          expect.objectContaining({
+            termType: 'NamedNode',
+            value: namedGraphB,
+          }),
+        ],
+      },
+    ]));
+    expect(operation.deletes[0]).toMatchObject({
+      graph: { variable: 'g' },
+      subject: { variable: 'message' },
+      object: { variable: 'old' },
+    });
+    expect(operation.inserts[0]).toMatchObject({
+      graph: { variable: 'g' },
+      subject: { variable: 'message' },
+      object: expect.objectContaining({
+        termType: 'Literal',
+        value: 'rewritten by explicit graph filter',
+      }),
+    });
+  });
+
+  it('compiles GRAPH variable update templates constrained by VALUES graph rows', () => {
+    const namedGraphA = `${BASE}.data/chat/default/a.ttl`;
+    const namedGraphB = `${BASE}.data/chat/default/b.ttl`;
+    const delta = adapter.compileUpdateDelta(`
+      DELETE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH ?g {
+          ?message <${CONTENT}> "rewritten from values" .
+        }
+      }
+      WHERE {
+        GRAPH ?g {
+          ?message <${CONTENT}> ?old .
+        }
+        VALUES (?g ?message) {
+          (<${namedGraphA}> <${namedGraphA}#msg_a>)
+          (<${namedGraphB}> <${namedGraphB}#msg_b>)
+        }
+      }
+    `, BASE);
+
+    const operation = delta.operations[0];
+    expect(operation.type).toBe('insertDeleteWhere');
+    if (operation.type !== 'insertDeleteWhere') {
+      throw new Error(`Unexpected operation type: ${operation.type}`);
+    }
+    expect(operation.query.values).toEqual([
+      {
+        variables: ['g', 'message'],
+        rows: [
+          {
+            g: expect.objectContaining({
+              termType: 'NamedNode',
+              value: namedGraphA,
+            }),
+            message: expect.objectContaining({
+              termType: 'NamedNode',
+              value: `${namedGraphA}#msg_a`,
+            }),
+          },
+          {
+            g: expect.objectContaining({
+              termType: 'NamedNode',
+              value: namedGraphB,
+            }),
+            message: expect.objectContaining({
+              termType: 'NamedNode',
+              value: `${namedGraphB}#msg_b`,
+            }),
+          },
+        ],
+      },
+    ]);
+    expect(operation.query.filters).toEqual(expect.arrayContaining([
+      {
+        variable: 'g',
+        operator: '$startsWith',
+        value: BASE,
+      },
+    ]));
+    expect(operation.deletes[0]).toMatchObject({
+      graph: { variable: 'g' },
+      subject: { variable: 'message' },
+      object: { variable: 'old' },
+    });
+    expect(operation.inserts[0]).toMatchObject({
+      graph: { variable: 'g' },
+      subject: { variable: 'message' },
+      object: expect.objectContaining({
+        termType: 'Literal',
+        value: 'rewritten from values',
+      }),
+    });
+  });
+
   it('rejects update shapes that cannot be safely applied as embedded deltas', () => {
     expect(() => adapter.compileUpdateDelta(`
       INSERT DATA {
@@ -2886,6 +3654,47 @@ describe('RdfSparqlAdapter', () => {
       WHERE {
         GRAPH ?g {
           ?s <${CONTENT}> ?old .
+        }
+      }
+    `, BASE)).toThrow(UnsupportedSparqlQueryError);
+
+    expect(() => adapter.compileUpdateDelta(`
+      DELETE {
+        GRAPH ?g {
+          ?s <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH ?g {
+          ?s <${CONTENT}> "changed" .
+        }
+      }
+      WHERE {
+        GRAPH ?g {
+          ?s <${CONTENT}> ?old .
+        }
+        FILTER(?g IN (<${BASE}.data/chat/default/a.ttl>, <https://external.example/data.ttl>))
+      }
+    `, BASE)).toThrow(UnsupportedSparqlQueryError);
+
+    expect(() => adapter.compileUpdateDelta(`
+      DELETE {
+        GRAPH ?g {
+          ?s <${CONTENT}> ?old .
+        }
+      }
+      INSERT {
+        GRAPH ?g {
+          ?s <${CONTENT}> ?replacement .
+        }
+      }
+      WHERE {
+        GRAPH ?g {
+          ?s <${CONTENT}> ?old .
+        }
+        VALUES (?g ?replacement) {
+          (<${BASE}.data/chat/default/a.ttl> "changed")
+          (<https://external.example/data.ttl> "external")
         }
       }
     `, BASE)).toThrow(UnsupportedSparqlQueryError);
@@ -3231,10 +4040,6 @@ describe('RdfSparqlAdapter', () => {
   });
 
   it('falls back for unsupported SPARQL shapes instead of returning partial results', () => {
-    expect(() => adapter.compile(`
-      SELECT ?s WHERE { OPTIONAL { GRAPH ?g { ?s ?p ?o } } }
-    `, BASE)).toThrow(UnsupportedSparqlQueryError);
-
     expect(() => adapter.compile(`
       SELECT ?message WHERE {
         VALUES ?message { <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_1> }

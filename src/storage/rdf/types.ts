@@ -7,6 +7,7 @@ export interface RdfTermRow {
   id: number;
   kind: RdfTermKind;
   value: string;
+  value_head: string;
   datatype_id: number | null;
   lang: string | null;
   hash: string;
@@ -46,6 +47,8 @@ export interface RdfQuadIndexOptions {
   path: string;
   debug?: boolean;
 }
+
+export type RdfDerivedIndexProfile = 'baseline' | 'rdf3x';
 
 export interface RdfShadowAutoBackfillOptions {
   enabled?: boolean;
@@ -92,6 +95,32 @@ export interface RdfIndexStats {
   serializedTermTextBytes: number;
   literalDatatypeDistribution: RdfLiteralDatatypeDistribution[];
   cardinalityDistributions: RdfCardinalityDistributions;
+}
+
+export interface RdfEngineStorageStats {
+  derivedIndexProfile: RdfDerivedIndexProfile;
+  facts: RdfIndexStats;
+  rdf3x?: {
+    stats: Rdf3xIndexStats;
+    syncedWithFacts: boolean;
+  };
+  factsBytes: number;
+  derivedBytes: number;
+  totalBytes: number;
+  derivedToFactsRatio: number;
+  totalToFactsRatio: number;
+}
+
+export interface RdfDerivedIndexRefreshResult {
+  derivedIndexProfile: RdfDerivedIndexProfile;
+  factsDataVersion: number;
+  rdf3x?: {
+    refreshed: boolean;
+    previousFactsDataVersion: number;
+    factsDataVersion: number;
+    syncedWithFacts: boolean;
+    rebuild?: Rdf3xRebuildResult;
+  };
 }
 
 export interface RdfIndexSpaceObject {
@@ -166,7 +195,7 @@ export type Rdf3xPermutationName = 'SPO' | 'SOP' | 'PSO' | 'POS' | 'OSP' | 'OPS'
 export type Rdf3xPairProjectionName = 'SP' | 'SO' | 'PS' | 'PO' | 'OS' | 'OP';
 export type Rdf3xTermProjectionName = 'S' | 'P' | 'O';
 
-export interface Rdf3xTripleIndexOptions {
+export interface Rdf3xIndexOptions {
   path: string;
   debug?: boolean;
 }
@@ -175,22 +204,51 @@ export interface Rdf3xGraphPrefixPattern {
   $startsWith: string;
 }
 
-export interface Rdf3xNumericObjectRangePattern {
+export interface Rdf3xTermInPattern {
+  $in: Term[];
+}
+
+export interface Rdf3xTermNotInPattern {
+  $notIn: Term[];
+}
+
+export type Rdf3xTermTypePatternValue = 'iri' | 'blank' | 'literal' | 'numeric';
+
+export interface Rdf3xTermMetadataPattern {
+  $termType?: Rdf3xTermTypePatternValue;
+  $language?: string;
+  $notLanguage?: string;
+  $langMatches?: string;
+  $datatype?: Term;
+  $notDatatype?: Term;
+}
+
+export interface Rdf3xObjectRangePattern {
   $gt?: Term | string | number;
   $gte?: Term | string | number;
   $lt?: Term | string | number;
   $lte?: Term | string | number;
 }
 
+export type Rdf3xNumericObjectRangePattern = Rdf3xObjectRangePattern;
+
+export interface Rdf3xObjectTextSearchPattern {
+  $contains?: string;
+  $endsWith?: string;
+}
+
+export interface Rdf3xObjectOperatorPattern extends Rdf3xObjectRangePattern, Rdf3xObjectTextSearchPattern, Rdf3xTermMetadataPattern {}
+
 export interface Rdf3xTriplePattern {
-  graph?: Term | Rdf3xGraphPrefixPattern;
-  subject?: Term;
-  predicate?: Term;
-  object?: Term | Rdf3xNumericObjectRangePattern;
+  graph?: Term | Rdf3xGraphPrefixPattern | Rdf3xTermInPattern | Rdf3xTermNotInPattern | Rdf3xTermMetadataPattern;
+  subject?: Term | Rdf3xTermInPattern | Rdf3xTermNotInPattern | Rdf3xTermMetadataPattern;
+  predicate?: Term | Rdf3xTermInPattern | Rdf3xTermNotInPattern | Rdf3xTermMetadataPattern;
+  object?: Term | Rdf3xObjectOperatorPattern | Rdf3xTermInPattern | Rdf3xTermNotInPattern;
 }
 
 export interface Rdf3xTripleScanOptions {
   order?: Array<'graph' | 'subject' | 'predicate' | 'object'>;
+  orderDirections?: Array<'asc' | 'desc'>;
   reverse?: boolean;
   limit?: number;
   offset?: number;
@@ -210,6 +268,11 @@ export interface Rdf3xTripleScanResult {
   metrics: Rdf3xIndexMetrics;
 }
 
+export interface Rdf3xCountResult {
+  count: number;
+  metrics: Rdf3xIndexMetrics;
+}
+
 export interface Rdf3xJoinOptions {
   orderBy?: RdfQuadJoinOrder[];
   limit?: number;
@@ -217,6 +280,7 @@ export interface Rdf3xJoinOptions {
   project?: string[];
   distinct?: boolean;
   countMatchedRows?: boolean;
+  values?: RdfValuesBindingSource[];
 }
 
 export interface Rdf3xJoinMetrics {
@@ -238,6 +302,7 @@ export interface Rdf3xRebuildResult {
   uniqueTriples: number;
   memberships: number;
   projectionRows: number;
+  factsDataVersion: number;
   durationMs: number;
 }
 
@@ -252,6 +317,7 @@ export interface Rdf3xIndexStats {
   uniqueTriples: number;
   membershipCount: number;
   graphCount: number;
+  factsDataVersion: number;
   permutationRows: Record<Rdf3xPermutationName, number>;
   pairProjectionRows: Record<Rdf3xPairProjectionName, number>;
   termProjectionRows: Record<Rdf3xTermProjectionName, number>;
@@ -373,6 +439,7 @@ export interface RdfQueryAggregate {
   as: string;
   variable?: string;
   distinct?: boolean;
+  distinctVariables?: string[];
 }
 
 export type RdfBindExpression =
@@ -382,6 +449,8 @@ export type RdfBindExpression =
   | { type: 'stringLength'; variable: string }
   | { type: 'lowerCase'; expression: RdfBindExpression }
   | { type: 'upperCase'; expression: RdfBindExpression }
+  | { type: 'coalesce'; expressions: RdfBindExpression[] }
+  | { type: 'if'; condition: RdfQueryFilter[]; then: RdfBindExpression; else: RdfBindExpression }
   | {
     type: 'substring';
     expression: RdfBindExpression;
@@ -389,7 +458,9 @@ export type RdfBindExpression =
     length?: RdfBindExpression;
   }
   | { type: 'concat'; expressions: RdfBindExpression[] }
-  | { type: 'iri'; expression: RdfBindExpression; base: string };
+  | { type: 'iri'; expression: RdfBindExpression; base: string }
+  | { type: 'strdt'; lexical: RdfBindExpression; datatype: RdfBindExpression }
+  | { type: 'strlang'; lexical: RdfBindExpression; language: RdfBindExpression };
 
 export interface RdfQueryBind {
   variable: string;
@@ -409,14 +480,25 @@ export type RdfQueryFilterOperator =
   | '$contains'
   | '$endsWith'
   | '$regex'
+  | '$notStartsWith'
+  | '$notContains'
+  | '$notEndsWith'
+  | '$notRegex'
   | '$bound'
   | '$termType'
+  | '$notTermType'
   | '$sameTerm'
+  | '$notSameTerm'
   | '$lang'
   | '$notLang'
+  | '$langIn'
+  | '$notLangIn'
   | '$langMatches'
+  | '$notLangMatches'
   | '$datatype'
-  | '$notDatatype';
+  | '$notDatatype'
+  | '$datatypeIn'
+  | '$notDatatypeIn';
 
 export type RdfQueryFilterValue = Term | string | number | boolean;
 
@@ -527,6 +609,7 @@ export interface RdfLocalQuery {
 export interface RdfUnionQueryBranch {
   patterns: RdfQueryPattern[];
   values?: RdfValuesBindingSource[];
+  unions?: RdfUnionQueryGroup[];
   optional?: Array<RdfQueryPattern[] | RdfOptionalQueryGroup>;
   binds?: RdfQueryBind[];
   filters?: RdfQueryFilter[];

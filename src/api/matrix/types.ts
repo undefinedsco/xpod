@@ -20,6 +20,8 @@ export interface MatrixEventRecord {
   sender: string;
   senderWebId?: string;
   originServerTs: number;
+  depth?: number;
+  txnId?: string;
   content: Record<string, unknown>;
   stateKey?: string;
   unsigned?: Record<string, unknown>;

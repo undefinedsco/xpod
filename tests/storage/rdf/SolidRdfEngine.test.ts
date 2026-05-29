@@ -7,7 +7,7 @@ import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
 import {
   RdfQuadIndex,
-  Rdf3xTripleIndex,
+  Rdf3xIndex,
   SolidRdfEngine,
   defaultSyntheticMessagesForRdfModelsScale,
   estimateRdfModelsSyntheticQuadCount,
@@ -24,6 +24,8 @@ import {
 const { namedNode, literal, quad } = DataFactory;
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
+const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
+const SIOC_CONTENT = 'http://rdfs.org/sioc/ns#content';
 const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
 const UDFS = 'https://undefineds.co/ns#';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
@@ -34,7 +36,7 @@ const MEETING_MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 
 describe('SolidRdfEngine', () => {
   let index: RdfQuadIndex;
-  let rdf3xIndex: Rdf3xTripleIndex;
+  let rdf3xIndex: Rdf3xIndex;
   let compatibilityStore: SqliteQuintStore;
   let engine: SolidRdfEngine;
   let root: string;
@@ -44,7 +46,7 @@ describe('SolidRdfEngine', () => {
     const dbPath = path.join(root, 'rdf.sqlite');
     index = new RdfQuadIndex({ path: dbPath });
     index.open();
-    rdf3xIndex = new Rdf3xTripleIndex({ path: dbPath });
+    rdf3xIndex = new Rdf3xIndex({ path: dbPath });
     rdf3xIndex.open();
     compatibilityStore = new SqliteQuintStore({ path: path.join(root, 'compat.sqlite') });
     await compatibilityStore.open();
@@ -173,8 +175,13 @@ describe('SolidRdfEngine', () => {
     expect(result.orderedMatch).toBe(true);
     expect(result.primary).toHaveLength(1);
     expect(result.rdf3x.map((q) => q.subject.value)).toEqual(['https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_10']);
-    expect(result.rdf3xMetrics.indexChoice).toBe('POS');
-    expect(result.rdf3xMetrics.queryPlan?.join('\n')).toContain('NumericRange(object$gt)');
+    expect(result.rdf3xMetrics.indexChoice).toBe('source-membership');
+    const plan = result.rdf3xMetrics.queryPlan?.join('\n') ?? '';
+    expect(plan).toContain('Rdf3xMembershipScan');
+    expect(plan).toContain('FROM rdf3x_stat_g');
+    expect(plan).toContain('JOIN rdf_quads AS membership');
+    expect(plan).toContain('GraphPrefixMembershipFilter');
+    expect(plan).toContain('NumericRange(object$gt)');
   });
 
   it('runs a shadow RDF-3X join compare against the baseline join planner', () => {
@@ -269,6 +276,430 @@ describe('SolidRdfEngine', () => {
     expect(result.rdf3xMetrics.engine).toBe('solid-rdf3x');
   });
 
+  it('auto-configures RDF-3X primary for file-backed engine options', async () => {
+    const autoRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-auto-'));
+    const autoEngine = new SolidRdfEngine({
+      index: { path: path.join(autoRoot, 'rdf.sqlite') },
+      autoOpen: true,
+    });
+
+    try {
+      expect(autoEngine.derivedIndexProfile).toBe('rdf3x');
+      expect(autoEngine.rdf3xIndex).toBeInstanceOf(Rdf3xIndex);
+
+      const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+      const type = namedNode(RDF_TYPE);
+      const created = namedNode(DCT_CREATED);
+      const messageType = namedNode(MEETING_MESSAGE);
+      const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+      const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+      autoEngine.put([
+        quad(msg1, type, messageType, graph),
+        quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
+        quad(msg2, type, messageType, graph),
+        quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), graph),
+      ]);
+      autoEngine.refreshDerivedIndexes();
+
+      const result = autoEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: type,
+            object: messageType,
+          },
+          {
+            subject: { variable: 'message' },
+            predicate: created,
+            object: { variable: 'createdAt' },
+          },
+        ],
+        select: ['message', 'createdAt'],
+        orderBy: [{ variable: 'createdAt', direction: 'desc' }],
+        limit: 1,
+      });
+
+      expect(result.bindings.map((binding) => ({
+        message: binding.message.value,
+        createdAt: binding.createdAt.value,
+      }))).toEqual([
+        {
+          message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+          createdAt: '2026-05-18T00:00:03.000Z',
+        },
+      ]);
+      expect(result.metrics.plan).toContain('Rdf3xJoinBGP(2)');
+      expect(result.metrics.plan).toContain('Rdf3xPrimaryJoinLimit');
+      expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+
+      const storage = autoEngine.storageStats();
+      expect(storage.derivedIndexProfile).toBe('rdf3x');
+      expect(storage.facts.quadCount).toBe(4);
+      expect(storage.rdf3x).toMatchObject({
+        syncedWithFacts: true,
+        stats: {
+          membershipCount: 4,
+          factsDataVersion: autoEngine.index.dataVersion(),
+        },
+      });
+      expect(storage.derivedBytes).toBeGreaterThan(0);
+      expect(storage.totalBytes).toBe(storage.factsBytes + storage.derivedBytes);
+      expect(storage.totalToFactsRatio).toBeGreaterThan(1);
+    } finally {
+      await autoEngine.close();
+      await rm(autoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes RDF-3X derived indexes through the maintenance API before queries', async () => {
+    const autoRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-refresh-derived-'));
+    const autoEngine = new SolidRdfEngine({
+      index: { path: path.join(autoRoot, 'rdf.sqlite') },
+      autoOpen: true,
+    });
+
+    try {
+      const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+      const type = namedNode(RDF_TYPE);
+      const created = namedNode(DCT_CREATED);
+      const messageType = namedNode(MEETING_MESSAGE);
+      const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+
+      autoEngine.put([
+        quad(msg1, type, messageType, graph),
+        quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      ]);
+
+      expect(autoEngine.storageStats().rdf3x).toMatchObject({
+        syncedWithFacts: false,
+        stats: {
+          factsDataVersion: 0,
+        },
+      });
+
+      const first = autoEngine.refreshDerivedIndexes();
+      const dataVersion = autoEngine.index.dataVersion();
+      expect(first).toMatchObject({
+        derivedIndexProfile: 'rdf3x',
+        factsDataVersion: dataVersion,
+        rdf3x: {
+          refreshed: true,
+          previousFactsDataVersion: 0,
+          factsDataVersion: dataVersion,
+          syncedWithFacts: true,
+          rebuild: {
+            scannedQuads: 2,
+            memberships: 2,
+          },
+        },
+      });
+
+      const second = autoEngine.refreshDerivedIndexes();
+      expect(second).toEqual({
+        derivedIndexProfile: 'rdf3x',
+        factsDataVersion: dataVersion,
+        rdf3x: {
+          refreshed: false,
+          previousFactsDataVersion: dataVersion,
+          factsDataVersion: dataVersion,
+          syncedWithFacts: true,
+        },
+      });
+
+      const result = autoEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: type,
+            object: messageType,
+          },
+        ],
+        select: ['message'],
+      });
+
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([
+        'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+      ]);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(true);
+      expect(autoEngine.storageStats().rdf3x).toMatchObject({
+        syncedWithFacts: true,
+        stats: {
+          membershipCount: 2,
+          factsDataVersion: dataVersion,
+        },
+      });
+    } finally {
+      await autoEngine.close();
+      await rm(autoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps facts and RDF-3X derived storage accounting scoped to their own SQLite objects', async () => {
+    const autoRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-storage-stats-'));
+    const autoEngine = new SolidRdfEngine({
+      index: { path: path.join(autoRoot, 'rdf.sqlite') },
+      autoOpen: true,
+    });
+
+    try {
+      const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+      const type = namedNode(RDF_TYPE);
+      const created = namedNode(DCT_CREATED);
+      const messageType = namedNode(MEETING_MESSAGE);
+      const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+      const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+      autoEngine.put([
+        quad(msg1, type, messageType, graph),
+        quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
+        quad(msg2, type, messageType, graph),
+        quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+      ]);
+      autoEngine.refreshDerivedIndexes();
+      autoEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: type,
+            object: messageType,
+          },
+          {
+            subject: { variable: 'message' },
+            predicate: created,
+            object: { variable: 'createdAt' },
+          },
+        ],
+        select: ['message', 'createdAt'],
+      });
+
+      const storage = autoEngine.storageStats();
+      const factObjectNames = new Set(storage.facts.spaceObjects.map((object) => object.name));
+      const derivedObjectNames = new Set(storage.rdf3x?.stats.spaceObjects.map((object) => object.name) ?? []);
+      const factObjectBytes = storage.facts.spaceObjects.reduce((sum, object) => sum + object.bytes, 0);
+      const derivedObjectBytes = storage.rdf3x?.stats.spaceObjects.reduce((sum, object) => sum + object.bytes, 0) ?? 0;
+
+      expect(storage.derivedIndexProfile).toBe('rdf3x');
+      expect(storage.rdf3x?.syncedWithFacts).toBe(true);
+      expect(storage.factsBytes).toBe(factObjectBytes);
+      expect(storage.derivedBytes).toBe(derivedObjectBytes);
+      expect(storage.totalBytes).toBe(factObjectBytes + derivedObjectBytes);
+      expect([...factObjectNames].every((name) => !name.startsWith('rdf3x_'))).toBe(true);
+      expect([...derivedObjectNames].every((name) => name.startsWith('rdf3x_') || name.startsWith('sqlite_autoindex_rdf3x_'))).toBe(true);
+      expect([...factObjectNames].some((name) => derivedObjectNames.has(name))).toBe(false);
+    } finally {
+      await autoEngine.close();
+      await rm(autoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('treats empty Components.js optional RDF-3X options as not configured', async () => {
+    const autoRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-components-empty-rdf3x-'));
+    const autoEngine = new SolidRdfEngine({
+      index: { path: path.join(autoRoot, 'rdf.sqlite') },
+      rdf3xIndex: { path: undefined } as any,
+      autoOpen: true,
+    });
+
+    try {
+      expect(autoEngine.derivedIndexProfile).toBe('rdf3x');
+      expect(autoEngine.rdf3xIndex).toBeInstanceOf(Rdf3xIndex);
+    } finally {
+      await autoEngine.close();
+      await rm(autoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps file-backed engines on the baseline profile when derived RDF-3X materialization is disabled', async () => {
+    const baselineRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-baseline-profile-'));
+    const baselineEngine = new SolidRdfEngine({
+      index: { path: path.join(baselineRoot, 'rdf.sqlite') },
+      derivedIndexProfile: 'baseline',
+      autoOpen: true,
+    });
+
+    try {
+      expect(baselineEngine.derivedIndexProfile).toBe('baseline');
+      expect(baselineEngine.rdf3xIndex).toBeUndefined();
+
+      const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+      const type = namedNode(RDF_TYPE);
+      const created = namedNode(DCT_CREATED);
+      const messageType = namedNode(MEETING_MESSAGE);
+      const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+
+      baselineEngine.put([
+        quad(msg1, type, messageType, graph),
+        quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      ]);
+
+      expect(baselineEngine.refreshDerivedIndexes()).toEqual({
+        derivedIndexProfile: 'baseline',
+        factsDataVersion: baselineEngine.index.dataVersion(),
+      });
+
+      const result = baselineEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: type,
+            object: messageType,
+          },
+          {
+            subject: { variable: 'message' },
+            predicate: created,
+            object: { variable: 'createdAt' },
+          },
+        ],
+        select: ['message', 'createdAt'],
+      });
+
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([
+        'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+      ]);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(true);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xJoinBGP('))).toBe(false);
+
+      const storage = baselineEngine.storageStats();
+      expect(storage.derivedIndexProfile).toBe('baseline');
+      expect(storage.rdf3x).toBeUndefined();
+      expect(storage.derivedBytes).toBe(0);
+      expect(storage.totalBytes).toBe(storage.factsBytes);
+      expect(storage.totalToFactsRatio).toBe(1);
+    } finally {
+      await baselineEngine.close();
+      await rm(baselineRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not refresh auto-configured RDF-3X primary on query after external quad-index writes', async () => {
+    const autoRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-auto-external-'));
+    const dbPath = path.join(autoRoot, 'rdf.sqlite');
+    const autoEngine = new SolidRdfEngine({
+      index: { path: dbPath },
+      autoOpen: true,
+    });
+    const externalIndex = new RdfQuadIndex({ path: dbPath });
+
+    try {
+      expect(autoEngine.derivedIndexProfile).toBe('rdf3x');
+      expect(autoEngine.rdf3xIndex).toBeInstanceOf(Rdf3xIndex);
+
+      const empty = autoEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: namedNode(RDF_TYPE),
+            object: namedNode(MEETING_MESSAGE),
+          },
+        ],
+        select: ['message'],
+      });
+      expect(empty.bindings).toEqual([]);
+      expect(empty.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(true);
+
+      externalIndex.open();
+      const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+      const message = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_external');
+      externalIndex.multiPut([
+        quad(message, namedNode(RDF_TYPE), namedNode(MEETING_MESSAGE), graph),
+      ]);
+
+      const staleResult = autoEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: namedNode(RDF_TYPE),
+            object: namedNode(MEETING_MESSAGE),
+          },
+        ],
+        select: ['message'],
+      });
+
+      expect(staleResult.bindings.map((binding) => binding.message.value)).toEqual([
+        'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_external',
+      ]);
+      expect(staleResult.metrics.plan).toContain('Rdf3xPrimaryStaleFallback');
+      expect(staleResult.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(true);
+      expect(staleResult.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(false);
+
+      const refresh = autoEngine.refreshDerivedIndexes();
+      expect(refresh.rdf3x).toMatchObject({
+        refreshed: true,
+        syncedWithFacts: true,
+      });
+
+      const result = autoEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: namedNode(RDF_TYPE),
+            object: namedNode(MEETING_MESSAGE),
+          },
+        ],
+        select: ['message'],
+      });
+
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([
+        'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_external',
+      ]);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(true);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+    } finally {
+      externalIndex.close();
+      await autoEngine.close();
+      await rm(autoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps file-backed engines on the RdfQuadIndex baseline when RDF-3X primary is disabled', async () => {
+    const disabledRoot = mkdtempSync(path.join(tmpdir(), 'xpod-solid-rdf-disabled-'));
+    const disabledEngine = new SolidRdfEngine({
+      index: { path: path.join(disabledRoot, 'rdf.sqlite') },
+      rdf3xPrimary: false,
+      autoOpen: true,
+    });
+
+    try {
+      expect(disabledEngine.derivedIndexProfile).toBe('baseline');
+      expect(disabledEngine.rdf3xIndex).toBeUndefined();
+
+      const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+      const type = namedNode(RDF_TYPE);
+      const created = namedNode(DCT_CREATED);
+      const messageType = namedNode(MEETING_MESSAGE);
+      const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+
+      disabledEngine.put([
+        quad(msg1, type, messageType, graph),
+        quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      ]);
+
+      const result = disabledEngine.query({
+        patterns: [
+          {
+            subject: { variable: 'message' },
+            predicate: type,
+            object: messageType,
+          },
+          {
+            subject: { variable: 'message' },
+            predicate: created,
+            object: { variable: 'createdAt' },
+          },
+        ],
+        select: ['message', 'createdAt'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(true);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin('))).toBe(false);
+    } finally {
+      await disabledEngine.close();
+      await rm(disabledRoot, { recursive: true, force: true });
+    }
+  });
+
   it('can opt supported required BGP local queries into RDF-3X primary execution', () => {
     const primaryEngine = new SolidRdfEngine({
       index,
@@ -290,6 +721,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
       quad(msg2, created, literal('ignored'), taskGraph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -322,12 +754,1058 @@ describe('SolidRdfEngine', () => {
     ]);
     expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
     expect(result.metrics.plan).toContain('Rdf3xJoinBGP(2)');
+    expect(result.metrics.plan).toContain('Rdf3xMembershipScan');
     expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
     expect(result.metrics.plan).toContain('Rdf3xPrimaryJoinLimit');
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
   });
 
-  it('keeps unsupported filters on the default term-id primary path when RDF-3X primary is enabled', () => {
+  it('keeps exact term IN predicates on the RDF-3X primary path', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const type = namedNode(RDF_TYPE);
+    const content = namedNode('http://rdfs.org/sioc/ns#content');
+    const created = namedNode(DCT_CREATED);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+
+    primaryEngine.put([
+      quad(msg1, type, messageType, chatGraph),
+      quad(msg1, content, literal('hello'), chatGraph),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: { $in: [content, created] },
+          object: { variable: 'value' },
+        },
+      ],
+      select: ['message', 'value'],
+      orderBy: [{ variable: 'value' }],
+    });
+
+    expect(result.bindings.map((binding) => binding.value.value)).toEqual([
+      '2026-05-18T00:00:01.000Z',
+      'hello',
+    ]);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin('))).toBe(true);
+    expect(result.metrics.plan).toContain('TermIn(predicate)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('keeps exact term NOT IN predicates on the RDF-3X primary path', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const type = namedNode(RDF_TYPE);
+    const content = namedNode('http://rdfs.org/sioc/ns#content');
+    const created = namedNode(DCT_CREATED);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+
+    primaryEngine.put([
+      quad(msg1, type, messageType, chatGraph),
+      quad(msg1, content, literal('hello'), chatGraph),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: { $notIn: [type] },
+          object: { variable: 'value' },
+        },
+      ],
+      select: ['message', 'value'],
+      orderBy: [{ variable: 'value' }],
+    });
+
+    expect(result.bindings.map((binding) => binding.value.value)).toEqual([
+      '2026-05-18T00:00:01.000Z',
+      'hello',
+    ]);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin('))).toBe(true);
+    expect(result.metrics.plan).toContain('TermNotIn(predicate)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('can opt supported single-pattern local scans into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const created = namedNode(DCT_CREATED);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const run1 = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl#run_1');
+
+    primaryEngine.put([
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+      quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
+      quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+      ],
+      select: ['message', 'createdAt'],
+      orderBy: [{ variable: 'createdAt', direction: 'desc' }],
+      limit: 1,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      createdAt: binding.createdAt.value,
+    }))).toEqual([
+      {
+        message: msg2.value,
+        createdAt: '2026-05-18T00:00:03.000Z',
+      },
+    ]);
+    expect(result.metrics.indexChoices[0]).toBe('source-membership');
+    expect(result.metrics.plan).toContain('Rdf3xMembershipScan');
+    expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan(graph:op,subject:?message'))).toBe(true);
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryOrder(desc:object)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+  });
+
+  it('keeps mixed-direction single-pattern ORDER and LIMIT on the RDF-3X primary path', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const created = namedNode(DCT_CREATED);
+    const msg0 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_0');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+    primaryEngine.put([
+      quad(msg0, created, literal('2026-05-18T00:00:01.000Z'), graph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), graph),
+      quad(msg1, created, literal('2026-05-18T00:00:02.000Z'), graph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+      ],
+      select: ['message', 'createdAt'],
+      orderBy: [
+        { variable: 'createdAt', direction: 'desc' },
+        { variable: 'message', direction: 'asc' },
+      ],
+      limit: 2,
+    });
+
+    expect(result.bindings.map((binding) => binding.message.value)).toEqual([
+      msg1.value,
+      msg2.value,
+    ]);
+    expect(result.metrics.indexChoices[0]).toBe('PSO');
+    expect(result.metrics.plan).toContain('Rdf3xPermutationScan(PSO)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryOrder(desc:object,asc:subject)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+    expect(result.metrics.plan).not.toContain('Sort');
+    expect(result.metrics.plan).not.toContain('Limit');
+  });
+
+  it('can opt lexical range join filters into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl');
+    const type = namedNode(RDF_TYPE);
+    const status = namedNode(`${UDFS}status`);
+    const nextRunAt = namedNode(`${UDFS}nextRunAt`);
+    const scheduleType = namedNode(`${UDFS}Schedule`);
+    const due = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_due');
+    const later = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_later');
+
+    primaryEngine.put([
+      quad(due, type, scheduleType, graph),
+      quad(due, status, literal('active'), graph),
+      quad(due, nextRunAt, literal('2026-05-18T01:00:00.000Z'), graph),
+      quad(later, type, scheduleType, graph),
+      quad(later, status, literal('active'), graph),
+      quad(later, nextRunAt, literal('2026-05-18T02:00:00.000Z'), graph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+          subject: { variable: 'schedule' },
+          predicate: type,
+          object: scheduleType,
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+          subject: { variable: 'schedule' },
+          predicate: status,
+          object: literal('active'),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+          subject: { variable: 'schedule' },
+          predicate: nextRunAt,
+          object: { variable: 'nextRunAt' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'nextRunAt',
+          operator: '$lte',
+          value: literal('2026-05-18T01:30:00.000Z'),
+        },
+      ],
+      select: ['schedule', 'nextRunAt'],
+      orderBy: [{ variable: 'nextRunAt', direction: 'asc' }],
+      limit: 100,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      schedule: binding.schedule.value,
+      nextRunAt: binding.nextRunAt.value,
+    }))).toEqual([
+      {
+        schedule: due.value,
+        nextRunAt: '2026-05-18T01:00:00.000Z',
+      },
+    ]);
+    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.plan).toContain('Rdf3xJoinBGP(3)');
+    expect(result.metrics.plan).toContain('LexicalRange(object$lte)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryJoinLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('can opt same-pattern tuple VALUES scans into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const created = namedNode(DCT_CREATED);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const run1 = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl#run_1');
+
+    primaryEngine.put([
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+      quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
+      quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+      ],
+      values: [
+        {
+          variables: ['message', 'createdAt'],
+          rows: [
+            { message: msg1, createdAt: literal('2026-05-18T00:00:09.000Z') },
+            { message: msg2, createdAt: literal('2026-05-18T00:00:03.000Z') },
+            { message: run1, createdAt: literal('2026-05-18T00:00:05.000Z') },
+          ],
+        },
+      ],
+      select: ['message', 'createdAt'],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      createdAt: binding.createdAt.value,
+    }))).toEqual([
+      {
+        message: msg2.value,
+        createdAt: '2026-05-18T00:00:03.000Z',
+      },
+    ]);
+    expect(result.metrics.plan).toContain('TupleValuesJoin(subject,object)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Values('))).toBe(false);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+  });
+
+  it('can opt cross-pattern tuple VALUES joins into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const created = namedNode(DCT_CREATED);
+    const status = namedNode(`${UDFS}status`);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');
+    const msg4 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_4');
+    const date1 = literal('2026-05-18T00:00:01.000Z');
+    const date2 = literal('2026-05-18T00:00:02.000Z');
+    const active = literal('active');
+    const closed = literal('closed');
+
+    primaryEngine.put([
+      quad(msg1, created, date1, chatGraph),
+      quad(msg1, status, active, chatGraph),
+      quad(msg2, created, date2, chatGraph),
+      quad(msg2, status, closed, chatGraph),
+      quad(msg3, created, date1, chatGraph),
+      quad(msg3, status, closed, chatGraph),
+      quad(msg4, created, date2, chatGraph),
+      quad(msg4, status, active, chatGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: status,
+          object: { variable: 'status' },
+        },
+      ],
+      values: [
+        {
+          variables: ['createdAt', 'status'],
+          rows: [
+            { createdAt: date1, status: closed },
+            { createdAt: date2, status: active },
+          ],
+        },
+      ],
+      select: ['message', 'createdAt', 'status'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      createdAt: binding.createdAt.value,
+      status: binding.status.value,
+    }))).toEqual([
+      {
+        message: msg3.value,
+        createdAt: date1.value,
+        status: closed.value,
+      },
+      {
+        message: msg4.value,
+        createdAt: date2.value,
+        status: active.value,
+      },
+    ]);
+    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.plan).toContain('Rdf3xJoinTupleValues(?createdAt,?status)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Values('))).toBe(false);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('can opt OPTIONAL-local BGP groups into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const type = namedNode(RDF_TYPE);
+    const created = namedNode(DCT_CREATED);
+    const status = namedNode(`${UDFS}status`);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+    primaryEngine.put([
+      quad(msg1, type, messageType, chatGraph),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+      quad(msg1, status, literal('active'), chatGraph),
+      quad(msg2, type, messageType, chatGraph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), chatGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+      ],
+      optional: [
+        {
+          patterns: [
+            {
+              graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+              subject: { variable: 'message' },
+              predicate: created,
+              object: { variable: 'createdAt' },
+            },
+            {
+              graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+              subject: { variable: 'message' },
+              predicate: status,
+              object: { variable: 'status' },
+            },
+          ],
+        },
+      ],
+      select: ['message', 'createdAt', 'status'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      createdAt: binding.createdAt?.value,
+      status: binding.status?.value,
+    }))).toEqual([
+      {
+        message: msg1.value,
+        createdAt: '2026-05-18T00:00:01.000Z',
+        status: 'active',
+      },
+      {
+        message: msg2.value,
+        createdAt: undefined,
+        status: undefined,
+      },
+    ]);
+    expect(result.metrics.plan).toContain('OptionalJoin(graph:op,subject:?message,predicate:http://purl.org/dc/terms/created,object:?createdAt,graph:op,subject:?message,predicate:https://undefineds.co/ns#status,object:?status)');
+    expect(result.metrics.plan).toContain('Rdf3xJoinBGP(2)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('can opt UNION branch BGP groups into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const created = namedNode(DCT_CREATED);
+    const status = namedNode(`${UDFS}status`);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');
+
+    primaryEngine.put([
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+      quad(msg1, status, literal('active'), chatGraph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), chatGraph),
+      quad(msg2, status, literal('closed'), chatGraph),
+      quad(msg3, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
+      quad(msg3, status, literal('ignored'), chatGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [],
+      unions: [
+        {
+          branches: [
+            {
+              patterns: [
+                {
+                  graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+                  subject: { variable: 'message' },
+                  predicate: status,
+                  object: literal('active'),
+                },
+                {
+                  graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+                  subject: { variable: 'message' },
+                  predicate: created,
+                  object: { variable: 'createdAt' },
+                },
+              ],
+            },
+            {
+              patterns: [
+                {
+                  graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+                  subject: { variable: 'message' },
+                  predicate: status,
+                  object: literal('closed'),
+                },
+                {
+                  graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+                  subject: { variable: 'message' },
+                  predicate: created,
+                  object: { variable: 'createdAt' },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      select: ['message', 'createdAt'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: binding.message.value,
+      createdAt: binding.createdAt.value,
+    }))).toEqual([
+      {
+        message: msg1.value,
+        createdAt: '2026-05-18T00:00:01.000Z',
+      },
+      {
+        message: msg2.value,
+        createdAt: '2026-05-18T00:00:02.000Z',
+      },
+    ]);
+    expect(result.metrics.plan.filter((entry) => entry === 'Rdf3xJoinBGP(2)')).toHaveLength(2);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+  });
+
+  it('can opt dependent BGP groups into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const type = namedNode(RDF_TYPE);
+    const created = namedNode(DCT_CREATED);
+    const status = namedNode(`${UDFS}status`);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');
+
+    primaryEngine.put([
+      quad(msg1, type, messageType, chatGraph),
+      quad(msg1, status, literal('active'), chatGraph),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+      quad(msg2, type, messageType, chatGraph),
+      quad(msg2, status, literal('closed'), chatGraph),
+      quad(msg2, created, literal('2026-05-18T00:00:02.000Z'), chatGraph),
+      quad(msg3, type, messageType, chatGraph),
+      quad(msg3, status, literal('active'), chatGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+      ],
+      minus: [
+        {
+          patterns: [
+            {
+              graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+              subject: { variable: 'message' },
+              predicate: status,
+              object: literal('closed'),
+            },
+            {
+              graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+              subject: { variable: 'message' },
+              predicate: created,
+              object: { variable: 'createdAt' },
+            },
+          ],
+        },
+      ],
+      exists: [
+        {
+          patterns: [
+            {
+              graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+              subject: { variable: 'message' },
+              predicate: status,
+              object: literal('active'),
+            },
+            {
+              graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+              subject: { variable: 'message' },
+              predicate: created,
+              object: { variable: 'createdAt' },
+            },
+          ],
+        },
+      ],
+      select: ['message'],
+    });
+
+    expect(result.bindings.map((binding) => binding.message.value)).toEqual([msg1.value]);
+    expect(result.metrics.plan.filter((entry) => entry === 'Rdf3xJoinBGP(2)').length).toBeGreaterThanOrEqual(2);
+    expect(result.metrics.plan).toContain('Minus(graph:op,subject:?message,predicate:https://undefineds.co/ns#status,object:"closed",graph:op,subject:?message,predicate:http://purl.org/dc/terms/created,object:?createdAt)');
+    expect(result.metrics.plan).toContain('Exists(graph:op,subject:?message,predicate:https://undefineds.co/ns#status,object:"active",graph:op,subject:?message,predicate:http://purl.org/dc/terms/created,object:?createdAt)');
+  });
+
+  it('can opt supported single-pattern count queries into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const created = namedNode(DCT_CREATED);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const run1 = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl#run_1');
+
+    primaryEngine.put([
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+      quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraph),
+      quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+      ],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => binding.messageCount.value)).toEqual(['2']);
+    expect(result.count).toBe(2);
+    expect(result.metrics.indexChoices[0]).toBe('source-membership');
+    expect(result.metrics.plan).toContain('Rdf3xMembershipScan');
+    expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryCount(graph:op,subject:?message,predicate:http://purl.org/dc/terms/created,object:?createdAt)');
+    expect(result.metrics.plan).toContain('Aggregate(count-rdf3x-primary)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexCount('))).toBe(false);
+  });
+
+  it('can opt supported single-pattern COUNT DISTINCT queries into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const chatGraphA = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const chatGraphB = namedNode('https://pod.example/alice/.data/chat/default/2026/05/19/messages.ttl');
+    const taskGraph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const created = namedNode(DCT_CREATED);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const run1 = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl#run_1');
+
+    primaryEngine.put([
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraphA),
+      quad(msg1, created, literal('2026-05-18T00:00:01.000Z'), chatGraphB),
+      quad(msg2, created, literal('2026-05-18T00:00:03.000Z'), chatGraphA),
+      quad(run1, created, literal('2026-05-18T00:00:05.000Z'), taskGraph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
+          subject: { variable: 'message' },
+          predicate: created,
+          object: { variable: 'createdAt' },
+        },
+      ],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+          distinct: true,
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => binding.messageCount.value)).toEqual(['2']);
+    expect(result.count).toBe(2);
+    expect(result.metrics.indexChoices[0]).toBe('source-membership');
+    expect(result.metrics.plan).toContain('Rdf3xMembershipScan');
+    expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
+    expect(result.metrics.plan).toContain('Rdf3xDistinctCount(?subject)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryCountDistinct(graph:op,subject:?message,predicate:http://purl.org/dc/terms/created,object:?createdAt)');
+    expect(result.metrics.plan).toContain('Aggregate(count-distinct-rdf3x-primary)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexCount('))).toBe(false);
+  });
+
+  it('can opt supported join count local queries into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const member = namedNode(SIOC_HAS_MEMBER);
+    const type = namedNode(RDF_TYPE);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+
+    primaryEngine.put([
+      quad(thread, member, msg1, graph),
+      quad(msg1, type, messageType, graph),
+      quad(thread, member, msg2, graph),
+      quad(msg2, type, messageType, graph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          subject: thread,
+          predicate: member,
+          object: { variable: 'message' },
+        },
+        {
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+      ],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+          distinct: true,
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => binding.messageCount.value)).toEqual(['2']);
+    expect(result.count).toBe(2);
+    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.plan).toContain('Rdf3xJoinCount(count:DISTINCT(?message))');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoinCount('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoinCount('))).toBe(false);
+  });
+
+  it('can opt supported numeric aggregate local queries into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const type = namedNode(RDF_TYPE);
+    const score = namedNode(`${UDFS}score`);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');
+
+    primaryEngine.put([
+      quad(msg1, type, messageType, graph),
+      quad(msg1, score, literal('2', namedNode(XSD_INTEGER)), graph),
+      quad(msg2, type, messageType, graph),
+      quad(msg2, score, literal('10', namedNode(XSD_INTEGER)), graph),
+      quad(msg3, type, messageType, graph),
+      quad(msg3, score, literal('not numeric'), graph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+        {
+          subject: { variable: 'message' },
+          predicate: score,
+          object: { variable: 'score' },
+        },
+      ],
+      aggregates: [
+        {
+          type: 'sum',
+          as: 'sum',
+          variable: 'score',
+        },
+        {
+          type: 'avg',
+          as: 'avg',
+          variable: 'score',
+        },
+      ],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      sum: binding.sum.value,
+      avg: binding.avg.value,
+    }))).toEqual([
+      {
+        sum: '12',
+        avg: '6',
+      },
+    ]);
+    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.plan).toContain('Rdf3xJoinAggregateNumeric(?score)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoinAggregate('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoinAggregate('))).toBe(false);
+  });
+
+  it('can opt supported grouped count local queries into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const member = namedNode(SIOC_HAS_MEMBER);
+    const type = namedNode(RDF_TYPE);
+    const messageType = namedNode(MEETING_MESSAGE);
+    const thread1 = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const thread2 = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_2');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');
+
+    primaryEngine.put([
+      quad(thread1, member, msg1, graph),
+      quad(msg1, type, messageType, graph),
+      quad(thread1, member, msg2, graph),
+      quad(msg2, type, messageType, graph),
+      quad(thread2, member, msg3, graph),
+      quad(msg3, type, messageType, graph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          subject: { variable: 'thread' },
+          predicate: member,
+          object: { variable: 'message' },
+        },
+        {
+          subject: { variable: 'message' },
+          predicate: type,
+          object: messageType,
+        },
+      ],
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+      ],
+      having: [
+        {
+          variable: 'messageCount',
+          operator: '$lt',
+          value: 2,
+        },
+      ],
+      orderBy: [
+        {
+          variable: 'messageCount',
+          direction: 'desc',
+        },
+      ],
+      limit: 1,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      thread: binding.thread.value,
+      messageCount: binding.messageCount.value,
+    }))).toEqual([
+      {
+        thread: thread2.value,
+        messageCount: '1',
+      },
+    ]);
+    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.plan).toContain('Rdf3xJoinGroupCount(?thread)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryGroupCountHaving(?messageCount$lt)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryGroupCountLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexGroupCount('))).toBe(false);
+  });
+
+  it('can opt supported grouped numeric aggregate local queries into RDF-3X primary execution', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const member = namedNode(SIOC_HAS_MEMBER);
+    const score = namedNode(`${UDFS}score`);
+    const thread1 = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const thread2 = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_2');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');
+    const msg4 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_4');
+
+    primaryEngine.put([
+      quad(msg1, member, thread1, graph),
+      quad(msg1, score, literal('2', namedNode(XSD_INTEGER)), graph),
+      quad(msg2, member, thread1, graph),
+      quad(msg2, score, literal('10', namedNode(XSD_INTEGER)), graph),
+      quad(msg3, member, thread2, graph),
+      quad(msg3, score, literal('4', namedNode(XSD_INTEGER)), graph),
+      quad(msg4, member, thread2, graph),
+      quad(msg4, score, literal('not numeric'), graph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const result = primaryEngine.query({
+      patterns: [
+        {
+          subject: { variable: 'message' },
+          predicate: member,
+          object: { variable: 'thread' },
+        },
+        {
+          subject: { variable: 'message' },
+          predicate: score,
+          object: { variable: 'score' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'score',
+          operator: '$termType',
+          value: 'numeric',
+        },
+      ],
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'count',
+          variable: 'message',
+        },
+        {
+          type: 'sum',
+          as: 'scoreTotal',
+          variable: 'score',
+        },
+        {
+          type: 'avg',
+          as: 'scoreAvg',
+          variable: 'score',
+        },
+      ],
+      having: [
+        {
+          variable: 'scoreTotal',
+          operator: '$gt',
+          value: literal('4', namedNode(XSD_INTEGER)),
+        },
+      ],
+      select: ['thread', 'count', 'scoreTotal', 'scoreAvg'],
+      orderBy: [{ variable: 'scoreTotal', direction: 'desc' }],
+      limit: 1,
+    });
+
+    expect(result.bindings.map((binding) => ({
+      thread: binding.thread.value,
+      count: binding.count.value,
+      scoreTotal: binding.scoreTotal.value,
+      scoreTotalDatatype: binding.scoreTotal.datatype.value,
+      scoreAvg: binding.scoreAvg.value,
+    }))).toEqual([
+      {
+        thread: thread1.value,
+        count: '2',
+        scoreTotal: '12',
+        scoreTotalDatatype: 'http://www.w3.org/2001/XMLSchema#decimal',
+        scoreAvg: '6',
+      },
+    ]);
+    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
+    expect(result.metrics.plan).toContain('Rdf3xJoinGroupAggregateNumeric(?score)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryGroupAggregateHaving(?scoreTotal$gt)');
+    expect(result.metrics.plan).toContain('Rdf3xPrimaryGroupAggregateLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryGroupAggregate('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexGroupAggregate('))).toBe(false);
+  });
+
+  it('keeps object text filters on the RDF-3X primary path', () => {
     const primaryEngine = new SolidRdfEngine({
       index,
       rdf3xIndex,
@@ -346,6 +1824,7 @@ describe('SolidRdfEngine', () => {
       quad(msg2, type, messageType, graph),
       quad(msg2, content, literal('other'), graph),
     ]);
+    primaryEngine.refreshDerivedIndexes();
 
     const result = primaryEngine.query({
       patterns: [
@@ -372,8 +1851,85 @@ describe('SolidRdfEngine', () => {
 
     expect(result.bindings).toHaveLength(1);
     expect(result.bindings[0].message.value).toBe(msg1.value);
-    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(true);
-    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin'))).toBe(false);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoin'))).toBe(true);
+    expect(result.metrics.plan).toContain('TextSearch(object$contains)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('keeps term metadata filters on the RDF-3X primary path', () => {
+    const primaryEngine = new SolidRdfEngine({
+      index,
+      rdf3xIndex,
+      rdf3xPrimary: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const label = namedNode(`${UDFS}label`);
+    const priority = namedNode(`${UDFS}priority`);
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');
+
+    primaryEngine.put([
+      quad(msg1, label, literal('hello', 'en'), graph),
+      quad(msg2, label, literal('hello', 'en-US'), graph),
+      quad(msg3, label, literal('bonjour', 'fr'), graph),
+      quad(msg1, priority, literal('5', namedNode(XSD_INTEGER)), graph),
+      quad(msg2, priority, literal('10', namedNode(XSD_INTEGER)), graph),
+      quad(msg3, priority, literal('9'), graph),
+    ]);
+    primaryEngine.refreshDerivedIndexes();
+
+    const languageResult = primaryEngine.query({
+      patterns: [
+        {
+          subject: { variable: 'message' },
+          predicate: label,
+          object: { variable: 'label' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'label',
+          operator: '$termType',
+          value: 'literal',
+        },
+        {
+          variable: 'label',
+          operator: '$langMatches',
+          value: 'en',
+        },
+      ],
+      select: ['message', 'label'],
+    });
+
+    expect(languageResult.bindings.map((binding) => binding.message.value).sort()).toEqual([msg1.value, msg2.value]);
+    expect(languageResult.metrics.plan).toContain('TermType(object:literal)');
+    expect(languageResult.metrics.plan).toContain('Language(object$langMatches)');
+    expect(languageResult.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan'))).toBe(true);
+    expect(languageResult.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+
+    const datatypeResult = primaryEngine.query({
+      patterns: [
+        {
+          subject: { variable: 'message' },
+          predicate: priority,
+          object: { variable: 'priority' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'priority',
+          operator: '$datatype',
+          value: namedNode(XSD_INTEGER),
+        },
+      ],
+      select: ['message', 'priority'],
+    });
+
+    expect(datatypeResult.bindings.map((binding) => binding.message.value).sort()).toEqual([msg1.value, msg2.value]);
+    expect(datatypeResult.metrics.plan).toContain('Datatype(object$datatype)');
+    expect(datatypeResult.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan'))).toBe(true);
+    expect(datatypeResult.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
   });
 
   it('exposes a benchmark case list aligned to the spec', () => {
@@ -407,6 +1963,7 @@ describe('SolidRdfEngine', () => {
       'run steps by run local query',
       'task materialization active due local query',
       'message count by thread with having',
+      'message score by thread numeric aggregate',
       'message join count distinct',
     ]);
   });
@@ -475,6 +2032,12 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
       ),
       quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(`${UDFS}score`),
+        literal('2', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2'),
         namedNode(RDF_TYPE),
         namedNode(MEETING_MESSAGE),
@@ -484,6 +2047,12 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2'),
         namedNode(SIOC_HAS_MEMBER),
         namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2'),
+        namedNode(`${UDFS}score`),
+        literal('10', namedNode(XSD_INTEGER)),
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
       ),
       quad(
@@ -502,6 +2071,12 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3'),
         namedNode(SIOC_HAS_MEMBER),
         namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3'),
+        namedNode(`${UDFS}score`),
+        literal('4', namedNode(XSD_INTEGER)),
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
       ),
       quad(
@@ -650,9 +2225,13 @@ describe('SolidRdfEngine', () => {
     expect(report.engine).toBe('solid-rdf');
     expect(report.iterations).toBe(2);
     expect(report.cases).toHaveLength(19);
-    expect(report.localQueryCases).toHaveLength(6);
+    expect(report.localQueryCases).toHaveLength(7);
     expect(report.planMatched).toBe(true);
     expect(report.failedPlanCases).toEqual([]);
+    expect(report.storage.derivedIndexProfile).toBe('rdf3x');
+    expect(report.storage.facts.quadCount).toBeGreaterThan(0);
+    expect(report.storage.factsBytes).toBeGreaterThan(0);
+    expect(report.storage.totalBytes).toBeGreaterThanOrEqual(report.storage.factsBytes);
     expect(report.cases.every((testCase) => testCase.planMatched)).toBe(true);
     expect(byName.get('list chats')).toMatchObject({
       returnedRows: 1,
@@ -709,7 +2288,7 @@ describe('SolidRdfEngine', () => {
     expect(byName.get('task materialization due time')).toBeUndefined();
     expect(byName.get('list chats')?.checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(byName.get('list chats')?.durationsMs).toHaveLength(2);
-    expect(byName.get('list chats')?.indexStats.quadCount).toBe(36);
+    expect(byName.get('list chats')?.indexStats.quadCount).toBe(39);
     expect(byName.get('list chats')?.indexStats.tableBytes).toBeGreaterThan(0);
     expect(byName.get('list chats')?.indexStats.indexBytes).toBeGreaterThan(0);
     expect(byName.get('list chats')?.indexStats.spaceObjects.some((object) => object.kind === 'table')).toBe(true);
@@ -720,6 +2299,7 @@ describe('SolidRdfEngine', () => {
       graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
     });
     const groupedMessages = report.localQueryCases.find((testCase) => testCase.name === 'message count by thread with having');
+    const messageScoreByThread = report.localQueryCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
     const latestMessageByThread = report.localQueryCases.find((testCase) => testCase.name === 'latest message by thread local query');
     const nextQueuedRun = report.localQueryCases.find((testCase) => testCase.name === 'next queued run by workspace local query');
     const runSteps = report.localQueryCases.find((testCase) => testCase.name === 'run steps by run local query');
@@ -880,6 +2460,21 @@ describe('SolidRdfEngine', () => {
     expect(groupedMessages?.physicalPlan).toContain('IndexGroupCountLimit');
     expect(groupedMessages?.physicalPlan).not.toContain('Having(?count$gt)');
     expect(groupedMessages?.physicalPlan).not.toContain('Limit');
+    expect(messageScoreByThread).toMatchObject({
+      planMatched: true,
+      missingPlan: [],
+      returnedRows: 1,
+      metrics: {
+        filtersApplied: 0,
+        filtersPushedDown: 2,
+        returnedRows: 1,
+      },
+    });
+    expect(messageScoreByThread?.physicalPlan).toContain('JoinGroupAggregateNumeric(?score)');
+    expect(messageScoreByThread?.physicalPlan).toContain('IndexGroupAggregateHaving(?scoreTotal$gt)');
+    expect(messageScoreByThread?.physicalPlan).toContain('IndexGroupAggregateLimit');
+    expect(messageScoreByThread?.physicalPlan).not.toContain('Having(?scoreTotal$gt)');
+    expect(messageScoreByThread?.physicalPlan).not.toContain('Limit');
     const joinCount = report.localQueryCases.find((testCase) => testCase.name === 'message join count distinct');
     expect(joinCount).toMatchObject({
       planMatched: true,
@@ -1091,6 +2686,12 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
       ),
       quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(SIOC_CONTENT),
+        literal('alpha searchable note'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
         namedNode(DCT_CREATED),
         literal('2026-05-18T01:00:00.000Z'),
@@ -1267,14 +2868,68 @@ describe('SolidRdfEngine', () => {
       ),
       quad(
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(RDF_TYPE),
+        namedNode(MEETING_MESSAGE),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
         namedNode(SIOC_HAS_MEMBER),
         namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
       ),
       quad(
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(`${UDFS}score`),
+        literal('2', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2'),
+        namedNode(RDF_TYPE),
+        namedNode(MEETING_MESSAGE),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2'),
+        namedNode(SIOC_HAS_MEMBER),
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2'),
+        namedNode(`${UDFS}score`),
+        literal('10', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3'),
+        namedNode(RDF_TYPE),
+        namedNode(MEETING_MESSAGE),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3'),
+        namedNode(SIOC_HAS_MEMBER),
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3'),
+        namedNode(`${UDFS}score`),
+        literal('4', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
         namedNode(DCT_CREATED),
         literal('2026-05-18T01:02:03.000Z'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(SIOC_CONTENT),
+        literal('alpha searchable note'),
         namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
       ),
       quad(
@@ -1285,8 +2940,44 @@ describe('SolidRdfEngine', () => {
       ),
       quad(
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode(`${UDFS}workspace`),
+        namedNode('file://macbook.local/Users/alice/project/'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode(DCT_CREATED),
+        literal('2026-05-18T01:00:00.000Z'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
         namedNode(`${UDFS}priority`),
         literal('10', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#step_1'),
+        namedNode(RDF_TYPE),
+        namedNode(`${UDFS}RunStep`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#step_1'),
+        namedNode(`${UDFS}run`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#step_2'),
+        namedNode(RDF_TYPE),
+        namedNode(`${UDFS}RunStep`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#step_2'),
+        namedNode(`${UDFS}run`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1'),
         namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
       ),
       quad(
@@ -1295,53 +2986,158 @@ describe('SolidRdfEngine', () => {
         namedNode(`${UDFS}Provider`),
         namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
       ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/index.ttl#thread_1'),
+        namedNode(RDF_TYPE),
+        namedNode('http://rdfs.org/sioc/ns#Thread'),
+        namedNode('https://pod.example/alice/.data/task/default/index.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_2'),
+        namedNode(`${UDFS}status`),
+        literal('running'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+        namedNode(DCT_MODIFIED),
+        literal('2026-05-18T01:03:00.000Z'),
+        namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/settings/models/claude.ttl'),
+        namedNode(`${UDFS}isProvidedBy`),
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+        namedNode('https://pod.example/alice/settings/models/claude.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/settings/credentials/anthropic.ttl'),
+        namedNode(`${UDFS}provider`),
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+        namedNode('https://pod.example/alice/settings/credentials/anthropic.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/agents/secretary.ttl#this'),
+        namedNode(RDF_TYPE),
+        namedNode(FOAF_AGENT),
+        namedNode('https://pod.example/alice/.data/agents/secretary.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/contacts/secretary.ttl'),
+        namedNode(RDF_TYPE),
+        namedNode(VCARD_INDIVIDUAL),
+        namedNode('https://pod.example/alice/.data/contacts/secretary.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/favorites/2026/05/18.ttl#favorite_1'),
+        namedNode(RDF_TYPE),
+        namedNode(SCHEMA_CREATIVE_WORK),
+        namedNode('https://pod.example/alice/.data/favorites/2026/05/18.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_1'),
+        namedNode(RDF_TYPE),
+        namedNode(`${UDFS}Schedule`),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_1'),
+        namedNode(`${UDFS}status`),
+        literal('active'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl#schedule_1'),
+        namedNode(`${UDFS}nextRunAt`),
+        literal('2026-05-18T01:00:00.000Z'),
+        namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl'),
+      ),
     ];
     engine.index.multiPut(quads);
 
     const report = runRdfModelsRdf3xShadowBenchmark(engine, {
-      scale: 'small',
-      iterations: 2,
+      scale: 'medium',
+      iterations: 1,
     });
     const listChats = report.cases.find((testCase) => testCase.name === 'list chats');
     const numericPriority = report.cases.find((testCase) => testCase.name === 'runs by numeric priority');
     const latestMessageJoin = report.joinCases.find((testCase) => testCase.name === 'latest message by thread local query');
     const taskMaterializationJoin = report.joinCases.find((testCase) => testCase.name === 'task materialization active due local query');
+    const messageCountByThread = report.joinCases.find((testCase) => testCase.name === 'message count by thread with having');
+    const messageScoreByThread = report.joinCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
+    const messageJoinCount = report.joinCases.find((testCase) => testCase.name === 'message join count distinct');
+    const searchMessages = report.cases.find((testCase) => testCase.name === 'search message literals');
 
     expect(report.engine).toBe('rdf3x-shadow');
     expect(report.rebuild.scannedQuads).toBe(quads.length);
+    expect(report.storage.rdf3x).toMatchObject({
+      syncedWithFacts: true,
+      stats: {
+        membershipCount: quads.length,
+        factsDataVersion: engine.index.dataVersion(),
+      },
+    });
+    expect(report.storage.derivedBytes).toBeGreaterThan(0);
+    expect(report.storage.totalBytes).toBe(report.storage.factsBytes + report.storage.derivedBytes);
     expect(report.skippedCases).not.toContain('runs by numeric priority');
-    expect(report.skippedJoinCases).toEqual([
-      'task materialization active due local query',
-      'message count by thread with having',
-      'message join count distinct',
-    ]);
+    expect(report.skippedCases).not.toContain('search message literals');
+    expect(report.skippedJoinCases).not.toContain('task materialization active due local query');
+    expect(report.planMatched).toBe(true);
+    expect(report.failedPlanCases).toEqual([]);
     expect(report.failedJoinCases).toEqual([]);
+    expect([...report.cases, ...report.joinCases]
+      .filter((testCase) => testCase.supported)
+      .every((testCase) => testCase.planMatched && testCase.missingPlan.length === 0)).toBe(true);
+    expect([...report.cases, ...report.joinCases]
+      .flatMap((testCase) => testCase.rdf3x?.physicalPlan ?? [])
+      .some((entry) => /\bunresolved\b/i.test(entry))).toBe(false);
     expect(numericPriority).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
       rdf3x: {
         returnedRows: 1,
-        metrics: { indexChoice: 'POS', matchedRows: 1, returnedRows: 1 },
+        metrics: { indexChoice: 'source-membership', matchedRows: 1, returnedRows: 1 },
       },
     });
     expect(numericPriority?.unsupportedReason).toBeUndefined();
     expect(numericPriority?.rdf3x?.physicalPlan).toContain('NumericRange(object$gt)');
-    expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('JOIN rdf_terms object_numeric ON object_numeric.id = idx.object_id');
-    expect(listChats).toMatchObject({
+    expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('JOIN rdf_terms object_range');
+    expect(numericPriority?.rdf3x?.physicalPlan.join('\n')).toContain('ON object_range.id = membership.object_id');
+    expect(searchMessages).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
       rdf3x: {
         returnedRows: 1,
-        metrics: { indexChoice: 'POS', matchedRows: 1, returnedRows: 1 },
+        metrics: { indexChoice: 'source-membership', matchedRows: 1, returnedRows: 1 },
       },
     });
+    expect(searchMessages?.rdf3x?.physicalPlan).toContain('TextSearch(object$contains)');
+    expect(listChats).toMatchObject({
+      supported: true,
+      planMatched: true,
+      missingPlan: [],
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: { indexChoice: 'source-membership', matchedRows: 1, returnedRows: 1 },
+      },
+    });
+    expect(listChats?.rdf3x?.physicalPlan).toContain('Rdf3xMembershipScan');
     expect(listChats?.rdf3x?.physicalPlan.join('\n')).toContain('GraphPrefixMembershipFilter');
     expect(latestMessageJoin).toMatchObject({
       supported: true,
+      planMatched: true,
+      missingPlan: [],
       matched: true,
       orderedMatch: true,
       solidRdf: { returnedRows: 1 },
@@ -1357,8 +3153,70 @@ describe('SolidRdfEngine', () => {
     expect(latestMessageJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinBGP(2)');
     expect(latestMessageJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinLimit');
     expect(taskMaterializationJoin).toMatchObject({
-      supported: false,
-      unsupportedReason: 'RDF-3X join shadow does not support local query filters or BIND yet',
+      supported: true,
+      planMatched: true,
+      missingPlan: [],
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: {
+          engine: 'solid-rdf3x',
+          returnedRows: 1,
+        },
+      },
     });
+    expect(taskMaterializationJoin?.rdf3x?.physicalPlan).toContain('Rdf3xJoinBGP(3)');
+    expect(taskMaterializationJoin?.rdf3x?.physicalPlan).toContain('LexicalRange(object$lte)');
+    expect(messageCountByThread).toMatchObject({
+      supported: true,
+      planMatched: true,
+      missingPlan: [],
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: {
+          engine: 'solid-rdf3x',
+          returnedRows: 1,
+        },
+      },
+    });
+    expect(messageCountByThread?.rdf3x?.physicalPlan).toContain('Rdf3xJoinGroupCount(?thread)');
+    expect(messageCountByThread?.rdf3x?.physicalPlan).toContain('Rdf3xJoinGroupCountHaving(count$gt)');
+    expect(messageScoreByThread).toMatchObject({
+      supported: true,
+      planMatched: true,
+      missingPlan: [],
+      matched: true,
+      orderedMatch: true,
+      solidRdf: { returnedRows: 1 },
+      rdf3x: {
+        returnedRows: 1,
+        metrics: {
+          engine: 'solid-rdf3x',
+          returnedRows: 1,
+        },
+      },
+    });
+    expect(messageScoreByThread?.rdf3x?.physicalPlan).toContain('Rdf3xJoinGroupAggregateNumeric(?score)');
+    expect(messageScoreByThread?.rdf3x?.physicalPlan).toContain('Rdf3xJoinGroupAggregateHaving(scoreTotal$gt)');
+    expect(messageJoinCount).toMatchObject({
+      supported: true,
+      planMatched: true,
+      missingPlan: [],
+      matched: true,
+      orderedMatch: true,
+      rdf3x: {
+        returnedRows: 1,
+        metrics: {
+          engine: 'solid-rdf3x',
+          returnedRows: 1,
+        },
+      },
+    });
+    expect(messageJoinCount?.rdf3x?.physicalPlan).toContain('Rdf3xJoinCount(count(?message),count:DISTINCT(?thread))');
   });
 });

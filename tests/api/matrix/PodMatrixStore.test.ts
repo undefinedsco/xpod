@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { PodMatrixStore } from '../../../src/api/matrix';
 
@@ -73,11 +74,11 @@ describe('PodMatrixStore query pushdown', () => {
 
     const backwardConditions = flattenExpressions(backwardQuery.where.mock.calls[0][0]);
     expect(backwardConditions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ operator: '=', right: '!room:example.com' }),
-      expect.objectContaining({ operator: '<=', right: 200 }),
+      expect.objectContaining({ operator: '=', right: surfaceId('!room:example.com') }),
+      expect.objectContaining({ operator: '<=', right: '1970-01-01T00:00:00.200Z' }),
     ]));
     expect(backwardConditions).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ operator: '>', right: 200 }),
+      expect.objectContaining({ operator: '>', right: '1970-01-01T00:00:00.200Z' }),
     ]));
     expect(backwardQuery.orderBy.mock.calls[0][0]).toMatchObject({ direction: 'desc' });
     expect(backwardQuery.limit).toHaveBeenCalledWith(10);
@@ -92,20 +93,33 @@ describe('PodMatrixStore query pushdown', () => {
 
     const forwardConditions = flattenExpressions(forwardQuery.where.mock.calls[0][0]);
     expect(forwardConditions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ operator: '=', right: '!room:example.com' }),
-      expect.objectContaining({ operator: '>', right: 200 }),
+      expect.objectContaining({ operator: '=', right: surfaceId('!room:example.com') }),
+      expect.objectContaining({ operator: '>', right: '1970-01-01T00:00:00.200Z' }),
     ]));
     expect(forwardConditions).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ operator: '<=', right: 200 }),
+      expect.objectContaining({ operator: '<=', right: '1970-01-01T00:00:00.200Z' }),
     ]));
-    expect(forwardQuery.orderBy.mock.calls[0][0].name).toBe('originServerTs');
+    expect(forwardQuery.orderBy.mock.calls[0][0].name).toBe('createdAt');
     expect(forwardQuery.limit).toHaveBeenCalledWith(10);
   });
 
   it('computes new event depth from the current room max depth only', async () => {
     const store = new PodMatrixStore({});
     const txnQuery = createSelectQuery([]);
-    const depthQuery = createSelectQuery([{ depth: 41 }]);
+    const depthQuery = createSelectQuery([{
+      id: 'chat/matrix-room/2026/05/18/messages.ttl#old',
+      createdAt: '1970-01-01T00:00:00.041Z',
+      metadata: {
+        protocol: 'matrix',
+        eventId: '$old:example.com',
+        roomId: '!room:example.com',
+        eventType: 'm.room.message',
+        sender: '@alice:example.com',
+        originServerTs: 41,
+        depth: 41,
+        content: { body: 'old' },
+      },
+    }]);
     db.select.mockReturnValueOnce(txnQuery).mockReturnValueOnce(depthQuery);
 
     const event = await store.sendEvent('!room:example.com', 'm.room.message', 'txn-1', {
@@ -114,12 +128,15 @@ describe('PodMatrixStore query pushdown', () => {
     }, solidContext());
 
     expect(event.eventId).toMatch(/^\$/);
-    expect(depthQuery.where.mock.calls[0][0]).toMatchObject({
-      operator: '=',
-      right: '!room:example.com',
-    });
-    expect(depthQuery.orderBy.mock.calls[0][0]).toMatchObject({ direction: 'desc' });
-    expect(depthQuery.limit).toHaveBeenCalledWith(1);
+    expect(event.depth).toBe(42);
+    expect(flattenExpressions(depthQuery.where.mock.calls[0][0])).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operator: '=', right: surfaceId('!room:example.com') }),
+    ]));
+    expect(depthQuery.orderBy.mock.calls[0][0].name).toBe('createdAt');
     expect(db.insert).toHaveBeenCalled();
   });
 });
+
+function surfaceId(roomId: string): string {
+  return `matrix-${createHash('sha256').update(roomId).digest('hex').slice(0, 16)}`;
+}

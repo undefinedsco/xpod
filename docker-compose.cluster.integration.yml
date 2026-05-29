@@ -1,0 +1,18 @@
+# Overrides used by scripts/run-integration-full.ts.
+#
+# The full integration runner always tears this compose project down with
+# volumes, so Postgres does not need persistent storage. Keeping PGDATA on
+# tmpfs also avoids Docker volume-space flakes on local machines.
+
+services:
+  postgres:
+    environment:
+      PGDATA: /var/lib/postgresql/tmpdata/pgdata
+    tmpfs:
+      - /var/lib/postgresql/tmpdata:rw,size=512m
+
+  minio:
+    tmpfs:
+      - /tmp/minio-data:rw,size=512m
+    command: server /tmp/minio-data --console-address ":9001"
+    entrypoint: sh -c "mkdir -p /tmp/minio-data/xpod && exec minio $$@" --

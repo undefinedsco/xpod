@@ -7,7 +7,7 @@ import type { Quad } from '@rdfjs/types';
 import { SqliteQuintStore } from '../src/storage/quint';
 import {
   RdfQuadIndex,
-  Rdf3xTripleIndex,
+  Rdf3xIndex,
   ShadowRdfQuintStore,
   SolidRdfEngine,
   defaultSyntheticMessagesForRdfModelsScale,
@@ -18,6 +18,7 @@ import {
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
   type RdfBenchmarkScale,
+  type RdfEngineStorageStats,
 } from '../src/storage/rdf';
 
 const { namedNode, literal, quad } = DataFactory;
@@ -78,7 +79,7 @@ async function main(): Promise<void> {
       batchSize: 1000,
     });
 
-    const rdf3xIndex = new Rdf3xTripleIndex({ path: paths.indexDb });
+    const rdf3xIndex = new Rdf3xIndex({ path: paths.indexDb });
     rdf3xIndex.open();
     const engine = new SolidRdfEngine({
       index: shadowStore.index,
@@ -131,6 +132,7 @@ async function main(): Promise<void> {
       rdf3xOrderedMatched: rdf3xShadow.orderedMatched,
       baselinePlanMatched: baseline.planMatched,
       shadowPlanMatched: shadow.planMatched,
+      rdf3xPlanMatched: rdf3xShadow.planMatched,
       shadowSpaceGateEnforced: shadow.spaceGateEnforced,
       shadowPerformanceMatched: shadow.performanceMatched,
       shadowSpaceMatched: shadow.spaceMatched,
@@ -138,6 +140,7 @@ async function main(): Promise<void> {
         ...baseline.failedPlanCases,
         ...shadow.failedPlanCases,
       ])],
+      failedRdf3xPlanCases: rdf3xShadow.failedPlanCases,
       failedPerformanceCases: shadow.failedPerformanceCases,
       failedSpaceCases: shadow.failedSpaceCases,
       failedCases: shadow.cases
@@ -145,6 +148,7 @@ async function main(): Promise<void> {
         .map((testCase) => testCase.name),
       failedRdf3xCases: rdf3xShadow.failedCases,
       failedRdf3xJoinCases: rdf3xShadow.failedJoinCases,
+      storage: rdf3xShadow.storage,
     });
 
     if (
@@ -154,6 +158,7 @@ async function main(): Promise<void> {
       || !rdf3xShadow.orderedMatched
       || !baseline.planMatched
       || !shadow.planMatched
+      || !rdf3xShadow.planMatched
       || !shadow.performanceMatched
       || !shadow.spaceMatched
       || !rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length)
@@ -324,6 +329,7 @@ function seedAgentContactFavoriteQuads(quads: Quad[]): void {
 function seedCanonicalMessages(quads: Quad[]): void {
   const thread = `${DATA}/chat/default/index.ttl#thread_1`;
   const graph = `${DATA}/chat/default/2026/05/18/messages.ttl`;
+  const scores = ['2', '10', '4'];
 
   for (let index = 0; index < 3; index += 1) {
     const message = `${graph}#msg_${index + 1}`;
@@ -333,6 +339,7 @@ function seedCanonicalMessages(quads: Quad[]): void {
       q(message, SIOC_HAS_MEMBER, iri(thread), graph),
       q(message, DCT_CREATED, literal(timestamp), graph),
       q(message, DCT_MODIFIED, literal(timestamp), graph),
+      q(message, `${UDFS}score`, literal(scores[index], namedNode(XSD_INTEGER)), graph),
       q(message, SIOC_CONTENT, literal(`canonical message ${index + 1}`), graph),
     );
   }
@@ -416,15 +423,18 @@ function printSummary(summary: {
   rdf3xOrderedMatched: boolean;
   baselinePlanMatched: boolean;
   shadowPlanMatched: boolean;
+  rdf3xPlanMatched: boolean;
   shadowSpaceGateEnforced: boolean;
   shadowPerformanceMatched: boolean;
   shadowSpaceMatched: boolean;
   failedPlanCases: string[];
+  failedRdf3xPlanCases: string[];
   failedPerformanceCases: string[];
   failedSpaceCases: string[];
   failedCases: string[];
   failedRdf3xCases: string[];
   failedRdf3xJoinCases: string[];
+  storage: RdfEngineStorageStats;
 }): void {
   console.log('RDF models benchmark complete');
   console.log(`  scale: ${summary.options.scale}`);
@@ -450,13 +460,21 @@ function printSummary(summary: {
   console.log(`  rdf3x shadow ordered matched: ${summary.rdf3xOrderedMatched}`);
   console.log(`  baseline plan matched: ${summary.baselinePlanMatched}`);
   console.log(`  shadow plan matched: ${summary.shadowPlanMatched}`);
+  console.log(`  rdf3x plan matched: ${summary.rdf3xPlanMatched}`);
   console.log(`  shadow performance matched: ${summary.shadowPerformanceMatched}`);
   console.log(`  shadow space matched: ${summary.shadowSpaceMatched}${summary.shadowSpaceGateEnforced ? '' : ' (not enforced for this scale)'}`);
+  console.log(`  storage profile: ${summary.storage.derivedIndexProfile}`);
+  console.log(`  storage facts bytes: ${summary.storage.factsBytes}`);
+  console.log(`  storage derived bytes: ${summary.storage.derivedBytes}`);
+  console.log(`  storage total/facts ratio: ${formatRatio(summary.storage.totalToFactsRatio)}`);
   console.log(`  baseline report: ${summary.paths.baselineReport}`);
   console.log(`  shadow report: ${summary.paths.shadowReport}`);
   console.log(`  rdf3x shadow report: ${summary.paths.rdf3xShadowReport}`);
   if (summary.failedPlanCases.length > 0) {
     console.error(`  failed plan cases: ${summary.failedPlanCases.join(', ')}`);
+  }
+  if (summary.failedRdf3xPlanCases.length > 0) {
+    console.error(`  failed rdf3x plan cases: ${summary.failedRdf3xPlanCases.join(', ')}`);
   }
   if (summary.failedCases.length > 0) {
     console.error(`  failed cases: ${summary.failedCases.join(', ')}`);
@@ -473,6 +491,10 @@ function printSummary(summary: {
   if (summary.failedSpaceCases.length > 0) {
     console.error(`  failed space cases: ${summary.failedSpaceCases.join(', ')}`);
   }
+}
+
+function formatRatio(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(2) : 'Infinity';
 }
 
 function printHelp(): void {

@@ -4,6 +4,7 @@ import { SubgraphSparqlHttpHandler } from '../../src/http/SubgraphSparqlHttpHand
 import type { HttpRequest, HttpResponse } from '@solid/community-server';
 import { NotImplementedHttpError, IdentifierSetMultiMap } from '@solid/community-server';
 import { PERMISSIONS } from '@solidlab/policy-engine';
+import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from '../../src/storage/rdf';
 
 // Mock SubgraphQueryEngine
 const mockQueryEngine = {
@@ -161,6 +162,50 @@ describe('SubgraphSparqlHttpHandler', () => {
       const identifiers = [...authCall.requestedModes.keys()];
       expect(identifiers[0].path).toBe('http://localhost:3000/alice/photos/');
     });
+
+    it('should treat hidden .data sidecar base as a container', async () => {
+      const request = createMockRequest('/alice/.data/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
+      const response = createMockResponse();
+
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: [] }),
+      });
+
+      await handler.handle({ request, response });
+
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        expect.any(String),
+        'http://localhost:3000/alice/.data/',
+      );
+      const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
+      const identifiers = [...authCall.requestedModes.keys()];
+      expect(identifiers[0].path).toBe('http://localhost:3000/alice/.data/');
+    });
+
+    it('should keep file sidecar base exact', async () => {
+      const request = createMockRequest('/alice/profile/card.ttl/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
+      const response = createMockResponse();
+
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: [] }),
+      });
+
+      await handler.handle({ request, response });
+
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        expect.any(String),
+        'http://localhost:3000/alice/profile/card.ttl',
+      );
+      const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
+      const identifiers = [...authCall.requestedModes.keys()];
+      expect(identifiers[0].path).toBe('http://localhost:3000/alice/profile/card.ttl');
+    });
   });
 
   describe('permission mapping', () => {
@@ -276,6 +321,36 @@ describe('SubgraphSparqlHttpHandler', () => {
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const modes = [...authCall.requestedModes.values()].flat();
       expect(modes).toContain(PERMISSIONS.Read);
+    });
+  });
+
+  describe('RDF engine error mapping', () => {
+    it('should return 400 when the embedded engine cannot execute a query without compatibility fallback', async () => {
+      const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
+      const response = createMockResponse();
+
+      mockQueryEngine.queryBindings.mockRejectedValueOnce(
+        new UnsupportedSparqlQueryError('No compatibility SPARQL fallback configured for queryBindings: unsupported shape'),
+      );
+
+      await expect(handler.handle({ request, response })).resolves.toBeUndefined();
+
+      expect(response.statusCode).toBe(400);
+      expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain; charset=utf-8');
+    });
+
+    it('should return 403 when a disabled SPARQL feature is requested', async () => {
+      const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20SERVICE%20%3Chttps%3A%2F%2Fremote.example%2Fsparql%3E%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D%20%7D');
+      const response = createMockResponse();
+
+      mockQueryEngine.queryBindings.mockRejectedValueOnce(
+        new DisabledSparqlFeatureError('SPARQL SERVICE federation is disabled for server-owned Pod queries'),
+      );
+
+      await expect(handler.handle({ request, response })).resolves.toBeUndefined();
+
+      expect(response.statusCode).toBe(403);
+      expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain; charset=utf-8');
     });
   });
 

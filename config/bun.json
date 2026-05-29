@@ -12,44 +12,90 @@
   ],
   "@graph": [
     {
-      "comment": "Bun runtime profile - uses BunQuintStore and BunVectorStore instead of Node SQLite stores",
-      "@id": "urn:undefineds:xpod:QuintStore",
-      "@type": "BunQuintStore",
-      "path": {
+      "comment": "Compatibility QuintStore instance (Bun SQLite via SqliteQuintStore runtime abstraction).",
+      "@id": "urn:undefineds:xpod:CompatibilityQuintStore",
+      "@type": "SqliteQuintStore",
+      "options_path": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }
     },
     {
-      "comment": "VectorStore using Bun SQLite",
+      "comment": "Compatibility write bridge that mirrors legacy quints into the term-id RDF index.",
+      "@id": "urn:undefineds:xpod:QuintStore",
+      "@type": "ShadowRdfQuintStore",
+      "compatibilityStore": {
+        "@id": "urn:undefineds:xpod:CompatibilityQuintStore"
+      },
+      "index_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "autoOpen": true,
+      "autoBackfill_enabled": true,
+      "autoBackfill_clear": true,
+      "autoBackfill_batchSize": 1000
+    },
+    {
+      "comment": "VectorStore using SQLite through the shared runtime abstraction.",
       "@id": "urn:undefineds:xpod:VectorStore",
-      "@type": "BunVectorStore",
+      "@type": "SqliteVectorStore",
       "options_connectionString": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }
     },
     {
-      "comment": "Default SPARQL Engine for Bun",
-      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "comment": "RDF term-id query engine backed by the shared local RDF index.",
+      "@id": "urn:undefineds:xpod:SolidRdfEngine",
+      "@type": "SolidRdfEngine",
+      "index_path": {
+        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+        "@type": "Variable"
+      },
+      "autoOpen": true
+    },
+    {
+      "comment": "Compatibility SPARQL engine backed by the shadow store; not wired into DefaultSparqlEngine by default.",
+      "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine",
       "@type": "QuintstoreSparqlEngine",
       "store": {
         "@id": "urn:undefineds:xpod:QuintStore"
       }
     },
     {
-      "comment": "Use Bun-compatible stores for RDF data",
+      "comment": "Default SPARQL engine: server-owned Pod queries use SolidRdfEngine; compatibility fallback is opt-in.",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
+      "@type": "SolidRdfSparqlEngine",
+      "rdfEngine": {
+        "@id": "urn:undefineds:xpod:SolidRdfEngine"
+      },
+      "enablePrimary": true
+    },
+    {
+      "comment": "Use SolidRdfEngine for structured RDF data.",
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
       "structuredDataAccessor": {
-        "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor"
+        "@id": "urn:undefineds:xpod:SolidRdfDataAccessor"
       },
       "unstructuredDataAccessor": {
         "@id": "urn:solid-server:default:FileDataAccessor"
       }
     },
     {
-      "comment": "QuintStore-based data accessor",
+      "comment": "Default structured RDF data accessor backed directly by SolidRdfEngine.",
+      "@id": "urn:undefineds:xpod:SolidRdfDataAccessor",
+      "@type": "SolidRdfDataAccessor",
+      "rdfEngine": {
+        "@id": "urn:undefineds:xpod:SolidRdfEngine"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      }
+    },
+    {
+      "comment": "Compatibility SPARQL data accessor using the legacy QuintStore bridge.",
       "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
       "@type": "QuintStoreSparqlDataAccessor",
       "store": {

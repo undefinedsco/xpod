@@ -92,6 +92,20 @@ interface OptionalFrame {
   exists: RdfExistsQueryGroup[];
 }
 
+interface RdfUpdateTemplateOptions {
+  graphVariables?: ReadonlySet<string>;
+}
+
+interface RdfQueryGraphScope {
+  patterns: RdfQueryPattern[];
+  values?: RdfValuesBindingSource[];
+  filters?: RdfQueryFilter[];
+  optional?: RdfLocalQuery['optional'];
+  unions?: RdfLocalQuery['unions'];
+  minus?: RdfLocalQuery['minus'];
+  exists?: RdfLocalQuery['exists'];
+}
+
 export interface RdfSparqlCompileResult {
   query: RdfLocalQuery;
   variables: string[];
@@ -149,6 +163,10 @@ export interface RdfSparqlUpdateDelta {
   operations: RdfSparqlUpdateDeltaOperation[];
   inserts: Quad[];
   deletes: Quad[];
+}
+
+export interface RdfSparqlUpdateCompileOptions {
+  defaultGraph?: string | NamedNode;
 }
 
 export class UnsupportedSparqlQueryError extends Error {
@@ -217,7 +235,11 @@ export class RdfSparqlAdapter {
     };
   }
 
-  public compileUpdateDelta(query: string | SparqlQuery, basePath: string): RdfSparqlUpdateDelta {
+  public compileUpdateDelta(
+    query: string | SparqlQuery,
+    basePath: string,
+    options: RdfSparqlUpdateCompileOptions = {},
+  ): RdfSparqlUpdateDelta {
     const parsed = typeof query === 'string'
       ? new Parser({ baseIRI: basePath }).parse(query)
       : query;
@@ -226,6 +248,7 @@ export class RdfSparqlAdapter {
       throw new UnsupportedSparqlQueryError('Only SPARQL UPDATE can compile into update delta');
     }
 
+    const defaultGraph = this.compileUpdateDefaultGraph(options.defaultGraph, basePath);
     const operations: RdfSparqlUpdateDeltaOperation[] = [];
     for (const update of (parsed as Update).updates) {
       if (!('updateType' in update)) {
@@ -239,7 +262,7 @@ export class RdfSparqlAdapter {
           }
           operations.push({
             type: 'insert',
-            quads: this.compileUpdateGraphQuads(update.insert, basePath),
+            quads: this.compileUpdateGraphQuads(update.insert, basePath, defaultGraph),
           });
           break;
         case 'delete':
@@ -248,17 +271,17 @@ export class RdfSparqlAdapter {
           }
           operations.push({
             type: 'delete',
-            quads: this.compileUpdateGraphQuads(update.delete, basePath),
+            quads: this.compileUpdateGraphQuads(update.delete, basePath, defaultGraph),
           });
           break;
         case 'deletewhere':
           if (update.graph) {
             throw new UnsupportedSparqlQueryError('SPARQL UPDATE WITH/default graph scope fallback to compatibility engine');
           }
-          operations.push(this.compileDeleteWhere(update.delete, basePath));
+          operations.push(this.compileDeleteWhere(update.delete, basePath, defaultGraph));
           break;
         case 'insertdelete':
-          operations.push(this.compileInsertDeleteWhere(update, basePath));
+          operations.push(this.compileInsertDeleteWhere(update, basePath, defaultGraph));
           break;
         default:
           throw new UnsupportedSparqlQueryError('Unsupported SPARQL UPDATE operation fallback to compatibility engine');
@@ -291,8 +314,12 @@ export class RdfSparqlAdapter {
     return { operations, inserts, deletes };
   }
 
-  private compileDeleteWhere(items: Array<GraphQuads | BgpPattern>, basePath: string): RdfSparqlDeleteWhereOperation {
-    const template = this.compileGraphQuadsTemplate(items, basePath, 'DELETE WHERE');
+  private compileDeleteWhere(
+    items: Array<GraphQuads | BgpPattern>,
+    basePath: string,
+    defaultGraph?: NamedNode,
+  ): RdfSparqlDeleteWhereOperation {
+    const template = this.compileGraphQuadsTemplate(items, basePath, 'DELETE WHERE', defaultGraph);
     return {
       type: 'deleteWhere',
       query: this.queryFromUpdateTemplate(template, 'DELETE WHERE'),
@@ -303,6 +330,7 @@ export class RdfSparqlAdapter {
   private compileInsertDeleteWhere(
     update: Extract<Update['updates'][number], { updateType: 'insertdelete' }>,
     basePath: string,
+    defaultGraph?: NamedNode,
   ): RdfSparqlInsertDeleteWhereOperation | RdfSparqlInsertWhereOperation | RdfSparqlDeleteWhereOperation {
     const hasInsertTemplate = (update.insert?.length ?? 0) > 0;
     const hasDeleteTemplate = (update.delete?.length ?? 0) > 0;
@@ -314,7 +342,7 @@ export class RdfSparqlAdapter {
       : hasInsertTemplate
       ? 'INSERT WHERE'
       : 'DELETE WHERE';
-    const withGraph = this.compileWithGraph(update.graph, basePath, label);
+    const withGraph = this.compileWithGraph(update.graph, basePath, label) ?? defaultGraph;
     const using = this.compileUsingDatasetScope(update.using, basePath, label);
     const queryDefaultGraph = using.hasUsing
       ? using.defaultGraph ?? this.impossibleGraph(basePath)
@@ -326,14 +354,15 @@ export class RdfSparqlAdapter {
       defaultGraph: queryDefaultGraph,
       namedGraph: queryNamedGraph,
     });
+    const graphVariables = this.safeUpdateTemplateGraphVariables(query);
     const inserts = hasInsertTemplate
-      ? this.compileGraphQuadsTemplate(update.insert ?? [], basePath, 'INSERT template', withGraph)
+      ? this.compileGraphQuadsTemplate(update.insert ?? [], basePath, 'INSERT template', withGraph, { graphVariables })
       : [];
     if (hasInsertTemplate && inserts.length === 0) {
       throw new UnsupportedSparqlQueryError(`${label} without INSERT template fallback to compatibility engine`);
     }
     const deletes = hasDeleteTemplate
-      ? this.compileGraphQuadsTemplate(update.delete ?? [], basePath, 'DELETE template', withGraph)
+      ? this.compileGraphQuadsTemplate(update.delete ?? [], basePath, 'DELETE template', withGraph, { graphVariables })
       : [];
     if (hasDeleteTemplate && deletes.length === 0) {
       throw new UnsupportedSparqlQueryError(`${label} without DELETE template fallback to compatibility engine`);
@@ -405,7 +434,9 @@ export class RdfSparqlAdapter {
     basePath: string,
   ): RdfQueryDatasetScope {
     if (!from) {
-      return {};
+      return {
+        defaultGraph: this.compileImplicitQueryDefaultGraph(basePath),
+      };
     }
 
     const defaultGraphs = from.default ?? [];
@@ -415,11 +446,15 @@ export class RdfSparqlAdapter {
         ? this.compileQueryDatasetGraphs(defaultGraphs, basePath, 'FROM')
         : namedGraphs.length > 0
         ? this.impossibleGraph(basePath)
-        : undefined,
+        : this.compileImplicitQueryDefaultGraph(basePath),
       namedGraph: namedGraphs.length > 0
         ? this.compileQueryDatasetGraphs(namedGraphs, basePath, 'FROM NAMED')
         : undefined,
     };
+  }
+
+  private compileImplicitQueryDefaultGraph(basePath: string): RdfQueryTermPattern {
+    return implicitQueryDefaultGraph(basePath);
   }
 
   private compileQueryDatasetGraphs(
@@ -481,6 +516,7 @@ export class RdfSparqlAdapter {
     state.assertBindVariablesSafe();
     state.assertValuesVariablesBoundByRequiredPatterns();
     state.assertDependentGroupsShareRequiredVariables();
+    this.assertFiniteUpdateGraphVariables(state.query, basePath, label);
     if (state.query.patterns.length === 0 && (state.query.unions?.length ?? 0) === 0) {
       throw new UnsupportedSparqlQueryError(`${label} without required graph BGP patterns fallback to compatibility engine`);
     }
@@ -508,23 +544,30 @@ export class RdfSparqlAdapter {
     basePath: string,
     label: string,
     defaultGraph?: RdfQueryTermPattern,
+    options: RdfUpdateTemplateOptions = {},
   ): RdfSparqlUpdateTemplate[] {
     const template: RdfSparqlUpdateTemplate[] = [];
     for (const item of items) {
       let graph = defaultGraph;
       if (item.type === 'graph') {
-        if (item.name.termType !== 'NamedNode') {
+        if (item.name.termType === 'Variable') {
+          if (!options.graphVariables?.has(item.name.value)) {
+            throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
+          }
+          graph = rdfVar(item.name.value);
+        } else if (item.name.termType !== 'NamedNode') {
           throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
+        } else {
+          graph = this.compileGraphTerm(item.name, basePath) ?? undefined;
         }
-        graph = this.compileGraphTerm(item.name, basePath) ?? undefined;
       } else if (!graph) {
         throw new UnsupportedSparqlQueryError(`${label} default graph fallback to compatibility engine`);
       }
-      if (!graph || graph === null || isCompiledVariable(graph)) {
+      if (!graph || graph === null) {
         throw new UnsupportedSparqlQueryError(`${label} graph outside basePath fallback to compatibility engine`);
       }
       const state = new CompileState(basePath);
-      for (const triple of item.triples) {
+      for (const triple of this.updateTemplateTriples(item)) {
         if (!isSimpleTerm(triple.predicate)) {
           throw new UnsupportedSparqlQueryError(`${label} property path templates fallback to compatibility engine`);
         }
@@ -543,6 +586,93 @@ export class RdfSparqlAdapter {
       }
     }
     return template;
+  }
+
+  private safeUpdateTemplateGraphVariables(query: RdfLocalQuery): ReadonlySet<string> {
+    const graphVariables = new Set<string>();
+    this.collectQueryGraphVariables(query, graphVariables);
+    if (graphVariables.size === 0) {
+      return graphVariables;
+    }
+
+    const constrainedVariables = new Set<string>();
+    this.collectFiniteGraphFilterVariables(query, graphVariables, constrainedVariables);
+    return constrainedVariables;
+  }
+
+  private collectQueryGraphVariables(
+    query: RdfQueryGraphScope,
+    graphVariables: Set<string>,
+  ): void {
+    for (const pattern of query.patterns) {
+      if (pattern.graph && isCompiledVariable(pattern.graph)) {
+        graphVariables.add(pattern.graph.variable);
+      }
+    }
+    for (const optional of query.optional ?? []) {
+      this.collectQueryGraphVariables(Array.isArray(optional) ? { patterns: optional } : optional, graphVariables);
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectQueryGraphVariables(branch, graphVariables);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectQueryGraphVariables(minus, graphVariables);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectQueryGraphVariables(exists, graphVariables);
+    }
+  }
+
+  private collectFiniteGraphFilterVariables(
+    query: RdfQueryGraphScope,
+    graphVariables: Set<string>,
+    constrainedVariables: Set<string>,
+  ): void {
+    this.collectFiniteGraphValueVariables(query.values ?? [], graphVariables, constrainedVariables, (value) => (
+      this.isNamedNodeFilterValue(value)
+    ));
+    for (const filter of query.filters ?? []) {
+      if (!graphVariables.has(filter.variable)) {
+        continue;
+      }
+      const values = filter.values ?? (filter.value ? [filter.value] : []);
+      if (
+        (filter.operator === '$eq' || filter.operator === '$sameTerm' || filter.operator === '$in')
+          && values.length > 0
+          && values.every((value) => this.isNamedNodeFilterValue(value))
+      ) {
+        constrainedVariables.add(filter.variable);
+      }
+    }
+    for (const optional of query.optional ?? []) {
+      this.collectFiniteGraphFilterVariables(Array.isArray(optional) ? { patterns: optional } : optional, graphVariables, constrainedVariables);
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectFiniteGraphFilterVariables(branch, graphVariables, constrainedVariables);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectFiniteGraphFilterVariables(minus, graphVariables, constrainedVariables);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectFiniteGraphFilterVariables(exists, graphVariables, constrainedVariables);
+    }
+  }
+
+  private isNamedNodeFilterValue(value: unknown): boolean {
+    return Boolean(value && typeof value === 'object' && 'termType' in value && (value as Term).termType === 'NamedNode');
+  }
+
+  private updateTemplateTriples(item: GraphQuads | BgpPattern): Triple[] {
+    if ('triples' in item && Array.isArray(item.triples)) {
+      return item.triples;
+    }
+    const patterns = (item as unknown as { patterns?: Pattern[] }).patterns ?? [];
+    return patterns.flatMap((pattern): Triple[] =>
+      pattern.type === 'bgp' ? pattern.triples : []);
   }
 
   private assertSafeUpdateTemplatePattern(pattern: RdfQueryPattern, label: string): void {
@@ -566,9 +696,6 @@ export class RdfSparqlAdapter {
       switch (pattern.type) {
         case 'graph':
           if (pattern.name.termType === 'Variable') {
-            if (!namedGraph) {
-              throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
-            }
           } else if (pattern.name.termType !== 'NamedNode') {
             throw new UnsupportedSparqlQueryError(`${label} GRAPH variables fallback to compatibility engine`);
           } else if (!pattern.name.value.startsWith(basePath)) {
@@ -602,11 +729,109 @@ export class RdfSparqlAdapter {
     }
   }
 
-  private compileUpdateGraphQuads(items: Array<GraphQuads | BgpPattern>, basePath: string): Quad[] {
+  private assertFiniteUpdateGraphVariables(query: RdfQueryGraphScope, basePath: string, label: string): void {
+    const unboundedVariables = new Set<string>();
+    this.collectUnboundedUpdateGraphVariables(query, basePath, new Set(), unboundedVariables);
+    if (unboundedVariables.size > 0) {
+      throw new UnsupportedSparqlQueryError(`${label} GRAPH variables require finite named graph filters fallback to compatibility engine`);
+    }
+  }
+
+  private collectUnboundedUpdateGraphVariables(
+    query: RdfQueryGraphScope,
+    basePath: string,
+    inheritedFiniteVariables: ReadonlySet<string>,
+    unboundedVariables: Set<string>,
+  ): void {
+    const finiteVariables = new Set(inheritedFiniteVariables);
+    this.collectFiniteGraphValueVariables(query.values ?? [], undefined, finiteVariables, (value) => (
+      this.isBasePathNamedNodeFilterValue(value, basePath)
+    ));
+    this.collectFiniteGraphFilterVariablesFromFilters(query.filters ?? [], finiteVariables, basePath);
+
+    for (const pattern of query.patterns) {
+      if (pattern.graph && isCompiledVariable(pattern.graph) && !finiteVariables.has(pattern.graph.variable)) {
+        unboundedVariables.add(pattern.graph.variable);
+      }
+    }
+    for (const optional of query.optional ?? []) {
+      this.collectUnboundedUpdateGraphVariables(
+        Array.isArray(optional) ? { patterns: optional } : optional,
+        basePath,
+        finiteVariables,
+        unboundedVariables,
+      );
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectUnboundedUpdateGraphVariables(branch, basePath, finiteVariables, unboundedVariables);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectUnboundedUpdateGraphVariables(minus, basePath, finiteVariables, unboundedVariables);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectUnboundedUpdateGraphVariables(exists, basePath, finiteVariables, unboundedVariables);
+    }
+  }
+
+  private collectFiniteGraphFilterVariablesFromFilters(
+    filters: readonly RdfQueryFilter[],
+    finiteVariables: Set<string>,
+    basePath: string,
+  ): void {
+    for (const filter of filters) {
+      const values = filter.values ?? (filter.value ? [filter.value] : []);
+      if (
+        (filter.operator === '$eq' || filter.operator === '$sameTerm' || filter.operator === '$in')
+          && values.length > 0
+          && values.every((value) => this.isBasePathNamedNodeFilterValue(value, basePath))
+      ) {
+        finiteVariables.add(filter.variable);
+      }
+    }
+  }
+
+  private isBasePathNamedNodeFilterValue(value: unknown, basePath: string): boolean {
+    return this.isNamedNodeFilterValue(value) && (value as Term).value.startsWith(basePath);
+  }
+
+  private collectFiniteGraphValueVariables(
+    sources: readonly RdfValuesBindingSource[],
+    graphVariables: ReadonlySet<string> | undefined,
+    finiteVariables: Set<string>,
+    isSafeValue: (value: unknown) => boolean,
+  ): void {
+    for (const source of sources) {
+      if (source.rows.length === 0) {
+        continue;
+      }
+      for (const variable of source.variables) {
+        if (graphVariables && !graphVariables.has(variable)) {
+          continue;
+        }
+        if (source.rows.every((row) => isSafeValue(row[variable]))) {
+          finiteVariables.add(variable);
+        }
+      }
+    }
+  }
+
+  private compileUpdateGraphQuads(
+    items: Array<GraphQuads | BgpPattern>,
+    basePath: string,
+    defaultGraph?: NamedNode,
+  ): Quad[] {
     const quads: Quad[] = [];
     for (const item of items) {
       if (item.type !== 'graph') {
-        throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph fallback to compatibility engine');
+        if (!defaultGraph) {
+          throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph fallback to compatibility engine');
+        }
+        for (const triple of item.triples) {
+          quads.push(this.compileUpdateTriple(triple, defaultGraph));
+        }
+        continue;
       }
       if (item.name.termType !== 'NamedNode') {
         throw new UnsupportedSparqlQueryError('SPARQL UPDATE GRAPH variables fallback to compatibility engine');
@@ -614,11 +839,24 @@ export class RdfSparqlAdapter {
       if (!item.name.value.startsWith(basePath)) {
         throw new UnsupportedSparqlQueryError('SPARQL UPDATE graph outside basePath fallback to compatibility engine');
       }
-      for (const triple of item.triples) {
+      for (const triple of this.updateTemplateTriples(item)) {
         quads.push(this.compileUpdateTriple(triple, item.name));
       }
     }
     return quads;
+  }
+
+  private compileUpdateDefaultGraph(defaultGraph: string | NamedNode | undefined, basePath: string): NamedNode | undefined {
+    if (!defaultGraph) {
+      return undefined;
+    }
+    const graph = typeof defaultGraph === 'string'
+      ? DataFactory.namedNode(defaultGraph)
+      : defaultGraph;
+    if (basePath && !graph.value.startsWith(basePath)) {
+      throw new UnsupportedSparqlQueryError('SPARQL UPDATE default graph outside basePath fallback to compatibility engine');
+    }
+    return graph;
   }
 
   private compileUpdateTriple(triple: Triple, graph: NamedNode): Quad {
@@ -766,15 +1004,13 @@ export class RdfSparqlAdapter {
     this.compilePatterns(this.unionBranchPatterns(branch), graph, branchState, false, namedGraphScope);
     branchState.assertBindVariablesSafe();
     branchState.assertValuesVariablesBoundByRequiredPatterns();
-    if (branchState.query.unions?.length) {
-      throw new UnsupportedSparqlQueryError('Nested UNION fallback to compatibility engine');
-    }
-    if (branchState.query.patterns.length === 0) {
+    if (branchState.query.patterns.length === 0 && (branchState.query.unions?.length ?? 0) === 0) {
       throw new UnsupportedSparqlQueryError('UNION branch without required BGP fallback to compatibility engine');
     }
     return [{
       patterns: branchState.query.patterns,
       ...(branchState.query.values?.length ? { values: branchState.query.values } : {}),
+      ...(branchState.query.unions?.length ? { unions: branchState.query.unions } : {}),
       ...(branchState.query.optional?.length ? { optional: branchState.query.optional } : {}),
       ...(branchState.query.binds?.length ? { binds: branchState.query.binds } : {}),
       ...(branchState.query.filters?.length ? { filters: branchState.query.filters } : {}),
@@ -901,21 +1137,21 @@ export class RdfSparqlAdapter {
       return;
     }
     if (pattern.name.termType === 'Variable') {
-      if (optional) {
-        throw new UnsupportedSparqlQueryError('OPTIONAL GRAPH variable scope fallback to compatibility engine');
-      }
-      if (namedGraphScope) {
-        state.query.filters?.push({
+      const graphScopeFilter: RdfQueryFilter = namedGraphScope
+        ? {
           variable: pattern.name.value,
           operator: '$in',
           values: this.graphScopeFilterValues(namedGraphScope),
-        });
-      } else {
-        state.query.filters?.push({
+        }
+        : {
           variable: pattern.name.value,
           operator: '$startsWith',
           value: state.basePath,
-        });
+        };
+      if (optional) {
+        state.addOptionalFilters([graphScopeFilter]);
+      } else {
+        state.query.filters?.push(graphScopeFilter);
       }
     }
     this.compilePatterns(pattern.patterns, graph, state, optional, namedGraphScope);
@@ -1020,6 +1256,22 @@ export class RdfSparqlAdapter {
         expression: this.compileBindExpression(this.expressionArg(normalized.args[0]), basePath),
       };
     }
+    if (operator === 'coalesce') {
+      return {
+        type: 'coalesce',
+        expressions: normalized.args.map((arg: Expression | Pattern) => (
+          this.compileBindExpression(this.expressionArg(arg), basePath)
+        )),
+      };
+    }
+    if (operator === 'if') {
+      return {
+        type: 'if',
+        condition: this.compileFilter(this.expressionArg(normalized.args[0])),
+        then: this.compileBindExpression(this.expressionArg(normalized.args[1]), basePath),
+        else: this.compileBindExpression(this.expressionArg(normalized.args[2]), basePath),
+      };
+    }
     if (operator === 'substr' || operator === 'substring') {
       return {
         type: 'substring',
@@ -1043,6 +1295,20 @@ export class RdfSparqlAdapter {
         type: 'iri',
         expression: this.compileBindExpression(this.expressionArg(normalized.args[0]), basePath),
         base: basePath,
+      };
+    }
+    if (operator === 'strdt') {
+      return {
+        type: 'strdt',
+        lexical: this.compileBindExpression(this.expressionArg(normalized.args[0]), basePath),
+        datatype: this.compileBindExpression(this.expressionArg(normalized.args[1]), basePath),
+      };
+    }
+    if (operator === 'strlang') {
+      return {
+        type: 'strlang',
+        lexical: this.compileBindExpression(this.expressionArg(normalized.args[0]), basePath),
+        language: this.compileBindExpression(this.expressionArg(normalized.args[1]), basePath),
       };
     }
 
@@ -1338,6 +1604,7 @@ export class RdfSparqlAdapter {
 
     const variables: string[] = [];
     const visibleVariables = visibleSelectVariables(query);
+    state.setVisibleSolutionVariables(visibleVariables);
     for (const variable of query.variables) {
       if (isSelectVariableTerm(variable)) {
         variables.push(variable.value);
@@ -1398,6 +1665,9 @@ export class RdfSparqlAdapter {
       as,
       variable,
       distinct: aggregate.distinct,
+      ...(type === 'count' && aggregate.distinct && !variable
+        ? { distinctVariables: state.visibleSolutionVariables }
+        : {}),
     };
   }
 
@@ -1556,6 +1826,9 @@ export class RdfSparqlAdapter {
       as: state.nextHavingAggregateVariable(),
       variable,
       distinct: expression.distinct,
+      ...(type === 'count' && expression.distinct && !variable
+        ? { distinctVariables: state.visibleSolutionVariables }
+        : {}),
     };
     localQuery.aggregates = [...(localQuery.aggregates ?? []), hiddenAggregate];
     return hiddenAggregate.as;
@@ -1675,6 +1948,14 @@ export class RdfSparqlAdapter {
       const values = expression.args[1];
       if (!Array.isArray(values)) {
         throw new UnsupportedSparqlQueryError('FILTER IN tuple fallback to compatibility engine');
+      }
+      const functionFilter = this.compileFunctionInFilter(
+        this.expressionArg(expression.args[0]),
+        values,
+        operator === 'notin',
+      );
+      if (functionFilter) {
+        return [functionFilter];
       }
       const operand = this.stringOperandVariable(this.expressionArg(expression.args[0]));
       return [{
@@ -1962,6 +2243,36 @@ export class RdfSparqlAdapter {
     return null;
   }
 
+  private compileFunctionInFilter(
+    functionExpression: Expression,
+    values: Expression[],
+    negated: boolean,
+  ): RdfQueryFilter | null {
+    if (!isOperationExpression(functionExpression)) {
+      return null;
+    }
+    const functionOperator = functionExpression.operator.toLowerCase();
+    if (functionOperator === 'lang') {
+      return {
+        variable: this.expressionVariable(this.expressionArg(functionExpression.args[0])),
+        operator: negated ? '$notLangIn' : '$langIn',
+        values: values.map((value) => this.literalString(value)),
+      };
+    }
+    if (functionOperator === 'datatype') {
+      const datatypeValues = values.map((value) => this.filterValue(value));
+      if (datatypeValues.some((value) => !isNamedNodeTerm(value))) {
+        throw new UnsupportedSparqlQueryError('DATATYPE FILTER values must be IRIs locally');
+      }
+      return {
+        variable: this.expressionVariable(this.expressionArg(functionExpression.args[0])),
+        operator: negated ? '$notDatatypeIn' : '$datatypeIn',
+        values: datatypeValues,
+      };
+    }
+    return null;
+  }
+
   private stringLengthVariableOrUndefined(expression: Expression): string | undefined {
     const normalized = this.normalizeFunctionCallExpression(expression);
     if (!isOperationExpression(normalized) || normalized.operator.toLowerCase() !== 'strlen') {
@@ -2082,6 +2393,17 @@ export class RdfSparqlAdapter {
         value: false,
       }];
     }
+    const termTest = this.compileTermTestFilter(operator, expression);
+    if (termTest) {
+      return [this.negateTermTestFilter(termTest)];
+    }
+    if (operator === 'langmatches') {
+      const filter = this.compileLangMatchesFilter(expression);
+      return [{
+        ...filter,
+        operator: '$notLangMatches',
+      }];
+    }
     if (operator === '||') {
       const filter = this.compileOrFilter(expression);
       return [{
@@ -2100,12 +2422,33 @@ export class RdfSparqlAdapter {
       if (!Array.isArray(values)) {
         throw new UnsupportedSparqlQueryError('FILTER negated IN tuple fallback to compatibility engine');
       }
+      const functionFilter = this.compileFunctionInFilter(
+        this.expressionArg(expression.args[0]),
+        values,
+        operator === 'in',
+      );
+      if (functionFilter) {
+        return [functionFilter];
+      }
       const operand = this.stringOperandVariable(this.expressionArg(expression.args[0]));
       return [{
         variable: operand.variable,
         operator: operator === 'in' ? '$notIn' : '$in',
         operand: operand.operand,
         values: values.map((value) => this.filterValue(value)),
+      }];
+    }
+
+    const stringOperator = this.stringFilter(operator);
+    if (stringOperator) {
+      const [left, right, flags] = expression.args;
+      const leftOperand = this.stringOperandVariable(this.expressionArg(left));
+      return [{
+        variable: leftOperand.variable,
+        operator: this.negatedStringFilter(stringOperator),
+        operand: leftOperand.operand,
+        value: this.literalString(this.expressionArg(right)),
+        flags: operator === 'regex' && flags ? this.literalString(this.expressionArg(flags)) : undefined,
       }];
     }
 
@@ -2215,6 +2558,38 @@ export class RdfSparqlAdapter {
     }
   }
 
+  private negatedStringFilter(operator: RdfQueryFilterOperator): RdfQueryFilterOperator {
+    switch (operator) {
+      case '$startsWith':
+        return '$notStartsWith';
+      case '$contains':
+        return '$notContains';
+      case '$endsWith':
+        return '$notEndsWith';
+      case '$regex':
+        return '$notRegex';
+      default:
+        throw new UnsupportedSparqlQueryError(`FILTER !${operator} fallback to compatibility engine`);
+    }
+  }
+
+  private negateTermTestFilter(filter: RdfQueryFilter): RdfQueryFilter {
+    switch (filter.operator) {
+      case '$termType':
+        return {
+          ...filter,
+          operator: '$notTermType',
+        };
+      case '$sameTerm':
+        return {
+          ...filter,
+          operator: '$notSameTerm',
+        };
+      default:
+        throw new UnsupportedSparqlQueryError(`FILTER !${filter.operator} fallback to compatibility engine`);
+    }
+  }
+
   private normalizeFunctionCallExpression(expression: Expression): Expression {
     if (!isFunctionCallExpression(expression)) {
       return expression;
@@ -2284,11 +2659,16 @@ class CompileState {
   private groupVariableIndex = 0;
   private orderVariableIndex = 0;
   private havingAggregateVariableIndex = 0;
+  public visibleSolutionVariables: string[] | undefined;
 
   public constructor(
     public readonly basePath: string,
     private readonly skipMinusSharedVariableCheck = false,
   ) {}
+
+  public setVisibleSolutionVariables(variables: string[]): void {
+    this.visibleSolutionVariables = variables;
+  }
 
   public addPattern(pattern: RdfQueryPattern, optional: boolean): void {
     if (optional) {
@@ -2446,6 +2826,9 @@ class CompileState {
         for (const variableName of variablesInPatterns(branch.patterns)) {
           bound.add(variableName);
         }
+        for (const variableName of variablesInUnionGroups(branch.unions ?? [])) {
+          bound.add(variableName);
+        }
         for (const bind of branch.binds ?? []) {
           for (const dependency of variablesInBindExpression(bind.expression)) {
             if (!bound.has(dependency)) {
@@ -2498,7 +2881,7 @@ class CompileState {
   }
 
   private scopePattern(pattern: RdfQueryPattern): RdfQueryPattern {
-    return pattern.graph ? pattern : { ...pattern, graph: { $startsWith: this.basePath } };
+    return pattern.graph ? pattern : { ...pattern, graph: implicitQueryDefaultGraph(this.basePath) };
   }
 
   private currentOptionalFrame(): OptionalFrame {
@@ -2512,6 +2895,12 @@ class CompileState {
   private peekOptionalFrame(): OptionalFrame | undefined {
     return this.optionalStack[this.optionalStack.length - 1];
   }
+}
+
+function implicitQueryDefaultGraph(basePath: string): RdfQueryTermPattern {
+  return basePath.endsWith('/')
+    ? { $startsWith: basePath }
+    : DataFactory.namedNode(basePath) as unknown as Term;
 }
 
 function isVariableTerm(value: Variable | Expression): value is VariableTerm {
@@ -2752,6 +3141,7 @@ function variablesInUnionGroups(unions: RdfUnionQueryGroup[]): string[] {
     unionGroup.branches.flatMap((branch) => [
       ...variablesInPatterns(branch.patterns),
       ...variablesInValuesSources(branch.values ?? []),
+      ...variablesInUnionGroups(branch.unions ?? []),
       ...((branch.binds ?? []).map((bind) => bind.variable)),
     ])
   )));
@@ -2803,6 +3193,14 @@ function variablesInBindExpression(expression: RdfBindExpression): string[] {
     case 'lowerCase':
     case 'upperCase':
       return variablesInBindExpression(expression.expression);
+    case 'coalesce':
+      return unique(expression.expressions.flatMap((item) => variablesInBindExpression(item)));
+    case 'if':
+      return unique([
+        ...variablesInFilters(expression.condition),
+        ...variablesInBindExpression(expression.then),
+        ...variablesInBindExpression(expression.else),
+      ]);
     case 'substring':
       return unique([
         ...variablesInBindExpression(expression.expression),
@@ -2813,11 +3211,28 @@ function variablesInBindExpression(expression: RdfBindExpression): string[] {
       return unique(expression.expressions.flatMap((item) => variablesInBindExpression(item)));
     case 'iri':
       return variablesInBindExpression(expression.expression);
+    case 'strdt':
+      return unique([
+        ...variablesInBindExpression(expression.lexical),
+        ...variablesInBindExpression(expression.datatype),
+      ]);
+    case 'strlang':
+      return unique([
+        ...variablesInBindExpression(expression.lexical),
+        ...variablesInBindExpression(expression.language),
+      ]);
     default: {
       const exhaustive: never = expression;
       return exhaustive;
     }
   }
+}
+
+function variablesInFilters(filters: RdfQueryFilter[]): string[] {
+  return unique(filters.flatMap((filter) => [
+    filter.variable,
+    filter.variable2,
+  ].filter((value): value is string => Boolean(value))));
 }
 
 function assertOptionalBindVariablesSafe(
@@ -2839,6 +3254,9 @@ function assertOptionalBindVariablesSafe(
         branchBound.add(variableName);
       }
       for (const variableName of variablesInValuesSources(branch.values ?? [])) {
+        branchBound.add(variableName);
+      }
+      for (const variableName of variablesInUnionGroups(branch.unions ?? [])) {
         branchBound.add(variableName);
       }
       for (const bind of branch.binds ?? []) {
@@ -2901,7 +3319,17 @@ function queryBindsVariableInRequiredShape(query: RdfLocalQuery, variableName: s
     return false;
   }
   return (query.unions ?? []).every((group) => (
-    group.branches.every((branch) => patternsBindVariable(branch.patterns, variableName))
+    group.branches.every((branch) => unionBranchBindsVariable(branch, variableName))
+  ));
+}
+
+function unionBranchBindsVariable(branch: RdfUnionQueryBranch, variableName: string): boolean {
+  if (patternsBindVariable(branch.patterns, variableName)) {
+    return true;
+  }
+  const unions = branch.unions ?? [];
+  return unions.length > 0 && unions.every((group) => (
+    group.branches.every((nestedBranch) => unionBranchBindsVariable(nestedBranch, variableName))
   ));
 }
 

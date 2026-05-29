@@ -79,6 +79,143 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.indexChoices.length).toBeGreaterThan(0);
   });
 
+  it('applies safely negated string filters as local post-filters', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    engine.put([
+      quad(namedNode(`${graph.value}#msg_skip`), namedNode(SIOC_CONTENT), literal('skip this'), graph),
+      quad(namedNode(`${graph.value}#msg_draft`), namedNode(SIOC_CONTENT), literal('draft note'), graph),
+      quad(namedNode(`${graph.value}#msg_tmp`), namedNode(SIOC_CONTENT), literal('keep tmp'), graph),
+      quad(namedNode(`${graph.value}#msg_old`), namedNode(SIOC_CONTENT), literal('old note'), graph),
+    ]);
+
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$notContains',
+          operand: 'stringValue',
+          value: 'skip',
+        },
+        {
+          variable: 'content',
+          operator: '$notStartsWith',
+          operand: 'stringValue',
+          value: 'draft',
+        },
+        {
+          variable: 'content',
+          operator: '$notEndsWith',
+          operand: 'stringValue',
+          value: 'tmp',
+        },
+        {
+          variable: 'content',
+          operator: '$notRegex',
+          operand: 'stringValue',
+          value: '^old',
+          flags: 'i',
+        },
+      ],
+      select: ['content'],
+    });
+
+    expect(result.bindings.map((binding) => binding.content.value)).toEqual(['hello']);
+    expect(result.metrics.plan.some((entry) => entry.includes('$notContains'))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('TextSearch('))).toBe(false);
+  });
+
+  it('applies safely negated term-test filters as local post-filters', () => {
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: rdfVar('predicate'),
+          object: rdfVar('value'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'value',
+          operator: '$notTermType',
+          value: 'literal',
+        },
+        {
+          variable: 'value',
+          operator: '$notSameTerm',
+          value: thread,
+        },
+      ],
+      select: ['message', 'value'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      message: termToId(binding.message as any),
+      value: termToId(binding.value as any),
+    }))).toEqual([
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+        value: MEETING_MESSAGE,
+      },
+      {
+        message: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+        value: MEETING_MESSAGE,
+      },
+    ]);
+    expect(result.metrics.plan).toContain('Filter(?value$notTermType,?value$notSameTerm)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoin('))).toBe(false);
+  });
+
+  it('applies negated sameTerm filters between variables', () => {
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('left'),
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: rdfVar('thread'),
+        },
+        {
+          subject: rdfVar('right'),
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: rdfVar('thread'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'left',
+          operator: '$notSameTerm',
+          variable2: 'right',
+        },
+      ],
+      select: ['left', 'right'],
+      orderBy: [{ variable: 'left' }, { variable: 'right' }],
+    });
+
+    expect(result.bindings.map((binding) => ({
+      left: termToId(binding.left as any),
+      right: termToId(binding.right as any),
+    }))).toEqual([
+      {
+        left: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+        right: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+      },
+      {
+        left: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2',
+        right: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+      },
+    ]);
+    expect(result.metrics.plan).toContain('Filter(?left$notSameTerm)');
+  });
+
   it('pushes safe required BGP joins into the RDF quad index', () => {
     const result = engine.query({
       patterns: [
@@ -925,6 +1062,109 @@ describe('RdfLocalQueryEngine', () => {
     expect(wildcardResult.metrics.plan).toContain('Language(object$langMatches)');
   });
 
+  it('applies negated LANGMATCHES filters as local post-filters', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    engine.put([
+      quad(namedNode(`${graph.value}#msg_en`), namedNode(SIOC_CONTENT), literal('howdy', 'en-US'), graph),
+      quad(namedNode(`${graph.value}#msg_fr`), namedNode(SIOC_CONTENT), literal('bonjour', 'fr'), graph),
+    ]);
+
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$notLangMatches',
+          value: 'en',
+        },
+      ],
+      select: ['message'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(result.bindings.map((binding) => termToId(binding.message as any))).toEqual([
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_fr',
+    ]);
+    expect(result.metrics.filtersPushedDown).toBe(0);
+    expect(result.metrics.plan).toContain('Filter(?content$notLangMatches)');
+    expect(result.metrics.plan).not.toContain('Language(object$notLangMatches)');
+  });
+
+  it('applies language and datatype membership filters as local post-filters', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    engine.put([
+      quad(namedNode(`${graph.value}#msg_en`), namedNode(SIOC_CONTENT), literal('howdy', 'en-US'), graph),
+      quad(namedNode(`${graph.value}#msg_fr`), namedNode(SIOC_CONTENT), literal('bonjour', 'fr'), graph),
+    ]);
+
+    const langResult = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$langIn',
+          values: ['en-us', 'zh'],
+        },
+        {
+          variable: 'content',
+          operator: '$notLangIn',
+          values: ['fr'],
+        },
+      ],
+      select: ['message'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(langResult.bindings.map((binding) => termToId(binding.message as any))).toEqual([
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_en',
+    ]);
+    expect(langResult.metrics.filtersPushedDown).toBe(0);
+    expect(langResult.metrics.plan).toContain('Filter(?content$langIn,?content$notLangIn)');
+
+    const datatypeResult = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'content',
+          operator: '$datatypeIn',
+          values: [namedNode('http://www.w3.org/2001/XMLSchema#string')],
+        },
+        {
+          variable: 'content',
+          operator: '$notDatatypeIn',
+          values: [namedNode(XSD_INTEGER)],
+        },
+      ],
+      select: ['message'],
+      orderBy: [{ variable: 'message' }],
+    });
+
+    expect(datatypeResult.bindings.map((binding) => termToId(binding.message as any))).toEqual([
+      'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1',
+    ]);
+    expect(datatypeResult.metrics.filtersPushedDown).toBe(0);
+    expect(datatypeResult.metrics.plan).toContain('Filter(?content$datatypeIn,?content$notDatatypeIn)');
+  });
+
   it('applies string-length filters after scan without pushing them into the term index', () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const msg3 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_3');
@@ -1298,6 +1538,73 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.plan).toContain('Bind(?lowerContent:=LCASE("HeLLo"),?upperContent:=UCASE(STR(?content)))');
   });
 
+  it('evaluates COALESCE, IF, STRDT, and STRLANG BIND expressions after required joins', () => {
+    const result = engine.query({
+      patterns: [
+        {
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_CONTENT),
+          object: rdfVar('content'),
+        },
+      ],
+      binds: [
+        {
+          variable: 'fallbackContent',
+          expression: {
+            type: 'coalesce',
+            expressions: [
+              { type: 'variable', variable: 'missing' },
+              { type: 'stringValue', variable: 'content' },
+              { type: 'term', term: literal('fallback') },
+            ],
+          },
+        },
+        {
+          variable: 'branchContent',
+          expression: {
+            type: 'if',
+            condition: [
+              {
+                variable: 'missing',
+                operator: '$bound',
+                value: false,
+              },
+            ],
+            then: { type: 'stringValue', variable: 'content' },
+            else: { type: 'term', term: literal('missing') },
+          },
+        },
+        {
+          variable: 'typedContent',
+          expression: {
+            type: 'strdt',
+            lexical: { type: 'stringValue', variable: 'content' },
+            datatype: {
+              type: 'term',
+              term: namedNode('http://www.w3.org/2001/XMLSchema#string'),
+            },
+          },
+        },
+        {
+          variable: 'localizedContent',
+          expression: {
+            type: 'strlang',
+            lexical: { type: 'stringValue', variable: 'content' },
+            language: { type: 'term', term: literal('en') },
+          },
+        },
+      ],
+      select: ['fallbackContent', 'branchContent', 'typedContent', 'localizedContent'],
+    });
+
+    expect(result.bindings).toHaveLength(1);
+    expect(result.bindings[0].fallbackContent.value).toBe('hello');
+    expect(result.bindings[0].branchContent.value).toBe('hello');
+    expect(result.bindings[0].typedContent).toEqual(literal('hello', namedNode('http://www.w3.org/2001/XMLSchema#string')));
+    expect(result.bindings[0].localizedContent).toEqual(literal('hello', 'en'));
+    expect(result.metrics.plan).toContain('Bind(?fallbackContent:=COALESCE(?missing,STR(?content),"fallback"),?branchContent:=IF(?missing$bound,STR(?content),"missing"),?typedContent:=STRDT(STR(?content),http://www.w3.org/2001/XMLSchema#string),?localizedContent:=STRLANG(STR(?content),"en"))');
+  });
+
   it('counts distinct bindings after joins', () => {
     const result = engine.query({
       patterns: [
@@ -1326,6 +1633,49 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.plan).toContain('Aggregate(join-count-distinct-index)');
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoinCount('))).toBe(true);
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+  });
+
+  it('pushes joined COUNT DISTINCT star as a solution-tuple count', () => {
+    const firstGraph = namedNode('https://pod.example/alice/.data/rdf/join-distinct-star-a.ttl');
+    const secondGraph = namedNode('https://pod.example/alice/.data/rdf/join-distinct-star-b.ttl');
+    const message = namedNode('https://pod.example/alice/.data/rdf/join-distinct-star.ttl#message');
+    const thread = namedNode('https://pod.example/alice/.data/rdf/join-distinct-star.ttl#thread');
+    const status = namedNode('https://undefineds.co/ns#status');
+    engine.put([
+      quad(message, namedNode(SIOC_HAS_MEMBER), thread, firstGraph),
+      quad(message, status, literal('same'), firstGraph),
+      quad(message, namedNode(SIOC_HAS_MEMBER), thread, secondGraph),
+      quad(message, status, literal('same'), secondGraph),
+    ]);
+
+    const result = engine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/rdf/' },
+          subject: rdfVar('message'),
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: rdfVar('thread'),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/rdf/' },
+          subject: rdfVar('message'),
+          predicate: status,
+          object: rdfVar('status'),
+        },
+      ],
+      aggregate: {
+        type: 'count',
+        as: 'count',
+        distinct: true,
+        distinctVariables: ['message', 'thread', 'status'],
+      },
+    });
+
+    expect(result.count).toBe(1);
+    expect(result.bindings[0].count.value).toBe('1');
+    expect(result.metrics.plan).toContain('Aggregate(join-count-distinct-index)');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoinCount('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.includes('rowid'))).toBe(false);
   });
 
   it('reorders SQL self-join COUNT patterns before aggregate pushdown', () => {
@@ -2251,6 +2601,39 @@ describe('RdfLocalQueryEngine', () => {
     expect(result.metrics.plan).toContain('Aggregate(count-distinct-index)');
     expect(result.metrics.plan).not.toContain('Aggregate(count-distinct)');
     expect(result.metrics.filtersPushedDown).toBe(1);
+  });
+
+  it('pushes COUNT DISTINCT star as a solution-tuple count', () => {
+    const firstGraph = namedNode('https://pod.example/alice/.data/rdf/distinct-star-a.ttl');
+    const secondGraph = namedNode('https://pod.example/alice/.data/rdf/distinct-star-b.ttl');
+    const subject = namedNode('https://pod.example/alice/.data/rdf/distinct-star.ttl#subject');
+    const status = namedNode('https://undefineds.co/ns#status');
+    engine.put([
+      quad(subject, status, literal('same'), firstGraph),
+      quad(subject, status, literal('same'), secondGraph),
+    ]);
+
+    const result = engine.query({
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/rdf/' },
+          subject: rdfVar('subject'),
+          predicate: status,
+          object: rdfVar('status'),
+        },
+      ],
+      aggregate: {
+        type: 'count',
+        as: 'count',
+        distinct: true,
+      },
+    });
+
+    expect(result.count).toBe(1);
+    expect(result.bindings[0].count.value).toBe('1');
+    expect(result.metrics.plan).toContain('IndexCount(graph:op,subject:?subject,predicate:https://undefineds.co/ns#status,object:?status)');
+    expect(result.metrics.plan).toContain('Aggregate(count-distinct-tuple-index)');
+    expect(result.metrics.plan).not.toContain('Aggregate(count-distinct)');
   });
 
   it('does not push COUNT DISTINCT when one variable spans multiple term slots', () => {
@@ -3932,6 +4315,66 @@ describe('RdfLocalQueryEngine', () => {
     }
   });
 
+  it('uses pre-window text candidate counts when ranking source-local top-K searches', async () => {
+    const textEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const selectedA = namedNode('https://pod.example/alice/projects/demo/selected-a.md');
+    const selectedB = namedNode('https://pod.example/alice/projects/demo/selected-b.md');
+
+    try {
+      textEngine.put([
+        quad(selectedA, namedNode(RDF_TYPE), docType, selectedA),
+        quad(selectedB, namedNode(RDF_TYPE), docType, selectedB),
+      ]);
+      for (const source of [
+        selectedA,
+        selectedB,
+        ...Array.from({ length: 8 }, (_, index) => namedNode(`https://pod.example/alice/projects/demo/broad-${index}.md`)),
+      ]) {
+        textEngine.indexTextSource({
+          source: source.value,
+          workspace: 'https://pod.example/alice/projects/demo/',
+          localPath: source.value.slice(source.value.lastIndexOf('/') + 1),
+          contentType: 'text/markdown',
+        }, '# Note\n\nManaged runtime handoff.\n');
+      }
+
+      const result = textEngine.query({
+        textSearch: [
+          {
+            query: 'managed runtime',
+            scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+            source: 'source',
+            content: 'snippet',
+            limit: 1,
+          },
+        ],
+        patterns: [
+          {
+            graph: rdfVar('source'),
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      const indexPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('IndexScan('));
+      const textPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('TextSearch('));
+      expect(indexPlan).toBeGreaterThanOrEqual(0);
+      expect(textPlan).toBeGreaterThan(indexPlan);
+      expect(result.metrics.searchCardinalityEstimates).toBeGreaterThanOrEqual(2);
+    } finally {
+      await textEngine.close();
+    }
+  });
+
   it('applies textSearch explicit ordering before the source-local window', async () => {
     const textEngine = new SolidRdfEngine({
       index: { path: ':memory:' },
@@ -4268,6 +4711,78 @@ describe('RdfLocalQueryEngine', () => {
       expect(termToId(joinedWindow.bindings[0].source as any)).toBe(highScore.value);
       expect(joinedWindow.metrics.plan).toContain('Limit');
       expect(joinedWindow.metrics.plan.some((entry) => entry.includes('limit:1'))).toBe(false);
+    } finally {
+      await vectorEngine.close();
+    }
+  });
+
+  it('uses pre-window vector candidate counts when ranking source-local top-K searches', async () => {
+    const vectorEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const selectedA = namedNode('https://pod.example/alice/projects/demo/selected-vector-a.md');
+    const selectedB = namedNode('https://pod.example/alice/projects/demo/selected-vector-b.md');
+
+    try {
+      vectorEngine.put([
+        quad(selectedA, namedNode(RDF_TYPE), docType, selectedA),
+        quad(selectedB, namedNode(RDF_TYPE), docType, selectedB),
+      ]);
+      for (const [index, source] of [
+        selectedA,
+        selectedB,
+        ...Array.from({ length: 8 }, (_, itemIndex) => namedNode(`https://pod.example/alice/projects/demo/broad-vector-${itemIndex}.md`)),
+      ].entries()) {
+        vectorEngine.indexVectorSource({
+          source: source.value,
+          workspace: 'https://pod.example/alice/projects/demo/',
+          localPath: source.value.slice(source.value.lastIndexOf('/') + 1),
+          contentType: 'text/markdown',
+        }, [
+          {
+            chunkKey: `chunk-${index}`,
+            ordinal: 0,
+            level: 1,
+            content: 'Managed runtime vector candidate.',
+            startOffset: 0,
+            endOffset: 33,
+            embedding: [1, 0],
+            model: 'test-embed',
+          },
+        ]);
+      }
+
+      const result = vectorEngine.query({
+        vectorSearch: [
+          {
+            embedding: [1, 0],
+            vectorModel: 'test-embed',
+            scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+            source: 'source',
+            content: 'snippet',
+            limit: 1,
+          },
+        ],
+        patterns: [
+          {
+            graph: rdfVar('source'),
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      const indexPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('IndexScan('));
+      const vectorPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('VectorSearch('));
+      expect(indexPlan).toBeGreaterThanOrEqual(0);
+      expect(vectorPlan).toBeGreaterThan(indexPlan);
+      expect(result.metrics.searchCardinalityEstimates).toBeGreaterThanOrEqual(2);
     } finally {
       await vectorEngine.close();
     }

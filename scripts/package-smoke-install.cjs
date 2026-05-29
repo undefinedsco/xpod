@@ -191,10 +191,10 @@ function runCommand(packageManager, args, cwd, cacheDir, baseEnv) {
     env.npm_config_prefer_offline = env.npm_config_prefer_offline || 'true';
     env.npm_config_audit = 'false';
     env.npm_config_fund = 'false';
-    env.npm_config_maxsockets = env.npm_config_maxsockets || '1';
-    env.npm_config_fetch_retries = env.npm_config_fetch_retries || '1';
+    env.npm_config_maxsockets = env.npm_config_maxsockets || '8';
+    env.npm_config_fetch_retries = env.npm_config_fetch_retries || '2';
     env.npm_config_fetch_timeout = env.npm_config_fetch_timeout || '15000';
-    env.npm_config_fetch_retry_maxtimeout = env.npm_config_fetch_retry_maxtimeout || '15000';
+    env.npm_config_fetch_retry_maxtimeout = env.npm_config_fetch_retry_maxtimeout || '30000';
     if (installRegistry) {
       env.npm_config_registry = installRegistry;
     }

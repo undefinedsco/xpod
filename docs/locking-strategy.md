@@ -33,7 +33,7 @@ CSS 的锁系统分为三层：
 
 ### 2.1 内存锁 (`memory.json`)
 ```
-WrappedExpiringReadWriteLocker (expiration: 6000ms)
+WrappedExpiringReadWriteLocker (expiration: 30000ms)
   └── GreedyReadWriteLocker
         └── MemoryResourceLocker
         └── KeyValueStorage (存储读计数)
@@ -44,7 +44,7 @@ WrappedExpiringReadWriteLocker (expiration: 6000ms)
 
 ### 2.2 文件锁 (`file.json`)
 ```
-WrappedExpiringReadWriteLocker (expiration: 6000ms)
+WrappedExpiringReadWriteLocker (expiration: 30000ms)
   └── PartialReadWriteLocker
         └── FileSystemResourceLocker
 ```
@@ -54,7 +54,7 @@ WrappedExpiringReadWriteLocker (expiration: 6000ms)
 
 ### 2.3 Redis 锁 (`redis.json`)
 ```
-WrappedExpiringReadWriteLocker (expiration: 6000ms)
+WrappedExpiringReadWriteLocker (expiration: 30000ms)
   └── RedisLocker
 ```
 - ✅ 单进程并发安全

@@ -8,15 +8,26 @@ import type {
   Rdf3xJoinMetrics,
   Rdf3xIndexMetrics,
   Rdf3xIndexStats,
-  Rdf3xNumericObjectRangePattern,
+  Rdf3xObjectOperatorPattern,
+  Rdf3xObjectRangePattern,
+  Rdf3xObjectTextSearchPattern,
+  Rdf3xPermutationName,
+  Rdf3xTermInPattern,
+  Rdf3xTermNotInPattern,
   Rdf3xTriplePattern,
   RdfBindingRow,
+  RdfEngineStorageStats,
   RdfIndexMetrics,
   RdfIndexStats,
   RdfLocalQuery,
   RdfLocalQueryMetrics,
+  RdfQuadJoinCountOptions,
+  RdfQuadJoinGroupAggregateHaving,
+  RdfQuadJoinGroupAggregateOptions,
   RdfQuadJoinOptions,
   RdfQuadJoinPattern,
+  RdfQueryAggregate,
+  RdfQueryFilter,
   RdfQueryPattern,
   RdfQueryPatternKey,
   RdfShadowDiff,
@@ -60,6 +71,7 @@ export interface RdfModelLocalQueryBenchmarkCase {
   resource: string;
   purpose: string;
   minScale: RdfBenchmarkScale;
+  minReturnedRows?: number;
   query: RdfLocalQuery;
   expectedPlan: string[];
 }
@@ -128,6 +140,7 @@ export interface RdfModelBenchmarkReport {
   generatedAt: string;
   planMatched: boolean;
   failedPlanCases: string[];
+  storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
   localQueryCases: RdfModelLocalQueryBenchmarkResult[];
 }
@@ -218,6 +231,9 @@ export interface RdfModelRdf3xShadowBenchmarkResult {
     pattern: JsonPattern;
     options?: QueryOptions;
   };
+  expectedPlan: string[];
+  planMatched: boolean;
+  missingPlan: string[];
   supported: boolean;
   unsupportedReason?: string;
   matched: boolean;
@@ -249,6 +265,9 @@ export interface RdfModelRdf3xShadowJoinBenchmarkResult {
   purpose: string;
   minScale: RdfBenchmarkScale;
   query: JsonPattern;
+  expectedPlan: string[];
+  planMatched: boolean;
+  missingPlan: string[];
   supported: boolean;
   unsupportedReason?: string;
   matched: boolean;
@@ -283,10 +302,12 @@ export interface RdfModelRdf3xShadowBenchmarkReport {
   generatedAt: string;
   matched: boolean;
   orderedMatched: boolean;
+  planMatched: boolean;
   skippedCases: string[];
   skippedJoinCases: string[];
   failedCases: string[];
   failedJoinCases: string[];
+  failedPlanCases: string[];
   rebuild: {
     scannedQuads: number;
     uniqueTriples: number;
@@ -294,14 +315,27 @@ export interface RdfModelRdf3xShadowBenchmarkReport {
     projectionRows: number;
     durationMs: number;
   };
+  storage: RdfEngineStorageStats;
   cases: RdfModelRdf3xShadowBenchmarkResult[];
   joinCases: RdfModelRdf3xShadowJoinBenchmarkResult[];
 }
 
-interface Rdf3xJoinBenchmarkShape {
-  patterns: RdfQuadJoinPattern[];
-  options?: RdfQuadJoinOptions;
-}
+type Rdf3xJoinBenchmarkShape =
+  | {
+      kind: 'join';
+      patterns: RdfQuadJoinPattern[];
+      options?: RdfQuadJoinOptions;
+    }
+  | {
+      kind: 'join-count' | 'join-aggregate';
+      patterns: RdfQuadJoinPattern[];
+      options: RdfQuadJoinCountOptions;
+    }
+  | {
+      kind: 'group-count' | 'group-aggregate';
+      patterns: RdfQuadJoinPattern[];
+      options: RdfQuadJoinGroupAggregateOptions;
+    };
 
 type JsonPattern = Record<string, unknown>;
 
@@ -649,6 +683,7 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     query: {
       patterns: [
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(SIOC_HAS_MEMBER),
           object: namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
@@ -791,6 +826,7 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     query: {
       patterns: [
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(SIOC_HAS_MEMBER),
           object: { variable: 'thread' },
@@ -821,6 +857,70 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     expectedPlan: ['group-count-index', 'having-pushdown', 'order', 'limit'],
   },
   {
+    name: 'message score by thread numeric aggregate',
+    resource: 'message',
+    purpose: 'grouped numeric message score aggregate stays inside SQL/RDF-3X GROUP BY',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}score`),
+          object: { variable: 'score' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'score',
+          operator: '$termType',
+          value: 'numeric',
+        },
+      ],
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'count',
+          variable: 'message',
+        },
+        {
+          type: 'sum',
+          as: 'scoreTotal',
+          variable: 'score',
+        },
+        {
+          type: 'avg',
+          as: 'scoreAvg',
+          variable: 'score',
+        },
+      ],
+      having: [
+        {
+          variable: 'scoreTotal',
+          operator: '$gt',
+          value: literal('4', namedNode('http://www.w3.org/2001/XMLSchema#integer')),
+        },
+      ],
+      select: ['thread', 'count', 'scoreTotal', 'scoreAvg'],
+      orderBy: [
+        {
+          variable: 'scoreTotal',
+          direction: 'desc',
+        },
+      ],
+      limit: 1,
+    },
+    expectedPlan: ['group-aggregate-index', 'having-pushdown', 'order', 'limit'],
+  },
+  {
     name: 'message join count distinct',
     resource: 'message',
     purpose: 'message/thread BGP aggregate count stays inside SQL self-join',
@@ -828,11 +928,13 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     query: {
       patterns: [
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(RDF_TYPE),
           object: namedNode(`${MEETING}Message`),
         },
         {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
           subject: { variable: 'message' },
           predicate: namedNode(SIOC_HAS_MEMBER),
           object: { variable: 'thread' },
@@ -911,6 +1013,7 @@ export function runRdfModelsBenchmark(
     generatedAt: new Date().toISOString(),
     planMatched: failedPlanCases.length === 0,
     failedPlanCases,
+    storage: engine.storageStats(),
     cases: results,
     localQueryCases: localQueryResults,
   };
@@ -975,6 +1078,10 @@ export function runRdfModelsRdf3xShadowBenchmark(
   const joinResults = localQueryCases.map((testCase) => runRdf3xShadowJoinBenchmarkCase(engine, testCase, iterations));
   const supportedResults = results.filter((result) => result.supported);
   const supportedJoinResults = joinResults.filter((result) => result.supported);
+  const failedPlanCases = [
+    ...supportedResults.filter((result) => !result.planMatched).map((result) => result.name),
+    ...supportedJoinResults.filter((result) => !result.planMatched).map((result) => result.name),
+  ];
 
   return {
     engine: 'rdf3x-shadow',
@@ -987,13 +1094,16 @@ export function runRdfModelsRdf3xShadowBenchmark(
       && supportedJoinResults.every((result) => result.matched),
     orderedMatched: supportedResults.every((result) => result.orderedMatch)
       && supportedJoinResults.every((result) => result.orderedMatch),
+    planMatched: failedPlanCases.length === 0,
     skippedCases: results.filter((result) => !result.supported).map((result) => result.name),
     skippedJoinCases: joinResults.filter((result) => !result.supported).map((result) => result.name),
     failedCases: supportedResults.filter((result) => !result.matched || !result.orderedMatch).map((result) => result.name),
     failedJoinCases: supportedJoinResults
       .filter((result) => !result.matched || !result.orderedMatch)
       .map((result) => result.name),
+    failedPlanCases,
     rebuild,
+    storage: engine.storageStats(),
     cases: results,
     joinCases: joinResults,
   };
@@ -1078,7 +1188,7 @@ function runLocalQueryBenchmarkCase(
     filtersApplied: 0,
     filtersPushedDown: 0,
   };
-  const missingPlan = missingExpectedLocalQueryPlan(testCase, finalMetrics);
+  const missingPlan = missingExpectedLocalQueryPlan(testCase, finalMetrics, keys.length);
 
   return {
     name: testCase.name,
@@ -1116,6 +1226,8 @@ function runRdf3xShadowBenchmarkCase(
       ...baseResult,
       supported: false,
       unsupportedReason,
+      planMatched: false,
+      missingPlan: [unsupportedReason],
       matched: false,
       orderedMatch: false,
       diff: {
@@ -1167,11 +1279,15 @@ function runRdf3xShadowBenchmarkCase(
     returnedRows: 0,
     durationMs: 0,
   } satisfies Rdf3xIndexMetrics;
+  const missingPlan = missingExpectedRdf3xPlan(testCase, finalRdf3xMetrics);
+  const planMatched = missingPlan.length === 0;
 
   return {
     ...baseResult,
     supported: true,
-    matched: diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
+    planMatched,
+    missingPlan,
+    matched: planMatched && diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
     orderedMatch,
     diff,
     solidRdf: {
@@ -1200,6 +1316,8 @@ function runRdf3xShadowJoinBenchmarkCase(
       ...baseRdf3xShadowJoinBenchmarkResult(testCase),
       supported: false,
       unsupportedReason,
+      planMatched: false,
+      missingPlan: [unsupportedReason],
       matched: false,
       orderedMatch: false,
       diff: {
@@ -1220,13 +1338,13 @@ function runRdf3xShadowJoinBenchmarkCase(
 
   for (let i = 0; i < iterations; i += 1) {
     let start = Date.now();
-    const solidRdfResult = engine.index.joinPatterns(joinShape.patterns, joinShape.options);
+    const solidRdfResult = runSolidRdfJoinShape(engine, joinShape);
     solidRdfDurationsMs.push(Math.max(0, Date.now() - start));
     solidRdfBindings = solidRdfResult.bindings;
     solidRdfMetrics = solidRdfResult.metrics;
 
     start = Date.now();
-    const rdf3xResult = engine.rdf3xIndex!.joinPatterns(joinShape.patterns, joinShape.options);
+    const rdf3xResult = runRdf3xJoinShape(engine, joinShape);
     rdf3xDurationsMs.push(Math.max(0, Date.now() - start));
     rdf3xBindings = rdf3xResult.bindings;
     rdf3xMetrics = rdf3xResult.metrics;
@@ -1235,7 +1353,7 @@ function runRdf3xShadowJoinBenchmarkCase(
   const solidRdfKeys = solidRdfBindings.map(bindingKey);
   const rdf3xKeys = rdf3xBindings.map(bindingKey);
   const diff = diffBindingKeys(solidRdfKeys, rdf3xKeys);
-  const orderedMatch = isSemanticallyOrderedJoin(joinShape.options)
+  const orderedMatch = isSemanticallyOrderedRdf3xJoinShape(joinShape)
     ? rdf3xKeys.join('\n') === solidRdfKeys.join('\n')
     : true;
   const finalSolidRdfMetrics = solidRdfMetrics ?? {
@@ -1252,11 +1370,20 @@ function runRdf3xShadowJoinBenchmarkCase(
     returnedRows: 0,
     durationMs: 0,
   } satisfies Rdf3xJoinMetrics;
+  const missingPlan = [
+    ...missingExpectedRdf3xJoinPlan(testCase, finalRdf3xMetrics, rdf3xKeys.length),
+    ...unresolvedPlanFailures(finalSolidRdfMetrics.queryPlan ?? []).map((label) => `solid-rdf:${label}`),
+  ];
+  const planMatched = missingPlan.length === 0;
 
   return {
     ...baseRdf3xShadowJoinBenchmarkResult(testCase),
     supported: true,
-    matched: diff.missingFromPrimary.length === 0 && diff.extraInPrimary.length === 0,
+    planMatched,
+    missingPlan,
+    matched: planMatched
+      && diff.missingFromPrimary.length === 0
+      && diff.extraInPrimary.length === 0,
     orderedMatch,
     diff,
     solidRdf: {
@@ -1274,9 +1401,53 @@ function runRdf3xShadowJoinBenchmarkCase(
   };
 }
 
+function runSolidRdfJoinShape(
+  engine: SolidRdfEngine,
+  shape: Rdf3xJoinBenchmarkShape,
+): { bindings: RdfBindingRow[]; metrics: RdfIndexMetrics } {
+  switch (shape.kind) {
+    case 'join':
+      return engine.index.joinPatterns(shape.patterns, shape.options);
+    case 'join-count':
+      return engine.index.countJoinPatterns(shape.patterns, shape.options);
+    case 'join-aggregate':
+      return engine.index.aggregateJoinPatterns(shape.patterns, shape.options);
+    case 'group-count':
+      return engine.index.groupCountJoinPatterns(shape.patterns, shape.options);
+    case 'group-aggregate':
+      return engine.index.groupAggregateJoinPatterns(shape.patterns, shape.options);
+    default: {
+      const exhaustive: never = shape;
+      throw new Error(`Unsupported RDF-3X benchmark shape: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
+function runRdf3xJoinShape(
+  engine: SolidRdfEngine,
+  shape: Rdf3xJoinBenchmarkShape,
+): { bindings: RdfBindingRow[]; metrics: Rdf3xJoinMetrics } {
+  switch (shape.kind) {
+    case 'join':
+      return engine.rdf3xIndex!.joinPatterns(shape.patterns, shape.options);
+    case 'join-count':
+      return engine.rdf3xIndex!.countJoinPatterns(shape.patterns, shape.options);
+    case 'join-aggregate':
+      return engine.rdf3xIndex!.aggregateJoinPatterns(shape.patterns, shape.options);
+    case 'group-count':
+      return engine.rdf3xIndex!.groupCountJoinPatterns(shape.patterns, shape.options);
+    case 'group-aggregate':
+      return engine.rdf3xIndex!.groupAggregateJoinPatterns(shape.patterns, shape.options);
+    default: {
+      const exhaustive: never = shape;
+      throw new Error(`Unsupported RDF-3X benchmark shape: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
 function baseRdf3xShadowBenchmarkResult(testCase: RdfModelBenchmarkCase): Pick<
   RdfModelRdf3xShadowBenchmarkResult,
-  'name' | 'resource' | 'purpose' | 'minScale' | 'query'
+  'name' | 'resource' | 'purpose' | 'minScale' | 'query' | 'expectedPlan'
 > {
   return {
     name: testCase.name,
@@ -1287,6 +1458,7 @@ function baseRdf3xShadowBenchmarkResult(testCase: RdfModelBenchmarkCase): Pick<
       pattern: serializePattern(testCase.query.pattern),
       ...(testCase.query.options ? { options: testCase.query.options } : {}),
     },
+    expectedPlan: [...testCase.expectedPlan],
   };
 }
 
@@ -1429,7 +1601,7 @@ function rdf3xJoinBenchmarkExecution(metrics: Rdf3xJoinMetrics): {
 
 function baseRdf3xShadowJoinBenchmarkResult(testCase: RdfModelLocalQueryBenchmarkCase): Pick<
   RdfModelRdf3xShadowJoinBenchmarkResult,
-  'name' | 'resource' | 'purpose' | 'minScale' | 'query'
+  'name' | 'resource' | 'purpose' | 'minScale' | 'query' | 'expectedPlan'
 > {
   return {
     name: testCase.name,
@@ -1437,6 +1609,7 @@ function baseRdf3xShadowJoinBenchmarkResult(testCase: RdfModelLocalQueryBenchmar
     purpose: testCase.purpose,
     minScale: testCase.minScale,
     query: serializeLocalQuery(testCase.query),
+    expectedPlan: [...testCase.expectedPlan],
   };
 }
 
@@ -1453,26 +1626,67 @@ function unsupportedRdf3xJoinQueryReason(query: RdfLocalQuery): string | undefin
   if (query.unions?.length || query.minus?.length || query.exists?.length || query.optional?.length) {
     return 'RDF-3X join shadow only supports required BGP queries';
   }
-  if (query.binds?.length || query.filters?.length || query.having?.length) {
-    return 'RDF-3X join shadow does not support local query filters or BIND yet';
-  }
-  if (query.groupBy?.length || query.aggregate || query.aggregates?.length) {
-    return 'RDF-3X join shadow does not support aggregate queries yet';
+  if (query.binds?.length) {
+    return 'RDF-3X join shadow does not support BIND yet';
   }
 
-  for (const pattern of query.patterns) {
-    const joinPattern = rdf3xJoinPatternFor(pattern);
-    const unsupportedPattern = unsupportedRdf3xPatternReason(joinPattern.pattern);
-    if (unsupportedPattern) {
-      return unsupportedPattern;
+  const aggregates = queryAggregates(query);
+  const visibleVariables = new Set(query.patterns.flatMap((pattern) => variablesInLocalPattern(pattern)));
+  const compiled = rdf3xJoinPatternsFor(query, aggregates);
+  if (compiled.unsupportedReason) {
+    return compiled.unsupportedReason;
+  }
+  if ((query.filters?.length ?? 0) > 0 && compiled.pushedFilterIndexes.size < (query.filters?.length ?? 0)) {
+    return 'RDF-3X join shadow only supports filters that can be fully pushed into RDF-3X patterns';
+  }
+
+  if (aggregates.length > 0) {
+    const aggregateReason = unsupportedRdf3xAggregateReason(query, aggregates, visibleVariables);
+    if (aggregateReason) {
+      return aggregateReason;
     }
+  }
+  if (aggregates.length === 0 && (query.groupBy?.length ?? 0) > 0) {
+    return 'RDF-3X join shadow does not support GROUP BY without aggregates';
+  }
+  if (aggregates.length === 0 && (query.having?.length ?? 0) > 0) {
+    return 'RDF-3X join shadow does not support HAVING without aggregates';
   }
   return undefined;
 }
 
 function rdf3xJoinShapeFor(query: RdfLocalQuery): Rdf3xJoinBenchmarkShape {
+  const aggregates = queryAggregates(query);
+  const compiled = rdf3xJoinPatternsFor(query, aggregates);
+  if (!compiled.patterns) {
+    throw new Error(compiled.unsupportedReason ?? 'RDF-3X join shadow cannot compile query shape');
+  }
+  if ((query.groupBy?.length ?? 0) > 0) {
+    const aggregateAliases = new Set(aggregates.map((aggregate) => aggregate.as));
+    const having = rdf3xGroupAggregateHaving(query.having ?? [], aggregateAliases);
+    return {
+      kind: aggregates.every((aggregate) => aggregate.type === 'count') ? 'group-count' : 'group-aggregate',
+      patterns: compiled.patterns,
+      options: {
+        groupBy: query.groupBy ?? [],
+        aggregates,
+        ...(having.length > 0 ? { having } : {}),
+        ...(query.orderBy ? { orderBy: query.orderBy } : {}),
+        ...(query.limit !== undefined ? { limit: query.limit } : {}),
+        ...(query.offset !== undefined ? { offset: query.offset } : {}),
+      },
+    };
+  }
+  if (aggregates.length > 0) {
+    return {
+      kind: aggregates.every((aggregate) => aggregate.type === 'count') ? 'join-count' : 'join-aggregate',
+      patterns: compiled.patterns,
+      options: { aggregates },
+    };
+  }
   return {
-    patterns: query.patterns.map(rdf3xJoinPatternFor),
+    kind: 'join',
+    patterns: compiled.patterns,
     options: {
       ...(query.select ? { project: query.select } : {}),
       ...(query.distinct ? { distinct: true } : {}),
@@ -1483,9 +1697,76 @@ function rdf3xJoinShapeFor(query: RdfLocalQuery): Rdf3xJoinBenchmarkShape {
   };
 }
 
-function rdf3xJoinPatternFor(pattern: RdfQueryPattern): RdfQuadJoinPattern {
+function unsupportedRdf3xAggregateReason(
+  query: RdfLocalQuery,
+  aggregates: RdfQueryAggregate[],
+  visibleVariables: Set<string>,
+): string | undefined {
+  if ((query.groupBy?.length ?? 0) > 0) {
+    if ((query.groupBy ?? []).some((variableName) => !visibleVariables.has(variableName))) {
+      return 'RDF-3X join shadow cannot group by variables outside required BGP';
+    }
+    const aggregateAliases = new Set(aggregates.map((aggregate) => aggregate.as));
+    if ((query.orderBy ?? []).some((entry) => !(query.groupBy ?? []).includes(entry.variable) && !aggregateAliases.has(entry.variable))) {
+      return 'RDF-3X join shadow cannot order grouped aggregates by unbound variables';
+    }
+    if (!canCompileRdf3xGroupAggregateHaving(query.having ?? [], aggregateAliases)) {
+      return 'RDF-3X join shadow cannot push this grouped HAVING shape';
+    }
+  } else if ((query.having?.length ?? 0) > 0) {
+    return 'RDF-3X join shadow does not support non-grouped HAVING yet';
+  } else if (query.orderBy?.length || query.limit !== undefined || query.offset !== undefined || query.distinct) {
+    return 'RDF-3X join shadow does not support ORDER/LIMIT/DISTINCT around non-grouped aggregates yet';
+  }
+
+  for (const aggregate of aggregates) {
+    if (aggregate.variable && !visibleVariables.has(aggregate.variable)) {
+      return 'RDF-3X join shadow aggregate variable must be bound by required BGP';
+    }
+    if (aggregate.type !== 'count' && (!aggregate.variable || aggregate.distinct)) {
+      return 'RDF-3X join shadow only supports non-distinct numeric aggregates over bound variables';
+    }
+  }
+  return undefined;
+}
+
+function rdf3xJoinPatternsFor(query: RdfLocalQuery, aggregates: RdfQueryAggregate[]): {
+  patterns?: RdfQuadJoinPattern[];
+  pushedFilterIndexes: Set<number>;
+  unsupportedReason?: string;
+} {
+  const patterns: RdfQuadJoinPattern[] = [];
+  const pushedFilterIndexes = new Set<number>();
+  const numericAggregateVariables = new Set(aggregates
+    .filter((aggregate) => aggregate.type !== 'count')
+    .map((aggregate) => aggregate.variable)
+    .filter((variableName): variableName is string => Boolean(variableName)));
+  for (const pattern of query.patterns) {
+    const compiled = rdf3xJoinPatternFor(pattern, query.filters ?? [], numericAggregateVariables);
+    const unsupportedPattern = unsupportedRdf3xPatternReason(compiled.pattern);
+    if (unsupportedPattern) {
+      return {
+        pushedFilterIndexes,
+        unsupportedReason: unsupportedPattern,
+      };
+    }
+    compiled.pushedFilterIndexes.forEach((index) => pushedFilterIndexes.add(index));
+    patterns.push({
+      pattern: compiled.pattern,
+      variables: compiled.variables,
+    });
+  }
+  return { patterns, pushedFilterIndexes };
+}
+
+function rdf3xJoinPatternFor(
+  pattern: RdfQueryPattern,
+  filters: RdfQueryFilter[],
+  numericAggregateVariables: Set<string>,
+): RdfQuadJoinPattern & { pushedFilterIndexes: number[] } {
   const compiledPattern: RdfQuadJoinPattern['pattern'] = {};
   const variables: RdfQuadJoinPattern['variables'] = {};
+  const pushedFilterIndexes = new Set<number>();
   for (const key of ['graph', 'subject', 'predicate', 'object'] as RdfQueryPatternKey[]) {
     const value = pattern[key];
     if (!value) {
@@ -1493,6 +1774,13 @@ function rdf3xJoinPatternFor(pattern: RdfQueryPattern): RdfQuadJoinPattern {
     }
     if (isQueryVariable(value)) {
       variables[key] = value.variable;
+      const pushdown = rdf3xBenchmarkPushdownFilter(value.variable, filters, numericAggregateVariables);
+      if (pushdown) {
+        if (pushdown.pattern !== undefined) {
+          compiledPattern[key] = pushdown.pattern;
+        }
+        pushdown.filterIndexes.forEach((index) => pushedFilterIndexes.add(index));
+      }
     } else {
       compiledPattern[key] = value;
     }
@@ -1500,7 +1788,126 @@ function rdf3xJoinPatternFor(pattern: RdfQueryPattern): RdfQuadJoinPattern {
   return {
     pattern: compiledPattern,
     variables,
+    pushedFilterIndexes: [...pushedFilterIndexes],
   };
+}
+
+function rdf3xBenchmarkPushdownFilter(
+  variableName: string,
+  filters: RdfQueryFilter[],
+  numericAggregateVariables: Set<string>,
+): { pattern?: RdfQuadJoinPattern['pattern'][RdfQueryPatternKey]; filterIndexes: number[] } | undefined {
+  const operators: Record<string, unknown> = {};
+  const filterIndexes: number[] = [];
+  for (let index = 0; index < filters.length; index += 1) {
+    const filter = filters[index];
+    if (filter.variable !== variableName || filter.variable2 || filter.operand) {
+      continue;
+    }
+    switch (filter.operator) {
+      case '$eq':
+      case '$sameTerm':
+        if (filter.value === undefined || !isTerm(filter.value as any)) {
+          return undefined;
+        }
+        return { pattern: filter.value as Term, filterIndexes: [index] };
+      case '$in':
+        if (!filter.values?.length || filter.values.some((value) => !isTerm(value as any))) {
+          return undefined;
+        }
+        return { pattern: { $in: filter.values as Term[] }, filterIndexes: [index] };
+      case '$notIn':
+        if (!filter.values?.length || filter.values.some((value) => !isTerm(value as any))) {
+          return undefined;
+        }
+        return { pattern: { $notIn: filter.values as Term[] }, filterIndexes: [index] };
+      case '$gt':
+      case '$gte':
+      case '$lt':
+      case '$lte':
+        if (filter.value === undefined) {
+          return undefined;
+        }
+        operators[filter.operator] = filter.value;
+        filterIndexes.push(index);
+        break;
+      case '$termType':
+        if (filter.value !== 'numeric' || !numericAggregateVariables.has(variableName)) {
+          return undefined;
+        }
+        filterIndexes.push(index);
+        break;
+      default:
+        return undefined;
+    }
+  }
+  if (Object.keys(operators).length > 0) {
+    return { pattern: operators as RdfQuadJoinPattern['pattern'][RdfQueryPatternKey], filterIndexes };
+  }
+  return filterIndexes.length > 0
+    ? { filterIndexes }
+    : undefined;
+}
+
+function queryAggregates(query: RdfLocalQuery): RdfQueryAggregate[] {
+  return query.aggregates && query.aggregates.length > 0
+    ? query.aggregates
+    : query.aggregate
+      ? [query.aggregate]
+      : [];
+}
+
+function variablesInLocalPattern(pattern: RdfQueryPattern): string[] {
+  return ['graph', 'subject', 'predicate', 'object']
+    .map((key) => pattern[key as RdfQueryPatternKey])
+    .filter(isQueryVariable)
+    .map((value) => value.variable);
+}
+
+function canCompileRdf3xGroupAggregateHaving(
+  having: RdfQueryFilter[],
+  aggregateAliases: Set<string>,
+): boolean {
+  return having.every((filter) => (
+    aggregateAliases.has(filter.variable)
+      && !filter.operand
+      && !filter.variable2
+      && filter.value !== undefined
+      && isGroupAggregateHavingOperator(filter.operator)
+      && numericRangeValue(filter.value) !== undefined
+  ));
+}
+
+function rdf3xGroupAggregateHaving(
+  having: RdfQueryFilter[],
+  aggregateAliases: Set<string>,
+): RdfQuadJoinGroupAggregateHaving[] {
+  return having.map((filter) => {
+    const value = filter.value === undefined ? undefined : numericRangeValue(filter.value);
+    if (
+      !aggregateAliases.has(filter.variable)
+        || !isGroupAggregateHavingOperator(filter.operator)
+        || value === undefined
+    ) {
+      throw new Error('RDF-3X join shadow cannot compile grouped HAVING');
+    }
+    return {
+      aggregate: filter.variable,
+      operator: filter.operator,
+      value,
+    };
+  });
+}
+
+function isGroupAggregateHavingOperator(
+  operator: RdfQueryFilter['operator'],
+): operator is RdfQuadJoinGroupAggregateHaving['operator'] {
+  return operator === '$eq'
+    || operator === '$ne'
+    || operator === '$gt'
+    || operator === '$gte'
+    || operator === '$lt'
+    || operator === '$lte';
 }
 
 function isQueryVariable(value: unknown): value is { variable: string } {
@@ -1520,7 +1927,13 @@ function unsupportedRdf3xPatternReason(pattern: QuintPattern): string | undefine
     if (key === 'graph' && isGraphPrefixPattern(value)) {
       continue;
     }
-    if (key === 'object' && isSupportedRdf3xNumericObjectRangePattern(value)) {
+    if (isRdf3xTermInPattern(value)) {
+      continue;
+    }
+    if (isRdf3xTermNotInPattern(value)) {
+      continue;
+    }
+    if (key === 'object' && isSupportedRdf3xObjectOperatorPattern(value)) {
       continue;
     }
     return `unsupported ${key} pattern for RDF-3X shadow`;
@@ -1539,7 +1952,15 @@ function rdf3xPatternFor(pattern: QuintPattern): Rdf3xTriplePattern {
       result.graph = { $startsWith: value.$startsWith };
       continue;
     }
-    if (key === 'object' && isSupportedRdf3xNumericObjectRangePattern(value)) {
+    if (isRdf3xTermInPattern(value)) {
+      result[key] = value;
+      continue;
+    }
+    if (isRdf3xTermNotInPattern(value)) {
+      result[key] = value;
+      continue;
+    }
+    if (key === 'object' && isSupportedRdf3xObjectOperatorPattern(value)) {
       result.object = value;
       continue;
     }
@@ -1551,6 +1972,26 @@ function rdf3xPatternFor(pattern: QuintPattern): Rdf3xTriplePattern {
   return result;
 }
 
+function isRdf3xTermInPattern(value: unknown): value is Rdf3xTermInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $in?: unknown }).$in)
+    && ((value as { $in: unknown[] }).$in).length > 0
+    && ((value as { $in: unknown[] }).$in).every((entry) => isTerm(entry as any));
+}
+
+function isRdf3xTermNotInPattern(value: unknown): value is Rdf3xTermNotInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $notIn?: unknown }).$notIn)
+    && ((value as { $notIn: unknown[] }).$notIn).length > 0
+    && ((value as { $notIn: unknown[] }).$notIn).every((entry) => isTerm(entry as any));
+}
+
 function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } {
   return value !== null
     && typeof value === 'object'
@@ -1558,25 +1999,48 @@ function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } 
     && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
 }
 
-function isSupportedRdf3xNumericObjectRangePattern(value: unknown): value is Rdf3xNumericObjectRangePattern {
+function isSupportedRdf3xObjectOperatorPattern(value: unknown): value is Rdf3xObjectOperatorPattern {
   if (value === null || typeof value !== 'object' || 'termType' in value) {
     return false;
   }
-  let hasRange = false;
+  let hasOperator = false;
   for (const operator of ['$gt', '$gte', '$lt', '$lte'] as const) {
-    const rangeValue = (value as Rdf3xNumericObjectRangePattern)[operator];
+    const rangeValue = (value as Rdf3xObjectRangePattern)[operator];
     if (rangeValue === undefined) {
       continue;
     }
-    hasRange = true;
-    if (numericRangeValue(rangeValue) === undefined) {
+    hasOperator = true;
+    if (!isSupportedRdf3xObjectRangeValue(rangeValue)) {
       return false;
     }
   }
-  return hasRange;
+  for (const operator of ['$contains', '$endsWith'] satisfies Array<keyof Rdf3xObjectTextSearchPattern>) {
+    const textValue = (value as Rdf3xObjectTextSearchPattern)[operator];
+    if (textValue === undefined) {
+      continue;
+    }
+    hasOperator = true;
+    if (typeof textValue !== 'string') {
+      return false;
+    }
+  }
+  return hasOperator;
 }
 
-function numericRangeValue(value: Term | string | number): number | undefined {
+function isSupportedRdf3xObjectRangeValue(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isFinite(value);
+  }
+  if (typeof value === 'string') {
+    return true;
+  }
+  return isTerm(value as any);
+}
+
+function numericRangeValue(value: Term | string | number | boolean): number | undefined {
+  if (typeof value === 'boolean') {
+    return undefined;
+  }
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : undefined;
   }
@@ -1595,8 +2059,20 @@ function isSemanticallyOrdered(options?: QueryOptions): boolean {
   return Boolean(options?.order && options.order.length > 0);
 }
 
-function isSemanticallyOrderedJoin(options?: RdfQuadJoinOptions): boolean {
-  return Boolean(options?.orderBy && options.orderBy.length > 0);
+function isSemanticallyOrderedRdf3xJoinShape(shape: Rdf3xJoinBenchmarkShape): boolean {
+  switch (shape.kind) {
+    case 'join':
+    case 'group-count':
+    case 'group-aggregate':
+      return Boolean(shape.options?.orderBy && shape.options.orderBy.length > 0);
+    case 'join-count':
+    case 'join-aggregate':
+      return false;
+    default: {
+      const exhaustive: never = shape;
+      throw new Error(`Unsupported RDF-3X benchmark shape: ${JSON.stringify(exhaustive)}`);
+    }
+  }
 }
 
 function benchmarkSide(keys: string[], durationsMs: number[]): RdfModelShadowBenchmarkSide {
@@ -1677,7 +2153,10 @@ function ratio(candidate: number, baseline: number): number {
 }
 
 function missingExpectedPlan(testCase: RdfModelBenchmarkCase, metrics: RdfIndexMetrics): string[] {
-  return testCase.expectedPlan.filter((label) => !matchesExpectedPlanLabel(label, testCase, metrics));
+  return [
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedPlanLabel(label, testCase, metrics)),
+    ...unresolvedPlanFailures(metrics.queryPlan ?? []),
+  ];
 }
 
 function matchesExpectedPlanLabel(label: string, testCase: RdfModelBenchmarkCase, metrics: RdfIndexMetrics): boolean {
@@ -1719,11 +2198,98 @@ function matchesExpectedPlanLabel(label: string, testCase: RdfModelBenchmarkCase
   }
 }
 
+function missingExpectedRdf3xPlan(testCase: RdfModelBenchmarkCase, metrics: Rdf3xIndexMetrics): string[] {
+  return [
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedRdf3xPlanLabel(label, testCase, metrics)),
+    ...unresolvedPlanFailures(metrics.queryPlan ?? []),
+  ];
+}
+
+function matchesExpectedRdf3xPlanLabel(
+  label: string,
+  testCase: RdfModelBenchmarkCase,
+  metrics: Rdf3xIndexMetrics,
+): boolean {
+  const pattern = testCase.query.pattern;
+  const planText = (metrics.queryPlan ?? []).join('\n');
+  switch (label) {
+    case 'graph-scope':
+      return Boolean(pattern.graph)
+        && (metrics.indexChoice === 'source-membership'
+          || planText.includes('GraphPrefixMembershipFilter')
+          || planText.includes('GraphMembershipFilter'));
+    case 'type-filter':
+      return isTerm(pattern.predicate as any)
+        && termToId(pattern.predicate as any) === RDF_TYPE
+        && Boolean(pattern.object)
+        && metrics.indexChoice !== 'none';
+    case 'predicate-filter':
+      return Boolean(pattern.predicate) && metrics.indexChoice !== 'none';
+    case 'predicate-object-filter':
+      return Boolean(pattern.predicate) && Boolean(pattern.object) && metrics.indexChoice !== 'none';
+    case 'predicate-object-range-filter':
+      return Boolean(pattern.predicate)
+        && (planText.includes('NumericRange(') || planText.includes('LexicalRange('));
+    case 'limit':
+      return testCase.query.options?.limit !== undefined
+        && (planText.includes('Pagination') || planText.includes('LIMIT'));
+    case 'order':
+      return Boolean(testCase.query.options?.order?.length)
+        && (planText.includes('ORDER BY') || planText.includes('Rdf3xJoinOrder('));
+    case 'text-index':
+      return planText.includes('TextSearch(');
+    case 'rdf-subject-join':
+      return planText.includes('TextSearch(')
+        && metrics.indexChoice !== 'none'
+        && metrics.matchedRows >= metrics.returnedRows;
+    case 'SPOG':
+      return matchesRdf3xPermutation(metrics, 'SPO');
+    case 'POSG':
+      return matchesRdf3xPermutation(metrics, 'POS');
+    case 'OSPG':
+      return matchesRdf3xPermutation(metrics, 'OSP');
+    case 'GSPO':
+      return matchesExpectedRdf3xPlanLabel('graph-scope', testCase, metrics)
+        && matchesRdf3xPermutation(metrics, 'SPO');
+    case 'GPOS':
+      return matchesExpectedRdf3xPlanLabel('graph-scope', testCase, metrics)
+        && matchesRdf3xPermutation(metrics, 'POS');
+    default:
+      return false;
+  }
+}
+
+function matchesRdf3xPermutation(metrics: Rdf3xIndexMetrics, permutation: Rdf3xPermutationName): boolean {
+  const planText = (metrics.queryPlan ?? []).join('\n');
+  return metrics.indexChoice === permutation || planText.includes(`Rdf3xPermutationScan(${permutation})`);
+}
+
 function missingExpectedLocalQueryPlan(
   testCase: RdfModelLocalQueryBenchmarkCase,
   metrics: RdfLocalQueryMetrics,
+  returnedRows: number,
 ): string[] {
-  return testCase.expectedPlan.filter((label) => !matchesExpectedLocalQueryPlanLabel(label, metrics));
+  return [
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedLocalQueryPlanLabel(label, metrics)),
+    ...unresolvedPlanFailures(metrics.plan),
+    ...minimumReturnedRowsFailures(testCase, returnedRows),
+  ];
+}
+
+function unresolvedPlanFailures(plan: readonly string[]): string[] {
+  return hasUnresolvedPlan(plan) ? ['resolved-terms'] : [];
+}
+
+function hasUnresolvedPlan(plan: readonly string[]): boolean {
+  return plan.some((entry) => /\bunresolved\b/i.test(entry));
+}
+
+function minimumReturnedRowsFailures(
+  testCase: RdfModelLocalQueryBenchmarkCase,
+  returnedRows: number,
+): string[] {
+  const minimum = testCase.minReturnedRows ?? 0;
+  return returnedRows >= minimum ? [] : [`min-rows:${minimum}`];
 }
 
 function matchesExpectedLocalQueryPlanLabel(label: string, metrics: RdfLocalQueryMetrics): boolean {
@@ -1731,13 +2297,21 @@ function matchesExpectedLocalQueryPlanLabel(label: string, metrics: RdfLocalQuer
   switch (label) {
     case 'group-count-index':
       return planText.includes('Aggregate(group-count-index)');
+    case 'group-aggregate-index':
+      return planText.includes('Aggregate(group-basic-multi-index)')
+        || planText.includes('Aggregate(group-basic-index)');
     case 'having-pushdown':
-      return planText.includes('IndexGroupCountHaving(')
+      return (planText.includes('IndexGroupCountHaving(')
+        || planText.includes('IndexGroupAggregateHaving('))
         && !planText.includes('\nHaving(');
     case 'order':
-      return planText.includes('IndexGroupCountOrder(') && !planText.includes('\nSort');
+      return (planText.includes('IndexGroupCountOrder(')
+        || planText.includes('IndexGroupAggregateOrder('))
+        && !planText.includes('\nSort');
     case 'limit':
-      return planText.includes('IndexGroupCountLimit') && !planText.includes('\nLimit');
+      return (planText.includes('IndexGroupCountLimit')
+        || planText.includes('IndexGroupAggregateLimit'))
+        && !planText.includes('\nLimit');
     case 'join-index':
       return planText.includes('IndexJoin(')
         && !planText.includes('\nIndexScan(');
@@ -1754,6 +2328,50 @@ function matchesExpectedLocalQueryPlanLabel(label: string, metrics: RdfLocalQuer
       return planText.includes('Aggregate(join-count-distinct-index)')
         && planText.includes('IndexJoinCount(')
         && !planText.includes('\nIndexScan(');
+    default:
+      return false;
+  }
+}
+
+function missingExpectedRdf3xJoinPlan(
+  testCase: RdfModelLocalQueryBenchmarkCase,
+  metrics: Rdf3xJoinMetrics,
+  returnedRows: number,
+): string[] {
+  return [
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedRdf3xJoinPlanLabel(label, metrics)),
+    ...unresolvedPlanFailures(metrics.queryPlan ?? []),
+    ...minimumReturnedRowsFailures(testCase, returnedRows),
+  ];
+}
+
+function matchesExpectedRdf3xJoinPlanLabel(label: string, metrics: Rdf3xJoinMetrics): boolean {
+  const planText = (metrics.queryPlan ?? []).join('\n');
+  switch (label) {
+    case 'group-count-index':
+      return planText.includes('Rdf3xJoinGroupCount(');
+    case 'group-aggregate-index':
+      return planText.includes('Rdf3xJoinGroupAggregate(')
+        || planText.includes('Rdf3xJoinGroupAggregateNumeric(');
+    case 'having-pushdown':
+      return planText.includes('Rdf3xJoinGroupCountHaving(')
+        || planText.includes('Rdf3xJoinGroupAggregateHaving(');
+    case 'order':
+      return planText.includes('Rdf3xJoinGroupCountOrder(')
+        || planText.includes('Rdf3xJoinGroupAggregateOrder(');
+    case 'limit':
+      return planText.includes('Rdf3xJoinGroupCountLimit')
+        || planText.includes('Rdf3xJoinGroupAggregateLimit');
+    case 'join-index':
+      return planText.includes('Rdf3xJoinBGP(');
+    case 'join-order-pushdown':
+      return planText.includes('Rdf3xJoinOrder(');
+    case 'join-limit-pushdown':
+      return planText.includes('Rdf3xJoinLimit');
+    case 'range-filter-pushdown':
+      return planText.includes('LexicalRange(') || planText.includes('NumericRange(');
+    case 'join-count-index':
+      return planText.includes('Rdf3xJoinCount(');
     default:
       return false;
   }

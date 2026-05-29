@@ -4,6 +4,7 @@ import arrayifyStream from 'arrayify-stream';
 import { DataFactory, Parser, Writer, termToId } from 'n3';
 import jsonld from 'jsonld';
 import { rdfParser } from 'rdf-parse';
+import { Parser as SparqlParser } from 'sparqljs';
 
 import type { Quad, Term } from '@rdfjs/types';
 import {
@@ -45,6 +46,7 @@ import type {
   RdfQueryPattern,
   RdfQueryTermPattern,
   RdfSourceInput,
+  RdfValuesBindingSource,
 } from '../rdf/types';
 import { metadataRequestContext } from '../MetadataRequestContext';
 
@@ -84,10 +86,22 @@ export interface SourceScopedStructuredRdfAccessor {
   deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void>;
 }
 
+interface LocalRdfGraphState {
+  quads: Quad[];
+  existed: boolean;
+}
+
+interface LocalRdfAuthorityPatch {
+  identifier: ResourceIdentifier;
+  previousQuads: Quad[];
+  previousExists: boolean;
+  nextQuads: Quad[];
+}
+
 /**
  * MixDataAccessor - Routes data to appropriate storage based on content type
  * 
- * - RDF data (internal/quads) -> structuredDataAccessor (Quadstore or QuintStore)
+ * - RDF data (internal/quads) -> structuredDataAccessor (Solid RDF engine by default)
  * - RDF file mirrors (.ttl/.jsonld) -> rdfFileDataAccessor (local FileSystem)
  * - Other data (binary, text, etc.) -> unstructuredDataAccessor (FileSystem, Minio, etc.)
  * 
@@ -283,16 +297,18 @@ export class MixDataAccessor implements DataAccessor {
    * Execute SPARQL UPDATE.
    *
    * Supported embedded deltas patch the local RDF authority file first and then
-   * rebuild the structured RDF index. Unsupported shapes keep using the
-   * compatibility accessor until the embedded engine covers them.
+   * rebuild the structured RDF index. The structured accessor decides whether
+   * unsupported shapes have an explicitly configured compatibility path.
    */
   public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
     if (baseIri) {
       const identifier = { path: baseIri };
       if (this.isByLineRdfIdentifier(identifier)) {
         try {
-          await this.executeLocalRdfSparqlUpdate(query, identifier);
-          this.invalidateMetadataCache(identifier);
+          const writtenIdentifiers = await this.executeLocalRdfSparqlUpdate(query, identifier);
+          for (const writtenIdentifier of writtenIdentifiers) {
+            this.invalidateMetadataCache(writtenIdentifier);
+          }
           return;
         } catch (error) {
           if (!(error instanceof UnsupportedSparqlQueryError)) {
@@ -317,77 +333,124 @@ export class MixDataAccessor implements DataAccessor {
   private async executeLocalRdfSparqlUpdate(
     query: string,
     identifier: ResourceIdentifier,
-  ): Promise<void> {
-    const delta = this.rdfSparqlAdapter.compileUpdateDelta(query, identifier.path);
-    this.assertLocalRdfDeltaTargetsGraph(delta.operations, identifier.path);
-    const existingText = await this.readLocalRdfTextOrEmpty(identifier);
-    const graph = DataFactory.namedNode(identifier.path);
-    const existingQuads = existingText.length > 0
-      ? await this.parseLocalRdf(identifier, existingText, this.localRdfContentType(identifier))
-        .then((quads) => quads.map((quad) => this.toGraphQuad(quad, graph)))
-      : [];
-    const nextQuads = this.applyLocalRdfDelta(existingQuads, delta.operations);
-    const authorityQuads = nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
-    await this.writeLocalRdfAuthority(identifier, authorityQuads);
-    await this.writeStructuredRdfIndex(identifier, authorityQuads, new RepresentationMetadata(identifier));
+  ): Promise<ResourceIdentifier[]> {
+    const parsed = new SparqlParser({ baseIRI: identifier.path }).parse(query);
+    const delta = this.rdfSparqlAdapter.compileUpdateDelta(parsed, this.parentContainer(identifier).path, {
+      defaultGraph: identifier.path,
+    });
+    const writableGraphIris = this.localRdfDeltaWriteGraphIris(delta.operations);
+    const graphStates = await this.loadLocalRdfDeltaGraphs(delta.operations, writableGraphIris);
+    const graphQuads = new Map([...graphStates].map(([ graphIri, state ]) => [graphIri, state.quads]));
+    const nextQuadsByGraph = this.applyLocalRdfDelta(graphQuads, delta.operations, writableGraphIris);
+    const patches = writableGraphIris.map((graphIri): LocalRdfAuthorityPatch => {
+      const previous = graphStates.get(graphIri);
+      return {
+        identifier: { path: graphIri },
+        previousQuads: previous?.quads ?? [],
+        previousExists: previous?.existed ?? false,
+        nextQuads: nextQuadsByGraph.get(graphIri) ?? [],
+      };
+    });
+    await this.writeLocalRdfAuthorityPatches(patches);
+    return patches.map((patch) => patch.identifier);
   }
 
   private applyLocalRdfDelta(
-    quads: Quad[],
+    graphQuads: Map<string, Quad[]>,
     operations: RdfSparqlUpdateDeltaOperation[],
-  ): Quad[] {
-    const byKey = new Map(quads.map((quad) => [this.quadKey(quad), quad]));
+    writableGraphIris: string[],
+  ): Map<string, Quad[]> {
+    const writableGraphs = new Set(writableGraphIris);
+    const byGraph = new Map<string, Map<string, Quad>>();
+    for (const [ graphIri, quads ] of graphQuads) {
+      byGraph.set(graphIri, new Map(quads.map((quad) => [this.quadKey(quad), quad])));
+    }
+    const currentQuads = (): Quad[] => [...byGraph.values()].flatMap((quads) => [...quads.values()]);
+    const writableQuads = (graphIri: string): Map<string, Quad> => {
+      let quads = byGraph.get(graphIri);
+      if (!quads) {
+        quads = new Map();
+        byGraph.set(graphIri, quads);
+      }
+      return quads;
+    };
+    const deleteQuads = (quads: Quad[]): void => {
+      for (const quad of quads) {
+        const target = writableQuads(this.localRdfWriteGraphIri(quad.graph, writableGraphs));
+        target.delete(this.quadKey(quad));
+      }
+    };
+    const insertQuads = (quads: Quad[]): void => {
+      for (const quad of quads) {
+        const target = writableQuads(this.localRdfWriteGraphIri(quad.graph, writableGraphs));
+        target.set(this.quadKey(quad), quad);
+      }
+    };
 
     for (const operation of operations) {
       if (operation.type === 'insert') {
-        for (const quad of operation.quads) {
-          byKey.set(this.quadKey(quad), quad);
-        }
+        insertQuads(operation.quads);
         continue;
       }
 
       if (operation.type === 'delete') {
-        for (const quad of operation.quads) {
-          byKey.delete(this.quadKey(quad));
-        }
+        deleteQuads(operation.quads);
         continue;
       }
 
       if (operation.type === 'insertDeleteWhere') {
-        const rows = this.queryLocalUpdateBindings([...byKey.values()], operation.query);
-        for (const quad of this.rdfSparqlAdapter.materializeDeleteWhere(operation.deletes, rows)) {
-          byKey.delete(this.quadKey(quad));
-        }
-        for (const quad of this.rdfSparqlAdapter.materializeDeleteWhere(operation.inserts, rows)) {
-          byKey.set(this.quadKey(quad), quad);
-        }
+        const rows = this.queryLocalUpdateBindings(currentQuads(), operation.query);
+        deleteQuads(this.rdfSparqlAdapter.materializeDeleteWhere(operation.deletes, rows));
+        insertQuads(this.rdfSparqlAdapter.materializeDeleteWhere(operation.inserts, rows));
         continue;
       }
 
       if (operation.type === 'insertWhere') {
-        const rows = this.queryLocalUpdateBindings([...byKey.values()], operation.query);
-        for (const quad of this.rdfSparqlAdapter.materializeDeleteWhere(operation.inserts, rows)) {
-          byKey.set(this.quadKey(quad), quad);
-        }
+        const rows = this.queryLocalUpdateBindings(currentQuads(), operation.query);
+        insertQuads(this.rdfSparqlAdapter.materializeDeleteWhere(operation.inserts, rows));
         continue;
       }
 
-      const rows = this.queryLocalUpdateBindings([...byKey.values()], operation.query);
-      for (const quad of this.rdfSparqlAdapter.materializeDeleteWhere(operation.template, rows)) {
-        byKey.delete(this.quadKey(quad));
-      }
+      const rows = this.queryLocalUpdateBindings(currentQuads(), operation.query);
+      deleteQuads(this.rdfSparqlAdapter.materializeDeleteWhere(operation.template, rows));
     }
 
-    return [...byKey.values()];
+    return new Map(writableGraphIris.map((graphIri) => [graphIri, [...(byGraph.get(graphIri)?.values() ?? [])]]));
   }
 
-  private assertLocalRdfDeltaTargetsGraph(
+  private async loadLocalRdfDeltaGraphs(
     operations: RdfSparqlUpdateDeltaOperation[],
-    graphIri: string,
-  ): void {
+    writableGraphIris: readonly string[],
+  ): Promise<Map<string, LocalRdfGraphState>> {
+    const graphIris = this.localRdfDeltaGraphIris(operations, writableGraphIris);
+    const graphStates = new Map<string, LocalRdfGraphState>();
+    for (const graphIri of graphIris) {
+      const graphIdentifier = { path: graphIri };
+      if (!this.isByLineRdfIdentifier(graphIdentifier)) {
+        throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports by-line local RDF graph documents');
+      }
+      const existing = await this.readLocalRdfState(graphIdentifier);
+      const graph = DataFactory.namedNode(graphIri);
+      const quads = existing.text.length > 0
+        ? await this.parseLocalRdf(graphIdentifier, existing.text, this.localRdfContentType(graphIdentifier))
+          .then((items) => items.map((quad) => this.toGraphQuad(quad, graph)))
+        : [];
+      graphStates.set(graphIri, { quads, existed: existing.existed });
+    }
+    return graphStates;
+  }
+
+  private localRdfDeltaGraphIris(
+    operations: RdfSparqlUpdateDeltaOperation[],
+    writableGraphIris: readonly string[],
+  ): string[] {
+    const graphIris = new Set<string>(writableGraphIris);
     for (const operation of operations) {
       const graphTerms = operation.type === 'deleteWhere'
-        ? operation.template.map((item) => item.graph)
+        ? [
+            ...operation.template.map((item) => item.graph),
+            ...this.queryGraphTerms(operation.query),
+          ]
         : operation.type === 'insertDeleteWhere'
         ? [
             ...operation.deletes.map((item) => item.graph),
@@ -401,11 +464,77 @@ export class MixDataAccessor implements DataAccessor {
           ]
         : operation.quads.map((quad) => quad.graph);
       for (const graph of graphTerms) {
-        if (!('termType' in graph) || graph.termType !== 'NamedNode' || graph.value !== graphIri) {
-          throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports the target document graph');
-        }
+        this.addNamedGraphIris(graph, graphIris);
       }
     }
+    return [...graphIris];
+  }
+
+  private localRdfDeltaWriteGraphIris(
+    operations: RdfSparqlUpdateDeltaOperation[],
+  ): string[] {
+    const graphIris = new Set<string>();
+    for (const operation of operations) {
+      if (operation.type === 'deleteWhere') {
+        this.addWritableTemplateGraphIris(operation.template.map((item) => item.graph), operation.query, graphIris);
+        continue;
+      }
+      if (operation.type === 'insertDeleteWhere') {
+        this.addWritableTemplateGraphIris([
+          ...operation.deletes.map((item) => item.graph),
+          ...operation.inserts.map((item) => item.graph),
+        ], operation.query, graphIris);
+        continue;
+      }
+      if (operation.type === 'insertWhere') {
+        this.addWritableTemplateGraphIris(operation.inserts.map((item) => item.graph), operation.query, graphIris);
+        continue;
+      }
+      const graphTerms = operation.quads.map((quad) => quad.graph);
+      for (const graph of graphTerms) {
+        this.addWritableNamedGraphIri(graph, graphIris);
+      }
+    }
+    if (graphIris.size === 0) {
+      throw new UnsupportedSparqlQueryError('Embedded local RDF update requires explicit local RDF graph write targets');
+    }
+    return [...graphIris];
+  }
+
+  private addWritableTemplateGraphIris(
+    graphs: RdfQueryTermPattern[],
+    query: RdfLocalQuery,
+    graphIris: Set<string>,
+  ): void {
+    for (const graph of graphs) {
+      if (this.isQueryVariable(graph)) {
+        this.addWritableGraphVariableIris(query, graph.variable, graphIris);
+        continue;
+      }
+      this.addWritableNamedGraphIri(graph, graphIris);
+    }
+  }
+
+  private addWritableGraphVariableIris(
+    query: RdfLocalQuery,
+    variable: string,
+    graphIris: Set<string>,
+  ): void {
+    const values = new Set<string>();
+    this.collectGraphVariableFilterIris(query, variable, values);
+    if (values.size === 0) {
+      throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports finite GRAPH variable write targets');
+    }
+    for (const value of values) {
+      this.addWritableNamedGraphIri(DataFactory.namedNode(value) as unknown as Term, graphIris);
+    }
+  }
+
+  private localRdfWriteGraphIri(graph: Term, writableGraphs: Set<string>): string {
+    if (graph.termType !== 'NamedNode' || !writableGraphs.has(graph.value)) {
+      throw new UnsupportedSparqlQueryError('Embedded local RDF update can only write declared local RDF graph documents');
+    }
+    return graph.value;
   }
 
   private queryLocalUpdateBindings(
@@ -424,32 +553,244 @@ export class MixDataAccessor implements DataAccessor {
   }
 
   private queryGraphTerms(query: RdfLocalQuery): RdfQueryTermPattern[] {
-    const patterns: RdfQueryPattern[] = [...query.patterns];
+    const graphTerms: RdfQueryTermPattern[] = [];
+    const graphVariables = new Set<string>();
+    this.collectQueryGraphTerms(query, graphTerms, graphVariables);
+    this.collectGraphVariableFilterTerms(query, graphVariables, graphTerms);
+    return graphTerms;
+  }
+
+  private collectQueryGraphTerms(
+    query: RdfLocalQuery | {
+      patterns: RdfQueryPattern[];
+      values?: RdfValuesBindingSource[];
+      optional?: RdfLocalQuery['optional'];
+      unions?: RdfLocalQuery['unions'];
+      minus?: RdfLocalQuery['minus'];
+      exists?: RdfLocalQuery['exists'];
+    },
+    graphTerms: RdfQueryTermPattern[],
+    graphVariables: Set<string>,
+  ): void {
+    for (const pattern of query.patterns) {
+      if (!pattern.graph) {
+        continue;
+      }
+      graphTerms.push(pattern.graph);
+      if (this.isQueryVariable(pattern.graph)) {
+        graphVariables.add(pattern.graph.variable);
+      }
+    }
     for (const optional of query.optional ?? []) {
-      patterns.push(...(Array.isArray(optional) ? optional : optional.patterns));
+      this.collectQueryGraphTerms(Array.isArray(optional) ? { patterns: optional } : optional, graphTerms, graphVariables);
     }
     for (const union of query.unions ?? []) {
       for (const branch of union.branches) {
-        patterns.push(...branch.patterns);
-        for (const optional of branch.optional ?? []) {
-          patterns.push(...(Array.isArray(optional) ? optional : optional.patterns));
+        this.collectQueryGraphTerms(branch, graphTerms, graphVariables);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectQueryGraphTerms(minus, graphTerms, graphVariables);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectQueryGraphTerms(exists, graphTerms, graphVariables);
+    }
+  }
+
+  private collectGraphVariableFilterTerms(
+    query: RdfLocalQuery | {
+      values?: RdfValuesBindingSource[];
+      filters?: RdfLocalQuery['filters'];
+      optional?: RdfLocalQuery['optional'];
+      unions?: RdfLocalQuery['unions'];
+      minus?: RdfLocalQuery['minus'];
+      exists?: RdfLocalQuery['exists'];
+    },
+    graphVariables: Set<string>,
+    graphTerms: RdfQueryTermPattern[],
+  ): void {
+    for (const filter of query.filters ?? []) {
+      if (!graphVariables.has(filter.variable)) {
+        continue;
+      }
+      if (filter.value && this.isRdfTerm(filter.value)) {
+        graphTerms.push(filter.value);
+      }
+      for (const value of filter.values ?? []) {
+        if (this.isRdfTerm(value)) {
+          graphTerms.push(value);
         }
       }
     }
-    return patterns.flatMap((pattern) => pattern.graph ? [pattern.graph] : []);
+    this.collectGraphVariableValueTerms(query.values ?? [], graphVariables, graphTerms);
+    for (const optional of query.optional ?? []) {
+      if (!Array.isArray(optional)) {
+        this.collectGraphVariableFilterTerms(optional, graphVariables, graphTerms);
+      }
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectGraphVariableFilterTerms(branch, graphVariables, graphTerms);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectGraphVariableFilterTerms(minus, graphVariables, graphTerms);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectGraphVariableFilterTerms(exists, graphVariables, graphTerms);
+    }
   }
 
-  private async readLocalRdfTextOrEmpty(identifier: ResourceIdentifier): Promise<string> {
+  private collectGraphVariableFilterIris(
+    query: RdfLocalQuery | {
+      values?: RdfValuesBindingSource[];
+      filters?: RdfLocalQuery['filters'];
+      optional?: RdfLocalQuery['optional'];
+      unions?: RdfLocalQuery['unions'];
+      minus?: RdfLocalQuery['minus'];
+      exists?: RdfLocalQuery['exists'];
+    },
+    variable: string,
+    values: Set<string>,
+  ): void {
+    for (const filter of query.filters ?? []) {
+      if (filter.variable !== variable) {
+        continue;
+      }
+      if ((filter.operator === '$eq' || filter.operator === '$sameTerm') && filter.value && this.isRdfTerm(filter.value)) {
+        this.addGraphFilterValueIri(filter.value, values);
+      }
+      if (filter.operator === '$in') {
+        for (const value of filter.values ?? []) {
+          if (this.isRdfTerm(value)) {
+            this.addGraphFilterValueIri(value, values);
+          }
+        }
+      }
+    }
+    this.collectGraphVariableValueIris(query.values ?? [], variable, values);
+    for (const optional of query.optional ?? []) {
+      if (!Array.isArray(optional)) {
+        this.collectGraphVariableFilterIris(optional, variable, values);
+      }
+    }
+    for (const union of query.unions ?? []) {
+      for (const branch of union.branches) {
+        this.collectGraphVariableFilterIris(branch, variable, values);
+      }
+    }
+    for (const minus of query.minus ?? []) {
+      this.collectGraphVariableFilterIris(minus, variable, values);
+    }
+    for (const exists of query.exists ?? []) {
+      this.collectGraphVariableFilterIris(exists, variable, values);
+    }
+  }
+
+  private collectGraphVariableValueTerms(
+    sources: readonly RdfValuesBindingSource[],
+    graphVariables: Set<string>,
+    graphTerms: RdfQueryTermPattern[],
+  ): void {
+    for (const source of sources) {
+      for (const variable of source.variables) {
+        if (!graphVariables.has(variable)) {
+          continue;
+        }
+        for (const row of source.rows) {
+          const value = row[variable];
+          if (value) {
+            graphTerms.push(value);
+          }
+        }
+      }
+    }
+  }
+
+  private collectGraphVariableValueIris(
+    sources: readonly RdfValuesBindingSource[],
+    variable: string,
+    values: Set<string>,
+  ): void {
+    for (const source of sources) {
+      if (!source.variables.includes(variable)) {
+        continue;
+      }
+      for (const row of source.rows) {
+        const value = row[variable];
+        if (value) {
+          this.addGraphFilterValueIri(value, values);
+        }
+      }
+    }
+  }
+
+  private addGraphFilterValueIri(value: Term, values: Set<string>): void {
+    if (value.termType !== 'NamedNode') {
+      throw new UnsupportedSparqlQueryError('Embedded local RDF update GRAPH variable write targets must be named graph documents');
+    }
+    values.add(value.value);
+  }
+
+  private addNamedGraphIris(graph: RdfQueryTermPattern | Term, graphIris: Set<string>): void {
+    if (this.isRdfTerm(graph)) {
+      if (graph.termType !== 'NamedNode') {
+        throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports named graph documents');
+      }
+      graphIris.add(graph.value);
+      return;
+    }
+    const values = (graph as { $in?: unknown }).$in;
+    if (Array.isArray(values) && values.every((value) => this.isRdfTerm(value))) {
+      for (const value of values) {
+        if (value.termType !== 'NamedNode') {
+          throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports named graph documents');
+        }
+        graphIris.add(value.value);
+      }
+      return;
+    }
+    if (this.isQueryVariable(graph)) {
+      return;
+    }
+    throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports explicit local RDF graph documents');
+  }
+
+  private addWritableNamedGraphIri(graph: RdfQueryTermPattern | Term, graphIris: Set<string>): void {
+    if (!this.isRdfTerm(graph) || graph.termType !== 'NamedNode') {
+      throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports explicit local RDF graph write targets');
+    }
+    if (!this.isByLineRdfIdentifier({ path: graph.value })) {
+      throw new UnsupportedSparqlQueryError('Embedded local RDF update only supports by-line local RDF graph write targets');
+    }
+    graphIris.add(graph.value);
+  }
+
+  private isQueryVariable(value: unknown): value is { variable: string } {
+    return Boolean(value && typeof value === 'object' && 'variable' in value);
+  }
+
+  private isRdfTerm(value: unknown): value is Term {
+    return Boolean(value && typeof value === 'object' && 'termType' in value);
+  }
+
+  private async readLocalRdfState(identifier: ResourceIdentifier): Promise<{ text: string; existed: boolean }> {
     try {
-      return await this.readStreamText(await this.rdfFileDataAccessor.getData(identifier));
+      return {
+        text: await this.readStreamText(await this.rdfFileDataAccessor.getData(identifier)),
+        existed: true,
+      };
     } catch (error) {
       if (NotFoundHttpError.isInstance(error)) {
         await this.refreshLocalRdfMirror(identifier);
         try {
-          return await this.readStreamText(await this.rdfFileDataAccessor.getData(identifier));
+          return {
+            text: await this.readStreamText(await this.rdfFileDataAccessor.getData(identifier)),
+            existed: true,
+          };
         } catch (retryError) {
           if (NotFoundHttpError.isInstance(retryError)) {
-            return '';
+            return { text: '', existed: false };
           }
           throw retryError;
         }
@@ -465,6 +806,52 @@ export class MixDataAccessor implements DataAccessor {
       guardStream(Readable.from([ await this.serializeQuadsForLocalFile(identifier, quads) ])),
       this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier)),
     );
+  }
+
+  private async writeLocalRdfAuthorityPatches(patches: LocalRdfAuthorityPatch[]): Promise<void> {
+    const applied: LocalRdfAuthorityPatch[] = [];
+    try {
+      for (const patch of patches) {
+        let localAuthorityWritten = false;
+        try {
+          const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
+          await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
+          localAuthorityWritten = true;
+          await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+          applied.push(patch);
+        } catch (error) {
+          if (localAuthorityWritten) {
+            applied.push(patch);
+          }
+          throw error;
+        }
+      }
+    } catch (error) {
+      await this.rollbackLocalRdfAuthorityPatches(applied);
+      throw error;
+    }
+  }
+
+  private async rollbackLocalRdfAuthorityPatches(patches: LocalRdfAuthorityPatch[]): Promise<void> {
+    const failures: string[] = [];
+    for (const patch of patches.slice().reverse()) {
+      try {
+        if (patch.previousExists) {
+          const authorityQuads = patch.previousQuads.map((quad) => this.toDefaultGraphQuad(quad));
+          await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
+          await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+        } else {
+          await this.deleteRdfFileResourceIfPresent(patch.identifier);
+          await this.deleteLocalRdfIndex(patch.identifier);
+        }
+        this.invalidateMetadataCache(patch.identifier);
+      } catch (rollbackError) {
+        failures.push(`${patch.identifier.path}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+    }
+    if (failures.length > 0) {
+      this.logger.warn(`Failed to fully roll back local RDF authority patch: ${failures.join('; ')}`);
+    }
   }
 
   private toDefaultGraphQuad(quad: Quad): Quad {
@@ -621,9 +1008,17 @@ export class MixDataAccessor implements DataAccessor {
   }
 
   private async getExistingLocalRdfMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
-    const metadata = await this.rdfFileDataAccessor.getMetadata(identifier);
-    metadata.contentType = this.localRdfContentType(identifier);
-    return metadata;
+    try {
+      const metadata = await this.rdfFileDataAccessor.getMetadata(identifier);
+      metadata.contentType = this.localRdfContentType(identifier);
+      return metadata;
+    } catch (error) {
+      if (NotFoundHttpError.isInstance(error)) {
+        throw error;
+      }
+      this.logger.warn(`Ignoring unreadable local RDF metadata for ${identifier.path}: ${error instanceof Error ? error.message : String(error)}`);
+      return this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier));
+    }
   }
 
   private createLocalRdfMetadata(

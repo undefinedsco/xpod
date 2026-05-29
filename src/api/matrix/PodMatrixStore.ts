@@ -2,11 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, drizzle, eq, gt, lte } from '@undefineds.co/drizzle-solid';
 import {
   chatResource,
-  matrixAccountResource,
-  matrixEventResource,
-  matrixRoomResource,
   messageResource,
-  MatrixRoomVisibility,
   MessageRole,
   MessageStatus,
   threadResource,
@@ -23,9 +19,6 @@ import type {
 } from './types';
 
 const schema = {
-  matrixAccount: matrixAccountResource,
-  matrixRoom: matrixRoomResource,
-  matrixEvent: matrixEventResource,
   chat: chatResource,
   thread: threadResource,
   message: messageResource,
@@ -40,27 +33,20 @@ type JsonObjectSource = string | Record<string, unknown> | null | undefined;
 
 interface MatrixRoomSource {
   id: string;
-  matrixRoomId?: string | null;
-  name?: string | null;
-  topic?: string | null;
-  creator?: string | null;
+  title?: string | null;
+  description?: string | null;
+  author?: string | null;
   createdAt?: string | Date | null;
   metadata?: JsonObjectSource;
 }
 
 interface MatrixEventSource {
   id: string;
-  matrixEventId?: string | null;
-  matrixRoomId?: string | null;
-  type?: string | null;
-  sender?: string | null;
-  senderWebId?: string | null;
-  originServerTs?: number | null;
-  depth?: number | null;
+  surfaceId?: string | null;
+  maker?: string | null;
   content?: JsonObjectSource;
-  stateKey?: string | null;
-  unsigned?: JsonObjectSource;
   createdAt?: string | Date | null;
+  metadata?: JsonObjectSource;
 }
 
 export class PodMatrixStore {
@@ -78,14 +64,25 @@ export class PodMatrixStore {
     const chatId = this.chatResourceIdFromRoomId(roomId);
     const threadId = this.threadResourceIdFromRoomId(roomId);
 
-    await this.ensureMatrixAccount(db, context);
     await db.insert(chatResource).values({
       id: chatId,
       title: input.name ?? roomId,
       description: input.topic ?? null,
       author: context.userId,
       status: 'active',
-      metadata: { protocol: 'matrix', roomId },
+      participants: [context.userId],
+      metadata: {
+        protocol: 'matrix',
+        roomId,
+        canonicalAlias: input.room_alias_name ? `#${input.room_alias_name}:${this.getServerName(context)}` : null,
+        visibility: input.visibility === 'public' ? 'public' : 'private',
+        roomVersion: String(input.creation_content?.room_version ?? '11'),
+        federate: input.creation_content?.['m.federate'] === true,
+        members: [context.userId],
+        preset: input.preset,
+        is_direct: input.is_direct,
+        invite: input.invite ?? [],
+      },
       createdAt: new Date(now).toISOString(),
       updatedAt: new Date(now).toISOString(),
     });
@@ -97,26 +94,6 @@ export class PodMatrixStore {
       title: input.name ?? roomId,
       status: 'active',
       metadata: { protocol: 'matrix', roomId },
-      createdAt: new Date(now).toISOString(),
-      updatedAt: new Date(now).toISOString(),
-    });
-    await db.insert(matrixRoomResource).values({
-      id: this.roomResourceId(roomId),
-      matrixRoomId: roomId,
-      canonicalAlias: input.room_alias_name ? `#${input.room_alias_name}:${this.getServerName(context)}` : null,
-      name: input.name ?? null,
-      topic: input.topic ?? null,
-      creator: context.userId,
-      visibility: input.visibility === 'public' ? MatrixRoomVisibility.PUBLIC : MatrixRoomVisibility.PRIVATE,
-      roomVersion: String(input.creation_content?.room_version ?? '11'),
-      federate: input.creation_content?.['m.federate'] === true,
-      chat: chatId,
-      members: [context.userId],
-      metadata: {
-        preset: input.preset,
-        is_direct: input.is_direct,
-        invite: input.invite ?? [],
-      },
       createdAt: new Date(now).toISOString(),
       updatedAt: new Date(now).toISOString(),
     });
@@ -194,7 +171,6 @@ export class PodMatrixStore {
   ): Promise<MatrixEventRecord> {
     const db = await this.getDb(context);
     await this.ensureRoomExists(db, roomId);
-    await this.ensureMatrixAccount(db, context);
 
     const existing = await this.findEventByTxnId(db, roomId, txnId);
     if (existing) {
@@ -210,28 +186,6 @@ export class PodMatrixStore {
       originServerTs: Date.now(),
       content,
     }, context);
-
-    if (eventType === 'm.room.message') {
-      await db.insert(messageResource).values({
-        id: this.messageResourceIdFromEvent(roomId, event.eventId, event.originServerTs),
-        commandKind: 'chat',
-        surfaceId: this.surfaceIdFromRoomId(roomId),
-        chat: this.chatResourceIdFromRoomId(roomId),
-        thread: this.resolveDataResourceUriFromId(this.threadResourceIdFromRoomId(roomId), context),
-        maker: context.userId,
-        role: MessageRole.USER,
-        content: typeof content.body === 'string' ? content.body : JSON.stringify(content),
-        status: MessageStatus.SENT,
-        metadata: {
-          protocol: 'matrix',
-          roomId,
-          eventId: event.eventId,
-          eventType,
-          msgtype: content.msgtype,
-        },
-        createdAt: new Date(event.originServerTs).toISOString(),
-      });
-    }
 
     return event;
   }
@@ -330,9 +284,6 @@ export class PodMatrixStore {
       { schema },
     );
     await db.init(
-      matrixAccountResource,
-      matrixRoomResource,
-      matrixEventResource,
       chatResource,
       threadResource,
       messageResource,
@@ -352,26 +303,8 @@ export class PodMatrixStore {
     };
   }
 
-  private async ensureMatrixAccount(db: Db, context: MatrixStoreContext): Promise<void> {
-    const matrixUserId = this.getMatrixUserId(context);
-    const accountId = this.accountResourceId(matrixUserId);
-    const existing = await db.findById(matrixAccountResource, accountId);
-    if (existing) {
-      return;
-    }
-    await db.insert(matrixAccountResource).values({
-      id: accountId,
-      matrixUserId,
-      webId: context.userId,
-      displayName: this.displayNameFromUserId(matrixUserId),
-      metadata: { serverName: this.getServerName(context) },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-  }
-
   private async ensureRoomExists(db: Db, roomId: string): Promise<void> {
-    const room = await db.findById(matrixRoomResource, this.roomResourceId(roomId));
+    const room = await db.findById(chatResource, this.chatResourceIdFromRoomId(roomId));
     if (!room) {
       throw new Error(`Matrix room not found: ${roomId}`);
     }
@@ -392,34 +325,54 @@ export class PodMatrixStore {
   ): Promise<MatrixEventRecord> {
     const eventId = this.generateEventId(context);
     const depth = await this.nextEventDepth(db, input.roomId);
+    const originIso = new Date(input.originServerTs).toISOString();
     const record = {
-      id: this.eventResourceId(input.roomId, eventId, input.originServerTs),
-      matrixEventId: eventId,
-      matrixRoomId: input.roomId,
-      room: this.roomResourceId(input.roomId),
+      eventId,
+      roomId: input.roomId,
       type: input.type,
       sender: input.sender,
       senderWebId: context.userId,
       originServerTs: input.originServerTs,
       depth,
-      txnId: input.txnId ?? null,
-      stateKey: input.stateKey ?? null,
+      txnId: input.txnId ?? undefined,
+      stateKey: input.stateKey ?? undefined,
       content: input.content,
-      createdAt: new Date(input.originServerTs).toISOString(),
+      createdAt: originIso,
     };
-    await db.insert(matrixEventResource).values(record);
-    return this.eventSourceToRecord(record);
+    await db.insert(messageResource).values({
+      id: this.messageResourceIdFromEvent(input.roomId, eventId, input.originServerTs),
+      commandKind: 'chat',
+      surfaceId: this.surfaceIdFromRoomId(input.roomId),
+      chat: this.chatResourceIdFromRoomId(input.roomId),
+      thread: this.resolveDataResourceUriFromId(this.threadResourceIdFromRoomId(input.roomId), context),
+      maker: context.userId,
+      role: input.type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM,
+      content: this.messageContentFromMatrixEvent(input.type, input.content),
+      status: MessageStatus.SENT,
+      metadata: {
+        protocol: 'matrix',
+        eventId,
+        roomId: input.roomId,
+        eventType: input.type,
+        sender: input.sender,
+        senderWebId: context.userId,
+        originServerTs: input.originServerTs,
+        depth,
+        txnId: input.txnId ?? null,
+        stateKey: input.stateKey ?? null,
+        content: input.content,
+      },
+      createdAt: originIso,
+      updatedAt: originIso,
+    });
+    return record;
   }
 
   private async listRooms(db: Db): Promise<MatrixRoomRecord[]> {
-    const rooms = await db.select().from(matrixRoomResource) as MatrixRoomSource[];
-    return rooms.map((room) => ({
-      roomId: room.matrixRoomId ?? this.roomIdFromResourceId(room.id),
-      name: room.name ?? undefined,
-      topic: room.topic ?? undefined,
-      creator: room.creator ?? '',
-      createdAt: this.isoToMillis(room.createdAt) ?? 0,
-    }));
+    const rooms = await db.select().from(chatResource) as MatrixRoomSource[];
+    return rooms
+      .map((room) => this.chatSourceToRoomRecord(room))
+      .filter((room): room is MatrixRoomRecord => room !== undefined);
   }
 
   private async listEvents(
@@ -433,14 +386,14 @@ export class PodMatrixStore {
     } = {},
   ): Promise<MatrixEventRecord[]> {
     const conditions = [
-      eq(matrixEventResource.matrixRoomId, roomId),
-      options.sinceTs !== undefined ? gt(matrixEventResource.originServerTs, options.sinceTs) : undefined,
-      options.beforeOrAtTs !== undefined ? lte(matrixEventResource.originServerTs, options.beforeOrAtTs) : undefined,
+      eq(messageResource.surfaceId, this.surfaceIdFromRoomId(roomId)),
+      options.sinceTs !== undefined ? gt(messageResource.createdAt, new Date(options.sinceTs).toISOString()) : undefined,
+      options.beforeOrAtTs !== undefined ? lte(messageResource.createdAt, new Date(options.beforeOrAtTs).toISOString()) : undefined,
     ];
-    let query = db.select().from(matrixEventResource).where(and(...conditions));
+    let query = db.select().from(messageResource).where(and(...conditions));
     query = options.newestFirst
-      ? query.orderBy(desc(matrixEventResource.originServerTs as any))
-      : query.orderBy(matrixEventResource.originServerTs as any);
+      ? query.orderBy(desc(messageResource.createdAt as any))
+      : query.orderBy(messageResource.createdAt as any);
     if (options.limit && options.limit > 0) {
       query = query.limit(options.limit);
     }
@@ -449,32 +402,18 @@ export class PodMatrixStore {
   }
 
   private async findEventByTxnId(db: Db, roomId: string, txnId: string): Promise<MatrixEventRecord | undefined> {
-    const records = await db.select()
-      .from(matrixEventResource)
-      .where(and(eq(matrixEventResource.matrixRoomId, roomId), eq(matrixEventResource.txnId, txnId))) as MatrixEventSource[];
-    const record = records[0];
-    return record ? this.eventSourceToRecord(record) : undefined;
+    const records = await this.listEvents(db, roomId);
+    return records.find((record) => record.txnId === txnId);
   }
 
   private async findEventById(db: Db, roomId: string, eventId: string): Promise<MatrixEventRecord | undefined> {
-    const records = await db.select()
-      .from(matrixEventResource)
-      .where(and(
-        eq(matrixEventResource.matrixRoomId, roomId),
-        eq(matrixEventResource.matrixEventId, eventId),
-      ))
-      .limit(1) as MatrixEventSource[];
-    const record = records[0];
-    return record ? this.eventSourceToRecord(record) : undefined;
+    const records = await this.listEvents(db, roomId);
+    return records.find((record) => record.eventId === eventId);
   }
 
   private async nextEventDepth(db: Db, roomId: string): Promise<number> {
-    const records = await db.select()
-      .from(matrixEventResource)
-      .where(eq(matrixEventResource.matrixRoomId, roomId))
-      .orderBy(desc(matrixEventResource.depth as any))
-      .limit(1) as MatrixEventSource[];
-    return Number(records[0]?.depth ?? 0) + 1;
+    const records = await this.listEvents(db, roomId);
+    return records.reduce((max, record) => Math.max(max, record.depth ?? 0), 0) + 1;
   }
 
   private async findLatestStateEvent(
@@ -483,30 +422,48 @@ export class PodMatrixStore {
     eventType: string,
     stateKey: string,
   ): Promise<MatrixEventRecord | undefined> {
-    const records = await db.select()
-      .from(matrixEventResource)
-      .where(and(
-        eq(matrixEventResource.matrixRoomId, roomId),
-        eq(matrixEventResource.type, eventType),
-        eq(matrixEventResource.stateKey, stateKey),
-      ))
-      .orderBy(desc(matrixEventResource.originServerTs as any))
-      .limit(1) as MatrixEventSource[];
-    const record = records[0];
-    return record ? this.eventSourceToRecord(record) : undefined;
+    const records = await this.listEvents(db, roomId, { newestFirst: true });
+    return records.find((record) => record.type === eventType && (record.stateKey ?? '') === stateKey);
   }
 
   private eventSourceToRecord(source: MatrixEventSource): MatrixEventRecord {
+    const metadata = this.parseJsonObject(source.metadata) ?? {};
+    const content = this.parseJsonObject(metadata.content as JsonObjectSource)
+      ?? this.parseJsonObject(source.content)
+      ?? {};
+    const unsigned = this.parseJsonObject(metadata.unsigned as JsonObjectSource);
+    const stateKey = this.stringValue(metadata.stateKey);
+    const txnId = this.stringValue(metadata.txnId);
     return {
-      eventId: source.matrixEventId ?? this.eventIdFromResourceId(source.id),
-      roomId: source.matrixRoomId ?? '',
-      type: source.type ?? 'm.room.message',
-      sender: source.sender ?? '',
-      senderWebId: source.senderWebId ?? undefined,
-      originServerTs: Number(source.originServerTs ?? this.isoToMillis(source.createdAt) ?? Date.now()),
-      content: this.parseJsonObject(source.content) ?? {},
-      stateKey: source.stateKey ?? undefined,
-      unsigned: this.parseJsonObject(source.unsigned),
+      eventId: this.stringValue(metadata.eventId) ?? source.id,
+      roomId: this.stringValue(metadata.roomId) ?? '',
+      type: this.stringValue(metadata.eventType) ?? 'm.room.message',
+      sender: this.stringValue(metadata.sender) ?? '',
+      senderWebId: this.stringValue(metadata.senderWebId) ?? source.maker ?? undefined,
+      originServerTs: this.numberValue(metadata.originServerTs) ?? this.isoToMillis(source.createdAt) ?? Date.now(),
+      depth: this.numberValue(metadata.depth),
+      txnId: txnId ?? undefined,
+      content,
+      stateKey: stateKey ?? undefined,
+      unsigned,
+    };
+  }
+
+  private chatSourceToRoomRecord(source: MatrixRoomSource): MatrixRoomRecord | undefined {
+    const metadata = this.parseJsonObject(source.metadata) ?? {};
+    if (metadata.protocol !== 'matrix') {
+      return undefined;
+    }
+    const roomId = this.stringValue(metadata.roomId);
+    if (!roomId) {
+      return undefined;
+    }
+    return {
+      roomId,
+      name: source.title ?? undefined,
+      topic: source.description ?? undefined,
+      creator: source.author ?? '',
+      createdAt: this.isoToMillis(source.createdAt) ?? 0,
     };
   }
 
@@ -541,6 +498,24 @@ export class PodMatrixStore {
     } catch {
       return undefined;
     }
+  }
+
+  private stringValue(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private numberValue(value: unknown): number | undefined {
+    if (typeof value !== 'number') {
+      return undefined;
+    }
+    return Number.isFinite(value) ? value : undefined;
+  }
+
+  private messageContentFromMatrixEvent(eventType: string, content: Record<string, unknown>): string {
+    if (eventType === 'm.room.message' && typeof content.body === 'string') {
+      return content.body;
+    }
+    return JSON.stringify(content);
   }
 
   private getMatrixUserId(context: MatrixStoreContext): string {
@@ -590,18 +565,8 @@ export class PodMatrixStore {
     return value.toLowerCase().replace(/[^a-z0-9._=-]+/g, '_').replace(/^_+|_+$/g, '') || 'user';
   }
 
-  private resourceSlot(value: string): string {
-    return encodeURIComponent(value)
-      .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
-      .replace(/%/g, '~');
-  }
-
   private surfaceIdFromRoomId(roomId: string): string {
     return `matrix-${createHash('sha256').update(roomId).digest('hex').slice(0, 16)}`;
-  }
-
-  private roomResourceId(roomId: string): string {
-    return `rooms/${this.resourceSlot(roomId)}/index.ttl#this`;
   }
 
   private chatResourceIdFromRoomId(roomId: string): string {
@@ -615,28 +580,6 @@ export class PodMatrixStore {
   private messageResourceIdFromEvent(roomId: string, eventId: string, ts: number): string {
     const { yyyy, MM, dd } = this.dateParts(ts);
     return `chat/${this.surfaceIdFromRoomId(roomId)}/${yyyy}/${MM}/${dd}/messages.ttl#${this.slug(eventId)}`;
-  }
-
-  private accountResourceId(matrixUserId: string): string {
-    return `accounts/${this.resourceSlot(matrixUserId)}.ttl#this`;
-  }
-
-  private eventResourceId(roomId: string, eventId: string, ts: number): string {
-    const { yyyy, MM, dd } = this.dateParts(ts);
-    return `rooms/${this.resourceSlot(roomId)}/${yyyy}/${MM}/${dd}/events.ttl#${this.resourceSlot(eventId)}`;
-  }
-
-  private roomIdFromResourceId(id: string): string {
-    const match = id.match(/^rooms\/([^/]+)\/index\.ttl#this$/);
-    return match ? decodeURIComponent(match[1].replace(/~/g, '%')) : id;
-  }
-
-  private eventIdFromResourceId(id: string): string {
-    const hash = id.lastIndexOf('#');
-    if (hash < 0) {
-      return id;
-    }
-    return decodeURIComponent(id.slice(hash + 1).replace(/~/g, '%'));
   }
 
   private resolveDataResourceUriFromId(resourceId: string, context: MatrixStoreContext): string {

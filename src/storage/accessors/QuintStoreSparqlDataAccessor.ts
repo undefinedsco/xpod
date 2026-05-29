@@ -46,16 +46,21 @@ import {
 } from '@solid/community-server';
 
 import type { QuintStore, Quint } from '../quint/types';
-import { ComunicaQuintEngine } from '../sparql/ComunicaQuintEngine';
 import type { RdfSourceInput } from '../rdf/types';
 
 const { defaultGraph, namedNode, quad, variable } = DataFactory;
+
+interface CompatibilityEngine {
+  queryBindings(query: string, context?: unknown): Promise<any>;
+  queryQuads(query: string, context?: unknown): Promise<any>;
+  queryVoid(query: string, context?: unknown): Promise<void>;
+}
 
 export class QuintStoreSparqlDataAccessor implements DataAccessor {
   protected readonly logger = getLoggerFor(this);
   private readonly identifierStrategy: IdentifierStrategy;
   private readonly store: QuintStore;
-  private readonly engine: ComunicaQuintEngine;
+  private readonly engine: Promise<CompatibilityEngine>;
   private readonly generator: SparqlGenerator;
   private readonly baseUrl: string;
   private initialized = false;
@@ -68,7 +73,8 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     this.store = store;
     this.identifierStrategy = identifierStrategy;
     this.generator = new Generator();
-    this.engine = new ComunicaQuintEngine(this.store);
+    this.engine = import('../sparql/ComunicaQuintEngine')
+      .then(({ ComunicaQuintEngine }) => new ComunicaQuintEngine(this.store));
     // Get baseUrl from identifierStrategy
     const strategy = identifierStrategy as unknown as { baseUrl?: string };
     this.baseUrl = strategy.baseUrl ?? '';
@@ -319,7 +325,7 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     graphPrefix: string,
   ): Promise<Quad[]> {
     await this.initialize();
-    const stream = await this.engine.queryBindings(query, { graphPrefix });
+    const stream = await (await this.engine).queryBindings(query, { graphPrefix });
     return arrayifyStream(stream);
   }
 
@@ -517,7 +523,7 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     this.logger.verbose(`SPARQL CONSTRUCT: ${queryString}`);
 
     try {
-      const quadStream = await this.engine.queryQuads(queryString);
+      const quadStream = await (await this.engine).queryQuads(queryString);
       return guardStream(Readable.from(quadStream as unknown as AsyncIterable<any>));
     } catch (error: unknown) {
       this.logger.error(`SPARQL query failed: ${createErrorMessage(error)}`);
@@ -530,7 +536,7 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
     this.logger.verbose(`SPARQL UPDATE: ${queryString}`);
 
     try {
-      await this.engine.queryVoid(queryString);
+      await (await this.engine).queryVoid(queryString);
     } catch (error: unknown) {
       this.logger.error(`SPARQL update failed: ${createErrorMessage(error)}`);
       throw error;
@@ -582,7 +588,7 @@ export class QuintStoreSparqlDataAccessor implements DataAccessor {
   public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
     this.logger.verbose(`executeSparqlUpdate: ${query}`);
     try {
-      await this.engine.queryVoid(query);
+      await (await this.engine).queryVoid(query);
     } catch (error: unknown) {
       this.logger.error(`SPARQL update failed: ${createErrorMessage(error)}`);
       throw error;

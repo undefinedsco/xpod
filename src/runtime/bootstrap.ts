@@ -1,5 +1,6 @@
 import { setGlobalLoggerFactory } from 'global-logger-factory';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
 import { PACKAGE_ROOT } from './package-root';
 import type { RuntimeHost } from './host/types';
@@ -60,6 +61,10 @@ function toWindowsFileUrl(filePath: string): string {
 function toConfigImportSpecifier(fromFilePath: string, toFilePath: string): string {
   const normalizedFromPath = normalizeWindowsAbsolutePath(fromFilePath);
   const normalizedToPath = normalizeWindowsAbsolutePath(toFilePath);
+  if (!isWindowsAbsolutePath(normalizedFromPath) && (pathNeedsEscapedFileUrl(normalizedFromPath) || pathNeedsEscapedFileUrl(normalizedToPath))) {
+    return pathToFileURL(normalizedToPath).href;
+  }
+
   const useWindowsPaths = isWindowsAbsolutePath(normalizedFromPath) || isWindowsAbsolutePath(normalizedToPath);
   const pathApi = useWindowsPaths ? path.win32 : path.posix;
   const fromDirectoryPath = pathApi.dirname(useWindowsPaths ? normalizedFromPath : fromFilePath);
@@ -74,6 +79,10 @@ function toConfigImportSpecifier(fromFilePath: string, toFilePath: string): stri
     return relativePath;
   }
   return `./${relativePath}`;
+}
+
+function pathNeedsEscapedFileUrl(filePath: string): boolean {
+  return /\s/.test(filePath);
 }
 
 function withDefinedEntries(entries: Array<[string, string | number | boolean | undefined]>): Record<string, string | number | boolean> {

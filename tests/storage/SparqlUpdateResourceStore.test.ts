@@ -4,11 +4,14 @@ import { Readable } from 'stream';
 import arrayifyStream from 'arrayify-stream';
 import {
   BasicRepresentation,
+  BadRequestHttpError,
+  ForbiddenHttpError,
   RepresentationMetadata,
   guardedStreamFrom,
   guardStream,
 } from '@solid/community-server';
 import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore';
+import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from '../../src/storage/rdf';
 
 const { namedNode, literal } = DataFactory;
 
@@ -54,6 +57,7 @@ describe('SparqlUpdateResourceStore', () => {
   let accessor: ReturnType<typeof createMockAccessor>;
 
   beforeEach(() => {
+    mockIdentifierStrategy.supportsIdentifier.mockReset().mockReturnValue(true);
     accessor = createMockAccessor();
     store = new SparqlUpdateResourceStore({
       accessor: accessor as any,
@@ -188,6 +192,128 @@ describe('SparqlUpdateResourceStore', () => {
       // IRIs should have angle brackets
       expect(executedQuery).toContain('<http://example.org/bob>');
       expect(executedQuery).toContain('<http://example.org/charlie>');
+    });
+  });
+
+  describe('default graph normalization', () => {
+    it('rejects explicit GRAPH targets outside the identifier space without falling back', async () => {
+      mockIdentifierStrategy.supportsIdentifier.mockImplementation(({ path }) =>
+        path.startsWith('http://localhost:3000/'));
+
+      const identifier = { path: 'http://localhost:3000/alice/chat.ttl' };
+      const patch = createPatch(`
+        INSERT DATA {
+          GRAPH <https://external.example/data.ttl> {
+            <${identifier.path}#message> <https://schema.org/name> "bad" .
+          }
+        }
+      `);
+
+      await expect(store.modifyResource(identifier, patch)).rejects.toBeInstanceOf(BadRequestHttpError);
+      expect(accessor.executeSparqlUpdate).not.toHaveBeenCalled();
+    });
+
+    it('rewrites DELETE WHERE default graph updates to the target resource graph', async () => {
+      const identifier = { path: 'http://localhost:3000/alice/chat.ttl' };
+      const patch = createPatch(`
+        DELETE WHERE {
+          <${identifier.path}#message> <https://schema.org/name> ?name .
+        }
+      `);
+
+      await store.modifyResource(identifier, patch);
+
+      expect(accessor.executeSparqlUpdate).toHaveBeenCalledTimes(1);
+      const executedQuery = accessor.executeSparqlUpdate.mock.calls[0][0];
+      expect(executedQuery).toContain(`DELETE WHERE { GRAPH <${identifier.path}>`);
+      expect(executedQuery).toContain(`<${identifier.path}#message> <https://schema.org/name> ?name`);
+    });
+
+    it('rewrites DELETE/INSERT WHERE default graph updates without generating invalid BGP templates', async () => {
+      const identifier = { path: 'http://localhost:3000/alice/chat.ttl' };
+      const patch = createPatch(`
+        DELETE {
+          <${identifier.path}#message> <https://schema.org/name> ?old .
+        }
+        INSERT {
+          <${identifier.path}#message> <https://schema.org/name> "new" .
+        }
+        WHERE {
+          <${identifier.path}#message> <https://schema.org/name> ?old .
+        }
+      `);
+
+      await store.modifyResource(identifier, patch);
+
+      expect(accessor.executeSparqlUpdate).toHaveBeenCalledTimes(1);
+      const executedQuery = accessor.executeSparqlUpdate.mock.calls[0][0];
+      expect(executedQuery).toContain(`DELETE { GRAPH <${identifier.path}>`);
+      expect(executedQuery).toContain(`INSERT { GRAPH <${identifier.path}>`);
+      expect(executedQuery).toContain(`WHERE { GRAPH <${identifier.path}>`);
+      expect(executedQuery).not.toContain('undefined');
+    });
+
+    it('preserves explicit GRAPH WHERE blocks and INSERT DATA operations', async () => {
+      const identifier = { path: 'http://localhost:3000/alice/settings/credentials.ttl' };
+      const subject = `${identifier.path}#cred-status-test`;
+      const patch = createPatch(`
+        DELETE {
+          GRAPH <${identifier.path}> {
+            <${subject}> <https://vocab.xpod.dev/credential#status> ?oldStatus .
+          }
+        }
+        WHERE {
+          GRAPH <${identifier.path}> {
+            <${subject}> <https://vocab.xpod.dev/credential#status> ?oldStatus .
+          }
+        };
+        INSERT DATA {
+          GRAPH <${identifier.path}> {
+            <${subject}> <https://vocab.xpod.dev/credential#status> "active" .
+          }
+        }
+      `);
+
+      await store.modifyResource(identifier, patch);
+
+      expect(accessor.executeSparqlUpdate).toHaveBeenCalledTimes(1);
+      const executedQuery = accessor.executeSparqlUpdate.mock.calls[0][0];
+      expect(executedQuery).toContain(`WHERE { GRAPH <${identifier.path}>`);
+      expect(executedQuery).not.toContain(`GRAPH <${identifier.path}> { GRAPH <${identifier.path}>`);
+      expect(executedQuery).toContain('INSERT DATA');
+      expect(executedQuery).not.toContain('WHERE {  }');
+    });
+  });
+
+  describe('SPARQL engine errors', () => {
+    it('maps unsupported RDF engine updates to 400 instead of leaking 500', async () => {
+      accessor.executeSparqlUpdate.mockRejectedValueOnce(
+        new UnsupportedSparqlQueryError('DELETE WHERE default graph fallback to compatibility engine'),
+      );
+      const identifier = { path: 'http://localhost:3000/alice/settings/credentials.ttl' };
+      const patch = createPatch(`
+        DELETE WHERE {
+          <${identifier.path}#cred> <https://schema.org/name> ?name .
+        }
+      `);
+
+      await expect(store.modifyResource(identifier, patch)).rejects.toBeInstanceOf(BadRequestHttpError);
+    });
+
+    it('maps disabled SPARQL features to 403 instead of leaking 500', async () => {
+      accessor.executeSparqlUpdate.mockRejectedValueOnce(
+        new DisabledSparqlFeatureError('SPARQL SERVICE federation is disabled for server-owned Pod queries'),
+      );
+      const identifier = { path: 'http://localhost:3000/alice/settings/credentials.ttl' };
+      const patch = createPatch(`
+        INSERT DATA {
+          GRAPH <${identifier.path}> {
+            <${identifier.path}#cred> <https://schema.org/name> "secret" .
+          }
+        }
+      `);
+
+      await expect(store.modifyResource(identifier, patch)).rejects.toBeInstanceOf(ForbiddenHttpError);
     });
   });
 

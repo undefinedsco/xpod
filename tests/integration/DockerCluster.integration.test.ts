@@ -137,9 +137,11 @@ suite('Docker Cluster Integration', () => {
     });
 
     it('Local should keep account routes local in SP mode', async () => {
-      // Local 模式信任 Cloud IdP，但账户/consent 交互仍由本地 CSS 处理。
+      // Local 模式信任 Cloud IdP，但账户/consent 交互仍由本地 CSS 处理，
+      // 避免登录流程跳到 Cloud Pod 选择面。
       const res = await fetch(`${SERVICES.local.baseUrl}/.account/`, { redirect: 'manual' });
       expect(res.status).toBe(200);
+      expect(res.headers.get('location')).toBeNull();
     });
   });
 

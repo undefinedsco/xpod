@@ -33,6 +33,7 @@ import type {
   UpdateOperation,
 } from 'sparqljs';
 import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
+import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from '../storage/rdf/RdfSparqlAdapter';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
@@ -142,7 +143,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         return;
       }
 
-      // WORKAROUND: Comunica crashes if ASK query has a LIMIT clause ("Expected bindings but got boolean").
+      // WORKAROUND: the compatibility engine crashes if ASK query has a LIMIT clause ("Expected bindings but got boolean").
       // ASK results are boolean and cannot be sliced, so LIMIT is semantically redundant but syntactically valid.
       // We strip it here to protect the engine.
       // console.log('Parsed Query Type:', parsed.queryType, 'Limit:', (parsed as any).limit); 
@@ -176,6 +177,16 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         const errorMessage = error.message || 'No message';
         this.logger.error(`SPARQL sidecar error ${error.statusCode} (${this.getRequestId(request)}): ${errorName} - ${errorMessage}`);
         this.sendErrorResponse(response, error.statusCode, errorMessage);
+        return;
+      }
+      if (error instanceof DisabledSparqlFeatureError) {
+        this.logger.warn(`SPARQL sidecar disabled feature (${this.getRequestId(request)}): ${error.message}`);
+        this.sendErrorResponse(response, 403, error.message);
+        return;
+      }
+      if (error instanceof UnsupportedSparqlQueryError) {
+        this.logger.warn(`SPARQL sidecar unsupported query (${this.getRequestId(request)}): ${error.message}`);
+        this.sendErrorResponse(response, 400, error.message);
         return;
       }
       // Re-throw unknown errors for CSS error handling
@@ -555,6 +566,12 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
           delete: rewritePatterns(op.delete),
         };
       }
+      if (op.updateType === 'deletewhere') {
+        return {
+          ...op,
+          delete: rewritePatterns(op.delete),
+        };
+      }
       return op;
     });
 
@@ -612,9 +629,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
 
     let basePath = path.slice(0, sidecarIndex);
-    // If the base looks like a container (no file extension), normalize with trailing slash.
-    const hasExtension = /\.[^/]+$/.test(basePath);
-    if (!hasExtension && !basePath.endsWith('/')) {
+    if (this.isContainerSidecarBase(basePath) && !basePath.endsWith('/')) {
       basePath = `${basePath}/`;
     }
 
@@ -666,6 +681,16 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const protocol = protocolHeader?.split(',')[0]?.trim() ?? 'http';
     const requestUrl = request.url ?? '/';
     return new URL(requestUrl, `${protocol}://${hostHeader}`);
+  }
+
+  private isContainerSidecarBase(basePath: string): boolean {
+    const lastSegment = basePath.split('/').filter(Boolean).pop() ?? '';
+    if (lastSegment.length === 0) {
+      return true;
+    }
+
+    const extensionStart = lastSegment.lastIndexOf('.');
+    return extensionStart <= 0;
   }
 
   private async readBody(request: HttpRequest): Promise<string> {

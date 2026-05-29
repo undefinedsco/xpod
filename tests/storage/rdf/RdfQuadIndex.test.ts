@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, afterEach, beforeEach } from 'vitest';
 import { DataFactory } from 'n3';
-import { RdfQuadIndex } from '../../../src/storage/rdf';
+import { Rdf3xIndex, RdfQuadIndex } from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 
 const { namedNode, literal, quad } = DataFactory;
@@ -60,6 +61,38 @@ describe('RdfQuadIndex', () => {
     expect(index.stats().termCount).toBeGreaterThan(4);
   });
 
+  it('applies mixed RDF deltas in one facts data version step', () => {
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const content = namedNode('http://rdfs.org/sioc/ns#content');
+    const msg1 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1');
+    const msg2 = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_2');
+    const old1 = quad(msg1, content, literal('old one'), graph);
+    const old2 = quad(msg2, content, literal('old two'), graph);
+
+    index.multiPut([old1, old2]);
+    const beforeDeltaVersion = index.dataVersion();
+
+    const result = index.applyDelta(
+      [
+        { graph, subject: msg1, predicate: content, object: literal('old one') },
+        { graph, subject: msg2, predicate: content, object: literal('old two') },
+      ],
+      [
+        quad(msg1, content, literal('new one'), graph),
+        quad(msg2, content, literal('new two'), graph),
+      ],
+    );
+
+    expect(result).toEqual({
+      deletedRows: 2,
+      insertedRows: 2,
+    });
+    expect(index.dataVersion()).toBe(beforeDeltaVersion + 1);
+    expect(index.scan({ graph, predicate: content, object: literal('old one') }).quads).toHaveLength(0);
+    expect(index.scan({ graph, predicate: content, object: literal('new one') }).quads).toHaveLength(1);
+    expect(index.scan({ graph, predicate: content, object: literal('new two') }).quads).toHaveLength(1);
+  });
+
   it('reports RDF table and index space separately for benchmark gates', () => {
     index.multiPut([
       quad(namedNode('https://s/1'), namedNode('https://p/type'), namedNode('https://type/Message'), namedNode('https://g/chat')),
@@ -94,6 +127,253 @@ describe('RdfQuadIndex', () => {
     expect(objectsByName.get('rdf_quads_posg')).toMatchObject({ kind: 'index' });
     expect(objectsByName.get('rdf_quads_ospg')).toMatchObject({ kind: 'index' });
     expect(objectsByName.get('rdf_quads_opsg')).toMatchObject({ kind: 'index' });
+  });
+
+  it('records the facts index schema version on open', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-version-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    try {
+      fileIndex.open();
+      fileIndex.close();
+
+      const db = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        expect(db.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+      } finally {
+        db.close();
+      }
+    } finally {
+      fileIndex.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('drops local RDF facts when the facts index schema version is incompatible', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-reset-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    try {
+      fileIndex.open();
+      fileIndex.multiPut([
+        quad(namedNode('https://s/1'), namedNode('https://p/status'), literal('open'), namedNode('https://g')),
+      ]);
+      expect(fileIndex.stats().quadCount).toBe(1);
+      fileIndex.close();
+
+      const db = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        db.prepare("UPDATE rdf_index_metadata SET value = '0' WHERE key = 'schema_version'").run();
+      } finally {
+        db.close();
+      }
+
+      const reopened = new RdfQuadIndex({ path: dbPath });
+      try {
+        reopened.open();
+        expect(reopened.stats()).toMatchObject({
+          termCount: 0,
+          quadCount: 0,
+          sourceCount: 0,
+        });
+        expect(reopened.dataVersion()).toBe(0);
+      } finally {
+        reopened.close();
+      }
+
+      const verifyDb = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        expect(verifyDb.prepare<{ value: string }>("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'").get()?.value).toBe('1');
+      } finally {
+        verifyDb.close();
+      }
+    } finally {
+      fileIndex.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('drops colocated RDF-3X derived state when the facts index schema version is incompatible', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-schema-rdf3x-reset-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    try {
+      fileIndex.open();
+      fileIndex.multiPut([
+        quad(namedNode('https://s/1'), namedNode('https://p/status'), literal('open'), namedNode('https://g')),
+      ]);
+      fileIndex.close();
+
+      const derived = new Rdf3xIndex({ path: dbPath });
+      try {
+        derived.open();
+        derived.rebuildFromCurrentQuads();
+        expect(derived.stats().graphCount).toBe(1);
+      } finally {
+        derived.close();
+      }
+
+      const db = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        const rdf3xObjectCount = db
+          .prepare<{ count: number }>("SELECT COUNT(*) AS count FROM sqlite_schema WHERE name LIKE 'rdf3x_%'")
+          .get()?.count;
+        expect(rdf3xObjectCount).toBeGreaterThan(0);
+        db.prepare("UPDATE rdf_index_metadata SET value = '0' WHERE key = 'schema_version'").run();
+      } finally {
+        db.close();
+      }
+
+      const reopened = new RdfQuadIndex({ path: dbPath });
+      try {
+        reopened.open();
+        expect(reopened.stats().quadCount).toBe(0);
+      } finally {
+        reopened.close();
+      }
+
+      const verifyDb = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        const rdf3xObjects = verifyDb.prepare<{ name: string }>(`
+          SELECT name
+          FROM sqlite_schema
+          WHERE name LIKE 'rdf3x_%'
+             OR tbl_name LIKE 'rdf3x_%'
+          ORDER BY name
+        `).all();
+        expect(rdf3xObjects).toEqual([]);
+      } finally {
+        verifyDb.close();
+      }
+    } finally {
+      fileIndex.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps long literal payloads out of term dictionary b-tree keys', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-long-object-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const fileIndex = new RdfQuadIndex({ path: dbPath });
+    const content = `title\n${'Long object payload '.repeat(2_000)}`;
+    try {
+      fileIndex.open();
+      fileIndex.multiPut([
+        quad(namedNode('https://message/long'), namedNode('http://rdfs.org/sioc/ns#content'), literal(content), namedNode('https://g')),
+      ]);
+
+      const results = fileIndex.scan({
+        predicate: namedNode('http://rdfs.org/sioc/ns#content'),
+        object: literal(content),
+      });
+      expect(results.quads).toHaveLength(1);
+    } finally {
+      fileIndex.close();
+    }
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      const schemaRows = db.prepare<{ name: string; sql: string | null }>(`
+        SELECT name, sql
+        FROM sqlite_schema
+        WHERE tbl_name = 'rdf_terms'
+           OR name LIKE 'rdf_terms%'
+        ORDER BY name
+      `).all();
+      const names = schemaRows.map((row) => row.name);
+      const schemaSql = schemaRows.map((row) => row.sql ?? '').join('\n');
+      const literalRow = db.prepare<{ value_head: string; value_length: number }>(`
+        SELECT value_head, length(value) AS value_length
+        FROM rdf_terms
+        WHERE kind = 'literal'
+          AND length(value) > 1000
+      `).get();
+
+      expect(names).toContain('rdf_terms_identity_hash');
+      expect(names).toContain('rdf_terms_kind_value_head');
+      expect(names).not.toContain('rdf_terms_hash');
+      expect(names).not.toContain('rdf_terms_kind_value');
+      expect(names).not.toContain('rdf_terms_normalized_text');
+      expect(schemaSql).not.toContain('UNIQUE (kind, value, datatype_id, lang)');
+      expect(literalRow?.value_length).toBe(content.length);
+      expect(literalRow?.value_head.length).toBeLessThanOrEqual(256);
+    } finally {
+      db.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it('migrates legacy raw term value indexes to hash and fixed-head indexes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-term-migration-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const longValue = 'legacy long literal '.repeat(2_000);
+    const hash = createHash('sha256')
+      .update('literal')
+      .update('\0')
+      .update(longValue)
+      .update('\0')
+      .update('')
+      .update('\0')
+      .update('')
+      .digest('hex');
+    const sqlite = createSqliteRuntime();
+    const legacyDb = sqlite.openDatabase(dbPath);
+    try {
+      legacyDb.exec(`
+        CREATE TABLE rdf_terms (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          value TEXT NOT NULL,
+          datatype_id INTEGER,
+          lang TEXT,
+          hash TEXT NOT NULL,
+          normalized_text TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          UNIQUE (kind, value, datatype_id, lang)
+        );
+        CREATE INDEX rdf_terms_hash ON rdf_terms (hash);
+        CREATE INDEX rdf_terms_kind_value ON rdf_terms (kind, value);
+        CREATE INDEX rdf_terms_normalized_text ON rdf_terms (normalized_text);
+      `);
+      legacyDb.prepare(`
+        INSERT INTO rdf_terms (kind, value, datatype_id, lang, hash, normalized_text)
+        VALUES ('literal', ?, NULL, NULL, ?, ?)
+      `).run(longValue, hash, longValue.toLowerCase());
+    } finally {
+      legacyDb.close();
+    }
+
+    const migrated = new RdfQuadIndex({ path: dbPath });
+    try {
+      migrated.open();
+    } finally {
+      migrated.close();
+    }
+
+    const verifyDb = sqlite.openDatabase(dbPath);
+    try {
+      const names = verifyDb.prepare<{ name: string }>(`
+        SELECT name
+        FROM sqlite_schema
+        WHERE tbl_name = 'rdf_terms'
+           OR name LIKE 'rdf_terms%'
+        ORDER BY name
+      `).all().map((row) => row.name);
+      const tableSql = verifyDb.prepare<{ sql: string }>("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'rdf_terms'").get()?.sql ?? '';
+      const row = verifyDb.prepare<{ id: number; value_head: string; numeric_value: number | null }>('SELECT id, value_head, numeric_value FROM rdf_terms').get();
+
+      expect(tableSql).not.toContain('UNIQUE (kind, value, datatype_id, lang)');
+      expect(names).toContain('rdf_terms_identity_hash');
+      expect(names).toContain('rdf_terms_kind_value_head');
+      expect(names).not.toContain('rdf_terms_hash');
+      expect(names).not.toContain('rdf_terms_kind_value');
+      expect(names).not.toContain('rdf_terms_normalized_text');
+      expect(row).toMatchObject({ id: 1, numeric_value: null });
+      expect(row?.value_head).toBe(longValue.slice(0, 256));
+    } finally {
+      verifyDb.close();
+      await rm(root, { force: true, recursive: true });
+    }
   });
 
   it('reports literal datatype distribution for planner statistics', () => {
@@ -1107,6 +1387,48 @@ describe('RdfQuadIndex', () => {
 
     expect(index.count({})).toBe(1);
     expect(index.scan({}).quads).toHaveLength(1);
+  });
+
+  it('keeps source refresh retries idempotent after reopening the persisted facts index', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-rdf-retry-'));
+    const dbPath = path.join(root, 'rdf.sqlite');
+    const source = {
+      source: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl',
+      workspace: 'https://pod.example/alice/.data/chat/default/',
+      localPath: '.data/chat/default/2026/05/18/messages.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'v1',
+    };
+    const value = quad(
+      namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_1'),
+      namedNode('http://rdfs.org/sioc/ns#content'),
+      literal('retry-safe message'),
+      namedNode(source.source),
+    );
+
+    let persisted = new RdfQuadIndex({ path: dbPath });
+
+    try {
+      persisted.open();
+      persisted.replaceSource([value], source);
+      persisted.close();
+
+      persisted = new RdfQuadIndex({ path: dbPath });
+      persisted.open();
+      persisted.replaceSource([value], source);
+
+      expect(persisted.count({ graph: namedNode(source.source) })).toBe(1);
+      expect(persisted.scan({ graph: namedNode(source.source) }).quads.map((q) => q.object.value)).toEqual([
+        'retry-safe message',
+      ]);
+      expect(persisted.stats()).toMatchObject({
+        quadCount: 1,
+        sourceCount: 1,
+      });
+    } finally {
+      persisted.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('replaces quads for one source without leaving stale statements', () => {

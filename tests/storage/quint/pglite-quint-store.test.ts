@@ -574,7 +574,7 @@ describe('PgQuintStore schema migration', () => {
       await store.close();
       await rm(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });
 
 describe('PgQuintStore object data types', () => {

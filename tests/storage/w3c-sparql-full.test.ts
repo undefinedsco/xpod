@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataFactory } from 'n3';
-import { SqliteQuintStore } from '../../src/storage/quint';
-import { QuintstoreSparqlEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
+import type { SparqlEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
 import {
   RdfQuadIndex,
   SolidRdfEngine,
@@ -25,8 +24,7 @@ const STATUS = 'https://undefineds.co/ns#status';
 
 describe('SolidRdfSparqlEngine W3C target subset', () => {
   let rdfEngine: SolidRdfEngine;
-  let compatibilityStore: SqliteQuintStore;
-  let fallback: QuintstoreSparqlEngine;
+  let fallback: SparqlEngine;
   let engine: SolidRdfSparqlEngine;
 
   beforeEach(async () => {
@@ -34,8 +32,7 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
       index: new RdfQuadIndex({ path: ':memory:' }),
       autoOpen: true,
     });
-    compatibilityStore = new SqliteQuintStore({ path: ':memory:' });
-    fallback = new QuintstoreSparqlEngine(compatibilityStore);
+    fallback = createUnusedFallback();
     engine = new SolidRdfSparqlEngine(
       rdfEngine,
       fallback,
@@ -89,6 +86,55 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
       {
         person: `${GRAPH}#bob`,
         name: 'Bob',
+        age: null,
+      },
+    ]);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      totalCount: 1,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 2,
+      },
+    });
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
+  it('covers OPTIONAL GRAPH variable scope without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+
+    const stream = await engine.queryBindings(`
+      SELECT ?person ?name ?ageGraph ?age WHERE {
+        ?person <${NAME}> ?name .
+        OPTIONAL {
+          GRAPH ?ageGraph {
+            ?person <${AGE}> ?age .
+          }
+        }
+      }
+      ORDER BY ?person
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      person: binding.get('person')?.value,
+      name: binding.get('name')?.value,
+      ageGraph: binding.get('ageGraph')?.value ?? null,
+      age: binding.get('age')?.value ?? null,
+    }))).toEqual([
+      {
+        person: `${GRAPH}#alice`,
+        name: 'Alice',
+        ageGraph: GRAPH,
+        age: '13',
+      },
+      {
+        person: `${GRAPH}#bob`,
+        name: 'Bob',
+        ageGraph: null,
         age: null,
       },
     ]);
@@ -331,6 +377,79 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
     expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
+  it('covers COALESCE, IF, STRDT, and STRLANG expression aliases without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+
+    const stream = await engine.queryBindings(`
+      SELECT ?person ?safeName ?personKey ?typedName ?localizedName WHERE {
+        ?person <${NAME}> ?name .
+        BIND(COALESCE(STR(?name), "unknown") AS ?safeName)
+        BIND(IF(BOUND(?name), STR(?person), "missing") AS ?personKey)
+        BIND(STRDT(STR(?name), <http://www.w3.org/2001/XMLSchema#string>) AS ?typedName)
+        BIND(STRLANG(STR(?name), "en") AS ?localizedName)
+      }
+      ORDER BY ?person
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      person: binding.get('person')?.value,
+      safeName: binding.get('safeName')?.value,
+      personKey: binding.get('personKey')?.value,
+      typedName: {
+        value: binding.get('typedName')?.value,
+        datatype: binding.get('typedName')?.termType === 'Literal'
+          ? binding.get('typedName')?.datatype.value
+          : undefined,
+      },
+      localizedName: {
+        value: binding.get('localizedName')?.value,
+        language: binding.get('localizedName')?.termType === 'Literal'
+          ? binding.get('localizedName')?.language
+          : undefined,
+      },
+    }))).toEqual([
+      {
+        person: `${GRAPH}#alice`,
+        safeName: 'Alice',
+        personKey: `${GRAPH}#alice`,
+        typedName: {
+          value: 'Alice',
+          datatype: 'http://www.w3.org/2001/XMLSchema#string',
+        },
+        localizedName: {
+          value: 'Alice',
+          language: 'en',
+        },
+      },
+      {
+        person: `${GRAPH}#bob`,
+        safeName: 'Bob',
+        personKey: `${GRAPH}#bob`,
+        typedName: {
+          value: 'Bob',
+          datatype: 'http://www.w3.org/2001/XMLSchema#string',
+        },
+        localizedName: {
+          value: 'Bob',
+          language: 'en',
+        },
+      },
+    ]);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      totalCount: 1,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 2,
+      },
+    });
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
   it('covers BIND inside OPTIONAL without fallback', async () => {
     const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
 
@@ -475,6 +594,62 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
       },
     });
     expect(engine.getMetrics().lastPrimary?.plan).toContain('UnionValues(?person,?value)');
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
+  it('covers branch-local required patterns before nested UNION without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+
+    const stream = await engine.queryBindings(`
+      SELECT ?person ?value WHERE {
+        {
+          ?person a <${PERSON}> .
+          {
+            ?person <${NAME}> ?value .
+          }
+          UNION
+          {
+            ?person <${KNOWS}> ?value .
+          }
+          FILTER(?value != <${GRAPH}#bob>)
+        }
+        UNION
+        {
+          ?person <${AGE}> ?value .
+        }
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      person: binding.get('person')?.value,
+      value: binding.get('value')?.value,
+    })).sort((left, right) => `${left.person}:${left.value}`.localeCompare(`${right.person}:${right.value}`))).toEqual([
+      {
+        person: `${GRAPH}#alice`,
+        value: '13',
+      },
+      {
+        person: `${GRAPH}#alice`,
+        value: 'Alice',
+      },
+      {
+        person: `${GRAPH}#bob`,
+        value: 'Bob',
+      },
+    ]);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      primaryCount: 1,
+      fallbackCount: 0,
+      totalCount: 1,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 3,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan.some((entry) => entry.startsWith('UnionNested('))).toBe(true);
     expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
@@ -827,6 +1002,50 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
     expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
+  it('covers language and datatype membership filters without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    rdfEngine.put([
+      q(`${GRAPH}#alice`, LABEL, literal('Ally', 'en')),
+      q(`${GRAPH}#bob`, LABEL, literal('Robert', 'fr')),
+      q(`${GRAPH}#bob`, AGE, literal('21', namedNode(XSD_INTEGER))),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?person ?label ?age WHERE {
+        ?person <${LABEL}> ?label .
+        ?person <${AGE}> ?age .
+        FILTER(LANG(?label) IN ("en", "zh"))
+        FILTER(LANG(?label) NOT IN ("fr"))
+        FILTER(DATATYPE(?age) IN (<${XSD_INTEGER}>))
+        FILTER(DATATYPE(?age) NOT IN (<http://www.w3.org/2001/XMLSchema#string>))
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      person: binding.get('person')?.value,
+      label: binding.get('label')?.value,
+      age: binding.get('age')?.value,
+    }))).toEqual([
+      {
+        person: `${GRAPH}#alice`,
+        label: 'Ally',
+        age: '13',
+      },
+    ]);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      fallbackCount: 0,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 1,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('Filter(?label$langIn,?label$notLangIn,?age$datatypeIn,?age$notDatatypeIn)');
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
   it('covers grouped COUNT/HAVING and DESCRIBE without fallback', async () => {
     const bindingsFallbackSpy = vi.spyOn(fallback, 'queryBindings');
     const quadsFallbackSpy = vi.spyOn(fallback, 'queryQuads');
@@ -920,6 +1139,79 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
     });
     expect(engine.getMetrics().lastPrimary?.plan).toContain('Aggregate(basic-multi)');
     expect(engine.getMetrics().lastPrimary?.plan).toContain('Aggregate(join-basic-multi-index)');
+  });
+
+  it('covers COUNT DISTINCT star over merged local graphs without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    rdfEngine.put([
+      q(`${GRAPH}#alice`, STATUS, literal('active')),
+      quad(
+        namedNode(`${GRAPH}#alice`),
+        namedNode(STATUS),
+        literal('active'),
+        namedNode(NAMED_GRAPH),
+      ),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT (COUNT(DISTINCT *) AS ?count) WHERE {
+        ?person <${STATUS}> ?status .
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => binding.get('count')?.value)).toEqual(['1']);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      fallbackCount: 0,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 1,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('Aggregate(count-distinct-tuple-index)');
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
+  it('covers joined COUNT DISTINCT star over merged local graphs without fallback', async () => {
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    rdfEngine.put([
+      q(`${GRAPH}#alice`, STATUS, literal('active')),
+      quad(
+        namedNode(`${GRAPH}#alice`),
+        namedNode(NAME),
+        literal('Alice'),
+        namedNode(NAMED_GRAPH),
+      ),
+      quad(
+        namedNode(`${GRAPH}#alice`),
+        namedNode(STATUS),
+        literal('active'),
+        namedNode(NAMED_GRAPH),
+      ),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT (COUNT(DISTINCT *) AS ?count) WHERE {
+        ?person <${NAME}> ?name .
+        ?person <${STATUS}> ?status .
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => binding.get('count')?.value)).toEqual(['1']);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics()).toMatchObject({
+      fallbackCount: 0,
+      fallbackRate: 0,
+      lastPrimary: {
+        operation: 'queryBindings',
+        returnedRows: 1,
+      },
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('Aggregate(join-count-distinct-index)');
+    expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
   it('covers grouped guarded numeric aggregates without fallback', async () => {
@@ -1122,25 +1414,40 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
       INSERT {
         GRAPH <${GRAPH}> {
           ?person <${STATUS}> "minor" .
+          ?person <${LABEL}> ?statusLabel .
         }
       }
       WHERE {
         GRAPH <${GRAPH}> {
           ?person <${STATUS}> ?oldStatus .
           ?person <${AGE}> ?age .
+          BIND(STRLANG(STR(?oldStatus), "en") AS ?statusLabel)
           FILTER(?age >= 13)
         }
       }
     `, BASE);
 
     const stream = await engine.queryBindings(`
-      SELECT ?status WHERE {
+      SELECT ?status ?label WHERE {
         <${GRAPH}#alice> <${STATUS}> ?status .
+        <${GRAPH}#alice> <${LABEL}> ?label .
       }
     `, BASE);
     const results = await arrayFromStream(stream);
 
-    expect(results.map((binding) => binding.get('status')?.value)).toEqual(['minor']);
+    expect(results.map((binding) => ({
+      status: binding.get('status')?.value,
+      label: binding.get('label')?.value,
+      labelLanguage: binding.get('label')?.termType === 'Literal'
+        ? binding.get('label')?.language
+        : undefined,
+    }))).toEqual([
+      {
+        status: 'minor',
+        label: 'queued',
+        labelLanguage: 'en',
+      },
+    ]);
     expect(fallbackSpy).not.toHaveBeenCalled();
     expect(engine.getMetrics()).toMatchObject({
       fallbackCount: 0,
@@ -1166,4 +1473,19 @@ function q(
     object,
     namedNode(graph),
   );
+}
+
+function createUnusedFallback(): SparqlEngine {
+  const fail = vi.fn(async () => {
+    throw new Error('W3C target subset should not use fallback SPARQL engine');
+  });
+  return {
+    queryBindings: fail,
+    queryQuads: fail,
+    queryBoolean: fail,
+    queryVoid: fail,
+    constructGraph: fail,
+    listGraphs: fail,
+    close: vi.fn(async () => undefined),
+  };
 }

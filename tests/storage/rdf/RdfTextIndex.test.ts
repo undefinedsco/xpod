@@ -64,6 +64,53 @@ describe('RdfTextIndex', () => {
     });
   });
 
+  it('does not create raw normalized chunk text indexes for long text payloads', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'text.sqlite');
+    const fileIndex = new RdfTextIndex({ path: dbPath });
+    const longToken = 'x'.repeat(2_000);
+    const text = `heading ${longToken} ${'large text chunk '.repeat(2_000)}`;
+    try {
+      fileIndex.open();
+      fileIndex.indexText({
+        source: 'https://pod.example/alice/docs/long.txt',
+        workspace: 'https://pod.example/alice/',
+        localPath: 'docs/long.txt',
+        contentType: 'text/plain',
+      }, text);
+      expect(fileIndex.search({ query: 'large text chunk' })).toHaveLength(1);
+      expect(fileIndex.search({ query: longToken })).toHaveLength(1);
+    } finally {
+      fileIndex.close();
+    }
+
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      const indexNames = db.prepare<{ name: string }>(`
+        SELECT name
+        FROM sqlite_schema
+        WHERE type = 'index'
+          AND tbl_name = 'rdf_text_chunks'
+        ORDER BY name
+      `).all().map((row) => row.name);
+      const row = db.prepare<{ normalized_length: number }>(`
+        SELECT MAX(length(normalized_text)) AS normalized_length
+        FROM rdf_text_chunks
+      `).get();
+      const longestTerm = db.prepare<{ max_length: number }>(`
+        SELECT MAX(length(term)) AS max_length
+        FROM rdf_text_terms
+      `).get();
+      expect(indexNames).not.toContain('rdf_text_chunks_normalized');
+      expect(row?.normalized_length).toBeGreaterThan(1000);
+      expect(longestTerm?.max_length).toBeLessThanOrEqual(256);
+    } finally {
+      db.close();
+    }
+  });
+
   it('chunks plain text by paragraphs with deterministic offsets', () => {
     const text = [
       'alpha paragraph marker.',

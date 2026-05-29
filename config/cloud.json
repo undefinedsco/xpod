@@ -121,7 +121,7 @@
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
       "structuredDataAccessor": {
-        "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor"
+        "@id": "urn:undefineds:xpod:SolidRdfDataAccessor"
       },
       "unstructuredDataAccessor": {
         "@id": "urn:undefineds:xpod:RemoteDataAccessor"
@@ -129,6 +129,17 @@
       "presignedRedirectEnabled": true,
       "rdfFileDataAccessor": {
         "@id": "urn:solid-server:default:FileDataAccessor"
+      }
+    },
+    {
+      "comment": "Default structured RDF data accessor backed directly by SolidRdfEngine.",
+      "@id": "urn:undefineds:xpod:SolidRdfDataAccessor",
+      "@type": "SolidRdfDataAccessor",
+      "rdfEngine": {
+        "@id": "urn:undefineds:xpod:SolidRdfEngine"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
       }
     },
     {
@@ -165,9 +176,6 @@
         "@id": "urn:solid-server:default:variable:rdfIndexPath",
         "@type": "Variable"
       },
-      "compatibilityStore": {
-        "@id": "urn:undefineds:xpod:QuintStore"
-      },
       "autoOpen": true
     },
     {
@@ -179,17 +187,11 @@
       }
     },
     {
-      "comment": "Default SPARQL engine: SELECT/ASK use SolidRdfEngine, unsupported shapes fall back to Quintstore.",
+      "comment": "Default SPARQL engine: server-owned Pod queries use SolidRdfEngine; compatibility fallback is opt-in.",
       "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
       "@type": "SolidRdfSparqlEngine",
       "rdfEngine": {
         "@id": "urn:undefineds:xpod:SolidRdfEngine"
-      },
-      "fallback": {
-        "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine"
-      },
-      "shadowStore": {
-        "@id": "urn:undefineds:xpod:QuintStore"
       },
       "enablePrimary": true
     },
@@ -234,7 +236,7 @@
       "defaultWorkdir": "/workspace"
     },
     {
-      "comment": "QuintStore-based SPARQL data accessor for RDF storage.",
+      "comment": "Compatibility SPARQL data accessor for RDF storage.",
       "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
       "@type": "QuintStoreSparqlDataAccessor",
       "store": {

@@ -1,9 +1,9 @@
 import { DataFactory, termToId } from 'n3';
 import type { Term } from '@rdfjs/types';
-import type { QueryOptions, QuintPattern, TermMatch } from '../quint/types';
+import type { QuintPattern, TermMatch } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfQuadIndex } from './RdfQuadIndex';
-import { Rdf3xTripleIndex } from './Rdf3xTripleIndex';
+import { Rdf3xIndex } from './Rdf3xIndex';
 import type { RdfTextIndex } from './RdfTextIndex';
 import type { RdfVectorIndex } from './RdfVectorIndex';
 import { isFiniteNumericLexical, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
@@ -34,7 +34,17 @@ import type {
   RdfExistsQueryGroup,
   RdfQueryVariable,
   RdfQuadJoinGroupAggregateHaving,
+  RdfQuadIndexScanResult,
   RdfQuadScanOptions,
+  Rdf3xPatternKey,
+  Rdf3xObjectOperatorPattern,
+  Rdf3xObjectTextSearchPattern,
+  Rdf3xTermInPattern,
+  Rdf3xTermMetadataPattern,
+  Rdf3xTermNotInPattern,
+  Rdf3xTriplePattern,
+  Rdf3xTripleScanOptions,
+  Rdf3xTripleScanResult,
 } from './types';
 
 const TERM_KEYS: RdfQueryPatternKey[] = ['graph', 'subject', 'predicate', 'object'];
@@ -57,6 +67,7 @@ type CompiledJoinPattern = { pattern: CompiledPattern; variables: Partial<Record
 
 interface RequiredBgpPushdown {
   patterns: CompiledJoinPattern[];
+  values?: RdfValuesBindingSource[];
   reorderPlan?: string;
   orderPushed: boolean;
   paginationPushed: boolean;
@@ -116,13 +127,24 @@ interface ValuesRequiredSource {
 }
 
 type RequiredSource = PatternRequiredSource | TextRequiredSource | VectorRequiredSource | ValuesRequiredSource;
+type PatternScanBackend = 'index' | 'rdf3x' | 'mixed' | 'none';
+
+interface PatternJoinResult {
+  bindings: RdfBindingRow[];
+  scanBackend: PatternScanBackend;
+}
+
+interface RequiredSourceEstimate {
+  rows: number;
+  costRows: number;
+}
 
 export class RdfLocalQueryEngine {
   public constructor(
     private readonly index: RdfQuadIndex,
     private readonly textIndex?: RdfTextIndex,
     private readonly vectorIndex?: RdfVectorIndex,
-    private readonly rdf3xPrimaryIndex?: Rdf3xTripleIndex,
+    private readonly rdf3xPrimaryIndex?: Rdf3xIndex,
   ) {}
 
   public query(query: RdfLocalQuery): RdfLocalQueryResult {
@@ -161,19 +183,47 @@ export class RdfLocalQueryEngine {
     let groupedAggregatePushed = false;
 
     if (countPushdown) {
-      const countEstimate = countPushdown.distinctKey
-        ? this.index.countDistinct(countPushdown.pattern, countPushdown.distinctKey)
+      const distinctKeys = countPushdown.distinctKeys ?? [];
+      const distinctKey = distinctKeys.length === 1 ? distinctKeys[0] : undefined;
+      const distinctTupleKeys = distinctKeys.length > 1 ? distinctKeys : undefined;
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryScan(countPushdown.pattern) && !distinctTupleKeys;
+      let rdf3xCount: ReturnType<Rdf3xIndex['countDistinct']> | undefined;
+      if (useRdf3xPrimary) {
+        const rdf3xPattern = toRdf3xTriplePattern(countPushdown.pattern);
+        if (distinctKey) {
+          rdf3xCount = this.rdf3xPrimaryIndex!.countDistinct(
+            rdf3xPattern,
+            distinctKey as Rdf3xPatternKey,
+          );
+        } else {
+          const rdf3xCountScan = this.rdf3xPrimaryIndex!.scan(rdf3xPattern, { limit: 0 });
+          rdf3xCount = {
+            count: rdf3xCountScan.metrics.matchedRows,
+            metrics: rdf3xCountScan.metrics,
+          };
+        }
+      }
+      const countEstimate = !useRdf3xPrimary && distinctTupleKeys
+        ? this.index.countDistinctTuple(countPushdown.pattern, distinctTupleKeys)
+        : !useRdf3xPrimary && distinctKey
+        ? this.index.countDistinct(countPushdown.pattern, distinctKey)
         : undefined;
-      const count = countEstimate?.rows ?? this.index.count(countPushdown.pattern);
+      const count = rdf3xCount?.count ?? countEstimate?.rows ?? this.index.count(countPushdown.pattern);
       const result = countLiteral(count);
       metrics.scannedRows = count;
       metrics.joinedRows = count;
       metrics.returnedRows = 1;
       metrics.durationMs = Date.now() - start;
-      metrics.indexChoices.push('count');
+      metrics.indexChoices.push(useRdf3xPrimary ? rdf3xCount!.metrics.indexChoice : 'count');
       metrics.filtersPushedDown += countPushdown.pushedDownFilters;
-      metrics.plan.push(`IndexCount(${describePattern(requiredPatterns[0])})`);
-      metrics.plan.push(countPushdown.distinctKey ? 'Aggregate(count-distinct-index)' : 'Aggregate(count-index)');
+      if (rdf3xCount) {
+        metrics.plan.push(...storagePlanMarkers(rdf3xCount.metrics.queryPlan));
+        metrics.plan.push(`${distinctKey ? 'Rdf3xPrimaryCountDistinct' : 'Rdf3xPrimaryCount'}(${describePattern(requiredPatterns[0])})`);
+        metrics.plan.push(distinctKey ? 'Aggregate(count-distinct-rdf3x-primary)' : 'Aggregate(count-rdf3x-primary)');
+      } else {
+        metrics.plan.push(`IndexCount(${describePattern(requiredPatterns[0])})`);
+        metrics.plan.push(distinctTupleKeys ? 'Aggregate(count-distinct-tuple-index)' : distinctKey ? 'Aggregate(count-distinct-index)' : 'Aggregate(count-index)');
+      }
       return {
         bindings: [{ [countPushdown.as]: result }],
         count,
@@ -182,7 +232,12 @@ export class RdfLocalQueryEngine {
     }
 
     if (joinCountPushdown) {
-      const scan = this.index.countJoinPatterns(joinCountPushdown.patterns, {
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(joinCountPushdown.patterns);
+      const scan = useRdf3xPrimary
+        ? this.rdf3xPrimaryIndex!.countJoinPatterns(joinCountPushdown.patterns, {
+          aggregates,
+        })
+        : this.index.countJoinPatterns(joinCountPushdown.patterns, {
         aggregates,
       });
       const firstAggregate = aggregates[0];
@@ -193,11 +248,11 @@ export class RdfLocalQueryEngine {
       metrics.durationMs = Date.now() - start;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += joinCountPushdown.pushedDownFilters;
-      if (joinCountPushdown.reorderPlan) {
+      if (!useRdf3xPrimary && joinCountPushdown.reorderPlan) {
         metrics.plan.push(joinCountPushdown.reorderPlan);
       }
       metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
-      metrics.plan.push(`IndexJoinCount(${joinCountPushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
+      metrics.plan.push(`${useRdf3xPrimary ? 'Rdf3xPrimaryJoinCount' : 'IndexJoinCount'}(${joinCountPushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
       metrics.plan.push(aggregatePlan(aggregates, false));
       metrics.plan.push(aggregates.some((aggregate) => aggregate.distinct)
         ? 'Aggregate(join-count-distinct-index)'
@@ -210,7 +265,12 @@ export class RdfLocalQueryEngine {
     }
 
     if (joinBasicAggregatePushdown) {
-      const scan = this.index.aggregateJoinPatterns(joinBasicAggregatePushdown.patterns, {
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(joinBasicAggregatePushdown.patterns);
+      const scan = useRdf3xPrimary
+        ? this.rdf3xPrimaryIndex!.aggregateJoinPatterns(joinBasicAggregatePushdown.patterns, {
+          aggregates,
+        })
+        : this.index.aggregateJoinPatterns(joinBasicAggregatePushdown.patterns, {
         aggregates,
       });
       metrics.scannedRows = scan.metrics.matchedRows;
@@ -219,11 +279,11 @@ export class RdfLocalQueryEngine {
       metrics.durationMs = Date.now() - start;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += joinBasicAggregatePushdown.pushedDownFilters;
-      if (joinBasicAggregatePushdown.reorderPlan) {
+      if (!useRdf3xPrimary && joinBasicAggregatePushdown.reorderPlan) {
         metrics.plan.push(joinBasicAggregatePushdown.reorderPlan);
       }
       metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
-      metrics.plan.push(`IndexJoinAggregate(${joinBasicAggregatePushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
+      metrics.plan.push(`${useRdf3xPrimary ? 'Rdf3xPrimaryJoinAggregate' : 'IndexJoinAggregate'}(${joinBasicAggregatePushdown.patterns.map((source) => describePatternSource(source)).join('|')})`);
       metrics.plan.push(aggregatePlan(aggregates, false));
       metrics.plan.push(aggregates.length > 1
         ? 'Aggregate(join-basic-multi-index)'
@@ -237,31 +297,35 @@ export class RdfLocalQueryEngine {
     const remainingSources = buildRequiredSources(requiredPatterns, query);
     const requiredBgpPushdown = this.requiredBgpPushdown(query, requiredPatterns, requiredFilters);
     if (groupAggregatePushdown) {
-      const scan = groupAggregatePushdown.countOnly
-        ? this.index.groupCountJoinPatterns(groupAggregatePushdown.patterns, {
-          groupBy: query.groupBy ?? [],
-          aggregates,
-          ...(groupAggregatePushdown.having ? { having: groupAggregatePushdown.having } : {}),
-          ...(groupAggregatePushdown.orderPushed ? { orderBy: query.orderBy } : {}),
-          ...(groupAggregatePushdown.paginationPushed && query.limit !== undefined ? { limit: Math.max(0, query.limit) } : {}),
-          ...(groupAggregatePushdown.paginationPushed && query.offset !== undefined ? { offset: Math.max(0, query.offset) } : {}),
-        })
-        : this.index.groupAggregateJoinPatterns(groupAggregatePushdown.patterns, {
+      const rdf3xGroupAggregatePatterns = groupAggregatePushdown.countOnly
+        ? groupAggregatePushdown.patterns
+        : stripRdf3xNumericAggregateGuards(groupAggregatePushdown.patterns, aggregates);
+      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(rdf3xGroupAggregatePatterns);
+      const groupOptions = {
         groupBy: query.groupBy ?? [],
         aggregates,
         ...(groupAggregatePushdown.having ? { having: groupAggregatePushdown.having } : {}),
         ...(groupAggregatePushdown.orderPushed ? { orderBy: query.orderBy } : {}),
         ...(groupAggregatePushdown.paginationPushed && query.limit !== undefined ? { limit: Math.max(0, query.limit) } : {}),
         ...(groupAggregatePushdown.paginationPushed && query.offset !== undefined ? { offset: Math.max(0, query.offset) } : {}),
-      });
-      const groupPlanPrefix = groupAggregatePushdown.countOnly ? 'IndexGroupCount' : 'IndexGroupAggregate';
+      };
+      const scan = groupAggregatePushdown.countOnly
+        ? useRdf3xPrimary
+          ? this.rdf3xPrimaryIndex!.groupCountJoinPatterns(rdf3xGroupAggregatePatterns, groupOptions)
+          : this.index.groupCountJoinPatterns(groupAggregatePushdown.patterns, groupOptions)
+        : useRdf3xPrimary
+          ? this.rdf3xPrimaryIndex!.groupAggregateJoinPatterns(rdf3xGroupAggregatePatterns, groupOptions)
+          : this.index.groupAggregateJoinPatterns(groupAggregatePushdown.patterns, groupOptions);
+      const groupPlanPrefix = useRdf3xPrimary
+        ? groupAggregatePushdown.countOnly ? 'Rdf3xPrimaryGroupCount' : 'Rdf3xPrimaryGroupAggregate'
+        : groupAggregatePushdown.countOnly ? 'IndexGroupCount' : 'IndexGroupAggregate';
       bindings = scan.bindings;
       metrics.scannedRows += scan.metrics.matchedRows;
       metrics.joinedRows = scan.metrics.matchedRows;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += groupAggregatePushdown.pushedDownFilters;
       metrics.filtersPushedDown += groupAggregatePushdown.pushedDownHaving;
-      if (groupAggregatePushdown.reorderPlan) {
+      if (!useRdf3xPrimary && groupAggregatePushdown.reorderPlan) {
         metrics.plan.push(groupAggregatePushdown.reorderPlan);
       }
       metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
@@ -288,6 +352,7 @@ export class RdfLocalQueryEngine {
       const scanOptions = {
         ...(requiredBgpPushdown.project ? { project: requiredBgpPushdown.project } : {}),
         ...(requiredBgpPushdown.distinctPushed ? { distinct: true } : {}),
+        ...(requiredBgpPushdown.values ? { values: requiredBgpPushdown.values } : {}),
         ...(requiredBgpPushdown.orderPushed ? { orderBy: query.orderBy } : {}),
         ...(requiredBgpPushdown.paginationPushed && query.limit !== undefined ? { limit: Math.max(0, query.limit) } : {}),
         ...(requiredBgpPushdown.paginationPushed && query.offset !== undefined ? { offset: Math.max(0, query.offset) } : {}),
@@ -489,16 +554,19 @@ export class RdfLocalQueryEngine {
       const sourceVariables = variablesInRequiredSource(source);
       const connected = sourceVariables.length === 0
         || sourceVariables.some((variableName) => boundVariables.has(variableName));
+      const estimate = this.estimateSource(source, bindings, filters, metrics);
       return {
         index,
         disconnectedPenalty: hasBoundVariables && !connected ? 1 : 0,
-        estimatedRows: this.estimateSourceRows(source, bindings, filters, metrics),
+        estimatedRows: estimate.rows,
+        estimatedCostRows: estimate.costRows,
         rank: this.sourceRank(source, sampleBinding),
       };
     });
 
     choices.sort((left, right) => (
       left.disconnectedPenalty - right.disconnectedPenalty
+        || left.estimatedCostRows - right.estimatedCostRows
         || left.estimatedRows - right.estimatedRows
         || left.rank - right.rank
         || left.index - right.index
@@ -593,29 +661,26 @@ export class RdfLocalQueryEngine {
       .map((slot) => ({ key: slot.key, variable: slot.value.variable }));
   }
 
-  private estimateSourceRows(
+  private estimateSource(
     source: RequiredSource,
     bindings: RdfBindingRow[],
     filters: RdfQueryFilter[],
     metrics: RdfLocalQueryMetrics,
-  ): number {
+  ): RequiredSourceEstimate {
     if (source.kind === 'pattern') {
-      if (source.tupleValues) {
-        return this.estimateTuplePatternRows(source, bindings, filters, metrics);
-      }
-      return this.estimatePatternRows(source.pattern, bindings, filters, metrics);
+      const rows = source.tupleValues
+        ? this.estimateTuplePatternRows(source, bindings, filters, metrics)
+        : this.estimatePatternRows(source.pattern, bindings, filters, metrics);
+      return { rows, costRows: rows };
     }
     if (source.kind === 'values') {
-      return source.source.rows.length * Math.max(1, bindings.length);
+      const rows = source.source.rows.length * Math.max(1, bindings.length);
+      return { rows, costRows: rows };
     }
 
     const sample = (bindings.length > 0 ? bindings : [{}]).slice(0, PLANNER_SAMPLE_BINDINGS);
     if (!this.searchSourceHasBoundVariables(source, sample)) {
-      metrics.searchCardinalityEstimates = (metrics.searchCardinalityEstimates ?? 0) + 1;
-      const estimate = source.kind === 'text'
-        ? this.estimateTextSearchRows(source)
-        : this.estimateVectorSearchRows(source);
-      return estimate * Math.max(1, bindings.length);
+      return this.estimateUnboundSearchSource(source, bindings, metrics);
     }
 
     const sourceVariable = source.pattern.source;
@@ -623,10 +688,14 @@ export class RdfLocalQueryEngine {
       ? this.estimateSearchRowsByBoundSource(source, sample, metrics)
       : undefined;
     if (boundSourceEstimate !== undefined) {
-      if (bindings.length > sample.length && sample.length > 0) {
-        return Math.ceil(boundSourceEstimate * (bindings.length / sample.length));
-      }
-      return boundSourceEstimate;
+      const rows = bindings.length > sample.length && sample.length > 0
+        ? Math.ceil(boundSourceEstimate * (bindings.length / sample.length))
+        : boundSourceEstimate;
+      return { rows, costRows: rows };
+    }
+
+    if (hasSearchWindow(source)) {
+      return this.estimateUnboundSearchSource(source, bindings, metrics);
     }
 
     const results = source.kind === 'text'
@@ -646,9 +715,36 @@ export class RdfLocalQueryEngine {
     }
 
     if (bindings.length > sample.length && sample.length > 0) {
-      return Math.ceil(rows * (bindings.length / sample.length));
+      const estimatedRows = Math.ceil(rows * (bindings.length / sample.length));
+      return { rows: estimatedRows, costRows: estimatedRows };
     }
-    return rows;
+    return { rows, costRows: rows };
+  }
+
+  private estimateUnboundSearchSource(
+    source: TextRequiredSource | VectorRequiredSource,
+    bindings: RdfBindingRow[],
+    metrics: RdfLocalQueryMetrics,
+  ): RequiredSourceEstimate {
+    metrics.searchCardinalityEstimates = (metrics.searchCardinalityEstimates ?? 0) + 1;
+    const rows = source.kind === 'text'
+      ? this.estimateTextSearchRows(source)
+      : this.estimateVectorSearchRows(source);
+    const bindingCount = Math.max(1, bindings.length);
+    if (!hasSearchWindow(source)) {
+      const estimatedRows = rows * bindingCount;
+      return { rows: estimatedRows, costRows: estimatedRows };
+    }
+
+    metrics.searchCardinalityEstimates = (metrics.searchCardinalityEstimates ?? 0) + 1;
+    const candidateRows = source.kind === 'text'
+      ? this.estimateTextSearchRows(source, undefined, false)
+      : this.estimateVectorSearchRows(source, undefined, false);
+    const estimatedRows = rows * bindingCount;
+    return {
+      rows: estimatedRows,
+      costRows: candidateRows + estimatedRows,
+    };
   }
 
   private estimateTuplePatternRows(
@@ -731,19 +827,19 @@ export class RdfLocalQueryEngine {
     return sawBoundSource ? rows : undefined;
   }
 
-  private estimateTextSearchRows(source: TextRequiredSource, exactSource?: string): number {
+  private estimateTextSearchRows(source: TextRequiredSource, exactSource?: string, includeWindow = true): number {
     if (!this.textIndex) {
       throw new Error('RdfLocalQuery textSearch requires a configured RdfTextIndex');
     }
-    const options = this.textSearchOptions(source.pattern, exactSource);
+    const options = this.textSearchOptions(source.pattern, exactSource, includeWindow);
     return options ? this.textIndex.estimateSearchCardinality(options).rows : 0;
   }
 
-  private estimateVectorSearchRows(source: VectorRequiredSource, exactSource?: string): number {
+  private estimateVectorSearchRows(source: VectorRequiredSource, exactSource?: string, includeWindow = true): number {
     if (!this.vectorIndex) {
       throw new Error('RdfLocalQuery vectorSearch requires a configured RdfVectorIndex');
     }
-    const options = this.vectorSearchOptions(source.pattern, exactSource);
+    const options = this.vectorSearchOptions(source.pattern, exactSource, includeWindow);
     return options ? this.vectorIndex.estimateSearchCardinality(options).rows : 0;
   }
 
@@ -799,7 +895,7 @@ export class RdfLocalQueryEngine {
   ): RdfBindingRow[] {
     switch (source.kind) {
       case 'pattern': {
-        const bindings = this.joinPattern(
+        const result = this.joinPattern(
           input,
           source,
           filters,
@@ -807,14 +903,15 @@ export class RdfLocalQueryEngine {
           false,
           singleScanPushdown?.options,
         );
-        metrics.plan.push(`IndexScan(${describePattern(source.pattern)})`);
+        const scanPlan = requiredSourceScanPlan(result.scanBackend);
+        metrics.plan.push(`${scanPlan}(${describePattern(source.pattern)})`);
         if (singleScanPushdown?.orderPushed) {
-          metrics.plan.push(`IndexOrder(${describeScanOrder(singleScanPushdown.options)})`);
+          metrics.plan.push(`${scanPlanOrder(scanPlan)}(${describeScanOrder(singleScanPushdown.options)})`);
         }
         if (singleScanPushdown?.paginationPushed) {
-          metrics.plan.push('IndexLimit');
+          metrics.plan.push(scanPlanLimit(scanPlan));
         }
-        return bindings;
+        return result.bindings;
       }
       case 'text': {
         const bindings = this.joinTextSearch(input, source, metrics);
@@ -858,10 +955,17 @@ export class RdfLocalQueryEngine {
           return [binding];
         }
       }
-      for (const pattern of optionalGroup.patterns) {
-        matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, optionalFilters, metrics, true);
-        if (matches.length === 0) {
-          return [binding];
+      const grouped = (optionalGroup.values?.length ?? 0) === 0
+        ? this.joinPatternGroupRdf3x(matches, optionalGroup.patterns, optionalFilters, metrics, true)
+        : undefined;
+      if (grouped) {
+        matches = grouped.bindings;
+      } else {
+        for (const pattern of optionalGroup.patterns) {
+          matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, optionalFilters, metrics, true).bindings;
+          if (matches.length === 0) {
+            return [binding];
+          }
         }
       }
       for (const unionGroup of optionalGroup.unions ?? []) {
@@ -930,8 +1034,25 @@ export class RdfLocalQueryEngine {
         if (matches.length === 0) {
           continue;
         }
-        for (const pattern of branch.patterns) {
-          matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, branchFilters, metrics, false);
+        const grouped = (branch.values?.length ?? 0) === 0
+          ? this.joinPatternGroupRdf3x(matches, branch.patterns, branchFilters, metrics, false)
+          : undefined;
+        if (grouped) {
+          matches = grouped.bindings;
+        } else {
+          for (const pattern of branch.patterns) {
+            matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, branchFilters, metrics, false).bindings;
+            if (matches.length === 0) {
+              break;
+            }
+          }
+        }
+        if (matches.length === 0) {
+          continue;
+        }
+        for (const unionGroup of branch.unions ?? []) {
+          matches = this.joinUnionGroup(matches, unionGroup.branches, branchFilters, metrics);
+          metrics.plan.push(`UnionNested(${unionGroup.branches.map((nestedBranch) => nestedBranch.patterns.map(describePattern).join(',')).join('|')})`);
           if (matches.length === 0) {
             break;
           }
@@ -996,10 +1117,17 @@ export class RdfLocalQueryEngine {
     for (const binding of input) {
       let matches: RdfBindingRow[] = [binding];
       matches = this.applyDependentValues(matches, minusGroup.values, metrics, 'Minus');
-      for (const pattern of minusGroup.patterns) {
-        matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, filters, metrics, false);
-        if (matches.length === 0) {
-          break;
+      const grouped = (minusGroup.values?.length ?? 0) === 0
+        ? this.joinPatternGroupRdf3x(matches, minusGroup.patterns, filters, metrics, false)
+        : undefined;
+      if (grouped) {
+        matches = grouped.bindings;
+      } else {
+        for (const pattern of minusGroup.patterns) {
+          matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, filters, metrics, false).bindings;
+          if (matches.length === 0) {
+            break;
+          }
         }
       }
       if (matches.length > 0) {
@@ -1042,10 +1170,17 @@ export class RdfLocalQueryEngine {
     for (const binding of input) {
       let matches: RdfBindingRow[] = [binding];
       matches = this.applyDependentValues(matches, existsGroup.values, metrics, 'Exists');
-      for (const pattern of existsGroup.patterns) {
-        matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, filters, metrics, false);
-        if (matches.length === 0) {
-          break;
+      const grouped = (existsGroup.values?.length ?? 0) === 0
+        ? this.joinPatternGroupRdf3x(matches, existsGroup.patterns, filters, metrics, false)
+        : undefined;
+      if (grouped) {
+        matches = grouped.bindings;
+      } else {
+        for (const pattern of existsGroup.patterns) {
+          matches = this.joinPattern(matches, { kind: 'pattern', pattern, originalIndex: -1 }, filters, metrics, false).bindings;
+          if (matches.length === 0) {
+            break;
+          }
         }
       }
       if (matches.length > 0) {
@@ -1078,15 +1213,88 @@ export class RdfLocalQueryEngine {
     return output;
   }
 
+  private joinPatternGroupRdf3x(
+    input: RdfBindingRow[],
+    patterns: RdfQueryPattern[],
+    filters: RdfQueryFilter[],
+    metrics: RdfLocalQueryMetrics,
+    optional: boolean,
+  ): PatternJoinResult | undefined {
+    if (!this.rdf3xPrimaryIndex || patterns.length < 2) {
+      return undefined;
+    }
+
+    const compiledByBinding = input.map((binding) => {
+      const compiled = patterns.map((pattern) => this.compileJoinPatternForBinding(pattern, binding, filters));
+      return {
+        binding,
+        patterns: compiled,
+      };
+    });
+    if (compiledByBinding.some((entry) => (
+      entry.patterns.some((pattern) => !pattern)
+        || !this.canUseRdf3xPrimaryJoin(entry.patterns as CompiledJoinPattern[])
+    ))) {
+      return undefined;
+    }
+
+    const output: RdfBindingRow[] = [];
+    for (const entry of compiledByBinding) {
+      const compiled = entry.patterns as CompiledJoinPattern[];
+      const scan = this.rdf3xPrimaryIndex.joinPatterns(compiled);
+      metrics.scannedRows += scan.metrics.matchedRows;
+      metrics.indexChoices.push(scan.metrics.indexChoice);
+      metrics.filtersPushedDown += uniqueNumbers(compiled.flatMap((pattern) => pattern.pattern.pushedDownFilterIndexes)).length;
+      metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
+      const remainingFilters = filtersWithoutIndexes(
+        filters,
+        uniqueNumbers(compiled.flatMap((pattern) => pattern.pattern.pushedDownFilterIndexes)),
+      );
+      const before = output.length;
+      for (const row of scan.bindings) {
+        const next = mergeBindingRows(entry.binding, row);
+        if (next && this.matchesNewlyBoundFilters(next, entry.binding, remainingFilters)) {
+          output.push(next);
+        }
+      }
+      if (optional && output.length === before) {
+        output.push(entry.binding);
+      }
+    }
+
+    return {
+      bindings: output,
+      scanBackend: 'rdf3x',
+    };
+  }
+
+  private compileJoinPatternForBinding(
+    pattern: RdfQueryPattern,
+    binding: RdfBindingRow,
+    filters: RdfQueryFilter[],
+  ): CompiledJoinPattern | undefined {
+    const variables: Partial<Record<RdfQueryPatternKey, string>> = {};
+    for (const key of TERM_KEYS) {
+      const value = pattern[key];
+      if (isVariable(value) && !binding[value.variable]) {
+        variables[key] = value.variable;
+      }
+    }
+
+    const compiled = this.compilePattern(pattern, binding, filters);
+    return compiled ? { pattern: compiled, variables } : undefined;
+  }
+
   private joinPattern(
     input: RdfBindingRow[],
     source: PatternRequiredSource,
     filters: RdfQueryFilter[],
     metrics: RdfLocalQueryMetrics,
     optional: boolean,
-    scanOptions?: QueryOptions,
-  ): RdfBindingRow[] {
+    scanOptions?: RdfQuadScanOptions,
+  ): PatternJoinResult {
     const output: RdfBindingRow[] = [];
+    const backends = new Set<Exclude<PatternScanBackend, 'mixed' | 'none'>>();
     const { pattern } = source;
 
     for (const binding of input) {
@@ -1098,9 +1306,8 @@ export class RdfLocalQueryEngine {
         continue;
       }
       const tupleValues = this.tupleValuesForBinding(source, binding);
-      const scan = tupleValues
-        ? this.index.scanWithTupleConstraints(compiled, tupleValues, scanOptions)
-        : this.index.scan(compiled, scanOptions);
+      const scan = this.scanCompiledPattern(compiled, tupleValues, scanOptions);
+      backends.add(scan.metrics.engine === 'solid-rdf3x' ? 'rdf3x' : 'index');
       metrics.scannedRows += scan.metrics.matchedRows;
       metrics.indexChoices.push(scan.metrics.indexChoice);
       metrics.filtersPushedDown += compiled.pushedDownFilters;
@@ -1115,7 +1322,38 @@ export class RdfLocalQueryEngine {
       }
     }
 
-    return output;
+    return {
+      bindings: output,
+      scanBackend: backends.size === 0
+        ? 'none'
+        : backends.size === 1
+          ? [...backends][0]
+          : 'mixed',
+    };
+  }
+
+  private scanCompiledPattern(
+    compiled: CompiledPattern,
+    tupleValues: RdfQuadTupleConstraintSource | undefined,
+    scanOptions?: RdfQuadScanOptions,
+  ): RdfQuadIndexScanResult | Rdf3xTripleScanResult {
+    if (this.canUseRdf3xPrimaryScan(compiled, scanOptions)) {
+      const rdf3xPattern = toRdf3xTriplePattern(compiled);
+      return tupleValues
+        ? this.rdf3xPrimaryIndex!.scanWithTupleConstraints(rdf3xPattern, tupleValues, toRdf3xScanOptions(scanOptions))
+        : this.rdf3xPrimaryIndex!.scan(rdf3xPattern, toRdf3xScanOptions(scanOptions));
+    }
+    return tupleValues
+      ? this.index.scanWithTupleConstraints(compiled, tupleValues, scanOptions)
+      : this.index.scan(compiled, scanOptions);
+  }
+
+  private canUseRdf3xPrimaryScan(
+    pattern: QuintPattern,
+    scanOptions?: RdfQuadScanOptions,
+  ): boolean {
+    return Boolean(this.rdf3xPrimaryIndex)
+      && isRdf3xCompatiblePattern(pattern);
   }
 
   private requiredBgpPushdown(
@@ -1125,7 +1363,6 @@ export class RdfLocalQueryEngine {
   ): RequiredBgpPushdown | undefined {
     if (
       requiredPatterns.length < 1
-      || (query.values?.length ?? 0) > 0
       || (query.textSearch?.length ?? 0) > 0
       || (query.vectorSearch?.length ?? 0) > 0
       || (query.unions?.length ?? 0) > 0
@@ -1142,6 +1379,12 @@ export class RdfLocalQueryEngine {
     }
 
     if (!this.canPushRequiredBgpFilters(requiredPatterns, filters)) {
+      return undefined;
+    }
+    const values = query.values?.length
+      ? this.requiredBgpValuesPushdown(query.values, requiredPatterns)
+      : undefined;
+    if ((query.values?.length ?? 0) > 0 && !values) {
       return undefined;
     }
 
@@ -1166,9 +1409,13 @@ export class RdfLocalQueryEngine {
     if (compiled.some((entry) => !entry)) {
       return undefined;
     }
+    if (values && !this.canUseRdf3xPrimaryJoin(compiled as CompiledJoinPattern[])) {
+      return undefined;
+    }
     const reordered = this.reorderJoinPatterns(requiredPatterns, compiled as CompiledJoinPattern[], filters);
     return {
       patterns: reordered.patterns,
+      ...(values ? { values } : {}),
       ...(reordered.reorderPlan ? { reorderPlan: reordered.reorderPlan } : {}),
       orderPushed,
       paginationPushed: query.limit !== undefined || query.offset !== undefined,
@@ -1176,6 +1423,25 @@ export class RdfLocalQueryEngine {
       ...(distinctProject ? { project: distinctProject } : {}),
       pushedDownFilters: filters.length,
     };
+  }
+
+  private requiredBgpValuesPushdown(
+    values: RdfValuesBindingSource[],
+    requiredPatterns: RdfQueryPattern[],
+  ): RdfValuesBindingSource[] | undefined {
+    const visibleVariables = new Set(requiredPatterns.flatMap((pattern) => variablesInPattern(pattern)));
+    for (const source of values) {
+      if (source.variables.length === 0 || new Set(source.variables).size !== source.variables.length) {
+        return undefined;
+      }
+      if (source.variables.some((variableName) => !visibleVariables.has(variableName))) {
+        return undefined;
+      }
+      if (source.rows.some((row) => source.variables.some((variableName) => !row[variableName]))) {
+        return undefined;
+      }
+    }
+    return values;
   }
 
   private requiredBgpDistinctProject(
@@ -1519,19 +1785,19 @@ export class RdfLocalQueryEngine {
     return results;
   }
 
-  private textSearchOptions(pattern: RdfTextSearchPattern, exactSource?: string): RdfTextSearchOptions {
+  private textSearchOptions(pattern: RdfTextSearchPattern, exactSource?: string, includeWindow = true): RdfTextSearchOptions {
     return {
       query: pattern.query,
       source: exactSource,
       workspace: pattern.scope?.workspace,
       sourcePrefix: pattern.scope?.sourcePrefix,
-      limit: pattern.limit,
-      offset: pattern.offset,
+      limit: includeWindow ? pattern.limit : undefined,
+      offset: includeWindow ? pattern.offset : undefined,
       orderBy: pattern.orderBy,
     };
   }
 
-  private vectorSearchOptions(pattern: RdfVectorSearchPattern, exactSource?: string): RdfVectorSearchOptions {
+  private vectorSearchOptions(pattern: RdfVectorSearchPattern, exactSource?: string, includeWindow = true): RdfVectorSearchOptions {
     return {
       embedding: pattern.embedding,
       metric: pattern.metric,
@@ -1539,8 +1805,8 @@ export class RdfLocalQueryEngine {
       source: exactSource,
       workspace: pattern.scope?.workspace,
       sourcePrefix: pattern.scope?.sourcePrefix,
-      limit: pattern.limit,
-      offset: pattern.offset,
+      limit: includeWindow ? pattern.limit : undefined,
+      offset: includeWindow ? pattern.offset : undefined,
       threshold: pattern.threshold,
       orderBy: pattern.orderBy,
     };
@@ -1582,6 +1848,19 @@ export class RdfLocalQueryEngine {
         const value = this.evaluateBindExpression(expression.expression, binding);
         return value ? DataFactory.literal(value.value.toLocaleUpperCase('en-US')) as Term : undefined;
       }
+      case 'coalesce': {
+        for (const item of expression.expressions) {
+          const value = this.evaluateBindExpression(item, binding);
+          if (value) {
+            return value;
+          }
+        }
+        return undefined;
+      }
+      case 'if':
+        return this.matchesFilters(binding, expression.condition)
+          ? this.evaluateBindExpression(expression.then, binding)
+          : this.evaluateBindExpression(expression.else, binding);
       case 'substring': {
         const value = this.evaluateBindExpression(expression.expression, binding);
         const startTerm = this.evaluateBindExpression(expression.start, binding);
@@ -1611,6 +1890,22 @@ export class RdfLocalQueryEngine {
         } catch {
           return undefined;
         }
+      }
+      case 'strdt': {
+        const lexical = this.evaluateBindExpression(expression.lexical, binding);
+        const datatype = this.evaluateBindExpression(expression.datatype, binding);
+        if (!lexical || !datatype || datatype.termType !== 'NamedNode') {
+          return undefined;
+        }
+        return DataFactory.literal(lexical.value, DataFactory.namedNode(datatype.value)) as Term;
+      }
+      case 'strlang': {
+        const lexical = this.evaluateBindExpression(expression.lexical, binding);
+        const language = this.evaluateBindExpression(expression.language, binding);
+        if (!lexical || !language) {
+          return undefined;
+        }
+        return DataFactory.literal(lexical.value, language.value) as Term;
       }
       default: {
         const exhaustive: never = expression;
@@ -1668,7 +1963,7 @@ export class RdfLocalQueryEngine {
     query: RdfLocalQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
-  ): { as: string; pattern: QuintPattern; distinctKey?: RdfQueryPatternKey; pushedDownFilters: number } | undefined {
+  ): { as: string; pattern: QuintPattern; distinctKeys?: RdfQueryPatternKey[]; pushedDownFilters: number } | undefined {
     const aggregates = queryAggregates(query);
     if (
       aggregates.length !== 1
@@ -1698,10 +1993,10 @@ export class RdfLocalQueryEngine {
     if (aggregate.variable && !variablesInPattern(pattern).includes(aggregate.variable)) {
       return undefined;
     }
-    const distinctKey = aggregate.distinct
-      ? this.distinctCountKey(pattern, aggregate.variable)
+    const distinctKeys = aggregate.distinct
+      ? this.distinctCountKeys(pattern, aggregate.variable, aggregate.distinctVariables)
       : undefined;
-    if (aggregate.distinct && !distinctKey) {
+    if (aggregate.distinct && (!distinctKeys || distinctKeys.length === 0)) {
       return undefined;
     }
     if (!this.canPushAllFiltersForPattern(pattern, filters)) {
@@ -1713,7 +2008,7 @@ export class RdfLocalQueryEngine {
       ? {
           as: aggregate.as,
           pattern: compiled,
-          distinctKey,
+          distinctKeys,
           pushedDownFilters: compiled.pushedDownFilters,
         }
       : undefined;
@@ -1965,15 +2260,34 @@ export class RdfLocalQueryEngine {
     return compiled;
   }
 
-  private distinctCountKey(pattern: RdfQueryPattern, variableName?: string): RdfQueryPatternKey | undefined {
-    if (!variableName) {
-      return undefined;
+  private distinctCountKeys(
+    pattern: RdfQueryPattern,
+    variableName?: string,
+    distinctVariables?: string[],
+  ): RdfQueryPatternKey[] | undefined {
+    if (variableName) {
+      const keys = TERM_KEYS.filter((key) => {
+        const value = pattern[key];
+        return isVariable(value) && value.variable === variableName;
+      });
+      return keys.length === 1 ? keys : undefined;
+    }
+    if (distinctVariables) {
+      const keys: RdfQueryPatternKey[] = [];
+      for (const distinctVariable of distinctVariables) {
+        const key = termKeyForVariable(pattern, distinctVariable);
+        if (!key) {
+          return undefined;
+        }
+        keys.push(key);
+      }
+      return uniquePatternKeys(keys);
     }
     const keys = TERM_KEYS.filter((key) => {
       const value = pattern[key];
-      return isVariable(value) && value.variable === variableName;
+      return isVariable(value);
     });
-    return keys.length === 1 ? keys[0] : undefined;
+    return uniquePatternKeys(keys);
   }
 
   private scanOrderForPattern(
@@ -2098,12 +2412,17 @@ export class RdfLocalQueryEngine {
     return next;
   }
 
-  private countBindings(bindings: RdfBindingRow[], variable?: string, distinct?: boolean): number {
+  private countBindings(
+    bindings: RdfBindingRow[],
+    variable?: string,
+    distinct?: boolean,
+    distinctVariables?: string[],
+  ): number {
     if (!distinct) {
       return variable ? bindings.filter((binding) => binding[variable]).length : bindings.length;
     }
     if (!variable) {
-      return new Set(bindings.map((binding) => bindingKey(binding))).size;
+      return new Set(bindings.map((binding) => bindingKey(binding, distinctVariables))).size;
     }
     return new Set(
       bindings
@@ -2121,7 +2440,7 @@ export class RdfLocalQueryEngine {
     let firstCount = 0;
     aggregates.forEach((aggregate, index) => {
       const count = aggregate.type === 'count'
-        ? this.countBindings(bindings, aggregate.variable, aggregate.distinct)
+        ? this.countBindings(bindings, aggregate.variable, aggregate.distinct, aggregate.distinctVariables)
         : 0;
       if (index === 0) {
         firstCount = count;
@@ -2173,7 +2492,12 @@ export class RdfLocalQueryEngine {
 
   private aggregateLiteral(bindings: RdfBindingRow[], aggregate: RdfQueryAggregate): Term | undefined {
     if (aggregate.type === 'count') {
-      return countLiteral(this.countBindings(bindings, aggregate.variable, aggregate.distinct));
+      return countLiteral(this.countBindings(
+        bindings,
+        aggregate.variable,
+        aggregate.distinct,
+        aggregate.distinctVariables,
+      ));
     }
     const values = this.numericAggregateValues(bindings, aggregate.variable, aggregate.distinct);
     if (values.length === 0) {
@@ -2380,23 +2704,45 @@ export class RdfLocalQueryEngine {
         const text = filterStringValue(value, comparisonValue);
         return typeof filter.value === 'string' && text.startsWith(filter.value);
       }
+      case '$notStartsWith': {
+        const text = filterStringValue(value, comparisonValue);
+        return typeof filter.value === 'string' && !text.startsWith(filter.value);
+      }
       case '$contains': {
         const text = filterStringValue(value, comparisonValue);
         return typeof filter.value === 'string' && text.includes(filter.value);
+      }
+      case '$notContains': {
+        const text = filterStringValue(value, comparisonValue);
+        return typeof filter.value === 'string' && !text.includes(filter.value);
       }
       case '$endsWith': {
         const text = filterStringValue(value, comparisonValue);
         return typeof filter.value === 'string' && text.endsWith(filter.value);
       }
+      case '$notEndsWith': {
+        const text = filterStringValue(value, comparisonValue);
+        return typeof filter.value === 'string' && !text.endsWith(filter.value);
+      }
       case '$regex': {
         const text = filterStringValue(value, comparisonValue);
         return typeof filter.value === 'string' && new RegExp(filter.value, filter.flags).test(text);
       }
+      case '$notRegex': {
+        const text = filterStringValue(value, comparisonValue);
+        return typeof filter.value === 'string' && !new RegExp(filter.value, filter.flags).test(text);
+      }
       case '$termType':
         return typeof filter.value === 'string' && matchesTermType(value, filter.value);
+      case '$notTermType':
+        return typeof filter.value === 'string' && !matchesTermType(value, filter.value);
       case '$sameTerm': {
         const right = filter.variable2 ? binding[filter.variable2] : filter.value;
         return Boolean(right && isTerm(right as any) && sameTerm(value, right as Term));
+      }
+      case '$notSameTerm': {
+        const right = filter.variable2 ? binding[filter.variable2] : filter.value;
+        return Boolean(right && isTerm(right as any) && !sameTerm(value, right as Term));
       }
       case '$lang':
         return typeof filter.value === 'string'
@@ -2406,10 +2752,20 @@ export class RdfLocalQueryEngine {
         return typeof filter.value === 'string'
           && value.termType === 'Literal'
           && value.language !== filter.value;
+      case '$langIn':
+        return value.termType === 'Literal'
+          && (filter.values ?? []).some((candidate) => typeof candidate === 'string' && value.language === candidate);
+      case '$notLangIn':
+        return value.termType === 'Literal'
+          && !(filter.values ?? []).some((candidate) => typeof candidate === 'string' && value.language === candidate);
       case '$langMatches':
         return typeof filter.value === 'string'
           && value.termType === 'Literal'
           && langMatches(value.language, filter.value);
+      case '$notLangMatches':
+        return typeof filter.value === 'string'
+          && value.termType === 'Literal'
+          && !langMatches(value.language, filter.value);
       case '$datatype':
         return filter.value !== undefined
           && value.termType === 'Literal'
@@ -2418,6 +2774,12 @@ export class RdfLocalQueryEngine {
         return filter.value !== undefined
           && value.termType === 'Literal'
           && !sameTermOrLexical(value.datatype, filter.value);
+      case '$datatypeIn':
+        return value.termType === 'Literal'
+          && (filter.values ?? []).some((candidate) => sameTermOrLexical(value.datatype, candidate));
+      case '$notDatatypeIn':
+        return value.termType === 'Literal'
+          && !(filter.values ?? []).some((candidate) => sameTermOrLexical(value.datatype, candidate));
       default: {
         const exhaustive: never = filter.operator;
         throw new Error(`Unsupported RDF local query filter operator: ${exhaustive}`);
@@ -2568,6 +2930,10 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function uniqueNumbers(values: number[]): number[] {
+  return [...new Set(values)];
+}
+
 function filtersWithoutIndexes(filters: RdfQueryFilter[], indexes: number[]): RdfQueryFilter[] {
   if (indexes.length === 0) {
     return filters;
@@ -2587,6 +2953,18 @@ function joinValuesSource(input: RdfBindingRow[], source: RdfValuesBindingSource
     }
   }
   return output;
+}
+
+function mergeBindingRows(left: RdfBindingRow, right: RdfBindingRow): RdfBindingRow | null {
+  const next = { ...left };
+  for (const [variableName, term] of Object.entries(right)) {
+    const existing = next[variableName];
+    if (existing && !sameTerm(existing, term)) {
+      return null;
+    }
+    next[variableName] = term;
+  }
+  return next;
 }
 
 function mergeTupleValuesBinding(
@@ -2887,10 +3265,13 @@ function compareBindings(
   return 0;
 }
 
-function bindingKey(binding: RdfBindingRow): string {
-  return Object.keys(binding)
+function bindingKey(binding: RdfBindingRow, variables?: string[]): string {
+  return [...(variables ?? Object.keys(binding))]
     .sort()
-    .map((key) => `${key}=${termToId(binding[key] as any)}`)
+    .map((key) => {
+      const term = binding[key];
+      return `${key}=${term ? termToId(term as any) : '__UNBOUND__'}`;
+    })
     .join('\u001f');
 }
 
@@ -3044,6 +3425,10 @@ function describeBindExpression(expression: RdfBindExpression): string {
       return `LCASE(${describeBindExpression(expression.expression)})`;
     case 'upperCase':
       return `UCASE(${describeBindExpression(expression.expression)})`;
+    case 'coalesce':
+      return `COALESCE(${expression.expressions.map(describeBindExpression).join(',')})`;
+    case 'if':
+      return `IF(${expression.condition.map(describeFilter).join('&')},${describeBindExpression(expression.then)},${describeBindExpression(expression.else)})`;
     case 'substring':
       return `SUBSTR(${[
         describeBindExpression(expression.expression),
@@ -3054,6 +3439,10 @@ function describeBindExpression(expression: RdfBindExpression): string {
       return `CONCAT(${expression.expressions.map(describeBindExpression).join(',')})`;
     case 'iri':
       return `IRI(${describeBindExpression(expression.expression)})`;
+    case 'strdt':
+      return `STRDT(${describeBindExpression(expression.lexical)},${describeBindExpression(expression.datatype)})`;
+    case 'strlang':
+      return `STRLANG(${describeBindExpression(expression.lexical)},${describeBindExpression(expression.language)})`;
     default: {
       const exhaustive: never = expression;
       return JSON.stringify(exhaustive);
@@ -3101,64 +3490,236 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
   ));
 }
 
+function requiredSourceScanPlan(backend: PatternScanBackend): 'IndexScan' | 'Rdf3xPrimaryScan' | 'MixedScan' {
+  switch (backend) {
+    case 'rdf3x':
+      return 'Rdf3xPrimaryScan';
+    case 'mixed':
+      return 'MixedScan';
+    case 'index':
+    case 'none':
+      return 'IndexScan';
+    default: {
+      const exhaustive: never = backend;
+      throw new Error(`Unsupported RDF required source scan backend: ${exhaustive}`);
+    }
+  }
+}
+
+function scanPlanOrder(plan: ReturnType<typeof requiredSourceScanPlan>): 'IndexOrder' | 'Rdf3xPrimaryOrder' | 'MixedOrder' {
+  switch (plan) {
+    case 'Rdf3xPrimaryScan':
+      return 'Rdf3xPrimaryOrder';
+    case 'MixedScan':
+      return 'MixedOrder';
+    case 'IndexScan':
+      return 'IndexOrder';
+    default: {
+      const exhaustive: never = plan;
+      throw new Error(`Unsupported RDF scan plan for order marker: ${exhaustive}`);
+    }
+  }
+}
+
+function scanPlanLimit(plan: ReturnType<typeof requiredSourceScanPlan>): 'IndexLimit' | 'Rdf3xPrimaryLimit' | 'MixedLimit' {
+  switch (plan) {
+    case 'Rdf3xPrimaryScan':
+      return 'Rdf3xPrimaryLimit';
+    case 'MixedScan':
+      return 'MixedLimit';
+    case 'IndexScan':
+      return 'IndexLimit';
+    default: {
+      const exhaustive: never = plan;
+      throw new Error(`Unsupported RDF scan plan for limit marker: ${exhaustive}`);
+    }
+  }
+}
+
+function toRdf3xScanOptions(options?: RdfQuadScanOptions): Rdf3xTripleScanOptions | undefined {
+  if (!options) {
+    return undefined;
+  }
+  return {
+    ...(options.order ? { order: options.order } : {}),
+    ...(options.orderDirections ? { orderDirections: options.orderDirections } : {}),
+    ...(options.reverse ? { reverse: true } : {}),
+    ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    ...(options.offset !== undefined ? { offset: options.offset } : {}),
+  };
+}
+
+function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
+  const result: Rdf3xTriplePattern = {};
+  for (const key of TERM_KEYS) {
+    const value = pattern[key];
+    if (!value) {
+      continue;
+    }
+    if (isTerm(value as any)) {
+      result[key] = value as Term;
+      continue;
+    }
+    if (isRdf3xTermInPattern(value)) {
+      result[key] = value;
+      continue;
+    }
+    if (isRdf3xTermNotInPattern(value)) {
+      result[key] = value;
+      continue;
+    }
+    if (isRdf3xCompatibleOperatorPattern(key, value)) {
+      result[key] = value as Rdf3xTriplePattern[typeof key];
+      continue;
+    }
+    throw new Error(`RDF-3X primary scan cannot compile unsupported ${key} pattern`);
+  }
+  return result;
+}
+
+function stripRdf3xNumericAggregateGuards(
+  patterns: CompiledJoinPattern[],
+  aggregates: RdfQueryAggregate[],
+): CompiledJoinPattern[] {
+  const numericVariables = new Set(aggregates
+    .filter((aggregate) => aggregate.type !== 'count')
+    .map((aggregate) => aggregate.variable)
+    .filter((variableName): variableName is string => Boolean(variableName)));
+  if (numericVariables.size === 0) {
+    return patterns;
+  }
+
+  return patterns.map((entry) => {
+    let changed = false;
+    const pattern: CompiledPattern = {
+      ...entry.pattern,
+      pushedDownFilters: entry.pattern.pushedDownFilters,
+      pushedDownFilterIndexes: [...entry.pattern.pushedDownFilterIndexes],
+    };
+
+    for (const key of TERM_KEYS) {
+      const variableName = entry.variables[key];
+      if (!variableName || !numericVariables.has(variableName)) {
+        continue;
+      }
+      const value = pattern[key];
+      if (!value || isTerm(value as any) || typeof value !== 'object') {
+        continue;
+      }
+      if ((value as { $termType?: unknown }).$termType !== 'numeric') {
+        continue;
+      }
+
+      const stripped = { ...(value as Record<string, unknown>) };
+      delete stripped.$termType;
+      if (Object.keys(stripped).length === 0) {
+        delete pattern[key];
+      } else {
+        pattern[key] = stripped as TermMatch;
+      }
+      changed = true;
+    }
+
+    return changed ? { pattern, variables: entry.variables } : entry;
+  });
+}
+
 function isRdf3xCompatiblePattern(pattern: QuintPattern): boolean {
   return TERM_KEYS.every((key) => {
     const value = pattern[key];
     if (!value || isTerm(value as any)) {
       return true;
     }
-    if (key === 'graph' && isGraphPrefixPattern(value)) {
+    if (isRdf3xTermInPattern(value)) {
       return true;
     }
-    if (key === 'object' && isRdf3xNumericRangePattern(value)) {
+    if (isRdf3xTermNotInPattern(value)) {
+      return true;
+    }
+    if (isRdf3xCompatibleOperatorPattern(key, value)) {
       return true;
     }
     return false;
   });
 }
 
-function isGraphPrefixPattern(value: unknown): value is { $startsWith: string } {
+function isRdf3xTermInPattern(value: unknown): value is Rdf3xTermInPattern {
   return value !== null
     && typeof value === 'object'
+    && !('termType' in value)
     && Object.keys(value).length === 1
-    && '$startsWith' in value
-    && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
+    && Array.isArray((value as { $in?: unknown }).$in)
+    && ((value as { $in: unknown[] }).$in).length > 0
+    && ((value as { $in: unknown[] }).$in).every((entry) => isTerm(entry as any));
 }
 
-function isRdf3xNumericRangePattern(value: unknown): boolean {
+function isRdf3xTermNotInPattern(value: unknown): value is Rdf3xTermNotInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $notIn?: unknown }).$notIn)
+    && ((value as { $notIn: unknown[] }).$notIn).length > 0
+    && ((value as { $notIn: unknown[] }).$notIn).every((entry) => isTerm(entry as any));
+}
+
+function isRdf3xCompatibleOperatorPattern(
+  key: Rdf3xPatternKey,
+  value: unknown,
+): value is Rdf3xTermMetadataPattern | Rdf3xObjectOperatorPattern {
   if (value === null || typeof value !== 'object' || 'termType' in value) {
     return false;
   }
-  const operators = ['$gt', '$gte', '$lt', '$lte'] as const;
-  if (Object.keys(value).some((key) => !operators.includes(key as typeof operators[number]))) {
+  const allowed = new Set<string>([
+    '$in',
+    '$notIn',
+    '$termType',
+    '$language',
+    '$notLanguage',
+    '$langMatches',
+    '$datatype',
+    '$notDatatype',
+    ...(key === 'graph' ? ['$startsWith'] : []),
+    ...(key === 'object' ? ['$gt', '$gte', '$lt', '$lte', '$contains', '$endsWith'] : []),
+  ]);
+  if (Object.keys(value).length === 0 || Object.keys(value).some((operator) => !allowed.has(operator))) {
     return false;
   }
-  let hasRange = false;
-  for (const operator of operators) {
-    const rangeValue = (value as Record<string, unknown>)[operator];
-    if (rangeValue === undefined) {
-      continue;
+  const operators = value as Record<string, unknown>;
+  if (operators.$in !== undefined && !isRdf3xTermInPattern({ $in: operators.$in })) return false;
+  if (operators.$notIn !== undefined && !isRdf3xTermNotInPattern({ $notIn: operators.$notIn })) return false;
+  if (operators.$startsWith !== undefined && typeof operators.$startsWith !== 'string') return false;
+  if (operators.$termType !== undefined && !['iri', 'blank', 'literal', 'numeric'].includes(operators.$termType as string)) return false;
+  for (const languageOperator of ['$language', '$notLanguage', '$langMatches']) {
+    if (operators[languageOperator] !== undefined && typeof operators[languageOperator] !== 'string') return false;
+  }
+  for (const datatypeOperator of ['$datatype', '$notDatatype']) {
+    const datatype = operators[datatypeOperator];
+    if (datatype !== undefined && (!isTerm(datatype as any) || (datatype as Term).termType !== 'NamedNode')) return false;
+  }
+  if (key === 'object') {
+    for (const rangeOperator of ['$gt', '$gte', '$lt', '$lte']) {
+      const rangeValue = operators[rangeOperator];
+      if (rangeValue !== undefined && !isRdf3xObjectRangeValue(rangeValue)) return false;
     }
-    hasRange = true;
-    if (rdf3xNumericRangeValue(rangeValue) === undefined) {
-      return false;
+    for (const textOperator of ['$contains', '$endsWith'] satisfies Array<keyof Rdf3xObjectTextSearchPattern>) {
+      if (operators[textOperator] !== undefined && typeof operators[textOperator] !== 'string') return false;
     }
   }
-  return hasRange;
+  return true;
 }
 
-function rdf3xNumericRangeValue(value: unknown): number | undefined {
+function isRdf3xObjectRangeValue(value: unknown): boolean {
   if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : undefined;
+    return Number.isFinite(value);
   }
   if (typeof value === 'string') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    return true;
   }
   if (isTerm(value as any)) {
-    return isRdfNumericTerm(value as Term) ? rdfNumericValue((value as Term).value) : undefined;
+    return true;
   }
-  return undefined;
+  return false;
 }
 
 function bindTextSearchResult(
@@ -3258,4 +3819,8 @@ function aggregatePlan(aggregates: RdfQueryAggregate[], grouped: boolean): strin
   return aggregates.some((aggregate) => aggregate.distinct)
     ? 'Aggregate(count-multi-distinct)'
     : 'Aggregate(count-multi)';
+}
+
+function uniquePatternKeys(values: RdfQueryPatternKey[]): RdfQueryPatternKey[] {
+  return TERM_KEYS.filter((key) => values.includes(key));
 }

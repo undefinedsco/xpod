@@ -1,13 +1,20 @@
-import type { Quad } from '@rdfjs/types';
+import type { Quad, Term } from '@rdfjs/types';
 import { termToId } from 'n3';
 import type { QuintPattern, QuintStore } from '../quint/types';
 import { isTerm } from '../quint/types';
 import type {
-  Rdf3xNumericObjectRangePattern,
+  Rdf3xObjectOperatorPattern,
+  Rdf3xObjectTextSearchPattern,
   Rdf3xShadowJoinResult,
   Rdf3xShadowScanResult,
-  Rdf3xTripleIndexOptions,
+  Rdf3xTermInPattern,
+  Rdf3xTermMetadataPattern,
+  Rdf3xTermNotInPattern,
+  Rdf3xIndexOptions,
   Rdf3xTriplePattern,
+  RdfDerivedIndexProfile,
+  RdfDerivedIndexRefreshResult,
+  RdfEngineStorageStats,
   RdfIndexPutOptions,
   RdfPatternQuery,
   RdfQuadJoinOptions,
@@ -28,7 +35,7 @@ import type {
   RdfVectorSourceInput,
 } from './types';
 import { RdfQuadIndex } from './RdfQuadIndex';
-import { Rdf3xTripleIndex } from './Rdf3xTripleIndex';
+import { Rdf3xIndex } from './Rdf3xIndex';
 import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
 import { RdfShadowComparator, diffQuads } from './RdfShadowComparator';
@@ -37,9 +44,10 @@ import type { RdfLocalQuery, RdfLocalQueryResult } from './types';
 
 export interface SolidRdfEngineOptions {
   index: RdfQuadIndex | RdfQuadIndexOptions;
+  derivedIndexProfile?: RdfDerivedIndexProfile;
   textIndex?: RdfTextIndex | RdfTextIndexOptions;
   vectorIndex?: RdfVectorIndex | RdfVectorIndexOptions;
-  rdf3xIndex?: Rdf3xTripleIndex | Rdf3xTripleIndexOptions;
+  rdf3xIndex?: Rdf3xIndex | Rdf3xIndexOptions;
   rdf3xPrimary?: boolean;
   compatibilityStore?: QuintStore;
   autoOpen?: boolean;
@@ -49,7 +57,8 @@ export class SolidRdfEngine {
   public readonly index: RdfQuadIndex;
   public readonly textIndex?: RdfTextIndex;
   public readonly vectorIndex?: RdfVectorIndex;
-  public readonly rdf3xIndex?: Rdf3xTripleIndex;
+  public readonly rdf3xIndex?: Rdf3xIndex;
+  public readonly derivedIndexProfile: RdfDerivedIndexProfile;
   private readonly ownsIndex: boolean;
   private readonly ownsTextIndex: boolean;
   private readonly ownsVectorIndex: boolean;
@@ -57,10 +66,13 @@ export class SolidRdfEngine {
   private readonly rdf3xPrimary: boolean;
   private readonly compatibilityStore?: QuintStore;
   private shadowComparator?: RdfShadowComparator;
-  private readonly queryEngine: RdfLocalQueryEngine;
   private rdf3xDirty = true;
+  private rdf3xDataVersion: number | undefined;
 
   public constructor(options: SolidRdfEngineOptions) {
+    const indexOptions = isRdfQuadIndexOptions(options.index) ? options.index : undefined;
+    const rdf3xIndexInput = normalizeOptionalRdf3xIndex(options.rdf3xIndex);
+    this.derivedIndexProfile = resolveDerivedIndexProfile(options, indexOptions, rdf3xIndexInput);
     if (options.index instanceof RdfQuadIndex) {
       this.index = options.index;
       this.ownsIndex = false;
@@ -86,26 +98,34 @@ export class SolidRdfEngine {
     } else {
       this.ownsVectorIndex = false;
     }
-    if (options.rdf3xIndex instanceof Rdf3xTripleIndex) {
-      this.rdf3xIndex = options.rdf3xIndex;
+    let autoConfiguredRdf3xPrimary = false;
+    if (rdf3xIndexInput instanceof Rdf3xIndex) {
+      this.rdf3xIndex = rdf3xIndexInput;
       this.ownsRdf3xIndex = false;
-    } else if (isRdf3xTripleIndexOptions(options.rdf3xIndex)) {
-      this.rdf3xIndex = new Rdf3xTripleIndex(options.rdf3xIndex);
+    } else if (isRdf3xIndexOptions(rdf3xIndexInput)) {
+      this.rdf3xIndex = new Rdf3xIndex(rdf3xIndexInput);
       this.ownsRdf3xIndex = true;
+    } else if (shouldAutoConfigureRdf3xIndex(this.derivedIndexProfile, rdf3xIndexInput, indexOptions)) {
+      this.rdf3xIndex = new Rdf3xIndex({
+        path: indexOptions.path,
+        debug: indexOptions.debug,
+      });
+      this.ownsRdf3xIndex = true;
+      autoConfiguredRdf3xPrimary = true;
     } else {
       this.ownsRdf3xIndex = false;
     }
-    if (options.rdf3xPrimary && !this.rdf3xIndex) {
-      throw new Error('SolidRdfEngine rdf3xPrimary requires an rdf3xIndex');
+    if (this.derivedIndexProfile === 'baseline' && this.rdf3xIndex) {
+      throw new Error('SolidRdfEngine derivedIndexProfile=baseline cannot materialize an rdf3xIndex');
     }
-    this.rdf3xPrimary = Boolean(options.rdf3xPrimary);
+    if (this.derivedIndexProfile === 'rdf3x' && !this.rdf3xIndex) {
+      throw new Error('SolidRdfEngine derivedIndexProfile=rdf3x requires an rdf3xIndex or a file-backed index option');
+    }
+    if (options.rdf3xPrimary && !this.rdf3xIndex) {
+      throw new Error('SolidRdfEngine rdf3xPrimary requires an rdf3xIndex or a file-backed index option');
+    }
+    this.rdf3xPrimary = options.rdf3xPrimary ?? autoConfiguredRdf3xPrimary;
     this.compatibilityStore = options.compatibilityStore;
-    this.queryEngine = new RdfLocalQueryEngine(
-      this.index,
-      this.textIndex,
-      this.vectorIndex,
-      this.rdf3xPrimary ? this.rdf3xIndex : undefined,
-    );
     if (this.compatibilityStore) {
       this.shadowComparator = new RdfShadowComparator(this.index, this.compatibilityStore);
     }
@@ -165,13 +185,40 @@ export class SolidRdfEngine {
     return changes;
   }
 
+  public applyDelta(deletes: QuintPattern[], inserts: Quad[], options?: RdfIndexPutOptions): { deletedRows: number; insertedRows: number } {
+    const result = this.index.applyDelta(deletes, inserts, options);
+    if (result.deletedRows > 0 || result.insertedRows > 0) {
+      this.markRdf3xDirty();
+    }
+    return result;
+  }
+
   public scan(query: RdfPatternQuery): RdfQuadIndexScanResult {
     return this.index.scan(query.pattern, query.options);
   }
 
   public query(query: RdfLocalQuery): RdfLocalQueryResult {
-    this.refreshRdf3xPrimary();
-    return this.queryEngine.query(query);
+    const rdf3xReady = this.isRdf3xPrimaryReady();
+    const result = new RdfLocalQueryEngine(
+      this.index,
+      this.textIndex,
+      this.vectorIndex,
+      rdf3xReady ? this.rdf3xIndex : undefined,
+    ).query(query);
+    if (this.rdf3xPrimary && this.rdf3xIndex && !rdf3xReady) {
+      result.metrics.plan.unshift('Rdf3xPrimaryStaleFallback');
+    }
+    return result;
+  }
+
+  public refreshDerivedIndexes(): RdfDerivedIndexRefreshResult {
+    const factsDataVersion = this.index.dataVersion();
+    const rdf3x = this.refreshRdf3xDerivedIndex(factsDataVersion);
+    return {
+      derivedIndexProfile: this.derivedIndexProfile,
+      factsDataVersion,
+      ...(rdf3x ? { rdf3x } : {}),
+    };
   }
 
   public indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void {
@@ -260,6 +307,29 @@ export class SolidRdfEngine {
     }
   }
 
+  public storageStats(): RdfEngineStorageStats {
+    const facts = this.index.stats();
+    const rdf3x = this.rdf3xIndex
+      ? {
+          stats: this.rdf3xIndex.stats(),
+          syncedWithFacts: this.rdf3xIndex.isSyncedWithCurrentQuads(),
+        }
+      : undefined;
+    const factsBytes = facts.databaseBytes;
+    const derivedBytes = rdf3x?.stats.databaseBytes ?? 0;
+    const totalBytes = factsBytes + derivedBytes;
+    return {
+      derivedIndexProfile: this.derivedIndexProfile,
+      facts,
+      ...(rdf3x ? { rdf3x } : {}),
+      factsBytes,
+      derivedBytes,
+      totalBytes,
+      derivedToFactsRatio: byteRatio(derivedBytes, factsBytes),
+      totalToFactsRatio: byteRatio(totalBytes, factsBytes),
+    };
+  }
+
   private requireTextIndex(): RdfTextIndex {
     if (!this.textIndex) {
       throw new Error('SolidRdfEngine text index is not configured');
@@ -274,7 +344,7 @@ export class SolidRdfEngine {
     return this.vectorIndex;
   }
 
-  private requireRdf3xIndex(): Rdf3xTripleIndex {
+  private requireRdf3xIndex(): Rdf3xIndex {
     if (!this.rdf3xIndex) {
       throw new Error('SolidRdfEngine RDF-3X shadow index is not configured');
     }
@@ -287,12 +357,45 @@ export class SolidRdfEngine {
     }
   }
 
-  private refreshRdf3xPrimary(): void {
-    if (!this.rdf3xPrimary || !this.rdf3xDirty) {
-      return;
+  private isRdf3xPrimaryReady(): boolean {
+    return Boolean(this.rdf3xPrimary && this.rdf3xIndex?.isSyncedWithCurrentQuads());
+  }
+
+  private refreshRdf3xDerivedIndex(factsDataVersion = this.index.dataVersion()): RdfDerivedIndexRefreshResult['rdf3x'] {
+    if (!this.rdf3xIndex) {
+      return undefined;
     }
-    this.requireRdf3xIndex().rebuildFromCurrentQuads();
+    const dataVersion = factsDataVersion;
+    if (!this.rdf3xDirty && this.rdf3xDataVersion === dataVersion) {
+      return {
+        refreshed: false,
+        previousFactsDataVersion: dataVersion,
+        factsDataVersion: dataVersion,
+        syncedWithFacts: true,
+      };
+    }
+    const rdf3xIndex = this.rdf3xIndex;
+    const previousFactsDataVersion = rdf3xIndex.factsDataVersion();
+    if (previousFactsDataVersion === dataVersion) {
+      this.rdf3xDirty = false;
+      this.rdf3xDataVersion = dataVersion;
+      return {
+        refreshed: false,
+        previousFactsDataVersion,
+        factsDataVersion: dataVersion,
+        syncedWithFacts: true,
+      };
+    }
+    const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
     this.rdf3xDirty = false;
+    this.rdf3xDataVersion = rebuild.factsDataVersion;
+    return {
+      refreshed: true,
+      previousFactsDataVersion,
+      factsDataVersion: rebuild.factsDataVersion,
+      syncedWithFacts: rdf3xIndex.factsDataVersion() === this.index.dataVersion(),
+      rebuild,
+    };
   }
 }
 
@@ -304,8 +407,54 @@ function isRdfVectorIndexOptions(input: RdfVectorIndex | RdfVectorIndexOptions |
   return input !== undefined && !(input instanceof RdfVectorIndex) && typeof input.path === 'string';
 }
 
-function isRdf3xTripleIndexOptions(input: Rdf3xTripleIndex | Rdf3xTripleIndexOptions | undefined): input is Rdf3xTripleIndexOptions {
-  return input !== undefined && !(input instanceof Rdf3xTripleIndex) && typeof input.path === 'string';
+function isRdf3xIndexOptions(input: Rdf3xIndex | Rdf3xIndexOptions | undefined): input is Rdf3xIndexOptions {
+  return input !== undefined && !(input instanceof Rdf3xIndex) && typeof input.path === 'string';
+}
+
+function isRdfQuadIndexOptions(input: RdfQuadIndex | RdfQuadIndexOptions): input is RdfQuadIndexOptions {
+  return !(input instanceof RdfQuadIndex) && typeof input.path === 'string';
+}
+
+function resolveDerivedIndexProfile(
+  options: SolidRdfEngineOptions,
+  indexOptions: RdfQuadIndexOptions | undefined,
+  rdf3xIndexInput: Rdf3xIndex | Rdf3xIndexOptions | undefined,
+): RdfDerivedIndexProfile {
+  if (options.derivedIndexProfile) {
+    return options.derivedIndexProfile;
+  }
+  if (rdf3xIndexInput !== undefined || options.rdf3xPrimary === true) {
+    return 'rdf3x';
+  }
+  if (options.rdf3xPrimary === false) {
+    return 'baseline';
+  }
+  return indexOptions !== undefined && indexOptions.path !== ':memory:' ? 'rdf3x' : 'baseline';
+}
+
+function shouldAutoConfigureRdf3xIndex(
+  profile: RdfDerivedIndexProfile,
+  rdf3xIndexInput: Rdf3xIndex | Rdf3xIndexOptions | undefined,
+  indexOptions: RdfQuadIndexOptions | undefined,
+): indexOptions is RdfQuadIndexOptions {
+  return profile === 'rdf3x'
+    && rdf3xIndexInput === undefined
+    && indexOptions !== undefined
+    && indexOptions.path !== ':memory:';
+}
+
+function normalizeOptionalRdf3xIndex(input: Rdf3xIndex | Rdf3xIndexOptions | undefined): Rdf3xIndex | Rdf3xIndexOptions | undefined {
+  if (input instanceof Rdf3xIndex || isRdf3xIndexOptions(input)) {
+    return input;
+  }
+  return undefined;
+}
+
+function byteRatio(numerator: number, denominator: number): number {
+  if (denominator <= 0) {
+    return numerator <= 0 ? 1 : Number.POSITIVE_INFINITY;
+  }
+  return numerator / denominator;
 }
 
 function canonicalQuadKeys(quads: Quad[]): string[] {
@@ -344,12 +493,16 @@ function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
       continue;
     }
     if (!isTerm(value)) {
-      if (key === 'graph' && isStartsWithOperator(value)) {
-        result.graph = { $startsWith: value.$startsWith };
+      if (isRdf3xTermInPattern(value)) {
+        result[key] = value;
         continue;
       }
-      if (key === 'object' && isNumericObjectRangeOperator(value)) {
-        result.object = value;
+      if (isRdf3xTermNotInPattern(value)) {
+        result[key] = value;
+        continue;
+      }
+      if (isRdf3xCompatibleOperatorPattern(key, value)) {
+        result[key] = value as Rdf3xTriplePattern[typeof key];
         continue;
       }
       throw new Error(`SolidRdfEngine RDF-3X shadow scan only supports exact ${key} terms${key === 'graph' ? ' or graph $startsWith' : ''}`);
@@ -359,16 +512,78 @@ function toRdf3xTriplePattern(pattern: QuintPattern): Rdf3xTriplePattern {
   return result;
 }
 
-function isStartsWithOperator(value: unknown): value is { $startsWith: string } {
-  return value !== null
-    && typeof value === 'object'
-    && '$startsWith' in value
-    && typeof (value as { $startsWith?: unknown }).$startsWith === 'string';
-}
-
-function isNumericObjectRangeOperator(value: unknown): value is Rdf3xNumericObjectRangePattern {
+function isRdf3xTermInPattern(value: unknown): value is Rdf3xTermInPattern {
   return value !== null
     && typeof value === 'object'
     && !('termType' in value)
-    && ['$gt', '$gte', '$lt', '$lte'].some((operator) => operator in value);
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $in?: unknown }).$in)
+    && ((value as { $in: unknown[] }).$in).length > 0
+    && ((value as { $in: unknown[] }).$in).every((entry) => isTerm(entry as any));
+}
+
+function isRdf3xTermNotInPattern(value: unknown): value is Rdf3xTermNotInPattern {
+  return value !== null
+    && typeof value === 'object'
+    && !('termType' in value)
+    && Object.keys(value).length === 1
+    && Array.isArray((value as { $notIn?: unknown }).$notIn)
+    && ((value as { $notIn: unknown[] }).$notIn).length > 0
+    && ((value as { $notIn: unknown[] }).$notIn).every((entry) => isTerm(entry as any));
+}
+
+function isRdf3xCompatibleOperatorPattern(
+  key: keyof Rdf3xTriplePattern,
+  value: unknown,
+): value is Rdf3xTermMetadataPattern | Rdf3xObjectOperatorPattern {
+  if (value === null || typeof value !== 'object' || 'termType' in value) {
+    return false;
+  }
+  const allowed = new Set<string>([
+    '$in',
+    '$notIn',
+    '$termType',
+    '$language',
+    '$notLanguage',
+    '$langMatches',
+    '$datatype',
+    '$notDatatype',
+    ...(key === 'graph' ? ['$startsWith'] : []),
+    ...(key === 'object' ? ['$gt', '$gte', '$lt', '$lte', '$contains', '$endsWith'] : []),
+  ]);
+  if (Object.keys(value).length === 0 || Object.keys(value).some((operator) => !allowed.has(operator))) {
+    return false;
+  }
+  const operators = value as Record<string, unknown>;
+  if (operators.$in !== undefined && !isRdf3xTermInPattern({ $in: operators.$in })) return false;
+  if (operators.$notIn !== undefined && !isRdf3xTermNotInPattern({ $notIn: operators.$notIn })) return false;
+  if (operators.$startsWith !== undefined && typeof operators.$startsWith !== 'string') return false;
+  if (operators.$termType !== undefined && !['iri', 'blank', 'literal', 'numeric'].includes(operators.$termType as string)) return false;
+  for (const languageOperator of ['$language', '$notLanguage', '$langMatches']) {
+    if (operators[languageOperator] !== undefined && typeof operators[languageOperator] !== 'string') return false;
+  }
+  for (const datatypeOperator of ['$datatype', '$notDatatype']) {
+    const datatype = operators[datatypeOperator];
+    if (datatype !== undefined && (!isTerm(datatype as any) || (datatype as Term).termType !== 'NamedNode')) return false;
+  }
+  if (key === 'object') {
+    for (const rangeOperator of ['$gt', '$gte', '$lt', '$lte']) {
+      const rangeValue = operators[rangeOperator];
+      if (rangeValue !== undefined && !isRdf3xObjectRangeValue(rangeValue)) return false;
+    }
+    for (const textOperator of ['$contains', '$endsWith'] satisfies Array<keyof Rdf3xObjectTextSearchPattern>) {
+      if (operators[textOperator] !== undefined && typeof operators[textOperator] !== 'string') return false;
+    }
+  }
+  return true;
+}
+
+function isRdf3xObjectRangeValue(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isFinite(value);
+  }
+  if (typeof value === 'string') {
+    return true;
+  }
+  return isTerm(value as any);
 }
