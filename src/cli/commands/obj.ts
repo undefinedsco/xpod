@@ -10,14 +10,16 @@ import {
 import { requireAuthContext, type CliAuthContext } from '../lib/auth-context';
 import { CliCommandError, handleCliError, writeJsonItems, writeJsonResult } from '../lib/output';
 import {
-  type ModelTypeIndexEntry,
-  buildModelTypeIndexInsertData,
+  type ModelTypeIndexScope,
   buildModelTypeIndexJsonLdDocument,
-  buildProfileTypeIndexInsertData,
-  modelPrivateTypeIndexUrl,
-  renderModelTypeIndexTurtle,
+  modelTypeIndexUrl,
   resolveModelTypeIndexEntries,
 } from '../../provision/model-type-index';
+import {
+  ensureContainerResource,
+  patchProfileTypeIndexes,
+  writeOrPatchModelTypeIndex,
+} from '../lib/type-index-ops';
 import {
   ensureOk,
   fetchResource,
@@ -48,6 +50,7 @@ interface ObjUpsertArgs extends ObjArgs {
 interface ObjRegisterArgs extends ObjArgs {
   'pod-root'?: string;
   'type-index'?: string;
+  scope?: 'private' | 'public' | 'both';
   'dry-run'?: boolean;
   commit?: boolean;
 }
@@ -299,6 +302,13 @@ function containerUrlForResource(resourceUrl: string): string {
   url.search = '';
   url.hash = '';
   return url.toString();
+}
+
+function typeIndexScopes(scope?: 'private' | 'public' | 'both'): ModelTypeIndexScope[] {
+  if (scope === 'both') {
+    return [ 'private', 'public' ];
+  }
+  return [ scope ?? 'private' ];
 }
 
 function sparqlValue(value: unknown, field?: PodModelFieldDescriptor): string {
@@ -999,112 +1009,41 @@ async function executeRows(input: {
   return items;
 }
 
-async function ensureContainerResource(context: CliAuthContext, containerUrl: string): Promise<Record<string, unknown>> {
-  const target = resolveResourceTarget(context, ensureTrailingSlash(containerUrl));
-  const head = await fetchResource(context, target, { method: 'HEAD' });
-  if (head.ok) {
-    return {
-      action: 'already_exists',
-      ...responseData(target, head),
-    };
-  }
-  if (head.status !== 404) {
-    ensureOk(head, 'container_check_failed', `Failed to check container ${containerUrl}`);
-  }
-
-  const created = await fetchResource(context, target, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'text/turtle',
-      'Link': '<http://www.w3.org/ns/ldp#BasicContainer>; rel="type"',
-    },
-    body: '',
-  });
-  ensureOk(created, 'container_create_failed', `Failed to create container ${containerUrl}`);
-  return {
-    action: 'created',
-    ...responseData(target, created),
-  };
-}
-
-async function writeOrPatchTypeIndex(input: {
-  context: CliAuthContext;
-  typeIndexUrl: string;
-  entries: ModelTypeIndexEntry[];
-}): Promise<Record<string, unknown>> {
-  const target = resolveResourceTarget(input.context, input.typeIndexUrl);
-  const head = await fetchResource(input.context, target, { method: 'HEAD' });
-  if (head.ok) {
-    const patch = await fetchResource(input.context, target, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/sparql-update' },
-      body: buildModelTypeIndexInsertData(input.typeIndexUrl, input.entries),
-    });
-    ensureOk(patch, 'type_index_patch_failed', `Failed to patch TypeIndex ${input.typeIndexUrl}`);
-    return {
-      action: 'patched',
-      ...responseData(target, patch),
-    };
-  }
-  if (head.status !== 404) {
-    ensureOk(head, 'type_index_check_failed', `Failed to check TypeIndex ${input.typeIndexUrl}`);
-  }
-
-  const created = await fetchResource(input.context, target, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'text/turtle' },
-    body: renderModelTypeIndexTurtle(input.entries),
-  });
-  ensureOk(created, 'type_index_create_failed', `Failed to create TypeIndex ${input.typeIndexUrl}`);
-  return {
-    action: 'created',
-    ...responseData(target, created),
-  };
-}
-
-async function patchProfileTypeIndex(input: {
-  context: CliAuthContext;
-  podRoot: string;
-  typeIndexUrl: string;
-}): Promise<Record<string, unknown>> {
-  const target = resolveResourceTarget(input.context, documentResourceInput(input.context.webId));
-  const response = await fetchResource(input.context, target, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/sparql-update' },
-    body: buildProfileTypeIndexInsertData({
-      webId: input.context.webId,
-      podRoot: input.podRoot,
-      privateTypeIndex: input.typeIndexUrl,
-    }),
-  });
-  ensureOk(response, 'profile_patch_failed', `Failed to link TypeIndex from profile ${input.context.webId}`);
-  return {
-    action: 'patched',
-    ...responseData(target, response),
-  };
-}
-
 async function executeRegisterCommand(argv: ObjRegisterArgs): Promise<Record<string, unknown>> {
   const context = await requireAuthContext(argv);
   const podRoot = resolvePodRootOption(context, argv['pod-root']);
-  const privateTypeIndex = argv['type-index']
-    ? resolveResourceTarget({ ...context, podRoot, baseIri: podRoot }, argv['type-index']).resourceUrl
-    : modelPrivateTypeIndexUrl(podRoot);
+  const scopes = typeIndexScopes(argv.scope);
+  if (argv['type-index'] && scopes.length > 1) {
+    throw new CliCommandError('invalid_scope', '--type-index can only be used with a single --scope.', 2);
+  }
   const registrationResolution = resolveModelTypeIndexEntries(podRoot);
   const entries = registrationResolution.entries;
-  const typeIndexContainer = containerUrlForResource(privateTypeIndex);
+  const typeIndexes = scopes.map((scope) => ({
+    scope,
+    typeIndexUrl: argv['type-index']
+      ? resolveResourceTarget({ ...context, podRoot, baseIri: podRoot }, argv['type-index']).resourceUrl
+      : modelTypeIndexUrl(podRoot, scope),
+  }));
 
   const plan = {
     webId: context.webId,
     podRoot,
-    privateTypeIndex,
+    scope: argv.scope ?? 'private',
+    typeIndexes,
+    privateTypeIndex: typeIndexes.find((entry) => entry.scope === 'private')?.typeIndexUrl,
+    publicTypeIndex: typeIndexes.find((entry) => entry.scope === 'public')?.typeIndexUrl,
     registrationSource: registrationResolution.source,
     registrations: entries,
-    typeIndexJsonLd: buildModelTypeIndexJsonLdDocument(privateTypeIndex, entries),
+    typeIndexJsonLd: typeIndexes.map((entry) => ({
+      scope: entry.scope,
+      document: buildModelTypeIndexJsonLdDocument(entry.typeIndexUrl, entries),
+    })),
     operations: [
-      { method: 'PUT', resourceUrl: typeIndexContainer, whenMissing: true },
-      { method: 'PUT_OR_PATCH', resourceUrl: privateTypeIndex },
-      { method: 'PATCH', resourceUrl: documentResourceInput(context.webId) },
+      ...typeIndexes.flatMap((entry) => [
+        { method: 'PUT', resourceUrl: containerUrlForResource(entry.typeIndexUrl), whenMissing: true, scope: entry.scope },
+        { method: 'PUT_OR_PATCH', resourceUrl: entry.typeIndexUrl, scope: entry.scope },
+      ]),
+      { method: 'PATCH', resourceUrl: documentResourceInput(context.webId), scope: argv.scope ?? 'private' },
     ],
   };
 
@@ -1112,16 +1051,35 @@ async function executeRegisterCommand(argv: ObjRegisterArgs): Promise<Record<str
     return { plan };
   }
 
-  const operations = [
-    await ensureContainerResource(context, typeIndexContainer),
-    await writeOrPatchTypeIndex({ context, typeIndexUrl: privateTypeIndex, entries }),
-    await patchProfileTypeIndex({ context, podRoot, typeIndexUrl: privateTypeIndex }),
-  ];
+  const operations: Record<string, unknown>[] = [];
+  const profilePatch: { privateTypeIndex?: string; publicTypeIndex?: string } = {};
+  for (const typeIndex of typeIndexes) {
+    operations.push({
+      scope: typeIndex.scope,
+      ...(await ensureContainerResource(context, containerUrlForResource(typeIndex.typeIndexUrl))),
+    });
+    operations.push({
+      scope: typeIndex.scope,
+      ...(await writeOrPatchModelTypeIndex({ context, typeIndexUrl: typeIndex.typeIndexUrl, entries })),
+    });
+    if (typeIndex.scope === 'private') {
+      profilePatch.privateTypeIndex = typeIndex.typeIndexUrl;
+    } else {
+      profilePatch.publicTypeIndex = typeIndex.typeIndexUrl;
+    }
+  }
+  operations.push({
+    scope: argv.scope ?? 'private',
+    ...(await patchProfileTypeIndexes({ context, podRoot, ...profilePatch })),
+  });
 
   return {
     webId: context.webId,
     podRoot,
-    privateTypeIndex,
+    scope: argv.scope ?? 'private',
+    typeIndexes,
+    privateTypeIndex: profilePatch.privateTypeIndex,
+    publicTypeIndex: profilePatch.publicTypeIndex,
     registrationSource: registrationResolution.source,
     registrationCount: entries.length,
     registrations: entries,
@@ -1205,10 +1163,11 @@ const registerCommand: CommandModule<object, ObjRegisterArgs> = {
   builder: (yargs) =>
     objOptions<ObjRegisterArgs>(yargs)
       .option('pod-root', { type: 'string', description: 'Pod storage root to register. Defaults to the authenticated WebID-derived Pod root.' })
-      .option('type-index', { type: 'string', description: 'Private TypeIndex URL/path. Defaults to settings/privateTypeIndex.ttl under the Pod root.' })
+      .option('scope', { choices: [ 'private', 'public', 'both' ] as const, default: 'private', description: 'TypeIndex scope to register' })
+      .option('type-index', { type: 'string', description: 'TypeIndex URL/path for a single selected scope. Defaults to settings/<scope>TypeIndex.ttl under the Pod root.' })
       .option('dry-run', { type: 'boolean', description: 'Validate and print the registration plan without writing' })
       .option('commit', { type: 'boolean', description: 'Create/patch the TypeIndex and link it from the profile' })
-      .check(mutationModeCheck),
+      .check(mutationModeCheck) as unknown as Argv<ObjRegisterArgs>,
   handler: async (argv) => {
     try {
       const data = await executeRegisterCommand(argv);
@@ -1220,7 +1179,10 @@ const registerCommand: CommandModule<object, ObjRegisterArgs> = {
         console.log(JSON.stringify(data.plan, null, 2));
         return;
       }
-      console.log(`REGISTER ${String(data.registrationCount)} model types -> ${String(data.privateTypeIndex)}`);
+      const targets = Array.isArray(data.typeIndexes)
+        ? data.typeIndexes.map((entry) => `${String((entry as { scope: unknown }).scope)}:${String((entry as { typeIndexUrl: unknown }).typeIndexUrl)}`).join(', ')
+        : String(data.privateTypeIndex ?? data.publicTypeIndex ?? '');
+      console.log(`REGISTER ${String(data.registrationCount)} model types -> ${targets}`);
     } catch (error) {
       handleCliError(error, argv.json);
     }

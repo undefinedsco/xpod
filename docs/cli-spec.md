@@ -316,6 +316,63 @@ Disallowed catalog content:
 If a model is missing from the catalog, `xpod obj` returns `schema_unknown`
 instead of guessing.
 
+### Schema DDL
+
+`xpod schema` is the operational DDL surface for model-backed Pod schema state.
+It may apply, verify, diff, or migrate schema state, but every DDL fact and
+operation plan must come from `@undefineds.co/models` or a catalog derived from
+that package.
+
+`xpod schema` may manage:
+
+- profile links to `solid:privateTypeIndex` and `solid:publicTypeIndex`
+- model `solid:TypeIndex` resources
+- model `solid:TypeRegistration` entries
+- model-declared containers and enumerable storage roots
+- model catalog/schema documents if exported by `@undefineds.co/models`
+- model-owned migration/version markers if exported by `@undefineds.co/models`
+
+`xpod schema` must not:
+
+- accept ad hoc field definitions as authoritative schema
+- invent xpod-local classes, predicates, storage paths, or validation rules
+- silently migrate user data during read/list/export commands
+- delete unknown TypeIndex registrations unless a model-owned migration plan
+  explicitly says they are owned and removable
+
+Required commands:
+
+```bash
+xpod schema list [--pod-root <url>]
+xpod schema describe <class-or-kind> [--pod-root <url>]
+xpod schema diff [--scope private|public|both] [--pod-root <url>]
+xpod schema apply [--scope private|public|both] [--dry-run|--commit] [--pod-root <url>]
+xpod schema verify [--scope private|public|both] [--pod-root <url>]
+xpod schema migrate [--dry-run|--commit] [--pod-root <url>]
+```
+
+Rules:
+
+- `schema list` and `schema describe` expose the models-derived catalog view.
+- `schema diff` compares Pod DDL state against the models-derived plan.
+- `schema apply --dry-run` returns the planned TypeIndex/profile/container
+  operations without writing.
+- `schema apply --commit` creates or patches model-owned TypeIndex resources
+  and profile links. Private scope is only the safe default; public scope must
+  be selectable by the operator or declared by the model catalog.
+- Public scope marks the TypeIndex as `solid:ListedDocument` and links it with
+  `solid:publicTypeIndex`, but it must not silently change Pod ACL/ACP policy.
+- `schema verify` exits with `schema_drift_detected` when required model
+  registrations or profile links are missing.
+- `schema migrate` executes only migrations exported by
+  `@undefineds.co/models`. If the installed models package has no migration API,
+  it must return `unsupported_model` on commit instead of inventing a migration.
+
+TypeIndex is not a field schema. It is only a discovery layer from RDF class to
+registered storage container. Field-level changes, predicate aliases,
+deprecated fields, validation changes, and storage/id rewrites belong in the
+models catalog and migration APIs.
+
 ### Commands
 
 Required commands:
@@ -340,12 +397,14 @@ Rules:
 - `obj export` exports objects by model class or resource kind. Filtering must
   use model fields or RDF predicates known to `@undefineds.co/models`.
 - `obj register` is an idempotent repair/bootstrap command for existing Pods.
-  It creates or patches the private TypeIndex from every model registration
-  exported by `@undefineds.co/models` and links it from the WebID profile. It
-  must not make profile registration the only discovery path for Xpod model
+  It creates or patches the selected TypeIndex scope (`private` by default,
+  or `public` / `both` when explicitly selected) from every model registration
+  exported by `@undefineds.co/models` and links it from the WebID profile.
+  It must not make profile registration the only discovery path for Xpod model
   data. The normal source is the `@undefineds.co/models/interop` JSON-LD model
   TypeIndex catalog; deriving registrations from `solidResources` is only a
-  compatibility path for older model package versions.
+  compatibility path for older model package versions. Prefer `xpod schema
+  apply` for new DDL workflows.
 
 ### Read Discovery
 

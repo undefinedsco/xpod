@@ -5,7 +5,10 @@ import path from 'node:path';
 import * as models from '@undefineds.co/models';
 import type { PodModelDescriptor } from '@undefineds.co/models';
 
+export type ModelTypeIndexScope = 'private' | 'public';
+
 export const PRIVATE_TYPE_INDEX_PATH = 'settings/privateTypeIndex.ttl';
+export const PUBLIC_TYPE_INDEX_PATH = 'settings/publicTypeIndex.ttl';
 const requireFromHere = createRequire(__filename);
 
 export interface ModelTypeIndexEntry {
@@ -52,8 +55,8 @@ export interface ModelTypeIndexJsonLdDocument {
     solid: 'http://www.w3.org/ns/solid/terms#';
   };
   '@id': string;
-  '@type': ['solid:TypeIndex', 'solid:UnlistedDocument'];
-  'foaf:name': 'Private Type Index';
+  '@type': ['solid:TypeIndex', 'solid:ListedDocument' | 'solid:UnlistedDocument'];
+  'foaf:name': string;
   '@graph': ModelTypeIndexJsonLdRegistration[];
 }
 
@@ -159,8 +162,33 @@ function escapeTurtleLiteral(value: string): string {
     .replace(/\r/gu, '\\r');
 }
 
+export function typeIndexLabel(typeIndexUrl: string): string {
+  if (typeIndexUrl.includes('/publicTypeIndex.')) {
+    return 'Public Type Index';
+  }
+  if (typeIndexUrl.includes('/privateTypeIndex.')) {
+    return 'Private Type Index';
+  }
+  return 'Model Type Index';
+}
+
+export function typeIndexDocumentType(typeIndexUrl: string): 'solid:ListedDocument' | 'solid:UnlistedDocument' {
+  return typeIndexUrl.includes('/publicTypeIndex.')
+    ? 'solid:ListedDocument'
+    : 'solid:UnlistedDocument';
+}
+
 export function modelPrivateTypeIndexUrl(podRoot: string): string {
-  return new URL(PRIVATE_TYPE_INDEX_PATH, ensureTrailingSlash(podRoot)).toString();
+  return modelTypeIndexUrl(podRoot, 'private');
+}
+
+export function modelPublicTypeIndexUrl(podRoot: string): string {
+  return modelTypeIndexUrl(podRoot, 'public');
+}
+
+export function modelTypeIndexUrl(podRoot: string, scope: ModelTypeIndexScope): string {
+  const path = scope === 'private' ? PRIVATE_TYPE_INDEX_PATH : PUBLIC_TYPE_INDEX_PATH;
+  return new URL(path, ensureTrailingSlash(podRoot)).toString();
 }
 
 export function buildModelTypeIndexEntries(
@@ -364,6 +392,7 @@ function getModelsInteropCatalog(): ModelTypeIndexCatalogSource | undefined {
 export function buildModelTypeIndexJsonLdDocument(
   typeIndexUrl: string,
   entries: readonly ModelTypeIndexEntry[],
+  label = typeIndexLabel(typeIndexUrl),
 ): ModelTypeIndexJsonLdDocument {
   return {
     '@context': {
@@ -371,8 +400,8 @@ export function buildModelTypeIndexJsonLdDocument(
       solid: 'http://www.w3.org/ns/solid/terms#',
     },
     '@id': typeIndexUrl,
-    '@type': ['solid:TypeIndex', 'solid:UnlistedDocument'],
-    'foaf:name': 'Private Type Index',
+    '@type': ['solid:TypeIndex', typeIndexDocumentType(typeIndexUrl)],
+    'foaf:name': label,
     '@graph': entries.map((entry) => ({
       '@id': `${typeIndexUrl}#${entry.registrationId}`,
       '@type': 'solid:TypeRegistration',
@@ -394,7 +423,11 @@ export function buildModelTypeIndexTemplateData(
   };
 }
 
-export function renderModelTypeIndexTurtle(entries: ModelTypeIndexEntry[]): string {
+export function renderModelTypeIndexTurtle(
+  entries: ModelTypeIndexEntry[],
+  label = 'Private Type Index',
+  documentType: 'solid:ListedDocument' | 'solid:UnlistedDocument' = 'solid:UnlistedDocument',
+): string {
   const registrationBlocks = entries.map((entry) => [
     `<#${entry.registrationId}>`,
     '    a solid:TypeRegistration;',
@@ -408,8 +441,8 @@ export function renderModelTypeIndexTurtle(entries: ModelTypeIndexEntry[]): stri
     '@prefix solid: <http://www.w3.org/ns/solid/terms#>.',
     '',
     '<>',
-    '    a solid:TypeIndex, solid:UnlistedDocument;',
-    '    foaf:name "Private Type Index".',
+    `    a solid:TypeIndex, ${documentType};`,
+    `    foaf:name "${escapeTurtleLiteral(label)}".`,
     '',
     ...registrationBlocks,
     '',
@@ -418,9 +451,12 @@ export function renderModelTypeIndexTurtle(entries: ModelTypeIndexEntry[]): stri
 
 export function buildModelTypeIndexInsertData(typeIndexUrl: string, entries: ModelTypeIndexEntry[]): string {
   const typeIndexSubject = `<${typeIndexUrl}>`;
+  const documentTypeIri = typeIndexDocumentType(typeIndexUrl) === 'solid:ListedDocument'
+    ? 'http://www.w3.org/ns/solid/terms#ListedDocument'
+    : 'http://www.w3.org/ns/solid/terms#UnlistedDocument';
   const triples = [
-    `${typeIndexSubject} a <http://www.w3.org/ns/solid/terms#TypeIndex>, <http://www.w3.org/ns/solid/terms#UnlistedDocument> .`,
-    `${typeIndexSubject} <http://xmlns.com/foaf/0.1/name> "Private Type Index" .`,
+    `${typeIndexSubject} a <http://www.w3.org/ns/solid/terms#TypeIndex>, <${documentTypeIri}> .`,
+    `${typeIndexSubject} <http://xmlns.com/foaf/0.1/name> "${escapeTurtleLiteral(typeIndexLabel(typeIndexUrl))}" .`,
     ...entries.flatMap((entry) => {
       const subject = `<${typeIndexUrl}#${entry.registrationId}>`;
       return [
@@ -438,12 +474,23 @@ export function buildModelTypeIndexInsertData(typeIndexUrl: string, entries: Mod
 export function buildProfileTypeIndexInsertData(input: {
   webId: string;
   podRoot: string;
-  privateTypeIndex: string;
+  privateTypeIndex?: string;
+  publicTypeIndex?: string;
 }): string {
-  return [
+  if (!input.privateTypeIndex && !input.publicTypeIndex) {
+    throw new Error('At least one TypeIndex URL is required.');
+  }
+
+  const triples = [
     'INSERT DATA {',
-    `  <${input.webId}> <http://www.w3.org/ns/solid/terms#privateTypeIndex> <${input.privateTypeIndex}> .`,
-    `  <${input.webId}> <http://www.w3.org/ns/solid/terms#storage> <${ensureTrailingSlash(input.podRoot)}> .`,
-    '}',
-  ].join('\n');
+  ];
+  if (input.privateTypeIndex) {
+    triples.push(`  <${input.webId}> <http://www.w3.org/ns/solid/terms#privateTypeIndex> <${input.privateTypeIndex}> .`);
+  }
+  if (input.publicTypeIndex) {
+    triples.push(`  <${input.webId}> <http://www.w3.org/ns/solid/terms#publicTypeIndex> <${input.publicTypeIndex}> .`);
+  }
+  triples.push(`  <${input.webId}> <http://www.w3.org/ns/solid/terms#storage> <${ensureTrailingSlash(input.podRoot)}> .`);
+  triples.push('}');
+  return triples.join('\n');
 }
