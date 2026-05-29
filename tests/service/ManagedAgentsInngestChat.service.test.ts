@@ -2196,6 +2196,180 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
   });
 
+  it('replays default journaled Pod sync work on the next runtime start', async () => {
+    const originalCssBaseUrl = process.env.CSS_BASE_URL;
+    const originalCssRootFilePath = process.env.CSS_ROOT_FILE_PATH;
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalProvider = process.env.DEFAULT_PROVIDER;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    const originalFetch = globalThis.fetch;
+
+    const podRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-managed-agent-journal-'));
+    const journalRoot = path.join(podRoot, 'control');
+    const workspaceRef = 'https://pod.example/alice/projects/demo/';
+    const mappedWorkspacePath = path.join(podRoot, 'alice/projects/demo');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('remote down', { status: 503 }))
+      .mockResolvedValue(new Response('', { status: 200 }));
+
+    try {
+      process.env.CSS_BASE_URL = 'https://pod.example/';
+      process.env.CSS_ROOT_FILE_PATH = podRoot;
+      process.env.DEFAULT_API_KEY = 'sk-test';
+      process.env.DEFAULT_PROVIDER = 'openai';
+      process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+      globalThis.fetch = fetchMock as any;
+
+      fs.mkdirSync(mappedWorkspacePath, { recursive: true });
+      fs.writeFileSync(path.join(mappedWorkspacePath, 'data.ttl'), '<#me> <https://schema.org/name> "Alice" .\n', 'utf8');
+
+      const driver = new PiAgentRuntimeDriver({
+        piSdk: piSdkMock as any,
+        solidfsJournalRootDir: journalRoot,
+      });
+      const input: RunExecutionInput = {
+        runId: 'run_journal_1',
+        threadId: 'thread_journal',
+        prompt: 'sync workspace',
+        conversation: [],
+        context: {
+          auth: {
+            type: 'solid',
+            webId: 'https://pod.example/alice/profile/card#me',
+            accessToken: 'token-1',
+          },
+        },
+        config: {
+          workspace: workspaceRef,
+          runner: { type: 'pi', protocol: 'pi' },
+        },
+      };
+
+      for await (const _event of driver.start(input)) {
+        // drain
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe('https://pod.example/alice/projects/demo/data.ttl');
+
+      for await (const _event of driver.start({ ...input, runId: 'run_journal_2' })) {
+        // drain
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][0]).toBe('https://pod.example/alice/projects/demo/data.ttl');
+      expect(fetchMock.mock.calls[1][1]?.method).toBe('PUT');
+
+      for await (const _event of driver.start({ ...input, runId: 'run_journal_3' })) {
+        // drain
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalCssBaseUrl === undefined) delete process.env.CSS_BASE_URL;
+      else process.env.CSS_BASE_URL = originalCssBaseUrl;
+      if (originalCssRootFilePath === undefined) delete process.env.CSS_ROOT_FILE_PATH;
+      else process.env.CSS_ROOT_FILE_PATH = originalCssRootFilePath;
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalProvider === undefined) delete process.env.DEFAULT_PROVIDER;
+      else process.env.DEFAULT_PROVIDER = originalProvider;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+      fs.rmSync(podRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('replays default journaled Pod sync work on the next managed runtime start', async () => {
+    const originalCssBaseUrl = process.env.CSS_BASE_URL;
+    const originalCssRootFilePath = process.env.CSS_ROOT_FILE_PATH;
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalProvider = process.env.DEFAULT_PROVIDER;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    const originalFetch = globalThis.fetch;
+
+    const podRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-managed-agent-journal-'));
+    const workspaceRef = 'https://pod.example/alice/projects/demo/';
+    const mappedWorkspacePath = path.join(podRoot, 'alice/projects/demo');
+    const journalRoot = path.join(podRoot, 'control');
+
+    try {
+      process.env.CSS_BASE_URL = 'https://pod.example/';
+      process.env.CSS_ROOT_FILE_PATH = podRoot;
+      process.env.DEFAULT_API_KEY = 'sk-test';
+      process.env.DEFAULT_PROVIDER = 'openai';
+      process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+
+      fs.mkdirSync(mappedWorkspacePath, { recursive: true });
+      fs.writeFileSync(path.join(mappedWorkspacePath, 'data.ttl'), '<#me> <https://schema.org/name> "Alice" .\n', 'utf8');
+
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(new Response('unavailable', { status: 503 }))
+        .mockResolvedValue(new Response('', { status: 200 }));
+      globalThis.fetch = fetchMock as any;
+
+      const driver = new PiAgentRuntimeDriver({
+        piSdk: piSdkMock as any,
+        solidfsJournalRootDir: journalRoot,
+      });
+      const input: RunExecutionInput = {
+        runId: 'run_journal_1',
+        threadId: 'thread_journal',
+        prompt: 'sync workspace',
+        conversation: [],
+        context: {
+          auth: {
+            type: 'solid',
+            webId: 'https://pod.example/alice/profile/card#me',
+            accessToken: 'test-token',
+            tokenType: 'Bearer',
+          },
+        },
+        config: {
+          workspace: workspaceRef,
+          runner: { type: 'pi', protocol: 'pi' },
+        },
+      };
+
+      for await (const _event of driver.start(input)) {
+        // First run records a retryable journal entry because the Pod sync fails.
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe('https://pod.example/alice/projects/demo/data.ttl');
+
+      for await (const _event of driver.start({ ...input, runId: 'run_journal_2' })) {
+        // Second run replays the persisted journal entry before the agent loop.
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][0]).toBe('https://pod.example/alice/projects/demo/data.ttl');
+      expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBe('PUT');
+
+      for await (const _event of driver.start({ ...input, runId: 'run_journal_3' })) {
+        // The checkpoint now covers the file, so prepare should not sync again.
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalCssBaseUrl === undefined) delete process.env.CSS_BASE_URL;
+      else process.env.CSS_BASE_URL = originalCssBaseUrl;
+      if (originalCssRootFilePath === undefined) delete process.env.CSS_ROOT_FILE_PATH;
+      else process.env.CSS_ROOT_FILE_PATH = originalCssRootFilePath;
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalProvider === undefined) delete process.env.DEFAULT_PROVIDER;
+      else process.env.DEFAULT_PROVIDER = originalProvider;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+      fs.rmSync(podRoot, { recursive: true, force: true });
+    }
+  });
+
   it('runs the whole pi agent loop through a sandboxed worker in cloud isolation mode', async () => {
     const driver = new PiAgentRuntimeDriver({
       agentLoopIsolation: 'sandboxed-process',

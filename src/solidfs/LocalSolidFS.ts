@@ -1,16 +1,12 @@
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import {
   cp,
   mkdir,
   mkdtemp,
-  readdir,
   rm,
   stat,
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import {
   MaterializedWorkspace,
@@ -29,14 +25,17 @@ import {
 } from './types';
 import {
   isLineAddressableRdfPath as isRdfPath,
-  rdfContentTypeForPath,
 } from '../storage/rdf/RdfContentTypes';
-
-interface FileSnapshot {
-  relativePath: string;
-  absolutePath: string;
-  version: string;
-}
+import {
+  contentTypeForPath,
+  fileVersion,
+  maybeFileVersion,
+  resolveWorkspaceResource,
+  safeRelativePath,
+  snapshotDirectory,
+  SolidFsFileSnapshot,
+  sourceForProjection,
+} from './SolidFsPathUtils';
 
 export interface LocalSolidFSOptions {
   workRoot?: string;
@@ -72,12 +71,16 @@ export class LocalSolidFS implements SolidFS {
           : isLineAddressableRdfPath
         : undefined;
       const entries = changeFilter ? await snapshotDirectory(sourceRoot, changeFilter) : [];
+      const manifest = this.createManifest(input.workspace, sourceRoot, projection, entries);
+      if (trackChanges && syncer?.initializeWorkspace) {
+        await syncer.initializeWorkspace(manifest, input.context);
+      }
       return new LocalMaterializedWorkspace({
         sourceRoot,
         cwd: sourceRoot,
         projection,
         cleanupOnRollback: false,
-        manifest: this.createManifest(input.workspace, sourceRoot, projection, entries),
+        manifest,
         changeFilter,
         context: input.context,
         syncer: this.syncer,
@@ -163,7 +166,7 @@ export class LocalSolidFS implements SolidFS {
     workspace: string,
     cwd: string,
     projection: SolidFsProjection,
-    snapshots: FileSnapshot[],
+    snapshots: SolidFsFileSnapshot[],
   ): SolidFsManifest {
     const source = sourceForProjection(projection, workspace);
     return {
@@ -408,7 +411,7 @@ class LocalMaterializedWorkspace implements MaterializedWorkspace {
       if (currentVersion === undefined) {
         changes.push({
           path: entry.path,
-        resource: entry.resource ?? resolveWorkspaceResource(this.manifest.workspace, entry.path),
+          resource: entry.resource ?? resolveWorkspaceResource(this.manifest.workspace, entry.path),
           source: entry.source,
           sourcePath: entry.sourcePath,
           contentType: entry.contentType,
@@ -422,7 +425,7 @@ class LocalMaterializedWorkspace implements MaterializedWorkspace {
       if (currentVersion !== entry.workingVersion) {
         changes.push({
           path: entry.path,
-        resource: entry.resource ?? resolveWorkspaceResource(this.manifest.workspace, entry.path),
+          resource: entry.resource ?? resolveWorkspaceResource(this.manifest.workspace, entry.path),
           source: entry.source,
           sourcePath: entry.sourcePath,
           contentType: entry.contentType,
@@ -532,7 +535,7 @@ class LocalMaterializedWorkspace implements MaterializedWorkspace {
   ): SolidFsChange {
     return {
       path: relativePath,
-        resource: resolveWorkspaceResource(this.manifest.workspace, relativePath),
+      resource: resolveWorkspaceResource(this.manifest.workspace, relativePath),
       source: this.entrySource,
       sourcePath,
       contentType: contentTypeForPath(relativePath),
@@ -557,112 +560,6 @@ class LocalMaterializedWorkspace implements MaterializedWorkspace {
   }
 }
 
-function contentTypeForPath(filePath: string): string | undefined {
-  const lower = filePath.toLowerCase();
-  const rdfContentType = rdfContentTypeForPath(lower);
-  if (rdfContentType) {
-    return rdfContentType;
-  }
-  if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.mdown')) {
-    return 'text/markdown';
-  }
-  if (lower.endsWith('.txt') || lower.endsWith('.log')) {
-    return 'text/plain';
-  }
-  return undefined;
-}
-
-function sourceForProjection(projection: SolidFsProjection, workspace: string): SolidFsEntrySource {
-  if (projection === 'hydrated-object') {
-    return 'object';
-  }
-  if (/^https?:/u.test(workspace)) {
-    return 'pod-http';
-  }
-  return 'filesystem';
-}
-
-function resolveWorkspaceResource(workspace: string, relativePath: string): string | undefined {
-  if (path.isAbsolute(workspace)) {
-    return pathToFileURL(path.join(workspace, relativePath)).href;
-  }
-
-  try {
-    const base = new URL(workspace.endsWith('/') ? workspace : `${workspace}/`);
-    const normalized = relativePath.split(path.sep).join('/');
-    return new URL(normalized, base).href;
-  } catch {
-    return undefined;
-  }
-}
-
 function isLineAddressableRdfPath(filePath: string): boolean {
   return isRdfPath(filePath);
-}
-
-function safeRelativePath(input: string): string {
-  const normalized = input.split(/[\\/]+/u).filter((part) => part.length > 0).join(path.sep);
-  if (!normalized || path.isAbsolute(input) || normalized.split(path.sep).includes('..')) {
-    throw new Error(`Invalid SolidFS relative path: ${input}`);
-  }
-  return normalized;
-}
-
-async function maybeFileVersion(filePath: string): Promise<string | undefined> {
-  try {
-    return await fileVersion(filePath);
-  } catch {
-    return undefined;
-  }
-}
-
-async function fileVersion(filePath: string): Promise<string> {
-  const fileStat = await stat(filePath);
-  const hash = createHash('sha256');
-  await new Promise<void>((resolve, reject) => {
-    const stream = createReadStream(filePath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('error', reject);
-    stream.on('end', resolve);
-  });
-  return `${fileStat.size}:${fileStat.mtimeMs}:${hash.digest('hex')}`;
-}
-
-async function snapshotDirectory(
-  root: string,
-  filter?: (relativePath: string) => boolean,
-): Promise<FileSnapshot[]> {
-  const snapshots: FileSnapshot[] = [];
-
-  async function walk(current: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      const absolute = path.join(current, entry.name);
-      const relative = path.relative(root, absolute);
-      if (entry.isDirectory()) {
-        await walk(absolute);
-        continue;
-      }
-      if (!entry.isFile()) {
-        continue;
-      }
-      if (filter && !filter(relative)) {
-        continue;
-      }
-      snapshots.push({
-        relativePath: relative,
-        absolutePath: absolute,
-        version: await fileVersion(absolute),
-      });
-    }
-  }
-
-  await walk(root);
-  return snapshots.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 }

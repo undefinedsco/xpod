@@ -8,7 +8,7 @@ import { getDefaultBaseUrl } from '../service/provider-registry';
 import { getPlatformApiBaseUrl, getPlatformApiKey, getPlatformDefaultModel, getPlatformProviderId } from '../service/platform-ai-config';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
-import { LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, type MaterializedWorkspace, type SolidFS, type SolidFsProjection } from '../../solidfs';
+import { LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, WorkspaceJournaledSolidFsSyncer, type MaterializedWorkspace, type SolidFS, type SolidFsProjection } from '../../solidfs';
 import type {
   AgentRuntimeConfig,
   AgentRuntimeEvent,
@@ -94,6 +94,7 @@ export interface PiAgentRuntimeDriverOptions {
   piSdk?: PiSdk;
   solidfs?: SolidFS;
   solidfsProjection?: SolidFsProjection;
+  solidfsJournalRootDir?: string;
 }
 
 type WarmRuntime = {
@@ -130,7 +131,10 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
 
   public constructor(private readonly options: PiAgentRuntimeDriverOptions = {}) {
     this.solidfs = options.solidfs ?? new LocalSolidFS({
-      syncer: new PodSolidFsSyncer(),
+      syncer: new WorkspaceJournaledSolidFsSyncer({
+        syncer: new PodSolidFsSyncer(),
+        journalRoot: options.solidfsJournalRootDir,
+      }),
       hydrator: new PodSolidFsHydrator(),
     });
   }

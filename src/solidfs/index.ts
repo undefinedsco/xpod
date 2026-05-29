@@ -5,3 +5,4 @@ export * from './PodSolidFsHydrator';
 export * from './RdfIndexSolidFsSyncer';
 export * from './PodSolidFsSyncer';
 export * from './LocalFirstRdfRepresentationResolver';
+export * from './SolidFsSyncJournal';
