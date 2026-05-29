@@ -101,10 +101,8 @@
       setVisibility('response-linkWebId', Boolean(webIdResource));
       setVisibility('mainForm', false);
 
-      // Pod 创建成功后清除 provisionCode
-      if (pc) {
-        sessionStorage.removeItem('provisionCode');
-      }
+      // Keep provisionCode until logout so the account dashboard and consent
+      // stay scoped to the selected Local storage provider.
     });
   })();
 </script>

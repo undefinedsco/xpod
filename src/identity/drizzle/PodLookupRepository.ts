@@ -93,30 +93,47 @@ export class PodLookupRepository {
    * not have to match the storage base URL.
    */
   public async findByWebId(webId: string): Promise<PodLookupResult | undefined> {
+    return (await this.findAllByWebId(webId))[0];
+  }
+
+  /**
+   * Find all Pods linked to a WebID.
+   *
+   * A Cloud WebID can legitimately back both a Cloud Pod and a Local SP Pod.
+   * Callers that are scoped to a storage provider must inspect all candidates
+   * instead of accepting the first account record returned by CSS storage.
+   */
+  public async findAllByWebId(webId: string): Promise<PodLookupResult[]> {
     const normalized = normalizeWebId(webId);
     if (!normalized) {
-      return undefined;
+      return [];
     }
 
+    const results: PodLookupResult[] = [];
     const pods = await this.getAllPods();
     for (const pod of pods) {
       const matchedWebId = getPodWebIds(pod).find((candidate) => normalizeWebId(candidate) === normalized);
       if (matchedWebId) {
-        return {
+        results.push({
           ...pod,
           webId: matchedWebId,
-        };
+        });
       }
     }
+
+    if (results.length > 0) {
+      return results;
+    }
+
     const indexed = await this.findByWebIdIndex(normalized);
     if (!indexed) {
-      return undefined;
+      return [];
     }
     const usage = await this.getUsageByPodId();
-    return {
+    return [{
       ...indexed,
       storageUrl: indexed.storageUrl ?? usage.get(indexed.podId)?.storageUrl,
-    };
+    }];
   }
 
   /**
