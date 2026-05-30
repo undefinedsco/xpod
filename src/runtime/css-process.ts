@@ -64,6 +64,10 @@ export function createCssChildRuntimeConfig(options: {
 }): { configPath: string; cwd?: string } {
   fs.mkdirSync(options.runtimeRoot, { recursive: true });
   const runtimeConfigPath = path.join(options.runtimeRoot, 'css-child-runtime.config.json');
+  const configImportPath = rewriteConfigForFileUrlImportsIfNeeded(
+    path.resolve(options.configPath),
+    path.join(options.runtimeRoot, 'config'),
+  );
   fs.writeFileSync(runtimeConfigPath, JSON.stringify({
     '@context': [
       'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
@@ -71,7 +75,7 @@ export function createCssChildRuntimeConfig(options: {
       'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld',
     ],
     import: [
-      toImportSpecifier(runtimeConfigPath, options.configPath),
+      toImportSpecifier(runtimeConfigPath, configImportPath),
     ],
     '@graph': [],
   }, null, 2), 'utf-8');
@@ -90,6 +94,65 @@ export function createCssChildRuntimeConfig(options: {
     configPath: runtimeConfigPath,
     cwd: options.externalOidcIssuer ? options.runtimeRoot : undefined,
   };
+}
+
+function rewriteConfigForFileUrlImportsIfNeeded(
+  configPath: string,
+  outputDir: string,
+  rewritten = new Map<string, string>(),
+): string {
+  if (!pathNeedsEscapedFileUrl(configPath)) {
+    return configPath;
+  }
+
+  const existing = rewritten.get(configPath);
+  if (existing) {
+    return existing;
+  }
+
+  fs.mkdirSync(outputDir, { recursive: true });
+  const outputPath = path.join(outputDir, path.basename(configPath));
+  rewritten.set(configPath, outputPath);
+
+  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+  parsed.import = rewriteConfigImports(configPath, parsed.import, outputDir, rewritten);
+  fs.writeFileSync(outputPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf-8');
+
+  return outputPath;
+}
+
+function rewriteConfigImports(
+  sourceConfigPath: string,
+  imports: unknown,
+  outputDir: string,
+  rewritten: Map<string, string>,
+): unknown {
+  if (typeof imports === 'string') {
+    return rewriteConfigImport(sourceConfigPath, imports, outputDir, rewritten);
+  }
+
+  if (Array.isArray(imports)) {
+    return imports.map((value) => typeof value === 'string'
+      ? rewriteConfigImport(sourceConfigPath, value, outputDir, rewritten)
+      : value);
+  }
+
+  return imports;
+}
+
+function rewriteConfigImport(
+  sourceConfigPath: string,
+  importValue: string,
+  outputDir: string,
+  rewritten: Map<string, string>,
+): string {
+  if (!importValue.startsWith('./') && !importValue.startsWith('../')) {
+    return importValue;
+  }
+
+  const targetPath = path.resolve(path.dirname(sourceConfigPath), importValue);
+  const rewrittenTargetPath = rewriteConfigForFileUrlImportsIfNeeded(targetPath, outputDir, rewritten);
+  return pathToFileURL(rewrittenTargetPath).href;
 }
 
 export function buildCssArgs(options: {

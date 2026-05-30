@@ -71,7 +71,17 @@ describe('CSS child process env and args', () => {
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = path.join(configDir, 'config', 'local.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, '{"@graph":[]}', 'utf-8');
+    fs.writeFileSync(configPath, JSON.stringify({
+      import: ['./main.json', './xpod.base.json'],
+      '@graph': [],
+    }), 'utf-8');
+    fs.writeFileSync(path.join(path.dirname(configPath), 'main.json'), JSON.stringify({
+      import: ['css:config/app/main/default.json'],
+    }), 'utf-8');
+    fs.writeFileSync(path.join(path.dirname(configPath), 'xpod.base.json'), JSON.stringify({
+      import: ['./resolver.json'],
+    }), 'utf-8');
+    fs.writeFileSync(path.join(path.dirname(configPath), 'resolver.json'), '{}', 'utf-8');
 
     const runtimeConfig = createCssChildRuntimeConfig({
       configPath,
@@ -84,8 +94,30 @@ describe('CSS child process env and args', () => {
     expect(parsed.import).toEqual([
       expect.stringMatching(/^file:\/\//),
     ]);
-    expect(parsed.import?.[0]).toContain('Application%20Support');
-    expect(parsed.import?.[0]).not.toContain('Application Support');
+    expect(parsed.import?.[0]).toContain('/config/local.json');
+    expect(parsed.import?.[0]).toContain('xpod%20css%20runtime-');
+    expect(parsed.import?.[0]).not.toContain('xpod css runtime-');
+
+    const rewrittenLocalPath = path.join(runtimeRoot, 'config', 'local.json');
+    const rewrittenLocal = JSON.parse(fs.readFileSync(rewrittenLocalPath, 'utf-8')) as {
+      import?: string[]
+    };
+    expect(rewrittenLocal.import).toEqual([
+      expect.stringContaining('/config/main.json'),
+      expect.stringContaining('/config/xpod.base.json'),
+    ]);
+    expect(rewrittenLocal.import?.[0]).toContain('xpod%20css%20runtime-');
+    expect(rewrittenLocal.import?.[0]).not.toContain('xpod css runtime-');
+
+    const rewrittenBase = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'config', 'xpod.base.json'), 'utf-8')) as {
+      import?: string[]
+    };
+    expect(rewrittenBase.import).toEqual([
+      expect.stringContaining('/config/resolver.json'),
+    ]);
+    expect(JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'config', 'main.json'), 'utf-8')).import).toEqual([
+      'css:config/app/main/default.json',
+    ]);
   });
 
   it('generates a legacy CSS runtime config without package settings when external oidcIssuer is absent', () => {

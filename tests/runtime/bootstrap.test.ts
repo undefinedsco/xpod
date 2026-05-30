@@ -164,6 +164,7 @@ describe('runtime bootstrap helpers', () => {
 
   it('should write Components config imports as relative paths on Windows paths', () => {
     const writeTextFile = vi.fn();
+    const readTextFile = vi.fn();
     const ensureDir = vi.fn();
     const joinPath = createWindowsJoinPath('D:\\package');
     const runtimeConfigPath = createCssRuntimeConfig({
@@ -174,6 +175,7 @@ describe('runtime bootstrap helpers', () => {
       dirname: (filePath: string): string => path.win32.dirname(filePath),
       ensureDir,
       joinPath,
+      readTextFile,
       writeTextFile,
     });
 
@@ -190,7 +192,10 @@ describe('runtime bootstrap helpers', () => {
   });
 
   it('should escape Components config imports when runtime paths contain spaces', () => {
-    const writeTextFile = vi.fn();
+    const writes = new Map<string, string>();
+    const writeTextFile = vi.fn((filePath: string, content: string) => {
+      writes.set(filePath, content);
+    });
     const ensureDir = vi.fn();
     const joinPath = (...segments: string[]): string => {
       if (segments[0] === PACKAGE_ROOT) {
@@ -198,6 +203,24 @@ describe('runtime bootstrap helpers', () => {
       }
       return path.posix.join(...segments);
     };
+    const readTextFile = vi.fn((filePath: string): string => {
+      const byPath: Record<string, unknown> = {
+        '/Users/alice/Application Support/@undefineds.co/xpod/config/local.json': {
+          import: ['./main.json', './xpod.base.json', './terminal.json', './extensions.local.initializer.json'],
+        },
+        '/Users/alice/Application Support/@undefineds.co/xpod/config/main.json': {
+          import: ['css:config/app/main/default.json'],
+        },
+        '/Users/alice/Application Support/@undefineds.co/xpod/config/xpod.base.json': {
+          import: ['./cli.json', './resolver.json'],
+        },
+        '/Users/alice/Application Support/@undefineds.co/xpod/config/cli.json': {},
+        '/Users/alice/Application Support/@undefineds.co/xpod/config/resolver.json': {},
+        '/Users/alice/Application Support/@undefineds.co/xpod/config/terminal.json': {},
+        '/Users/alice/Application Support/@undefineds.co/xpod/config/extensions.local.initializer.json': {},
+      };
+      return JSON.stringify(byPath[filePath] ?? {});
+    });
     const runtimeConfigPath = createCssRuntimeConfig({
       id: 'space-path',
       mode: 'local',
@@ -206,22 +229,37 @@ describe('runtime bootstrap helpers', () => {
       dirname: (filePath: string): string => path.posix.dirname(filePath),
       ensureDir,
       joinPath,
+      readTextFile,
       writeTextFile,
     });
 
     expect(runtimeConfigPath).toBe('/Users/alice/Application Support/@linx/local/runtimes/xpod/css-runtime.config.json');
-    expect(writeTextFile).toHaveBeenCalledTimes(1);
+    expect(writeTextFile).toHaveBeenCalledTimes(8);
 
-    const [, content] = writeTextFile.mock.calls[0];
-    const parsed = JSON.parse(content);
+    const parsed = JSON.parse(writes.get(runtimeConfigPath) ?? '{}');
     expect(parsed.import).toEqual([
-      'file:///Users/alice/Application%20Support/@undefineds.co/xpod/config/local.json',
+      'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/local.json',
       'file:///Users/alice/Application%20Support/@undefineds.co/xpod/config/runtime-open.json',
+    ]);
+
+    const rewrittenLocal = JSON.parse(writes.get('/Users/alice/Application Support/@linx/local/runtimes/xpod/config/local.json') ?? '{}');
+    expect(rewrittenLocal.import).toEqual([
+      'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/main.json',
+      'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/xpod.base.json',
+      'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/terminal.json',
+      'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/extensions.local.initializer.json',
+    ]);
+
+    const rewrittenBase = JSON.parse(writes.get('/Users/alice/Application Support/@linx/local/runtimes/xpod/config/xpod.base.json') ?? '{}');
+    expect(rewrittenBase.import).toEqual([
+      'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/cli.json',
+      'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/resolver.json',
     ]);
   });
 
   it('should write Components config imports from a package-local runtime dir on Windows cross-drive paths', () => {
     const writeTextFile = vi.fn();
+    const readTextFile = vi.fn();
     const ensureDir = vi.fn();
     const joinPath = createWindowsJoinPath('D:\\package');
     const runtimeConfigPath = createCssRuntimeConfig({
@@ -232,6 +270,7 @@ describe('runtime bootstrap helpers', () => {
       dirname: (filePath: string): string => path.win32.dirname(filePath),
       ensureDir,
       joinPath,
+      readTextFile,
       writeTextFile,
     });
 
@@ -249,6 +288,7 @@ describe('runtime bootstrap helpers', () => {
 
   it('should detect slash-prefixed Windows cross-drive runtime roots', () => {
     const writeTextFile = vi.fn();
+    const readTextFile = vi.fn();
     const ensureDir = vi.fn();
     const joinPath = createWindowsJoinPath('D:\\package');
     const runtimeConfigPath = createCssRuntimeConfig({
@@ -259,6 +299,7 @@ describe('runtime bootstrap helpers', () => {
       dirname: (filePath: string): string => path.win32.dirname(filePath),
       ensureDir,
       joinPath,
+      readTextFile,
       writeTextFile,
     });
 
@@ -276,6 +317,7 @@ describe('runtime bootstrap helpers', () => {
 
   it('should normalize slash-prefixed Windows package roots before writing runtime config', () => {
     const writeTextFile = vi.fn();
+    const readTextFile = vi.fn();
     const ensureDir = vi.fn();
     const joinPath = createWindowsJoinPath('/D:/package');
     const runtimeConfigPath = createCssRuntimeConfig({
@@ -286,6 +328,7 @@ describe('runtime bootstrap helpers', () => {
       dirname: (filePath: string): string => path.win32.dirname(filePath),
       ensureDir,
       joinPath,
+      readTextFile,
       writeTextFile,
     });
 

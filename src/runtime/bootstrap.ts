@@ -263,7 +263,7 @@ export function buildRuntimeShorthand(
 export function createCssRuntimeConfig(
   state: RuntimeBootstrapState,
   open: boolean,
-  platform: Pick<RuntimePlatform, 'dirname' | 'ensureDir' | 'joinPath' | 'writeTextFile'> = nodeRuntimePlatform,
+  platform: Pick<RuntimePlatform, 'dirname' | 'ensureDir' | 'joinPath' | 'readTextFile' | 'writeTextFile'> = nodeRuntimePlatform,
 ): string {
   const configPath = normalizeWindowsAbsolutePath(platform.joinPath(PACKAGE_ROOT, `config/${state.mode}.json`));
   if (!open) {
@@ -284,18 +284,94 @@ export function createCssRuntimeConfig(
     })()
     : normalizeWindowsAbsolutePath(platform.joinPath(runtimeRoot, 'css-runtime.config.json'));
   const openConfigPath = normalizeWindowsAbsolutePath(platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json'));
+  const runtimeConfigDir = platform.dirname(runtimeConfigPath);
+  const runtimeConfigImportPath = rewriteConfigForFileUrlImportsIfNeeded(
+    configPath,
+    platform.joinPath(runtimeConfigDir, 'config'),
+    platform,
+  );
   platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
       'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
       'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld',
     ],
     import: [
-      toConfigImportSpecifier(runtimeConfigPath, configPath),
+      toConfigImportSpecifier(runtimeConfigPath, runtimeConfigImportPath),
       toConfigImportSpecifier(runtimeConfigPath, openConfigPath),
     ],
   }, null, 2));
 
   return runtimeConfigPath;
+}
+
+function rewriteConfigForFileUrlImportsIfNeeded(
+  configPath: string,
+  outputDir: string,
+  platform: Pick<RuntimePlatform, 'dirname' | 'ensureDir' | 'joinPath' | 'readTextFile' | 'writeTextFile'>,
+  rewritten = new Map<string, string>(),
+): string {
+  const normalizedConfigPath = normalizeWindowsAbsolutePath(configPath);
+  if (isWindowsAbsolutePath(normalizedConfigPath) || !pathNeedsEscapedFileUrl(normalizedConfigPath)) {
+    return normalizedConfigPath;
+  }
+
+  const existing = rewritten.get(normalizedConfigPath);
+  if (existing) {
+    return existing;
+  }
+
+  platform.ensureDir(outputDir);
+  const outputPath = normalizeWindowsAbsolutePath(platform.joinPath(outputDir, path.posix.basename(normalizedConfigPath)));
+  rewritten.set(normalizedConfigPath, outputPath);
+
+  const parsed = JSON.parse(platform.readTextFile(normalizedConfigPath)) as Record<string, unknown>;
+  parsed.import = rewriteConfigImports(
+    normalizedConfigPath,
+    parsed.import,
+    outputDir,
+    platform,
+    rewritten,
+  );
+  platform.writeTextFile(outputPath, `${JSON.stringify(parsed, null, 2)}\n`);
+  return outputPath;
+}
+
+function rewriteConfigImports(
+  sourceConfigPath: string,
+  imports: unknown,
+  outputDir: string,
+  platform: Pick<RuntimePlatform, 'dirname' | 'ensureDir' | 'joinPath' | 'readTextFile' | 'writeTextFile'>,
+  rewritten: Map<string, string>,
+): unknown {
+  if (typeof imports === 'string') {
+    return rewriteConfigImport(sourceConfigPath, imports, outputDir, platform, rewritten);
+  }
+
+  if (Array.isArray(imports)) {
+    return imports.map((value) => typeof value === 'string'
+      ? rewriteConfigImport(sourceConfigPath, value, outputDir, platform, rewritten)
+      : value);
+  }
+
+  return imports;
+}
+
+function rewriteConfigImport(
+  sourceConfigPath: string,
+  importValue: string,
+  outputDir: string,
+  platform: Pick<RuntimePlatform, 'dirname' | 'ensureDir' | 'joinPath' | 'readTextFile' | 'writeTextFile'>,
+  rewritten: Map<string, string>,
+): string {
+  if (!importValue.startsWith('./') && !importValue.startsWith('../')) {
+    return importValue;
+  }
+
+  const targetPath = normalizeWindowsAbsolutePath(
+    path.posix.resolve(platform.dirname(sourceConfigPath), importValue),
+  );
+  const rewrittenTargetPath = rewriteConfigForFileUrlImportsIfNeeded(targetPath, outputDir, platform, rewritten);
+  return pathToFileURL(rewrittenTargetPath).href;
 }
 
 export function initRuntimeLogger(
