@@ -1,11 +1,6 @@
 import { Pool } from 'pg';
-import type {
-  Finalizable,
-  Initializable,
-  KeyValueStorage,
-} from '@solid/community-server';
-import { getLoggerFor } from 'global-logger-factory';
 import { getSharedPool, releaseSharedPool } from '../database/PostgresPoolManager';
+import { BaseKeyValueStorage, type BaseKeyValueStorageRow } from './BaseKeyValueStorage';
 
 export interface PostgresKeyValueStorageOptions {
   connectionString: string;
@@ -18,26 +13,14 @@ export interface PostgresKeyValueStorageOptions {
   pool?: Pool;
 }
 
-function assertIdentifier(name: string): void {
-  if (!/^[A-Za-z0-9_]+$/u.test(name)) {
-    throw new Error(`Invalid identifier: "${name}". Only alphanumeric and underscore are allowed.`);
-  }
-}
-
-export class PostgresKeyValueStorage<T = unknown> implements
-  KeyValueStorage<string, T>,
-  Initializable,
-  Finalizable {
-  protected readonly logger = getLoggerFor(this);
+export class PostgresKeyValueStorage<T = unknown> extends BaseKeyValueStorage<T> {
   private readonly pool: Pool;
-  private readonly tableName: string;
   private readonly quotedTableName: string;
-  private readonly namespace: string;
-  private readonly ready: Promise<void>;
   private readonly sharedConnectionString?: string;
 
   public constructor(options: PostgresKeyValueStorageOptions) {
-    // 使用共享的连接池，避免多个组件创建独立连接池导致死锁
+    super(options);
+
     if (options.pool) {
       this.pool = options.pool;
       this.sharedConnectionString = undefined;
@@ -45,102 +28,65 @@ export class PostgresKeyValueStorage<T = unknown> implements
       this.sharedConnectionString = options.connectionString;
       this.pool = getSharedPool({ connectionString: options.connectionString });
     }
-    this.tableName = options.tableName ?? 'internal_kv';
-    this.namespace = options.namespace ?? '';
-    assertIdentifier(this.tableName);
-    this.quotedTableName = this.formatIdentifier(this.tableName);
-    this.ready = this.ensureTable();
+
+    const tableName = options.tableName ?? 'internal_kv';
+    this.quotedTableName = formatIdentifier(tableName);
+    this.setReady(this.ensureTable());
   }
 
-  public async initialize(): Promise<void> {
-    await this.ready;
-  }
-
-  public async finalize(): Promise<void> {
+  protected async closeStorage(): Promise<void> {
     if (!this.sharedConnectionString) {
       return;
     }
     releaseSharedPool({ connectionString: this.sharedConnectionString });
   }
 
-
-  public async has(key: string): Promise<boolean> {
-    await this.ready;
-    const storageKey = this.toStorageKey(key);
+  protected async hasValue(key: string): Promise<boolean> {
     const result = await this.pool.query<{ exists: boolean }>(
       `SELECT EXISTS (SELECT 1 FROM ${this.quotedTableName} WHERE key = $1) AS exists`,
-      [ storageKey ],
+      [ key ],
     );
     return result.rows[0]?.exists ?? false;
   }
 
-  public async get(key: string): Promise<T | undefined> {
-    await this.ready;
-    const storageKey = this.toStorageKey(key);
-    const result = await this.pool.query<{ value: any }>(
+  protected async selectValue(key: string): Promise<unknown | undefined> {
+    const result = await this.pool.query<{ value: unknown }>(
       `SELECT value FROM ${this.quotedTableName} WHERE key = $1 LIMIT 1`,
-      [ storageKey ],
+      [ key ],
     );
     if ((result.rowCount ?? 0) === 0) {
       return undefined;
     }
-    // JSONB column returns object, TEXT column returns string
-    return this.parseValue(result.rows[0].value);
+    return result.rows[0]?.value;
   }
 
-  public async set(key: string, value: T): Promise<this> {
-    await this.ready;
-    const storageKey = this.toStorageKey(key);
-    
-    let payload: string;
-    try {
-      payload = this.validateAndSerialize(value, key);
-    } catch (error: unknown) {
-      this.logger.error(`Failed to serialize value for key "${key}": ${error}`);
-      throw error;
-    }
-    
+  protected async upsertValue(key: string, payload: string): Promise<void> {
     await this.pool.query(
       `INSERT INTO ${this.quotedTableName} (key, value)
        VALUES ($1, $2)
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      [ storageKey, payload ],
+      [ key, payload ],
     );
-    return this;
   }
 
-  public async delete(key: string): Promise<boolean> {
-    await this.ready;
-    const storageKey = this.toStorageKey(key);
+  protected async deleteValue(key: string): Promise<boolean> {
     const result = await this.pool.query(
       `DELETE FROM ${this.quotedTableName} WHERE key = $1`,
-      [ storageKey ],
+      [ key ],
     );
     return (result.rowCount ?? 0) > 0;
   }
 
-  public async *entries(): AsyncIterableIterator<[ string, T ]> {
-    await this.ready;
-    const prefix = this.namespace;
+  protected async selectEntries(prefix: string): Promise<BaseKeyValueStorageRow[]> {
     const query = prefix.length > 0 ?
       `SELECT key, value FROM ${this.quotedTableName} WHERE key LIKE $1` :
       `SELECT key, value FROM ${this.quotedTableName}`;
     const values = prefix.length > 0 ? [ `${prefix}%` ] : [];
-    const result = await this.pool.query<{ key: string; value: any }>(query, values);
-    for (const row of result.rows) {
-      if (!row.key.startsWith(prefix)) {
-        continue;
-      }
-      const logicalKey = row.key.slice(prefix.length);
-      const value = this.parseValue(row.value);
-      if (typeof value === 'undefined') {
-        continue;
-      }
-      yield [ logicalKey, value ];
-    }
+    const result = await this.pool.query<BaseKeyValueStorageRow>(query, values);
+    return result.rows;
   }
 
-  protected async ensureTable(): Promise<void> {
+  private async ensureTable(): Promise<void> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.quotedTableName} (
         key TEXT PRIMARY KEY,
@@ -149,49 +95,11 @@ export class PostgresKeyValueStorage<T = unknown> implements
       )
     `);
   }
+}
 
-  protected toStorageKey(key: string): string {
-    return `${this.namespace}${key}`;
+function formatIdentifier(name: string): string {
+  if (!/^[A-Za-z0-9_]+$/u.test(name)) {
+    throw new Error(`Invalid identifier: "${name}". Only alphanumeric and underscore are allowed.`);
   }
-
-  protected formatIdentifier(name: string): string {
-    return `"${name}"`;
-  }
-
-  protected validateAndSerialize(value: T, key: string): string {
-    try {
-      const payload = JSON.stringify(value ?? null);
-      
-      // Basic validation
-      if (payload === 'undefined') {
-        throw new Error(`Cannot serialize undefined value`);
-      }
-      
-      // Validate JSON can be parsed back
-      JSON.parse(payload);
-      
-      return payload;
-    } catch (error: unknown) {
-      this.logger.error(`JSON serialization failed for key "${key}": ${error}`);
-      throw new Error(`JSON serialization failed for key "${key}": ${error}`);
-    }
-  }
-
-  protected parseValue(raw: any): T | undefined {
-    try {
-      // JSONB column returns object, TEXT column returns string
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      
-      // Handle CSS internal storage format: {"key": "...", "payload": ...}
-      if (parsed && typeof parsed === 'object' && 'key' in parsed && 'payload' in parsed) {
-        return parsed.payload as T;
-      }
-      
-      return parsed as T;
-    } catch (error: unknown) {
-      this.logger.error(`Failed to parse stored value: ${error}. Raw value: ${JSON.stringify(raw)}`);
-      return undefined;
-    }
-  }
-
+  return `"${name}"`;
 }

@@ -1122,7 +1122,7 @@ export class PgQuintStore extends BaseQuintStore {
     );
   }
 
-  private extractExactPredicate(match: TermMatch | undefined): string | undefined {
+  protected override extractExactPredicate(match: TermMatch | undefined): string | undefined {
     if (!match) return undefined;
     if (typeof match === 'object' && 'termType' in match) {
       return termToId(match as Term);
@@ -1134,7 +1134,7 @@ export class PgQuintStore extends BaseQuintStore {
     return undefined;
   }
 
-  private resolveObjectDataTypeForPattern(pattern: QuintPattern): PredicateObjectDataType | undefined {
+  protected override resolveObjectDataTypeForPattern(pattern: QuintPattern): PredicateObjectDataType | undefined {
     const predicate = this.extractExactPredicate(pattern.predicate);
     if (predicate) {
       return getPredicateObjectDataType(predicate, this.options.predicateObjectDataTypes);
