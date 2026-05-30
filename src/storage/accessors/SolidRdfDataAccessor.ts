@@ -29,8 +29,7 @@ import {
   RdfSparqlAdapter,
   UnsupportedSparqlQueryError,
 } from '../rdf/RdfSparqlAdapter';
-import { SolidRdfEngine } from '../rdf/SolidRdfEngine';
-import type { RdfBindingRow, RdfSourceInput } from '../rdf/types';
+import type { RdfBindingRow, RdfEngineLike, RdfSourceInput } from '../rdf/types';
 import type { Quint } from '../quint/types';
 
 const { defaultGraph, namedNode, quad } = DataFactory;
@@ -49,7 +48,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
   private initializing: Promise<void> | null = null;
 
   public constructor(
-    private readonly rdfEngine: SolidRdfEngine,
+    private readonly rdfEngine: RdfEngineLike,
     private readonly identifierStrategy: IdentifierStrategy,
   ) {}
 
@@ -59,9 +58,9 @@ export class SolidRdfDataAccessor implements DataAccessor {
     }
 
     this.initializing ??= Promise.resolve()
-      .then(() => {
-        this.rdfEngine.open();
-        this.rdfEngine.refreshDerivedIndexes();
+      .then(async () => {
+        await this.rdfEngine.open();
+        await this.rdfEngine.refreshDerivedIndexes();
         this.initialized = true;
       })
       .finally(() => {
@@ -89,14 +88,14 @@ export class SolidRdfDataAccessor implements DataAccessor {
 
   public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
     await this.initialize();
-    const quads = this.scanGraph(namedNode(identifier.path));
+    const quads = await this.scanGraph(namedNode(identifier.path));
     return guardStream(Readable.from(quads));
   }
 
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
     await this.initialize();
     const name = namedNode(identifier.path);
-    const quads = this.scanGraph(this.getMetadataNode(name));
+    const quads = await this.scanGraph(this.getMetadataNode(name));
 
     if (quads.length === 0) {
       throw new NotFoundHttpError();
@@ -112,14 +111,15 @@ export class SolidRdfDataAccessor implements DataAccessor {
   public async* getChildren(identifier: ResourceIdentifier): AsyncIterableIterator<RepresentationMetadata> {
     await this.initialize();
     const name = namedNode(identifier.path);
-    for (const entry of this.rdfEngine.scan({
+    const scan = await this.rdfEngine.scan({
       pattern: {
         graph: name,
         subject: name,
         predicate: LDP.terms.contains,
       },
       options: { order: ['object'] },
-    }).quads) {
+    });
+    for (const entry of scan.quads) {
       if (entry.object.termType === 'NamedNode') {
         yield new RepresentationMetadata(entry.object as NamedNode);
       }
@@ -131,7 +131,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
     addResourceMetadata(metadata, true);
     updateModifiedDate(metadata);
     const { name, parent } = this.getRelatedNames(identifier);
-    this.replaceMetadata(name, metadata, parent);
+    await this.replaceMetadata(name, metadata, parent);
   }
 
   public async writeDocument(
@@ -154,9 +154,9 @@ export class SolidRdfDataAccessor implements DataAccessor {
     updateModifiedDate(metadata);
     metadata.removeAll(CONTENT_TYPE_TERM);
     const { name, parent } = this.getRelatedNames(identifier);
-    this.rdfEngine.delete({ graph: name });
-    this.replaceMetadata(name, metadata, parent);
-    this.putGraphQuads(name, triples);
+    await this.rdfEngine.delete({ graph: name });
+    await this.replaceMetadata(name, metadata, parent);
+    await this.putGraphQuads(name, triples);
   }
 
   public async writeRdfSourceDocument(
@@ -177,8 +177,8 @@ export class SolidRdfDataAccessor implements DataAccessor {
 
     metadata.removeAll(CONTENT_TYPE_TERM);
     const { name, parent } = this.getRelatedNames(identifier);
-    this.replaceMetadata(name, metadata, parent);
-    this.rdfEngine.replaceSource(
+    await this.replaceMetadata(name, metadata, parent);
+    await this.rdfEngine.replaceSource(
       quads.map((value) => quad(value.subject, value.predicate, value.object, name) as Quad),
       source,
     );
@@ -187,10 +187,10 @@ export class SolidRdfDataAccessor implements DataAccessor {
   public async deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void> {
     await this.initialize();
     const { name, parent } = this.getRelatedNames(identifier);
-    this.rdfEngine.deleteSource(identifier.path);
-    this.rdfEngine.delete({ graph: this.getMetadataNode(name) });
+    await this.rdfEngine.deleteSource(identifier.path);
+    await this.rdfEngine.delete({ graph: this.getMetadataNode(name) });
     if (parent) {
-      this.rdfEngine.delete({
+      await this.rdfEngine.delete({
         graph: parent,
         subject: parent,
         predicate: LDP.terms.contains,
@@ -203,21 +203,21 @@ export class SolidRdfDataAccessor implements DataAccessor {
     await this.initialize();
     const { name, parent } = this.getRelatedNames(identifier);
     const metaName = this.getMetadataNode(name);
-    this.rdfEngine.delete({ graph: metaName });
+    await this.rdfEngine.delete({ graph: metaName });
     const inserts = this.toGraphQuads(metaName, metadata.quads());
     if (parent) {
       inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
     }
-    this.rdfEngine.put(inserts);
+    await this.rdfEngine.put(inserts);
   }
 
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
     await this.initialize();
     const { name, parent } = this.getRelatedNames(identifier);
-    this.rdfEngine.delete({ graph: name });
-    this.rdfEngine.delete({ graph: this.getMetadataNode(name) });
+    await this.rdfEngine.delete({ graph: name });
+    await this.rdfEngine.delete({ graph: this.getMetadataNode(name) });
     if (parent) {
-      this.rdfEngine.delete({
+      await this.rdfEngine.delete({
         graph: parent,
         subject: parent,
         predicate: LDP.terms.contains,
@@ -228,11 +228,12 @@ export class SolidRdfDataAccessor implements DataAccessor {
 
   public async getDataByGraphPrefix(prefix: string): Promise<Quint[]> {
     await this.initialize();
-    return this.rdfEngine.scan({
+    const scan = await this.rdfEngine.scan({
       pattern: {
         graph: { $startsWith: prefix },
       },
-    }).quads as Quint[];
+    });
+    return scan.quads as Quint[];
   }
 
   public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
@@ -242,7 +243,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
         defaultGraph: baseIri,
       });
       for (const operation of delta.operations) {
-        this.applyUpdateOperation(operation);
+        await this.applyUpdateOperation(operation);
       }
     } catch (error: unknown) {
       if (error instanceof DisabledSparqlFeatureError) {
@@ -257,14 +258,14 @@ export class SolidRdfDataAccessor implements DataAccessor {
     }
   }
 
-  private applyUpdateOperation(operation: RdfSparqlUpdateDeltaOperation): void {
+  private async applyUpdateOperation(operation: RdfSparqlUpdateDeltaOperation): Promise<void> {
     if (operation.type === 'insert') {
-      this.rdfEngine.put(operation.quads);
+      await this.rdfEngine.put(operation.quads);
       return;
     }
     if (operation.type === 'delete') {
       for (const value of operation.quads) {
-        this.rdfEngine.delete({
+        await this.rdfEngine.delete({
           graph: value.graph,
           subject: value.subject,
           predicate: value.predicate,
@@ -275,26 +276,29 @@ export class SolidRdfDataAccessor implements DataAccessor {
     }
 
     if (operation.type === 'deleteWhere') {
-      this.deleteMaterialized(operation.template, this.rdfEngine.query(operation.query).bindings);
+      const result = await this.rdfEngine.query(operation.query);
+      await this.deleteMaterialized(operation.template, result.bindings);
       return;
     }
 
     if (operation.type === 'insertWhere') {
-      this.rdfEngine.put(this.adapter.materializeDeleteWhere(
+      const result = await this.rdfEngine.query(operation.query);
+      await this.rdfEngine.put(this.adapter.materializeDeleteWhere(
         operation.inserts,
-        this.rdfEngine.query(operation.query).bindings,
+        result.bindings,
       ));
       return;
     }
 
-    const rows = this.rdfEngine.query(operation.query).bindings;
-    this.deleteMaterialized(operation.deletes, rows);
-    this.rdfEngine.put(this.adapter.materializeDeleteWhere(operation.inserts, rows));
+    const result = await this.rdfEngine.query(operation.query);
+    const rows = result.bindings;
+    await this.deleteMaterialized(operation.deletes, rows);
+    await this.rdfEngine.put(this.adapter.materializeDeleteWhere(operation.inserts, rows));
   }
 
-  private deleteMaterialized(template: RdfSparqlUpdateTemplate[], rows: RdfBindingRow[]): void {
+  private async deleteMaterialized(template: RdfSparqlUpdateTemplate[], rows: RdfBindingRow[]): Promise<void> {
     for (const value of this.adapter.materializeDeleteWhere(template, rows)) {
-      this.rdfEngine.delete({
+      await this.rdfEngine.delete({
         graph: value.graph,
         subject: value.subject,
         predicate: value.predicate,
@@ -323,25 +327,26 @@ export class SolidRdfDataAccessor implements DataAccessor {
     return identifier.path.startsWith('meta:');
   }
 
-  private replaceMetadata(name: NamedNode, metadata: RepresentationMetadata, parent?: NamedNode): void {
+  private async replaceMetadata(name: NamedNode, metadata: RepresentationMetadata, parent?: NamedNode): Promise<void> {
     const metaName = this.getMetadataNode(name);
-    this.rdfEngine.delete({ graph: metaName });
+    await this.rdfEngine.delete({ graph: metaName });
     const inserts = this.toGraphQuads(metaName, metadata.quads());
     if (parent) {
       inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
     }
-    this.rdfEngine.put(inserts);
+    await this.rdfEngine.put(inserts);
   }
 
-  private putGraphQuads(graph: NamedNode, triples: Quad[]): void {
-    this.rdfEngine.put(this.toGraphQuads(graph, triples));
+  private async putGraphQuads(graph: NamedNode, triples: Quad[]): Promise<void> {
+    await this.rdfEngine.put(this.toGraphQuads(graph, triples));
   }
 
-  private scanGraph(graph: NamedNode): Quad[] {
-    return this.rdfEngine.scan({
+  private async scanGraph(graph: NamedNode): Promise<Quad[]> {
+    const scan = await this.rdfEngine.scan({
       pattern: { graph },
       options: { order: ['subject', 'predicate', 'object'] },
-    }).quads.map((value) => quad(value.subject, value.predicate, value.object) as Quad);
+    });
+    return scan.quads.map((value) => quad(value.subject, value.predicate, value.object) as Quad);
   }
 
   private toGraphQuads(graph: NamedNode, quads: Quad[]): Quad[] {

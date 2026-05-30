@@ -84,13 +84,27 @@ SolidRdfEngine
 
 第一阶段只实现 embedded 形态：`SolidRdfEngine` 直接作为 Xpod 进程内 RDF engine 接入 Components.js。当前阶段不新增 sidecar/backend selector、不暴露 Components.js backend 注册面，也不区分 cloud/local 的查询引擎类型；cloud/local 只允许在同一行为契约下替换持久化实现。
 
+实现约束：
+
+- `SolidRdfEngine` 的对外消费面必须同时容纳同步与异步实现，调用方只依赖 `RdfEngineLike`。
+- local SQLite 仍可保持同步内部实现；cloud PostgreSQL 版可以异步实现同一契约，不要求把 SQLite 内核伪装成异步。
+- `SolidRdfSparqlEngine`、`SolidRdfDataAccessor` 这类上层适配器只依赖行为契约，不直接依赖具体 SQLite 类。
+
+同步/异步边界：
+
+- facts 主路径必须同步可见。`put`、`replaceSource`、`deleteSource`、`delete`、`applyDelta` 返回成功后，同一个 `RdfEngineLike` 的 `scan` / `query` 必须能立即读到新的 facts。
+- RDF-3X projection / graph stats 是异步派生层。写入只推进 facts `data_version` 并把派生层标记为 dirty，不在请求路径自动重建 stats。
+- `scan` / `query` 以 facts + covering index 为可用主路径，不能依赖 RDF-3X stats 已同步；当前 planner 可表达的 shape 可以直接走 PG facts SQL。
+- `storageStats()` 只报告当前 facts 与 derived stats 的同步状态，不触发补建。`rdf3x.syncedWithFacts=false` 是合法运行态。
+- `refreshDerivedIndexes()` 是显式补建入口，供启动、维护任务、测试或运维调用。它可以从当前 facts 重建 `rdf3x_*` stats，但不是普通查询的隐式前置步骤。
+
 当前决策口径：
 
 - Xpod 的默认 RDF 引擎已经切到自有 `SolidRdfEngine`。local/cloud/xpod/bun profile 的 `DefaultSparqlEngine` 均指向 `SolidRdfSparqlEngine -> SolidRdfEngine`，结构化 LDP 写入默认走 `MixDataAccessor -> SolidRdfDataAccessor -> SolidRdfEngine`。
 - RDF-3X target core 是 local 和 cloud 都必须具备的基础查询内核。
 - 当前 `RdfQuadIndex` 不再继续扩写成“准 RDF-3X”；它只服务迁移、benchmark 和 fallback。
 - `Rdf3xIndex` 是 first embedded slice：已覆盖 RDF-3X 数据布局、projection stats、permutation scan、基于 bound-slot fanout 的 connected BGP join order、term merge join、受控 index-only join，以及受控 single-pattern scan / count、object text contains/endsWith scan、同 pattern tuple VALUES scan、required BGP tuple VALUES join、OPTIONAL / UNION / dependent group 内部 BGP join、join count / basic numeric aggregate / grouped count / grouped numeric aggregate primary path；大多数 models 查询带 exact graph 或 graph prefix，因此这类 shape 在 scan/count/join 中优先以 `rdf_quads` facts source 收窄候选，而不是先扫三元组 permutation 再后置过滤 graph；六排列扫描复用 `rdf_quads_spog` / `rdf_quads_posg` 等 facts covering index，不再额外物化 `rdf3x_spo` / `rdf3x_pos` / `rdf3x_triple_membership` 这类事实副本；文件型 `SolidRdfEngine` 标准配置会自动把它接成 selective primary，仍保留 `RdfQuadIndex` 作为迁移、benchmark 和 fallback。
-- `SolidRdfEngine` 已接入内部 `derivedIndexProfile`：`baseline` 只保留事实层 `RdfQuadIndex` baseline，`rdf3x` 会启用 `Rdf3xIndex` 并维护 projection / graph stats。文件型 `index: { path }` 标准配置默认进入 `rdf3x` profile 并启用 selective primary；`:memory:` 和外部传入的 `RdfQuadIndex` 实例不会隐式创建第二个连接，仍可用显式 `rdf3xIndex + rdf3xPrimary` 进入 primary。query 只有在 RDF-3X 当前可表达的 single-pattern scan/count 或 required BGP（可含无 `UNDEF` 且所有变量均由 required BGP 绑定的 tuple VALUES；pattern 只含 exact term、exact term `$in` / `$notIn`、graph prefix、object range、object text contains/endsWith，以及 term-type/language/datatype metadata filter）时，才把 scan / count / join / join count / basic numeric aggregate / grouped count / grouped numeric aggregate 下推到 `Rdf3xIndex`。object range 会对 typed numeric literal 走 numeric 语义，对其他 term 走 lexical 语义；object text contains/endsWith 走 `rdf_terms.normalized_text` candidate scan 并用原始 value 复验大小写语义。当前 index-only 只用于 `DISTINCT` term projection、无 graph 变量/graph 约束、无 pagination count 的 join；这种 shape 的 named graph multiplicity 对最终 term 集合无影响，所以可直接利用 facts covering index 执行，其他 shape 仍回到 facts source。OPTIONAL / UNION / dependent join 仍由 local query layer 保持控制流语义，但其内部无 group-local `VALUES` 的多 pattern BGP 可走 RDF-3X join。未覆盖 shape 自动保持 `RdfQuadIndex` fallback，不暴露 backend selector。
+- `SolidRdfEngine` 已接入内部 `derivedIndexProfile`：`baseline` 只保留事实层 `RdfQuadIndex` baseline，`rdf3x` 会启用 `Rdf3xIndex` 并维护 projection / graph stats。文件型 `index: { path }` 标准配置默认进入 `rdf3x` profile 并启用 selective primary；`:memory:` 和外部传入的 `RdfQuadIndex` 实例不会隐式创建第二个连接，仍可用显式 `rdf3xIndex + rdf3xPrimary` 进入 primary。query 只有在 RDF-3X 当前可表达的 single-pattern scan/count 或 required BGP（可含无 `UNDEF` 且所有变量均由 required BGP 绑定的 tuple VALUES；pattern 只含 exact term、exact term `$in` / `$notIn`、graph prefix、object range、object text contains/endsWith，以及 term-type/language/datatype metadata filter）时，才把 scan / count / join / join count / basic numeric aggregate / grouped count / grouped numeric aggregate 下推到 `Rdf3xIndex`。object range 会对 typed numeric literal 走 numeric 语义，对其他 term 走 lexical 语义；object text contains/endsWith 走 `rdf_terms.normalized_text` candidate scan 并用原始 value 复验大小写语义。当前 index-only 只用于 `DISTINCT` term projection、无 graph 变量/graph 约束、无 pagination count 的 join；这种 shape 的 named graph multiplicity 对最终 term 集合无影响，所以可直接利用 facts covering index 执行，其他 shape 仍回到 facts source。OPTIONAL / UNION / dependent join 仍由 local query layer 保持控制流语义，但其内部无 group-local `VALUES` 的多 pattern BGP 可走 RDF-3X join。未覆盖 shape 自动保持 `RdfQuadIndex` fallback，不暴露 backend selector。这个边界同样为未来 PostgreSQL 实现保留空间：同一行为契约下，`RdfEngineLike` 的具体实现可以异步落到 PG，而不改变上层 SPARQL / DataAccessor API。
 - `SolidRdfSparqlEngine` 的 compatibility fallback 已改为显式 opt-in；local/cloud 默认 `DefaultSparqlEngine` 不配置 fallback，因此 server-owned Pod 的 `/-/sparql` 默认不会把 unsupported shape 转给 Comunica。迁移测试、oracle 和外部 source 兼容路径仍可显式传入 `QuintstoreSparqlEngine`。
 - QLever-style capability 是 cloud 更早需要吸收的增强能力，不是 cloud 的替代内核。
 - 对外不暴露 “RDF-3X backend / QLever backend” 选择；即便后续引入 QLever，也只能作为 `SolidRdfEngine` 内部执行层、result table 或 cache layer。
@@ -104,7 +118,7 @@ SolidRdfEngine
 | local | `SolidRdfEngine` + RDF-3X target planner/index | SQLite / PGlite、本机可移动索引 | 可延后吸收 vocabulary/text/result-table 思路，不引入额外常驻服务 |
 | cloud | 同一套 `SolidRdfEngine` + RDF-3X target planner/index | PostgreSQL / shared storage、租约、索引生命周期、Pod 迁移 | 更早吸收 result table、query cache、全文/RDF 一体化、高并发执行层 |
 
-cloud/local 的差异只能体现在持久化、并发控制、租约、索引生命周期和部署形态上；查询语义、planner 能力和对外协议仍由同一个 `SolidRdfEngine` 行为契约约束。
+cloud/local 的差异只能体现在持久化、并发控制、租约、索引生命周期和部署形态上；查询语义、planner 能力和对外协议仍由同一个 `SolidRdfEngine` 行为契约约束。这里的 PostgreSQL 版不是 `PgQuintStore` 的复用，而是同一 `RdfEngineLike` 契约下的 RDF facts/index 实现。
 
 ## 数据权威
 
@@ -174,6 +188,8 @@ RDF engine 不能按“每吸收一个算法就永久多存一整套数据”的
 和 `totalToFactsRatio`。benchmark report 也要带这份 storage profile 数据。
 空间放大只能作为显式 profile 决策或 benchmark gate 的结果进入默认配置，不能因为
 实现了 RDF-3X / QLever-style 能力就默认叠满所有物化结构。
+cloud `PostgresRdfEngine` 也遵循同一口径：facts 表和 facts covering index 是同步查询主路径，
+`rdf3x_*` projection / graph stats 只计入可重建 derived space。
 
 ## Server / Client 边界
 

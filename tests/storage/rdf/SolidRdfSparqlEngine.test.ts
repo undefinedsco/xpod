@@ -12,6 +12,9 @@ import {
   SolidRdfEngine,
   SolidRdfSparqlEngine,
   UnsupportedSparqlQueryError,
+  type RdfEngineLike,
+  type RdfLocalQuery,
+  type RdfLocalQueryResult,
 } from '../../../src/storage/rdf';
 import { arrayFromStream } from '../../helpers/arrayFromStream';
 
@@ -130,6 +133,46 @@ describe('SolidRdfSparqlEngine', () => {
       fallbackRate: 0,
     });
     expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
+  it('awaits async RDF engine implementations on the primary path', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [
+        {
+          message: namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_async'),
+          content: literal('async hello'),
+        },
+      ],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 1,
+        joinedRows: 1,
+        returnedRows: 1,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+      }
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results).toHaveLength(1);
+    expect(results[0].get('message')?.value).toBe('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_async');
+    expect(results[0].get('content')?.value).toBe('async hello');
+    expect(asyncEngine.calls).toEqual(['query']);
+    expect(engine.getMetrics().lastPrimary).toMatchObject({
+      operation: 'queryBindings',
+      returnedRows: 1,
+      plan: ['AsyncRdfEngineFake'],
+    });
   });
 
   it('scopes implicit default graph reads exactly for resource base paths', async () => {
@@ -5482,3 +5525,89 @@ describe('SolidRdfSparqlEngine', () => {
     }
   });
 });
+
+class AsyncRdfEngineFake implements RdfEngineLike {
+  public readonly calls: string[] = [];
+
+  public constructor(private readonly result: RdfLocalQueryResult) {}
+
+  public async open(): Promise<void> {
+    this.calls.push('open');
+  }
+
+  public async close(): Promise<void> {
+    this.calls.push('close');
+  }
+
+  public async put(): Promise<void> {
+    this.calls.push('put');
+  }
+
+  public async replaceSource(): Promise<void> {
+    this.calls.push('replaceSource');
+  }
+
+  public async deleteSource(): Promise<number> {
+    this.calls.push('deleteSource');
+    return 0;
+  }
+
+  public async delete(): Promise<number> {
+    this.calls.push('delete');
+    return 0;
+  }
+
+  public async applyDelta(): Promise<{ deletedRows: number; insertedRows: number }> {
+    this.calls.push('applyDelta');
+    return { deletedRows: 0, insertedRows: 0 };
+  }
+
+  public async scan(): Promise<ReturnType<SolidRdfEngine['scan']>> {
+    this.calls.push('scan');
+    return {
+      quads: [],
+      metrics: {
+        indexChoice: 'fake',
+        queryPlan: ['fake'],
+        scannedRows: 0,
+        matchedRows: 0,
+      },
+    };
+  }
+
+  public async query(_query: RdfLocalQuery): Promise<RdfLocalQueryResult> {
+    this.calls.push('query');
+    return this.result;
+  }
+
+  public async refreshDerivedIndexes(): Promise<ReturnType<SolidRdfEngine['refreshDerivedIndexes']>> {
+    this.calls.push('refreshDerivedIndexes');
+    return {
+      derivedIndexProfile: 'baseline',
+      factsDataVersion: 0,
+    };
+  }
+
+  public async storageStats(): Promise<ReturnType<SolidRdfEngine['storageStats']>> {
+    this.calls.push('storageStats');
+    return {
+      derivedIndexProfile: 'baseline',
+      facts: {
+        quadCount: 0,
+        termCount: 0,
+        sourceCount: 0,
+        databaseBytes: 0,
+        tableBytes: 0,
+        indexBytes: 0,
+        dataVersion: 0,
+        index: {},
+        tables: {},
+      },
+      factsBytes: 0,
+      derivedBytes: 0,
+      totalBytes: 0,
+      derivedToFactsRatio: 1,
+      totalToFactsRatio: 1,
+    };
+  }
+}

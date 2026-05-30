@@ -33,6 +33,7 @@ import type {
   RdfVectorSearchOptions,
   RdfVectorSearchResult,
   RdfVectorSourceInput,
+  RdfEngineLike,
 } from './types';
 import { RdfQuadIndex } from './RdfQuadIndex';
 import { Rdf3xIndex } from './Rdf3xIndex';
@@ -53,7 +54,7 @@ export interface SolidRdfEngineOptions {
   autoOpen?: boolean;
 }
 
-export class SolidRdfEngine {
+export class SolidRdfEngine implements RdfEngineLike {
   public readonly index: RdfQuadIndex;
   public readonly textIndex?: RdfTextIndex;
   public readonly vectorIndex?: RdfVectorIndex;

@@ -10,6 +10,9 @@ import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
 import { QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/CompatibilitySparqlEngine';
 export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 export type {
+  RdfEngineLike,
+  RdfEngineStorageStats,
+  RdfDerivedIndexRefreshResult,
   RdfIndexStats,
   RdfIndexSpaceObject,
   RdfIndexMetrics,
@@ -29,6 +32,7 @@ export type {
   SolidRdfSparqlEngineOptions,
   SolidRdfSparqlFallback,
 } from './storage/rdf/SolidRdfSparqlEngine';
+export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
@@ -76,6 +80,7 @@ import { RdfSparqlAdapter } from './storage/rdf/RdfSparqlAdapter';
 import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
 import { ShadowRdfQuintStore } from './storage/rdf/ShadowRdfQuintStore';
 import { SolidRdfEngine } from './storage/rdf/SolidRdfEngine';
+import { PostgresRdfEngine } from './storage/rdf/PostgresRdfEngine';
 import { SolidRdfSparqlEngine } from './storage/rdf/SolidRdfSparqlEngine';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
@@ -197,6 +202,7 @@ export {
   RdfSparqlAdapter,
   ShadowRdfQuintStore,
   SolidRdfEngine,
+  PostgresRdfEngine,
   SolidRdfSparqlEngine,
   // Vector exports
   VectorStore,

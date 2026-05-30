@@ -7,11 +7,10 @@ import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
 import type { QuintPattern } from '../quint/types';
 import { DisabledSparqlFeatureError, RdfSparqlAdapter, UnsupportedSparqlQueryError } from './RdfSparqlAdapter';
 import type { ShadowRdfQuintStore } from './ShadowRdfQuintStore';
-import type { SolidRdfEngine } from './SolidRdfEngine';
-import type { RdfBindingRow, RdfLocalQueryResult, RdfQueryTermPattern } from './types';
+import type { RdfBindingRow, RdfEngineLike, RdfLocalQueryResult, RdfQueryTermPattern } from './types';
 
 export interface SolidRdfSparqlEngineOptions {
-  rdfEngine: SolidRdfEngine;
+  rdfEngine: RdfEngineLike;
   fallback?: SparqlEngine;
   shadowStore?: ShadowRdfQuintStore;
   enablePrimary?: boolean;
@@ -79,7 +78,7 @@ const rdfDataFactory = new RdfDataFactory();
 
 export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly adapter = new RdfSparqlAdapter();
-  private readonly rdfEngine: SolidRdfEngine;
+  private readonly rdfEngine: RdfEngineLike;
   private readonly fallback?: SparqlEngine;
   private readonly shadowStore?: ShadowRdfQuintStore;
   private readonly enablePrimary: boolean;
@@ -89,7 +88,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   private lastFallback?: SolidRdfSparqlFallbackMetric;
 
   public constructor(
-    rdfEngine: SolidRdfEngine,
+    rdfEngine: RdfEngineLike,
     fallback?: SparqlEngine,
     shadowStore?: ShadowRdfQuintStore,
     enablePrimary = true,
@@ -156,7 +155,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
 
     const start = Date.now();
     try {
-      const quads = this.executeQuadsPrimary(query, basePath, 'queryQuads', start);
+      const quads = await this.executeQuadsPrimary(query, basePath, 'queryQuads', start);
       return new ArrayIterator(quads);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
@@ -182,26 +181,26 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       let computedInserts = 0;
       for (const operation of delta.operations) {
         if (operation.type === 'delete') {
-          deletedRows += this.rdfEngine.applyDelta(operation.quads.map(quadToPattern), []).deletedRows;
+          deletedRows += (await this.rdfEngine.applyDelta(operation.quads.map(quadToPattern), [])).deletedRows;
         } else if (operation.type === 'insert') {
-          this.rdfEngine.applyDelta([], operation.quads);
+          await this.rdfEngine.applyDelta([], operation.quads);
         } else if (operation.type === 'insertDeleteWhere') {
-          const result = this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(operation.query);
           const deletes = this.adapter.materializeDeleteWhere(operation.deletes, result.bindings);
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
           computedDeletes += deletes.length;
           computedInserts += inserts.length;
-          deletedRows += this.rdfEngine.applyDelta(deletes.map(quadToPattern), inserts).deletedRows;
+          deletedRows += (await this.rdfEngine.applyDelta(deletes.map(quadToPattern), inserts)).deletedRows;
         } else if (operation.type === 'insertWhere') {
-          const result = this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(operation.query);
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
           computedInserts += inserts.length;
-          this.rdfEngine.applyDelta([], inserts);
+          await this.rdfEngine.applyDelta([], inserts);
         } else {
-          const result = this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(operation.query);
           const quads = this.adapter.materializeDeleteWhere(operation.template, result.bindings);
           computedDeletes += quads.length;
-          deletedRows += this.rdfEngine.applyDelta(quads.map(quadToPattern), []).deletedRows;
+          deletedRows += (await this.rdfEngine.applyDelta(quads.map(quadToPattern), [])).deletedRows;
         }
       }
       this.recordPrimary('queryVoid', start, {
@@ -238,7 +237,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
 
     const start = Date.now();
     try {
-      const quads = this.executeConstructPrimary(`
+      const quads = await this.executeConstructPrimary(`
         CONSTRUCT { ?s ?p ?o }
         WHERE { GRAPH <${escapeIri(graph)}> { ?s ?p ?o } }
       `, basePath, 'constructGraph', start);
@@ -259,7 +258,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
 
     const start = Date.now();
     try {
-      const result = this.executeSelectPrimary(`
+      const result = await this.executeSelectPrimary(`
         SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }
       `, basePath, 'listGraphs', start);
       const graphs = new Set<string>();
@@ -372,32 +371,32 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     }
   }
 
-  private executeSelectPrimary(
+  private async executeSelectPrimary(
     query: string,
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
-  ): RdfLocalQueryResult {
+  ): Promise<RdfLocalQueryResult> {
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType !== 'SELECT') {
       throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce bindings`);
     }
-    const result = this.rdfEngine.query(compiled.query);
+    const result = await this.rdfEngine.query(compiled.query);
     this.recordPrimary(operation, start, result);
     return result;
   }
 
-  private executeConstructPrimary(
+  private async executeConstructPrimary(
     query: string,
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
-  ): Quad[] {
+  ): Promise<Quad[]> {
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType !== 'CONSTRUCT' || !compiled.constructTemplate) {
       throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce quads`);
     }
-    const result = this.rdfEngine.query(compiled.query);
+    const result = await this.rdfEngine.query(compiled.query);
     const quads = this.adapter.materializeConstruct(compiled.constructTemplate, result.bindings, rdfDataFactory.defaultGraph() as Term);
     this.recordPrimary(operation, start, {
       ...result,
@@ -411,15 +410,15 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     return quads;
   }
 
-  private executeQuadsPrimary(
+  private async executeQuadsPrimary(
     query: string,
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
-  ): Quad[] {
+  ): Promise<Quad[]> {
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType === 'CONSTRUCT' && compiled.constructTemplate) {
-      const result = this.rdfEngine.query(compiled.query);
+      const result = await this.rdfEngine.query(compiled.query);
       const quads = this.adapter.materializeConstruct(compiled.constructTemplate, result.bindings, rdfDataFactory.defaultGraph() as Term);
       this.recordPrimary(operation, start, {
         ...result,
@@ -438,14 +437,14 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce quads`);
   }
 
-  private executeDescribePrimary(
+  private async executeDescribePrimary(
     query: import('./types').RdfLocalQuery,
     targets: RdfQueryTermPattern[],
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
-  ): Quad[] {
-    const seed = this.rdfEngine.query(query);
+  ): Promise<Quad[]> {
+    const seed = await this.rdfEngine.query(query);
     const quads: Quad[] = [];
     const seen = new Set<string>();
 
@@ -455,7 +454,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
         if (!subject || subject.termType !== 'NamedNode') {
           continue;
         }
-        const describe = this.rdfEngine.query({
+        const describe = await this.rdfEngine.query({
           patterns: [
             {
               subject,
