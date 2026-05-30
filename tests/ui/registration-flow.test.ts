@@ -212,6 +212,63 @@ describe('completeRegistrationProvisioning', () => {
     })).toBe(false);
   });
 
+  it('keeps Local SP scope when the current account already has a Cloud pod and a provisionCode is present', async () => {
+    const provisionCode = makeProvisionCode({
+      spDomain: 'node-0000.undefineds.co',
+      spUrl: 'http://localhost:5737',
+      serviceToken: 'service-token',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, {
+        controls: {
+          account: {
+            pod: '/.account/account/pod',
+            webId: '/.account/account/webid',
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        webIdLinks: { 'https://id.example/alice/profile/card#me': '/.account/account/webid/1' },
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        entries: [
+          {
+            webId: 'https://id.example/alice/profile/card#me',
+            storageUrl: 'https://node-0000.undefineds.co/alice/',
+          },
+        ],
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        webIdLinks: { 'https://id.example/alice/profile/card#me': '/.account/account/webid/1' },
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        entries: [
+          {
+            webId: 'https://id.example/alice/profile/card#me',
+            storageUrl: 'https://node-0000.undefineds.co/alice/',
+          },
+        ],
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { client: { client_id: 'linx' } }));
+
+    const result = await completeRegistrationProvisioning({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      accountToken: 'acct-token-1',
+      idpIndex: 'https://id.example/',
+      username: 'alice',
+      provisionCode,
+    });
+
+    expect(result).toEqual({ createdPod: true, redirectedToConsent: true });
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/.account/account/webid');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('http://localhost:5737/provision/webids');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('/.account/account/webid');
+    expect(fetchMock.mock.calls[4]?.[0]).toBe('http://localhost:5737/provision/webids');
+    expect(fetchMock.mock.calls[5]?.[0]).toBe('/.account/oidc/consent/');
+  });
+
   it('fails registration when authenticated account controls do not expose pod creation', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(200, {
@@ -356,4 +413,8 @@ function jsonResponse(status: number, json: unknown): Response {
     status,
     json: async () => json,
   } as Response;
+}
+
+function makeProvisionCode(payload: Record<string, unknown>): string {
+  return `${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}.signature`;
 }

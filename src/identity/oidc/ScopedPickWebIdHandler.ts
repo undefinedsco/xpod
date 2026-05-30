@@ -40,6 +40,7 @@ export interface ScopedPickWebIdHandlerOptions {
 
 export interface PodWebIdLookupRepository {
   findByWebId: (webId: string) => Promise<PodLookupResult | undefined>;
+  findAllByWebId?: (webId: string) => Promise<PodLookupResult[]>;
 }
 
 interface WebIdEntry extends Record<string, Json | undefined> {
@@ -150,8 +151,10 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     }
 
     try {
-      const pod = await this.podLookupRepository.findByWebId(webId);
-      return pod && matchesTargetStorage(pod, targetStorageUrl) ? pod : undefined;
+      const pods = this.podLookupRepository.findAllByWebId
+        ? await this.podLookupRepository.findAllByWebId(webId)
+        : await this.podLookupRepository.findByWebId(webId).then((pod) => pod ? [pod] : []);
+      return pods.find((pod) => matchesTargetStorage(pod, targetStorageUrl));
     } catch (error) {
       this.logger.warn(`Pod lookup unavailable for WebID ${webId}: ${error}`);
       return undefined;

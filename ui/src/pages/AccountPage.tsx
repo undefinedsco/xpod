@@ -2,13 +2,24 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { buildPodCreatePayload, clearStoredProvisionCode } from '../utils/pod';
+import { buildPodCreatePayload, clearStoredProvisionCode, getStoredProvisionCode } from '../utils/pod';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
+import {
+  currentStorageScope,
+  dedupeScopedEntries,
+  lookupProvisionScopedWebIds,
+  scopedEntriesFromPods,
+  storageModeFor,
+  storageUrlBelongsToRoot,
+  type ScopedWebIdEntry,
+  type StorageMode,
+} from '../utils/storage-scope';
 
 interface PodView {
   id: string;
-  resourceUrl: string;
+  resourceUrl?: string;
   name?: string;
+  storageMode?: StorageMode;
 }
 
 interface AccountPodResponse {
@@ -17,6 +28,16 @@ interface AccountPodResponse {
 
 interface AccountWebIdResponse {
   webIdLinks?: Record<string, string>;
+}
+
+interface AccountClientCredentialsResponse {
+  clientCredentials?: Record<string, string>;
+}
+
+interface CredentialView {
+  id: string;
+  resourceUrl: string;
+  webId?: string;
 }
 
 function derivePodName(storageUrl: string): string | undefined {
@@ -40,6 +61,36 @@ function normalizePods(json: AccountPodResponse | undefined): PodView[] {
     resourceUrl,
     name: derivePodName(storageUrl),
   }));
+}
+
+function podsFromScopedEntries(entries: ScopedWebIdEntry[]): PodView[] {
+  const seen = new Set<string>();
+  const pods: PodView[] = [];
+  for (const entry of entries) {
+    if (seen.has(entry.storageUrl)) {
+      continue;
+    }
+    seen.add(entry.storageUrl);
+    pods.push({
+      id: entry.storageUrl,
+      name: derivePodName(entry.storageUrl),
+      storageMode: entry.storageMode ?? storageModeFor(entry.webId, entry.storageUrl),
+    });
+  }
+  return pods;
+}
+
+function webIdsFromScopedEntries(entries: ScopedWebIdEntry[]): string[] {
+  return Array.from(new Set(entries.map((entry) => entry.webId)));
+}
+
+function credentialIdFromUrl(resourceUrl: string): string {
+  try {
+    const segments = new URL(resourceUrl).pathname.split('/').filter(Boolean);
+    return segments[segments.length - 1] ?? resourceUrl;
+  } catch {
+    return resourceUrl.split('/').filter(Boolean).pop() ?? resourceUrl;
+  }
 }
 
 /**
@@ -80,7 +131,7 @@ export function AccountPage() {
   const [podName, setPodName] = useState('');
   const [showLinkWebId, setShowLinkWebId] = useState(false);
   const [linkWebIdUrl, setLinkWebIdUrl] = useState('');
-  const [credentials, setCredentials] = useState<{ id: string; secret?: string }[]>([]);
+  const [credentials, setCredentials] = useState<CredentialView[]>([]);
   const [newCredential, setNewCredential] = useState<{ id: string; secret: string } | null>(null);
   const [showCreateCredential, setShowCreateCredential] = useState(false);
   const [credentialWebId, setCredentialWebId] = useState('');
@@ -113,48 +164,82 @@ export function AccountPage() {
 
   const fetchData = async () => {
     try {
+      const scope = currentStorageScope(window.location.origin, getStoredProvisionCode());
       let nextWebIds: string[] = [];
+      let allWebIds: string[] = [];
+      let allPods: PodView[] = [];
+      let scopedEntries: ScopedWebIdEntry[] = [];
       if (controls?.account?.webId) {
         const res = await fetch(controls.account.webId, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountWebIdResponse;
           const links = json.webIdLinks || {};
-          nextWebIds = Object.keys(links);
-          setWebIds(nextWebIds);
+          allWebIds = Object.keys(links);
         } else {
           // No WebIDs yet is normal for new users
-          setWebIds([]);
+          allWebIds = [];
         }
-      } else {
-        setWebIds([]);
       }
+
       if (controls?.account?.pod) {
         const res = await fetch(controls.account.pod, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountPodResponse;
-          const nextPods = normalizePods(json);
-          setPods(nextPods);
-          setPodStateSettling(nextPods.length === 0 && nextWebIds.length > 0);
+          allPods = normalizePods(json);
         } else {
-          setPods([]);
-          setPodStateSettling(nextWebIds.length > 0);
+          allPods = [];
         }
+      }
+
+      if (scope) {
+        scopedEntries = scope.serviceToken
+          ? await lookupProvisionScopedWebIds(fetch, allWebIds, scope)
+          : scopedEntriesFromPods(allWebIds, allPods.map((pod) => pod.id), scope);
+      }
+      scopedEntries = dedupeScopedEntries(scopedEntries);
+      nextWebIds = webIdsFromScopedEntries(scopedEntries);
+      const nextPods = scope?.serviceToken
+        ? podsFromScopedEntries(scopedEntries)
+        : allPods
+          .filter((pod) => storageUrlBelongsToRoot(pod.id, scope?.root))
+          .map((pod) => ({
+            ...pod,
+            storageMode: scopedEntries.find((entry) => storageUrlBelongsToRoot(pod.id, entry.storageUrl))?.storageMode,
+          }));
+
+      setWebIds(nextWebIds);
+      setPods(nextPods);
+      if (scope) {
+        setPodStateSettling(nextPods.length === 0 && allWebIds.length > 0);
       } else {
-        setPods([]);
         setPodStateSettling(false);
       }
+
       if (controls?.account?.clientCredentials) {
         const res = await fetch(controls.account.clientCredentials, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
-          const json = await res.json();
+          const json = await res.json() as AccountClientCredentialsResponse;
           const creds = json.clientCredentials || {};
-          setCredentials(Object.entries(creds).map(([id]) => ({ id })));
+          const scopedWebIds = new Set(nextWebIds);
+          setCredentials(Object.entries(creds)
+            .map(([resourceUrl, webId]) => ({
+              id: credentialIdFromUrl(resourceUrl),
+              resourceUrl,
+              webId: typeof webId === 'string' ? webId : undefined,
+            }))
+            .filter((credential) => credential.webId && scopedWebIds.has(credential.webId)));
         } else {
           setCredentials([]);
         }
+      } else {
+        setCredentials([]);
       }
     } catch (err) {
       console.error('Failed to fetch account data:', err);
+      setWebIds([]);
+      setPods([]);
+      setCredentials([]);
+      setPodStateSettling(false);
     }
   };
 
@@ -172,6 +257,7 @@ export function AccountPage() {
         credentials: 'include',
       });
       if (res.ok) {
+        clearStoredProvisionCode();
         clearAccountSessionToken();
         await refetchControls();
         navigate('/.account/');
@@ -195,8 +281,6 @@ export function AccountPage() {
         body: JSON.stringify(buildPodCreatePayload(podName)),
       });
       if (res.ok) {
-        // Pod 创建成功后清除 provisionCode
-        clearStoredProvisionCode();
         setPodName('');
         setShowCreatePod(false);
         // Refresh controls to get updated endpoints (including new WebID)
@@ -219,6 +303,11 @@ export function AccountPage() {
   const handleLinkWebId = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!controls?.account?.webId || !linkWebIdUrl.trim()) return;
+    if (getStoredProvisionCode()) {
+      setShowLinkWebId(false);
+      alert('Link WebID is disabled in a scoped Local storage session.');
+      return;
+    }
     setIsLoading(true);
     try {
       const res = await fetch(controls.account.webId, {
@@ -242,11 +331,12 @@ export function AccountPage() {
     }
   };
 
-  const handleDeletePod = async (podUrl: string) => {
-    if (!confirm(`Delete pod ${podUrl}? This cannot be undone.`)) return;
+  const handleDeletePod = async (pod: PodView) => {
+    if (!pod.resourceUrl) return;
+    if (!confirm(`Delete pod ${pod.id}? This cannot be undone.`)) return;
     setIsLoading(true);
     try {
-      const res = await fetch(podUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      const res = await fetch(pod.resourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -298,11 +388,11 @@ export function AccountPage() {
     setShowCreateCredential(true);
   };
 
-  const handleDeleteCredential = async (credId: string) => {
+  const handleDeleteCredential = async (credential: CredentialView) => {
     if (!confirm('Delete this credential? This cannot be undone.')) return;
     setIsLoading(true);
     try {
-      const res = await fetch(credId, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      const res = await fetch(credential.resourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -412,7 +502,7 @@ export function AccountPage() {
                         )}
                       </div>
                     </div>
-                    <button onClick={() => handleDeletePod(pod.resourceUrl)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Delete Pod">
+                    <button onClick={() => handleDeletePod(pod)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Delete Pod">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </li>
@@ -625,7 +715,7 @@ export function AccountPage() {
                           <Key className="w-4 h-4 text-zinc-400 shrink-0" />
                           <span className="text-xs font-mono text-zinc-600 truncate">{cred.id}</span>
                         </div>
-                        <button onClick={() => handleDeleteCredential(cred.id)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Revoke Key">
+                        <button onClick={() => handleDeleteCredential(cred)} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Revoke Key">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </li>
