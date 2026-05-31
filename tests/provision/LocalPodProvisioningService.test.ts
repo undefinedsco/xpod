@@ -63,6 +63,11 @@ describe('LocalPodProvisioningService', () => {
         'https://node-0000.undefineds.co/alice/profile/',
       )).toBe(true);
       expect(hasQuad(
+        'https://node-0000.undefineds.co/alice/profile/',
+        'http://www.w3.org/ns/ldp#contains',
+        'https://node-0000.undefineds.co/alice/profile/.acr',
+      )).toBe(true);
+      expect(hasQuad(
         'https://node-0000.undefineds.co/alice/profile/card',
         'http://xmlns.com/foaf/0.1/primaryTopic',
         'https://id.undefineds.co/alice/profile/card#me',
@@ -76,6 +81,16 @@ describe('LocalPodProvisioningService', () => {
         'https://node-0000.undefineds.co/alice/.acr#root',
         'http://www.w3.org/ns/solid/acp#resource',
         'https://node-0000.undefineds.co/alice/',
+      )).toBe(true);
+      expect(hasQuad(
+        'https://node-0000.undefineds.co/alice/profile/.acr#profile',
+        'http://www.w3.org/ns/solid/acp#resource',
+        'https://node-0000.undefineds.co/alice/profile/',
+      )).toBe(true);
+      expect(hasQuad(
+        'https://node-0000.undefineds.co/alice/profile/.acr#profile',
+        'http://www.w3.org/ns/solid/acp#accessControl',
+        'https://node-0000.undefineds.co/alice/profile/.acr#publicReadAccess',
       )).toBe(true);
     } finally {
       quadsDb.close();
@@ -217,6 +232,11 @@ describe('LocalPodProvisioningService', () => {
         'https://node-0000.undefineds.co/alice/profile/card.acl#public',
         'http://www.w3.org/ns/auth/acl#accessTo',
         'https://node-0000.undefineds.co/alice/profile/card',
+      )).toBe(true);
+      expect(hasQuad(
+        'https://node-0000.undefineds.co/alice/profile/.acl#public',
+        'http://www.w3.org/ns/auth/acl#accessTo',
+        'https://node-0000.undefineds.co/alice/profile/',
       )).toBe(true);
       expect(quads.some((quad) =>
         quad.predicate.value === 'http://www.w3.org/ns/solid/acp#resource')).toBe(false);

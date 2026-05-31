@@ -1,0 +1,21 @@
+# ACR for the public profile container
+@prefix acl: <http://www.w3.org/ns/auth/acl#>.
+@prefix acp: <http://www.w3.org/ns/solid/acp#>.
+
+# The profile container must be readable so clients can discover the
+# profile document through normal Solid container reads.
+<#profile>
+    a acp:AccessControlResource;
+    acp:resource <./>;
+    acp:accessControl <#publicReadAccess>.
+
+<#publicReadAccess>
+    a acp:AccessControl;
+    acp:apply [
+        a acp:Policy;
+        acp:allow acl:Read;
+        acp:anyOf [
+            a acp:Matcher;
+            acp:agent acp:PublicAgent
+        ]
+    ].

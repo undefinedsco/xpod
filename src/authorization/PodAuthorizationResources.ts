@@ -24,6 +24,7 @@ export interface PodAuthorizationResourceInput {
 export interface PodAuthorizationResourceOutput {
   kind: PodAuthorizationResourceKind;
   rootResourceUrl: string;
+  profileResourceUrl: string;
   cardResourceUrl: string;
   quads: Quad[];
 }
@@ -36,21 +37,29 @@ export function buildPodAuthorizationResources(input: PodAuthorizationResourceIn
   const authMode = normalizeAuthMode(input.authMode);
   const kind = resourceKindForAuthMode(authMode);
   const rootResourceUrl = input.iri(input.podUrl, kind === 'acl' ? '.acl' : '.acr');
+  const profileResourceUrl = input.iri(input.podUrl, kind === 'acl' ? 'profile/.acl' : 'profile/.acr');
   const cardResourceUrl = input.iri(input.podUrl, kind === 'acl' ? 'profile/card.acl' : 'profile/card.acr');
   const quads = kind === 'acl'
-    ? buildWebAclQuads(input, rootResourceUrl, cardResourceUrl)
-    : buildAcpQuads(input, rootResourceUrl, cardResourceUrl);
+    ? buildWebAclQuads(input, rootResourceUrl, profileResourceUrl, cardResourceUrl)
+    : buildAcpQuads(input, rootResourceUrl, profileResourceUrl, cardResourceUrl);
 
   return {
     kind,
     rootResourceUrl,
+    profileResourceUrl,
     cardResourceUrl,
     quads,
   };
 }
 
-function buildAcpQuads(input: PodAuthorizationResourceInput, rootAcrUrl: string, cardAcrUrl: string): Quad[] {
+function buildAcpQuads(
+  input: PodAuthorizationResourceInput,
+  rootAcrUrl: string,
+  profileAcrUrl: string,
+  cardAcrUrl: string,
+): Quad[] {
   const rootGraph = namedNode(rootAcrUrl);
+  const profileGraph = namedNode(profileAcrUrl);
   const cardGraph = namedNode(cardAcrUrl);
   const root = namedNode(`${rootAcrUrl}#root`);
   const rootPublicRead = namedNode(`${rootAcrUrl}#publicReadAccess`);
@@ -59,10 +68,15 @@ function buildAcpQuads(input: PodAuthorizationResourceInput, rootAcrUrl: string,
   const rootPublicMatcher = blankNode(`public-matcher-${input.stableId(rootAcrUrl)}`);
   const rootOwnerPolicy = blankNode(`owner-policy-${input.stableId(rootAcrUrl)}`);
   const rootOwnerMatcher = blankNode(`owner-matcher-${input.stableId(rootAcrUrl)}`);
+  const profile = namedNode(`${profileAcrUrl}#profile`);
+  const profilePublicRead = namedNode(`${profileAcrUrl}#publicReadAccess`);
+  const profilePolicy = blankNode(`profile-policy-${input.stableId(profileAcrUrl)}`);
+  const profileMatcher = blankNode(`profile-matcher-${input.stableId(profileAcrUrl)}`);
   const card = namedNode(`${cardAcrUrl}#card`);
   const cardPublicRead = namedNode(`${cardAcrUrl}#publicReadAccess`);
   const cardPolicy = blankNode(`card-policy-${input.stableId(cardAcrUrl)}`);
   const cardMatcher = blankNode(`card-matcher-${input.stableId(cardAcrUrl)}`);
+  const profileUrl = input.iri(input.podUrl, 'profile/');
 
   return [
     quad(root, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControlResource`), rootGraph),
@@ -87,6 +101,17 @@ function buildAcpQuads(input: PodAuthorizationResourceInput, rootAcrUrl: string,
     quad(rootOwnerMatcher, namedNode(`${RDF}type`), namedNode(`${ACP}Matcher`), rootGraph),
     quad(rootOwnerMatcher, namedNode(`${ACP}agent`), namedNode(input.webId), rootGraph),
 
+    quad(profile, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControlResource`), profileGraph),
+    quad(profile, namedNode(`${ACP}resource`), namedNode(profileUrl), profileGraph),
+    quad(profile, namedNode(`${ACP}accessControl`), profilePublicRead, profileGraph),
+    quad(profilePublicRead, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControl`), profileGraph),
+    quad(profilePublicRead, namedNode(`${ACP}apply`), profilePolicy, profileGraph),
+    quad(profilePolicy, namedNode(`${RDF}type`), namedNode(`${ACP}Policy`), profileGraph),
+    quad(profilePolicy, namedNode(`${ACP}allow`), namedNode(`${ACL}Read`), profileGraph),
+    quad(profilePolicy, namedNode(`${ACP}anyOf`), profileMatcher, profileGraph),
+    quad(profileMatcher, namedNode(`${RDF}type`), namedNode(`${ACP}Matcher`), profileGraph),
+    quad(profileMatcher, namedNode(`${ACP}agent`), namedNode(`${ACP}PublicAgent`), profileGraph),
+
     quad(card, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControlResource`), cardGraph),
     quad(card, namedNode(`${ACP}resource`), namedNode(input.cardUrl), cardGraph),
     quad(card, namedNode(`${ACP}accessControl`), cardPublicRead, cardGraph),
@@ -100,13 +125,22 @@ function buildAcpQuads(input: PodAuthorizationResourceInput, rootAcrUrl: string,
   ];
 }
 
-function buildWebAclQuads(input: PodAuthorizationResourceInput, rootAclUrl: string, cardAclUrl: string): Quad[] {
+function buildWebAclQuads(
+  input: PodAuthorizationResourceInput,
+  rootAclUrl: string,
+  profileAclUrl: string,
+  cardAclUrl: string,
+): Quad[] {
   const rootGraph = namedNode(rootAclUrl);
+  const profileGraph = namedNode(profileAclUrl);
   const cardGraph = namedNode(cardAclUrl);
   const rootPublic = namedNode(`${rootAclUrl}#public`);
   const rootOwner = namedNode(`${rootAclUrl}#owner`);
+  const profilePublic = namedNode(`${profileAclUrl}#public`);
+  const profileOwner = namedNode(`${profileAclUrl}#owner`);
   const cardPublic = namedNode(`${cardAclUrl}#public`);
   const cardOwner = namedNode(`${cardAclUrl}#owner`);
+  const profileUrl = input.iri(input.podUrl, 'profile/');
 
   return [
     quad(rootPublic, namedNode(`${RDF}type`), namedNode(`${ACL}Authorization`), rootGraph),
@@ -120,6 +154,17 @@ function buildWebAclQuads(input: PodAuthorizationResourceInput, rootAclUrl: stri
     quad(rootOwner, namedNode(`${ACL}mode`), namedNode(`${ACL}Read`), rootGraph),
     quad(rootOwner, namedNode(`${ACL}mode`), namedNode(`${ACL}Write`), rootGraph),
     quad(rootOwner, namedNode(`${ACL}mode`), namedNode(`${ACL}Control`), rootGraph),
+
+    quad(profilePublic, namedNode(`${RDF}type`), namedNode(`${ACL}Authorization`), profileGraph),
+    quad(profilePublic, namedNode(`${ACL}agentClass`), namedNode(`${FOAF}Agent`), profileGraph),
+    quad(profilePublic, namedNode(`${ACL}accessTo`), namedNode(profileUrl), profileGraph),
+    quad(profilePublic, namedNode(`${ACL}mode`), namedNode(`${ACL}Read`), profileGraph),
+    quad(profileOwner, namedNode(`${RDF}type`), namedNode(`${ACL}Authorization`), profileGraph),
+    quad(profileOwner, namedNode(`${ACL}agent`), namedNode(input.webId), profileGraph),
+    quad(profileOwner, namedNode(`${ACL}accessTo`), namedNode(profileUrl), profileGraph),
+    quad(profileOwner, namedNode(`${ACL}mode`), namedNode(`${ACL}Read`), profileGraph),
+    quad(profileOwner, namedNode(`${ACL}mode`), namedNode(`${ACL}Write`), profileGraph),
+    quad(profileOwner, namedNode(`${ACL}mode`), namedNode(`${ACL}Control`), profileGraph),
 
     quad(cardPublic, namedNode(`${RDF}type`), namedNode(`${ACL}Authorization`), cardGraph),
     quad(cardPublic, namedNode(`${ACL}agentClass`), namedNode(`${FOAF}Agent`), cardGraph),

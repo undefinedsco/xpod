@@ -1,0 +1,18 @@
+# ACL resource for the public profile container
+@prefix acl: <http://www.w3.org/ns/auth/acl#>.
+@prefix foaf: <http://xmlns.com/foaf/0.1/>.
+
+# The profile container must be readable so clients can discover the
+# profile document through normal Solid container reads.
+<#public>
+    a acl:Authorization;
+    acl:agentClass foaf:Agent;
+    acl:accessTo <./>;
+    acl:mode acl:Read.
+
+# The owner has full access to the profile container.
+<#owner>
+    a acl:Authorization;
+    acl:agent <{{webId}}>;
+    acl:accessTo <./>;
+    acl:mode acl:Read, acl:Write, acl:Control.
