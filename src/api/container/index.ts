@@ -15,6 +15,7 @@ import { registerCloudServices } from './cloud';
 import { registerLocalServices } from './local';
 import { registerBusinessToken } from './business-token';
 import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
+import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
@@ -84,6 +85,8 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     port: apiPort,
     host: process.env.API_HOST ?? '0.0.0.0',
     socketPath: process.env.API_SOCKET_PATH,
+    authMode: resolveAuthModeFromEnv(process.env),
+    rdfIndexPath: process.env.CSS_RDF_INDEX_PATH,
     databaseUrl: process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? '',
     redisUrl: process.env.CSS_REDIS_CLIENT ?? process.env.REDIS_URL,
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],

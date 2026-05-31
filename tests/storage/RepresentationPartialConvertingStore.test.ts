@@ -30,7 +30,8 @@ describe('RepresentationPartialConvertingStore', () => {
   };
 
   const metadataStrategy = {
-    isAuxiliaryIdentifier: vi.fn((identifier: ResourceIdentifier) => identifier.path.endsWith('.acr')),
+    isAuxiliaryIdentifier: vi.fn((identifier: ResourceIdentifier) =>
+      identifier.path.endsWith('.acr') || identifier.path.endsWith('.acl')),
     getAuxiliaryIdentifier: vi.fn(),
     hasAuxiliaryIdentifier: vi.fn(),
     getAuxiliaryPath: vi.fn(),

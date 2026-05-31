@@ -168,4 +168,60 @@ describe('LocalPodProvisioningService', () => {
       identityDb.close();
     }
   });
+
+  it('can create WebACL authorization resources when authMode is acl', async () => {
+    const rootDir = createTestDir('local-pod-provisioning-acl');
+    createdDirs.push(rootDir);
+    const sparqlPath = path.join(rootDir, 'quadstore.sqlite');
+    const identityPath = path.join(rootDir, 'identity.sqlite');
+    const service = new LocalPodProvisioningService({
+      baseUrl: 'https://node-0000.undefineds.co/',
+      rootDir: path.join(rootDir, 'data'),
+      sparqlEndpoint: `sqlite:${sparqlPath}`,
+      identityDbUrl: `sqlite:${identityPath}`,
+      oidcIssuer: 'https://id.undefineds.co/',
+      authMode: 'acl',
+    });
+
+    await service.createPod({
+      podName: 'alice',
+      webId: 'https://id.undefineds.co/alice/profile/card#me',
+    });
+
+    const quadsDb = sqliteRuntime.openDatabase(sparqlPath, { readonly: true });
+    try {
+      const rows = quadsDb.prepare<{
+        graph: string;
+        subject: string;
+        predicate: string;
+        object: string;
+      }>('SELECT graph, subject, predicate, object FROM quints').all();
+      const quads = rows.map(rowToQuad);
+      const hasQuad = (subject: string, predicate: string, object: string): boolean =>
+        quads.some((quad) =>
+          quad.subject.value === subject &&
+          quad.predicate.value === predicate &&
+          quad.object.value === object);
+
+      expect(hasQuad(
+        'https://node-0000.undefineds.co/alice/.acl#owner',
+        'http://www.w3.org/ns/auth/acl#accessTo',
+        'https://node-0000.undefineds.co/alice/',
+      )).toBe(true);
+      expect(hasQuad(
+        'https://node-0000.undefineds.co/alice/.acl#owner',
+        'http://www.w3.org/ns/auth/acl#default',
+        'https://node-0000.undefineds.co/alice/',
+      )).toBe(true);
+      expect(hasQuad(
+        'https://node-0000.undefineds.co/alice/profile/card.acl#public',
+        'http://www.w3.org/ns/auth/acl#accessTo',
+        'https://node-0000.undefineds.co/alice/profile/card',
+      )).toBe(true);
+      expect(quads.some((quad) =>
+        quad.predicate.value === 'http://www.w3.org/ns/solid/acp#resource')).toBe(false);
+    } finally {
+      quadsDb.close();
+    }
+  });
 });

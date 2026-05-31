@@ -4,6 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildApiChildEnv, buildCssArgs, buildCssChildEnv, createCssChildRuntimeConfig } from '../../src/runtime/css-process';
 
+const ACP_AUTH_IMPORTS = [
+  'css:config/ldp/authorization/acp.json',
+  'css:config/util/auxiliary/acr.json',
+];
+const ACL_AUTH_IMPORTS = [
+  'css:config/ldp/authorization/webacl.json',
+  'css:config/util/auxiliary/acl.json',
+];
+
 describe('CSS child process env and args', () => {
   it('keeps external IdP out of CSS CLI args', () => {
     const args = buildCssArgs({
@@ -20,7 +29,7 @@ describe('CSS child process env and args', () => {
   });
 
   it('keeps oidcIssuer out of the CSS child env', () => {
-    const env = buildCssChildEnv('http://localhost:3000/', 3001, 'https://id.undefineds.co', {
+    const env = buildCssChildEnv('http://localhost:3000/', 3001, 'https://id.undefineds.co', undefined, {
       [`CSS_${['OIDC', 'ISSUER'].join('_')}`]: 'https://id.undefineds.co',
       [`CSS_${['IDP', 'URL'].join('_')}`]: 'https://legacy-idp.example',
       [`XPOD_${['OIDC', 'ISSUER'].join('_')}`]: 'https://wrong.example',
@@ -37,6 +46,25 @@ describe('CSS child process env and args', () => {
     expect(env[`XPOD_${['OIDC', 'ISSUER'].join('_')}`]).toBeUndefined();
     expect(env.oidcIssuer).toBeUndefined();
     expect(env[['identity', 'ProviderUrl'].join('')]).toBeUndefined();
+  });
+
+  it('passes normalized auth mode to CSS and API child processes', () => {
+    const cssEnv = buildCssChildEnv('http://localhost:3000/', 3001, undefined, 'wac', {});
+    expect(cssEnv.CSS_AUTH_MODE).toBe('acl');
+
+    const apiEnv = buildApiChildEnv({
+      apiPort: 3002,
+      mainPort: 3000,
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000/',
+      authMode: 'acp',
+      baseEnv: {
+        XPOD_AUTH_MODE: 'acl',
+      },
+    });
+
+    expect(apiEnv.CSS_AUTH_MODE).toBe('acp');
+    expect(apiEnv.XPOD_AUTH_MODE).toBeUndefined();
   });
 
   it('injects external oidcIssuer through CSS package settings for legacy CSS children', () => {
@@ -58,7 +86,7 @@ describe('CSS child process env and args', () => {
       import?: string[]
       '@graph'?: Array<Record<string, unknown>>
     };
-    expect(parsed.import).toEqual(['./local.json']);
+    expect(parsed.import).toEqual(['./local.json', ...ACP_AUTH_IMPORTS]);
     expect(parsed['@graph']).toEqual([]);
     expect(JSON.parse(fs.readFileSync(path.join(runtimeRoot, '.community-solid-server.config.json'), 'utf-8'))).toEqual({
       oidcIssuer: 'https://id.undefineds.co/',
@@ -83,9 +111,27 @@ describe('CSS child process env and args', () => {
     };
     expect(parsed.import).toEqual([
       expect.stringMatching(/^file:\/\//),
+      ...ACP_AUTH_IMPORTS,
     ]);
     expect(parsed.import?.[0]).toContain('Application%20Support');
     expect(parsed.import?.[0]).not.toContain('Application Support');
+  });
+
+  it('injects ACL authorization imports into legacy CSS runtime configs', () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-css-runtime-'));
+    const configPath = path.join(runtimeRoot, 'cloud.json');
+    fs.writeFileSync(configPath, '{"@graph":[]}', 'utf-8');
+
+    const runtimeConfig = createCssChildRuntimeConfig({
+      configPath,
+      runtimeRoot,
+      authMode: 'wac',
+    });
+    const parsed = JSON.parse(fs.readFileSync(runtimeConfig.configPath, 'utf-8')) as {
+      import?: string[]
+    };
+
+    expect(parsed.import).toEqual(['./cloud.json', ...ACL_AUTH_IMPORTS]);
   });
 
   it('generates a legacy CSS runtime config without package settings when external oidcIssuer is absent', () => {

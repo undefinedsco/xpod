@@ -2,6 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { oidcTokenEndpoint } from './oidc-issuer';
+import type { AuthMode } from '../authorization/AuthMode';
+import { applyAuthModeEnv, isAuthModeEnvKey, resolveAuthModeInput } from '../authorization/AuthMode';
+import { cssAuthModeConfigImports } from './bootstrap';
+
+const CSS_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld';
+const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
+const ASYNC_HANDLERS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld';
 
 /**
  * Build the environment for the CSS child process.
@@ -14,16 +21,19 @@ export function buildCssChildEnv(
   baseUrl: string,
   cssPort: number,
   oidcIssuer?: string,
+  authModeInput?: AuthMode | string,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
+  const authMode = resolveAuthModeInput(authModeInput, baseEnv);
   const env: Record<string, string> = {
     ...baseEnv,
     CSS_PORT: cssPort.toString(),
     CSS_BASE_URL: baseUrl,
   } as Record<string, string>;
+  applyAuthModeEnv(env, authMode);
 
   for (const key of Object.keys(env)) {
-    if (key === 'oidcIssuer' || isExternalOidcPollutionKey(key)) {
+    if (key === 'oidcIssuer' || (isExternalOidcPollutionKey(key) && !isAuthModeEnvKey(key))) {
       delete env[key];
     }
   }
@@ -60,18 +70,22 @@ function pathNeedsEscapedFileUrl(filePath: string): boolean {
 export function createCssChildRuntimeConfig(options: {
   configPath: string
   runtimeRoot: string
+  authMode?: AuthMode | string
   externalOidcIssuer?: string
+  baseEnv?: NodeJS.ProcessEnv
 }): { configPath: string; cwd?: string } {
   fs.mkdirSync(options.runtimeRoot, { recursive: true });
   const runtimeConfigPath = path.join(options.runtimeRoot, 'css-child-runtime.config.json');
+  const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
   fs.writeFileSync(runtimeConfigPath, JSON.stringify({
     '@context': [
-      'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
-      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
-      'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld',
+      CSS_COMPONENTS_CONTEXT,
+      XPOD_COMPONENTS_CONTEXT,
+      ASYNC_HANDLERS_CONTEXT,
     ],
     import: [
       toImportSpecifier(runtimeConfigPath, options.configPath),
+      ...cssAuthModeConfigImports(authMode),
     ],
     '@graph': [],
   }, null, 2), 'utf-8');
@@ -114,18 +128,24 @@ export function buildApiChildEnv(options: {
   mainPort: number
   cssPort: number
   baseUrl: string
+  rdfIndexPath?: string
+  authMode?: AuthMode | string
   externalOidcIssuer?: string
   baseEnv?: NodeJS.ProcessEnv
 }): Record<string, string> {
-  return {
+  const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
+  const env = {
     ...(options.baseEnv ?? process.env),
     ...(options.externalOidcIssuer ? { oidcIssuer: options.externalOidcIssuer } : {}),
     API_PORT: options.apiPort.toString(),
     XPOD_MAIN_PORT: options.mainPort.toString(),
     CSS_INTERNAL_URL: `http://localhost:${options.cssPort}`,
     CSS_BASE_URL: options.baseUrl,
+    ...(options.rdfIndexPath ? { CSS_RDF_INDEX_PATH: options.rdfIndexPath } : {}),
     CSS_TOKEN_ENDPOINT: options.externalOidcIssuer
       ? oidcTokenEndpoint(options.externalOidcIssuer)
       : `${options.baseUrl}.oidc/token`,
   } as Record<string, string>;
+
+  return applyAuthModeEnv(env, authMode);
 }

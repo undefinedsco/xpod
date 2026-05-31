@@ -7,7 +7,13 @@ import type { RuntimeHost } from './host/types';
 import { oidcTokenEndpoint, resolveExternalOidcIssuer } from './oidc-issuer';
 import { nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';
 import type { RuntimePlatform } from './platform/types';
+import { loadEnvFile } from './env-utils';
 import type { XpodRuntimeOptions, XpodRuntimePorts, XpodRuntimeSockets } from './runtime-types';
+import type { AuthMode } from '../authorization/AuthMode';
+import { applyAuthModeEnv, resolveAuthModeInput } from '../authorization/AuthMode';
+
+const CSS_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld';
+const ASYNC_HANDLERS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld';
 
 export interface RuntimeBootstrapState {
   id: string;
@@ -21,7 +27,7 @@ export interface RuntimeBootstrapState {
   rdfIndexPath: string;
   identityDbUrl: string;
   usageDbUrl: string;
-  cssAuthMode: 'acp' | 'acl' | 'allow-all';
+  cssAuthMode: AuthMode;
   apiOpen: boolean;
   logLevel: string;
   baseUrl: string;
@@ -110,6 +116,34 @@ function normalizeDatabaseUrl(
   return `sqlite:${platform.resolvePath(value)}`;
 }
 
+function readRuntimeEnvFile(
+  envFilePath: string | undefined,
+  platform: Pick<RuntimePlatform, 'fileExists' | 'readTextFile'>,
+): Record<string, string> {
+  return envFilePath ? loadEnvFile(envFilePath, platform) : {};
+}
+
+export function cssAuthModeConfigImports(authMode: AuthMode): string[] {
+  switch (authMode) {
+    case 'acl':
+      return [
+        'css:config/ldp/authorization/webacl.json',
+        'css:config/util/auxiliary/acl.json',
+      ];
+    case 'allow-all':
+      return [
+        'css:config/ldp/authorization/allow-all.json',
+        'css:config/util/auxiliary/empty.json',
+      ];
+    case 'acp':
+    default:
+      return [
+        'css:config/ldp/authorization/acp.json',
+        'css:config/util/auxiliary/acr.json',
+      ];
+  }
+}
+
 export async function resolveRuntimeBootstrap(
   id: string,
   options: XpodRuntimeOptions,
@@ -125,7 +159,13 @@ export async function resolveRuntimeBootstrap(
   const rdfIndexPath = platform.resolvePath(options.rdfIndexPath ?? platform.joinPath(runtimeRoot, 'rdf-index.sqlite'));
   const identityDbUrl = normalizeDatabaseUrl(options.identityDbUrl ?? platform.joinPath(runtimeRoot, 'identity.sqlite'), platform);
   const usageDbUrl = normalizeDatabaseUrl(options.usageDbUrl ?? platform.joinPath(runtimeRoot, 'usage.sqlite'), platform);
-  const cssAuthMode = options.authMode ?? (options.open ? 'allow-all' : 'acp');
+  const envFilePath = options.envFile ? platform.resolvePath(options.envFile) : undefined;
+  const authModeEnv = {
+    ...platform.baseEnv,
+    ...readRuntimeEnvFile(envFilePath, platform),
+    ...options.env,
+  };
+  const cssAuthMode = options.open ? 'allow-all' : resolveAuthModeInput(options.authMode, authModeEnv);
   const apiOpen = options.apiOpen ?? options.open ?? false;
   const logLevel = options.logLevel ?? platform.getEnv('CSS_LOGGING_LEVEL') ?? 'warn';
 
@@ -174,7 +214,7 @@ export async function resolveRuntimeBootstrap(
     apiOpen,
     logLevel,
     baseUrl,
-    envFilePath: options.envFile ? platform.resolvePath(options.envFile) : undefined,
+    envFilePath,
     ports,
     sockets,
   };
@@ -191,7 +231,7 @@ export function buildRuntimeEnv(
   };
   const externalOidcIssuer = resolveExternalOidcIssuer(mergedEnv);
 
-  return {
+  const runtimeEnv = {
     ...mergedEnv,
     XPOD_ENV_PATH: state.envFilePath,
     XPOD_EDITION: state.mode,
@@ -200,6 +240,7 @@ export function buildRuntimeEnv(
       ? oidcTokenEndpoint(externalOidcIssuer)
       : `${state.baseUrl}.oidc/token`,
     CSS_ROOT_FILE_PATH: state.rootFilePath,
+    CSS_RDF_INDEX_PATH: state.rdfIndexPath,
     CSS_SPARQL_ENDPOINT: state.sparqlEndpoint,
     SPARQL_ENDPOINT: state.sparqlEndpoint,
     CSS_IDENTITY_DB_URL: state.identityDbUrl,
@@ -212,6 +253,8 @@ export function buildRuntimeEnv(
     CORS_ORIGINS: new URL(state.baseUrl).origin,
     CSS_LOGGING_LEVEL: state.logLevel,
   };
+
+  return applyAuthModeEnv(runtimeEnv, state.cssAuthMode);
 }
 
 export function buildRuntimeShorthand(
@@ -262,14 +305,10 @@ export function buildRuntimeShorthand(
 
 export function createCssRuntimeConfig(
   state: RuntimeBootstrapState,
-  open: boolean,
+  _open?: boolean,
   platform: Pick<RuntimePlatform, 'dirname' | 'ensureDir' | 'joinPath' | 'writeTextFile'> = nodeRuntimePlatform,
 ): string {
   const configPath = normalizeWindowsAbsolutePath(platform.joinPath(PACKAGE_ROOT, `config/${state.mode}.json`));
-  if (!open) {
-    return configPath;
-  }
-
   const runtimeRoot = normalizeWindowsAbsolutePath(state.runtimeRoot);
   const runtimeConfigPath = arePathsOnDifferentWindowsDrives(runtimeRoot, configPath)
     ? (() => {
@@ -283,15 +322,14 @@ export function createCssRuntimeConfig(
       return normalizeWindowsAbsolutePath(platform.joinPath(runtimeConfigDir, 'css-runtime.config.json'));
     })()
     : normalizeWindowsAbsolutePath(platform.joinPath(runtimeRoot, 'css-runtime.config.json'));
-  const openConfigPath = normalizeWindowsAbsolutePath(platform.joinPath(PACKAGE_ROOT, 'config/runtime-open.json'));
   platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
-      'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
-      'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld',
+      CSS_COMPONENTS_CONTEXT,
+      ASYNC_HANDLERS_CONTEXT,
     ],
     import: [
       toConfigImportSpecifier(runtimeConfigPath, configPath),
-      toConfigImportSpecifier(runtimeConfigPath, openConfigPath),
+      ...cssAuthModeConfigImports(state.cssAuthMode),
     ],
   }, null, 2));
 

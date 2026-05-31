@@ -239,7 +239,9 @@ function registerLocalRoutes(
           rootDir,
           sparqlEndpoint,
           identityDbUrl,
+          rdfIndexPath: config.rdfIndexPath,
           oidcIssuer: process.env.oidcIssuer ?? config.oidcIssuer,
+          authMode: config.authMode,
         })
         : undefined;
 

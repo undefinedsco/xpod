@@ -5,6 +5,7 @@ import { Supervisor } from '../../supervisor';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from '../../runtime';
 import { buildApiChildEnv, buildCssArgs, buildCssChildEnv, createCssChildRuntimeConfig } from '../../runtime/css-process';
 import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
+import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 
 interface StartArgs {
   mode?: string;
@@ -102,11 +103,15 @@ export const startCommand: CommandModule<object, StartArgs> = {
 
     const cssPort = await getFreePort(mainPort + 1, argv.host);
     const apiPort = await getFreePort(cssPort + 1, argv.host);
+    const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');
 
     const baseUrl = process.env.CSS_BASE_URL || `http://${argv.host}:${mainPort}/`;
+    const rdfIndexPath = process.env.CSS_RDF_INDEX_PATH || path.join(runtimeRoot, 'rdf-index.sqlite');
+    process.env.CSS_RDF_INDEX_PATH = rdfIndexPath;
 
     // SP 模式：oidcIssuer 显式指定外部 IdP；Cloud API 地址不再隐式当作 issuer。
     const externalOidcIssuer = resolveExternalOidcIssuer(process.env);
+    const authMode = resolveAuthModeFromEnv(process.env);
 
     console.log('Starting xpod...');
     console.log(`  Gateway: ${baseUrl} (${argv.host}:${mainPort})`);
@@ -115,12 +120,14 @@ export const startCommand: CommandModule<object, StartArgs> = {
     if (externalOidcIssuer) {
       console.log(`  SP mode: Cloud IdP = ${externalOidcIssuer}`);
     }
+    console.log(`  Authorization mode: ${authMode}`);
 
     const supervisor = new Supervisor();
     const cssBinary = require.resolve('@solid/community-server/bin/server.js');
     const cssRuntimeConfig = createCssChildRuntimeConfig({
       configPath,
-      runtimeRoot: path.join(process.cwd(), '.xpod/runtime/legacy-css'),
+      runtimeRoot,
+      authMode,
       externalOidcIssuer,
     });
     const cssArgs = buildCssArgs({
@@ -137,7 +144,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
       command: childJsRuntime,
       args: cssArgs,
       cwd: cssRuntimeConfig.cwd,
-      env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer),
+      env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode),
     });
 
     const isDevMode = __filename.endsWith('.ts');
@@ -158,6 +165,8 @@ export const startCommand: CommandModule<object, StartArgs> = {
         mainPort,
         cssPort,
         baseUrl,
+        rdfIndexPath,
+        authMode,
         externalOidcIssuer,
       }),
     });
