@@ -18,6 +18,19 @@ function createWindowsJoinPath(packageRoot: string) {
   };
 }
 
+const ACP_AUTH_IMPORTS = [
+  'css:config/ldp/authorization/acp.json',
+  'css:config/util/auxiliary/acr.json',
+];
+const ACL_AUTH_IMPORTS = [
+  'css:config/ldp/authorization/webacl.json',
+  'css:config/util/auxiliary/acl.json',
+];
+const ALLOW_ALL_AUTH_IMPORTS = [
+  'css:config/ldp/authorization/allow-all.json',
+  'css:config/util/auxiliary/empty.json',
+];
+
 describe('runtime bootstrap helpers', () => {
   it('should resolve socket runtime bootstrap layout', async() => {
     const state = await resolveRuntimeBootstrap('test-id', {
@@ -73,6 +86,62 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.emailConfigPort).toBe('587');
     expect(shorthand.emailConfigAuthUser).toBe('');
     expect(shorthand.emailConfigAuthPass).toBe('');
+  });
+
+  it('should resolve auth mode from runtime env and prefer explicit options', async() => {
+    const envState = await resolveRuntimeBootstrap('test-auth-env', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/auth-env',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5720,
+      cssPort: 5721,
+      apiPort: 5722,
+      env: {
+        CSS_AUTH_MODE: 'wac',
+      },
+    }, nodeRuntimeHost);
+
+    expect(envState.cssAuthMode).toBe('acl');
+
+    const explicitState = await resolveRuntimeBootstrap('test-auth-option', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/auth-option',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5730,
+      cssPort: 5731,
+      apiPort: 5732,
+      authMode: 'acp',
+      env: {
+        CSS_AUTH_MODE: 'acl',
+      },
+    }, nodeRuntimeHost);
+
+    expect(explicitState.cssAuthMode).toBe('acp');
+  });
+
+  it('should write only CSS_AUTH_MODE into runtime env', async() => {
+    const state = await resolveRuntimeBootstrap('test-auth-env-write', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/auth-env-write',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5740,
+      cssPort: 5741,
+      apiPort: 5742,
+      authMode: 'acl',
+    }, nodeRuntimeHost);
+
+    const runtimeEnv = buildRuntimeEnv(state, {
+      mode: 'local',
+      env: {
+        XPOD_AUTH_MODE: 'acp',
+      },
+    });
+
+    expect(runtimeEnv.CSS_AUTH_MODE).toBe('acl');
+    expect(runtimeEnv.XPOD_AUTH_MODE).toBeUndefined();
   });
 
   it('should use oidcIssuer for local SP mode', async() => {
@@ -171,6 +240,7 @@ describe('runtime bootstrap helpers', () => {
       id: 'same-drive',
       mode: 'local',
       runtimeRoot: 'D:\\runtime',
+      cssAuthMode: 'acp',
     } as any, true, {
       dirname: (filePath: string): string => path.win32.dirname(filePath),
       ensureDir,
@@ -187,7 +257,63 @@ describe('runtime bootstrap helpers', () => {
     const parsed = JSON.parse(content);
     expect(parsed.import).toEqual([
       '../package/config/local.json',
-      '../package/config/runtime-open.json',
+      ...ACP_AUTH_IMPORTS,
+    ]);
+  });
+
+  it('should write ACL authorization config imports when auth mode is acl', () => {
+    const writeTextFile = vi.fn();
+    const runtimeConfigPath = createCssRuntimeConfig({
+      id: 'acl-mode',
+      mode: 'cloud',
+      runtimeRoot: '/runtime',
+      cssAuthMode: 'acl',
+    } as any, false, {
+      dirname: (filePath: string): string => path.posix.dirname(filePath),
+      ensureDir: vi.fn(),
+      joinPath: (...segments: string[]): string => {
+        if (segments[0] === PACKAGE_ROOT) {
+          return path.posix.join('/package', ...segments.slice(1));
+        }
+        return path.posix.join(...segments);
+      },
+      writeTextFile,
+    });
+
+    expect(runtimeConfigPath).toBe('/runtime/css-runtime.config.json');
+    const [, content] = writeTextFile.mock.calls[0];
+    const parsed = JSON.parse(content);
+    expect(parsed.import).toEqual([
+      '../package/config/cloud.json',
+      ...ACL_AUTH_IMPORTS,
+    ]);
+  });
+
+  it('should write allow-all authorization config imports for open runtime mode', () => {
+    const writeTextFile = vi.fn();
+    const runtimeConfigPath = createCssRuntimeConfig({
+      id: 'open-mode',
+      mode: 'local',
+      runtimeRoot: '/runtime',
+      cssAuthMode: 'allow-all',
+    } as any, true, {
+      dirname: (filePath: string): string => path.posix.dirname(filePath),
+      ensureDir: vi.fn(),
+      joinPath: (...segments: string[]): string => {
+        if (segments[0] === PACKAGE_ROOT) {
+          return path.posix.join('/package', ...segments.slice(1));
+        }
+        return path.posix.join(...segments);
+      },
+      writeTextFile,
+    });
+
+    expect(runtimeConfigPath).toBe('/runtime/css-runtime.config.json');
+    const [, content] = writeTextFile.mock.calls[0];
+    const parsed = JSON.parse(content);
+    expect(parsed.import).toEqual([
+      '../package/config/local.json',
+      ...ALLOW_ALL_AUTH_IMPORTS,
     ]);
   });
 
@@ -225,6 +351,7 @@ describe('runtime bootstrap helpers', () => {
       id: 'space-path',
       mode: 'local',
       runtimeRoot: '/Users/alice/Application Support/@linx/local/runtimes/xpod',
+      cssAuthMode: 'acp',
     } as any, true, {
       dirname: (filePath: string): string => path.posix.dirname(filePath),
       ensureDir,
@@ -239,7 +366,7 @@ describe('runtime bootstrap helpers', () => {
     const parsed = JSON.parse(writes.get(runtimeConfigPath) ?? '{}');
     expect(parsed.import).toEqual([
       'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/local.json',
-      'file:///Users/alice/Application%20Support/@undefineds.co/xpod/config/runtime-open.json',
+      ...ACP_AUTH_IMPORTS,
     ]);
 
     const rewrittenLocal = JSON.parse(writes.get('/Users/alice/Application Support/@linx/local/runtimes/xpod/config/local.json') ?? '{}');
@@ -266,6 +393,7 @@ describe('runtime bootstrap helpers', () => {
       id: 'cross-drive',
       mode: 'local',
       runtimeRoot: 'C:\\runtime',
+      cssAuthMode: 'acp',
     } as any, true, {
       dirname: (filePath: string): string => path.win32.dirname(filePath),
       ensureDir,
@@ -282,7 +410,7 @@ describe('runtime bootstrap helpers', () => {
     const parsed = JSON.parse(content);
     expect(parsed.import).toEqual([
       '../../config/local.json',
-      '../../config/runtime-open.json',
+      ...ACP_AUTH_IMPORTS,
     ]);
   });
 
@@ -295,6 +423,7 @@ describe('runtime bootstrap helpers', () => {
       id: 'cross-drive-slash-prefixed',
       mode: 'local',
       runtimeRoot: '/C:/runtime',
+      cssAuthMode: 'acp',
     } as any, true, {
       dirname: (filePath: string): string => path.win32.dirname(filePath),
       ensureDir,
@@ -311,7 +440,7 @@ describe('runtime bootstrap helpers', () => {
     const parsed = JSON.parse(content);
     expect(parsed.import).toEqual([
       '../../config/local.json',
-      '../../config/runtime-open.json',
+      ...ACP_AUTH_IMPORTS,
     ]);
   });
 
@@ -324,6 +453,7 @@ describe('runtime bootstrap helpers', () => {
       id: 'slash-prefixed-package-root',
       mode: 'local',
       runtimeRoot: 'C:\\runtime',
+      cssAuthMode: 'acp',
     } as any, true, {
       dirname: (filePath: string): string => path.win32.dirname(filePath),
       ensureDir,
@@ -340,7 +470,7 @@ describe('runtime bootstrap helpers', () => {
     const parsed = JSON.parse(content);
     expect(parsed.import).toEqual([
       '../../config/local.json',
-      '../../config/runtime-open.json',
+      ...ACP_AUTH_IMPORTS,
     ]);
   });
 });

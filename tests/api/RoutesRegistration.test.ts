@@ -24,6 +24,7 @@ describe('registerRoutes mode wiring', () => {
     edition: 'cloud',
     port: 3002,
     host: '0.0.0.0',
+    authMode: 'acp',
     databaseUrl: 'postgres://example.invalid/xpod',
     corsOrigins: ['*'],
     cssTokenEndpoint: 'https://id.undefineds.co/.oidc/token',

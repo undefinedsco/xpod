@@ -75,7 +75,6 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       host,
       runtimeShorthand: environment.shorthand,
       supervisor,
-      open: options.open ?? false,
       createCssRuntimeConfig,
       cssRunner,
     });

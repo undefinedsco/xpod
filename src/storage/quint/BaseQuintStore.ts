@@ -158,15 +158,10 @@ export abstract class BaseQuintStore extends QuintStore {
   // ============================================
 
   async get(pattern: QuintPattern, options?: QueryOptions): Promise<Quint[]> {
-    const patternDesc = Object.entries(pattern).map(([k, v]) => `${k}=${v ? 'set' : 'any'}`).join(',');
-    console.log(`[BaseQuintStore.get] Starting: ${patternDesc}`);
     this.ensureOpen();
 
     const { sql, params } = this.buildSelectQuery(pattern, options);
-    console.log(`[BaseQuintStore.get] SQL: ${sql.slice(0, 80)}...`);
-    const start = Date.now();
     const rows = await this.executor!.query<QuintRow>(sql, params);
-    console.log(`[BaseQuintStore.get] Completed in ${Date.now() - start}ms, got ${rows.length} rows`);
     
     return rows.map(row => this.rowToQuint(row));
   }
@@ -627,56 +622,6 @@ export abstract class BaseQuintStore extends QuintStore {
     return { sql, params };
   }
 
-  protected addAliasedConditions(
-    conditions: string[],
-    params: any[],
-    alias: string,
-    pattern: QuintPattern
-  ): void {
-    const addCond = (col: string, match: TermMatch | undefined, isObject: boolean) => {
-      if (!match) return;
-
-      if (isTerm(match)) {
-        conditions.push(`${alias}.${col} = ?`);
-        params.push(isObject ? serializeObject(match as any) : termToId(match as any));
-        return;
-      }
-
-      const ops = match as TermOperators;
-      
-      if (ops.$eq !== undefined) {
-        conditions.push(`${alias}.${col} = ?`);
-        params.push(this.serializeOpValue(ops.$eq, isObject, '$eq'));
-      }
-      if (ops.$gt !== undefined) {
-        conditions.push(`${alias}.${col} > ?`);
-        params.push(this.serializeOpValue(ops.$gt, isObject, '$gt'));
-      }
-      if (ops.$gte !== undefined) {
-        conditions.push(`${alias}.${col} >= ?`);
-        params.push(this.serializeOpValue(ops.$gte, isObject, '$gte'));
-      }
-      if (ops.$lt !== undefined) {
-        conditions.push(`${alias}.${col} < ?`);
-        params.push(this.serializeOpValue(ops.$lt, isObject, '$lt'));
-      }
-      if (ops.$lte !== undefined) {
-        conditions.push(`${alias}.${col} <= ?`);
-        params.push(this.serializeOpValue(ops.$lte, isObject, '$lte'));
-      }
-      if (ops.$in !== undefined && ops.$in.length > 0) {
-        const placeholders = ops.$in.map(() => '?').join(', ');
-        conditions.push(`${alias}.${col} IN (${placeholders})`);
-        params.push(...ops.$in.map(v => this.serializeOpValue(v, isObject, '$in')));
-      }
-    };
-
-    addCond('graph', pattern.graph, false);
-    addCond('subject', pattern.subject, false);
-    addCond('predicate', pattern.predicate, false);
-    addCond('object', pattern.object, true);
-  }
-
   // ============================================
   // Serialization Helpers
   // ============================================
@@ -729,5 +674,80 @@ export abstract class BaseQuintStore extends QuintStore {
     }
     
     return DataFactory.namedNode(value);
+  }
+
+  protected resolveObjectDataTypeForPattern(_pattern: QuintPattern): string | undefined {
+    return undefined;
+  }
+
+  protected extractExactPredicate(match: TermMatch | undefined): string | undefined {
+    if (!match) return undefined;
+    if (typeof match === 'object' && 'termType' in match) {
+      return termToId(match as Term);
+    }
+    const ops = match as TermOperators;
+    if (ops.$eq !== undefined) {
+      return String(this.serializeOpValue(ops.$eq, false, '$eq'));
+    }
+    return undefined;
+  }
+
+  protected addTermConditions(
+    conditions: string[],
+    params: any[],
+    column: string,
+    match: TermMatch | undefined,
+    isObject: boolean,
+  ): void {
+    this.addConditions(conditions, params, column, match, isObject);
+  }
+
+  protected addAliasedConditions(
+    conditions: string[],
+    params: any[],
+    alias: string,
+    pattern: QuintPattern,
+  ): void {
+    const addCond = (col: string, match: TermMatch | undefined, isObject: boolean) => {
+      if (!match) return;
+
+      if (isTerm(match)) {
+        conditions.push(`${alias}.${col} = ?`);
+        params.push(isObject ? serializeObject(match as any) : termToId(match as any));
+        return;
+      }
+
+      const ops = match as TermOperators;
+      if (ops.$eq !== undefined) {
+        conditions.push(`${alias}.${col} = ?`);
+        params.push(this.serializeOpValue(ops.$eq, isObject, '$eq'));
+      }
+      if (ops.$gt !== undefined) {
+        conditions.push(`${alias}.${col} > ?`);
+        params.push(this.serializeOpValue(ops.$gt, isObject, '$gt'));
+      }
+      if (ops.$gte !== undefined) {
+        conditions.push(`${alias}.${col} >= ?`);
+        params.push(this.serializeOpValue(ops.$gte, isObject, '$gte'));
+      }
+      if (ops.$lt !== undefined) {
+        conditions.push(`${alias}.${col} < ?`);
+        params.push(this.serializeOpValue(ops.$lt, isObject, '$lt'));
+      }
+      if (ops.$lte !== undefined) {
+        conditions.push(`${alias}.${col} <= ?`);
+        params.push(this.serializeOpValue(ops.$lte, isObject, '$lte'));
+      }
+      if (ops.$in !== undefined && ops.$in.length > 0) {
+        const placeholders = ops.$in.map(() => '?').join(', ');
+        conditions.push(`${alias}.${col} IN (${placeholders})`);
+        params.push(...ops.$in.map(v => this.serializeOpValue(v, isObject, '$in')));
+      }
+    };
+
+    addCond('graph', pattern.graph, false);
+    addCond('subject', pattern.subject, false);
+    addCond('predicate', pattern.predicate, false);
+    addCond('object', pattern.object, true);
   }
 }

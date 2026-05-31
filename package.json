@@ -83,7 +83,7 @@
     "dev:test": "NODE_ENV=development bun scripts/test-dev-flow.ts",
     "dev:cluster": "docker compose -f docker-compose.cluster.yml up --build",
     "dev:cluster:down": "docker compose -f docker-compose.cluster.yml down",
-    "dev:css": "dotenv -e .env.local -- community-solid-server -c config/local.json -m .",
+    "dev:css": "dotenv -e .env.local -- bun src/main.ts -c config/local.json",
     "watch:css": "nodemon --watch config --watch templates --watch static --watch src --ext json,ejs,html,ts,tsx --exec \"bun run build:ts && bun run build:components && bun run dev:css\"",
     "test": "./scripts/run-vitest-safe.sh --run",
     "test:run": "./scripts/run-vitest-safe.sh --run",

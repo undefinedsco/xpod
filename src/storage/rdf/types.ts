@@ -687,6 +687,24 @@ export interface RdfLocalQueryResult {
   metrics: RdfLocalQueryMetrics;
 }
 
+export interface RdfEngineLike {
+  open(): void | Promise<void>;
+  close(): void | Promise<void>;
+  put(quads: Quad | Quad[], options?: RdfIndexPutOptions): void | Promise<void>;
+  replaceSource(quads: Quad[], source: RdfSourceInput): void | Promise<void>;
+  deleteSource(source: string): number | Promise<number>;
+  delete(pattern: QuintPattern): number | Promise<number>;
+  applyDelta(
+    deletes: QuintPattern[],
+    inserts: Quad[],
+    options?: RdfIndexPutOptions,
+  ): { deletedRows: number; insertedRows: number } | Promise<{ deletedRows: number; insertedRows: number }>;
+  scan(query: RdfPatternQuery): RdfQuadIndexScanResult | Promise<RdfQuadIndexScanResult>;
+  query(query: RdfLocalQuery): RdfLocalQueryResult | Promise<RdfLocalQueryResult>;
+  refreshDerivedIndexes(): RdfDerivedIndexRefreshResult | Promise<RdfDerivedIndexRefreshResult>;
+  storageStats(): RdfEngineStorageStats | Promise<RdfEngineStorageStats>;
+}
+
 export type RdfQueryPatternKey = TermName;
 
 export interface RdfShadowDiff {

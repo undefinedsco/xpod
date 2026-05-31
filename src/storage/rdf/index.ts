@@ -25,6 +25,7 @@ export { RdfShadowComparator, canonicalQuadKey, diffQuads } from './RdfShadowCom
 export { RdfLocalQueryEngine, variable as rdfVar } from './RdfLocalQueryEngine';
 export { ShadowRdfQuintStore, type ShadowRdfQuintStoreOptions } from './ShadowRdfQuintStore';
 export { SolidRdfEngine, type SolidRdfEngineOptions } from './SolidRdfEngine';
+export { PostgresRdfEngine, type PostgresRdfEngineOptions } from './PostgresRdfEngine';
 export {
   DisabledSparqlFeatureError,
   RdfSparqlAdapter,
@@ -77,6 +78,7 @@ export {
   type RdfModelShadowBenchmarkSide,
 } from './models-benchmark';
 export type {
+  RdfEngineLike,
   RdfEngineStorageStats,
   RdfDerivedIndexRefreshResult,
   RdfIndexStats,

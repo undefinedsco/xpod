@@ -1,5 +1,6 @@
 import type { AuthContext } from '../api/auth/AuthContext';
 import type { Supervisor } from '../supervisor/Supervisor';
+import type { AuthMode } from '../authorization/AuthMode';
 import type { RuntimeDriver } from './driver/types';
 import type { RuntimeHost } from './host/types';
 import type { RuntimePlatform } from './platform/types';
@@ -20,7 +21,7 @@ export interface XpodRuntimeSockets {
 export interface XpodRuntimeOptions {
   mode?: 'local' | 'cloud';
   open?: boolean;
-  authMode?: 'acp' | 'acl' | 'allow-all';
+  authMode?: AuthMode;
   apiOpen?: boolean;
   authContext?: AuthContext;
   envFile?: string;

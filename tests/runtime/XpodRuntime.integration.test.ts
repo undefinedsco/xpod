@@ -60,3 +60,85 @@ describe('XpodRuntime', () => {
     await expect(getResponse.text()).resolves.toContain('hello from runtime');
   });
 });
+
+describe('XpodRuntime standalone profile authorization', () => {
+  let runtime: XpodRuntimeHandle;
+
+  beforeAll(async () => {
+    runtime = await startXpodRuntime({
+      mode: 'local',
+      transport: resolveTestRuntimeTransport('port'),
+      runtimeRoot: createTestDir('xpod-runtime-standalone-profile'),
+      logLevel: 'warn',
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await runtime?.stop();
+  });
+
+  it('serves an account-created public profile card without authorization headers', async () => {
+    const createdAccount = await setupAccount(runtime.baseUrl.replace(/\/$/, ''), 'profile-standalone');
+
+    expect(createdAccount).toBeTruthy();
+
+    const profileResponse = await runtime.fetch(createdAccount!.webId.split('#')[0], {
+      headers: {
+        accept: 'text/turtle',
+      },
+    });
+
+    expect(profileResponse.status).toBe(200);
+    const body = await profileResponse.text();
+    expect(body).toContain(createdAccount!.webId);
+    expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+  });
+});
+
+describe('XpodRuntime SP provisioning authorization', () => {
+  let runtime: XpodRuntimeHandle;
+
+  beforeAll(async () => {
+    runtime = await startXpodRuntime({
+      mode: 'local',
+      transport: resolveTestRuntimeTransport('port'),
+      runtimeRoot: createTestDir('xpod-runtime-sp-provisioning'),
+      logLevel: 'warn',
+      env: {
+        XPOD_SERVICE_TOKEN: 'test-service-token',
+        oidcIssuer: 'https://id.undefineds.co/',
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await runtime?.stop();
+  });
+
+  it('serves a provisioned public profile card without authorization headers', async () => {
+    const createResponse = await runtime.fetch('/provision/pods', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-service-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        podName: 'alice',
+        webId: 'https://id.undefineds.co/alice/profile/card#me',
+      }),
+    });
+
+    expect(createResponse.status).toBe(201);
+
+    const profileResponse = await runtime.fetch('/alice/profile/card', {
+      headers: {
+        accept: 'text/turtle',
+      },
+    });
+
+    expect(profileResponse.status).toBe(200);
+    const body = await profileResponse.text();
+    expect(body).toContain('https://id.undefineds.co/alice/profile/card#me');
+    expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+  });
+});

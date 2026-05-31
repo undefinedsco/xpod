@@ -27,6 +27,7 @@ const LOCAL_PORT = process.env.LOCAL_PORT || '5737';
 const LOCAL_API_PORT = process.env.LOCAL_API_PORT || '5738';
 const STANDALONE_PORT = process.env.STANDALONE_PORT || '5739';
 const STANDALONE_API_PORT = process.env.STANDALONE_API_PORT || '5740';
+const SERVICE_TOKEN = 'svc-testservicetokenforintegration';
 
 // 与 docker-compose.cluster.yml 对应的服务配置
 const SERVICES = {
@@ -150,6 +151,57 @@ suite('Docker Cluster Integration', () => {
   // ==========================================
   describe('Pod Data Access', () => {
     it.each([
+      ['cloud', SERVICES.cloud],
+      ['standalone', SERVICES.standalone],
+    ] as const)('%s should serve account-created public profile cards anonymously', async (serviceKey, config) => {
+      const account = await setupAccount(config.baseUrl, `profile-${serviceKey}`);
+
+      expect(account).not.toBeNull();
+
+      const profileRes = await fetch(account!.webId.split('#')[0], {
+        headers: {
+          Accept: 'text/turtle',
+        },
+      });
+
+      expect(profileRes.status).toBe(200);
+      const profile = await profileRes.text();
+      expect(profile).toContain(account!.webId);
+      expect(profile).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+    }, 120000);
+
+    it('Local SP should serve provisioned public profile cards anonymously', async () => {
+      const podName = `profile-local-${Date.now().toString(36)}`;
+      const webId = `${SERVICES.cloud.baseUrl}/${podName}/profile/card#me`;
+      const createRes = await fetch(`${SERVICES.local.baseUrl}/provision/pods`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${SERVICE_TOKEN}`,
+        },
+        body: JSON.stringify({ podName, webId }),
+      });
+
+      expect(createRes.status).toBe(201);
+
+      const profileRes = await fetch(`${SERVICES.local.baseUrl}/${podName}/profile/card`, {
+        headers: {
+          Accept: 'text/turtle',
+        },
+      });
+
+      expect(profileRes.status).toBe(200);
+      const profile = await profileRes.text();
+      expect(profile).toContain(webId);
+      expect(profile).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+
+      await fetch(`${SERVICES.local.baseUrl}/provision/pods/${podName}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${SERVICE_TOKEN}` },
+      }).catch(() => undefined);
+    }, 60000);
+
+    it.each([
       // ['cloud', SERVICES.cloud, SERVICES.cloud.baseUrl],  // FIXME: PgQuintStore 性能问题，Pod 创建 >120s
       // ['local', SERVICES.local, SERVICES.cloud.baseUrl],  // FIXME: 依赖 Cloud，同样慢
       ['standalone', SERVICES.standalone, SERVICES.standalone.baseUrl],
@@ -246,8 +298,6 @@ suite('Docker Cluster Integration', () => {
   // 统一服务鉴权测试
   // ==========================================
   describe('Service Authentication', () => {
-    const SERVICE_TOKEN = 'svc-testservicetokenforintegration';
-
     it('should reject quota API without authentication', async () => {
       const res = await fetch(`${SERVICES.local.baseUrl}/v1/quota/accounts/test-account`);
       expect(res.status).toBe(401);

@@ -25,8 +25,7 @@ interface StartCssRuntimeOptions {
   host: RuntimeHost;
   runtimeShorthand: Record<string, string | number | boolean>;
   supervisor: Supervisor;
-  open: boolean;
-  createCssRuntimeConfig: (state: RuntimeBootstrapState, open: boolean) => string;
+  createCssRuntimeConfig: (state: RuntimeBootstrapState) => string;
   cssRunner: CssRuntimeRunner;
 }
 
@@ -102,11 +101,10 @@ export async function startCssRuntime({
   host,
   runtimeShorthand,
   supervisor,
-  open,
   createCssRuntimeConfig,
   cssRunner,
 }: StartCssRuntimeOptions): Promise<App> {
-  const cssConfigPath = createCssRuntimeConfig(state, open || state.cssAuthMode === 'allow-all');
+  const cssConfigPath = createCssRuntimeConfig(state);
 
   supervisor.setStatus('css', 'starting', { startTime: Date.now() });
   const cssApp = await cssRunner.start({

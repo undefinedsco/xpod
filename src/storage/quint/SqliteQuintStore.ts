@@ -5,39 +5,31 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { sql } from 'drizzle-orm';
-import { wrap, AsyncIterator } from 'asynciterator';
-import { DataFactory } from 'n3';
 import type { Term } from '@rdfjs/types';
 
-import { quints, type QuintRow, type NewQuintRow } from './schema';
+import { BaseQuintStore, type QuintRow, type SqlExecutor } from './BaseQuintStore';
+import type { NewQuintRow } from './schema';
 import {
   rowToQuad,
   parseVector,
   termToId,
   serializeObject,
-  deserializeObject,
-  fpEncode,
   isSerializedDateTimeLiteral,
   isSerializedNumericLiteral,
   SEP,
-  isSerializedObjectValue,
 } from './serialization';
 import { getSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import type {
-  Quint,
-  QuintPattern,
   QuintStoreOptions,
-  QueryOptions,
   StoreStats,
   StoreSpaceObject,
+  QuintPattern,
+  QueryOptions,
+  Quint,
   TermMatch,
   TermOperators,
-  CompoundPattern,
-  CompoundResult,
   OperatorValue,
 } from './types';
-import { isTerm } from './types';
 import {
   getPredicateObjectDataType,
   objectIndexFieldsFromSerialized,
@@ -69,62 +61,176 @@ export interface SqliteQuintStoreOptions extends QuintStoreOptions {
   path: string;
 }
 
-export class SqliteQuintStore {
-  private sqlite: SqliteDatabase | null = null;
-  private db: any | null = null;
-  private options: SqliteQuintStoreOptions;
-  private readonly sqliteRuntime = getSqliteRuntime();
+class SqliteExecutor implements SqlExecutor {
+  constructor(private readonly db: SqliteDatabase) {}
 
-  constructor(options: SqliteQuintStoreOptions) {
-    // Handle sqlite: prefix
-    let path = options.path;
-    if (path.startsWith('sqlite:')) {
-      path = path.slice(7);
-    }
-    this.options = { ...options, path };
+  async query<T = any>(sqlText: string, params?: any[]): Promise<T[]> {
+    return this.db.prepare<T>(sqlText).all(...(params ?? []));
   }
 
-  // ============================================
-  // Lifecycle
-  // ============================================
+  async execute(sqlText: string, params?: any[]): Promise<number> {
+    return this.db.prepare(sqlText).run(...(params ?? [])).changes;
+  }
 
-  async open(): Promise<void> {
-    // Idempotent: if already open, do nothing
-    if (this.sqlite) {
-      return;
-    }
+  async executeInTransaction(statements: { sql: string; params?: any[] }[]): Promise<void> {
+    this.db.transaction(() => {
+      for (const statement of statements) {
+        this.db.prepare(statement.sql).run(...(statement.params ?? []));
+      }
+    })();
+  }
 
-    const dbPath = this.options.path;
-    
-    // Ensure directory exists (unless it's in-memory)
+  async exec(sqlText: string): Promise<void> {
+    this.db.exec(sqlText);
+  }
+}
+
+export class SqliteQuintStore extends BaseQuintStore {
+  private sqlite: SqliteDatabase | null = null;
+  private readonly sqliteRuntime = getSqliteRuntime();
+  private readonly path: string;
+
+  constructor(options: SqliteQuintStoreOptions) {
+    const path = options.path.startsWith('sqlite:') ? options.path.slice(7) : options.path;
+    super(options);
+    this.path = path;
+  }
+
+  protected async createExecutor(): Promise<SqlExecutor> {
+    const dbPath = this.path;
     if (dbPath !== ':memory:') {
       const dir = dirname(dbPath);
-      if (!existsSync(dir)) {
+      if (dir && !existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
     }
-    
+
     this.sqlite = this.sqliteRuntime.openDatabase(dbPath);
-    this.db = this.sqliteRuntime.createDrizzleDatabase(this.sqlite);
+    return new SqliteExecutor(this.sqlite);
+  }
 
-    // Create table and indexes
-    this.sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS quints (
-        object_kind TEXT,
-        object_key TEXT,
-        object_text TEXT,
-        object_digest TEXT,
-        graph TEXT NOT NULL,
-        subject TEXT NOT NULL,
-        predicate TEXT NOT NULL,
-        object TEXT NOT NULL,
-        vector TEXT
-      );
+  protected async closeExecutor(): Promise<void> {
+    if (this.sqlite) {
+      this.sqlite.close();
+      this.sqlite = null;
+    }
+  }
+
+  protected override async openOnce(): Promise<void> {
+    const executor = await this.createExecutor();
+    this.executor = executor;
+
+    try {
+      await executor.exec(`
+        CREATE TABLE IF NOT EXISTS quints (
+          object_kind TEXT,
+          object_key TEXT,
+          object_text TEXT,
+          object_digest TEXT,
+          graph TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          predicate TEXT NOT NULL,
+          object TEXT NOT NULL,
+          vector TEXT
+        );
+      `);
+
+      await this.ensureTypedObjectSchema();
+      await this.createTypedObjectIndexes();
+      this.opened = true;
+    } catch (error) {
+      await this.closeExecutor().catch(() => {});
+      if (this.executor === executor) {
+        this.executor = null;
+      }
+      this.opened = false;
+      throw error;
+    }
+  }
+
+  protected override buildSelectQuery(pattern: QuintPattern, options?: QueryOptions): { sql: string; params: any[] } {
+    const { whereClause, params } = this.buildWhereClause(pattern);
+
+    let sqlText = `SELECT * FROM quints${whereClause}`;
+
+    if (options?.order && options.order.length > 0) {
+      const orderCols = options.order.map(field => {
+        if (field === 'object') {
+          const objectType = this.resolveObjectDataTypeForPattern(pattern);
+          if (objectType === 'longText') {
+            throw new Error('ORDER BY object is not supported for longText predicates');
+          }
+          return 'object_key';
+        }
+        return field;
+      }).join(', ');
+      sqlText += ` ORDER BY ${orderCols}`;
+      if (options.reverse) {
+        sqlText += ' DESC';
+      }
+    }
+
+    if (options?.limit !== undefined) {
+      sqlText += ` LIMIT ?`;
+      params.push(options.limit);
+    }
+
+    if (options?.offset !== undefined) {
+      if (options.limit === undefined) {
+        sqlText += ` LIMIT ?`;
+        params.push(SQLITE_UNBOUNDED_LIMIT);
+      }
+      sqlText += ` OFFSET ?`;
+      params.push(options.offset);
+    }
+
+    return { sql: sqlText, params };
+  }
+
+  override async stats(): Promise<StoreStats> {
+    const stats = await super.stats();
+    return {
+      totalCount: Number(stats.totalCount),
+      vectorCount: Number(stats.vectorCount),
+      graphCount: Number(stats.graphCount),
+      ...this.sqliteSpaceStats(),
+    };
+  }
+
+  override async clear(): Promise<void> {
+    this.ensureOpen();
+    await this.executor!.execute('DELETE FROM quints');
+  }
+
+  private async ensureTypedObjectSchema(): Promise<void> {
+    await this.addColumnIfMissing('object_kind', 'TEXT');
+    await this.addColumnIfMissing('object_key', 'TEXT');
+    await this.addColumnIfMissing('object_text', 'TEXT');
+    await this.addColumnIfMissing('object_digest', 'TEXT');
+
+    for (const indexName of ['idx_spog', 'idx_ogsp', 'idx_gspo', 'idx_sopg', 'idx_pogs', 'idx_gpos']) {
+      await this.executor!.exec(`DROP INDEX IF EXISTS ${indexName}`);
+    }
+
+    await this.backfillMissingObjectIndexFields();
+    await this.executor!.exec(`
+      UPDATE quints
+      SET object_kind = 'text'
+      WHERE object_kind = 'shortText'
     `);
+  }
 
-    this.ensureTypedObjectSchema();
+  private async addColumnIfMissing(name: string, definition: string): Promise<void> {
+    const columns = new Set(
+      this.sqlite!.prepare<{ name: string }>('PRAGMA table_info(quints)').all().map(row => row.name),
+    );
+    if (!columns.has(name)) {
+      await this.executor!.exec(`ALTER TABLE quints ADD COLUMN ${name} ${definition}`);
+    }
+  }
 
-    this.sqlite.exec(`
+  private async createTypedObjectIndexes(): Promise<void> {
+    await this.executor!.exec(`
       CREATE INDEX IF NOT EXISTS idx_quints_graph ON quints (graph);
       CREATE INDEX IF NOT EXISTS idx_quints_subject ON quints (subject);
       CREATE INDEX IF NOT EXISTS idx_quints_predicate ON quints (predicate);
@@ -143,375 +249,42 @@ export class SqliteQuintStore {
     `);
   }
 
-  async close(): Promise<void> {
-    if (this.sqlite) {
-      this.sqlite.close();
-      this.sqlite = null;
-      this.db = null;
-    }
-  }
-
-  // ============================================
-  // Query Operations
-  // ============================================
-
-  async get(pattern: QuintPattern, options?: QueryOptions): Promise<Quint[]> {
-    this.ensureOpen();
-
-    const { sql: query, params } = this.buildSelectQuery(pattern, options);
-    const rows = this.sqlite!.prepare<QuintRow>(query).all(...params);
-    return rows.map((row: QuintRow) => this.rowToQuint(row));
-  }
-
-  match(
-    subject?: Term | null,
-    predicate?: Term | null,
-    object?: Term | null,
-    graph?: Term | null,
-  ): AsyncIterator<Quint> {
-    const pattern: QuintPattern = {};
-    if (subject) pattern.subject = subject;
-    if (predicate) pattern.predicate = predicate;
-    if (object) pattern.object = object;
-    if (graph) pattern.graph = graph;
-
-    return wrap(this.get(pattern));
-  }
-
-  async getByGraphPrefix(prefix: string, options?: QueryOptions): Promise<Quint[]> {
-    return this.get({ graph: { $startsWith: prefix } }, options);
-  }
-
-  async count(pattern: QuintPattern): Promise<number> {
-    this.ensureOpen();
-
-    const { whereClause, params } = this.buildWhereClause(pattern);
-    const result = this.sqlite!.prepare<{ count: number }>(
-      `SELECT COUNT(*) AS count FROM quints${whereClause}`,
-    ).get(...params);
-    return Number(result?.count ?? 0);
-  }
-
-  /**
-   * Compound query - multiple patterns JOINed by a common field
-   * This executes a single SQL query with JOINs, letting SQLite optimize the execution plan
-   */
-  async getCompound(compound: CompoundPattern, options?: QueryOptions): Promise<CompoundResult[]> {
-    this.ensureOpen();
-
-    const { patterns, joinOn, select } = compound;
-    
-    if (patterns.length === 0) {
-      return [];
-    }
-
-    if (patterns.length === 1) {
-      // Single pattern, fall back to regular get
-      const quads = await this.get(patterns[0], options);
-      return quads.map(q => ({
-        joinValue: termToId((q as any)[joinOn]),
-        bindings: {},
-        quads: [q],
-      }));
-    }
-
-    // Build JOIN SQL
-    const { sql: sqlQuery, params } = this.buildCompoundSQL(compound, options);
-    
-    if (this.options.debug) {
-      console.log('[SqliteQuintStore] Compound SQL:', sqlQuery);
-      console.log('[SqliteQuintStore] Params:', params);
-    }
-
-    // Execute raw SQL
-    const stmt = this.sqlite!.prepare(sqlQuery);
-    const rows = stmt.all(...params) as Record<string, string>[];
-
-    // Convert rows to CompoundResult
-    return rows.map(row => {
-      const bindings: Record<string, string> = {};
-      
-      // Extract bindings based on select config or default naming
-      if (select) {
-        for (const s of select) {
-          bindings[s.alias] = row[s.alias];
-        }
-      } else {
-        // Default: include all fields from all patterns
-        for (const key of Object.keys(row)) {
-          if (key !== 'join_value') {
-            bindings[key] = row[key];
-          }
-        }
-      }
-
-      return {
-        joinValue: row.join_value,
-        bindings,
-      };
-    });
-  }
-
-  /**
-   * 批量获取多个 subject 的多个属性
-   * 
-   * 用于优化 OPTIONAL 查询：避免每个 OPTIONAL 变成一次 LEFT JOIN
-   * 
-   * SQL: SELECT subject, predicate, object FROM quints 
-   *      WHERE subject IN (...) AND predicate IN (...)
-   */
-  async getAttributes(
-    subjects: string[],
-    predicates: string[],
-    graph?: Term
-  ): Promise<Map<string, Map<string, Term[]>>> {
-    this.ensureOpen();
-
-    if (subjects.length === 0 || predicates.length === 0) {
-      return new Map();
-    }
-
-    // Build SQL with IN clauses
-    const params: string[] = [];
-    let sql = `SELECT subject, predicate, object FROM quints WHERE subject IN (${
-      subjects.map(() => '?').join(', ')
-    }) AND predicate IN (${
-      predicates.map(() => '?').join(', ')
-    })`;
-    
-    params.push(...subjects);
-    params.push(...predicates);
-
-    // Add graph filter if specified
-    if (graph && graph.termType !== 'DefaultGraph') {
-      sql += ` AND graph = ?`;
-      params.push(termToId(graph as any));
-    }
-
-    if (this.options.debug) {
-      console.log('[SqliteQuintStore] getAttributes SQL:', sql);
-      console.log('[SqliteQuintStore] Params:', params.length, 'subjects:', subjects.length, 'predicates:', predicates.length);
-    }
-
-    const stmt = this.sqlite!.prepare(sql);
-    const rows = stmt.all(...params) as { subject: string; predicate: string; object: string }[];
-
-    // Build result map: subject -> predicate -> object[]
-    const result = new Map<string, Map<string, Term[]>>();
+  private async backfillMissingObjectIndexFields(): Promise<void> {
+    const rows = await this.executor!.query<{
+      graph: string;
+      subject: string;
+      predicate: string;
+      object: string;
+    }>(`
+      SELECT graph, subject, predicate, object
+      FROM quints
+      WHERE object_kind IS NULL
+         OR (object_key IS NULL AND object_digest IS NULL)
+    `);
 
     for (const row of rows) {
-      if (!result.has(row.subject)) {
-        result.set(row.subject, new Map());
-      }
-      const predicateMap = result.get(row.subject)!;
-      
-      if (!predicateMap.has(row.predicate)) {
-        predicateMap.set(row.predicate, []);
-      }
-      
-      // Deserialize object back to Term
-      const objectTerm = deserializeObject(row.object);
-      predicateMap.get(row.predicate)!.push(objectTerm);
+      const objectIndex = this.objectIndexForSerialized(row.predicate, row.object);
+      await this.executor!.execute(`
+        UPDATE quints
+        SET object_kind = ?,
+            object_key = ?,
+            object_text = ?,
+            object_digest = ?
+        WHERE graph = ?
+          AND subject = ?
+          AND predicate = ?
+          AND object = ?
+      `, [
+        objectIndex.objectKind,
+        objectIndex.objectKey,
+        objectIndex.objectText,
+        this.objectDigestForIndex(row.object, objectIndex),
+        row.graph,
+        row.subject,
+        row.predicate,
+        row.object,
+      ]);
     }
-
-    if (this.options.debug) {
-      console.log('[SqliteQuintStore] getAttributes returned', result.size, 'subjects');
-    }
-
-    return result;
-  }
-
-  /**
-   * Build SQL for compound query with JOINs
-   */
-  private buildCompoundSQL(
-    compound: CompoundPattern,
-    options?: QueryOptions
-  ): { sql: string; params: (string | number)[] } {
-    const { patterns, joinOn, select } = compound;
-    const params: (string | number)[] = [];
-    
-    // Map joinOn to column name
-    const joinColumn = joinOn; // 'subject' | 'predicate' | 'object' | 'graph'
-
-    // Build SELECT clause
-    let selectClause = `q0.${joinColumn} as join_value`;
-    
-    if (select) {
-      for (const s of select) {
-        selectClause += `, q${s.pattern}.${s.field} as ${s.alias}`;
-      }
-    } else {
-      // Default: select object from each pattern as p0_object, p1_object, etc.
-      for (let i = 0; i < patterns.length; i++) {
-        selectClause += `, q${i}.object as p${i}_object`;
-        selectClause += `, q${i}.predicate as p${i}_predicate`;
-      }
-    }
-
-    // Build FROM clause with JOINs
-    let fromClause = 'quints q0';
-    for (let i = 1; i < patterns.length; i++) {
-      fromClause += ` JOIN quints q${i} ON q0.${joinColumn} = q${i}.${joinColumn}`;
-      // Also join on graph to ensure same graph
-      fromClause += ` AND q0.graph = q${i}.graph`;
-    }
-
-    // Build WHERE clause
-    const whereParts: string[] = [];
-    
-    for (let i = 0; i < patterns.length; i++) {
-      const pattern = patterns[i];
-      const alias = `q${i}`;
-      
-      const conditions = this.buildConditionsForAlias(pattern, alias, params);
-      whereParts.push(...conditions);
-    }
-
-    let sql = `SELECT ${selectClause} FROM ${fromClause}`;
-    
-    if (whereParts.length > 0) {
-      sql += ` WHERE ${whereParts.join(' AND ')}`;
-    }
-
-    // Add LIMIT/OFFSET
-    if (options?.limit) {
-      sql += ` LIMIT ?`;
-      params.push(options.limit);
-    }
-    if (options?.offset) {
-      if (!options?.limit) {
-        sql += ` LIMIT -1`;
-      }
-      sql += ` OFFSET ?`;
-      params.push(options.offset);
-    }
-
-    return { sql, params };
-  }
-
-  /**
-   * Build WHERE conditions for a specific table alias
-   */
-  private buildConditionsForAlias(
-    pattern: QuintPattern,
-    alias: string,
-    params: (string | number)[]
-  ): string[] {
-    const conditions: string[] = [];
-    this.addTermConditions(conditions, params, `${alias}.graph`, pattern.graph, false);
-    this.addTermConditions(conditions, params, `${alias}.subject`, pattern.subject, false);
-    this.addTermConditions(conditions, params, `${alias}.predicate`, pattern.predicate, false);
-    if (pattern.object) {
-      this.addObjectConditions(
-        conditions,
-        params,
-        alias,
-        pattern.object,
-        this.extractExactPredicate(pattern.predicate),
-      );
-    }
-
-    return conditions;
-  }
-
-  // ============================================
-  // Write Operations
-  // ============================================
-
-  async put(quint: Quint): Promise<void> {
-    this.ensureOpen();
-
-    const row = this.quintToRow(quint);
-    const statement = this.writeStatementForRow(row);
-    this.sqlite!.prepare(statement.sql).run(...statement.params);
-  }
-
-  async multiPut(quintList: Quint[]): Promise<void> {
-    this.ensureOpen();
-
-    if (quintList.length === 0) return;
-
-    const rows = quintList.map(q => this.writeStatementForRow(this.quintToRow(q)));
-
-    // Use transaction for batch insert
-    this.sqlite!.transaction(() => {
-      for (const row of rows) {
-        this.sqlite!.prepare(row.sql).run(...row.params);
-      }
-    })();
-  }
-
-  async updateEmbedding(pattern: QuintPattern, embedding: number[]): Promise<number> {
-    this.ensureOpen();
-
-    const { whereClause, params } = this.buildWhereClause(pattern);
-    const vectorJson = JSON.stringify(embedding);
-    const result = this.sqlite!.prepare(`UPDATE quints SET vector = ?${whereClause}`).run(vectorJson, ...params);
-    return result.changes;
-  }
-
-  // ============================================
-  // Delete Operations
-  // ============================================
-
-  async del(pattern: QuintPattern): Promise<number> {
-    this.ensureOpen();
-
-    const { whereClause, params } = this.buildWhereClause(pattern);
-    const result = this.sqlite!.prepare(`DELETE FROM quints${whereClause}`).run(...params);
-    return result.changes;
-  }
-
-  async multiDel(quintList: Quint[]): Promise<void> {
-    this.ensureOpen();
-
-    if (quintList.length === 0) return;
-
-    this.sqlite!.transaction(() => {
-      for (const quint of quintList) {
-        const g = termToId(quint.graph as any);
-        const s = termToId(quint.subject as any);
-        const p = termToId(quint.predicate as any);
-        const o = serializeObject(quint.object as any);
-
-        this.sqlite!.prepare(`
-          DELETE FROM quints
-          WHERE graph = ?
-            AND subject = ?
-            AND predicate = ?
-            AND object = ?
-        `).run(g, s, p, o);
-      }
-    })();
-  }
-
-  // ============================================
-  // Management
-  // ============================================
-
-  async stats(): Promise<StoreStats> {
-    this.ensureOpen();
-
-    const totalResult = await this.db!
-      .select({ count: sql<number>`count(*)` })
-      .from(quints);
-
-    const vectorResult = await this.db!
-      .select({ count: sql<number>`count(*)` })
-      .from(quints)
-      .where(sql`${quints.vector} IS NOT NULL`);
-
-    const graphResult = await this.db!
-      .select({ count: sql<number>`COUNT(DISTINCT ${quints.graph})` })
-      .from(quints);
-
-    return {
-      totalCount: totalResult[0]?.count ?? 0,
-      vectorCount: vectorResult[0]?.count ?? 0,
-      graphCount: graphResult[0]?.count ?? 0,
-      ...this.sqliteSpaceStats(),
-    };
   }
 
   private sqliteSpaceStats(): Pick<StoreStats, 'databaseBytes' | 'tableBytes' | 'indexBytes' | 'spaceObjects'> {
@@ -599,126 +372,30 @@ export class SqliteQuintStore {
     }
   }
 
-  async clear(): Promise<void> {
-    this.ensureOpen();
-    await this.db!.delete(quints);
+  private objectIndexForSerialized(predicate: string, object: string): ObjectIndexFields {
+    return objectIndexFieldsFromSerialized(object, {
+      predicate,
+      predicateObjectDataTypes: this.options.predicateObjectDataTypes,
+      textMaxBytes: this.options.textMaxBytes,
+    });
   }
 
-  // ============================================
-  // Private Helpers
-  // ============================================
-
-  private ensureOpen(): void {
-    if (!this.db) {
-      throw new Error('Store not open. Call open() first.');
-    }
+  private objectDigestForIndex(serialized: string, fields: ObjectIndexFields): string | null {
+    return fields.objectKey === null ? digestObject(serialized) : null;
   }
 
-  private ensureTypedObjectSchema(): void {
-    this.addColumnIfMissing('object_kind', 'TEXT');
-    this.addColumnIfMissing('object_key', 'TEXT');
-    this.addColumnIfMissing('object_text', 'TEXT');
-    this.addColumnIfMissing('object_digest', 'TEXT');
-
-    for (const indexName of ['idx_spog', 'idx_ogsp', 'idx_gspo', 'idx_sopg', 'idx_pogs', 'idx_gpos']) {
-      this.sqlite!.exec(`DROP INDEX IF EXISTS ${indexName}`);
+  protected override resolveObjectDataTypeForPattern(pattern: QuintPattern): PredicateObjectDataType | undefined {
+    const predicate = this.extractExactPredicate(pattern.predicate);
+    if (predicate) {
+      return getPredicateObjectDataType(predicate, this.options.predicateObjectDataTypes);
     }
-
-    this.backfillMissingObjectIndexFields();
-    this.sqlite!.prepare(`
-      UPDATE quints
-      SET object_kind = 'text'
-      WHERE object_kind = 'shortText'
-    `).run();
+    if (pattern.object && typeof pattern.object === 'object' && 'termType' in pattern.object) {
+      return this.objectIndexForTerm(predicate, pattern.object as Term).objectKind;
+    }
+    return undefined;
   }
 
-  private addColumnIfMissing(name: string, definition: string): void {
-    const columns = new Set(
-      this.sqlite!.prepare<{ name: string }>('PRAGMA table_info(quints)').all().map(row => row.name),
-    );
-    if (!columns.has(name)) {
-      this.sqlite!.exec(`ALTER TABLE quints ADD COLUMN ${name} ${definition}`);
-    }
-  }
-
-  private backfillMissingObjectIndexFields(): void {
-    const rows = this.sqlite!.prepare<{
-      graph: string;
-      subject: string;
-      predicate: string;
-      object: string;
-    }>(`
-      SELECT graph, subject, predicate, object
-      FROM quints
-      WHERE object_kind IS NULL
-         OR (object_key IS NULL AND object_digest IS NULL)
-    `).all();
-
-    const update = this.sqlite!.prepare(`
-      UPDATE quints
-      SET object_kind = ?,
-          object_key = ?,
-          object_text = ?,
-          object_digest = ?
-      WHERE graph = ?
-        AND subject = ?
-        AND predicate = ?
-        AND object = ?
-    `);
-
-    for (const row of rows) {
-      const objectIndex = this.objectIndexForSerialized(row.predicate, row.object);
-      update.run(
-        objectIndex.objectKind,
-        objectIndex.objectKey,
-        objectIndex.objectText,
-        this.objectDigestForIndex(row.object, objectIndex),
-        row.graph,
-        row.subject,
-        row.predicate,
-        row.object,
-      );
-    }
-  }
-
-  private buildSelectQuery(pattern: QuintPattern, options?: QueryOptions): { sql: string; params: any[] } {
-    const { whereClause, params } = this.buildWhereClause(pattern);
-    let query = `SELECT * FROM quints${whereClause}`;
-
-    if (options?.order && options.order.length > 0) {
-      const orderCols = options.order.map(field => {
-        if (field === 'object') {
-          const objectType = this.resolveObjectDataTypeForPattern(pattern);
-          if (objectType === 'longText') {
-            throw new Error('ORDER BY object is not supported for longText predicates');
-          }
-          return 'object_key';
-        }
-        return field;
-      }).join(', ');
-      query += ` ORDER BY ${orderCols}`;
-      if (options.reverse) {
-        query += ' DESC';
-      }
-    }
-
-    if (options?.limit !== undefined) {
-      query += ' LIMIT ?';
-      params.push(options.limit);
-    }
-    if (options?.offset !== undefined) {
-      if (options.limit === undefined) {
-        query += ' LIMIT ?';
-        params.push(SQLITE_UNBOUNDED_LIMIT);
-      }
-      query += ' OFFSET ?';
-      params.push(options.offset);
-    }
-
-    return { sql: query, params };
-  }
-
-  private buildWhereClause(pattern: QuintPattern): { whereClause: string; params: any[] } {
+  protected override buildWhereClause(pattern: QuintPattern): { whereClause: string; params: any[] } {
     const conditions: string[] = [];
     const params: any[] = [];
     const predicate = this.extractExactPredicate(pattern.predicate);
@@ -736,104 +413,34 @@ export class SqliteQuintStore {
     };
   }
 
-  private addTermConditions(
+  protected override addTermConditions(
     conditions: string[],
     params: any[],
     column: string,
     match: TermMatch | undefined,
     isObject: boolean,
   ): void {
-    if (!match) return;
-
-    if (isTerm(match)) {
-      conditions.push(`${column} = ?`);
-      params.push(isObject ? serializeObject(match as any) : termToId(match as any));
-      return;
-    }
-
-    const ops = match as TermOperators;
-    if (ops.$eq !== undefined) {
-      conditions.push(`${column} = ?`);
-      params.push(this.serializeOpValue(ops.$eq, isObject, '$eq'));
-    }
-    if (ops.$ne !== undefined) {
-      conditions.push(`${column} != ?`);
-      params.push(this.serializeOpValue(ops.$ne, isObject, '$ne'));
-    }
-    if (ops.$gt !== undefined) {
-      conditions.push(`${column} > ?`);
-      params.push(this.serializeOpValue(ops.$gt, isObject, '$gt'));
-    }
-    if (ops.$gte !== undefined) {
-      conditions.push(`${column} >= ?`);
-      params.push(this.serializeOpValue(ops.$gte, isObject, '$gte'));
-    }
-    if (ops.$lt !== undefined) {
-      conditions.push(`${column} < ?`);
-      params.push(this.serializeOpValue(ops.$lt, isObject, '$lt'));
-    }
-    if (ops.$lte !== undefined) {
-      conditions.push(`${column} <= ?`);
-      params.push(this.serializeOpValue(ops.$lte, isObject, '$lte'));
-    }
-    if (ops.$in !== undefined && ops.$in.length > 0) {
-      const placeholders = ops.$in.map(() => '?').join(', ');
-      conditions.push(`${column} IN (${placeholders})`);
-      params.push(...ops.$in.map(v => this.serializeOpValue(v, isObject, '$in')));
-    }
-    if (ops.$notIn !== undefined && ops.$notIn.length > 0) {
-      const placeholders = ops.$notIn.map(() => '?').join(', ');
-      conditions.push(`${column} NOT IN (${placeholders})`);
-      params.push(...ops.$notIn.map(v => this.serializeOpValue(v, isObject, '$notIn')));
-    }
-    if (ops.$startsWith !== undefined) {
-      conditions.push(`${column} >= ? AND ${column} < ?`);
-      params.push(ops.$startsWith, ops.$startsWith + '\uffff');
-    }
-    if (ops.$endsWith !== undefined) {
-      conditions.push(`${column} LIKE ?`);
-      params.push(`%${ops.$endsWith}`);
-    }
-    if (ops.$contains !== undefined) {
-      conditions.push(`${column} LIKE ?`);
-      params.push(`%${ops.$contains}%`);
-    }
-    if (ops.$regex !== undefined) {
-      conditions.push(`${column} GLOB ?`);
-      params.push(ops.$regex.replace(/\.\*/g, '*').replace(/\./g, '?'));
-    }
-    if (ops.$isNull === true) {
-      conditions.push(`${column} IS NULL`);
-    }
-    if (ops.$isNull === false) {
-      conditions.push(`${column} IS NOT NULL`);
-    }
+    this.addConditions(conditions, params, column, match, isObject);
   }
 
-  private serializeOpValue(value: OperatorValue, isObject: boolean, filterOp: string): any {
-    if (typeof value === 'object' && 'termType' in value) {
-      return isObject ? serializeObject(value as any) : termToId(value as any);
+  protected override addAliasedConditions(
+    conditions: string[],
+    params: any[],
+    alias: string,
+    pattern: QuintPattern,
+  ): void {
+    this.addTermConditions(conditions, params, `${alias}.graph`, pattern.graph, false);
+    this.addTermConditions(conditions, params, `${alias}.subject`, pattern.subject, false);
+    this.addTermConditions(conditions, params, `${alias}.predicate`, pattern.predicate, false);
+    if (pattern.object) {
+      this.addObjectConditions(
+        conditions,
+        params,
+        alias,
+        pattern.object,
+        this.extractExactPredicate(pattern.predicate),
+      );
     }
-
-    if (typeof value === 'number') {
-      if (isObject) {
-        if (filterOp === '$eq' || filterOp === '$ne' || filterOp === '$in' || filterOp === '$notIn') {
-          const lit = DataFactory.literal(String(value), DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#integer'));
-          return serializeObject(lit);
-        }
-        const fpValue = `N${SEP}${fpEncode(value)}`;
-        if (filterOp === '$gt' || filterOp === '$lte') {
-          return fpValue + SEP + '\uffff';
-        }
-        return fpValue;
-      }
-      return value;
-    }
-
-    if (isObject && !isSerializedObjectValue(value)) {
-      return `"${value}"`;
-    }
-    return value;
   }
 
   private addObjectConditions(
@@ -1114,19 +721,11 @@ export class SqliteQuintStore {
       }
     }
 
-    return this.objectIndexForSerialized(predicate, serialized);
+    return this.objectIndexForSerialized(predicate ?? '', serialized);
   }
 
   private objectIndexForTerm(predicate: string | undefined, object: Term): ObjectIndexFields {
     return objectIndexFieldsFromTerm(object, {
-      predicate,
-      predicateObjectDataTypes: this.options.predicateObjectDataTypes,
-      textMaxBytes: this.options.textMaxBytes,
-    });
-  }
-
-  private objectIndexForSerialized(predicate: string | undefined, object: string): ObjectIndexFields {
-    return objectIndexFieldsFromSerialized(object, {
       predicate,
       predicateObjectDataTypes: this.options.predicateObjectDataTypes,
       textMaxBytes: this.options.textMaxBytes,
@@ -1156,10 +755,6 @@ export class SqliteQuintStore {
     return { objectKind: 'iri', objectKey: prefix, objectText: null };
   }
 
-  private objectDigestForIndex(serialized: string, fields: ObjectIndexFields): string | null {
-    return fields.objectKey === null ? digestObject(serialized) : null;
-  }
-
   private assertComparableObject(fields: ObjectIndexFields, op: string): void {
     if (fields.objectKey !== null && fields.objectKind !== 'longText') {
       return;
@@ -1167,34 +762,28 @@ export class SqliteQuintStore {
     throw new Error(`Object ${op} is not supported for ${fields.objectKind}; declare/use a comparable data type instead of longText`);
   }
 
-  private extractExactPredicate(match: TermMatch | undefined): string | undefined {
-    if (!match) return undefined;
-    if (typeof match === 'object' && 'termType' in match) {
-      return termToId(match as Term);
-    }
-    const ops = match as TermOperators;
-    if (ops.$eq !== undefined) {
-      return String(this.serializeOpValue(ops.$eq, false, '$eq'));
-    }
-    return undefined;
-  }
-
-  private resolveObjectDataTypeForPattern(pattern: QuintPattern): PredicateObjectDataType | undefined {
-    const predicate = this.extractExactPredicate(pattern.predicate);
-    if (predicate) {
-      return getPredicateObjectDataType(predicate, this.options.predicateObjectDataTypes);
-    }
-    if (pattern.object && typeof pattern.object === 'object' && 'termType' in pattern.object) {
-      return this.objectIndexForTerm(predicate, pattern.object as Term).objectKind;
-    }
-    return undefined;
-  }
-
   private predicateForIndex(predicate: string | undefined): string | undefined {
     return predicate;
   }
 
-  private writeStatementForRow(row: SqliteIndexedQuintRow): { sql: string; params: any[] } {
+  override async put(quint: Quint): Promise<void> {
+    this.ensureOpen();
+
+    const row = this.quintToRow(quint);
+    const statement = this.writeStatementForRow(row);
+    await this.executor!.execute(statement.sql, statement.params);
+  }
+
+  override async multiPut(quintList: Quint[]): Promise<void> {
+    this.ensureOpen();
+
+    if (quintList.length === 0) return;
+
+    const statements = quintList.map(quint => this.writeStatementForRow(this.quintToRow(quint)));
+    await this.executor!.executeInTransaction(statements);
+  }
+
+  private writeStatementForRow(row: SqliteIndexedQuintRow): { sql: string; params?: any[] } {
     const params = [
       row.objectKind,
       row.objectKey,
@@ -1245,7 +834,7 @@ export class SqliteQuintStore {
     };
   }
 
-  private quintToRow(quint: Quint): SqliteIndexedQuintRow {
+  protected override quintToRow(quint: Quint): SqliteIndexedQuintRow {
     const predicate = termToId(quint.predicate as any);
     const object = serializeObject(quint.object as any);
     const objectIndex = this.objectIndexForTerm(predicate, quint.object as Term);
@@ -1262,7 +851,7 @@ export class SqliteQuintStore {
     };
   }
 
-  private rowToQuint(row: QuintRow): Quint {
+  protected override rowToQuint(row: QuintRow): Quint {
     const quad = rowToQuad(row);
     const quint: Quint = quad as Quint;
     if (row.vector) {

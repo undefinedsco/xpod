@@ -188,9 +188,9 @@ describe('MixDataAccessor (local profile integration)', () => {
     metadata.contentType = 'internal/quads';
     const { quad, namedNode, literal } = DataFactory;
     metadata.addQuad(
-      namedNode('http://www.w3.org/ns/auth/acl#'),
+      namedNode('http://www.w3.org/ns/solid/acp#'),
       namedNode('http://purl.org/vocab/vann/preferredNamespacePrefix'),
-      literal('acl'),
+      literal('acp'),
       namedNode('urn:npm:solid:community-server:meta:ResponseMetadata'),
     );
 

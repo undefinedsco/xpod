@@ -169,14 +169,15 @@
       "autoBackfill_batchSize": 1000
     },
     {
-      "comment": "RDF term-id query engine backed by the shared cloud RDF index.",
+      "comment": "RDF query engine backed by PostgreSQL facts plus PostgreSQL RDF-3X derived stats.",
       "@id": "urn:undefineds:xpod:SolidRdfEngine",
-      "@type": "SolidRdfEngine",
-      "index_path": {
-        "@id": "urn:solid-server:default:variable:rdfIndexPath",
+      "@type": "PostgresRdfEngine",
+      "options_driver": "pg",
+      "options_connectionString": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       },
-      "autoOpen": true
+      "options_autoOpen": true
     },
     {
       "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",

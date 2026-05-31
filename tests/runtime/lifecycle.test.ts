@@ -46,7 +46,6 @@ describe('runtime lifecycle helpers', () => {
       host,
       runtimeShorthand: { redisClient: 'localhost:6379' },
       supervisor: new Supervisor({ handleProcessSignals: false }),
-      open: false,
       createCssRuntimeConfig: (): string => '/tmp/runtime-css.json',
       cssRunner,
     });

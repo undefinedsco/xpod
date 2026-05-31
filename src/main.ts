@@ -10,6 +10,7 @@ import { hideBin } from 'yargs/helpers';
 import { GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
 import { buildApiChildEnv, buildCssArgs, buildCssChildEnv, createCssChildRuntimeConfig } from './runtime/css-process';
 import { resolveExternalOidcIssuer } from './runtime/oidc-issuer';
+import { resolveAuthModeFromEnv } from './authorization/AuthMode';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { Supervisor } from './supervisor';
 
@@ -257,9 +258,12 @@ async function startRuntime(options: RunOptions): Promise<void> {
   const baseUrl = ensureTrailingSlash(process.env.CSS_BASE_URL || `http://${host}:${mainPort}`);
   const cssPort = await getFreePort(mainPort + 1, host);
   const apiPort = await getFreePort(cssPort + 1, host);
+  const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');
+  const rdfIndexPath = process.env.CSS_RDF_INDEX_PATH || path.join(runtimeRoot, 'rdf-index.sqlite');
 
   // Make sure GatewayProxy has access to the effective baseUrl for host rewrites.
   process.env.CSS_BASE_URL = baseUrl;
+  process.env.CSS_RDF_INDEX_PATH = rdfIndexPath;
 
   logger.info('Orchestration Plan:');
   logger.info(`  - Main Entry: ${baseUrl} (${host}:${mainPort})`);
@@ -270,13 +274,16 @@ async function startRuntime(options: RunOptions): Promise<void> {
   const cssBinary = require.resolve('@solid/community-server/bin/server.js');
   const cssModuleRoot = path.dirname(require.resolve('@solid/community-server/package.json'));
   const externalOidcIssuer = resolveExternalOidcIssuer(process.env);
+  const authMode = resolveAuthModeFromEnv(process.env);
   if (externalOidcIssuer) {
     logger.info(`  - SP mode external IdP: ${externalOidcIssuer}`);
   }
+  logger.info(`  - Authorization mode: ${authMode}`);
 
   const cssRuntimeConfig = createCssChildRuntimeConfig({
     configPath,
-    runtimeRoot: path.join(process.cwd(), '.xpod/runtime/legacy-css'),
+    runtimeRoot,
+    authMode,
     externalOidcIssuer,
   });
 
@@ -292,7 +299,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
       externalOidcIssuer,
     }),
     cwd: cssRuntimeConfig.cwd,
-    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer),
+    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode),
   });
 
   // API server: resolve the entry point dynamically
@@ -316,6 +323,8 @@ async function startRuntime(options: RunOptions): Promise<void> {
       mainPort,
       cssPort,
       baseUrl,
+      rdfIndexPath,
+      authMode,
       externalOidcIssuer,
     }),
   });

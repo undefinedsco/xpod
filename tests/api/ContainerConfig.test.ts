@@ -5,6 +5,7 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
   const envKeys = [
     'CSS_TOKEN_ENDPOINT',
     'CSS_BASE_URL',
+    'CSS_AUTH_MODE',
     'XPOD_EDITION',
     'API_PORT',
     'API_HOST',
@@ -48,5 +49,12 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
   it('falls back to localhost default when base URL is missing', () => {
     const config = loadConfigFromEnv();
     expect(config.cssTokenEndpoint).toBe('http://localhost:3000/.oidc/token');
+  });
+
+  it('defaults auth mode to acp and reads CSS_AUTH_MODE when set', () => {
+    expect(loadConfigFromEnv().authMode).toBe('acp');
+
+    process.env.CSS_AUTH_MODE = 'wac';
+    expect(loadConfigFromEnv().authMode).toBe('acl');
   });
 });

@@ -29,6 +29,7 @@ import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestServic
 import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import type { TaskAuthBindingService, TaskService, InngestTaskScheduler } from '../tasks';
 import type { PodMatrixStore } from '../matrix';
+import type { AuthMode } from '../../authorization/AuthMode';
 
 /**
  * 容器配置
@@ -48,6 +49,13 @@ export interface ApiContainerConfig {
 
   /** Runtime host implementation */
   runtimeHost?: RuntimeHost;
+
+  /** Solid authorization mode used by CSS and SP-local Pod provisioning. */
+  authMode: AuthMode;
+
+  /** RDF term-id index used by CSS LDP structured reads. */
+  rdfIndexPath?: string;
+
   /** 数据库连接 URL */
   databaseUrl: string;
 

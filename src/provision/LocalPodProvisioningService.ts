@@ -6,6 +6,9 @@ import type { Quad } from '@rdfjs/types';
 import { getLoggerFor } from 'global-logger-factory';
 import { quadToRow } from '../storage/quint/serialization';
 import { getSqliteRuntime, type SqliteDatabase } from '../storage/SqliteRuntime';
+import type { AuthMode } from '../authorization/AuthMode';
+import { buildPodAuthorizationResources } from '../authorization/PodAuthorizationResources';
+import { RdfQuadIndex } from '../storage/rdf/RdfQuadIndex';
 
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const LDP = 'http://www.w3.org/ns/ldp#';
@@ -14,10 +17,8 @@ const MA = 'http://www.w3.org/ns/ma-ont#';
 const PIM = 'http://www.w3.org/ns/pim/space#';
 const FOAF = 'http://xmlns.com/foaf/0.1/';
 const SOLID = 'http://www.w3.org/ns/solid/terms#';
-const ACL = 'http://www.w3.org/ns/auth/acl#';
-const ACP = 'http://www.w3.org/ns/solid/acp#';
 
-const { blankNode, literal, namedNode, quad } = DataFactory;
+const { literal, namedNode, quad } = DataFactory;
 
 export interface LocalPodProvisioningInput {
   podName: string;
@@ -36,7 +37,9 @@ export interface LocalPodProvisioningServiceOptions {
   rootDir: string;
   sparqlEndpoint: string;
   identityDbUrl: string;
+  rdfIndexPath?: string;
   oidcIssuer?: string;
+  authMode?: AuthMode | string;
 }
 
 function ensureTrailingSlash(url: string): string {
@@ -130,7 +133,9 @@ export class LocalPodProvisioningService {
   private readonly rootDir: string;
   private readonly sparqlDbPath: string;
   private readonly identityDbPath: string;
+  private readonly rdfIndexPath?: string;
   private readonly oidcIssuer?: string;
+  private readonly authMode?: AuthMode | string;
   private readonly sqliteRuntime = getSqliteRuntime();
 
   public constructor(options: LocalPodProvisioningServiceOptions) {
@@ -138,7 +143,9 @@ export class LocalPodProvisioningService {
     this.rootDir = options.rootDir;
     this.sparqlDbPath = stripSqlitePrefix(options.sparqlEndpoint, 'sparqlEndpoint');
     this.identityDbPath = stripSqlitePrefix(options.identityDbUrl, 'identityDbUrl');
+    this.rdfIndexPath = options.rdfIndexPath;
     this.oidcIssuer = options.oidcIssuer ? ensureTrailingSlash(options.oidcIssuer) : undefined;
+    this.authMode = options.authMode;
   }
 
   public async createPod(input: LocalPodProvisioningInput): Promise<LocalPodProvisioningResult> {
@@ -151,7 +158,9 @@ export class LocalPodProvisioningService {
     const webIdLinkId = stableUuid(`webIdLink:${accountId}:${webId}`);
 
     await this.createPodFiles(input.podName, input.initialResources);
-    this.writeQuints({ podUrl, webId, oidcIssuer });
+    const quads = this.buildPodQuads({ podUrl, webId, oidcIssuer });
+    this.writeQuints(quads);
+    this.writeRdfIndex(quads);
     this.writeIdentityIndexes({ accountId, podId, ownerId, webIdLinkId, podUrl, webId });
 
     this.logger.info(`Provisioned local pod ${podUrl} for ${webId}`);
@@ -177,11 +186,11 @@ export class LocalPodProvisioningService {
     }
   }
 
-  private writeQuints(input: { podUrl: string; webId: string; oidcIssuer: string }): void {
+  private writeQuints(quads: Quad[]): void {
     const db = this.sqliteRuntime.openDatabase(this.sparqlDbPath);
     try {
       createQuintsTable(db);
-      const rows = this.buildPodQuads(input).map((entry) => {
+      const rows = quads.map((entry) => {
         const row = quadToRow(entry);
         return [row.graph, row.subject, row.predicate, row.object, row.vector] as const;
       });
@@ -200,19 +209,37 @@ export class LocalPodProvisioningService {
     }
   }
 
+  private writeRdfIndex(quads: Quad[]): void {
+    if (!this.rdfIndexPath) {
+      return;
+    }
+
+    const index = new RdfQuadIndex({ path: this.rdfIndexPath });
+    try {
+      index.open();
+      index.multiPut(quads);
+    } finally {
+      index.close();
+    }
+  }
+
   private buildPodQuads({ podUrl, webId, oidcIssuer }: { podUrl: string; webId: string; oidcIssuer: string }): Quad[] {
     const now = new Date().toISOString();
     const root = this.baseUrl;
     const profileUrl = iri(podUrl, 'profile/');
     const cardUrl = iri(podUrl, 'profile/card');
-    const rootAcrUrl = iri(podUrl, '.acr');
-    const cardAcrUrl = iri(podUrl, 'profile/card.acr');
+    const authorizationResources = buildPodAuthorizationResources({
+      authMode: this.authMode,
+      podUrl,
+      cardUrl,
+      webId,
+      stableId: stableUuid,
+      iri,
+    });
     const rootGraph = namedNode(root);
     const podGraph = namedNode(podUrl);
     const profileGraph = namedNode(profileUrl);
     const cardGraph = namedNode(cardUrl);
-    const rootAcrGraph = namedNode(rootAcrUrl);
-    const cardAcrGraph = namedNode(cardAcrUrl);
     const out: Quad[] = [];
 
     const add = (graph: string, subject: string, predicate: string, object: string): void => {
@@ -242,17 +269,17 @@ export class LocalPodProvisioningService {
     };
 
     out.push(quad(namedNode(root), namedNode(`${LDP}contains`), namedNode(podUrl), rootGraph));
-    out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(rootAcrUrl), podGraph));
+    out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.rootResourceUrl), podGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(profileUrl), podGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardUrl), profileGraph));
-    out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardAcrUrl), profileGraph));
+    out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.cardResourceUrl), profileGraph));
 
     addContainerMeta(root);
     addContainerMeta(podUrl, true);
     addContainerMeta(profileUrl);
-    addDocumentMeta(rootAcrUrl);
+    addDocumentMeta(authorizationResources.rootResourceUrl);
     addDocumentMeta(cardUrl);
-    addDocumentMeta(cardAcrUrl);
+    addDocumentMeta(authorizationResources.cardResourceUrl);
 
     out.push(quad(namedNode(cardUrl), namedNode(`${RDF}type`), namedNode(`${FOAF}PersonalProfileDocument`), cardGraph));
     out.push(quad(namedNode(cardUrl), namedNode(`${FOAF}maker`), namedNode(webId), cardGraph));
@@ -260,64 +287,9 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(webId), namedNode(`${RDF}type`), namedNode(`${FOAF}Person`), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${SOLID}oidcIssuer`), namedNode(oidcIssuer), cardGraph));
 
-    this.addRootAcrQuads(out, rootAcrGraph, rootAcrUrl, podUrl, webId);
-    this.addPublicReadAcrQuads(out, cardAcrGraph, cardAcrUrl, cardUrl);
+    out.push(...authorizationResources.quads);
 
     return out;
-  }
-
-  private addRootAcrQuads(out: Quad[], graph: ReturnType<typeof namedNode>, acrUrl: string, podUrl: string, webId: string): void {
-    const root = namedNode(`${acrUrl}#root`);
-    const publicRead = namedNode(`${acrUrl}#publicReadAccess`);
-    const fullOwner = namedNode(`${acrUrl}#fullOwnerAccess`);
-    const publicPolicy = blankNode(`public-policy-${stableUuid(acrUrl)}`);
-    const publicMatcher = blankNode(`public-matcher-${stableUuid(acrUrl)}`);
-    const ownerPolicy = blankNode(`owner-policy-${stableUuid(acrUrl)}`);
-    const ownerMatcher = blankNode(`owner-matcher-${stableUuid(acrUrl)}`);
-
-    out.push(
-      quad(root, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControlResource`), graph),
-      quad(root, namedNode(`${ACP}resource`), namedNode(podUrl), graph),
-      quad(root, namedNode(`${ACP}accessControl`), publicRead, graph),
-      quad(root, namedNode(`${ACP}accessControl`), fullOwner, graph),
-      quad(root, namedNode(`${ACP}memberAccessControl`), fullOwner, graph),
-      quad(publicRead, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControl`), graph),
-      quad(publicRead, namedNode(`${ACP}apply`), publicPolicy, graph),
-      quad(publicPolicy, namedNode(`${RDF}type`), namedNode(`${ACP}Policy`), graph),
-      quad(publicPolicy, namedNode(`${ACP}allow`), namedNode(`${ACL}Read`), graph),
-      quad(publicPolicy, namedNode(`${ACP}anyOf`), publicMatcher, graph),
-      quad(publicMatcher, namedNode(`${RDF}type`), namedNode(`${ACP}Matcher`), graph),
-      quad(publicMatcher, namedNode(`${ACP}agent`), namedNode(`${ACP}PublicAgent`), graph),
-      quad(fullOwner, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControl`), graph),
-      quad(fullOwner, namedNode(`${ACP}apply`), ownerPolicy, graph),
-      quad(ownerPolicy, namedNode(`${RDF}type`), namedNode(`${ACP}Policy`), graph),
-      quad(ownerPolicy, namedNode(`${ACP}allow`), namedNode(`${ACL}Read`), graph),
-      quad(ownerPolicy, namedNode(`${ACP}allow`), namedNode(`${ACL}Write`), graph),
-      quad(ownerPolicy, namedNode(`${ACP}allow`), namedNode(`${ACL}Control`), graph),
-      quad(ownerPolicy, namedNode(`${ACP}anyOf`), ownerMatcher, graph),
-      quad(ownerMatcher, namedNode(`${RDF}type`), namedNode(`${ACP}Matcher`), graph),
-      quad(ownerMatcher, namedNode(`${ACP}agent`), namedNode(webId), graph),
-    );
-  }
-
-  private addPublicReadAcrQuads(out: Quad[], graph: ReturnType<typeof namedNode>, acrUrl: string, resourceUrl: string): void {
-    const card = namedNode(`${acrUrl}#card`);
-    const publicRead = namedNode(`${acrUrl}#publicReadAccess`);
-    const policy = blankNode(`card-policy-${stableUuid(acrUrl)}`);
-    const matcher = blankNode(`card-matcher-${stableUuid(acrUrl)}`);
-
-    out.push(
-      quad(card, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControlResource`), graph),
-      quad(card, namedNode(`${ACP}resource`), namedNode(resourceUrl), graph),
-      quad(card, namedNode(`${ACP}accessControl`), publicRead, graph),
-      quad(publicRead, namedNode(`${RDF}type`), namedNode(`${ACP}AccessControl`), graph),
-      quad(publicRead, namedNode(`${ACP}apply`), policy, graph),
-      quad(policy, namedNode(`${RDF}type`), namedNode(`${ACP}Policy`), graph),
-      quad(policy, namedNode(`${ACP}allow`), namedNode(`${ACL}Read`), graph),
-      quad(policy, namedNode(`${ACP}anyOf`), matcher, graph),
-      quad(matcher, namedNode(`${RDF}type`), namedNode(`${ACP}Matcher`), graph),
-      quad(matcher, namedNode(`${ACP}agent`), namedNode(`${ACP}PublicAgent`), graph),
-    );
   }
 
   private writeIdentityIndexes(input: {

@@ -10,6 +10,9 @@ import { SubgraphQueryEngine } from './storage/sparql/SubgraphQueryEngine';
 import { QuadstoreSparqlEngine, QuintstoreSparqlEngine } from './storage/sparql/CompatibilitySparqlEngine';
 export type { SparqlEngine } from './storage/sparql/SubgraphQueryEngine';
 export type {
+  RdfEngineLike,
+  RdfEngineStorageStats,
+  RdfDerivedIndexRefreshResult,
   RdfIndexStats,
   RdfIndexSpaceObject,
   RdfIndexMetrics,
@@ -29,6 +32,7 @@ export type {
   SolidRdfSparqlEngineOptions,
   SolidRdfSparqlFallback,
 } from './storage/rdf/SolidRdfSparqlEngine';
+export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
@@ -47,6 +51,7 @@ import { ValidatingIdentityProviderHttpHandler } from './identity/ValidatingIden
 import { PostgresKeyValueStorage } from './storage/keyvalue/PostgresKeyValueStorage';
 import { RedisKeyValueStorage } from './storage/keyvalue/RedisKeyValueStorage';
 import { SqliteKeyValueStorage } from './storage/keyvalue/SqliteKeyValueStorage';
+import { BaseKeyValueStorage } from './storage/keyvalue/BaseKeyValueStorage';
 import { DrizzleQuotaService } from './quota/DrizzleQuotaService';
 import { NoopQuotaService } from './quota/NoopQuotaService';
 import { HttpEntitlementProvider, NoopEntitlementProvider } from './quota/EntitlementProvider';
@@ -76,6 +81,7 @@ import { RdfSparqlAdapter } from './storage/rdf/RdfSparqlAdapter';
 import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
 import { ShadowRdfQuintStore } from './storage/rdf/ShadowRdfQuintStore';
 import { SolidRdfEngine } from './storage/rdf/SolidRdfEngine';
+import { PostgresRdfEngine } from './storage/rdf/PostgresRdfEngine';
 import { SolidRdfSparqlEngine } from './storage/rdf/SolidRdfSparqlEngine';
 import type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
 // Vector components
@@ -106,8 +112,6 @@ import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
-// Authorization components
-import { AuthModeSelector } from './authorization/AuthModeSelector';
 
 export type {
   DnsProvider,
@@ -136,52 +140,53 @@ export type {
 // Export the new AppStaticAssetHandler
 export { AppStaticAssetHandler } from './http/AppStaticAssetHandler';
 
-export { 
-    RepresentationPartialConvertingStore,
-    MinioDataAccessor, 
-    QuadstoreSparqlDataAccessor,
-    QuintStoreSparqlDataAccessor,
-    SolidRdfDataAccessor,
-    MixDataAccessor,
-    ConfigurableLoggerFactory,
-    SparqlUpdateResourceStore,
-    SubgraphQueryEngine,
-    QuadstoreSparqlEngine,
-    QuintstoreSparqlEngine,
-    SubgraphSparqlHttpHandler,
-    QuotaAdminHttpHandler,
-    ClusterIngressRouter,
-    ClusterWebSocketConfigurator,
-    EdgeNodeDirectDebugHttpHandler,
-    EdgeNodeProxyHttpHandler,
-    RouterHttpHandler,
-    RouterHttpRoute,
-    TracingHandler,
-    EdgeNodeCertificateHttpHandler,
-    TerminalHttpHandler,
-    ReservedSuffixIdentifierGenerator,
-    DrizzleIndexedStorage,
-    ValidatingIdentityProviderHttpHandler,
-    PostgresKeyValueStorage,
-    RedisKeyValueStorage,
-    SqliteKeyValueStorage,
+export {
+  RepresentationPartialConvertingStore,
+  MinioDataAccessor,
+  QuadstoreSparqlDataAccessor,
+  QuintStoreSparqlDataAccessor,
+  SolidRdfDataAccessor,
+  MixDataAccessor,
+  ConfigurableLoggerFactory,
+  SparqlUpdateResourceStore,
+  SubgraphQueryEngine,
+  QuadstoreSparqlEngine,
+  QuintstoreSparqlEngine,
+  SubgraphSparqlHttpHandler,
+  QuotaAdminHttpHandler,
+  ClusterIngressRouter,
+  ClusterWebSocketConfigurator,
+  EdgeNodeDirectDebugHttpHandler,
+  EdgeNodeProxyHttpHandler,
+  RouterHttpHandler,
+  RouterHttpRoute,
+  TracingHandler,
+  EdgeNodeCertificateHttpHandler,
+  TerminalHttpHandler,
+  ReservedSuffixIdentifierGenerator,
+  DrizzleIndexedStorage,
+  ValidatingIdentityProviderHttpHandler,
+  PostgresKeyValueStorage,
+  RedisKeyValueStorage,
+  SqliteKeyValueStorage,
+  BaseKeyValueStorage,
   DrizzleQuotaService,
   NoopQuotaService,
   HttpEntitlementProvider,
   NoopEntitlementProvider,
   PerAccountQuotaStrategy,
-    TencentDnsProvider,
-    EdgeNodeDnsCoordinator,
-    Dns01CertificateProvisioner,
-    SimpleEdgeNodeTunnelManager,
-    NoopEdgeNodeTunnelManager,
-    FrpTunnelManager,
-    EdgeNodeHealthProbeService,
-    EdgeNodeAgent,
-    EdgeNodeCertificateService,
-    AcmeCertificateManager,
-    EdgeNodeModeDetector,
-    ClusterIdentifierStrategy,
+  TencentDnsProvider,
+  EdgeNodeDnsCoordinator,
+  Dns01CertificateProvisioner,
+  SimpleEdgeNodeTunnelManager,
+  NoopEdgeNodeTunnelManager,
+  FrpTunnelManager,
+  EdgeNodeHealthProbeService,
+  EdgeNodeAgent,
+  EdgeNodeCertificateService,
+  AcmeCertificateManager,
+  EdgeNodeModeDetector,
+  ClusterIdentifierStrategy,
   UsageTrackingStore,
   CenterNodeRegistrationService,
   PodRoutingHttpHandler,
@@ -197,6 +202,7 @@ export {
   RdfSparqlAdapter,
   ShadowRdfQuintStore,
   SolidRdfEngine,
+  PostgresRdfEngine,
   SolidRdfSparqlEngine,
   // Vector exports
   VectorStore,
@@ -228,6 +234,4 @@ export {
   ProvisionPodCreator,
   ProvisionCodeCodec,
   LocalPodProvisioningService,
-  // Authorization exports
-  AuthModeSelector,
 };

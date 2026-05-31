@@ -43,6 +43,7 @@ describe('startApiService background services', () => {
     edition: 'local',
     port: 3001,
     host: '127.0.0.1',
+    authMode: 'acp',
     databaseUrl: 'sqlite::memory:',
     corsOrigins: ['*'],
     cssTokenEndpoint: 'http://127.0.0.1:3000/.oidc/token',
