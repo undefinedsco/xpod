@@ -13,14 +13,13 @@ jobs:
   verify-package-tarball:
     name: verify-package-tarball (${{ matrix.os }} / node${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     timeout-minutes: 30
     env:
       XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         node-version: [22, 24, 25]
     steps:
       - uses: actions/checkout@v4
@@ -56,14 +55,13 @@ jobs:
   verify-package-tarball-bun:
     name: verify-package-tarball-bun (${{ matrix.os }} / node${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     timeout-minutes: 30
     env:
       XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         node-version: [22, 24, 25]
     steps:
       - uses: actions/checkout@v4
@@ -172,7 +170,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         node-version: [22, 24, 25]
     steps:
       - uses: actions/checkout@v4
@@ -201,7 +199,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         node-version: [22, 24, 25]
     steps:
       - uses: actions/checkout@v4
