@@ -92,6 +92,14 @@ describe('XpodRuntime standalone profile authorization', () => {
     const body = await profileResponse.text();
     expect(body).toContain(createdAccount!.webId);
     expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+
+    const profileContainerResponse = await runtime.fetch(`${createdAccount!.podUrl}profile/`, {
+      headers: {
+        accept: 'text/turtle',
+      },
+    });
+
+    expect(profileContainerResponse.status).toBe(200);
   });
 });
 
@@ -140,5 +148,13 @@ describe('XpodRuntime SP provisioning authorization', () => {
     const body = await profileResponse.text();
     expect(body).toContain('https://id.undefineds.co/alice/profile/card#me');
     expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+
+    const profileContainerResponse = await runtime.fetch('/alice/profile/', {
+      headers: {
+        accept: 'text/turtle',
+      },
+    });
+
+    expect(profileContainerResponse.status).toBe(200);
   });
 });

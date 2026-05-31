@@ -91,6 +91,9 @@ export class ProvisionPodCreator extends BasePodCreator {
     if (!spResponse.ok) {
       const errBody = await spResponse.text();
       this.provisionLogger.error(`SP callback failed: ${spResponse.status} ${errBody}`);
+      if (spResponse.status === 409) {
+        throw new ConflictHttpError(parseSpErrorMessage(errBody) ?? `Pod name "${podName}" is already taken for this storage target.`);
+      }
       throw new Error(`Failed to create pod on SP: ${spResponse.status}`);
     }
 
@@ -171,5 +174,18 @@ export class ProvisionPodCreator extends BasePodCreator {
       podId,
       webIdLink,
     };
+  }
+}
+
+function parseSpErrorMessage(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as { message?: unknown; error?: unknown };
+    return typeof parsed.message === 'string'
+      ? parsed.message
+      : typeof parsed.error === 'string'
+        ? parsed.error
+        : undefined;
+  } catch {
+    return body.trim() || undefined;
   }
 }

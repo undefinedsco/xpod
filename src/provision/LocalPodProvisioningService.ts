@@ -271,6 +271,7 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(root), namedNode(`${LDP}contains`), namedNode(podUrl), rootGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.rootResourceUrl), podGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(profileUrl), podGraph));
+    out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.profileResourceUrl), profileGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardUrl), profileGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.cardResourceUrl), profileGraph));
 
@@ -278,6 +279,7 @@ export class LocalPodProvisioningService {
     addContainerMeta(podUrl, true);
     addContainerMeta(profileUrl);
     addDocumentMeta(authorizationResources.rootResourceUrl);
+    addDocumentMeta(authorizationResources.profileResourceUrl);
     addDocumentMeta(cardUrl);
     addDocumentMeta(authorizationResources.cardResourceUrl);
 

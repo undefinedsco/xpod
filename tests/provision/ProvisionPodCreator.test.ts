@@ -218,6 +218,27 @@ describe('ProvisionPodCreator', () => {
       })).rejects.toThrow('Failed to create pod on SP: 500');
     });
 
+    it('should preserve SP pod-name conflicts as conflicts', async () => {
+      const provisionCode = makeProvisionCode();
+
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ error: 'Conflict', message: 'Pod alice already exists' }),
+      });
+
+      vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+
+      await expect(creator.handle({
+        name: 'alice',
+        accountId: 'account-1',
+        settings: { provisionCode },
+      })).rejects.toMatchObject({
+        statusCode: 409,
+        message: 'Pod alice already exists',
+      });
+    });
+
     it('should use provided webId instead of generating one', async () => {
       const provisionCode = makeProvisionCode();
       const customWebId = 'https://other.example.com/profile#me';
