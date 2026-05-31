@@ -62,6 +62,14 @@
         },
         {
           "@type": "YargsParameter",
+          "name": "rdfIndexPath",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
           "name": "minioAccessKey",
           "options": {
             "type": "string",
