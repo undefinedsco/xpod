@@ -19,6 +19,7 @@ import {
   rowToQuad, 
   parseVector,
   termToId,
+  deserializeObject as deserializeStoredObject,
   serializeObject,
   fpEncode,
   SEP,
@@ -646,34 +647,7 @@ export abstract class BaseQuintStore extends QuintStore {
   }
 
   protected deserializeObject(value: string): Term {
-    if (value.startsWith('"')) {
-      const match = value.match(/^"([^"]*)"(?:@([a-zA-Z-]+)|\^\^<([^>]+)>)?$/);
-      if (match) {
-        const [, lexical, lang, datatype] = match;
-        if (lang) {
-          return DataFactory.literal(lexical, lang);
-        }
-        if (datatype) {
-          return DataFactory.literal(lexical, DataFactory.namedNode(datatype));
-        }
-        return DataFactory.literal(lexical);
-      }
-    }
-    
-    if (value.startsWith('N\u0000')) {
-      const parts = value.split('\u0000');
-      const datatype = parts[2];
-      const originalValue = parts[3];
-      return DataFactory.literal(originalValue, DataFactory.namedNode(datatype));
-    }
-    
-    if (value.startsWith('D\u0000')) {
-      const parts = value.split('\u0000');
-      const originalValue = parts[2];
-      return DataFactory.literal(originalValue, DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#dateTime'));
-    }
-    
-    return DataFactory.namedNode(value);
+    return deserializeStoredObject(value);
   }
 
   protected resolveObjectDataTypeForPattern(_pattern: QuintPattern): string | undefined {
