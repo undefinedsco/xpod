@@ -33,7 +33,7 @@ import type {
 import type { NamedNode, Quad, Term } from '@rdfjs/types';
 import type {
   RdfBindExpression,
-  RdfLocalQuery,
+  RdfQuery,
   RdfBindingRow,
   RdfConstructTemplate,
   RdfQueryFilter,
@@ -50,7 +50,7 @@ import type {
   RdfExistsQueryGroup,
   RdfOptionalQueryGroup,
 } from './types';
-import { variable as rdfVar } from './RdfLocalQueryEngine';
+import { variable as rdfVar } from './RdfQueryExecutor';
 
 const PATH_JOIN_VARIABLE_PREFIX = '__rdf_path';
 const XPATH_FUNCTION_NS = 'http://www.w3.org/2005/xpath-functions#';
@@ -100,14 +100,14 @@ interface RdfQueryGraphScope {
   patterns: RdfQueryPattern[];
   values?: RdfValuesBindingSource[];
   filters?: RdfQueryFilter[];
-  optional?: RdfLocalQuery['optional'];
-  unions?: RdfLocalQuery['unions'];
-  minus?: RdfLocalQuery['minus'];
-  exists?: RdfLocalQuery['exists'];
+  optional?: RdfQuery['optional'];
+  unions?: RdfQuery['unions'];
+  minus?: RdfQuery['minus'];
+  exists?: RdfQuery['exists'];
 }
 
 export interface RdfSparqlCompileResult {
-  query: RdfLocalQuery;
+  query: RdfQuery;
   variables: string[];
   queryType: 'SELECT' | 'ASK' | 'CONSTRUCT' | 'DESCRIBE';
   constructTemplate?: RdfConstructTemplate[];
@@ -135,20 +135,20 @@ export type RdfSparqlUpdateTemplate = RdfSparqlDeleteWhereTemplate;
 
 export interface RdfSparqlDeleteWhereOperation {
   type: 'deleteWhere';
-  query: RdfLocalQuery;
+  query: RdfQuery;
   template: RdfSparqlUpdateTemplate[];
 }
 
 export interface RdfSparqlInsertDeleteWhereOperation {
   type: 'insertDeleteWhere';
-  query: RdfLocalQuery;
+  query: RdfQuery;
   deletes: RdfSparqlUpdateTemplate[];
   inserts: RdfSparqlUpdateTemplate[];
 }
 
 export interface RdfSparqlInsertWhereOperation {
   type: 'insertWhere';
-  query: RdfLocalQuery;
+  query: RdfQuery;
   inserts: RdfSparqlUpdateTemplate[];
 }
 
@@ -506,7 +506,7 @@ export class RdfSparqlAdapter {
     basePath: string,
     label: string,
     dataset: { defaultGraph?: RdfQueryTermPattern; namedGraph?: RdfQueryTermPattern } = {},
-  ): RdfLocalQuery {
+  ): RdfQuery {
     if (patterns.length === 0) {
       throw new UnsupportedSparqlQueryError(`${label} without WHERE patterns fallback to compatibility engine`);
     }
@@ -523,7 +523,7 @@ export class RdfSparqlAdapter {
     return state.query;
   }
 
-  private queryFromUpdateTemplate(template: RdfSparqlUpdateTemplate[], label: string): RdfLocalQuery {
+  private queryFromUpdateTemplate(template: RdfSparqlUpdateTemplate[], label: string): RdfQuery {
     if (template.length === 0) {
       throw new UnsupportedSparqlQueryError(`${label} without WHERE patterns fallback to compatibility engine`);
     }
@@ -588,7 +588,7 @@ export class RdfSparqlAdapter {
     return template;
   }
 
-  private safeUpdateTemplateGraphVariables(query: RdfLocalQuery): ReadonlySet<string> {
+  private safeUpdateTemplateGraphVariables(query: RdfQuery): ReadonlySet<string> {
     const graphVariables = new Set<string>();
     this.collectQueryGraphVariables(query, graphVariables);
     if (graphVariables.size === 0) {
@@ -1554,13 +1554,13 @@ export class RdfSparqlAdapter {
     });
   }
 
-  private compileDescribeTargets(query: DescribeQuery, localQuery: RdfLocalQuery): RdfQueryTermPattern[] {
+  private compileDescribeTargets(query: DescribeQuery, rdfQuery: RdfQuery): RdfQueryTermPattern[] {
     if (query.variables.length === 1 && query.variables[0] instanceof Wildcard) {
       const variables = visibleSelectVariables(query);
       if (variables.length === 0) {
         throw new UnsupportedSparqlQueryError('DESCRIBE wildcard without visible variables fallback to compatibility engine');
       }
-      const unboundVariable = variables.find((variable) => !queryBindsVariableInRequiredShape(localQuery, variable));
+      const unboundVariable = variables.find((variable) => !queryBindsVariableInRequiredShape(rdfQuery, variable));
       if (unboundVariable) {
         throw new UnsupportedSparqlQueryError('DESCRIBE wildcard variables must be bound by required embedded query patterns');
       }
@@ -1569,7 +1569,7 @@ export class RdfSparqlAdapter {
 
     const targets = query.variables.map((target) => {
       if (target.termType === 'Variable') {
-        if (!queryBindsVariableInRequiredShape(localQuery, target.value)) {
+        if (!queryBindsVariableInRequiredShape(rdfQuery, target.value)) {
           throw new UnsupportedSparqlQueryError('DESCRIBE variables must be bound by required embedded query patterns');
         }
         return rdfVar(target.value);
@@ -1594,9 +1594,9 @@ export class RdfSparqlAdapter {
   }
 
   private compileSelectVariables(query: SelectQuery, state: CompileState): string[] {
-    const localQuery = state.query;
+    const rdfQuery = state.query;
     if (query.variables.length === 1 && query.variables[0] instanceof Wildcard) {
-      if ((localQuery.groupBy?.length ?? 0) > 0) {
+      if ((rdfQuery.groupBy?.length ?? 0) > 0) {
         throw new UnsupportedSparqlQueryError('Wildcard grouped SELECT fallback to compatibility engine');
       }
       return visibleSelectVariables(query);
@@ -1615,14 +1615,14 @@ export class RdfSparqlAdapter {
       }
 
       if (!isAggregateExpression(variable.expression)) {
-        if ((localQuery.groupBy?.length ?? 0) > 0) {
+        if ((rdfQuery.groupBy?.length ?? 0) > 0) {
           throw new UnsupportedSparqlQueryError('Grouped SELECT expression projection fallback to compatibility engine');
         }
         const alias = variable.variable.value;
         if (
           variables.includes(alias)
             || visibleVariables.includes(alias)
-            || (localQuery.binds ?? []).some((bind) => bind.variable === alias)
+            || (rdfQuery.binds ?? []).some((bind) => bind.variable === alias)
         ) {
           throw new UnsupportedSparqlQueryError('SELECT expression alias is already bound locally');
         }
@@ -1636,11 +1636,11 @@ export class RdfSparqlAdapter {
 
       const aggregate = variable.expression;
       const compiledAggregate = this.compileAggregateProjection(aggregate, variable.variable.value, state);
-      localQuery.aggregates = [...(localQuery.aggregates ?? []), compiledAggregate];
-      localQuery.aggregate ??= compiledAggregate;
+      rdfQuery.aggregates = [...(rdfQuery.aggregates ?? []), compiledAggregate];
+      rdfQuery.aggregate ??= compiledAggregate;
       variables.push(variable.variable.value);
     }
-    this.assertGroupProjection(query, localQuery, variables);
+    this.assertGroupProjection(query, rdfQuery, variables);
     return variables;
   }
 
@@ -1740,8 +1740,8 @@ export class RdfSparqlAdapter {
     if (having.length === 0) {
       return undefined;
     }
-    const localQuery = state.query;
-    if ((localQuery.aggregates?.length ?? 0) === 0 && !localQuery.aggregate) {
+    const rdfQuery = state.query;
+    if ((rdfQuery.aggregates?.length ?? 0) === 0 && !rdfQuery.aggregate) {
       throw new UnsupportedSparqlQueryError('HAVING without aggregate fallback to compatibility engine');
     }
 
@@ -1794,8 +1794,8 @@ export class RdfSparqlAdapter {
   }
 
   private havingAggregateVariableOrUndefined(expression: Expression, state: CompileState): string | undefined {
-    const localQuery = state.query;
-    const aggregates = localQuery.aggregates ?? (localQuery.aggregate ? [localQuery.aggregate] : []);
+    const rdfQuery = state.query;
+    const aggregates = rdfQuery.aggregates ?? (rdfQuery.aggregate ? [rdfQuery.aggregate] : []);
     if (aggregates.length === 0) {
       return undefined;
     }
@@ -1830,22 +1830,22 @@ export class RdfSparqlAdapter {
         ? { distinctVariables: state.visibleSolutionVariables }
         : {}),
     };
-    localQuery.aggregates = [...(localQuery.aggregates ?? []), hiddenAggregate];
+    rdfQuery.aggregates = [...(rdfQuery.aggregates ?? []), hiddenAggregate];
     return hiddenAggregate.as;
   }
 
-  private assertGroupProjection(query: SelectQuery, localQuery: RdfLocalQuery, variables: string[]): void {
-    const groupBy = localQuery.groupBy ?? [];
+  private assertGroupProjection(query: SelectQuery, rdfQuery: RdfQuery, variables: string[]): void {
+    const groupBy = rdfQuery.groupBy ?? [];
     if (groupBy.length === 0) {
       return;
     }
-    const aggregates = localQuery.aggregates ?? (localQuery.aggregate ? [localQuery.aggregate] : []);
+    const aggregates = rdfQuery.aggregates ?? (rdfQuery.aggregate ? [rdfQuery.aggregate] : []);
     if (aggregates.length === 0) {
       throw new UnsupportedSparqlQueryError('GROUP BY without aggregate fallback to compatibility engine');
     }
     const groupableVariables = new Set([
-      ...localQuery.patterns.flatMap((pattern) => variablesInPattern(pattern)),
-      ...(localQuery.binds ?? []).map((bind) => bind.variable),
+      ...rdfQuery.patterns.flatMap((pattern) => variablesInPattern(pattern)),
+      ...(rdfQuery.binds ?? []).map((bind) => bind.variable),
     ]);
     if (groupBy.some((variableName) => !groupableVariables.has(variableName))) {
       throw new UnsupportedSparqlQueryError('GROUP BY variables must come from required BGP patterns or local binds');
@@ -1876,7 +1876,7 @@ export class RdfSparqlAdapter {
     }
   }
 
-  private compileOrder(order: Ordering[], state: CompileState): RdfLocalQuery['orderBy'] {
+  private compileOrder(order: Ordering[], state: CompileState): RdfQuery['orderBy'] {
     if (order.length === 0) {
       return undefined;
     }
@@ -2647,7 +2647,7 @@ export class RdfSparqlAdapter {
 }
 
 class CompileState {
-  public readonly query: RdfLocalQuery = {
+  public readonly query: RdfQuery = {
     patterns: [],
     unions: [],
     optional: [],
@@ -3147,7 +3147,7 @@ function variablesInUnionGroups(unions: RdfUnionQueryGroup[]): string[] {
   )));
 }
 
-function variablesBoundByRequiredShape(query: RdfLocalQuery): Set<string> {
+function variablesBoundByRequiredShape(query: RdfQuery): Set<string> {
   return new Set([
     ...variablesInPatterns(query.patterns),
     ...variablesInValuesSources(query.values ?? []),
@@ -3311,7 +3311,7 @@ function assertBindDependenciesBound(bind: RdfQueryBind, bound: Set<string>): vo
   }
 }
 
-function queryBindsVariableInRequiredShape(query: RdfLocalQuery, variableName: string): boolean {
+function queryBindsVariableInRequiredShape(query: RdfQuery, variableName: string): boolean {
   if (patternsBindVariable(query.patterns, variableName)) {
     return true;
   }

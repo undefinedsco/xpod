@@ -1,15 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { DataFactory } from 'n3';
+import { DataFactory, termToId } from 'n3';
 import type { Quad, Term } from '@rdfjs/types';
 import { PGlite } from '@electric-sql/pglite';
 import { getSharedPool, releaseSharedPool } from '../database/PostgresPoolManager';
 import { RDF_TERM_VALUE_HEAD_LENGTH, rdfTermValueHead } from './RdfTermDictionary';
-import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
-import { SolidRdfEngine } from './SolidRdfEngine';
+import { isFiniteNumericLexical, isRdfNumericDatatype, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
 import {
   RDF3X_GRAPH_PROJECTION_TABLE,
   RDF3X_PAIR_PROJECTION_TABLE_BY_NAME,
@@ -24,14 +19,23 @@ import type {
   RdfIndexPutOptions,
   RdfIndexSpaceObject,
   RdfIndexStats,
-  RdfLocalQuery,
-  RdfLocalQueryMetrics,
-  RdfLocalQueryResult,
+  RdfQuery,
+  RdfQueryMetrics,
+  RdfQueryResult,
   RdfPatternQuery,
   RdfQueryFilter,
   RdfQueryPattern,
   RdfQueryPatternKey,
   RdfQueryTermPattern,
+  RdfQueryFilterValue,
+  RdfQueryAggregate,
+  RdfQueryBind,
+  RdfBindExpression,
+  RdfValuesBindingSource,
+  RdfOptionalQueryGroup,
+  RdfUnionQueryBranch,
+  RdfMinusQueryGroup,
+  RdfExistsQueryGroup,
   RdfQuadIndexScanResult,
   RdfSourceInput,
   Rdf3xIndexStats,
@@ -159,11 +163,6 @@ interface PgCompiledJoin {
   unresolved?: PgPatternKey;
 }
 
-interface PgLocalQueryNativeResult {
-  result?: RdfLocalQueryResult;
-  unsupported?: boolean;
-}
-
 interface PgPatternEquality {
   variable: string;
   left: PgPatternKey;
@@ -256,15 +255,6 @@ interface PostgresRdfSourceRow {
   content_type: string | null;
   last_indexed_at: string | null;
   source_version: string | null;
-}
-
-interface PostgresRdfQuadRow {
-  graph_id: number;
-  subject_id: number;
-  predicate_id: number;
-  object_id: number;
-  source_file_id: number | null;
-  source_line_no: number | null;
 }
 
 interface RdfTermIdentity {
@@ -674,11 +664,6 @@ class PostgresRdfTermDictionary {
 export class PostgresRdfEngine implements RdfEngineLike {
   private executor: AsyncSqlExecutor | null = null;
   private termDictionary: PostgresRdfTermDictionary | null = null;
-  private cacheEngine: SolidRdfEngine | null = null;
-  private cacheDir: string | null = null;
-  private cachePath: string | null = null;
-  private factsDataVersion = 0;
-  private cacheDirty = true;
   private initialized = false;
   private initializing: Promise<void> | null = null;
   private readonly pgOptions: PostgresRdfEngineOptions;
@@ -692,8 +677,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
   } | null = null;
   private pglite: PGlite | null = null;
   private pgPool: any = null;
-  private rdf3xDataVersion = 0;
-  private rdf3xDirty = true;
 
   public constructor(options: PostgresRdfEngineOptions) {
     this.pgOptions = {
@@ -716,9 +699,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
         this.termDictionary = new PostgresRdfTermDictionary(this.requireExecutor());
         await this.termDictionary.initialize();
         await this.initializeSchema();
-        this.factsDataVersion = await this.readFactsDataVersion();
-        this.rdf3xDataVersion = await this.readRdf3xFactsDataVersion();
-        this.rdf3xDirty = this.rdf3xDataVersion !== this.factsDataVersion;
         this.initialized = true;
       })
       .finally(() => {
@@ -731,15 +711,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
   public async close(): Promise<void> {
     if (this.initializing) {
       await this.initializing.catch(() => {});
-    }
-    if (this.cacheEngine) {
-      await this.cacheEngine.close();
-      this.cacheEngine = null;
-    }
-    if (this.cacheDir) {
-      await rm(this.cacheDir, { recursive: true, force: true });
-      this.cacheDir = null;
-      this.cachePath = null;
     }
     this.executor = null;
     if (this.pglite) {
@@ -757,10 +728,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     this.termDictionary = null;
     this.initialized = false;
-    this.cacheDirty = true;
-    this.factsDataVersion = 0;
-    this.rdf3xDataVersion = 0;
-    this.rdf3xDirty = true;
   }
 
   public async put(quads: Quad | Quad[], options?: RdfIndexPutOptions): Promise<void> {
@@ -775,10 +742,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         await this.insertQuads(tx, scopedDictionary, quadList, sourceId, options?.sourceLineNo ?? null);
         await this.bumpFactsDataVersion(tx);
       });
-      this.factsDataVersion = await this.readFactsDataVersion();
-      this.markDerivedDirty();
     } catch (error) {
-      this.cacheDirty = true;
       throw error;
     }
   }
@@ -795,10 +759,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         await this.insertQuads(tx, scopedDictionary, quads, sourceId, null);
         await this.bumpFactsDataVersion(tx);
       });
-      this.factsDataVersion = await this.readFactsDataVersion();
-      this.markDerivedDirty();
     } catch (error) {
-      this.cacheDirty = true;
       throw error;
     }
   }
@@ -817,11 +778,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         await this.bumpFactsDataVersion(tx);
         return deleteResult.length;
       });
-      this.factsDataVersion = await this.readFactsDataVersion();
-      this.markDerivedDirty();
       return result;
     } catch (error) {
-      this.cacheDirty = true;
       throw error;
     }
   }
@@ -842,11 +800,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         }
         await this.bumpFactsDataVersion(tx);
       });
-      this.factsDataVersion = await this.readFactsDataVersion();
-      this.markDerivedDirty();
       return scan.quads.length;
     } catch (error) {
-      this.cacheDirty = true;
       throw error;
     }
   }
@@ -880,46 +835,33 @@ export class PostgresRdfEngine implements RdfEngineLike {
         }
         return deletedRows;
       });
-      this.factsDataVersion = await this.readFactsDataVersion();
-      this.markDerivedDirty();
       return {
         deletedRows,
         insertedRows: inserts.length,
       };
     } catch (error) {
-      this.cacheDirty = true;
       throw error;
     }
   }
 
   public async scan(query: RdfPatternQuery): Promise<RdfQuadIndexScanResult> {
     await this.ensureReady();
-    if (!isPgRdf3xCompatiblePattern(query.pattern)) {
-      await this.ensureCacheReady();
-      const fallback = await this.requireCache().scan(query);
-      fallback.metrics.queryPlan = ['PostgresRdf3xScanFallback', ...(fallback.metrics.queryPlan ?? [])];
-      return fallback;
-    }
-    return this.scanNative(query.pattern, query.options);
+    return isPgSqlScanCompatiblePattern(query.pattern)
+      ? this.scanNative(query.pattern, query.options)
+      : this.scanPostFilter(query.pattern, query.options);
   }
 
-  public async query(query: RdfLocalQuery): Promise<RdfLocalQueryResult> {
+  public async query(query: RdfQuery): Promise<RdfQueryResult> {
     await this.ensureReady();
     const native = await this.queryNative(query);
-    if (native.result) {
-      return native.result;
-    }
-    await this.ensureCacheReady();
-    const fallback = await this.requireCache().query(query);
-    fallback.metrics.plan.unshift('PostgresRdf3xFallback');
-    return fallback;
+    return native ?? this.queryFacts(query);
   }
 
   public async refreshDerivedIndexes(): Promise<RdfDerivedIndexRefreshResult> {
     await this.ensureReady();
     const factsDataVersion = await this.readFactsDataVersion();
     const previousFactsDataVersion = await this.readRdf3xFactsDataVersion();
-    if (previousFactsDataVersion === factsDataVersion && !this.rdf3xDirty) {
+    if (previousFactsDataVersion === factsDataVersion) {
       return {
         derivedIndexProfile: 'rdf3x',
         factsDataVersion,
@@ -932,8 +874,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       };
     }
     const rebuild = await this.rebuildRdf3xDerivedIndexes(factsDataVersion);
-    this.rdf3xDataVersion = factsDataVersion;
-    this.rdf3xDirty = false;
     return {
       derivedIndexProfile: 'rdf3x',
       factsDataVersion,
@@ -1245,36 +1185,62 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private async queryNative(query: RdfLocalQuery): Promise<PgLocalQueryNativeResult> {
+  private async scanPostFilter(pattern: QuintPattern, options?: QueryOptions): Promise<RdfQuadIndexScanResult> {
+    const start = Date.now();
+    const rows = await this.requireExecutor().query<PgQuadIdRow>(`
+      SELECT graph_id, subject_id, predicate_id, object_id
+      FROM ${RDF_FACTS_TABLE}
+      ORDER BY graph_id, subject_id, predicate_id, object_id
+    `);
+    const quads = await this.rowsToQuads(rows);
+    const matched = quads.filter((value) => matchesQuadPattern(value, pattern));
+    const ordered = orderQuads(matched, options);
+    const startOffset = Math.max(0, options?.offset ?? 0);
+    const endOffset = options?.limit === undefined
+      ? undefined
+      : startOffset + Math.max(0, options.limit);
+    const page = ordered.slice(startOffset, endOffset);
+    return {
+      quads: page,
+      metrics: this.indexMetrics('facts-post-filter', matched.length, page.length, start, [
+        'PostgresFactsScan',
+        'PostgresFactsPostFilter',
+        ...(options?.order?.length ? [`PostgresFactsScanOrder(${describeScanOrder(options)})`] : []),
+        ...(options?.limit !== undefined || options?.offset !== undefined ? ['PostgresFactsScanLimit'] : []),
+      ]),
+    };
+  }
+
+  private async queryNative(query: RdfQuery): Promise<RdfQueryResult | undefined> {
     if (!this.canTryNativeQuery(query)) {
-      return { unsupported: true };
+      return undefined;
     }
     const start = Date.now();
     const aggregates = queryAggregates(query);
     const requiredPatterns = query.patterns.length > 0 ? query.patterns : [{}];
     const compiledPatterns = await this.compileNativeJoinPatterns(requiredPatterns, query.filters ?? []);
     if (!compiledPatterns) {
-      return { unsupported: true };
+      return undefined;
     }
     if (!this.allFiltersPushed(query.filters ?? [], compiledPatterns)) {
-      return { unsupported: true };
+      return undefined;
     }
 
     if (aggregates.length > 0) {
       if (!query.patterns.length) {
-        return { unsupported: true };
+        return undefined;
       }
       const aggregateResult = await this.queryNativeAggregate(query, compiledPatterns, aggregates, start);
-      return aggregateResult ? { result: aggregateResult } : { unsupported: true };
+      return aggregateResult;
     }
 
     const visibleVariables = uniqueStrings(requiredPatterns.flatMap((pattern) => variablesInPattern(pattern)));
     const project = query.select && query.select.length > 0 ? query.select : visibleVariables;
     if (project.some((variableName) => !visibleVariables.includes(variableName))) {
-      return { unsupported: true };
+      return undefined;
     }
     if ((query.orderBy ?? []).some((entry) => !visibleVariables.includes(entry.variable))) {
-      return { unsupported: true };
+      return undefined;
     }
 
     const compiled = await this.compileJoinSql(compiledPatterns, {
@@ -1287,13 +1253,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     });
     if (compiled.unresolved) {
       return {
-        result: {
-          bindings: [],
-          metrics: this.localMetrics(start, 0, 0, 0, [compiled.indexChoice], [
-            ...compiled.queryPlan,
-            `unresolved ${compiled.unresolved}`,
-          ], query.filters?.length ?? 0),
-        },
+        bindings: [],
+        metrics: this.localMetrics(start, 0, 0, 0, [compiled.indexChoice], [
+          ...compiled.queryPlan,
+          `unresolved ${compiled.unresolved}`,
+        ], query.filters?.length ?? 0),
       };
     }
     const rows = await this.requireExecutor().query<Record<string, number>>(compiled.sql, compiled.params);
@@ -1308,19 +1272,421 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...(query.limit !== undefined || query.offset !== undefined ? ['PostgresRdf3xJoinLimit'] : []),
     ];
     return {
-      result: {
-        bindings,
-        metrics: this.localMetrics(start, matchedRows, matchedRows, bindings.length, [compiled.indexChoice], plan, query.filters?.length ?? 0),
-      },
+      bindings,
+      metrics: this.localMetrics(start, matchedRows, matchedRows, bindings.length, [compiled.indexChoice], plan, query.filters?.length ?? 0),
     };
   }
 
+  private async queryFacts(query: RdfQuery): Promise<RdfQueryResult> {
+    const start = Date.now();
+    const metrics = this.localMetrics(start, 0, 0, 0, ['facts-post-filter'], ['PostgresFactsQuery']);
+    if ((query.textSearch?.length ?? 0) > 0) {
+      throw new Error('RdfQuery textSearch requires a configured RdfTextIndex');
+    }
+    if ((query.vectorSearch?.length ?? 0) > 0) {
+      throw new Error('RdfQuery vectorSearch requires a configured RdfVectorIndex');
+    }
+    const hasNonPatternSource = (query.values?.length ?? 0) > 0
+      || (query.textSearch?.length ?? 0) > 0
+      || (query.vectorSearch?.length ?? 0) > 0;
+    const requiredPatterns = query.patterns.length > 0
+      ? query.patterns
+      : query.unions?.length || hasNonPatternSource
+        ? []
+        : [{}];
+    const aggregates = queryAggregates(query);
+    let bindings: RdfBindingRow[] = [{}];
+
+    for (const values of query.values ?? []) {
+      bindings = joinValuesSource(bindings, values);
+      metrics.scannedRows += values.rows.length;
+      metrics.plan.push(`PostgresFactsValues(${values.variables.map((variableName) => `?${variableName}`).join(',')})`);
+      if (bindings.length === 0) {
+        break;
+      }
+    }
+
+    if (bindings.length > 0) {
+      for (const pattern of requiredPatterns) {
+        bindings = await this.joinFactsPattern(bindings, pattern, query.filters ?? [], metrics, false);
+        metrics.plan.push(`PostgresFactsScan(${describeQueryPattern(pattern)})`);
+        if (bindings.length === 0) {
+          break;
+        }
+      }
+    }
+
+    if ((query.binds?.length ?? 0) > 0 && bindings.length > 0) {
+      bindings = this.applyFactsBinds(bindings, query.binds ?? []);
+      metrics.plan.push(`PostgresFactsBind(${(query.binds ?? []).map(describeBind).join(',')})`);
+    }
+
+    for (const rawOptionalGroup of query.optional ?? []) {
+      bindings = await this.joinFactsOptionalGroup(bindings, normalizeOptionalGroup(rawOptionalGroup), metrics);
+      metrics.plan.push(`PostgresFactsOptionalJoin(${normalizeOptionalGroup(rawOptionalGroup).patterns.map(describeQueryPattern).join(',')})`);
+    }
+
+    for (const unionGroup of query.unions ?? []) {
+      bindings = await this.joinFactsUnionGroup(bindings, unionGroup.branches, query.filters ?? [], metrics);
+      metrics.plan.push(`PostgresFactsUnion(${unionGroup.branches.map((branch) => branch.patterns.map(describeQueryPattern).join(',')).join('|')})`);
+      if (bindings.length === 0) {
+        break;
+      }
+    }
+
+    for (const minusGroup of query.minus ?? []) {
+      bindings = await this.applyFactsMinusGroup(bindings, minusGroup, metrics);
+      metrics.plan.push(`PostgresFactsMinus(${minusGroup.patterns.map(describeQueryPattern).join(',')})`);
+      if (bindings.length === 0) {
+        break;
+      }
+    }
+
+    for (const existsGroup of query.exists ?? []) {
+      bindings = await this.applyFactsExistsGroup(bindings, existsGroup, metrics);
+      metrics.plan.push(`PostgresFactsExists(${existsGroup.patterns.map(describeQueryPattern).join(',')})`);
+      if (bindings.length === 0) {
+        break;
+      }
+    }
+
+    if ((query.filters?.length ?? 0) > 0) {
+      bindings = bindings.filter((binding) => matchesBindingFilters(binding, query.filters ?? []));
+      metrics.filtersApplied += query.filters?.length ?? 0;
+      metrics.plan.push(`PostgresFactsFilter(${(query.filters ?? []).map(describeFilter).join(',')})`);
+    }
+
+    if (aggregates.length > 0 && (query.groupBy?.length ?? 0) > 0) {
+      const joinedRows = bindings.length;
+      bindings = groupAggregateBindings(bindings, query.groupBy ?? [], aggregates);
+      metrics.joinedRows = joinedRows;
+      metrics.plan.push(aggregatePlan(aggregates, true));
+      if ((query.having?.length ?? 0) > 0) {
+        bindings = bindings.filter((binding) => matchesBindingFilters(binding, query.having ?? []));
+        metrics.filtersApplied += query.having?.length ?? 0;
+        metrics.plan.push(`PostgresFactsHaving(${(query.having ?? []).map(describeFilter).join(',')})`);
+      }
+    } else if (aggregates.length > 0) {
+      const { binding, firstCount } = aggregateBindings(bindings, aggregates);
+      const having = query.having ?? [];
+      metrics.joinedRows = bindings.length;
+      metrics.plan.push(aggregatePlan(aggregates, false));
+      if (having.length > 0 && !matchesBindingFilters(binding, having)) {
+        metrics.filtersApplied += having.length;
+        metrics.plan.push(`PostgresFactsHaving(${having.map(describeFilter).join(',')})`);
+        metrics.returnedRows = 0;
+        metrics.durationMs = Date.now() - start;
+        return {
+          bindings: [],
+          count: firstCount,
+          metrics,
+        };
+      }
+      if (having.length > 0) {
+        metrics.filtersApplied += having.length;
+        metrics.plan.push(`PostgresFactsHaving(${having.map(describeFilter).join(',')})`);
+      }
+      metrics.returnedRows = 1;
+      metrics.durationMs = Date.now() - start;
+      return {
+        bindings: [binding],
+        count: firstCount,
+        metrics,
+      };
+    }
+
+    const joinedRows = metrics.joinedRows > 0 ? metrics.joinedRows : bindings.length;
+
+    if ((query.orderBy?.length ?? 0) > 0) {
+      bindings = [...bindings].sort((left, right) => compareBindings(left, right, query.orderBy ?? []));
+      metrics.plan.push(`PostgresFactsSort(${describeQueryOrder(query.orderBy ?? [])})`);
+    }
+
+    let projected = query.select && query.select.length > 0
+      ? bindings.map((binding) => projectBinding(binding, query.select ?? []))
+      : bindings;
+
+    if (query.distinct) {
+      projected = distinctBindings(projected);
+      metrics.plan.push('PostgresFactsDistinct');
+    }
+
+    if (query.offset !== undefined || query.limit !== undefined) {
+      const startOffset = Math.max(0, query.offset ?? 0);
+      const endOffset = query.limit === undefined
+        ? undefined
+        : startOffset + Math.max(0, query.limit);
+      projected = projected.slice(startOffset, endOffset);
+      metrics.plan.push('PostgresFactsLimit');
+    }
+
+    metrics.joinedRows = joinedRows;
+    metrics.returnedRows = projected.length;
+    metrics.durationMs = Date.now() - start;
+    return {
+      bindings: projected,
+      metrics,
+    };
+  }
+
+  private async joinFactsPattern(
+    input: RdfBindingRow[],
+    pattern: RdfQueryPattern,
+    filters: RdfQueryFilter[],
+    metrics: RdfQueryMetrics,
+    optional: boolean,
+  ): Promise<RdfBindingRow[]> {
+    const output: RdfBindingRow[] = [];
+    for (const binding of input) {
+      const compiled = compilePatternForBinding(pattern, binding);
+      if (!compiled) {
+        if (optional) {
+          output.push(binding);
+        }
+        continue;
+      }
+      const scan = isPgSqlScanCompatiblePattern(compiled)
+        ? await this.scanNative(compiled)
+        : await this.scanPostFilter(compiled);
+      metrics.scannedRows += scan.metrics.matchedRows;
+      metrics.indexChoices.push(scan.metrics.indexChoice);
+      metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
+      const before = output.length;
+      for (const value of scan.quads) {
+        const next = bindQuadPattern(pattern, binding, value);
+        if (next && matchesNewlyBoundFilters(next, binding, filters)) {
+          output.push(next);
+        }
+      }
+      if (optional && output.length === before) {
+        output.push(binding);
+      }
+    }
+    return output;
+  }
+
+  private async joinFactsOptionalGroup(
+    input: RdfBindingRow[],
+    optionalGroup: RdfOptionalQueryGroup,
+    metrics: RdfQueryMetrics,
+  ): Promise<RdfBindingRow[]> {
+    const filters = optionalGroup.filters ?? [];
+    const output: RdfBindingRow[] = [];
+    for (const binding of input) {
+      let matches: RdfBindingRow[] = [binding];
+      matches = this.applyFactsValues(matches, optionalGroup.values, metrics, 'Optional');
+      if (matches.length > 0) {
+        for (const pattern of optionalGroup.patterns) {
+          matches = await this.joinFactsPattern(matches, pattern, filters, metrics, false);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+      }
+      if (matches.length > 0) {
+        for (const unionGroup of optionalGroup.unions ?? []) {
+          matches = await this.joinFactsUnionGroup(matches, unionGroup.branches, filters, metrics);
+          metrics.plan.push(`PostgresFactsOptionalUnion(${unionGroup.branches.map((branch) => branch.patterns.map(describeQueryPattern).join(',')).join('|')})`);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+      }
+      if (matches.length > 0) {
+        for (const rawNestedOptional of optionalGroup.optional ?? []) {
+          matches = await this.joinFactsOptionalGroup(matches, normalizeOptionalGroup(rawNestedOptional), metrics);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+      }
+      if (matches.length > 0) {
+        for (const minusGroup of optionalGroup.minus ?? []) {
+          matches = await this.applyFactsMinusGroup(matches, minusGroup, metrics);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+      }
+      if (matches.length > 0) {
+        for (const existsGroup of optionalGroup.exists ?? []) {
+          matches = await this.applyFactsExistsGroup(matches, existsGroup, metrics);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+      }
+      if ((optionalGroup.binds?.length ?? 0) > 0 && matches.length > 0) {
+        matches = this.applyFactsBinds(matches, optionalGroup.binds ?? []);
+        metrics.plan.push(`PostgresFactsOptionalBind(${(optionalGroup.binds ?? []).map(describeBind).join(',')})`);
+      }
+      if (filters.length > 0 && matches.length > 0) {
+        matches = matches.filter((match) => matchesBindingFilters(match, filters));
+        metrics.filtersApplied += filters.length;
+        metrics.plan.push(`PostgresFactsOptionalFilter(${filters.map(describeFilter).join(',')})`);
+      }
+      output.push(...(matches.length > 0 ? matches : [binding]));
+    }
+    return output;
+  }
+
+  private async joinFactsUnionGroup(
+    input: RdfBindingRow[],
+    branches: RdfUnionQueryBranch[],
+    outerFilters: RdfQueryFilter[],
+    metrics: RdfQueryMetrics,
+  ): Promise<RdfBindingRow[]> {
+    const output: RdfBindingRow[] = [];
+    for (const binding of input) {
+      for (const branch of branches) {
+        const branchFilters = [...outerFilters, ...(branch.filters ?? [])];
+        let matches: RdfBindingRow[] = [binding];
+        matches = this.applyFactsValues(matches, branch.values, metrics, 'Union');
+        if (matches.length === 0) {
+          continue;
+        }
+        for (const pattern of branch.patterns) {
+          matches = await this.joinFactsPattern(matches, pattern, branchFilters, metrics, false);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+        if (matches.length === 0) {
+          continue;
+        }
+        for (const unionGroup of branch.unions ?? []) {
+          matches = await this.joinFactsUnionGroup(matches, unionGroup.branches, branchFilters, metrics);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+        if (matches.length === 0) {
+          continue;
+        }
+        if ((branch.binds?.length ?? 0) > 0) {
+          matches = this.applyFactsBinds(matches, branch.binds ?? []);
+        }
+        for (const rawOptionalGroup of branch.optional ?? []) {
+          matches = await this.joinFactsOptionalGroup(matches, normalizeOptionalGroup(rawOptionalGroup), metrics);
+          if (matches.length === 0) {
+            break;
+          }
+        }
+        if ((branch.filters?.length ?? 0) > 0) {
+          matches = matches.filter((match) => matchesBindingFilters(match, branch.filters ?? []));
+          metrics.filtersApplied += branch.filters?.length ?? 0;
+          metrics.plan.push(`PostgresFactsUnionFilter(${(branch.filters ?? []).map(describeFilter).join(',')})`);
+        }
+        output.push(...matches);
+      }
+    }
+    return output;
+  }
+
+  private async applyFactsMinusGroup(
+    input: RdfBindingRow[],
+    minusGroup: RdfMinusQueryGroup,
+    metrics: RdfQueryMetrics,
+  ): Promise<RdfBindingRow[]> {
+    const output: RdfBindingRow[] = [];
+    for (const binding of input) {
+      let matches = await this.evaluateFactsDependentGroup([binding], minusGroup, metrics, 'Minus');
+      if ((minusGroup.filters?.length ?? 0) > 0) {
+        matches = matches.filter((match) => matchesBindingFilters(match, minusGroup.filters ?? []));
+        metrics.filtersApplied += minusGroup.filters?.length ?? 0;
+      }
+      if (matches.length === 0) {
+        output.push(binding);
+      }
+    }
+    return output;
+  }
+
+  private async applyFactsExistsGroup(
+    input: RdfBindingRow[],
+    existsGroup: RdfExistsQueryGroup,
+    metrics: RdfQueryMetrics,
+  ): Promise<RdfBindingRow[]> {
+    const output: RdfBindingRow[] = [];
+    for (const binding of input) {
+      let matches = await this.evaluateFactsDependentGroup([binding], existsGroup, metrics, 'Exists');
+      if ((existsGroup.filters?.length ?? 0) > 0) {
+        matches = matches.filter((match) => matchesBindingFilters(match, existsGroup.filters ?? []));
+        metrics.filtersApplied += existsGroup.filters?.length ?? 0;
+      }
+      if (matches.length > 0) {
+        output.push(binding);
+      }
+    }
+    return output;
+  }
+
+  private async evaluateFactsDependentGroup(
+    input: RdfBindingRow[],
+    group: RdfMinusQueryGroup | RdfExistsQueryGroup,
+    metrics: RdfQueryMetrics,
+    label: 'Minus' | 'Exists',
+  ): Promise<RdfBindingRow[]> {
+    let matches = this.applyFactsValues(input, group.values, metrics, label);
+    for (const pattern of group.patterns) {
+      matches = await this.joinFactsPattern(matches, pattern, group.filters ?? [], metrics, false);
+      if (matches.length === 0) {
+        return [];
+      }
+    }
+    for (const unionGroup of group.unions ?? []) {
+      matches = await this.joinFactsUnionGroup(matches, unionGroup.branches, group.filters ?? [], metrics);
+      if (matches.length === 0) {
+        return [];
+      }
+    }
+    for (const rawOptionalGroup of group.optional ?? []) {
+      matches = await this.joinFactsOptionalGroup(matches, normalizeOptionalGroup(rawOptionalGroup), metrics);
+    }
+    if ((group.binds?.length ?? 0) > 0) {
+      matches = this.applyFactsBinds(matches, group.binds ?? []);
+    }
+    return matches;
+  }
+
+  private applyFactsValues(
+    input: RdfBindingRow[],
+    sources: RdfValuesBindingSource[] | undefined,
+    metrics: RdfQueryMetrics,
+    label: 'Optional' | 'Union' | 'Minus' | 'Exists',
+  ): RdfBindingRow[] {
+    let output = input;
+    for (const source of sources ?? []) {
+      output = joinValuesSource(output, source);
+      metrics.scannedRows += source.rows.length;
+      metrics.plan.push(`PostgresFacts${label}Values(${source.variables.map((variableName) => `?${variableName}`).join(',')})`);
+      if (output.length === 0) {
+        break;
+      }
+    }
+    return output;
+  }
+
+  private applyFactsBinds(input: RdfBindingRow[], binds: RdfQueryBind[]): RdfBindingRow[] {
+    let output = input;
+    for (const bind of binds) {
+      output = output.flatMap((binding) => {
+        if (binding[bind.variable]) {
+          return [];
+        }
+        const value = evaluateBindExpression(bind.expression, binding);
+        return value ? [{ ...binding, [bind.variable]: value }] : [binding];
+      });
+    }
+    return output;
+  }
+
   private async queryNativeAggregate(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     patterns: PgCompiledJoinPattern[],
     aggregates: ReturnType<typeof queryAggregates>,
     start: number,
-  ): Promise<RdfLocalQueryResult | undefined> {
+  ): Promise<RdfQueryResult | undefined> {
     if (!this.canNativeAggregate(query, aggregates)) {
       return undefined;
     }
@@ -1401,7 +1767,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private canNativeAggregate(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     aggregates: ReturnType<typeof queryAggregates>,
   ): boolean {
     if (aggregates.length === 0 || aggregates.some((aggregate) => aggregate.type !== 'count')) {
@@ -1457,7 +1823,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private compileAggregateColumn(
-    aggregate: NonNullable<RdfLocalQuery['aggregates']>[number],
+    aggregate: NonNullable<RdfQuery['aggregates']>[number],
     index: number,
     variableAliases: Map<string, string>,
     aggregateAliases: Map<string, string>,
@@ -1512,7 +1878,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private buildAggregateOrderClause(
-    orderBy: NonNullable<RdfLocalQuery['orderBy']>,
+    orderBy: NonNullable<RdfQuery['orderBy']>,
     variableAliases: Map<string, string>,
     aggregates: PgAggregateSqlExpression[],
   ): string {
@@ -1546,7 +1912,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return undefined;
   }
 
-  private canTryNativeQuery(query: RdfLocalQuery): boolean {
+  private canTryNativeQuery(query: RdfQuery): boolean {
     return (query.values?.length ?? 0) === 0
       && (query.textSearch?.length ?? 0) === 0
       && (query.vectorSearch?.length ?? 0) === 0
@@ -1888,7 +2254,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     options?: {
       project?: string[];
       distinct?: boolean;
-      orderBy?: RdfLocalQuery['orderBy'];
+      orderBy?: RdfQuery['orderBy'];
       limit?: number;
       offset?: number;
       countMatchedRows?: boolean;
@@ -2293,7 +2659,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private buildJoinOrderClause(
-    orderBy: RdfLocalQuery['orderBy'] | undefined,
+    orderBy: RdfQuery['orderBy'] | undefined,
     variableColumns: Map<string, string>,
   ): { joins: string; orderBy: string } {
     if (!orderBy || orderBy.length === 0) return { joins: '', orderBy: '' };
@@ -2395,7 +2761,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     indexChoices: string[],
     plan: string[],
     filtersPushedDown = 0,
-  ): RdfLocalQueryMetrics {
+  ): RdfQueryMetrics {
     return {
       engine: 'solid-rdf',
       plan,
@@ -2410,57 +2776,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       filtersApplied: 0,
       filtersPushedDown,
     };
-  }
-
-  private async rebuildCacheFromStore(): Promise<void> {
-    if (this.cacheEngine) {
-      await this.cacheEngine.close();
-      this.cacheEngine = null;
-    }
-    if (this.cacheDir) {
-      await rm(this.cacheDir, { recursive: true, force: true });
-    }
-    this.cacheDir = mkdtempSync(join(tmpdir(), 'xpod-pg-rdf-cache-'));
-    this.cachePath = join(this.cacheDir, 'rdf-cache.sqlite');
-    this.cacheEngine = new SolidRdfEngine({
-      index: { path: this.cachePath },
-      autoOpen: true,
-    });
-    const sources = await this.requireExecutor().query<PostgresRdfSourceRow>('SELECT * FROM rdf_sources ORDER BY id');
-    const nullSourceRows = await this.requireExecutor().query<PostgresRdfQuadRow>('SELECT * FROM rdf_quads WHERE source_file_id IS NULL ORDER BY graph_id, subject_id, predicate_id, object_id');
-    await this.loadCacheQuads(nullSourceRows, undefined);
-
-    for (const source of sources) {
-      const quadRows = await this.requireExecutor().query<PostgresRdfQuadRow>(
-        'SELECT * FROM rdf_quads WHERE source_file_id = $1 ORDER BY graph_id, subject_id, predicate_id, object_id',
-        [source.id],
-      );
-      await this.loadCacheQuads(quadRows, source);
-    }
-    await this.requireCache().refreshDerivedIndexes();
-    this.factsDataVersion = await this.readFactsDataVersion();
-    this.cacheDirty = false;
-  }
-
-  private async loadCacheQuads(rows: PostgresRdfQuadRow[], source?: PostgresRdfSourceRow): Promise<void> {
-    if (rows.length === 0) {
-      return;
-    }
-    const dictionary = this.requireDictionary();
-    const termIds = Array.from(new Set(rows.flatMap((row) => [row.graph_id, row.subject_id, row.predicate_id, row.object_id])));
-    const terms = await dictionary.rowsForIds(termIds);
-    const quads = rows.map((row) => quad(
-      this.requiredTerm(terms, row.subject_id) as any,
-      this.requiredTerm(terms, row.predicate_id) as any,
-      this.requiredTerm(terms, row.object_id) as any,
-      this.requiredTerm(terms, row.graph_id) as any,
-    ));
-    const sourceInput = source ? this.sourceRowToInput(source) : undefined;
-    if (sourceInput) {
-      this.requireCache().replaceSource(quads, sourceInput);
-    } else {
-      this.requireCache().put(quads);
-    }
   }
 
   private async insertQuads(
@@ -2517,16 +2832,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       [graphId, subjectId, predicateId, objectId],
     );
     return result.length;
-  }
-
-  private sourceRowToInput(row: PostgresRdfSourceRow): RdfSourceInput {
-    return {
-      source: row.source,
-      workspace: row.workspace,
-      localPath: row.local_path !== null ? row.local_path : undefined,
-      contentType: row.content_type !== null ? row.content_type : undefined,
-      sourceVersion: row.source_version !== null ? row.source_version : undefined,
-    };
   }
 
   private async upsertSource(source: RdfSourceInput, executor = this.requireExecutor()): Promise<number> {
@@ -2591,23 +2896,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   private async ensureReady(): Promise<void> {
     await this.open();
-    const currentVersion = await this.readFactsDataVersion();
-    if (currentVersion !== this.factsDataVersion) {
-      this.factsDataVersion = currentVersion;
-      this.markDerivedDirty();
-    }
-  }
-
-  private async ensureCacheReady(): Promise<void> {
-    await this.ensureReady();
-    if (this.cacheDirty || !this.cacheEngine) {
-      await this.rebuildCacheFromStore();
-    }
-  }
-
-  private markDerivedDirty(): void {
-    this.rdf3xDirty = true;
-    this.cacheDirty = true;
   }
 
   private async scalarCount(sql: string, params: unknown[] = []): Promise<number> {
@@ -2738,13 +3026,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return this.termDictionary;
   }
 
-  private requireCache(): SolidRdfEngine {
-    if (!this.cacheEngine) {
-      throw new Error('PostgresRdfEngine cache is not initialized');
-    }
-    return this.cacheEngine;
-  }
-
   private requiredTerm(termMap: Map<number, Term>, id: number): Term {
     const term = termMap.get(id);
     if (!term) {
@@ -2829,6 +3110,14 @@ function variablesInPattern(pattern: RdfQueryPattern): string[] {
     .map((key) => pattern[key])
     .filter(isVariable)
     .map((value) => value.variable));
+}
+
+function normalizeOptionalGroup(group: RdfQueryPattern[] | RdfOptionalQueryGroup): RdfOptionalQueryGroup {
+  return Array.isArray(group) ? { patterns: group } : group;
+}
+
+function isPgSqlScanCompatiblePattern(pattern: QuintPattern): boolean {
+  return isPgRdf3xCompatiblePattern(pattern);
 }
 
 function isPgRdf3xCompatiblePattern(pattern: QuintPattern): boolean {
@@ -2926,6 +3215,20 @@ function describeScanOrder(options?: QueryOptions): string {
   return order.map((entry, index) => `${directions[index] ?? 'asc'}:${entry}`).join(',');
 }
 
+function describeQueryPattern(pattern: RdfQueryPattern): string {
+  return PATTERN_KEYS
+    .filter((key) => pattern[key])
+    .map((key) => `${key}:${describeQueryPatternValue(pattern[key])}`)
+    .join(',');
+}
+
+function describeQueryPatternValue(value: RdfQueryTermPattern | undefined): string {
+  if (!value) return '*';
+  if (isVariable(value)) return `?${value.variable}`;
+  if (isTerm(value as any)) return termToId(value as any);
+  return 'op';
+}
+
 function describePatternSource(source: { pattern: QuintPattern; variables: Partial<Record<PgPatternKey, string>> }): string {
   return PATTERN_KEYS
     .map((key) => {
@@ -2944,22 +3247,22 @@ function termMatchKey(match: QuintPattern[keyof QuintPattern] | undefined): stri
   return JSON.stringify(match);
 }
 
-function queryAggregates(query: RdfLocalQuery): NonNullable<RdfLocalQuery['aggregates']> {
+function queryAggregates(query: RdfQuery): NonNullable<RdfQuery['aggregates']> {
   if (query.aggregates && query.aggregates.length > 0) return query.aggregates;
   return query.aggregate ? [query.aggregate] : [];
 }
 
-function aggregatePlan(aggregates: NonNullable<RdfLocalQuery['aggregates']>, grouped: boolean): string {
+function aggregatePlan(aggregates: NonNullable<RdfQuery['aggregates']>, grouped: boolean): string {
   return `Aggregate(${grouped ? 'group-' : ''}${aggregates.map((aggregate) => (
     `${aggregate.type}${aggregate.distinct ? ':DISTINCT' : ''}(${aggregate.variable ? `?${aggregate.variable}` : '*'})`
   )).join(',')})`;
 }
 
 function describeFilter(filter: RdfQueryFilter): string {
-  return `?${filter.variable}${filter.operator}`;
+  return `?${filter.variable}${filter.operand ? `:${filter.operand}` : ''}${filter.operator}`;
 }
 
-function describeQueryOrder(orderBy: NonNullable<RdfLocalQuery['orderBy']>): string {
+function describeQueryOrder(orderBy: NonNullable<RdfQuery['orderBy']>): string {
   return orderBy.map((entry) => `${entry.direction ?? 'asc'}:${entry.variable}`).join(',');
 }
 
@@ -3017,6 +3320,642 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
       || entry.startsWith('Language(')
       || entry.startsWith('Datatype(')
   ));
+}
+
+function compilePatternForBinding(pattern: RdfQueryPattern, binding: RdfBindingRow): QuintPattern | null {
+  const compiled: QuintPattern = {};
+  for (const key of PATTERN_KEYS) {
+    const value = pattern[key];
+    if (!value) {
+      continue;
+    }
+    if (isVariable(value)) {
+      const bound = binding[value.variable];
+      if (bound) {
+        compiled[key] = bound;
+      }
+      continue;
+    }
+    compiled[key] = value;
+  }
+  return compiled;
+}
+
+function bindQuadPattern(pattern: RdfQueryPattern, binding: RdfBindingRow, value: Quad): RdfBindingRow | null {
+  const next = { ...binding };
+  for (const key of PATTERN_KEYS) {
+    const patternValue = pattern[key];
+    if (!isVariable(patternValue)) {
+      continue;
+    }
+    const term = value[key] as Term;
+    const existing = next[patternValue.variable];
+    if (existing && !sameTerm(existing, term)) {
+      return null;
+    }
+    next[patternValue.variable] = term;
+  }
+  return next;
+}
+
+function matchesQuadPattern(value: Quad, pattern: QuintPattern): boolean {
+  return PATTERN_KEYS.every((key) => {
+    const match = pattern[key];
+    return !match || matchesTermPattern(value[key] as Term, key, match);
+  });
+}
+
+function matchesTermPattern(term: Term, key: PgPatternKey, match: TermMatch): boolean {
+  if (isTerm(match as any)) {
+    return sameTerm(term, match as Term);
+  }
+  const operators = match as TermOperators;
+  if (operators.$eq !== undefined && !sameTermOrLexical(term, operators.$eq)) return false;
+  if (operators.$ne !== undefined && sameTermOrLexical(term, operators.$ne)) return false;
+  if (operators.$in !== undefined && !operators.$in.some((candidate) => sameTermOrLexical(term, candidate))) return false;
+  if (operators.$notIn !== undefined && operators.$notIn.some((candidate) => sameTermOrLexical(term, candidate))) return false;
+  if (operators.$startsWith !== undefined && !term.value.startsWith(operators.$startsWith)) return false;
+  if (operators.$contains !== undefined && !term.value.includes(operators.$contains)) return false;
+  if (operators.$endsWith !== undefined && !term.value.endsWith(operators.$endsWith)) return false;
+  if (operators.$regex !== undefined && !new RegExp(operators.$regex).test(term.value)) return false;
+  if (operators.$strStartsWith !== undefined && !term.value.startsWith(operators.$strStartsWith)) return false;
+  if (operators.$strContains !== undefined && !term.value.includes(operators.$strContains)) return false;
+  if (operators.$strEndsWith !== undefined && !term.value.endsWith(operators.$strEndsWith)) return false;
+  if (operators.$strRegex !== undefined && !new RegExp(operators.$strRegex).test(term.value)) return false;
+  if (operators.$language !== undefined && !(term.termType === 'Literal' && term.language === operators.$language)) return false;
+  if (operators.$notLanguage !== undefined && !(term.termType === 'Literal' && term.language !== operators.$notLanguage)) return false;
+  if (operators.$langMatches !== undefined && !(term.termType === 'Literal' && langMatches(term.language, operators.$langMatches))) return false;
+  if (operators.$datatype !== undefined && !(term.termType === 'Literal' && sameTerm(term.datatype, operators.$datatype))) return false;
+  if (operators.$notDatatype !== undefined && !(term.termType === 'Literal' && !sameTerm(term.datatype, operators.$notDatatype))) return false;
+  if (operators.$termType !== undefined && !matchesTermTypeForKey(term, key, operators.$termType)) return false;
+  if (operators.$isNull !== undefined) return !operators.$isNull;
+  for (const operator of ['$gt', '$gte', '$lt', '$lte'] as const) {
+    const expected = operators[operator];
+    if (expected === undefined) continue;
+    const comparison = compareFilterValues(term, expected);
+    if (operator === '$gt' && comparison <= 0) return false;
+    if (operator === '$gte' && comparison < 0) return false;
+    if (operator === '$lt' && comparison >= 0) return false;
+    if (operator === '$lte' && comparison > 0) return false;
+  }
+  return true;
+}
+
+function orderQuads(values: Quad[], options?: QueryOptions): Quad[] {
+  if (!options?.order?.length) {
+    return values;
+  }
+  const directions = 'orderDirections' in options && Array.isArray((options as QueryOptions & { orderDirections?: Array<'asc' | 'desc'> }).orderDirections)
+    ? (options as QueryOptions & { orderDirections?: Array<'asc' | 'desc'> }).orderDirections as Array<'asc' | 'desc'>
+    : options.order.map(() => (options.reverse ? 'desc' : 'asc'));
+  return [...values].sort((left, right) => {
+    for (const [index, key] of (options.order ?? []).entries()) {
+      const comparison = termToId(left[key] as any).localeCompare(termToId(right[key] as any));
+      if (comparison !== 0) {
+        return directions[index] === 'desc' ? -comparison : comparison;
+      }
+    }
+    return 0;
+  });
+}
+
+function matchesNewlyBoundFilters(binding: RdfBindingRow, previousBinding: RdfBindingRow, filters: RdfQueryFilter[]): boolean {
+  const newlyBound = filters.filter((filter) => {
+    const variables = filter.variable2 ? [filter.variable, filter.variable2] : [filter.variable];
+    return variables.every((variableName) => binding[variableName])
+      && variables.some((variableName) => !previousBinding[variableName]);
+  });
+  return matchesBindingFilters(binding, newlyBound);
+}
+
+function matchesBindingFilters(binding: RdfBindingRow, filters: RdfQueryFilter[]): boolean {
+  return filters.every((filter) => matchesBindingFilter(binding, filter));
+}
+
+function matchesBindingFilter(binding: RdfBindingRow, filter: RdfQueryFilter): boolean {
+  const value = binding[filter.variable];
+  if (filter.operator === '$bound') {
+    return Boolean(filter.value) ? Boolean(value) : !value;
+  }
+  if (!value) {
+    return false;
+  }
+  const comparisonValue = filterOperandValue(value, filter.operand);
+  switch (filter.operator) {
+    case '$eq':
+      if (filter.variable2) return compareVariableFilter(binding, comparisonValue, filter, (comparison) => comparison === 0);
+      return filter.value !== undefined && sameTermOrLexical(comparisonValue, filter.value);
+    case '$ne':
+      if (filter.variable2) return compareVariableFilter(binding, comparisonValue, filter, (comparison) => comparison !== 0);
+      return filter.value === undefined || !sameTermOrLexical(comparisonValue, filter.value);
+    case '$gt':
+      if (filter.variable2) return compareVariableFilter(binding, comparisonValue, filter, (comparison) => comparison > 0);
+      return compareTermsForFilter(comparisonValue, filter.value) > 0;
+    case '$gte':
+      if (filter.variable2) return compareVariableFilter(binding, comparisonValue, filter, (comparison) => comparison >= 0);
+      return compareTermsForFilter(comparisonValue, filter.value) >= 0;
+    case '$lt':
+      if (filter.variable2) return compareVariableFilter(binding, comparisonValue, filter, (comparison) => comparison < 0);
+      return compareTermsForFilter(comparisonValue, filter.value) < 0;
+    case '$lte':
+      if (filter.variable2) return compareVariableFilter(binding, comparisonValue, filter, (comparison) => comparison <= 0);
+      return compareTermsForFilter(comparisonValue, filter.value) <= 0;
+    case '$in':
+      return (filter.values ?? []).some((candidate) => sameTermOrLexical(comparisonValue, candidate));
+    case '$notIn':
+      return !(filter.values ?? []).some((candidate) => sameTermOrLexical(comparisonValue, candidate));
+    case '$startsWith':
+      return typeof filter.value === 'string' && filterStringValue(value, comparisonValue).startsWith(filter.value);
+    case '$notStartsWith':
+      return typeof filter.value === 'string' && !filterStringValue(value, comparisonValue).startsWith(filter.value);
+    case '$contains':
+      return typeof filter.value === 'string' && filterStringValue(value, comparisonValue).includes(filter.value);
+    case '$notContains':
+      return typeof filter.value === 'string' && !filterStringValue(value, comparisonValue).includes(filter.value);
+    case '$endsWith':
+      return typeof filter.value === 'string' && filterStringValue(value, comparisonValue).endsWith(filter.value);
+    case '$notEndsWith':
+      return typeof filter.value === 'string' && !filterStringValue(value, comparisonValue).endsWith(filter.value);
+    case '$regex':
+      return typeof filter.value === 'string' && new RegExp(filter.value, filter.flags).test(filterStringValue(value, comparisonValue));
+    case '$notRegex':
+      return typeof filter.value === 'string' && !new RegExp(filter.value, filter.flags).test(filterStringValue(value, comparisonValue));
+    case '$termType':
+      return typeof filter.value === 'string' && matchesTermType(value, filter.value);
+    case '$notTermType':
+      return typeof filter.value === 'string' && !matchesTermType(value, filter.value);
+    case '$sameTerm': {
+      const right = filter.variable2 ? binding[filter.variable2] : filter.value;
+      return Boolean(right && isTerm(right as any) && sameTerm(value, right as Term));
+    }
+    case '$notSameTerm': {
+      const right = filter.variable2 ? binding[filter.variable2] : filter.value;
+      return Boolean(right && isTerm(right as any) && !sameTerm(value, right as Term));
+    }
+    case '$lang':
+      return typeof filter.value === 'string' && value.termType === 'Literal' && value.language === filter.value;
+    case '$notLang':
+      return typeof filter.value === 'string' && value.termType === 'Literal' && value.language !== filter.value;
+    case '$langIn':
+      return value.termType === 'Literal' && (filter.values ?? []).some((candidate) => typeof candidate === 'string' && value.language === candidate);
+    case '$notLangIn':
+      return value.termType === 'Literal' && !(filter.values ?? []).some((candidate) => typeof candidate === 'string' && value.language === candidate);
+    case '$langMatches':
+      return typeof filter.value === 'string' && value.termType === 'Literal' && langMatches(value.language, filter.value);
+    case '$notLangMatches':
+      return typeof filter.value === 'string' && value.termType === 'Literal' && !langMatches(value.language, filter.value);
+    case '$datatype':
+      return filter.value !== undefined && value.termType === 'Literal' && sameTermOrLexical(value.datatype, filter.value);
+    case '$notDatatype':
+      return filter.value !== undefined && value.termType === 'Literal' && !sameTermOrLexical(value.datatype, filter.value);
+    case '$datatypeIn':
+      return value.termType === 'Literal' && (filter.values ?? []).some((candidate) => sameTermOrLexical(value.datatype, candidate));
+    case '$notDatatypeIn':
+      return value.termType === 'Literal' && !(filter.values ?? []).some((candidate) => sameTermOrLexical(value.datatype, candidate));
+    default: {
+      const exhaustive: never = filter.operator;
+      throw new Error(`Unsupported RDF facts filter operator: ${exhaustive}`);
+    }
+  }
+}
+
+function compareVariableFilter(
+  binding: RdfBindingRow,
+  comparisonValue: Term | number | string,
+  filter: RdfQueryFilter,
+  predicate: (comparison: number) => boolean,
+): boolean {
+  if (!filter.variable2) {
+    return false;
+  }
+  const right = binding[filter.variable2];
+  if (!right) {
+    return false;
+  }
+  return predicate(compareFilterValues(comparisonValue, filterOperandValue(right, filter.operand)));
+}
+
+function filterOperandValue(value: Term, operand: RdfQueryFilter['operand']): Term | number | string {
+  switch (operand) {
+    case 'stringLength':
+      return value.value.length;
+    case 'stringValue':
+      return value.value;
+    case 'lowerStringValue':
+      return value.value.toLowerCase();
+    case 'upperStringValue':
+      return value.value.toUpperCase();
+    default:
+      return value;
+  }
+}
+
+function filterStringValue(value: Term, comparisonValue: Term | number | string): string {
+  return typeof comparisonValue === 'string' ? comparisonValue : value.value;
+}
+
+function sameTerm(left: Term, right: Term): boolean {
+  return termToId(left as any) === termToId(right as any);
+}
+
+function sameTermOrLexical(left: Term | number | string, right: RdfQueryFilterValue | TermOperators['$eq']): boolean {
+  if (typeof left === 'number') {
+    if (isNumericFilterValue(right)) {
+      return left === rdfNumericValue(isTerm(right as any) ? (right as Term).value : String(right));
+    }
+    return String(left) === String(right);
+  }
+  if (typeof left === 'string') {
+    return left === (isTerm(right as any) ? (right as Term).value : String(right));
+  }
+  return isTerm(right as any) ? sameTerm(left, right as Term) : left.value === String(right);
+}
+
+function compareTermsForFilter(left: Term | number | string, right: RdfQueryFilterValue | undefined): number {
+  if (right === undefined) {
+    return 1;
+  }
+  return compareFilterValues(left, right);
+}
+
+function compareFilterValues(left: Term | number | string, right: Term | number | string | boolean): number {
+  if (typeof left === 'number') {
+    if (isNumericFilterValue(right)) {
+      return left - rdfNumericValue(isTerm(right as any) ? (right as Term).value : String(right));
+    }
+    return String(left).localeCompare(String(right));
+  }
+  if (typeof left === 'string') {
+    return left.localeCompare(isTerm(right as any) ? (right as Term).value : String(right));
+  }
+  if (isRdfNumericTerm(left) && isNumericFilterValue(right)) {
+    return rdfNumericValue(left.value) - rdfNumericValue(isTerm(right as any) ? (right as Term).value : String(right));
+  }
+  return left.value.localeCompare(isTerm(right as any) ? (right as Term).value : String(right));
+}
+
+function matchesTermTypeForKey(term: Term, key: PgPatternKey, expected: string): boolean {
+  return termKindsForPatternKey(key).includes(expected as RdfTermKind) && matchesTermType(term, expected);
+}
+
+function matchesTermType(term: Term, expected: string): boolean {
+  switch (expected) {
+    case 'iri':
+      return term.termType === 'NamedNode';
+    case 'blank':
+      return term.termType === 'BlankNode';
+    case 'literal':
+      return term.termType === 'Literal';
+    case 'numeric':
+      return isRdfNumericTerm(term);
+    default:
+      return false;
+  }
+}
+
+function langMatches(languageTag: string, languageRange: string): boolean {
+  if (!languageTag) {
+    return false;
+  }
+  if (languageRange === '*') {
+    return true;
+  }
+  const normalizedTag = languageTag.toLowerCase();
+  const normalizedRange = languageRange.toLowerCase();
+  return normalizedTag === normalizedRange || normalizedTag.startsWith(`${normalizedRange}-`);
+}
+
+function isNumericFilterValue(value: RdfQueryFilterValue | TermOperators['$eq']): boolean {
+  return isTerm(value as any)
+    ? isRdfNumericTerm(value as Term)
+    : (typeof value === 'number' || (typeof value === 'string' && isFiniteNumericLexical(value)));
+}
+
+function joinValuesSource(input: RdfBindingRow[], source: RdfValuesBindingSource): RdfBindingRow[] {
+  const output: RdfBindingRow[] = [];
+  for (const binding of input) {
+    for (const row of source.rows) {
+      const next = mergeTupleValuesBinding(binding, source.variables, row);
+      if (next) {
+        output.push(next);
+      }
+    }
+  }
+  return output;
+}
+
+function mergeTupleValuesBinding(binding: RdfBindingRow, variables: string[], row: RdfBindingRow): RdfBindingRow | null {
+  const next = { ...binding };
+  for (const variableName of variables) {
+    const value = row[variableName];
+    if (!value) {
+      continue;
+    }
+    const existing = next[variableName];
+    if (existing && !sameTerm(existing, value)) {
+      return null;
+    }
+    next[variableName] = value;
+  }
+  return next;
+}
+
+function projectBinding(binding: RdfBindingRow, select: string[]): RdfBindingRow {
+  const projected: RdfBindingRow = {};
+  for (const variableName of select) {
+    const value = binding[variableName];
+    if (value) {
+      projected[variableName] = value;
+    }
+  }
+  return projected;
+}
+
+function compareBindings(left: RdfBindingRow, right: RdfBindingRow, orderBy: NonNullable<RdfQuery['orderBy']>): number {
+  for (const order of orderBy) {
+    const leftValue = left[order.variable] ? termToId(left[order.variable] as any) : '';
+    const rightValue = right[order.variable] ? termToId(right[order.variable] as any) : '';
+    const comparison = leftValue.localeCompare(rightValue);
+    if (comparison !== 0) {
+      return order.direction === 'desc' ? -comparison : comparison;
+    }
+  }
+  return 0;
+}
+
+function bindingKey(binding: RdfBindingRow, variables?: string[]): string {
+  return [...(variables ?? Object.keys(binding))]
+    .sort()
+    .map((key) => {
+      const value = binding[key];
+      return `${key}=${value ? termToId(value as any) : '__UNBOUND__'}`;
+    })
+    .join('\u001f');
+}
+
+function distinctBindings(bindings: RdfBindingRow[]): RdfBindingRow[] {
+  const seen = new Set<string>();
+  const output: RdfBindingRow[] = [];
+  for (const binding of bindings) {
+    const key = bindingKey(binding);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(binding);
+  }
+  return output;
+}
+
+function aggregateBindings(bindings: RdfBindingRow[], aggregates: RdfQueryAggregate[]): { binding: RdfBindingRow; firstCount: number } {
+  const binding: RdfBindingRow = {};
+  let firstCount = 0;
+  aggregates.forEach((aggregate, index) => {
+    const count = aggregate.type === 'count'
+      ? countBindings(bindings, aggregate.variable, aggregate.distinct, aggregate.distinctVariables)
+      : 0;
+    if (index === 0) {
+      firstCount = count;
+    }
+    const term = aggregateLiteral(bindings, aggregate);
+    if (term) {
+      binding[aggregate.as] = term;
+    }
+  });
+  return { binding, firstCount };
+}
+
+function groupAggregateBindings(bindings: RdfBindingRow[], groupBy: string[], aggregates: RdfQueryAggregate[]): RdfBindingRow[] {
+  const groups = new Map<string, RdfBindingRow[]>();
+  for (const binding of bindings) {
+    const key = groupBy.map((variableName) => {
+      const value = binding[variableName];
+      return value ? termToId(value as any) : '__UNBOUND__';
+    }).join('\u001f');
+    groups.set(key, [...(groups.get(key) ?? []), binding]);
+  }
+  return [...groups.values()].map((groupBindings) => {
+    const first = groupBindings[0];
+    const grouped: RdfBindingRow = {};
+    for (const variableName of groupBy) {
+      if (first[variableName]) {
+        grouped[variableName] = first[variableName];
+      }
+    }
+    for (const aggregate of aggregates) {
+      const term = aggregateLiteral(groupBindings, aggregate);
+      if (term) {
+        grouped[aggregate.as] = term;
+      }
+    }
+    return grouped;
+  });
+}
+
+function countBindings(bindings: RdfBindingRow[], variable?: string, distinct?: boolean, distinctVariables?: string[]): number {
+  if (!distinct) {
+    return variable ? bindings.filter((binding) => binding[variable]).length : bindings.length;
+  }
+  if (!variable) {
+    return new Set(bindings.map((binding) => bindingKey(binding, distinctVariables))).size;
+  }
+  return new Set(bindings
+    .map((binding) => binding[variable])
+    .filter((term): term is Term => Boolean(term))
+    .map((term) => termToId(term as any))).size;
+}
+
+function aggregateLiteral(bindings: RdfBindingRow[], aggregate: RdfQueryAggregate): Term | undefined {
+  if (aggregate.type === 'count') {
+    return countLiteral(countBindings(bindings, aggregate.variable, aggregate.distinct, aggregate.distinctVariables));
+  }
+  const values = numericAggregateValues(bindings, aggregate.variable, aggregate.distinct);
+  if (values.length === 0) {
+    return aggregate.type === 'sum' ? decimalLiteral(0) : undefined;
+  }
+  switch (aggregate.type) {
+    case 'sum':
+      return decimalLiteral(values.reduce((sum, value) => sum + value, 0));
+    case 'avg':
+      return decimalLiteral(values.reduce((sum, value) => sum + value, 0) / values.length);
+    case 'min':
+      return decimalLiteral(Math.min(...values));
+    case 'max':
+      return decimalLiteral(Math.max(...values));
+    default: {
+      const exhaustive: never = aggregate.type;
+      throw new Error(`Unsupported RDF facts aggregate type: ${exhaustive}`);
+    }
+  }
+}
+
+function numericAggregateValues(bindings: RdfBindingRow[], variable?: string, distinct?: boolean): number[] {
+  if (!variable) {
+    return [];
+  }
+  const values: number[] = [];
+  const seen = new Set<string>();
+  for (const binding of bindings) {
+    const term = binding[variable];
+    if (!term || !isRdfNumericTerm(term)) {
+      continue;
+    }
+    if (distinct) {
+      const key = termToId(term as any);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+    }
+    values.push(rdfNumericValue(term.value));
+  }
+  return values;
+}
+
+function countLiteral(count: number): Term {
+  return DataFactory.literal(String(count), DataFactory.namedNode(XSD_INTEGER)) as Term;
+}
+
+function decimalLiteral(value: number): Term {
+  return DataFactory.literal(String(value), DataFactory.namedNode(XSD_DECIMAL)) as Term;
+}
+
+function evaluateBindExpression(expression: RdfBindExpression, binding: RdfBindingRow): Term | undefined {
+  switch (expression.type) {
+    case 'term':
+      return expression.term;
+    case 'variable':
+      return binding[expression.variable];
+    case 'stringValue': {
+      const value = binding[expression.variable];
+      return value ? DataFactory.literal(value.value) as Term : undefined;
+    }
+    case 'stringLength': {
+      const value = binding[expression.variable];
+      return value ? countLiteral(value.value.length) : undefined;
+    }
+    case 'lowerCase': {
+      const value = evaluateBindExpression(expression.expression, binding);
+      return value ? DataFactory.literal(value.value.toLocaleLowerCase('en-US')) as Term : undefined;
+    }
+    case 'upperCase': {
+      const value = evaluateBindExpression(expression.expression, binding);
+      return value ? DataFactory.literal(value.value.toLocaleUpperCase('en-US')) as Term : undefined;
+    }
+    case 'coalesce':
+      for (const item of expression.expressions) {
+        const value = evaluateBindExpression(item, binding);
+        if (value) {
+          return value;
+        }
+      }
+      return undefined;
+    case 'if':
+      return matchesBindingFilters(binding, expression.condition)
+        ? evaluateBindExpression(expression.then, binding)
+        : evaluateBindExpression(expression.else, binding);
+    case 'substring': {
+      const value = evaluateBindExpression(expression.expression, binding);
+      const startTerm = evaluateBindExpression(expression.start, binding);
+      const start = startTerm ? finiteBindNumber(startTerm) : undefined;
+      const lengthTerm = expression.length ? evaluateBindExpression(expression.length, binding) : undefined;
+      const length = lengthTerm ? finiteBindNumber(lengthTerm) : undefined;
+      if (!value || start === undefined || (expression.length && length === undefined)) {
+        return undefined;
+      }
+      const startIndex = Math.max(0, Math.round(start) - 1);
+      const lengthValue = length === undefined ? undefined : Math.max(0, Math.round(length));
+      return DataFactory.literal(value.value.slice(startIndex, lengthValue === undefined ? undefined : startIndex + lengthValue)) as Term;
+    }
+    case 'concat': {
+      const values = expression.expressions.map((item) => evaluateBindExpression(item, binding));
+      return values.every((value): value is Term => Boolean(value))
+        ? DataFactory.literal(values.map((value) => value.value).join('')) as Term
+        : undefined;
+    }
+    case 'iri': {
+      const value = evaluateBindExpression(expression.expression, binding);
+      if (!value) {
+        return undefined;
+      }
+      try {
+        return DataFactory.namedNode(new URL(value.value, expression.base).href) as Term;
+      } catch {
+        return undefined;
+      }
+    }
+    case 'strdt': {
+      const lexical = evaluateBindExpression(expression.lexical, binding);
+      const datatype = evaluateBindExpression(expression.datatype, binding);
+      if (!lexical || !datatype || datatype.termType !== 'NamedNode') {
+        return undefined;
+      }
+      return DataFactory.literal(lexical.value, DataFactory.namedNode(datatype.value)) as Term;
+    }
+    case 'strlang': {
+      const lexical = evaluateBindExpression(expression.lexical, binding);
+      const language = evaluateBindExpression(expression.language, binding);
+      if (!lexical || !language) {
+        return undefined;
+      }
+      return DataFactory.literal(lexical.value, language.value) as Term;
+    }
+    default: {
+      const exhaustive: never = expression;
+      throw new Error(`Unsupported RDF facts BIND expression: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
+function finiteBindNumber(term: Term): number | undefined {
+  if (term.termType !== 'Literal') {
+    return undefined;
+  }
+  const value = Number(term.value);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function describeBind(bind: RdfQueryBind): string {
+  return `?${bind.variable}:=${describeBindExpression(bind.expression)}`;
+}
+
+function describeBindExpression(expression: RdfBindExpression): string {
+  switch (expression.type) {
+    case 'term':
+      return termToId(expression.term as any);
+    case 'variable':
+      return `?${expression.variable}`;
+    case 'stringValue':
+      return `STR(?${expression.variable})`;
+    case 'stringLength':
+      return `STRLEN(?${expression.variable})`;
+    case 'lowerCase':
+      return `LCASE(${describeBindExpression(expression.expression)})`;
+    case 'upperCase':
+      return `UCASE(${describeBindExpression(expression.expression)})`;
+    case 'coalesce':
+      return `COALESCE(${expression.expressions.map(describeBindExpression).join(',')})`;
+    case 'if':
+      return `IF(${expression.condition.map(describeFilter).join('&')},${describeBindExpression(expression.then)},${describeBindExpression(expression.else)})`;
+    case 'substring':
+      return `SUBSTR(${[
+        describeBindExpression(expression.expression),
+        describeBindExpression(expression.start),
+        expression.length ? describeBindExpression(expression.length) : undefined,
+      ].filter(Boolean).join(',')})`;
+    case 'concat':
+      return `CONCAT(${expression.expressions.map(describeBindExpression).join(',')})`;
+    case 'iri':
+      return `IRI(${describeBindExpression(expression.expression)})`;
+    case 'strdt':
+      return `STRDT(${describeBindExpression(expression.lexical)},${describeBindExpression(expression.datatype)})`;
+    case 'strlang':
+      return `STRLANG(${describeBindExpression(expression.lexical)},${describeBindExpression(expression.language)})`;
+    default: {
+      const exhaustive: never = expression;
+      return JSON.stringify(exhaustive);
+    }
+  }
 }
 
 function uniqueStrings(values: string[]): string[] {

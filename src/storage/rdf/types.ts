@@ -584,7 +584,7 @@ export interface RdfVectorSearchPattern {
   model?: string;
 }
 
-export interface RdfLocalQuery {
+export interface RdfQuery {
   patterns: RdfQueryPattern[];
   values?: RdfValuesBindingSource[];
   textSearch?: RdfTextSearchPattern[];
@@ -666,7 +666,7 @@ export interface RdfQuadJoinGroupAggregateOptions {
 
 export type RdfQuadJoinGroupCountOptions = RdfQuadJoinGroupAggregateOptions;
 
-export interface RdfLocalQueryMetrics {
+export interface RdfQueryMetrics {
   engine: 'solid-rdf';
   plan: string[];
   scannedRows: number;
@@ -681,10 +681,10 @@ export interface RdfLocalQueryMetrics {
   filtersPushedDown: number;
 }
 
-export interface RdfLocalQueryResult {
+export interface RdfQueryResult {
   bindings: RdfBindingRow[];
   count?: number;
-  metrics: RdfLocalQueryMetrics;
+  metrics: RdfQueryMetrics;
 }
 
 export interface RdfEngineLike {
@@ -700,7 +700,7 @@ export interface RdfEngineLike {
     options?: RdfIndexPutOptions,
   ): { deletedRows: number; insertedRows: number } | Promise<{ deletedRows: number; insertedRows: number }>;
   scan(query: RdfPatternQuery): RdfQuadIndexScanResult | Promise<RdfQuadIndexScanResult>;
-  query(query: RdfLocalQuery): RdfLocalQueryResult | Promise<RdfLocalQueryResult>;
+  query(query: RdfQuery): RdfQueryResult | Promise<RdfQueryResult>;
   refreshDerivedIndexes(): RdfDerivedIndexRefreshResult | Promise<RdfDerivedIndexRefreshResult>;
   storageStats(): RdfEngineStorageStats | Promise<RdfEngineStorageStats>;
 }

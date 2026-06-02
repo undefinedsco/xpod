@@ -120,7 +120,7 @@ async function main(): Promise<void> {
       syntheticPodCount: options.syntheticPodCount,
       backfilledRows: backfill.indexedRows,
       baselineCases: baseline.cases.length,
-      localQueryCases: baseline.localQueryCases.length,
+      queryCases: baseline.queryCases.length,
       shadowCases: shadow.cases.length,
       rdf3xShadowCases: rdf3xShadow.cases.length,
       rdf3xShadowJoinCases: rdf3xShadow.joinCases.length,
@@ -411,7 +411,7 @@ function printSummary(summary: {
   syntheticPodCount: number;
   backfilledRows: number;
   baselineCases: number;
-  localQueryCases: number;
+  queryCases: number;
   shadowCases: number;
   rdf3xShadowCases: number;
   rdf3xShadowJoinCases: number;
@@ -448,7 +448,7 @@ function printSummary(summary: {
   }
   console.log(`  backfilled rows: ${summary.backfilledRows}`);
   console.log(`  baseline cases: ${summary.baselineCases}`);
-  console.log(`  local query cases: ${summary.localQueryCases}`);
+  console.log(`  query cases: ${summary.queryCases}`);
   console.log(`  shadow cases: ${summary.shadowCases}`);
   console.log(`  rdf3x shadow cases: ${summary.rdf3xShadowCases}`);
   console.log(`  rdf3x shadow join cases: ${summary.rdf3xShadowJoinCases}`);

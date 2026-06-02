@@ -12,7 +12,7 @@ import {
   defaultSyntheticMessagesForRdfModelsScale,
   estimateRdfModelsSyntheticQuadCount,
   rdfModelsBenchmarkCaseNames,
-  rdfModelsLocalQueryBenchmarkCaseNames,
+  rdfModelsQueryBenchmarkCaseNames,
   rdfModelsBenchmarkScaleSatisfied,
   rdfModelsBenchmarkScaleTargetQuads,
   rdfModelsBenchmarkSyntheticPodCount,
@@ -605,7 +605,7 @@ describe('SolidRdfEngine', () => {
         quad(message, namedNode(RDF_TYPE), namedNode(MEETING_MESSAGE), graph),
       ]);
 
-      const staleResult = autoEngine.query({
+      const needsRefreshResult = autoEngine.query({
         patterns: [
           {
             subject: { variable: 'message' },
@@ -616,12 +616,12 @@ describe('SolidRdfEngine', () => {
         select: ['message'],
       });
 
-      expect(staleResult.bindings.map((binding) => binding.message.value)).toEqual([
+      expect(needsRefreshResult.bindings.map((binding) => binding.message.value)).toEqual([
         'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_external',
       ]);
-      expect(staleResult.metrics.plan).toContain('Rdf3xPrimaryStaleFallback');
-      expect(staleResult.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(true);
-      expect(staleResult.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(false);
+      expect(needsRefreshResult.metrics.plan).toContain('Rdf3xPrimaryNeedsRefreshFallback');
+      expect(needsRefreshResult.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(true);
+      expect(needsRefreshResult.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(false);
 
       const refresh = autoEngine.refreshDerivedIndexes();
       expect(refresh.rdf3x).toMatchObject({
@@ -1957,11 +1957,11 @@ describe('SolidRdfEngine', () => {
       'list contacts',
       'list favorites',
     ]);
-    expect(rdfModelsLocalQueryBenchmarkCaseNames()).toEqual([
-      'latest message by thread local query',
-      'next queued run by workspace local query',
-      'run steps by run local query',
-      'task materialization active due local query',
+    expect(rdfModelsQueryBenchmarkCaseNames()).toEqual([
+      'latest message by thread query',
+      'next queued run by workspace query',
+      'run steps by run query',
+      'task materialization active due query',
       'message count by thread with having',
       'message score by thread numeric aggregate',
       'message join count distinct',
@@ -2225,7 +2225,7 @@ describe('SolidRdfEngine', () => {
     expect(report.engine).toBe('solid-rdf');
     expect(report.iterations).toBe(2);
     expect(report.cases).toHaveLength(19);
-    expect(report.localQueryCases).toHaveLength(7);
+    expect(report.queryCases).toHaveLength(7);
     expect(report.planMatched).toBe(true);
     expect(report.failedPlanCases).toEqual([]);
     expect(report.storage.derivedIndexProfile).toBe('rdf3x');
@@ -2298,12 +2298,12 @@ describe('SolidRdfEngine', () => {
       object: 'http://www.w3.org/ns/pim/meeting#LongChat',
       graph: { $startsWith: 'https://pod.example/alice/.data/chat/' },
     });
-    const groupedMessages = report.localQueryCases.find((testCase) => testCase.name === 'message count by thread with having');
-    const messageScoreByThread = report.localQueryCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
-    const latestMessageByThread = report.localQueryCases.find((testCase) => testCase.name === 'latest message by thread local query');
-    const nextQueuedRun = report.localQueryCases.find((testCase) => testCase.name === 'next queued run by workspace local query');
-    const runSteps = report.localQueryCases.find((testCase) => testCase.name === 'run steps by run local query');
-    const taskMaterialization = report.localQueryCases.find((testCase) => testCase.name === 'task materialization active due local query');
+    const groupedMessages = report.queryCases.find((testCase) => testCase.name === 'message count by thread with having');
+    const messageScoreByThread = report.queryCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
+    const latestMessageByThread = report.queryCases.find((testCase) => testCase.name === 'latest message by thread query');
+    const nextQueuedRun = report.queryCases.find((testCase) => testCase.name === 'next queued run by workspace query');
+    const runSteps = report.queryCases.find((testCase) => testCase.name === 'run steps by run query');
+    const taskMaterialization = report.queryCases.find((testCase) => testCase.name === 'task materialization active due query');
     expect(latestMessageByThread).toMatchObject({
       planMatched: true,
       missingPlan: [],
@@ -2475,7 +2475,7 @@ describe('SolidRdfEngine', () => {
     expect(messageScoreByThread?.physicalPlan).toContain('IndexGroupAggregateLimit');
     expect(messageScoreByThread?.physicalPlan).not.toContain('Having(?scoreTotal$gt)');
     expect(messageScoreByThread?.physicalPlan).not.toContain('Limit');
-    const joinCount = report.localQueryCases.find((testCase) => testCase.name === 'message join count distinct');
+    const joinCount = report.queryCases.find((testCase) => testCase.name === 'message join count distinct');
     expect(joinCount).toMatchObject({
       planMatched: true,
       missingPlan: [],
@@ -3061,8 +3061,8 @@ describe('SolidRdfEngine', () => {
     });
     const listChats = report.cases.find((testCase) => testCase.name === 'list chats');
     const numericPriority = report.cases.find((testCase) => testCase.name === 'runs by numeric priority');
-    const latestMessageJoin = report.joinCases.find((testCase) => testCase.name === 'latest message by thread local query');
-    const taskMaterializationJoin = report.joinCases.find((testCase) => testCase.name === 'task materialization active due local query');
+    const latestMessageJoin = report.joinCases.find((testCase) => testCase.name === 'latest message by thread query');
+    const taskMaterializationJoin = report.joinCases.find((testCase) => testCase.name === 'task materialization active due query');
     const messageCountByThread = report.joinCases.find((testCase) => testCase.name === 'message count by thread with having');
     const messageScoreByThread = report.joinCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
     const messageJoinCount = report.joinCases.find((testCase) => testCase.name === 'message join count distinct');
@@ -3081,7 +3081,7 @@ describe('SolidRdfEngine', () => {
     expect(report.storage.totalBytes).toBe(report.storage.factsBytes + report.storage.derivedBytes);
     expect(report.skippedCases).not.toContain('runs by numeric priority');
     expect(report.skippedCases).not.toContain('search message literals');
-    expect(report.skippedJoinCases).not.toContain('task materialization active due local query');
+    expect(report.skippedJoinCases).not.toContain('task materialization active due query');
     expect(report.planMatched).toBe(true);
     expect(report.failedPlanCases).toEqual([]);
     expect(report.failedJoinCases).toEqual([]);

@@ -18,7 +18,7 @@ const { namedNode, literal } = DataFactory;
 describe('RdfSparqlAdapter', () => {
   const adapter = new RdfSparqlAdapter();
 
-  it('compiles SELECT BGP, filters, ordering, and pagination into local query shape', () => {
+  it('compiles SELECT BGP, filters, ordering, and pagination into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?content WHERE {
         ?message <${CONTENT}> ?content .
@@ -72,7 +72,7 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
-  it('compiles standard XPath function-call string filters into local query shape', () => {
+  it('compiles standard XPath function-call string filters into embedded query shape', () => {
     const compiled = adapter.compile(`
       PREFIX fn: <http://www.w3.org/2005/xpath-functions#>
       SELECT ?message ?content WHERE {
@@ -343,7 +343,7 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
-  it('compiles standard BIND expressions into local query shape', () => {
+  it('compiles standard BIND expressions into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?messageLexical ?messageIri ?contentLength WHERE {
         ?message <${CONTENT}> ?content .
@@ -415,7 +415,7 @@ describe('RdfSparqlAdapter', () => {
     expect(compiled.query.orderBy).toEqual([{ variable: 'messageLexical', direction: 'asc' }]);
   });
 
-  it('compiles CONCAT BIND expressions into local query shape', () => {
+  it('compiles CONCAT BIND expressions into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?value WHERE {
         ?message <${CONTENT}> ?content .
@@ -437,7 +437,7 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
-  it('compiles XPath concat function calls into local query shape', () => {
+  it('compiles XPath concat function calls into embedded query shape', () => {
     const compiled = adapter.compile(`
       PREFIX fn: <http://www.w3.org/2005/xpath-functions#>
       SELECT ?message ?value WHERE {
@@ -460,7 +460,7 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
-  it('compiles SUBSTR and XPath substring BIND expressions into local query shape', () => {
+  it('compiles SUBSTR and XPath substring BIND expressions into embedded query shape', () => {
     const compiled = adapter.compile(`
       PREFIX fn: <http://www.w3.org/2005/xpath-functions#>
       SELECT ?message ?slice ?tail WHERE {
@@ -518,7 +518,7 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
-  it('compiles SUBSTR dynamic start and length expressions into local query shape', () => {
+  it('compiles SUBSTR dynamic start and length expressions into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?slice WHERE {
         ?message <${CONTENT}> ?content .
@@ -560,7 +560,7 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
-  it('compiles standard lowercase and uppercase BIND expressions into local query shape', () => {
+  it('compiles standard lowercase and uppercase BIND expressions into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?lower ?upper WHERE {
         ?message <${CONTENT}> ?content .
@@ -593,7 +593,7 @@ describe('RdfSparqlAdapter', () => {
     ]);
   });
 
-  it('compiles standard COALESCE, IF, STRDT, and STRLANG BIND expressions into local query shape', () => {
+  it('compiles standard COALESCE, IF, STRDT, and STRLANG BIND expressions into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?fallback ?branch ?typed ?localized WHERE {
         ?message <${CONTENT}> ?content .
@@ -728,7 +728,7 @@ describe('RdfSparqlAdapter', () => {
     expect(termToId((optional as any).patterns[0].predicate as any)).toBe(CONTENT);
   });
 
-  it('compiles controlled MINUS anti-joins into local query shape', () => {
+  it('compiles controlled MINUS anti-joins into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message WHERE {
         ?message a <${MESSAGE}> .
@@ -763,7 +763,7 @@ describe('RdfSparqlAdapter', () => {
     expect(termToId(compiled.query.minus?.[0].patterns[0].predicate as any)).toBe(CONTENT);
   });
 
-  it('compiles controlled FILTER NOT EXISTS anti-joins into local query shape', () => {
+  it('compiles controlled FILTER NOT EXISTS anti-joins into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message WHERE {
         ?message a <${MESSAGE}> .
@@ -798,7 +798,7 @@ describe('RdfSparqlAdapter', () => {
     expect(termToId(compiled.query.minus?.[0].patterns[0].predicate as any)).toBe(CONTENT);
   });
 
-  it('compiles controlled FILTER EXISTS semi-joins into local query shape', () => {
+  it('compiles controlled FILTER EXISTS semi-joins into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message WHERE {
         ?message a <${MESSAGE}> .
@@ -1604,7 +1604,7 @@ describe('RdfSparqlAdapter', () => {
     });
   });
 
-  it('compiles simple CONSTRUCT templates into local query shape', () => {
+  it('compiles simple CONSTRUCT templates into embedded query shape', () => {
     const compiled = adapter.compile(`
       CONSTRUCT {
         ?message <${CONTENT}> ?content .
@@ -1805,7 +1805,7 @@ describe('RdfSparqlAdapter', () => {
     expect(compiled.query.select).toEqual(['thread', 'content']);
   });
 
-  it('compiles controlled UNION branches into the embedded local query shape', () => {
+  it('compiles controlled UNION branches into the embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?value WHERE {
         { ?message <${CONTENT}> ?value }
@@ -2434,7 +2434,7 @@ describe('RdfSparqlAdapter', () => {
     expect(remove.deletes[0].graph.value).toBe(`${BASE}.data/chat/default/index.ttl`);
   });
 
-  it('compiles DELETE WHERE into a local query-backed update delta', () => {
+  it('compiles DELETE WHERE into a query-backed update delta', () => {
     const delta = adapter.compileUpdateDelta(`
       DELETE WHERE {
         GRAPH <${BASE}.data/chat/default/index.ttl> {
@@ -2691,7 +2691,7 @@ describe('RdfSparqlAdapter', () => {
     });
   });
 
-  it('compiles DELETE/INSERT WHERE into a local query-backed update delta', () => {
+  it('compiles DELETE/INSERT WHERE into a query-backed update delta', () => {
     const delta = adapter.compileUpdateDelta(`
       DELETE {
         GRAPH <${BASE}.data/chat/default/index.ttl> {
@@ -2749,7 +2749,7 @@ describe('RdfSparqlAdapter', () => {
     });
   });
 
-  it('compiles INSERT WHERE into a local query-backed update delta', () => {
+  it('compiles INSERT WHERE into a query-backed update delta', () => {
     const delta = adapter.compileUpdateDelta(`
       INSERT {
         GRAPH <${BASE}.data/chat/default/index.ttl> {
@@ -2803,7 +2803,7 @@ describe('RdfSparqlAdapter', () => {
     });
   });
 
-  it('compiles DELETE/INSERT WHERE with BIND in WHERE into a local query-backed update delta', () => {
+  it('compiles DELETE/INSERT WHERE with BIND in WHERE into a query-backed update delta', () => {
     const delta = adapter.compileUpdateDelta(`
       DELETE {
         GRAPH <${BASE}.data/chat/default/index.ttl> {
