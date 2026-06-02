@@ -13,8 +13,8 @@ import {
   SolidRdfSparqlEngine,
   UnsupportedSparqlQueryError,
   type RdfEngineLike,
-  type RdfLocalQuery,
-  type RdfLocalQueryResult,
+  type RdfQuery,
+  type RdfQueryResult,
 } from '../../../src/storage/rdf';
 import { arrayFromStream } from '../../helpers/arrayFromStream';
 
@@ -5529,7 +5529,7 @@ describe('SolidRdfSparqlEngine', () => {
 class AsyncRdfEngineFake implements RdfEngineLike {
   public readonly calls: string[] = [];
 
-  public constructor(private readonly result: RdfLocalQueryResult) {}
+  public constructor(private readonly result: RdfQueryResult) {}
 
   public async open(): Promise<void> {
     this.calls.push('open');
@@ -5575,7 +5575,7 @@ class AsyncRdfEngineFake implements RdfEngineLike {
     };
   }
 
-  public async query(_query: RdfLocalQuery): Promise<RdfLocalQueryResult> {
+  public async query(_query: RdfQuery): Promise<RdfQueryResult> {
     this.calls.push('query');
     return this.result;
   }

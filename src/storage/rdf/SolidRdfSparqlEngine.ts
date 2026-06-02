@@ -7,7 +7,7 @@ import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
 import type { QuintPattern } from '../quint/types';
 import { DisabledSparqlFeatureError, RdfSparqlAdapter, UnsupportedSparqlQueryError } from './RdfSparqlAdapter';
 import type { ShadowRdfQuintStore } from './ShadowRdfQuintStore';
-import type { RdfBindingRow, RdfEngineLike, RdfLocalQueryResult, RdfQueryTermPattern } from './types';
+import type { RdfBindingRow, RdfEngineLike, RdfQueryResult, RdfQueryTermPattern } from './types';
 
 export interface SolidRdfSparqlEngineOptions {
   rdfEngine: RdfEngineLike;
@@ -326,7 +326,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     this.lastFallback = undefined;
   }
 
-  private bindingsStream(result: RdfLocalQueryResult, variables: string[]): BindingsStream {
+  private bindingsStream(result: RdfQueryResult, variables: string[]): BindingsStream {
     const projectedVariables = variables.length > 0
       ? variables
       : inferVariables(result.bindings);
@@ -376,7 +376,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
-  ): Promise<RdfLocalQueryResult> {
+  ): Promise<RdfQueryResult> {
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType !== 'SELECT') {
       throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce bindings`);
@@ -438,7 +438,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   }
 
   private async executeDescribePrimary(
-    query: import('./types').RdfLocalQuery,
+    query: import('./types').RdfQuery,
     targets: RdfQueryTermPattern[],
     basePath: string,
     operation: SolidRdfSparqlOperation,
@@ -495,7 +495,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   private recordPrimary(
     operation: SolidRdfSparqlOperation,
     start: number,
-    result: RdfLocalQueryResult,
+    result: RdfQueryResult,
   ): void {
     const durationMs = Date.now() - start;
     const counts = this.countsFor(operation);

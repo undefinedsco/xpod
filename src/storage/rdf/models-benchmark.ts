@@ -19,8 +19,8 @@ import type {
   RdfEngineStorageStats,
   RdfIndexMetrics,
   RdfIndexStats,
-  RdfLocalQuery,
-  RdfLocalQueryMetrics,
+  RdfQuery,
+  RdfQueryMetrics,
   RdfQuadJoinCountOptions,
   RdfQuadJoinGroupAggregateHaving,
   RdfQuadJoinGroupAggregateOptions,
@@ -66,19 +66,19 @@ export interface RdfModelBenchmarkCase {
   expectedPlan: string[];
 }
 
-export interface RdfModelLocalQueryBenchmarkCase {
+export interface RdfModelQueryBenchmarkCase {
   name: string;
   resource: string;
   purpose: string;
   minScale: RdfBenchmarkScale;
   minReturnedRows?: number;
-  query: RdfLocalQuery;
+  query: RdfQuery;
   expectedPlan: string[];
 }
 
 export interface RdfModelBenchmarkRunOptions {
   cases?: readonly RdfModelBenchmarkCase[];
-  localQueryCases?: readonly RdfModelLocalQueryBenchmarkCase[];
+  queryCases?: readonly RdfModelQueryBenchmarkCase[];
   scale?: RdfBenchmarkScale;
   iterations?: number;
 }
@@ -110,7 +110,7 @@ export interface RdfModelBenchmarkResult {
   indexStats: RdfIndexStats;
 }
 
-export interface RdfModelLocalQueryBenchmarkResult {
+export interface RdfModelQueryBenchmarkResult {
   name: string;
   resource: string;
   purpose: string;
@@ -129,7 +129,7 @@ export interface RdfModelLocalQueryBenchmarkResult {
   durationsMs: number[];
   p50DurationMs: number;
   p95DurationMs: number;
-  metrics: RdfLocalQueryMetrics;
+  metrics: RdfQueryMetrics;
   indexStats: RdfIndexStats;
 }
 
@@ -142,7 +142,7 @@ export interface RdfModelBenchmarkReport {
   failedPlanCases: string[];
   storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
-  localQueryCases: RdfModelLocalQueryBenchmarkResult[];
+  queryCases: RdfModelQueryBenchmarkResult[];
 }
 
 export interface RdfModelShadowBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {}
@@ -674,9 +674,9 @@ export const rdfModelsBenchmarkCases: readonly RdfModelBenchmarkCase[] = [
   },
 ];
 
-export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBenchmarkCase[] = [
+export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[] = [
   {
-    name: 'latest message by thread local query',
+    name: 'latest message by thread query',
     resource: 'message',
     purpose: 'date-bucketed message timeline keeps ORDER BY/LIMIT inside SQL self-join',
     minScale: 'small',
@@ -707,7 +707,7 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
   },
   {
-    name: 'next queued run by workspace local query',
+    name: 'next queued run by workspace query',
     resource: 'run',
     purpose: 'run state center scheduler query keeps status/workspace/date joins in SQL before LIMIT',
     minScale: 'small',
@@ -744,7 +744,7 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
   },
   {
-    name: 'run steps by run local query',
+    name: 'run steps by run query',
     resource: 'runStep',
     purpose: 'one-to-many run-step lookup keeps type and run relation in SQL self-join',
     minScale: 'small',
@@ -775,7 +775,7 @@ export const rdfModelsLocalQueryBenchmarkCases: readonly RdfModelLocalQueryBench
     expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
   },
   {
-    name: 'task materialization active due local query',
+    name: 'task materialization active due query',
     resource: 'schedule',
     purpose: 'task scheduler materialization keeps active status and due-time filter in SQL self-join',
     minScale: 'small',
@@ -962,8 +962,8 @@ export function rdfModelsBenchmarkCaseNames(): string[] {
   return rdfModelsBenchmarkCases.map((testCase) => testCase.name);
 }
 
-export function rdfModelsLocalQueryBenchmarkCaseNames(): string[] {
-  return rdfModelsLocalQueryBenchmarkCases.map((testCase) => testCase.name);
+export function rdfModelsQueryBenchmarkCaseNames(): string[] {
+  return rdfModelsQueryBenchmarkCases.map((testCase) => testCase.name);
 }
 
 export function rdfModelsBenchmarkScaleTargetQuads(scale: RdfBenchmarkScale): number {
@@ -997,13 +997,13 @@ export function runRdfModelsBenchmark(
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
   const cases = (options.cases ?? rdfModelsBenchmarkCases)
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
-  const localQueryCases = (options.localQueryCases ?? rdfModelsLocalQueryBenchmarkCases)
+  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCases)
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const results = cases.map((testCase) => runBenchmarkCase(engine, testCase, iterations));
-  const localQueryResults = localQueryCases.map((testCase) => runLocalQueryBenchmarkCase(engine, testCase, iterations));
+  const queryResults = queryCases.map((testCase) => runQueryBenchmarkCase(engine, testCase, iterations));
   const failedPlanCases = [
     ...results.filter((result) => !result.planMatched).map((result) => result.name),
-    ...localQueryResults.filter((result) => !result.planMatched).map((result) => result.name),
+    ...queryResults.filter((result) => !result.planMatched).map((result) => result.name),
   ];
 
   return {
@@ -1015,7 +1015,7 @@ export function runRdfModelsBenchmark(
     failedPlanCases,
     storage: engine.storageStats(),
     cases: results,
-    localQueryCases: localQueryResults,
+    queryCases: queryResults,
   };
 }
 
@@ -1071,11 +1071,11 @@ export function runRdfModelsRdf3xShadowBenchmark(
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
   const cases = (options.cases ?? rdfModelsBenchmarkCases)
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
-  const localQueryCases = (options.localQueryCases ?? rdfModelsLocalQueryBenchmarkCases)
+  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCases)
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const rebuild = engine.rdf3xIndex.rebuildFromCurrentQuads();
   const results = cases.map((testCase) => runRdf3xShadowBenchmarkCase(engine, testCase, iterations));
-  const joinResults = localQueryCases.map((testCase) => runRdf3xShadowJoinBenchmarkCase(engine, testCase, iterations));
+  const joinResults = queryCases.map((testCase) => runRdf3xShadowJoinBenchmarkCase(engine, testCase, iterations));
   const supportedResults = results.filter((result) => result.supported);
   const supportedJoinResults = joinResults.filter((result) => result.supported);
   const failedPlanCases = [
@@ -1160,13 +1160,13 @@ function runBenchmarkCase(
   };
 }
 
-function runLocalQueryBenchmarkCase(
+function runQueryBenchmarkCase(
   engine: SolidRdfEngine,
-  testCase: RdfModelLocalQueryBenchmarkCase,
+  testCase: RdfModelQueryBenchmarkCase,
   iterations: number,
-): RdfModelLocalQueryBenchmarkResult {
+): RdfModelQueryBenchmarkResult {
   const durationsMs: number[] = [];
-  let metrics: RdfLocalQueryMetrics | undefined;
+  let metrics: RdfQueryMetrics | undefined;
   let keys: string[] = [];
 
   for (let i = 0; i < iterations; i += 1) {
@@ -1188,14 +1188,14 @@ function runLocalQueryBenchmarkCase(
     filtersApplied: 0,
     filtersPushedDown: 0,
   };
-  const missingPlan = missingExpectedLocalQueryPlan(testCase, finalMetrics, keys.length);
+  const missingPlan = missingExpectedQueryPlan(testCase, finalMetrics, keys.length);
 
   return {
     name: testCase.name,
     resource: testCase.resource,
     purpose: testCase.purpose,
     minScale: testCase.minScale,
-    query: serializeLocalQuery(testCase.query),
+    query: serializeQueryPlan(testCase.query),
     expectedPlan: [...testCase.expectedPlan],
     planMatched: missingPlan.length === 0,
     missingPlan,
@@ -1307,7 +1307,7 @@ function runRdf3xShadowBenchmarkCase(
 
 function runRdf3xShadowJoinBenchmarkCase(
   engine: SolidRdfEngine,
-  testCase: RdfModelLocalQueryBenchmarkCase,
+  testCase: RdfModelQueryBenchmarkCase,
   iterations: number,
 ): RdfModelRdf3xShadowJoinBenchmarkResult {
   const unsupportedReason = unsupportedRdf3xJoinQueryReason(testCase.query);
@@ -1599,7 +1599,7 @@ function rdf3xJoinBenchmarkExecution(metrics: Rdf3xJoinMetrics): {
   };
 }
 
-function baseRdf3xShadowJoinBenchmarkResult(testCase: RdfModelLocalQueryBenchmarkCase): Pick<
+function baseRdf3xShadowJoinBenchmarkResult(testCase: RdfModelQueryBenchmarkCase): Pick<
   RdfModelRdf3xShadowJoinBenchmarkResult,
   'name' | 'resource' | 'purpose' | 'minScale' | 'query' | 'expectedPlan'
 > {
@@ -1608,12 +1608,12 @@ function baseRdf3xShadowJoinBenchmarkResult(testCase: RdfModelLocalQueryBenchmar
     resource: testCase.resource,
     purpose: testCase.purpose,
     minScale: testCase.minScale,
-    query: serializeLocalQuery(testCase.query),
+    query: serializeQueryPlan(testCase.query),
     expectedPlan: [...testCase.expectedPlan],
   };
 }
 
-function unsupportedRdf3xJoinQueryReason(query: RdfLocalQuery): string | undefined {
+function unsupportedRdf3xJoinQueryReason(query: RdfQuery): string | undefined {
   if (query.patterns.length === 0) {
     return 'RDF-3X join shadow requires at least one required BGP pattern';
   }
@@ -1655,7 +1655,7 @@ function unsupportedRdf3xJoinQueryReason(query: RdfLocalQuery): string | undefin
   return undefined;
 }
 
-function rdf3xJoinShapeFor(query: RdfLocalQuery): Rdf3xJoinBenchmarkShape {
+function rdf3xJoinShapeFor(query: RdfQuery): Rdf3xJoinBenchmarkShape {
   const aggregates = queryAggregates(query);
   const compiled = rdf3xJoinPatternsFor(query, aggregates);
   if (!compiled.patterns) {
@@ -1698,7 +1698,7 @@ function rdf3xJoinShapeFor(query: RdfLocalQuery): Rdf3xJoinBenchmarkShape {
 }
 
 function unsupportedRdf3xAggregateReason(
-  query: RdfLocalQuery,
+  query: RdfQuery,
   aggregates: RdfQueryAggregate[],
   visibleVariables: Set<string>,
 ): string | undefined {
@@ -1730,7 +1730,7 @@ function unsupportedRdf3xAggregateReason(
   return undefined;
 }
 
-function rdf3xJoinPatternsFor(query: RdfLocalQuery, aggregates: RdfQueryAggregate[]): {
+function rdf3xJoinPatternsFor(query: RdfQuery, aggregates: RdfQueryAggregate[]): {
   patterns?: RdfQuadJoinPattern[];
   pushedFilterIndexes: Set<number>;
   unsupportedReason?: string;
@@ -1849,7 +1849,7 @@ function rdf3xBenchmarkPushdownFilter(
     : undefined;
 }
 
-function queryAggregates(query: RdfLocalQuery): RdfQueryAggregate[] {
+function queryAggregates(query: RdfQuery): RdfQueryAggregate[] {
   return query.aggregates && query.aggregates.length > 0
     ? query.aggregates
     : query.aggregate
@@ -2264,13 +2264,13 @@ function matchesRdf3xPermutation(metrics: Rdf3xIndexMetrics, permutation: Rdf3xP
   return metrics.indexChoice === permutation || planText.includes(`Rdf3xPermutationScan(${permutation})`);
 }
 
-function missingExpectedLocalQueryPlan(
-  testCase: RdfModelLocalQueryBenchmarkCase,
-  metrics: RdfLocalQueryMetrics,
+function missingExpectedQueryPlan(
+  testCase: RdfModelQueryBenchmarkCase,
+  metrics: RdfQueryMetrics,
   returnedRows: number,
 ): string[] {
   return [
-    ...testCase.expectedPlan.filter((label) => !matchesExpectedLocalQueryPlanLabel(label, metrics)),
+    ...testCase.expectedPlan.filter((label) => !matchesExpectedQueryPlanLabel(label, metrics)),
     ...unresolvedPlanFailures(metrics.plan),
     ...minimumReturnedRowsFailures(testCase, returnedRows),
   ];
@@ -2285,14 +2285,14 @@ function hasUnresolvedPlan(plan: readonly string[]): boolean {
 }
 
 function minimumReturnedRowsFailures(
-  testCase: RdfModelLocalQueryBenchmarkCase,
+  testCase: RdfModelQueryBenchmarkCase,
   returnedRows: number,
 ): string[] {
   const minimum = testCase.minReturnedRows ?? 0;
   return returnedRows >= minimum ? [] : [`min-rows:${minimum}`];
 }
 
-function matchesExpectedLocalQueryPlanLabel(label: string, metrics: RdfLocalQueryMetrics): boolean {
+function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics): boolean {
   const planText = metrics.plan.join('\n');
   switch (label) {
     case 'group-count-index':
@@ -2334,7 +2334,7 @@ function matchesExpectedLocalQueryPlanLabel(label: string, metrics: RdfLocalQuer
 }
 
 function missingExpectedRdf3xJoinPlan(
-  testCase: RdfModelLocalQueryBenchmarkCase,
+  testCase: RdfModelQueryBenchmarkCase,
   metrics: Rdf3xJoinMetrics,
   returnedRows: number,
 ): string[] {
@@ -2424,7 +2424,7 @@ function serializePattern(pattern: QuintPattern): JsonPattern {
   );
 }
 
-function serializeLocalQuery(query: RdfLocalQuery): JsonPattern {
+function serializeQueryPlan(query: RdfQuery): JsonPattern {
   return serializePatternValue(query) as JsonPattern;
 }
 

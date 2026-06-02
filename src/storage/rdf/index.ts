@@ -22,7 +22,7 @@ export {
   rdfContentTypeForPath,
 } from './RdfContentTypes';
 export { RdfShadowComparator, canonicalQuadKey, diffQuads } from './RdfShadowComparator';
-export { RdfLocalQueryEngine, variable as rdfVar } from './RdfLocalQueryEngine';
+export { RdfQueryExecutor, variable as rdfVar } from './RdfQueryExecutor';
 export { ShadowRdfQuintStore, type ShadowRdfQuintStoreOptions } from './ShadowRdfQuintStore';
 export { SolidRdfEngine, type SolidRdfEngineOptions } from './SolidRdfEngine';
 export { PostgresRdfEngine, type PostgresRdfEngineOptions } from './PostgresRdfEngine';
@@ -51,8 +51,8 @@ export {
 export {
   rdfModelsBenchmarkCases,
   rdfModelsBenchmarkCaseNames,
-  rdfModelsLocalQueryBenchmarkCases,
-  rdfModelsLocalQueryBenchmarkCaseNames,
+  rdfModelsQueryBenchmarkCases,
+  rdfModelsQueryBenchmarkCaseNames,
   defaultSyntheticMessagesForRdfModelsScale,
   estimateRdfModelsSyntheticQuadCount,
   rdfModelsBenchmarkScaleSatisfied,
@@ -64,8 +64,8 @@ export {
   RDF_MODELS_SYNTHETIC_MESSAGE_QUADS,
   type RdfBenchmarkScale,
   type RdfModelBenchmarkCase,
-  type RdfModelLocalQueryBenchmarkCase,
-  type RdfModelLocalQueryBenchmarkResult,
+  type RdfModelQueryBenchmarkCase,
+  type RdfModelQueryBenchmarkResult,
   type RdfModelBenchmarkReport,
   type RdfModelBenchmarkResult,
   type RdfModelBenchmarkRunOptions,
@@ -120,10 +120,10 @@ export type {
   RdfQuadJoinOrder,
   RdfQuadJoinPattern,
   RdfQuadJoinScanResult,
-  RdfLocalQuery,
+  RdfQuery,
   RdfQueryAggregate,
-  RdfLocalQueryMetrics,
-  RdfLocalQueryResult,
+  RdfQueryMetrics,
+  RdfQueryResult,
   RdfPatternQuery,
   RdfQuadIndexOptions,
   RdfQuadIndexScanResult,

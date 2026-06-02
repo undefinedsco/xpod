@@ -42,7 +42,7 @@ import { serializeRdfXml } from '../rdf/RdfXmlSerializer';
 import { SolidRdfEngine } from '../rdf/SolidRdfEngine';
 import type {
   RdfBindingRow,
-  RdfLocalQuery,
+  RdfQuery,
   RdfQueryPattern,
   RdfQueryTermPattern,
   RdfSourceInput,
@@ -503,7 +503,7 @@ export class MixDataAccessor implements DataAccessor {
 
   private addWritableTemplateGraphIris(
     graphs: RdfQueryTermPattern[],
-    query: RdfLocalQuery,
+    query: RdfQuery,
     graphIris: Set<string>,
   ): void {
     for (const graph of graphs) {
@@ -516,7 +516,7 @@ export class MixDataAccessor implements DataAccessor {
   }
 
   private addWritableGraphVariableIris(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     variable: string,
     graphIris: Set<string>,
   ): void {
@@ -539,7 +539,7 @@ export class MixDataAccessor implements DataAccessor {
 
   private queryLocalUpdateBindings(
     quads: Quad[],
-    query: RdfLocalQuery,
+    query: RdfQuery,
   ): RdfBindingRow[] {
     const index = new RdfQuadIndex({ path: ':memory:' });
     index.open();
@@ -552,7 +552,7 @@ export class MixDataAccessor implements DataAccessor {
     }
   }
 
-  private queryGraphTerms(query: RdfLocalQuery): RdfQueryTermPattern[] {
+  private queryGraphTerms(query: RdfQuery): RdfQueryTermPattern[] {
     const graphTerms: RdfQueryTermPattern[] = [];
     const graphVariables = new Set<string>();
     this.collectQueryGraphTerms(query, graphTerms, graphVariables);
@@ -561,13 +561,13 @@ export class MixDataAccessor implements DataAccessor {
   }
 
   private collectQueryGraphTerms(
-    query: RdfLocalQuery | {
+    query: RdfQuery | {
       patterns: RdfQueryPattern[];
       values?: RdfValuesBindingSource[];
-      optional?: RdfLocalQuery['optional'];
-      unions?: RdfLocalQuery['unions'];
-      minus?: RdfLocalQuery['minus'];
-      exists?: RdfLocalQuery['exists'];
+      optional?: RdfQuery['optional'];
+      unions?: RdfQuery['unions'];
+      minus?: RdfQuery['minus'];
+      exists?: RdfQuery['exists'];
     },
     graphTerms: RdfQueryTermPattern[],
     graphVariables: Set<string>,
@@ -598,13 +598,13 @@ export class MixDataAccessor implements DataAccessor {
   }
 
   private collectGraphVariableFilterTerms(
-    query: RdfLocalQuery | {
+    query: RdfQuery | {
       values?: RdfValuesBindingSource[];
-      filters?: RdfLocalQuery['filters'];
-      optional?: RdfLocalQuery['optional'];
-      unions?: RdfLocalQuery['unions'];
-      minus?: RdfLocalQuery['minus'];
-      exists?: RdfLocalQuery['exists'];
+      filters?: RdfQuery['filters'];
+      optional?: RdfQuery['optional'];
+      unions?: RdfQuery['unions'];
+      minus?: RdfQuery['minus'];
+      exists?: RdfQuery['exists'];
     },
     graphVariables: Set<string>,
     graphTerms: RdfQueryTermPattern[],
@@ -642,13 +642,13 @@ export class MixDataAccessor implements DataAccessor {
   }
 
   private collectGraphVariableFilterIris(
-    query: RdfLocalQuery | {
+    query: RdfQuery | {
       values?: RdfValuesBindingSource[];
-      filters?: RdfLocalQuery['filters'];
-      optional?: RdfLocalQuery['optional'];
-      unions?: RdfLocalQuery['unions'];
-      minus?: RdfLocalQuery['minus'];
-      exists?: RdfLocalQuery['exists'];
+      filters?: RdfQuery['filters'];
+      optional?: RdfQuery['optional'];
+      unions?: RdfQuery['unions'];
+      minus?: RdfQuery['minus'];
+      exists?: RdfQuery['exists'];
     },
     variable: string,
     values: Set<string>,

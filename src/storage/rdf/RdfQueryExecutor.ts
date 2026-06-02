@@ -10,9 +10,9 @@ import { isFiniteNumericLexical, isRdfNumericTerm, rdfNumericValue } from './Rdf
 import type {
   RdfBindExpression,
   RdfBindingRow,
-  RdfLocalQuery,
-  RdfLocalQueryMetrics,
-  RdfLocalQueryResult,
+  RdfQuery,
+  RdfQueryMetrics,
+  RdfQueryResult,
   RdfQueryBind,
   RdfQueryAggregate,
   RdfQueryFilter,
@@ -139,7 +139,7 @@ interface RequiredSourceEstimate {
   costRows: number;
 }
 
-export class RdfLocalQueryEngine {
+export class RdfQueryExecutor {
   public constructor(
     private readonly index: RdfQuadIndex,
     private readonly textIndex?: RdfTextIndex,
@@ -147,9 +147,9 @@ export class RdfLocalQueryEngine {
     private readonly rdf3xPrimaryIndex?: Rdf3xIndex,
   ) {}
 
-  public query(query: RdfLocalQuery): RdfLocalQueryResult {
+  public query(query: RdfQuery): RdfQueryResult {
     const start = Date.now();
-    const metrics: RdfLocalQueryMetrics = {
+    const metrics: RdfQueryMetrics = {
       engine: 'solid-rdf',
       plan: [],
       scannedRows: 0,
@@ -545,7 +545,7 @@ export class RdfLocalQueryEngine {
     sources: RequiredSource[],
     bindings: RdfBindingRow[],
     filters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): number {
     const boundVariables = this.boundVariables(bindings);
     const hasBoundVariables = boundVariables.size > 0;
@@ -578,7 +578,7 @@ export class RdfLocalQueryEngine {
     pattern: RdfQueryPattern,
     bindings: RdfBindingRow[],
     filters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): number {
     const sample = (bindings.length > 0 ? bindings : [{}]).slice(0, PLANNER_SAMPLE_BINDINGS);
     const fanoutEstimate = this.estimatePatternRowsByDistinctFanout(pattern, sample, filters, metrics);
@@ -616,7 +616,7 @@ export class RdfLocalQueryEngine {
     pattern: RdfQueryPattern,
     sample: RdfBindingRow[],
     filters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): number | undefined {
     if (sample.length < 2) {
       return undefined;
@@ -665,7 +665,7 @@ export class RdfLocalQueryEngine {
     source: RequiredSource,
     bindings: RdfBindingRow[],
     filters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RequiredSourceEstimate {
     if (source.kind === 'pattern') {
       const rows = source.tupleValues
@@ -724,7 +724,7 @@ export class RdfLocalQueryEngine {
   private estimateUnboundSearchSource(
     source: TextRequiredSource | VectorRequiredSource,
     bindings: RdfBindingRow[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RequiredSourceEstimate {
     metrics.searchCardinalityEstimates = (metrics.searchCardinalityEstimates ?? 0) + 1;
     const rows = source.kind === 'text'
@@ -751,7 +751,7 @@ export class RdfLocalQueryEngine {
     source: PatternRequiredSource,
     bindings: RdfBindingRow[],
     filters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): number {
     const sample = (bindings.length > 0 ? bindings : [{}]).slice(0, PLANNER_SAMPLE_BINDINGS);
     const estimates = new Map<string, number>();
@@ -794,7 +794,7 @@ export class RdfLocalQueryEngine {
   private estimateSearchRowsByBoundSource(
     source: TextRequiredSource | VectorRequiredSource,
     sample: RdfBindingRow[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): number | undefined {
     const sourceVariable = source.pattern.source;
     if (!sourceVariable) {
@@ -829,7 +829,7 @@ export class RdfLocalQueryEngine {
 
   private estimateTextSearchRows(source: TextRequiredSource, exactSource?: string, includeWindow = true): number {
     if (!this.textIndex) {
-      throw new Error('RdfLocalQuery textSearch requires a configured RdfTextIndex');
+      throw new Error('RdfQuery textSearch requires a configured RdfTextIndex');
     }
     const options = this.textSearchOptions(source.pattern, exactSource, includeWindow);
     return options ? this.textIndex.estimateSearchCardinality(options).rows : 0;
@@ -837,7 +837,7 @@ export class RdfLocalQueryEngine {
 
   private estimateVectorSearchRows(source: VectorRequiredSource, exactSource?: string, includeWindow = true): number {
     if (!this.vectorIndex) {
-      throw new Error('RdfLocalQuery vectorSearch requires a configured RdfVectorIndex');
+      throw new Error('RdfQuery vectorSearch requires a configured RdfVectorIndex');
     }
     const options = this.vectorSearchOptions(source.pattern, exactSource, includeWindow);
     return options ? this.vectorIndex.estimateSearchCardinality(options).rows : 0;
@@ -890,7 +890,7 @@ export class RdfLocalQueryEngine {
     input: RdfBindingRow[],
     source: RequiredSource,
     filters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
     singleScanPushdown?: SingleScanPushdown,
   ): RdfBindingRow[] {
     switch (source.kind) {
@@ -939,7 +939,7 @@ export class RdfLocalQueryEngine {
   private joinOptionalGroup(
     input: RdfBindingRow[],
     optionalGroup: RdfOptionalQueryGroup,
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RdfBindingRow[] {
     const optionalFilters = optionalGroup.filters ?? [];
     if (optionalFilters.length > 0) {
@@ -1016,7 +1016,7 @@ export class RdfLocalQueryEngine {
     input: RdfBindingRow[],
     branches: RdfUnionQueryBranch[],
     outerFilters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RdfBindingRow[] {
     const output: RdfBindingRow[] = [];
     for (const binding of input) {
@@ -1092,7 +1092,7 @@ export class RdfLocalQueryEngine {
   private applyDependentValues(
     input: RdfBindingRow[],
     sources: RdfValuesBindingSource[] | undefined,
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
     label: 'Minus' | 'Exists',
   ): RdfBindingRow[] {
     let matches = input;
@@ -1110,7 +1110,7 @@ export class RdfLocalQueryEngine {
   private applyMinusGroup(
     input: RdfBindingRow[],
     minusGroup: RdfMinusQueryGroup,
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RdfBindingRow[] {
     const filters = minusGroup.filters ?? [];
     const output: RdfBindingRow[] = [];
@@ -1163,7 +1163,7 @@ export class RdfLocalQueryEngine {
   private applyExistsGroup(
     input: RdfBindingRow[],
     existsGroup: RdfExistsQueryGroup,
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RdfBindingRow[] {
     const filters = existsGroup.filters ?? [];
     const output: RdfBindingRow[] = [];
@@ -1217,7 +1217,7 @@ export class RdfLocalQueryEngine {
     input: RdfBindingRow[],
     patterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
     optional: boolean,
   ): PatternJoinResult | undefined {
     if (!this.rdf3xPrimaryIndex || patterns.length < 2) {
@@ -1289,7 +1289,7 @@ export class RdfLocalQueryEngine {
     input: RdfBindingRow[],
     source: PatternRequiredSource,
     filters: RdfQueryFilter[],
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
     optional: boolean,
     scanOptions?: RdfQuadScanOptions,
   ): PatternJoinResult {
@@ -1357,7 +1357,7 @@ export class RdfLocalQueryEngine {
   }
 
   private requiredBgpPushdown(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
   ): RequiredBgpPushdown | undefined {
@@ -1445,7 +1445,7 @@ export class RdfLocalQueryEngine {
   }
 
   private requiredBgpDistinctProject(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
   ): string[] | undefined {
@@ -1484,7 +1484,7 @@ export class RdfLocalQueryEngine {
 
   private canPushRequiredBgpOrder(
     requiredPatterns: RdfQueryPattern[],
-    orderBy: NonNullable<RdfLocalQuery['orderBy']>,
+    orderBy: NonNullable<RdfQuery['orderBy']>,
   ): boolean {
     if (orderBy.length === 0) {
       return true;
@@ -1583,7 +1583,7 @@ export class RdfLocalQueryEngine {
   private joinTextSearch(
     input: RdfBindingRow[],
     source: TextRequiredSource,
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RdfBindingRow[] {
     metrics.indexChoices.push('text-chunk');
     const sourceVariable = source.pattern.source;
@@ -1609,7 +1609,7 @@ export class RdfLocalQueryEngine {
   private joinVectorSearch(
     input: RdfBindingRow[],
     source: VectorRequiredSource,
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RdfBindingRow[] {
     metrics.indexChoices.push('vector-chunk');
     const sourceVariable = source.pattern.source;
@@ -1636,7 +1636,7 @@ export class RdfLocalQueryEngine {
     input: RdfBindingRow[],
     source: TextRequiredSource,
     sourceVariable: string,
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RdfBindingRow[] {
     const cache = new Map<string, RdfTextSearchResult[]>();
     const countedSources = new Set<string>();
@@ -1682,7 +1682,7 @@ export class RdfLocalQueryEngine {
     input: RdfBindingRow[],
     source: VectorRequiredSource,
     sourceVariable: string,
-    metrics: RdfLocalQueryMetrics,
+    metrics: RdfQueryMetrics,
   ): RdfBindingRow[] {
     const cache = new Map<string, RdfVectorSearchResult[]>();
     const countedSources = new Set<string>();
@@ -1758,7 +1758,7 @@ export class RdfLocalQueryEngine {
       return source.results;
     }
     if (!this.textIndex) {
-      throw new Error('RdfLocalQuery textSearch requires a configured RdfTextIndex');
+      throw new Error('RdfQuery textSearch requires a configured RdfTextIndex');
     }
 
     const options = this.textSearchOptions(source.pattern, exactSource);
@@ -1774,7 +1774,7 @@ export class RdfLocalQueryEngine {
       return source.results;
     }
     if (!this.vectorIndex) {
-      throw new Error('RdfLocalQuery vectorSearch requires a configured RdfVectorIndex');
+      throw new Error('RdfQuery vectorSearch requires a configured RdfVectorIndex');
     }
 
     const options = this.vectorSearchOptions(source.pattern, exactSource);
@@ -1915,7 +1915,7 @@ export class RdfLocalQueryEngine {
   }
 
   private singleScanPushdown(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
   ): SingleScanPushdown | undefined {
@@ -1960,7 +1960,7 @@ export class RdfLocalQueryEngine {
   }
 
   private countPushdown(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
   ): { as: string; pattern: QuintPattern; distinctKeys?: RdfQueryPatternKey[]; pushedDownFilters: number } | undefined {
@@ -2015,7 +2015,7 @@ export class RdfLocalQueryEngine {
   }
 
   private joinCountPushdown(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
     aggregates: RdfQueryAggregate[],
@@ -2069,7 +2069,7 @@ export class RdfLocalQueryEngine {
   }
 
   private joinBasicAggregatePushdown(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
     aggregates: RdfQueryAggregate[],
@@ -2154,7 +2154,7 @@ export class RdfLocalQueryEngine {
   }
 
   private groupAggregatePushdown(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
     aggregates: RdfQueryAggregate[],
@@ -2292,7 +2292,7 @@ export class RdfLocalQueryEngine {
 
   private scanOrderForPattern(
     pattern: RdfQueryPattern,
-    orderBy: NonNullable<RdfLocalQuery['orderBy']>,
+    orderBy: NonNullable<RdfQuery['orderBy']>,
   ): Pick<RdfQuadScanOptions, 'order' | 'orderDirections' | 'reverse'> | undefined {
     if (orderBy.length === 0) {
       return undefined;
@@ -2325,7 +2325,7 @@ export class RdfLocalQueryEngine {
   }
 
   private requiredFiltersNeedingPostApply(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
     filters: RdfQueryFilter[],
     requiredBgpPushdown?: RequiredBgpPushdown,
@@ -2348,7 +2348,7 @@ export class RdfLocalQueryEngine {
   }
 
   private canElideRequiredPatternFilterRechecks(
-    query: RdfLocalQuery,
+    query: RdfQuery,
     requiredPatterns: RdfQueryPattern[],
   ): boolean {
     return requiredPatterns.length > 0
@@ -2782,7 +2782,7 @@ export class RdfLocalQueryEngine {
           && !(filter.values ?? []).some((candidate) => sameTermOrLexical(value.datatype, candidate));
       default: {
         const exhaustive: never = filter.operator;
-        throw new Error(`Unsupported RDF local query filter operator: ${exhaustive}`);
+        throw new Error(`Unsupported RDF query filter operator: ${exhaustive}`);
       }
     }
   }
@@ -2858,7 +2858,7 @@ function filterVariables(filter: RdfQueryFilter): string[] {
     : [filter.variable];
 }
 
-function buildRequiredSources(patterns: RdfQueryPattern[], query: RdfLocalQuery): RequiredSource[] {
+function buildRequiredSources(patterns: RdfQueryPattern[], query: RdfQuery): RequiredSource[] {
   const patternSources = patterns.map((pattern, originalIndex): PatternRequiredSource => ({
       kind: 'pattern',
       pattern,
@@ -3252,7 +3252,7 @@ function projectBinding(binding: RdfBindingRow, select: string[]): RdfBindingRow
 function compareBindings(
   left: RdfBindingRow,
   right: RdfBindingRow,
-  orderBy: NonNullable<RdfLocalQuery['orderBy']>,
+  orderBy: NonNullable<RdfQuery['orderBy']>,
 ): number {
   for (const order of orderBy) {
     const leftValue = left[order.variable] ? termToId(left[order.variable] as any) : '';
@@ -3461,7 +3461,7 @@ function describeScanOrder(options: RdfQuadScanOptions): string {
   return order.map((entry, index) => `${directions[index] ?? 'asc'}:${entry}`).join(',');
 }
 
-function describeQueryOrder(orderBy: NonNullable<RdfLocalQuery['orderBy']>): string {
+function describeQueryOrder(orderBy: NonNullable<RdfQuery['orderBy']>): string {
   return orderBy.map((entry) => `${entry.direction ?? 'asc'}:${entry.variable}`).join(',');
 }
 
@@ -3794,7 +3794,7 @@ function bindVectorSearchResult(
   return next;
 }
 
-function queryAggregates(query: RdfLocalQuery): RdfQueryAggregate[] {
+function queryAggregates(query: RdfQuery): RdfQueryAggregate[] {
   return query.aggregates ?? (query.aggregate ? [query.aggregate] : []);
 }
 

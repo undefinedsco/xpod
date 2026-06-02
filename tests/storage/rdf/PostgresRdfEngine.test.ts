@@ -135,7 +135,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('uses PostgreSQL RDF-3X stats and BGP join without building the SQLite fallback cache', async () => {
+  it('uses PostgreSQL RDF-3X stats and BGP join without building a fallback cache', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf3x-native-'));
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
@@ -205,6 +205,55 @@ describe('PostgresRdfEngine', () => {
       expect(join.metrics.plan.some((entry) => entry.startsWith('PostgresRdf3xJoin('))).toBe(true);
       expect(join.metrics.plan).not.toContain('PostgresRdf3xFallback');
 
+      const files = await readdir(dataDir);
+      expect(files.some((entry) => entry.includes('rdf-cache.sqlite'))).toBe(false);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to PostgreSQL facts for query shapes outside the native fast path', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-facts-query-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(CONTENT), literal('Hello managed agents'), graph),
+        quad(message2, namedNode(CONTENT), literal('Draft note'), graph),
+      ]);
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(CONTENT),
+            object: { variable: 'content' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'content',
+            operator: '$regex',
+            value: 'managed\\s+agents',
+            flags: 'i',
+          },
+        ],
+        select: ['message'],
+      });
+
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(result.metrics.plan).toContain('PostgresFactsQuery');
+      expect(result.metrics.plan).toContain('PostgresFactsFilter(?content$regex)');
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xFallback');
       const files = await readdir(dataDir);
       expect(files.some((entry) => entry.includes('rdf-cache.sqlite'))).toBe(false);
     } finally {

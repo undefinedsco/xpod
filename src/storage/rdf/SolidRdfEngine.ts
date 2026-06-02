@@ -40,8 +40,8 @@ import { Rdf3xIndex } from './Rdf3xIndex';
 import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
 import { RdfShadowComparator, diffQuads } from './RdfShadowComparator';
-import { RdfLocalQueryEngine } from './RdfLocalQueryEngine';
-import type { RdfLocalQuery, RdfLocalQueryResult } from './types';
+import { RdfQueryExecutor } from './RdfQueryExecutor';
+import type { RdfQuery, RdfQueryResult } from './types';
 
 export interface SolidRdfEngineOptions {
   index: RdfQuadIndex | RdfQuadIndexOptions;
@@ -67,8 +67,6 @@ export class SolidRdfEngine implements RdfEngineLike {
   private readonly rdf3xPrimary: boolean;
   private readonly compatibilityStore?: QuintStore;
   private shadowComparator?: RdfShadowComparator;
-  private rdf3xDirty = true;
-  private rdf3xDataVersion: number | undefined;
 
   public constructor(options: SolidRdfEngineOptions) {
     const indexOptions = isRdfQuadIndexOptions(options.index) ? options.index : undefined;
@@ -162,52 +160,38 @@ export class SolidRdfEngine implements RdfEngineLike {
 
   public put(quads: Quad | Quad[], options?: RdfIndexPutOptions): void {
     this.index.multiPut(Array.isArray(quads) ? quads : [quads], options);
-    this.markRdf3xDirty();
   }
 
   public replaceSource(quads: Quad[], source: RdfSourceInput): void {
     this.index.replaceSource(quads, source);
-    this.markRdf3xDirty();
   }
 
   public deleteSource(source: string): number {
-    const changes = this.index.deleteSource(source);
-    if (changes > 0) {
-      this.markRdf3xDirty();
-    }
-    return changes;
+    return this.index.deleteSource(source);
   }
 
   public delete(pattern: QuintPattern): number {
-    const changes = this.index.delete(pattern);
-    if (changes > 0) {
-      this.markRdf3xDirty();
-    }
-    return changes;
+    return this.index.delete(pattern);
   }
 
   public applyDelta(deletes: QuintPattern[], inserts: Quad[], options?: RdfIndexPutOptions): { deletedRows: number; insertedRows: number } {
-    const result = this.index.applyDelta(deletes, inserts, options);
-    if (result.deletedRows > 0 || result.insertedRows > 0) {
-      this.markRdf3xDirty();
-    }
-    return result;
+    return this.index.applyDelta(deletes, inserts, options);
   }
 
   public scan(query: RdfPatternQuery): RdfQuadIndexScanResult {
     return this.index.scan(query.pattern, query.options);
   }
 
-  public query(query: RdfLocalQuery): RdfLocalQueryResult {
+  public query(query: RdfQuery): RdfQueryResult {
     const rdf3xReady = this.isRdf3xPrimaryReady();
-    const result = new RdfLocalQueryEngine(
+    const result = new RdfQueryExecutor(
       this.index,
       this.textIndex,
       this.vectorIndex,
       rdf3xReady ? this.rdf3xIndex : undefined,
     ).query(query);
     if (this.rdf3xPrimary && this.rdf3xIndex && !rdf3xReady) {
-      result.metrics.plan.unshift('Rdf3xPrimaryStaleFallback');
+      result.metrics.plan.unshift('Rdf3xPrimaryNeedsRefreshFallback');
     }
     return result;
   }
@@ -352,12 +336,6 @@ export class SolidRdfEngine implements RdfEngineLike {
     return this.rdf3xIndex;
   }
 
-  private markRdf3xDirty(): void {
-    if (this.rdf3xIndex) {
-      this.rdf3xDirty = true;
-    }
-  }
-
   private isRdf3xPrimaryReady(): boolean {
     return Boolean(this.rdf3xPrimary && this.rdf3xIndex?.isSyncedWithCurrentQuads());
   }
@@ -367,19 +345,9 @@ export class SolidRdfEngine implements RdfEngineLike {
       return undefined;
     }
     const dataVersion = factsDataVersion;
-    if (!this.rdf3xDirty && this.rdf3xDataVersion === dataVersion) {
-      return {
-        refreshed: false,
-        previousFactsDataVersion: dataVersion,
-        factsDataVersion: dataVersion,
-        syncedWithFacts: true,
-      };
-    }
     const rdf3xIndex = this.rdf3xIndex;
     const previousFactsDataVersion = rdf3xIndex.factsDataVersion();
     if (previousFactsDataVersion === dataVersion) {
-      this.rdf3xDirty = false;
-      this.rdf3xDataVersion = dataVersion;
       return {
         refreshed: false,
         previousFactsDataVersion,
@@ -388,8 +356,6 @@ export class SolidRdfEngine implements RdfEngineLike {
       };
     }
     const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
-    this.rdf3xDirty = false;
-    this.rdf3xDataVersion = rebuild.factsDataVersion;
     return {
       refreshed: true,
       previousFactsDataVersion,

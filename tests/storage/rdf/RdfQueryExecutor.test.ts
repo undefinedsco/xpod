@@ -18,7 +18,7 @@ const MEETING_MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 
-describe('RdfLocalQueryEngine', () => {
+describe('RdfQueryExecutor', () => {
   let index: RdfQuadIndex;
   let engine: SolidRdfEngine;
 
@@ -4442,7 +4442,7 @@ describe('RdfLocalQueryEngine', () => {
         },
       ],
       patterns: [],
-    })).toThrow('RdfLocalQuery textSearch requires a configured RdfTextIndex');
+    })).toThrow('RdfQuery textSearch requires a configured RdfTextIndex');
   });
 
   it('joins vector-search hits with RDF graph bindings', async () => {
@@ -4870,6 +4870,6 @@ describe('RdfLocalQueryEngine', () => {
         },
       ],
       patterns: [],
-    })).toThrow('RdfLocalQuery vectorSearch requires a configured RdfVectorIndex');
+    })).toThrow('RdfQuery vectorSearch requires a configured RdfVectorIndex');
   });
 });
