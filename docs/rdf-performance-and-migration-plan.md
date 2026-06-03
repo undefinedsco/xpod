@@ -151,6 +151,63 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 
 本次 PG/PGlite small gate 不是性能容量结论，只证明 PostgreSQL facts/RDF-3X baseline 能跑同一组 models query case，且不会用 result cache 掩盖实际执行路径。`queued run priority numeric aggregate` 已下推到 `PostgresRdf3xJoinAggregate`，`message score by thread numeric aggregate` 已下推到 `PostgresRdf3xGroupAggregate`，都不再走 `PostgresFactsQuery` fallback。
 
+### Real PostgreSQL / Disposable Medium Gate
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --out=.test-data/rdf-pg-real-medium
+```
+
+运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | medium |
+| target quads | 10000 |
+| seed quads | 10066 |
+| scan cases | 22 |
+| query cases | 8 |
+| iterations | 3 |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| real PG models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| query result cache disabled for benchmark | true |
+| PG acceleration profile | `baseline` |
+| report | `.test-data/rdf-pg-real-medium/models-postgres-2026-06-03T19-43-00-499Z-79511-61ee15df-e22c-4400-8176-9df6b8aeb5bb.json` |
+
+真实 PG storage profile：
+
+| Space | Bytes | Notes |
+| --- | ---: | --- |
+| facts bytes | 22487040 | PG facts tables + facts covering indexes |
+| facts table bytes | 12632064 | tables only |
+| facts index bytes | 9854976 | facts covering indexes |
+| RDF-3X derived bytes | 8658944 | projection / graph stats + derived indexes |
+| total bytes | 31145984 | facts + derived |
+| total / facts ratio | 1.39x | PG baseline profile |
+
+真实 PG representative p95：
+
+| Case | p95 | Notes |
+| --- | ---: | --- |
+| list messages by thread | 25 ms | scan, 2503 matched rows |
+| latest message | 21 ms | scan + order/limit |
+| search message literals | 34 ms | text contains source-membership path |
+| next queued run by workspace query | 13 ms | tiny 3-pattern scheduler query |
+| task materialization active due query | 20 ms | tiny 3-pattern scheduler query |
+| message score by thread numeric aggregate | 32 ms | numeric aggregate native path |
+| latest message by thread query | 2600 ms | large 2-pattern message join; not product-grade yet |
+| message join count distinct | 1674 ms | large count-distinct join; not product-grade yet |
+
+结论：真实 PG medium gate 已证明 schema、refresh、planner gate、numeric aggregate 下推和 correctness 可用，但还没有证明 cloud 热路径已经达到 product-grade。两个大 message join/count case 仍在秒级，下一步必须优先优化 `PostgresRdf3xJoinBGP` 的大 fanout path、下沉 hot operators，或引入 custom index access method；在这些 gate 通过前，PG baseline 只能算正确性和迁移底座，不能作为性能完成口径。
+
 ## PostgreSQL Status
 
 `PostgresRdfEngine` 当前已有：
@@ -162,14 +219,16 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 - `storageStats()` 中暴露 facts / derived / query cache 统计。
 - `rdfAccelerationProfile` capability probe，能在 `xpod_rdf` extension 缺失时稳定 fallback。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases。
+- `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；当前 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case。
 
 未完成：
 
 - native `xpod_rdf` hot operators。
 - custom index access method `xpod_rdf_perm`。
-- PG extension 实测性能报告；baseline PG/PGlite gate 已有，extension profile 还没有。
+- PG extension 实测性能报告；baseline PG/PGlite/real-PG gate 已有，extension profile 还没有。
 
-因此 cloud 当前默认应仍按 PG RDF-3X baseline 上线；`pg-hot-operators` / `pg-custom-index` 只能在独立 benchmark gate 通过后进入 cloud profile。
+因此 cloud 当前只能把 PG RDF-3X baseline 当作正确性和迁移底座；`pg-hot-operators` / `pg-custom-index` 只能在独立 benchmark gate 通过后进入 cloud profile。
+真实 PG medium benchmark 显示 baseline 对小查询、scheduler 查询和 numeric aggregate 已可用，但大 fanout message join/count 仍需要 P0 优化；cloud product-grade 性能发布应把这两个 case 作为 release-blocking performance gate，而不是只看 plan matched。
 
 ## Migration Strategy
 
@@ -264,7 +323,8 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 - `bun run build:ts` 通过。
 - `bun run test:integration` 通过。
 - `bun run benchmark:rdf-models -- --scale=medium --iterations=3` 通过。
-- `bun run benchmark:rdf-models:pg -- --scale=small --iterations=1` 通过；cloud 默认 profile 前再补 medium PG/PGlite 或真实 PG benchmark。
+- `bun run benchmark:rdf-models:pg -- --scale=small --iterations=1` 通过。
+- `bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3` 通过；cloud 性能发布还必须让 `latest message by thread query` 和 `message join count distinct` 脱离秒级。
 - `storageStats().totalToFactsRatio` 可接受；当前 medium 参考值为 1.18x。
 - `rdf3x.syncedWithFacts=true`。
 - profile / schema version 不一致时重建逻辑可重复执行。
@@ -280,6 +340,6 @@ PG extension 进入默认 cloud profile 前还必须额外满足：
 ## Open Follow-ups
 
 - 优化或禁用当前 SQLite/file-backed numeric aggregate 的 RDF-3X unconditional path。
-- 把 PG/PGlite benchmark 扩到 medium scale，并增加真实 PostgreSQL 连接模式 benchmark。
+- 优化真实 PG medium 下的大 fanout message join/count：`latest message by thread query` 和 `message join count distinct` 不能保持秒级。
 - 增加 cloud runbook 脚本：只清理 RDF 表，不碰 identity / ai-gateway。
 - 为 `storageStats()` 增加 cloud dashboard 指标：facts bytes、derived bytes、cache bytes、refresh lag、facts data version。

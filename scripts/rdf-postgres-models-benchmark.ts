@@ -17,6 +17,9 @@ import {
 
 interface CliOptions {
   outDir: string;
+  driver: 'pglite' | 'pg';
+  connectionString?: string;
+  allowPgWrites: boolean;
   scale: RdfBenchmarkScale;
   iterations: number;
   syntheticMessages: number;
@@ -25,7 +28,7 @@ interface CliOptions {
 }
 
 interface BenchmarkPaths {
-  pgDataDir: string;
+  pgliteDataDir?: string;
   postgresReport: string;
 }
 
@@ -33,15 +36,12 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   await mkdir(options.outDir, { recursive: true });
 
-  const paths = createBenchmarkPaths(options.outDir);
-  const engine = new PostgresRdfEngine({
-    driver: 'pglite',
-    dataDir: paths.pgDataDir,
-    queryResultCacheEnabled: false,
-  });
+  const paths = createBenchmarkPaths(options);
+  const engine = createEngine(options, paths);
 
   try {
     await engine.open();
+    await assertWritableBenchmarkTarget(engine, options);
     const seedQuads = buildRdfModelsBenchmarkSeed(options);
     await engine.put(seedQuads);
     const report = await runRdfModelsPostgresBenchmark(engine, {
@@ -80,6 +80,9 @@ async function main(): Promise<void> {
 
 function parseArgs(args: string[]): CliOptions {
   let outDir = path.join(process.cwd(), '.test-data', 'rdf-engine');
+  let driver: CliOptions['driver'] = 'pglite';
+  let connectionString: string | undefined;
+  let allowPgWrites = false;
   let scale: RdfBenchmarkScale = 'medium';
   let iterations = 3;
   let syntheticMessages: number | undefined;
@@ -87,6 +90,22 @@ function parseArgs(args: string[]): CliOptions {
   for (const arg of args) {
     if (arg.startsWith('--out=')) {
       outDir = path.resolve(arg.slice('--out='.length));
+      continue;
+    }
+    if (arg.startsWith('--driver=')) {
+      const value = arg.slice('--driver='.length);
+      if (value !== 'pglite' && value !== 'pg') {
+        throw new Error(`Unsupported --driver value: ${value}`);
+      }
+      driver = value;
+      continue;
+    }
+    if (arg.startsWith('--connectionString=')) {
+      connectionString = arg.slice('--connectionString='.length);
+      continue;
+    }
+    if (arg === '--allowPgWrites') {
+      allowPgWrites = true;
       continue;
     }
     if (arg.startsWith('--scale=')) {
@@ -112,8 +131,15 @@ function parseArgs(args: string[]): CliOptions {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
+  if (driver === 'pg' && !connectionString) {
+    throw new Error('--driver=pg requires --connectionString=...');
+  }
+
   return {
     outDir,
+    driver,
+    connectionString,
+    allowPgWrites,
     scale,
     iterations,
     syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
@@ -130,18 +156,49 @@ function positiveInteger(raw: string, name: string): number {
   return value;
 }
 
-function createBenchmarkPaths(outDir: string): BenchmarkPaths {
+function createBenchmarkPaths(options: CliOptions): BenchmarkPaths {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runId = `${stamp}-${process.pid}-${randomUUID()}`;
   return {
-    pgDataDir: path.join(outDir, `rdf-models-pglite-${runId}`),
-    postgresReport: path.join(outDir, `models-postgres-${runId}.json`),
+    ...(options.driver === 'pglite'
+      ? { pgliteDataDir: path.join(options.outDir, `rdf-models-pglite-${runId}`) }
+      : {}),
+    postgresReport: path.join(options.outDir, `models-postgres-${runId}.json`),
   };
+}
+
+function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEngine {
+  if (options.driver === 'pglite') {
+    return new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir: paths.pgliteDataDir,
+      queryResultCacheEnabled: false,
+    });
+  }
+  return new PostgresRdfEngine({
+    driver: 'pg',
+    connectionString: options.connectionString,
+    queryResultCacheEnabled: false,
+  });
+}
+
+async function assertWritableBenchmarkTarget(engine: PostgresRdfEngine, options: CliOptions): Promise<void> {
+  if (options.driver !== 'pg') {
+    return;
+  }
+  if (!options.allowPgWrites) {
+    throw new Error('--driver=pg writes RDF benchmark rows; pass --allowPgWrites only for a disposable empty PostgreSQL database');
+  }
+  const stats = await engine.storageStats();
+  if (stats.facts.quadCount > 0 || stats.facts.sourceCount > 0) {
+    throw new Error(`PostgreSQL benchmark target is not empty: ${stats.facts.quadCount} quads, ${stats.facts.sourceCount} sources`);
+  }
 }
 
 function seedSummary(options: CliOptions, seedQuadCount: number): Record<string, unknown> {
   return {
     pod: RDF_MODELS_BENCHMARK_POD,
+    driver: options.driver,
     scale: options.scale,
     iterations: options.iterations,
     syntheticMessages: options.syntheticMessages,
@@ -175,6 +232,7 @@ function printSummary(summary: {
   storage: RdfEngineStorageStats;
 }): void {
   console.log('PostgreSQL RDF models benchmark complete');
+  console.log(`  driver: ${summary.options.driver}`);
   console.log(`  scale: ${summary.options.scale}`);
   console.log(`  iterations: ${summary.options.iterations}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
@@ -189,7 +247,9 @@ function printSummary(summary: {
   console.log(`  storage facts bytes: ${summary.storage.factsBytes}`);
   console.log(`  storage derived bytes: ${summary.storage.derivedBytes}`);
   console.log(`  storage total/facts ratio: ${formatRatio(summary.storage.totalToFactsRatio)}`);
-  console.log(`  pglite data dir: ${summary.paths.pgDataDir}`);
+  if (summary.paths.pgliteDataDir) {
+    console.log(`  pglite data dir: ${summary.paths.pgliteDataDir}`);
+  }
   console.log(`  postgres report: ${summary.paths.postgresReport}`);
   if (summary.options.syntheticMessagesOverridden && !summary.fullScale) {
     console.error('  syntheticMessages override is below the selected scale target');
@@ -207,6 +267,9 @@ function printHelp(): void {
   console.log(`Usage: bun scripts/rdf-postgres-models-benchmark.ts [options]
 
 Options:
+  --driver=pglite|pg                Select PostgreSQL driver. Default: pglite
+  --connectionString=URL            PostgreSQL URL for --driver=pg
+  --allowPgWrites                   Required for --driver=pg; only use with a disposable empty database
   --scale=small|medium|large       Select benchmark case scale. Default: medium
   --iterations=N                   Iterations per case. Default: 3
   --syntheticMessages=N            Override generated message count for storage-size tests
