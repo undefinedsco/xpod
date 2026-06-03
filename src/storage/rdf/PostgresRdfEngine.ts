@@ -23,6 +23,8 @@ import type {
   RdfQueryMetrics,
   RdfQueryResultCacheStats,
   RdfQueryResult,
+  RdfPgAccelerationProfile,
+  RdfPgAccelerationStats,
   RdfPatternQuery,
   RdfQueryFilter,
   RdfQueryPattern,
@@ -63,6 +65,20 @@ const RDF_QUERY_RESULT_CACHE_TABLE = 'rdf_query_result_cache';
 const RDF_QUERY_RESULT_CACHE_KEY_VERSION = 1;
 const DEFAULT_QUERY_RESULT_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const XPOD_RDF_EXTENSION_NAME = 'xpod_rdf';
+const HOT_OPERATOR_REQUIRED_CAPABILITIES = [
+  'scan.exact_graph',
+  'scan.graph_prefix',
+  'scan.term_in',
+  'join.required_bgp',
+  'aggregate.count',
+  'aggregate.numeric',
+  'cache.result',
+];
+const CUSTOM_INDEX_REQUIRED_CAPABILITIES = [
+  ...HOT_OPERATOR_REQUIRED_CAPABILITIES,
+  'index.xpod_rdf_perm',
+];
 
 type PgPatternKey = 'graph' | 'subject' | 'predicate' | 'object';
 type PgTermKey = 'subject' | 'predicate' | 'object';
@@ -259,6 +275,8 @@ export interface PostgresRdfEngineOptions {
   queryResultCacheEnabled?: boolean;
   queryResultCacheMaxEntries?: number;
   queryResultCacheTtlMs?: number;
+  rdfAccelerationProfile?: RdfPgAccelerationProfile;
+  rdfExtensionRequiredCapabilities?: string[];
 }
 
 interface PostgresRdfTermRow {
@@ -694,6 +712,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private initialized = false;
   private initializing: Promise<void> | null = null;
   private readonly pgOptions: PostgresRdfEngineOptions;
+  private pgAcceleration: RdfPgAccelerationStats | null = null;
   private sharedPoolConfig: {
     connectionString?: string;
     host?: string;
@@ -726,6 +745,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         this.termDictionary = new PostgresRdfTermDictionary(this.requireExecutor());
         await this.termDictionary.initialize();
         await this.initializeSchema();
+        this.pgAcceleration = await this.probePgAcceleration();
         this.initialized = true;
       })
       .finally(() => {
@@ -883,7 +903,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const cacheMode = query.cache?.mode ?? 'default';
     if (!this.isQueryResultCacheEnabled(query)) {
       const native = await this.queryNative(query);
-      return native ?? this.queryFacts(query);
+      return this.withPgAccelerationFallbackPlan(native ?? await this.queryFacts(query));
     }
 
     const factsDataVersion = await this.readFactsDataVersion();
@@ -894,7 +914,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (cacheMode !== 'refresh') {
       const cached = await this.readQueryResultCache(cacheKey, factsDataVersion);
       if (cached) {
-        return cached;
+        return this.withPgAccelerationFallbackPlan(cached);
       }
     }
 
@@ -902,11 +922,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const result = native ?? await this.queryFacts(query);
     await this.writeQueryResultCache(cacheKey, factsDataVersion, queryShape, result);
     await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
-    return withQueryCachePlan(
+    return this.withPgAccelerationFallbackPlan(withQueryCachePlan(
       result,
       cacheMode === 'refresh' ? 'PostgresResultCacheRefresh' : 'PostgresResultCacheMiss',
       'PostgresResultCacheStore',
-    );
+    ));
   }
 
   public async refreshDerivedIndexes(): Promise<RdfDerivedIndexRefreshResult> {
@@ -955,6 +975,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         syncedWithFacts: rdf3x.factsDataVersion === await this.readFactsDataVersion(),
       },
       queryResultCache,
+      pgAcceleration: this.pgAcceleration ?? this.disabledPgAccelerationStats(),
       factsBytes,
       derivedBytes,
       totalBytes,
@@ -1627,6 +1648,127 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private queryResultCacheTtlMs(query?: RdfQuery): number {
     const configured = query?.cache?.ttlMs ?? this.pgOptions.queryResultCacheTtlMs ?? DEFAULT_QUERY_RESULT_CACHE_TTL_MS;
     return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_RESULT_CACHE_TTL_MS;
+  }
+
+  private async probePgAcceleration(): Promise<RdfPgAccelerationStats> {
+    const profile = this.pgOptions.rdfAccelerationProfile ?? 'baseline';
+    const requiredCapabilities = this.requiredPgAccelerationCapabilities(profile);
+    if (profile === 'baseline') {
+      return this.disabledPgAccelerationStats();
+    }
+
+    const executor = this.requireExecutor();
+    try {
+      const extensionRows = await executor.query<{ installed: boolean }>(`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_extension
+          WHERE extname = $1
+        ) AS installed
+      `, [XPOD_RDF_EXTENSION_NAME]);
+      if (!pgBoolean(extensionRows[0]?.installed)) {
+        return this.pgAccelerationFallback(profile, requiredCapabilities, 'extension-missing');
+      }
+
+      const version = await this.readPgAccelerationVersion();
+      const capabilities = await this.readPgAccelerationCapabilities();
+      const missingCapabilities = requiredCapabilities.filter((capability) => !capabilities.includes(capability));
+      if (missingCapabilities.length > 0) {
+        return {
+          profile,
+          requested: true,
+          available: true,
+          enabled: false,
+          version,
+          capabilities,
+          requiredCapabilities,
+          missingCapabilities,
+          fallbackReason: 'capability-missing',
+        };
+      }
+
+      return {
+        profile,
+        requested: true,
+        available: true,
+        enabled: true,
+        version,
+        capabilities,
+        requiredCapabilities,
+        missingCapabilities: [],
+      };
+    } catch (error) {
+      return this.pgAccelerationFallback(profile, requiredCapabilities, 'probe-failed', errorMessage(error));
+    }
+  }
+
+  private disabledPgAccelerationStats(): RdfPgAccelerationStats {
+    return {
+      profile: this.pgOptions.rdfAccelerationProfile ?? 'baseline',
+      requested: false,
+      available: false,
+      enabled: false,
+      capabilities: [],
+      requiredCapabilities: [],
+      missingCapabilities: [],
+      fallbackReason: 'profile-disabled',
+    };
+  }
+
+  private pgAccelerationFallback(
+    profile: RdfPgAccelerationProfile,
+    requiredCapabilities: string[],
+    fallbackReason: RdfPgAccelerationStats['fallbackReason'],
+    fallbackDetail?: string,
+  ): RdfPgAccelerationStats {
+    return {
+      profile,
+      requested: profile !== 'baseline',
+      available: false,
+      enabled: false,
+      capabilities: [],
+      requiredCapabilities,
+      missingCapabilities: requiredCapabilities,
+      fallbackReason,
+      ...(fallbackDetail ? { fallbackDetail } : {}),
+    };
+  }
+
+  private requiredPgAccelerationCapabilities(profile: RdfPgAccelerationProfile): string[] {
+    if (this.pgOptions.rdfExtensionRequiredCapabilities) {
+      return [...this.pgOptions.rdfExtensionRequiredCapabilities].sort();
+    }
+    switch (profile) {
+      case 'baseline':
+        return [];
+      case 'pg-hot-operators':
+        return [...HOT_OPERATOR_REQUIRED_CAPABILITIES];
+      case 'pg-custom-index':
+        return [...CUSTOM_INDEX_REQUIRED_CAPABILITIES];
+      default: {
+        const exhaustive: never = profile;
+        throw new Error(`Unsupported PostgreSQL RDF acceleration profile: ${String(exhaustive)}`);
+      }
+    }
+  }
+
+  private async readPgAccelerationVersion(): Promise<string | undefined> {
+    const rows = await this.requireExecutor().query<{ version: unknown }>('SELECT xpod_rdf.version() AS version');
+    const version = rows[0]?.version;
+    return typeof version === 'string' ? version : version === undefined || version === null ? undefined : String(version);
+  }
+
+  private async readPgAccelerationCapabilities(): Promise<string[]> {
+    const rows = await this.requireExecutor().query<{ capabilities: unknown }>('SELECT xpod_rdf.capabilities() AS capabilities');
+    return normalizePgAccelerationCapabilities(rows[0]?.capabilities);
+  }
+
+  private withPgAccelerationFallbackPlan(result: RdfQueryResult): RdfQueryResult {
+    const acceleration = this.pgAcceleration;
+    if (!acceleration?.requested || acceleration.enabled) {
+      return result;
+    }
+    return withQueryCachePlan(result, `XpodRdfExtensionFallback(${acceleration.fallbackReason ?? 'unknown'})`);
   }
 
   private async joinFactsPattern(
@@ -3356,6 +3498,35 @@ function queryResultCacheKey(queryShape: string): string {
     .digest('hex');
 }
 
+function normalizePgAccelerationCapabilities(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry): entry is string => typeof entry === 'string')
+      .sort();
+  }
+  if (typeof value === 'string') {
+    try {
+      return normalizePgAccelerationCapabilities(JSON.parse(value));
+    } catch {
+      return value.split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+        .sort();
+    }
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.capabilities)) {
+      return normalizePgAccelerationCapabilities(record.capabilities);
+    }
+  }
+  return [];
+}
+
+function pgBoolean(value: unknown): boolean {
+  return value === true || value === 'true' || value === 't' || value === 1 || value === '1';
+}
+
 function normalizeQueryCacheValue(value: unknown): unknown {
   if (isTerm(value as any)) {
     return { $term: termToId(value as any) };
@@ -3450,6 +3621,10 @@ function withQueryCachePlan(result: RdfQueryResult, ...markers: string[]): RdfQu
       ],
     },
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function restoreValue(key: string, value: unknown): unknown {

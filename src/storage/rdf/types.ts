@@ -49,6 +49,12 @@ export interface RdfQuadIndexOptions {
 }
 
 export type RdfDerivedIndexProfile = 'baseline' | 'rdf3x';
+export type RdfPgAccelerationProfile = 'baseline' | 'pg-hot-operators' | 'pg-custom-index';
+export type RdfPgAccelerationFallbackReason =
+  | 'profile-disabled'
+  | 'extension-missing'
+  | 'capability-missing'
+  | 'probe-failed';
 
 export interface RdfShadowAutoBackfillOptions {
   enabled?: boolean;
@@ -105,11 +111,25 @@ export interface RdfEngineStorageStats {
     syncedWithFacts: boolean;
   };
   queryResultCache?: RdfQueryResultCacheStats;
+  pgAcceleration?: RdfPgAccelerationStats;
   factsBytes: number;
   derivedBytes: number;
   totalBytes: number;
   derivedToFactsRatio: number;
   totalToFactsRatio: number;
+}
+
+export interface RdfPgAccelerationStats {
+  profile: RdfPgAccelerationProfile;
+  requested: boolean;
+  available: boolean;
+  enabled: boolean;
+  version?: string;
+  capabilities: string[];
+  requiredCapabilities: string[];
+  missingCapabilities: string[];
+  fallbackReason?: RdfPgAccelerationFallbackReason;
+  fallbackDetail?: string;
 }
 
 export interface RdfQueryResultCacheStats {

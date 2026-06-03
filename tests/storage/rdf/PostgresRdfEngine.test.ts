@@ -789,6 +789,60 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('falls back cleanly when the requested PostgreSQL RDF extension profile is unavailable', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-profile-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      rdfAccelerationProfile: 'pg-hot-operators',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        select: ['message'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(result.metrics.plan).toContain('XpodRdfExtensionFallback(extension-missing)');
+      expect(result.metrics.plan.some((entry) => entry.startsWith('PostgresRdf3xJoin('))).toBe(true);
+
+      const stats = await engine.storageStats();
+      expect(stats.pgAcceleration).toMatchObject({
+        profile: 'pg-hot-operators',
+        requested: true,
+        available: false,
+        enabled: false,
+        fallbackReason: 'extension-missing',
+        requiredCapabilities: [
+          'scan.exact_graph',
+          'scan.graph_prefix',
+          'scan.term_in',
+          'join.required_bgp',
+          'aggregate.count',
+          'aggregate.numeric',
+          'cache.result',
+        ],
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('wires cloud RDF storage to the PostgreSQL RDF engine', async () => {
     const cloudConfig = JSON.parse(await readFile(path.join(process.cwd(), 'config/cloud.json'), 'utf8'));
     const engine = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:SolidRdfEngine');
