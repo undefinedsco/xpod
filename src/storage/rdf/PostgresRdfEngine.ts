@@ -61,6 +61,8 @@ const POSTGRES_RDF3X_SCHEMA_VERSION = 1;
 const PG_STRING_ESCAPE = '\u001f';
 const RDF_QUERY_RESULT_CACHE_TABLE = 'rdf_query_result_cache';
 const RDF_QUERY_RESULT_CACHE_KEY_VERSION = 1;
+const DEFAULT_QUERY_RESULT_CACHE_MAX_ENTRIES = 512;
+const DEFAULT_QUERY_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 type PgPatternKey = 'graph' | 'subject' | 'predicate' | 'object';
 type PgTermKey = 'subject' | 'predicate' | 'object';
@@ -254,6 +256,9 @@ export interface PostgresRdfEngineOptions {
   password?: string;
   pool?: any;
   autoOpen?: boolean;
+  queryResultCacheEnabled?: boolean;
+  queryResultCacheMaxEntries?: number;
+  queryResultCacheTtlMs?: number;
 }
 
 interface PostgresRdfTermRow {
@@ -875,9 +880,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   public async query(query: RdfQuery): Promise<RdfQueryResult> {
     await this.ensureReady();
+    if (!this.isQueryResultCacheEnabled()) {
+      const native = await this.queryNative(query);
+      return native ?? this.queryFacts(query);
+    }
+
     const factsDataVersion = await this.readFactsDataVersion();
     const queryShape = stableRdfQueryShape(query);
     const cacheKey = queryResultCacheKey(queryShape);
+    await this.pruneQueryResultCache(factsDataVersion);
     const cached = await this.readQueryResultCache(cacheKey, factsDataVersion);
     if (cached) {
       return cached;
@@ -886,6 +897,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const native = await this.queryNative(query);
     const result = native ?? await this.queryFacts(query);
     await this.writeQueryResultCache(cacheKey, factsDataVersion, queryShape, result);
+    await this.pruneQueryResultCache(factsDataVersion);
     return withQueryCachePlan(result, 'PostgresResultCacheMiss', 'PostgresResultCacheStore');
   }
 
@@ -1561,6 +1573,52 @@ export class PostgresRdfEngine implements RdfEngineLike {
       serializeQueryResult(result),
       result.bindings.length,
     ]);
+  }
+
+  private async pruneQueryResultCache(factsDataVersion: number): Promise<void> {
+    const executor = this.requireExecutor();
+    await executor.exec(`
+      DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+      WHERE facts_data_version < $1
+    `, [factsDataVersion]);
+
+    const ttlMs = this.queryResultCacheTtlMs();
+    if (ttlMs > 0) {
+      await executor.exec(`
+        DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+        WHERE created_at < $1::timestamptz
+      `, [new Date(Date.now() - ttlMs).toISOString()]);
+    }
+
+    const maxEntries = this.queryResultCacheMaxEntries();
+    const rows = await executor.query<{ cache_key: string; facts_data_version: number }>(`
+      SELECT cache_key, facts_data_version
+      FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+      WHERE facts_data_version = $1
+      ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC
+    `, [factsDataVersion]);
+    for (const row of rows.slice(maxEntries)) {
+      await executor.exec(`
+        DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+        WHERE cache_key = $1
+          AND facts_data_version = $2
+      `, [row.cache_key, row.facts_data_version]);
+    }
+  }
+
+  private isQueryResultCacheEnabled(): boolean {
+    return this.pgOptions.queryResultCacheEnabled !== false
+      && this.queryResultCacheMaxEntries() > 0;
+  }
+
+  private queryResultCacheMaxEntries(): number {
+    const configured = this.pgOptions.queryResultCacheMaxEntries ?? DEFAULT_QUERY_RESULT_CACHE_MAX_ENTRIES;
+    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_RESULT_CACHE_MAX_ENTRIES;
+  }
+
+  private queryResultCacheTtlMs(): number {
+    const configured = this.pgOptions.queryResultCacheTtlMs ?? DEFAULT_QUERY_RESULT_CACHE_TTL_MS;
+    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_RESULT_CACHE_TTL_MS;
   }
 
   private async joinFactsPattern(

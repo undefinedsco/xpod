@@ -465,6 +465,11 @@ acceleration profile。所有收益都必须通过 models benchmark 和真实 Po
 - 如果 extension 只新增 cache / materialized result，空间增长应由 TTL、profile 和
   `storageStats()` 控制；如果新增 custom postings，必须单独报告 index/facts ratio，并以
   benchmark gate 决定是否启用。
+- 当前 PG-backed query result cache 第一版已落在 `PostgresRdfEngine` 内：缓存表为
+  `rdf_query_result_cache`，cache key 由 normalized query shape + facts `data_version`
+  组成，写入推进 `data_version` 后旧版本缓存会被清理；engine option 提供
+  `queryResultCacheEnabled`、`queryResultCacheMaxEntries`、`queryResultCacheTtlMs`
+  作为 baseline 回退和 derived space 生命周期控制。
 
 #### 完整 PG extension hot operators
 

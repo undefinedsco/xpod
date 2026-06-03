@@ -282,6 +282,102 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('can disable PostgreSQL query result caching and fall back to the baseline query path', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-disabled-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const query = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(query);
+      const second = await engine.query(query);
+      expect(first.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(first.metrics.plan.join('\n')).not.toContain('PostgresResultCache');
+      expect(second.metrics.plan.join('\n')).not.toContain('PostgresResultCache');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 0,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prunes PostgreSQL query result cache entries to the configured profile', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-prune-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheMaxEntries: 1,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const openQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+    };
+    const closedQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('closed'),
+        },
+      ],
+      select: ['message'],
+    };
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('closed'), graph),
+      ]);
+
+      const open = await engine.query(openQuery);
+      expect(open.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(open.metrics.plan).toContain('PostgresResultCacheStore');
+
+      const closed = await engine.query(closedQuery);
+      expect(closed.bindings.map((binding) => binding.message.value)).toEqual([message2.value]);
+      expect(closed.metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 1,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to PostgreSQL facts for query shapes outside the native fast path', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-facts-query-'));
     const engine = new PostgresRdfEngine({
