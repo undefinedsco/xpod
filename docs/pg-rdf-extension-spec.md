@@ -98,6 +98,9 @@ extension 提供。后续 native extension 的职责是替换这些已经有 cor
 - `capabilities` 只表示 provider 声称可用的能力位；`activeOperators` 表示当前
   `PostgresRdfEngine` 已经实际接线的 operator。profile 已启用但 query 仍落回 PG RDF-3X
   baseline 时，metrics plan 必须标记 `XpodRdfExtensionUnsupported(<capability>)`。
+- `capabilityProviders` 按能力位记录实际来源。当前混合 profile 中，`cache.result` 可以来自
+  `sql-abi` 或 native `extension`，scan / join / aggregate 在 native extension 替换前来自
+  `engine-sql`。
 
 部署约束：
 

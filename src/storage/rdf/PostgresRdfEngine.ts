@@ -25,6 +25,7 @@ import type {
   RdfQueryResult,
   RdfPlannerStatsRefreshResult,
   RdfPgAccelerationProfile,
+  RdfPgAccelerationProvider,
   RdfPgAccelerationStats,
   RdfPatternQuery,
   RdfQueryFilter,
@@ -1832,16 +1833,24 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!extensionInstalled && !sqlAbiAvailable && engineSqlCapabilities.length === 0) {
         return this.pgAccelerationFallback(profile, requiredCapabilities, 'extension-missing', this.pgAccelerationSqlAbiInstallError);
       }
-      const provider: NonNullable<RdfPgAccelerationStats['provider']> = extensionInstalled
+      const provider: RdfPgAccelerationProvider = extensionInstalled
         ? 'extension'
         : engineSqlCapabilities.length > 0
           ? 'engine-sql'
           : 'sql-abi';
 
       const abiAvailable = extensionInstalled || sqlAbiAvailable;
+      const abiProvider: RdfPgAccelerationProvider | undefined = abiAvailable
+        ? extensionInstalled ? 'extension' : 'sql-abi'
+        : undefined;
       const abiVersion = abiAvailable ? await this.readPgAccelerationVersion() : undefined;
       const abiCapabilities = abiAvailable ? await this.readPgAccelerationCapabilities() : [];
       const capabilities = uniqueStrings([...abiCapabilities, ...engineSqlCapabilities]).sort();
+      const capabilityProviders = this.pgAccelerationCapabilityProviders({
+        abiCapabilities,
+        abiProvider,
+        engineSqlCapabilities,
+      });
       const version = provider === 'engine-sql'
         ? uniqueStrings(['engine-sql', ...(abiVersion ? [abiVersion] : [])]).join('+')
         : abiVersion;
@@ -1855,6 +1864,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           provider,
           version,
           capabilities,
+          capabilityProviders,
           requiredCapabilities,
           missingCapabilities,
           fallbackReason: 'capability-missing',
@@ -1869,6 +1879,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         provider,
         version,
         capabilities,
+        capabilityProviders,
         requiredCapabilities,
         missingCapabilities: [],
         activeOperators: this.activePgAccelerationOperators(capabilities),
@@ -2013,6 +2024,23 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...RESULT_CACHE_REQUIRED_CAPABILITIES,
     ]);
     return capabilities.filter((capability) => wiredOperators.has(capability)).sort();
+  }
+
+  private pgAccelerationCapabilityProviders(options: {
+    abiCapabilities: string[];
+    abiProvider?: RdfPgAccelerationProvider;
+    engineSqlCapabilities: string[];
+  }): Record<string, RdfPgAccelerationProvider> {
+    const providers: Record<string, RdfPgAccelerationProvider> = {};
+    if (options.abiProvider) {
+      for (const capability of options.abiCapabilities) {
+        providers[capability] = options.abiProvider;
+      }
+    }
+    for (const capability of options.engineSqlCapabilities) {
+      providers[capability] = 'engine-sql';
+    }
+    return providers;
   }
 
   private engineSqlPgAccelerationCapabilities(profile: RdfPgAccelerationProfile): string[] {

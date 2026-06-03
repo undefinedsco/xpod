@@ -318,6 +318,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `pg-hot-operators` engine-sql provider：当前不要求 native extension，scan / graph prefix /
   term-in / required BGP join / count / numeric aggregate 走 `PostgresRdfEngine` 已验证的 PG SQL
   native path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
+- `storageStats().pgAcceleration.capabilityProviders` 会按 capability 标记实际来源；当前
+  `pg-hot-operators` 中 `cache.result` 来自 `sql-abi`，scan / join / aggregate 来自
+  `engine-sql`。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；当前 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case。
 

@@ -503,6 +503,9 @@ describe('PostgresRdfEngine', () => {
         enabled: true,
         provider: 'sql-abi',
         capabilities: ['cache.result'],
+        capabilityProviders: {
+          'cache.result': 'sql-abi',
+        },
         requiredCapabilities: ['cache.result'],
         missingCapabilities: [],
         activeOperators: ['cache.result'],
@@ -988,6 +991,15 @@ describe('PostgresRdfEngine', () => {
           'scan.graph_prefix',
           'scan.term_in',
         ],
+        capabilityProviders: {
+          'aggregate.count': 'engine-sql',
+          'aggregate.numeric': 'engine-sql',
+          'cache.result': 'sql-abi',
+          'join.required_bgp': 'engine-sql',
+          'scan.exact_graph': 'engine-sql',
+          'scan.graph_prefix': 'engine-sql',
+          'scan.term_in': 'engine-sql',
+        },
         requiredCapabilities: [
           'scan.exact_graph',
           'scan.graph_prefix',

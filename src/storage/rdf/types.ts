@@ -50,6 +50,7 @@ export interface RdfQuadIndexOptions {
 
 export type RdfDerivedIndexProfile = 'baseline' | 'rdf3x';
 export type RdfPgAccelerationProfile = 'baseline' | 'pg-result-cache' | 'pg-hot-operators' | 'pg-custom-index';
+export type RdfPgAccelerationProvider = 'extension' | 'sql-abi' | 'engine-sql';
 export type RdfPgAccelerationFallbackReason =
   | 'profile-disabled'
   | 'extension-missing'
@@ -124,9 +125,10 @@ export interface RdfPgAccelerationStats {
   requested: boolean;
   available: boolean;
   enabled: boolean;
-  provider?: 'extension' | 'sql-abi' | 'engine-sql';
+  provider?: RdfPgAccelerationProvider;
   version?: string;
   capabilities: string[];
+  capabilityProviders?: Record<string, RdfPgAccelerationProvider>;
   requiredCapabilities: string[];
   missingCapabilities: string[];
   activeOperators?: string[];
