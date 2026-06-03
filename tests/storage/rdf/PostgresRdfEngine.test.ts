@@ -213,6 +213,75 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('caches PostgreSQL query results by facts data version and invalidates on writes', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-'));
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const query = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      orderBy: [{ variable: 'message' }],
+    };
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+
+    try {
+      await engine.open();
+      await engine.put(quad(message1, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(query);
+      expect(first.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(first.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(first.metrics.plan).toContain('PostgresResultCacheStore');
+      expect(first.metrics.plan).not.toContain('PostgresResultCacheHit');
+
+      const second = await engine.query(query);
+      expect(second.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(second.metrics.plan).toContain('PostgresResultCacheHit');
+      expect(second.metrics.plan.some((entry) => entry.startsWith('PostgresRdf3xJoin('))).toBe(true);
+
+      const storage = await engine.storageStats();
+      expect(storage.queryResultCache).toMatchObject({
+        entryCount: 1,
+      });
+      expect(storage.derivedBytes).toBeGreaterThanOrEqual(storage.queryResultCache?.totalBytes ?? 0);
+
+      await engine.close();
+
+      const reopened = new PostgresRdfEngine({
+        driver: 'pglite',
+        dataDir,
+      });
+      try {
+        await reopened.open();
+        const persisted = await reopened.query(query);
+        expect(persisted.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+        expect(persisted.metrics.plan).toContain('PostgresResultCacheHit');
+
+        await reopened.put(quad(message2, namedNode(STATUS), literal('open'), graph));
+        const afterWrite = await reopened.query(query);
+        expect(afterWrite.bindings.map((binding) => binding.message.value)).toEqual([message1.value, message2.value]);
+        expect(afterWrite.metrics.plan).toContain('PostgresResultCacheMiss');
+        expect(afterWrite.metrics.plan).not.toContain('PostgresResultCacheHit');
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to PostgreSQL facts for query shapes outside the native fast path', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-facts-query-'));
     const engine = new PostgresRdfEngine({

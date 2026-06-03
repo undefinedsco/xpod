@@ -104,11 +104,20 @@ export interface RdfEngineStorageStats {
     stats: Rdf3xIndexStats;
     syncedWithFacts: boolean;
   };
+  queryResultCache?: RdfQueryResultCacheStats;
   factsBytes: number;
   derivedBytes: number;
   totalBytes: number;
   derivedToFactsRatio: number;
   totalToFactsRatio: number;
+}
+
+export interface RdfQueryResultCacheStats {
+  entryCount: number;
+  tableBytes: number;
+  indexBytes: number;
+  totalBytes: number;
+  spaceObjects: RdfIndexSpaceObject[];
 }
 
 export interface RdfDerivedIndexRefreshResult {

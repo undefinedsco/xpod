@@ -21,6 +21,7 @@ import type {
   RdfIndexStats,
   RdfQuery,
   RdfQueryMetrics,
+  RdfQueryResultCacheStats,
   RdfQueryResult,
   RdfPatternQuery,
   RdfQueryFilter,
@@ -58,6 +59,8 @@ const RDF_LANG_STRING = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString';
 const POSTGRES_RDF_SCHEMA_VERSION = 1;
 const POSTGRES_RDF3X_SCHEMA_VERSION = 1;
 const PG_STRING_ESCAPE = '\u001f';
+const RDF_QUERY_RESULT_CACHE_TABLE = 'rdf_query_result_cache';
+const RDF_QUERY_RESULT_CACHE_KEY_VERSION = 1;
 
 type PgPatternKey = 'graph' | 'subject' | 'predicate' | 'object';
 type PgTermKey = 'subject' | 'predicate' | 'object';
@@ -175,6 +178,25 @@ interface PgAggregateSqlExpression {
   type: 'integer';
   expression: string;
   sql: string;
+}
+
+interface PgQueryResultCacheRow {
+  result_json: string;
+  row_count: number;
+}
+
+interface SerializedRdfTerm {
+  termType: 'NamedNode' | 'BlankNode' | 'DefaultGraph' | 'Literal';
+  value: string;
+  language?: string;
+  datatype?: string;
+}
+
+interface SerializedRdfQueryResult {
+  bindings: Array<Record<string, SerializedRdfTerm>>;
+  count?: number;
+  sourcePlan?: string[];
+  sourceIndexChoices?: string[];
 }
 
 const TERM_KEYS: PgTermKey[] = ['subject', 'predicate', 'object'];
@@ -853,8 +875,18 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   public async query(query: RdfQuery): Promise<RdfQueryResult> {
     await this.ensureReady();
+    const factsDataVersion = await this.readFactsDataVersion();
+    const queryShape = stableRdfQueryShape(query);
+    const cacheKey = queryResultCacheKey(queryShape);
+    const cached = await this.readQueryResultCache(cacheKey, factsDataVersion);
+    if (cached) {
+      return cached;
+    }
+
     const native = await this.queryNative(query);
-    return native ?? this.queryFacts(query);
+    const result = native ?? await this.queryFacts(query);
+    await this.writeQueryResultCache(cacheKey, factsDataVersion, queryShape, result);
+    return withQueryCachePlan(result, 'PostgresResultCacheMiss', 'PostgresResultCacheStore');
   }
 
   public async refreshDerivedIndexes(): Promise<RdfDerivedIndexRefreshResult> {
@@ -891,8 +923,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.ensureReady();
     const facts = await this.factsStats();
     const rdf3x = await this.rdf3xStats();
+    const queryResultCache = await this.queryResultCacheStats();
     const factsBytes = facts.databaseBytes;
-    const derivedBytes = rdf3x.databaseBytes;
+    const derivedBytes = rdf3x.databaseBytes + queryResultCache.totalBytes;
     const totalBytes = factsBytes + derivedBytes;
     return {
       derivedIndexProfile: 'rdf3x',
@@ -901,6 +934,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         stats: rdf3x,
         syncedWithFacts: rdf3x.factsDataVersion === await this.readFactsDataVersion(),
       },
+      queryResultCache,
       factsBytes,
       derivedBytes,
       totalBytes,
@@ -959,7 +993,32 @@ export class PostgresRdfEngine implements RdfEngineLike {
       VALUES ('data_version', '0')
       ON CONFLICT (key) DO NOTHING
     `);
+    await this.initializeQueryResultCacheSchema(executor);
     await this.initializeRdf3xSchema(executor);
+  }
+
+  private async initializeQueryResultCacheSchema(executor: AsyncSqlExecutor): Promise<void> {
+    await executor.exec(`
+      CREATE TABLE IF NOT EXISTS ${RDF_QUERY_RESULT_CACHE_TABLE} (
+        cache_key TEXT NOT NULL,
+        facts_data_version BIGINT NOT NULL,
+        query_shape TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        row_count BIGINT NOT NULL,
+        hit_count BIGINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_hit_at TIMESTAMPTZ,
+        PRIMARY KEY (cache_key, facts_data_version)
+      )
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_query_result_cache_version
+      ON ${RDF_QUERY_RESULT_CACHE_TABLE} (facts_data_version)
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_query_result_cache_created_at
+      ON ${RDF_QUERY_RESULT_CACHE_TABLE} (created_at)
+    `);
   }
 
   private async ensureCompatibleSchemaVersion(executor: AsyncSqlExecutor): Promise<void> {
@@ -1427,6 +1486,81 @@ export class PostgresRdfEngine implements RdfEngineLike {
       bindings: projected,
       metrics,
     };
+  }
+
+  private async readQueryResultCache(cacheKey: string, factsDataVersion: number): Promise<RdfQueryResult | undefined> {
+    const start = Date.now();
+    const rows = await this.requireExecutor().query<PgQueryResultCacheRow>(`
+      SELECT result_json, row_count
+      FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+      WHERE cache_key = $1
+        AND facts_data_version = $2
+    `, [cacheKey, factsDataVersion]);
+    const row = rows[0];
+    if (!row) {
+      return undefined;
+    }
+
+    try {
+      const payload = JSON.parse(row.result_json) as SerializedRdfQueryResult;
+      const bindings = deserializeQueryResultBindings(payload.bindings);
+      await this.requireExecutor().exec(`
+        UPDATE ${RDF_QUERY_RESULT_CACHE_TABLE}
+        SET hit_count = hit_count + 1,
+            last_hit_at = NOW()
+        WHERE cache_key = $1
+          AND facts_data_version = $2
+      `, [cacheKey, factsDataVersion]);
+      return {
+        bindings,
+        ...(payload.count !== undefined ? { count: payload.count } : {}),
+        metrics: this.localMetrics(start, 0, Number(row.row_count ?? bindings.length) || bindings.length, bindings.length, [
+          'pg-query-result-cache',
+          ...(payload.sourceIndexChoices ?? []),
+        ], [
+          'PostgresResultCacheHit',
+          ...(payload.sourcePlan ?? []),
+          `PostgresResultCacheVersion(${factsDataVersion})`,
+        ]),
+      };
+    } catch {
+      await this.requireExecutor().exec(`
+        DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+        WHERE cache_key = $1
+          AND facts_data_version = $2
+      `, [cacheKey, factsDataVersion]);
+      return undefined;
+    }
+  }
+
+  private async writeQueryResultCache(
+    cacheKey: string,
+    factsDataVersion: number,
+    queryShape: string,
+    result: RdfQueryResult,
+  ): Promise<void> {
+    await this.requireExecutor().exec(`
+      INSERT INTO ${RDF_QUERY_RESULT_CACHE_TABLE} (
+        cache_key,
+        facts_data_version,
+        query_shape,
+        result_json,
+        row_count,
+        created_at
+      )
+      VALUES ($1, $2, $3, $4, $5, NOW())
+      ON CONFLICT (cache_key, facts_data_version) DO UPDATE
+      SET query_shape = EXCLUDED.query_shape,
+          result_json = EXCLUDED.result_json,
+          row_count = EXCLUDED.row_count,
+          created_at = NOW()
+    `, [
+      cacheKey,
+      factsDataVersion,
+      queryShape,
+      serializeQueryResult(result),
+      result.bindings.length,
+    ]);
   }
 
   private async joinFactsPattern(
@@ -2878,6 +3012,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
       SET value = (COALESCE(NULLIF(value, ''), '0')::bigint + 1)::text
       WHERE key = 'data_version'
     `);
+    await executor.exec(`
+      DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+      WHERE facts_data_version < (
+        SELECT COALESCE(NULLIF(value, ''), '0')::bigint
+        FROM rdf_index_metadata
+        WHERE key = 'data_version'
+      )
+    `);
   }
 
   private async readFactsDataVersion(): Promise<number> {
@@ -2963,6 +3105,58 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
+  private async queryResultCacheStats(): Promise<RdfQueryResultCacheStats> {
+    const spaceObjects = await this.collectQueryResultCacheSpaceObjects();
+    return {
+      entryCount: await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF_QUERY_RESULT_CACHE_TABLE}`),
+      tableBytes: sumSpaceObjects(spaceObjects, 'table'),
+      indexBytes: sumSpaceObjects(spaceObjects, 'index'),
+      totalBytes: spaceObjects.reduce((sum, object) => sum + object.bytes, 0),
+      spaceObjects,
+    };
+  }
+
+  private async collectQueryResultCacheSpaceObjects(): Promise<RdfIndexSpaceObject[]> {
+    try {
+      const rows = await this.requireExecutor().query<{
+        name: string;
+        kind: 'table' | 'index';
+        table_name: string | null;
+        bytes: number;
+      }>(`
+        SELECT
+          rel.relname AS name,
+          CASE WHEN rel.relkind = 'i' THEN 'index' ELSE 'table' END AS kind,
+          tbl.relname AS table_name,
+          pg_total_relation_size(rel.oid) AS bytes
+        FROM pg_class rel
+        LEFT JOIN pg_index idx ON idx.indexrelid = rel.oid
+        LEFT JOIN pg_class tbl ON tbl.oid = idx.indrelid
+        WHERE rel.relkind IN ('r', 'i')
+          AND (rel.relname = '${RDF_QUERY_RESULT_CACHE_TABLE}' OR tbl.relname = '${RDF_QUERY_RESULT_CACHE_TABLE}')
+        ORDER BY rel.relname
+      `);
+      return rows.map((row) => ({
+        name: row.name,
+        kind: row.kind,
+        ...(row.table_name && row.table_name !== row.name ? { tableName: row.table_name } : {}),
+        bytes: Number(row.bytes ?? 0),
+        pages: 0,
+        estimated: false,
+      }));
+    } catch {
+      const rows = await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF_QUERY_RESULT_CACHE_TABLE}`).catch(() => 0);
+      const bytes = Math.max(4096, rows * 512);
+      return [{
+        name: RDF_QUERY_RESULT_CACHE_TABLE,
+        kind: 'table',
+        bytes,
+        pages: Math.max(1, Math.ceil(bytes / 4096)),
+        estimated: true,
+      }];
+    }
+  }
+
   private async collectSpaceObjects(derived: boolean): Promise<RdfIndexSpaceObject[]> {
     try {
       const rows = await this.requireExecutor().query<{
@@ -2982,7 +3176,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
         WHERE rel.relkind IN ('r', 'i')
           AND ${derived
             ? "(rel.relname LIKE 'rdf3x_%' OR tbl.relname LIKE 'rdf3x_%')"
-            : "(rel.relname LIKE 'rdf_%' OR tbl.relname LIKE 'rdf_%') AND rel.relname NOT LIKE 'rdf3x_%' AND COALESCE(tbl.relname, '') NOT LIKE 'rdf3x_%'"}
+            : `(rel.relname LIKE 'rdf_%' OR tbl.relname LIKE 'rdf_%')
+              AND rel.relname NOT LIKE 'rdf3x_%'
+              AND COALESCE(tbl.relname, '') NOT LIKE 'rdf3x_%'
+              AND rel.relname <> '${RDF_QUERY_RESULT_CACHE_TABLE}'
+              AND COALESCE(tbl.relname, '') <> '${RDF_QUERY_RESULT_CACHE_TABLE}'`}
         ORDER BY rel.relname
       `);
       return rows.map((row) => ({
@@ -3074,6 +3272,114 @@ function restoreRow<T>(row: T): T {
     restored[key] = restoreValue(key, value);
   }
   return restored as T;
+}
+
+function stableRdfQueryShape(query: RdfQuery): string {
+  return JSON.stringify(normalizeQueryCacheValue(query));
+}
+
+function queryResultCacheKey(queryShape: string): string {
+  return createHash('sha256')
+    .update(`rdf-query-result-cache:${RDF_QUERY_RESULT_CACHE_KEY_VERSION}`)
+    .update('\0')
+    .update(queryShape)
+    .digest('hex');
+}
+
+function normalizeQueryCacheValue(value: unknown): unknown {
+  if (isTerm(value as any)) {
+    return { $term: termToId(value as any) };
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeQueryCacheValue(entry));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => [key, normalizeQueryCacheValue(entry)]));
+}
+
+function serializeQueryResult(result: RdfQueryResult): string {
+  const payload: SerializedRdfQueryResult = {
+    bindings: result.bindings.map(serializeBinding),
+    sourcePlan: result.metrics.plan,
+    sourceIndexChoices: result.metrics.indexChoices,
+    ...(result.count !== undefined ? { count: result.count } : {}),
+  };
+  return JSON.stringify(payload);
+}
+
+function serializeBinding(binding: RdfBindingRow): Record<string, SerializedRdfTerm> {
+  return Object.fromEntries(Object.entries(binding)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, term]) => [key, serializeTerm(term)]));
+}
+
+function serializeTerm(term: Term): SerializedRdfTerm {
+  switch (term.termType) {
+    case 'NamedNode':
+      return { termType: 'NamedNode', value: term.value };
+    case 'BlankNode':
+      return { termType: 'BlankNode', value: term.value };
+    case 'DefaultGraph':
+      return { termType: 'DefaultGraph', value: '' };
+    case 'Literal':
+      return {
+        termType: 'Literal',
+        value: term.value,
+        ...(term.language ? { language: term.language } : {}),
+        datatype: term.datatype?.value ?? XSD_STRING,
+      };
+    case 'Variable':
+      throw new Error(`Cannot cache RDF variable term: ${term.value}`);
+    case 'Quad':
+      throw new Error('Cannot cache nested RDF-star quads');
+    default: {
+      const exhaustive: never = term;
+      throw new Error(`Unsupported RDF term in query result cache: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function deserializeQueryResultBindings(bindings: SerializedRdfQueryResult['bindings']): RdfBindingRow[] {
+  return bindings.map((binding) => Object.fromEntries(Object.entries(binding)
+    .map(([key, term]) => [key, deserializeTerm(term)])));
+}
+
+function deserializeTerm(term: SerializedRdfTerm): Term {
+  switch (term.termType) {
+    case 'NamedNode':
+      return DataFactory.namedNode(term.value) as Term;
+    case 'BlankNode':
+      return DataFactory.blankNode(term.value) as Term;
+    case 'DefaultGraph':
+      return DataFactory.defaultGraph() as Term;
+    case 'Literal':
+      if (term.language) {
+        return DataFactory.literal(term.value, term.language) as Term;
+      }
+      return DataFactory.literal(term.value, DataFactory.namedNode(term.datatype ?? XSD_STRING)) as Term;
+    default: {
+      const exhaustive: never = term.termType;
+      throw new Error(`Unsupported cached RDF term type: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function withQueryCachePlan(result: RdfQueryResult, ...markers: string[]): RdfQueryResult {
+  return {
+    ...result,
+    metrics: {
+      ...result.metrics,
+      plan: [
+        ...result.metrics.plan,
+        ...markers,
+      ],
+    },
+  };
 }
 
 function restoreValue(key: string, value: unknown): unknown {
