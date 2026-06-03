@@ -880,7 +880,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   public async query(query: RdfQuery): Promise<RdfQueryResult> {
     await this.ensureReady();
-    if (!this.isQueryResultCacheEnabled()) {
+    const cacheMode = query.cache?.mode ?? 'default';
+    if (!this.isQueryResultCacheEnabled(query)) {
       const native = await this.queryNative(query);
       return native ?? this.queryFacts(query);
     }
@@ -888,17 +889,24 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const factsDataVersion = await this.readFactsDataVersion();
     const queryShape = stableRdfQueryShape(query);
     const cacheKey = queryResultCacheKey(queryShape);
-    await this.pruneQueryResultCache(factsDataVersion);
-    const cached = await this.readQueryResultCache(cacheKey, factsDataVersion);
-    if (cached) {
-      return cached;
+    const cacheTtlMs = this.queryResultCacheTtlMs(query);
+    await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
+    if (cacheMode !== 'refresh') {
+      const cached = await this.readQueryResultCache(cacheKey, factsDataVersion);
+      if (cached) {
+        return cached;
+      }
     }
 
     const native = await this.queryNative(query);
     const result = native ?? await this.queryFacts(query);
     await this.writeQueryResultCache(cacheKey, factsDataVersion, queryShape, result);
-    await this.pruneQueryResultCache(factsDataVersion);
-    return withQueryCachePlan(result, 'PostgresResultCacheMiss', 'PostgresResultCacheStore');
+    await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
+    return withQueryCachePlan(
+      result,
+      cacheMode === 'refresh' ? 'PostgresResultCacheRefresh' : 'PostgresResultCacheMiss',
+      'PostgresResultCacheStore',
+    );
   }
 
   public async refreshDerivedIndexes(): Promise<RdfDerivedIndexRefreshResult> {
@@ -1575,14 +1583,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
     ]);
   }
 
-  private async pruneQueryResultCache(factsDataVersion: number): Promise<void> {
+  private async pruneQueryResultCache(factsDataVersion: number, ttlMs = this.queryResultCacheTtlMs()): Promise<void> {
     const executor = this.requireExecutor();
     await executor.exec(`
       DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
       WHERE facts_data_version < $1
     `, [factsDataVersion]);
 
-    const ttlMs = this.queryResultCacheTtlMs();
     if (ttlMs > 0) {
       await executor.exec(`
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
@@ -1606,8 +1613,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
   }
 
-  private isQueryResultCacheEnabled(): boolean {
+  private isQueryResultCacheEnabled(query?: RdfQuery): boolean {
     return this.pgOptions.queryResultCacheEnabled !== false
+      && query?.cache?.mode !== 'bypass'
       && this.queryResultCacheMaxEntries() > 0;
   }
 
@@ -1616,8 +1624,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_RESULT_CACHE_MAX_ENTRIES;
   }
 
-  private queryResultCacheTtlMs(): number {
-    const configured = this.pgOptions.queryResultCacheTtlMs ?? DEFAULT_QUERY_RESULT_CACHE_TTL_MS;
+  private queryResultCacheTtlMs(query?: RdfQuery): number {
+    const configured = query?.cache?.ttlMs ?? this.pgOptions.queryResultCacheTtlMs ?? DEFAULT_QUERY_RESULT_CACHE_TTL_MS;
     return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_RESULT_CACHE_TTL_MS;
   }
 
@@ -3333,7 +3341,11 @@ function restoreRow<T>(row: T): T {
 }
 
 function stableRdfQueryShape(query: RdfQuery): string {
-  return JSON.stringify(normalizeQueryCacheValue(query));
+  const { cache, ...semanticQuery } = query;
+  return JSON.stringify(normalizeQueryCacheValue({
+    ...semanticQuery,
+    cacheScope: cache?.scope ?? 'default',
+  }));
 }
 
 function queryResultCacheKey(queryShape: string): string {

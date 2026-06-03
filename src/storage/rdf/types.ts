@@ -593,6 +593,15 @@ export interface RdfVectorSearchPattern {
   model?: string;
 }
 
+export type RdfQueryCacheMode = 'default' | 'bypass' | 'refresh';
+
+export interface RdfQueryCacheOptions {
+  /** Auth/principal/business scope that must be isolated in the cache key. */
+  scope?: string;
+  mode?: RdfQueryCacheMode;
+  ttlMs?: number;
+}
+
 export interface RdfQuery {
   patterns: RdfQueryPattern[];
   values?: RdfValuesBindingSource[];
@@ -613,6 +622,7 @@ export interface RdfQuery {
   orderBy?: RdfQueryOrder[];
   limit?: number;
   offset?: number;
+  cache?: RdfQueryCacheOptions;
 }
 
 export interface RdfUnionQueryBranch {

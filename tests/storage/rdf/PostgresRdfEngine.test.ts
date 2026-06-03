@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DataFactory } from 'n3';
 import { PGlite } from '@electric-sql/pglite';
-import { PostgresRdfEngine } from '../../../src/storage/rdf';
+import { PostgresRdfEngine, type RdfQuery } from '../../../src/storage/rdf';
 
 const { literal, namedNode, quad } = DataFactory;
 
@@ -315,6 +315,142 @@ describe('PostgresRdfEngine', () => {
       expect(second.metrics.plan.join('\n')).not.toContain('PostgresResultCache');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 0,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('isolates PostgreSQL query result cache entries by query cache scope', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-scope-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const queryForScope = (scope: string): RdfQuery => ({
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: { scope },
+    });
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const alice = await engine.query(queryForScope('principal:alice'));
+      expect(alice.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(alice.metrics.plan).toContain('PostgresResultCacheStore');
+
+      const bob = await engine.query(queryForScope('principal:bob'));
+      expect(bob.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(bob.metrics.plan).toContain('PostgresResultCacheStore');
+      expect(bob.metrics.plan).not.toContain('PostgresResultCacheHit');
+
+      const aliceAgain = await engine.query(queryForScope('principal:alice'));
+      expect(aliceAgain.metrics.plan).toContain('PostgresResultCacheHit');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 2,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('can bypass PostgreSQL query result caching for a single query', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-bypass-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const query: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: { mode: 'bypass' },
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(query);
+      const second = await engine.query(query);
+      expect(first.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(first.metrics.plan.join('\n')).not.toContain('PostgresResultCache');
+      expect(second.metrics.plan.join('\n')).not.toContain('PostgresResultCache');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 0,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('can refresh a PostgreSQL query result cache entry without changing its semantic key', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-refresh-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const baseQuery: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: { scope: 'principal:alice' },
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(baseQuery);
+      expect(first.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(first.metrics.plan).toContain('PostgresResultCacheStore');
+
+      const refreshed = await engine.query({
+        ...baseQuery,
+        cache: { ...baseQuery.cache, mode: 'refresh' },
+      });
+      expect(refreshed.metrics.plan).toContain('PostgresResultCacheRefresh');
+      expect(refreshed.metrics.plan).toContain('PostgresResultCacheStore');
+      expect(refreshed.metrics.plan).not.toContain('PostgresResultCacheHit');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 1,
+      });
+
+      const afterRefresh = await engine.query(baseQuery);
+      expect(afterRefresh.metrics.plan).toContain('PostgresResultCacheHit');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 1,
       });
     } finally {
       await engine.close();
