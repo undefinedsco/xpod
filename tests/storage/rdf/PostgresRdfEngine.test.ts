@@ -16,6 +16,7 @@ import {
 const { literal, namedNode, quad } = DataFactory;
 
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
+const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const CONTENT = 'http://rdfs.org/sioc/ns#content';
 const PRIORITY = 'https://undefineds.co/ns#priority';
 const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
@@ -684,6 +685,85 @@ describe('PostgresRdfEngine', () => {
       expect(result.metrics.plan).toContain('PostgresRdf3xAggregateHaving(?messageCount$lt)');
       expect(result.metrics.plan).toContain('PostgresRdf3xAggregateOrder(desc:messageCount)');
       expect(result.metrics.plan).toContain('PostgresRdf3xAggregateLimit');
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xFallback');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs non-grouped numeric aggregates as native PostgreSQL RDF-3X SQL', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-numeric-aggregate-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    const run1 = namedNode(`${graph.value}#run_1`);
+    const run2 = namedNode(`${graph.value}#run_2`);
+    const run3 = namedNode(`${graph.value}#run_3`);
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(run1, namedNode(STATUS), literal('queued'), graph),
+        quad(run1, namedNode(PRIORITY), literal('10', namedNode(XSD_INTEGER)), graph),
+        quad(run2, namedNode(STATUS), literal('queued'), graph),
+        quad(run2, namedNode(PRIORITY), literal('2', namedNode(XSD_INTEGER)), graph),
+        quad(run3, namedNode(STATUS), literal('running'), graph),
+        quad(run3, namedNode(PRIORITY), literal('8', namedNode(XSD_INTEGER)), graph),
+      ]);
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'run' },
+            predicate: namedNode(STATUS),
+            object: literal('queued'),
+          },
+          {
+            graph,
+            subject: { variable: 'run' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'priority',
+            operator: '$termType',
+            value: 'numeric',
+          },
+        ],
+        aggregates: [
+          {
+            type: 'sum',
+            as: 'priorityTotal',
+            variable: 'priority',
+          },
+          {
+            type: 'avg',
+            as: 'priorityAvg',
+            variable: 'priority',
+          },
+          {
+            type: 'max',
+            as: 'priorityMax',
+            variable: 'priority',
+          },
+        ],
+        select: ['priorityTotal', 'priorityAvg', 'priorityMax'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].priorityTotal.value).toBe('12');
+      expect(result.bindings[0].priorityAvg.value).toBe('6');
+      expect(result.bindings[0].priorityMax.value).toBe('10');
+      expect(result.bindings[0].priorityTotal.datatype.value).toBe(XSD_DECIMAL);
+      expect(result.metrics.plan).toContain('PostgresRdf3xJoinAggregate');
+      expect(result.metrics.plan).toContain('Aggregate(sum(?priority),avg(?priority),max(?priority))');
+      expect(result.metrics.plan).not.toContain('PostgresFactsQuery');
       expect(result.metrics.plan).not.toContain('PostgresRdf3xFallback');
     } finally {
       await engine.close();

@@ -137,7 +137,7 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 | target quads | 48 |
 | seed quads | 114 |
 | scan cases | 19 |
-| query cases | 7 |
+| query cases | 8 |
 | iterations | 1 |
 
 通过情况：
@@ -149,7 +149,7 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 | query result cache disabled for benchmark | true |
 | PG acceleration profile | `baseline` |
 
-本次 PG/PGlite small gate 不是性能容量结论，只证明 PostgreSQL facts/RDF-3X baseline 能跑同一组 models query case，且不会用 result cache 掩盖实际执行路径。`message score by thread numeric aggregate` 已下推到 `PostgresRdf3xGroupAggregate`，不再走 `PostgresFactsQuery` fallback。
+本次 PG/PGlite small gate 不是性能容量结论，只证明 PostgreSQL facts/RDF-3X baseline 能跑同一组 models query case，且不会用 result cache 掩盖实际执行路径。`queued run priority numeric aggregate` 已下推到 `PostgresRdf3xJoinAggregate`，`message score by thread numeric aggregate` 已下推到 `PostgresRdf3xGroupAggregate`，都不再走 `PostgresFactsQuery` fallback。
 
 ## PostgreSQL Status
 
@@ -157,7 +157,7 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 
 - PG facts table 作为 baseline authority。
 - RDF-3X stats / BGP join path。
-- grouped count / grouped numeric aggregate native SQL path。
+- grouped count / grouped and non-grouped numeric aggregate native SQL path。
 - query result cache by facts data version。
 - `storageStats()` 中暴露 facts / derived / query cache 统计。
 - `rdfAccelerationProfile` capability probe，能在 `xpod_rdf` extension 缺失时稳定 fallback。

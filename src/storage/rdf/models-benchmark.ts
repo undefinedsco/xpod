@@ -885,6 +885,55 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
     expectedPlan: ['group-count-index', 'having-pushdown', 'order', 'limit'],
   },
   {
+    name: 'queued run priority numeric aggregate',
+    resource: 'run',
+    purpose: 'non-grouped numeric run priority aggregate stays inside SQL/RDF-3X aggregate execution',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+          subject: { variable: 'run' },
+          predicate: namedNode(`${UDFS}status`),
+          object: literal('queued'),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+          subject: { variable: 'run' },
+          predicate: namedNode(`${UDFS}priority`),
+          object: { variable: 'priority' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'priority',
+          operator: '$termType',
+          value: 'numeric',
+        },
+      ],
+      aggregates: [
+        {
+          type: 'sum',
+          as: 'priorityTotal',
+          variable: 'priority',
+        },
+        {
+          type: 'avg',
+          as: 'priorityAvg',
+          variable: 'priority',
+        },
+        {
+          type: 'max',
+          as: 'priorityMax',
+          variable: 'priority',
+        },
+      ],
+      select: ['priorityTotal', 'priorityAvg', 'priorityMax'],
+    },
+    expectedPlan: ['join-aggregate-index'],
+  },
+  {
     name: 'message score by thread numeric aggregate',
     resource: 'message',
     purpose: 'grouped numeric message score aggregate stays inside SQL/RDF-3X GROUP BY',
@@ -2666,6 +2715,13 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
       return planText.includes('Aggregate(group-basic-multi-index)')
         || planText.includes('Aggregate(group-basic-index)')
         || planText.includes('PostgresRdf3xGroupAggregate');
+    case 'join-aggregate-index':
+      return (
+        (planText.includes('Aggregate(join-basic-multi-index)')
+          || planText.includes('Aggregate(join-basic-index)'))
+        && (planText.includes('IndexJoinAggregate(')
+          || planText.includes('Rdf3xPrimaryJoinAggregate('))
+      ) || planText.includes('PostgresRdf3xJoinAggregate');
     case 'having-pushdown':
       return (planText.includes('IndexGroupCountHaving(')
         || planText.includes('IndexGroupAggregateHaving(')
@@ -2733,6 +2789,9 @@ function matchesExpectedRdf3xJoinPlanLabel(label: string, metrics: Rdf3xJoinMetr
     case 'group-aggregate-index':
       return planText.includes('Rdf3xJoinGroupAggregate(')
         || planText.includes('Rdf3xJoinGroupAggregateNumeric(');
+    case 'join-aggregate-index':
+      return planText.includes('Rdf3xJoinAggregate(')
+        || planText.includes('Rdf3xJoinAggregateNumeric(');
     case 'having-pushdown':
       return planText.includes('Rdf3xJoinGroupCountHaving(')
         || planText.includes('Rdf3xJoinGroupAggregateHaving(');
