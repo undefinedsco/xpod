@@ -13,6 +13,7 @@ import {
   runRdfModelsPostgresBenchmark,
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
+  type RdfPgAccelerationProfile,
 } from '../src/storage/rdf';
 
 interface CliOptions {
@@ -26,6 +27,7 @@ interface CliOptions {
   syntheticMessages: number;
   syntheticMessagesOverridden: boolean;
   syntheticPodCount: number;
+  rdfAccelerationProfile: RdfPgAccelerationProfile;
 }
 
 interface BenchmarkPaths {
@@ -89,6 +91,7 @@ function parseArgs(args: string[]): CliOptions {
   let iterations = 3;
   let warmupIterations = 1;
   let syntheticMessages: number | undefined;
+  let rdfAccelerationProfile: RdfPgAccelerationProfile = 'baseline';
 
   for (const arg of args) {
     if (arg.startsWith('--out=')) {
@@ -131,6 +134,14 @@ function parseArgs(args: string[]): CliOptions {
       syntheticMessages = positiveInteger(arg.slice('--syntheticMessages='.length), '--syntheticMessages');
       continue;
     }
+    if (arg.startsWith('--rdfAccelerationProfile=')) {
+      const value = arg.slice('--rdfAccelerationProfile='.length);
+      if (!isRdfPgAccelerationProfile(value)) {
+        throw new Error(`Unsupported --rdfAccelerationProfile value: ${value}`);
+      }
+      rdfAccelerationProfile = value;
+      continue;
+    }
     if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -153,6 +164,7 @@ function parseArgs(args: string[]): CliOptions {
     syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
+    rdfAccelerationProfile,
   };
 }
 
@@ -172,6 +184,13 @@ function nonNegativeInteger(raw: string, name: string): number {
   return value;
 }
 
+function isRdfPgAccelerationProfile(value: string): value is RdfPgAccelerationProfile {
+  return value === 'baseline'
+    || value === 'pg-result-cache'
+    || value === 'pg-hot-operators'
+    || value === 'pg-custom-index';
+}
+
 function createBenchmarkPaths(options: CliOptions): BenchmarkPaths {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runId = `${stamp}-${process.pid}-${randomUUID()}`;
@@ -189,12 +208,14 @@ function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEn
       driver: 'pglite',
       dataDir: paths.pgliteDataDir,
       queryResultCacheEnabled: false,
+      rdfAccelerationProfile: options.rdfAccelerationProfile,
     });
   }
   return new PostgresRdfEngine({
     driver: 'pg',
     connectionString: options.connectionString,
     queryResultCacheEnabled: false,
+    rdfAccelerationProfile: options.rdfAccelerationProfile,
   });
 }
 
@@ -221,6 +242,7 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     syntheticMessages: options.syntheticMessages,
     syntheticMessagesOverridden: options.syntheticMessagesOverridden,
     syntheticPodCount: options.syntheticPodCount,
+    rdfAccelerationProfile: options.rdfAccelerationProfile,
     seedQuadCount,
     targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
     fullScale: rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuadCount),
@@ -253,6 +275,7 @@ function printSummary(summary: {
   console.log(`  scale: ${summary.options.scale}`);
   console.log(`  iterations: ${summary.options.iterations}`);
   console.log(`  warmup iterations: ${summary.options.warmupIterations}`);
+  console.log(`  requested pg acceleration profile: ${summary.options.rdfAccelerationProfile}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
   console.log(`  target quads: ${summary.targetQuadCount}`);
   console.log(`  full scale seed: ${summary.fullScale}`);
@@ -292,6 +315,7 @@ Options:
   --iterations=N                   Iterations per case. Default: 3
   --warmupIterations=N             Warmup runs per case before timing. Default: 1
   --syntheticMessages=N            Override generated message count for storage-size tests
+  --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators|pg-custom-index. Default: baseline
   --out=PATH                       Output directory. Default: .test-data/rdf-engine
 `);
 }

@@ -70,13 +70,16 @@ const XPOD_RDF_EXTENSION_NAME = 'xpod_rdf';
 const RESULT_CACHE_REQUIRED_CAPABILITIES = [
   'cache.result',
 ];
-const HOT_OPERATOR_REQUIRED_CAPABILITIES = [
+const PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES = [
   'scan.exact_graph',
   'scan.graph_prefix',
   'scan.term_in',
   'join.required_bgp',
   'aggregate.count',
   'aggregate.numeric',
+] as const;
+const HOT_OPERATOR_REQUIRED_CAPABILITIES = [
+  ...PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES,
   ...RESULT_CACHE_REQUIRED_CAPABILITIES,
 ];
 const CUSTOM_INDEX_REQUIRED_CAPABILITIES = [
@@ -1368,6 +1371,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return {
       quads: await this.rowsToQuads(rows),
       metrics: this.indexMetrics(compiled.indexChoice, matchedRows, rows.length, start, [
+        ...this.pgAccelerationActiveMarkersForScan(pattern),
         ...compiled.queryPlan,
         compiled.sql,
       ]),
@@ -1456,6 +1460,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const bindings = await this.joinRowsToBindings(rows, compiled.variableAliases);
     const plan = [
       ...storagePlanMarkers(compiled.queryPlan),
+      ...this.pgAccelerationActiveMarkersForQuery(query),
       `PostgresRdf3xJoin(${compiledPatterns.map((entry) => describePatternSource(entry)).join('|')})`,
       ...(query.distinct ? [`PostgresRdf3xJoinDistinct(${project.map((variableName) => `?${variableName}`).join(',')})`] : []),
       ...(query.limit !== undefined || query.offset !== undefined ? ['PostgresRdf3xJoinLimit'] : []),
@@ -1823,13 +1828,23 @@ export class PostgresRdfEngine implements RdfEngineLike {
     try {
       const extensionInstalled = await this.hasNativePgAccelerationExtension();
       const sqlAbiAvailable = extensionInstalled ? false : await this.isPgAccelerationSqlAbiAvailable();
-      if (!extensionInstalled && !sqlAbiAvailable) {
+      const engineSqlCapabilities = this.engineSqlPgAccelerationCapabilities(profile);
+      if (!extensionInstalled && !sqlAbiAvailable && engineSqlCapabilities.length === 0) {
         return this.pgAccelerationFallback(profile, requiredCapabilities, 'extension-missing', this.pgAccelerationSqlAbiInstallError);
       }
-      const provider: NonNullable<RdfPgAccelerationStats['provider']> = extensionInstalled ? 'extension' : 'sql-abi';
+      const provider: NonNullable<RdfPgAccelerationStats['provider']> = extensionInstalled
+        ? 'extension'
+        : engineSqlCapabilities.length > 0
+          ? 'engine-sql'
+          : 'sql-abi';
 
-      const version = await this.readPgAccelerationVersion();
-      const capabilities = await this.readPgAccelerationCapabilities();
+      const abiAvailable = extensionInstalled || sqlAbiAvailable;
+      const abiVersion = abiAvailable ? await this.readPgAccelerationVersion() : undefined;
+      const abiCapabilities = abiAvailable ? await this.readPgAccelerationCapabilities() : [];
+      const capabilities = uniqueStrings([...abiCapabilities, ...engineSqlCapabilities]).sort();
+      const version = provider === 'engine-sql'
+        ? uniqueStrings(['engine-sql', ...(abiVersion ? [abiVersion] : [])]).join('+')
+        : abiVersion;
       const missingCapabilities = requiredCapabilities.filter((capability) => !capabilities.includes(capability));
       if (missingCapabilities.length > 0) {
         return {
@@ -1886,8 +1901,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return false;
     }
     const requiredCapabilities = this.requiredPgAccelerationCapabilities(profile);
-    return requiredCapabilities.length === RESULT_CACHE_REQUIRED_CAPABILITIES.length
-      && requiredCapabilities.every((capability) => RESULT_CACHE_REQUIRED_CAPABILITIES.includes(capability));
+    return requiredCapabilities.includes('cache.result');
   }
 
   private async hasNativePgAccelerationExtension(): Promise<boolean> {
@@ -1994,9 +2008,38 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private activePgAccelerationOperators(capabilities: string[]): string[] {
-    return [
-      ...(capabilities.includes('cache.result') ? ['cache.result'] : []),
-    ];
+    const wiredOperators = new Set<string>([
+      ...PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES,
+      ...RESULT_CACHE_REQUIRED_CAPABILITIES,
+    ]);
+    return capabilities.filter((capability) => wiredOperators.has(capability)).sort();
+  }
+
+  private engineSqlPgAccelerationCapabilities(profile: RdfPgAccelerationProfile): string[] {
+    switch (profile) {
+      case 'baseline':
+      case 'pg-result-cache':
+        return [];
+      case 'pg-hot-operators':
+      case 'pg-custom-index':
+        return [...PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES];
+      default: {
+        const exhaustive: never = profile;
+        throw new Error(`Unsupported PostgreSQL RDF acceleration profile: ${String(exhaustive)}`);
+      }
+    }
+  }
+
+  private pgAccelerationActiveMarkersForQuery(query: RdfQuery): string[] {
+    return this.pgAccelerationCapabilitiesForQuery(query)
+      .filter((capability) => this.canUsePgAccelerationCapability(capability))
+      .map((capability) => `XpodRdfPgHotOperator(${capability})`);
+  }
+
+  private pgAccelerationActiveMarkersForScan(pattern: RdfQueryPattern): string[] {
+    return this.pgAccelerationScanCapabilities(pattern)
+      .filter((capability) => this.canUsePgAccelerationCapability(capability))
+      .map((capability) => `XpodRdfPgHotOperator(${capability})`);
   }
 
   private withPgAccelerationFallbackPlan(result: RdfQueryResult, query?: RdfQuery): RdfQueryResult {
@@ -2387,6 +2430,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const aggregateMarker = this.postgresRdf3xAggregateMarker(aggregates, groupColumns.length > 0);
     const plan = [
       ...storagePlanMarkers(compiled.queryPlan),
+      ...this.pgAccelerationActiveMarkersForQuery(query),
       aggregateMarker,
       aggregatePlan(aggregates, groupColumns.length > 0),
       ...(havingClause.sql ? [`PostgresRdf3xAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),

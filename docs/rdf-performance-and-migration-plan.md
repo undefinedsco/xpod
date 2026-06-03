@@ -1,6 +1,6 @@
 # RDF Performance Report and Data Migration Plan
 
-记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；`xpod_rdf` native PostgreSQL extension 目前还没有落地，H0 schema-local SQL ABI 已覆盖 `cache.result`，native hot operator / custom index AM 不能计入已实现性能收益。
+记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；`xpod_rdf` native PostgreSQL extension 目前还没有落地，H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 当前由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，native extension / custom index AM 不能计入已实现性能收益。
 
 ## Current Decision
 
@@ -10,8 +10,9 @@
 - 不提供用户可见的 `Hexastore / RDF-3X / QLever` backend selector。
 - PG extension 路线只作为 `PostgresRdfEngine` 内部 acceleration profile：
   `baseline | pg-result-cache | pg-hot-operators | pg-custom-index`。
-- cloud 默认可启用 `pg-result-cache`：启动时安装 schema-local SQL ABI 并只激活
-  `cache.result`；完整 `pg-hot-operators` / `pg-custom-index` 仍必须等独立 benchmark gate。
+- cloud 默认启用 `pg-hot-operators`：启动时安装 schema-local SQL ABI 提供
+  `cache.result`，并把已接线的 PG SQL scan / join / count / numeric aggregate 标记为
+  active hot operators；`pg-custom-index` 仍必须等独立 benchmark gate。
 
 ## Benchmark Evidence
 
@@ -154,6 +155,33 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 
 本次 PG/PGlite small gate 不是性能容量结论，只证明 PostgreSQL facts/RDF-3X baseline 能跑同一组 models query case，且不会用 result cache 掩盖实际执行路径。`queued run priority numeric aggregate` 已下推到 `PostgresRdf3xJoinAggregate`，`message score by thread numeric aggregate` 已下推到 `PostgresRdf3xGroupAggregate`，都不再走 `PostgresFactsQuery` fallback。
 
+### PostgreSQL / PGlite Hot-operator Profile Smoke
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --rdfAccelerationProfile=pg-hot-operators --out=.test-data/rdf-pg-hot-small
+```
+
+运行时间：2026-06-04 本地机器。
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| PGlite models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| PG acceleration profile | `pg-hot-operators` |
+| PG acceleration provider | `engine-sql` |
+| PG acceleration enabled | true |
+| active operators | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+
+本次 smoke 覆盖 114 quads、19 个 scan case 和 8 个 query case；physical plan 中出现
+`XpodRdfPgHotOperator(scan.graph_prefix)` 15 次、`scan.exact_graph` 2 次、
+`join.required_bgp` 7 次、`aggregate.count` 3 次、`aggregate.numeric` 2 次。该结果证明
+`pg-hot-operators` profile 已能在没有 native extension 的情况下启用 PG SQL hot operator
+路径；它仍不是 medium/real-PG 性能容量结论。
+
 ### Real PostgreSQL / Disposable Medium Gate
 
 执行命令：
@@ -213,6 +241,65 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 
 结论：真实 PG medium gate 已证明 schema、refresh、planner gate、numeric aggregate 下推和 warm steady-state 性能都可用。当前 PG baseline 可以作为 cloud RDF-3X 的默认正确性和性能底座；下一步 product-grade acceleration 不应重做事实存储，而应继续补 hot operators、result cache 策略、并发和更大数据量 gate，把冷启动、统计刷新和 query cache 生命周期纳入运维指标。
 
+### Real PostgreSQL / Hot-operator Profile Gate
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --rdfAccelerationProfile=pg-hot-operators --out=.test-data/rdf-pg-hot-real-medium
+```
+
+运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | medium |
+| target quads | 10000 |
+| seed quads | 10066 |
+| scan cases | 22 |
+| query cases | 8 |
+| iterations | 3 |
+| warmup iterations | 1 |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| real PG models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| PG acceleration profile | `pg-hot-operators` |
+| PG acceleration provider | `engine-sql` |
+| PG acceleration enabled | true |
+| active operators | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+
+真实 PG hot-profile storage profile：
+
+| Space | Bytes | Notes |
+| --- | ---: | --- |
+| facts bytes | 22487040 | PG facts tables + facts covering indexes |
+| derived bytes | 8658944 | RDF-3X projection / graph stats + query cache table/index |
+| total / facts ratio | 1.39x | same storage profile class as PG baseline |
+
+真实 PG hot-profile warm steady-state representative p95：
+
+| Case | p95 | Notes |
+| --- | ---: | --- |
+| latest message by thread query | 35 ms | large 2-pattern message join |
+| next queued run by workspace query | 20 ms | scheduler query |
+| task materialization active due query | 23 ms | scheduler query |
+| message count by thread with having | 26 ms | grouped count |
+| queued run priority numeric aggregate | 9 ms | non-grouped numeric aggregate |
+| message score by thread numeric aggregate | 15 ms | grouped numeric aggregate |
+| message join count distinct | 15 ms | large count-distinct join |
+
+physical plan 中出现 `XpodRdfPgHotOperator(scan.graph_prefix)` 18 次、`scan.exact_graph`
+2 次、`join.required_bgp` 7 次、`aggregate.count` 3 次、`aggregate.numeric` 2 次。该 gate
+证明 cloud 默认 `pg-hot-operators` profile 在真实 PostgreSQL 上可启用并保持同一套 models
+plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 profile/metrics/部署
+边界的 product-grade 化，不是 native extension 的额外性能结论。
+
 ## PostgreSQL Status
 
 `PostgresRdfEngine` 当前已有：
@@ -227,19 +314,23 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 - `rdfAccelerationProfile` capability probe，能在 `xpod_rdf` extension 缺失时稳定 fallback。
 - schema-local `xpod_rdf` SQL ABI provider：当前可通过 `scripts/xpod-rdf-sql-abi.sql` 安装
   `cache.result`，engine 会调用 `xpod_rdf.result_cache_probe(...)` /
-  `xpod_rdf.result_cache_store(...)`，并在 metrics plan 中标记实际 operator。
+  `xpod_rdf.result_cache_store(...)`，并在 metrics plan 中标记实际 cache operator。
+- `pg-hot-operators` engine-sql provider：当前不要求 native extension，scan / graph prefix /
+  term-in / required BGP join / count / numeric aggregate 走 `PostgresRdfEngine` 已验证的 PG SQL
+  native path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；当前 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case。
 
 未完成：
 
-- native `xpod_rdf` hot operators。
 - custom index access method `xpod_rdf_perm`。
+- native PG extension hot operators。当前 `pg-hot-operators` 是 engine-sql profile，不是 C/Rust
+  extension。
 - native PG extension 实测性能报告；baseline PG/PGlite/real-PG gate 已有，SQL ABI `cache.result`
-  有单测覆盖，native extension profile 还没有。
+  和 engine-sql hot operator profile 有单测覆盖，native extension profile 还没有。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用
-`pg-result-cache` 打开已验证的 repeated-query cache acceleration；`pg-hot-operators` /
+`pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration；
 `pg-custom-index` 仍只能在独立 benchmark gate 通过后进入 cloud profile。
 真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 
@@ -355,7 +446,7 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 - profile / schema version 不一致时重建逻辑可重复执行。
 - profile 401、models 读取、ACL/ACR 查询 smoke 通过。
 
-PG extension 进入默认 cloud profile 前还必须额外满足：
+native PG extension 或 `pg-custom-index` 进入默认 cloud profile 前还必须额外满足：
 
 - extension missing / capability missing fallback 不影响业务读写。
 - hot operator p95 稳定优于 PG RDF-3X baseline。

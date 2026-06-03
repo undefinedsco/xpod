@@ -959,21 +959,66 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('falls back cleanly when the requested PostgreSQL RDF extension profile is unavailable', async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-profile-'));
+  it('enables PostgreSQL SQL hot operators without requiring a native extension', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-hot-operators-'));
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
       dataDir,
       rdfAccelerationProfile: 'pg-hot-operators',
     });
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
-    const message = namedNode(`${graph.value}#msg_1`);
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
 
     try {
       await engine.open();
-      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+      expect((await engine.storageStats()).pgAcceleration).toMatchObject({
+        profile: 'pg-hot-operators',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'engine-sql',
+        capabilities: [
+          'aggregate.count',
+          'aggregate.numeric',
+          'cache.result',
+          'join.required_bgp',
+          'scan.exact_graph',
+          'scan.graph_prefix',
+          'scan.term_in',
+        ],
+        requiredCapabilities: [
+          'scan.exact_graph',
+          'scan.graph_prefix',
+          'scan.term_in',
+          'join.required_bgp',
+          'aggregate.count',
+          'aggregate.numeric',
+          'cache.result',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'aggregate.numeric',
+          'cache.result',
+          'join.required_bgp',
+          'scan.exact_graph',
+          'scan.graph_prefix',
+          'scan.term_in',
+        ],
+      });
 
-      const result = await engine.query({
+      await engine.put([
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message1, namedNode(PRIORITY), literal('10', namedNode(XSD_DECIMAL)), graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(PRIORITY), literal('20', namedNode(XSD_DECIMAL)), graph),
+      ]);
+
+      const scanResult = await engine.query({
         patterns: [
           {
             graph,
@@ -986,27 +1031,49 @@ describe('PostgresRdfEngine', () => {
         cache: { mode: 'bypass' },
       });
 
-      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
-      expect(result.metrics.plan).toContain('XpodRdfExtensionFallback(extension-missing)');
-      expect(result.metrics.plan.some((entry) => entry.startsWith('PostgresRdf3xJoin('))).toBe(true);
+      expect(scanResult.bindings.map((binding) => binding.message.value).sort()).toEqual([message1.value, message2.value]);
+      expect(scanResult.metrics.plan).toContain('XpodRdfPgHotOperator(scan.exact_graph)');
+      expect(scanResult.metrics.plan).not.toContain('XpodRdfExtensionFallback(extension-missing)');
+      expect(scanResult.metrics.plan).not.toContain('XpodRdfExtensionUnsupported(scan.exact_graph)');
 
-      const stats = await engine.storageStats();
-      expect(stats.pgAcceleration).toMatchObject({
-        profile: 'pg-hot-operators',
-        requested: true,
-        available: false,
-        enabled: false,
-        fallbackReason: 'extension-missing',
-        requiredCapabilities: [
-          'scan.exact_graph',
-          'scan.graph_prefix',
-          'scan.term_in',
-          'join.required_bgp',
-          'aggregate.count',
-          'aggregate.numeric',
-          'cache.result',
+      const aggregateResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
         ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'sum',
+            as: 'priorityTotal',
+            variable: 'priority',
+          },
+        ],
+        cache: { mode: 'bypass' },
       });
+
+      expect(aggregateResult.bindings).toHaveLength(1);
+      expect(aggregateResult.bindings[0].messageCount.value).toBe('2');
+      expect(aggregateResult.bindings[0].priorityTotal.value).toBe('30');
+      expect(aggregateResult.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(aggregateResult.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.numeric)');
+      expect(aggregateResult.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
+      expect(aggregateResult.metrics.plan).toContain('PostgresRdf3xGroupAggregate');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -1070,6 +1137,7 @@ describe('PostgresRdfEngine', () => {
         '@id': 'urn:solid-server:default:variable:sparqlEndpoint',
         '@type': 'Variable',
       },
+      options_rdfAccelerationProfile: 'pg-hot-operators',
       options_autoOpen: true,
     });
   });

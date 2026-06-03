@@ -124,7 +124,7 @@ export interface RdfPgAccelerationStats {
   requested: boolean;
   available: boolean;
   enabled: boolean;
-  provider?: 'extension' | 'sql-abi';
+  provider?: 'extension' | 'sql-abi' | 'engine-sql';
   version?: string;
   capabilities: string[];
   requiredCapabilities: string[];
