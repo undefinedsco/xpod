@@ -193,7 +193,7 @@ interface PgPatternEquality {
 interface PgAggregateSqlExpression {
   variableName: string;
   alias: string;
-  type: 'integer';
+  type: 'integer' | 'decimal';
   expression: string;
   sql: string;
 }
@@ -2050,12 +2050,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     const aggregateAliases = new Map<string, string>();
     const aggregateTypes = new Map<string, 'integer' | 'decimal'>();
+    const numericJoins = new Map<string, string>();
+    const numericJoinSql: string[] = [];
     const aggregateColumns = aggregates.map((aggregate, index) => this.compileAggregateColumn(
       aggregate,
       index,
       compiled.variableAliases,
       aggregateAliases,
       aggregateTypes,
+      numericJoins,
+      numericJoinSql,
     ));
     const groupColumns = (query.groupBy ?? []).map((variableName) => {
       const alias = compiled.variableAliases.get(variableName);
@@ -2068,7 +2072,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...groupColumns.map((group) => `${group.column} AS ${group.alias}`),
       ...aggregateColumns.map((aggregate) => aggregate.sql),
     ].filter(Boolean).join(', ');
-    let sql = `SELECT ${projection} FROM (${compiled.sql}) source`;
+    const aggregateFrom = `(${compiled.sql}) source${numericJoinSql.join('')}`;
+    let sql = `SELECT ${projection} FROM ${aggregateFrom}`;
     if (groupColumns.length > 0) {
       sql += ` GROUP BY ${groupColumns.map((group) => group.column).join(', ')}`;
     }
@@ -2084,7 +2089,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ? await this.scalarCount(
           `SELECT COUNT(*) AS count FROM (
             SELECT ${groupColumns.map((group) => group.column).join(', ')}
-            FROM (${compiled.sql}) source
+            FROM ${aggregateFrom}
             GROUP BY ${groupColumns.map((group) => group.column).join(', ')}
             ${havingClause.sql}
           ) grouped_count`,
@@ -2093,9 +2098,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
       : rows.length;
     const bindings = await this.joinRowsToBindings(rows, new Map(groupColumns.map((group) => [group.variableName, group.alias])), aggregateAliases, aggregateTypes);
     const firstCount = !groupColumns.length && aggregates[0] ? Number(bindings[0]?.[aggregates[0].as]?.value ?? 0) : undefined;
+    const aggregateMarker = this.postgresRdf3xAggregateMarker(aggregates, groupColumns.length > 0);
     const plan = [
       ...storagePlanMarkers(compiled.queryPlan),
-      groupColumns.length > 0 ? 'PostgresRdf3xGroupCount' : 'PostgresRdf3xJoinCount',
+      aggregateMarker,
       aggregatePlan(aggregates, groupColumns.length > 0),
       ...(havingClause.sql ? [`PostgresRdf3xAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
       ...((query.orderBy ?? []).length > 0 ? [`PostgresRdf3xAggregateOrder(${describeQueryOrder(query.orderBy ?? [])})`] : []),
@@ -2112,11 +2118,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
     query: RdfQuery,
     aggregates: ReturnType<typeof queryAggregates>,
   ): boolean {
-    if (aggregates.length === 0 || aggregates.some((aggregate) => aggregate.type !== 'count')) {
+    if (aggregates.length === 0) {
       return false;
     }
     const visibleVariables = uniqueStrings(query.patterns.flatMap((pattern) => variablesInPattern(pattern)));
     const aggregateVariables = new Set(aggregates.map((aggregate) => aggregate.as));
+    if (aggregates.some((aggregate) => !this.canNativeAggregateExpression(aggregate, visibleVariables))) {
+      return false;
+    }
     if ((query.groupBy ?? []).some((variableName) => !visibleVariables.includes(variableName))) {
       return false;
     }
@@ -2154,6 +2163,22 @@ export class PostgresRdfEngine implements RdfEngineLike {
     ));
   }
 
+  private canNativeAggregateExpression(
+    aggregate: RdfQueryAggregate,
+    visibleVariables: string[],
+  ): boolean {
+    if (aggregate.type === 'count') {
+      return aggregate.variable === undefined
+        ? (aggregate.distinctVariables ?? []).every((variableName) => visibleVariables.includes(variableName))
+        : visibleVariables.includes(aggregate.variable)
+          && (aggregate.distinctVariables ?? []).every((variableName) => visibleVariables.includes(variableName));
+    }
+    return Boolean(aggregate.variable)
+      && visibleVariables.includes(aggregate.variable!)
+      && !aggregate.distinct
+      && aggregate.distinctVariables === undefined;
+  }
+
   private canNativeAggregateHaving(filter: RdfQueryFilter, aggregateVariables: Set<string>): boolean {
     return aggregateVariables.has(filter.variable)
       && !filter.operand
@@ -2170,11 +2195,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
     variableAliases: Map<string, string>,
     aggregateAliases: Map<string, string>,
     aggregateTypes: Map<string, 'integer' | 'decimal'>,
+    numericJoins: Map<string, string>,
+    numericJoinSql: string[],
   ): PgAggregateSqlExpression {
     const alias = `a${index}`;
     aggregateAliases.set(aggregate.as, alias);
-    aggregateTypes.set(aggregate.as, 'integer');
-    if (!aggregate.variable) {
+    if (aggregate.type === 'count' && !aggregate.variable) {
+      aggregateTypes.set(aggregate.as, 'integer');
       const expression = aggregate.distinct
         ? `COUNT(DISTINCT ${joinSolutionMappingKeyExpression(variableAliases, aggregate.distinctVariables)})`
         : 'COUNT(*)';
@@ -2186,18 +2213,68 @@ export class PostgresRdfEngine implements RdfEngineLike {
         sql: `${expression} AS ${alias}`,
       };
     }
+    if (!aggregate.variable) {
+      throw new Error(`Postgres RDF-3X ${aggregate.type} aggregate requires a bound variable`);
+    }
     const variableAlias = variableAliases.get(aggregate.variable);
     if (!variableAlias) {
       throw new Error(`Postgres RDF-3X aggregate cannot read unbound variable: ${aggregate.variable}`);
     }
-    const expression = `COUNT(${aggregate.distinct ? 'DISTINCT ' : ''}source.${variableAlias})`;
+    if (aggregate.type === 'count') {
+      aggregateTypes.set(aggregate.as, 'integer');
+      const expression = `COUNT(${aggregate.distinct ? 'DISTINCT ' : ''}source.${variableAlias})`;
+      return {
+        variableName: aggregate.as,
+        alias,
+        type: 'integer',
+        expression,
+        sql: `${expression} AS ${alias}`,
+      };
+    }
+    if (aggregate.distinct) {
+      throw new Error(`Postgres RDF-3X ${aggregate.type} DISTINCT aggregate is not supported in native aggregate path`);
+    }
+    aggregateTypes.set(aggregate.as, 'decimal');
+    const termAlias = numericJoins.get(aggregate.variable) ?? `agg_numeric_t${numericJoins.size}`;
+    if (!numericJoins.has(aggregate.variable)) {
+      numericJoins.set(aggregate.variable, termAlias);
+      numericJoinSql.push(` JOIN rdf_terms ${termAlias} ON ${termAlias}.id = source.${variableAlias} AND ${termAlias}.kind = 'literal' AND ${termAlias}.numeric_value IS NOT NULL`);
+    }
+    const expression = this.numericAggregateExpression(aggregate, termAlias);
     return {
       variableName: aggregate.as,
       alias,
-      type: 'integer',
+      type: 'decimal',
       expression,
       sql: `${expression} AS ${alias}`,
     };
+  }
+
+  private numericAggregateExpression(aggregate: RdfQueryAggregate, termAlias: string): string {
+    switch (aggregate.type) {
+      case 'sum':
+        return `COALESCE(SUM(${termAlias}.numeric_value), 0)`;
+      case 'avg':
+        return `AVG(${termAlias}.numeric_value)`;
+      case 'min':
+        return `MIN(${termAlias}.numeric_value)`;
+      case 'max':
+        return `MAX(${termAlias}.numeric_value)`;
+      case 'count':
+        throw new Error('Postgres RDF-3X count aggregate should not use numericAggregateExpression');
+      default: {
+        const exhaustive: never = aggregate.type;
+        throw new Error(`Unsupported PostgreSQL RDF numeric aggregate: ${exhaustive}`);
+      }
+    }
+  }
+
+  private postgresRdf3xAggregateMarker(aggregates: RdfQueryAggregate[], grouped: boolean): string {
+    const countOnly = aggregates.every((aggregate) => aggregate.type === 'count');
+    if (grouped) {
+      return countOnly ? 'PostgresRdf3xGroupCount' : 'PostgresRdf3xGroupAggregate';
+    }
+    return countOnly ? 'PostgresRdf3xJoinCount' : 'PostgresRdf3xJoinAggregate';
   }
 
   private buildAggregateHavingClause(
@@ -3066,11 +3143,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
         if (id !== undefined) binding[variableName] = this.requiredTerm(terms, id);
       }
       for (const [variableName, alias] of aggregateAliases ?? []) {
-        const value = pgInteger(row[alias]);
+        const type = aggregateTypes?.get(variableName) ?? 'integer';
+        const value = type === 'decimal' ? pgNumber(row[alias]) : pgInteger(row[alias]);
         if (value !== undefined) {
           binding[variableName] = DataFactory.literal(
             String(value),
-            DataFactory.namedNode(aggregateTypes?.get(variableName) === 'decimal' ? XSD_DECIMAL : XSD_INTEGER),
+            DataFactory.namedNode(type === 'decimal' ? XSD_DECIMAL : XSD_INTEGER),
           ) as Term;
         }
       }
@@ -3646,6 +3724,17 @@ function pgInteger(value: unknown): number | undefined {
     return Number.isFinite(value) ? value : undefined;
   }
   if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function pgNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === 'string') {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : undefined;
   }

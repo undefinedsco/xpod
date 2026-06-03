@@ -4,7 +4,14 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DataFactory } from 'n3';
 import { PGlite } from '@electric-sql/pglite';
-import { PostgresRdfEngine, type RdfQuery } from '../../../src/storage/rdf';
+import {
+  PostgresRdfEngine,
+  buildRdfModelsBenchmarkSeed,
+  defaultSyntheticMessagesForRdfModelsScale,
+  rdfModelsBenchmarkSyntheticPodCount,
+  runRdfModelsPostgresBenchmark,
+  type RdfQuery,
+} from '../../../src/storage/rdf';
 
 const { literal, namedNode, quad } = DataFactory;
 
@@ -837,6 +844,49 @@ describe('PostgresRdfEngine', () => {
           'cache.result',
         ],
       });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs shared models benchmark cases on the PostgreSQL RDF engine without result-cache masking', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-models-benchmark-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+
+    try {
+      await engine.open();
+      await engine.put(buildRdfModelsBenchmarkSeed({
+        syntheticMessages: defaultSyntheticMessagesForRdfModelsScale('small'),
+        syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
+      }));
+
+      const report = await runRdfModelsPostgresBenchmark(engine, {
+        scale: 'small',
+        iterations: 1,
+      });
+
+      expect(report.engine).toBe('postgres-rdf');
+      expect(report.planMatched).toBe(true);
+      expect(report.failedPlanCases).toEqual([]);
+      expect(report.storage.derivedIndexProfile).toBe('rdf3x');
+      expect(report.storage.rdf3x?.syncedWithFacts).toBe(true);
+      expect(report.storage.pgAcceleration).toMatchObject({
+        profile: 'baseline',
+        enabled: false,
+      });
+      expect(report.queryCases.flatMap((testCase) => testCase.physicalPlan).join('\n')).not.toContain('PostgresResultCache');
+
+      const numericAggregate = report.queryCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
+      expect(numericAggregate).toBeDefined();
+      expect(numericAggregate?.planMatched).toBe(true);
+      expect(numericAggregate?.returnedRows).toBeGreaterThan(0);
+      expect(numericAggregate?.physicalPlan).toContain('PostgresRdf3xGroupAggregate');
+      expect(numericAggregate?.physicalPlan).not.toContain('PostgresFactsQuery');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

@@ -12,6 +12,8 @@
 
 ## Benchmark Evidence
 
+### SQLite / File-backed RDF-3X
+
 执行命令：
 
 ```bash
@@ -117,21 +119,55 @@ RDF-3X stats:
 - 但当前 numeric aggregate 不能直接按“所有 aggregate 都更快”宣传。下一步要么优化 `Rdf3xJoinGroupAggregateNumeric`，要么让 planner 对小样本/低选择性 numeric aggregate 回退 baseline。
 - PG extension P0 不应该先做新存储；应先下沉已经证明有收益的大 BGP join、count distinct、result cache，再处理 numeric aggregate。
 
+### PostgreSQL / PGlite Baseline Gate
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data/rdf-pg-debug
+```
+
+运行时间：2026-06-04 本地机器。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | small |
+| target quads | 48 |
+| seed quads | 114 |
+| scan cases | 19 |
+| query cases | 7 |
+| iterations | 1 |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| PG/PGlite models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| query result cache disabled for benchmark | true |
+| PG acceleration profile | `baseline` |
+
+本次 PG/PGlite small gate 不是性能容量结论，只证明 PostgreSQL facts/RDF-3X baseline 能跑同一组 models query case，且不会用 result cache 掩盖实际执行路径。`message score by thread numeric aggregate` 已下推到 `PostgresRdf3xGroupAggregate`，不再走 `PostgresFactsQuery` fallback。
+
 ## PostgreSQL Status
 
 `PostgresRdfEngine` 当前已有：
 
 - PG facts table 作为 baseline authority。
 - RDF-3X stats / BGP join path。
+- grouped count / grouped numeric aggregate native SQL path。
 - query result cache by facts data version。
 - `storageStats()` 中暴露 facts / derived / query cache 统计。
 - `rdfAccelerationProfile` capability probe，能在 `xpod_rdf` extension 缺失时稳定 fallback。
+- `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases。
 
 未完成：
 
 - native `xpod_rdf` hot operators。
 - custom index access method `xpod_rdf_perm`。
-- PG extension 实测性能报告。
+- PG extension 实测性能报告；baseline PG/PGlite gate 已有，extension profile 还没有。
 
 因此 cloud 当前默认应仍按 PG RDF-3X baseline 上线；`pg-hot-operators` / `pg-custom-index` 只能在独立 benchmark gate 通过后进入 cloud profile。
 
@@ -228,6 +264,7 @@ RDF-3X stats:
 - `bun run build:ts` 通过。
 - `bun run test:integration` 通过。
 - `bun run benchmark:rdf-models -- --scale=medium --iterations=3` 通过。
+- `bun run benchmark:rdf-models:pg -- --scale=small --iterations=1` 通过；cloud 默认 profile 前再补 medium PG/PGlite 或真实 PG benchmark。
 - `storageStats().totalToFactsRatio` 可接受；当前 medium 参考值为 1.18x。
 - `rdf3x.syncedWithFacts=true`。
 - profile / schema version 不一致时重建逻辑可重复执行。
@@ -242,7 +279,7 @@ PG extension 进入默认 cloud profile 前还必须额外满足：
 
 ## Open Follow-ups
 
-- 优化或禁用当前 numeric aggregate 的 RDF-3X unconditional path。
-- 增加 PG/PGlite benchmark 入口，对齐 SQLite models benchmark 的 case 和 report 格式。
+- 优化或禁用当前 SQLite/file-backed numeric aggregate 的 RDF-3X unconditional path。
+- 把 PG/PGlite benchmark 扩到 medium scale，并增加真实 PostgreSQL 连接模式 benchmark。
 - 增加 cloud runbook 脚本：只清理 RDF 表，不碰 identity / ai-gateway。
 - 为 `storageStats()` 增加 cloud dashboard 指标：facts bytes、derived bytes、cache bytes、refresh lag、facts data version。

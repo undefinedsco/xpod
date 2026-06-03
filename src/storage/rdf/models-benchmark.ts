@@ -16,6 +16,8 @@ import type {
   Rdf3xTermNotInPattern,
   Rdf3xTriplePattern,
   RdfBindingRow,
+  RdfDerivedIndexRefreshResult,
+  RdfEngineLike,
   RdfEngineStorageStats,
   RdfIndexMetrics,
   RdfIndexStats,
@@ -36,7 +38,7 @@ import { canonicalQuadKey, diffQuads } from './RdfShadowComparator';
 import type { SolidRdfEngine } from './SolidRdfEngine';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 
-const { namedNode, literal } = DataFactory;
+const { namedNode, literal, quad } = DataFactory;
 
 export type RdfBenchmarkScale = 'small' | 'medium' | 'large';
 
@@ -81,6 +83,10 @@ export interface RdfModelBenchmarkRunOptions {
   queryCases?: readonly RdfModelQueryBenchmarkCase[];
   scale?: RdfBenchmarkScale;
   iterations?: number;
+}
+
+export interface RdfModelPostgresBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {
+  refreshDerivedIndexes?: boolean;
 }
 
 export interface RdfModelBenchmarkResult {
@@ -143,6 +149,24 @@ export interface RdfModelBenchmarkReport {
   storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
   queryCases: RdfModelQueryBenchmarkResult[];
+}
+
+export interface RdfModelPostgresBenchmarkReport {
+  engine: 'postgres-rdf';
+  scale: RdfBenchmarkScale;
+  iterations: number;
+  generatedAt: string;
+  planMatched: boolean;
+  failedPlanCases: string[];
+  refresh?: RdfDerivedIndexRefreshResult;
+  storage: RdfEngineStorageStats;
+  cases: RdfModelBenchmarkResult[];
+  queryCases: RdfModelQueryBenchmarkResult[];
+}
+
+export interface RdfModelsBenchmarkSeedOptions {
+  syntheticMessages: number;
+  syntheticPodCount: number;
 }
 
 export interface RdfModelShadowBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {}
@@ -339,6 +363,9 @@ type Rdf3xJoinBenchmarkShape =
 
 type JsonPattern = Record<string, unknown>;
 
+export const RDF_MODELS_BENCHMARK_POD = 'https://pod.example/alice';
+const DATA = `${RDF_MODELS_BENCHMARK_POD}/.data`;
+const SETTINGS = `${RDF_MODELS_BENCHMARK_POD}/settings`;
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
 const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
@@ -351,6 +378,7 @@ const SIOC = 'http://rdfs.org/sioc/ns#';
 const FOAF_AGENT = 'http://xmlns.com/foaf/0.1/Agent';
 const VCARD_INDIVIDUAL = 'http://www.w3.org/2006/vcard/ns#Individual';
 const SCHEMA_CREATIVE_WORK = 'http://schema.org/CreativeWork';
+const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const PERFORMANCE_P95_MIN_ABSOLUTE_HEADROOM_MS = 25;
 const PERFORMANCE_P95_MAX_RATIO = 8;
 
@@ -989,6 +1017,151 @@ export function rdfModelsBenchmarkScaleSatisfied(scale: RdfBenchmarkScale, seedQ
   return seedQuadCount >= rdfModelsBenchmarkScaleTargetQuads(scale);
 }
 
+export function buildRdfModelsBenchmarkSeed(options: RdfModelsBenchmarkSeedOptions): Quad[] {
+  const quads: Quad[] = [];
+
+  seedChatTaskThreadRunProviderQuads(quads);
+  seedAgentContactFavoriteQuads(quads);
+  seedCanonicalMessages(quads);
+  seedSyntheticMessages(quads, options.syntheticMessages, options.syntheticPodCount);
+
+  return quads;
+}
+
+function seedChatTaskThreadRunProviderQuads(quads: Quad[]): void {
+  const chatGraph = `${DATA}/chat/default/index.ttl`;
+  const chat = `${chatGraph}#this`;
+  const thread = `${chatGraph}#thread_1`;
+  const taskGraph = `${DATA}/task/index.ttl`;
+  const task = `${taskGraph}#default`;
+  const taskThreadGraph = `${DATA}/task/default/index.ttl`;
+  const taskThread = `${taskThreadGraph}#thread_1`;
+  const scheduleGraph = `${DATA}/task/default/2026/05/18/schedules.ttl`;
+  const runGraph = `${DATA}/task/default/2026/05/18/runs.ttl`;
+  const run = `${runGraph}#run_1`;
+  const workspace = 'file://macbook.local/Users/alice/project/';
+  const provider = `${SETTINGS}/providers/anthropic.ttl`;
+  const credentialGraph = `${SETTINGS}/credentials.ttl`;
+  const credential = `${credentialGraph}#anthropic-default`;
+
+  quads.push(
+    seedQuad(chat, RDF_TYPE, iri(`${MEETING}LongChat`), chatGraph),
+    seedQuad(chat, DCT_TITLE, literal('Default chat'), chatGraph),
+    seedQuad(chat, DCT_MODIFIED, literal('2026-05-18T00:00:00.000Z'), chatGraph),
+    seedQuad(thread, RDF_TYPE, iri(`${SIOC}Thread`), chatGraph),
+    seedQuad(thread, DCT_CREATED, literal('2026-05-18T00:00:01.000Z'), chatGraph),
+    seedQuad(thread, `${UDFS}workspace`, iri(workspace), chatGraph),
+    seedQuad(task, RDF_TYPE, iri(`${UDFS}Task`), taskGraph),
+    seedQuad(task, `${UDFS}status`, literal('active'), taskGraph),
+    seedQuad(task, `${UDFS}workspace`, iri(workspace), taskGraph),
+    seedQuad(taskThread, RDF_TYPE, iri(`${SIOC}Thread`), taskThreadGraph),
+    seedQuad(taskThread, DCT_CREATED, literal('2026-05-18T00:30:00.000Z'), taskThreadGraph),
+    seedQuad(`${scheduleGraph}#schedule_1`, RDF_TYPE, iri(`${UDFS}Schedule`), scheduleGraph),
+    seedQuad(`${scheduleGraph}#schedule_1`, `${UDFS}status`, literal('active'), scheduleGraph),
+    seedQuad(`${scheduleGraph}#schedule_1`, `${UDFS}nextRunAt`, literal('2026-05-18T01:00:00.000Z'), scheduleGraph),
+    seedQuad(run, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
+    seedQuad(run, DCT_CREATED, literal('2026-05-18T01:00:00.000Z'), runGraph),
+    seedQuad(run, `${UDFS}status`, literal('queued'), runGraph),
+    seedQuad(run, `${UDFS}workspace`, iri(workspace), runGraph),
+    seedQuad(run, `${UDFS}priority`, literal('10', iri(XSD_INTEGER)), runGraph),
+    seedQuad(`${runGraph}#run_2`, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
+    seedQuad(`${runGraph}#run_2`, DCT_CREATED, literal('2026-05-18T01:05:00.000Z'), runGraph),
+    seedQuad(`${runGraph}#run_2`, `${UDFS}status`, literal('queued'), runGraph),
+    seedQuad(`${runGraph}#run_2`, `${UDFS}workspace`, iri(workspace), runGraph),
+    seedQuad(`${runGraph}#run_2`, `${UDFS}priority`, literal('2', iri(XSD_INTEGER)), runGraph),
+    seedQuad(`${runGraph}#run_3`, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
+    seedQuad(`${runGraph}#run_3`, DCT_CREATED, literal('2026-05-18T01:10:00.000Z'), runGraph),
+    seedQuad(`${runGraph}#run_3`, `${UDFS}status`, literal('running'), runGraph),
+    seedQuad(`${runGraph}#run_3`, `${UDFS}workspace`, iri(workspace), runGraph),
+    seedQuad(`${runGraph}#run_3`, `${UDFS}priority`, literal('8', iri(XSD_INTEGER)), runGraph),
+    seedQuad(`${runGraph}#step_1`, RDF_TYPE, iri(`${UDFS}RunStep`), runGraph),
+    seedQuad(`${runGraph}#step_1`, `${UDFS}run`, iri(run), runGraph),
+    seedQuad(`${runGraph}#step_2`, RDF_TYPE, iri(`${UDFS}RunStep`), runGraph),
+    seedQuad(`${runGraph}#step_2`, `${UDFS}run`, iri(run), runGraph),
+    seedQuad(provider, RDF_TYPE, iri(`${UDFS}Provider`), provider),
+    seedQuad(provider, `${UDFS}displayName`, literal('Anthropic'), provider),
+    seedQuad(`${provider}#claude-sonnet-4`, RDF_TYPE, iri(`${UDFS}Model`), provider),
+    seedQuad(`${provider}#claude-sonnet-4`, `${UDFS}isProvidedBy`, iri(provider), provider),
+    seedQuad(credential, RDF_TYPE, iri(`${UDFS}Credential`), credentialGraph),
+    seedQuad(credential, `${UDFS}provider`, iri(provider), credentialGraph),
+  );
+}
+
+function seedAgentContactFavoriteQuads(quads: Quad[]): void {
+  const agentGraph = `${DATA}/agents/secretary.ttl`;
+  const agent = `${agentGraph}#this`;
+  const contactGraph = `${DATA}/contacts/secretary.ttl`;
+  const contact = contactGraph;
+  const favoriteGraph = `${DATA}/favorites/2026/05/18.ttl`;
+  const favorite = `${favoriteGraph}#favorite_1`;
+  const chat = `${DATA}/chat/default/index.ttl#this`;
+
+  quads.push(
+    seedQuad(agent, RDF_TYPE, iri(FOAF_AGENT), agentGraph),
+    seedQuad(agent, `${UDFS}provider`, literal('anthropic'), agentGraph),
+    seedQuad(agent, `${UDFS}model`, literal('claude-sonnet-4'), agentGraph),
+    seedQuad(contact, RDF_TYPE, iri(VCARD_INDIVIDUAL), contactGraph),
+    seedQuad(contact, `${UDFS}contactType`, literal('agent'), contactGraph),
+    seedQuad(contact, `${UDFS}favorite`, literal('true'), contactGraph),
+    seedQuad(favorite, RDF_TYPE, iri(SCHEMA_CREATIVE_WORK), favoriteGraph),
+    seedQuad(favorite, `${UDFS}favoriteTarget`, iri(chat), favoriteGraph),
+    seedQuad(favorite, `${UDFS}favoredAt`, literal('2026-05-18T02:00:00.000Z'), favoriteGraph),
+  );
+}
+
+function seedCanonicalMessages(quads: Quad[]): void {
+  const thread = `${DATA}/chat/default/index.ttl#thread_1`;
+  const graph = `${DATA}/chat/default/2026/05/18/messages.ttl`;
+  const scores = ['2', '10', '4'];
+
+  for (let index = 0; index < 3; index += 1) {
+    const message = `${graph}#msg_${index + 1}`;
+    const timestamp = `2026-05-18T00:0${index + 1}:00.000Z`;
+    quads.push(
+      seedQuad(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
+      seedQuad(message, SIOC_HAS_MEMBER, iri(thread), graph),
+      seedQuad(message, DCT_CREATED, literal(timestamp), graph),
+      seedQuad(message, DCT_MODIFIED, literal(timestamp), graph),
+      seedQuad(message, `${UDFS}score`, literal(scores[index], namedNode(XSD_INTEGER)), graph),
+      seedQuad(message, SIOC_CONTENT, literal(`canonical message ${index + 1}`), graph),
+    );
+  }
+}
+
+function seedSyntheticMessages(quads: Quad[], count: number, podCount: number): void {
+  const syntheticPodCount = Math.max(1, Math.floor(podCount));
+  for (let index = 0; index < count; index += 1) {
+    const podIndex = index % syntheticPodCount;
+    const pod = podIndex === 0 ? RDF_MODELS_BENCHMARK_POD : `https://pod.example/synthetic-${podIndex}`;
+    const data = `${pod}/.data`;
+    const thread = `${data}/chat/default/index.ttl#thread_1`;
+    const dayNumber = (index % 28) + 1;
+    const day = String(dayNumber).padStart(2, '0');
+    const graph = `${data}/chat/default/2026/05/${day}/messages.ttl`;
+    const message = `${graph}#synthetic_${index}`;
+    const timestamp = new Date(Date.UTC(2026, 4, dayNumber, 12, 0, index)).toISOString();
+    quads.push(
+      seedQuad(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
+      seedQuad(message, SIOC_HAS_MEMBER, iri(thread), graph),
+      seedQuad(message, DCT_CREATED, literal(timestamp), graph),
+      seedQuad(message, SIOC_CONTENT, literal(`synthetic searchable message ${index}`), graph),
+    );
+  }
+}
+
+function seedQuad(
+  subject: string,
+  predicate: string,
+  object: ReturnType<typeof namedNode> | ReturnType<typeof literal>,
+  graph: string,
+): Quad {
+  return quad(namedNode(subject), namedNode(predicate), object, namedNode(graph));
+}
+
+function iri(value: string): ReturnType<typeof namedNode> {
+  return namedNode(value);
+}
+
 export function runRdfModelsBenchmark(
   engine: SolidRdfEngine,
   options: RdfModelBenchmarkRunOptions = {},
@@ -1014,6 +1187,47 @@ export function runRdfModelsBenchmark(
     planMatched: failedPlanCases.length === 0,
     failedPlanCases,
     storage: engine.storageStats(),
+    cases: results,
+    queryCases: queryResults,
+  };
+}
+
+export async function runRdfModelsPostgresBenchmark(
+  engine: RdfEngineLike,
+  options: RdfModelPostgresBenchmarkRunOptions = {},
+): Promise<RdfModelPostgresBenchmarkReport> {
+  const scale = options.scale ?? 'small';
+  const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
+  const refresh = options.refreshDerivedIndexes === false
+    ? undefined
+    : await engine.refreshDerivedIndexes();
+  const storageBefore = await engine.storageStats();
+  const cases = (options.cases ?? rdfModelsBenchmarkCases)
+    .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
+  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCases)
+    .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
+  const results = [];
+  for (const testCase of cases) {
+    results.push(await runAsyncBenchmarkCase(engine, testCase, iterations, storageBefore.facts));
+  }
+  const queryResults = [];
+  for (const testCase of queryCases) {
+    queryResults.push(await runAsyncQueryBenchmarkCase(engine, testCase, iterations, storageBefore.facts));
+  }
+  const failedPlanCases = [
+    ...results.filter((result) => !result.planMatched).map((result) => result.name),
+    ...queryResults.filter((result) => !result.planMatched).map((result) => result.name),
+  ];
+
+  return {
+    engine: 'postgres-rdf',
+    scale,
+    iterations,
+    generatedAt: new Date().toISOString(),
+    planMatched: failedPlanCases.length === 0,
+    failedPlanCases,
+    ...(refresh ? { refresh } : {}),
+    storage: await engine.storageStats(),
     cases: results,
     queryCases: queryResults,
   };
@@ -1211,6 +1425,120 @@ function runQueryBenchmarkCase(
     p95DurationMs: percentile(durationsMs, 0.95),
     metrics: finalMetrics,
     indexStats: engine.index.stats(),
+  };
+}
+
+async function runAsyncBenchmarkCase(
+  engine: RdfEngineLike,
+  testCase: RdfModelBenchmarkCase,
+  iterations: number,
+  indexStats: RdfIndexStats,
+): Promise<RdfModelBenchmarkResult> {
+  const durationsMs: number[] = [];
+  let metrics: RdfIndexMetrics | undefined;
+  let keys: string[] = [];
+
+  for (let i = 0; i < iterations; i += 1) {
+    const start = Date.now();
+    const result = await engine.scan(testCase.query);
+    durationsMs.push(Math.max(0, Date.now() - start));
+    metrics = result.metrics;
+    keys = result.quads.map(canonicalQuadKey);
+  }
+
+  const finalMetrics = metrics ?? {
+    engine: 'solid-rdf',
+    indexChoice: 'not-run',
+    matchedRows: 0,
+    returnedRows: 0,
+    durationMs: 0,
+  };
+  const missingPlan = missingExpectedPlan(testCase, finalMetrics);
+  const execution = benchmarkExecution(finalMetrics);
+
+  return {
+    name: testCase.name,
+    resource: testCase.resource,
+    purpose: testCase.purpose,
+    minScale: testCase.minScale,
+    query: {
+      pattern: serializePattern(testCase.query.pattern),
+      ...(testCase.query.options ? { options: testCase.query.options } : {}),
+    },
+    expectedPlan: [...testCase.expectedPlan],
+    planMatched: missingPlan.length === 0,
+    missingPlan,
+    ...execution,
+    returnedRows: keys.length,
+    checksum: checksum(keys, false),
+    orderedChecksum: checksum(keys, true),
+    durationsMs,
+    p50DurationMs: percentile(durationsMs, 0.5),
+    p95DurationMs: percentile(durationsMs, 0.95),
+    metrics: finalMetrics,
+    indexStats,
+  };
+}
+
+async function runAsyncQueryBenchmarkCase(
+  engine: RdfEngineLike,
+  testCase: RdfModelQueryBenchmarkCase,
+  iterations: number,
+  indexStats: RdfIndexStats,
+): Promise<RdfModelQueryBenchmarkResult> {
+  const durationsMs: number[] = [];
+  let metrics: RdfQueryMetrics | undefined;
+  let keys: string[] = [];
+  const query = {
+    ...testCase.query,
+    cache: {
+      ...(testCase.query.cache ?? {}),
+      mode: 'bypass' as const,
+    },
+  };
+
+  for (let i = 0; i < iterations; i += 1) {
+    const start = Date.now();
+    const result = await engine.query(query);
+    durationsMs.push(Math.max(0, Date.now() - start));
+    metrics = result.metrics;
+    keys = result.bindings.map(bindingKey);
+  }
+
+  const finalMetrics = metrics ?? {
+    engine: 'solid-rdf',
+    plan: [],
+    scannedRows: 0,
+    joinedRows: 0,
+    returnedRows: 0,
+    durationMs: 0,
+    indexChoices: [],
+    filtersApplied: 0,
+    filtersPushedDown: 0,
+  };
+  const missingPlan = missingExpectedQueryPlan(testCase, finalMetrics, keys.length);
+
+  return {
+    name: testCase.name,
+    resource: testCase.resource,
+    purpose: testCase.purpose,
+    minScale: testCase.minScale,
+    query: serializeQueryPlan(query),
+    expectedPlan: [...testCase.expectedPlan],
+    planMatched: missingPlan.length === 0,
+    missingPlan,
+    physicalPlan: finalMetrics.plan,
+    scannedRows: finalMetrics.scannedRows,
+    indexChoices: [...finalMetrics.indexChoices],
+    fallbackReason: null,
+    returnedRows: keys.length,
+    checksum: checksum(keys, false),
+    orderedChecksum: checksum(keys, true),
+    durationsMs,
+    p50DurationMs: percentile(durationsMs, 0.5),
+    p95DurationMs: percentile(durationsMs, 0.95),
+    metrics: finalMetrics,
+    indexStats,
   };
 }
 
@@ -2164,16 +2492,29 @@ function matchesExpectedPlanLabel(label: string, testCase: RdfModelBenchmarkCase
   const planText = (metrics.queryPlan ?? []).join('\n');
   switch (label) {
     case 'graph-scope':
-      return Boolean(pattern.graph) && metrics.indexChoice.includes('G');
+      return Boolean(pattern.graph)
+        && (metrics.indexChoice.includes('G')
+          || metrics.indexChoice === 'source-membership'
+          || planText.includes('GraphPrefixMembershipFilter')
+          || planText.includes('GraphMembershipFilter')
+          || planText.includes('Rdf3xMembershipScan'));
     case 'type-filter':
       return isTerm(pattern.predicate as any)
         && termToId(pattern.predicate as any) === RDF_TYPE
         && Boolean(pattern.object)
-        && metrics.indexChoice !== 'full-scan';
+        && metrics.indexChoice !== 'full-scan'
+        && metrics.indexChoice !== 'facts-post-filter';
     case 'predicate-filter':
-      return Boolean(pattern.predicate) && metrics.indexChoice.includes('P');
+      return Boolean(pattern.predicate)
+        && (metrics.indexChoice.includes('P')
+          || metrics.indexChoice === 'source-membership'
+          || planText.includes('Rdf3xPermutationScan('));
     case 'predicate-object-filter':
-      return Boolean(pattern.predicate) && Boolean(pattern.object) && metrics.indexChoice.includes('P');
+      return Boolean(pattern.predicate)
+        && Boolean(pattern.object)
+        && (metrics.indexChoice.includes('P')
+          || metrics.indexChoice === 'source-membership'
+          || planText.includes('Rdf3xPermutationScan('));
     case 'predicate-object-range-filter':
       return Boolean(pattern.predicate)
         && (planText.includes('_range') || planText.includes('LexicalRange(') || planText.includes('NumericRange('));
@@ -2192,7 +2533,30 @@ function matchesExpectedPlanLabel(label: string, testCase: RdfModelBenchmarkCase
     case 'GSPO':
     case 'GPOS':
     case 'OSPG':
-      return metrics.indexChoice === label;
+      return metrics.indexChoice === label || matchesPgPermutationPlan(label, testCase, metrics);
+    default:
+      return false;
+  }
+}
+
+function matchesPgPermutationPlan(
+  label: string,
+  testCase: RdfModelBenchmarkCase,
+  metrics: RdfIndexMetrics,
+): boolean {
+  const planText = (metrics.queryPlan ?? []).join('\n');
+  const graphScoped = matchesExpectedPlanLabel('graph-scope', testCase, metrics);
+  switch (label) {
+    case 'SPOG':
+      return metrics.indexChoice === 'SPO' || planText.includes('Rdf3xPermutationScan(SPO)');
+    case 'POSG':
+      return metrics.indexChoice === 'POS' || planText.includes('Rdf3xPermutationScan(POS)');
+    case 'OSPG':
+      return metrics.indexChoice === 'OSP' || planText.includes('Rdf3xPermutationScan(OSP)');
+    case 'GSPO':
+      return graphScoped && (metrics.indexChoice === 'SPO' || planText.includes('Rdf3xPermutationScan(SPO)'));
+    case 'GPOS':
+      return graphScoped && (metrics.indexChoice === 'POS' || planText.includes('Rdf3xPermutationScan(POS)'));
     default:
       return false;
   }
@@ -2296,38 +2660,54 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
   const planText = metrics.plan.join('\n');
   switch (label) {
     case 'group-count-index':
-      return planText.includes('Aggregate(group-count-index)');
+      return planText.includes('Aggregate(group-count-index)')
+        || planText.includes('PostgresRdf3xGroupCount');
     case 'group-aggregate-index':
       return planText.includes('Aggregate(group-basic-multi-index)')
-        || planText.includes('Aggregate(group-basic-index)');
+        || planText.includes('Aggregate(group-basic-index)')
+        || planText.includes('PostgresRdf3xGroupAggregate');
     case 'having-pushdown':
       return (planText.includes('IndexGroupCountHaving(')
-        || planText.includes('IndexGroupAggregateHaving('))
-        && !planText.includes('\nHaving(');
+        || planText.includes('IndexGroupAggregateHaving(')
+        || planText.includes('PostgresRdf3xAggregateHaving('))
+        && !planText.includes('\nHaving(')
+        && !planText.includes('\nPostgresFactsHaving(');
     case 'order':
       return (planText.includes('IndexGroupCountOrder(')
-        || planText.includes('IndexGroupAggregateOrder('))
-        && !planText.includes('\nSort');
+        || planText.includes('IndexGroupAggregateOrder(')
+        || planText.includes('PostgresRdf3xAggregateOrder('))
+        && !planText.includes('\nSort')
+        && !planText.includes('\nPostgresFactsSort(');
     case 'limit':
       return (planText.includes('IndexGroupCountLimit')
-        || planText.includes('IndexGroupAggregateLimit'))
-        && !planText.includes('\nLimit');
+        || planText.includes('IndexGroupAggregateLimit')
+        || planText.includes('PostgresRdf3xAggregateLimit'))
+        && !planText.includes('\nLimit')
+        && !planText.includes('\nPostgresFactsLimit');
     case 'join-index':
       return planText.includes('IndexJoin(')
-        && !planText.includes('\nIndexScan(');
+        && !planText.includes('\nIndexScan(')
+        || planText.includes('PostgresRdf3xJoin(');
     case 'join-order-pushdown':
-      return planText.includes('IndexJoinOrder(')
-        && !planText.includes('\nSort');
+      return (planText.includes('IndexJoinOrder(')
+        || planText.includes('Rdf3xJoinOrder(')
+        || planText.includes('Rdf3xJoinOrderBy('))
+        && !planText.includes('\nSort')
+        && !planText.includes('\nPostgresFactsSort(');
     case 'join-limit-pushdown':
-      return planText.includes('IndexJoinLimit')
-        && !planText.includes('\nLimit');
+      return (planText.includes('IndexJoinLimit')
+        || planText.includes('Rdf3xJoinLimit')
+        || planText.includes('PostgresRdf3xJoinLimit'))
+        && !planText.includes('\nLimit')
+        && !planText.includes('\nPostgresFactsLimit');
     case 'range-filter-pushdown':
       return metrics.filtersPushedDown > 0
-        && planText.includes('LexicalRange(');
+        && (planText.includes('LexicalRange(') || planText.includes('NumericRange('));
     case 'join-count-index':
       return planText.includes('Aggregate(join-count-distinct-index)')
         && planText.includes('IndexJoinCount(')
-        && !planText.includes('\nIndexScan(');
+        && !planText.includes('\nIndexScan(')
+        || planText.includes('PostgresRdf3xJoinCount');
     default:
       return false;
   }

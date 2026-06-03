@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { DataFactory } from 'n3';
-import type { Quad } from '@rdfjs/types';
 import { SqliteQuintStore } from '../src/storage/quint';
 import {
+  RDF_MODELS_BENCHMARK_POD,
   RdfQuadIndex,
   Rdf3xIndex,
   ShadowRdfQuintStore,
   SolidRdfEngine,
+  buildRdfModelsBenchmarkSeed,
   defaultSyntheticMessagesForRdfModelsScale,
   runRdfModelsBenchmark,
   runRdfModelsRdf3xShadowBenchmark,
@@ -20,26 +20,6 @@ import {
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
 } from '../src/storage/rdf';
-
-const { namedNode, literal, quad } = DataFactory;
-
-const POD = 'https://pod.example/alice';
-const DATA = `${POD}/.data`;
-const SETTINGS = `${POD}/settings`;
-
-const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
-const DCT_CREATED = 'http://purl.org/dc/terms/created';
-const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
-const DCT_TITLE = 'http://purl.org/dc/terms/title';
-const SIOC_CONTENT = 'http://rdfs.org/sioc/ns#content';
-const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
-const SIOC = 'http://rdfs.org/sioc/ns#';
-const MEETING = 'http://www.w3.org/ns/pim/meeting#';
-const UDFS = 'https://undefineds.co/ns#';
-const FOAF_AGENT = 'http://xmlns.com/foaf/0.1/Agent';
-const VCARD_INDIVIDUAL = 'http://www.w3.org/2006/vcard/ns#Individual';
-const SCHEMA_CREATIVE_WORK = 'http://schema.org/CreativeWork';
-const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 
 interface CliOptions {
   outDir: string;
@@ -72,7 +52,7 @@ async function main(): Promise<void> {
   try {
     await shadowStore.open();
 
-    const seedQuads = buildSeedQuads(options);
+    const seedQuads = buildRdfModelsBenchmarkSeed(options);
     await compatibilityStore.multiPut(seedQuads);
     const backfill = await shadowStore.backfillShadowIndex({
       clear: true,
@@ -234,154 +214,13 @@ function createBenchmarkPaths(outDir: string): BenchmarkPaths {
   };
 }
 
-function buildSeedQuads(options: CliOptions): Quad[] {
-  const quads: Quad[] = [];
-
-  seedChatTaskThreadRunProviderQuads(quads);
-  seedAgentContactFavoriteQuads(quads);
-  seedCanonicalMessages(quads);
-  seedSyntheticMessages(quads, options.syntheticMessages, options.syntheticPodCount);
-
-  return quads;
-}
-
-function seedChatTaskThreadRunProviderQuads(quads: Quad[]): void {
-  const chatGraph = `${DATA}/chat/default/index.ttl`;
-  const chat = `${chatGraph}#this`;
-  const thread = `${chatGraph}#thread_1`;
-  const taskGraph = `${DATA}/task/index.ttl`;
-  const task = `${taskGraph}#default`;
-  const taskThreadGraph = `${DATA}/task/default/index.ttl`;
-  const taskThread = `${taskThreadGraph}#thread_1`;
-  const scheduleGraph = `${DATA}/task/default/2026/05/18/schedules.ttl`;
-  const runGraph = `${DATA}/task/default/2026/05/18/runs.ttl`;
-  const run = `${runGraph}#run_1`;
-  const workspace = 'file://macbook.local/Users/alice/project/';
-  const provider = `${SETTINGS}/providers/anthropic.ttl`;
-  const credentialGraph = `${SETTINGS}/credentials.ttl`;
-  const credential = `${credentialGraph}#anthropic-default`;
-
-  quads.push(
-    q(chat, RDF_TYPE, iri(`${MEETING}LongChat`), chatGraph),
-    q(chat, DCT_TITLE, literal('Default chat'), chatGraph),
-    q(chat, DCT_MODIFIED, literal('2026-05-18T00:00:00.000Z'), chatGraph),
-    q(thread, RDF_TYPE, iri(`${SIOC}Thread`), chatGraph),
-    q(thread, DCT_CREATED, literal('2026-05-18T00:00:01.000Z'), chatGraph),
-    q(thread, `${UDFS}workspace`, iri(workspace), chatGraph),
-    q(task, RDF_TYPE, iri(`${UDFS}Task`), taskGraph),
-    q(task, `${UDFS}status`, literal('active'), taskGraph),
-    q(task, `${UDFS}workspace`, iri(workspace), taskGraph),
-    q(taskThread, RDF_TYPE, iri(`${SIOC}Thread`), taskThreadGraph),
-    q(taskThread, DCT_CREATED, literal('2026-05-18T00:30:00.000Z'), taskThreadGraph),
-    q(`${scheduleGraph}#schedule_1`, RDF_TYPE, iri(`${UDFS}Schedule`), scheduleGraph),
-    q(`${scheduleGraph}#schedule_1`, `${UDFS}status`, literal('active'), scheduleGraph),
-    q(`${scheduleGraph}#schedule_1`, `${UDFS}nextRunAt`, literal('2026-05-18T01:00:00.000Z'), scheduleGraph),
-    q(run, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
-    q(run, DCT_CREATED, literal('2026-05-18T01:00:00.000Z'), runGraph),
-    q(run, `${UDFS}status`, literal('queued'), runGraph),
-    q(run, `${UDFS}workspace`, iri(workspace), runGraph),
-    q(run, `${UDFS}priority`, literal('10', iri(XSD_INTEGER)), runGraph),
-    q(`${runGraph}#run_2`, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
-    q(`${runGraph}#run_2`, DCT_CREATED, literal('2026-05-18T01:05:00.000Z'), runGraph),
-    q(`${runGraph}#run_2`, `${UDFS}status`, literal('queued'), runGraph),
-    q(`${runGraph}#run_2`, `${UDFS}workspace`, iri(workspace), runGraph),
-    q(`${runGraph}#run_2`, `${UDFS}priority`, literal('2', iri(XSD_INTEGER)), runGraph),
-    q(`${runGraph}#run_3`, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
-    q(`${runGraph}#run_3`, DCT_CREATED, literal('2026-05-18T01:10:00.000Z'), runGraph),
-    q(`${runGraph}#run_3`, `${UDFS}status`, literal('running'), runGraph),
-    q(`${runGraph}#run_3`, `${UDFS}workspace`, iri(workspace), runGraph),
-    q(`${runGraph}#run_3`, `${UDFS}priority`, literal('8', iri(XSD_INTEGER)), runGraph),
-    q(`${runGraph}#step_1`, RDF_TYPE, iri(`${UDFS}RunStep`), runGraph),
-    q(`${runGraph}#step_1`, `${UDFS}run`, iri(run), runGraph),
-    q(`${runGraph}#step_2`, RDF_TYPE, iri(`${UDFS}RunStep`), runGraph),
-    q(`${runGraph}#step_2`, `${UDFS}run`, iri(run), runGraph),
-    q(provider, RDF_TYPE, iri(`${UDFS}Provider`), provider),
-    q(provider, `${UDFS}displayName`, literal('Anthropic'), provider),
-    q(`${provider}#claude-sonnet-4`, RDF_TYPE, iri(`${UDFS}Model`), provider),
-    q(`${provider}#claude-sonnet-4`, `${UDFS}isProvidedBy`, iri(provider), provider),
-    q(credential, RDF_TYPE, iri(`${UDFS}Credential`), credentialGraph),
-    q(credential, `${UDFS}provider`, iri(provider), credentialGraph),
-  );
-}
-
-function seedAgentContactFavoriteQuads(quads: Quad[]): void {
-  const agentGraph = `${DATA}/agents/secretary.ttl`;
-  const agent = `${agentGraph}#this`;
-  const contactGraph = `${DATA}/contacts/secretary.ttl`;
-  const contact = contactGraph;
-  const favoriteGraph = `${DATA}/favorites/2026/05/18.ttl`;
-  const favorite = `${favoriteGraph}#favorite_1`;
-  const chat = `${DATA}/chat/default/index.ttl#this`;
-
-  quads.push(
-    q(agent, RDF_TYPE, iri(FOAF_AGENT), agentGraph),
-    q(agent, `${UDFS}provider`, literal('anthropic'), agentGraph),
-    q(agent, `${UDFS}model`, literal('claude-sonnet-4'), agentGraph),
-    q(contact, RDF_TYPE, iri(VCARD_INDIVIDUAL), contactGraph),
-    q(contact, `${UDFS}contactType`, literal('agent'), contactGraph),
-    q(contact, `${UDFS}favorite`, literal('true'), contactGraph),
-    q(favorite, RDF_TYPE, iri(SCHEMA_CREATIVE_WORK), favoriteGraph),
-    q(favorite, `${UDFS}favoriteTarget`, iri(chat), favoriteGraph),
-    q(favorite, `${UDFS}favoredAt`, literal('2026-05-18T02:00:00.000Z'), favoriteGraph),
-  );
-}
-
-function seedCanonicalMessages(quads: Quad[]): void {
-  const thread = `${DATA}/chat/default/index.ttl#thread_1`;
-  const graph = `${DATA}/chat/default/2026/05/18/messages.ttl`;
-  const scores = ['2', '10', '4'];
-
-  for (let index = 0; index < 3; index += 1) {
-    const message = `${graph}#msg_${index + 1}`;
-    const timestamp = `2026-05-18T00:0${index + 1}:00.000Z`;
-    quads.push(
-      q(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
-      q(message, SIOC_HAS_MEMBER, iri(thread), graph),
-      q(message, DCT_CREATED, literal(timestamp), graph),
-      q(message, DCT_MODIFIED, literal(timestamp), graph),
-      q(message, `${UDFS}score`, literal(scores[index], namedNode(XSD_INTEGER)), graph),
-      q(message, SIOC_CONTENT, literal(`canonical message ${index + 1}`), graph),
-    );
-  }
-
-}
-
-function seedSyntheticMessages(quads: Quad[], count: number, podCount: number): void {
-  const syntheticPodCount = Math.max(1, Math.floor(podCount));
-  for (let index = 0; index < count; index += 1) {
-    const podIndex = index % syntheticPodCount;
-    const pod = podIndex === 0 ? POD : `https://pod.example/synthetic-${podIndex}`;
-    const data = `${pod}/.data`;
-    const thread = `${data}/chat/default/index.ttl#thread_1`;
-    const dayNumber = (index % 28) + 1;
-    const day = String(dayNumber).padStart(2, '0');
-    const graph = `${data}/chat/default/2026/05/${day}/messages.ttl`;
-    const message = `${graph}#synthetic_${index}`;
-    const timestamp = new Date(Date.UTC(2026, 4, dayNumber, 12, 0, index)).toISOString();
-    quads.push(
-      q(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
-      q(message, SIOC_HAS_MEMBER, iri(thread), graph),
-      q(message, DCT_CREATED, literal(timestamp), graph),
-      q(message, SIOC_CONTENT, literal(`synthetic searchable message ${index}`), graph),
-    );
-  }
-}
-
-function q(subject: string, predicate: string, object: ReturnType<typeof iri> | ReturnType<typeof literal>, graph: string): Quad {
-  return quad(namedNode(subject), namedNode(predicate), object, namedNode(graph));
-}
-
-function iri(value: string): ReturnType<typeof namedNode> {
-  return namedNode(value);
-}
-
 function seedSummary(
   options: CliOptions,
   seedQuadCount: number,
   backfill: { scannedRows: number; indexedRows: number; batchCount: number; durationMs: number },
 ): Record<string, unknown> {
   return {
-    pod: POD,
+    pod: RDF_MODELS_BENCHMARK_POD,
     scale: options.scale,
     iterations: options.iterations,
     syntheticMessages: options.syntheticMessages,

@@ -1045,6 +1045,7 @@ benchmark。
 ```bash
 bun run benchmark:rdf-models
 bun run benchmark:rdf-models -- --scale=small --iterations=1
+bun run benchmark:rdf-models:pg -- --scale=small --iterations=1
 bun run test:w3c
 ```
 
@@ -1053,6 +1054,7 @@ bun run test:w3c
 - `models-baseline-*.json`：只跑 candidate `SolidRdfEngine`，记录 case、checksum、p50/p95、physical plan、scanned rows、index choice 和空间统计。
 - `models-shadow-*.json`：同一批 models case 同时跑旧 TEXT `QuintStore` 和 term-id `SolidRdfEngine`，记录 matched / orderedMatched / diff、p95 performance comparison、TEXT vs term-id space comparison 和 plan gate。
 - `models-rdf3x-shadow-*.json`：同一批 models scan / query case 同时跑 `SolidRdfEngine` baseline 和 `Rdf3xIndex` candidate，记录 RDF-3X rebuild、matched / orderedMatched / diff、candidate physical plan、planMatched / missingPlan / failedPlanCases 和 storage profile；plan gate 只验证已存在的固定 index profile，不触发 query-time 动态建索引。
+- `models-postgres-*.json`：同一批 models scan / query case 跑 `PostgresRdfEngine` PGlite baseline，默认关闭 query result cache 并刷新 RDF-3X derived stats，记录 PG physical plan、planMatched / failedPlanCases、storage profile 和 `pgAcceleration` fallback/capability 状态。
 
 最新 medium 级实测摘要和迁移计划单独维护在
 [RDF Performance Report and Data Migration Plan](rdf-performance-and-migration-plan.md)，
@@ -1141,6 +1143,7 @@ compare(A, B)
 - `runRdfModelsBenchmark(...)` 已能基于 `rdfModelsBenchmarkCases` 生成 baseline report，包含 query、返回行数、checksum、p50/p95、physical plan、scanned rows、index choice、join order、fallback reason 和 index 空间统计；空间统计同时记录总 DB bytes、RDF table bytes、RDF index bytes 和 SQLite object breakdown。medium 级 `search message literals` case 会带 `$contains` 条件，证明 literal text index 不是普通 predicate scan。report 同时记录 `planMatched` / `missingPlan` / `failedPlanCases`，把 expected plan 和实际 `metrics.indexChoice` / `metrics.queryPlan` 对齐成可机检 gate。
 - `runRdfModelsShadowBenchmark(...)` 已能对同一 models benchmark case 同时执行旧 TEXT `QuintStore` 和新 term-id `SolidRdfEngine` scan，并记录 matched、orderedMatch、diff、两边 checksum、p50/p95、compatibility store stats、candidate index metrics、performance comparison 和 space comparison；TEXT store stats 与 candidate index stats 都包含 table/index space breakdown。medium/large scale 已把 “term-id quads 不能比 TEXT quints 更差” 做成硬 gate；small scale 只记录空间比较，避免固定 schema/index 页开销误判。
 - `bun run benchmark:rdf-models` 已提供 repo 内可重复执行的基准入口，会构造覆盖 chat/task/thread/message/run/runStep/provider/model/credential 的 deterministic seed data，回灌 shadow index，并把 baseline / shadow / RDF-3X shadow report 保存到 `.test-data/rdf-engine/`。脚本 summary 会打印 baseline/shadow/RDF-3X plan gate、shadow performance gate 和 shadow space gate；任何 shadow diff、plan mismatch、明显 p95 退化或 medium/large 空间退化都会让命令退出非 0。
+- `bun run benchmark:rdf-models:pg` 已提供同 seed / 同 models case 的 PostgreSQL baseline gate，当前使用 PGlite 跑 `PostgresRdfEngine`，默认关闭 query result cache，执行前调用 `refreshDerivedIndexes()`，并把 `models-postgres-*.json` report 保存到 `.test-data/rdf-engine/`；任何 plan mismatch、seed 未达到目标规模或 derived stats 未同步都会让命令退出非 0。2026-06-04 small gate 中 seed 为 `114` quads，19 个 scan case 和 7 个 query case 均 plan matched，`message score by thread numeric aggregate` 走 `PostgresRdf3xGroupAggregate`，未落回 `PostgresFactsQuery`。
 - `rdfModelsQueryBenchmarkCases` 已开始覆盖跨 pattern 的业务查询物理计划，并在 report 中记录 RdfQuery DSL 输入、physical plan 和 checksum：按 thread 拉最新 message 会要求 `ORDER BY createdAt DESC LIMIT 1` 保持在 SQL self-join 内；workspace 内下一条 queued run 会要求 status/workspace/createdAt 三个 pattern 在 SQL self-join 内完成并下推 `ORDER BY createdAt ASC LIMIT 1`；run step 列表会要求 `rdf:type RunStep` 和 `udfs:run` 关系在 SQL self-join 内完成并下推排序/分页；task materialization 会要求 `rdf:type Schedule`、`udfs:status "active"` 和 `udfs:nextRunAt <= cutoff` 在 SQL self-join 内完成，并下推 range filter、排序和分页；这些 timeline/state-center/one-to-many/scheduler 查询会和 grouped message count / message-thread `COUNT DISTINCT` 一起作为 RdfQueryExecutor 的 models-level plan gate。
 - `RdfQueryExecutor` 已开始承接 phase 2 的本地物理查询层，支持 BGP join、OPTIONAL group、COUNT/basic aggregate、FILTER DSL 和 select/order/limit 投影；可下推的 exact/range/prefix filter 会合并到 `RdfQuadIndex.scan(...)`，纯 required-pattern 查询里已经由 index 保证的 filter 不再重复进入后置内存 `Filter(...)`。
 - `RdfQuadIndex.scan(...)` 已把 graph/source prefix scope、lexical range filter 和 RDF term text search 改为显式 `JOIN rdf_terms ...`，避免把前缀 graph、range hit 或 text hit 先展开成巨大 `IN (?, ...)` / `IN (SELECT ...)` 候选列表；`$in` / `$notIn` 这类 VALUES-style term filter 在短列表时保留参数化 `IN`，长列表会写入临时候选表并用 JOIN / anti-JOIN 回连 quad scan，避免长 SQL、参数上限和 planner 误判；medium models benchmark 中 `search message literals` 的 physical plan 可机检到 `prefix_graph_id` 和 `text_object_id_contains` JOIN，`task materialization due time` 可机检到 `object_id_range_lte` JOIN。
