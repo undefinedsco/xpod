@@ -208,6 +208,8 @@ P1 的定义：支撑更完整的 SPARQL shape、搜索融合和可观测性。
 
 - cache key 必须包含 `factsDataVersion`，写入推进 facts version 后旧缓存不可命中。
 - cache scope 必须区分 auth/business scope；不同用户、workspace、task/thread 的结果不得复用。
+- cache store ABI 必须接收 normalized `scope_hash`，用于索引和可观测性；权限解释仍在进入
+  extension 前完成，extension 不根据 `scope_hash` 自行判权。
 - cache row 只缓存 term ids / scalar values / score，不缓存可变权限解释。
 - 当前 H0 `sql-abi` 已实现 `cache.result`：`PostgresRdfEngine` 在 capability enabled 时会调用
   `xpod_rdf.result_cache_probe(...)` / `xpod_rdf.result_cache_store(...)`，并在 metrics plan 中

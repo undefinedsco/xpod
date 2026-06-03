@@ -34,10 +34,13 @@ AS $fn$
     AND cache.facts_data_version = p_facts_data_version
 $fn$;
 
+DROP FUNCTION IF EXISTS xpod_rdf.result_cache_store(text, bigint, text, text, bigint);
+
 CREATE OR REPLACE FUNCTION xpod_rdf.result_cache_store(
   p_cache_key text,
   p_facts_data_version bigint,
   p_query_shape text,
+  p_scope_hash text,
   p_result_json text,
   p_row_count bigint
 )
@@ -48,13 +51,15 @@ AS $fn$
     cache_key,
     facts_data_version,
     query_shape,
+    scope_hash,
     result_json,
     row_count,
     created_at
   )
-  VALUES (p_cache_key, p_facts_data_version, p_query_shape, p_result_json, p_row_count, NOW())
+  VALUES (p_cache_key, p_facts_data_version, p_query_shape, p_scope_hash, p_result_json, p_row_count, NOW())
   ON CONFLICT (cache_key, facts_data_version) DO UPDATE
   SET query_shape = EXCLUDED.query_shape,
+      scope_hash = EXCLUDED.scope_hash,
       result_json = EXCLUDED.result_json,
       row_count = EXCLUDED.row_count,
       created_at = NOW()

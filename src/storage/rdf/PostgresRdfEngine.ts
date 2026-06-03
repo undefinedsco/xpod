@@ -119,11 +119,13 @@ const XPOD_RDF_SQL_ABI_STATEMENTS = [
         AND cache.facts_data_version = p_facts_data_version
     $fn$
   `,
+  'DROP FUNCTION IF EXISTS xpod_rdf.result_cache_store(text, bigint, text, text, bigint)',
   `
     CREATE OR REPLACE FUNCTION xpod_rdf.result_cache_store(
       p_cache_key text,
       p_facts_data_version bigint,
       p_query_shape text,
+      p_scope_hash text,
       p_result_json text,
       p_row_count bigint
     )
@@ -134,13 +136,15 @@ const XPOD_RDF_SQL_ABI_STATEMENTS = [
         cache_key,
         facts_data_version,
         query_shape,
+        scope_hash,
         result_json,
         row_count,
         created_at
       )
-      VALUES (p_cache_key, p_facts_data_version, p_query_shape, p_result_json, p_row_count, NOW())
+      VALUES (p_cache_key, p_facts_data_version, p_query_shape, p_scope_hash, p_result_json, p_row_count, NOW())
       ON CONFLICT (cache_key, facts_data_version) DO UPDATE
       SET query_shape = EXCLUDED.query_shape,
+          scope_hash = EXCLUDED.scope_hash,
           result_json = EXCLUDED.result_json,
           row_count = EXCLUDED.row_count,
           created_at = NOW()
@@ -986,6 +990,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     const factsDataVersion = await this.readFactsDataVersion();
     const queryShape = stableRdfQueryShape(query);
+    const scopeHash = rdfQueryCacheScopeHash(query);
     const cacheKey = queryResultCacheKey(queryShape);
     const cacheTtlMs = this.queryResultCacheTtlMs(query);
     await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
@@ -998,7 +1003,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     const native = await this.queryNative(query);
     const result = native ?? await this.queryFacts(query);
-    const storePlan = await this.writeQueryResultCache(cacheKey, factsDataVersion, queryShape, result);
+    const storePlan = await this.writeQueryResultCache(cacheKey, factsDataVersion, queryShape, scopeHash, result);
     await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
     return this.withPgAccelerationFallbackPlan(withQueryCachePlan(
       result,
@@ -1126,6 +1131,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         cache_key TEXT NOT NULL,
         facts_data_version BIGINT NOT NULL,
         query_shape TEXT NOT NULL,
+        scope_hash TEXT NOT NULL DEFAULT 'legacy',
         result_json TEXT NOT NULL,
         row_count BIGINT NOT NULL,
         hit_count BIGINT NOT NULL DEFAULT 0,
@@ -1135,8 +1141,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
       )
     `);
     await executor.exec(`
+      ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
+      ADD COLUMN IF NOT EXISTS scope_hash TEXT NOT NULL DEFAULT 'legacy'
+    `);
+    await executor.exec(`
       CREATE INDEX IF NOT EXISTS rdf_query_result_cache_version
       ON ${RDF_QUERY_RESULT_CACHE_TABLE} (facts_data_version)
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_query_result_cache_scope
+      ON ${RDF_QUERY_RESULT_CACHE_TABLE} (facts_data_version, scope_hash)
     `);
     await executor.exec(`
       CREATE INDEX IF NOT EXISTS rdf_query_result_cache_created_at
@@ -1726,17 +1740,19 @@ export class PostgresRdfEngine implements RdfEngineLike {
     cacheKey: string,
     factsDataVersion: number,
     queryShape: string,
+    scopeHash: string,
     result: RdfQueryResult,
   ): Promise<string[]> {
     const resultJson = serializeQueryResult(result);
     if (this.canUsePgAccelerationCapability('cache.result')) {
       try {
         await this.requireExecutor().exec(`
-          SELECT xpod_rdf.result_cache_store($1, $2, $3, $4, $5)
+          SELECT xpod_rdf.result_cache_store($1, $2, $3, $4, $5, $6)
         `, [
           cacheKey,
           factsDataVersion,
           queryShape,
+          scopeHash,
           resultJson,
           result.bindings.length,
         ]);
@@ -1752,13 +1768,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
         cache_key,
         facts_data_version,
         query_shape,
+        scope_hash,
         result_json,
         row_count,
         created_at
       )
-      VALUES ($1, $2, $3, $4, $5, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
       ON CONFLICT (cache_key, facts_data_version) DO UPDATE
       SET query_shape = EXCLUDED.query_shape,
+          scope_hash = EXCLUDED.scope_hash,
           result_json = EXCLUDED.result_json,
           row_count = EXCLUDED.row_count,
           created_at = NOW()
@@ -1766,6 +1784,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       cacheKey,
       factsDataVersion,
       queryShape,
+      scopeHash,
       resultJson,
       result.bindings.length,
     ]);
@@ -3753,6 +3772,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const spaceObjects = await this.collectQueryResultCacheSpaceObjects();
     return {
       entryCount: await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF_QUERY_RESULT_CACHE_TABLE}`),
+      scopeCount: await this.scalarCount(`SELECT COUNT(DISTINCT scope_hash) AS count FROM ${RDF_QUERY_RESULT_CACHE_TABLE}`),
       tableBytes: sumSpaceObjects(spaceObjects, 'table'),
       indexBytes: sumSpaceObjects(spaceObjects, 'index'),
       totalBytes: spaceObjects.reduce((sum, object) => sum + object.bytes, 0),
@@ -3922,8 +3942,20 @@ function stableRdfQueryShape(query: RdfQuery): string {
   const { cache, ...semanticQuery } = query;
   return JSON.stringify(normalizeQueryCacheValue({
     ...semanticQuery,
-    cacheScope: cache?.scope ?? 'default',
+    cacheScope: rdfQueryCacheScope(query),
   }));
+}
+
+function rdfQueryCacheScope(query: RdfQuery): string {
+  return query.cache?.scope ?? 'default';
+}
+
+function rdfQueryCacheScopeHash(query: RdfQuery): string {
+  return createHash('sha256')
+    .update('rdf-query-cache-scope')
+    .update('\0')
+    .update(rdfQueryCacheScope(query))
+    .digest('hex');
 }
 
 function queryResultCacheKey(queryShape: string): string {

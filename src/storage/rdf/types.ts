@@ -138,6 +138,7 @@ export interface RdfPgAccelerationStats {
 
 export interface RdfQueryResultCacheStats {
   entryCount: number;
+  scopeCount: number;
   tableBytes: number;
   indexBytes: number;
   totalBytes: number;

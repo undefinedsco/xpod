@@ -309,7 +309,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - RDF-3X stats / BGP join path。
 - grouped count / grouped and non-grouped numeric aggregate native SQL path。
 - query result cache by facts data version。
-- `storageStats()` 中暴露 facts / derived / query cache 统计。
+- `rdf_query_result_cache.scope_hash` 记录 normalized cache scope 的摘要；`storageStats()` 中暴露
+  facts / derived / query cache 统计，包括 cache `entryCount` 和 `scopeCount`。
 - `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE`
   facts 与 RDF-3X stats 表。
 - `rdfAccelerationProfile` capability probe，能在 `xpod_rdf` extension 缺失时稳定 fallback。
@@ -350,6 +351,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - R2 / COS blob 不是 RDF derived index，除非明确全量重置 Pod 内容，否则不清理。
 - `rdf_query_result_cache` 可随时删除。
 - `rdf3x_*` derived stats 可随时删除。
+- `rdf_query_result_cache.scope_hash` 是派生观测字段；旧行可用 `legacy` 默认值，清 cache 后会自然重建。
 
 ### Data Classes
 
@@ -417,8 +419,10 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
    - run/task scheduler query
    - ACL/ACR profile access
    - SPARQL graph prefix query
-10. 打开写流量。
-11. 观察 p95、500、401、index refresh duration、storage ratio。
+10. 检查 `storageStats().queryResultCache.scopeCount` 能随不同 principal / workspace cache scope
+    增长，确认 result cache 没有跨 scope 复用。
+11. 打开写流量。
+12. 观察 p95、500、401、index refresh duration、storage ratio、cache entry/scope ratio。
 
 ### Rollback
 
@@ -451,6 +455,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `rdf3x.syncedWithFacts=true`。
 - profile / schema version 不一致时重建逻辑可重复执行。
 - profile 401、models 读取、ACL/ACR 查询 smoke 通过。
+- result cache smoke 需要覆盖不同 cache scope：同一 query 在 Alice/Bob scope 下应产生不同 cache
+  entry，`storageStats().queryResultCache.scopeCount` 应反映该隔离。
 
 native PG extension 或 `pg-custom-index` 进入默认 cloud profile 前还必须额外满足：
 

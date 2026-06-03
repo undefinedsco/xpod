@@ -267,6 +267,7 @@ describe('PostgresRdfEngine', () => {
       const storage = await engine.storageStats();
       expect(storage.queryResultCache).toMatchObject({
         entryCount: 1,
+        scopeCount: 1,
       });
       expect(storage.derivedBytes).toBeGreaterThanOrEqual(storage.queryResultCache?.totalBytes ?? 0);
 
@@ -329,6 +330,7 @@ describe('PostgresRdfEngine', () => {
       expect(second.metrics.plan.join('\n')).not.toContain('PostgresResultCache');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 0,
+        scopeCount: 0,
       });
     } finally {
       await engine.close();
@@ -374,6 +376,7 @@ describe('PostgresRdfEngine', () => {
       expect(aliceAgain.metrics.plan).toContain('PostgresResultCacheHit');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 2,
+        scopeCount: 2,
       });
     } finally {
       await engine.close();
@@ -414,6 +417,7 @@ describe('PostgresRdfEngine', () => {
       expect(second.metrics.plan.join('\n')).not.toContain('PostgresResultCache');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 0,
+        scopeCount: 0,
       });
     } finally {
       await engine.close();
@@ -459,12 +463,14 @@ describe('PostgresRdfEngine', () => {
       expect(refreshed.metrics.plan).not.toContain('PostgresResultCacheHit');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 1,
+        scopeCount: 1,
       });
 
       const afterRefresh = await engine.query(baseQuery);
       expect(afterRefresh.metrics.plan).toContain('PostgresResultCacheHit');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 1,
+        scopeCount: 1,
       });
     } finally {
       await engine.close();
@@ -525,6 +531,7 @@ describe('PostgresRdfEngine', () => {
       expect(second.metrics.plan).not.toContain('XpodRdfExtensionUnsupported(scan.exact_graph)');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 1,
+        scopeCount: 1,
       });
     } finally {
       await engine.close();
@@ -581,6 +588,7 @@ describe('PostgresRdfEngine', () => {
       expect(closed.metrics.plan).toContain('PostgresResultCacheStore');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 1,
+        scopeCount: 1,
       });
     } finally {
       await engine.close();
