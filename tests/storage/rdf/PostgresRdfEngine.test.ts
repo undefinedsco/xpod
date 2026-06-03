@@ -466,6 +466,80 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('uses the schema-local xpod_rdf cache ABI when the capability is enabled', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-sql-abi-cache-'));
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const query: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+    };
+
+    const bootstrap = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    try {
+      await bootstrap.open();
+    } finally {
+      await bootstrap.close();
+    }
+
+    const db = new PGlite(dataDir);
+    try {
+      await db.waitReady;
+      await installXpodRdfCacheSqlAbi(db);
+    } finally {
+      await db.close();
+    }
+
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      rdfAccelerationProfile: 'pg-hot-operators',
+      rdfExtensionRequiredCapabilities: ['cache.result'],
+    });
+
+    try {
+      await engine.open();
+      expect((await engine.storageStats()).pgAcceleration).toMatchObject({
+        profile: 'pg-hot-operators',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'sql-abi',
+        capabilities: ['cache.result'],
+        requiredCapabilities: ['cache.result'],
+        missingCapabilities: [],
+        activeOperators: ['cache.result'],
+      });
+
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+      const first = await engine.query(query);
+      expect(first.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(first.metrics.plan).toContain('XpodRdfExtensionResultCacheStore');
+      expect(first.metrics.plan).toContain('PostgresResultCacheStore');
+
+      const second = await engine.query(query);
+      expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(second.metrics.plan).toContain('XpodRdfExtensionResultCacheProbe');
+      expect(second.metrics.plan).toContain('PostgresResultCacheHit');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 1,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('prunes PostgreSQL query result cache entries to the configured profile', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-prune-'));
     const engine = new PostgresRdfEngine({
@@ -1014,6 +1088,72 @@ class StringIntegerPgPool {
 
   public async end(): Promise<void> {
     await this.db.close();
+  }
+}
+
+async function installXpodRdfCacheSqlAbi(db: PGlite): Promise<void> {
+  const statements = [
+    'CREATE SCHEMA IF NOT EXISTS xpod_rdf',
+    `
+      CREATE OR REPLACE FUNCTION xpod_rdf.version()
+      RETURNS text
+      LANGUAGE SQL
+      AS $fn$
+        SELECT '0.1.0-sql'::text
+      $fn$
+    `,
+    `
+      CREATE OR REPLACE FUNCTION xpod_rdf.capabilities()
+      RETURNS text
+      LANGUAGE SQL
+      AS $fn$
+        SELECT 'cache.result'::text
+      $fn$
+    `,
+    `
+      CREATE OR REPLACE FUNCTION xpod_rdf.result_cache_probe(
+        p_cache_key text,
+        p_facts_data_version bigint
+      )
+      RETURNS TABLE(result_json text, row_count bigint)
+      LANGUAGE SQL
+      AS $fn$
+        SELECT cache.result_json, cache.row_count
+        FROM rdf_query_result_cache cache
+        WHERE cache.cache_key = p_cache_key
+          AND cache.facts_data_version = p_facts_data_version
+      $fn$
+    `,
+    `
+      CREATE OR REPLACE FUNCTION xpod_rdf.result_cache_store(
+        p_cache_key text,
+        p_facts_data_version bigint,
+        p_query_shape text,
+        p_result_json text,
+        p_row_count bigint
+      )
+      RETURNS void
+      LANGUAGE SQL
+      AS $fn$
+        INSERT INTO rdf_query_result_cache (
+          cache_key,
+          facts_data_version,
+          query_shape,
+          result_json,
+          row_count,
+          created_at
+        )
+        VALUES (p_cache_key, p_facts_data_version, p_query_shape, p_result_json, p_row_count, NOW())
+        ON CONFLICT (cache_key, facts_data_version) DO UPDATE
+        SET query_shape = EXCLUDED.query_shape,
+            result_json = EXCLUDED.result_json,
+            row_count = EXCLUDED.row_count,
+            created_at = NOW()
+      $fn$
+    `,
+  ];
+  for (const statement of statements) {
+    await db.query(statement);
   }
 }
 

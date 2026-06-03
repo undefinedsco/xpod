@@ -72,6 +72,12 @@ SELECT xpod_rdf.version();
 SELECT xpod_rdf.capabilities();
 ```
 
+H0 已支持 schema-local SQL ABI：当 `pg_extension` 里没有 native `xpod_rdf`，但
+`xpod_rdf.version()` 和 `xpod_rdf.capabilities()` 存在时，`PostgresRdfEngine` 会把
+provider 标记为 `sql-abi`。这条路径用于托管 PG / PGlite / 早期自托管部署，只暴露已经
+声明的能力位；当前可安装脚本为 `scripts/xpod-rdf-sql-abi.sql`，第一版只提供
+`cache.result`。
+
 能力探测是强制的：
 
 - `PostgresRdfEngine` 启动时探测 extension 是否存在、版本是否兼容、能力位是否满足当前
@@ -79,6 +85,8 @@ SELECT xpod_rdf.capabilities();
 - 探测失败不能影响 Pod 读写；engine 记录 plan marker 后回退 PG RDF-3X baseline。
 - extension 版本升级必须支持 `ALTER EXTENSION xpod_rdf UPDATE` 或明确要求重建 derived
   space。
+- schema-local SQL ABI 不等价于 native extension；它只能作为 H0/H2 的函数式能力入口，
+  不能声明 `scan.*` / `join.*` / `aggregate.*` 等未实现 native hot operators。
 
 部署约束：
 
@@ -187,6 +195,10 @@ P1 的定义：支撑更完整的 SPARQL shape、搜索融合和可观测性。
 - cache key 必须包含 `factsDataVersion`，写入推进 facts version 后旧缓存不可命中。
 - cache scope 必须区分 auth/business scope；不同用户、workspace、task/thread 的结果不得复用。
 - cache row 只缓存 term ids / scalar values / score，不缓存可变权限解释。
+- 当前 H0 `sql-abi` 已实现 `cache.result`：`PostgresRdfEngine` 在 capability enabled 时会调用
+  `xpod_rdf.result_cache_probe(...)` / `xpod_rdf.result_cache_store(...)`，并在 metrics plan 中
+  标记 `XpodRdfExtensionResultCacheProbe` / `XpodRdfExtensionResultCacheStore`；函数缺失或执行
+  失败时回退 baseline cache table path。
 
 `text_candidates` / `vector_candidates` / `score_fusion`
 

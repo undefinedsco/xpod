@@ -475,7 +475,10 @@ acceleration profile。所有收益都必须通过 models benchmark 和真实 Po
   `rdf_query_result_cache`，cache key 由 normalized query shape + facts `data_version`
   组成，写入推进 `data_version` 后旧版本缓存会被清理；engine option 提供
   `queryResultCacheEnabled`、`queryResultCacheMaxEntries`、`queryResultCacheTtlMs`
-  作为 baseline 回退和 derived space 生命周期控制。
+  作为 baseline 回退和 derived space 生命周期控制。H0 schema-local `xpod_rdf` SQL ABI
+  已能提供 `cache.result` provider；能力开启时 cache probe/store 会走
+  `xpod_rdf.result_cache_probe(...)` / `xpod_rdf.result_cache_store(...)`，metrics plan
+  标记实际 operator，缺失或失败时保持 baseline table path。
 
 #### 完整 PG extension hot operators
 

@@ -1,6 +1,6 @@
 # RDF Performance Report and Data Migration Plan
 
-记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；`xpod_rdf` PostgreSQL extension 目前只完成能力探测边界，native hot operator / custom index AM 不能计入已实现性能收益。
+记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；`xpod_rdf` native PostgreSQL extension 目前还没有落地，H0 schema-local SQL ABI 已覆盖 `cache.result`，native hot operator / custom index AM 不能计入已实现性能收益。
 
 ## Current Decision
 
@@ -220,6 +220,9 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 - query result cache by facts data version。
 - `storageStats()` 中暴露 facts / derived / query cache 统计。
 - `rdfAccelerationProfile` capability probe，能在 `xpod_rdf` extension 缺失时稳定 fallback。
+- schema-local `xpod_rdf` SQL ABI provider：当前可通过 `scripts/xpod-rdf-sql-abi.sql` 安装
+  `cache.result`，engine 会调用 `xpod_rdf.result_cache_probe(...)` /
+  `xpod_rdf.result_cache_store(...)`，并在 metrics plan 中标记实际 operator。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；当前 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case。
 
@@ -227,7 +230,8 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 
 - native `xpod_rdf` hot operators。
 - custom index access method `xpod_rdf_perm`。
-- PG extension 实测性能报告；baseline PG/PGlite/real-PG gate 已有，extension profile 还没有。
+- native PG extension 实测性能报告；baseline PG/PGlite/real-PG gate 已有，SQL ABI `cache.result`
+  有单测覆盖，native extension profile 还没有。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座；`pg-hot-operators` / `pg-custom-index` 仍只能在独立 benchmark gate 通过后进入 cloud profile。
 真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。

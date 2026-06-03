@@ -928,12 +928,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     const native = await this.queryNative(query);
     const result = native ?? await this.queryFacts(query);
-    await this.writeQueryResultCache(cacheKey, factsDataVersion, queryShape, result);
+    const storePlan = await this.writeQueryResultCache(cacheKey, factsDataVersion, queryShape, result);
     await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
     return this.withPgAccelerationFallbackPlan(withQueryCachePlan(
       result,
       cacheMode === 'refresh' ? 'PostgresResultCacheRefresh' : 'PostgresResultCacheMiss',
-      'PostgresResultCacheStore',
+      ...storePlan,
     ));
   }
 
@@ -1546,6 +1546,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   private async readQueryResultCache(cacheKey: string, factsDataVersion: number): Promise<RdfQueryResult | undefined> {
     const start = Date.now();
+    if (this.canUsePgAccelerationCapability('cache.result')) {
+      const accelerated = await this.readQueryResultCacheViaPgAcceleration(cacheKey, factsDataVersion, start);
+      if (accelerated) {
+        return accelerated;
+      }
+    }
+
     const rows = await this.requireExecutor().query<PgQueryResultCacheRow>(`
       SELECT result_json, row_count
       FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
@@ -1589,12 +1596,77 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
   }
 
+  private async readQueryResultCacheViaPgAcceleration(
+    cacheKey: string,
+    factsDataVersion: number,
+    start: number,
+  ): Promise<RdfQueryResult | undefined> {
+    try {
+      const rows = await this.requireExecutor().query<PgQueryResultCacheRow>(`
+        SELECT result_json, row_count
+        FROM xpod_rdf.result_cache_probe($1, $2)
+      `, [cacheKey, factsDataVersion]);
+      const row = rows[0];
+      if (!row) {
+        return undefined;
+      }
+
+      const payload = JSON.parse(row.result_json) as SerializedRdfQueryResult;
+      const bindings = deserializeQueryResultBindings(payload.bindings);
+      await this.recordQueryResultCacheHit(cacheKey, factsDataVersion);
+      return {
+        bindings,
+        ...(payload.count !== undefined ? { count: payload.count } : {}),
+        metrics: this.localMetrics(start, 0, Number(row.row_count ?? bindings.length) || bindings.length, bindings.length, [
+          'pg-query-result-cache',
+          ...(payload.sourceIndexChoices ?? []),
+        ], [
+          'XpodRdfExtensionResultCacheProbe',
+          'PostgresResultCacheHit',
+          ...(payload.sourcePlan ?? []),
+          `PostgresResultCacheVersion(${factsDataVersion})`,
+        ]),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async recordQueryResultCacheHit(cacheKey: string, factsDataVersion: number): Promise<void> {
+    await this.requireExecutor().exec(`
+      UPDATE ${RDF_QUERY_RESULT_CACHE_TABLE}
+      SET hit_count = hit_count + 1,
+          last_hit_at = NOW()
+      WHERE cache_key = $1
+        AND facts_data_version = $2
+    `, [cacheKey, factsDataVersion]);
+  }
+
   private async writeQueryResultCache(
     cacheKey: string,
     factsDataVersion: number,
     queryShape: string,
     result: RdfQueryResult,
-  ): Promise<void> {
+  ): Promise<string[]> {
+    const resultJson = serializeQueryResult(result);
+    if (this.canUsePgAccelerationCapability('cache.result')) {
+      try {
+        await this.requireExecutor().exec(`
+          SELECT xpod_rdf.result_cache_store($1, $2, $3, $4, $5)
+        `, [
+          cacheKey,
+          factsDataVersion,
+          queryShape,
+          resultJson,
+          result.bindings.length,
+        ]);
+        return ['XpodRdfExtensionResultCacheStore', 'PostgresResultCacheStore'];
+      } catch {
+        // Fall through to the baseline table path; extension ABI failures must
+        // not change query semantics.
+      }
+    }
+
     await this.requireExecutor().exec(`
       INSERT INTO ${RDF_QUERY_RESULT_CACHE_TABLE} (
         cache_key,
@@ -1614,9 +1686,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
       cacheKey,
       factsDataVersion,
       queryShape,
-      serializeQueryResult(result),
+      resultJson,
       result.bindings.length,
     ]);
+    return ['PostgresResultCacheStore'];
   }
 
   private async pruneQueryResultCache(factsDataVersion: number, ttlMs = this.queryResultCacheTtlMs()): Promise<void> {
@@ -1681,9 +1754,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
           WHERE extname = $1
         ) AS installed
       `, [XPOD_RDF_EXTENSION_NAME]);
-      if (!pgBoolean(extensionRows[0]?.installed)) {
+      const extensionInstalled = pgBoolean(extensionRows[0]?.installed);
+      const sqlAbiAvailable = extensionInstalled ? false : await this.isPgAccelerationSqlAbiAvailable();
+      if (!extensionInstalled && !sqlAbiAvailable) {
         return this.pgAccelerationFallback(profile, requiredCapabilities, 'extension-missing');
       }
+      const provider: NonNullable<RdfPgAccelerationStats['provider']> = extensionInstalled ? 'extension' : 'sql-abi';
 
       const version = await this.readPgAccelerationVersion();
       const capabilities = await this.readPgAccelerationCapabilities();
@@ -1694,6 +1770,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           requested: true,
           available: true,
           enabled: false,
+          provider,
           version,
           capabilities,
           requiredCapabilities,
@@ -1707,14 +1784,40 @@ export class PostgresRdfEngine implements RdfEngineLike {
         requested: true,
         available: true,
         enabled: true,
+        provider,
         version,
         capabilities,
         requiredCapabilities,
         missingCapabilities: [],
+        activeOperators: this.activePgAccelerationOperators(capabilities),
       };
     } catch (error) {
       return this.pgAccelerationFallback(profile, requiredCapabilities, 'probe-failed', errorMessage(error));
     }
+  }
+
+  private async isPgAccelerationSqlAbiAvailable(): Promise<boolean> {
+    const rows = await this.requireExecutor().query<{
+      version_present: unknown;
+      capabilities_present: unknown;
+    }>(`
+      SELECT
+        EXISTS (
+          SELECT 1
+          FROM pg_proc proc
+          JOIN pg_namespace ns ON ns.oid = proc.pronamespace
+          WHERE ns.nspname = 'xpod_rdf'
+            AND proc.proname = 'version'
+        ) AS version_present,
+        EXISTS (
+          SELECT 1
+          FROM pg_proc proc
+          JOIN pg_namespace ns ON ns.oid = proc.pronamespace
+          WHERE ns.nspname = 'xpod_rdf'
+            AND proc.proname = 'capabilities'
+        ) AS capabilities_present
+    `);
+    return pgBoolean(rows[0]?.version_present) && pgBoolean(rows[0]?.capabilities_present);
   }
 
   private disabledPgAccelerationStats(): RdfPgAccelerationStats {
@@ -1776,6 +1879,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private async readPgAccelerationCapabilities(): Promise<string[]> {
     const rows = await this.requireExecutor().query<{ capabilities: unknown }>('SELECT xpod_rdf.capabilities() AS capabilities');
     return normalizePgAccelerationCapabilities(rows[0]?.capabilities);
+  }
+
+  private canUsePgAccelerationCapability(capability: string): boolean {
+    return this.pgAcceleration?.enabled === true && this.pgAcceleration.capabilities.includes(capability);
+  }
+
+  private activePgAccelerationOperators(capabilities: string[]): string[] {
+    return [
+      ...(capabilities.includes('cache.result') ? ['cache.result'] : []),
+    ];
   }
 
   private withPgAccelerationFallbackPlan(result: RdfQueryResult): RdfQueryResult {

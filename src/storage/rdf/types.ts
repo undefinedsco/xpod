@@ -124,10 +124,12 @@ export interface RdfPgAccelerationStats {
   requested: boolean;
   available: boolean;
   enabled: boolean;
+  provider?: 'extension' | 'sql-abi';
   version?: string;
   capabilities: string[];
   requiredCapabilities: string[];
   missingCapabilities: string[];
+  activeOperators?: string[];
   fallbackReason?: RdfPgAccelerationFallbackReason;
   fallbackDetail?: string;
 }
