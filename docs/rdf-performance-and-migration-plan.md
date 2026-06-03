@@ -209,7 +209,7 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 | latest message by thread query | 17 ms | large 2-pattern message join, SQL self-join stays native |
 | message join count distinct | 8 ms | large count-distinct join, native count path |
 
-冷启动说明：同一批数据在未区分 warmup 的首次 disposable PG run 中，`latest message by thread query` 曾记录 `2600 ms`，`message join count distinct` 曾记录 `1674 ms`。随后对同一 seeded PG 执行 `refreshDerivedIndexes()` 后会同步 `ANALYZE` facts / RDF-3X stats 表，benchmark 也会先跑 warmup 再采样，两个 case 分别稳定到 `17 ms` 和 `8 ms`。因此旧秒级结果归类为 cold-start / planner stats artifact，不能再作为 steady-state 结论，但必须保留为冷启动观测项。
+冷启动说明：同一批数据在未区分 warmup 的首次 disposable PG run 中，`latest message by thread query` 曾记录 `2600 ms`，`message join count distinct` 曾记录 `1674 ms`。随后对同一 seeded PG 执行 `refreshDerivedIndexes()` 后会同步 `ANALYZE` facts / RDF-3X stats 表，benchmark 也会先跑 warmup 再采样，两个 case 分别稳定到 `17 ms` 和 `8 ms`。因此旧秒级结果归类为 cold-start / planner stats artifact，不能再作为 steady-state 结论，但必须保留为冷启动观测项。PostgreSQL `refreshDerivedIndexes()` 的返回值会暴露 `plannerStats.analyzedTables`，运维和 benchmark 需要把它作为 stats refresh 已执行的证据。
 
 结论：真实 PG medium gate 已证明 schema、refresh、planner gate、numeric aggregate 下推和 warm steady-state 性能都可用。当前 PG baseline 可以作为 cloud RDF-3X 的默认正确性和性能底座；下一步 product-grade acceleration 不应重做事实存储，而应继续补 hot operators、result cache 策略、并发和更大数据量 gate，把冷启动、统计刷新和 query cache 生命周期纳入运维指标。
 
@@ -222,6 +222,8 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 - grouped count / grouped and non-grouped numeric aggregate native SQL path。
 - query result cache by facts data version。
 - `storageStats()` 中暴露 facts / derived / query cache 统计。
+- `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE`
+  facts 与 RDF-3X stats 表。
 - `rdfAccelerationProfile` capability probe，能在 `xpod_rdf` extension 缺失时稳定 fallback。
 - schema-local `xpod_rdf` SQL ABI provider：当前可通过 `scripts/xpod-rdf-sql-abi.sql` 安装
   `cache.result`，engine 会调用 `xpod_rdf.result_cache_probe(...)` /
@@ -300,7 +302,7 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
    - truncate `rdf_terms`
    - reset `rdf_index_metadata`
 6. 启动新版本 xpod，执行 Pod bootstrap / SolidFS replay。
-7. 执行 `refreshDerivedIndexes()`，直到 `storageStats().rdf3x.syncedWithFacts=true`。
+7. 执行 `refreshDerivedIndexes()`，直到 `storageStats().rdf3x.syncedWithFacts=true`，且 refresh 返回值包含 `plannerStats.analyzedTables`。
 8. 跑 smoke：
    - GET WebID profile
    - list chat/task

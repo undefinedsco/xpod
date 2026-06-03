@@ -23,6 +23,7 @@ import type {
   RdfQueryMetrics,
   RdfQueryResultCacheStats,
   RdfQueryResult,
+  RdfPlannerStatsRefreshResult,
   RdfPgAccelerationProfile,
   RdfPgAccelerationStats,
   RdfPatternQuery,
@@ -1007,6 +1008,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const factsDataVersion = await this.readFactsDataVersion();
     const previousFactsDataVersion = await this.readRdf3xFactsDataVersion();
     if (previousFactsDataVersion === factsDataVersion) {
+      const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
       return {
         derivedIndexProfile: 'rdf3x',
         factsDataVersion,
@@ -1015,10 +1017,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
           previousFactsDataVersion,
           factsDataVersion,
           syncedWithFacts: true,
+          plannerStats,
         },
       };
     }
     const rebuild = await this.rebuildRdf3xDerivedIndexes(factsDataVersion);
+    const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
     return {
       derivedIndexProfile: 'rdf3x',
       factsDataVersion,
@@ -1027,6 +1031,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         previousFactsDataVersion,
         factsDataVersion,
         syncedWithFacts: true,
+        plannerStats,
         rebuild,
       },
     };
@@ -1326,7 +1331,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
       `, [String(factsDataVersion)]);
     });
-    await this.refreshPlannerStats(executor);
     const stats = await this.rdf3xStats();
     return {
       scannedQuads,
@@ -1338,10 +1342,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private async refreshPlannerStats(executor: AsyncSqlExecutor): Promise<void> {
+  private async refreshPlannerStats(executor: AsyncSqlExecutor): Promise<RdfPlannerStatsRefreshResult> {
+    const start = Date.now();
     for (const table of RDF_PLANNER_STATS_TABLES) {
       await executor.exec(`ANALYZE ${table}`);
     }
+    return {
+      analyzedTables: [...RDF_PLANNER_STATS_TABLES],
+      durationMs: Date.now() - start,
+    };
   }
 
   private async scanNative(pattern: QuintPattern, options?: QueryOptions): Promise<RdfQuadIndexScanResult> {

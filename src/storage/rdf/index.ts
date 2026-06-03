@@ -87,6 +87,7 @@ export type {
   RdfEngineLike,
   RdfEngineStorageStats,
   RdfDerivedIndexRefreshResult,
+  RdfPlannerStatsRefreshResult,
   RdfIndexStats,
   RdfDerivedIndexProfile,
   RdfPgAccelerationFallbackReason,

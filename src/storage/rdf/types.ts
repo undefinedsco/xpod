@@ -150,8 +150,14 @@ export interface RdfDerivedIndexRefreshResult {
     previousFactsDataVersion: number;
     factsDataVersion: number;
     syncedWithFacts: boolean;
+    plannerStats?: RdfPlannerStatsRefreshResult;
     rebuild?: Rdf3xRebuildResult;
   };
+}
+
+export interface RdfPlannerStatsRefreshResult {
+  analyzedTables: string[];
+  durationMs: number;
 }
 
 export interface RdfIndexSpaceObject {

@@ -180,6 +180,12 @@ describe('PostgresRdfEngine', () => {
           memberships: 6,
         },
       });
+      expect(refresh.rdf3x?.plannerStats?.analyzedTables).toEqual(expect.arrayContaining([
+        'rdf_terms',
+        'rdf_quads',
+        'rdf3x_stat_g',
+      ]));
+      expect(refresh.rdf3x?.plannerStats?.durationMs).toEqual(expect.any(Number));
 
       const scan = await engine.scan({
         pattern: {
@@ -846,6 +852,26 @@ describe('PostgresRdfEngine', () => {
         factsDataVersion: 1,
         syncedWithFacts: true,
       });
+      expect(firstRefresh.rdf3x?.plannerStats?.analyzedTables).toEqual(expect.arrayContaining([
+        'rdf_terms',
+        'rdf_quads',
+        'rdf3x_stat_g',
+      ]));
+      expect(firstRefresh.rdf3x?.plannerStats?.durationMs).toEqual(expect.any(Number));
+      const secondRefresh = await engine.refreshDerivedIndexes();
+      expect(secondRefresh.rdf3x).toMatchObject({
+        refreshed: false,
+        previousFactsDataVersion: 1,
+        factsDataVersion: 1,
+        syncedWithFacts: true,
+      });
+      expect(secondRefresh.rdf3x?.plannerStats?.analyzedTables).toEqual(expect.arrayContaining([
+        'rdf_terms',
+        'rdf_quads',
+        'rdf3x_stat_g',
+      ]));
+      expect(secondRefresh.rdf3x?.plannerStats?.durationMs).toEqual(expect.any(Number));
+      expect(secondRefresh.rdf3x?.rebuild).toBeUndefined();
 
       await engine.put(quad(run2, namedNode(STATUS), literal('closed'), graph));
       const query = await engine.query({

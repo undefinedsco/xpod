@@ -96,7 +96,7 @@ SolidRdfEngine
 - RDF-3X projection / graph stats 是异步派生层。写入只推进 facts `data_version` 并把派生层标记为 needs-refresh，不在请求路径自动重建 stats。
 - `scan` / `query` 以 facts + covering index 为可用主路径，不能依赖 RDF-3X stats 已同步；当前 planner 可表达的 shape 可以直接走 PG facts SQL。
 - `storageStats()` 只报告当前 facts 与 derived stats 的同步状态，不触发补建。`rdf3x.syncedWithFacts=false` 是合法运行态。
-- `refreshDerivedIndexes()` 是显式补建入口，供启动、维护任务、测试或运维调用。它可以从当前 facts 重建 `rdf3x_*` stats，但不是普通查询的隐式前置步骤。
+- `refreshDerivedIndexes()` 是显式补建入口，供启动、维护任务、测试或运维调用。它可以从当前 facts 重建 `rdf3x_*` stats，但不是普通查询的隐式前置步骤。PostgreSQL backend 每次显式 refresh 都会同步执行 facts / RDF-3X stats 表的 planner stats refresh，并在返回值里暴露 `plannerStats.analyzedTables` 与耗时；即使派生 stats 已追上 facts、无需 rebuild，也不能跳过这个显式运维动作。
 - SolidFS journal 只负责本地权威文件到 Pod HTTP / index syncer 的 outbox、replay 和 compaction；它不是 RDF-3X 派生索引新鲜度证明。即使 journal 已 replay 完，仍必须用 facts `data_version` 与 `rdf3x_metadata.facts_data_version` 判断派生索引是否 needs-refresh。
 - SQLite/file-backed `SolidRdfEngine` 和 PostgreSQL `PostgresRdfEngine` 都不维护第二套内存 refresh guard；query readiness、refresh skip 和 storage stats 都直接读取 durable metadata。backend 差异只保留在同步/异步 executor 与 SQL 方言上。
 
