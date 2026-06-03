@@ -177,6 +177,7 @@
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       },
+      "options_rdfAccelerationProfile": "pg-result-cache",
       "options_autoOpen": true
     },
     {

@@ -381,7 +381,7 @@ custom AM 不允许和六个 btree covering index 永久全部叠满。
 必须保留全局禁用开关：
 
 ```text
-rdfAccelerationProfile = baseline | pg-hot-operators | pg-custom-index
+rdfAccelerationProfile = baseline | pg-result-cache | pg-hot-operators | pg-custom-index
 ```
 
 这是内部部署 profile，不是用户可见 backend selector。

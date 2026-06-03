@@ -8,7 +8,10 @@
 - 默认索引 profile：`rdf3x`。
 - 事实源：SolidFS 权威文件和 RDF facts 表；RDF-3X derived stats / query cache 都是可删除、可重建的派生数据。
 - 不提供用户可见的 `Hexastore / RDF-3X / QLever` backend selector。
-- PG extension 路线只作为 `PostgresRdfEngine` 内部 acceleration profile：`baseline | pg-hot-operators | pg-custom-index`。
+- PG extension 路线只作为 `PostgresRdfEngine` 内部 acceleration profile：
+  `baseline | pg-result-cache | pg-hot-operators | pg-custom-index`。
+- cloud 默认可启用 `pg-result-cache`：启动时安装 schema-local SQL ABI 并只激活
+  `cache.result`；完整 `pg-hot-operators` / `pg-custom-index` 仍必须等独立 benchmark gate。
 
 ## Benchmark Evidence
 
@@ -233,7 +236,9 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 - native PG extension 实测性能报告；baseline PG/PGlite/real-PG gate 已有，SQL ABI `cache.result`
   有单测覆盖，native extension profile 还没有。
 
-因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座；`pg-hot-operators` / `pg-custom-index` 仍只能在独立 benchmark gate 通过后进入 cloud profile。
+因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用
+`pg-result-cache` 打开已验证的 repeated-query cache acceleration；`pg-hot-operators` /
+`pg-custom-index` 仍只能在独立 benchmark gate 通过后进入 cloud profile。
 真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 
 ## Migration Strategy

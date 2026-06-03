@@ -49,7 +49,7 @@ export interface RdfQuadIndexOptions {
 }
 
 export type RdfDerivedIndexProfile = 'baseline' | 'rdf3x';
-export type RdfPgAccelerationProfile = 'baseline' | 'pg-hot-operators' | 'pg-custom-index';
+export type RdfPgAccelerationProfile = 'baseline' | 'pg-result-cache' | 'pg-hot-operators' | 'pg-custom-index';
 export type RdfPgAccelerationFallbackReason =
   | 'profile-disabled'
   | 'extension-missing'

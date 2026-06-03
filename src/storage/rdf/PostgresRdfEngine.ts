@@ -66,6 +66,9 @@ const RDF_QUERY_RESULT_CACHE_KEY_VERSION = 1;
 const DEFAULT_QUERY_RESULT_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const XPOD_RDF_EXTENSION_NAME = 'xpod_rdf';
+const RESULT_CACHE_REQUIRED_CAPABILITIES = [
+  'cache.result',
+];
 const HOT_OPERATOR_REQUIRED_CAPABILITIES = [
   'scan.exact_graph',
   'scan.graph_prefix',
@@ -73,12 +76,72 @@ const HOT_OPERATOR_REQUIRED_CAPABILITIES = [
   'join.required_bgp',
   'aggregate.count',
   'aggregate.numeric',
-  'cache.result',
+  ...RESULT_CACHE_REQUIRED_CAPABILITIES,
 ];
 const CUSTOM_INDEX_REQUIRED_CAPABILITIES = [
   ...HOT_OPERATOR_REQUIRED_CAPABILITIES,
   'index.xpod_rdf_perm',
 ];
+const XPOD_RDF_SQL_ABI_STATEMENTS = [
+  'CREATE SCHEMA IF NOT EXISTS xpod_rdf',
+  `
+    CREATE OR REPLACE FUNCTION xpod_rdf.version()
+    RETURNS text
+    LANGUAGE SQL
+    AS $fn$
+      SELECT '0.1.0-sql'::text
+    $fn$
+  `,
+  `
+    CREATE OR REPLACE FUNCTION xpod_rdf.capabilities()
+    RETURNS text
+    LANGUAGE SQL
+    AS $fn$
+      SELECT 'cache.result'::text
+    $fn$
+  `,
+  `
+    CREATE OR REPLACE FUNCTION xpod_rdf.result_cache_probe(
+      p_cache_key text,
+      p_facts_data_version bigint
+    )
+    RETURNS TABLE(result_json text, row_count bigint)
+    LANGUAGE SQL
+    AS $fn$
+      SELECT cache.result_json, cache.row_count
+      FROM rdf_query_result_cache cache
+      WHERE cache.cache_key = p_cache_key
+        AND cache.facts_data_version = p_facts_data_version
+    $fn$
+  `,
+  `
+    CREATE OR REPLACE FUNCTION xpod_rdf.result_cache_store(
+      p_cache_key text,
+      p_facts_data_version bigint,
+      p_query_shape text,
+      p_result_json text,
+      p_row_count bigint
+    )
+    RETURNS void
+    LANGUAGE SQL
+    AS $fn$
+      INSERT INTO rdf_query_result_cache (
+        cache_key,
+        facts_data_version,
+        query_shape,
+        result_json,
+        row_count,
+        created_at
+      )
+      VALUES (p_cache_key, p_facts_data_version, p_query_shape, p_result_json, p_row_count, NOW())
+      ON CONFLICT (cache_key, facts_data_version) DO UPDATE
+      SET query_shape = EXCLUDED.query_shape,
+          result_json = EXCLUDED.result_json,
+          row_count = EXCLUDED.row_count,
+          created_at = NOW()
+    $fn$
+  `,
+] as const;
 const RDF_PLANNER_STATS_TABLES = [
   'rdf_terms',
   'rdf_sources',
@@ -721,6 +784,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private initializing: Promise<void> | null = null;
   private readonly pgOptions: PostgresRdfEngineOptions;
   private pgAcceleration: RdfPgAccelerationStats | null = null;
+  private pgAccelerationSqlAbiInstallError: string | undefined;
   private sharedPoolConfig: {
     connectionString?: string;
     host?: string;
@@ -753,6 +817,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         this.termDictionary = new PostgresRdfTermDictionary(this.requireExecutor());
         await this.termDictionary.initialize();
         await this.initializeSchema();
+        await this.ensurePgAccelerationSqlAbi();
         this.pgAcceleration = await this.probePgAcceleration();
         this.initialized = true;
       })
@@ -1747,17 +1812,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     const executor = this.requireExecutor();
     try {
-      const extensionRows = await executor.query<{ installed: boolean }>(`
-        SELECT EXISTS (
-          SELECT 1
-          FROM pg_extension
-          WHERE extname = $1
-        ) AS installed
-      `, [XPOD_RDF_EXTENSION_NAME]);
-      const extensionInstalled = pgBoolean(extensionRows[0]?.installed);
+      const extensionInstalled = await this.hasNativePgAccelerationExtension();
       const sqlAbiAvailable = extensionInstalled ? false : await this.isPgAccelerationSqlAbiAvailable();
       if (!extensionInstalled && !sqlAbiAvailable) {
-        return this.pgAccelerationFallback(profile, requiredCapabilities, 'extension-missing');
+        return this.pgAccelerationFallback(profile, requiredCapabilities, 'extension-missing', this.pgAccelerationSqlAbiInstallError);
       }
       const provider: NonNullable<RdfPgAccelerationStats['provider']> = extensionInstalled ? 'extension' : 'sql-abi';
 
@@ -1794,6 +1852,44 @@ export class PostgresRdfEngine implements RdfEngineLike {
     } catch (error) {
       return this.pgAccelerationFallback(profile, requiredCapabilities, 'probe-failed', errorMessage(error));
     }
+  }
+
+  private async ensurePgAccelerationSqlAbi(): Promise<void> {
+    if (!this.shouldInstallPgAccelerationSqlAbi()) {
+      return;
+    }
+    try {
+      if (await this.hasNativePgAccelerationExtension()) {
+        return;
+      }
+      for (const statement of XPOD_RDF_SQL_ABI_STATEMENTS) {
+        await this.requireExecutor().exec(statement);
+      }
+      this.pgAccelerationSqlAbiInstallError = undefined;
+    } catch (error) {
+      this.pgAccelerationSqlAbiInstallError = errorMessage(error);
+    }
+  }
+
+  private shouldInstallPgAccelerationSqlAbi(): boolean {
+    const profile = this.pgOptions.rdfAccelerationProfile ?? 'baseline';
+    if (profile === 'baseline') {
+      return false;
+    }
+    const requiredCapabilities = this.requiredPgAccelerationCapabilities(profile);
+    return requiredCapabilities.length === RESULT_CACHE_REQUIRED_CAPABILITIES.length
+      && requiredCapabilities.every((capability) => RESULT_CACHE_REQUIRED_CAPABILITIES.includes(capability));
+  }
+
+  private async hasNativePgAccelerationExtension(): Promise<boolean> {
+    const rows = await this.requireExecutor().query<{ installed: unknown }>(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_extension
+        WHERE extname = $1
+      ) AS installed
+    `, [XPOD_RDF_EXTENSION_NAME]);
+    return pgBoolean(rows[0]?.installed);
   }
 
   private async isPgAccelerationSqlAbiAvailable(): Promise<boolean> {
@@ -1859,6 +1955,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
     switch (profile) {
       case 'baseline':
         return [];
+      case 'pg-result-cache':
+        return [...RESULT_CACHE_REQUIRED_CAPABILITIES];
       case 'pg-hot-operators':
         return [...HOT_OPERATOR_REQUIRED_CAPABILITIES];
       case 'pg-custom-index':

@@ -478,7 +478,9 @@ acceleration profile。所有收益都必须通过 models benchmark 和真实 Po
   作为 baseline 回退和 derived space 生命周期控制。H0 schema-local `xpod_rdf` SQL ABI
   已能提供 `cache.result` provider；能力开启时 cache probe/store 会走
   `xpod_rdf.result_cache_probe(...)` / `xpod_rdf.result_cache_store(...)`，metrics plan
-  标记实际 operator，缺失或失败时保持 baseline table path。
+  标记实际 operator，缺失或失败时保持 baseline table path。`pg-result-cache` 是当前可部署的
+  cache-only acceleration profile；`pg-hot-operators` 继续表示完整 scan/join/aggregate/cache
+  P0 operator profile。
 
 #### 完整 PG extension hot operators
 
