@@ -180,7 +180,8 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --rdfAcceleratio
 `XpodRdfPgHotOperator(scan.graph_prefix)` 15 次、`scan.exact_graph` 2 次、
 `join.required_bgp` 7 次、`aggregate.count` 3 次、`aggregate.numeric` 2 次。该结果证明
 `pg-hot-operators` profile 已能在没有 native extension 的情况下启用 PG SQL hot operator
-路径；它仍不是 medium/real-PG 性能容量结论。
+路径；benchmark CLI 会校验请求的 acceleration profile 已实际 enabled，避免 fallback 后
+仅因 correctness 通过而误判为 acceleration 验收通过。它仍不是 medium/real-PG 性能容量结论。
 
 ### Real PostgreSQL / Disposable Medium Gate
 
@@ -444,6 +445,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `bun run benchmark:rdf-models -- --scale=medium --iterations=3` 通过。
 - `bun run benchmark:rdf-models:pg -- --scale=small --iterations=1` 通过。
 - `bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1` 通过；cloud 性能发布必须同时记录 warm steady-state p95 和 cold first-run 观测，且 `latest message by thread query` / `message join count distinct` warm p95 不能回到秒级。
+- 显式传入 `--rdfAccelerationProfile=<profile>` 的 PG benchmark 必须显示
+  `pg acceleration matched request: true`；非 baseline profile fallback 时命令必须非零退出。
 - `storageStats().totalToFactsRatio` 可接受；当前 medium 参考值为 SQLite/file-backed 1.18x、真实 PG 1.39x。
 - `rdf3x.syncedWithFacts=true`。
 - profile / schema version 不一致时重建逻辑可重复执行。

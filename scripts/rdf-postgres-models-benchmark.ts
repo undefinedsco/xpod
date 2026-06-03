@@ -60,6 +60,7 @@ async function main(): Promise<void> {
 
     const fullScale = rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length);
     const synced = report.storage.rdf3x?.syncedWithFacts === true;
+    const accelerationMatched = rdfAccelerationProfileMatched(options.rdfAccelerationProfile, report.storage);
     printSummary({
       options,
       paths,
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
       targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
       fullScale,
       synced,
+      accelerationMatched,
       scanCases: report.cases.length,
       queryCases: report.queryCases.length,
       planMatched: report.planMatched,
@@ -74,7 +76,7 @@ async function main(): Promise<void> {
       storage: report.storage,
     });
 
-    if (!fullScale || !synced || !report.planMatched) {
+    if (!fullScale || !synced || !report.planMatched || !accelerationMatched) {
       process.exitCode = 1;
     }
   } finally {
@@ -191,6 +193,14 @@ function isRdfPgAccelerationProfile(value: string): value is RdfPgAccelerationPr
     || value === 'pg-custom-index';
 }
 
+function rdfAccelerationProfileMatched(profile: RdfPgAccelerationProfile, storage: RdfEngineStorageStats): boolean {
+  const stats = storage.pgAcceleration;
+  if (profile === 'baseline') {
+    return stats?.profile === 'baseline' && stats.enabled === false;
+  }
+  return stats?.profile === profile && stats.enabled === true;
+}
+
 function createBenchmarkPaths(options: CliOptions): BenchmarkPaths {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runId = `${stamp}-${process.pid}-${randomUUID()}`;
@@ -264,6 +274,7 @@ function printSummary(summary: {
   targetQuadCount: number;
   fullScale: boolean;
   synced: boolean;
+  accelerationMatched: boolean;
   scanCases: number;
   queryCases: number;
   planMatched: boolean;
@@ -285,6 +296,8 @@ function printSummary(summary: {
   console.log(`  rdf3x synced with facts: ${summary.synced}`);
   console.log(`  pg acceleration profile: ${summary.storage.pgAcceleration?.profile ?? 'unknown'}`);
   console.log(`  pg acceleration enabled: ${summary.storage.pgAcceleration?.enabled ?? false}`);
+  console.log(`  pg acceleration matched request: ${summary.accelerationMatched}`);
+  console.log(`  pg active operators: ${(summary.storage.pgAcceleration?.activeOperators ?? []).join(', ') || 'none'}`);
   console.log(`  storage facts bytes: ${summary.storage.factsBytes}`);
   console.log(`  storage derived bytes: ${summary.storage.derivedBytes}`);
   console.log(`  storage total/facts ratio: ${formatRatio(summary.storage.totalToFactsRatio)}`);
@@ -297,6 +310,9 @@ function printSummary(summary: {
   }
   if (summary.failedPlanCases.length > 0) {
     console.error(`  failed plan cases: ${summary.failedPlanCases.join(', ')}`);
+  }
+  if (!summary.accelerationMatched) {
+    console.error('  requested pg acceleration profile was not enabled');
   }
 }
 
