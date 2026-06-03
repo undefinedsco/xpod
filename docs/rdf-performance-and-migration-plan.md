@@ -293,25 +293,37 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
    - `rdf3x_*`
    - `rdf_query_result_cache`
 3. 确认清理 scope 只包含 xpod cloud RDF 表，不包含 ai-gateway 或其他服务 schema。
-4. 清理 RDF derived/cache：
-   - drop / truncate `rdf3x_*`
-   - truncate `rdf_query_result_cache`
-5. 如果 facts schema 也不兼容或现网数据可丢，继续清理 facts：
-   - truncate `rdf_quads`
-   - truncate `rdf_sources`
-   - truncate `rdf_terms`
-   - reset `rdf_index_metadata`
-6. 启动新版本 xpod，执行 Pod bootstrap / SolidFS replay。
-7. 执行 `refreshDerivedIndexes()`，直到 `storageStats().rdf3x.syncedWithFacts=true`，且 refresh 返回值包含 `plannerStats.analyzedTables`。
-8. 跑 smoke：
+4. 先 dry-run RDF-only reset，确认脚本只列出 RDF facts / RDF-3X / query cache / metadata 表：
+
+   ```bash
+   bun run ops:rdf:reset:pg -- --connectionString=<cloud-xpod-pg-url>
+   ```
+
+5. 清理 RDF derived/cache：
+
+   ```bash
+   bun run ops:rdf:reset:pg -- --connectionString=<cloud-xpod-pg-url> --execute --confirm=RESET_XPOD_RDF_DERIVED
+   ```
+
+6. 如果 facts schema 也不兼容或现网数据可丢，继续清理 facts。这个模式会额外 truncate
+   `rdf_quads` / `rdf_sources` / `rdf_terms`，并重置 facts `data_version`：
+
+   ```bash
+   bun run ops:rdf:reset:pg -- --connectionString=<cloud-xpod-pg-url> --includeFacts --execute --confirm=RESET_XPOD_RDF_FACTS
+   ```
+
+   该脚本只触碰 xpod RDF 表，不能用于清理 identity、auth、quota、billing、AI gateway 或 R2/COS。
+7. 启动新版本 xpod，执行 Pod bootstrap / SolidFS replay。
+8. 执行 `refreshDerivedIndexes()`，直到 `storageStats().rdf3x.syncedWithFacts=true`，且 refresh 返回值包含 `plannerStats.analyzedTables`。
+9. 跑 smoke：
    - GET WebID profile
    - list chat/task
    - load message by id
    - run/task scheduler query
    - ACL/ACR profile access
    - SPARQL graph prefix query
-9. 打开写流量。
-10. 观察 p95、500、401、index refresh duration、storage ratio。
+10. 打开写流量。
+11. 观察 p95、500、401、index refresh duration、storage ratio。
 
 ### Rollback
 
@@ -354,5 +366,4 @@ PG extension 进入默认 cloud profile 前还必须额外满足：
 
 - 优化或禁用当前 SQLite/file-backed numeric aggregate 的 RDF-3X unconditional path。
 - 增加真实 PG cold-start benchmark case：区分首次连接/首次执行、stats refresh 后首轮、warm steady-state 三个口径。
-- 增加 cloud runbook 脚本：只清理 RDF 表，不碰 identity / ai-gateway。
 - 为 `storageStats()` 增加 cloud dashboard 指标：facts bytes、derived bytes、cache bytes、refresh lag、facts data version。

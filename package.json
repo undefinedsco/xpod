@@ -100,6 +100,7 @@
     "test:storage": "vitest --run tests/storage/",
     "benchmark:rdf-models": "bun scripts/rdf-models-benchmark.ts",
     "benchmark:rdf-models:pg": "bun scripts/rdf-postgres-models-benchmark.ts",
+    "ops:rdf:reset:pg": "bun scripts/reset-postgres-rdf-index.ts",
     "dev:cluster:lite": "docker compose -f docker-compose.standalone.yml up --build",
     "dev:cluster:lite:down": "docker compose -f docker-compose.standalone.yml down",
     "doctor:dev-procs": "node scripts/dev-process-doctor.cjs scan",
