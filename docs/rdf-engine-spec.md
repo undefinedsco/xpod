@@ -389,6 +389,189 @@ SolidFS files
 
 QLever 支持 federation、Graph Store HTTP Protocol、updates 等完整能力，但 Xpod server 不把 federation 放进本地 Pod 查询热路径；update 能力也必须通过 Xpod 的文件权威和 delta/journal 协议落地。
 
+### Cloud Product-grade RDF acceleration 路线
+
+cloud 后续不把 QLever 作为外部 sidecar，也不把官方 QLever index 文件作为第二套事实源。
+更合适的路线是把产品级 RDF 查询体验所需的 planner、executor、cache、text/vector
+和索引能力翻译成 Xpod 自己的 PostgreSQL extension，暂名 `xpod_rdf`：
+
+```text
+SolidFS / journal
+  -> PostgreSQL facts
+       rdf_terms
+       rdf_quads
+       rdf_quads_* covering indexes
+       rdf3x_stat_*
+  -> xpod_rdf extension
+       planner helpers
+       RDF pattern scan / BGP join executor
+       result cache / materialized result tables
+       text / vector candidate merge
+       future custom RDF index access method
+```
+
+这个路线的语义是 “PG-backed RDF accelerator”，不是把官方 QLever 换一个 storage
+backend 后直接运行。RDF-3X、QLever、SQL optimizer 和列式/全文/vector engine 的算法
+都可以作为参考，但 cloud 的事实权威仍然只有 PG facts 表；extension 里的索引、cache、
+materialized result 和 text/vector 候选结构都属于 derived space，可删除、可重建，并且
+必须按 facts `data_version` 失效或刷新。
+
+实施顺序必须分层推进：
+
+1. 先用现有 PG facts / covering indexes / RDF-3X stats 实现 planner 与 executor
+   fast path，验证 query shape、storage profile 和 p95 收益。
+2. 再把热点算子下沉到 PostgreSQL extension，例如 permutation scan、term-id merge
+   join、count / aggregate、result cache probe 和 text candidate scoring。
+3. 只有 benchmark 证明 PG btree / SQL executor 成为瓶颈时，才实现 custom scan
+   provider 或 custom RDF index access method。
+
+`xpod_rdf` 作为 PostgreSQL extension 不需要重新编译 PostgreSQL core。需要编译的是
+extension 自身，并且 extension binary 必须匹配目标 PostgreSQL major version、CPU
+架构和运行镜像。自托管 PG 可以把 extension 打进镜像并通过 `CREATE EXTENSION`
+启用；托管 PG 如果不允许安装自定义 C/C++/Rust extension，则不能走这条路线，只能保留
+PG SQL / query service 形态。
+
+即使实现 custom index access method，也不能把 extension 变成第二套 SPO 权威。索引
+可以物化 term-id postings 或排序结构，但它们只计入 derived/index space；业务 facts
+仍以 `rdf_quads` 和 SolidFS journal 为准。对外仍只暴露 `SolidRdfEngine` 行为契约和
+现有 `/-/sparql` 协议，不提供 “QLever backend / PG extension backend” 用户选择项。
+
+#### 与 RDF-3X baseline 的成本 / 收益估算
+
+RDF-3X baseline 是 local 和 cloud 的共同必备内核；`xpod_rdf` extension 不是替代这条
+主线，而是 cloud 在更大数据量、更高并发、更多 text/vector 混合查询后才启用的 product-grade
+acceleration profile。所有收益都必须通过 models benchmark 和真实 Pod storage profile 验证后才能
+进入默认配置。
+
+| 方案 | 预期收益 | 主要成本 | 默认策略 |
+| --- | --- | --- | --- |
+| PG RDF-3X baseline | 已覆盖 exact graph / graph prefix、single-pattern scan、BGP join、count / aggregate 等主路径；无需 PG extension，部署简单 | 仍受 PG btree / SQL executor / JS query layer 开销影响；text/RDF 混合和重复复杂查询需要额外 profile | cloud/local 默认继续依赖 |
+| `xpod_rdf` hot-operator extension | 将 permutation scan、merge join、count / aggregate、cache probe 等 CPU 热点下沉到 PG 进程内，减少 JS/SQL 往返和中间结果搬运 | 需要编译 extension、维护 PG major version ABI、增加部署镜像复杂度；收益依赖热点 query shape | benchmark 证明 RDF-3X baseline CPU-bound 后启用 |
+| `xpod_rdf` result cache / materialized result | 对重复 models 查询、常用列表页、统计页、Agent context 查询可能带来数量级延迟下降；不需要第二套 SPO | cache invalidation、权限 scope、storage TTL 和 derived space 配额必须严格控制 | 适合 cloud-first，必须绑定 `data_version` |
+| `xpod_rdf` custom RDF index access method | 有机会把 PG btree 六排列替换成更接近 QLever/RDF-3X 的压缩 term-id postings / ordered stream，降低大 join 的 IO 和 CPU | 难度最高；需要处理 WAL、MVCC、VACUUM、crash recovery、rebuild、统计和 planner 接入 | 只作为后续阶段，不作为第一版 |
+
+粗略判断：
+
+- 对小 Pod、简单 exact graph 查询，PG RDF-3X baseline 已经足够，extension 收益有限。
+- 对复杂 BGP、count / aggregate、分页列表和 repeated models 查询，hot-operator extension
+  可能提供稳定的倍数级改善；如果命中 materialized result/cache，延迟改善可以远大于
+  单纯 RDF-3X join 优化。
+- 对 text/RDF/vector 混合检索，RDF-3X baseline 本身不是完整答案，product-grade acceleration
+  profile 的收益主要来自 candidate generation、scoring、cache、materialized result 和结构化
+  join 的一体化。
+- storage 不能把 RDF-3X baseline、custom index 和 cache 全部叠满。若 custom RDF index
+  access method 成熟，它应该逐步替代部分 PG btree covering index，而不是长期额外复制
+  一整套 permutation facts。
+- 如果 extension 只新增 cache / materialized result，空间增长应由 TTL、profile 和
+  `storageStats()` 控制；如果新增 custom postings，必须单独报告 index/facts ratio，并以
+  benchmark gate 决定是否启用。
+
+#### 完整 PG extension hot operators
+
+`xpod_rdf` 的第一类 native 能力是 hot operators：把当前 `PostgresRdfEngine` 中已经验证
+有价值、且在 PG btree / SQL executor / JS 中间结果搬运上 CPU-bound 的算子下沉到
+PostgreSQL extension。它不是独立查询服务，也不是 raw SPARQL endpoint；上层仍由
+`SolidRdfEngine` 传入已归一化、已 scope 的 query AST / physical plan。
+
+首批 hot operators 范围：
+
+| Operator | 输入 | 输出 | 用途 |
+| --- | --- | --- | --- |
+| `rdf_scan` | graph/source scope、term-id pattern、filter、limit/order hint | term-id row stream + metrics | single-pattern scan / candidate scan |
+| `rdf_bgp_join` | required BGP physical plan、变量投影、join order / stats hint | projected binding rows / count | 多 pattern BGP join、term-id merge join |
+| `rdf_count_aggregate` | BGP physical plan、group keys、aggregate expression | grouped count / numeric aggregate rows | count、group count、duration/size 等数值聚合 |
+| `rdf_result_cache_probe` | normalized query shape、graph scope、auth scope、facts `data_version` | cached rows / miss reason | repeated models query、列表页、Agent context |
+| `rdf_materialized_result_scan` | materialized result id、version、projection、pagination | cached/materialized row stream | 常用 dashboard / context query |
+| `rdf_text_candidates` | text/vector query、source scope、limit、score options | candidate ids + score | text/vector candidate generation 后再结构化 join |
+
+约束：
+
+- 输入必须是 `SolidRdfEngine` 归一化后的内部 plan；不接受任意用户 SQL 或公开 SPARQL。
+- 所有 scope 必须在进入 extension 前确定，包括 graph/source prefix、principal/auth scope、
+  workspace/task/thread 等业务约束。
+- extension 只读 PG facts 与 derived tables；写路径仍由 `SolidRdfEngine` / SolidFS journal
+  负责推进 facts version。
+- cache / materialized result 必须以 query shape、graph scope、auth scope、facts
+  `data_version` 为 key；不能跨权限复用。
+- hot operators 的收益必须由 benchmark gate 证明：同一 query shape 相比 PG RDF-3X
+  baseline 有稳定 p95 改善，且 storage ratio / CPU / memory 没有超过 profile 预算。
+
+不做：
+
+- 不在第一版注册 public SQL API 给应用直接调用。
+- 不要求 PG planner 自动理解任意 SPARQL；custom scan provider 只有在函数式 hot
+  operator 接口稳定后才考虑。
+- 不实现第二套更新协议；SPARQL update 仍先进入 Xpod 写路径。
+
+#### Custom RDF index access method
+
+`xpod_rdf` 的第二类 native 能力是 custom RDF index access method，暂名
+`xpod_rdf_perm`。它只有在 hot operators + PG btree covering index 已经证明瓶颈明显时
+才进入实现，不作为 P0 或第一版 extension 的前置条件。
+
+目标：
+
+```sql
+CREATE ACCESS METHOD xpod_rdf_perm TYPE INDEX HANDLER xpod_rdf_perm_handler;
+
+CREATE INDEX rdf_quads_spo_perm
+ON rdf_quads
+USING xpod_rdf_perm (subject_id, predicate_id, object_id, graph_id);
+```
+
+`xpod_rdf_perm` 应提供面向 RDF term-id 的 ordered stream / postings，而不是通用 btree：
+
+- 支持 SPO / SOP / PSO / POS / OSP / OPS 等排列的 bound-prefix scan。
+- 支持 graph/source scope 收窄，避免先扫全局三元组再后置过滤 graph。
+- 支持按 term-id 有序输出，供 merge join、distinct、count、pagination 使用。
+- 支持 cardinality / fanout stats 读取，供 `rdf_bgp_join` 做 join order。
+- 可使用 block compression / postings layout，但它们只属于 derived/index space。
+
+生命周期约束：
+
+- `rdf_quads` 仍是事实权威；custom index 只是 PG index，不是第二套 SPO 业务事实。
+- custom index 必须服从 PostgreSQL 的 WAL、MVCC、VACUUM、crash recovery 和 REINDEX
+  语义；如果做不到，就不能进入默认 profile。
+- schema version、index version、facts `data_version`、source hash 必须能在
+  `storageStats()` / index metadata 中报告。
+- 如果 custom index 替代部分 PG btree covering index，必须有 migration / rollback
+  profile；不能长期把 btree 六排列和 custom postings 全部叠满。
+- 托管 PG 不支持自定义 native extension 时，cloud 必须回退到 PG RDF-3X baseline /
+  hot-operator-free profile。
+
+验收：
+
+- correctness 必须与 PG RDF-3X baseline / oracle query 一致。
+- benchmark 必须覆盖 simple exact graph、multi-pattern BGP、graph prefix、count /
+  aggregate、text candidate join、cache miss/hit、write-after-read invalidation。
+- 必须报告 facts bytes、index bytes、derived/cache bytes 和 total-to-facts ratio。
+- 必须提供禁用开关；禁用后 `SolidRdfEngine` 回退到 PG RDF-3X baseline，而不改变业务语义。
+
+#### Product-facing RDF 查询能力缺口
+
+Product-grade 不等于把完整数据库运维能力都产品化。Xpod 对外卖的是一体化服务，
+用户真正感知的是两件事：能不能完成更多业务，以及速度体验是否稳定。metrics、部署、
+观测和 benchmark 是内部验收手段，不是独立产品目标。
+
+| 优先级 | 用户可感知能力 | 需要补的内容 |
+| --- | --- | --- |
+| P0 | 能表达更多业务查询 | models DSL / repository query 归一化成稳定 query AST；支持 relation traversal、filter、sort、pagination、count / aggregate、OPTIONAL / UNION 的常见业务 shape |
+| P0 | 复杂查询速度稳定 | hot-operator pushdown、result cache、materialized result、query template cache；避免大范围 join、排序和聚合每次重新全量计算 |
+| P0 | 搜索 / Agent context 更好用 | RDF literal text、文件 text chunk、embedding chunk、candidate generation、score fusion、rerank，再和结构化条件 join |
+| P0 | 写入后可继续用 | SolidFS journal、SPARQL update、direct engine write、replay/reconcile 后统一推进 facts version，并失效相关 derived data |
+| P1 | 失败可理解、可转向 | unsupported query shape 返回明确能力边界和可行 fallback，不能退成 500 或静默走错误路径 |
+
+内部支撑能力仍然必须存在，但只服务于上面的用户体验：
+
+- Cost model / stats、planner controls、index lifecycle、auth-aware cache、query timeout、
+  slow query backpressure、`EXPLAIN` / trace、storage profile、benchmark / regression、
+  PG extension packaging 和 rollout / rollback 都是工程验收与运维工具。
+- 这些内部能力不单独驱动产品路线；只有当它们能改善业务覆盖或速度体验时才进入
+  `xpod_rdf` 的优先实现范围。
+
+因此 `xpod_rdf` 的目标不是 “实现某个著名引擎”，也不是补齐数据库厂商级全量能力，
+而是在 `SolidRdfEngine` 上优先补齐用户可感知的业务查询覆盖、全文/向量融合、缓存和速度体验。
+
 参考：
 
 - RDF-3X: https://www.vldb.org/pvldb/vol1/1453927.pdf
