@@ -911,7 +911,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const cacheMode = query.cache?.mode ?? 'default';
     if (!this.isQueryResultCacheEnabled(query)) {
       const native = await this.queryNative(query);
-      return this.withPgAccelerationFallbackPlan(native ?? await this.queryFacts(query));
+      return this.withPgAccelerationFallbackPlan(native ?? await this.queryFacts(query), query);
     }
 
     const factsDataVersion = await this.readFactsDataVersion();
@@ -934,7 +934,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       result,
       cacheMode === 'refresh' ? 'PostgresResultCacheRefresh' : 'PostgresResultCacheMiss',
       ...storePlan,
-    ));
+    ), query);
   }
 
   public async refreshDerivedIndexes(): Promise<RdfDerivedIndexRefreshResult> {
@@ -1882,7 +1882,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private canUsePgAccelerationCapability(capability: string): boolean {
-    return this.pgAcceleration?.enabled === true && this.pgAcceleration.capabilities.includes(capability);
+    return this.pgAcceleration?.enabled === true
+      && (this.pgAcceleration.activeOperators ?? []).includes(capability);
   }
 
   private activePgAccelerationOperators(capabilities: string[]): string[] {
@@ -1891,12 +1892,62 @@ export class PostgresRdfEngine implements RdfEngineLike {
     ];
   }
 
-  private withPgAccelerationFallbackPlan(result: RdfQueryResult): RdfQueryResult {
+  private withPgAccelerationFallbackPlan(result: RdfQueryResult, query?: RdfQuery): RdfQueryResult {
     const acceleration = this.pgAcceleration;
     if (!acceleration?.requested || acceleration.enabled) {
-      return result;
+      const unsupportedMarkers = query ? this.unsupportedPgAccelerationMarkers(query) : [];
+      return unsupportedMarkers.length > 0
+        ? withQueryCachePlan(result, ...unsupportedMarkers)
+        : result;
     }
     return withQueryCachePlan(result, `XpodRdfExtensionFallback(${acceleration.fallbackReason ?? 'unknown'})`);
+  }
+
+  private unsupportedPgAccelerationMarkers(query: RdfQuery): string[] {
+    const acceleration = this.pgAcceleration;
+    if (!acceleration?.enabled) {
+      return [];
+    }
+    const activeOperators = new Set(acceleration.activeOperators ?? []);
+    return this.pgAccelerationCapabilitiesForQuery(query)
+      .filter((capability) => !activeOperators.has(capability))
+      .map((capability) => `XpodRdfExtensionUnsupported(${capability})`);
+  }
+
+  private pgAccelerationCapabilitiesForQuery(query: RdfQuery): string[] {
+    const capabilities = new Set<string>();
+    const aggregates = queryAggregates(query);
+    if (aggregates.some((aggregate) => aggregate.type === 'count')) {
+      capabilities.add('aggregate.count');
+    }
+    if (aggregates.some((aggregate) => aggregate.type !== 'count')) {
+      capabilities.add('aggregate.numeric');
+    }
+
+    const requiredPatterns = query.patterns.length > 0 ? query.patterns : [{}];
+    if (requiredPatterns.length > 1) {
+      capabilities.add('join.required_bgp');
+    } else if (requiredPatterns.length === 1) {
+      this.pgAccelerationScanCapabilities(requiredPatterns[0]).forEach((capability) => capabilities.add(capability));
+    }
+    return [...capabilities].sort();
+  }
+
+  private pgAccelerationScanCapabilities(pattern: RdfQueryPattern): string[] {
+    const capabilities = new Set<string>();
+    if (isQueryExactTerm(pattern.graph)) {
+      capabilities.add('scan.exact_graph');
+    } else if (isQueryTermOperator(pattern.graph) && typeof pattern.graph.$startsWith === 'string') {
+      capabilities.add('scan.graph_prefix');
+    }
+    if (
+      (isQueryTermOperator(pattern.subject) && pattern.subject.$in)
+      || (isQueryTermOperator(pattern.predicate) && pattern.predicate.$in)
+      || (isQueryTermOperator(pattern.object) && pattern.object.$in)
+    ) {
+      capabilities.add('scan.term_in');
+    }
+    return [...capabilities].sort();
   }
 
   private async joinFactsPattern(
@@ -4131,6 +4182,18 @@ function matchesQuadPattern(value: Quad, pattern: QuintPattern): boolean {
     const match = pattern[key];
     return !match || matchesTermPattern(value[key] as Term, key, match);
   });
+}
+
+function isQueryExactTerm(match: RdfQueryTermPattern | undefined): match is Term {
+  return Boolean(match) && isTerm(match as any);
+}
+
+function isQueryTermOperator(match: RdfQueryTermPattern | undefined): match is TermOperators {
+  return Boolean(match) && typeof match === 'object' && !isTerm(match as any) && !('variable' in match);
+}
+
+function isTermOperator(match: TermMatch | undefined): match is TermOperators {
+  return Boolean(match) && typeof match === 'object' && !isTerm(match as any);
 }
 
 function matchesTermPattern(term: Term, key: PgPatternKey, match: TermMatch): boolean {

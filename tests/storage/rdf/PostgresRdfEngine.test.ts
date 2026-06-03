@@ -526,11 +526,13 @@ describe('PostgresRdfEngine', () => {
       expect(first.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
       expect(first.metrics.plan).toContain('XpodRdfExtensionResultCacheStore');
       expect(first.metrics.plan).toContain('PostgresResultCacheStore');
+      expect(first.metrics.plan).toContain('XpodRdfExtensionUnsupported(scan.exact_graph)');
 
       const second = await engine.query(query);
       expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
       expect(second.metrics.plan).toContain('XpodRdfExtensionResultCacheProbe');
       expect(second.metrics.plan).toContain('PostgresResultCacheHit');
+      expect(second.metrics.plan).not.toContain('XpodRdfExtensionUnsupported(scan.exact_graph)');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 1,
       });
