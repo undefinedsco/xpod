@@ -951,6 +951,7 @@ describe('PostgresRdfEngine', () => {
       });
 
       expect(report.engine).toBe('postgres-rdf');
+      expect(report.warmupIterations).toBe(1);
       expect(report.planMatched).toBe(true);
       expect(report.failedPlanCases).toEqual([]);
       expect(report.storage.derivedIndexProfile).toBe('rdf3x');
@@ -960,6 +961,8 @@ describe('PostgresRdfEngine', () => {
         enabled: false,
       });
       expect(report.queryCases.flatMap((testCase) => testCase.physicalPlan).join('\n')).not.toContain('PostgresResultCache');
+      expect(report.cases.every((testCase) => testCase.durationsMs.length === 1)).toBe(true);
+      expect(report.queryCases.every((testCase) => testCase.durationsMs.length === 1)).toBe(true);
 
       const numericAggregate = report.queryCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
       expect(numericAggregate).toBeDefined();

@@ -79,6 +79,14 @@ const CUSTOM_INDEX_REQUIRED_CAPABILITIES = [
   ...HOT_OPERATOR_REQUIRED_CAPABILITIES,
   'index.xpod_rdf_perm',
 ];
+const RDF_PLANNER_STATS_TABLES = [
+  'rdf_terms',
+  'rdf_sources',
+  'rdf_quads',
+  RDF3X_GRAPH_PROJECTION_TABLE,
+  ...Object.values(RDF3X_PAIR_PROJECTION_TABLE_BY_NAME),
+  ...Object.values(RDF3X_TERM_PROJECTION_TABLE_BY_NAME),
+] as const;
 
 type PgPatternKey = 'graph' | 'subject' | 'predicate' | 'object';
 type PgTermKey = 'subject' | 'predicate' | 'object';
@@ -1253,6 +1261,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
       `, [String(factsDataVersion)]);
     });
+    await this.refreshPlannerStats(executor);
     const stats = await this.rdf3xStats();
     return {
       scannedQuads,
@@ -1262,6 +1271,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
       factsDataVersion,
       durationMs: Date.now() - start,
     };
+  }
+
+  private async refreshPlannerStats(executor: AsyncSqlExecutor): Promise<void> {
+    for (const table of RDF_PLANNER_STATS_TABLES) {
+      await executor.exec(`ANALYZE ${table}`);
+    }
   }
 
   private async scanNative(pattern: QuintPattern, options?: QueryOptions): Promise<RdfQuadIndexScanResult> {

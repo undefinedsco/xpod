@@ -156,7 +156,7 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 执行命令：
 
 ```bash
-bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --out=.test-data/rdf-pg-real-medium
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --out=.test-data/rdf-pg-real-medium-warmup
 ```
 
 运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container。
@@ -171,6 +171,7 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 | scan cases | 22 |
 | query cases | 8 |
 | iterations | 3 |
+| warmup iterations | 1 |
 
 通过情况：
 
@@ -180,33 +181,34 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 | `rdf3x.syncedWithFacts` | true |
 | query result cache disabled for benchmark | true |
 | PG acceleration profile | `baseline` |
-| report | `.test-data/rdf-pg-real-medium/models-postgres-2026-06-03T19-43-00-499Z-79511-61ee15df-e22c-4400-8176-9df6b8aeb5bb.json` |
+| cold report | `.test-data/rdf-pg-real-medium/models-postgres-2026-06-03T19-43-00-499Z-79511-61ee15df-e22c-4400-8176-9df6b8aeb5bb.json` |
+| warm steady-state report | `.test-data/rdf-pg-existing-warmup/models-postgres-existing-warmup-1780517362264.json` |
 
 真实 PG storage profile：
 
 | Space | Bytes | Notes |
 | --- | ---: | --- |
-| facts bytes | 22487040 | PG facts tables + facts covering indexes |
-| facts table bytes | 12632064 | tables only |
-| facts index bytes | 9854976 | facts covering indexes |
-| RDF-3X derived bytes | 8658944 | projection / graph stats + derived indexes |
-| total bytes | 31145984 | facts + derived |
+| facts bytes | 22503424 | PG facts tables + facts covering indexes |
+| RDF-3X derived bytes | 8724480 | projection / graph stats + derived indexes |
+| total bytes | 31227904 | facts + derived |
 | total / facts ratio | 1.39x | PG baseline profile |
 
-真实 PG representative p95：
+真实 PG warm steady-state representative p95：
 
 | Case | p95 | Notes |
 | --- | ---: | --- |
-| list messages by thread | 25 ms | scan, 2503 matched rows |
-| latest message | 21 ms | scan + order/limit |
-| search message literals | 34 ms | text contains source-membership path |
-| next queued run by workspace query | 13 ms | tiny 3-pattern scheduler query |
-| task materialization active due query | 20 ms | tiny 3-pattern scheduler query |
-| message score by thread numeric aggregate | 32 ms | numeric aggregate native path |
-| latest message by thread query | 2600 ms | large 2-pattern message join; not product-grade yet |
-| message join count distinct | 1674 ms | large count-distinct join; not product-grade yet |
+| list messages by thread | 7 ms | scan, graph prefix + predicate |
+| latest message | 3 ms | scan + order/limit |
+| search message literals | 6 ms | text contains source-membership path |
+| next queued run by workspace query | 11 ms | tiny 3-pattern scheduler query |
+| task materialization active due query | 23 ms | tiny 3-pattern scheduler query |
+| message score by thread numeric aggregate | 16 ms | numeric aggregate native path |
+| latest message by thread query | 17 ms | large 2-pattern message join, SQL self-join stays native |
+| message join count distinct | 8 ms | large count-distinct join, native count path |
 
-结论：真实 PG medium gate 已证明 schema、refresh、planner gate、numeric aggregate 下推和 correctness 可用，但还没有证明 cloud 热路径已经达到 product-grade。两个大 message join/count case 仍在秒级，下一步必须优先优化 `PostgresRdf3xJoinBGP` 的大 fanout path、下沉 hot operators，或引入 custom index access method；在这些 gate 通过前，PG baseline 只能算正确性和迁移底座，不能作为性能完成口径。
+冷启动说明：同一批数据在未区分 warmup 的首次 disposable PG run 中，`latest message by thread query` 曾记录 `2600 ms`，`message join count distinct` 曾记录 `1674 ms`。随后对同一 seeded PG 执行 `refreshDerivedIndexes()` 后会同步 `ANALYZE` facts / RDF-3X stats 表，benchmark 也会先跑 warmup 再采样，两个 case 分别稳定到 `17 ms` 和 `8 ms`。因此旧秒级结果归类为 cold-start / planner stats artifact，不能再作为 steady-state 结论，但必须保留为冷启动观测项。
+
+结论：真实 PG medium gate 已证明 schema、refresh、planner gate、numeric aggregate 下推和 warm steady-state 性能都可用。当前 PG baseline 可以作为 cloud RDF-3X 的默认正确性和性能底座；下一步 product-grade acceleration 不应重做事实存储，而应继续补 hot operators、result cache 策略、并发和更大数据量 gate，把冷启动、统计刷新和 query cache 生命周期纳入运维指标。
 
 ## PostgreSQL Status
 
@@ -227,8 +229,8 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 - custom index access method `xpod_rdf_perm`。
 - PG extension 实测性能报告；baseline PG/PGlite/real-PG gate 已有，extension profile 还没有。
 
-因此 cloud 当前只能把 PG RDF-3X baseline 当作正确性和迁移底座；`pg-hot-operators` / `pg-custom-index` 只能在独立 benchmark gate 通过后进入 cloud profile。
-真实 PG medium benchmark 显示 baseline 对小查询、scheduler 查询和 numeric aggregate 已可用，但大 fanout message join/count 仍需要 P0 优化；cloud product-grade 性能发布应把这两个 case 作为 release-blocking performance gate，而不是只看 plan matched。
+因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座；`pg-hot-operators` / `pg-custom-index` 仍只能在独立 benchmark gate 通过后进入 cloud profile。
+真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 
 ## Migration Strategy
 
@@ -324,8 +326,8 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 - `bun run test:integration` 通过。
 - `bun run benchmark:rdf-models -- --scale=medium --iterations=3` 通过。
 - `bun run benchmark:rdf-models:pg -- --scale=small --iterations=1` 通过。
-- `bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3` 通过；cloud 性能发布还必须让 `latest message by thread query` 和 `message join count distinct` 脱离秒级。
-- `storageStats().totalToFactsRatio` 可接受；当前 medium 参考值为 1.18x。
+- `bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1` 通过；cloud 性能发布必须同时记录 warm steady-state p95 和 cold first-run 观测，且 `latest message by thread query` / `message join count distinct` warm p95 不能回到秒级。
+- `storageStats().totalToFactsRatio` 可接受；当前 medium 参考值为 SQLite/file-backed 1.18x、真实 PG 1.39x。
 - `rdf3x.syncedWithFacts=true`。
 - profile / schema version 不一致时重建逻辑可重复执行。
 - profile 401、models 读取、ACL/ACR 查询 smoke 通过。
@@ -340,6 +342,6 @@ PG extension 进入默认 cloud profile 前还必须额外满足：
 ## Open Follow-ups
 
 - 优化或禁用当前 SQLite/file-backed numeric aggregate 的 RDF-3X unconditional path。
-- 优化真实 PG medium 下的大 fanout message join/count：`latest message by thread query` 和 `message join count distinct` 不能保持秒级。
+- 增加真实 PG cold-start benchmark case：区分首次连接/首次执行、stats refresh 后首轮、warm steady-state 三个口径。
 - 增加 cloud runbook 脚本：只清理 RDF 表，不碰 identity / ai-gateway。
 - 为 `storageStats()` 增加 cloud dashboard 指标：facts bytes、derived bytes、cache bytes、refresh lag、facts data version。

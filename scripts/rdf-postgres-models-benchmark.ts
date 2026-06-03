@@ -22,6 +22,7 @@ interface CliOptions {
   allowPgWrites: boolean;
   scale: RdfBenchmarkScale;
   iterations: number;
+  warmupIterations: number;
   syntheticMessages: number;
   syntheticMessagesOverridden: boolean;
   syntheticPodCount: number;
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
     const report = await runRdfModelsPostgresBenchmark(engine, {
       scale: options.scale,
       iterations: options.iterations,
+      warmupIterations: options.warmupIterations,
     });
 
     await writeJson(paths.postgresReport, {
@@ -85,6 +87,7 @@ function parseArgs(args: string[]): CliOptions {
   let allowPgWrites = false;
   let scale: RdfBenchmarkScale = 'medium';
   let iterations = 3;
+  let warmupIterations = 1;
   let syntheticMessages: number | undefined;
 
   for (const arg of args) {
@@ -120,6 +123,10 @@ function parseArgs(args: string[]): CliOptions {
       iterations = positiveInteger(arg.slice('--iterations='.length), '--iterations');
       continue;
     }
+    if (arg.startsWith('--warmupIterations=')) {
+      warmupIterations = nonNegativeInteger(arg.slice('--warmupIterations='.length), '--warmupIterations');
+      continue;
+    }
     if (arg.startsWith('--syntheticMessages=')) {
       syntheticMessages = positiveInteger(arg.slice('--syntheticMessages='.length), '--syntheticMessages');
       continue;
@@ -142,6 +149,7 @@ function parseArgs(args: string[]): CliOptions {
     allowPgWrites,
     scale,
     iterations,
+    warmupIterations,
     syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
@@ -152,6 +160,14 @@ function positiveInteger(raw: string, name: string): number {
   const value = Number.parseInt(raw, 10);
   if (!Number.isFinite(value) || value < 1) {
     throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+function nonNegativeInteger(raw: string, name: string): number {
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
   }
   return value;
 }
@@ -201,6 +217,7 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     driver: options.driver,
     scale: options.scale,
     iterations: options.iterations,
+    warmupIterations: options.warmupIterations,
     syntheticMessages: options.syntheticMessages,
     syntheticMessagesOverridden: options.syntheticMessagesOverridden,
     syntheticPodCount: options.syntheticPodCount,
@@ -235,6 +252,7 @@ function printSummary(summary: {
   console.log(`  driver: ${summary.options.driver}`);
   console.log(`  scale: ${summary.options.scale}`);
   console.log(`  iterations: ${summary.options.iterations}`);
+  console.log(`  warmup iterations: ${summary.options.warmupIterations}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
   console.log(`  target quads: ${summary.targetQuadCount}`);
   console.log(`  full scale seed: ${summary.fullScale}`);
@@ -272,6 +290,7 @@ Options:
   --allowPgWrites                   Required for --driver=pg; only use with a disposable empty database
   --scale=small|medium|large       Select benchmark case scale. Default: medium
   --iterations=N                   Iterations per case. Default: 3
+  --warmupIterations=N             Warmup runs per case before timing. Default: 1
   --syntheticMessages=N            Override generated message count for storage-size tests
   --out=PATH                       Output directory. Default: .test-data/rdf-engine
 `);

@@ -87,6 +87,7 @@ export interface RdfModelBenchmarkRunOptions {
 
 export interface RdfModelPostgresBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {
   refreshDerivedIndexes?: boolean;
+  warmupIterations?: number;
 }
 
 export interface RdfModelBenchmarkResult {
@@ -155,6 +156,7 @@ export interface RdfModelPostgresBenchmarkReport {
   engine: 'postgres-rdf';
   scale: RdfBenchmarkScale;
   iterations: number;
+  warmupIterations: number;
   generatedAt: string;
   planMatched: boolean;
   failedPlanCases: string[];
@@ -1247,6 +1249,7 @@ export async function runRdfModelsPostgresBenchmark(
 ): Promise<RdfModelPostgresBenchmarkReport> {
   const scale = options.scale ?? 'small';
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
+  const warmupIterations = Math.max(0, Math.floor(options.warmupIterations ?? 1));
   const refresh = options.refreshDerivedIndexes === false
     ? undefined
     : await engine.refreshDerivedIndexes();
@@ -1257,11 +1260,11 @@ export async function runRdfModelsPostgresBenchmark(
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const results = [];
   for (const testCase of cases) {
-    results.push(await runAsyncBenchmarkCase(engine, testCase, iterations, storageBefore.facts));
+    results.push(await runAsyncBenchmarkCase(engine, testCase, iterations, storageBefore.facts, warmupIterations));
   }
   const queryResults = [];
   for (const testCase of queryCases) {
-    queryResults.push(await runAsyncQueryBenchmarkCase(engine, testCase, iterations, storageBefore.facts));
+    queryResults.push(await runAsyncQueryBenchmarkCase(engine, testCase, iterations, storageBefore.facts, warmupIterations));
   }
   const failedPlanCases = [
     ...results.filter((result) => !result.planMatched).map((result) => result.name),
@@ -1272,6 +1275,7 @@ export async function runRdfModelsPostgresBenchmark(
     engine: 'postgres-rdf',
     scale,
     iterations,
+    warmupIterations,
     generatedAt: new Date().toISOString(),
     planMatched: failedPlanCases.length === 0,
     failedPlanCases,
@@ -1482,10 +1486,15 @@ async function runAsyncBenchmarkCase(
   testCase: RdfModelBenchmarkCase,
   iterations: number,
   indexStats: RdfIndexStats,
+  warmupIterations = 0,
 ): Promise<RdfModelBenchmarkResult> {
   const durationsMs: number[] = [];
   let metrics: RdfIndexMetrics | undefined;
   let keys: string[] = [];
+
+  for (let i = 0; i < warmupIterations; i += 1) {
+    await engine.scan(testCase.query);
+  }
 
   for (let i = 0; i < iterations; i += 1) {
     const start = Date.now();
@@ -1534,6 +1543,7 @@ async function runAsyncQueryBenchmarkCase(
   testCase: RdfModelQueryBenchmarkCase,
   iterations: number,
   indexStats: RdfIndexStats,
+  warmupIterations = 0,
 ): Promise<RdfModelQueryBenchmarkResult> {
   const durationsMs: number[] = [];
   let metrics: RdfQueryMetrics | undefined;
@@ -1545,6 +1555,10 @@ async function runAsyncQueryBenchmarkCase(
       mode: 'bypass' as const,
     },
   };
+
+  for (let i = 0; i < warmupIterations; i += 1) {
+    await engine.query(query);
+  }
 
   for (let i = 0; i < iterations; i += 1) {
     const start = Date.now();
