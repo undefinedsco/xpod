@@ -79,6 +79,7 @@ const PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES = [
   'scan.graph_prefix',
   'scan.term_in',
   'join.required_bgp',
+  'join.values',
   'aggregate.count',
   'aggregate.numeric',
 ] as const;
@@ -277,6 +278,11 @@ interface PgCompiledJoinPattern {
   pattern: QuintPattern;
   variables: Partial<Record<PgPatternKey, string>>;
   equalities: PgPatternEquality[];
+}
+
+interface PgCompiledValuesSource {
+  variables: string[];
+  rows: number[][];
 }
 
 interface PgJoinSource {
@@ -1743,6 +1749,38 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return best && best.prefixLength > 0 ? best : undefined;
   }
 
+  private buildPgValuesJoins(
+    sources: PgCompiledValuesSource[],
+    variableColumns: Map<string, string>,
+    builder: PgSqlBuilder,
+  ): { joins: string; queryPlan: string[] } {
+    if (sources.length === 0) {
+      return { joins: '', queryPlan: [] };
+    }
+    const joins: string[] = [];
+    const queryPlan: string[] = [];
+    for (const [sourceIndex, source] of sources.entries()) {
+      const alias = `join_values_${sourceIndex}`;
+      const columns = source.variables.map((_variableName, variableIndex) => `value_${variableIndex}_id`);
+      const valuesSql = source.rows.length > 0
+        ? `VALUES ${source.rows.map((row) => `(${row.map((id) => `${builder.add(id)}::bigint`).join(', ')})`).join(', ')}`
+        : `SELECT ${columns.map((column) => `NULL::bigint AS ${column}`).join(', ')} WHERE FALSE`;
+      const onClause = source.variables.map((variableName, variableIndex) => {
+        const column = variableColumns.get(variableName);
+        if (!column) {
+          throw new Error(`Postgres RDF-3X VALUES join cannot constrain unbound variable: ${variableName}`);
+        }
+        return `${alias}.${columns[variableIndex]} = ${column}`;
+      }).join(' AND ');
+      joins.push(` JOIN (${valuesSql}) AS ${alias}(${columns.join(', ')}) ON ${onClause}`);
+      queryPlan.push(`Rdf3xJoinTupleValues(${source.variables.map((variableName) => `?${variableName}`).join(',')})`);
+    }
+    return {
+      joins: joins.join(''),
+      queryPlan,
+    };
+  }
+
   private compilePgCustomIndexPermCountSql(resolved: PgResolvedPattern): PgCustomIndexCountPlan | undefined {
     const prefix = this.pgCustomIndexPermScanPrefix(resolved);
     if (!prefix) {
@@ -1852,11 +1890,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return undefined;
     }
 
+    const visibleVariables = uniqueStrings(requiredPatterns.flatMap((pattern) => variablesInPattern(pattern)));
+    const compiledValues = await this.compileNativeValuesSources(query.values ?? [], visibleVariables);
+    if ((query.values?.length ?? 0) > 0 && !compiledValues) {
+      return undefined;
+    }
+
     if (aggregates.length > 0) {
       if (!query.patterns.length) {
         return undefined;
       }
-      if (query.patterns.length === 1 && aggregates.length === 1) {
+      if ((query.values?.length ?? 0) === 0 && query.patterns.length === 1 && aggregates.length === 1) {
         const customIndexCount = await this.queryPgCustomIndexSinglePatternCountAggregate(
           query,
           compiledPatterns[0],
@@ -1867,11 +1911,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
           return customIndexCount;
         }
       }
-      const aggregateResult = await this.queryNativeAggregate(query, compiledPatterns, aggregates, start);
+      const aggregateResult = await this.queryNativeAggregate(query, compiledPatterns, aggregates, compiledValues ?? [], start);
       return aggregateResult;
     }
 
-    const visibleVariables = uniqueStrings(requiredPatterns.flatMap((pattern) => variablesInPattern(pattern)));
     const project = query.select && query.select.length > 0 ? query.select : visibleVariables;
     if (project.some((variableName) => !visibleVariables.includes(variableName))) {
       return undefined;
@@ -1879,7 +1922,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if ((query.orderBy ?? []).some((entry) => !visibleVariables.includes(entry.variable))) {
       return undefined;
     }
-    if (requiredPatterns.length === 1) {
+    if (requiredPatterns.length === 1 && (compiledValues ?? []).length === 0) {
       const extensionResult = await this.queryPgExtensionSinglePattern(query, compiledPatterns[0], project, start);
       if (extensionResult) {
         return extensionResult;
@@ -1893,8 +1936,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       limit: query.limit,
       offset: query.offset,
       countMatchedRows: query.limit !== undefined || query.offset !== undefined,
+      values: compiledValues ?? [],
     };
-    const subjectStarJoin = requiredPatterns.length > 1
+    const subjectStarJoin = requiredPatterns.length > 1 && (compiledValues ?? []).length === 0
       ? await this.compilePgCustomIndexSubjectStarJoinSql(compiledPatterns, joinOptions)
       : undefined;
     const compiled = subjectStarJoin ?? await this.compileJoinSql(compiledPatterns, joinOptions);
@@ -2798,6 +2842,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (aggregates.some((aggregate) => aggregate.type !== 'count')) {
       capabilities.add('aggregate.numeric');
     }
+    if ((query.values?.length ?? 0) > 0) {
+      capabilities.add('join.values');
+    }
 
     const requiredPatterns = query.patterns.length > 0 ? query.patterns : [{}];
     if (requiredPatterns.length > 1) {
@@ -3081,6 +3128,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     query: RdfQuery,
     patterns: PgCompiledJoinPattern[],
     aggregates: ReturnType<typeof queryAggregates>,
+    values: PgCompiledValuesSource[],
     start: number,
   ): Promise<RdfQueryResult | undefined> {
     if (!this.canNativeAggregate(query, aggregates)) {
@@ -3090,6 +3138,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const compiled = await this.compileJoinSql(patterns, {
       project: visibleVariables,
       countMatchedRows: false,
+      values,
       fenceGraphPrefix: aggregates.some((aggregate) => aggregate.distinct || (aggregate.distinctVariables ?? []).length > 0),
     });
     if (compiled.unresolved) {
@@ -3396,8 +3445,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private canTryNativeQuery(query: RdfQuery): boolean {
-    return (query.values?.length ?? 0) === 0
-      && (query.textSearch?.length ?? 0) === 0
+    return (query.textSearch?.length ?? 0) === 0
       && (query.vectorSearch?.length ?? 0) === 0
       && (query.unions?.length ?? 0) === 0
       && (query.minus?.length ?? 0) === 0
@@ -3439,6 +3487,37 @@ export class PostgresRdfEngine implements RdfEngineLike {
       });
     }
     return result;
+  }
+
+  private async compileNativeValuesSources(
+    sources: RdfValuesBindingSource[],
+    visibleVariables: string[],
+  ): Promise<PgCompiledValuesSource[] | undefined> {
+    if (sources.length === 0) {
+      return [];
+    }
+    const visible = new Set(visibleVariables);
+    const compiled: PgCompiledValuesSource[] = [];
+    for (const source of sources) {
+      if (source.variables.length === 0 || source.variables.some((variableName) => !visible.has(variableName))) {
+        return undefined;
+      }
+      const rows: number[][] = [];
+      for (const row of source.rows) {
+        if (source.variables.some((variableName) => !row[variableName])) {
+          return undefined;
+        }
+        const ids = await Promise.all(source.variables.map((variableName) => this.requireDictionary().find(row[variableName])));
+        if (ids.every((id): id is number => id !== undefined)) {
+          rows.push(ids);
+        }
+      }
+      compiled.push({
+        variables: [...source.variables],
+        rows,
+      });
+    }
+    return compiled;
   }
 
   private allFiltersPushed(
@@ -3947,6 +4026,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       offset?: number;
       countMatchedRows?: boolean;
       fenceGraphPrefix?: boolean;
+      values?: PgCompiledValuesSource[];
     },
   ): Promise<PgCompiledJoin> {
     const resolvedSources: PgJoinSource[] = [];
@@ -4030,10 +4110,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const projection = projectionColumns.length > 0
       ? `${options?.distinct ? 'DISTINCT ' : ''}${projectionColumns.join(', ')}`
       : `${options?.distinct ? 'DISTINCT ' : ''}1 AS __empty`;
+    const valuesJoins = this.buildPgValuesJoins(options?.values ?? [], variableColumns, builder);
+    queryPlan.push(...valuesJoins.queryPlan);
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
     const orderClause = this.buildJoinOrderClause(options?.orderBy, variableColumns);
     const pagination = this.buildPagination(options, builder);
-    const from = joins.join('');
+    const from = `${joins.join('')}${valuesJoins.joins}`;
     const sql = `
       SELECT ${projection}
       FROM ${from}${orderClause.joins}

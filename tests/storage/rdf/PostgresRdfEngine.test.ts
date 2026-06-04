@@ -998,6 +998,7 @@ describe('PostgresRdfEngine', () => {
           'aggregate.numeric',
           'cache.result',
           'join.required_bgp',
+          'join.values',
           'scan.exact_graph',
           'scan.graph_prefix',
           'scan.term_in',
@@ -1007,6 +1008,7 @@ describe('PostgresRdfEngine', () => {
           'aggregate.numeric': 'engine-sql',
           'cache.result': 'sql-abi',
           'join.required_bgp': 'engine-sql',
+          'join.values': 'engine-sql',
           'scan.exact_graph': 'engine-sql',
           'scan.graph_prefix': 'engine-sql',
           'scan.term_in': 'engine-sql',
@@ -1016,6 +1018,7 @@ describe('PostgresRdfEngine', () => {
           'scan.graph_prefix',
           'scan.term_in',
           'join.required_bgp',
+          'join.values',
           'aggregate.count',
           'aggregate.numeric',
           'cache.result',
@@ -1026,6 +1029,7 @@ describe('PostgresRdfEngine', () => {
           'aggregate.numeric',
           'cache.result',
           'join.required_bgp',
+          'join.values',
           'scan.exact_graph',
           'scan.graph_prefix',
           'scan.term_in',
@@ -1058,6 +1062,33 @@ describe('PostgresRdfEngine', () => {
       expect(scanResult.metrics.plan).toContain('XpodRdfPgHotOperator(scan.exact_graph)');
       expect(scanResult.metrics.plan).not.toContain('XpodRdfExtensionFallback(extension-missing)');
       expect(scanResult.metrics.plan).not.toContain('XpodRdfExtensionUnsupported(scan.exact_graph)');
+
+      const valuesResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: { variable: 'status' },
+          },
+        ],
+        values: [
+          {
+            variables: ['message'],
+            rows: [
+              { message: message2 },
+            ],
+          },
+        ],
+        select: ['message', 'status'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(valuesResult.bindings.map((binding) => binding.message.value)).toEqual([message2.value]);
+      expect(valuesResult.bindings.map((binding) => binding.status.value)).toEqual(['open']);
+      expect(valuesResult.metrics.plan).toContain('XpodRdfPgHotOperator(join.values)');
+      expect(valuesResult.metrics.plan).toContain('Rdf3xJoinTupleValues(?message)');
+      expect(valuesResult.metrics.plan).not.toContain('PostgresFactsValues');
 
       const aggregateResult = await engine.query({
         patterns: [
@@ -1124,6 +1155,7 @@ describe('PostgresRdfEngine', () => {
           'aggregate.numeric',
           'cache.result',
           'join.required_bgp',
+          'join.values',
           'scan.exact_graph',
           'scan.graph_prefix',
           'scan.term_in',
@@ -2656,6 +2688,7 @@ describe('PostgresRdfEngine', () => {
         'cache.result',
         'index.xpod_rdf_perm',
         'join.required_bgp',
+        'join.values',
         'scan.exact_graph',
         'scan.graph_prefix',
         'scan.term_in',
@@ -2665,6 +2698,7 @@ describe('PostgresRdfEngine', () => {
         'scan.graph_prefix',
         'scan.term_in',
         'join.required_bgp',
+        'join.values',
         'aggregate.count',
         'aggregate.numeric',
         'cache.result',
@@ -2677,6 +2711,7 @@ describe('PostgresRdfEngine', () => {
         'cache.result',
         'index.xpod_rdf_perm',
         'join.required_bgp',
+        'join.values',
         'scan.exact_graph',
         'scan.graph_prefix',
         'scan.term_in',

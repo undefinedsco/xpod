@@ -11,8 +11,8 @@
 - PG extension 路线只作为 `PostgresRdfEngine` 内部 acceleration profile：
   `baseline | pg-result-cache | pg-hot-operators | pg-custom-index`。
 - cloud 默认启用 `pg-hot-operators`：启动时安装 schema-local SQL ABI 提供
-  `cache.result`，并把已接线的 PG SQL scan / join / count / numeric aggregate 标记为
-  active hot operators；`pg-custom-index` 仍必须等独立 benchmark gate。
+  `cache.result`，并把已接线的 PG SQL scan / join / VALUES join / count / numeric aggregate
+  标记为 active hot operators；`pg-custom-index` 仍必须等独立 benchmark gate。
 
 ## Benchmark Evidence
 
@@ -174,7 +174,7 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --rdfAcceleratio
 | PG acceleration profile | `pg-hot-operators` |
 | PG acceleration provider | `engine-sql` |
 | PG acceleration enabled | true |
-| active operators | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+| active operators | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `join.values`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
 
 本次 smoke 覆盖 114 quads、19 个 scan case 和 8 个 query case；physical plan 中出现
 `XpodRdfPgHotOperator(scan.graph_prefix)` 15 次、`scan.exact_graph` 2 次、
@@ -182,6 +182,9 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --rdfAcceleratio
 `pg-hot-operators` profile 已能在没有 native extension 的情况下启用 PG SQL hot operator
 路径；benchmark CLI 会校验请求的 acceleration profile 已实际 enabled，避免 fallback 后
 仅因 correctness 通过而误判为 acceleration 验收通过。它仍不是 medium/real-PG 性能容量结论。
+`join.values` 是后续补入的 PG SQL hot operator：它把单/多 pattern BGP 上的完整 term
+tuple `VALUES` source 编译成 term-id inline relation join，避免回到 JS facts binding join。
+上表中的 smoke 计数尚未重跑 VALUES 专项 benchmark，不能把它当成 `join.values` 性能结论。
 
 ### PostgreSQL / PGlite Medium RDF-3X Baseline Rerun
 
@@ -220,7 +223,7 @@ bun run benchmark:rdf-models:pg -- --scale=medium --iterations=3 --warmupIterati
 | acceleration profile | `baseline` | `pg-hot-operators` |
 | acceleration enabled | false | true |
 | acceleration matched request | true | true |
-| active operators | none | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+| active operators | none | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `join.values`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
 | facts bytes | 22487040 | 22487040 |
 | derived bytes | 8691712 | 8691712 |
 | total / facts ratio | 1.39x | 1.39x |
@@ -348,7 +351,7 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 | PG acceleration profile | `pg-hot-operators` |
 | PG acceleration provider | `engine-sql` |
 | PG acceleration enabled | true |
-| active operators | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+| active operators | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `join.values`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
 
 真实 PG hot-profile storage profile：
 
@@ -371,7 +374,8 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-em
 | message join count distinct | 15 ms | large count-distinct join |
 
 physical plan 中出现 `XpodRdfPgHotOperator(scan.graph_prefix)` 18 次、`scan.exact_graph`
-2 次、`join.required_bgp` 7 次、`aggregate.count` 3 次、`aggregate.numeric` 2 次。该 gate
+2 次、`join.required_bgp` 7 次、`aggregate.count` 3 次、`aggregate.numeric` 2 次。`join.values`
+为后续补入，尚未包含在这次 real PG 计数里。该 gate
 证明 cloud 默认 `pg-hot-operators` profile 在真实 PostgreSQL 上可启用并保持同一套 models
 plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 profile/metrics/部署
 边界的 product-grade 化，不是 native extension 的额外性能结论。
@@ -598,7 +602,7 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<pg17-db-with-
 | `rdf3x.syncedWithFacts` | true |
 | acceleration profile | `pg-custom-index` |
 | acceleration enabled | true |
-| active operators | `aggregate.count`, `aggregate.numeric`, `cache.result`, `index.xpod_rdf_perm`, `index.xpod_rdf_perm.scan`, `index.xpod_rdf_perm.scan_any`, `join.required_bgp`, `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in` |
+| active operators | `aggregate.count`, `aggregate.numeric`, `cache.result`, `index.xpod_rdf_perm`, `index.xpod_rdf_perm.scan`, `index.xpod_rdf_perm.scan_any`, `join.required_bgp`, `join.values`, `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in` |
 | custom indexes created | 6 (`rdf_quads_*_perm`) |
 | storage total/facts ratio | 1.69x on small seed |
 
@@ -669,7 +673,7 @@ aggregate graph-prefix plan fence 后重新验证：
 medium seed 为 10066 quads，baseline 和 `pg-custom-index` 都是 22 个 scan case / 8 个 query case
 plan matched，`rdf3x.syncedWithFacts=true`，`pg-custom-index` active operators 包含
 `index.xpod_rdf_perm.scan`、`index.xpod_rdf_perm.scan_any`、`join.subject_star`、
-`scan.graph_prefix`、`join.required_bgp` 和 aggregate capabilities。存储口径为
+`scan.graph_prefix`、`join.required_bgp`、`join.values` 和 aggregate capabilities。存储口径为
 `pg-custom-index` facts bytes `28,975,104`、RDF-3X derived bytes `8,617,984`、custom perm
 index bytes `3,244,032`、total/facts `1.30x`。refresh 阶段 reindex 6 个 perm index 约
 `1.4s`，planner analyze 约 `0.1s`。
