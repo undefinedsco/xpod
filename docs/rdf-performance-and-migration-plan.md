@@ -584,7 +584,12 @@ range；全局有序时 scan 会按 leading equality/range bounds 做 block-leve
 并在越过 upper prefix 后停止后续 block；sorted page 继续做 page-local lower-bound seek 和
 upper-bound early stop。`storageStats().pgAcceleration.customIndexes` 会暴露每个 shadow
 index 的 `layout=compressed-posting-v1`、`compressed=true`、page tuple count、item/posting count、
-item bytes 和 free bytes，用作后续 skip stats、cost model 和 hot operators 的基线。无序 append 会降级全局有序标记，
+item bytes 和 free bytes，用作后续 skip stats 和 hot operators 的基线。custom index AM
+当前已有 prefix-aware planner cost：真实 PG17 smoke 中，100k-row `rdf_quads` + `xpod_rdf_perm(S,P,O,G)`
+在 bigint-typed leading equality 和 leading range 条件下均由正常 planner 选择 `Index Scan`。
+裸整数 literal 不是有效证据，因为 PostgreSQL 会解析成 cross-type `bigint = integer` operator，
+不会匹配当前 bigint-only opfamily；产品 SQL 生成必须使用 bigint 参数或显式 cast。
+无序 append 会降级全局有序标记，
 回到保守扫描以保证正确性。仍需要注意：这还不是完整 native hot-operator performance
 implementation，因此不能把这组 gate 作为默认引擎性能收益证明。下一步性能工作是在 medium/large +
 concurrency gate 中对比 RDF-3X baseline，并把 native hot operators 接到 join / aggregate path。
@@ -606,7 +611,7 @@ scan，但 join 和 aggregate 仍是 engine-sql。
 因此 small 对照没有稳定性能收益：例如 `latest message by thread query` 从 6 ms 到 14 ms、
 `list messages by thread` 从 2 ms 到 7 ms、`task materialization active due query` 从
 14 ms 到 21 ms；少数 case 持平或略快。这个结果说明问题不在 benchmark case 本身，而在两块
-PG 能力尚未完成：custom index 还没有 skip stats / cost model / operator 深度接入，native
+PG 能力尚未完成：custom index 还没有 skip stats / operator 深度接入，native
 hot operators 还没有替换 engine-sql join / aggregate path。block-level seek、compressed
 posting storage 和单 pattern scan ABI 是必要中间层，但还不足以让当前 models benchmark
 稳定快过 RDF-3X baseline。

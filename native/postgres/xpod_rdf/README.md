@@ -17,7 +17,8 @@ The first native cut provides:
   in the PostgreSQL index relation and supports build, insert, scan, bitmap
   scan, vacuum cleanup, planner path generation, ordered build, a metapage
   global-order guard, block-level lower-bound seeking, page-level min/max
-  pruning, and page-local lower-bound seeking on sorted pages.
+  pruning, page-local lower-bound seeking on sorted pages, and prefix-aware
+  planner cost estimates.
 - `xpod_rdf.term_id_ops`, a bigint operator class for RDF term id columns.
 - `xpod_rdf.perm_index_stats(regclass)`, an internal observability hook used
   by `PostgresRdfEngine.storageStats()` to report the custom index layout,
@@ -44,6 +45,10 @@ pruning, page-local bound-prefix seek, and delta-varint compressed posting
 entries. Its reported layout is `compressed-posting-v1` with `compressed=true`:
 ordered build groups duplicate full permutation keys into compressed TID
 posting streams, while online insert still writes single tuple entries.
+Planner smoke tests must use bigint-typed RDF term ids, either through typed
+parameters or explicit casts such as `42::bigint`; plain integer literals parse
+as cross-type `bigint = integer` operators that are intentionally not part of
+the current opfamily because scan-key decoding is bigint-only.
 
 The current scan ABI is intentionally narrower than the final product-grade hot
 operator set. Range/text filters, BGP joins, DISTINCT, stable

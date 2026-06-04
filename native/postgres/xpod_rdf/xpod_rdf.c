@@ -12,11 +12,13 @@
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "nodes/pathnodes.h"
+#include "nodes/primnodes.h"
 #include "storage/bufpage.h"
 #include "storage/bufmgr.h"
 #include "storage/itemptr.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 
 PG_MODULE_MAGIC;
@@ -28,6 +30,8 @@ PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_stats);
 PG_FUNCTION_INFO_V1(xpod_rdf_scan_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_count_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_handler);
+
+typedef struct XpodRdfPermCostState XpodRdfPermCostState;
 
 static IndexBuildResult *xpod_rdf_perm_build(Relation heapRelation,
                                              Relation indexRelation,
@@ -55,6 +59,23 @@ static void xpod_rdf_perm_cost_estimate(struct PlannerInfo *root,
                                         Selectivity *indexSelectivity,
                                         double *indexCorrelation,
                                         double *indexPages);
+static void xpod_rdf_perm_read_cost_meta(Oid index_oid,
+                                         uint64 *tuple_count,
+                                         bool *global_sorted,
+                                         uint16 *nkeys);
+static void xpod_rdf_perm_prepare_cost_state(IndexPath *path, XpodRdfPermCostState *state);
+static void xpod_rdf_perm_note_cost_clause(IndexPath *path,
+                                           XpodRdfPermCostState *state,
+                                           IndexClause *clause);
+static StrategyNumber xpod_rdf_perm_clause_strategy(IndexPath *path, IndexClause *clause);
+static StrategyNumber xpod_rdf_perm_op_strategy_for_index_column(IndexPath *path,
+                                                                 int index_col,
+                                                                 Oid opno);
+static Selectivity xpod_rdf_perm_result_selectivity(XpodRdfPermCostState *state,
+                                                    double tuple_count);
+static Selectivity xpod_rdf_perm_page_selectivity(XpodRdfPermCostState *state);
+static Selectivity xpod_rdf_perm_clamp_selectivity(Selectivity value,
+                                                   double tuple_count);
 static bool xpod_rdf_perm_validate(Oid opclassoid);
 static IndexScanDesc xpod_rdf_perm_begin_scan(Relation indexRelation,
                                               int nkeys,
@@ -168,6 +189,20 @@ typedef struct XpodRdfPermScanOpaque
   bool global_sorted;
   XpodRdfPermScanBounds bounds;
 } XpodRdfPermScanOpaque;
+
+typedef struct XpodRdfPermCostColumn
+{
+  bool has_equal;
+  bool has_range;
+  bool has_unknown;
+} XpodRdfPermCostColumn;
+
+typedef struct XpodRdfPermCostState
+{
+  uint16 nkeys;
+  XpodRdfPermCostColumn columns[XPOD_RDF_PERM_MAX_KEYS];
+  uint32 clause_count;
+} XpodRdfPermCostState;
 
 static void xpod_rdf_perm_build_callback(Relation indexRelation,
                                          ItemPointer tid,
@@ -978,23 +1013,281 @@ xpod_rdf_perm_cost_estimate(struct PlannerInfo *root,
                             double *indexCorrelation,
                             double *indexPages)
 {
+  XpodRdfPermCostState state;
+  uint64 meta_tuple_count = 0;
+  bool global_sorted = false;
+  uint16 meta_nkeys = 0;
+  double tuple_count;
+  double page_count;
+  Selectivity row_selectivity;
+  Selectivity page_selectivity;
+  double expected_rows;
+  double expected_pages;
+
   (void) root;
   (void) loop_count;
 
-  *indexStartupCost = 1.0;
-  *indexSelectivity = 1.0;
-  if (path->indexclauses != NIL)
+  xpod_rdf_perm_prepare_cost_state(path, &state);
+  xpod_rdf_perm_read_cost_meta(path->indexinfo->indexoid, &meta_tuple_count, &global_sorted, &meta_nkeys);
+  if (meta_nkeys > 0 && meta_nkeys < state.nkeys)
   {
-    int clause_count = list_length(path->indexclauses);
+    state.nkeys = meta_nkeys;
+  }
 
-    while (clause_count-- > 0)
+  tuple_count = meta_tuple_count > 0
+    ? (double) meta_tuple_count
+    : Max(path->indexinfo->tuples, 1.0);
+  page_count = Max((double) path->indexinfo->pages, 1.0);
+  row_selectivity = xpod_rdf_perm_result_selectivity(&state, tuple_count);
+  page_selectivity = xpod_rdf_perm_page_selectivity(&state);
+  expected_rows = Max(1.0, tuple_count * row_selectivity);
+  expected_pages = Max(1.0, page_count * page_selectivity);
+
+  *indexStartupCost = global_sorted && page_selectivity < 1.0 ? 0.75 : 1.0;
+  *indexTotalCost = *indexStartupCost + (Cost) expected_pages + (Cost) (expected_rows * 0.01);
+  *indexSelectivity = row_selectivity;
+  *indexCorrelation = global_sorted ? 0.95 : 0.0;
+  *indexPages = expected_pages;
+}
+
+static void
+xpod_rdf_perm_read_cost_meta(Oid index_oid,
+                             uint64 *tuple_count,
+                             bool *global_sorted,
+                             uint16 *nkeys)
+{
+  Relation indexRelation;
+  BlockNumber block_count;
+  Buffer buffer;
+  Page page;
+  XpodRdfPermMetaOpaque *meta;
+
+  *tuple_count = 0;
+  *global_sorted = false;
+  *nkeys = 0;
+  if (!OidIsValid(index_oid))
+  {
+    return;
+  }
+
+  indexRelation = index_open(index_oid, AccessShareLock);
+  block_count = RelationGetNumberOfBlocks(indexRelation);
+  if (block_count == 0)
+  {
+    index_close(indexRelation, AccessShareLock);
+    return;
+  }
+
+  buffer = ReadBuffer(indexRelation, 0);
+  LockBuffer(buffer, BUFFER_LOCK_SHARE);
+  page = BufferGetPage(buffer);
+  meta = xpod_rdf_perm_meta_opaque(page);
+  if (meta != NULL)
+  {
+    *tuple_count = meta->tuple_count;
+    *global_sorted = (meta->flags & XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED) != 0;
+    *nkeys = meta->nkeys;
+  }
+  UnlockReleaseBuffer(buffer);
+  index_close(indexRelation, AccessShareLock);
+}
+
+static void
+xpod_rdf_perm_prepare_cost_state(IndexPath *path, XpodRdfPermCostState *state)
+{
+  ListCell *cell;
+
+  memset(state, 0, sizeof(XpodRdfPermCostState));
+  state->nkeys = (uint16) Min(path->indexinfo->nkeycolumns, XPOD_RDF_PERM_MAX_KEYS);
+  foreach(cell, path->indexclauses)
+  {
+    IndexClause *clause = (IndexClause *) lfirst(cell);
+
+    xpod_rdf_perm_note_cost_clause(path, state, clause);
+  }
+}
+
+static void
+xpod_rdf_perm_note_cost_clause(IndexPath *path,
+                               XpodRdfPermCostState *state,
+                               IndexClause *clause)
+{
+  int index_col;
+  StrategyNumber strategy;
+  XpodRdfPermCostColumn *column;
+
+  if (clause == NULL)
+  {
+    return;
+  }
+  index_col = clause->indexcol;
+  if (index_col < 0 || index_col >= state->nkeys)
+  {
+    return;
+  }
+
+  state->clause_count++;
+  column = &state->columns[index_col];
+  strategy = xpod_rdf_perm_clause_strategy(path, clause);
+  switch (strategy)
+  {
+    case BTEqualStrategyNumber:
+      column->has_equal = true;
+      break;
+    case BTLessStrategyNumber:
+    case BTLessEqualStrategyNumber:
+    case BTGreaterEqualStrategyNumber:
+    case BTGreaterStrategyNumber:
+      column->has_range = true;
+      break;
+    default:
+      column->has_unknown = true;
+      break;
+  }
+}
+
+static StrategyNumber
+xpod_rdf_perm_clause_strategy(IndexPath *path, IndexClause *clause)
+{
+  ListCell *cell;
+
+  foreach(cell, clause->indexquals)
+  {
+    RestrictInfo *rinfo = (RestrictInfo *) lfirst(cell);
+    Node *node;
+    OpExpr *op;
+    StrategyNumber strategy;
+
+    if (rinfo == NULL || !IsA(rinfo, RestrictInfo))
     {
-      *indexSelectivity *= 0.1;
+      continue;
+    }
+    node = (Node *) rinfo->clause;
+    if (node == NULL || !IsA(node, OpExpr))
+    {
+      continue;
+    }
+    op = (OpExpr *) node;
+    strategy = xpod_rdf_perm_op_strategy_for_index_column(path, clause->indexcol, op->opno);
+    if (strategy != InvalidStrategy)
+    {
+      return strategy;
     }
   }
-  *indexTotalCost = 1.0 + ((Cost) Max(path->indexinfo->pages, 1) * (*indexSelectivity));
-  *indexCorrelation = 0.0;
-  *indexPages = Max(path->indexinfo->pages, 1) * (*indexSelectivity);
+  return InvalidStrategy;
+}
+
+static StrategyNumber
+xpod_rdf_perm_op_strategy_for_index_column(IndexPath *path, int index_col, Oid opno)
+{
+  StrategyNumber strategy;
+  Oid opfamily;
+  Oid opcintype;
+
+  if (!OidIsValid(opno) || index_col < 0 || index_col >= path->indexinfo->nkeycolumns)
+  {
+    return InvalidStrategy;
+  }
+  opfamily = path->indexinfo->opfamily[index_col];
+  opcintype = path->indexinfo->opcintype[index_col];
+  for (strategy = BTLessStrategyNumber; strategy <= BTGreaterStrategyNumber; strategy++)
+  {
+    Oid candidate = get_opfamily_member(opfamily, opcintype, opcintype, strategy);
+
+    if (candidate == opno)
+    {
+      return strategy;
+    }
+  }
+  return InvalidStrategy;
+}
+
+static Selectivity
+xpod_rdf_perm_result_selectivity(XpodRdfPermCostState *state, double tuple_count)
+{
+  Selectivity selectivity = 1.0;
+  uint16 key_index;
+
+  if (state->clause_count == 0)
+  {
+    return 1.0;
+  }
+  for (key_index = 0; key_index < state->nkeys; key_index++)
+  {
+    XpodRdfPermCostColumn *column = &state->columns[key_index];
+
+    if (column->has_equal)
+    {
+      selectivity *= key_index == 0 ? 0.02 : 0.05;
+    }
+    else if (column->has_range)
+    {
+      selectivity *= key_index == 0 ? 0.20 : 0.35;
+    }
+    else if (column->has_unknown)
+    {
+      selectivity *= 0.50;
+    }
+  }
+  return xpod_rdf_perm_clamp_selectivity(selectivity, tuple_count);
+}
+
+static Selectivity
+xpod_rdf_perm_page_selectivity(XpodRdfPermCostState *state)
+{
+  Selectivity selectivity = 1.0;
+  uint16 key_index;
+
+  if (state->clause_count == 0)
+  {
+    return 1.0;
+  }
+  for (key_index = 0; key_index < state->nkeys; key_index++)
+  {
+    XpodRdfPermCostColumn *column = &state->columns[key_index];
+
+    if (column->has_equal)
+    {
+      selectivity *= key_index == 0 ? 0.02 : 0.05;
+      continue;
+    }
+    if (column->has_range)
+    {
+      selectivity *= key_index == 0 ? 0.20 : 0.35;
+      break;
+    }
+    if (column->has_unknown)
+    {
+      selectivity *= key_index == 0 ? 0.50 : 0.75;
+      break;
+    }
+    break;
+  }
+  if (selectivity < 0.001)
+  {
+    return 0.001;
+  }
+  if (selectivity > 1.0)
+  {
+    return 1.0;
+  }
+  return selectivity;
+}
+
+static Selectivity
+xpod_rdf_perm_clamp_selectivity(Selectivity value, double tuple_count)
+{
+  Selectivity min_selectivity = tuple_count > 1.0 ? (1.0 / tuple_count) : 1.0;
+
+  if (value < min_selectivity)
+  {
+    return min_selectivity;
+  }
+  if (value > 1.0)
+  {
+    return 1.0;
+  }
+  return value;
 }
 
 static bool

@@ -24,11 +24,18 @@ docker run --rm \
   sh -lc '
     set -eu
     if command -v apt-get >/dev/null 2>&1; then
+      PG_CONFIG_PATH="${PG_CONFIG:-pg_config}"
+      INCLUDE_DIR="$("$PG_CONFIG_PATH" --includedir-server 2>/dev/null || true)"
+      PGXS_PATH="$("$PG_CONFIG_PATH" --pgxs 2>/dev/null || true)"
       echo "[xpod_rdf] apt-get update"
       apt-get update
-      echo "[xpod_rdf] install PostgreSQL server headers and build tools"
-      DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-server-dev-17 build-essential
-      PG_CONFIG_PATH="${PG_CONFIG:-pg_config}"
+      if [ -f "$INCLUDE_DIR/postgres.h" ] && [ -n "$PGXS_PATH" ] && [ -f "$PGXS_PATH" ]; then
+        echo "[xpod_rdf] install build tools"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential
+      else
+        echo "[xpod_rdf] install PostgreSQL server headers and build tools"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-server-dev-17 build-essential
+      fi
     elif command -v apk >/dev/null 2>&1; then
       PG_CONFIG_PATH="${PG_CONFIG:-/usr/local/bin/pg_config}"
       INCLUDE_DIR="$("$PG_CONFIG_PATH" --includedir-server 2>/dev/null || true)"
