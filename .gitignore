@@ -66,6 +66,12 @@ package-lock.json
 # Development scripts (personal)
 *.sh
 !scripts/run-vitest-safe.sh
+!scripts/build-xpod-rdf-extension.sh
+
+# Native extension build artifacts
+native/postgres/xpod_rdf/*.o
+native/postgres/xpod_rdf/*.so
+native/postgres/xpod_rdf/*.bc
 
 # Debug and analysis files
 debug-*.ts

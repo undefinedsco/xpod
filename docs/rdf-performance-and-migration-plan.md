@@ -1,6 +1,6 @@
 # RDF Performance Report and Data Migration Plan
 
-记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；`xpod_rdf` native PostgreSQL extension 目前还没有落地，H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 当前由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，native extension / custom index AM 不能计入已实现性能收益。
+记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 当前由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold 和 `xpod_rdf_perm` custom-index storage prototype，但 compressed postings / native hot-operator 性能实现还不能计入已实现性能收益。
 
 ## Current Decision
 
@@ -398,20 +398,28 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `storageStats().pgAcceleration.capabilityProviders` 会按 capability 标记实际来源；当前
   `pg-hot-operators` 中 `cache.result` 来自 `sql-abi`，scan / join / aggregate 来自
   `engine-sql`。
+- native `xpod_rdf` extension scaffold：`native/postgres/xpod_rdf` 已提供 PG17 C extension、
+  `xpod_rdf.version()`、`xpod_rdf.capabilities()`、`cache.result` SQL ABI、
+  `xpod_rdf_perm` custom index access method 和 `xpod_rdf.term_id_ops` bigint opclass。
+- `pg-custom-index` profile：只有 native extension 声明 `index.xpod_rdf_perm` 后才启用；
+  engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
+  index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；但 scan 仍是
+  full index-page filtering，不是 compressed postings performance implementation。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；当前 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case。
 
 未完成：
 
-- custom index access method `xpod_rdf_perm`。
+- `xpod_rdf_perm` compressed postings layout / cost model；当前只完成 index-relation storage prototype。
 - native PG extension hot operators。当前 `pg-hot-operators` 是 engine-sql profile，不是 C/Rust
-  extension。
-- native PG extension 实测性能报告；baseline PG/PGlite/real-PG gate 已有，SQL ABI `cache.result`
-  和 engine-sql hot operator profile 有单测覆盖，native extension profile 还没有。
+  hot-operator execution。
+- native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比
+  RDF-3X baseline。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用
 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration；
-`pg-custom-index` 仍只能在独立 benchmark gate 通过后进入 cloud profile。
+`pg-custom-index` 仍不能进入默认 cloud profile，只能作为 shadow/correctness profile 验证
+native extension packaging、capability 和 custom-index DDL。
 真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 
 ## Migration Strategy
@@ -514,6 +522,49 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 1. 将 acceleration profile 改回 `baseline`。
 2. 不需要迁移数据。
 3. 删除 extension-owned custom index/cache 之前先确认 `storageStats()` 中没有 active profile 依赖。
+
+### Native PG Extension / Custom-index Small Gate
+
+执行命令：
+
+```bash
+scripts/build-xpod-rdf-extension.sh
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<pg17-db-with-create-extension-xpod_rdf> --allowPgWrites --scale=small --iterations=1 --warmupIterations=1 --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-custom-index-native-small
+```
+
+运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container。
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| native extension build | passed (`xpod_rdf.so`) |
+| `CREATE EXTENSION xpod_rdf` | passed |
+| `xpod_rdf.version()` | `0.1.0-native` |
+| native capability includes `index.xpod_rdf_perm` | true |
+| `CREATE INDEX ... USING xpod_rdf_perm` | passed |
+| forced planner path | `Index Scan` / `Bitmap Index Scan` on `rdf_quads_spog_perm` |
+| insert + vacuum smoke | passed |
+| real PG models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| acceleration profile | `pg-custom-index` |
+| acceleration enabled | true |
+| active operators | `aggregate.count`, `aggregate.numeric`, `cache.result`, `index.xpod_rdf_perm`, `join.required_bgp`, `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in` |
+| custom indexes created | 6 (`rdf_quads_*_perm`) |
+| storage total/facts ratio | 1.69x on small seed |
+
+报告文件：
+
+```text
+.test-data/rdf-pg-custom-index-storage-small/models-postgres-2026-06-04T08-09-58-909Z-40737-87945bcd-d39f-45bd-adcb-9e67e0bafd50.json
+```
+
+结论：native extension packaging、capability probe、`pg-custom-index` profile、custom AM DDL
+和 benchmark correctness gate 已打通。当前 `xpod_rdf_perm` 已从 heap-scan prototype 升级为
+index-relation storage prototype，能支持 build / insert / index scan / bitmap scan / vacuum；
+但仍不是 compressed postings performance implementation，因此不能把这组 gate 作为性能收益证明。
+下一步性能工作是把 AM scan 从 full index-page filtering 升级为 RDF term-id bound-prefix
+ordered postings，并在 medium/large + concurrency gate 中对比 RDF-3X baseline。
 
 ## Operational Gates
 

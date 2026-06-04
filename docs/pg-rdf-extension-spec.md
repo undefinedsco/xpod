@@ -54,9 +54,10 @@ SolidFS / journal / SPARQL update
 | --- | --- | --- | --- |
 | H0 | SQL/PLPGSQL wrapper + capability probe | 可默认探测 | 让 `PostgresRdfEngine` 能按能力选择 path |
 | H1a | Engine-sql hot operator profile | cloud 默认 | 复用 `PostgresRdfEngine` 已验证的 PG SQL scan / join / aggregate fast path，明确 product profile 与 metrics |
-| H1b | Native hot operators | benchmark 通过后可替换 engine-sql operator | 降低 CPU 和中间结果搬运 |
+| H1b | Native extension scaffold / capability ABI | 可探测，随 `pg-custom-index` gate 验证 | 建立真实 C extension、版本/能力探测和部署边界 |
+| H1c | Native hot operators | benchmark 通过后可替换 engine-sql operator | 降低 CPU 和中间结果搬运 |
 | H2 | Result cache / materialized result helpers | cloud-first | 改善 repeated models query、列表页、Agent context |
-| I0 | custom index AM prototype | 不默认 | 评估 postings layout、MVCC、VACUUM、planner 成本 |
+| I0 | custom index AM storage prototype | 不默认 | 提供 `xpod_rdf_perm` AM、opclass、DDL、自有 index-relation entry storage 和 planner path |
 | I1 | `xpod_rdf_perm` 替代部分 btree covering index | benchmark gate 后 | 降低复杂 join IO / storage ratio |
 
 ## Extension Packaging
@@ -73,6 +74,19 @@ SELECT xpod_rdf.version();
 SELECT xpod_rdf.capabilities();
 ```
 
+源码位于 `native/postgres/xpod_rdf`，本地构建入口是：
+
+```bash
+scripts/build-xpod-rdf-extension.sh
+```
+
+当前 `0.1.0-native` 已提供真实 C extension、`xpod_rdf.version()`、
+`xpod_rdf.capabilities()`、`cache.result` SQL ABI、`xpod_rdf_perm` custom index access
+method 和 `xpod_rdf.term_id_ops` bigint opclass。`xpod_rdf_perm` 第一版是
+index-relation storage prototype：它能被 PostgreSQL 创建、维护和扫描，返回正确 heap TID，
+也能生成 `Index Scan` / `Bitmap Index Scan` path；但扫描仍是全 index-page filter，尚未实现
+RDF-specific ordered compressed postings，因此不作为性能收益结论。
+
 H0 已支持 schema-local SQL ABI：当 `pg_extension` 里没有 native `xpod_rdf`，但
 `xpod_rdf.version()` 和 `xpod_rdf.capabilities()` 存在时，`PostgresRdfEngine` 会把
 provider 标记为 `sql-abi`。这条路径用于托管 PG / PGlite / 早期自托管部署，只暴露已经
@@ -84,6 +98,13 @@ graph prefix / term-in / required BGP join / count / numeric aggregate 由
 `PostgresRdfEngine` 生成并执行 PG SQL，`cache.result` 仍由 schema-local SQL ABI 或 native
 extension 提供。后续 native extension 的职责是替换这些已经有 correctness / benchmark gate
 的 engine-sql operators，而不是新增第二套查询语义。
+
+`pg-custom-index` 必须看到 native extension 声明 `index.xpod_rdf_perm` 后才启用。启用后
+`PostgresRdfEngine` 会创建六个 shadow custom permutation indexes：
+`rdf_quads_spog_perm`、`rdf_quads_sopg_perm`、`rdf_quads_psog_perm`、
+`rdf_quads_posg_perm`、`rdf_quads_ospg_perm`、`rdf_quads_opsg_perm`。这些 index 进入
+`storageStats().facts.spaceObjects`，但在 postings layout 达标前不能替代 btree covering
+indexes。
 
 能力探测是强制的：
 
@@ -248,8 +269,9 @@ vector.chunk_candidates
 
 ## Custom Index Access Method
 
-`xpod_rdf_perm` 是后续 custom PostgreSQL index access method，目标是给 RDF term-id
-permutation 提供更适合 merge join 和 count 的压缩 ordered stream。
+`xpod_rdf_perm` 是 custom PostgreSQL index access method。当前已落地 correctness
+prototype；目标终态是给 RDF term-id permutation 提供更适合 merge join 和 count 的压缩
+ordered stream。
 
 PostgreSQL 的 custom index AM 通过 `CREATE ACCESS METHOD ... TYPE INDEX HANDLER ...`
 注册；handler 返回 `IndexAmRoutine`，其中包含 build、insert、vacuum、scan、cost estimate
@@ -284,9 +306,9 @@ CREATE OPERATOR CLASS xpod_rdf_term_id_ops
 DEFAULT FOR TYPE bigint
 USING xpod_rdf_perm
 FAMILY xpod_rdf_term_id_family AS
-  OPERATOR 1 = (bigint, bigint),
-  OPERATOR 2 < (bigint, bigint),
-  OPERATOR 3 <= (bigint, bigint),
+  OPERATOR 1 < (bigint, bigint),
+  OPERATOR 2 <= (bigint, bigint),
+  OPERATOR 3 = (bigint, bigint),
   OPERATOR 4 >= (bigint, bigint),
   OPERATOR 5 > (bigint, bigint),
   FUNCTION 1 xpod_rdf_term_id_cmp(bigint, bigint);
@@ -302,9 +324,9 @@ USING xpod_rdf_perm (
 WITH (permutation = 'spog', compression = 'delta-varint');
 ```
 
-是否最终使用 multi-column bigint opclass、composite `xpod_rdf_quad_key`，还是 expression
-index，由 prototype benchmark 决定。spec 只固定语义：facts 仍在 `rdf_quads`，index
-提供 permutation ordered stream。
+当前实现使用 multi-column bigint opclass `xpod_rdf.term_id_ops`。是否后续切到 composite
+`xpod_rdf_quad_key` 或 expression index，由 postings prototype benchmark 决定。spec 固定
+语义：facts 仍在 `rdf_quads`，index 负责提供 permutation ordered stream。
 
 ### Required Permutations
 
@@ -328,7 +350,9 @@ Graph 维度的处理策略：
 
 ### Index Layout
 
-目标布局：
+当前 `0.1.0-native` 的 AM 已写入 PostgreSQL index relation page，entry 包含 indexed
+term-id keys 和 heap TID。它是自有 storage correctness prototype，但还没有 metapage、
+prefix min/max、ordered compressed postings 或 block-level stats。目标布局：
 
 ```text
 metapage
@@ -355,7 +379,10 @@ posting block
 
 ### Index AM Callback Scope
 
-prototype 至少需要覆盖：
+当前 storage prototype 已覆盖 `ambuild`、`ambuildempty`、`aminsert`、
+`ambulkdelete`、`amvacuumcleanup`、`amcostestimate`、`ambeginscan`、`amrescan`、
+`amgettuple`、`amgetbitmap`、`amendscan` 和 `amvalidate`。postings prototype 还需要把
+这些 callback 从 full index-page filtering 升级为 bound-prefix ordered postings。目标至少需要覆盖：
 
 | Callback | 要求 |
 | --- | --- |

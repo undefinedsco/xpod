@@ -1100,6 +1100,40 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('does not enable the custom-index profile without a native xpod_rdf extension', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-missing-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+
+    try {
+      await engine.open();
+      expect((await engine.storageStats()).pgAcceleration).toMatchObject({
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: false,
+        provider: 'engine-sql',
+        capabilities: [
+          'aggregate.count',
+          'aggregate.numeric',
+          'cache.result',
+          'join.required_bgp',
+          'scan.exact_graph',
+          'scan.graph_prefix',
+          'scan.term_in',
+        ],
+        missingCapabilities: ['index.xpod_rdf_perm'],
+        fallbackReason: 'capability-missing',
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('runs shared models benchmark cases on the PostgreSQL RDF engine without result-cache masking', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-models-benchmark-'));
     const engine = new PostgresRdfEngine({

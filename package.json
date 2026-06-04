@@ -17,8 +17,10 @@
     "!dist/xpod.single.cjs",
     "config",
     "components",
+    "native",
     "templates",
     "static",
+    "scripts/build-xpod-rdf-extension.sh",
     "scripts/patch-jose.js"
   ],
   "engines": {

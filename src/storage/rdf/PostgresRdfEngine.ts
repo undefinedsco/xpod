@@ -87,6 +87,7 @@ const CUSTOM_INDEX_REQUIRED_CAPABILITIES = [
   ...HOT_OPERATOR_REQUIRED_CAPABILITIES,
   'index.xpod_rdf_perm',
 ];
+const XPOD_RDF_PERM_INDEX_CAPABILITY = 'index.xpod_rdf_perm';
 const XPOD_RDF_SQL_ABI_STATEMENTS = [
   'CREATE SCHEMA IF NOT EXISTS xpod_rdf',
   `
@@ -828,6 +829,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         await this.initializeSchema();
         await this.ensurePgAccelerationSqlAbi();
         this.pgAcceleration = await this.probePgAcceleration();
+        await this.ensurePgCustomAccelerationIndexes();
         this.initialized = true;
       })
       .finally(() => {
@@ -2041,8 +2043,39 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const wiredOperators = new Set<string>([
       ...PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES,
       ...RESULT_CACHE_REQUIRED_CAPABILITIES,
+      XPOD_RDF_PERM_INDEX_CAPABILITY,
     ]);
     return capabilities.filter((capability) => wiredOperators.has(capability)).sort();
+  }
+
+  private async ensurePgCustomAccelerationIndexes(): Promise<void> {
+    const acceleration = this.pgAcceleration;
+    if (
+      acceleration?.profile !== 'pg-custom-index'
+      || acceleration.enabled !== true
+      || !acceleration.capabilities.includes(XPOD_RDF_PERM_INDEX_CAPABILITY)
+    ) {
+      return;
+    }
+
+    try {
+      for (const permutation of PERMUTATIONS) {
+        const indexName = `${permutation.indexName}_perm`;
+        const columns = permutation.columns.map((column) => `${column} xpod_rdf.term_id_ops`).join(', ');
+        await this.requireExecutor().exec(`
+          CREATE INDEX IF NOT EXISTS ${indexName}
+          ON ${RDF_FACTS_TABLE}
+          USING xpod_rdf_perm (${columns})
+        `);
+      }
+    } catch (error) {
+      this.pgAcceleration = this.pgAccelerationFallback(
+        acceleration.profile,
+        acceleration.requiredCapabilities,
+        'probe-failed',
+        `custom index DDL failed: ${errorMessage(error)}`,
+      );
+    }
   }
 
   private pgAccelerationCapabilityProviders(options: {
