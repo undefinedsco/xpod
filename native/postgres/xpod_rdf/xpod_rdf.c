@@ -20,6 +20,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/tuplestore.h"
 
 PG_MODULE_MAGIC;
 
@@ -28,6 +29,8 @@ PG_FUNCTION_INFO_V1(xpod_rdf_capabilities);
 PG_FUNCTION_INFO_V1(xpod_rdf_term_id_cmp);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_stats);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_probe);
+PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_scan);
+PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_scan_any);
 PG_FUNCTION_INFO_V1(xpod_rdf_scan_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_count_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_handler);
@@ -191,6 +194,12 @@ typedef struct XpodRdfPermScanBounds
   XpodRdfPermColumnBound columns[XPOD_RDF_PERM_MAX_KEYS];
 } XpodRdfPermScanBounds;
 
+typedef struct XpodRdfPermPrefixSet
+{
+  int64 *values;
+  int value_count;
+} XpodRdfPermPrefixSet;
+
 typedef struct XpodRdfPermScanOpaque
 {
   BlockNumber first_data_block;
@@ -348,6 +357,30 @@ static void xpod_rdf_perm_probe_prefix_args(FunctionCallInfo fcinfo,
                                             uint16 index_nkeys,
                                             int64 *keys,
                                             uint16 *prefix_nkeys);
+static void xpod_rdf_perm_array_prefix_args(FunctionCallInfo fcinfo,
+                                            uint16 index_nkeys,
+                                            XpodRdfPermPrefixSet *prefix_sets,
+                                            uint16 *prefix_nkeys,
+                                            bool *empty_prefix);
+static void xpod_rdf_perm_scan_prefix(Relation indexRelation,
+                                      int64 *prefix_keys,
+                                      uint16 prefix_nkeys,
+                                      ReturnSetInfo *rsinfo);
+static void xpod_rdf_perm_scan_prefix_sets(Relation indexRelation,
+                                           XpodRdfPermPrefixSet *prefix_sets,
+                                           uint16 prefix_nkeys,
+                                           ReturnSetInfo *rsinfo);
+static void xpod_rdf_perm_scan_prefix_sets_recurse(Relation indexRelation,
+                                                   XpodRdfPermPrefixSet *prefix_sets,
+                                                   uint16 prefix_nkeys,
+                                                   uint16 depth,
+                                                   int64 *prefix_keys,
+                                                   ReturnSetInfo *rsinfo);
+static void xpod_rdf_perm_scan_put_row(ReturnSetInfo *rsinfo,
+                                       ItemPointerData *heap_tid,
+                                       int64 *keys,
+                                       uint16 nkeys);
+static int xpod_rdf_perm_int64_compare(const void *left, const void *right);
 static void xpod_rdf_scan_quads_add_array_filter(StringInfo sql,
                                                  Datum *values,
                                                  char *nulls,
@@ -408,7 +441,9 @@ xpod_rdf_capabilities(PG_FUNCTION_ARGS)
     "aggregate.numeric,"
     "cache.result,"
     "index.xpod_rdf_perm,"
-    "index.xpod_rdf_perm.probe"
+    "index.xpod_rdf_perm.probe,"
+    "index.xpod_rdf_perm.scan,"
+    "index.xpod_rdf_perm.scan_any"
   ));
 }
 
@@ -824,6 +859,69 @@ xpod_rdf_perm_index_probe(PG_FUNCTION_ARGS)
     (unsigned long long) postings_matched
   );
   PG_RETURN_TEXT_P(cstring_to_text(json.data));
+}
+
+Datum
+xpod_rdf_perm_index_scan(PG_FUNCTION_ARGS)
+{
+  Oid index_oid = PG_GETARG_OID(0);
+  Relation indexRelation;
+  uint16 index_nkeys;
+  int64 prefix_keys[XPOD_RDF_PERM_MAX_KEYS];
+  uint16 prefix_nkeys = 0;
+  ReturnSetInfo *rsinfo;
+
+  indexRelation = index_open(index_oid, AccessShareLock);
+  index_nkeys = Min(indexRelation->rd_att->natts, XPOD_RDF_PERM_MAX_KEYS);
+  xpod_rdf_perm_assert_supported_nkeys(index_nkeys);
+  xpod_rdf_perm_probe_prefix_args(fcinfo, index_nkeys, prefix_keys, &prefix_nkeys);
+
+  InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
+  rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+  if (rsinfo == NULL || rsinfo->setResult == NULL || rsinfo->setDesc == NULL)
+  {
+    index_close(indexRelation, AccessShareLock);
+    ereport(ERROR, (errmsg("xpod_rdf.perm_index_scan expected a materialized set-returning context")));
+  }
+
+  xpod_rdf_perm_scan_prefix(indexRelation, prefix_keys, prefix_nkeys, rsinfo);
+
+  index_close(indexRelation, AccessShareLock);
+  PG_RETURN_NULL();
+}
+
+Datum
+xpod_rdf_perm_index_scan_any(PG_FUNCTION_ARGS)
+{
+  Oid index_oid = PG_GETARG_OID(0);
+  Relation indexRelation;
+  uint16 index_nkeys;
+  XpodRdfPermPrefixSet prefix_sets[XPOD_RDF_PERM_MAX_KEYS];
+  uint16 prefix_nkeys = 0;
+  bool empty_prefix = false;
+  ReturnSetInfo *rsinfo;
+
+  memset(prefix_sets, 0, sizeof(prefix_sets));
+  indexRelation = index_open(index_oid, AccessShareLock);
+  index_nkeys = Min(indexRelation->rd_att->natts, XPOD_RDF_PERM_MAX_KEYS);
+  xpod_rdf_perm_assert_supported_nkeys(index_nkeys);
+  xpod_rdf_perm_array_prefix_args(fcinfo, index_nkeys, prefix_sets, &prefix_nkeys, &empty_prefix);
+
+  InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
+  rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+  if (rsinfo == NULL || rsinfo->setResult == NULL || rsinfo->setDesc == NULL)
+  {
+    index_close(indexRelation, AccessShareLock);
+    ereport(ERROR, (errmsg("xpod_rdf.perm_index_scan_any expected a materialized set-returning context")));
+  }
+
+  if (!empty_prefix)
+  {
+    xpod_rdf_perm_scan_prefix_sets(indexRelation, prefix_sets, prefix_nkeys, rsinfo);
+  }
+
+  index_close(indexRelation, AccessShareLock);
+  PG_RETURN_NULL();
 }
 
 Datum
@@ -3745,6 +3843,290 @@ xpod_rdf_perm_probe_prefix_args(FunctionCallInfo fcinfo,
     keys[*prefix_nkeys] = PG_GETARG_INT64(arg_index);
     (*prefix_nkeys)++;
   }
+}
+
+static void
+xpod_rdf_perm_array_prefix_args(FunctionCallInfo fcinfo,
+                                uint16 index_nkeys,
+                                XpodRdfPermPrefixSet *prefix_sets,
+                                uint16 *prefix_nkeys,
+                                bool *empty_prefix)
+{
+  int arg_index;
+  bool saw_null = false;
+
+  *prefix_nkeys = 0;
+  *empty_prefix = false;
+  for (arg_index = 1; arg_index <= XPOD_RDF_PERM_MAX_KEYS; arg_index++)
+  {
+    ArrayType *array;
+    Datum *datums;
+    bool *nulls;
+    int item_count;
+    int item_index;
+    int unique_count = 0;
+    int16 typlen;
+    bool typbyval;
+    char typalign;
+    XpodRdfPermPrefixSet *set;
+
+    if (arg_index >= PG_NARGS() || PG_ARGISNULL(arg_index))
+    {
+      saw_null = true;
+      continue;
+    }
+    if (arg_index > index_nkeys)
+    {
+      ereport(ERROR,
+              (errmsg("xpod_rdf_perm scan_any key exceeds index key count"),
+               errdetail("Argument %d was provided for an index with %u key columns.", arg_index, index_nkeys)));
+    }
+    if (saw_null)
+    {
+      ereport(ERROR,
+              (errmsg("xpod_rdf_perm scan_any keys must be a contiguous leading prefix"),
+               errdetail("Argument %d was provided after a null leading key.", arg_index)));
+    }
+
+    array = PG_GETARG_ARRAYTYPE_P(arg_index);
+    item_count = ArrayGetNItems(ARR_NDIM(array), ARR_DIMS(array));
+    set = &prefix_sets[*prefix_nkeys];
+    if (item_count == 0)
+    {
+      set->values = NULL;
+      set->value_count = 0;
+      *empty_prefix = true;
+      (*prefix_nkeys)++;
+      PG_FREE_IF_COPY(array, arg_index);
+      continue;
+    }
+
+    get_typlenbyvalalign(INT8OID, &typlen, &typbyval, &typalign);
+    deconstruct_array(array, INT8OID, typlen, typbyval, typalign, &datums, &nulls, &item_count);
+    set->values = palloc(sizeof(int64) * item_count);
+    for (item_index = 0; item_index < item_count; item_index++)
+    {
+      if (nulls[item_index])
+      {
+        ereport(ERROR, (errmsg("xpod_rdf_perm scan_any arrays cannot contain null values")));
+      }
+      set->values[item_index] = DatumGetInt64(datums[item_index]);
+    }
+    qsort(set->values, item_count, sizeof(int64), xpod_rdf_perm_int64_compare);
+    for (item_index = 0; item_index < item_count; item_index++)
+    {
+      if (unique_count == 0 || set->values[item_index] != set->values[unique_count - 1])
+      {
+        set->values[unique_count++] = set->values[item_index];
+      }
+    }
+    set->value_count = unique_count;
+    if (unique_count == 0)
+    {
+      *empty_prefix = true;
+    }
+    (*prefix_nkeys)++;
+    pfree(datums);
+    pfree(nulls);
+    PG_FREE_IF_COPY(array, arg_index);
+  }
+}
+
+static void
+xpod_rdf_perm_scan_prefix(Relation indexRelation,
+                          int64 *prefix_keys,
+                          uint16 prefix_nkeys,
+                          ReturnSetInfo *rsinfo)
+{
+  BlockNumber block_count;
+  BlockNumber first_data_block;
+  BlockNumber start_block;
+  BlockNumber block;
+  bool global_sorted;
+  uint64 seek_pages_examined = 0;
+
+  block_count = RelationGetNumberOfBlocks(indexRelation);
+  first_data_block = xpod_rdf_perm_first_data_block(indexRelation);
+  global_sorted = xpod_rdf_perm_relation_is_globally_sorted(indexRelation);
+  start_block = first_data_block;
+  if (global_sorted && prefix_nkeys > 0)
+  {
+    start_block = xpod_rdf_perm_seek_lower_block_for_prefix(
+      indexRelation,
+      first_data_block,
+      block_count,
+      prefix_keys,
+      prefix_nkeys,
+      &seek_pages_examined
+    );
+  }
+  (void) seek_pages_examined;
+
+  for (block = start_block; block < block_count; block++)
+  {
+    Buffer buffer;
+    Page page;
+    XpodRdfPermPageOpaque *opaque;
+    bool last_before = false;
+    bool first_past = false;
+    bool page_sorted;
+    OffsetNumber max_offset;
+    OffsetNumber offset;
+
+    buffer = ReadBuffer(indexRelation, block);
+    LockBuffer(buffer, BUFFER_LOCK_SHARE);
+    page = BufferGetPage(buffer);
+    opaque = xpod_rdf_perm_page_opaque(page);
+    if (opaque == NULL)
+    {
+      UnlockReleaseBuffer(buffer);
+      continue;
+    }
+    page_sorted = (opaque->flags & XPOD_RDF_PERM_PAGE_FLAG_SORTED) != 0;
+
+    if (!xpod_rdf_perm_page_prefix_may_match(page, prefix_keys, prefix_nkeys, &last_before, &first_past))
+    {
+      if (first_past && global_sorted)
+      {
+        UnlockReleaseBuffer(buffer);
+        break;
+      }
+      UnlockReleaseBuffer(buffer);
+      continue;
+    }
+
+    max_offset = PageGetMaxOffsetNumber(page);
+    offset = FirstOffsetNumber;
+    if (page_sorted && prefix_nkeys > 0)
+    {
+      OffsetNumber lower_bound_offset = xpod_rdf_perm_page_seek_prefix(page, prefix_keys, prefix_nkeys);
+
+      if (!OffsetNumberIsValid(lower_bound_offset))
+      {
+        UnlockReleaseBuffer(buffer);
+        continue;
+      }
+      offset = lower_bound_offset;
+    }
+
+    for (; offset <= max_offset; offset = OffsetNumberNext(offset))
+    {
+      void *entry = xpod_rdf_perm_page_entry(page, offset);
+      int prefix_compare = 0;
+      int64 *entry_keys;
+      uint16 entry_nkeys;
+      ItemPointerData heap_tid;
+      uint32 posting_index = 0;
+      uint32 next_posting = 0;
+
+      if (entry == NULL)
+      {
+        continue;
+      }
+      if (prefix_nkeys > 0)
+      {
+        prefix_compare = xpod_rdf_perm_entry_compare_key_prefix(entry, prefix_keys, prefix_nkeys);
+        if (page_sorted && prefix_compare > 0)
+        {
+          break;
+        }
+        if (prefix_compare < 0)
+        {
+          continue;
+        }
+      }
+
+      entry_keys = xpod_rdf_perm_entry_keys(entry);
+      entry_nkeys = xpod_rdf_perm_entry_nkeys(entry);
+      while (xpod_rdf_perm_entry_next_tid(entry, posting_index, &heap_tid, &next_posting))
+      {
+        xpod_rdf_perm_scan_put_row(rsinfo, &heap_tid, entry_keys, entry_nkeys);
+        if (next_posting == 0)
+        {
+          break;
+        }
+        posting_index = next_posting;
+      }
+    }
+
+    UnlockReleaseBuffer(buffer);
+  }
+}
+
+static void
+xpod_rdf_perm_scan_prefix_sets(Relation indexRelation,
+                               XpodRdfPermPrefixSet *prefix_sets,
+                               uint16 prefix_nkeys,
+                               ReturnSetInfo *rsinfo)
+{
+  int64 prefix_keys[XPOD_RDF_PERM_MAX_KEYS];
+
+  memset(prefix_keys, 0, sizeof(prefix_keys));
+  xpod_rdf_perm_scan_prefix_sets_recurse(indexRelation, prefix_sets, prefix_nkeys, 0, prefix_keys, rsinfo);
+}
+
+static void
+xpod_rdf_perm_scan_prefix_sets_recurse(Relation indexRelation,
+                                       XpodRdfPermPrefixSet *prefix_sets,
+                                       uint16 prefix_nkeys,
+                                       uint16 depth,
+                                       int64 *prefix_keys,
+                                       ReturnSetInfo *rsinfo)
+{
+  int value_index;
+
+  if (depth >= prefix_nkeys)
+  {
+    xpod_rdf_perm_scan_prefix(indexRelation, prefix_keys, prefix_nkeys, rsinfo);
+    return;
+  }
+
+  for (value_index = 0; value_index < prefix_sets[depth].value_count; value_index++)
+  {
+    prefix_keys[depth] = prefix_sets[depth].values[value_index];
+    xpod_rdf_perm_scan_prefix_sets_recurse(indexRelation, prefix_sets, prefix_nkeys, depth + 1, prefix_keys, rsinfo);
+  }
+}
+
+static void
+xpod_rdf_perm_scan_put_row(ReturnSetInfo *rsinfo, ItemPointerData *heap_tid, int64 *keys, uint16 nkeys)
+{
+  Datum values[5];
+  bool nulls[5];
+  uint16 key_index;
+
+  memset(values, 0, sizeof(values));
+  memset(nulls, 0, sizeof(nulls));
+  values[0] = PointerGetDatum(heap_tid);
+  for (key_index = 0; key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+  {
+    if (keys != NULL && key_index < nkeys)
+    {
+      values[key_index + 1] = Int64GetDatum(keys[key_index]);
+    }
+    else
+    {
+      nulls[key_index + 1] = true;
+    }
+  }
+  tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+}
+
+static int
+xpod_rdf_perm_int64_compare(const void *left, const void *right)
+{
+  int64 left_value = *((const int64 *) left);
+  int64 right_value = *((const int64 *) right);
+
+  if (left_value < right_value)
+  {
+    return -1;
+  }
+  if (left_value > right_value)
+  {
+    return 1;
+  }
+  return 0;
 }
 
 static void

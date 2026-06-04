@@ -40,6 +40,18 @@ The first native cut provides:
   and posting counts. The probe is an observability and next-step hot-operator
   building block; it does not return user query rows and therefore does not
   bypass PostgreSQL heap visibility checks.
+- `xpod_rdf.perm_index_scan(regclass, bigint, bigint, bigint, bigint)`, a
+  private leading-prefix scan for `xpod_rdf_perm`. It reads native index pages
+  and compressed postings directly, returning heap TIDs plus permutation keys.
+  `PostgresRdfEngine` only uses it for narrow exact-id single-pattern scans,
+  then joins back to `rdf_quads` by `ctid` and rechecks all quad columns so heap
+  visibility and stale-index safety remain PostgreSQL-owned.
+- `xpod_rdf.perm_index_scan_any(regclass, bigint[], bigint[], bigint[], bigint[])`,
+  a private leading-prefix array scan for `xpod_rdf_perm`. It deduplicates each
+  contiguous prefix array, enumerates the prefix combinations, reuses the same
+  native page scan as `perm_index_scan`, and lets `PostgresRdfEngine` route
+  supported single-pattern `$in` term-id queries through custom index pages plus
+  heap recheck.
 
 Build inside an image with PostgreSQL server headers:
 
@@ -76,5 +88,7 @@ engine-sql path. Required BGP joins and aggregate operators now enter the
 extension through `execute_plan_json`, but this is not yet a custom C join /
 aggregate executor and must not be counted as a final native performance gate.
 `perm_index_probe` proves the extension can now inspect `xpod_rdf_perm` pages
-without routing through planner SQL, but it is still an internal probe rather
-than the final MVCC-safe scan / join / aggregate executor.
+without routing through planner SQL. `perm_index_scan` is the first direct
+custom-index query-row path; `perm_index_scan_any` extends that foundation to
+`$in` prefix scans. They are still single-pattern foundations and not the final
+native join / aggregate executor.

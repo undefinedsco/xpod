@@ -90,6 +90,9 @@ const CUSTOM_INDEX_REQUIRED_CAPABILITIES = [
   'index.xpod_rdf_perm',
 ];
 const XPOD_RDF_PERM_INDEX_CAPABILITY = 'index.xpod_rdf_perm';
+const XPOD_RDF_PERM_SCAN_CAPABILITY = 'index.xpod_rdf_perm.scan';
+const XPOD_RDF_PERM_SCAN_ANY_CAPABILITY = 'index.xpod_rdf_perm.scan_any';
+const XPOD_RDF_PERM_MAX_KEYS = 4;
 const XPOD_RDF_SQL_ABI_STATEMENTS = [
   'CREATE SCHEMA IF NOT EXISTS xpod_rdf',
   `
@@ -239,6 +242,12 @@ interface PgCompiledScan {
   countParams: unknown[];
   indexChoice: string;
   queryPlan: string[];
+}
+
+interface PgCustomIndexScanPlan extends PgCompiledScan {
+  permutation: PgPermutation;
+  prefixLength: number;
+  capability: string;
 }
 
 interface PgCompiledJoinPattern {
@@ -1474,6 +1483,73 @@ export class PostgresRdfEngine implements RdfEngineLike {
     );
   }
 
+  private compilePgCustomIndexPermScanSql(resolved: PgResolvedPattern, options?: QueryOptions): PgCustomIndexScanPlan | undefined {
+    const prefix = this.pgCustomIndexPermScanPrefix(resolved);
+    if (!prefix) {
+      return undefined;
+    }
+
+    const builder = new PgSqlBuilder();
+    const alias = 'q';
+    const scanAlias = 'idx';
+    const conditions: string[] = [];
+    const joins: string[] = [];
+    const queryPlan: string[] = [];
+    const keyArgs = Array.from({ length: XPOD_RDF_PERM_MAX_KEYS }, (_, index) => {
+      const value = prefix.keys[index];
+      if (value === undefined) {
+        return prefix.mode === 'any' ? 'NULL::bigint[]' : 'NULL::bigint';
+      }
+      if (Array.isArray(value)) {
+        return `${builder.add(value)}::bigint[]`;
+      }
+      if (prefix.mode === 'any') {
+        return `${builder.add([value])}::bigint[]`;
+      }
+      return `${builder.add(value)}::bigint`;
+    }).join(', ');
+    const indexName = `${prefix.permutation.indexName}_perm`;
+    const functionName = prefix.mode === 'any' ? 'perm_index_scan_any' : 'perm_index_scan';
+    const keyRecheck = prefix.permutation.columns
+      .map((column, index) => `${alias}.${column} = ${scanAlias}.key${index + 1}`)
+      .join(' AND ');
+
+    this.appendResolvedPatternConditions(resolved, alias, conditions, joins, builder, queryPlan);
+    const order = this.buildOrderClause(options, alias);
+    const pagination = this.buildPagination(options, builder);
+    const from = `
+      xpod_rdf.${functionName}('${indexName}'::regclass, ${keyArgs}) ${scanAlias}
+      JOIN ${RDF_FACTS_TABLE} ${alias}
+        ON ${alias}.ctid = ${scanAlias}.heap_tid
+       AND ${keyRecheck}
+    `;
+    const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+
+    return {
+      sql: `
+        SELECT ${alias}.graph_id, ${alias}.subject_id, ${alias}.predicate_id, ${alias}.object_id
+        FROM ${from}${joins.join('')}
+        ${whereClause}
+        ${order || ` ORDER BY ${prefix.permutation.columns.map((column) => `${alias}.${column}`).join(', ')}`}
+        ${pagination.sql}
+      `,
+      params: builder.snapshot(),
+      countSql: `SELECT COUNT(*) AS count FROM ${from}${joins.join('')}${whereClause}`,
+      countParams: builder.snapshot().slice(0, builder.snapshot().length - pagination.paramCount),
+      indexChoice: `xpod_rdf.${functionName}(${prefix.permutation.name},prefix:${prefix.prefixLength})`,
+      queryPlan: [
+        `XpodRdfCustomIndexScan(${functionName}:${prefix.permutation.name},prefix:${prefix.prefixLength})`,
+        `Rdf3xPermutationScan(${prefix.permutation.name})`,
+        ...queryPlan,
+        ...(order ? [`Rdf3xJoinOrder(${describeScanOrder(options)})`] : []),
+        ...(pagination.sql ? ['Pagination'] : []),
+      ],
+      permutation: prefix.permutation,
+      prefixLength: prefix.prefixLength,
+      capability: prefix.capability,
+    };
+  }
+
   private async queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]> {
     const rows = await this.requireExecutor().query<{ row_json: unknown }>(
       'SELECT row_json FROM xpod_rdf.execute_plan_json($1::text)',
@@ -1529,6 +1605,79 @@ export class PostgresRdfEngine implements RdfEngineLike {
       && !resolved.objectRange
       && Object.keys(resolved.excludedIdSets).length === 0
       && Object.keys(resolved.termFilters).length === 0;
+  }
+
+  private canUsePgCustomIndexPermScan(): boolean {
+    return this.pgAcceleration?.profile === 'pg-custom-index'
+      && this.pgAcceleration.provider === 'extension'
+      && this.pgAcceleration.enabled === true
+      && this.pgAcceleration.capabilityProviders?.[XPOD_RDF_PERM_INDEX_CAPABILITY] === 'extension'
+      && this.pgAcceleration.capabilityProviders?.[XPOD_RDF_PERM_SCAN_CAPABILITY] === 'extension';
+  }
+
+  private canUsePgCustomIndexPermScanAny(): boolean {
+    return this.canUsePgCustomIndexPermScan()
+      && this.pgAcceleration?.capabilityProviders?.[XPOD_RDF_PERM_SCAN_ANY_CAPABILITY] === 'extension';
+  }
+
+  private pgCustomIndexPermScanPrefix(resolved: PgResolvedPattern): {
+    permutation: PgPermutation;
+    keys: Array<number | number[]>;
+    prefixLength: number;
+    mode: 'exact' | 'any';
+    capability: string;
+  } | undefined {
+    if (
+      !this.canUsePgCustomIndexPermScan()
+      || resolved.graphPrefix !== undefined
+      || resolved.objectRange
+      || Object.keys(resolved.excludedIdSets).length > 0
+      || Object.keys(resolved.termFilters).length > 0
+    ) {
+      return undefined;
+    }
+
+    const canUseAny = this.canUsePgCustomIndexPermScanAny();
+    const preferred = this.choosePermutation(resolved);
+    const candidates = [
+      preferred,
+      ...PERMUTATIONS.filter((permutation) => permutation.name !== preferred.name),
+    ];
+    let best: {
+      permutation: PgPermutation;
+      keys: Array<number | number[]>;
+      prefixLength: number;
+      mode: 'exact' | 'any';
+      capability: string;
+    } | undefined;
+    for (const permutation of candidates) {
+      const keys: Array<number | number[]> = [];
+      let usesAny = false;
+      for (const column of permutation.columns) {
+        const key = pgPatternKeyForIndexedColumn(column);
+        const id = resolved.ids[key];
+        if (id === undefined) {
+          const ids = resolved.idSets[key];
+          if (ids?.length && canUseAny) {
+            keys.push(ids);
+            usesAny = true;
+            continue;
+          }
+          break;
+        }
+        keys.push(id);
+      }
+      if (keys.length > (best?.prefixLength ?? 0)) {
+        best = {
+          permutation,
+          keys,
+          prefixLength: keys.length,
+          mode: usesAny ? 'any' : 'exact',
+          capability: usesAny ? XPOD_RDF_PERM_SCAN_ANY_CAPABILITY : XPOD_RDF_PERM_SCAN_CAPABILITY,
+        };
+      }
+    }
+    return best && best.prefixLength > 0 ? best : undefined;
   }
 
   private canUsePgExtensionQueryOperators(query: RdfQuery): boolean {
@@ -1660,7 +1809,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const resolved = await this.resolvePattern(entry.pattern);
-    if (resolved.unresolved || !this.canUsePgExtensionQuadScan(resolved)) {
+    if (resolved.unresolved) {
+      return undefined;
+    }
+    const customIndexScan = this.compilePgCustomIndexPermScanSql(resolved);
+    const useCustomIndexScan = customIndexScan !== undefined;
+    if (!useCustomIndexScan && !this.canUsePgExtensionQuadScan(resolved)) {
       return undefined;
     }
 
@@ -1674,8 +1828,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
       variableAliases.set(variableName, `v${variableAliases.size}`);
     }
 
-    const rows = await this.scanPgExtensionQuadIds(resolved);
-    const matchedRows = await this.countPgExtensionQuads(resolved);
+    const rows = useCustomIndexScan
+      ? await this.requireExecutor().query<PgQuadIdRow>(customIndexScan.sql, customIndexScan.params)
+      : await this.scanPgExtensionQuadIds(resolved);
+    const matchedRows = useCustomIndexScan
+      ? await this.scalarCount(customIndexScan.countSql, customIndexScan.countParams)
+      : await this.countPgExtensionQuads(resolved);
     const bindingRows = rows.map((row) => {
       const bindingRow: Record<string, unknown> = {};
       for (const key of PATTERN_KEYS) {
@@ -1693,12 +1851,21 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const bindings = await this.joinRowsToBindings(bindingRows, variableAliases);
     const plan = [
       ...this.pgAccelerationActiveMarkersForScan(entry.pattern),
-      'XpodRdfExtensionScan(scan_quads)',
+      ...(useCustomIndexScan ? [`XpodRdfPgHotOperator(${customIndexScan.capability})`] : []),
+      ...(useCustomIndexScan ? customIndexScan.queryPlan : ['XpodRdfExtensionScan(scan_quads)']),
       `PostgresRdfExtensionSinglePattern(${describePatternSource(entry)})`,
     ];
     return {
       bindings,
-      metrics: this.localMetrics(start, matchedRows, matchedRows, bindings.length, ['xpod_rdf.scan_quads'], plan, query.filters?.length ?? 0),
+      metrics: this.localMetrics(
+        start,
+        matchedRows,
+        matchedRows,
+        bindings.length,
+        [useCustomIndexScan ? customIndexScan.indexChoice : 'xpod_rdf.scan_quads'],
+        plan,
+        query.filters?.length ?? 0,
+      ),
     };
   }
 
@@ -2258,6 +2425,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES,
       ...RESULT_CACHE_REQUIRED_CAPABILITIES,
       XPOD_RDF_PERM_INDEX_CAPABILITY,
+      XPOD_RDF_PERM_SCAN_CAPABILITY,
+      XPOD_RDF_PERM_SCAN_ANY_CAPABILITY,
     ]);
     return capabilities.filter((capability) => wiredOperators.has(capability)).sort();
   }
@@ -5474,6 +5643,23 @@ function uniqueNumbers(values: number[]): number[] {
 
 function joinSourceVariables(source: PgJoinSource): string[] {
   return uniqueStrings(Object.values(source.entry.variables).filter((value): value is string => Boolean(value)));
+}
+
+function pgPatternKeyForIndexedColumn(column: PgIndexedColumn): PgPatternKey {
+  switch (column) {
+    case 'graph_id':
+      return 'graph';
+    case 'subject_id':
+      return 'subject';
+    case 'predicate_id':
+      return 'predicate';
+    case 'object_id':
+      return 'object';
+    default: {
+      const exhaustive: never = column;
+      throw new Error(`Unsupported PostgreSQL RDF indexed column: ${String(exhaustive)}`);
+    }
+  }
 }
 
 function joinSolutionMappingKeyExpression(variableAliases: Map<string, string>, variables?: string[]): string {
