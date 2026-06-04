@@ -1,6 +1,6 @@
 # RDF Performance Report and Data Migration Plan
 
-记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 在没有 native extension 时由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold、`execute_plan_json` private plan execution ABI 和 `xpod_rdf_perm` custom-index storage prototype，但 compressed postings / custom C hot-operator 性能实现还不能计入已实现性能收益。
+记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 在没有 native extension 时由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold、`execute_plan_json` legacy private plan execution ABI、`xpod_rdf_perm` custom-index storage prototype 和受限 `subject_star_join` native join prototype，但 custom C/Rust hot-operator 性能实现还不能计入已实现性能收益。
 
 ## Current Decision
 
@@ -405,15 +405,16 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `xpod_rdf.perm_index_probe(regclass, bigint, bigint, bigint, bigint)` private index probe ABI、
   `xpod_rdf.perm_index_scan(regclass, bigint, bigint, bigint, bigint)` private leading-prefix
   custom-index scan ABI、`xpod_rdf.perm_index_scan_any(regclass, bigint[], bigint[], bigint[], bigint[])`
-  private leading-prefix array custom-index scan ABI、
+  private leading-prefix array custom-index scan ABI、`xpod_rdf.subject_star_join(...)`
+  narrow native subject-star join prototype、
   `xpod_rdf_perm` custom index access method 和 `xpod_rdf.term_id_ops` bigint opclass。
 - `PostgresRdfEngine` 已能在 native extension 声明 `scan.exact_graph` / `scan.term_in` 时，
   对无排序、无分页、无 DISTINCT、无同 pattern 变量相等约束的单 pattern 查询调用
   `xpod_rdf.scan_quads(...)`，并在 metrics plan 中标记
-  `XpodRdfExtensionScan(scan_quads)`；required BGP join 和 count / numeric aggregate 可通过
-  `xpod_rdf.execute_plan_json(...)` 进入 native extension provider，并在 metrics plan 中标记
-  `XpodRdfExtensionJoin(execute_plan_json)` / `XpodRdfExtensionAggregate(execute_plan_json)`。
-  当前它仍执行 `PostgresRdfEngine` 编译出的 PG SQL，不是 custom C join / aggregate executor。
+  `XpodRdfExtensionScan(scan_quads)`；普通 required BGP join、group aggregate 和 numeric
+  aggregate 不再通过 `xpod_rdf.execute_plan_json(...)` 进入 extension wrapper，而是继续走
+  direct PG RDF-3X SQL。只有受限 constant-predicate subject-star shape 会走
+  `xpod_rdf.subject_star_join(...)` native seed/probe/recheck path。
 - `pg-custom-index` profile：只有 native extension 声明 `index.xpod_rdf_perm` 后才启用；
   engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
   index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会把
@@ -450,9 +451,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   已接线；exact leading-prefix 单 pattern 可进一步走 `perm_index_scan + heap recheck` direct
   custom-index path，`$in` leading-prefix 单 pattern 可走 `perm_index_scan_any + heap recheck`
   direct custom-index path；单 pattern 非 DISTINCT `COUNT` aggregate 可复用 direct custom-index
-  count SQL。required BGP join、group aggregate 和 numeric aggregate 也能通过 `execute_plan_json`
-  进入 native extension provider。但 join/aggregate 仍复用 compiled PG SQL，不是 custom C/Rust
-  join / aggregate execution。
+  count SQL；受限 subject-star join 可走 `subject_star_join`。普通 required BGP join、group
+  aggregate 和 numeric aggregate 仍复用 direct PG RDF-3X SQL，不是 custom C/Rust join /
+  aggregate execution。
 - native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比
   RDF-3X baseline。
 
@@ -638,31 +639,36 @@ case plan matched，`rdf3x.syncedWithFacts=true`。这些旧报告生成时，`p
 `cache.result` 和 `index.xpod_rdf_perm`；查询物理计划仍主要是 `Rdf3xMembershipScan` /
 `PostgresRdf3xJoin`。当前代码已经补上 `scan_quads/count_quads` ABI、`perm_index_scan`
 leading-prefix direct custom-index ABI、`perm_index_scan_any` leading-prefix array direct
-custom-index ABI 和 `execute_plan_json` ABI，`scan.exact_graph` /
+custom-index ABI 和受限 `subject_star_join` ABI，`scan.exact_graph` /
 `scan.graph_prefix` / `scan.term_in` 可由 native extension provider 执行受支持的单 pattern
 scan；exact leading-prefix 单 pattern 在 `index.xpod_rdf_perm.scan` 存在时可绕过 `scan_quads`
 SPI 包装，直接读 custom index pages 后 heap recheck。2026-06-04 的 disposable PG17 smoke
 已确认 `(subject_id=1,predicate_id=10)` prefix scan 返回两个 heap TID，join 回 `rdf_quads`
 并按四元组列重检后得到预期两行；同日新增的 `perm_index_scan_any` smoke 已确认
-`ARRAY[1,2,2] x ARRAY[10]` prefix scan 会去重并返回预期两行。join 和 aggregate 可由 native extension
-provider 执行 compiled SQL。
+`ARRAY[1,2,2] x ARRAY[10]` prefix scan 会去重并返回预期两行。ordinary join 和 aggregate 仍由
+direct PG RDF-3X SQL 执行，受限 subject-star shape 可由 native extension
+provider 执行 seed/probe/recheck。
 
 因此 small 对照没有稳定性能收益：例如 `latest message by thread query` 从 6 ms 到 14 ms、
 `list messages by thread` 从 2 ms 到 7 ms、`task materialization active due query` 从
 14 ms 到 21 ms；少数 case 持平或略快。
 
-2026-06-04 的真实 PG17 medium rerun 已补齐 `engine.scan()` 的 direct custom-index path 后重新验证：
+2026-06-04 的真实 PG17 medium rerun 已补齐 `engine.scan()` 的 direct custom-index path、
+`subject_star_join` prototype、ordinary join/aggregate direct SQL fallback，以及 DISTINCT
+aggregate graph-prefix plan fence 后重新验证：
 
 ```text
-.test-data/rdf-pg-product-grade-baseline/models-postgres-2026-06-04T16-35-56-974Z-26447-eaebb97f-bef7-4086-8fc8-98122d9d0ef3.json
-.test-data/rdf-pg-product-grade-custom-scan/models-postgres-2026-06-04T16-52-54-632Z-27313-562e2a53-1943-4b23-9b3e-4bf60a9a017c.json
+.test-data/rdf-pg-product-grade-alpine-baseline/models-postgres-2026-06-04T17-25-09-888Z-29538-ef98b917-4ecd-45a9-83be-231e2120090c.json
+.test-data/rdf-pg-subject-star-final3/models-postgres-2026-06-04T18-56-11-341Z-35577-71ebe490-3fcc-4516-8d1b-800d2ff9b5ea.json
 ```
 
 medium seed 为 10066 quads，baseline 和 `pg-custom-index` 都是 22 个 scan case / 8 个 query case
 plan matched，`rdf3x.syncedWithFacts=true`，`pg-custom-index` active operators 包含
-`index.xpod_rdf_perm.scan`、`index.xpod_rdf_perm.scan_any`、`scan.graph_prefix`、`join.required_bgp`
-和 aggregate capabilities。存储口径为 baseline total/facts `1.39x`，custom total/facts `1.30x`；
-custom facts bytes 因额外 `rdf_quads_*_perm` indexes 变大，derived RDF-3X bytes 持平。
+`index.xpod_rdf_perm.scan`、`index.xpod_rdf_perm.scan_any`、`join.subject_star`、
+`scan.graph_prefix`、`join.required_bgp` 和 aggregate capabilities。存储口径为
+`pg-custom-index` facts bytes `28,975,104`、RDF-3X derived bytes `8,617,984`、custom perm
+index bytes `3,244,032`、total/facts `1.30x`。refresh 阶段 reindex 6 个 perm index 约
+`1.4s`，planner analyze 约 `0.1s`。
 
 关键 scan case：
 
@@ -673,14 +679,26 @@ custom facts bytes 因额外 `rdf_quads_*_perm` indexes 变大，derived RDF-3X 
 | models by provider | 2 ms | 7 ms | `perm_index_scan(POS,prefix:2)` |
 | credentials by provider | 2 ms | 4 ms | `perm_index_scan(POS,prefix:2)` |
 
-query case 仍全部通过 `xpod_rdf.execute_plan_json(...)` 进入 native provider，而不是 custom
-join / aggregate executor；例如 `latest message by thread query` p95 从 21 ms 到 30 ms，
-`task materialization active due query` 从 18 ms 到 30 ms，只有 `run steps by run query`
-从 12 ms 到 6 ms。这个结果说明问题不在 benchmark case 本身，而在两块 PG 能力尚未完成：
-custom index 还没有 join/aggregate skip table / operator 深度接入，native hot operators
-还没有把 `execute_plan_json` 内部替换为 custom join / aggregate algorithms。block-level seek、
-compressed posting storage、prefix fanout stats 和 direct 单 pattern custom-index scan ABI 是必要中间层，
-但还不足以让当前 models benchmark 稳定快过 RDF-3X baseline。
+关键 query case：
+
+| Case | RDF-3X baseline p95 | `pg-custom-index` p95 | Custom path |
+| --- | ---: | ---: | --- |
+| latest message by thread query | 21 ms | 22 ms | `subject_star_join(seed:POS,probes:PSO)` |
+| next queued run by workspace query | 10 ms | 12 ms | `subject_star_join(seed:POS,probes:PSO>PSO)` |
+| run steps by run query | 6 ms | 7 ms | `subject_star_join(seed:POS,probes:PSO)` |
+| task materialization active due query | 25 ms | 21 ms | direct `Rdf3xJoinBGP` |
+| message count by thread with having | 6 ms | 9 ms | direct `Rdf3xJoinBGP` |
+| queued run priority numeric aggregate | 5 ms | 6 ms | direct `Rdf3xJoinBGP` |
+| message score by thread numeric aggregate | 10 ms | 11 ms | direct `Rdf3xJoinBGP` |
+| message join count distinct | 10 ms | 16 ms | direct `Rdf3xJoinBGP` with graph-prefix fence |
+
+`execute_plan_json` 不再作为 ordinary join / aggregate 执行路径。之前 `message join count
+distinct` 在 cold full benchmark 中会被 PG 拉平成坏 semi-join，产生约 `200ms` p50；现在只对
+DISTINCT aggregate 的 graph-prefix subquery 加 plan fence，p95 回到 `16ms`。整体结论仍然是
+`pg-custom-index` 只能作为 shadow/experimental profile：它证明 native extension packaging、
+custom index storage、direct single-pattern scan 和 narrow subject-star join，但 medium
+models benchmark 尚未稳定快过 RDF-3X baseline。下一步不是扩大默认启用面，而是补成本模型：
+只有当 custom path 的估算收益明确高于 source-membership/BTree/RDF-3X SQL 时才路由过去。
 
 ## Operational Gates
 

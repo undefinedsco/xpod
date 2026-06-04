@@ -55,6 +55,23 @@ RETURNS TABLE(heap_tid tid, key1 bigint, key2 bigint, key3 bigint, key4 bigint)
 AS 'MODULE_PATHNAME', 'xpod_rdf_perm_index_scan_any'
 LANGUAGE C VOLATILE PARALLEL SAFE;
 
+CREATE FUNCTION xpod_rdf.subject_star_join(
+  p_heap regclass,
+  p_seed_index regclass,
+  p_seed_subject_key smallint,
+  p_seed_key1 bigint DEFAULT NULL,
+  p_seed_key2 bigint DEFAULT NULL,
+  p_seed_key3 bigint DEFAULT NULL,
+  p_seed_key4 bigint DEFAULT NULL,
+  p_probe_index regclass DEFAULT NULL,
+  p_probe_predicate_ids bigint[] DEFAULT NULL,
+  p_probe_object_ids bigint[] DEFAULT NULL,
+  p_graph_ids bigint[] DEFAULT NULL
+)
+RETURNS TABLE(subject_id bigint, object1_id bigint, object2_id bigint, object3_id bigint, object4_id bigint)
+AS 'MODULE_PATHNAME', 'xpod_rdf_subject_star_join'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
 CREATE FUNCTION xpod_rdf.scan_quads(
   p_subject_ids bigint[],
   p_predicate_ids bigint[],

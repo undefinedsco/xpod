@@ -219,6 +219,14 @@ export interface RdfDerivedIndexRefreshResult {
     plannerStats?: RdfPlannerStatsRefreshResult;
     rebuild?: Rdf3xRebuildResult;
   };
+  pgCustomIndex?: {
+    refreshed: boolean;
+    previousFactsDataVersion: number;
+    factsDataVersion: number;
+    syncedWithFacts: boolean;
+    reindexedIndexes: string[];
+    durationMs: number;
+  };
 }
 
 export interface RdfPlannerStatsRefreshResult {

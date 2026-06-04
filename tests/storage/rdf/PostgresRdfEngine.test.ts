@@ -24,6 +24,7 @@ const PRIORITY = 'https://undefineds.co/ns#priority';
 const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
 const STATUS = 'https://undefineds.co/ns#status';
 const THREAD = 'https://undefineds.co/ns#thread';
+const DCT_CREATED = 'http://purl.org/dc/terms/created';
 
 describe('PostgresRdfEngine', () => {
   it('stores RDF facts asynchronously while preserving datatype and language terms', async () => {
@@ -1364,9 +1365,9 @@ describe('PostgresRdfEngine', () => {
 
       expect(observedSql[0]).toContain("xpod_rdf.perm_index_scan('rdf_quads_posg_perm'::regclass");
       expect(observedSql[0]).toContain('JOIN rdf_quads q');
-      expect(observedSql[0]).toContain('q.ctid = idx.heap_tid');
-      expect(observedSql[0]).toContain('q.predicate_id = idx.key1');
-      expect(observedSql[0]).toContain('q.object_id = idx.key2');
+      expect(observedSql[0]).toContain('q_heap.ctid = idx.heap_tid');
+      expect(observedSql[0]).toContain('q_heap.predicate_id = idx.key1');
+      expect(observedSql[0]).toContain('q_heap.object_id = idx.key2');
       expect(observedParams?.slice(0, 2)).toEqual([predicateId, objectId]);
       expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
       expect(result.metrics.indexChoices).toEqual(['xpod_rdf.perm_index_scan(POS,prefix:2)']);
@@ -1494,9 +1495,9 @@ describe('PostgresRdfEngine', () => {
 
       expect(observedSql[0]).toContain("xpod_rdf.perm_index_scan('rdf_quads_posg_perm'::regclass");
       expect(observedSql[0]).toContain('JOIN rdf_quads q');
-      expect(observedSql[0]).toContain('q.ctid = idx.heap_tid');
-      expect(observedSql[0]).toContain('q.predicate_id = idx.key1');
-      expect(observedSql[0]).toContain('q.object_id = idx.key2');
+      expect(observedSql[0]).toContain('q_heap.ctid = idx.heap_tid');
+      expect(observedSql[0]).toContain('q_heap.predicate_id = idx.key1');
+      expect(observedSql[0]).toContain('q_heap.object_id = idx.key2');
       expect(observedParams?.slice(0, 2)).toEqual([predicateId, objectId]);
       expect(result.quads.map((value) => value.subject.value)).toEqual([message.value]);
       expect(result.metrics.indexChoice).toBe('xpod_rdf.perm_index_scan(POS,prefix:2)');
@@ -1771,8 +1772,8 @@ describe('PostgresRdfEngine', () => {
       });
 
       expect(observedSql[0]).toContain("xpod_rdf.perm_index_scan_any('rdf_quads_posg_perm'::regclass");
-      expect(observedSql[0]).toContain('q.predicate_id = idx.key1');
-      expect(observedSql[0]).toContain('q.object_id = idx.key2');
+      expect(observedSql[0]).toContain('q_heap.predicate_id = idx.key1');
+      expect(observedSql[0]).toContain('q_heap.object_id = idx.key2');
       expect(observedSql[0]).toContain('q.predicate_id = ANY');
       expect(observedParams?.[0]).toEqual([predicateId, alternatePredicateId]);
       expect(observedParams?.[1]).toEqual([objectId]);
@@ -2029,7 +2030,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('routes required BGP joins through the native extension plan ABI', async () => {
+  it('keeps required BGP joins on direct RDF-3X SQL instead of the extension plan ABI', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-join-'));
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
@@ -2041,12 +2042,14 @@ describe('PostgresRdfEngine', () => {
       requireDictionary(): {
         find(term: unknown): Promise<number | undefined>;
       };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
       queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
     };
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
     const message = namedNode(`${graph.value}#msg_1`);
-    let extensionCalls = 0;
     let observedSql = '';
 
     try {
@@ -2081,10 +2084,17 @@ describe('PostgresRdfEngine', () => {
         ],
       };
       internals.queryPgExtensionJsonRows = async <T extends Record<string, unknown>>(sql: string): Promise<T[]> => {
-        extensionCalls++;
-        observedSql = sql;
-        return [{ v0: messageId }] as T[];
+        throw new Error(`execute_plan_json should not be used for direct RDF-3X joins: ${sql}`);
       };
+      const originalExecutor = internals.requireExecutor();
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('JOIN rdf_quads')) {
+            observedSql = sql;
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
 
       const result = await engine.query({
         patterns: [
@@ -2105,19 +2115,139 @@ describe('PostgresRdfEngine', () => {
         cache: { mode: 'bypass' },
       });
 
-      expect(extensionCalls).toBe(1);
       expect(observedSql).toContain('JOIN rdf_quads');
       expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
-      expect(result.metrics.indexChoices[0]).toMatch(/^xpod_rdf\.execute_plan_json\(Rdf3xJoinBGP\(/u);
+      expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP\(/u);
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
-      expect(result.metrics.plan).toContain('XpodRdfExtensionJoin(execute_plan_json)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionJoin(execute_plan_json)');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
 
-  it('routes aggregate hot operators through the native extension plan ABI', async () => {
+  it('routes supported pg-custom-index subject-star joins through native subject_star_join', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-subject-star-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const createdAt = literal('2026-05-18T00:00:01.000Z');
+    const observedSql: string[] = [];
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      const originalExecutor = internals.requireExecutor();
+      await engine.put([
+        quad(message, namedNode(THREAD), thread, graph),
+        quad(message, namedNode(DCT_CREATED), createdAt, graph),
+      ]);
+      const dictionary = internals.requireDictionary();
+      const messageId = await dictionary.find(message);
+      const createdAtId = await dictionary.find(createdAt);
+      expect(messageId).toBeDefined();
+      expect(createdAtId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.subject_star',
+        ],
+        capabilityProviders: {
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.subject_star': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.subject_star',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for subject-star joins');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.subject_star_join')) {
+            observedSql.push(sql);
+            observedParams = params;
+            return [{ v0: messageId, v1: createdAtId }] as T[];
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: thread,
+          },
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
+            subject: { variable: 'message' },
+            predicate: namedNode(DCT_CREATED),
+            object: { variable: 'createdAt' },
+          },
+        ],
+        select: ['message', 'createdAt'],
+        orderBy: [{ variable: 'createdAt', direction: 'desc' }],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.subject_star_join');
+      expect(observedSql[0]).toContain("'rdf_quads_posg_perm'::regclass");
+      expect(observedSql[0]).toContain("'rdf_quads_psog_perm'::regclass");
+      expect(observedSql[0]).toContain('JOIN rdf_terms join_order_t0');
+      expect(observedParams).toContainEqual([expect.any(Number)]);
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(result.bindings.map((binding) => binding.createdAt.value)).toEqual([createdAt.value]);
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.subject_star_join');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.subject_star)');
+      expect(result.metrics.plan).toContain('XpodRdfSubjectStarJoin(subject_star_join)');
+      expect(result.metrics.plan).toContain('XpodRdfSubjectStarSeed(POS,prefix:2)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionJoin(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps aggregate hot operators on direct RDF-3X SQL instead of the extension plan ABI', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-aggregate-'));
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
@@ -2129,13 +2259,15 @@ describe('PostgresRdfEngine', () => {
       requireDictionary(): {
         find(term: unknown): Promise<number | undefined>;
       };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
       queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
     };
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
     const message1 = namedNode(`${graph.value}#msg_1`);
     const message2 = namedNode(`${graph.value}#msg_2`);
-    let extensionCalls = 0;
     const observedSql: string[] = [];
 
     try {
@@ -2180,13 +2312,17 @@ describe('PostgresRdfEngine', () => {
         ],
       };
       internals.queryPgExtensionJsonRows = async <T extends Record<string, unknown>>(sql: string): Promise<T[]> => {
-        extensionCalls++;
-        observedSql.push(sql);
-        if (/SELECT COUNT\(\*\) AS count/u.test(sql)) {
-          return [{ count: 1 }] as T[];
-        }
-        return [{ v1: threadId, a0: 2, a1: 30 }] as T[];
+        throw new Error(`execute_plan_json should not be used for direct RDF-3X aggregates: ${sql}`);
       };
+      const originalExecutor = internals.requireExecutor();
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('GROUP BY source.v1')) {
+            observedSql.push(sql);
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
 
       const result = await engine.query({
         patterns: [
@@ -2219,17 +2355,16 @@ describe('PostgresRdfEngine', () => {
         cache: { mode: 'bypass' },
       });
 
-      expect(extensionCalls).toBe(2);
       expect(observedSql[0]).toContain('GROUP BY source.v1');
       expect(result.bindings).toHaveLength(1);
       expect(result.bindings[0].thread.value).toBe(thread.value);
       expect(result.bindings[0].messageCount.value).toBe('2');
       expect(result.bindings[0].priorityTotal.value).toBe('30');
-      expect(result.metrics.indexChoices[0]).toMatch(/^xpod_rdf\.execute_plan_json\(Rdf3xJoinBGP\(/u);
+      expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP\(/u);
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.numeric)');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
-      expect(result.metrics.plan).toContain('XpodRdfExtensionAggregate(execute_plan_json)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

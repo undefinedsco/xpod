@@ -14,6 +14,7 @@ interface PoolConfig {
   database?: string;
   user?: string;
   password?: string;
+  options?: string;
   max?: number;
   idleTimeoutMillis?: number;
   connectionTimeoutMillis?: number;
@@ -97,9 +98,9 @@ class PoolManager {
    */
   private getPoolKey(config: PoolConfig): string {
     if (config.connectionString) {
-      return config.connectionString;
+      return config.options ? `${config.connectionString}|options=${config.options}` : config.connectionString;
     }
-    return `${config.user}@${config.host}:${config.port}/${config.database}`;
+    return `${config.user}@${config.host}:${config.port}/${config.database}|options=${config.options ?? ''}`;
   }
 
   listPools(): IterableIterator<[string, PoolEntry]> {

@@ -13,11 +13,11 @@ The first native cut provides:
   `PostgresRdfEngine` only uses this path for single-pattern exact / IN /
   graph-prefix scans without order, pagination, DISTINCT, or same-pattern
   variable equality constraints.
-- `xpod_rdf.execute_plan_json(text)`, a private plan execution ABI for
-  scope-safe SQL compiled by `PostgresRdfEngine`. It is currently the native
-  extension entry point for required BGP joins and count / numeric aggregates;
-  the implementation still executes compiled PostgreSQL SQL and is a stable
-  boundary for later custom join / aggregate algorithms.
+- `xpod_rdf.execute_plan_json(text)`, a private legacy plan execution ABI for
+  scope-safe SQL compiled by `PostgresRdfEngine`. It remains installed for ABI
+  compatibility, but ordinary BGP joins and count / numeric aggregates stay on
+  the direct PG RDF-3X SQL path until a real native join / aggregate executor is
+  faster than the baseline.
 - `xpod_rdf_perm`, a custom index access method prototype that stores entries
   in the PostgreSQL index relation and supports build, insert, scan, bitmap
   scan, vacuum cleanup, planner path generation, ordered build, a metapage
@@ -52,6 +52,11 @@ The first native cut provides:
   native page scan as `perm_index_scan`, and lets `PostgresRdfEngine` route
   supported single-pattern `$in` term-id queries through custom index pages plus
   heap recheck.
+- `xpod_rdf.subject_star_join(...)`, a conservative native subject-star join
+  prototype. It seeds from one custom permutation index, probes the remaining
+  constant-predicate edges through `PSO`, and rechecks heap visibility before
+  returning term ids. `PostgresRdfEngine` only routes narrow subject-star shapes
+  through it; all other joins remain on RDF-3X SQL.
 
 Build inside an image with PostgreSQL server headers:
 
@@ -82,13 +87,11 @@ right-hand types remain outside the current opfamily and should not be used for
 RDF term ids.
 
 The current extension ABI is intentionally narrower than the final
-product-grade hot operator set. Range/text filters, DISTINCT, and stable
-ordering/pagination still belong to the `PostgresRdfEngine` PG RDF-3X /
-engine-sql path. Required BGP joins and aggregate operators now enter the
-extension through `execute_plan_json`, but this is not yet a custom C join /
-aggregate executor and must not be counted as a final native performance gate.
-`perm_index_probe` proves the extension can now inspect `xpod_rdf_perm` pages
-without routing through planner SQL. `perm_index_scan` is the first direct
-custom-index query-row path; `perm_index_scan_any` extends that foundation to
-`$in` prefix scans. They are still single-pattern foundations and not the final
-native join / aggregate executor.
+product-grade hot operator set. Range/text filters, DISTINCT, broad joins, and
+stable ordering/pagination still belong to the `PostgresRdfEngine` PG RDF-3X /
+engine-sql path. `perm_index_probe` proves the extension can inspect
+`xpod_rdf_perm` pages without routing through planner SQL. `perm_index_scan` is
+the first direct custom-index query-row path; `perm_index_scan_any` extends that
+foundation to `$in` prefix scans; `subject_star_join` is the first narrow native
+join prototype. They are still selective foundations and not a general native
+join / aggregate executor.
