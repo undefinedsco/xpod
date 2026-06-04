@@ -85,10 +85,11 @@ scripts/build-xpod-rdf-extension.sh
 method 和 `xpod_rdf.term_id_ops` bigint opclass。`xpod_rdf_perm` 当前是
 index-relation storage prototype：它能被 PostgreSQL 创建、维护和扫描，返回正确 heap TID，
 也能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会按 permutation key 排序写入，
-每个 index page 维护 key min/max range，scan 时可做 page-level pruning；有序页还会根据
-leading equality/range bounds 做 page-local lower-bound seek，并在越过 upper bound 后提前结束本页。
-但它尚未实现 RDF-specific postings block、compressed postings 和 custom join operator，
-因此不作为性能收益结论。
+metapage 会记录全局有序 guard；全局有序时 scan 可根据 leading equality/range bounds 做
+block-level lower-bound seek，并在越过 upper prefix 后停止后续 block；每个 index page 仍维护
+key min/max range 和 page-local lower-bound seek。无序 append 会先降级 metapage 的全局有序标记，
+回到保守扫描以避免漏行。但它尚未实现 RDF-specific postings block、compressed postings 和
+custom join operator，因此不作为完整性能收益结论。
 
 H0 已支持 schema-local SQL ABI：当 `pg_extension` 里没有 native `xpod_rdf`，但
 `xpod_rdf.version()` 和 `xpod_rdf.capabilities()` 存在时，`PostgresRdfEngine` 会把
@@ -354,8 +355,9 @@ Graph 维度的处理策略：
 ### Index Layout
 
 当前 `0.1.0-native` 的 AM 已写入 PostgreSQL index relation page，entry 包含 indexed
-term-id keys 和 heap TID。它是自有 storage correctness prototype，但还没有 metapage、
-prefix min/max、ordered compressed postings 或 block-level stats。目标布局：
+term-id keys 和 heap TID。它是自有 storage correctness prototype，已有 metapage、global sorted
+guard、page min/max、block-level lower seek 和 page-local lower seek；但还没有 ordered compressed
+postings、block-level fanout stats 或 native join/aggregate operator。目标布局：
 
 ```text
 metapage
@@ -385,9 +387,10 @@ posting block
 当前 storage prototype 已覆盖 `ambuild`、`ambuildempty`、`aminsert`、
 `ambulkdelete`、`amvacuumcleanup`、`amcostestimate`、`ambeginscan`、`amrescan`、
 `amgettuple`、`amgetbitmap`、`amendscan` 和 `amvalidate`。build 已经按 key 排序写入，
-page opaque 已记录 min/max range，scan 能跳过不可能命中的 page；sorted page 支持
-page-local lower-bound seek 和 upper-bound early stop。postings prototype 还需要把这些
-callback 从 page-local seek 升级为 postings/block-level bound-prefix ordered streams。目标至少需要覆盖：
+metapage 记录全局有序状态，page opaque 已记录 min/max range；全局有序时 scan 能从 lower bound
+二分定位 data block，并在 page first tuple 越过 upper prefix 后结束扫描；sorted page 继续支持
+page-local lower-bound seek 和 upper-bound early stop。postings prototype 还需要把这些 callback
+从 page/block seek 升级为 compressed postings streams 和 block-level stats。目标至少需要覆盖：
 
 | Callback | 要求 |
 | --- | --- |

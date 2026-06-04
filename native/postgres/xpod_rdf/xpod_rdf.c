@@ -61,11 +61,27 @@ static int64 xpod_rdf_perm_get_bitmap(IndexScanDesc scan, TIDBitmap *tbm);
 static void xpod_rdf_perm_end_scan(IndexScanDesc scan);
 
 #define XPOD_RDF_PERM_MAGIC 0x58524446
+#define XPOD_RDF_PERM_META_MAGIC 0x58524d54
 #define XPOD_RDF_PERM_PAGE_MAGIC 0x58525047
+#define XPOD_RDF_PERM_SCHEMA_VERSION 1
 #define XPOD_RDF_PERM_MAX_KEYS 4
+#define XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED 0x0001
 #define XPOD_RDF_PERM_PAGE_FLAG_SORTED 0x0001
+#define XPOD_RDF_PERM_META_SPECIAL_SIZE MAXALIGN(sizeof(XpodRdfPermMetaOpaque))
 #define XPOD_RDF_PERM_PAGE_SPECIAL_SIZE MAXALIGN(sizeof(XpodRdfPermPageOpaque))
 #define XPOD_RDF_PERM_MAX_ENTRY_SIZE (BLCKSZ - SizeOfPageHeaderData - XPOD_RDF_PERM_PAGE_SPECIAL_SIZE)
+
+typedef struct XpodRdfPermMetaOpaque
+{
+  uint32 magic;
+  uint16 schema_version;
+  uint16 nkeys;
+  uint16 flags;
+  uint16 reserved16;
+  uint32 reserved32;
+  uint64 tuple_count;
+  int64 last_keys[XPOD_RDF_PERM_MAX_KEYS];
+} XpodRdfPermMetaOpaque;
 
 typedef struct XpodRdfPermPageOpaque
 {
@@ -125,8 +141,10 @@ typedef struct XpodRdfPermScanBounds
 
 typedef struct XpodRdfPermScanOpaque
 {
+  BlockNumber first_data_block;
   BlockNumber current_block;
   OffsetNumber current_offset;
+  bool global_sorted;
   XpodRdfPermScanBounds bounds;
 } XpodRdfPermScanOpaque;
 
@@ -152,7 +170,19 @@ static bool xpod_rdf_perm_append_entry(Relation indexRelation,
                                        ItemPointer heap_tid,
                                        uint16 nkeys);
 static bool xpod_rdf_perm_append_build_entry(Relation indexRelation,
-                                             XpodRdfPermBuildEntry *entry);
+                                             XpodRdfPermBuildEntry *entry,
+                                             bool update_meta);
+static void xpod_rdf_perm_ensure_metapage(Relation indexRelation, uint16 nkeys);
+static XpodRdfPermMetaOpaque *xpod_rdf_perm_meta_opaque(Page page);
+static bool xpod_rdf_perm_relation_has_metapage(Relation indexRelation);
+static BlockNumber xpod_rdf_perm_first_data_block(Relation indexRelation);
+static bool xpod_rdf_perm_relation_is_globally_sorted(Relation indexRelation);
+static void xpod_rdf_perm_meta_note_append(Relation indexRelation, XpodRdfPermBuildEntry *entry);
+static void xpod_rdf_perm_meta_finish_ordered_build(Relation indexRelation,
+                                                    uint16 nkeys,
+                                                    uint64 tuple_count,
+                                                    XpodRdfPermBuildEntry *last_entry);
+static int xpod_rdf_perm_meta_compare_last_keys(XpodRdfPermMetaOpaque *opaque, XpodRdfPermBuildEntry *entry);
 static bool xpod_rdf_perm_page_add_entry(Relation indexRelation,
                                          Buffer buffer,
                                          XpodRdfPermBuildEntry *build_entry,
@@ -165,14 +195,21 @@ static void xpod_rdf_perm_page_update_range(Page page, XpodRdfPermEntry *entry);
 static void xpod_rdf_perm_page_recompute_range(Page page);
 static void xpod_rdf_perm_page_update_sorted_flag(Page page, XpodRdfPermEntry *entry);
 static bool xpod_rdf_perm_page_may_match(IndexScanDesc scan, Page page);
+static bool xpod_rdf_perm_page_last_before_lower_bound(IndexScanDesc scan, Page page);
+static bool xpod_rdf_perm_page_first_past_upper_bound(IndexScanDesc scan, Page page);
+static BlockNumber xpod_rdf_perm_seek_lower_block(IndexScanDesc scan, BlockNumber first_block, BlockNumber block_count);
 static OffsetNumber xpod_rdf_perm_page_seek_lower_bound(IndexScanDesc scan, Page page);
 static bool xpod_rdf_perm_entry_past_upper_bound(IndexScanDesc scan, XpodRdfPermEntry *entry);
 static bool xpod_rdf_perm_entry_matches(IndexScanDesc scan, XpodRdfPermEntry *entry);
 static void xpod_rdf_perm_prepare_scan_bounds(IndexScanDesc scan);
+static void xpod_rdf_perm_prepare_scan_position(IndexScanDesc scan);
 static void xpod_rdf_perm_apply_scan_key_bound(XpodRdfPermScanBounds *bounds, ScanKey key);
 static void xpod_rdf_perm_finalize_scan_bounds(XpodRdfPermScanBounds *bounds);
+static bool xpod_rdf_perm_bounds_lower_prefix(XpodRdfPermScanBounds *bounds, uint16 nkeys, int64 *keys, uint16 *prefix_nkeys);
+static bool xpod_rdf_perm_bounds_upper_prefix(XpodRdfPermScanBounds *bounds, uint16 nkeys, int64 *keys, uint16 *prefix_nkeys, bool *inclusive);
 static int xpod_rdf_perm_entry_compare_entry(XpodRdfPermEntry *left, XpodRdfPermEntry *right);
 static int xpod_rdf_perm_entry_compare_key_prefix(XpodRdfPermEntry *entry, int64 *keys, uint16 nkeys);
+static int xpod_rdf_perm_key_prefix_compare(int64 *left, uint16 left_nkeys, int64 *right, uint16 right_nkeys);
 
 Datum
 xpod_rdf_version(PG_FUNCTION_ARGS)
@@ -283,6 +320,7 @@ xpod_rdf_perm_build(Relation heapRelation,
   build_state.nkeys = indexRelation->rd_att->natts;
   build_state.index_tuples = 0;
   xpod_rdf_perm_assert_supported_nkeys(build_state.nkeys);
+  xpod_rdf_perm_ensure_metapage(indexRelation, build_state.nkeys);
 
   result->heap_tuples = table_index_build_scan(
     heapRelation,
@@ -301,11 +339,17 @@ xpod_rdf_perm_build(Relation heapRelation,
   }
   for (index_entry = 0; index_entry < build_state.entry_count; index_entry++)
   {
-    if (xpod_rdf_perm_append_build_entry(indexRelation, &build_state.entries[index_entry]))
+    if (xpod_rdf_perm_append_build_entry(indexRelation, &build_state.entries[index_entry], false))
     {
       build_state.index_tuples++;
     }
   }
+  xpod_rdf_perm_meta_finish_ordered_build(
+    indexRelation,
+    build_state.nkeys,
+    build_state.entry_count,
+    build_state.entry_count > 0 ? &build_state.entries[build_state.entry_count - 1] : NULL
+  );
 
   result->index_tuples = build_state.index_tuples;
   return result;
@@ -314,7 +358,8 @@ xpod_rdf_perm_build(Relation heapRelation,
 static void
 xpod_rdf_perm_build_empty(Relation indexRelation)
 {
-  (void) indexRelation;
+  xpod_rdf_perm_assert_supported_nkeys(indexRelation->rd_att->natts);
+  xpod_rdf_perm_ensure_metapage(indexRelation, indexRelation->rd_att->natts);
 }
 
 static bool
@@ -467,10 +512,12 @@ xpod_rdf_perm_begin_scan(Relation indexRelation, int nkeys, int norderbys)
   IndexScanDesc scan = RelationGetIndexScan(indexRelation, nkeys, norderbys);
   XpodRdfPermScanOpaque *opaque = palloc0(sizeof(XpodRdfPermScanOpaque));
 
-  opaque->current_block = 0;
+  opaque->first_data_block = xpod_rdf_perm_first_data_block(indexRelation);
+  opaque->current_block = opaque->first_data_block;
   opaque->current_offset = FirstOffsetNumber;
   scan->opaque = opaque;
   xpod_rdf_perm_prepare_scan_bounds(scan);
+  xpod_rdf_perm_prepare_scan_position(scan);
   return scan;
 }
 
@@ -494,9 +541,11 @@ xpod_rdf_perm_rescan(IndexScanDesc scan,
     scan->numberOfOrderBys = norderbys;
   }
 
-  opaque->current_block = 0;
+  opaque->first_data_block = xpod_rdf_perm_first_data_block(scan->indexRelation);
+  opaque->current_block = opaque->first_data_block;
   opaque->current_offset = FirstOffsetNumber;
   xpod_rdf_perm_prepare_scan_bounds(scan);
+  xpod_rdf_perm_prepare_scan_position(scan);
 }
 
 static bool
@@ -524,6 +573,12 @@ xpod_rdf_perm_get_tuple(IndexScanDesc scan, ScanDirection direction)
     page = BufferGetPage(buffer);
     max_offset = PageGetMaxOffsetNumber(page);
     page_sorted = xpod_rdf_perm_page_is_sorted(page);
+
+    if (opaque->global_sorted && xpod_rdf_perm_page_first_past_upper_bound(scan, page))
+    {
+      UnlockReleaseBuffer(buffer);
+      return false;
+    }
 
     if (!xpod_rdf_perm_page_may_match(scan, page))
     {
@@ -737,14 +792,15 @@ xpod_rdf_perm_append_entry(Relation indexRelation,
   {
     return false;
   }
-  return xpod_rdf_perm_append_build_entry(indexRelation, &entry);
+  return xpod_rdf_perm_append_build_entry(indexRelation, &entry, true);
 }
 
 static bool
-xpod_rdf_perm_append_build_entry(Relation indexRelation, XpodRdfPermBuildEntry *entry)
+xpod_rdf_perm_append_build_entry(Relation indexRelation, XpodRdfPermBuildEntry *entry, bool update_meta)
 {
   Size entry_size = xpod_rdf_perm_entry_size(entry->nkeys);
-  BlockNumber block_count = RelationGetNumberOfBlocks(indexRelation);
+  BlockNumber block_count;
+  BlockNumber first_data_block;
   Buffer buffer;
 
   if (entry_size > XPOD_RDF_PERM_MAX_ENTRY_SIZE)
@@ -754,7 +810,15 @@ xpod_rdf_perm_append_build_entry(Relation indexRelation, XpodRdfPermBuildEntry *
              errdetail("Entry size %zu exceeds page capacity.", entry_size)));
   }
 
-  if (block_count > 0)
+  xpod_rdf_perm_ensure_metapage(indexRelation, entry->nkeys);
+  if (update_meta)
+  {
+    xpod_rdf_perm_meta_note_append(indexRelation, entry);
+  }
+
+  block_count = RelationGetNumberOfBlocks(indexRelation);
+  first_data_block = xpod_rdf_perm_first_data_block(indexRelation);
+  if (block_count > first_data_block)
   {
     buffer = ReadBuffer(indexRelation, block_count - 1);
     LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -777,6 +841,200 @@ xpod_rdf_perm_append_build_entry(Relation indexRelation, XpodRdfPermBuildEntry *
   }
   UnlockReleaseBuffer(buffer);
   return true;
+}
+
+static void
+xpod_rdf_perm_ensure_metapage(Relation indexRelation, uint16 nkeys)
+{
+  BlockNumber block_count = RelationGetNumberOfBlocks(indexRelation);
+  Buffer buffer;
+  GenericXLogState *state;
+  Page page;
+  XpodRdfPermMetaOpaque *opaque;
+
+  if (block_count > 0)
+  {
+    return;
+  }
+
+  buffer = ReadBuffer(indexRelation, P_NEW);
+  LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+  state = GenericXLogStart(indexRelation);
+  page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
+  PageInit(page, BufferGetPageSize(buffer), XPOD_RDF_PERM_META_SPECIAL_SIZE);
+  opaque = (XpodRdfPermMetaOpaque *) PageGetSpecialPointer(page);
+  memset(opaque, 0, sizeof(XpodRdfPermMetaOpaque));
+  opaque->magic = XPOD_RDF_PERM_META_MAGIC;
+  opaque->schema_version = XPOD_RDF_PERM_SCHEMA_VERSION;
+  opaque->nkeys = nkeys;
+  opaque->flags = XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED;
+  GenericXLogFinish(state);
+  UnlockReleaseBuffer(buffer);
+}
+
+static XpodRdfPermMetaOpaque *
+xpod_rdf_perm_meta_opaque(Page page)
+{
+  XpodRdfPermMetaOpaque *opaque;
+
+  if (PageGetSpecialSize(page) < sizeof(XpodRdfPermMetaOpaque))
+  {
+    return NULL;
+  }
+  opaque = (XpodRdfPermMetaOpaque *) PageGetSpecialPointer(page);
+  return opaque->magic == XPOD_RDF_PERM_META_MAGIC ? opaque : NULL;
+}
+
+static bool
+xpod_rdf_perm_relation_has_metapage(Relation indexRelation)
+{
+  Buffer buffer;
+  Page page;
+  bool has_metapage;
+
+  if (RelationGetNumberOfBlocks(indexRelation) == 0)
+  {
+    return false;
+  }
+
+  buffer = ReadBuffer(indexRelation, 0);
+  LockBuffer(buffer, BUFFER_LOCK_SHARE);
+  page = BufferGetPage(buffer);
+  has_metapage = xpod_rdf_perm_meta_opaque(page) != NULL;
+  UnlockReleaseBuffer(buffer);
+  return has_metapage;
+}
+
+static BlockNumber
+xpod_rdf_perm_first_data_block(Relation indexRelation)
+{
+  return xpod_rdf_perm_relation_has_metapage(indexRelation) ? 1 : 0;
+}
+
+static bool
+xpod_rdf_perm_relation_is_globally_sorted(Relation indexRelation)
+{
+  Buffer buffer;
+  Page page;
+  XpodRdfPermMetaOpaque *opaque;
+  bool sorted = false;
+
+  if (RelationGetNumberOfBlocks(indexRelation) == 0)
+  {
+    return false;
+  }
+
+  buffer = ReadBuffer(indexRelation, 0);
+  LockBuffer(buffer, BUFFER_LOCK_SHARE);
+  page = BufferGetPage(buffer);
+  opaque = xpod_rdf_perm_meta_opaque(page);
+  sorted = opaque != NULL && (opaque->flags & XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED) != 0;
+  UnlockReleaseBuffer(buffer);
+  return sorted;
+}
+
+static void
+xpod_rdf_perm_meta_note_append(Relation indexRelation, XpodRdfPermBuildEntry *entry)
+{
+  Buffer buffer;
+  GenericXLogState *state;
+  Page page;
+  XpodRdfPermMetaOpaque *opaque;
+  uint16 key_index;
+
+  if (!xpod_rdf_perm_relation_has_metapage(indexRelation))
+  {
+    return;
+  }
+
+  buffer = ReadBuffer(indexRelation, 0);
+  LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+  state = GenericXLogStart(indexRelation);
+  page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
+  opaque = xpod_rdf_perm_meta_opaque(page);
+  if (opaque != NULL)
+  {
+    if (opaque->tuple_count > 0 && xpod_rdf_perm_meta_compare_last_keys(opaque, entry) > 0)
+    {
+      opaque->flags &= ~XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED;
+    }
+    opaque->nkeys = entry->nkeys;
+    opaque->tuple_count++;
+    for (key_index = 0; key_index < entry->nkeys; key_index++)
+    {
+      opaque->last_keys[key_index] = entry->keys[key_index];
+    }
+  }
+  GenericXLogFinish(state);
+  UnlockReleaseBuffer(buffer);
+}
+
+static void
+xpod_rdf_perm_meta_finish_ordered_build(Relation indexRelation,
+                                        uint16 nkeys,
+                                        uint64 tuple_count,
+                                        XpodRdfPermBuildEntry *last_entry)
+{
+  Buffer buffer;
+  GenericXLogState *state;
+  Page page;
+  XpodRdfPermMetaOpaque *opaque;
+  uint16 key_index;
+
+  if (!xpod_rdf_perm_relation_has_metapage(indexRelation))
+  {
+    return;
+  }
+
+  buffer = ReadBuffer(indexRelation, 0);
+  LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+  state = GenericXLogStart(indexRelation);
+  page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
+  opaque = xpod_rdf_perm_meta_opaque(page);
+  if (opaque != NULL)
+  {
+    opaque->nkeys = nkeys;
+    opaque->tuple_count = tuple_count;
+    opaque->flags |= XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED;
+    memset(opaque->last_keys, 0, sizeof(opaque->last_keys));
+    if (last_entry != NULL)
+    {
+      for (key_index = 0; key_index < last_entry->nkeys; key_index++)
+      {
+        opaque->last_keys[key_index] = last_entry->keys[key_index];
+      }
+    }
+  }
+  GenericXLogFinish(state);
+  UnlockReleaseBuffer(buffer);
+}
+
+static int
+xpod_rdf_perm_meta_compare_last_keys(XpodRdfPermMetaOpaque *opaque, XpodRdfPermBuildEntry *entry)
+{
+  uint16 nkeys = Min(opaque->nkeys, entry->nkeys);
+  uint16 key_index;
+
+  for (key_index = 0; key_index < nkeys; key_index++)
+  {
+    if (opaque->last_keys[key_index] < entry->keys[key_index])
+    {
+      return -1;
+    }
+    if (opaque->last_keys[key_index] > entry->keys[key_index])
+    {
+      return 1;
+    }
+  }
+  if (opaque->nkeys < entry->nkeys)
+  {
+    return -1;
+  }
+  if (opaque->nkeys > entry->nkeys)
+  {
+    return 1;
+  }
+  return 0;
 }
 
 static bool
@@ -1040,6 +1298,102 @@ xpod_rdf_perm_page_may_match(IndexScanDesc scan, Page page)
   return true;
 }
 
+static bool
+xpod_rdf_perm_page_last_before_lower_bound(IndexScanDesc scan, Page page)
+{
+  XpodRdfPermPageOpaque *opaque = xpod_rdf_perm_page_opaque(page);
+  XpodRdfPermScanOpaque *scan_opaque = (XpodRdfPermScanOpaque *) scan->opaque;
+  int64 lower_keys[XPOD_RDF_PERM_MAX_KEYS];
+  uint16 lower_nkeys = 0;
+  XpodRdfPermEntry *last_entry;
+
+  if (
+    opaque == NULL
+    || opaque->tuple_count == 0
+    || !xpod_rdf_perm_bounds_lower_prefix(&scan_opaque->bounds, opaque->nkeys, lower_keys, &lower_nkeys)
+  )
+  {
+    return false;
+  }
+
+  last_entry = xpod_rdf_perm_page_entry(page, PageGetMaxOffsetNumber(page));
+  return last_entry != NULL && xpod_rdf_perm_entry_compare_key_prefix(last_entry, lower_keys, lower_nkeys) < 0;
+}
+
+static bool
+xpod_rdf_perm_page_first_past_upper_bound(IndexScanDesc scan, Page page)
+{
+  XpodRdfPermPageOpaque *opaque = xpod_rdf_perm_page_opaque(page);
+  XpodRdfPermScanOpaque *scan_opaque = (XpodRdfPermScanOpaque *) scan->opaque;
+  int64 upper_keys[XPOD_RDF_PERM_MAX_KEYS];
+  uint16 upper_nkeys = 0;
+  bool inclusive = true;
+  XpodRdfPermEntry *first_entry;
+  int compare;
+
+  if (
+    opaque == NULL
+    || opaque->tuple_count == 0
+    || !xpod_rdf_perm_bounds_upper_prefix(&scan_opaque->bounds, opaque->nkeys, upper_keys, &upper_nkeys, &inclusive)
+  )
+  {
+    return false;
+  }
+
+  first_entry = xpod_rdf_perm_page_entry(page, FirstOffsetNumber);
+  if (first_entry == NULL)
+  {
+    return false;
+  }
+  compare = xpod_rdf_perm_entry_compare_key_prefix(first_entry, upper_keys, upper_nkeys);
+  return compare > 0 || (compare == 0 && !inclusive);
+}
+
+static BlockNumber
+xpod_rdf_perm_seek_lower_block(IndexScanDesc scan, BlockNumber first_block, BlockNumber block_count)
+{
+  BlockNumber low;
+  BlockNumber high;
+  XpodRdfPermScanOpaque *scan_opaque = (XpodRdfPermScanOpaque *) scan->opaque;
+  int64 lower_keys[XPOD_RDF_PERM_MAX_KEYS];
+  uint16 lower_nkeys = 0;
+
+  if (
+    first_block >= block_count
+    || scan_opaque->bounds.impossible
+    || !xpod_rdf_perm_bounds_lower_prefix(&scan_opaque->bounds, scan_opaque->bounds.nkeys, lower_keys, &lower_nkeys)
+  )
+  {
+    return first_block;
+  }
+
+  low = first_block;
+  high = block_count;
+  while (low < high)
+  {
+    BlockNumber mid = low + ((high - low) / 2);
+    Buffer buffer;
+    Page page;
+    bool before_lower;
+
+    buffer = ReadBuffer(scan->indexRelation, mid);
+    LockBuffer(buffer, BUFFER_LOCK_SHARE);
+    page = BufferGetPage(buffer);
+    before_lower = xpod_rdf_perm_page_last_before_lower_bound(scan, page);
+    UnlockReleaseBuffer(buffer);
+
+    if (before_lower)
+    {
+      low = mid + 1;
+    }
+    else
+    {
+      high = mid;
+    }
+  }
+  return low;
+}
+
 static OffsetNumber
 xpod_rdf_perm_page_seek_lower_bound(IndexScanDesc scan, Page page)
 {
@@ -1153,6 +1507,28 @@ xpod_rdf_perm_prepare_scan_bounds(IndexScanDesc scan)
 }
 
 static void
+xpod_rdf_perm_prepare_scan_position(IndexScanDesc scan)
+{
+  XpodRdfPermScanOpaque *opaque = (XpodRdfPermScanOpaque *) scan->opaque;
+  BlockNumber block_count = RelationGetNumberOfBlocks(scan->indexRelation);
+
+  opaque->first_data_block = xpod_rdf_perm_first_data_block(scan->indexRelation);
+  opaque->current_block = opaque->first_data_block;
+  opaque->current_offset = FirstOffsetNumber;
+  opaque->global_sorted = xpod_rdf_perm_relation_is_globally_sorted(scan->indexRelation);
+
+  if (opaque->bounds.impossible)
+  {
+    opaque->current_block = block_count;
+    return;
+  }
+  if (opaque->global_sorted)
+  {
+    opaque->current_block = xpod_rdf_perm_seek_lower_block(scan, opaque->first_data_block, block_count);
+  }
+}
+
+static void
 xpod_rdf_perm_apply_scan_key_bound(XpodRdfPermScanBounds *bounds, ScanKey key)
 {
   int attr_index = key->sk_attno - 1;
@@ -1243,6 +1619,65 @@ xpod_rdf_perm_finalize_scan_bounds(XpodRdfPermScanBounds *bounds)
   }
 }
 
+static bool
+xpod_rdf_perm_bounds_lower_prefix(XpodRdfPermScanBounds *bounds, uint16 nkeys, int64 *keys, uint16 *prefix_nkeys)
+{
+  uint16 key_index;
+
+  *prefix_nkeys = 0;
+  if (bounds->impossible)
+  {
+    return false;
+  }
+  for (key_index = 0; key_index < bounds->nkeys && key_index < nkeys; key_index++)
+  {
+    XpodRdfPermColumnBound *bound = &bounds->columns[key_index];
+
+    if (bound->has_equal)
+    {
+      keys[(*prefix_nkeys)++] = bound->equal;
+      continue;
+    }
+    if (bound->has_lower)
+    {
+      keys[(*prefix_nkeys)++] = bound->lower;
+    }
+    break;
+  }
+  return *prefix_nkeys > 0;
+}
+
+static bool
+xpod_rdf_perm_bounds_upper_prefix(XpodRdfPermScanBounds *bounds, uint16 nkeys, int64 *keys, uint16 *prefix_nkeys, bool *inclusive)
+{
+  uint16 key_index;
+
+  *prefix_nkeys = 0;
+  *inclusive = true;
+  if (bounds->impossible)
+  {
+    return false;
+  }
+  for (key_index = 0; key_index < bounds->nkeys && key_index < nkeys; key_index++)
+  {
+    XpodRdfPermColumnBound *bound = &bounds->columns[key_index];
+
+    if (bound->has_equal)
+    {
+      keys[(*prefix_nkeys)++] = bound->equal;
+      *inclusive = true;
+      continue;
+    }
+    if (bound->has_upper)
+    {
+      keys[(*prefix_nkeys)++] = bound->upper;
+      *inclusive = bound->upper_inclusive;
+    }
+    break;
+  }
+  return *prefix_nkeys > 0;
+}
+
 static int
 xpod_rdf_perm_entry_compare_entry(XpodRdfPermEntry *left, XpodRdfPermEntry *right)
 {
@@ -1274,20 +1709,27 @@ xpod_rdf_perm_entry_compare_entry(XpodRdfPermEntry *left, XpodRdfPermEntry *righ
 static int
 xpod_rdf_perm_entry_compare_key_prefix(XpodRdfPermEntry *entry, int64 *keys, uint16 nkeys)
 {
-  uint16 key_index;
+  return xpod_rdf_perm_key_prefix_compare(entry->keys, entry->nkeys, keys, nkeys);
+}
 
-  for (key_index = 0; key_index < nkeys && key_index < entry->nkeys; key_index++)
+static int
+xpod_rdf_perm_key_prefix_compare(int64 *left, uint16 left_nkeys, int64 *right, uint16 right_nkeys)
+{
+  uint16 key_index;
+  uint16 nkeys = Min(left_nkeys, right_nkeys);
+
+  for (key_index = 0; key_index < nkeys; key_index++)
   {
-    if (entry->keys[key_index] < keys[key_index])
+    if (left[key_index] < right[key_index])
     {
       return -1;
     }
-    if (entry->keys[key_index] > keys[key_index])
+    if (left[key_index] > right[key_index])
     {
       return 1;
     }
   }
-  if (entry->nkeys < nkeys)
+  if (left_nkeys < right_nkeys)
   {
     return -1;
   }

@@ -558,17 +558,19 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<pg17-db-with-
 ```text
 .test-data/rdf-pg-custom-index-ordered-small/models-postgres-2026-06-04T08-33-59-083Z-44597-a4697222-29af-4af2-a57a-a42faae57021.json
 .test-data/rdf-pg-custom-index-seek-small/models-postgres-2026-06-04T08-50-26-959Z-47420-e073c466-cde2-4c0c-b0fc-f41531d02f91.json
+.test-data/rdf-pg-custom-index-block-seek-small/models-postgres-2026-06-04T09-14-52-335Z-51557-b2b17107-76d4-497b-9d5a-aa8098398592.json
 ```
 
 结论：native extension packaging、capability probe、`pg-custom-index` profile、custom AM DDL
 和 benchmark correctness gate 已打通。当前 `xpod_rdf_perm` 已从 heap-scan prototype 升级为
 index-relation storage prototype，能支持 build / insert / index scan / bitmap scan / vacuum；
-build 已按 permutation key 排序，page opaque 记录 min/max range，scan 能做 page-level
-pruning；sorted page 会用 leading equality/range bounds 做 page-local lower-bound seek，并在
-越过 upper bound 后提前结束本页。仍需要注意：这还不是 postings/block-level seek 或
-compressed postings performance implementation，因此不能把这组 gate 作为性能收益证明。下一步
-性能工作是把 AM scan 从 page-local seek 升级为 RDF term-id bound-prefix postings streams，
-并在 medium/large + concurrency gate 中对比 RDF-3X baseline。
+build 已按 permutation key 排序，metapage 记录 global sorted guard，page opaque 记录 min/max
+range；全局有序时 scan 会按 leading equality/range bounds 做 block-level lower-bound seek，
+并在越过 upper prefix 后停止后续 block；sorted page 继续做 page-local lower-bound seek 和
+upper-bound early stop。无序 append 会降级全局有序标记，回到保守扫描以保证正确性。仍需要注意：
+这还不是 compressed postings performance implementation，也没有 native hot operators，因此不能把
+这组 gate 作为默认引擎性能收益证明。下一步性能工作是把 AM scan 从 tuple/page/block seek 升级为
+RDF term-id compressed postings streams，并在 medium/large + concurrency gate 中对比 RDF-3X baseline。
 
 同一轮还跑了真实 PG small RDF-3X baseline 对照：
 
@@ -584,9 +586,9 @@ case plan matched，`rdf3x.syncedWithFacts=true`。但 `pg-custom-index` 的 `sc
 query` 从 6 ms 到 14 ms、`list messages by thread` 从 2 ms 到 7 ms、`task
 materialization active due query` 从 14 ms 到 21 ms；少数 case 持平或略快。这个结果说明
 问题不在 benchmark case 本身，而在两块 PG 能力尚未完成：custom index 还没有
-postings/block-level skipping 和压缩 TID stream，native hot operators 还没有替换 engine-sql
-join / aggregate path。page-local seek 是必要中间层，但还不足以让当前 models benchmark
-稳定快过 RDF-3X baseline。
+compressed postings / 压缩 TID stream，native hot operators 还没有替换 engine-sql join /
+aggregate path。block-level seek 是必要中间层，但还不足以让当前 models benchmark 稳定快过
+RDF-3X baseline。
 
 ## Operational Gates
 
