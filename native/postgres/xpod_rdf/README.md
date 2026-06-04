@@ -68,9 +68,14 @@ The first native cut provides:
   aggregate execution is still future work.
 - `xpod_rdf.bgp_join(...)`, a conservative native exact-id required-BGP row
   stream for up to four patterns and eight variables. `PostgresRdfEngine` can
-  apply outer SQL VALUES tuple rechecks, ordering, pagination, grouping, and
-  numeric aggregation over that stream, but native `values_join`, native
-  index-level early stop, and native aggregate execution are still future work.
+  apply outer SQL ordering, pagination, grouping, and numeric aggregation over
+  that stream, but native index-level early stop and native aggregate execution
+  are still future work.
+- `xpod_rdf.values_join(...)`, a conservative native VALUES-constrained
+  exact-id required-BGP row stream. It pre-binds one tuple VALUES source to the
+  BGP variable slots before scanning custom indexes. Multi-source VALUES,
+  ordering, pagination, grouping, and numeric aggregation still remain outer
+  PostgreSQL SQL.
 
 Build inside an image with PostgreSQL server headers:
 
@@ -108,5 +113,5 @@ engine-sql path. `perm_index_probe` proves the extension can inspect
 the first direct custom-index query-row path; `perm_index_scan_any` extends that
 foundation to `$in` prefix scans; `perm_index_count(_any)` is the first scalar
 custom-index aggregate path; `subject_star_join` is the first narrow native join
-prototype. They are still selective foundations and not a general native join /
-aggregate executor.
+prototype; `values_join` is the first narrow native VALUES+BGP path. They are
+still selective foundations and not a general native join / aggregate executor.

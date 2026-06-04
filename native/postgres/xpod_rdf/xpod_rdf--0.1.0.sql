@@ -134,6 +134,19 @@ RETURNS TABLE(v1 bigint, v2 bigint, v3 bigint, v4 bigint, v5 bigint, v6 bigint, 
 AS 'MODULE_PATHNAME', 'xpod_rdf_bgp_join'
 LANGUAGE C VOLATILE PARALLEL SAFE;
 
+CREATE FUNCTION xpod_rdf.values_join(
+  p_heap regclass,
+  p_index_oids oid[],
+  p_constants bigint[],
+  p_variable_slots smallint[],
+  p_output_slots smallint[],
+  p_values_slots smallint[],
+  p_values_rows bigint[]
+)
+RETURNS TABLE(v1 bigint, v2 bigint, v3 bigint, v4 bigint, v5 bigint, v6 bigint, v7 bigint, v8 bigint)
+AS 'MODULE_PATHNAME', 'xpod_rdf_values_join'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
 CREATE FUNCTION xpod_rdf.scan_quads(
   p_subject_ids bigint[],
   p_predicate_ids bigint[],

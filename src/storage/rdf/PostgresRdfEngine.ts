@@ -99,6 +99,7 @@ const XPOD_RDF_PERM_COUNT_ANY_CAPABILITY = 'index.xpod_rdf_perm.count_any';
 const XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY = 'join.subject_star';
 const XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY = 'aggregate.subject_star_count';
 const XPOD_RDF_BGP_JOIN_CAPABILITY = 'join.required_bgp.native';
+const XPOD_RDF_VALUES_JOIN_CAPABILITY = 'join.values.native';
 const XPOD_RDF_PERM_MAX_KEYS = 4;
 const XPOD_RDF_BGP_MAX_PATTERNS = 4;
 const XPOD_RDF_BGP_MAX_VARIABLES = 8;
@@ -1792,6 +1793,42 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
+  private pgCustomIndexNativeValuesJoin(
+    sources: PgCompiledValuesSource[],
+    slotByVariable: Map<string, number>,
+  ): { valueSlots: number[]; valueRows: number[]; queryPlan: string[] } | undefined {
+    if (
+      sources.length !== 1
+      || !this.canUsePgAccelerationCapability(XPOD_RDF_VALUES_JOIN_CAPABILITY)
+      || this.pgAcceleration?.capabilityProviders?.[XPOD_RDF_VALUES_JOIN_CAPABILITY] !== 'extension'
+    ) {
+      return undefined;
+    }
+    const [source] = sources;
+    if (!source || source.variables.length < 1 || source.variables.length > XPOD_RDF_BGP_MAX_VARIABLES) {
+      return undefined;
+    }
+    const valueSlots: number[] = [];
+    for (const variableName of source.variables) {
+      const slot = slotByVariable.get(variableName);
+      if (!slot) {
+        return undefined;
+      }
+      valueSlots.push(slot);
+    }
+    if (source.rows.some((row) => row.length !== source.variables.length)) {
+      return undefined;
+    }
+    return {
+      valueSlots,
+      valueRows: source.rows.flat(),
+      queryPlan: [
+        `XpodRdfPgHotOperator(${XPOD_RDF_VALUES_JOIN_CAPABILITY})`,
+        `XpodRdfValuesJoinTuple(${source.variables.map((variableName) => `?${variableName}`).join(',')})`,
+      ],
+    };
+  }
+
   private compilePgCustomIndexPermCountSql(resolved: PgResolvedPattern): PgCustomIndexCountPlan | undefined {
     const prefix = this.pgCustomIndexPermScanPrefix(resolved);
     if (!prefix) {
@@ -2692,6 +2729,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       XPOD_RDF_PERM_COUNT_CAPABILITY,
       XPOD_RDF_PERM_COUNT_ANY_CAPABILITY,
       XPOD_RDF_BGP_JOIN_CAPABILITY,
+      XPOD_RDF_VALUES_JOIN_CAPABILITY,
       XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY,
       XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY,
     ]);
@@ -4265,6 +4303,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
       return slot;
     });
+    const nativeValuesJoin = this.pgCustomIndexNativeValuesJoin(options?.values ?? [], slotByVariable);
     const builder = new PgSqlBuilder();
     const outputColumns = new Map<string, string>();
     outputVariables.forEach((variableName, index) => {
@@ -4280,16 +4319,23 @@ export class PostgresRdfEngine implements RdfEngineLike {
     });
     const projection = projectionColumns.length > 0 ? projectionColumns.join(', ') : '1 AS __empty';
     const from = `
-      xpod_rdf.bgp_join(
+      xpod_rdf.${nativeValuesJoin ? 'values_join' : 'bgp_join'}(
         '${RDF_FACTS_TABLE}'::regclass,
         ARRAY[${indexOidsSql}]::oid[],
         ${builder.add(constants)}::bigint[],
         ${builder.add(variableSlots)}::smallint[],
         ${builder.add(outputSlots)}::smallint[]
+        ${nativeValuesJoin
+          ? `,
+        ${builder.add(nativeValuesJoin.valueSlots)}::smallint[],
+        ${builder.add(nativeValuesJoin.valueRows)}::bigint[]`
+          : ''}
       ) native_bgp
     `;
     const countParams = builder.snapshot();
-    const valuesJoins = this.buildPgValuesJoins(options?.values ?? [], outputColumns, builder);
+    const valuesJoins = nativeValuesJoin
+      ? { joins: '', queryPlan: nativeValuesJoin.queryPlan }
+      : this.buildPgValuesJoins(options?.values ?? [], outputColumns, builder);
     const orderClause = this.buildJoinOrderClause(options?.orderBy, outputColumns);
     const pagination = this.buildPagination(options, builder);
     const sql = `
@@ -4306,7 +4352,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ? `SELECT COUNT(*) AS count FROM ${from}${valuesJoins.joins}`
         : undefined,
       countParams: builder.snapshot().slice(0, builder.snapshot().length - pagination.paramCount),
-      indexChoice: `xpod_rdf.bgp_join(${indexChoices.join('>')})`,
+      indexChoice: `xpod_rdf.${nativeValuesJoin ? 'values_join' : 'bgp_join'}(${indexChoices.join('>')})`,
       queryPlan: [
         `XpodRdfPgHotOperator(${XPOD_RDF_BGP_JOIN_CAPABILITY})`,
         `XpodRdfBgpJoin(${orderedSources.map((source) => source.inputIndex).join('>')})`,
@@ -5819,10 +5865,12 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
       || entry.startsWith('XpodRdfCustomIndexScan(')
       || entry.startsWith('XpodRdfSubjectStar')
       || entry.startsWith('XpodRdfBgp')
+      || entry.startsWith('XpodRdfValues')
       || entry === 'XpodRdfPgHotOperator(index.xpod_rdf_perm.scan)'
       || entry === 'XpodRdfPgHotOperator(index.xpod_rdf_perm.scan_any)'
       || entry === `XpodRdfPgHotOperator(${XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY})`
       || entry === `XpodRdfPgHotOperator(${XPOD_RDF_BGP_JOIN_CAPABILITY})`
+      || entry === `XpodRdfPgHotOperator(${XPOD_RDF_VALUES_JOIN_CAPABILITY})`
   ));
 }
 

@@ -1,6 +1,6 @@
 # RDF Performance Report and Data Migration Plan
 
-记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 在没有 native extension 时由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold、`execute_plan_json` legacy private plan execution ABI、`xpod_rdf_perm` custom-index storage prototype、single-pattern scalar count 原型、受限 `subject_star_join` native join prototype、受限 `subject_star_count` native count summary 原型和受限 `bgp_join` native required-BGP 原型，但这些 custom C/Rust hot-operator 的性能收益仍必须通过 benchmark gate 后才能计入默认能力。
+记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 在没有 native extension 时由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold、`execute_plan_json` legacy private plan execution ABI、`xpod_rdf_perm` custom-index storage prototype、single-pattern scalar count 原型、受限 `subject_star_join` native join prototype、受限 `subject_star_count` native count summary 原型、受限 `bgp_join` native required-BGP 原型和单 tuple `values_join` native VALUES+BGP 原型，但这些 custom C/Rust hot-operator 的性能收益仍必须通过 benchmark gate 后才能计入默认能力。
 
 ## Current Decision
 
@@ -380,12 +380,12 @@ physical plan 中出现 `XpodRdfPgHotOperator(scan.graph_prefix)` 18 次、`scan
 plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 profile/metrics/部署
 边界的 product-grade 化，不是 native extension 的额外性能结论。
 
-### Real PostgreSQL / Native `pg-custom-index` Subject-star Small Gate
+### Real PostgreSQL / Native `pg-custom-index` Subject-star / VALUES Small Gate
 
 执行命令：
 
 ```bash
-bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:55433/xpod_bench_native_values_join --allowPgWrites --scale=small --iterations=1 --warmupIterations=1 --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-custom-index-native-values-small
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:55433/xpod_bench_native_values_join2 --allowPgWrites --scale=small --iterations=1 --warmupIterations=1 --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-custom-index-native-values-join-small
 ```
 
 运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container，已安装 native
@@ -413,14 +413,15 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://pos
 | PG acceleration profile | `pg-custom-index` |
 | PG acceleration provider | `extension` |
 | PG acceleration enabled | true |
-| report | `.test-data/rdf-pg-custom-index-native-values-small/models-postgres-2026-06-04T22-40-58-219Z-55069-ba5a5a9d-3b5d-4323-96b9-9a646f3ba91f.json` |
+| report | `.test-data/rdf-pg-custom-index-native-values-join-small/models-postgres-2026-06-04T23-02-31-898Z-56860-72313db7-dfa7-4f8f-aafc-db9ee2f67f87.json` |
 
 active operators：
 
 `aggregate.count`、`aggregate.numeric`、`aggregate.subject_star_count`、`cache.result`、`index.xpod_rdf_perm`、
 `index.xpod_rdf_perm.count`、`index.xpod_rdf_perm.count_any`、
 `index.xpod_rdf_perm.scan`、`index.xpod_rdf_perm.scan_any`、`join.required_bgp`、`join.required_bgp.native`、
-`join.subject_star`、`join.values`、`scan.exact_graph`、`scan.graph_prefix`、`scan.term_in`。
+`join.subject_star`、`join.values`、`join.values.native`、`scan.exact_graph`、`scan.graph_prefix`、
+`scan.term_in`。
 
 真实 PG native subject-star small storage profile：
 
@@ -431,48 +432,51 @@ active operators：
 | total bytes | 1720320 | facts + derived |
 | total / facts ratio | 1.63x | small seed 固定页开销较高，不能外推 medium/large ratio |
 
-真实 PG native subject-star small query p95：
+真实 PG native subject-star / VALUES small query p95：
 
-| Case | p95 | Native subject-star | Notes |
+| Case | p95 | Native path | Notes |
 | --- | ---: | --- | --- |
 | latest message by thread query | 4 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
-| next queued run by workspace query | 4 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` |
-| run steps by run query | 4 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
-| task materialization active due query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` + `LexicalRange(object$lte)` outer filter |
-| provider model credential join query | 3 ms | yes | `bgp_join(PSO>PSO)` native exact-id required BGP |
-| provider model credential VALUES join query | 3 ms | partial | `bgp_join(PSO>PSO)` native BGP input + outer SQL `Rdf3xJoinTupleValues(?provider)` |
-| provider model credential ordered join query | 4 ms | yes | `bgp_join(PSO>PSO)` native exact-id required BGP + outer SQL ORDER/LIMIT |
+| next queued run by workspace query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` |
+| run steps by run query | 3 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
+| task materialization active due query | 4 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` + `LexicalRange(object$lte)` outer filter |
+| provider model credential join query | 4 ms | yes | `bgp_join(PSO>PSO)` native exact-id required BGP |
+| provider model credential VALUES join query | 2 ms | yes | `values_join(PSO>PSO)` native single tuple VALUES+BGP pre-bind |
+| provider model credential ordered join query | 3 ms | yes | `bgp_join(PSO>PSO)` native exact-id required BGP + outer SQL ORDER/LIMIT |
 | provider credential priority aggregate query | 4 ms | partial | `bgp_join(PSO>PSO>PSO)` native BGP input + outer SQL grouped numeric aggregate |
 | message count by thread with having | 3 ms | no | grouped count over graph-prefix single pattern |
-| queued run priority numeric aggregate | 3 ms | partial | `subject_star_join(seed:POS,probes:PSO)` native input + outer SQL `TermType(object:numeric)` / numeric aggregate |
-| message score by thread numeric aggregate | 9 ms | no | graph-prefix grouped numeric aggregate over BGP |
-| message join count distinct | 3 ms | yes | `subject_star_count(seed:POS,probes:PSO)` native count / count-distinct summary |
+| queued run priority numeric aggregate | 4 ms | partial | `subject_star_join(seed:POS,probes:PSO)` native input + outer SQL `TermType(object:numeric)` / numeric aggregate |
+| message score by thread numeric aggregate | 8 ms | no | graph-prefix grouped numeric aggregate over BGP |
+| message join count distinct | 4 ms | yes | `subject_star_count(seed:POS,probes:PSO)` native count / count-distinct summary |
 
 结论：native `subject_star_join(...)` 已经覆盖 constant-predicate、同 subject 变量、至少一个
 exact object seed 的 subject-star shape。probe object 可以为空并作为返回列投影，`PostgresRdfEngine`
 会在 outer SQL 里 join `rdf_terms` 执行 object range filter 和 order。因此 scheduler
-materialization 的 `nextRunAt <= ...` 已经进入 subject-star input，small p95 为 5 ms。非分组
+materialization 的 `nextRunAt <= ...` 已经进入 subject-star input，small p95 为 4 ms。非分组
 count / count-distinct aggregate 在无 HAVING/ORDER/LIMIT、无 probe range、无 `distinctVariables`
 时会走 `xpod_rdf.subject_star_count(...)`，由 native extension 直接返回 summary 列。
 `message join count distinct` 已从 ordinary BGP path 进入 native subject-star count summary，
-small p95 为 3 ms。`provider model credential join query` 覆盖非 subject-star 的 exact-id
-object-to-object relation join，已命中 `xpod_rdf.bgp_join(PSO>PSO)`，small p95 为 3 ms。
+small p95 为 4 ms。`provider model credential join query` 覆盖非 subject-star 的 exact-id
+object-to-object relation join，已命中 `xpod_rdf.bgp_join(PSO>PSO)`，small p95 为 4 ms。
 `bgp_join` 现在也允许 ORDER/LIMIT/OFFSET 形态，但排序分页是在 row stream 外层 SQL 执行，
-不是 native index-level early stop；ordered provider/model/credential case small p95 为 4 ms。
-`VALUES` 约束也可以在 native BGP row stream 外层执行：`provider model credential VALUES join query`
-命中 `xpod_rdf.bgp_join(PSO>PSO)`，再由 `Rdf3xJoinTupleValues(?provider)` recheck，small p95 为 3 ms。
+不是 native index-level early stop；ordered provider/model/credential case small p95 为 3 ms。
+单 tuple `VALUES` 约束现在可以进入 native BGP pre-bind：`provider model credential VALUES join query`
+命中 `xpod_rdf.values_join(PSO>PSO)`，由 native extension 在递归 BGP join 前预绑定 VALUES 行，
+small p95 为 2 ms。多 source / 复杂 VALUES shape 暂不 native 化，仍保留外层
+`Rdf3xJoinTupleValues(...)` tuple recheck fallback。
 grouped / numeric aggregate 当前还不是 native C aggregate executor；但 exact-id non-subject-star
 aggregate 已能把 BGP 输入流切到 `bgp_join`，再由外层 PG SQL 完成 group / numeric aggregate。
 `provider credential priority aggregate query` small p95 为 4 ms。subject-star graph-prefix
 numeric aggregate 现在也能复用 `subject_star_join` 输入流：`queued run priority numeric aggregate`
 会在 outer SQL 中对 probe object 执行 `TermType(object:numeric)` recheck，并由 PG SQL 完成 numeric
-aggregate，small p95 为 3 ms。仍未 native 化的是非 subject-star graph-prefix grouped aggregate
+aggregate，small p95 为 4 ms。仍未 native 化的是非 subject-star graph-prefix grouped aggregate
 和 native C aggregate executor，例如 `message score by thread numeric aggregate`。
 
 最新通过报告：`.test-data/rdf-pg-custom-index-native-subject-star-count-small/models-postgres-2026-06-04T20-58-56-381Z-46027-8ffe7a23-7d3c-4509-9559-a533a7e00569.json`。
 最新 native BGP 补充报告：`.test-data/rdf-pg-custom-index-native-bgp-aggregate-small/models-postgres-2026-06-04T22-16-07-903Z-52459-39ed04aa-05d5-4ee8-829a-fd62ceaa8df5.json`。
 最新 subject-star numeric 补充报告：`.test-data/rdf-pg-custom-index-native-subject-star-numeric-small/models-postgres-2026-06-04T22-25-25-846Z-53564-4fc66753-2108-43fb-8870-ef636a9fe539.json`。
 最新 native BGP values 补充报告：`.test-data/rdf-pg-custom-index-native-values-small/models-postgres-2026-06-04T22-40-58-219Z-55069-ba5a5a9d-3b5d-4323-96b9-9a646f3ba91f.json`。
+最新 native VALUES join 补充报告：`.test-data/rdf-pg-custom-index-native-values-join-small/models-postgres-2026-06-04T23-02-31-898Z-56860-72313db7-dfa7-4f8f-aafc-db9ee2f67f87.json`。
 
 ## PostgreSQL Status
 

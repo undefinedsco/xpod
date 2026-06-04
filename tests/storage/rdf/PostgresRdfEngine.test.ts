@@ -2472,7 +2472,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('keeps VALUES-constrained required BGP joins on native bgp_join rows', async () => {
+  it('routes VALUES-constrained required BGP joins through native values_join', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-bgp-values-'));
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
@@ -2521,6 +2521,7 @@ describe('PostgresRdfEngine', () => {
           'join.required_bgp',
           'join.required_bgp.native',
           'join.values',
+          'join.values.native',
         ],
         capabilityProviders: {
           'index.xpod_rdf_perm': 'extension',
@@ -2528,6 +2529,7 @@ describe('PostgresRdfEngine', () => {
           'join.required_bgp': 'extension',
           'join.required_bgp.native': 'extension',
           'join.values': 'engine-sql',
+          'join.values.native': 'extension',
         },
         requiredCapabilities: [
           'join.required_bgp',
@@ -2540,6 +2542,7 @@ describe('PostgresRdfEngine', () => {
           'join.required_bgp',
           'join.required_bgp.native',
           'join.values',
+          'join.values.native',
         ],
       };
       internals.queryPgExtensionJsonRows = async () => {
@@ -2547,7 +2550,7 @@ describe('PostgresRdfEngine', () => {
       };
       internals.requireExecutor = () => ({
         query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
-          if (sql.includes('xpod_rdf.bgp_join')) {
+          if (sql.includes('xpod_rdf.values_join')) {
             observedSql.push(sql);
             observedParams = params;
             return [{ v0: threadId }] as T[];
@@ -2583,19 +2586,21 @@ describe('PostgresRdfEngine', () => {
         cache: { mode: 'bypass' },
       });
 
-      expect(observedSql[0]).toContain('xpod_rdf.bgp_join');
-      expect(observedSql[0]).toContain('JOIN (VALUES');
-      expect(observedSql[0]).toContain('join_values_0.value_0_id = native_bgp.v2');
+      expect(observedSql[0]).toContain('xpod_rdf.values_join');
+      expect(observedSql[0]).not.toContain('JOIN (VALUES');
       expect(observedSql[0]).not.toContain('JOIN rdf_quads q1');
       expect(observedParams?.[2]).toEqual([expect.any(Number), expect.any(Number)]);
-      expect(observedParams).toContain(messageId);
+      expect(observedParams?.[3]).toEqual([1]);
+      expect(observedParams?.[4]).toEqual([messageId]);
       expect(result.bindings.map((binding) => binding.thread.value)).toEqual([thread.value]);
       expect(result.bindings[0].message).toBeUndefined();
-      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.bgp_join');
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.values_join');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp.native)');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.values)');
-      expect(result.metrics.plan).toContain('Rdf3xJoinTupleValues(?message)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.values.native)');
+      expect(result.metrics.plan).toContain('XpodRdfValuesJoinTuple(?message)');
+      expect(result.metrics.plan).not.toContain('Rdf3xJoinTupleValues(?message)');
       expect(result.metrics.plan).not.toContain('PostgresFactsValues');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionJoin(execute_plan_json)');
     } finally {

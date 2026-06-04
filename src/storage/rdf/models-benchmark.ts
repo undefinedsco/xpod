@@ -906,7 +906,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
       ],
       select: ['model', 'credential'],
     },
-    expectedPlan: ['join-index', 'values-recheck'],
+    expectedPlan: ['join-index', 'values-join-pushdown'],
   },
   {
     name: 'provider model credential ordered join query',
@@ -2899,6 +2899,16 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
         || planText.includes('XpodRdfBgpJoin(');
     case 'values-recheck':
       return planText.includes('Rdf3xJoinTupleValues(')
+        && !planText.includes('PostgresFactsValues(');
+    case 'values-join-pushdown':
+      return (
+        planText.includes('Rdf3xJoinTupleValues(')
+          || planText.includes('XpodRdfValuesJoinTuple(')
+      ) && !planText.includes('PostgresFactsValues(');
+    case 'native-values-join':
+      return planText.includes('XpodRdfValuesJoinTuple(')
+        && planText.includes('XpodRdfPgHotOperator(join.values.native)')
+        && !planText.includes('Rdf3xJoinTupleValues(')
         && !planText.includes('PostgresFactsValues(');
     case 'join-order-pushdown':
       return (planText.includes('IndexJoinOrder(')
