@@ -524,11 +524,11 @@ PostgreSQL extension。它不是独立查询服务，也不是 raw SPARQL endpoi
 #### Custom RDF index access method
 
 `xpod_rdf` 的第二类 native 能力是 custom RDF index access method，暂名
-`xpod_rdf_perm`。当前 native extension 已有 storage prototype，用于验证 PG custom AM
-packaging、opclass、planner path 和 lifecycle；该 prototype 已支持 ordered build、
-metapage global-order guard、block-level lower-bound seek、page min/max pruning，以及 sorted page
-的 page-local lower-bound seek。它仍不作为默认 profile，也不能替代后续 ordered compressed
-postings 和 native hot-operator 性能实现。
+`xpod_rdf_perm`。当前 native extension 已有 page-local posting-list prototype，用于验证 PG
+custom AM packaging、opclass、planner path 和 lifecycle；该 prototype 已支持 ordered build、
+重复 full key posting list、metapage global-order guard、block-level lower-bound seek、page
+min/max pruning，以及 sorted page 的 page-local lower-bound seek。它仍不作为默认 profile，也不能
+替代后续 ordered compressed postings 和 native hot-operator 性能实现。
 
 目标：
 

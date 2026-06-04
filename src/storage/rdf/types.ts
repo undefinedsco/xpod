@@ -151,6 +151,8 @@ export interface RdfPgCustomIndexStats {
   nkeys: number;
   tupleCount: number;
   pageTupleCount: number;
+  itemCount: number;
+  postingCount: number;
   dataPages: number;
   emptyPages: number;
   sortedPages: number;
@@ -158,6 +160,7 @@ export interface RdfPgCustomIndexStats {
   minTuplesPerPage: number;
   maxTuplesPerPage: number;
   avgTuplesPerPage: number;
+  avgPostingsPerItem: number;
   itemBytes: number;
   freeBytes: number;
   avgEntryBytes: number;

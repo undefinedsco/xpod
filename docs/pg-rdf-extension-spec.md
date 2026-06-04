@@ -83,13 +83,13 @@ scripts/build-xpod-rdf-extension.sh
 当前 `0.1.0-native` 已提供真实 C extension、`xpod_rdf.version()`、
 `xpod_rdf.capabilities()`、`cache.result` SQL ABI、`xpod_rdf_perm` custom index access
 method 和 `xpod_rdf.term_id_ops` bigint opclass。`xpod_rdf_perm` 当前是
-index-relation storage prototype：它能被 PostgreSQL 创建、维护和扫描，返回正确 heap TID，
-也能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会按 permutation key 排序写入，
-metapage 会记录全局有序 guard；全局有序时 scan 可根据 leading equality/range bounds 做
-block-level lower-bound seek，并在越过 upper prefix 后停止后续 block；每个 index page 仍维护
-key min/max range 和 page-local lower-bound seek。无序 append 会先降级 metapage 的全局有序标记，
-回到保守扫描以避免漏行。但它尚未实现 RDF-specific postings block、compressed postings 和
-custom join operator，因此不作为完整性能收益结论。
+page-local posting-list prototype：它能被 PostgreSQL 创建、维护和扫描，返回正确 heap TID，
+也能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会按 permutation key 排序写入，并把
+重复 full key 聚成 posting list。metapage 会记录全局有序 guard；全局有序时 scan 可根据 leading
+equality/range bounds 做 block-level lower-bound seek，并在越过 upper prefix 后停止后续 block；
+每个 index page 仍维护 key min/max range 和 page-local lower-bound seek。无序 append 会先降级
+metapage 的全局有序标记，回到保守扫描以避免漏行。但它尚未实现 suffix/TID stream compressed
+postings 和 custom join operator，因此不作为完整性能收益结论。
 
 H0 已支持 schema-local SQL ABI：当 `pg_extension` 里没有 native `xpod_rdf`，但
 `xpod_rdf.version()` 和 `xpod_rdf.capabilities()` 存在时，`PostgresRdfEngine` 会把
@@ -110,8 +110,9 @@ extension 提供。后续 native extension 的职责是替换这些已经有 cor
 `storageStats().facts.spaceObjects`，但在 postings layout 达标前不能替代 btree covering
 indexes。native extension 同时提供内部观测函数 `xpod_rdf.perm_index_stats(regclass)`；
 `storageStats().pgAcceleration.customIndexes` 会读取 layout、compression flag、sorted
-state、tuple/page 分布、item bytes 和 free bytes。当前 layout 明确报告为
-`tuple-page-v1` / `compressed=false`，用于证明它还不是 compressed postings 实现。
+state、tuple/page 分布、item/posting count、item bytes 和 free bytes。当前 layout 明确报告为
+`posting-list-v1` / `compressed=false`：build 阶段会把重复 full key 聚成 page-local
+posting list，但还不是 suffix/TID stream compressed postings 实现。
 
 能力探测是强制的：
 
@@ -387,13 +388,14 @@ posting block
 
 ### Index AM Callback Scope
 
-当前 storage prototype 已覆盖 `ambuild`、`ambuildempty`、`aminsert`、
+当前 page-local posting-list prototype 已覆盖 `ambuild`、`ambuildempty`、`aminsert`、
 `ambulkdelete`、`amvacuumcleanup`、`amcostestimate`、`ambeginscan`、`amrescan`、
 `amgettuple`、`amgetbitmap`、`amendscan` 和 `amvalidate`。build 已经按 key 排序写入，
-metapage 记录全局有序状态，page opaque 已记录 min/max range；全局有序时 scan 能从 lower bound
-二分定位 data block，并在 page first tuple 越过 upper prefix 后结束扫描；sorted page 继续支持
-page-local lower-bound seek 和 upper-bound early stop。postings prototype 还需要把这些 callback
-从 page/block seek 升级为 compressed postings streams 和 block-level stats。目标至少需要覆盖：
+重复 full key 会聚成 posting list，metapage 记录全局有序状态，page opaque 已记录 min/max range；
+全局有序时 scan 能从 lower bound 二分定位 data block，并在 page first entry 越过 upper prefix
+后结束扫描；sorted page 继续支持 page-local lower-bound seek 和 upper-bound early stop。下一步
+还需要把这些 callback 从 page-local posting list 升级为 compressed postings streams 和
+block-level stats。目标至少需要覆盖：
 
 | Callback | 要求 |
 | --- | --- |
