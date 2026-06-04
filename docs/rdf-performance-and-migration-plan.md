@@ -405,6 +405,10 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
   index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；但 scan 仍是
   full index-page filtering，不是 compressed postings performance implementation。
+- `storageStats().pgAcceleration.customIndexes` 会读取 native
+  `xpod_rdf.perm_index_stats(regclass)`，报告每个 shadow index 的 layout、compression flag、
+  sorted state、tuple/page 分布、item bytes 和 free bytes。当前 layout 必须显示
+  `tuple-page-v1` / `compressed=false`，直到 compressed postings 落地。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；当前 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case。
 
@@ -567,7 +571,9 @@ index-relation storage prototype，能支持 build / insert / index scan / bitma
 build 已按 permutation key 排序，metapage 记录 global sorted guard，page opaque 记录 min/max
 range；全局有序时 scan 会按 leading equality/range bounds 做 block-level lower-bound seek，
 并在越过 upper prefix 后停止后续 block；sorted page 继续做 page-local lower-bound seek 和
-upper-bound early stop。无序 append 会降级全局有序标记，回到保守扫描以保证正确性。仍需要注意：
+upper-bound early stop。`storageStats().pgAcceleration.customIndexes` 会暴露每个 shadow
+index 的 `layout=tuple-page-v1`、`compressed=false`、page tuple count、item bytes 和 free
+bytes，用作后续 postings 替换的基线。无序 append 会降级全局有序标记，回到保守扫描以保证正确性。仍需要注意：
 这还不是 compressed postings performance implementation，也没有 native hot operators，因此不能把
 这组 gate 作为默认引擎性能收益证明。下一步性能工作是把 AM scan 从 tuple/page/block seek 升级为
 RDF term-id compressed postings streams，并在 medium/large + concurrency gate 中对比 RDF-3X baseline。

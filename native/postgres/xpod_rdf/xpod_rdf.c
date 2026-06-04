@@ -6,6 +6,7 @@
 #include "access/generic_xlog.h"
 #include "access/tableam.h"
 #include "fmgr.h"
+#include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "nodes/pathnodes.h"
 #include "storage/bufpage.h"
@@ -19,6 +20,7 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(xpod_rdf_version);
 PG_FUNCTION_INFO_V1(xpod_rdf_capabilities);
 PG_FUNCTION_INFO_V1(xpod_rdf_term_id_cmp);
+PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_stats);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_handler);
 
 static IndexBuildResult *xpod_rdf_perm_build(Relation heapRelation,
@@ -249,6 +251,154 @@ xpod_rdf_term_id_cmp(PG_FUNCTION_ARGS)
     PG_RETURN_INT32(1);
   }
   PG_RETURN_INT32(0);
+}
+
+Datum
+xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
+{
+  Oid index_oid = PG_GETARG_OID(0);
+  Relation indexRelation;
+  BlockNumber block_count;
+  BlockNumber first_data_block = 0;
+  BlockNumber block;
+  bool has_metapage = false;
+  bool global_sorted = false;
+  uint16 schema_version = 0;
+  uint16 nkeys = 0;
+  uint64 tuple_count = 0;
+  uint64 page_tuple_count = 0;
+  uint64 item_bytes = 0;
+  uint64 free_bytes = 0;
+  uint32 data_pages = 0;
+  uint32 empty_pages = 0;
+  uint32 sorted_pages = 0;
+  uint32 unsorted_pages = 0;
+  uint32 min_tuples_per_page = 0;
+  uint32 max_tuples_per_page = 0;
+  double avg_tuples_per_page;
+  double avg_entry_bytes;
+  StringInfoData json;
+
+  indexRelation = index_open(index_oid, AccessShareLock);
+  block_count = RelationGetNumberOfBlocks(indexRelation);
+
+  if (block_count > 0)
+  {
+    Buffer buffer = ReadBuffer(indexRelation, 0);
+    Page page;
+    XpodRdfPermMetaOpaque *meta;
+
+    LockBuffer(buffer, BUFFER_LOCK_SHARE);
+    page = BufferGetPage(buffer);
+    meta = xpod_rdf_perm_meta_opaque(page);
+    if (meta != NULL)
+    {
+      has_metapage = true;
+      first_data_block = 1;
+      schema_version = meta->schema_version;
+      nkeys = meta->nkeys;
+      tuple_count = meta->tuple_count;
+      global_sorted = (meta->flags & XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED) != 0;
+    }
+    UnlockReleaseBuffer(buffer);
+  }
+
+  for (block = first_data_block; block < block_count; block++)
+  {
+    Buffer buffer;
+    Page page;
+    XpodRdfPermPageOpaque *opaque;
+    OffsetNumber max_offset;
+    OffsetNumber offset;
+
+    buffer = ReadBuffer(indexRelation, block);
+    LockBuffer(buffer, BUFFER_LOCK_SHARE);
+    page = BufferGetPage(buffer);
+    opaque = xpod_rdf_perm_page_opaque(page);
+    if (opaque != NULL)
+    {
+      data_pages++;
+      page_tuple_count += opaque->tuple_count;
+      free_bytes += PageGetFreeSpace(page);
+      max_offset = PageGetMaxOffsetNumber(page);
+      for (offset = FirstOffsetNumber; offset <= max_offset; offset = OffsetNumberNext(offset))
+      {
+        ItemId item_id = PageGetItemId(page, offset);
+
+        if (ItemIdHasStorage(item_id))
+        {
+          item_bytes += ItemIdGetLength(item_id);
+        }
+      }
+      if (opaque->tuple_count == 0)
+      {
+        empty_pages++;
+      }
+      if ((opaque->flags & XPOD_RDF_PERM_PAGE_FLAG_SORTED) != 0)
+      {
+        sorted_pages++;
+      }
+      else
+      {
+        unsorted_pages++;
+      }
+      if (min_tuples_per_page == 0 || opaque->tuple_count < min_tuples_per_page)
+      {
+        min_tuples_per_page = opaque->tuple_count;
+      }
+      if (opaque->tuple_count > max_tuples_per_page)
+      {
+        max_tuples_per_page = opaque->tuple_count;
+      }
+    }
+    UnlockReleaseBuffer(buffer);
+  }
+
+  index_close(indexRelation, AccessShareLock);
+  avg_tuples_per_page = data_pages == 0 ? 0.0 : ((double) page_tuple_count / (double) data_pages);
+  avg_entry_bytes = page_tuple_count == 0 ? 0.0 : ((double) item_bytes / (double) page_tuple_count);
+
+  initStringInfo(&json);
+  appendStringInfo(
+    &json,
+    "{\"layout\":\"tuple-page-v1\","
+    "\"compressed\":false,"
+    "\"schemaVersion\":%u,"
+    "\"hasMetapage\":%s,"
+    "\"globalSorted\":%s,"
+    "\"nkeys\":%u,"
+    "\"tupleCount\":%llu,"
+    "\"pageTupleCount\":%llu,"
+    "\"pages\":%u,"
+    "\"dataPages\":%u,"
+    "\"emptyPages\":%u,"
+    "\"sortedPages\":%u,"
+    "\"unsortedPages\":%u,"
+    "\"minTuplesPerPage\":%u,"
+    "\"maxTuplesPerPage\":%u,"
+    "\"avgTuplesPerPage\":%.6f,"
+    "\"itemBytes\":%llu,"
+    "\"freeBytes\":%llu,"
+    "\"avgEntryBytes\":%.6f}",
+    (unsigned int) schema_version,
+    has_metapage ? "true" : "false",
+    global_sorted ? "true" : "false",
+    (unsigned int) nkeys,
+    (unsigned long long) tuple_count,
+    (unsigned long long) page_tuple_count,
+    (unsigned int) block_count,
+    (unsigned int) data_pages,
+    (unsigned int) empty_pages,
+    (unsigned int) sorted_pages,
+    (unsigned int) unsorted_pages,
+    (unsigned int) min_tuples_per_page,
+    (unsigned int) max_tuples_per_page,
+    avg_tuples_per_page,
+    (unsigned long long) item_bytes,
+    (unsigned long long) free_bytes,
+    avg_entry_bytes
+  );
+  PG_RETURN_TEXT_P(cstring_to_text(json.data));
 }
 
 Datum

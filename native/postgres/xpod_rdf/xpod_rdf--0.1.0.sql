@@ -17,6 +17,11 @@ RETURNS integer
 AS 'MODULE_PATHNAME', 'xpod_rdf_term_id_cmp'
 LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
 
+CREATE FUNCTION xpod_rdf.perm_index_stats(regclass)
+RETURNS text
+AS 'MODULE_PATHNAME', 'xpod_rdf_perm_index_stats'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE;
+
 CREATE FUNCTION xpod_rdf.perm_handler(internal)
 RETURNS index_am_handler
 AS 'MODULE_PATHNAME', 'xpod_rdf_perm_handler'

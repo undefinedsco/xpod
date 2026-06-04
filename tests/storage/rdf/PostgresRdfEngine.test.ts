@@ -10,6 +10,7 @@ import {
   defaultSyntheticMessagesForRdfModelsScale,
   rdfModelsBenchmarkSyntheticPodCount,
   runRdfModelsPostgresBenchmark,
+  type RdfPgAccelerationStats,
   type RdfQuery,
 } from '../../../src/storage/rdf';
 
@@ -1132,6 +1133,132 @@ describe('PostgresRdfEngine', () => {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
+  });
+
+  it('projects native custom-index storage stats when pg-custom-index is enabled', async () => {
+    const engine = new PostgresRdfEngine({
+      driver: 'pg',
+      connectionString: 'postgres://unused',
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const internals = engine as unknown as {
+      executor: {
+        query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+        exec(sql: string, params?: unknown[]): Promise<void>;
+        transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T>;
+        close(): Promise<void>;
+      };
+      pgAcceleration: RdfPgAccelerationStats;
+      pgAccelerationStats(): Promise<RdfPgAccelerationStats>;
+    };
+
+    internals.executor = {
+      async query<T = Record<string, unknown>>(_sql: string, params?: unknown[]): Promise<T[]> {
+        expect(params?.[0]).toEqual(expect.arrayContaining([
+          'rdf_quads_spog_perm',
+          'rdf_quads_opsg_perm',
+        ]));
+        return [
+          {
+            name: 'rdf_quads_spog_perm',
+            bytes: '8192',
+            pages: '1',
+            stats_json: JSON.stringify({
+              layout: 'tuple-page-v1',
+              compressed: false,
+              schemaVersion: 1,
+              hasMetapage: true,
+              globalSorted: true,
+              nkeys: 4,
+              tupleCount: 10,
+              pageTupleCount: 10,
+              dataPages: 1,
+              emptyPages: 0,
+              sortedPages: 1,
+              unsortedPages: 0,
+              minTuplesPerPage: 10,
+              maxTuplesPerPage: 10,
+              avgTuplesPerPage: 10,
+              itemBytes: 480,
+              freeBytes: 7000,
+              avgEntryBytes: 48,
+            }),
+          },
+        ] as T[];
+      },
+      async exec(): Promise<void> {},
+      async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+        return fn(this);
+      },
+      async close(): Promise<void> {},
+    };
+    internals.pgAcceleration = {
+      profile: 'pg-custom-index',
+      requested: true,
+      available: true,
+      enabled: true,
+      provider: 'extension',
+      version: '0.1.0-native',
+      capabilities: [
+        'aggregate.count',
+        'aggregate.numeric',
+        'cache.result',
+        'index.xpod_rdf_perm',
+        'join.required_bgp',
+        'scan.exact_graph',
+        'scan.graph_prefix',
+        'scan.term_in',
+      ],
+      requiredCapabilities: [
+        'scan.exact_graph',
+        'scan.graph_prefix',
+        'scan.term_in',
+        'join.required_bgp',
+        'aggregate.count',
+        'aggregate.numeric',
+        'cache.result',
+        'index.xpod_rdf_perm',
+      ],
+      missingCapabilities: [],
+      activeOperators: [
+        'aggregate.count',
+        'aggregate.numeric',
+        'cache.result',
+        'index.xpod_rdf_perm',
+        'join.required_bgp',
+        'scan.exact_graph',
+        'scan.graph_prefix',
+        'scan.term_in',
+      ],
+    };
+
+    await expect(internals.pgAccelerationStats()).resolves.toMatchObject({
+      profile: 'pg-custom-index',
+      enabled: true,
+      customIndexes: [
+        {
+          name: 'rdf_quads_spog_perm',
+          permutation: 'SPO',
+          accessMethod: 'xpod_rdf_perm',
+          layout: 'tuple-page-v1',
+          compressed: false,
+          bytes: 8192,
+          pages: 1,
+          schemaVersion: 1,
+          hasMetapage: true,
+          globalSorted: true,
+          nkeys: 4,
+          tupleCount: 10,
+          pageTupleCount: 10,
+          dataPages: 1,
+          sortedPages: 1,
+          avgTuplesPerPage: 10,
+          itemBytes: 480,
+          freeBytes: 7000,
+          avgEntryBytes: 48,
+        },
+      ],
+    });
   });
 
   it('runs shared models benchmark cases on the PostgreSQL RDF engine without result-cache masking', async () => {

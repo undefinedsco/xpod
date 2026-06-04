@@ -108,7 +108,10 @@ extension 提供。后续 native extension 的职责是替换这些已经有 cor
 `rdf_quads_spog_perm`、`rdf_quads_sopg_perm`、`rdf_quads_psog_perm`、
 `rdf_quads_posg_perm`、`rdf_quads_ospg_perm`、`rdf_quads_opsg_perm`。这些 index 进入
 `storageStats().facts.spaceObjects`，但在 postings layout 达标前不能替代 btree covering
-indexes。
+indexes。native extension 同时提供内部观测函数 `xpod_rdf.perm_index_stats(regclass)`；
+`storageStats().pgAcceleration.customIndexes` 会读取 layout、compression flag、sorted
+state、tuple/page 分布、item bytes 和 free bytes。当前 layout 明确报告为
+`tuple-page-v1` / `compressed=false`，用于证明它还不是 compressed postings 实现。
 
 能力探测是强制的：
 
@@ -412,8 +415,8 @@ custom index AM 必须符合 PG 原生索引语义：
 - index 修改必须 WAL-safe，crash 后能通过 recovery 恢复一致状态。
 - VACUUM、HOT update、dead tuple cleanup、REINDEX 都必须有明确行为。
 - 如果 postings 中保存聚合 stats，stats 只能作为 cost/skip hint，不能绕过 MVCC 返回不可见 rows。
-- `storageStats()` 必须报告 index version、facts version、bytes、tuple count、dead tuple
-  pressure 和 rebuild requirement。
+- `storageStats()` 必须报告 index version、layout/compression 状态、facts version、bytes、
+  tuple count、page tuple 分布、free bytes、dead tuple pressure 和 rebuild requirement。
 
 ### Migration / Rollback
 

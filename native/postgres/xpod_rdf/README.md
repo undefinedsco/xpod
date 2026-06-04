@@ -14,6 +14,10 @@ The first native cut provides:
   global-order guard, block-level lower-bound seeking, page-level min/max
   pruning, and page-local lower-bound seeking on sorted pages.
 - `xpod_rdf.term_id_ops`, a bigint operator class for RDF term id columns.
+- `xpod_rdf.perm_index_stats(regclass)`, an internal observability hook used
+  by `PostgresRdfEngine.storageStats()` to report the custom index layout,
+  sorted state, page tuple counts, item bytes, free bytes, and compression
+  status.
 
 Build inside an image with PostgreSQL server headers:
 
@@ -32,4 +36,6 @@ The current custom index AM is intentionally a correctness and deployment
 prototype. It proves native extension packaging, capability detection, custom
 index DDL, ordered index-relation storage, metapage-backed block seeking, page
 pruning, and page-local bound-prefix seek before replacing tuple-level page
-scans with RDF-specific postings blocks and compressed suffix/TID streams.
+scans with RDF-specific postings blocks and compressed suffix/TID streams. Its
+reported layout is `tuple-page-v1` with `compressed=false` until that postings
+work lands.

@@ -27,6 +27,7 @@ import type {
   RdfPgAccelerationProfile,
   RdfPgAccelerationProvider,
   RdfPgAccelerationStats,
+  RdfPgCustomIndexStats,
   RdfPatternQuery,
   RdfQueryFilter,
   RdfQueryPattern,
@@ -1064,13 +1065,28 @@ export class PostgresRdfEngine implements RdfEngineLike {
         syncedWithFacts: rdf3x.factsDataVersion === await this.readFactsDataVersion(),
       },
       queryResultCache,
-      pgAcceleration: this.pgAcceleration ?? this.disabledPgAccelerationStats(),
+      pgAcceleration: await this.pgAccelerationStats(),
       factsBytes,
       derivedBytes,
       totalBytes,
       derivedToFactsRatio: factsBytes === 0 ? 0 : derivedBytes / factsBytes,
       totalToFactsRatio: factsBytes === 0 ? 0 : totalBytes / factsBytes,
     };
+  }
+
+  private async pgAccelerationStats(): Promise<RdfPgAccelerationStats> {
+    const stats = this.pgAcceleration ?? this.disabledPgAccelerationStats();
+    if (
+      stats.enabled !== true
+      || stats.profile !== 'pg-custom-index'
+      || !stats.capabilities.includes(XPOD_RDF_PERM_INDEX_CAPABILITY)
+    ) {
+      return stats;
+    }
+    const customIndexes = await this.collectPgCustomIndexStats();
+    return customIndexes.length > 0
+      ? { ...stats, customIndexes }
+      : stats;
   }
 
   private async initializeSchema(): Promise<void> {
@@ -3854,6 +3870,64 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
   }
 
+  private async collectPgCustomIndexStats(): Promise<RdfPgCustomIndexStats[]> {
+    const expectedIndexNames = PERMUTATIONS.map((permutation) => `${permutation.indexName}_perm`);
+    const permutationByIndex = new Map(PERMUTATIONS.map((permutation) => [
+      `${permutation.indexName}_perm`,
+      permutation.name,
+    ]));
+    try {
+      const rows = await this.requireExecutor().query<{
+        name: string;
+        bytes: number;
+        pages: number;
+        stats_json: string | null;
+      }>(`
+        SELECT
+          index_rel.relname AS name,
+          pg_relation_size(index_rel.oid) AS bytes,
+          CEIL(pg_relation_size(index_rel.oid)::numeric / current_setting('block_size')::int)::bigint AS pages,
+          xpod_rdf.perm_index_stats(index_rel.oid)::text AS stats_json
+        FROM pg_class index_rel
+        JOIN pg_index idx ON idx.indexrelid = index_rel.oid
+        JOIN pg_am am ON am.oid = index_rel.relam
+        WHERE am.amname = 'xpod_rdf_perm'
+          AND index_rel.relname = ANY($1::text[])
+        ORDER BY index_rel.relname
+      `, [expectedIndexNames]);
+      return rows.map((row) => {
+        const native = parsePgCustomIndexStats(row.stats_json);
+        return {
+          name: row.name,
+          permutation: permutationByIndex.get(row.name),
+          accessMethod: 'xpod_rdf_perm',
+          layout: typeof native.layout === 'string' ? native.layout : undefined,
+          compressed: pgBoolean(native.compressed),
+          bytes: pgStatNumber(row.bytes),
+          pages: pgStatNumber(row.pages),
+          schemaVersion: pgStatNumber(native.schemaVersion),
+          hasMetapage: pgBoolean(native.hasMetapage),
+          globalSorted: pgBoolean(native.globalSorted),
+          nkeys: pgStatNumber(native.nkeys),
+          tupleCount: pgStatNumber(native.tupleCount),
+          pageTupleCount: pgStatNumber(native.pageTupleCount),
+          dataPages: pgStatNumber(native.dataPages),
+          emptyPages: pgStatNumber(native.emptyPages),
+          sortedPages: pgStatNumber(native.sortedPages),
+          unsortedPages: pgStatNumber(native.unsortedPages),
+          minTuplesPerPage: pgStatNumber(native.minTuplesPerPage),
+          maxTuplesPerPage: pgStatNumber(native.maxTuplesPerPage),
+          avgTuplesPerPage: pgStatNumber(native.avgTuplesPerPage),
+          itemBytes: pgStatNumber(native.itemBytes),
+          freeBytes: pgStatNumber(native.freeBytes),
+          avgEntryBytes: pgStatNumber(native.avgEntryBytes),
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
   private async collectSpaceObjects(derived: boolean): Promise<RdfIndexSpaceObject[]> {
     try {
       const rows = await this.requireExecutor().query<{
@@ -4162,6 +4236,28 @@ function pgNumber(value: unknown): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined;
   }
   return undefined;
+}
+
+function pgStatNumber(value: unknown): number {
+  return pgNumber(value) ?? 0;
+}
+
+function parsePgCustomIndexStats(value: unknown): Record<string, unknown> {
+  if (!value) {
+    return {};
+  }
+  if (typeof value === 'object') {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
 function isVariable(value: RdfQueryTermPattern | undefined): value is { variable: string } {

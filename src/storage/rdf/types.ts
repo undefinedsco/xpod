@@ -132,8 +132,35 @@ export interface RdfPgAccelerationStats {
   requiredCapabilities: string[];
   missingCapabilities: string[];
   activeOperators?: string[];
+  customIndexes?: RdfPgCustomIndexStats[];
   fallbackReason?: RdfPgAccelerationFallbackReason;
   fallbackDetail?: string;
+}
+
+export interface RdfPgCustomIndexStats {
+  name: string;
+  permutation?: string;
+  accessMethod: 'xpod_rdf_perm';
+  layout?: string;
+  compressed: boolean;
+  bytes: number;
+  pages: number;
+  schemaVersion: number;
+  hasMetapage: boolean;
+  globalSorted: boolean;
+  nkeys: number;
+  tupleCount: number;
+  pageTupleCount: number;
+  dataPages: number;
+  emptyPages: number;
+  sortedPages: number;
+  unsortedPages: number;
+  minTuplesPerPage: number;
+  maxTuplesPerPage: number;
+  avgTuplesPerPage: number;
+  itemBytes: number;
+  freeBytes: number;
+  avgEntryBytes: number;
 }
 
 export interface RdfQueryResultCacheStats {
