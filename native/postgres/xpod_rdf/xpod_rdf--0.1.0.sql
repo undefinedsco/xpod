@@ -122,6 +122,18 @@ FAMILY xpod_rdf.term_id_family AS
   OPERATOR 5 > (bigint, bigint),
   FUNCTION 1 xpod_rdf.term_id_cmp(bigint, bigint);
 
+ALTER OPERATOR FAMILY xpod_rdf.term_id_family USING xpod_rdf_perm ADD
+  OPERATOR 1 < (bigint, integer),
+  OPERATOR 2 <= (bigint, integer),
+  OPERATOR 3 = (bigint, integer),
+  OPERATOR 4 >= (bigint, integer),
+  OPERATOR 5 > (bigint, integer),
+  OPERATOR 1 < (bigint, smallint),
+  OPERATOR 2 <= (bigint, smallint),
+  OPERATOR 3 = (bigint, smallint),
+  OPERATOR 4 >= (bigint, smallint),
+  OPERATOR 5 > (bigint, smallint);
+
 CREATE FUNCTION xpod_rdf.result_cache_probe(
   p_cache_key text,
   p_facts_data_version bigint

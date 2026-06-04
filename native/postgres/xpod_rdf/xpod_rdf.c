@@ -281,6 +281,7 @@ static bool xpod_rdf_perm_entry_next_tid(void *entry, uint32 start_index, ItemPo
 static void xpod_rdf_perm_prepare_scan_bounds(IndexScanDesc scan);
 static void xpod_rdf_perm_prepare_scan_position(IndexScanDesc scan);
 static void xpod_rdf_perm_apply_scan_key_bound(XpodRdfPermScanBounds *bounds, ScanKey key);
+static bool xpod_rdf_perm_scan_key_argument_int64(ScanKey key, int64 *argument);
 static void xpod_rdf_perm_finalize_scan_bounds(XpodRdfPermScanBounds *bounds);
 static bool xpod_rdf_perm_bounds_lower_prefix(XpodRdfPermScanBounds *bounds, uint16 nkeys, int64 *keys, uint16 *prefix_nkeys);
 static bool xpod_rdf_perm_bounds_upper_prefix(XpodRdfPermScanBounds *bounds, uint16 nkeys, int64 *keys, uint16 *prefix_nkeys, bool *inclusive);
@@ -1180,26 +1181,14 @@ xpod_rdf_perm_clause_strategy(IndexPath *path, IndexClause *clause)
 static StrategyNumber
 xpod_rdf_perm_op_strategy_for_index_column(IndexPath *path, int index_col, Oid opno)
 {
-  StrategyNumber strategy;
   Oid opfamily;
-  Oid opcintype;
 
   if (!OidIsValid(opno) || index_col < 0 || index_col >= path->indexinfo->nkeycolumns)
   {
     return InvalidStrategy;
   }
   opfamily = path->indexinfo->opfamily[index_col];
-  opcintype = path->indexinfo->opcintype[index_col];
-  for (strategy = BTLessStrategyNumber; strategy <= BTGreaterStrategyNumber; strategy++)
-  {
-    Oid candidate = get_opfamily_member(opfamily, opcintype, opcintype, strategy);
-
-    if (candidate == opno)
-    {
-      return strategy;
-    }
-  }
-  return InvalidStrategy;
+  return (StrategyNumber) get_op_opfamily_strategy(opno, opfamily);
 }
 
 static Selectivity
@@ -2514,7 +2503,11 @@ xpod_rdf_perm_apply_scan_key_bound(XpodRdfPermScanBounds *bounds, ScanKey key)
     return;
   }
 
-  argument = DatumGetInt64(key->sk_argument);
+  if (!xpod_rdf_perm_scan_key_argument_int64(key, &argument))
+  {
+    bounds->impossible = true;
+    return;
+  }
   bound = &bounds->columns[attr_index];
 
   switch (key->sk_strategy)
@@ -2562,6 +2555,26 @@ xpod_rdf_perm_apply_scan_key_bound(XpodRdfPermScanBounds *bounds, ScanKey key)
       break;
     default:
       break;
+  }
+}
+
+static bool
+xpod_rdf_perm_scan_key_argument_int64(ScanKey key, int64 *argument)
+{
+  switch (key->sk_subtype)
+  {
+    case InvalidOid:
+    case INT8OID:
+      *argument = DatumGetInt64(key->sk_argument);
+      return true;
+    case INT4OID:
+      *argument = (int64) DatumGetInt32(key->sk_argument);
+      return true;
+    case INT2OID:
+      *argument = (int64) DatumGetInt16(key->sk_argument);
+      return true;
+    default:
+      return false;
   }
 }
 

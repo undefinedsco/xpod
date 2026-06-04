@@ -586,9 +586,10 @@ upper-bound early stop。`storageStats().pgAcceleration.customIndexes` 会暴露
 index 的 `layout=compressed-posting-v1`、`compressed=true`、page tuple count、item/posting count、
 item bytes 和 free bytes，用作后续 skip stats 和 hot operators 的基线。custom index AM
 当前已有 prefix-aware planner cost：真实 PG17 smoke 中，100k-row `rdf_quads` + `xpod_rdf_perm(S,P,O,G)`
-在 bigint-typed leading equality 和 leading range 条件下均由正常 planner 选择 `Index Scan`。
-裸整数 literal 不是有效证据，因为 PostgreSQL 会解析成 cross-type `bigint = integer` operator，
-不会匹配当前 bigint-only opfamily；产品 SQL 生成必须使用 bigint 参数或显式 cast。
+在 leading equality 和 leading range 条件下均由正常 planner 选择 `Index Scan`。smoke 同时覆盖
+bigint-typed 参数、裸整数 literal（PG 解析为 `bigint = integer`）和 `smallint` literal；
+custom opfamily 会把 `integer` / `smallint` scan key 安全转成 int64 term id。其他非 bigint
+右值类型仍不进入 custom index path。
 无序 append 会降级全局有序标记，
 回到保守扫描以保证正确性。仍需要注意：这还不是完整 native hot-operator performance
 implementation，因此不能把这组 gate 作为默认引擎性能收益证明。下一步性能工作是在 medium/large +
