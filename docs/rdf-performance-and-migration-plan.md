@@ -183,6 +183,81 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --rdfAcceleratio
 路径；benchmark CLI 会校验请求的 acceleration profile 已实际 enabled，避免 fallback 后
 仅因 correctness 通过而误判为 acceleration 验收通过。它仍不是 medium/real-PG 性能容量结论。
 
+### PostgreSQL / PGlite Medium RDF-3X Baseline Rerun
+
+这组重跑把 `--rdfAccelerationProfile=baseline` 明确定义为 PG RDF-3X baseline。benchmark
+脚本在 PG 路径中设置 `queryResultCacheEnabled: false`，因此结果不会被 result cache
+掩盖。它回答的是：在同一套 PostgresRdfEngine / RDF-3X facts + derived stats 上，
+`pg-hot-operators` 相对 RDF-3X baseline 的增量是多少。
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --scale=medium --iterations=3 --warmupIterations=1 --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-rdf3x-baseline-rerun
+bun run benchmark:rdf-models:pg -- --scale=medium --iterations=3 --warmupIterations=1 --rdfAccelerationProfile=pg-hot-operators --out=.test-data/rdf-pg-hot-vs-rdf3x-rerun
+```
+
+运行时间：2026-06-04 本地 PGlite。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | medium |
+| target quads | 10000 |
+| seed quads | 10066 |
+| scan cases | 22 |
+| query cases | 8 |
+| iterations | 3 |
+| warmup iterations | 1 |
+
+通过情况：
+
+| Gate | RDF-3X baseline | `pg-hot-operators` |
+| --- | --- | --- |
+| plan matched | true | true |
+| `rdf3x.syncedWithFacts` | true | true |
+| acceleration profile | `baseline` | `pg-hot-operators` |
+| acceleration enabled | false | true |
+| acceleration matched request | true | true |
+| active operators | none | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+| facts bytes | 22487040 | 22487040 |
+| derived bytes | 8691712 | 8691712 |
+| total / facts ratio | 1.39x | 1.39x |
+
+Query p95 对比：
+
+| Case | RDF-3X baseline p95 | `pg-hot-operators` p95 | Ratio |
+| --- | ---: | ---: | ---: |
+| latest message by thread query | 36 ms | 30 ms | 1.20x |
+| next queued run by workspace query | 13 ms | 11 ms | 1.18x |
+| run steps by run query | 6 ms | 5 ms | 1.20x |
+| task materialization active due query | 17 ms | 15 ms | 1.13x |
+| message count by thread with having | 7 ms | 6 ms | 1.17x |
+| queued run priority numeric aggregate | 4 ms | 4 ms | 1.00x |
+| message score by thread numeric aggregate | 9 ms | 8 ms | 1.13x |
+| message join count distinct | 12 ms | 13 ms | 0.92x |
+
+Representative scan p95:
+
+| Case | RDF-3X baseline p95 | `pg-hot-operators` p95 |
+| --- | ---: | ---: |
+| list messages by thread | 7 ms | 9 ms |
+| latest message | 3 ms | 3 ms |
+| search message literals | 13 ms | 13 ms |
+| latest run | 2 ms | 2 ms |
+| acl graph prefix scoped query | 2 ms | 2 ms |
+
+结论：以 RDF-3X 作为 baseline 后，当前 `pg-hot-operators` 是 product profile / capability
+标记和部署边界的完成，不是已经产生数量级性能收益的 native engine。PGlite medium 上
+它相对 RDF-3X baseline 的 query p95 大多在 0.92x-1.20x 之间，存储比完全一致。
+因此后续 native PG extension / custom index AM 的价值必须继续用 RDF-3X baseline 做对照，
+不能再用旧 TEXT baseline 来宣传收益。
+
+本次尝试重跑 real PostgreSQL disposable benchmark 时，Docker VM 中 `postgres:17-alpine`
+初始化 WAL 失败：`No space left on device`。没有执行 `docker system prune` 这类会清理用户
+Docker 缓存的操作；真实 PG rerun 需要在 Docker 空间释放后补跑。
+
 ### Real PostgreSQL / Disposable Medium Gate
 
 执行命令：
