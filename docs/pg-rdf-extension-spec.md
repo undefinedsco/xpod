@@ -82,10 +82,11 @@ scripts/build-xpod-rdf-extension.sh
 
 当前 `0.1.0-native` 已提供真实 C extension、`xpod_rdf.version()`、
 `xpod_rdf.capabilities()`、`cache.result` SQL ABI、`xpod_rdf_perm` custom index access
-method 和 `xpod_rdf.term_id_ops` bigint opclass。`xpod_rdf_perm` 第一版是
+method 和 `xpod_rdf.term_id_ops` bigint opclass。`xpod_rdf_perm` 当前是
 index-relation storage prototype：它能被 PostgreSQL 创建、维护和扫描，返回正确 heap TID，
-也能生成 `Index Scan` / `Bitmap Index Scan` path；但扫描仍是全 index-page filter，尚未实现
-RDF-specific ordered compressed postings，因此不作为性能收益结论。
+也能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会按 permutation key 排序写入，
+每个 index page 维护 key min/max range，scan 时可做 page-level pruning。但它尚未实现
+RDF-specific bound-prefix seek、compressed postings 和 custom join operator，因此不作为性能收益结论。
 
 H0 已支持 schema-local SQL ABI：当 `pg_extension` 里没有 native `xpod_rdf`，但
 `xpod_rdf.version()` 和 `xpod_rdf.capabilities()` 存在时，`PostgresRdfEngine` 会把
@@ -381,8 +382,9 @@ posting block
 
 当前 storage prototype 已覆盖 `ambuild`、`ambuildempty`、`aminsert`、
 `ambulkdelete`、`amvacuumcleanup`、`amcostestimate`、`ambeginscan`、`amrescan`、
-`amgettuple`、`amgetbitmap`、`amendscan` 和 `amvalidate`。postings prototype 还需要把
-这些 callback 从 full index-page filtering 升级为 bound-prefix ordered postings。目标至少需要覆盖：
+`amgettuple`、`amgetbitmap`、`amendscan` 和 `amvalidate`。build 已经按 key 排序写入，
+page opaque 已记录 min/max range，scan 能跳过不可能命中的 page。postings prototype 还需要把
+这些 callback 从 page-level pruning 升级为 bound-prefix ordered postings。目标至少需要覆盖：
 
 | Callback | 要求 |
 | --- | --- |

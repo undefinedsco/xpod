@@ -543,7 +543,7 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<pg17-db-with-
 | `xpod_rdf.version()` | `0.1.0-native` |
 | native capability includes `index.xpod_rdf_perm` | true |
 | `CREATE INDEX ... USING xpod_rdf_perm` | passed |
-| forced planner path | `Index Scan` / `Bitmap Index Scan` on `rdf_quads_spog_perm` |
+| forced planner path | `Index Scan` on `rdf_quads_spog_perm` |
 | insert + vacuum smoke | passed |
 | real PG models plan matched | true |
 | `rdf3x.syncedWithFacts` | true |
@@ -556,15 +556,34 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<pg17-db-with-
 报告文件：
 
 ```text
-.test-data/rdf-pg-custom-index-storage-small/models-postgres-2026-06-04T08-09-58-909Z-40737-87945bcd-d39f-45bd-adcb-9e67e0bafd50.json
+.test-data/rdf-pg-custom-index-ordered-small/models-postgres-2026-06-04T08-33-59-083Z-44597-a4697222-29af-4af2-a57a-a42faae57021.json
 ```
 
 结论：native extension packaging、capability probe、`pg-custom-index` profile、custom AM DDL
 和 benchmark correctness gate 已打通。当前 `xpod_rdf_perm` 已从 heap-scan prototype 升级为
 index-relation storage prototype，能支持 build / insert / index scan / bitmap scan / vacuum；
-但仍不是 compressed postings performance implementation，因此不能把这组 gate 作为性能收益证明。
-下一步性能工作是把 AM scan 从 full index-page filtering 升级为 RDF term-id bound-prefix
-ordered postings，并在 medium/large + concurrency gate 中对比 RDF-3X baseline。
+build 已按 permutation key 排序，page opaque 记录 min/max range，scan 能做 page-level
+pruning。但仍不是 bound-prefix seek / compressed postings performance implementation，因此不能把
+这组 gate 作为性能收益证明。下一步性能工作是把 AM scan 从 page-level pruning 升级为
+RDF term-id bound-prefix ordered postings，并在 medium/large + concurrency gate 中对比
+RDF-3X baseline。
+
+同一轮还跑了真实 PG small RDF-3X baseline 对照：
+
+```text
+.test-data/rdf-pg-rdf3x-baseline-small-ordered/models-postgres-2026-06-04T08-32-58-378Z-44497-952fde4c-945b-4eff-9bf0-9abb0472d06a.json
+```
+
+small seed 为 114 quads，baseline 与 `pg-custom-index` 都是 19 个 scan case / 8 个 query
+case plan matched，`rdf3x.syncedWithFacts=true`。但 `pg-custom-index` 的 `scan.*` /
+`join.*` / `aggregate.*` provider 仍是 `engine-sql`，native extension 只提供
+`cache.result` 和 `index.xpod_rdf_perm`；当前查询物理计划仍主要是 `Rdf3xMembershipScan` /
+`PostgresRdf3xJoin`。因此 small 对照没有稳定性能收益：例如 `latest message by thread
+query` 从 6 ms 到 14 ms、`list messages by thread` 从 2 ms 到 7 ms、`task
+materialization active due query` 从 14 ms 到 21 ms；少数 case 持平或略快。这个结果说明
+问题不在 benchmark case 本身，而在两块 PG 能力尚未完成：custom index 还没有
+bound-prefix seek / postings-level skipping，native hot operators 还没有替换 engine-sql
+join / aggregate path。
 
 ## Operational Gates
 
