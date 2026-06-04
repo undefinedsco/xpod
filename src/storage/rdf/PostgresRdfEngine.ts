@@ -98,7 +98,10 @@ const XPOD_RDF_PERM_COUNT_CAPABILITY = 'index.xpod_rdf_perm.count';
 const XPOD_RDF_PERM_COUNT_ANY_CAPABILITY = 'index.xpod_rdf_perm.count_any';
 const XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY = 'join.subject_star';
 const XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY = 'aggregate.subject_star_count';
+const XPOD_RDF_BGP_JOIN_CAPABILITY = 'join.required_bgp.native';
 const XPOD_RDF_PERM_MAX_KEYS = 4;
+const XPOD_RDF_BGP_MAX_PATTERNS = 4;
+const XPOD_RDF_BGP_MAX_VARIABLES = 8;
 const XPOD_RDF_SQL_ABI_STATEMENTS = [
   'CREATE SCHEMA IF NOT EXISTS xpod_rdf',
   `
@@ -1949,7 +1952,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const subjectStarJoin = requiredPatterns.length > 1 && (compiledValues ?? []).length === 0
       ? await this.compilePgCustomIndexSubjectStarJoinSql(compiledPatterns, joinOptions)
       : undefined;
-    const compiled = subjectStarJoin ?? await this.compileJoinSql(compiledPatterns, joinOptions);
+    const nativeBgpJoin = !subjectStarJoin && requiredPatterns.length > 1 && (compiledValues ?? []).length === 0
+      ? await this.compilePgCustomIndexBgpJoinSql(compiledPatterns, joinOptions)
+      : undefined;
+    const compiled = subjectStarJoin ?? nativeBgpJoin ?? await this.compileJoinSql(compiledPatterns, joinOptions);
     if (compiled.unresolved) {
       return {
         bindings: [],
@@ -2685,6 +2691,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       XPOD_RDF_PERM_SCAN_ANY_CAPABILITY,
       XPOD_RDF_PERM_COUNT_CAPABILITY,
       XPOD_RDF_PERM_COUNT_ANY_CAPABILITY,
+      XPOD_RDF_BGP_JOIN_CAPABILITY,
       XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY,
       XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY,
     ]);
@@ -4146,6 +4153,124 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id));
     }
     return null;
+  }
+
+  private async compilePgCustomIndexBgpJoinSql(
+    patterns: PgCompiledJoinPattern[],
+    options?: {
+      project?: string[];
+      distinct?: boolean;
+      orderBy?: RdfQuery['orderBy'];
+      limit?: number;
+      offset?: number;
+      countMatchedRows?: boolean;
+    },
+  ): Promise<PgCompiledJoin | undefined> {
+    if (
+      options?.distinct
+      || (options?.orderBy?.length ?? 0) > 0
+      || options?.limit !== undefined
+      || options?.offset !== undefined
+      || patterns.length < 2
+      || patterns.length > XPOD_RDF_BGP_MAX_PATTERNS
+      || !this.canUsePgCustomIndexPermScan()
+      || !this.canUsePgAccelerationCapability(XPOD_RDF_BGP_JOIN_CAPABILITY)
+      || this.pgAcceleration?.capabilityProviders?.[XPOD_RDF_BGP_JOIN_CAPABILITY] !== 'extension'
+    ) {
+      return undefined;
+    }
+
+    const resolvedSources: PgJoinSource[] = [];
+    for (const [inputIndex, entry] of patterns.entries()) {
+      const resolved = await this.resolvePattern(entry.pattern);
+      if (
+        resolved.unresolved
+        || Object.keys(resolved.idSets).length > 0
+        || Object.keys(resolved.excludedIdSets).length > 0
+        || Object.keys(resolved.termFilters).length > 0
+        || resolved.graphPrefix !== undefined
+        || resolved.objectRange
+      ) {
+        return undefined;
+      }
+      const permutation = this.choosePermutation(resolved);
+      const estimateRows = await this.estimateResolvedRows(resolved);
+      resolvedSources.push({
+        inputIndex,
+        alias: `q${inputIndex}`,
+        entry,
+        resolved,
+        permutation,
+        estimateRows,
+      });
+    }
+
+    const orderedSources = this.orderJoinSources(resolvedSources);
+    const variables = uniqueStrings(orderedSources.flatMap(joinSourceVariables));
+    if (variables.length > XPOD_RDF_BGP_MAX_VARIABLES) {
+      return undefined;
+    }
+    const slotByVariable = new Map<string, number>(variables.map((variableName, index) => [variableName, index + 1]));
+    const projectVariables = options?.project ?? variables;
+    if (projectVariables.some((variableName) => !slotByVariable.has(variableName))) {
+      return undefined;
+    }
+
+    const constants: Array<number | null> = [];
+    const variableSlots: number[] = [];
+    const indexOidsSql = orderedSources
+      .map((source) => `'${source.permutation.indexName}_perm'::regclass`)
+      .join(', ');
+    const indexChoices: string[] = [];
+    for (const source of orderedSources) {
+      indexChoices.push(source.permutation.name);
+      for (const column of source.permutation.columns) {
+        const key = pgPatternKeyForIndexedColumn(column);
+        const variableName = source.entry.variables[key];
+        constants.push(source.resolved.ids[key] ?? null);
+        variableSlots.push(variableName ? slotByVariable.get(variableName) ?? 0 : 0);
+      }
+    }
+
+    const outputSlots = projectVariables.map((variableName) => {
+      const slot = slotByVariable.get(variableName);
+      if (!slot) {
+        throw new Error(`Postgres RDF native BGP cannot project unbound variable: ${variableName}`);
+      }
+      return slot;
+    });
+    const builder = new PgSqlBuilder();
+    const variableAliases = new Map<string, string>();
+    const projectionColumns = projectVariables.map((variableName, index) => {
+      const alias = `v${index}`;
+      variableAliases.set(variableName, alias);
+      return `native_bgp.v${index + 1} AS ${alias}`;
+    });
+    const projection = projectionColumns.length > 0 ? projectionColumns.join(', ') : '1 AS __empty';
+    const sql = `
+      SELECT ${projection}
+      FROM xpod_rdf.bgp_join(
+        '${RDF_FACTS_TABLE}'::regclass,
+        ARRAY[${indexOidsSql}]::oid[],
+        ${builder.add(constants)}::bigint[],
+        ${builder.add(variableSlots)}::smallint[],
+        ${builder.add(outputSlots)}::smallint[]
+      ) native_bgp
+    `;
+
+    return {
+      sql,
+      params: builder.snapshot(),
+      countParams: [],
+      indexChoice: `xpod_rdf.bgp_join(${indexChoices.join('>')})`,
+      queryPlan: [
+        `XpodRdfPgHotOperator(${XPOD_RDF_BGP_JOIN_CAPABILITY})`,
+        `XpodRdfBgpJoin(${orderedSources.map((source) => source.inputIndex).join('>')})`,
+        ...orderedSources.map((source) => `XpodRdfBgpPattern(${source.inputIndex}:${source.permutation.name})`),
+        sql,
+      ],
+      variableAliases,
+    };
   }
 
   private async compileJoinSql(
@@ -5646,9 +5771,11 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
       || entry.startsWith('Datatype(')
       || entry.startsWith('XpodRdfCustomIndexScan(')
       || entry.startsWith('XpodRdfSubjectStar')
+      || entry.startsWith('XpodRdfBgp')
       || entry === 'XpodRdfPgHotOperator(index.xpod_rdf_perm.scan)'
       || entry === 'XpodRdfPgHotOperator(index.xpod_rdf_perm.scan_any)'
       || entry === `XpodRdfPgHotOperator(${XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY})`
+      || entry === `XpodRdfPgHotOperator(${XPOD_RDF_BGP_JOIN_CAPABILITY})`
   ));
 }
 

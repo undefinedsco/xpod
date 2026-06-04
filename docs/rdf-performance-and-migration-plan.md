@@ -1,6 +1,6 @@
 # RDF Performance Report and Data Migration Plan
 
-记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 在没有 native extension 时由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold、`execute_plan_json` legacy private plan execution ABI、`xpod_rdf_perm` custom-index storage prototype、single-pattern scalar count 原型、受限 `subject_star_join` native join prototype 和受限 `subject_star_count` native count summary 原型，但这些 custom C/Rust hot-operator 的性能收益仍必须通过 benchmark gate 后才能计入默认能力。
+记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 在没有 native extension 时由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold、`execute_plan_json` legacy private plan execution ABI、`xpod_rdf_perm` custom-index storage prototype、single-pattern scalar count 原型、受限 `subject_star_join` native join prototype、受限 `subject_star_count` native count summary 原型和受限 `bgp_join` native required-BGP 原型，但这些 custom C/Rust hot-operator 的性能收益仍必须通过 benchmark gate 后才能计入默认能力。
 
 ## Current Decision
 
@@ -141,7 +141,7 @@ bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data
 | target quads | 48 |
 | seed quads | 114 |
 | scan cases | 19 |
-| query cases | 8 |
+| query cases | 9 |
 | iterations | 1 |
 
 通过情况：
@@ -419,7 +419,7 @@ active operators：
 
 `aggregate.count`、`aggregate.numeric`、`aggregate.subject_star_count`、`cache.result`、`index.xpod_rdf_perm`、
 `index.xpod_rdf_perm.count`、`index.xpod_rdf_perm.count_any`、
-`index.xpod_rdf_perm.scan`、`index.xpod_rdf_perm.scan_any`、`join.required_bgp`、
+`index.xpod_rdf_perm.scan`、`index.xpod_rdf_perm.scan_any`、`join.required_bgp`、`join.required_bgp.native`、
 `join.subject_star`、`join.values`、`scan.exact_graph`、`scan.graph_prefix`、`scan.term_in`。
 
 真实 PG native subject-star small storage profile：
@@ -439,6 +439,7 @@ active operators：
 | next queued run by workspace query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` |
 | run steps by run query | 4 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
 | task materialization active due query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` + `LexicalRange(object$lte)` outer filter |
+| provider model credential join query | 3 ms | yes | `bgp_join(PSO>PSO)` native exact-id required BGP |
 | message count by thread with having | 2 ms | no | grouped count over one pattern |
 | queued run priority numeric aggregate | 6 ms | no | numeric aggregate over BGP |
 | message score by thread numeric aggregate | 9 ms | no | grouped numeric aggregate over BGP |
@@ -451,9 +452,12 @@ materialization 的 `nextRunAt <= ...` 已经进入 subject-star input，small p
 count / count-distinct aggregate 在无 HAVING/ORDER/LIMIT、无 probe range、无 `distinctVariables`
 时会走 `xpod_rdf.subject_star_count(...)`，由 native extension 直接返回 summary 列。
 `message join count distinct` 已从 ordinary BGP path 进入 native subject-star count summary，
-small p95 为 2 ms；复杂 grouped / numeric aggregate 仍由 PG RDF-3X SQL 执行。
+small p95 为 2 ms。`provider model credential join query` 覆盖非 subject-star 的 exact-id
+object-to-object relation join，已命中 `xpod_rdf.bgp_join(PSO>PSO)`，small p95 为 3 ms。
+复杂 grouped / numeric aggregate 仍由 PG RDF-3X SQL 执行。
 
 最新通过报告：`.test-data/rdf-pg-custom-index-native-subject-star-count-small/models-postgres-2026-06-04T20-58-56-381Z-46027-8ffe7a23-7d3c-4509-9559-a533a7e00569.json`。
+最新 native BGP 补充报告：`.test-data/rdf-pg-custom-index-native-bgp-small/models-postgres-2026-06-04T21-35-21-594Z-48402-fb3b8b42-ce2d-498a-87f5-50a2adfd9b56.json`。
 
 ## PostgreSQL Status
 
@@ -487,19 +491,23 @@ small p95 为 2 ms；复杂 grouped / numeric aggregate 仍由 PG RDF-3X SQL 执
   private leading-prefix array custom-index scan ABI、`xpod_rdf.perm_index_count(...)` /
   `xpod_rdf.perm_index_count_any(...)` private leading-prefix scalar count ABI、`xpod_rdf.subject_star_join(...)`
   narrow native subject-star join prototype、`xpod_rdf.subject_star_count(...)` narrow native
-  subject-star count / count-distinct summary ABI、
+  subject-star count / count-distinct summary ABI、`xpod_rdf.bgp_join(...)` narrow native
+  required-BGP row-stream ABI、
   `xpod_rdf_perm` custom index access method 和 `xpod_rdf.term_id_ops` bigint opclass。
 - `PostgresRdfEngine` 已能在 native extension 声明 `scan.exact_graph` / `scan.term_in` 时，
   对无排序、无分页、无 DISTINCT、无同 pattern 变量相等约束的单 pattern 查询调用
   `xpod_rdf.scan_quads(...)`，并在 metrics plan 中标记
-  `XpodRdfExtensionScan(scan_quads)`；普通 required BGP join、group aggregate 和 numeric
-  aggregate 不再通过 `xpod_rdf.execute_plan_json(...)` 进入 extension wrapper，而是继续走
-  direct PG RDF-3X SQL。受限 constant-predicate subject-star shape 会走
+  `XpodRdfExtensionScan(scan_quads)`；group aggregate 和 numeric aggregate 不再通过
+  `xpod_rdf.execute_plan_json(...)` 进入 extension wrapper，而是继续走 direct PG RDF-3X SQL。
+  受限 constant-predicate subject-star shape 会走
   `xpod_rdf.subject_star_join(...)` native seed/probe/recheck path；probe object range filter
   和 order 由 outer SQL join `rdf_terms` 执行。这类 shape 的非分组 count / count-distinct aggregate
   在 `aggregate.subject_star_count` capability 可用且没有 probe object range / having / order /
   limit / `distinctVariables` 时会走 `xpod_rdf.subject_star_count(...)`，由 extension 直接返回
   summary 列；否则复用 native subject-star rows 作为输入，aggregate 本身仍由 PG SQL 执行。
+  `join.required_bgp.native` capability 可用时，最多 4 pattern / 8 变量、exact-id 常量和变量等值
+  的非 subject-star required BGP 子集会走 `xpod_rdf.bgp_join(...)`；graph-prefix、range/filter、
+  order/limit、distinct、group 和 aggregate 仍回退到 PG RDF-3X SQL。
 - `pg-custom-index` profile：只有 native extension 声明 `index.xpod_rdf_perm` 后才启用；
   engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
   index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会把
@@ -518,7 +526,8 @@ small p95 为 2 ms；复杂 grouped / numeric aggregate 仍由 PG RDF-3X SQL 执
   graph/subject/predicate/object id filters 并进行 heap visibility recheck；能力缺失或遇到
   graph-prefix/range/text/excluded filter 时回退到 direct custom-index scan 的
   `COUNT(*) + heap recheck` SQL。受限 subject-star 非分组 count 已进入
-  `subject_star_count(...)`；完整 grouped / numeric aggregate 仍未进入 custom C/Rust executor。
+  `subject_star_count(...)`；受限普通 required BGP 可走 `bgp_join(...)`；完整 grouped / numeric
+  aggregate 仍未进入 custom C/Rust executor。
 - `storageStats().pgAcceleration.customIndexes` 会读取 native
   `xpod_rdf.perm_index_stats(regclass)` 和 `xpod_rdf.perm_index_probe(...)`，报告每个 shadow
   index 的 layout、compression flag、sorted state、tuple/page 分布、prefix distinct / fanout
@@ -540,14 +549,15 @@ small p95 为 2 ms；复杂 grouped / numeric aggregate 仍由 PG RDF-3X SQL 执
   已接线；exact leading-prefix 单 pattern 可进一步走 `perm_index_scan + heap recheck` direct
   custom-index path，`$in` leading-prefix 单 pattern 可走 `perm_index_scan_any + heap recheck`
   direct custom-index path；单 pattern 非 DISTINCT `COUNT` aggregate 可走 native
-  `perm_index_count(_any)`，受限 subject-star join 可走 `subject_star_join`。普通 required BGP join、group
-  aggregate 和 numeric aggregate 仍复用 direct PG RDF-3X SQL，不是 custom C/Rust join /
-  aggregate execution。
+  `perm_index_count(_any)`，受限 subject-star join 可走 `subject_star_join`，受限 exact-id
+  普通 required BGP 可走 `bgp_join`。graph-prefix/range/filter/order/limit/distinct 的普通 BGP、
+  group aggregate 和 numeric aggregate 仍复用 direct PG RDF-3X SQL，不是完整 custom C/Rust
+  join / aggregate execution。
 - native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比
   RDF-3X baseline。
-- native C-level range-aware BGP join。当前 probe object range 可由 subject-star outer SQL
-  filter 覆盖，但普通 required BGP join、group aggregate 和 numeric aggregate 仍复用 direct
-  PG RDF-3X SQL。
+- native C-level range-aware / order-aware BGP join。当前 probe object range 可由 subject-star
+  outer SQL filter 覆盖，但普通 required BGP 的 range/filter/order/limit、group aggregate 和
+  numeric aggregate 仍复用 direct PG RDF-3X SQL。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用
 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration；

@@ -849,6 +849,31 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
     expectedPlan: ['join-index', 'range-filter-pushdown', 'join-order-pushdown', 'join-limit-pushdown'],
   },
   {
+    name: 'provider model credential join query',
+    resource: 'aiProvider',
+    purpose: 'non-subject-star provider/model/credential relation join can use native BGP',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+          subject: { variable: 'model' },
+          predicate: namedNode(`${UDFS}isProvidedBy`),
+          object: { variable: 'provider' },
+        },
+        {
+          graph: namedNode('https://pod.example/alice/settings/credentials.ttl'),
+          subject: { variable: 'credential' },
+          predicate: namedNode(`${UDFS}provider`),
+          object: { variable: 'provider' },
+        },
+      ],
+      select: ['model', 'credential'],
+    },
+    expectedPlan: ['join-index'],
+  },
+  {
     name: 'message count by thread with having',
     resource: 'message',
     purpose: 'grouped message count uses SQL GROUP BY/HAVING before pagination',
@@ -2758,7 +2783,8 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
     case 'join-index':
       return planText.includes('IndexJoin(')
         && !planText.includes('\nIndexScan(')
-        || planText.includes('PostgresRdf3xJoin(');
+        || planText.includes('PostgresRdf3xJoin(')
+        || planText.includes('XpodRdfBgpJoin(');
     case 'join-order-pushdown':
       return (planText.includes('IndexJoinOrder(')
         || planText.includes('Rdf3xJoinOrder(')
