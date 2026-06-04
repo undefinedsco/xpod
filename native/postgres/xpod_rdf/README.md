@@ -35,8 +35,7 @@ CREATE EXTENSION xpod_rdf;
 The current custom index AM is intentionally a correctness and deployment
 prototype. It proves native extension packaging, capability detection, custom
 index DDL, ordered index-relation storage, metapage-backed block seeking, page
-pruning, and page-local bound-prefix seek before replacing tuple-level page
-scans with RDF-specific compressed suffix/TID streams. Its reported layout is
-`posting-list-v1` with `compressed=false`: ordered build groups duplicate full
-permutation keys into page-local posting lists, while online insert still writes
-single tuple entries.
+pruning, page-local bound-prefix seek, and delta-varint compressed posting
+entries. Its reported layout is `compressed-posting-v1` with `compressed=true`:
+ordered build groups duplicate full permutation keys into compressed TID
+posting streams, while online insert still writes single tuple entries.

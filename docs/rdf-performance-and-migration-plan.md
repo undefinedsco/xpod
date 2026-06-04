@@ -404,19 +404,20 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `pg-custom-index` profile：只有 native extension 声明 `index.xpod_rdf_perm` 后才启用；
   engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
   index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会把
-  重复 full key 聚成 page-local posting list，但它仍不是 compressed postings performance
-  implementation。
+  重复 full key 聚成 delta-varint compressed TID posting stream，但它仍不是完整 native
+  hot-operator performance implementation。
 - `storageStats().pgAcceleration.customIndexes` 会读取 native
   `xpod_rdf.perm_index_stats(regclass)`，报告每个 shadow index 的 layout、compression flag、
   sorted state、tuple/page 分布、item/posting count、item bytes 和 free bytes。当前 layout 必须显示
-  `posting-list-v1` / `compressed=false`，直到 suffix/TID stream compressed postings 落地。
+  `compressed-posting-v1` / `compressed=true`，直到后续 skip stats / cost model / hot operators
+  落地前仍只能作为 native index storage milestone。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；当前 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case。
 
 未完成：
 
-- `xpod_rdf_perm` compressed postings layout / cost model；当前只完成 page-local posting-list
-  prototype。
+- `xpod_rdf_perm` block-level fanout/cost stats 和 skip hints；当前只完成 delta-varint
+  compressed posting storage prototype。
 - native PG extension hot operators。当前 `pg-hot-operators` 是 engine-sql profile，不是 C/Rust
   hot-operator execution。
 - native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比
@@ -574,12 +575,11 @@ build 已按 permutation key 排序，metapage 记录 global sorted guard，page
 range；全局有序时 scan 会按 leading equality/range bounds 做 block-level lower-bound seek，
 并在越过 upper prefix 后停止后续 block；sorted page 继续做 page-local lower-bound seek 和
 upper-bound early stop。`storageStats().pgAcceleration.customIndexes` 会暴露每个 shadow
-index 的 `layout=posting-list-v1`、`compressed=false`、page tuple count、item/posting count、
-item bytes 和 free bytes，用作后续 compressed postings 替换的基线。无序 append 会降级全局有序标记，
-回到保守扫描以保证正确性。仍需要注意：这还不是 compressed postings performance implementation，也没有
-native hot operators，因此不能把这组 gate 作为默认引擎性能收益证明。下一步性能工作是把 AM scan 从
-page-local posting list 升级为 RDF term-id compressed postings streams，并在 medium/large +
-concurrency gate 中对比 RDF-3X baseline。
+index 的 `layout=compressed-posting-v1`、`compressed=true`、page tuple count、item/posting count、
+item bytes 和 free bytes，用作后续 skip stats、cost model 和 hot operators 的基线。无序 append 会降级全局有序标记，
+回到保守扫描以保证正确性。仍需要注意：这还不是完整 native hot-operator performance
+implementation，因此不能把这组 gate 作为默认引擎性能收益证明。下一步性能工作是在 medium/large +
+concurrency gate 中对比 RDF-3X baseline，并把 native hot operators 接到 join / aggregate path。
 
 同一轮还跑了真实 PG small RDF-3X baseline 对照：
 
@@ -595,9 +595,9 @@ case plan matched，`rdf3x.syncedWithFacts=true`。但 `pg-custom-index` 的 `sc
 query` 从 6 ms 到 14 ms、`list messages by thread` 从 2 ms 到 7 ms、`task
 materialization active due query` 从 14 ms 到 21 ms；少数 case 持平或略快。这个结果说明
 问题不在 benchmark case 本身，而在两块 PG 能力尚未完成：custom index 还没有
-compressed postings / 压缩 TID stream，native hot operators 还没有替换 engine-sql join /
-aggregate path。block-level seek 是必要中间层，但还不足以让当前 models benchmark 稳定快过
-RDF-3X baseline。
+skip stats / cost model / operator 接入，native hot operators 还没有替换 engine-sql join /
+aggregate path。block-level seek 和 compressed posting storage 是必要中间层，但还不足以让当前
+models benchmark 稳定快过 RDF-3X baseline。
 
 ## Operational Gates
 

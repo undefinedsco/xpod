@@ -63,7 +63,8 @@ static int64 xpod_rdf_perm_get_bitmap(IndexScanDesc scan, TIDBitmap *tbm);
 static void xpod_rdf_perm_end_scan(IndexScanDesc scan);
 
 #define XPOD_RDF_PERM_MAGIC 0x58524446
-#define XPOD_RDF_PERM_POSTING_MAGIC 0x5852504c
+#define XPOD_RDF_PERM_POSTING_ARRAY_MAGIC 0x5852504c
+#define XPOD_RDF_PERM_POSTING_MAGIC 0x58525044
 #define XPOD_RDF_PERM_META_MAGIC 0x58524d54
 #define XPOD_RDF_PERM_PAGE_MAGIC 0x58525047
 #define XPOD_RDF_PERM_SCHEMA_VERSION 1
@@ -112,7 +113,7 @@ typedef struct XpodRdfPermPostingEntry
   uint16 nkeys;
   uint16 reserved;
   uint32 posting_count;
-  uint32 reserved32;
+  uint32 payload_size;
   int64 keys[FLEXIBLE_ARRAY_MEMBER];
 } XpodRdfPermPostingEntry;
 
@@ -170,7 +171,6 @@ static void xpod_rdf_perm_build_callback(Relation indexRelation,
                                          void *state);
 static int xpod_rdf_perm_build_entry_compare(const void *left, const void *right);
 static Size xpod_rdf_perm_entry_size(uint16 nkeys);
-static Size xpod_rdf_perm_posting_entry_size(uint16 nkeys, uint32 posting_count);
 static void xpod_rdf_perm_assert_supported_nkeys(uint16 nkeys);
 static bool xpod_rdf_perm_decode_build_entry(XpodRdfPermBuildEntry *entry,
                                              Datum *values,
@@ -181,6 +181,10 @@ static void xpod_rdf_perm_collect_build_entry(XpodRdfPermBuildState *state,
                                               XpodRdfPermBuildEntry *entry);
 static bool xpod_rdf_perm_build_entries_same_keys(XpodRdfPermBuildEntry *left,
                                                   XpodRdfPermBuildEntry *right);
+static Size xpod_rdf_perm_posting_build_entry_size(XpodRdfPermBuildEntry *entries,
+                                                   uint32 posting_count);
+static uint32 xpod_rdf_perm_build_posting_count_for_page(XpodRdfPermBuildEntry *entries,
+                                                         uint64 remaining_count);
 static bool xpod_rdf_perm_append_entry(Relation indexRelation,
                                        Datum *values,
                                        bool *isnull,
@@ -247,7 +251,27 @@ static uint16 xpod_rdf_perm_entry_nkeys(void *entry);
 static int64 *xpod_rdf_perm_entry_keys(void *entry);
 static uint32 xpod_rdf_perm_entry_live_posting_count(void *entry);
 static void xpod_rdf_perm_rewrite_meta_tuple_count(Relation indexRelation, uint64 tuples_removed);
-static ItemPointerData *xpod_rdf_perm_posting_entry_tids(XpodRdfPermPostingEntry *entry);
+static Size xpod_rdf_perm_posting_entry_header_size(uint16 nkeys);
+static Size xpod_rdf_perm_posting_entry_size(uint16 nkeys, uint32 payload_size);
+static Size xpod_rdf_perm_posting_payload_size_from_build_entries(XpodRdfPermBuildEntry *entries,
+                                                                  uint32 posting_count);
+static Size xpod_rdf_perm_posting_payload_size_from_tids(ItemPointerData *tids,
+                                                         uint32 posting_count);
+static XpodRdfPermPostingEntry *xpod_rdf_perm_create_posting_entry(uint16 nkeys,
+                                                                   int64 *keys,
+                                                                   ItemPointerData *tids,
+                                                                   uint32 posting_count,
+                                                                   Size *entry_size);
+static uint8 *xpod_rdf_perm_posting_entry_payload(XpodRdfPermPostingEntry *entry);
+static ItemPointerData *xpod_rdf_perm_posting_array_entry_tids(XpodRdfPermPostingEntry *entry);
+static bool xpod_rdf_perm_posting_entry_tid_at(XpodRdfPermPostingEntry *entry,
+                                               uint32 posting_index,
+                                               ItemPointerData *heap_tid);
+static uint64 xpod_rdf_perm_tid_value(ItemPointerData *tid);
+static void xpod_rdf_perm_tid_from_value(uint64 value, ItemPointerData *tid);
+static Size xpod_rdf_perm_varint_size(uint64 value);
+static uint8 *xpod_rdf_perm_varint_encode(uint8 *cursor, uint64 value);
+static bool xpod_rdf_perm_varint_decode(uint8 **cursor, uint8 *end, uint64 *value);
 
 Datum
 xpod_rdf_version(PG_FUNCTION_ARGS)
@@ -412,8 +436,8 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
   initStringInfo(&json);
   appendStringInfo(
     &json,
-    "{\"layout\":\"posting-list-v1\","
-    "\"compressed\":false,"
+    "{\"layout\":\"compressed-posting-v1\","
+    "\"compressed\":true,"
     "\"schemaVersion\":%u,"
     "\"hasMetapage\":%s,"
     "\"globalSorted\":%s,"
@@ -559,15 +583,14 @@ xpod_rdf_perm_build(Relation heapRelation,
 
     if (group_end - index_entry > 1)
     {
-      uint32 max_postings = (uint32) Max(
-        (XPOD_RDF_PERM_MAX_ENTRY_SIZE - MAXALIGN(offsetof(XpodRdfPermPostingEntry, keys) + (sizeof(int64) * build_state.entries[index_entry].nkeys))) / sizeof(ItemPointerData),
-        1
-      );
       uint64 posting_index = index_entry;
 
       while (posting_index < group_end)
       {
-        uint32 posting_count = (uint32) Min(group_end - posting_index, (uint64) max_postings);
+        uint32 posting_count = xpod_rdf_perm_build_posting_count_for_page(
+          &build_state.entries[posting_index],
+          group_end - posting_index
+        );
 
         if (posting_count > 1 && xpod_rdf_perm_append_posting_build_entries(indexRelation, &build_state.entries[posting_index], posting_count))
         {
@@ -706,44 +729,41 @@ xpod_rdf_perm_bulk_delete(IndexVacuumInfo *info,
         live_item_count++;
         stats->num_index_tuples++;
       }
-      else if (entry_magic == XPOD_RDF_PERM_POSTING_MAGIC)
+      else if (entry_magic == XPOD_RDF_PERM_POSTING_MAGIC || entry_magic == XPOD_RDF_PERM_POSTING_ARRAY_MAGIC)
       {
         XpodRdfPermPostingEntry *posting_entry = (XpodRdfPermPostingEntry *) entry;
-        ItemPointerData *tids = xpod_rdf_perm_posting_entry_tids(posting_entry);
         ItemPointerData *live_tids = palloc(sizeof(ItemPointerData) * posting_entry->posting_count);
         uint32 posting_index;
         uint32 live_posting_count = 0;
 
         for (posting_index = 0; posting_index < posting_entry->posting_count; posting_index++)
         {
-          if (callback != NULL && callback(&tids[posting_index], callback_state))
+          ItemPointerData posting_tid;
+
+          if (!xpod_rdf_perm_posting_entry_tid_at(posting_entry, posting_index, &posting_tid))
+          {
+            continue;
+          }
+          if (callback != NULL && callback(&posting_tid, callback_state))
           {
             page_removed++;
             continue;
           }
-          ItemPointerCopy(&tids[posting_index], &live_tids[live_posting_count]);
+          ItemPointerCopy(&posting_tid, &live_tids[live_posting_count]);
           live_posting_count++;
         }
 
         if (live_posting_count > 0)
         {
-          Size live_item_size = xpod_rdf_perm_posting_entry_size(posting_entry->nkeys, live_posting_count);
-          XpodRdfPermPostingEntry *live_entry = palloc0(live_item_size);
-          ItemPointerData *live_entry_tids;
-          uint16 key_index;
+          Size live_item_size;
+          XpodRdfPermPostingEntry *live_entry = xpod_rdf_perm_create_posting_entry(
+            posting_entry->nkeys,
+            posting_entry->keys,
+            live_tids,
+            live_posting_count,
+            &live_item_size
+          );
 
-          live_entry->magic = XPOD_RDF_PERM_POSTING_MAGIC;
-          live_entry->nkeys = posting_entry->nkeys;
-          live_entry->posting_count = live_posting_count;
-          for (key_index = 0; key_index < posting_entry->nkeys; key_index++)
-          {
-            live_entry->keys[key_index] = posting_entry->keys[key_index];
-          }
-          live_entry_tids = xpod_rdf_perm_posting_entry_tids(live_entry);
-          for (posting_index = 0; posting_index < live_posting_count; posting_index++)
-          {
-            ItemPointerCopy(&live_tids[posting_index], &live_entry_tids[posting_index]);
-          }
           live_items[live_item_count] = (char *) live_entry;
           live_item_sizes[live_item_count] = live_item_size;
           live_item_count++;
@@ -1090,11 +1110,50 @@ xpod_rdf_perm_entry_size(uint16 nkeys)
 }
 
 static Size
-xpod_rdf_perm_posting_entry_size(uint16 nkeys, uint32 posting_count)
+xpod_rdf_perm_posting_entry_header_size(uint16 nkeys)
 {
-  Size key_size = MAXALIGN(offsetof(XpodRdfPermPostingEntry, keys) + (sizeof(int64) * nkeys));
+  return MAXALIGN(offsetof(XpodRdfPermPostingEntry, keys) + (sizeof(int64) * nkeys));
+}
 
-  return MAXALIGN(key_size + (sizeof(ItemPointerData) * posting_count));
+static Size
+xpod_rdf_perm_posting_entry_size(uint16 nkeys, uint32 payload_size)
+{
+  return MAXALIGN(xpod_rdf_perm_posting_entry_header_size(nkeys) + payload_size);
+}
+
+static Size
+xpod_rdf_perm_posting_build_entry_size(XpodRdfPermBuildEntry *entries, uint32 posting_count)
+{
+  return xpod_rdf_perm_posting_entry_size(
+    entries[0].nkeys,
+    (uint32) xpod_rdf_perm_posting_payload_size_from_build_entries(entries, posting_count)
+  );
+}
+
+static uint32
+xpod_rdf_perm_build_posting_count_for_page(XpodRdfPermBuildEntry *entries, uint64 remaining_count)
+{
+  uint32 posting_count = 0;
+  Size payload_size = 0;
+  uint64 previous_tid = 0;
+
+  while (posting_count < remaining_count)
+  {
+    uint64 tid = xpod_rdf_perm_tid_value(&entries[posting_count].heap_tid);
+    uint64 delta = posting_count == 0 ? tid : tid - previous_tid;
+    Size next_payload_size = payload_size + xpod_rdf_perm_varint_size(delta);
+    Size next_entry_size = xpod_rdf_perm_posting_entry_size(entries[0].nkeys, (uint32) next_payload_size);
+
+    if (next_entry_size > XPOD_RDF_PERM_MAX_ENTRY_SIZE)
+    {
+      break;
+    }
+    payload_size = next_payload_size;
+    previous_tid = tid;
+    posting_count++;
+  }
+
+  return posting_count == 0 ? 1 : posting_count;
 }
 
 static void
@@ -1239,7 +1298,7 @@ xpod_rdf_perm_append_build_entry(Relation indexRelation, XpodRdfPermBuildEntry *
 static bool
 xpod_rdf_perm_append_posting_build_entries(Relation indexRelation, XpodRdfPermBuildEntry *entries, uint32 posting_count)
 {
-  Size entry_size = xpod_rdf_perm_posting_entry_size(entries[0].nkeys, posting_count);
+  Size entry_size = xpod_rdf_perm_posting_build_entry_size(entries, posting_count);
   BlockNumber block_count;
   BlockNumber first_data_block;
   Buffer buffer;
@@ -1547,30 +1606,27 @@ xpod_rdf_perm_page_add_posting_entry(Relation indexRelation,
                                      uint32 posting_count,
                                      bool init_page)
 {
-  Size entry_size = xpod_rdf_perm_posting_entry_size(entries[0].nkeys, posting_count);
+  Size entry_size;
   XpodRdfPermPostingEntry *entry;
   ItemPointerData *tids;
   bool added;
-  uint16 key_index;
   uint32 posting_index;
 
-  entry = palloc0(entry_size);
-  entry->magic = XPOD_RDF_PERM_POSTING_MAGIC;
-  entry->nkeys = entries[0].nkeys;
-  entry->posting_count = posting_count;
-
-  for (key_index = 0; key_index < entries[0].nkeys; key_index++)
-  {
-    entry->keys[key_index] = entries[0].keys[key_index];
-  }
-
-  tids = xpod_rdf_perm_posting_entry_tids(entry);
+  tids = palloc(sizeof(ItemPointerData) * posting_count);
   for (posting_index = 0; posting_index < posting_count; posting_index++)
   {
     ItemPointerCopy(&entries[posting_index].heap_tid, &tids[posting_index]);
   }
 
+  entry = xpod_rdf_perm_create_posting_entry(
+    entries[0].nkeys,
+    entries[0].keys,
+    tids,
+    posting_count,
+    &entry_size
+  );
   added = xpod_rdf_perm_page_add_item(indexRelation, buffer, entry, entry_size, init_page, entries[0].nkeys);
+  pfree(tids);
   pfree(entry);
   return added;
 }
@@ -2297,16 +2353,18 @@ xpod_rdf_perm_entry_next_tid(void *entry, uint32 start_index, ItemPointerData *h
     *next_index = 0;
     return true;
   }
-  if (magic == XPOD_RDF_PERM_POSTING_MAGIC)
+  if (magic == XPOD_RDF_PERM_POSTING_MAGIC || magic == XPOD_RDF_PERM_POSTING_ARRAY_MAGIC)
   {
     XpodRdfPermPostingEntry *posting_entry = (XpodRdfPermPostingEntry *) entry;
-    ItemPointerData *tids = xpod_rdf_perm_posting_entry_tids(posting_entry);
 
     if (start_index >= posting_entry->posting_count)
     {
       return false;
     }
-    ItemPointerCopy(&tids[start_index], heap_tid);
+    if (!xpod_rdf_perm_posting_entry_tid_at(posting_entry, start_index, heap_tid))
+    {
+      return false;
+    }
     *next_index = start_index + 1 < posting_entry->posting_count ? start_index + 1 : 0;
     return true;
   }
@@ -2324,7 +2382,7 @@ xpod_rdf_perm_entry_is_valid(void *entry)
     return false;
   }
   magic = *((uint32 *) entry);
-  if (magic != XPOD_RDF_PERM_MAGIC && magic != XPOD_RDF_PERM_POSTING_MAGIC)
+  if (magic != XPOD_RDF_PERM_MAGIC && magic != XPOD_RDF_PERM_POSTING_MAGIC && magic != XPOD_RDF_PERM_POSTING_ARRAY_MAGIC)
   {
     return false;
   }
@@ -2333,11 +2391,20 @@ xpod_rdf_perm_entry_is_valid(void *entry)
   {
     return false;
   }
-  if (magic == XPOD_RDF_PERM_POSTING_MAGIC)
+  if (magic == XPOD_RDF_PERM_POSTING_MAGIC || magic == XPOD_RDF_PERM_POSTING_ARRAY_MAGIC)
   {
     XpodRdfPermPostingEntry *posting_entry = (XpodRdfPermPostingEntry *) entry;
+    ItemPointerData last_tid;
 
-    return posting_entry->posting_count > 0;
+    if (posting_entry->posting_count == 0)
+    {
+      return false;
+    }
+    if (magic == XPOD_RDF_PERM_POSTING_MAGIC && posting_entry->payload_size == 0)
+    {
+      return false;
+    }
+    return xpod_rdf_perm_posting_entry_tid_at(posting_entry, posting_entry->posting_count - 1, &last_tid);
   }
   return true;
 }
@@ -2356,7 +2423,7 @@ xpod_rdf_perm_entry_nkeys(void *entry)
   {
     return ((XpodRdfPermEntry *) entry)->nkeys;
   }
-  if (magic == XPOD_RDF_PERM_POSTING_MAGIC)
+  if (magic == XPOD_RDF_PERM_POSTING_MAGIC || magic == XPOD_RDF_PERM_POSTING_ARRAY_MAGIC)
   {
     return ((XpodRdfPermPostingEntry *) entry)->nkeys;
   }
@@ -2377,7 +2444,7 @@ xpod_rdf_perm_entry_keys(void *entry)
   {
     return ((XpodRdfPermEntry *) entry)->keys;
   }
-  if (magic == XPOD_RDF_PERM_POSTING_MAGIC)
+  if (magic == XPOD_RDF_PERM_POSTING_MAGIC || magic == XPOD_RDF_PERM_POSTING_ARRAY_MAGIC)
   {
     return ((XpodRdfPermPostingEntry *) entry)->keys;
   }
@@ -2398,7 +2465,7 @@ xpod_rdf_perm_entry_live_posting_count(void *entry)
   {
     return 1;
   }
-  if (magic == XPOD_RDF_PERM_POSTING_MAGIC)
+  if (magic == XPOD_RDF_PERM_POSTING_MAGIC || magic == XPOD_RDF_PERM_POSTING_ARRAY_MAGIC)
   {
     return ((XpodRdfPermPostingEntry *) entry)->posting_count;
   }
@@ -2431,10 +2498,204 @@ xpod_rdf_perm_rewrite_meta_tuple_count(Relation indexRelation, uint64 tuples_rem
   UnlockReleaseBuffer(buffer);
 }
 
-static ItemPointerData *
-xpod_rdf_perm_posting_entry_tids(XpodRdfPermPostingEntry *entry)
+static Size
+xpod_rdf_perm_posting_payload_size_from_build_entries(XpodRdfPermBuildEntry *entries, uint32 posting_count)
 {
-  Size key_size = MAXALIGN(offsetof(XpodRdfPermPostingEntry, keys) + (sizeof(int64) * entry->nkeys));
+  Size payload_size = 0;
+  uint64 previous_tid = 0;
+  uint32 posting_index;
 
-  return (ItemPointerData *) (((char *) entry) + key_size);
+  for (posting_index = 0; posting_index < posting_count; posting_index++)
+  {
+    uint64 tid = xpod_rdf_perm_tid_value(&entries[posting_index].heap_tid);
+    uint64 delta = posting_index == 0 ? tid : tid - previous_tid;
+
+    payload_size += xpod_rdf_perm_varint_size(delta);
+    previous_tid = tid;
+  }
+  return payload_size;
+}
+
+static Size
+xpod_rdf_perm_posting_payload_size_from_tids(ItemPointerData *tids, uint32 posting_count)
+{
+  Size payload_size = 0;
+  uint64 previous_tid = 0;
+  uint32 posting_index;
+
+  for (posting_index = 0; posting_index < posting_count; posting_index++)
+  {
+    uint64 tid = xpod_rdf_perm_tid_value(&tids[posting_index]);
+    uint64 delta = posting_index == 0 ? tid : tid - previous_tid;
+
+    payload_size += xpod_rdf_perm_varint_size(delta);
+    previous_tid = tid;
+  }
+  return payload_size;
+}
+
+static XpodRdfPermPostingEntry *
+xpod_rdf_perm_create_posting_entry(uint16 nkeys,
+                                   int64 *keys,
+                                   ItemPointerData *tids,
+                                   uint32 posting_count,
+                                   Size *entry_size)
+{
+  Size payload_size = xpod_rdf_perm_posting_payload_size_from_tids(tids, posting_count);
+  XpodRdfPermPostingEntry *entry;
+  uint8 *payload;
+  uint8 *cursor;
+  uint64 previous_tid = 0;
+  uint16 key_index;
+  uint32 posting_index;
+
+  *entry_size = xpod_rdf_perm_posting_entry_size(nkeys, (uint32) payload_size);
+  if (*entry_size > XPOD_RDF_PERM_MAX_ENTRY_SIZE)
+  {
+    ereport(ERROR,
+            (errmsg("xpod_rdf_perm compressed posting entry is too large"),
+             errdetail("Entry size %zu exceeds page capacity.", *entry_size)));
+  }
+
+  entry = palloc0(*entry_size);
+  entry->magic = XPOD_RDF_PERM_POSTING_MAGIC;
+  entry->nkeys = nkeys;
+  entry->posting_count = posting_count;
+  entry->payload_size = (uint32) payload_size;
+  for (key_index = 0; key_index < nkeys; key_index++)
+  {
+    entry->keys[key_index] = keys[key_index];
+  }
+
+  payload = xpod_rdf_perm_posting_entry_payload(entry);
+  cursor = payload;
+  for (posting_index = 0; posting_index < posting_count; posting_index++)
+  {
+    uint64 tid = xpod_rdf_perm_tid_value(&tids[posting_index]);
+    uint64 delta = posting_index == 0 ? tid : tid - previous_tid;
+
+    cursor = xpod_rdf_perm_varint_encode(cursor, delta);
+    previous_tid = tid;
+  }
+  Assert((Size) (cursor - payload) == payload_size);
+  return entry;
+}
+
+static uint8 *
+xpod_rdf_perm_posting_entry_payload(XpodRdfPermPostingEntry *entry)
+{
+  return ((uint8 *) entry) + xpod_rdf_perm_posting_entry_header_size(entry->nkeys);
+}
+
+static ItemPointerData *
+xpod_rdf_perm_posting_array_entry_tids(XpodRdfPermPostingEntry *entry)
+{
+  return (ItemPointerData *) (((char *) entry) + xpod_rdf_perm_posting_entry_header_size(entry->nkeys));
+}
+
+static bool
+xpod_rdf_perm_posting_entry_tid_at(XpodRdfPermPostingEntry *entry,
+                                   uint32 posting_index,
+                                   ItemPointerData *heap_tid)
+{
+  uint32 magic;
+  uint32 current_posting;
+  uint64 tid = 0;
+  uint8 *cursor;
+  uint8 *end;
+
+  if (entry == NULL || posting_index >= entry->posting_count)
+  {
+    return false;
+  }
+  magic = entry->magic;
+  if (magic == XPOD_RDF_PERM_POSTING_ARRAY_MAGIC)
+  {
+    ItemPointerData *tids = xpod_rdf_perm_posting_array_entry_tids(entry);
+
+    ItemPointerCopy(&tids[posting_index], heap_tid);
+    return true;
+  }
+  if (magic != XPOD_RDF_PERM_POSTING_MAGIC || entry->payload_size == 0)
+  {
+    return false;
+  }
+
+  cursor = xpod_rdf_perm_posting_entry_payload(entry);
+  end = cursor + entry->payload_size;
+  for (current_posting = 0; current_posting <= posting_index; current_posting++)
+  {
+    uint64 delta;
+
+    if (!xpod_rdf_perm_varint_decode(&cursor, end, &delta))
+    {
+      return false;
+    }
+    tid += delta;
+  }
+
+  xpod_rdf_perm_tid_from_value(tid, heap_tid);
+  return true;
+}
+
+static uint64
+xpod_rdf_perm_tid_value(ItemPointerData *tid)
+{
+  return (((uint64) ItemPointerGetBlockNumber(tid)) << 16) | (uint64) ItemPointerGetOffsetNumber(tid);
+}
+
+static void
+xpod_rdf_perm_tid_from_value(uint64 value, ItemPointerData *tid)
+{
+  BlockNumber block = (BlockNumber) (value >> 16);
+  OffsetNumber offset = (OffsetNumber) (value & 0xffff);
+
+  ItemPointerSet(tid, block, offset);
+}
+
+static Size
+xpod_rdf_perm_varint_size(uint64 value)
+{
+  Size size = 1;
+
+  while (value >= 0x80)
+  {
+    value >>= 7;
+    size++;
+  }
+  return size;
+}
+
+static uint8 *
+xpod_rdf_perm_varint_encode(uint8 *cursor, uint64 value)
+{
+  while (value >= 0x80)
+  {
+    *cursor++ = (uint8) ((value & 0x7f) | 0x80);
+    value >>= 7;
+  }
+  *cursor++ = (uint8) value;
+  return cursor;
+}
+
+static bool
+xpod_rdf_perm_varint_decode(uint8 **cursor, uint8 *end, uint64 *value)
+{
+  uint64 result = 0;
+  uint32 shift = 0;
+
+  while (*cursor < end && shift < 64)
+  {
+    uint8 byte = **cursor;
+
+    (*cursor)++;
+    result |= ((uint64) (byte & 0x7f)) << shift;
+    if ((byte & 0x80) == 0)
+    {
+      *value = result;
+      return true;
+    }
+    shift += 7;
+  }
+  return false;
 }
