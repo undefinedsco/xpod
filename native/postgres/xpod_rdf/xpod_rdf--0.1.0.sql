@@ -22,6 +22,28 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'xpod_rdf_perm_index_stats'
 LANGUAGE C STRICT VOLATILE PARALLEL SAFE;
 
+CREATE FUNCTION xpod_rdf.scan_quads(
+  p_subject_ids bigint[],
+  p_predicate_ids bigint[],
+  p_object_ids bigint[],
+  p_graph_ids bigint[],
+  p_limit bigint,
+  p_offset bigint
+)
+RETURNS TABLE(graph_id bigint, subject_id bigint, predicate_id bigint, object_id bigint)
+AS 'MODULE_PATHNAME', 'xpod_rdf_scan_quads'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
+CREATE FUNCTION xpod_rdf.count_quads(
+  p_subject_ids bigint[],
+  p_predicate_ids bigint[],
+  p_object_ids bigint[],
+  p_graph_ids bigint[]
+)
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'xpod_rdf_count_quads'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
 CREATE FUNCTION xpod_rdf.perm_handler(internal)
 RETURNS index_am_handler
 AS 'MODULE_PATHNAME', 'xpod_rdf_perm_handler'

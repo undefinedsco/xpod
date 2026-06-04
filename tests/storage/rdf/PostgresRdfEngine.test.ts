@@ -1135,6 +1135,114 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('routes simple pg-custom-index queries through the native extension scan ABI', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-scan-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      scanPgExtensionQuadIds(resolved: unknown): Promise<Array<{
+        graph_id: number;
+        subject_id: number;
+        predicate_id: number;
+        object_id: number;
+      }>>;
+      countPgExtensionQuads(resolved: unknown): Promise<number>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const status = namedNode(STATUS);
+    const open = literal('open');
+    let scanCalls = 0;
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, status, open, graph));
+      const dictionary = internals.requireDictionary();
+      const graphId = await dictionary.find(graph);
+      const subjectId = await dictionary.find(message);
+      const predicateId = await dictionary.find(status);
+      const objectId = await dictionary.find(open);
+      expect(graphId).toBeDefined();
+      expect(subjectId).toBeDefined();
+      expect(predicateId).toBeDefined();
+      expect(objectId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'cache.result',
+          'index.xpod_rdf_perm',
+          'scan.exact_graph',
+          'scan.term_in',
+        ],
+        capabilityProviders: {
+          'cache.result': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'scan.exact_graph': 'extension',
+          'scan.term_in': 'extension',
+        },
+        requiredCapabilities: [
+          'scan.exact_graph',
+          'scan.term_in',
+          'cache.result',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'cache.result',
+          'index.xpod_rdf_perm',
+          'scan.exact_graph',
+          'scan.term_in',
+        ],
+      };
+      internals.scanPgExtensionQuadIds = async () => {
+        scanCalls++;
+        return [{
+          graph_id: graphId as number,
+          subject_id: subjectId as number,
+          predicate_id: predicateId as number,
+          object_id: objectId as number,
+        }];
+      };
+      internals.countPgExtensionQuads = async () => 1;
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: status,
+            object: open,
+          },
+        ],
+        select: ['message'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(scanCalls).toBe(1);
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(result.metrics.indexChoices).toEqual(['xpod_rdf.scan_quads']);
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(scan.exact_graph)');
+      expect(result.metrics.plan).toContain('XpodRdfExtensionScan(scan_quads)');
+      expect(result.metrics.plan).toContain('PostgresRdfExtensionSinglePattern(graph:NamedNode:https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl,subject:?message,predicate:NamedNode:https://undefineds.co/ns#status,object:Literal:open)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('projects native custom-index storage stats when pg-custom-index is enabled', async () => {
     const engine = new PostgresRdfEngine({
       driver: 'pg',

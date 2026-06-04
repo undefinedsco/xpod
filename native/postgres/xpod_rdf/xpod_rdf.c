@@ -5,15 +5,19 @@
 #include "access/genam.h"
 #include "access/generic_xlog.h"
 #include "access/tableam.h"
+#include "catalog/pg_type_d.h"
+#include "executor/spi.h"
 #include "fmgr.h"
+#include "funcapi.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "nodes/pathnodes.h"
 #include "storage/bufpage.h"
 #include "storage/bufmgr.h"
 #include "storage/itemptr.h"
-#include "utils/rel.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/rel.h"
 
 PG_MODULE_MAGIC;
 
@@ -21,6 +25,8 @@ PG_FUNCTION_INFO_V1(xpod_rdf_version);
 PG_FUNCTION_INFO_V1(xpod_rdf_capabilities);
 PG_FUNCTION_INFO_V1(xpod_rdf_term_id_cmp);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_stats);
+PG_FUNCTION_INFO_V1(xpod_rdf_scan_quads);
+PG_FUNCTION_INFO_V1(xpod_rdf_count_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_handler);
 
 static IndexBuildResult *xpod_rdf_perm_build(Relation heapRelation,
@@ -272,6 +278,25 @@ static void xpod_rdf_perm_tid_from_value(uint64 value, ItemPointerData *tid);
 static Size xpod_rdf_perm_varint_size(uint64 value);
 static uint8 *xpod_rdf_perm_varint_encode(uint8 *cursor, uint64 value);
 static bool xpod_rdf_perm_varint_decode(uint8 **cursor, uint8 *end, uint64 *value);
+static void xpod_rdf_scan_quads_add_array_filter(StringInfo sql,
+                                                 Datum *values,
+                                                 char *nulls,
+                                                 Oid *argtypes,
+                                                 int *nargs,
+                                                 FunctionCallInfo fcinfo,
+                                                 int arg_index,
+                                                 const char *column,
+                                                 bool *has_where);
+static void xpod_rdf_scan_quads_add_int8_clause(StringInfo sql,
+                                                Datum *values,
+                                                char *nulls,
+                                                Oid *argtypes,
+                                                int *nargs,
+                                                FunctionCallInfo fcinfo,
+                                                int arg_index,
+                                                const char *clause);
+static int xpod_rdf_array_arg_length(FunctionCallInfo fcinfo, int arg_index);
+static void xpod_rdf_scan_quads_put_rows(ReturnSetInfo *rsinfo);
 
 Datum
 xpod_rdf_version(PG_FUNCTION_ARGS)
@@ -286,11 +311,7 @@ xpod_rdf_capabilities(PG_FUNCTION_ARGS)
   (void) fcinfo;
   PG_RETURN_TEXT_P(cstring_to_text(
     "scan.exact_graph,"
-    "scan.graph_prefix,"
     "scan.term_in,"
-    "join.required_bgp,"
-    "aggregate.count,"
-    "aggregate.numeric,"
     "cache.result,"
     "index.xpod_rdf_perm"
   ));
@@ -480,6 +501,96 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
     avg_entry_bytes
   );
   PG_RETURN_TEXT_P(cstring_to_text(json.data));
+}
+
+Datum
+xpod_rdf_scan_quads(PG_FUNCTION_ARGS)
+{
+  StringInfoData sql;
+  Oid argtypes[6];
+  Datum values[6];
+  char nulls[6];
+  int nargs = 0;
+  int ret;
+  bool has_where = false;
+
+  initStringInfo(&sql);
+  appendStringInfoString(&sql, "SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads");
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 0, "subject_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 1, "predicate_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 2, "object_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 3, "graph_id", &has_where);
+  appendStringInfoString(&sql, " ORDER BY subject_id, predicate_id, object_id, graph_id");
+  xpod_rdf_scan_quads_add_int8_clause(&sql, values, nulls, argtypes, &nargs, fcinfo, 4, " LIMIT ");
+  xpod_rdf_scan_quads_add_int8_clause(&sql, values, nulls, argtypes, &nargs, fcinfo, 5, " OFFSET ");
+  InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
+  if (SPI_connect() != SPI_OK_CONNECT)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.scan_quads could not connect to SPI")));
+  }
+  ret = SPI_execute_with_args(
+    sql.data,
+    nargs,
+    argtypes,
+    values,
+    nulls,
+    true,
+    0
+  );
+  if (ret != SPI_OK_SELECT)
+  {
+    SPI_finish();
+    ereport(ERROR, (errmsg("xpod_rdf.scan_quads SPI query failed")));
+  }
+  xpod_rdf_scan_quads_put_rows((ReturnSetInfo *) fcinfo->resultinfo);
+  SPI_finish();
+  PG_RETURN_NULL();
+}
+
+Datum
+xpod_rdf_count_quads(PG_FUNCTION_ARGS)
+{
+  StringInfoData sql;
+  Oid argtypes[4];
+  Datum values[4];
+  char nulls[4];
+  int nargs = 0;
+  int ret;
+  bool isnull = false;
+  Datum count;
+  bool has_where = false;
+
+  initStringInfo(&sql);
+  appendStringInfoString(&sql, "SELECT COUNT(*)::bigint AS count FROM rdf_quads");
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 0, "subject_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 1, "predicate_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 2, "object_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 3, "graph_id", &has_where);
+  if (SPI_connect() != SPI_OK_CONNECT)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.count_quads could not connect to SPI")));
+  }
+  ret = SPI_execute_with_args(
+    sql.data,
+    nargs,
+    argtypes,
+    values,
+    nulls,
+    true,
+    1
+  );
+  if (ret != SPI_OK_SELECT || SPI_processed != 1)
+  {
+    SPI_finish();
+    ereport(ERROR, (errmsg("xpod_rdf.count_quads SPI query failed")));
+  }
+  count = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+  SPI_finish();
+  if (isnull)
+  {
+    PG_RETURN_INT64(0);
+  }
+  PG_RETURN_DATUM(count);
 }
 
 Datum
@@ -2698,4 +2809,122 @@ xpod_rdf_perm_varint_decode(uint8 **cursor, uint8 *end, uint64 *value)
     shift += 7;
   }
   return false;
+}
+
+static void
+xpod_rdf_scan_quads_put_rows(ReturnSetInfo *rsinfo)
+{
+  uint64 row_index;
+
+  if (rsinfo == NULL || rsinfo->setResult == NULL || rsinfo->setDesc == NULL || SPI_tuptable == NULL)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.scan_quads expected a materialized set-returning context")));
+  }
+
+  for (row_index = 0; row_index < SPI_processed; row_index++)
+  {
+    Datum values[4];
+    bool nulls[4] = { false, false, false, false };
+    HeapTuple tuple = SPI_tuptable->vals[row_index];
+    TupleDesc tupdesc = SPI_tuptable->tupdesc;
+    int column;
+
+    for (column = 0; column < 4; column++)
+    {
+      values[column] = SPI_getbinval(tuple, tupdesc, column + 1, &nulls[column]);
+    }
+    tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+  }
+}
+
+static void
+xpod_rdf_scan_quads_add_array_filter(StringInfo sql,
+                                     Datum *values,
+                                     char *nulls,
+                                     Oid *argtypes,
+                                     int *nargs,
+                                     FunctionCallInfo fcinfo,
+                                     int arg_index,
+                                     const char *column,
+                                     bool *has_where)
+{
+  int length;
+  int param_index;
+
+  if (PG_ARGISNULL(arg_index))
+  {
+    return;
+  }
+
+  if (*has_where)
+  {
+    appendStringInfoString(sql, " AND ");
+  }
+  else
+  {
+    appendStringInfoString(sql, " WHERE ");
+    *has_where = true;
+  }
+
+  length = xpod_rdf_array_arg_length(fcinfo, arg_index);
+  if (length <= 0)
+  {
+    appendStringInfoString(sql, "1 = 0");
+    return;
+  }
+
+  values[*nargs] = PG_GETARG_DATUM(arg_index);
+  nulls[*nargs] = ' ';
+  argtypes[*nargs] = INT8ARRAYOID;
+  (*nargs)++;
+  param_index = *nargs;
+
+  if (length == 1)
+  {
+    appendStringInfo(sql, "%s = ($%d::bigint[])[1]", column, param_index);
+    return;
+  }
+  appendStringInfo(sql, "%s = ANY($%d::bigint[])", column, param_index);
+}
+
+static void
+xpod_rdf_scan_quads_add_int8_clause(StringInfo sql,
+                                    Datum *values,
+                                    char *nulls,
+                                    Oid *argtypes,
+                                    int *nargs,
+                                    FunctionCallInfo fcinfo,
+                                    int arg_index,
+                                    const char *clause)
+{
+  int param_index;
+
+  if (PG_ARGISNULL(arg_index))
+  {
+    return;
+  }
+
+  values[*nargs] = PG_GETARG_DATUM(arg_index);
+  nulls[*nargs] = ' ';
+  argtypes[*nargs] = INT8OID;
+  (*nargs)++;
+  param_index = *nargs;
+  appendStringInfo(sql, "%s$%d::bigint", clause, param_index);
+}
+
+static int
+xpod_rdf_array_arg_length(FunctionCallInfo fcinfo, int arg_index)
+{
+  ArrayType *array;
+  int length;
+
+  if (PG_ARGISNULL(arg_index))
+  {
+    return -1;
+  }
+
+  array = PG_GETARG_ARRAYTYPE_P(arg_index);
+  length = ArrayGetNItems(ARR_NDIM(array), ARR_DIMS(array));
+  PG_FREE_IF_COPY(array, arg_index);
+  return length;
 }

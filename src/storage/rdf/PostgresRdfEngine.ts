@@ -1398,6 +1398,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
         metrics: this.indexMetrics('none', 0, 0, start, [`unresolved ${resolved.unresolved}`]),
       };
     }
+    if (this.canUsePgExtensionQuadScan(resolved, options)) {
+      const rows = await this.scanPgExtensionQuadIds(resolved, options);
+      const matchedRows = await this.countPgExtensionQuads(resolved);
+      return {
+        quads: await this.rowsToQuads(rows),
+        metrics: this.indexMetrics('xpod_rdf.scan_quads', matchedRows, rows.length, start, [
+          ...this.pgAccelerationActiveMarkersForScan(pattern),
+          'XpodRdfExtensionScan(scan_quads)',
+        ]),
+      };
+    }
     const compiled = this.compileScanSql(resolved, options);
     const matchedRows = await this.scalarCount(compiled.countSql, compiled.countParams);
     const rows = await this.requireExecutor().query<PgQuadIdRow>(compiled.sql, compiled.params);
@@ -1437,6 +1448,66 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
+  private async scanPgExtensionQuadIds(resolved: PgResolvedPattern, options?: QueryOptions): Promise<PgQuadIdRow[]> {
+    return this.requireExecutor().query<PgQuadIdRow>(`
+      SELECT graph_id, subject_id, predicate_id, object_id
+      FROM xpod_rdf.scan_quads(
+        $1::bigint[],
+        $2::bigint[],
+        $3::bigint[],
+        $4::bigint[],
+        $5::bigint,
+        $6::bigint
+      )
+    `, this.pgExtensionQuadScanParams(resolved, options));
+  }
+
+  private async countPgExtensionQuads(resolved: PgResolvedPattern): Promise<number> {
+    return this.scalarCount(
+      'SELECT xpod_rdf.count_quads($1::bigint[], $2::bigint[], $3::bigint[], $4::bigint[]) AS count',
+      this.pgExtensionQuadScanParams(resolved).slice(0, 4),
+    );
+  }
+
+  private pgExtensionQuadScanParams(resolved: PgResolvedPattern, options?: QueryOptions): unknown[] {
+    return [
+      this.pgExtensionIdsForPatternKey(resolved, 'subject'),
+      this.pgExtensionIdsForPatternKey(resolved, 'predicate'),
+      this.pgExtensionIdsForPatternKey(resolved, 'object'),
+      this.pgExtensionIdsForPatternKey(resolved, 'graph'),
+      options?.limit ?? null,
+      options?.offset ?? null,
+    ];
+  }
+
+  private pgExtensionIdsForPatternKey(resolved: PgResolvedPattern, key: PgPatternKey): number[] | null {
+    const id = resolved.ids[key];
+    if (id !== undefined) {
+      return [id];
+    }
+    const ids = resolved.idSets[key];
+    return ids?.length ? ids : null;
+  }
+
+  private canUsePgExtensionQuadScan(resolved: PgResolvedPattern, options?: QueryOptions): boolean {
+    if (this.pgAcceleration?.provider !== 'extension' || this.pgAcceleration.enabled !== true) {
+      return false;
+    }
+    if (
+      this.pgAcceleration.capabilityProviders?.['scan.exact_graph'] !== 'extension'
+      && this.pgAcceleration.capabilityProviders?.['scan.term_in'] !== 'extension'
+    ) {
+      return false;
+    }
+    if (options?.order?.length || options?.limit !== undefined || options?.offset !== undefined) {
+      return false;
+    }
+    return !resolved.graphPrefix
+      && !resolved.objectRange
+      && Object.keys(resolved.excludedIdSets).length === 0
+      && Object.keys(resolved.termFilters).length === 0;
+  }
+
   private async queryNative(query: RdfQuery): Promise<RdfQueryResult | undefined> {
     if (!this.canTryNativeQuery(query)) {
       return undefined;
@@ -1467,6 +1538,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     if ((query.orderBy ?? []).some((entry) => !visibleVariables.includes(entry.variable))) {
       return undefined;
+    }
+    if (requiredPatterns.length === 1) {
+      const extensionResult = await this.queryPgExtensionSinglePattern(query, compiledPatterns[0], project, start);
+      if (extensionResult) {
+        return extensionResult;
+      }
     }
 
     const compiled = await this.compileJoinSql(compiledPatterns, {
@@ -1501,6 +1578,65 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return {
       bindings,
       metrics: this.localMetrics(start, matchedRows, matchedRows, bindings.length, [compiled.indexChoice], plan, query.filters?.length ?? 0),
+    };
+  }
+
+  private async queryPgExtensionSinglePattern(
+    query: RdfQuery,
+    entry: PgCompiledJoinPattern,
+    project: string[],
+    start: number,
+  ): Promise<RdfQueryResult | undefined> {
+    if (
+      query.distinct
+      || (query.orderBy?.length ?? 0) > 0
+      || query.limit !== undefined
+      || query.offset !== undefined
+      || entry.equalities.length > 0
+    ) {
+      return undefined;
+    }
+
+    const resolved = await this.resolvePattern(entry.pattern);
+    if (resolved.unresolved || !this.canUsePgExtensionQuadScan(resolved)) {
+      return undefined;
+    }
+
+    const variableAliases = new Map<string, string>();
+    const projectedVariables = new Set(project);
+    for (const key of PATTERN_KEYS) {
+      const variableName = entry.variables[key];
+      if (!variableName || !projectedVariables.has(variableName) || variableAliases.has(variableName)) {
+        continue;
+      }
+      variableAliases.set(variableName, `v${variableAliases.size}`);
+    }
+
+    const rows = await this.scanPgExtensionQuadIds(resolved);
+    const matchedRows = await this.countPgExtensionQuads(resolved);
+    const bindingRows = rows.map((row) => {
+      const bindingRow: Record<string, unknown> = {};
+      for (const key of PATTERN_KEYS) {
+        const variableName = entry.variables[key];
+        if (!variableName) {
+          continue;
+        }
+        const alias = variableAliases.get(variableName);
+        if (alias) {
+          bindingRow[alias] = row[TERM_COLUMN[key]];
+        }
+      }
+      return bindingRow;
+    });
+    const bindings = await this.joinRowsToBindings(bindingRows, variableAliases);
+    const plan = [
+      ...this.pgAccelerationActiveMarkersForScan(entry.pattern),
+      'XpodRdfExtensionScan(scan_quads)',
+      `PostgresRdfExtensionSinglePattern(${describePatternSource(entry)})`,
+    ];
+    return {
+      bindings,
+      metrics: this.localMetrics(start, matchedRows, matchedRows, bindings.length, ['xpod_rdf.scan_quads'], plan, query.filters?.length ?? 0),
     };
   }
 
@@ -2106,7 +2242,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
     }
     for (const capability of options.engineSqlCapabilities) {
-      providers[capability] = 'engine-sql';
+      providers[capability] ??= 'engine-sql';
     }
     return providers;
   }

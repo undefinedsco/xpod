@@ -400,7 +400,12 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `engine-sql`。
 - native `xpod_rdf` extension scaffold：`native/postgres/xpod_rdf` 已提供 PG17 C extension、
   `xpod_rdf.version()`、`xpod_rdf.capabilities()`、`cache.result` SQL ABI、
+  `xpod_rdf.scan_quads(...)` / `xpod_rdf.count_quads(...)` 单 pattern term-id scan ABI、
   `xpod_rdf_perm` custom index access method 和 `xpod_rdf.term_id_ops` bigint opclass。
+- `PostgresRdfEngine` 已能在 native extension 声明 `scan.exact_graph` / `scan.term_in` 时，
+  对无排序、无分页、无 DISTINCT、无同 pattern 变量相等约束的单 pattern 查询调用
+  `xpod_rdf.scan_quads(...)`，并在 metrics plan 中标记
+  `XpodRdfExtensionScan(scan_quads)`；复杂查询仍走 PG RDF-3X engine-sql path。
 - `pg-custom-index` profile：只有 native extension 声明 `index.xpod_rdf_perm` 后才启用；
   engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
   index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会把
@@ -418,8 +423,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 
 - `xpod_rdf_perm` block-level fanout/cost stats 和 skip hints；当前只完成 delta-varint
   compressed posting storage prototype。
-- native PG extension hot operators。当前 `pg-hot-operators` 是 engine-sql profile，不是 C/Rust
-  hot-operator execution。
+- native PG extension hot operators。当前只有最小 `scan_quads/count_quads` 单 pattern scan ABI
+  接线；graph-prefix scan、BGP join、count/group aggregate 和 numeric aggregate 仍是
+  engine-sql profile，不是 C/Rust hot-operator execution。
 - native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比
   RDF-3X baseline。
 
@@ -548,7 +554,8 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<pg17-db-with-
 | native extension build | passed (`xpod_rdf.so`) |
 | `CREATE EXTENSION xpod_rdf` | passed |
 | `xpod_rdf.version()` | `0.1.0-native` |
-| native capability includes `index.xpod_rdf_perm` | true |
+| native capability includes `scan.exact_graph`, `scan.term_in`, `index.xpod_rdf_perm` | true |
+| `xpod_rdf.scan_quads(...)` / `xpod_rdf.count_quads(...)` smoke | passed |
 | `CREATE INDEX ... USING xpod_rdf_perm` | passed |
 | forced planner path | `Index Scan` on `rdf_quads_spog_perm` |
 | insert + vacuum smoke | passed |
@@ -588,16 +595,20 @@ concurrency gate 中对比 RDF-3X baseline，并把 native hot operators 接到 
 ```
 
 small seed 为 114 quads，baseline 与 `pg-custom-index` 都是 19 个 scan case / 8 个 query
-case plan matched，`rdf3x.syncedWithFacts=true`。但 `pg-custom-index` 的 `scan.*` /
-`join.*` / `aggregate.*` provider 仍是 `engine-sql`，native extension 只提供
-`cache.result` 和 `index.xpod_rdf_perm`；当前查询物理计划仍主要是 `Rdf3xMembershipScan` /
-`PostgresRdf3xJoin`。因此 small 对照没有稳定性能收益：例如 `latest message by thread
-query` 从 6 ms 到 14 ms、`list messages by thread` 从 2 ms 到 7 ms、`task
-materialization active due query` 从 14 ms 到 21 ms；少数 case 持平或略快。这个结果说明
-问题不在 benchmark case 本身，而在两块 PG 能力尚未完成：custom index 还没有
-skip stats / cost model / operator 接入，native hot operators 还没有替换 engine-sql join /
-aggregate path。block-level seek 和 compressed posting storage 是必要中间层，但还不足以让当前
-models benchmark 稳定快过 RDF-3X baseline。
+case plan matched，`rdf3x.syncedWithFacts=true`。这些旧报告生成时，`pg-custom-index` 的
+`scan.*` / `join.*` / `aggregate.*` provider 仍是 `engine-sql`，native extension 只提供
+`cache.result` 和 `index.xpod_rdf_perm`；查询物理计划仍主要是 `Rdf3xMembershipScan` /
+`PostgresRdf3xJoin`。当前代码已经补上最小 `scan_quads/count_quads` ABI，`scan.exact_graph` /
+`scan.term_in` 可由 native extension provider 执行受支持的单 pattern scan，但 graph-prefix
+scan、join 和 aggregate 仍是 engine-sql。
+
+因此 small 对照没有稳定性能收益：例如 `latest message by thread query` 从 6 ms 到 14 ms、
+`list messages by thread` 从 2 ms 到 7 ms、`task materialization active due query` 从
+14 ms 到 21 ms；少数 case 持平或略快。这个结果说明问题不在 benchmark case 本身，而在两块
+PG 能力尚未完成：custom index 还没有 skip stats / cost model / operator 深度接入，native
+hot operators 还没有替换 engine-sql join / aggregate path。block-level seek、compressed
+posting storage 和单 pattern scan ABI 是必要中间层，但还不足以让当前 models benchmark
+稳定快过 RDF-3X baseline。
 
 ## Operational Gates
 
