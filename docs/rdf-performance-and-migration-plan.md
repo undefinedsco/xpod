@@ -649,11 +649,38 @@ provider 执行 compiled SQL。
 
 因此 small 对照没有稳定性能收益：例如 `latest message by thread query` 从 6 ms 到 14 ms、
 `list messages by thread` 从 2 ms 到 7 ms、`task materialization active due query` 从
-14 ms 到 21 ms；少数 case 持平或略快。这个结果说明问题不在 benchmark case 本身，而在两块
-PG 能力尚未完成：custom index 还没有 join/aggregate skip table / operator 深度接入，native
-hot operators 还没有把 `execute_plan_json` 内部替换为 custom join / aggregate algorithms。block-level seek、compressed
-posting storage、prefix fanout stats 和 direct 单 pattern custom-index scan ABI 是必要中间层，但还不足以让当前 models benchmark
-稳定快过 RDF-3X baseline。
+14 ms 到 21 ms；少数 case 持平或略快。
+
+2026-06-04 的真实 PG17 medium rerun 已补齐 `engine.scan()` 的 direct custom-index path 后重新验证：
+
+```text
+.test-data/rdf-pg-product-grade-baseline/models-postgres-2026-06-04T16-35-56-974Z-26447-eaebb97f-bef7-4086-8fc8-98122d9d0ef3.json
+.test-data/rdf-pg-product-grade-custom-scan/models-postgres-2026-06-04T16-52-54-632Z-27313-562e2a53-1943-4b23-9b3e-4bf60a9a017c.json
+```
+
+medium seed 为 10066 quads，baseline 和 `pg-custom-index` 都是 22 个 scan case / 8 个 query case
+plan matched，`rdf3x.syncedWithFacts=true`，`pg-custom-index` active operators 包含
+`index.xpod_rdf_perm.scan`、`index.xpod_rdf_perm.scan_any`、`scan.graph_prefix`、`join.required_bgp`
+和 aggregate capabilities。存储口径为 baseline total/facts `1.39x`，custom total/facts `1.30x`；
+custom facts bytes 因额外 `rdf_quads_*_perm` indexes 变大，derived RDF-3X bytes 持平。
+
+关键 scan case：
+
+| Case | RDF-3X baseline p95 | `pg-custom-index` p95 | Custom path |
+| --- | ---: | ---: | --- |
+| load by exact id | 2 ms | 2 ms | `perm_index_scan(SPO,prefix:1)` |
+| list providers | 3 ms | 5 ms | `scan_quads` graph-prefix |
+| models by provider | 2 ms | 7 ms | `perm_index_scan(POS,prefix:2)` |
+| credentials by provider | 2 ms | 4 ms | `perm_index_scan(POS,prefix:2)` |
+
+query case 仍全部通过 `xpod_rdf.execute_plan_json(...)` 进入 native provider，而不是 custom
+join / aggregate executor；例如 `latest message by thread query` p95 从 21 ms 到 30 ms，
+`task materialization active due query` 从 18 ms 到 30 ms，只有 `run steps by run query`
+从 12 ms 到 6 ms。这个结果说明问题不在 benchmark case 本身，而在两块 PG 能力尚未完成：
+custom index 还没有 join/aggregate skip table / operator 深度接入，native hot operators
+还没有把 `execute_plan_json` 内部替换为 custom join / aggregate algorithms。block-level seek、
+compressed posting storage、prefix fanout stats 和 direct 单 pattern custom-index scan ABI 是必要中间层，
+但还不足以让当前 models benchmark 稳定快过 RDF-3X baseline。
 
 ## Operational Gates
 

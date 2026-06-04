@@ -110,12 +110,13 @@ page skip、page-local seek、entry match 和 posting match，用于验证 custo
 它只返回观测数据，不返回业务查询行，也不绕过 PostgreSQL heap visibility。
 `perm_index_scan` 则是第一条 direct custom-index query-row path：它直接读取 index pages /
 compressed postings 并返回 heap TID 与 permutation keys；`PostgresRdfEngine` 只在 exact-id
-leading-prefix 单 pattern 查询中使用它，再通过 `rdf_quads.ctid = heap_tid` JOIN heap 并重检
+leading-prefix 单 pattern scan/query 中使用它，再通过 `rdf_quads.ctid = heap_tid` JOIN heap 并重检
 quad columns，确保 MVCC visibility 和 stale-index 安全仍由 PG heap 负责。`perm_index_scan_any`
 把同一条 page-scan 逻辑扩展到连续 leading prefix 的 `$in` / scalar 混合数组组合；数组会先去重，
 再枚举 prefix 组合并回到 heap recheck，因此 `scan.term_in` 的 single-pattern 路径也能绕过
-`scan_quads` 的 SPI 包装。它当前不覆盖 graph-prefix、range/text filter、排序/分页、DISTINCT
-或 join/aggregate。单 pattern、非 DISTINCT 的 `COUNT` aggregate 可以复用同一条 direct
+`scan_quads` 的 SPI 包装。它当前不覆盖 graph-prefix、range/text filter、DISTINCT
+或 join/aggregate；排序/分页只是在 heap recheck SQL 外层保守执行，不是 native index-level
+skip/order。单 pattern、非 DISTINCT 的 `COUNT` aggregate 可以复用同一条 direct
 custom-index scan 的 `COUNT(*) + heap recheck` SQL 路径，避免再进入 `execute_plan_json`；
 这仍只是 count fast path，不是完整 custom aggregate executor。`xpod_rdf_perm` 仍尚未实现
 block-level skip table、custom index-aware join 算法和 custom aggregate operator，因此不作为完整性能收益结论。

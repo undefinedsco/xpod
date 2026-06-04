@@ -1379,6 +1379,136 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('routes exact pg-custom-index scans through direct native perm index scan when available', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-perm-scan-native-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      scanPgExtensionQuadIds(resolved: unknown): Promise<Array<{
+        graph_id: number;
+        subject_id: number;
+        predicate_id: number;
+        object_id: number;
+      }>>;
+      countPgExtensionQuads(resolved: unknown): Promise<number>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const status = namedNode(STATUS);
+    const open = literal('open');
+    const observedSql: string[] = [];
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      const originalExecutor = internals.requireExecutor();
+      await engine.put(quad(message, status, open, graph));
+      const dictionary = internals.requireDictionary();
+      const graphId = await dictionary.find(graph);
+      const subjectId = await dictionary.find(message);
+      const predicateId = await dictionary.find(status);
+      const objectId = await dictionary.find(open);
+      expect(graphId).toBeDefined();
+      expect(subjectId).toBeDefined();
+      expect(predicateId).toBeDefined();
+      expect(objectId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'cache.result',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'scan.exact_graph',
+          'scan.term_in',
+        ],
+        capabilityProviders: {
+          'cache.result': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'scan.exact_graph': 'extension',
+          'scan.term_in': 'extension',
+        },
+        requiredCapabilities: [
+          'scan.exact_graph',
+          'scan.term_in',
+          'cache.result',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'cache.result',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'scan.exact_graph',
+          'scan.term_in',
+        ],
+      };
+      internals.scanPgExtensionQuadIds = async () => {
+        throw new Error('scan_quads should not be used when direct perm index scan is available');
+      };
+      internals.countPgExtensionQuads = async () => {
+        throw new Error('count_quads should not be used when direct perm index scan is available');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.perm_index_scan')) {
+            observedSql.push(sql);
+            observedParams = params;
+            if (sql.includes('COUNT(*) AS count')) {
+              return [{ count: 1 }] as T[];
+            }
+            return [{
+              graph_id: graphId as number,
+              subject_id: subjectId as number,
+              predicate_id: predicateId as number,
+              object_id: objectId as number,
+            }] as T[];
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.scan({
+        pattern: {
+          graph,
+          predicate: status,
+          object: open,
+        },
+      });
+
+      expect(observedSql[0]).toContain("xpod_rdf.perm_index_scan('rdf_quads_posg_perm'::regclass");
+      expect(observedSql[0]).toContain('JOIN rdf_quads q');
+      expect(observedSql[0]).toContain('q.ctid = idx.heap_tid');
+      expect(observedSql[0]).toContain('q.predicate_id = idx.key1');
+      expect(observedSql[0]).toContain('q.object_id = idx.key2');
+      expect(observedParams?.slice(0, 2)).toEqual([predicateId, objectId]);
+      expect(result.quads.map((value) => value.subject.value)).toEqual([message.value]);
+      expect(result.metrics.indexChoice).toBe('xpod_rdf.perm_index_scan(POS,prefix:2)');
+      expect(result.metrics.queryPlan).toContain('XpodRdfPgHotOperator(index.xpod_rdf_perm.scan)');
+      expect(result.metrics.queryPlan).toContain('XpodRdfCustomIndexScan(perm_index_scan:POS,prefix:2)');
+      expect(result.metrics.queryPlan).not.toContain('XpodRdfExtensionScan(scan_quads)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('routes single-pattern count aggregates through direct native perm index count when available', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-perm-count-'));
     const engine = new PostgresRdfEngine({

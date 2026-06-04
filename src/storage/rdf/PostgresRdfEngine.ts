@@ -1408,6 +1408,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         metrics: this.indexMetrics('none', 0, 0, start, [`unresolved ${resolved.unresolved}`]),
       };
     }
+    const customIndexScan = this.compilePgCustomIndexPermScanSql(resolved, options);
+    if (customIndexScan) {
+      return this.scanPgCustomIndexPermQuads(pattern, customIndexScan, start);
+    }
     if (this.canUsePgExtensionQuadScan(resolved, options)) {
       const rows = await this.scanPgExtensionQuadIds(resolved, options);
       const matchedRows = await this.countPgExtensionQuads(resolved);
@@ -1426,6 +1430,24 @@ export class PostgresRdfEngine implements RdfEngineLike {
       quads: await this.rowsToQuads(rows),
       metrics: this.indexMetrics(compiled.indexChoice, matchedRows, rows.length, start, [
         ...this.pgAccelerationActiveMarkersForScan(pattern),
+        ...compiled.queryPlan,
+        compiled.sql,
+      ]),
+    };
+  }
+
+  private async scanPgCustomIndexPermQuads(
+    pattern: QuintPattern,
+    compiled: PgCustomIndexScanPlan,
+    start: number,
+  ): Promise<RdfQuadIndexScanResult> {
+    const rows = await this.requireExecutor().query<PgQuadIdRow>(compiled.sql, compiled.params);
+    const matchedRows = await this.scalarCount(compiled.countSql, compiled.countParams);
+    return {
+      quads: await this.rowsToQuads(rows),
+      metrics: this.indexMetrics(compiled.indexChoice, matchedRows, rows.length, start, [
+        ...this.pgAccelerationActiveMarkersForScan(pattern),
+        `XpodRdfPgHotOperator(${compiled.capability})`,
         ...compiled.queryPlan,
         compiled.sql,
       ]),

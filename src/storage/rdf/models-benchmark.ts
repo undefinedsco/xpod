@@ -2560,7 +2560,8 @@ function matchesExpectedPlanLabel(label: string, testCase: RdfModelBenchmarkCase
           || metrics.indexChoice === 'source-membership'
           || planText.includes('GraphPrefixMembershipFilter')
           || planText.includes('GraphMembershipFilter')
-          || planText.includes('Rdf3xMembershipScan'));
+          || planText.includes('Rdf3xMembershipScan')
+          || planText.includes('scan.graph_prefix'));
     case 'type-filter':
       return isTerm(pattern.predicate as any)
         && termToId(pattern.predicate as any) === RDF_TYPE
