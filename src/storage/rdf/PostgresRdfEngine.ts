@@ -4168,9 +4168,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
   ): Promise<PgCompiledJoin | undefined> {
     if (
       options?.distinct
-      || (options?.orderBy?.length ?? 0) > 0
-      || options?.limit !== undefined
-      || options?.offset !== undefined
       || patterns.length < 2
       || patterns.length > XPOD_RDF_BGP_MAX_PATTERNS
       || !this.canUsePgCustomIndexPermScan()
@@ -4215,6 +4212,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (projectVariables.some((variableName) => !slotByVariable.has(variableName))) {
       return undefined;
     }
+    const orderVariables = (options?.orderBy ?? []).map((entry) => entry.variable);
+    if (orderVariables.some((variableName) => !slotByVariable.has(variableName))) {
+      return undefined;
+    }
+    const outputVariables = uniqueStrings([...projectVariables, ...orderVariables]);
 
     const constants: Array<number | null> = [];
     const variableSlots: number[] = [];
@@ -4232,7 +4234,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
     }
 
-    const outputSlots = projectVariables.map((variableName) => {
+    const outputSlots = outputVariables.map((variableName) => {
       const slot = slotByVariable.get(variableName);
       if (!slot) {
         throw new Error(`Postgres RDF native BGP cannot project unbound variable: ${variableName}`);
@@ -4240,16 +4242,21 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return slot;
     });
     const builder = new PgSqlBuilder();
+    const outputColumns = new Map<string, string>();
+    outputVariables.forEach((variableName, index) => {
+      outputColumns.set(variableName, `native_bgp.v${index + 1}`);
+    });
     const variableAliases = new Map<string, string>();
     const projectionColumns = projectVariables.map((variableName, index) => {
       const alias = `v${index}`;
       variableAliases.set(variableName, alias);
-      return `native_bgp.v${index + 1} AS ${alias}`;
+      const column = outputColumns.get(variableName);
+      if (!column) throw new Error(`Postgres RDF native BGP cannot project unbound variable: ${variableName}`);
+      return `${column} AS ${alias}`;
     });
     const projection = projectionColumns.length > 0 ? projectionColumns.join(', ') : '1 AS __empty';
-    const sql = `
-      SELECT ${projection}
-      FROM xpod_rdf.bgp_join(
+    const from = `
+      xpod_rdf.bgp_join(
         '${RDF_FACTS_TABLE}'::regclass,
         ARRAY[${indexOidsSql}]::oid[],
         ${builder.add(constants)}::bigint[],
@@ -4257,16 +4264,30 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ${builder.add(outputSlots)}::smallint[]
       ) native_bgp
     `;
+    const countParams = builder.snapshot();
+    const orderClause = this.buildJoinOrderClause(options?.orderBy, outputColumns);
+    const pagination = this.buildPagination(options, builder);
+    const sql = `
+      SELECT ${projection}
+      FROM ${from}${orderClause.joins}
+      ${orderClause.orderBy}
+      ${pagination.sql}
+    `;
 
     return {
       sql,
       params: builder.snapshot(),
-      countParams: [],
+      countSql: pagination.sql && options?.countMatchedRows !== false
+        ? `SELECT COUNT(*) AS count FROM ${from}`
+        : undefined,
+      countParams,
       indexChoice: `xpod_rdf.bgp_join(${indexChoices.join('>')})`,
       queryPlan: [
         `XpodRdfPgHotOperator(${XPOD_RDF_BGP_JOIN_CAPABILITY})`,
         `XpodRdfBgpJoin(${orderedSources.map((source) => source.inputIndex).join('>')})`,
         ...orderedSources.map((source) => `XpodRdfBgpPattern(${source.inputIndex}:${source.permutation.name})`),
+        ...(orderClause.orderBy ? [`Rdf3xJoinOrderBy(${(options?.orderBy ?? []).map((entry) => `${entry.direction ?? 'asc'}:${entry.variable}`).join(',')})`] : []),
+        ...(pagination.sql ? ['Rdf3xJoinLimit'] : []),
         sql,
       ],
       variableAliases,

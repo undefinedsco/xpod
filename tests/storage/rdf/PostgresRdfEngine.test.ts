@@ -2418,6 +2418,9 @@ describe('PostgresRdfEngine', () => {
           if (sql.includes('xpod_rdf.bgp_join')) {
             observedSql.push(sql);
             observedParams = params;
+            if (sql.includes('COUNT(*) AS count')) {
+              return [{ count: 2 }] as T[];
+            }
             return [{ v0: messageId, v1: threadId }] as T[];
           }
           return originalExecutor.query<T>(sql, params);
@@ -2439,22 +2442,29 @@ describe('PostgresRdfEngine', () => {
             object: literal('open'),
           },
         ],
-        select: ['message', 'thread'],
+        select: ['message'],
+        orderBy: [{ variable: 'thread', direction: 'desc' }],
+        limit: 1,
         cache: { mode: 'bypass' },
       });
 
       expect(observedSql[0]).toContain('xpod_rdf.bgp_join');
       expect(observedSql[0]).toContain("'rdf_quads_psog_perm'::regclass");
+      expect(observedSql[0]).toContain('JOIN rdf_terms join_order_t0 ON join_order_t0.id = native_bgp.v2');
+      expect(observedSql[0]).toContain('ORDER BY join_order_t0.value DESC');
+      expect(observedSql[0]).toContain('LIMIT');
       expect(observedSql[0]).not.toContain('JOIN rdf_quads');
       expect(observedParams?.[0]).toHaveLength(8);
       expect(observedParams?.[1]).toHaveLength(8);
       expect(observedParams?.[2]).toEqual([expect.any(Number), expect.any(Number)]);
       expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
-      expect(result.bindings.map((binding) => binding.thread.value)).toEqual([thread.value]);
+      expect(result.bindings[0].thread).toBeUndefined();
+      expect(result.metrics.joinedRows).toBe(2);
       expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.bgp_join');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp.native)');
       expect(result.metrics.plan.some((entry) => entry.startsWith('XpodRdfBgpJoin('))).toBe(true);
+      expect(result.metrics.plan).toContain('Rdf3xJoinLimit');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionJoin(execute_plan_json)');
     } finally {
       await engine.close();
