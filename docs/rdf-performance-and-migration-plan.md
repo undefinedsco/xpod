@@ -419,7 +419,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `storageStats().pgAcceleration.customIndexes` 会读取 native
   `xpod_rdf.perm_index_stats(regclass)` 和 `xpod_rdf.perm_index_probe(...)`，报告每个 shadow
   index 的 layout、compression flag、sorted state、tuple/page 分布、prefix distinct / fanout
-  stats、item/posting count、item bytes、free bytes 和 native probe 页访问统计。当前 layout 必须显示
+  stats、item/posting count、item bytes、free bytes 和 native leading-prefix probe 页访问统计。当前 layout 必须显示
   `compressed-posting-v1` / `compressed=true`；
   schema version 2 的 metapage 会在 sorted build / sorted append 场景下报告 exact prefix
   stats，并让 AM cost estimate 使用这些真实前缀基数。直到后续 skip table 和 hot operators

@@ -4096,6 +4096,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       `${permutation.indexName}_perm`,
       permutation.name,
     ]));
+    const leadingProbeKeySql = `CASE index_rel.relname ${PERMUTATIONS
+      .map((permutation) => `WHEN '${permutation.indexName}_perm' THEN (SELECT MAX(${permutation.columns[0]}) FROM ${RDF_FACTS_TABLE})`)
+      .join(' ')} ELSE NULL END`;
     type PgCustomIndexStatsRow = {
       name: string;
       bytes: number;
@@ -4112,7 +4115,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
             pg_relation_size(index_rel.oid) AS bytes,
             CEIL(pg_relation_size(index_rel.oid)::numeric / current_setting('block_size')::int)::bigint AS pages,
             xpod_rdf.perm_index_stats(index_rel.oid)::text AS stats_json,
-            xpod_rdf.perm_index_probe(index_rel.oid, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint)::text AS probe_json
+            xpod_rdf.perm_index_probe(index_rel.oid, (${leadingProbeKeySql})::bigint, NULL::bigint, NULL::bigint, NULL::bigint)::text AS probe_json
           FROM pg_class index_rel
           JOIN pg_index idx ON idx.indexrelid = index_rel.oid
           JOIN pg_am am ON am.oid = index_rel.relam

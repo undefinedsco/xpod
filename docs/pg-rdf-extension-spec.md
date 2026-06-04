@@ -134,7 +134,7 @@ indexes。native extension 同时提供内部观测函数 `xpod_rdf.perm_index_s
 `xpod_rdf.perm_index_probe(regclass, bigint, bigint, bigint, bigint)`；
 `storageStats().pgAcceleration.customIndexes` 会读取 layout、compression flag、sorted
 state、tuple/page 分布、prefix distinct / fanout stats、item/posting count、item bytes 和
-free bytes，并把无 prefix probe 的页访问统计投影到每个 custom index 下。当前 layout 明确报告为
+free bytes，并把 leading-column sample prefix probe 的页访问统计投影到每个 custom index 下。当前 layout 明确报告为
 `compressed-posting-v1` / `compressed=true`：build
 阶段会把重复 full key 聚成 delta-varint TID posting stream，schema version 2 metapage
 会暴露 `distinctPrefix1..4` 和 `avgPostingsPerPrefix1..4`，但还不是 native hot-operator
