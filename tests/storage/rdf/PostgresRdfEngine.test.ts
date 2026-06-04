@@ -2638,6 +2638,7 @@ describe('PostgresRdfEngine', () => {
         version: '0.1.0-native',
         capabilities: [
           'aggregate.count',
+          'aggregate.subject_star_count',
           'index.xpod_rdf_perm',
           'index.xpod_rdf_perm.scan',
           'join.required_bgp',
@@ -2645,6 +2646,7 @@ describe('PostgresRdfEngine', () => {
         ],
         capabilityProviders: {
           'aggregate.count': 'extension',
+          'aggregate.subject_star_count': 'extension',
           'index.xpod_rdf_perm': 'extension',
           'index.xpod_rdf_perm.scan': 'extension',
           'join.required_bgp': 'extension',
@@ -2657,6 +2659,7 @@ describe('PostgresRdfEngine', () => {
         missingCapabilities: [],
         activeOperators: [
           'aggregate.count',
+          'aggregate.subject_star_count',
           'index.xpod_rdf_perm',
           'index.xpod_rdf_perm.scan',
           'join.required_bgp',
@@ -2668,7 +2671,7 @@ describe('PostgresRdfEngine', () => {
       };
       internals.requireExecutor = () => ({
         query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
-          if (sql.includes('xpod_rdf.subject_star_join')) {
+          if (sql.includes('xpod_rdf.subject_star_count')) {
             observedSql.push(sql);
             return [{ a0: 2, a1: 1 }] as T[];
           }
@@ -2707,19 +2710,21 @@ describe('PostgresRdfEngine', () => {
         cache: { mode: 'bypass' },
       });
 
-      expect(observedSql[0]).toContain('xpod_rdf.subject_star_join');
-      expect(observedSql[0]).toContain('COUNT(source.v0) AS a0');
-      expect(observedSql[0]).toContain('COUNT(DISTINCT source.v1) AS a1');
+      expect(observedSql[0]).toContain('xpod_rdf.subject_star_count');
+      expect(observedSql[0]).not.toContain('COUNT(source.v0) AS a0');
+      expect(observedSql[0]).not.toContain('COUNT(DISTINCT source.v1) AS a1');
       expect(observedSql[0]).not.toContain('JOIN rdf_quads q1');
       expect(result.bindings).toHaveLength(1);
       expect(result.bindings[0].messageCount.value).toBe('2');
       expect(result.bindings[0].threadCount.value).toBe('1');
       expect(result.count).toBe(2);
-      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.subject_star_join');
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.subject_star_count');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.subject_star)');
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.subject_star_count)');
       expect(result.metrics.plan).toContain('XpodRdfSubjectStarJoin(seed:0,probes:1)');
-      expect(result.metrics.plan).toContain('PostgresRdf3xJoinCount');
+      expect(result.metrics.plan).toContain('XpodRdfSubjectStarCount(aggregates:2)');
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xJoinCount');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
     } finally {
       await engine.close();

@@ -97,6 +97,7 @@ const XPOD_RDF_PERM_SCAN_ANY_CAPABILITY = 'index.xpod_rdf_perm.scan_any';
 const XPOD_RDF_PERM_COUNT_CAPABILITY = 'index.xpod_rdf_perm.count';
 const XPOD_RDF_PERM_COUNT_ANY_CAPABILITY = 'index.xpod_rdf_perm.count_any';
 const XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY = 'join.subject_star';
+const XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY = 'aggregate.subject_star_count';
 const XPOD_RDF_PERM_MAX_KEYS = 4;
 const XPOD_RDF_SQL_ABI_STATEMENTS = [
   'CREATE SCHEMA IF NOT EXISTS xpod_rdf',
@@ -303,7 +304,14 @@ interface PgCompiledJoin {
   queryPlan: string[];
   variableAliases: Map<string, string>;
   subjectStar?: boolean;
+  subjectStarCount?: PgSubjectStarCountPlan;
   unresolved?: PgPatternKey;
+}
+
+interface PgSubjectStarCountPlan {
+  argsSql: string[];
+  params: unknown[];
+  variableIndexes: Map<string, number>;
 }
 
 interface PgPatternEquality {
@@ -2678,6 +2686,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       XPOD_RDF_PERM_COUNT_CAPABILITY,
       XPOD_RDF_PERM_COUNT_ANY_CAPABILITY,
       XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY,
+      XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY,
     ]);
     return capabilities.filter((capability) => wiredOperators.has(capability)).sort();
   }
@@ -3155,6 +3164,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ], query.filters?.length ?? 0),
       };
     }
+    const subjectStarCount = await this.queryNativeSubjectStarCountAggregate(query, aggregates, compiled, start);
+    if (subjectStarCount) {
+      return subjectStarCount;
+    }
 
     const aggregateAliases = new Map<string, string>();
     const aggregateTypes = new Map<string, 'integer' | 'decimal'>();
@@ -3229,6 +3242,92 @@ export class PostgresRdfEngine implements RdfEngineLike {
         query.filters?.length ?? 0,
       ),
     };
+  }
+
+  private async queryNativeSubjectStarCountAggregate(
+    query: RdfQuery,
+    aggregates: ReturnType<typeof queryAggregates>,
+    compiled: PgCompiledJoin,
+    start: number,
+  ): Promise<RdfQueryResult | undefined> {
+    const countPlan = compiled.subjectStarCount;
+    if (!countPlan || !this.canNativeSubjectStarCountAggregate(query, aggregates, countPlan)) {
+      return undefined;
+    }
+
+    const builder = new PgSqlBuilder(countPlan.params);
+    const aggregateAliases = new Map<string, string>();
+    const aggregateTypes = new Map<string, 'integer' | 'decimal'>();
+    const countVariableIndexes = aggregates.map((aggregate, index) => {
+      const alias = `a${index}`;
+      aggregateAliases.set(aggregate.as, alias);
+      aggregateTypes.set(aggregate.as, 'integer');
+      if (!aggregate.variable) {
+        return -1;
+      }
+      const variableIndex = countPlan.variableIndexes.get(aggregate.variable);
+      if (variableIndex === undefined) {
+        throw new Error(`Postgres RDF subject-star count cannot read unbound variable: ${aggregate.variable}`);
+      }
+      return variableIndex;
+    });
+    const distinctFlags = aggregates.map((aggregate) => aggregate.distinct ? 1 : 0);
+    const projection = aggregates.map((_, index) => `summary.count${index + 1} AS a${index}`).join(', ');
+    const sql = `
+      SELECT ${projection}
+      FROM xpod_rdf.subject_star_count(
+        ${countPlan.argsSql.join(',\n        ')},
+        ${builder.add(countVariableIndexes)}::bigint[],
+        ${builder.add(distinctFlags)}::bigint[]
+      ) summary
+    `;
+    const rows = await this.requireExecutor().query<Record<string, number>>(sql, builder.snapshot());
+    const bindings = await this.joinRowsToBindings(rows, new Map(), aggregateAliases, aggregateTypes);
+    const firstCount = aggregates[0] ? Number(bindings[0]?.[aggregates[0].as]?.value ?? 0) : undefined;
+    const plan = [
+      ...storagePlanMarkers(compiled.queryPlan),
+      ...this.pgAccelerationActiveMarkersForQuery(query),
+      `XpodRdfPgHotOperator(${XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY})`,
+      `XpodRdfSubjectStarCount(aggregates:${aggregates.length})`,
+      aggregatePlan(aggregates, false),
+      sql,
+    ];
+    return {
+      bindings,
+      ...(firstCount !== undefined ? { count: firstCount } : {}),
+      metrics: this.localMetrics(
+        start,
+        firstCount ?? 0,
+        firstCount ?? 0,
+        bindings.length,
+        ['xpod_rdf.subject_star_count'],
+        plan,
+        query.filters?.length ?? 0,
+      ),
+    };
+  }
+
+  private canNativeSubjectStarCountAggregate(
+    query: RdfQuery,
+    aggregates: ReturnType<typeof queryAggregates>,
+    countPlan: PgSubjectStarCountPlan,
+  ): boolean {
+    return this.canUsePgAccelerationCapability(XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY)
+      && aggregates.length > 0
+      && aggregates.length <= 8
+      && aggregates.every((aggregate) => (
+        aggregate.type === 'count'
+          && aggregate.distinctVariables === undefined
+          && (!aggregate.variable || countPlan.variableIndexes.has(aggregate.variable))
+          && (!aggregate.distinct || Boolean(aggregate.variable))
+      ))
+      && (query.groupBy ?? []).length === 0
+      && (query.having ?? []).length === 0
+      && (query.orderBy ?? []).length === 0
+      && query.limit === undefined
+      && query.offset === undefined
+      && !query.distinct
+      && (query.select ?? []).every((variableName) => aggregates.some((aggregate) => aggregate.as === variableName));
   }
 
   private canNativeAggregate(
@@ -3901,10 +4000,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const variableColumns = new Map<string, string>([[subjectVariable, 'star.subject_id']]);
+    const subjectStarVariableIndexes = new Map<string, number>([[subjectVariable, 0]]);
     for (const [probeIndexInOutput, probe] of probes.entries()) {
       const objectVariable = probe.entry.variables.object;
       if (objectVariable) {
         variableColumns.set(objectVariable, `star.object${probeIndexInOutput + 1}_id`);
+        subjectStarVariableIndexes.set(objectVariable, probeIndexInOutput + 1);
       }
     }
 
@@ -3916,26 +4017,34 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return undefined;
     }
 
-    const builder = new PgSqlBuilder();
-    const seedKeySql = Array.from({ length: XPOD_RDF_PERM_MAX_KEYS }, (_, index) => {
-      const value = seedPrefix.keys[index];
-      return value === undefined ? 'NULL::bigint' : `${builder.add(value)}::bigint`;
-    });
     const probePredicateIds = probes.map((source) => source.resolved.ids.predicate as number);
     const probeObjectIds = probes.map((source) => source.resolved.ids.object ?? null);
-    const graphIdsSql = graphIds === null ? 'NULL::bigint[]' : `${builder.add(graphIds)}::bigint[]`;
+    const subjectStarArgsSql = (builder: PgSqlBuilder): string[] => {
+      const seedKeySql = Array.from({ length: XPOD_RDF_PERM_MAX_KEYS }, (_, index) => {
+        const value = seedPrefix.keys[index];
+        return value === undefined ? 'NULL::bigint' : `${builder.add(value)}::bigint`;
+      });
+      const graphIdsSql = graphIds === null ? 'NULL::bigint[]' : `${builder.add(graphIds)}::bigint[]`;
+      return [
+        `'${RDF_FACTS_TABLE}'::regclass`,
+        `'${seedPrefix.permutation.indexName}_perm'::regclass`,
+        `${seedSubjectKey}::smallint`,
+        ...seedKeySql,
+        `'${probeIndex.indexName}_perm'::regclass`,
+        `${builder.add(probePredicateIds)}::bigint[]`,
+        `${builder.add(probeObjectIds)}::bigint[]`,
+        graphIdsSql,
+      ];
+    };
+    const builder = new PgSqlBuilder();
+    const joinArgsSql = subjectStarArgsSql(builder);
     const from = `
       xpod_rdf.subject_star_join(
-        '${RDF_FACTS_TABLE}'::regclass,
-        '${seedPrefix.permutation.indexName}_perm'::regclass,
-        ${seedSubjectKey}::smallint,
-        ${seedKeySql.join(', ')},
-        '${probeIndex.indexName}_perm'::regclass,
-        ${builder.add(probePredicateIds)}::bigint[],
-        ${builder.add(probeObjectIds)}::bigint[],
-        ${graphIdsSql}
+        ${joinArgsSql.join(',\n        ')}
       ) star
     `;
+    const countBuilder = new PgSqlBuilder();
+    const countArgsSql = subjectStarArgsSql(countBuilder);
     const variableAliases = new Map<string, string>();
     const projectionColumns = projectVariables.map((variableName) => {
       const column = variableColumns.get(variableName);
@@ -3964,6 +4073,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ${orderClause.orderBy}
       ${pagination.sql}
     `;
+    const subjectStarCount = rangeConditions.length === 0 && !orderClause.orderBy && !pagination.sql
+      ? {
+          argsSql: countArgsSql,
+          params: countBuilder.snapshot(),
+          variableIndexes: subjectStarVariableIndexes,
+        }
+      : undefined;
 
     return {
       sql,
@@ -3982,6 +4098,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ],
       variableAliases,
       subjectStar: true,
+      ...(subjectStarCount ? { subjectStarCount } : {}),
     };
   }
 

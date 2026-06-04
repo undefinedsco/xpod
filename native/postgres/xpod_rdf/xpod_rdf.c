@@ -37,6 +37,7 @@ PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_scan_any);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_count);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_count_any);
 PG_FUNCTION_INFO_V1(xpod_rdf_subject_star_join);
+PG_FUNCTION_INFO_V1(xpod_rdf_subject_star_count);
 PG_FUNCTION_INFO_V1(xpod_rdf_scan_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_count_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_handler);
@@ -124,6 +125,7 @@ static void xpod_rdf_perm_end_scan(IndexScanDesc scan);
 #define XPOD_RDF_QUAD_SUBJECT_ATTNUM 2
 #define XPOD_RDF_QUAD_PREDICATE_ATTNUM 3
 #define XPOD_RDF_QUAD_OBJECT_ATTNUM 4
+#define XPOD_RDF_STAR_COUNT_MAX_AGGREGATES 8
 
 typedef struct XpodRdfPermMetaOpaque
 {
@@ -262,6 +264,13 @@ typedef struct XpodRdfStarJoinProbeMatches
   int capacity;
 } XpodRdfStarJoinProbeMatches;
 
+typedef struct XpodRdfInt64List
+{
+  int64 *values;
+  int count;
+  int capacity;
+} XpodRdfInt64List;
+
 typedef struct XpodRdfSubjectStarJoinState
 {
   Relation heap_relation;
@@ -275,6 +284,12 @@ typedef struct XpodRdfSubjectStarJoinState
   AttrNumber probe_attnums[XPOD_RDF_PERM_MAX_KEYS];
   int64 *graph_ids;
   int graph_id_count;
+  bool count_summary;
+  int aggregate_count;
+  int aggregate_variables[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  bool aggregate_distinct[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  uint64 aggregate_counts[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  XpodRdfInt64List aggregate_distinct_values[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
 } XpodRdfSubjectStarJoinState;
 
 typedef struct XpodRdfPermCountState
@@ -523,6 +538,10 @@ static void xpod_rdf_subject_star_join_put_rows(XpodRdfSubjectStarJoinState *sta
                                                 XpodRdfStarJoinProbeMatches *matches,
                                                 int probe_index,
                                                 int64 *selected_objects);
+static void xpod_rdf_subject_star_count_summary_add(XpodRdfSubjectStarJoinState *state,
+                                                    int64 subject_id,
+                                                    XpodRdfStarJoinProbeMatches *matches);
+static void xpod_rdf_subject_star_count_summary_put_row(XpodRdfSubjectStarJoinState *state);
 static bool xpod_rdf_subject_star_seed_visitor(ItemPointerData *heap_tid,
                                                int64 *keys,
                                                uint16 nkeys,
@@ -556,6 +575,8 @@ static bool xpod_rdf_perm_keys_quad_value(int64 *keys,
                                           int64 *value);
 static void xpod_rdf_star_join_matches_add(XpodRdfStarJoinProbeMatches *matches,
                                            int64 object_id);
+static void xpod_rdf_int64_list_add(XpodRdfInt64List *list, int64 value);
+static uint64 xpod_rdf_int64_list_unique_count(XpodRdfInt64List *list);
 
 Datum
 xpod_rdf_version(PG_FUNCTION_ARGS)
@@ -575,6 +596,7 @@ xpod_rdf_capabilities(PG_FUNCTION_ARGS)
     "join.required_bgp,"
     "aggregate.count,"
     "aggregate.numeric,"
+    "aggregate.subject_star_count,"
     "cache.result,"
     "index.xpod_rdf_perm,"
     "index.xpod_rdf_perm.probe,"
@@ -1283,6 +1305,148 @@ xpod_rdf_subject_star_join(PG_FUNCTION_ARGS)
     qsort(state.graph_ids, state.graph_id_count, sizeof(int64), xpod_rdf_perm_int64_compare);
   }
   xpod_rdf_perm_scan_prefix_visit(seed_index_relation, seed_keys, seed_prefix_nkeys, xpod_rdf_subject_star_seed_visitor, &state);
+
+  ExecDropSingleTupleTableSlot(state.heap_slot);
+  index_close(state.probe_index_relation, AccessShareLock);
+  index_close(seed_index_relation, AccessShareLock);
+  table_close(state.heap_relation, AccessShareLock);
+  PG_RETURN_NULL();
+}
+
+Datum
+xpod_rdf_subject_star_count(PG_FUNCTION_ARGS)
+{
+  Oid heap_oid = PG_GETARG_OID(0);
+  Oid seed_index_oid = PG_GETARG_OID(1);
+  int16 seed_subject_key = PG_GETARG_INT16(2);
+  Oid probe_index_oid = PG_GETARG_OID(7);
+  int64 seed_keys[XPOD_RDF_PERM_MAX_KEYS];
+  uint16 seed_prefix_nkeys = 0;
+  XpodRdfInt64ArrayArg predicate_ids;
+  XpodRdfInt64ArrayArg object_ids;
+  XpodRdfInt64ArrayArg graph_ids;
+  XpodRdfInt64ArrayArg aggregate_variables;
+  XpodRdfInt64ArrayArg aggregate_distinct;
+  Relation seed_index_relation;
+  XpodRdfSubjectStarJoinState state;
+  int key_index;
+  ReturnSetInfo *rsinfo;
+
+  if (seed_subject_key < 1 || seed_subject_key > XPOD_RDF_PERM_MAX_KEYS)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.subject_star_count seed subject key must be between 1 and 4")));
+  }
+
+  memset(seed_keys, 0, sizeof(seed_keys));
+  for (key_index = 0; key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+  {
+    int arg_index = 3 + key_index;
+
+    if (PG_ARGISNULL(arg_index))
+    {
+      break;
+    }
+    seed_keys[key_index] = PG_GETARG_INT64(arg_index);
+    seed_prefix_nkeys++;
+  }
+  if (seed_prefix_nkeys == 0)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.subject_star_count requires a non-empty seed prefix")));
+  }
+
+  predicate_ids = xpod_rdf_int64_array_arg(fcinfo, 8, false);
+  object_ids = xpod_rdf_int64_array_arg(fcinfo, 9, true);
+  graph_ids = xpod_rdf_int64_array_arg(fcinfo, 10, false);
+  aggregate_variables = xpod_rdf_int64_array_arg(fcinfo, 11, false);
+  aggregate_distinct = xpod_rdf_int64_array_arg(fcinfo, 12, false);
+  if (predicate_ids.count > XPOD_RDF_STAR_JOIN_MAX_PROBES)
+  {
+    ereport(ERROR,
+            (errmsg("xpod_rdf.subject_star_count supports at most %d probe patterns", XPOD_RDF_STAR_JOIN_MAX_PROBES)));
+  }
+  if (object_ids.count != predicate_ids.count)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.subject_star_count predicate and object arrays must have the same length")));
+  }
+  if (aggregate_variables.count == 0 || aggregate_variables.count > XPOD_RDF_STAR_COUNT_MAX_AGGREGATES)
+  {
+    ereport(ERROR,
+            (errmsg("xpod_rdf.subject_star_count supports between 1 and %d count aggregates", XPOD_RDF_STAR_COUNT_MAX_AGGREGATES)));
+  }
+  if (aggregate_distinct.count != aggregate_variables.count)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.subject_star_count aggregate variable and distinct arrays must have the same length")));
+  }
+
+  memset(&state, 0, sizeof(state));
+  state.count_summary = true;
+  state.aggregate_count = aggregate_variables.count;
+  for (key_index = 0; key_index < aggregate_variables.count; key_index++)
+  {
+    int64 variable_index = aggregate_variables.values[key_index];
+    int64 distinct_flag = aggregate_distinct.values[key_index];
+
+    if (variable_index < -1 || variable_index > predicate_ids.count)
+    {
+      ereport(ERROR, (errmsg("xpod_rdf.subject_star_count aggregate variable index is outside the joined row")));
+    }
+    if (variable_index < 0 && distinct_flag != 0)
+    {
+      ereport(ERROR, (errmsg("xpod_rdf.subject_star_count cannot DISTINCT count an unbound wildcard")));
+    }
+    if (distinct_flag != 0 && distinct_flag != 1)
+    {
+      ereport(ERROR, (errmsg("xpod_rdf.subject_star_count distinct flags must be 0 or 1")));
+    }
+    state.aggregate_variables[key_index] = (int) variable_index;
+    state.aggregate_distinct[key_index] = distinct_flag != 0;
+  }
+
+  state.heap_relation = table_open(heap_oid, AccessShareLock);
+  seed_index_relation = index_open(seed_index_oid, AccessShareLock);
+  state.probe_index_relation = index_open(probe_index_oid, AccessShareLock);
+  xpod_rdf_perm_assert_supported_nkeys(seed_index_relation->rd_att->natts);
+  xpod_rdf_perm_assert_supported_nkeys(state.probe_index_relation->rd_att->natts);
+  for (key_index = 0; key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+  {
+    state.seed_attnums[key_index] = key_index < seed_index_relation->rd_att->natts
+      ? seed_index_relation->rd_index->indkey.values[key_index]
+      : InvalidAttrNumber;
+    state.probe_attnums[key_index] = key_index < state.probe_index_relation->rd_att->natts
+      ? state.probe_index_relation->rd_index->indkey.values[key_index]
+      : InvalidAttrNumber;
+  }
+  state.heap_slot = table_slot_create(state.heap_relation, NULL);
+  state.seed_subject_key = seed_subject_key;
+  state.graph_ids = graph_ids.values;
+  state.graph_id_count = graph_ids.count;
+  state.probe_count = predicate_ids.count;
+
+  for (key_index = 0; key_index < predicate_ids.count; key_index++)
+  {
+    state.probes[key_index].predicate_id = predicate_ids.values[key_index];
+    state.probes[key_index].has_object_id = !object_ids.nulls[key_index];
+    state.probes[key_index].object_id = object_ids.nulls[key_index] ? 0 : object_ids.values[key_index];
+  }
+
+  InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
+  rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+  if (rsinfo == NULL || rsinfo->setResult == NULL || rsinfo->setDesc == NULL)
+  {
+    ExecDropSingleTupleTableSlot(state.heap_slot);
+    index_close(state.probe_index_relation, AccessShareLock);
+    index_close(seed_index_relation, AccessShareLock);
+    table_close(state.heap_relation, AccessShareLock);
+    ereport(ERROR, (errmsg("xpod_rdf.subject_star_count expected a materialized set-returning context")));
+  }
+  state.rsinfo = rsinfo;
+
+  if (state.graph_id_count > 1)
+  {
+    qsort(state.graph_ids, state.graph_id_count, sizeof(int64), xpod_rdf_perm_int64_compare);
+  }
+  xpod_rdf_perm_scan_prefix_visit(seed_index_relation, seed_keys, seed_prefix_nkeys, xpod_rdf_subject_star_seed_visitor, &state);
+  xpod_rdf_subject_star_count_summary_put_row(&state);
 
   ExecDropSingleTupleTableSlot(state.heap_slot);
   index_close(state.probe_index_relation, AccessShareLock);
@@ -4522,7 +4686,14 @@ xpod_rdf_subject_star_seed_visitor(ItemPointerData *heap_tid, int64 *keys, uint1
     }
   }
 
-  xpod_rdf_subject_star_join_put_rows(state, subject_id, matches, 0, selected_objects);
+  if (state->count_summary)
+  {
+    xpod_rdf_subject_star_count_summary_add(state, subject_id, matches);
+  }
+  else
+  {
+    xpod_rdf_subject_star_join_put_rows(state, subject_id, matches, 0, selected_objects);
+  }
   for (probe_index = 0; probe_index < state->probe_count; probe_index++)
   {
     if (matches[probe_index].object_ids != NULL)
@@ -4634,6 +4805,77 @@ xpod_rdf_sort_int64_arg(XpodRdfInt64ArrayArg *arg)
   {
     qsort(arg->values, arg->count, sizeof(int64), xpod_rdf_perm_int64_compare);
   }
+}
+
+static void
+xpod_rdf_subject_star_count_summary_add(XpodRdfSubjectStarJoinState *state,
+                                        int64 subject_id,
+                                        XpodRdfStarJoinProbeMatches *matches)
+{
+  uint64 row_count = 1;
+  int probe_index;
+  int aggregate_index;
+
+  for (probe_index = 0; probe_index < state->probe_count; probe_index++)
+  {
+    row_count *= (uint64) matches[probe_index].count;
+  }
+
+  for (aggregate_index = 0; aggregate_index < state->aggregate_count; aggregate_index++)
+  {
+    int variable_index = state->aggregate_variables[aggregate_index];
+
+    if (!state->aggregate_distinct[aggregate_index])
+    {
+      state->aggregate_counts[aggregate_index] += row_count;
+      continue;
+    }
+
+    if (variable_index == 0)
+    {
+      xpod_rdf_int64_list_add(&state->aggregate_distinct_values[aggregate_index], subject_id);
+    }
+    else if (variable_index > 0 && variable_index <= state->probe_count)
+    {
+      XpodRdfStarJoinProbeMatches *probe_matches = &matches[variable_index - 1];
+      int match_index;
+
+      for (match_index = 0; match_index < probe_matches->count; match_index++)
+      {
+        xpod_rdf_int64_list_add(
+          &state->aggregate_distinct_values[aggregate_index],
+          probe_matches->object_ids[match_index]
+        );
+      }
+    }
+  }
+}
+
+static void
+xpod_rdf_subject_star_count_summary_put_row(XpodRdfSubjectStarJoinState *state)
+{
+  Datum values[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  bool nulls[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  int aggregate_index;
+
+  memset(values, 0, sizeof(values));
+  memset(nulls, 0, sizeof(nulls));
+  for (aggregate_index = 0; aggregate_index < XPOD_RDF_STAR_COUNT_MAX_AGGREGATES; aggregate_index++)
+  {
+    if (aggregate_index < state->aggregate_count)
+    {
+      uint64 count = state->aggregate_distinct[aggregate_index]
+        ? xpod_rdf_int64_list_unique_count(&state->aggregate_distinct_values[aggregate_index])
+        : state->aggregate_counts[aggregate_index];
+
+      values[aggregate_index] = Int64GetDatum((int64) count);
+    }
+    else
+    {
+      nulls[aggregate_index] = true;
+    }
+  }
+  tuplestore_putvalues(state->rsinfo->setResult, state->rsinfo->setDesc, values, nulls);
 }
 
 static void
@@ -4761,6 +5003,44 @@ xpod_rdf_star_join_matches_add(XpodRdfStarJoinProbeMatches *matches, int64 objec
   }
   matches->object_ids[matches->count] = object_id;
   matches->count++;
+}
+
+static void
+xpod_rdf_int64_list_add(XpodRdfInt64List *list, int64 value)
+{
+  if (list->count >= list->capacity)
+  {
+    int64 *next_values;
+
+    list->capacity = list->capacity == 0 ? 8 : list->capacity * 2;
+    next_values = list->values == NULL
+      ? palloc(sizeof(int64) * list->capacity)
+      : repalloc(list->values, sizeof(int64) * list->capacity);
+    list->values = next_values;
+  }
+  list->values[list->count] = value;
+  list->count++;
+}
+
+static uint64
+xpod_rdf_int64_list_unique_count(XpodRdfInt64List *list)
+{
+  int index;
+  uint64 unique_count = 0;
+
+  if (list->count == 0)
+  {
+    return 0;
+  }
+  qsort(list->values, list->count, sizeof(int64), xpod_rdf_perm_int64_compare);
+  for (index = 0; index < list->count; index++)
+  {
+    if (index == 0 || list->values[index] != list->values[index - 1])
+    {
+      unique_count++;
+    }
+  }
+  return unique_count;
 }
 
 static XpodRdfInt64ArrayArg

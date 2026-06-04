@@ -104,6 +104,25 @@ RETURNS TABLE(subject_id bigint, object1_id bigint, object2_id bigint, object3_i
 AS 'MODULE_PATHNAME', 'xpod_rdf_subject_star_join'
 LANGUAGE C VOLATILE PARALLEL SAFE;
 
+CREATE FUNCTION xpod_rdf.subject_star_count(
+  p_heap regclass,
+  p_seed_index regclass,
+  p_seed_subject_key smallint,
+  p_seed_key1 bigint DEFAULT NULL,
+  p_seed_key2 bigint DEFAULT NULL,
+  p_seed_key3 bigint DEFAULT NULL,
+  p_seed_key4 bigint DEFAULT NULL,
+  p_probe_index regclass DEFAULT NULL,
+  p_probe_predicate_ids bigint[] DEFAULT NULL,
+  p_probe_object_ids bigint[] DEFAULT NULL,
+  p_graph_ids bigint[] DEFAULT NULL,
+  p_count_variable_indexes bigint[] DEFAULT NULL,
+  p_count_distinct_flags bigint[] DEFAULT NULL
+)
+RETURNS TABLE(count1 bigint, count2 bigint, count3 bigint, count4 bigint, count5 bigint, count6 bigint, count7 bigint, count8 bigint)
+AS 'MODULE_PATHNAME', 'xpod_rdf_subject_star_count'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
 CREATE FUNCTION xpod_rdf.scan_quads(
   p_subject_ids bigint[],
   p_predicate_ids bigint[],

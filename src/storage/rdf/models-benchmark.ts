@@ -1002,7 +1002,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'message join count distinct',
     resource: 'message',
-    purpose: 'message/thread BGP aggregate count stays inside SQL self-join',
+    purpose: 'message/thread BGP aggregate count stays on the RDF-3X/native subject-star count path',
     minScale: 'small',
     query: {
       patterns: [
@@ -2778,7 +2778,8 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
       return planText.includes('Aggregate(join-count-distinct-index)')
         && planText.includes('IndexJoinCount(')
         && !planText.includes('\nIndexScan(')
-        || planText.includes('PostgresRdf3xJoinCount');
+        || planText.includes('PostgresRdf3xJoinCount')
+        || planText.includes('XpodRdfSubjectStarCount(');
     default:
       return false;
   }
