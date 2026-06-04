@@ -401,8 +401,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - native `xpod_rdf` extension scaffold：`native/postgres/xpod_rdf` 已提供 PG17 C extension、
   `xpod_rdf.version()`、`xpod_rdf.capabilities()`、`cache.result` SQL ABI、
   `xpod_rdf.scan_quads(...)` / `xpod_rdf.count_quads(...)` 单 pattern term-id scan ABI、
-  `xpod_rdf.execute_plan_json(text)` private plan execution ABI、`xpod_rdf_perm` custom index
-  access method 和 `xpod_rdf.term_id_ops` bigint opclass。
+  `xpod_rdf.execute_plan_json(text)` private plan execution ABI、
+  `xpod_rdf.perm_index_probe(regclass, bigint, bigint, bigint, bigint)` private index probe ABI、
+  `xpod_rdf_perm` custom index access method 和 `xpod_rdf.term_id_ops` bigint opclass。
 - `PostgresRdfEngine` 已能在 native extension 声明 `scan.exact_graph` / `scan.term_in` 时，
   对无排序、无分页、无 DISTINCT、无同 pattern 变量相等约束的单 pattern 查询调用
   `xpod_rdf.scan_quads(...)`，并在 metrics plan 中标记
@@ -416,9 +417,10 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   重复 full key 聚成 delta-varint compressed TID posting stream，但它仍不是完整 native
   hot-operator performance implementation。
 - `storageStats().pgAcceleration.customIndexes` 会读取 native
-  `xpod_rdf.perm_index_stats(regclass)`，报告每个 shadow index 的 layout、compression flag、
-  sorted state、tuple/page 分布、prefix distinct / fanout stats、item/posting count、item bytes
-  和 free bytes。当前 layout 必须显示 `compressed-posting-v1` / `compressed=true`；
+  `xpod_rdf.perm_index_stats(regclass)` 和 `xpod_rdf.perm_index_probe(...)`，报告每个 shadow
+  index 的 layout、compression flag、sorted state、tuple/page 分布、prefix distinct / fanout
+  stats、item/posting count、item bytes、free bytes 和 native probe 页访问统计。当前 layout 必须显示
+  `compressed-posting-v1` / `compressed=true`；
   schema version 2 的 metapage 会在 sorted build / sorted append 场景下报告 exact prefix
   stats，并让 AM cost estimate 使用这些真实前缀基数。直到后续 skip table 和 hot operators
   落地前，它仍只能作为 native index storage / planner milestone。
@@ -429,7 +431,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 
 - `xpod_rdf_perm` block-level skip table / skip hints；当前已经完成 delta-varint
   compressed posting storage、metapage prefix distinct / fanout stats 和 prefix-stats-aware
-  planner cost，但还没有把这些 stats 变成 join 算法的跳跃执行结构。
+  planner cost，也补了 `perm_index_probe` 来直接验证 native index page seek / skip / match 行为；
+  但还没有把这些 stats 变成 join 算法的跳跃执行结构。
 - native PG extension custom hot operators。当前 `scan_quads/count_quads` 单 pattern scan ABI
   已接线；required BGP join、count/group aggregate 和 numeric aggregate 也能通过
   `execute_plan_json` 进入 native extension provider。但它们仍复用 compiled PG SQL，不是
@@ -591,8 +594,8 @@ range；全局有序时 scan 会按 leading equality/range bounds 做 block-leve
 并在越过 upper prefix 后停止后续 block；sorted page 继续做 page-local lower-bound seek 和
 upper-bound early stop。`storageStats().pgAcceleration.customIndexes` 会暴露每个 shadow
 index 的 `layout=compressed-posting-v1`、`compressed=true`、page tuple count、prefix distinct /
-fanout stats、item/posting count、item bytes 和 free bytes，用作后续 skip table 和 hot operators
-的基线。custom index AM 当前已有 prefix-stats-aware planner cost：schema version 2
+fanout stats、item/posting count、item bytes、free bytes 和 `perm_index_probe` 页访问统计，用作后续
+skip table 和 hot operators 的基线。custom index AM 当前已有 prefix-stats-aware planner cost：schema version 2
 metapage 会记录 leading 1..4 key prefix distinct counts；当 index 保持 sorted append 时这些
 stats 维持 exact，一旦乱序 append 就清掉 exact flag 并回到保守成本。真实 PG17 smoke 中，100k-row `rdf_quads` + `xpod_rdf_perm(S,P,O,G)`
 在 leading equality 和 leading range 条件下均由正常 planner 选择 `Index Scan`。smoke 同时覆盖

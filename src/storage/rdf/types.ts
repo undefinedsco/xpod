@@ -173,6 +173,30 @@ export interface RdfPgCustomIndexStats {
   itemBytes: number;
   freeBytes: number;
   avgEntryBytes: number;
+  probe?: RdfPgCustomIndexProbeStats;
+}
+
+export interface RdfPgCustomIndexProbeStats {
+  probe: string;
+  layout?: string;
+  nkeys: number;
+  prefixKeys: number;
+  globalSorted: boolean;
+  pages: number;
+  firstDataBlock: number;
+  startBlock: number;
+  dataPages: number;
+  seekPagesExamined: number;
+  pagesVisited: number;
+  pagesSkipped: number;
+  pagesSkippedBeforeLower: number;
+  pagesSkippedPastUpper: number;
+  pagesSkippedByRange: number;
+  stoppedAtUpperBound: boolean;
+  pageLocalSeeks: number;
+  itemsExamined: number;
+  itemsMatched: number;
+  postingsMatched: number;
 }
 
 export interface RdfQueryResultCacheStats {

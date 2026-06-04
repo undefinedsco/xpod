@@ -22,6 +22,17 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'xpod_rdf_perm_index_stats'
 LANGUAGE C STRICT VOLATILE PARALLEL SAFE;
 
+CREATE FUNCTION xpod_rdf.perm_index_probe(
+  p_index regclass,
+  p_key1 bigint DEFAULT NULL,
+  p_key2 bigint DEFAULT NULL,
+  p_key3 bigint DEFAULT NULL,
+  p_key4 bigint DEFAULT NULL
+)
+RETURNS text
+AS 'MODULE_PATHNAME', 'xpod_rdf_perm_index_probe'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
 CREATE FUNCTION xpod_rdf.scan_quads(
   p_subject_ids bigint[],
   p_predicate_ids bigint[],

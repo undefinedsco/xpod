@@ -27,6 +27,7 @@ PG_FUNCTION_INFO_V1(xpod_rdf_version);
 PG_FUNCTION_INFO_V1(xpod_rdf_capabilities);
 PG_FUNCTION_INFO_V1(xpod_rdf_term_id_cmp);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_stats);
+PG_FUNCTION_INFO_V1(xpod_rdf_perm_index_probe);
 PG_FUNCTION_INFO_V1(xpod_rdf_scan_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_count_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_handler);
@@ -291,7 +292,19 @@ static bool xpod_rdf_perm_page_may_match(IndexScanDesc scan, Page page);
 static bool xpod_rdf_perm_page_last_before_lower_bound(IndexScanDesc scan, Page page);
 static bool xpod_rdf_perm_page_first_past_upper_bound(IndexScanDesc scan, Page page);
 static BlockNumber xpod_rdf_perm_seek_lower_block(IndexScanDesc scan, BlockNumber first_block, BlockNumber block_count);
+static BlockNumber xpod_rdf_perm_seek_lower_block_for_prefix(Relation indexRelation,
+                                                             BlockNumber first_block,
+                                                             BlockNumber block_count,
+                                                             int64 *keys,
+                                                             uint16 prefix_nkeys,
+                                                             uint64 *seek_pages_examined);
 static OffsetNumber xpod_rdf_perm_page_seek_lower_bound(IndexScanDesc scan, Page page);
+static OffsetNumber xpod_rdf_perm_page_seek_prefix(Page page, int64 *keys, uint16 prefix_nkeys);
+static bool xpod_rdf_perm_page_prefix_may_match(Page page,
+                                                int64 *keys,
+                                                uint16 prefix_nkeys,
+                                                bool *last_before,
+                                                bool *first_past);
 static bool xpod_rdf_perm_entry_past_upper_bound(IndexScanDesc scan, void *entry);
 static bool xpod_rdf_perm_entry_matches(IndexScanDesc scan, void *entry);
 static bool xpod_rdf_perm_entry_next_tid(void *entry, uint32 start_index, ItemPointerData *heap_tid, uint32 *next_index);
@@ -331,6 +344,10 @@ static void xpod_rdf_perm_tid_from_value(uint64 value, ItemPointerData *tid);
 static Size xpod_rdf_perm_varint_size(uint64 value);
 static uint8 *xpod_rdf_perm_varint_encode(uint8 *cursor, uint64 value);
 static bool xpod_rdf_perm_varint_decode(uint8 **cursor, uint8 *end, uint64 *value);
+static void xpod_rdf_perm_probe_prefix_args(FunctionCallInfo fcinfo,
+                                            uint16 index_nkeys,
+                                            int64 *keys,
+                                            uint16 *prefix_nkeys);
 static void xpod_rdf_scan_quads_add_array_filter(StringInfo sql,
                                                  Datum *values,
                                                  char *nulls,
@@ -390,7 +407,8 @@ xpod_rdf_capabilities(PG_FUNCTION_ARGS)
     "aggregate.count,"
     "aggregate.numeric,"
     "cache.result,"
-    "index.xpod_rdf_perm"
+    "index.xpod_rdf_perm,"
+    "index.xpod_rdf_perm.probe"
   ));
 }
 
@@ -614,6 +632,196 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
     (unsigned long long) item_bytes,
     (unsigned long long) free_bytes,
     avg_entry_bytes
+  );
+  PG_RETURN_TEXT_P(cstring_to_text(json.data));
+}
+
+Datum
+xpod_rdf_perm_index_probe(PG_FUNCTION_ARGS)
+{
+  Oid index_oid = PG_GETARG_OID(0);
+  Relation indexRelation;
+  BlockNumber block_count;
+  BlockNumber first_data_block;
+  BlockNumber block;
+  BlockNumber start_block;
+  bool global_sorted;
+  int64 prefix_keys[XPOD_RDF_PERM_MAX_KEYS];
+  uint16 prefix_nkeys = 0;
+  uint16 index_nkeys;
+  uint64 data_pages = 0;
+  uint64 seek_pages_examined = 0;
+  uint64 pages_visited = 0;
+  uint64 pages_skipped = 0;
+  uint64 pages_skipped_before_lower = 0;
+  uint64 pages_skipped_past_upper = 0;
+  uint64 pages_skipped_by_range = 0;
+  uint64 page_local_seeks = 0;
+  uint64 items_examined = 0;
+  uint64 items_matched = 0;
+  uint64 postings_matched = 0;
+  bool stopped_at_upper_bound = false;
+  StringInfoData json;
+
+  indexRelation = index_open(index_oid, AccessShareLock);
+  xpod_rdf_perm_assert_supported_nkeys(indexRelation->rd_att->natts);
+  index_nkeys = (uint16) Min(indexRelation->rd_att->natts, XPOD_RDF_PERM_MAX_KEYS);
+  xpod_rdf_perm_probe_prefix_args(fcinfo, index_nkeys, prefix_keys, &prefix_nkeys);
+
+  block_count = RelationGetNumberOfBlocks(indexRelation);
+  first_data_block = xpod_rdf_perm_first_data_block(indexRelation);
+  global_sorted = xpod_rdf_perm_relation_is_globally_sorted(indexRelation);
+  start_block = first_data_block;
+  if (global_sorted && prefix_nkeys > 0)
+  {
+    start_block = xpod_rdf_perm_seek_lower_block_for_prefix(
+      indexRelation,
+      first_data_block,
+      block_count,
+      prefix_keys,
+      prefix_nkeys,
+      &seek_pages_examined
+    );
+  }
+
+  for (block = start_block; block < block_count; block++)
+  {
+    Buffer buffer;
+    Page page;
+    XpodRdfPermPageOpaque *opaque;
+    bool last_before = false;
+    bool first_past = false;
+    bool page_sorted;
+    OffsetNumber max_offset;
+    OffsetNumber offset;
+
+    buffer = ReadBuffer(indexRelation, block);
+    LockBuffer(buffer, BUFFER_LOCK_SHARE);
+    page = BufferGetPage(buffer);
+    opaque = xpod_rdf_perm_page_opaque(page);
+    if (opaque == NULL)
+    {
+      UnlockReleaseBuffer(buffer);
+      continue;
+    }
+    data_pages++;
+    page_sorted = (opaque->flags & XPOD_RDF_PERM_PAGE_FLAG_SORTED) != 0;
+
+    if (!xpod_rdf_perm_page_prefix_may_match(page, prefix_keys, prefix_nkeys, &last_before, &first_past))
+    {
+      pages_skipped++;
+      if (last_before)
+      {
+        pages_skipped_before_lower++;
+      }
+      else if (first_past)
+      {
+        pages_skipped_past_upper++;
+        if (global_sorted)
+        {
+          stopped_at_upper_bound = true;
+          UnlockReleaseBuffer(buffer);
+          break;
+        }
+      }
+      else
+      {
+        pages_skipped_by_range++;
+      }
+      UnlockReleaseBuffer(buffer);
+      continue;
+    }
+
+    pages_visited++;
+    max_offset = PageGetMaxOffsetNumber(page);
+    offset = FirstOffsetNumber;
+    if (page_sorted && prefix_nkeys > 0)
+    {
+      OffsetNumber lower_bound_offset = xpod_rdf_perm_page_seek_prefix(page, prefix_keys, prefix_nkeys);
+
+      page_local_seeks++;
+      if (!OffsetNumberIsValid(lower_bound_offset))
+      {
+        UnlockReleaseBuffer(buffer);
+        continue;
+      }
+      offset = lower_bound_offset;
+    }
+
+    for (; offset <= max_offset; offset = OffsetNumberNext(offset))
+    {
+      void *entry = xpod_rdf_perm_page_entry(page, offset);
+      int prefix_compare = 0;
+
+      if (entry == NULL)
+      {
+        continue;
+      }
+      if (prefix_nkeys > 0)
+      {
+        prefix_compare = xpod_rdf_perm_entry_compare_key_prefix(entry, prefix_keys, prefix_nkeys);
+        if (page_sorted && prefix_compare > 0)
+        {
+          break;
+        }
+        if (prefix_compare < 0)
+        {
+          continue;
+        }
+      }
+      items_examined++;
+      if (prefix_compare == 0)
+      {
+        items_matched++;
+        postings_matched += xpod_rdf_perm_entry_live_posting_count(entry);
+      }
+    }
+
+    UnlockReleaseBuffer(buffer);
+  }
+
+  index_close(indexRelation, AccessShareLock);
+  initStringInfo(&json);
+  appendStringInfo(
+    &json,
+    "{\"probe\":\"prefix-equality-v1\","
+    "\"layout\":\"compressed-posting-v1\","
+    "\"nkeys\":%u,"
+    "\"prefixKeys\":%u,"
+    "\"globalSorted\":%s,"
+    "\"pages\":%u,"
+    "\"firstDataBlock\":%u,"
+    "\"startBlock\":%u,"
+    "\"dataPages\":%llu,"
+    "\"seekPagesExamined\":%llu,"
+    "\"pagesVisited\":%llu,"
+    "\"pagesSkipped\":%llu,"
+    "\"pagesSkippedBeforeLower\":%llu,"
+    "\"pagesSkippedPastUpper\":%llu,"
+    "\"pagesSkippedByRange\":%llu,"
+    "\"stoppedAtUpperBound\":%s,"
+    "\"pageLocalSeeks\":%llu,"
+    "\"itemsExamined\":%llu,"
+    "\"itemsMatched\":%llu,"
+    "\"postingsMatched\":%llu}",
+    (unsigned int) index_nkeys,
+    (unsigned int) prefix_nkeys,
+    global_sorted ? "true" : "false",
+    (unsigned int) block_count,
+    (unsigned int) first_data_block,
+    (unsigned int) start_block,
+    (unsigned long long) data_pages,
+    (unsigned long long) seek_pages_examined,
+    (unsigned long long) pages_visited,
+    (unsigned long long) pages_skipped,
+    (unsigned long long) pages_skipped_before_lower,
+    (unsigned long long) pages_skipped_past_upper,
+    (unsigned long long) pages_skipped_by_range,
+    stopped_at_upper_bound ? "true" : "false",
+    (unsigned long long) page_local_seeks,
+    (unsigned long long) items_examined,
+    (unsigned long long) items_matched,
+    (unsigned long long) postings_matched
   );
   PG_RETURN_TEXT_P(cstring_to_text(json.data));
 }
@@ -2584,6 +2792,55 @@ xpod_rdf_perm_seek_lower_block(IndexScanDesc scan, BlockNumber first_block, Bloc
   return low;
 }
 
+static BlockNumber
+xpod_rdf_perm_seek_lower_block_for_prefix(Relation indexRelation,
+                                          BlockNumber first_block,
+                                          BlockNumber block_count,
+                                          int64 *keys,
+                                          uint16 prefix_nkeys,
+                                          uint64 *seek_pages_examined)
+{
+  BlockNumber low;
+  BlockNumber high;
+
+  if (first_block >= block_count || prefix_nkeys == 0)
+  {
+    return first_block;
+  }
+
+  low = first_block;
+  high = block_count;
+  while (low < high)
+  {
+    BlockNumber mid = low + ((high - low) / 2);
+    Buffer buffer;
+    Page page;
+    void *last_entry;
+    bool before_lower = false;
+
+    buffer = ReadBuffer(indexRelation, mid);
+    LockBuffer(buffer, BUFFER_LOCK_SHARE);
+    page = BufferGetPage(buffer);
+    if (seek_pages_examined != NULL)
+    {
+      (*seek_pages_examined)++;
+    }
+    last_entry = xpod_rdf_perm_page_entry(page, PageGetMaxOffsetNumber(page));
+    before_lower = last_entry != NULL && xpod_rdf_perm_entry_compare_key_prefix(last_entry, keys, prefix_nkeys) < 0;
+    UnlockReleaseBuffer(buffer);
+
+    if (before_lower)
+    {
+      low = mid + 1;
+    }
+    else
+    {
+      high = mid;
+    }
+  }
+  return low;
+}
+
 static OffsetNumber
 xpod_rdf_perm_page_seek_lower_bound(IndexScanDesc scan, Page page)
 {
@@ -2640,6 +2897,91 @@ xpod_rdf_perm_page_seek_lower_bound(IndexScanDesc scan, Page page)
     }
   }
   return low <= max_offset ? (OffsetNumber) low : InvalidOffsetNumber;
+}
+
+static OffsetNumber
+xpod_rdf_perm_page_seek_prefix(Page page, int64 *keys, uint16 prefix_nkeys)
+{
+  XpodRdfPermPageOpaque *opaque = xpod_rdf_perm_page_opaque(page);
+  OffsetNumber max_offset;
+  int low;
+  int high;
+
+  if (
+    opaque == NULL
+    || (opaque->flags & XPOD_RDF_PERM_PAGE_FLAG_SORTED) == 0
+    || prefix_nkeys == 0
+  )
+  {
+    return FirstOffsetNumber;
+  }
+
+  max_offset = PageGetMaxOffsetNumber(page);
+  low = FirstOffsetNumber;
+  high = max_offset + 1;
+  while (low < high)
+  {
+    int mid = low + ((high - low) / 2);
+    void *entry = xpod_rdf_perm_page_entry(page, (OffsetNumber) mid);
+
+    if (entry == NULL || xpod_rdf_perm_entry_compare_key_prefix(entry, keys, prefix_nkeys) < 0)
+    {
+      low = mid + 1;
+    }
+    else
+    {
+      high = mid;
+    }
+  }
+  return low <= max_offset ? (OffsetNumber) low : InvalidOffsetNumber;
+}
+
+static bool
+xpod_rdf_perm_page_prefix_may_match(Page page,
+                                    int64 *keys,
+                                    uint16 prefix_nkeys,
+                                    bool *last_before,
+                                    bool *first_past)
+{
+  XpodRdfPermPageOpaque *opaque = xpod_rdf_perm_page_opaque(page);
+  uint16 key_index;
+
+  *last_before = false;
+  *first_past = false;
+  if (opaque == NULL || opaque->tuple_count == 0)
+  {
+    return false;
+  }
+  if (prefix_nkeys == 0)
+  {
+    return true;
+  }
+
+  if ((opaque->flags & XPOD_RDF_PERM_PAGE_FLAG_SORTED) != 0)
+  {
+    void *first_entry = xpod_rdf_perm_page_entry(page, FirstOffsetNumber);
+    void *last_entry = xpod_rdf_perm_page_entry(page, PageGetMaxOffsetNumber(page));
+
+    if (last_entry != NULL && xpod_rdf_perm_entry_compare_key_prefix(last_entry, keys, prefix_nkeys) < 0)
+    {
+      *last_before = true;
+      return false;
+    }
+    if (first_entry != NULL && xpod_rdf_perm_entry_compare_key_prefix(first_entry, keys, prefix_nkeys) > 0)
+    {
+      *first_past = true;
+      return false;
+    }
+  }
+
+  for (key_index = 0; key_index < prefix_nkeys && key_index < opaque->nkeys; key_index++)
+  {
+    if (opaque->max_keys[key_index] < keys[key_index] || opaque->min_keys[key_index] > keys[key_index])
+    {
+      return false;
+    }
+  }
+  return true;
 }
 
 static bool
@@ -3369,6 +3711,40 @@ xpod_rdf_perm_varint_decode(uint8 **cursor, uint8 *end, uint64 *value)
     shift += 7;
   }
   return false;
+}
+
+static void
+xpod_rdf_perm_probe_prefix_args(FunctionCallInfo fcinfo,
+                                uint16 index_nkeys,
+                                int64 *keys,
+                                uint16 *prefix_nkeys)
+{
+  int arg_index;
+  bool saw_null = false;
+
+  *prefix_nkeys = 0;
+  for (arg_index = 1; arg_index <= XPOD_RDF_PERM_MAX_KEYS; arg_index++)
+  {
+    if (arg_index >= PG_NARGS() || PG_ARGISNULL(arg_index))
+    {
+      saw_null = true;
+      continue;
+    }
+    if (arg_index > index_nkeys)
+    {
+      ereport(ERROR,
+              (errmsg("xpod_rdf_perm probe key exceeds index key count"),
+               errdetail("Argument %d was provided for an index with %u key columns.", arg_index, index_nkeys)));
+    }
+    if (saw_null)
+    {
+      ereport(ERROR,
+              (errmsg("xpod_rdf_perm probe keys must be a contiguous leading prefix"),
+               errdetail("Argument %d was provided after a null leading key.", arg_index)));
+    }
+    keys[*prefix_nkeys] = PG_GETARG_INT64(arg_index);
+    (*prefix_nkeys)++;
+  }
 }
 
 static void

@@ -28,6 +28,7 @@ import type {
   RdfPgAccelerationProvider,
   RdfPgAccelerationStats,
   RdfPgCustomIndexStats,
+  RdfPgCustomIndexProbeStats,
   RdfPatternQuery,
   RdfQueryFilter,
   RdfQueryPattern,
@@ -4095,13 +4096,32 @@ export class PostgresRdfEngine implements RdfEngineLike {
       `${permutation.indexName}_perm`,
       permutation.name,
     ]));
+    type PgCustomIndexStatsRow = {
+      name: string;
+      bytes: number;
+      pages: number;
+      stats_json: string | null;
+      probe_json?: string | null;
+    };
     try {
-      const rows = await this.requireExecutor().query<{
-        name: string;
-        bytes: number;
-        pages: number;
-        stats_json: string | null;
-      }>(`
+      let rows: PgCustomIndexStatsRow[];
+      try {
+        rows = await this.requireExecutor().query<PgCustomIndexStatsRow>(`
+          SELECT
+            index_rel.relname AS name,
+            pg_relation_size(index_rel.oid) AS bytes,
+            CEIL(pg_relation_size(index_rel.oid)::numeric / current_setting('block_size')::int)::bigint AS pages,
+            xpod_rdf.perm_index_stats(index_rel.oid)::text AS stats_json,
+            xpod_rdf.perm_index_probe(index_rel.oid, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint)::text AS probe_json
+          FROM pg_class index_rel
+          JOIN pg_index idx ON idx.indexrelid = index_rel.oid
+          JOIN pg_am am ON am.oid = index_rel.relam
+          WHERE am.amname = 'xpod_rdf_perm'
+            AND index_rel.relname = ANY($1::text[])
+          ORDER BY index_rel.relname
+        `, [expectedIndexNames]);
+      } catch {
+        rows = await this.requireExecutor().query<PgCustomIndexStatsRow>(`
         SELECT
           index_rel.relname AS name,
           pg_relation_size(index_rel.oid) AS bytes,
@@ -4113,9 +4133,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
         WHERE am.amname = 'xpod_rdf_perm'
           AND index_rel.relname = ANY($1::text[])
         ORDER BY index_rel.relname
-      `, [expectedIndexNames]);
+        `, [expectedIndexNames]);
+      }
       return rows.map((row) => {
         const native = parsePgCustomIndexStats(row.stats_json);
+        const probe = parsePgCustomIndexProbeStats(row.probe_json);
         return {
           name: row.name,
           permutation: permutationByIndex.get(row.name),
@@ -4152,6 +4174,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           itemBytes: pgStatNumber(native.itemBytes),
           freeBytes: pgStatNumber(native.freeBytes),
           avgEntryBytes: pgStatNumber(native.avgEntryBytes),
+          ...(probe ? { probe } : {}),
         };
       });
     } catch {
@@ -4537,6 +4560,36 @@ function parsePgCustomIndexStats(value: unknown): Record<string, unknown> {
     }
   }
   return {};
+}
+
+function parsePgCustomIndexProbeStats(value: unknown): RdfPgCustomIndexProbeStats | undefined {
+  const native = parsePgCustomIndexStats(value);
+  const probe = native.probe;
+  if (typeof probe !== 'string') {
+    return undefined;
+  }
+  return {
+    probe,
+    layout: typeof native.layout === 'string' ? native.layout : undefined,
+    nkeys: pgStatNumber(native.nkeys),
+    prefixKeys: pgStatNumber(native.prefixKeys),
+    globalSorted: pgBoolean(native.globalSorted),
+    pages: pgStatNumber(native.pages),
+    firstDataBlock: pgStatNumber(native.firstDataBlock),
+    startBlock: pgStatNumber(native.startBlock),
+    dataPages: pgStatNumber(native.dataPages),
+    seekPagesExamined: pgStatNumber(native.seekPagesExamined),
+    pagesVisited: pgStatNumber(native.pagesVisited),
+    pagesSkipped: pgStatNumber(native.pagesSkipped),
+    pagesSkippedBeforeLower: pgStatNumber(native.pagesSkippedBeforeLower),
+    pagesSkippedPastUpper: pgStatNumber(native.pagesSkippedPastUpper),
+    pagesSkippedByRange: pgStatNumber(native.pagesSkippedByRange),
+    stoppedAtUpperBound: pgBoolean(native.stoppedAtUpperBound),
+    pageLocalSeeks: pgStatNumber(native.pageLocalSeeks),
+    itemsExamined: pgStatNumber(native.itemsExamined),
+    itemsMatched: pgStatNumber(native.itemsMatched),
+    postingsMatched: pgStatNumber(native.postingsMatched),
+  };
 }
 
 function isVariable(value: RdfQueryTermPattern | undefined): value is { variable: string } {

@@ -532,8 +532,8 @@ PostgreSQL extension。它不是独立查询服务，也不是 raw SPARQL endpoi
 custom AM packaging、opclass、planner path 和 lifecycle；该 prototype 已支持 ordered build、
 重复 full key delta-varint TID posting stream、metapage global-order guard、block-level lower-bound seek、page
 min/max pruning、sorted page 的 page-local lower-bound seek、metapage prefix distinct /
-fanout stats，以及 prefix-stats-aware cost model。它仍不作为默认 profile，也不能替代后续
-block-level skip table 和 native hot-operator 性能实现。
+fanout stats、prefix-stats-aware cost model，以及 private `perm_index_probe` 页访问观测 ABI。
+它仍不作为默认 profile，也不能替代后续 block-level skip table 和 native hot-operator 性能实现。
 
 目标：
 

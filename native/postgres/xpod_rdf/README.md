@@ -34,6 +34,12 @@ The first native cut provides:
   sorted state, page tuple counts, item bytes, free bytes, and compression
   status. Schema version 2 also reports exact prefix stats when the index was
   built or appended in sorted order.
+- `xpod_rdf.perm_index_probe(regclass, bigint, bigint, bigint, bigint)`, a
+  private prefix-equality probe for `xpod_rdf_perm`. It reads the native index
+  relation directly and reports block seek, page skip, page visit, entry match,
+  and posting counts. The probe is an observability and next-step hot-operator
+  building block; it does not return user query rows and therefore does not
+  bypass PostgreSQL heap visibility checks.
 
 Build inside an image with PostgreSQL server headers:
 
@@ -69,3 +75,6 @@ ordering/pagination still belong to the `PostgresRdfEngine` PG RDF-3X /
 engine-sql path. Required BGP joins and aggregate operators now enter the
 extension through `execute_plan_json`, but this is not yet a custom C join /
 aggregate executor and must not be counted as a final native performance gate.
+`perm_index_probe` proves the extension can now inspect `xpod_rdf_perm` pages
+without routing through planner SQL, but it is still an internal probe rather
+than the final MVCC-safe scan / join / aggregate executor.
