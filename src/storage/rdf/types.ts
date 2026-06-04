@@ -148,8 +148,17 @@ export interface RdfPgCustomIndexStats {
   schemaVersion: number;
   hasMetapage: boolean;
   globalSorted: boolean;
+  prefixStatsExact: boolean;
   nkeys: number;
   tupleCount: number;
+  distinctPrefix1: number;
+  distinctPrefix2: number;
+  distinctPrefix3: number;
+  distinctPrefix4: number;
+  avgPostingsPerPrefix1: number;
+  avgPostingsPerPrefix2: number;
+  avgPostingsPerPrefix3: number;
+  avgPostingsPerPrefix4: number;
   pageTupleCount: number;
   itemCount: number;
   postingCount: number;

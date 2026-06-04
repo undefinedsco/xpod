@@ -99,6 +99,20 @@ AS $$
   )
 $$;
 
+CREATE FUNCTION xpod_rdf.execute_plan_json(p_sql text)
+RETURNS TABLE(row_json jsonb)
+LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+AS $fn$
+DECLARE
+  row_value record;
+BEGIN
+  FOR row_value IN EXECUTE p_sql LOOP
+    row_json := to_jsonb(row_value);
+    RETURN NEXT;
+  END LOOP;
+END
+$fn$;
+
 CREATE FUNCTION xpod_rdf.perm_handler(internal)
 RETURNS index_am_handler
 AS 'MODULE_PATHNAME', 'xpod_rdf_perm_handler'

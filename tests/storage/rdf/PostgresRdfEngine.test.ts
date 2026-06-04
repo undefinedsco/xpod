@@ -1360,6 +1360,213 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('routes required BGP joins through the native extension plan ABI', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-join-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message = namedNode(`${graph.value}#msg_1`);
+    let extensionCalls = 0;
+    let observedSql = '';
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message, namedNode(THREAD), thread, graph),
+        quad(message, namedNode(STATUS), literal('open'), graph),
+      ]);
+      const dictionary = internals.requireDictionary();
+      const messageId = await dictionary.find(message);
+      expect(messageId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-hot-operators',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'join.required_bgp',
+        ],
+        capabilityProviders: {
+          'join.required_bgp': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'join.required_bgp',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async <T extends Record<string, unknown>>(sql: string): Promise<T[]> => {
+        extensionCalls++;
+        observedSql = sql;
+        return [{ v0: messageId }] as T[];
+      };
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: thread,
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        select: ['message'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(extensionCalls).toBe(1);
+      expect(observedSql).toContain('JOIN rdf_quads');
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(result.metrics.indexChoices[0]).toMatch(/^xpod_rdf\.execute_plan_json\(Rdf3xJoinBGP\(/u);
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
+      expect(result.metrics.plan).toContain('XpodRdfExtensionJoin(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes aggregate hot operators through the native extension plan ABI', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-aggregate-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    let extensionCalls = 0;
+    const observedSql: string[] = [];
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message1, namedNode(PRIORITY), literal('10', namedNode(XSD_DECIMAL)), graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(PRIORITY), literal('20', namedNode(XSD_DECIMAL)), graph),
+      ]);
+      const dictionary = internals.requireDictionary();
+      const threadId = await dictionary.find(thread);
+      expect(threadId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-hot-operators',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.count',
+          'aggregate.numeric',
+          'join.required_bgp',
+        ],
+        capabilityProviders: {
+          'aggregate.count': 'extension',
+          'aggregate.numeric': 'extension',
+          'join.required_bgp': 'extension',
+        },
+        requiredCapabilities: [
+          'aggregate.count',
+          'aggregate.numeric',
+          'join.required_bgp',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'aggregate.numeric',
+          'join.required_bgp',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async <T extends Record<string, unknown>>(sql: string): Promise<T[]> => {
+        extensionCalls++;
+        observedSql.push(sql);
+        if (/SELECT COUNT\(\*\) AS count/u.test(sql)) {
+          return [{ count: 1 }] as T[];
+        }
+        return [{ v1: threadId, a0: 2, a1: 30 }] as T[];
+      };
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'sum',
+            as: 'priorityTotal',
+            variable: 'priority',
+          },
+        ],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(extensionCalls).toBe(2);
+      expect(observedSql[0]).toContain('GROUP BY source.v1');
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].thread.value).toBe(thread.value);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.bindings[0].priorityTotal.value).toBe('30');
+      expect(result.metrics.indexChoices[0]).toMatch(/^xpod_rdf\.execute_plan_json\(Rdf3xJoinBGP\(/u);
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.numeric)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
+      expect(result.metrics.plan).toContain('XpodRdfExtensionAggregate(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('projects native custom-index storage stats when pg-custom-index is enabled', async () => {
     const engine = new PostgresRdfEngine({
       driver: 'pg',
@@ -1391,11 +1598,20 @@ describe('PostgresRdfEngine', () => {
             stats_json: JSON.stringify({
               layout: 'compressed-posting-v1',
               compressed: true,
-              schemaVersion: 1,
+              schemaVersion: 2,
               hasMetapage: true,
               globalSorted: true,
+              prefixStatsExact: true,
               nkeys: 4,
               tupleCount: 10,
+              distinctPrefix1: 2,
+              distinctPrefix2: 3,
+              distinctPrefix3: 4,
+              distinctPrefix4: 4,
+              avgPostingsPerPrefix1: 5,
+              avgPostingsPerPrefix2: 3.333333,
+              avgPostingsPerPrefix3: 2.5,
+              avgPostingsPerPrefix4: 2.5,
               pageTupleCount: 10,
               itemCount: 4,
               postingCount: 10,
@@ -1472,11 +1688,20 @@ describe('PostgresRdfEngine', () => {
           compressed: true,
           bytes: 8192,
           pages: 1,
-          schemaVersion: 1,
+          schemaVersion: 2,
           hasMetapage: true,
           globalSorted: true,
+          prefixStatsExact: true,
           nkeys: 4,
           tupleCount: 10,
+          distinctPrefix1: 2,
+          distinctPrefix2: 3,
+          distinctPrefix3: 4,
+          distinctPrefix4: 4,
+          avgPostingsPerPrefix1: 5,
+          avgPostingsPerPrefix2: 3.333333,
+          avgPostingsPerPrefix3: 2.5,
+          avgPostingsPerPrefix4: 2.5,
           pageTupleCount: 10,
           itemCount: 4,
           postingCount: 10,

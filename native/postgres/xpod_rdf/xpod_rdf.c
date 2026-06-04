@@ -62,7 +62,9 @@ static void xpod_rdf_perm_cost_estimate(struct PlannerInfo *root,
 static void xpod_rdf_perm_read_cost_meta(Oid index_oid,
                                          uint64 *tuple_count,
                                          bool *global_sorted,
-                                         uint16 *nkeys);
+                                         bool *prefix_stats_exact,
+                                         uint16 *nkeys,
+                                         uint64 *distinct_prefix_counts);
 static void xpod_rdf_perm_prepare_cost_state(IndexPath *path, XpodRdfPermCostState *state);
 static void xpod_rdf_perm_note_cost_clause(IndexPath *path,
                                            XpodRdfPermCostState *state,
@@ -72,8 +74,13 @@ static StrategyNumber xpod_rdf_perm_op_strategy_for_index_column(IndexPath *path
                                                                  int index_col,
                                                                  Oid opno);
 static Selectivity xpod_rdf_perm_result_selectivity(XpodRdfPermCostState *state,
-                                                    double tuple_count);
-static Selectivity xpod_rdf_perm_page_selectivity(XpodRdfPermCostState *state);
+                                                    double tuple_count,
+                                                    bool prefix_stats_exact,
+                                                    uint64 *distinct_prefix_counts);
+static Selectivity xpod_rdf_perm_page_selectivity(XpodRdfPermCostState *state,
+                                                  double page_count,
+                                                  bool prefix_stats_exact,
+                                                  uint64 *distinct_prefix_counts);
 static Selectivity xpod_rdf_perm_clamp_selectivity(Selectivity value,
                                                    double tuple_count);
 static bool xpod_rdf_perm_validate(Oid opclassoid);
@@ -94,10 +101,12 @@ static void xpod_rdf_perm_end_scan(IndexScanDesc scan);
 #define XPOD_RDF_PERM_POSTING_MAGIC 0x58525044
 #define XPOD_RDF_PERM_META_MAGIC 0x58524d54
 #define XPOD_RDF_PERM_PAGE_MAGIC 0x58525047
-#define XPOD_RDF_PERM_SCHEMA_VERSION 1
+#define XPOD_RDF_PERM_SCHEMA_VERSION 2
 #define XPOD_RDF_PERM_MAX_KEYS 4
 #define XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED 0x0001
+#define XPOD_RDF_PERM_META_FLAG_PREFIX_STATS_EXACT 0x0002
 #define XPOD_RDF_PERM_PAGE_FLAG_SORTED 0x0001
+#define XPOD_RDF_PERM_META_V1_SPECIAL_SIZE MAXALIGN(offsetof(XpodRdfPermMetaOpaque, distinct_prefix_counts))
 #define XPOD_RDF_PERM_META_SPECIAL_SIZE MAXALIGN(sizeof(XpodRdfPermMetaOpaque))
 #define XPOD_RDF_PERM_PAGE_SPECIAL_SIZE MAXALIGN(sizeof(XpodRdfPermPageOpaque))
 #define XPOD_RDF_PERM_MAX_ENTRY_SIZE (BLCKSZ - SizeOfPageHeaderData - XPOD_RDF_PERM_PAGE_SPECIAL_SIZE)
@@ -112,6 +121,7 @@ typedef struct XpodRdfPermMetaOpaque
   uint32 reserved32;
   uint64 tuple_count;
   int64 last_keys[XPOD_RDF_PERM_MAX_KEYS];
+  uint64 distinct_prefix_counts[XPOD_RDF_PERM_MAX_KEYS];
 } XpodRdfPermMetaOpaque;
 
 typedef struct XpodRdfPermPageOpaque
@@ -211,6 +221,10 @@ static void xpod_rdf_perm_build_callback(Relation indexRelation,
                                          bool tupleIsAlive,
                                          void *state);
 static int xpod_rdf_perm_build_entry_compare(const void *left, const void *right);
+static void xpod_rdf_perm_build_distinct_prefix_counts(XpodRdfPermBuildEntry *entries,
+                                                       uint64 entry_count,
+                                                       uint16 nkeys,
+                                                       uint64 *distinct_prefix_counts);
 static Size xpod_rdf_perm_entry_size(uint16 nkeys);
 static void xpod_rdf_perm_assert_supported_nkeys(uint16 nkeys);
 static bool xpod_rdf_perm_decode_build_entry(XpodRdfPermBuildEntry *entry,
@@ -239,6 +253,8 @@ static bool xpod_rdf_perm_append_posting_build_entries(Relation indexRelation,
                                                        uint32 posting_count);
 static void xpod_rdf_perm_ensure_metapage(Relation indexRelation, uint16 nkeys);
 static XpodRdfPermMetaOpaque *xpod_rdf_perm_meta_opaque(Page page);
+static bool xpod_rdf_perm_meta_supports_prefix_stats(Page page,
+                                                     XpodRdfPermMetaOpaque *opaque);
 static bool xpod_rdf_perm_relation_has_metapage(Relation indexRelation);
 static BlockNumber xpod_rdf_perm_first_data_block(Relation indexRelation);
 static bool xpod_rdf_perm_relation_is_globally_sorted(Relation indexRelation);
@@ -246,7 +262,8 @@ static void xpod_rdf_perm_meta_note_append(Relation indexRelation, XpodRdfPermBu
 static void xpod_rdf_perm_meta_finish_ordered_build(Relation indexRelation,
                                                     uint16 nkeys,
                                                     uint64 tuple_count,
-                                                    XpodRdfPermBuildEntry *last_entry);
+                                                    XpodRdfPermBuildEntry *last_entry,
+                                                    uint64 *distinct_prefix_counts);
 static int xpod_rdf_perm_meta_compare_last_keys(XpodRdfPermMetaOpaque *opaque, XpodRdfPermBuildEntry *entry);
 static bool xpod_rdf_perm_page_add_item(Relation indexRelation,
                                         Buffer buffer,
@@ -369,6 +386,9 @@ xpod_rdf_capabilities(PG_FUNCTION_ARGS)
     "scan.exact_graph,"
     "scan.graph_prefix,"
     "scan.term_in,"
+    "join.required_bgp,"
+    "aggregate.count,"
+    "aggregate.numeric,"
     "cache.result,"
     "index.xpod_rdf_perm"
   ));
@@ -401,9 +421,11 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
   BlockNumber block;
   bool has_metapage = false;
   bool global_sorted = false;
+  bool prefix_stats_exact = false;
   uint16 schema_version = 0;
   uint16 nkeys = 0;
   uint64 tuple_count = 0;
+  uint64 distinct_prefix_counts[XPOD_RDF_PERM_MAX_KEYS];
   uint64 page_tuple_count = 0;
   uint64 item_count = 0;
   uint64 posting_count = 0;
@@ -418,8 +440,12 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
   double avg_tuples_per_page;
   double avg_entry_bytes;
   double avg_postings_per_item;
+  double avg_postings_per_prefix[XPOD_RDF_PERM_MAX_KEYS];
+  uint16 key_index;
   StringInfoData json;
 
+  memset(distinct_prefix_counts, 0, sizeof(distinct_prefix_counts));
+  memset(avg_postings_per_prefix, 0, sizeof(avg_postings_per_prefix));
   indexRelation = index_open(index_oid, AccessShareLock);
   block_count = RelationGetNumberOfBlocks(indexRelation);
 
@@ -440,6 +466,14 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
       nkeys = meta->nkeys;
       tuple_count = meta->tuple_count;
       global_sorted = (meta->flags & XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED) != 0;
+      if (xpod_rdf_perm_meta_supports_prefix_stats(page, meta))
+      {
+        prefix_stats_exact = (meta->flags & XPOD_RDF_PERM_META_FLAG_PREFIX_STATS_EXACT) != 0;
+        for (key_index = 0; key_index < nkeys && key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+        {
+          distinct_prefix_counts[key_index] = meta->distinct_prefix_counts[key_index];
+        }
+      }
     }
     UnlockReleaseBuffer(buffer);
   }
@@ -510,6 +544,12 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
   avg_tuples_per_page = data_pages == 0 ? 0.0 : ((double) posting_count / (double) data_pages);
   avg_entry_bytes = item_count == 0 ? 0.0 : ((double) item_bytes / (double) item_count);
   avg_postings_per_item = item_count == 0 ? 0.0 : ((double) posting_count / (double) item_count);
+  for (key_index = 0; key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+  {
+    avg_postings_per_prefix[key_index] = distinct_prefix_counts[key_index] == 0
+      ? 0.0
+      : ((double) posting_count / (double) distinct_prefix_counts[key_index]);
+  }
 
   initStringInfo(&json);
   appendStringInfo(
@@ -519,8 +559,17 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
     "\"schemaVersion\":%u,"
     "\"hasMetapage\":%s,"
     "\"globalSorted\":%s,"
+    "\"prefixStatsExact\":%s,"
     "\"nkeys\":%u,"
     "\"tupleCount\":%llu,"
+    "\"distinctPrefix1\":%llu,"
+    "\"distinctPrefix2\":%llu,"
+    "\"distinctPrefix3\":%llu,"
+    "\"distinctPrefix4\":%llu,"
+    "\"avgPostingsPerPrefix1\":%.6f,"
+    "\"avgPostingsPerPrefix2\":%.6f,"
+    "\"avgPostingsPerPrefix3\":%.6f,"
+    "\"avgPostingsPerPrefix4\":%.6f,"
     "\"pageTupleCount\":%llu,"
     "\"itemCount\":%llu,"
     "\"postingCount\":%llu,"
@@ -539,8 +588,17 @@ xpod_rdf_perm_index_stats(PG_FUNCTION_ARGS)
     (unsigned int) schema_version,
     has_metapage ? "true" : "false",
     global_sorted ? "true" : "false",
+    prefix_stats_exact ? "true" : "false",
     (unsigned int) nkeys,
     (unsigned long long) tuple_count,
+    (unsigned long long) distinct_prefix_counts[0],
+    (unsigned long long) distinct_prefix_counts[1],
+    (unsigned long long) distinct_prefix_counts[2],
+    (unsigned long long) distinct_prefix_counts[3],
+    avg_postings_per_prefix[0],
+    avg_postings_per_prefix[1],
+    avg_postings_per_prefix[2],
+    avg_postings_per_prefix[3],
     (unsigned long long) page_tuple_count,
     (unsigned long long) item_count,
     (unsigned long long) posting_count,
@@ -715,6 +773,7 @@ xpod_rdf_perm_build(Relation heapRelation,
 {
   IndexBuildResult *result = palloc0(sizeof(IndexBuildResult));
   XpodRdfPermBuildState build_state;
+  uint64 distinct_prefix_counts[XPOD_RDF_PERM_MAX_KEYS];
   uint64 index_entry;
 
   memset(&build_state, 0, sizeof(XpodRdfPermBuildState));
@@ -738,6 +797,12 @@ xpod_rdf_perm_build(Relation heapRelation,
   {
     qsort(build_state.entries, build_state.entry_count, sizeof(XpodRdfPermBuildEntry), xpod_rdf_perm_build_entry_compare);
   }
+  xpod_rdf_perm_build_distinct_prefix_counts(
+    build_state.entries,
+    build_state.entry_count,
+    build_state.nkeys,
+    distinct_prefix_counts
+  );
   index_entry = 0;
   while (index_entry < build_state.entry_count)
   {
@@ -784,7 +849,8 @@ xpod_rdf_perm_build(Relation heapRelation,
     indexRelation,
     build_state.nkeys,
     build_state.entry_count,
-    build_state.entry_count > 0 ? &build_state.entries[build_state.entry_count - 1] : NULL
+    build_state.entry_count > 0 ? &build_state.entries[build_state.entry_count - 1] : NULL,
+    distinct_prefix_counts
   );
 
   result->index_tuples = build_state.index_tuples;
@@ -1017,7 +1083,9 @@ xpod_rdf_perm_cost_estimate(struct PlannerInfo *root,
   XpodRdfPermCostState state;
   uint64 meta_tuple_count = 0;
   bool global_sorted = false;
+  bool prefix_stats_exact = false;
   uint16 meta_nkeys = 0;
+  uint64 distinct_prefix_counts[XPOD_RDF_PERM_MAX_KEYS];
   double tuple_count;
   double page_count;
   Selectivity row_selectivity;
@@ -1029,7 +1097,15 @@ xpod_rdf_perm_cost_estimate(struct PlannerInfo *root,
   (void) loop_count;
 
   xpod_rdf_perm_prepare_cost_state(path, &state);
-  xpod_rdf_perm_read_cost_meta(path->indexinfo->indexoid, &meta_tuple_count, &global_sorted, &meta_nkeys);
+  memset(distinct_prefix_counts, 0, sizeof(distinct_prefix_counts));
+  xpod_rdf_perm_read_cost_meta(
+    path->indexinfo->indexoid,
+    &meta_tuple_count,
+    &global_sorted,
+    &prefix_stats_exact,
+    &meta_nkeys,
+    distinct_prefix_counts
+  );
   if (meta_nkeys > 0 && meta_nkeys < state.nkeys)
   {
     state.nkeys = meta_nkeys;
@@ -1039,8 +1115,8 @@ xpod_rdf_perm_cost_estimate(struct PlannerInfo *root,
     ? (double) meta_tuple_count
     : Max(path->indexinfo->tuples, 1.0);
   page_count = Max((double) path->indexinfo->pages, 1.0);
-  row_selectivity = xpod_rdf_perm_result_selectivity(&state, tuple_count);
-  page_selectivity = xpod_rdf_perm_page_selectivity(&state);
+  row_selectivity = xpod_rdf_perm_result_selectivity(&state, tuple_count, prefix_stats_exact, distinct_prefix_counts);
+  page_selectivity = xpod_rdf_perm_page_selectivity(&state, page_count, prefix_stats_exact, distinct_prefix_counts);
   expected_rows = Max(1.0, tuple_count * row_selectivity);
   expected_pages = Max(1.0, page_count * page_selectivity);
 
@@ -1055,7 +1131,9 @@ static void
 xpod_rdf_perm_read_cost_meta(Oid index_oid,
                              uint64 *tuple_count,
                              bool *global_sorted,
-                             uint16 *nkeys)
+                             bool *prefix_stats_exact,
+                             uint16 *nkeys,
+                             uint64 *distinct_prefix_counts)
 {
   Relation indexRelation;
   BlockNumber block_count;
@@ -1065,7 +1143,9 @@ xpod_rdf_perm_read_cost_meta(Oid index_oid,
 
   *tuple_count = 0;
   *global_sorted = false;
+  *prefix_stats_exact = false;
   *nkeys = 0;
+  memset(distinct_prefix_counts, 0, sizeof(uint64) * XPOD_RDF_PERM_MAX_KEYS);
   if (!OidIsValid(index_oid))
   {
     return;
@@ -1088,6 +1168,16 @@ xpod_rdf_perm_read_cost_meta(Oid index_oid,
     *tuple_count = meta->tuple_count;
     *global_sorted = (meta->flags & XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED) != 0;
     *nkeys = meta->nkeys;
+    if (xpod_rdf_perm_meta_supports_prefix_stats(page, meta))
+    {
+      uint16 key_index;
+
+      *prefix_stats_exact = (meta->flags & XPOD_RDF_PERM_META_FLAG_PREFIX_STATS_EXACT) != 0;
+      for (key_index = 0; key_index < meta->nkeys && key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+      {
+        distinct_prefix_counts[key_index] = meta->distinct_prefix_counts[key_index];
+      }
+    }
   }
   UnlockReleaseBuffer(buffer);
   index_close(indexRelation, AccessShareLock);
@@ -1192,15 +1282,58 @@ xpod_rdf_perm_op_strategy_for_index_column(IndexPath *path, int index_col, Oid o
 }
 
 static Selectivity
-xpod_rdf_perm_result_selectivity(XpodRdfPermCostState *state, double tuple_count)
+xpod_rdf_perm_result_selectivity(XpodRdfPermCostState *state,
+                                 double tuple_count,
+                                 bool prefix_stats_exact,
+                                 uint64 *distinct_prefix_counts)
 {
   Selectivity selectivity = 1.0;
   uint16 key_index;
+  uint16 exact_prefix_nkeys = 0;
 
   if (state->clause_count == 0)
   {
     return 1.0;
   }
+
+  if (prefix_stats_exact)
+  {
+    for (key_index = 0; key_index < state->nkeys; key_index++)
+    {
+      if (!state->columns[key_index].has_equal)
+      {
+        break;
+      }
+      exact_prefix_nkeys++;
+    }
+    if (
+      exact_prefix_nkeys > 0
+      && exact_prefix_nkeys <= XPOD_RDF_PERM_MAX_KEYS
+      && distinct_prefix_counts[exact_prefix_nkeys - 1] > 0
+    )
+    {
+      selectivity = 1.0 / (double) distinct_prefix_counts[exact_prefix_nkeys - 1];
+      for (key_index = exact_prefix_nkeys; key_index < state->nkeys; key_index++)
+      {
+        XpodRdfPermCostColumn *column = &state->columns[key_index];
+
+        if (column->has_equal)
+        {
+          selectivity *= 0.05;
+        }
+        else if (column->has_range)
+        {
+          selectivity *= 0.35;
+        }
+        else if (column->has_unknown)
+        {
+          selectivity *= 0.50;
+        }
+      }
+      return xpod_rdf_perm_clamp_selectivity(selectivity, tuple_count);
+    }
+  }
+
   for (key_index = 0; key_index < state->nkeys; key_index++)
   {
     XpodRdfPermCostColumn *column = &state->columns[key_index];
@@ -1222,14 +1355,38 @@ xpod_rdf_perm_result_selectivity(XpodRdfPermCostState *state, double tuple_count
 }
 
 static Selectivity
-xpod_rdf_perm_page_selectivity(XpodRdfPermCostState *state)
+xpod_rdf_perm_page_selectivity(XpodRdfPermCostState *state,
+                               double page_count,
+                               bool prefix_stats_exact,
+                               uint64 *distinct_prefix_counts)
 {
   Selectivity selectivity = 1.0;
   uint16 key_index;
+  uint16 exact_prefix_nkeys = 0;
 
   if (state->clause_count == 0)
   {
     return 1.0;
+  }
+  if (prefix_stats_exact)
+  {
+    for (key_index = 0; key_index < state->nkeys; key_index++)
+    {
+      if (!state->columns[key_index].has_equal)
+      {
+        break;
+      }
+      exact_prefix_nkeys++;
+    }
+    if (
+      exact_prefix_nkeys > 0
+      && exact_prefix_nkeys <= XPOD_RDF_PERM_MAX_KEYS
+      && distinct_prefix_counts[exact_prefix_nkeys - 1] > 0
+    )
+    {
+      selectivity = 1.0 / (double) distinct_prefix_counts[exact_prefix_nkeys - 1];
+      return xpod_rdf_perm_clamp_selectivity(selectivity, page_count);
+    }
   }
   for (key_index = 0; key_index < state->nkeys; key_index++)
   {
@@ -1519,6 +1676,37 @@ xpod_rdf_perm_build_entry_compare(const void *left, const void *right)
   return tid_compare < 0 ? -1 : tid_compare > 0 ? 1 : 0;
 }
 
+static void
+xpod_rdf_perm_build_distinct_prefix_counts(XpodRdfPermBuildEntry *entries,
+                                           uint64 entry_count,
+                                           uint16 nkeys,
+                                           uint64 *distinct_prefix_counts)
+{
+  uint64 entry_index;
+  uint16 prefix_nkeys;
+  uint16 bounded_nkeys = Min(nkeys, XPOD_RDF_PERM_MAX_KEYS);
+
+  memset(distinct_prefix_counts, 0, sizeof(uint64) * XPOD_RDF_PERM_MAX_KEYS);
+  for (entry_index = 0; entry_index < entry_count; entry_index++)
+  {
+    for (prefix_nkeys = 1; prefix_nkeys <= bounded_nkeys; prefix_nkeys++)
+    {
+      if (
+        entry_index == 0
+        || xpod_rdf_perm_key_prefix_compare(
+          entries[entry_index - 1].keys,
+          prefix_nkeys,
+          entries[entry_index].keys,
+          prefix_nkeys
+        ) != 0
+      )
+      {
+        distinct_prefix_counts[prefix_nkeys - 1]++;
+      }
+    }
+  }
+}
+
 static Size
 xpod_rdf_perm_entry_size(uint16 nkeys)
 {
@@ -1779,7 +1967,7 @@ xpod_rdf_perm_ensure_metapage(Relation indexRelation, uint16 nkeys)
   opaque->magic = XPOD_RDF_PERM_META_MAGIC;
   opaque->schema_version = XPOD_RDF_PERM_SCHEMA_VERSION;
   opaque->nkeys = nkeys;
-  opaque->flags = XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED;
+  opaque->flags = XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED | XPOD_RDF_PERM_META_FLAG_PREFIX_STATS_EXACT;
   GenericXLogFinish(state);
   UnlockReleaseBuffer(buffer);
 }
@@ -1789,12 +1977,20 @@ xpod_rdf_perm_meta_opaque(Page page)
 {
   XpodRdfPermMetaOpaque *opaque;
 
-  if (PageGetSpecialSize(page) < sizeof(XpodRdfPermMetaOpaque))
+  if (PageGetSpecialSize(page) < XPOD_RDF_PERM_META_V1_SPECIAL_SIZE)
   {
     return NULL;
   }
   opaque = (XpodRdfPermMetaOpaque *) PageGetSpecialPointer(page);
   return opaque->magic == XPOD_RDF_PERM_META_MAGIC ? opaque : NULL;
+}
+
+static bool
+xpod_rdf_perm_meta_supports_prefix_stats(Page page, XpodRdfPermMetaOpaque *opaque)
+{
+  return opaque != NULL
+    && opaque->schema_version >= 2
+    && PageGetSpecialSize(page) >= XPOD_RDF_PERM_META_SPECIAL_SIZE;
 }
 
 static bool
@@ -1853,6 +2049,8 @@ xpod_rdf_perm_meta_note_append(Relation indexRelation, XpodRdfPermBuildEntry *en
   Page page;
   XpodRdfPermMetaOpaque *opaque;
   uint16 key_index;
+  bool out_of_order = false;
+  bool prefix_stats_exact = false;
 
   if (!xpod_rdf_perm_relation_has_metapage(indexRelation))
   {
@@ -1868,7 +2066,30 @@ xpod_rdf_perm_meta_note_append(Relation indexRelation, XpodRdfPermBuildEntry *en
   {
     if (opaque->tuple_count > 0 && xpod_rdf_perm_meta_compare_last_keys(opaque, entry) > 0)
     {
+      out_of_order = true;
       opaque->flags &= ~XPOD_RDF_PERM_META_FLAG_GLOBAL_SORTED;
+      opaque->flags &= ~XPOD_RDF_PERM_META_FLAG_PREFIX_STATS_EXACT;
+    }
+    prefix_stats_exact = !out_of_order
+      && xpod_rdf_perm_meta_supports_prefix_stats(page, opaque)
+      && (opaque->flags & XPOD_RDF_PERM_META_FLAG_PREFIX_STATS_EXACT) != 0;
+    if (prefix_stats_exact)
+    {
+      for (key_index = 0; key_index < entry->nkeys && key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+      {
+        if (
+          opaque->tuple_count == 0
+          || xpod_rdf_perm_key_prefix_compare(
+            opaque->last_keys,
+            key_index + 1,
+            entry->keys,
+            key_index + 1
+          ) != 0
+        )
+        {
+          opaque->distinct_prefix_counts[key_index]++;
+        }
+      }
     }
     opaque->nkeys = entry->nkeys;
     opaque->tuple_count++;
@@ -1885,7 +2106,8 @@ static void
 xpod_rdf_perm_meta_finish_ordered_build(Relation indexRelation,
                                         uint16 nkeys,
                                         uint64 tuple_count,
-                                        XpodRdfPermBuildEntry *last_entry)
+                                        XpodRdfPermBuildEntry *last_entry,
+                                        uint64 *distinct_prefix_counts)
 {
   Buffer buffer;
   GenericXLogState *state;
@@ -1914,6 +2136,15 @@ xpod_rdf_perm_meta_finish_ordered_build(Relation indexRelation,
       for (key_index = 0; key_index < last_entry->nkeys; key_index++)
       {
         opaque->last_keys[key_index] = last_entry->keys[key_index];
+      }
+    }
+    if (xpod_rdf_perm_meta_supports_prefix_stats(page, opaque))
+    {
+      opaque->flags |= XPOD_RDF_PERM_META_FLAG_PREFIX_STATS_EXACT;
+      memset(opaque->distinct_prefix_counts, 0, sizeof(opaque->distinct_prefix_counts));
+      for (key_index = 0; key_index < nkeys && key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+      {
+        opaque->distinct_prefix_counts[key_index] = distinct_prefix_counts[key_index];
       }
     }
   }

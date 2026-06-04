@@ -1473,6 +1473,19 @@ export class PostgresRdfEngine implements RdfEngineLike {
     );
   }
 
+  private async queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]> {
+    const rows = await this.requireExecutor().query<{ row_json: unknown }>(
+      'SELECT row_json FROM xpod_rdf.execute_plan_json($1::text)',
+      [inlinePgSqlParams(sql, params)],
+    );
+    return rows.map((row) => parsePgJsonRow(row.row_json) as T);
+  }
+
+  private async scalarPgExtensionCount(sql: string, params?: unknown[]): Promise<number> {
+    const rows = await this.queryPgExtensionJsonRows<{ count?: unknown }>(sql, params ?? []);
+    return pgInteger(rows[0]?.count) ?? 0;
+  }
+
   private pgExtensionQuadScanParams(resolved: PgResolvedPattern, options?: QueryOptions): unknown[] {
     const graphPrefixHead = resolved.graphPrefix === undefined
       ? undefined
@@ -1515,6 +1528,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
       && !resolved.objectRange
       && Object.keys(resolved.excludedIdSets).length === 0
       && Object.keys(resolved.termFilters).length === 0;
+  }
+
+  private canUsePgExtensionQueryOperators(query: RdfQuery): boolean {
+    if (this.pgAcceleration?.provider !== 'extension' || this.pgAcceleration.enabled !== true) {
+      return false;
+    }
+    const providers = this.pgAcceleration.capabilityProviders ?? {};
+    return this.pgAccelerationCapabilitiesForQuery(query)
+      .every((capability) => providers[capability] === 'extension');
   }
 
   private pgExtensionScanCapabilitiesForResolvedPattern(resolved: PgResolvedPattern): string[] {
@@ -1588,21 +1610,35 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ], query.filters?.length ?? 0),
       };
     }
-    const rows = await this.requireExecutor().query<Record<string, number>>(compiled.sql, compiled.params);
+    const useExtensionJoin = requiredPatterns.length > 1 && this.canUsePgExtensionQueryOperators(query);
+    const rows = useExtensionJoin
+      ? await this.queryPgExtensionJsonRows<Record<string, number>>(compiled.sql, compiled.params)
+      : await this.requireExecutor().query<Record<string, number>>(compiled.sql, compiled.params);
     const matchedRows = compiled.countSql
-      ? await this.scalarCount(compiled.countSql, compiled.countParams)
+      ? useExtensionJoin
+        ? await this.scalarPgExtensionCount(compiled.countSql, compiled.countParams)
+        : await this.scalarCount(compiled.countSql, compiled.countParams)
       : rows.length;
     const bindings = await this.joinRowsToBindings(rows, compiled.variableAliases);
     const plan = [
       ...storagePlanMarkers(compiled.queryPlan),
       ...this.pgAccelerationActiveMarkersForQuery(query),
+      ...(useExtensionJoin ? ['XpodRdfExtensionJoin(execute_plan_json)'] : []),
       `PostgresRdf3xJoin(${compiledPatterns.map((entry) => describePatternSource(entry)).join('|')})`,
       ...(query.distinct ? [`PostgresRdf3xJoinDistinct(${project.map((variableName) => `?${variableName}`).join(',')})`] : []),
       ...(query.limit !== undefined || query.offset !== undefined ? ['PostgresRdf3xJoinLimit'] : []),
     ];
     return {
       bindings,
-      metrics: this.localMetrics(start, matchedRows, matchedRows, bindings.length, [compiled.indexChoice], plan, query.filters?.length ?? 0),
+      metrics: this.localMetrics(
+        start,
+        matchedRows,
+        matchedRows,
+        bindings.length,
+        [useExtensionJoin ? `xpod_rdf.execute_plan_json(${compiled.indexChoice})` : compiled.indexChoice],
+        plan,
+        query.filters?.length ?? 0,
+      ),
     };
   }
 
@@ -2670,17 +2706,30 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const pagination = this.buildPagination(query, builder);
     sql += pagination.sql;
     const params = builder.snapshot();
-    const rows = await this.requireExecutor().query<Record<string, number>>(sql, params);
+    const useExtensionAggregate = this.canUsePgExtensionQueryOperators(query);
+    const rows = useExtensionAggregate
+      ? await this.queryPgExtensionJsonRows<Record<string, number>>(sql, params)
+      : await this.requireExecutor().query<Record<string, number>>(sql, params);
     const matchedRows = groupColumns.length > 0
-      ? await this.scalarCount(
-          `SELECT COUNT(*) AS count FROM (
+      ? useExtensionAggregate
+        ? await this.scalarPgExtensionCount(
+            `SELECT COUNT(*) AS count FROM (
+              SELECT ${groupColumns.map((group) => group.column).join(', ')}
+              FROM ${aggregateFrom}
+              GROUP BY ${groupColumns.map((group) => group.column).join(', ')}
+              ${havingClause.sql}
+            ) grouped_count`,
+            builder.snapshot().slice(0, builder.snapshot().length - pagination.paramCount),
+          )
+        : await this.scalarCount(
+            `SELECT COUNT(*) AS count FROM (
             SELECT ${groupColumns.map((group) => group.column).join(', ')}
             FROM ${aggregateFrom}
             GROUP BY ${groupColumns.map((group) => group.column).join(', ')}
             ${havingClause.sql}
           ) grouped_count`,
-          builder.snapshot().slice(0, builder.snapshot().length - pagination.paramCount),
-        )
+            builder.snapshot().slice(0, builder.snapshot().length - pagination.paramCount),
+          )
       : rows.length;
     const bindings = await this.joinRowsToBindings(rows, new Map(groupColumns.map((group) => [group.variableName, group.alias])), aggregateAliases, aggregateTypes);
     const firstCount = !groupColumns.length && aggregates[0] ? Number(bindings[0]?.[aggregates[0].as]?.value ?? 0) : undefined;
@@ -2688,6 +2737,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const plan = [
       ...storagePlanMarkers(compiled.queryPlan),
       ...this.pgAccelerationActiveMarkersForQuery(query),
+      ...(useExtensionAggregate ? ['XpodRdfExtensionAggregate(execute_plan_json)'] : []),
       aggregateMarker,
       aggregatePlan(aggregates, groupColumns.length > 0),
       ...(havingClause.sql ? [`PostgresRdf3xAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
@@ -2697,7 +2747,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return {
       bindings,
       ...(firstCount !== undefined ? { count: firstCount } : {}),
-      metrics: this.localMetrics(start, matchedRows, matchedRows, bindings.length, [compiled.indexChoice], plan, query.filters?.length ?? 0),
+      metrics: this.localMetrics(
+        start,
+        matchedRows,
+        matchedRows,
+        bindings.length,
+        [useExtensionAggregate ? `xpod_rdf.execute_plan_json(${compiled.indexChoice})` : compiled.indexChoice],
+        plan,
+        query.filters?.length ?? 0,
+      ),
     };
   }
 
@@ -4069,8 +4127,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
           schemaVersion: pgStatNumber(native.schemaVersion),
           hasMetapage: pgBoolean(native.hasMetapage),
           globalSorted: pgBoolean(native.globalSorted),
+          prefixStatsExact: pgBoolean(native.prefixStatsExact),
           nkeys: pgStatNumber(native.nkeys),
           tupleCount: pgStatNumber(native.tupleCount),
+          distinctPrefix1: pgStatNumber(native.distinctPrefix1),
+          distinctPrefix2: pgStatNumber(native.distinctPrefix2),
+          distinctPrefix3: pgStatNumber(native.distinctPrefix3),
+          distinctPrefix4: pgStatNumber(native.distinctPrefix4),
+          avgPostingsPerPrefix1: pgStatNumber(native.avgPostingsPerPrefix1),
+          avgPostingsPerPrefix2: pgStatNumber(native.avgPostingsPerPrefix2),
+          avgPostingsPerPrefix3: pgStatNumber(native.avgPostingsPerPrefix3),
+          avgPostingsPerPrefix4: pgStatNumber(native.avgPostingsPerPrefix4),
           pageTupleCount: pgStatNumber(native.pageTupleCount),
           itemCount: pgStatNumber(native.itemCount),
           postingCount: pgStatNumber(native.postingCount),
@@ -4235,6 +4302,54 @@ function queryResultCacheKey(queryShape: string): string {
     .update('\0')
     .update(queryShape)
     .digest('hex');
+}
+
+function inlinePgSqlParams(sql: string, params: unknown[]): string {
+  return sql.replace(/\$(\d+)\b/g, (placeholder, rawIndex) => {
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || index < 1 || index > params.length) {
+      throw new Error(`Cannot inline PostgreSQL parameter ${placeholder}: value is missing`);
+    }
+    return pgLiteral(params[index - 1]);
+  });
+}
+
+function pgLiteral(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'NULL';
+  }
+  if (Array.isArray(value)) {
+    return `ARRAY[${value.map(pgLiteral).join(', ')}]`;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error('Cannot inline non-finite PostgreSQL numeric parameter');
+    }
+    return String(value);
+  }
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'TRUE' : 'FALSE';
+  }
+  if (typeof value === 'string') {
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+  throw new Error(`Cannot inline unsupported PostgreSQL parameter type: ${typeof value}`);
+}
+
+function parsePgJsonRow(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  throw new Error('xpod_rdf.execute_plan_json returned a non-object row');
 }
 
 function normalizePgAccelerationCapabilities(value: unknown): string[] {

@@ -531,8 +531,9 @@ PostgreSQL extension。它不是独立查询服务，也不是 raw SPARQL endpoi
 `xpod_rdf_perm`。当前 native extension 已有 compressed posting prototype，用于验证 PG
 custom AM packaging、opclass、planner path 和 lifecycle；该 prototype 已支持 ordered build、
 重复 full key delta-varint TID posting stream、metapage global-order guard、block-level lower-bound seek、page
-min/max pruning，以及 sorted page 的 page-local lower-bound seek。它仍不作为默认 profile，也不能
-替代后续 skip stats / cost model 和 native hot-operator 性能实现。
+min/max pruning、sorted page 的 page-local lower-bound seek、metapage prefix distinct /
+fanout stats，以及 prefix-stats-aware cost model。它仍不作为默认 profile，也不能替代后续
+block-level skip table 和 native hot-operator 性能实现。
 
 目标：
 
