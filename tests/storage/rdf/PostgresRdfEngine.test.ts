@@ -27,6 +27,8 @@ const THREAD = 'https://undefineds.co/ns#thread';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const MESSAGE_TYPE = 'https://undefineds.co/ns#Message';
+const SCHEDULE_TYPE = 'https://undefineds.co/ns#Schedule';
+const NEXT_RUN_AT = 'https://undefineds.co/ns#nextRunAt';
 
 describe('PostgresRdfEngine', () => {
   it('stores RDF facts asynchronously while preserving datatype and language terms', async () => {
@@ -2455,6 +2457,141 @@ describe('PostgresRdfEngine', () => {
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.subject_star)');
       expect(result.metrics.plan).toContain('XpodRdfSubjectStarJoin(subject_star_join)');
       expect(result.metrics.plan).toContain('XpodRdfSubjectStarSeed(POS,prefix:2)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionJoin(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes pg-custom-index subject-star joins with object range filters through native subject_star_join', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-subject-star-range-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/schedules.ttl');
+    const schedule = namedNode(`${graph.value}#schedule_1`);
+    const nextRunAt = literal('2026-05-18T01:00:00.000Z');
+    const dueAt = literal('2026-05-18T01:30:00.000Z');
+    const observedSql: string[] = [];
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      const originalExecutor = internals.requireExecutor();
+      await engine.put([
+        quad(schedule, namedNode(RDF_TYPE), namedNode(SCHEDULE_TYPE), graph),
+        quad(schedule, namedNode(STATUS), literal('active'), graph),
+        quad(schedule, namedNode(NEXT_RUN_AT), nextRunAt, graph),
+      ]);
+      const dictionary = internals.requireDictionary();
+      const scheduleId = await dictionary.find(schedule);
+      const nextRunAtId = await dictionary.find(nextRunAt);
+      expect(scheduleId).toBeDefined();
+      expect(nextRunAtId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.subject_star',
+        ],
+        capabilityProviders: {
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.subject_star': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.subject_star',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for subject-star range joins');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.subject_star_join')) {
+            observedSql.push(sql);
+            observedParams = params;
+            return [{ v0: scheduleId, v1: nextRunAtId }] as T[];
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+            subject: { variable: 'schedule' },
+            predicate: namedNode(RDF_TYPE),
+            object: namedNode(SCHEDULE_TYPE),
+          },
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+            subject: { variable: 'schedule' },
+            predicate: namedNode(STATUS),
+            object: literal('active'),
+          },
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+            subject: { variable: 'schedule' },
+            predicate: namedNode(NEXT_RUN_AT),
+            object: { variable: 'nextRunAt' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'nextRunAt',
+            operator: '$lte',
+            value: dueAt,
+          },
+        ],
+        select: ['schedule', 'nextRunAt'],
+        orderBy: [{ variable: 'nextRunAt', direction: 'asc' }],
+        limit: 100,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.subject_star_join');
+      expect(observedSql[0]).toContain('JOIN rdf_terms star_object_range_t1 ON star_object_range_t1.id = star.object2_id');
+      expect(observedSql[0]).toContain('star_object_range_t1.value <=');
+      expect(observedSql[0]).toContain('ORDER BY join_order_t0.value ASC');
+      expect(observedParams).toContain('2026-05-18T01:30:00.000Z');
+      expect(result.bindings.map((binding) => binding.schedule.value)).toEqual([schedule.value]);
+      expect(result.bindings.map((binding) => binding.nextRunAt.value)).toEqual([nextRunAt.value]);
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.subject_star_join');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.subject_star)');
+      expect(result.metrics.plan).toContain('LexicalRange(object$lte)');
+      expect(result.metrics.plan).toContain('XpodRdfSubjectStarJoin(subject_star_join)');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionJoin(execute_plan_json)');
     } finally {
       await engine.close();

@@ -380,6 +380,78 @@ physical plan 中出现 `XpodRdfPgHotOperator(scan.graph_prefix)` 18 次、`scan
 plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 profile/metrics/部署
 边界的 product-grade 化，不是 native extension 的额外性能结论。
 
+### Real PostgreSQL / Native `pg-custom-index` Subject-star Small Gate
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:55433/xpod_bench_range --allowPgWrites --scale=small --iterations=1 --warmupIterations=1 --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-custom-index-native-subject-star-range-small
+```
+
+运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container，已安装 native
+`xpod_rdf` extension。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | small |
+| target quads | 48 |
+| seed quads | 114 |
+| synthetic messages | 12 |
+| synthetic pods | 1 |
+| query cases | 8 |
+| iterations | 1 |
+| warmup iterations | 1 |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| real PG models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| PG acceleration profile | `pg-custom-index` |
+| PG acceleration provider | `extension` |
+| PG acceleration enabled | true |
+| report | `.test-data/rdf-pg-custom-index-native-subject-star-range-small/models-postgres-2026-06-04T20-29-11-059Z-43910-f546d101-9d80-4f0e-bfdb-05a8d5102ce6.json` |
+
+active operators：
+
+`aggregate.count`、`aggregate.numeric`、`cache.result`、`index.xpod_rdf_perm`、
+`index.xpod_rdf_perm.count`、`index.xpod_rdf_perm.count_any`、
+`index.xpod_rdf_perm.scan`、`index.xpod_rdf_perm.scan_any`、`join.required_bgp`、
+`join.subject_star`、`join.values`、`scan.exact_graph`、`scan.graph_prefix`、`scan.term_in`。
+
+真实 PG native subject-star small storage profile：
+
+| Space | Bytes | Notes |
+| --- | ---: | --- |
+| facts bytes | 1056768 | PG facts tables + facts covering indexes + custom perm indexes |
+| derived bytes | 663552 | RDF-3X projection / graph stats + cache/index metadata |
+| total bytes | 1720320 | facts + derived |
+| total / facts ratio | 1.63x | small seed 固定页开销较高，不能外推 medium/large ratio |
+
+真实 PG native subject-star small query p95：
+
+| Case | p95 | Native subject-star | Notes |
+| --- | ---: | --- | --- |
+| latest message by thread query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
+| next queued run by workspace query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` |
+| run steps by run query | 4 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
+| task materialization active due query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` + `LexicalRange(object$lte)` outer filter |
+| message count by thread with having | 2 ms | no | grouped count over one pattern |
+| queued run priority numeric aggregate | 6 ms | no | numeric aggregate over BGP |
+| message score by thread numeric aggregate | 9 ms | no | grouped numeric aggregate over BGP |
+| message join count distinct | 4 ms | yes | subject-star rows feed PG SQL `COUNT` / `COUNT DISTINCT` |
+
+结论：native `subject_star_join(...)` 已经覆盖 constant-predicate、同 subject 变量、至少一个
+exact object seed 的 subject-star shape。probe object 可以为空并作为返回列投影，`PostgresRdfEngine`
+会在 outer SQL 里 join `rdf_terms` 执行 object range filter 和 order。因此 scheduler
+materialization 的 `nextRunAt <= ...` 已经进入 subject-star input，small p95 为 5 ms。count /
+count-distinct aggregate 可以复用这条 native row stream 作为输入；aggregate 本身仍由
+PostgreSQL SQL 执行，不是 native aggregate executor。`message join count distinct` 已从 ordinary
+BGP path 进入 subject-star input，small p95 为 4 ms。
+
 ## PostgreSQL Status
 
 `PostgresRdfEngine` 当前已有：
@@ -418,10 +490,10 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `xpod_rdf.scan_quads(...)`，并在 metrics plan 中标记
   `XpodRdfExtensionScan(scan_quads)`；普通 required BGP join、group aggregate 和 numeric
   aggregate 不再通过 `xpod_rdf.execute_plan_json(...)` 进入 extension wrapper，而是继续走
-  direct PG RDF-3X SQL。只有受限 constant-predicate subject-star shape 会走
-  `xpod_rdf.subject_star_join(...)` native seed/probe/recheck path；这类 shape 的 count /
-  count-distinct aggregate 会复用 native subject-star rows 作为输入，aggregate 本身仍由 PG
-  SQL 执行。
+  direct PG RDF-3X SQL。受限 constant-predicate subject-star shape 会走
+  `xpod_rdf.subject_star_join(...)` native seed/probe/recheck path；probe object range filter
+  和 order 由 outer SQL join `rdf_terms` 执行。这类 shape 的 count / count-distinct aggregate
+  会复用 native subject-star rows 作为输入，aggregate 本身仍由 PG SQL 执行。
 - `pg-custom-index` profile：只有 native extension 声明 `index.xpod_rdf_perm` 后才启用；
   engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
   index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会把
@@ -466,6 +538,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   aggregate execution。
 - native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比
   RDF-3X baseline。
+- native C-level range-aware BGP join。当前 probe object range 可由 subject-star outer SQL
+  filter 覆盖，但普通 required BGP join、group aggregate 和 numeric aggregate 仍复用 direct
+  PG RDF-3X SQL。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用
 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration；
@@ -696,11 +771,16 @@ index bytes `3,244,032`、total/facts `1.30x`。refresh 阶段 reindex 6 个 per
 | latest message by thread query | 21 ms | 22 ms | `subject_star_join(seed:POS,probes:PSO)` |
 | next queued run by workspace query | 10 ms | 12 ms | `subject_star_join(seed:POS,probes:PSO>PSO)` |
 | run steps by run query | 6 ms | 7 ms | `subject_star_join(seed:POS,probes:PSO)` |
-| task materialization active due query | 25 ms | 21 ms | direct `Rdf3xJoinBGP` |
+| task materialization active due query | 25 ms | 21 ms | direct `Rdf3xJoinBGP` in this pre-range report |
 | message count by thread with having | 6 ms | 9 ms | direct `Rdf3xJoinBGP` |
 | queued run priority numeric aggregate | 5 ms | 6 ms | direct `Rdf3xJoinBGP` |
 | message score by thread numeric aggregate | 10 ms | 11 ms | direct `Rdf3xJoinBGP` |
 | message join count distinct | 10 ms | 16 ms | direct `Rdf3xJoinBGP` with graph-prefix fence |
+
+注意：上表是 probe object range 接入前的 medium 报告，不能再用来判断 scheduler
+materialization 的当前 native path。当前 small gate 已验证 `nextRunAt <= ...` 通过
+subject-star outer SQL range filter 进入 `subject_star_join(seed:POS,probes:PSO>PSO)`，后续需要
+重跑 medium/large 才能给出稳态性能结论。
 
 `execute_plan_json` 不再作为 ordinary join / aggregate 执行路径。之前 `message join count
 distinct` 在 cold full benchmark 中会被 PG 拉平成坏 semi-join，产生约 `200ms` p50；现在只对

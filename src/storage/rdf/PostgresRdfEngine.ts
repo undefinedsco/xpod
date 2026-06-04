@@ -3844,7 +3844,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       const resolved = await this.resolvePattern(entry.pattern);
       if (
         resolved.unresolved
-        || resolved.objectRange
         || Object.keys(resolved.termFilters).length > 0
         || Object.keys(resolved.excludedIdSets).length > 0
         || resolved.idSets.predicate?.length
@@ -3880,7 +3879,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const seed = [...resolvedSources]
       .filter((source) => source.resolved.ids.object !== undefined && !source.entry.variables.object)
       .sort((left, right) => left.estimateRows - right.estimateRows || left.inputIndex - right.inputIndex)[0];
-    if (!seed) {
+    if (!seed || seed.resolved.objectRange) {
       return undefined;
     }
     const seedPrefix = this.pgCustomIndexPermScanPrefix(seed.resolved);
@@ -3946,11 +3945,22 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return `${column} AS ${alias}`;
     });
     const projection = projectionColumns.length > 0 ? projectionColumns.join(', ') : '1 AS __empty';
+    const rangeJoins: string[] = [];
+    const rangeConditions: string[] = [];
+    const rangePlan: string[] = [];
+    for (const [probeIndexInOutput, probe] of probes.entries()) {
+      if (!probe.resolved.objectRange) continue;
+      const alias = `star_object_range_t${probeIndexInOutput}`;
+      rangeJoins.push(` JOIN rdf_terms ${alias} ON ${alias}.id = star.object${probeIndexInOutput + 1}_id`);
+      this.appendObjectRangeCondition(alias, probe.resolved.objectRange, rangeConditions, builder, rangePlan);
+    }
     const orderClause = this.buildJoinOrderClause(options?.orderBy, variableColumns);
     const pagination = this.buildPagination(options, builder);
+    const whereClause = rangeConditions.length > 0 ? ` WHERE ${rangeConditions.join(' AND ')}` : '';
     const sql = `
       SELECT ${projection}
-      FROM ${from}${orderClause.joins}
+      FROM ${from}${rangeJoins.join('')}${orderClause.joins}
+      ${whereClause}
       ${orderClause.orderBy}
       ${pagination.sql}
     `;
@@ -3965,6 +3975,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         `XpodRdfSubjectStarJoin(seed:${seed.inputIndex},probes:${probes.map((source) => source.inputIndex).join(',')})`,
         `XpodRdfSubjectStarSeed(${seedPrefix.permutation.name},prefix:${seedPrefix.prefixLength})`,
         ...(graphIds ? ['GraphMembershipFilter'] : []),
+        ...rangePlan,
         ...(orderClause.orderBy ? [`Rdf3xJoinOrderBy(${(options?.orderBy ?? []).map((entry) => `${entry.direction ?? 'asc'}:${entry.variable}`).join(',')})`] : []),
         ...(pagination.sql ? ['Rdf3xJoinLimit'] : []),
         sql,
