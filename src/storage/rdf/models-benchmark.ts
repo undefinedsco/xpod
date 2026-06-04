@@ -874,6 +874,38 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
     expectedPlan: ['join-index'],
   },
   {
+    name: 'provider model credential ordered join query',
+    resource: 'aiProvider',
+    purpose: 'non-subject-star native BGP keeps hidden ordering variables for paginated settings lists',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+          subject: { variable: 'model' },
+          predicate: namedNode(`${UDFS}isProvidedBy`),
+          object: { variable: 'provider' },
+        },
+        {
+          graph: namedNode('https://pod.example/alice/settings/credentials.ttl'),
+          subject: { variable: 'credential' },
+          predicate: namedNode(`${UDFS}provider`),
+          object: { variable: 'provider' },
+        },
+      ],
+      select: ['model', 'credential'],
+      orderBy: [
+        {
+          variable: 'provider',
+          direction: 'asc',
+        },
+      ],
+      limit: 1,
+    },
+    expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
+  },
+  {
     name: 'message count by thread with having',
     resource: 'message',
     purpose: 'grouped message count uses SQL GROUP BY/HAVING before pagination',
