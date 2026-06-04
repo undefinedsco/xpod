@@ -941,6 +941,44 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
     expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
   },
   {
+    name: 'provider model credential count query',
+    resource: 'aiProvider',
+    purpose: 'non-subject-star count aggregate can stay inside native BGP count summary',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+          subject: { variable: 'model' },
+          predicate: namedNode(`${UDFS}isProvidedBy`),
+          object: { variable: 'provider' },
+        },
+        {
+          graph: namedNode('https://pod.example/alice/settings/credentials.ttl'),
+          subject: { variable: 'credential' },
+          predicate: namedNode(`${UDFS}provider`),
+          object: { variable: 'provider' },
+        },
+      ],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'credentialCount',
+          variable: 'credential',
+        },
+        {
+          type: 'count',
+          as: 'providerCount',
+          variable: 'provider',
+          distinct: true,
+        },
+      ],
+      select: ['credentialCount', 'providerCount'],
+    },
+    expectedPlan: ['join-count-index'],
+  },
+  {
     name: 'provider credential priority aggregate query',
     resource: 'aiProvider',
     purpose: 'non-subject-star grouped numeric aggregate can use native BGP as its input stream',
@@ -2930,7 +2968,8 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
         && planText.includes('IndexJoinCount(')
         && !planText.includes('\nIndexScan(')
         || planText.includes('PostgresRdf3xJoinCount')
-        || planText.includes('XpodRdfSubjectStarCount(');
+        || planText.includes('XpodRdfSubjectStarCount(')
+        || planText.includes('XpodRdfBgpCount(');
     default:
       return false;
   }

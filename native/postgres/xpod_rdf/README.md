@@ -76,6 +76,10 @@ The first native cut provides:
   BGP variable slots before scanning custom indexes. Multi-source VALUES,
   ordering, pagination, grouping, and numeric aggregation still remain outer
   PostgreSQL SQL.
+- `xpod_rdf.bgp_count(...)`, a narrow native count summary over the same
+  exact-id required-BGP row stream. It supports non-grouped `COUNT` and
+  single-variable `COUNT DISTINCT` without materializing every binding row back
+  into outer SQL. Grouped and numeric aggregates remain outer PostgreSQL SQL.
 
 Build inside an image with PostgreSQL server headers:
 
@@ -113,5 +117,6 @@ engine-sql path. `perm_index_probe` proves the extension can inspect
 the first direct custom-index query-row path; `perm_index_scan_any` extends that
 foundation to `$in` prefix scans; `perm_index_count(_any)` is the first scalar
 custom-index aggregate path; `subject_star_join` is the first narrow native join
-prototype; `values_join` is the first narrow native VALUES+BGP path. They are
-still selective foundations and not a general native join / aggregate executor.
+prototype; `values_join` is the first narrow native VALUES+BGP path; `bgp_count`
+is the first narrow non-subject-star BGP count summary path. They are still
+selective foundations and not a general native join / aggregate executor.

@@ -2998,6 +2998,148 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('routes supported required BGP count aggregates through native bgp_count', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-bgp-count-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const observedSql: string[] = [];
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message, namedNode(THREAD), thread, graph),
+        quad(thread, namedNode(STATUS), literal('open'), graph),
+      ]);
+      const originalExecutor = internals.requireExecutor();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.count',
+          'aggregate.bgp_count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+        ],
+        capabilityProviders: {
+          'aggregate.count': 'extension',
+          'aggregate.bgp_count': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.required_bgp.native': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'aggregate.bgp_count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for native BGP count aggregates');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.bgp_count')) {
+            observedSql.push(sql);
+            observedParams = params;
+            return [{ a0: 1, a1: 1 }] as T[];
+          }
+          if (sql.includes('xpod_rdf.bgp_join')) {
+            throw new Error('bgp_count aggregate should not materialize bgp_join rows');
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'thread' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'count',
+            as: 'threadCount',
+            variable: 'thread',
+            distinct: true,
+          },
+        ],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.bgp_count');
+      expect(observedSql[0]).not.toContain('COUNT(source.v0) AS a0');
+      expect(observedSql[0]).not.toContain('COUNT(DISTINCT source.v1) AS a1');
+      expect(observedSql[0]).not.toContain('JOIN rdf_quads q1');
+      expect(observedParams?.[0]).toHaveLength(8);
+      expect(observedParams?.[1]).toHaveLength(8);
+      expect(observedParams?.[2]).toEqual([]);
+      expect(observedParams?.[3]).toEqual([]);
+      expect(observedParams?.[4]).toHaveLength(2);
+      expect(observedParams?.[4]).toEqual(expect.arrayContaining([1, 2]));
+      expect(observedParams?.[5]).toEqual([0, 1]);
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].messageCount.value).toBe('1');
+      expect(result.bindings[0].threadCount.value).toBe('1');
+      expect(result.count).toBe(1);
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.bgp_count');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp.native)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.bgp_count)');
+      expect(result.metrics.plan).toContain('XpodRdfBgpCount(aggregates:2)');
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xJoinCount');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses native subject-star joins as the input for numeric aggregates with term filters', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-subject-star-numeric-'));
     const engine = new PostgresRdfEngine({

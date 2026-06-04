@@ -40,6 +40,7 @@ PG_FUNCTION_INFO_V1(xpod_rdf_subject_star_join);
 PG_FUNCTION_INFO_V1(xpod_rdf_subject_star_count);
 PG_FUNCTION_INFO_V1(xpod_rdf_bgp_join);
 PG_FUNCTION_INFO_V1(xpod_rdf_values_join);
+PG_FUNCTION_INFO_V1(xpod_rdf_bgp_count);
 PG_FUNCTION_INFO_V1(xpod_rdf_scan_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_count_quads);
 PG_FUNCTION_INFO_V1(xpod_rdf_perm_handler);
@@ -351,6 +352,12 @@ typedef struct XpodRdfBgpJoinState
   int value_width;
   int value_row_count;
   int64 *value_rows;
+  bool count_summary;
+  int aggregate_count;
+  int aggregate_slots[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  bool aggregate_distinct[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  uint64 aggregate_counts[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  XpodRdfInt64List aggregate_distinct_values[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
 } XpodRdfBgpJoinState;
 
 typedef struct XpodRdfBgpScanState
@@ -615,6 +622,8 @@ static bool xpod_rdf_bgp_join_visitor(ItemPointerData *heap_tid,
                                       uint16 nkeys,
                                       void *state);
 static void xpod_rdf_bgp_join_put_row(XpodRdfBgpJoinState *state);
+static void xpod_rdf_bgp_count_summary_add(XpodRdfBgpJoinState *state);
+static void xpod_rdf_bgp_count_summary_put_row(XpodRdfBgpJoinState *state);
 static bool xpod_rdf_perm_count_visitor(ItemPointerData *heap_tid,
                                         int64 *keys,
                                         uint16 nkeys,
@@ -664,6 +673,7 @@ xpod_rdf_capabilities(PG_FUNCTION_ARGS)
     "aggregate.count,"
     "aggregate.numeric,"
     "aggregate.subject_star_count,"
+    "aggregate.bgp_count,"
     "cache.result,"
     "index.xpod_rdf_perm,"
     "index.xpod_rdf_perm.probe,"
@@ -1740,6 +1750,160 @@ xpod_rdf_values_join(PG_FUNCTION_ARGS)
   state.rsinfo = rsinfo;
 
   xpod_rdf_bgp_join_run(&state);
+
+  for (pattern_index = 0; pattern_index < state.pattern_count; pattern_index++)
+  {
+    index_close(state.patterns[pattern_index].index_relation, AccessShareLock);
+  }
+  ExecDropSingleTupleTableSlot(state.heap_slot);
+  table_close(state.heap_relation, AccessShareLock);
+  PG_RETURN_NULL();
+}
+
+Datum
+xpod_rdf_bgp_count(PG_FUNCTION_ARGS)
+{
+  Oid heap_oid = PG_GETARG_OID(0);
+  XpodRdfOidArrayArg index_oids = xpod_rdf_oid_array_arg(fcinfo, 1, false);
+  XpodRdfInt64ArrayArg constants = xpod_rdf_int64_array_arg(fcinfo, 2, true);
+  XpodRdfInt16ArrayArg variable_slots = xpod_rdf_int16_array_arg(fcinfo, 3, false);
+  XpodRdfInt16ArrayArg value_slots = xpod_rdf_int16_array_arg(fcinfo, 4, false);
+  XpodRdfInt64ArrayArg value_rows = xpod_rdf_int64_array_arg(fcinfo, 5, false);
+  XpodRdfInt16ArrayArg aggregate_slots = xpod_rdf_int16_array_arg(fcinfo, 6, false);
+  XpodRdfInt16ArrayArg aggregate_distinct = xpod_rdf_int16_array_arg(fcinfo, 7, false);
+  XpodRdfBgpJoinState state;
+  int pattern_index;
+  int key_index;
+  ReturnSetInfo *rsinfo;
+
+  if (index_oids.count < 1 || index_oids.count > XPOD_RDF_BGP_MAX_PATTERNS)
+  {
+    ereport(ERROR,
+            (errmsg("xpod_rdf.bgp_count supports between 1 and %d patterns", XPOD_RDF_BGP_MAX_PATTERNS)));
+  }
+  if (constants.count != index_oids.count * XPOD_RDF_PERM_MAX_KEYS
+      || variable_slots.count != index_oids.count * XPOD_RDF_PERM_MAX_KEYS)
+  {
+    ereport(ERROR,
+            (errmsg("xpod_rdf.bgp_count constant and variable slot arrays must contain pattern_count * 4 entries")));
+  }
+  if (value_slots.count > XPOD_RDF_BGP_MAX_OUTPUTS)
+  {
+    ereport(ERROR,
+            (errmsg("xpod_rdf.bgp_count supports at most %d VALUES variables", XPOD_RDF_BGP_MAX_OUTPUTS)));
+  }
+  if (value_slots.count == 0 && value_rows.count != 0)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.bgp_count values rows require at least one VALUES variable")));
+  }
+  if (value_slots.count > 0 && value_rows.count % value_slots.count != 0)
+  {
+    ereport(ERROR,
+            (errmsg("xpod_rdf.bgp_count values row array must be a multiple of the VALUES variable count")));
+  }
+  if (aggregate_slots.count == 0 || aggregate_slots.count > XPOD_RDF_STAR_COUNT_MAX_AGGREGATES)
+  {
+    ereport(ERROR,
+            (errmsg("xpod_rdf.bgp_count supports between 1 and %d count aggregates", XPOD_RDF_STAR_COUNT_MAX_AGGREGATES)));
+  }
+  if (aggregate_distinct.count != aggregate_slots.count)
+  {
+    ereport(ERROR, (errmsg("xpod_rdf.bgp_count aggregate slot and distinct arrays must have the same length")));
+  }
+
+  memset(&state, 0, sizeof(state));
+  state.pattern_count = index_oids.count;
+  state.count_summary = true;
+  state.value_width = value_slots.count;
+  state.value_row_count = value_slots.count == 0 ? 0 : value_rows.count / value_slots.count;
+  state.value_rows = value_rows.values;
+  state.aggregate_count = aggregate_slots.count;
+
+  for (key_index = 0; key_index < value_slots.count; key_index++)
+  {
+    int16 slot = value_slots.values[key_index];
+    int previous_index;
+
+    if (slot < 1 || slot > XPOD_RDF_BGP_MAX_VARIABLES)
+    {
+      ereport(ERROR,
+              (errmsg("xpod_rdf.bgp_count VALUES slots must be between 1 and %d", XPOD_RDF_BGP_MAX_VARIABLES)));
+    }
+    for (previous_index = 0; previous_index < key_index; previous_index++)
+    {
+      if (state.value_slots[previous_index] == slot)
+      {
+        ereport(ERROR, (errmsg("xpod_rdf.bgp_count VALUES slots must be unique")));
+      }
+    }
+    state.value_slots[key_index] = slot;
+  }
+
+  for (key_index = 0; key_index < aggregate_slots.count; key_index++)
+  {
+    int16 slot = aggregate_slots.values[key_index];
+    int16 distinct_flag = aggregate_distinct.values[key_index];
+
+    if (slot < -1 || slot > XPOD_RDF_BGP_MAX_VARIABLES)
+    {
+      ereport(ERROR,
+              (errmsg("xpod_rdf.bgp_count aggregate slots must be -1 or between 1 and %d", XPOD_RDF_BGP_MAX_VARIABLES)));
+    }
+    if (slot < 0 && distinct_flag != 0)
+    {
+      ereport(ERROR, (errmsg("xpod_rdf.bgp_count cannot DISTINCT count an unbound wildcard")));
+    }
+    if (distinct_flag != 0 && distinct_flag != 1)
+    {
+      ereport(ERROR, (errmsg("xpod_rdf.bgp_count distinct flags must be 0 or 1")));
+    }
+    state.aggregate_slots[key_index] = slot;
+    state.aggregate_distinct[key_index] = distinct_flag != 0;
+  }
+
+  state.heap_relation = table_open(heap_oid, AccessShareLock);
+  state.heap_slot = table_slot_create(state.heap_relation, NULL);
+  for (pattern_index = 0; pattern_index < index_oids.count; pattern_index++)
+  {
+    XpodRdfBgpPattern *pattern = &state.patterns[pattern_index];
+
+    pattern->index_relation = index_open(index_oids.values[pattern_index], AccessShareLock);
+    xpod_rdf_perm_assert_supported_nkeys(pattern->index_relation->rd_att->natts);
+    for (key_index = 0; key_index < XPOD_RDF_PERM_MAX_KEYS; key_index++)
+    {
+      int flat_index = (pattern_index * XPOD_RDF_PERM_MAX_KEYS) + key_index;
+      int16 slot = variable_slots.values[flat_index];
+
+      pattern->attnums[key_index] = key_index < pattern->index_relation->rd_att->natts
+        ? pattern->index_relation->rd_index->indkey.values[key_index]
+        : InvalidAttrNumber;
+      pattern->has_constant[key_index] = !constants.nulls[flat_index];
+      pattern->constants[key_index] = constants.nulls[flat_index] ? 0 : constants.values[flat_index];
+      if (slot < 0 || slot > XPOD_RDF_BGP_MAX_VARIABLES)
+      {
+        ereport(ERROR,
+                (errmsg("xpod_rdf.bgp_count variable slots must be between 0 and %d", XPOD_RDF_BGP_MAX_VARIABLES)));
+      }
+      pattern->variable_slots[key_index] = slot;
+    }
+  }
+
+  InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
+  rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+  if (rsinfo == NULL || rsinfo->setResult == NULL || rsinfo->setDesc == NULL)
+  {
+    for (pattern_index = 0; pattern_index < state.pattern_count; pattern_index++)
+    {
+      index_close(state.patterns[pattern_index].index_relation, AccessShareLock);
+    }
+    ExecDropSingleTupleTableSlot(state.heap_slot);
+    table_close(state.heap_relation, AccessShareLock);
+    ereport(ERROR, (errmsg("xpod_rdf.bgp_count expected a materialized set-returning context")));
+  }
+  state.rsinfo = rsinfo;
+
+  xpod_rdf_bgp_join_run(&state);
+  xpod_rdf_bgp_count_summary_put_row(&state);
 
   for (pattern_index = 0; pattern_index < state.pattern_count; pattern_index++)
   {
@@ -5110,7 +5274,14 @@ xpod_rdf_bgp_join_recurse(XpodRdfBgpJoinState *state, int pattern_index)
 
   if (pattern_index >= state->pattern_count)
   {
-    xpod_rdf_bgp_join_put_row(state);
+    if (state->count_summary)
+    {
+      xpod_rdf_bgp_count_summary_add(state);
+    }
+    else
+    {
+      xpod_rdf_bgp_join_put_row(state);
+    }
     return;
   }
 
@@ -5248,6 +5419,54 @@ xpod_rdf_bgp_join_put_row(XpodRdfBgpJoinState *state)
     else
     {
       nulls[output_index] = true;
+    }
+  }
+  tuplestore_putvalues(state->rsinfo->setResult, state->rsinfo->setDesc, values, nulls);
+}
+
+static void
+xpod_rdf_bgp_count_summary_add(XpodRdfBgpJoinState *state)
+{
+  int aggregate_index;
+
+  for (aggregate_index = 0; aggregate_index < state->aggregate_count; aggregate_index++)
+  {
+    int slot = state->aggregate_slots[aggregate_index];
+
+    if (!state->aggregate_distinct[aggregate_index])
+    {
+      state->aggregate_counts[aggregate_index]++;
+      continue;
+    }
+    if (slot > 0 && slot <= XPOD_RDF_BGP_MAX_VARIABLES && state->bound[slot - 1])
+    {
+      xpod_rdf_int64_list_add(&state->aggregate_distinct_values[aggregate_index], state->bindings[slot - 1]);
+    }
+  }
+}
+
+static void
+xpod_rdf_bgp_count_summary_put_row(XpodRdfBgpJoinState *state)
+{
+  Datum values[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  bool nulls[XPOD_RDF_STAR_COUNT_MAX_AGGREGATES];
+  int aggregate_index;
+
+  memset(values, 0, sizeof(values));
+  memset(nulls, 0, sizeof(nulls));
+  for (aggregate_index = 0; aggregate_index < XPOD_RDF_STAR_COUNT_MAX_AGGREGATES; aggregate_index++)
+  {
+    if (aggregate_index < state->aggregate_count)
+    {
+      uint64 count = state->aggregate_distinct[aggregate_index]
+        ? xpod_rdf_int64_list_unique_count(&state->aggregate_distinct_values[aggregate_index])
+        : state->aggregate_counts[aggregate_index];
+
+      values[aggregate_index] = Int64GetDatum((int64) count);
+    }
+    else
+    {
+      nulls[aggregate_index] = true;
     }
   }
   tuplestore_putvalues(state->rsinfo->setResult, state->rsinfo->setDesc, values, nulls);
