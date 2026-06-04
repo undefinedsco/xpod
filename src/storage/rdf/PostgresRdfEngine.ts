@@ -93,6 +93,8 @@ const CUSTOM_INDEX_REQUIRED_CAPABILITIES = [
 const XPOD_RDF_PERM_INDEX_CAPABILITY = 'index.xpod_rdf_perm';
 const XPOD_RDF_PERM_SCAN_CAPABILITY = 'index.xpod_rdf_perm.scan';
 const XPOD_RDF_PERM_SCAN_ANY_CAPABILITY = 'index.xpod_rdf_perm.scan_any';
+const XPOD_RDF_PERM_COUNT_CAPABILITY = 'index.xpod_rdf_perm.count';
+const XPOD_RDF_PERM_COUNT_ANY_CAPABILITY = 'index.xpod_rdf_perm.count_any';
 const XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY = 'join.subject_star';
 const XPOD_RDF_PERM_MAX_KEYS = 4;
 const XPOD_RDF_SQL_ABI_STATEMENTS = [
@@ -254,6 +256,16 @@ interface PgCustomIndexScanPlan extends PgCompiledScan {
 
 interface PgCustomIndexScanFragment {
   from: string;
+  indexChoice: string;
+  queryPlan: string[];
+  permutation: PgPermutation;
+  prefixLength: number;
+  capability: string;
+}
+
+interface PgCustomIndexCountPlan {
+  sql: string;
+  params: unknown[];
   indexChoice: string;
   queryPlan: string[];
   permutation: PgPermutation;
@@ -1669,6 +1681,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
       && this.pgAcceleration?.capabilityProviders?.[XPOD_RDF_PERM_SCAN_ANY_CAPABILITY] === 'extension';
   }
 
+  private canUsePgCustomIndexPermCount(mode: 'exact' | 'any'): boolean {
+    const capability = mode === 'any' ? XPOD_RDF_PERM_COUNT_ANY_CAPABILITY : XPOD_RDF_PERM_COUNT_CAPABILITY;
+    return this.canUsePgCustomIndexPermScan()
+      && this.pgAcceleration?.capabilityProviders?.[capability] === 'extension';
+  }
+
   private pgCustomIndexPermScanPrefix(resolved: PgResolvedPattern): {
     permutation: PgPermutation;
     keys: Array<number | number[]>;
@@ -1723,6 +1741,84 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
     }
     return best && best.prefixLength > 0 ? best : undefined;
+  }
+
+  private compilePgCustomIndexPermCountSql(resolved: PgResolvedPattern): PgCustomIndexCountPlan | undefined {
+    const prefix = this.pgCustomIndexPermScanPrefix(resolved);
+    if (!prefix) {
+      return undefined;
+    }
+
+    const nativeCapability = prefix.mode === 'any'
+      ? XPOD_RDF_PERM_COUNT_ANY_CAPABILITY
+      : XPOD_RDF_PERM_COUNT_CAPABILITY;
+    if (
+      !this.canUsePgCustomIndexPermCount(prefix.mode)
+      || !this.canUsePgCustomIndexNativeCountFilters(resolved)
+    ) {
+      const scan = this.compilePgCustomIndexPermScanSql(resolved);
+      return scan
+        ? {
+            sql: scan.countSql,
+            params: scan.countParams,
+            indexChoice: `${scan.indexChoice}.count`,
+            queryPlan: [
+              `XpodRdfCustomIndexCountViaScan(${scan.permutation.name},prefix:${scan.prefixLength})`,
+              ...scan.queryPlan,
+            ],
+            permutation: scan.permutation,
+            prefixLength: scan.prefixLength,
+            capability: scan.capability,
+          }
+        : undefined;
+    }
+
+    const builder = new PgSqlBuilder();
+    const keyArgs = Array.from({ length: XPOD_RDF_PERM_MAX_KEYS }, (_, index) => {
+      const value = prefix.keys[index];
+      if (value === undefined) {
+        return prefix.mode === 'any' ? 'NULL::bigint[]' : 'NULL::bigint';
+      }
+      if (Array.isArray(value)) {
+        return `${builder.add(value)}::bigint[]`;
+      }
+      if (prefix.mode === 'any') {
+        return `${builder.add([value])}::bigint[]`;
+      }
+      return `${builder.add(value)}::bigint`;
+    }).join(', ');
+    const filterArgs = PATTERN_KEYS.map((key) => {
+      const ids = pgCustomIndexNativeCountFilterIds(resolved, key);
+      return ids.length > 0 ? `${builder.add(ids)}::bigint[]` : 'NULL::bigint[]';
+    }).join(', ');
+    const indexName = `${prefix.permutation.indexName}_perm`;
+    const functionName = prefix.mode === 'any' ? 'perm_index_count_any' : 'perm_index_count';
+    return {
+      sql: `
+        SELECT xpod_rdf.${functionName}(
+          '${RDF_FACTS_TABLE}'::regclass,
+          '${indexName}'::regclass,
+          ${keyArgs},
+          ${filterArgs}
+        ) AS count
+      `,
+      params: builder.snapshot(),
+      indexChoice: `xpod_rdf.${functionName}(${prefix.permutation.name},prefix:${prefix.prefixLength})`,
+      queryPlan: [
+        `XpodRdfCustomIndexNativeCount(${functionName}:${prefix.permutation.name},prefix:${prefix.prefixLength})`,
+        `Rdf3xPermutationScan(${prefix.permutation.name})`,
+      ],
+      permutation: prefix.permutation,
+      prefixLength: prefix.prefixLength,
+      capability: nativeCapability,
+    };
+  }
+
+  private canUsePgCustomIndexNativeCountFilters(resolved: PgResolvedPattern): boolean {
+    return resolved.graphPrefix === undefined
+      && resolved.objectRange === undefined
+      && Object.keys(resolved.excludedIdSets).length === 0
+      && Object.keys(resolved.termFilters).length === 0;
   }
 
   private pgExtensionScanCapabilitiesForResolvedPattern(resolved: PgResolvedPattern): string[] {
@@ -1949,17 +2045,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (resolved.unresolved) {
       return undefined;
     }
-    const customIndexScan = this.compilePgCustomIndexPermScanSql(resolved);
-    if (!customIndexScan) {
+    const customIndexCount = this.compilePgCustomIndexPermCountSql(resolved);
+    if (!customIndexCount) {
       return undefined;
     }
 
-    const matchedRows = await this.scalarCount(customIndexScan.countSql, customIndexScan.countParams);
+    const matchedRows = await this.scalarCount(customIndexCount.sql, customIndexCount.params);
     const plan = [
       ...this.pgAccelerationActiveMarkersForQuery(query),
-      `XpodRdfPgHotOperator(${customIndexScan.capability})`,
-      `XpodRdfCustomIndexCount(${customIndexScan.permutation.name},prefix:${customIndexScan.prefixLength})`,
-      ...customIndexScan.queryPlan,
+      `XpodRdfPgHotOperator(${customIndexCount.capability})`,
+      `XpodRdfCustomIndexCount(${customIndexCount.permutation.name},prefix:${customIndexCount.prefixLength})`,
+      ...customIndexCount.queryPlan,
       aggregatePlan([aggregate], false),
     ];
     return {
@@ -1970,7 +2066,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         matchedRows,
         matchedRows,
         1,
-        [`${customIndexScan.indexChoice}.count`],
+        [customIndexCount.indexChoice],
         plan,
         query.filters?.length ?? 0,
       ),
@@ -2535,6 +2631,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
       XPOD_RDF_PERM_INDEX_CAPABILITY,
       XPOD_RDF_PERM_SCAN_CAPABILITY,
       XPOD_RDF_PERM_SCAN_ANY_CAPABILITY,
+      XPOD_RDF_PERM_COUNT_CAPABILITY,
+      XPOD_RDF_PERM_COUNT_ANY_CAPABILITY,
       XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY,
     ]);
     return capabilities.filter((capability) => wiredOperators.has(capability)).sort();
@@ -5994,6 +6092,13 @@ function uniqueStrings(values: string[]): string[] {
 
 function uniqueNumbers(values: number[]): number[] {
   return [...new Set(values)];
+}
+
+function pgCustomIndexNativeCountFilterIds(resolved: PgResolvedPattern, key: PgPatternKey): number[] {
+  return uniqueNumbers([
+    ...(resolved.ids[key] === undefined ? [] : [resolved.ids[key]]),
+    ...(resolved.idSets[key] ?? []),
+  ]);
 }
 
 function joinSourceVariables(source: PgJoinSource): string[] {

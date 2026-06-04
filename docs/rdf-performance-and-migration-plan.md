@@ -1,6 +1,6 @@
 # RDF Performance Report and Data Migration Plan
 
-记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 在没有 native extension 时由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold、`execute_plan_json` legacy private plan execution ABI、`xpod_rdf_perm` custom-index storage prototype 和受限 `subject_star_join` native join prototype，但 custom C/Rust hot-operator 性能实现还不能计入已实现性能收益。
+记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档只描述已经落到代码和 benchmark 的能力；H0 schema-local SQL ABI 已覆盖 `cache.result`，`pg-hot-operators` 在没有 native extension 时由 `PostgresRdfEngine` 内置 PG SQL fast path 提供 scan / join / aggregate operator 标记，`xpod_rdf` native PostgreSQL extension 已提供 `0.1.0-native` scaffold、`execute_plan_json` legacy private plan execution ABI、`xpod_rdf_perm` custom-index storage prototype、single-pattern scalar count 原型和受限 `subject_star_join` native join prototype，但这些 custom C/Rust hot-operator 的性能收益仍必须通过 benchmark gate 后才能计入默认能力。
 
 ## Current Decision
 
@@ -405,7 +405,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `xpod_rdf.perm_index_probe(regclass, bigint, bigint, bigint, bigint)` private index probe ABI、
   `xpod_rdf.perm_index_scan(regclass, bigint, bigint, bigint, bigint)` private leading-prefix
   custom-index scan ABI、`xpod_rdf.perm_index_scan_any(regclass, bigint[], bigint[], bigint[], bigint[])`
-  private leading-prefix array custom-index scan ABI、`xpod_rdf.subject_star_join(...)`
+  private leading-prefix array custom-index scan ABI、`xpod_rdf.perm_index_count(...)` /
+  `xpod_rdf.perm_index_count_any(...)` private leading-prefix scalar count ABI、`xpod_rdf.subject_star_join(...)`
   narrow native subject-star join prototype、
   `xpod_rdf_perm` custom index access method 和 `xpod_rdf.term_id_ops` bigint opclass。
 - `PostgresRdfEngine` 已能在 native extension 声明 `scan.exact_graph` / `scan.term_in` 时，
@@ -427,9 +428,12 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   因此 MVCC 可见性和 stale-index 安全仍由 PG heap 负责。native extension 声明
   `index.xpod_rdf_perm.scan_any` 后，连续 leading prefix 的 `$in` / scalar 混合数组可进一步走
   `xpod_rdf.perm_index_scan_any(...) + heap recheck`。当前不覆盖 graph-prefix、range/text filter、
-  排序/分页、DISTINCT 或 join/aggregate。单 pattern、非 DISTINCT `COUNT` aggregate 可复用
-  direct custom-index scan 的 `COUNT(*) + heap recheck` SQL，作为 count fast path；完整 grouped /
-  numeric aggregate 仍未进入 custom C/Rust executor。
+  排序/分页、DISTINCT 或 join。单 pattern、非 DISTINCT `COUNT` aggregate 在 native provider
+  声明 `index.xpod_rdf_perm.count` / `index.xpod_rdf_perm.count_any` 后会走
+  `xpod_rdf.perm_index_count(_any)(...)`，由 extension 直接扫描 custom index pages、应用完整
+  graph/subject/predicate/object id filters 并进行 heap visibility recheck；能力缺失或遇到
+  graph-prefix/range/text/excluded filter 时回退到 direct custom-index scan 的
+  `COUNT(*) + heap recheck` SQL。完整 grouped / numeric aggregate 仍未进入 custom C/Rust executor。
 - `storageStats().pgAcceleration.customIndexes` 会读取 native
   `xpod_rdf.perm_index_stats(regclass)` 和 `xpod_rdf.perm_index_probe(...)`，报告每个 shadow
   index 的 layout、compression flag、sorted state、tuple/page 分布、prefix distinct / fanout
@@ -450,8 +454,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - native PG extension custom hot operators。当前 `scan_quads/count_quads` 单 pattern scan ABI
   已接线；exact leading-prefix 单 pattern 可进一步走 `perm_index_scan + heap recheck` direct
   custom-index path，`$in` leading-prefix 单 pattern 可走 `perm_index_scan_any + heap recheck`
-  direct custom-index path；单 pattern 非 DISTINCT `COUNT` aggregate 可复用 direct custom-index
-  count SQL；受限 subject-star join 可走 `subject_star_join`。普通 required BGP join、group
+  direct custom-index path；单 pattern 非 DISTINCT `COUNT` aggregate 可走 native
+  `perm_index_count(_any)`，受限 subject-star join 可走 `subject_star_join`。普通 required BGP join、group
   aggregate 和 numeric aggregate 仍复用 direct PG RDF-3X SQL，不是 custom C/Rust join /
   aggregate execution。
 - native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比

@@ -52,6 +52,12 @@ The first native cut provides:
   native page scan as `perm_index_scan`, and lets `PostgresRdfEngine` route
   supported single-pattern `$in` term-id queries through custom index pages plus
   heap recheck.
+- `xpod_rdf.perm_index_count(...)` and `xpod_rdf.perm_index_count_any(...)`,
+  private leading-prefix count operators for `xpod_rdf_perm`. They reuse the
+  native page scan, apply complete graph/subject/predicate/object id filters,
+  and recheck PostgreSQL heap visibility before returning a scalar count.
+  `PostgresRdfEngine` uses them only for non-DISTINCT single-pattern `COUNT`
+  aggregates; grouped and numeric aggregates remain on direct PG RDF-3X SQL.
 - `xpod_rdf.subject_star_join(...)`, a conservative native subject-star join
   prototype. It seeds from one custom permutation index, probes the remaining
   constant-predicate edges through `PSO`, and rechecks heap visibility before
@@ -92,6 +98,7 @@ stable ordering/pagination still belong to the `PostgresRdfEngine` PG RDF-3X /
 engine-sql path. `perm_index_probe` proves the extension can inspect
 `xpod_rdf_perm` pages without routing through planner SQL. `perm_index_scan` is
 the first direct custom-index query-row path; `perm_index_scan_any` extends that
-foundation to `$in` prefix scans; `subject_star_join` is the first narrow native
-join prototype. They are still selective foundations and not a general native
-join / aggregate executor.
+foundation to `$in` prefix scans; `perm_index_count(_any)` is the first scalar
+custom-index aggregate path; `subject_star_join` is the first narrow native join
+prototype. They are still selective foundations and not a general native join /
+aggregate executor.

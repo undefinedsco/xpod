@@ -1519,6 +1519,9 @@ describe('PostgresRdfEngine', () => {
     });
     const internals = engine as unknown as {
       pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
       requireExecutor(): {
         query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
       };
@@ -1546,6 +1549,13 @@ describe('PostgresRdfEngine', () => {
         quad(message1, status, open, graph),
         quad(message2, status, open, graph),
       ]);
+      const dictionary = internals.requireDictionary();
+      const graphId = await dictionary.find(graph);
+      const predicateId = await dictionary.find(status);
+      const objectId = await dictionary.find(open);
+      expect(graphId).toBeDefined();
+      expect(predicateId).toBeDefined();
+      expect(objectId).toBeDefined();
 
       internals.pgAcceleration = {
         profile: 'pg-custom-index',
@@ -1558,6 +1568,7 @@ describe('PostgresRdfEngine', () => {
           'aggregate.count',
           'cache.result',
           'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.count',
           'index.xpod_rdf_perm.scan',
           'scan.exact_graph',
           'scan.term_in',
@@ -1566,6 +1577,7 @@ describe('PostgresRdfEngine', () => {
           'aggregate.count': 'engine-sql',
           'cache.result': 'extension',
           'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.count': 'extension',
           'index.xpod_rdf_perm.scan': 'extension',
           'scan.exact_graph': 'extension',
           'scan.term_in': 'extension',
@@ -1582,6 +1594,7 @@ describe('PostgresRdfEngine', () => {
           'aggregate.count',
           'cache.result',
           'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.count',
           'index.xpod_rdf_perm.scan',
           'scan.exact_graph',
           'scan.term_in',
@@ -1598,7 +1611,7 @@ describe('PostgresRdfEngine', () => {
       };
       internals.requireExecutor = () => ({
         query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
-          if (sql.includes('xpod_rdf.perm_index_scan') && sql.includes('COUNT(*) AS count')) {
+          if (sql.includes('xpod_rdf.perm_index_count')) {
             observedSql.push(sql);
             observedParams = params;
             return [{ count: 2 }] as T[];
@@ -1627,16 +1640,23 @@ describe('PostgresRdfEngine', () => {
         cache: { mode: 'bypass' },
       });
 
-      expect(observedSql[0]).toContain("xpod_rdf.perm_index_scan('rdf_quads_posg_perm'::regclass");
-      expect(observedSql[0]).toContain('COUNT(*) AS count');
-      expect(observedParams?.slice(0, 2)).toHaveLength(2);
+      expect(observedSql[0]).toContain("xpod_rdf.perm_index_count(\n          'rdf_quads'::regclass");
+      expect(observedSql[0]).toContain("'rdf_quads_posg_perm'::regclass");
+      expect(observedSql[0]).toContain('NULL::bigint[]');
+      expect(observedParams?.slice(0, 2)).toEqual([predicateId, objectId]);
+      expect(observedParams?.slice(2, 5)).toEqual([
+        [graphId],
+        [predicateId],
+        [objectId],
+      ]);
       expect(result.bindings).toHaveLength(1);
       expect(result.bindings[0].messageCount.value).toBe('2');
       expect(result.count).toBe(2);
-      expect(result.metrics.indexChoices).toEqual(['xpod_rdf.perm_index_scan(POS,prefix:2).count']);
+      expect(result.metrics.indexChoices).toEqual(['xpod_rdf.perm_index_count(POS,prefix:2)']);
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
-      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(index.xpod_rdf_perm.scan)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(index.xpod_rdf_perm.count)');
       expect(result.metrics.plan).toContain('XpodRdfCustomIndexCount(POS,prefix:2)');
+      expect(result.metrics.plan).toContain('XpodRdfCustomIndexNativeCount(perm_index_count:POS,prefix:2)');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionScan(scan_quads)');
     } finally {
@@ -1781,6 +1801,167 @@ describe('PostgresRdfEngine', () => {
       expect(result.metrics.indexChoices).toEqual(['xpod_rdf.perm_index_scan_any(POS,prefix:2)']);
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(index.xpod_rdf_perm.scan_any)');
       expect(result.metrics.plan).toContain('XpodRdfCustomIndexScan(perm_index_scan_any:POS,prefix:2)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionScan(scan_quads)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes term-in single-pattern count aggregates through native perm index array-prefix count when available', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-perm-count-any-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+      scanPgExtensionQuadIds(resolved: unknown): Promise<Array<{
+        graph_id: number;
+        subject_id: number;
+        predicate_id: number;
+        object_id: number;
+      }>>;
+      countPgExtensionQuads(resolved: unknown): Promise<number>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const otherMessage = namedNode(`${graph.value}#msg_2`);
+    const status = namedNode(STATUS);
+    const thread = namedNode(THREAD);
+    const open = literal('open');
+    const observedSql: string[] = [];
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      const originalExecutor = internals.requireExecutor();
+      await engine.put(quad(message, status, open, graph));
+      await engine.put(quad(otherMessage, thread, open, graph));
+      const dictionary = internals.requireDictionary();
+      const graphId = await dictionary.find(graph);
+      const predicateId = await dictionary.find(status);
+      const alternatePredicateId = await dictionary.find(thread);
+      const objectId = await dictionary.find(open);
+      expect(graphId).toBeDefined();
+      expect(predicateId).toBeDefined();
+      expect(alternatePredicateId).toBeDefined();
+      expect(objectId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.count',
+          'cache.result',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.count_any',
+          'index.xpod_rdf_perm.scan',
+          'index.xpod_rdf_perm.scan_any',
+          'scan.exact_graph',
+          'scan.term_in',
+        ],
+        capabilityProviders: {
+          'aggregate.count': 'engine-sql',
+          'cache.result': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.count_any': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'index.xpod_rdf_perm.scan_any': 'extension',
+          'scan.exact_graph': 'extension',
+          'scan.term_in': 'extension',
+        },
+        requiredCapabilities: [
+          'scan.exact_graph',
+          'scan.term_in',
+          'aggregate.count',
+          'cache.result',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'cache.result',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.count_any',
+          'index.xpod_rdf_perm.scan',
+          'index.xpod_rdf_perm.scan_any',
+          'scan.exact_graph',
+          'scan.term_in',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for direct custom-index count_any aggregates');
+      };
+      internals.scanPgExtensionQuadIds = async () => {
+        throw new Error('scan_quads should not be used for direct custom-index count_any aggregates');
+      };
+      internals.countPgExtensionQuads = async () => {
+        throw new Error('count_quads should not be used for direct custom-index count_any aggregates');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.perm_index_count_any')) {
+            observedSql.push(sql);
+            observedParams = params;
+            return [{ count: 2 }] as T[];
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: { $in: [status, thread] },
+            object: open,
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['messageCount'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain("xpod_rdf.perm_index_count_any(\n          'rdf_quads'::regclass");
+      expect(observedSql[0]).toContain("'rdf_quads_posg_perm'::regclass");
+      expect(observedSql[0]).toContain('NULL::bigint[]');
+      expect(observedParams?.slice(0, 2)).toEqual([
+        [predicateId, alternatePredicateId],
+        [objectId],
+      ]);
+      expect(observedParams?.slice(2, 5)).toEqual([
+        [graphId],
+        [predicateId, alternatePredicateId],
+        [objectId],
+      ]);
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.count).toBe(2);
+      expect(result.metrics.indexChoices).toEqual(['xpod_rdf.perm_index_count_any(POS,prefix:2)']);
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(index.xpod_rdf_perm.count_any)');
+      expect(result.metrics.plan).toContain('XpodRdfCustomIndexNativeCount(perm_index_count_any:POS,prefix:2)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionScan(scan_quads)');
     } finally {
       await engine.close();

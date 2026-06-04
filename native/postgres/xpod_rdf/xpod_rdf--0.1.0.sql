@@ -55,6 +55,38 @@ RETURNS TABLE(heap_tid tid, key1 bigint, key2 bigint, key3 bigint, key4 bigint)
 AS 'MODULE_PATHNAME', 'xpod_rdf_perm_index_scan_any'
 LANGUAGE C VOLATILE PARALLEL SAFE;
 
+CREATE FUNCTION xpod_rdf.perm_index_count(
+  p_heap regclass,
+  p_index regclass,
+  p_key1 bigint DEFAULT NULL,
+  p_key2 bigint DEFAULT NULL,
+  p_key3 bigint DEFAULT NULL,
+  p_key4 bigint DEFAULT NULL,
+  p_graph_ids bigint[] DEFAULT NULL,
+  p_subject_ids bigint[] DEFAULT NULL,
+  p_predicate_ids bigint[] DEFAULT NULL,
+  p_object_ids bigint[] DEFAULT NULL
+)
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'xpod_rdf_perm_index_count'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
+CREATE FUNCTION xpod_rdf.perm_index_count_any(
+  p_heap regclass,
+  p_index regclass,
+  p_key1 bigint[] DEFAULT NULL,
+  p_key2 bigint[] DEFAULT NULL,
+  p_key3 bigint[] DEFAULT NULL,
+  p_key4 bigint[] DEFAULT NULL,
+  p_graph_ids bigint[] DEFAULT NULL,
+  p_subject_ids bigint[] DEFAULT NULL,
+  p_predicate_ids bigint[] DEFAULT NULL,
+  p_object_ids bigint[] DEFAULT NULL
+)
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'xpod_rdf_perm_index_count_any'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
 CREATE FUNCTION xpod_rdf.subject_star_join(
   p_heap regclass,
   p_seed_index regclass,
