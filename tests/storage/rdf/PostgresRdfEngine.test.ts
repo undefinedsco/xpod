@@ -2861,6 +2861,130 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('uses native subject-star joins as the input for numeric aggregates with term filters', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-subject-star-numeric-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    const run = namedNode(`${graph.value}#run_1`);
+    const observedSql: string[] = [];
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(run, namedNode(STATUS), literal('queued'), graph),
+        quad(run, namedNode(PRIORITY), literal('15', namedNode(XSD_DECIMAL)), graph),
+      ]);
+      const originalExecutor = internals.requireExecutor();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.numeric',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.subject_star',
+        ],
+        capabilityProviders: {
+          'aggregate.numeric': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.subject_star': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.numeric',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.subject_star',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for subject-star numeric aggregates');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.subject_star_join')) {
+            observedSql.push(sql);
+            return [{ a0: 15 }] as T[];
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+            subject: { variable: 'run' },
+            predicate: namedNode(STATUS),
+            object: literal('queued'),
+          },
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/task/default/' },
+            subject: { variable: 'run' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'priority',
+            operator: '$termType',
+            value: 'numeric',
+          },
+        ],
+        aggregates: [
+          {
+            type: 'sum',
+            as: 'priorityTotal',
+            variable: 'priority',
+          },
+        ],
+        select: ['priorityTotal'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.subject_star_join');
+      expect(observedSql[0]).toContain('JOIN rdf_terms star_term_filter_t0 ON star_term_filter_t0.id = star.object1_id');
+      expect(observedSql[0]).toContain("star_term_filter_t0.kind = 'literal' AND star_term_filter_t0.numeric_value IS NOT NULL");
+      expect(observedSql[0]).not.toContain('JOIN rdf_quads q1');
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].priorityTotal.value).toBe('15');
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.subject_star_join');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.subject_star)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.numeric)');
+      expect(result.metrics.plan).toContain('TermType(object:numeric)');
+      expect(result.metrics.plan).toContain('PostgresRdf3xJoinAggregate');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses native BGP joins as the input for supported pg-custom-index grouped numeric aggregates', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-bgp-aggregate-'));
     const engine = new PostgresRdfEngine({

@@ -63,7 +63,9 @@ The first native cut provides:
   prototype. It seeds from one custom permutation index, probes the remaining
   constant-predicate edges through `PSO`, and rechecks heap visibility before
   returning term ids. `PostgresRdfEngine` only routes narrow subject-star shapes
-  through it; all other joins remain on RDF-3X SQL.
+  through it, then can apply outer SQL term/range filters, ordering,
+  pagination, grouping, and numeric aggregation over that row stream. Native
+  aggregate execution is still future work.
 - `xpod_rdf.bgp_join(...)`, a conservative native exact-id required-BGP row
   stream for up to four patterns and eight variables. `PostgresRdfEngine` can
   apply outer SQL ordering, pagination, grouping, and numeric aggregation over

@@ -385,7 +385,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 执行命令：
 
 ```bash
-bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:55433/xpod_bench_native_bgp_aggregate --allowPgWrites --scale=small --iterations=1 --warmupIterations=1 --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-custom-index-native-bgp-aggregate-small
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:55433/xpod_bench_native_subject_star_numeric --allowPgWrites --scale=small --iterations=1 --warmupIterations=1 --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-custom-index-native-subject-star-numeric-small
 ```
 
 运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container，已安装 native
@@ -413,7 +413,7 @@ bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://pos
 | PG acceleration profile | `pg-custom-index` |
 | PG acceleration provider | `extension` |
 | PG acceleration enabled | true |
-| report | `.test-data/rdf-pg-custom-index-native-bgp-aggregate-small/models-postgres-2026-06-04T22-16-07-903Z-52459-39ed04aa-05d5-4ee8-829a-fd62ceaa8df5.json` |
+| report | `.test-data/rdf-pg-custom-index-native-subject-star-numeric-small/models-postgres-2026-06-04T22-25-25-846Z-53564-4fc66753-2108-43fb-8870-ef636a9fe539.json` |
 
 active operators：
 
@@ -437,14 +437,14 @@ active operators：
 | --- | ---: | --- | --- |
 | latest message by thread query | 4 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
 | next queued run by workspace query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` |
-| run steps by run query | 4 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
+| run steps by run query | 3 ms | yes | `subject_star_join(seed:POS,probes:PSO)` |
 | task materialization active due query | 5 ms | yes | `subject_star_join(seed:POS,probes:PSO>PSO)` + `LexicalRange(object$lte)` outer filter |
 | provider model credential join query | 3 ms | yes | `bgp_join(PSO>PSO)` native exact-id required BGP |
 | provider model credential ordered join query | 3 ms | yes | `bgp_join(PSO>PSO)` native exact-id required BGP + outer SQL ORDER/LIMIT |
-| provider credential priority aggregate query | 4 ms | partial | `bgp_join(PSO>PSO>PSO)` native BGP input + outer SQL grouped numeric aggregate |
-| message count by thread with having | 4 ms | no | grouped count over graph-prefix single pattern |
-| queued run priority numeric aggregate | 5 ms | no | graph-prefix numeric aggregate over BGP |
-| message score by thread numeric aggregate | 8 ms | no | graph-prefix grouped numeric aggregate over BGP |
+| provider credential priority aggregate query | 7 ms | partial | `bgp_join(PSO>PSO>PSO)` native BGP input + outer SQL grouped numeric aggregate |
+| message count by thread with having | 3 ms | no | grouped count over graph-prefix single pattern |
+| queued run priority numeric aggregate | 4 ms | partial | `subject_star_join(seed:POS,probes:PSO)` native input + outer SQL `TermType(object:numeric)` / numeric aggregate |
+| message score by thread numeric aggregate | 10 ms | no | graph-prefix grouped numeric aggregate over BGP |
 | message join count distinct | 3 ms | yes | `subject_star_count(seed:POS,probes:PSO)` native count / count-distinct summary |
 
 结论：native `subject_star_join(...)` 已经覆盖 constant-predicate、同 subject 变量、至少一个
@@ -460,11 +460,15 @@ object-to-object relation join，已命中 `xpod_rdf.bgp_join(PSO>PSO)`，small 
 不是 native index-level early stop；ordered provider/model/credential case small p95 为 3 ms。
 grouped / numeric aggregate 当前还不是 native C aggregate executor；但 exact-id non-subject-star
 aggregate 已能把 BGP 输入流切到 `bgp_join`，再由外层 PG SQL 完成 group / numeric aggregate。
-`provider credential priority aggregate query` small p95 为 4 ms。graph-prefix aggregate
-仍由 PG RDF-3X SQL 执行，是下一块 native 覆盖缺口。
+`provider credential priority aggregate query` small p95 为 7 ms。subject-star graph-prefix
+numeric aggregate 现在也能复用 `subject_star_join` 输入流：`queued run priority numeric aggregate`
+会在 outer SQL 中对 probe object 执行 `TermType(object:numeric)` recheck，并由 PG SQL 完成 numeric
+aggregate，small p95 为 4 ms。仍未 native 化的是非 subject-star graph-prefix grouped aggregate
+和 native C aggregate executor，例如 `message score by thread numeric aggregate`。
 
 最新通过报告：`.test-data/rdf-pg-custom-index-native-subject-star-count-small/models-postgres-2026-06-04T20-58-56-381Z-46027-8ffe7a23-7d3c-4509-9559-a533a7e00569.json`。
 最新 native BGP 补充报告：`.test-data/rdf-pg-custom-index-native-bgp-aggregate-small/models-postgres-2026-06-04T22-16-07-903Z-52459-39ed04aa-05d5-4ee8-829a-fd62ceaa8df5.json`。
+最新 subject-star numeric 补充报告：`.test-data/rdf-pg-custom-index-native-subject-star-numeric-small/models-postgres-2026-06-04T22-25-25-846Z-53564-4fc66753-2108-43fb-8870-ef636a9fe539.json`。
 
 ## PostgreSQL Status
 
@@ -508,15 +512,15 @@ aggregate 已能把 BGP 输入流切到 `bgp_join`，再由外层 PG SQL 完成 
   `xpod_rdf.execute_plan_json(...)` 进入 extension wrapper，而是继续走 direct PG RDF-3X SQL。
   受限 constant-predicate subject-star shape 会走
   `xpod_rdf.subject_star_join(...)` native seed/probe/recheck path；probe object range filter
-  和 order 由 outer SQL join `rdf_terms` 执行。这类 shape 的非分组 count / count-distinct aggregate
+  和可映射 term filter / order 由 outer SQL join `rdf_terms` 执行。这类 shape 的非分组 count / count-distinct aggregate
   在 `aggregate.subject_star_count` capability 可用且没有 probe object range / having / order /
   limit / `distinctVariables` 时会走 `xpod_rdf.subject_star_count(...)`，由 extension 直接返回
   summary 列；否则复用 native subject-star rows 作为输入，aggregate 本身仍由 PG SQL 执行。
   `join.required_bgp.native` capability 可用时，最多 4 pattern / 8 变量、exact-id 常量和变量等值
   的非 subject-star required BGP 子集会走 `xpod_rdf.bgp_join(...)`；ORDER/LIMIT/OFFSET
   可以由 outer SQL 继续处理；supported grouped / numeric aggregate 可以把该 row stream 作为
-  输入，再由 outer PG SQL 完成 aggregate 计算。graph-prefix、range/filter、distinct 和
-  native aggregate executor 仍回退到 PG RDF-3X SQL。
+  输入，再由 outer PG SQL 完成 aggregate 计算。非 subject-star graph-prefix、无法映射的
+  filter、distinct 和 native aggregate executor 仍回退到 PG RDF-3X SQL。
 - `pg-custom-index` profile：只有 native extension 声明 `index.xpod_rdf_perm` 后才启用；
   engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
   index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会把

@@ -3953,7 +3953,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       const resolved = await this.resolvePattern(entry.pattern);
       if (
         resolved.unresolved
-        || Object.keys(resolved.termFilters).length > 0
         || Object.keys(resolved.excludedIdSets).length > 0
         || resolved.idSets.predicate?.length
         || resolved.idSets.subject?.length
@@ -4067,23 +4066,39 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const rangeJoins: string[] = [];
     const rangeConditions: string[] = [];
     const rangePlan: string[] = [];
+    const termFilterJoins: string[] = [];
+    const termFilterConditions: string[] = [];
+    const termFilterPlan: string[] = [];
     for (const [probeIndexInOutput, probe] of probes.entries()) {
       if (!probe.resolved.objectRange) continue;
       const alias = `star_object_range_t${probeIndexInOutput}`;
       rangeJoins.push(` JOIN rdf_terms ${alias} ON ${alias}.id = star.object${probeIndexInOutput + 1}_id`);
       this.appendObjectRangeCondition(alias, probe.resolved.objectRange, rangeConditions, builder, rangePlan);
     }
+    for (const source of resolvedSources) {
+      for (const [key, filter] of Object.entries(source.resolved.termFilters) as Array<[PgPatternKey, PgResolvedTermFilter]>) {
+        const variableName = source.entry.variables[key];
+        const column = variableName ? variableColumns.get(variableName) : undefined;
+        if (!column) {
+          return undefined;
+        }
+        const alias = `star_term_filter_t${termFilterJoins.length}`;
+        termFilterJoins.push(` JOIN rdf_terms ${alias} ON ${alias}.id = ${column}`);
+        this.appendTermFilterCondition(key, alias, filter, termFilterConditions, builder, termFilterPlan);
+      }
+    }
     const orderClause = this.buildJoinOrderClause(options?.orderBy, variableColumns);
     const pagination = this.buildPagination(options, builder);
-    const whereClause = rangeConditions.length > 0 ? ` WHERE ${rangeConditions.join(' AND ')}` : '';
+    const outerConditions = [...rangeConditions, ...termFilterConditions];
+    const whereClause = outerConditions.length > 0 ? ` WHERE ${outerConditions.join(' AND ')}` : '';
     const sql = `
       SELECT ${projection}
-      FROM ${from}${rangeJoins.join('')}${orderClause.joins}
+      FROM ${from}${rangeJoins.join('')}${termFilterJoins.join('')}${orderClause.joins}
       ${whereClause}
       ${orderClause.orderBy}
       ${pagination.sql}
     `;
-    const subjectStarCount = rangeConditions.length === 0 && !orderClause.orderBy && !pagination.sql
+    const subjectStarCount = outerConditions.length === 0 && !orderClause.orderBy && !pagination.sql
       ? {
           argsSql: countArgsSql,
           params: countBuilder.snapshot(),
@@ -4102,6 +4117,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         `XpodRdfSubjectStarSeed(${seedPrefix.permutation.name},prefix:${seedPrefix.prefixLength})`,
         ...(graphIds ? ['GraphMembershipFilter'] : []),
         ...rangePlan,
+        ...termFilterPlan,
         ...(orderClause.orderBy ? [`Rdf3xJoinOrderBy(${(options?.orderBy ?? []).map((entry) => `${entry.direction ?? 'asc'}:${entry.variable}`).join(',')})`] : []),
         ...(pagination.sql ? ['Rdf3xJoinLimit'] : []),
         sql,
