@@ -1952,7 +1952,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const subjectStarJoin = requiredPatterns.length > 1 && (compiledValues ?? []).length === 0
       ? await this.compilePgCustomIndexSubjectStarJoinSql(compiledPatterns, joinOptions)
       : undefined;
-    const nativeBgpJoin = !subjectStarJoin && requiredPatterns.length > 1 && (compiledValues ?? []).length === 0
+    const nativeBgpJoin = !subjectStarJoin && requiredPatterns.length > 1
       ? await this.compilePgCustomIndexBgpJoinSql(compiledPatterns, joinOptions)
       : undefined;
     const compiled = subjectStarJoin ?? nativeBgpJoin ?? await this.compileJoinSql(compiledPatterns, joinOptions);
@@ -3160,7 +3160,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const subjectStarJoin = patterns.length > 1 && values.length === 0
       ? await this.compilePgCustomIndexSubjectStarJoinSql(patterns, joinOptions)
       : undefined;
-    const nativeBgpJoin = !subjectStarJoin && patterns.length > 1 && values.length === 0
+    const nativeBgpJoin = !subjectStarJoin && patterns.length > 1
       ? await this.compilePgCustomIndexBgpJoinSql(patterns, joinOptions)
       : undefined;
     const compiled = subjectStarJoin ?? nativeBgpJoin ?? await this.compileJoinSql(patterns, joinOptions);
@@ -4183,6 +4183,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       limit?: number;
       offset?: number;
       countMatchedRows?: boolean;
+      values?: PgCompiledValuesSource[];
     },
   ): Promise<PgCompiledJoin | undefined> {
     if (
@@ -4235,7 +4236,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (orderVariables.some((variableName) => !slotByVariable.has(variableName))) {
       return undefined;
     }
-    const outputVariables = uniqueStrings([...projectVariables, ...orderVariables]);
+    const valueVariables = uniqueStrings((options?.values ?? []).flatMap((source) => source.variables));
+    if (valueVariables.some((variableName) => !slotByVariable.has(variableName))) {
+      return undefined;
+    }
+    const outputVariables = uniqueStrings([...projectVariables, ...orderVariables, ...valueVariables]);
 
     const constants: Array<number | null> = [];
     const variableSlots: number[] = [];
@@ -4284,11 +4289,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ) native_bgp
     `;
     const countParams = builder.snapshot();
+    const valuesJoins = this.buildPgValuesJoins(options?.values ?? [], outputColumns, builder);
     const orderClause = this.buildJoinOrderClause(options?.orderBy, outputColumns);
     const pagination = this.buildPagination(options, builder);
     const sql = `
       SELECT ${projection}
-      FROM ${from}${orderClause.joins}
+      FROM ${from}${valuesJoins.joins}${orderClause.joins}
       ${orderClause.orderBy}
       ${pagination.sql}
     `;
@@ -4297,14 +4303,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
       sql,
       params: builder.snapshot(),
       countSql: pagination.sql && options?.countMatchedRows !== false
-        ? `SELECT COUNT(*) AS count FROM ${from}`
+        ? `SELECT COUNT(*) AS count FROM ${from}${valuesJoins.joins}`
         : undefined,
-      countParams,
+      countParams: builder.snapshot().slice(0, builder.snapshot().length - pagination.paramCount),
       indexChoice: `xpod_rdf.bgp_join(${indexChoices.join('>')})`,
       queryPlan: [
         `XpodRdfPgHotOperator(${XPOD_RDF_BGP_JOIN_CAPABILITY})`,
         `XpodRdfBgpJoin(${orderedSources.map((source) => source.inputIndex).join('>')})`,
         ...orderedSources.map((source) => `XpodRdfBgpPattern(${source.inputIndex}:${source.permutation.name})`),
+        ...valuesJoins.queryPlan,
         ...(orderClause.orderBy ? [`Rdf3xJoinOrderBy(${(options?.orderBy ?? []).map((entry) => `${entry.direction ?? 'asc'}:${entry.variable}`).join(',')})`] : []),
         ...(pagination.sql ? ['Rdf3xJoinLimit'] : []),
         sql,

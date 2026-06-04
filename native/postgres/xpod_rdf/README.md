@@ -68,9 +68,9 @@ The first native cut provides:
   aggregate execution is still future work.
 - `xpod_rdf.bgp_join(...)`, a conservative native exact-id required-BGP row
   stream for up to four patterns and eight variables. `PostgresRdfEngine` can
-  apply outer SQL ordering, pagination, grouping, and numeric aggregation over
-  that stream, but native index-level early stop and native aggregate execution
-  are still future work.
+  apply outer SQL VALUES tuple rechecks, ordering, pagination, grouping, and
+  numeric aggregation over that stream, but native `values_join`, native
+  index-level early stop, and native aggregate execution are still future work.
 
 Build inside an image with PostgreSQL server headers:
 

@@ -874,6 +874,41 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
     expectedPlan: ['join-index'],
   },
   {
+    name: 'provider model credential VALUES join query',
+    resource: 'aiProvider',
+    purpose: 'VALUES-constrained provider/model/credential relation join can keep native BGP rows',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+          subject: { variable: 'model' },
+          predicate: namedNode(`${UDFS}isProvidedBy`),
+          object: { variable: 'provider' },
+        },
+        {
+          graph: namedNode('https://pod.example/alice/settings/credentials.ttl'),
+          subject: { variable: 'credential' },
+          predicate: namedNode(`${UDFS}provider`),
+          object: { variable: 'provider' },
+        },
+      ],
+      values: [
+        {
+          variables: ['provider'],
+          rows: [
+            {
+              provider: namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+            },
+          ],
+        },
+      ],
+      select: ['model', 'credential'],
+    },
+    expectedPlan: ['join-index', 'values-recheck'],
+  },
+  {
     name: 'provider model credential ordered join query',
     resource: 'aiProvider',
     purpose: 'non-subject-star native BGP keeps hidden ordering variables for paginated settings lists',
@@ -2862,6 +2897,9 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
         && !planText.includes('\nIndexScan(')
         || planText.includes('PostgresRdf3xJoin(')
         || planText.includes('XpodRdfBgpJoin(');
+    case 'values-recheck':
+      return planText.includes('Rdf3xJoinTupleValues(')
+        && !planText.includes('PostgresFactsValues(');
     case 'join-order-pushdown':
       return (planText.includes('IndexJoinOrder(')
         || planText.includes('Rdf3xJoinOrder(')

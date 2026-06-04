@@ -2472,6 +2472,138 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('keeps VALUES-constrained required BGP joins on native bgp_join rows', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-bgp-values-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const observedSql: string[] = [];
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      const originalExecutor = internals.requireExecutor();
+      await engine.put([
+        quad(message, namedNode(THREAD), thread, graph),
+        quad(thread, namedNode(STATUS), literal('open'), graph),
+      ]);
+      const dictionary = internals.requireDictionary();
+      const messageId = await dictionary.find(message);
+      const threadId = await dictionary.find(thread);
+      expect(messageId).toBeDefined();
+      expect(threadId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+          'join.values',
+        ],
+        capabilityProviders: {
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.required_bgp.native': 'extension',
+          'join.values': 'engine-sql',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+          'join.values',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for native BGP VALUES joins');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.bgp_join')) {
+            observedSql.push(sql);
+            observedParams = params;
+            return [{ v0: threadId }] as T[];
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'thread' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        values: [
+          {
+            variables: ['message'],
+            rows: [
+              { message },
+            ],
+          },
+        ],
+        select: ['thread'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.bgp_join');
+      expect(observedSql[0]).toContain('JOIN (VALUES');
+      expect(observedSql[0]).toContain('join_values_0.value_0_id = native_bgp.v2');
+      expect(observedSql[0]).not.toContain('JOIN rdf_quads q1');
+      expect(observedParams?.[2]).toEqual([expect.any(Number), expect.any(Number)]);
+      expect(observedParams).toContain(messageId);
+      expect(result.bindings.map((binding) => binding.thread.value)).toEqual([thread.value]);
+      expect(result.bindings[0].message).toBeUndefined();
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.bgp_join');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp.native)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.values)');
+      expect(result.metrics.plan).toContain('Rdf3xJoinTupleValues(?message)');
+      expect(result.metrics.plan).not.toContain('PostgresFactsValues');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionJoin(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('routes supported pg-custom-index subject-star joins through native subject_star_join', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-subject-star-'));
     const engine = new PostgresRdfEngine({
