@@ -424,7 +424,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `xpod_rdf_perm` block-level fanout/cost stats 和 skip hints；当前只完成 delta-varint
   compressed posting storage prototype。
 - native PG extension hot operators。当前只有最小 `scan_quads/count_quads` 单 pattern scan ABI
-  接线；graph-prefix scan、BGP join、count/group aggregate 和 numeric aggregate 仍是
+  接线；exact graph / graph-prefix / term-in scan 可以走 native provider，但 BGP join、
+  count/group aggregate 和 numeric aggregate 仍是
   engine-sql profile，不是 C/Rust hot-operator execution。
 - native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比
   RDF-3X baseline。
@@ -599,8 +600,8 @@ case plan matched，`rdf3x.syncedWithFacts=true`。这些旧报告生成时，`p
 `scan.*` / `join.*` / `aggregate.*` provider 仍是 `engine-sql`，native extension 只提供
 `cache.result` 和 `index.xpod_rdf_perm`；查询物理计划仍主要是 `Rdf3xMembershipScan` /
 `PostgresRdf3xJoin`。当前代码已经补上最小 `scan_quads/count_quads` ABI，`scan.exact_graph` /
-`scan.term_in` 可由 native extension provider 执行受支持的单 pattern scan，但 graph-prefix
-scan、join 和 aggregate 仍是 engine-sql。
+`scan.graph_prefix` / `scan.term_in` 可由 native extension provider 执行受支持的单 pattern
+scan，但 join 和 aggregate 仍是 engine-sql。
 
 因此 small 对照没有稳定性能收益：例如 `latest message by thread query` 从 6 ms 到 14 ms、
 `list messages by thread` 从 2 ms 到 7 ms、`task materialization active due query` 从

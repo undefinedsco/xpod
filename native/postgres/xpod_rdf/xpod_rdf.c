@@ -295,6 +295,26 @@ static void xpod_rdf_scan_quads_add_int8_clause(StringInfo sql,
                                                 FunctionCallInfo fcinfo,
                                                 int arg_index,
                                                 const char *clause);
+static void xpod_rdf_scan_quads_add_graph_prefix_filter(StringInfo sql,
+                                                        Datum *values,
+                                                        char *nulls,
+                                                        Oid *argtypes,
+                                                        int *nargs,
+                                                        FunctionCallInfo fcinfo,
+                                                        int head_min_arg_index,
+                                                        int head_max_arg_index,
+                                                        int prefix_min_arg_index,
+                                                        int prefix_max_arg_index,
+                                                        bool *has_where);
+static void xpod_rdf_scan_quads_add_text_condition(StringInfo sql,
+                                                   Datum *values,
+                                                   char *nulls,
+                                                   Oid *argtypes,
+                                                   int *nargs,
+                                                   FunctionCallInfo fcinfo,
+                                                   int arg_index,
+                                                   const char *clause);
+static void xpod_rdf_scan_quads_add_where(StringInfo sql, bool *has_where);
 static int xpod_rdf_array_arg_length(FunctionCallInfo fcinfo, int arg_index);
 static void xpod_rdf_scan_quads_put_rows(ReturnSetInfo *rsinfo);
 
@@ -311,6 +331,7 @@ xpod_rdf_capabilities(PG_FUNCTION_ARGS)
   (void) fcinfo;
   PG_RETURN_TEXT_P(cstring_to_text(
     "scan.exact_graph,"
+    "scan.graph_prefix,"
     "scan.term_in,"
     "cache.result,"
     "index.xpod_rdf_perm"
@@ -507,22 +528,23 @@ Datum
 xpod_rdf_scan_quads(PG_FUNCTION_ARGS)
 {
   StringInfoData sql;
-  Oid argtypes[6];
-  Datum values[6];
-  char nulls[6];
+  Oid argtypes[10];
+  Datum values[10];
+  char nulls[10];
   int nargs = 0;
   int ret;
   bool has_where = false;
 
   initStringInfo(&sql);
-  appendStringInfoString(&sql, "SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads");
-  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 0, "subject_id", &has_where);
-  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 1, "predicate_id", &has_where);
-  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 2, "object_id", &has_where);
-  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 3, "graph_id", &has_where);
-  appendStringInfoString(&sql, " ORDER BY subject_id, predicate_id, object_id, graph_id");
-  xpod_rdf_scan_quads_add_int8_clause(&sql, values, nulls, argtypes, &nargs, fcinfo, 4, " LIMIT ");
-  xpod_rdf_scan_quads_add_int8_clause(&sql, values, nulls, argtypes, &nargs, fcinfo, 5, " OFFSET ");
+  appendStringInfoString(&sql, "SELECT q.graph_id, q.subject_id, q.predicate_id, q.object_id FROM rdf_quads q");
+  xpod_rdf_scan_quads_add_graph_prefix_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 4, 5, 6, 7, &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 0, "q.subject_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 1, "q.predicate_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 2, "q.object_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 3, "q.graph_id", &has_where);
+  appendStringInfoString(&sql, " ORDER BY q.subject_id, q.predicate_id, q.object_id, q.graph_id");
+  xpod_rdf_scan_quads_add_int8_clause(&sql, values, nulls, argtypes, &nargs, fcinfo, 8, " LIMIT ");
+  xpod_rdf_scan_quads_add_int8_clause(&sql, values, nulls, argtypes, &nargs, fcinfo, 9, " OFFSET ");
   InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
   if (SPI_connect() != SPI_OK_CONNECT)
   {
@@ -551,9 +573,9 @@ Datum
 xpod_rdf_count_quads(PG_FUNCTION_ARGS)
 {
   StringInfoData sql;
-  Oid argtypes[4];
-  Datum values[4];
-  char nulls[4];
+  Oid argtypes[8];
+  Datum values[8];
+  char nulls[8];
   int nargs = 0;
   int ret;
   bool isnull = false;
@@ -561,11 +583,12 @@ xpod_rdf_count_quads(PG_FUNCTION_ARGS)
   bool has_where = false;
 
   initStringInfo(&sql);
-  appendStringInfoString(&sql, "SELECT COUNT(*)::bigint AS count FROM rdf_quads");
-  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 0, "subject_id", &has_where);
-  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 1, "predicate_id", &has_where);
-  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 2, "object_id", &has_where);
-  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 3, "graph_id", &has_where);
+  appendStringInfoString(&sql, "SELECT COUNT(*)::bigint AS count FROM rdf_quads q");
+  xpod_rdf_scan_quads_add_graph_prefix_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 4, 5, 6, 7, &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 0, "q.subject_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 1, "q.predicate_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 2, "q.object_id", &has_where);
+  xpod_rdf_scan_quads_add_array_filter(&sql, values, nulls, argtypes, &nargs, fcinfo, 3, "q.graph_id", &has_where);
   if (SPI_connect() != SPI_OK_CONNECT)
   {
     ereport(ERROR, (errmsg("xpod_rdf.count_quads could not connect to SPI")));
@@ -2856,15 +2879,7 @@ xpod_rdf_scan_quads_add_array_filter(StringInfo sql,
     return;
   }
 
-  if (*has_where)
-  {
-    appendStringInfoString(sql, " AND ");
-  }
-  else
-  {
-    appendStringInfoString(sql, " WHERE ");
-    *has_where = true;
-  }
+  xpod_rdf_scan_quads_add_where(sql, has_where);
 
   length = xpod_rdf_array_arg_length(fcinfo, arg_index);
   if (length <= 0)
@@ -2910,6 +2925,70 @@ xpod_rdf_scan_quads_add_int8_clause(StringInfo sql,
   (*nargs)++;
   param_index = *nargs;
   appendStringInfo(sql, "%s$%d::bigint", clause, param_index);
+}
+
+static void
+xpod_rdf_scan_quads_add_graph_prefix_filter(StringInfo sql,
+                                            Datum *values,
+                                            char *nulls,
+                                            Oid *argtypes,
+                                            int *nargs,
+                                            FunctionCallInfo fcinfo,
+                                            int head_min_arg_index,
+                                            int head_max_arg_index,
+                                            int prefix_min_arg_index,
+                                            int prefix_max_arg_index,
+                                            bool *has_where)
+{
+  if (PG_ARGISNULL(head_min_arg_index) ||
+      PG_ARGISNULL(head_max_arg_index) ||
+      PG_ARGISNULL(prefix_min_arg_index) ||
+      PG_ARGISNULL(prefix_max_arg_index))
+  {
+    return;
+  }
+
+  appendStringInfoString(sql, " JOIN rdf_terms graph_prefix_term ON graph_prefix_term.id = q.graph_id");
+  xpod_rdf_scan_quads_add_where(sql, has_where);
+  appendStringInfoString(sql, "graph_prefix_term.kind = 'iri'");
+  xpod_rdf_scan_quads_add_text_condition(sql, values, nulls, argtypes, nargs, fcinfo, head_min_arg_index, " AND graph_prefix_term.value_head >= ");
+  xpod_rdf_scan_quads_add_text_condition(sql, values, nulls, argtypes, nargs, fcinfo, head_max_arg_index, " AND graph_prefix_term.value_head < ");
+  xpod_rdf_scan_quads_add_text_condition(sql, values, nulls, argtypes, nargs, fcinfo, prefix_min_arg_index, " AND graph_prefix_term.value >= ");
+  xpod_rdf_scan_quads_add_text_condition(sql, values, nulls, argtypes, nargs, fcinfo, prefix_max_arg_index, " AND graph_prefix_term.value < ");
+}
+
+static void
+xpod_rdf_scan_quads_add_text_condition(StringInfo sql,
+                                       Datum *values,
+                                       char *nulls,
+                                       Oid *argtypes,
+                                       int *nargs,
+                                       FunctionCallInfo fcinfo,
+                                       int arg_index,
+                                       const char *clause)
+{
+  int param_index;
+
+  values[*nargs] = PG_GETARG_DATUM(arg_index);
+  nulls[*nargs] = ' ';
+  argtypes[*nargs] = TEXTOID;
+  (*nargs)++;
+  param_index = *nargs;
+  appendStringInfo(sql, "%s$%d::text", clause, param_index);
+}
+
+static void
+xpod_rdf_scan_quads_add_where(StringInfo sql, bool *has_where)
+{
+  if (*has_where)
+  {
+    appendStringInfoString(sql, " AND ");
+  }
+  else
+  {
+    appendStringInfoString(sql, " WHERE ");
+    *has_where = true;
+  }
 }
 
 static int

@@ -1456,25 +1456,36 @@ export class PostgresRdfEngine implements RdfEngineLike {
         $2::bigint[],
         $3::bigint[],
         $4::bigint[],
-        $5::bigint,
-        $6::bigint
+        $5::text,
+        $6::text,
+        $7::text,
+        $8::text,
+        $9::bigint,
+        $10::bigint
       )
     `, this.pgExtensionQuadScanParams(resolved, options));
   }
 
   private async countPgExtensionQuads(resolved: PgResolvedPattern): Promise<number> {
     return this.scalarCount(
-      'SELECT xpod_rdf.count_quads($1::bigint[], $2::bigint[], $3::bigint[], $4::bigint[]) AS count',
-      this.pgExtensionQuadScanParams(resolved).slice(0, 4),
+      'SELECT xpod_rdf.count_quads($1::bigint[], $2::bigint[], $3::bigint[], $4::bigint[], $5::text, $6::text, $7::text, $8::text) AS count',
+      this.pgExtensionQuadScanParams(resolved).slice(0, 8),
     );
   }
 
   private pgExtensionQuadScanParams(resolved: PgResolvedPattern, options?: QueryOptions): unknown[] {
+    const graphPrefixHead = resolved.graphPrefix === undefined
+      ? undefined
+      : rdfTermValueHead(resolved.graphPrefix);
     return [
       this.pgExtensionIdsForPatternKey(resolved, 'subject'),
       this.pgExtensionIdsForPatternKey(resolved, 'predicate'),
       this.pgExtensionIdsForPatternKey(resolved, 'object'),
       this.pgExtensionIdsForPatternKey(resolved, 'graph'),
+      graphPrefixHead ?? null,
+      graphPrefixHead === undefined ? null : `${graphPrefixHead}\uffff`,
+      resolved.graphPrefix ?? null,
+      resolved.graphPrefix === undefined ? null : `${resolved.graphPrefix}\uffff`,
       options?.limit ?? null,
       options?.offset ?? null,
     ];
@@ -1493,19 +1504,33 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (this.pgAcceleration?.provider !== 'extension' || this.pgAcceleration.enabled !== true) {
       return false;
     }
-    if (
-      this.pgAcceleration.capabilityProviders?.['scan.exact_graph'] !== 'extension'
-      && this.pgAcceleration.capabilityProviders?.['scan.term_in'] !== 'extension'
-    ) {
+    const requiredCapabilities = this.pgExtensionScanCapabilitiesForResolvedPattern(resolved);
+    if (requiredCapabilities.some((capability) => this.pgAcceleration?.capabilityProviders?.[capability] !== 'extension')) {
       return false;
     }
     if (options?.order?.length || options?.limit !== undefined || options?.offset !== undefined) {
       return false;
     }
-    return !resolved.graphPrefix
+    return (resolved.graphPrefix === undefined || this.pgAcceleration.capabilityProviders?.['scan.graph_prefix'] === 'extension')
       && !resolved.objectRange
       && Object.keys(resolved.excludedIdSets).length === 0
       && Object.keys(resolved.termFilters).length === 0;
+  }
+
+  private pgExtensionScanCapabilitiesForResolvedPattern(resolved: PgResolvedPattern): string[] {
+    const capabilities = new Set<string>();
+    if (resolved.ids.graph !== undefined) {
+      capabilities.add('scan.exact_graph');
+    }
+    if (resolved.graphPrefix !== undefined) {
+      capabilities.add('scan.graph_prefix');
+    }
+    for (const key of PATTERN_KEYS) {
+      if (resolved.idSets[key]?.length) {
+        capabilities.add('scan.term_in');
+      }
+    }
+    return [...capabilities];
   }
 
   private async queryNative(query: RdfQuery): Promise<RdfQueryResult | undefined> {

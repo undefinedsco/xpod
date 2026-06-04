@@ -483,9 +483,10 @@ acceleration profile。所有收益都必须通过 models benchmark 和真实 Po
   term-in / required BGP join / count / numeric aggregate 由 `PostgresRdfEngine` 内置 PG SQL
   fast path 提供，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。native
   `xpod_rdf` extension 已开始接管最小单 pattern scan：当 provider 声明
-  `scan.exact_graph` / `scan.term_in` 且查询无排序、分页、DISTINCT、同 pattern 变量相等约束时，
-  `PostgresRdfEngine` 会调用 `xpod_rdf.scan_quads(...)` / `xpod_rdf.count_quads(...)`。graph
-  prefix、BGP join、count / numeric aggregate 仍是后续下沉到 C/Rust extension 的优化阶段。
+  `scan.exact_graph` / `scan.graph_prefix` / `scan.term_in` 且查询无排序、分页、DISTINCT、
+  同 pattern 变量相等约束时，`PostgresRdfEngine` 会调用 `xpod_rdf.scan_quads(...)` /
+  `xpod_rdf.count_quads(...)`。BGP join、count / numeric aggregate 仍是后续下沉到 C/Rust
+  extension 的优化阶段。
 
 #### 完整 PG extension hot operators
 

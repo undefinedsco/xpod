@@ -13,6 +13,7 @@ import {
   type RdfPgAccelerationStats,
   type RdfQuery,
 } from '../../../src/storage/rdf';
+import { rdfTermValueHead } from '../../../src/storage/rdf/RdfTermDictionary';
 
 const { literal, namedNode, quad } = DataFactory;
 
@@ -1237,6 +1238,122 @@ describe('PostgresRdfEngine', () => {
       expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(scan.exact_graph)');
       expect(result.metrics.plan).toContain('XpodRdfExtensionScan(scan_quads)');
       expect(result.metrics.plan).toContain('PostgresRdfExtensionSinglePattern(graph:NamedNode:https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl,subject:?message,predicate:NamedNode:https://undefineds.co/ns#status,object:Literal:open)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes graph-prefix pg-custom-index queries through the native extension scan ABI', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-graph-prefix-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      pgExtensionQuadScanParams(resolved: unknown): unknown[];
+      scanPgExtensionQuadIds(resolved: unknown): Promise<Array<{
+        graph_id: number;
+        subject_id: number;
+        predicate_id: number;
+        object_id: number;
+      }>>;
+      countPgExtensionQuads(resolved: unknown): Promise<number>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const status = namedNode(STATUS);
+    const open = literal('open');
+    const prefix = 'https://pod.example/alice/.data/chat/default/';
+    const prefixHead = rdfTermValueHead(prefix);
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, status, open, graph));
+      const dictionary = internals.requireDictionary();
+      const graphId = await dictionary.find(graph);
+      const subjectId = await dictionary.find(message);
+      const predicateId = await dictionary.find(status);
+      const objectId = await dictionary.find(open);
+      expect(graphId).toBeDefined();
+      expect(subjectId).toBeDefined();
+      expect(predicateId).toBeDefined();
+      expect(objectId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'cache.result',
+          'index.xpod_rdf_perm',
+          'scan.graph_prefix',
+          'scan.term_in',
+        ],
+        capabilityProviders: {
+          'cache.result': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'scan.graph_prefix': 'extension',
+          'scan.term_in': 'extension',
+        },
+        requiredCapabilities: [
+          'scan.graph_prefix',
+          'scan.term_in',
+          'cache.result',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'cache.result',
+          'index.xpod_rdf_perm',
+          'scan.graph_prefix',
+          'scan.term_in',
+        ],
+      };
+      internals.scanPgExtensionQuadIds = async (resolved) => {
+        observedParams = internals.pgExtensionQuadScanParams(resolved);
+        return [{
+          graph_id: graphId as number,
+          subject_id: subjectId as number,
+          predicate_id: predicateId as number,
+          object_id: objectId as number,
+        }];
+      };
+      internals.countPgExtensionQuads = async () => 1;
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: status,
+            object: { $in: [open] },
+          },
+        ],
+        select: ['message'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedParams?.slice(4, 8)).toEqual([
+        prefixHead,
+        `${prefixHead}\uffff`,
+        prefix,
+        `${prefix}\uffff`,
+      ]);
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(result.metrics.indexChoices).toEqual(['xpod_rdf.scan_quads']);
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(scan.graph_prefix)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(scan.term_in)');
+      expect(result.metrics.plan).toContain('XpodRdfExtensionScan(scan_quads)');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

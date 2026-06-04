@@ -27,11 +27,55 @@ CREATE FUNCTION xpod_rdf.scan_quads(
   p_predicate_ids bigint[],
   p_object_ids bigint[],
   p_graph_ids bigint[],
+  p_graph_prefix_head_min text,
+  p_graph_prefix_head_max text,
+  p_graph_prefix_min text,
+  p_graph_prefix_max text,
   p_limit bigint,
   p_offset bigint
 )
 RETURNS TABLE(graph_id bigint, subject_id bigint, predicate_id bigint, object_id bigint)
 AS 'MODULE_PATHNAME', 'xpod_rdf_scan_quads'
+LANGUAGE C VOLATILE PARALLEL SAFE;
+
+CREATE FUNCTION xpod_rdf.scan_quads(
+  p_subject_ids bigint[],
+  p_predicate_ids bigint[],
+  p_object_ids bigint[],
+  p_graph_ids bigint[],
+  p_limit bigint,
+  p_offset bigint
+)
+RETURNS TABLE(graph_id bigint, subject_id bigint, predicate_id bigint, object_id bigint)
+LANGUAGE SQL VOLATILE PARALLEL SAFE
+AS $$
+  SELECT graph_id, subject_id, predicate_id, object_id
+  FROM xpod_rdf.scan_quads(
+    p_subject_ids,
+    p_predicate_ids,
+    p_object_ids,
+    p_graph_ids,
+    NULL::text,
+    NULL::text,
+    NULL::text,
+    NULL::text,
+    p_limit,
+    p_offset
+  )
+$$;
+
+CREATE FUNCTION xpod_rdf.count_quads(
+  p_subject_ids bigint[],
+  p_predicate_ids bigint[],
+  p_object_ids bigint[],
+  p_graph_ids bigint[],
+  p_graph_prefix_head_min text,
+  p_graph_prefix_head_max text,
+  p_graph_prefix_min text,
+  p_graph_prefix_max text
+)
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'xpod_rdf_count_quads'
 LANGUAGE C VOLATILE PARALLEL SAFE;
 
 CREATE FUNCTION xpod_rdf.count_quads(
@@ -41,8 +85,19 @@ CREATE FUNCTION xpod_rdf.count_quads(
   p_graph_ids bigint[]
 )
 RETURNS bigint
-AS 'MODULE_PATHNAME', 'xpod_rdf_count_quads'
-LANGUAGE C VOLATILE PARALLEL SAFE;
+LANGUAGE SQL VOLATILE PARALLEL SAFE
+AS $$
+  SELECT xpod_rdf.count_quads(
+    p_subject_ids,
+    p_predicate_ids,
+    p_object_ids,
+    p_graph_ids,
+    NULL::text,
+    NULL::text,
+    NULL::text,
+    NULL::text
+  )
+$$;
 
 CREATE FUNCTION xpod_rdf.perm_handler(internal)
 RETURNS index_am_handler

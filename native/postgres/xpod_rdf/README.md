@@ -9,9 +9,10 @@ The first native cut provides:
 - `xpod_rdf.version()`
 - `xpod_rdf.capabilities()`
 - `xpod_rdf.scan_quads(...)` and `xpod_rdf.count_quads(...)`, the first
-  native scan ABI for simple term-id patterns. `PostgresRdfEngine` only uses
-  this path for single-pattern exact / IN scans without order, pagination,
-  DISTINCT, or same-pattern variable equality constraints.
+  native scan ABI for simple term-id and graph-prefix patterns.
+  `PostgresRdfEngine` only uses this path for single-pattern exact / IN /
+  graph-prefix scans without order, pagination, DISTINCT, or same-pattern
+  variable equality constraints.
 - `xpod_rdf_perm`, a custom index access method prototype that stores entries
   in the PostgreSQL index relation and supports build, insert, scan, bitmap
   scan, vacuum cleanup, planner path generation, ordered build, a metapage
@@ -45,7 +46,7 @@ ordered build groups duplicate full permutation keys into compressed TID
 posting streams, while online insert still writes single tuple entries.
 
 The current scan ABI is intentionally narrower than the final product-grade hot
-operator set. Graph-prefix scans, range/text filters, BGP joins, DISTINCT,
-stable ordering/pagination, and aggregate operators still belong to the
+operator set. Range/text filters, BGP joins, DISTINCT, stable
+ordering/pagination, and aggregate operators still belong to the
 `PostgresRdfEngine` PG RDF-3X / engine-sql path until they have native
 correctness and benchmark gates.
