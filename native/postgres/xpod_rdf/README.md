@@ -15,9 +15,8 @@ The first native cut provides:
   variable equality constraints.
 - `xpod_rdf.execute_plan_json(text)`, a private legacy plan execution ABI for
   scope-safe SQL compiled by `PostgresRdfEngine`. It remains installed for ABI
-  compatibility, but ordinary BGP joins and count / numeric aggregates stay on
-  the direct PG RDF-3X SQL path until a real native join / aggregate executor is
-  faster than the baseline.
+  compatibility, but ordinary BGP joins and count / numeric aggregates no
+  longer route through this wrapper.
 - `xpod_rdf_perm`, a custom index access method prototype that stores entries
   in the PostgreSQL index relation and supports build, insert, scan, bitmap
   scan, vacuum cleanup, planner path generation, ordered build, a metapage
@@ -57,12 +56,19 @@ The first native cut provides:
   native page scan, apply complete graph/subject/predicate/object id filters,
   and recheck PostgreSQL heap visibility before returning a scalar count.
   `PostgresRdfEngine` uses them only for non-DISTINCT single-pattern `COUNT`
-  aggregates; grouped and numeric aggregates remain on direct PG RDF-3X SQL.
+  aggregates. Supported exact-id BGP grouped / numeric aggregate queries can
+  use `bgp_join` as the input row stream, but the aggregate calculation itself
+  remains outer PostgreSQL SQL.
 - `xpod_rdf.subject_star_join(...)`, a conservative native subject-star join
   prototype. It seeds from one custom permutation index, probes the remaining
   constant-predicate edges through `PSO`, and rechecks heap visibility before
   returning term ids. `PostgresRdfEngine` only routes narrow subject-star shapes
   through it; all other joins remain on RDF-3X SQL.
+- `xpod_rdf.bgp_join(...)`, a conservative native exact-id required-BGP row
+  stream for up to four patterns and eight variables. `PostgresRdfEngine` can
+  apply outer SQL ordering, pagination, grouping, and numeric aggregation over
+  that stream, but native index-level early stop and native aggregate execution
+  are still future work.
 
 Build inside an image with PostgreSQL server headers:
 

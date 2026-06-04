@@ -3160,7 +3160,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const subjectStarJoin = patterns.length > 1 && values.length === 0
       ? await this.compilePgCustomIndexSubjectStarJoinSql(patterns, joinOptions)
       : undefined;
-    const compiled = subjectStarJoin ?? await this.compileJoinSql(patterns, joinOptions);
+    const nativeBgpJoin = !subjectStarJoin && patterns.length > 1 && values.length === 0
+      ? await this.compilePgCustomIndexBgpJoinSql(patterns, joinOptions)
+      : undefined;
+    const compiled = subjectStarJoin ?? nativeBgpJoin ?? await this.compileJoinSql(patterns, joinOptions);
     if (compiled.unresolved) {
       return {
         bindings: [],

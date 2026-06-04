@@ -906,6 +906,50 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
     expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
   },
   {
+    name: 'provider credential priority aggregate query',
+    resource: 'aiProvider',
+    purpose: 'non-subject-star grouped numeric aggregate can use native BGP as its input stream',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+          subject: { variable: 'model' },
+          predicate: namedNode(`${UDFS}isProvidedBy`),
+          object: { variable: 'provider' },
+        },
+        {
+          graph: namedNode('https://pod.example/alice/settings/credentials.ttl'),
+          subject: { variable: 'credential' },
+          predicate: namedNode(`${UDFS}provider`),
+          object: { variable: 'provider' },
+        },
+        {
+          graph: namedNode('https://pod.example/alice/settings/credentials.ttl'),
+          subject: { variable: 'credential' },
+          predicate: namedNode(`${UDFS}priority`),
+          object: { variable: 'priority' },
+        },
+      ],
+      groupBy: ['provider'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'credentialCount',
+          variable: 'credential',
+        },
+        {
+          type: 'sum',
+          as: 'priorityTotal',
+          variable: 'priority',
+        },
+      ],
+      select: ['provider', 'credentialCount', 'priorityTotal'],
+    },
+    expectedPlan: ['group-aggregate-index'],
+  },
+  {
     name: 'message count by thread with having',
     resource: 'message',
     purpose: 'grouped message count uses SQL GROUP BY/HAVING before pagination',
@@ -1192,6 +1236,7 @@ function seedChatTaskThreadRunProviderQuads(quads: Quad[]): void {
     seedQuad(`${provider}#claude-sonnet-4`, `${UDFS}isProvidedBy`, iri(provider), provider),
     seedQuad(credential, RDF_TYPE, iri(`${UDFS}Credential`), credentialGraph),
     seedQuad(credential, `${UDFS}provider`, iri(provider), credentialGraph),
+    seedQuad(credential, `${UDFS}priority`, literal('15', iri(XSD_INTEGER)), credentialGraph),
   );
 }
 

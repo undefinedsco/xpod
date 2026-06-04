@@ -2861,6 +2861,156 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('uses native BGP joins as the input for supported pg-custom-index grouped numeric aggregates', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-bgp-aggregate-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const providerGraph = namedNode('https://pod.example/alice/settings/providers/anthropic.ttl');
+    const credentialGraph = namedNode('https://pod.example/alice/settings/credentials.ttl');
+    const provider = namedNode('https://pod.example/alice/settings/providers/anthropic.ttl#provider');
+    const model = namedNode('https://pod.example/alice/settings/providers/anthropic.ttl#claude');
+    const credential = namedNode('https://pod.example/alice/settings/credentials.ttl#anthropic-key');
+    const priority = literal('15', namedNode(XSD_DECIMAL));
+    const isProvidedBy = namedNode('https://undefineds.co/ns#isProvidedBy');
+    const providerPredicate = namedNode('https://undefineds.co/ns#provider');
+    const observedSql: string[] = [];
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(model, isProvidedBy, provider, providerGraph),
+        quad(credential, providerPredicate, provider, credentialGraph),
+        quad(credential, namedNode(PRIORITY), priority, credentialGraph),
+      ]);
+      const originalExecutor = internals.requireExecutor();
+      const dictionary = internals.requireDictionary();
+      const providerId = await dictionary.find(provider);
+      expect(providerId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.count',
+          'aggregate.numeric',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+        ],
+        capabilityProviders: {
+          'aggregate.count': 'extension',
+          'aggregate.numeric': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.required_bgp.native': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'aggregate.numeric',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for native BGP aggregate sources');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.bgp_join')) {
+            observedSql.push(sql);
+            if (sql.includes('COUNT(*) AS count')) {
+              return [{ count: 1 }] as T[];
+            }
+            return [{ v1: providerId, a0: 1, a1: 15 }] as T[];
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: providerGraph,
+            subject: { variable: 'model' },
+            predicate: isProvidedBy,
+            object: { variable: 'provider' },
+          },
+          {
+            graph: credentialGraph,
+            subject: { variable: 'credential' },
+            predicate: providerPredicate,
+            object: { variable: 'provider' },
+          },
+          {
+            graph: credentialGraph,
+            subject: { variable: 'credential' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        groupBy: ['provider'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'credentialCount',
+            variable: 'credential',
+          },
+          {
+            type: 'sum',
+            as: 'priorityTotal',
+            variable: 'priority',
+          },
+        ],
+        select: ['provider', 'credentialCount', 'priorityTotal'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.bgp_join');
+      expect(observedSql[0]).toContain('COALESCE(SUM(agg_numeric_t0.numeric_value), 0) AS a1');
+      expect(observedSql[0]).toContain('GROUP BY source.v1');
+      expect(observedSql[0]).not.toContain('JOIN rdf_quads');
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].provider.value).toBe(provider.value);
+      expect(result.bindings[0].credentialCount.value).toBe('1');
+      expect(result.bindings[0].priorityTotal.value).toBe('15');
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.bgp_join');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp.native)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.numeric)');
+      expect(result.metrics.plan).toContain('PostgresRdf3xGroupAggregate');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps aggregate hot operators on direct RDF-3X SQL instead of the extension plan ABI', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-aggregate-'));
     const engine = new PostgresRdfEngine({
