@@ -1724,6 +1724,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!query.patterns.length) {
         return undefined;
       }
+      if (query.patterns.length === 1 && aggregates.length === 1) {
+        const customIndexCount = await this.queryPgCustomIndexSinglePatternCountAggregate(
+          query,
+          compiledPatterns[0],
+          aggregates[0],
+          start,
+        );
+        if (customIndexCount) {
+          return customIndexCount;
+        }
+      }
       const aggregateResult = await this.queryNativeAggregate(query, compiledPatterns, aggregates, start);
       return aggregateResult;
     }
@@ -1863,6 +1874,67 @@ export class PostgresRdfEngine implements RdfEngineLike {
         matchedRows,
         bindings.length,
         [useCustomIndexScan ? customIndexScan.indexChoice : 'xpod_rdf.scan_quads'],
+        plan,
+        query.filters?.length ?? 0,
+      ),
+    };
+  }
+
+  private async queryPgCustomIndexSinglePatternCountAggregate(
+    query: RdfQuery,
+    entry: PgCompiledJoinPattern,
+    aggregate: RdfQueryAggregate,
+    start: number,
+  ): Promise<RdfQueryResult | undefined> {
+    if (
+      aggregate.type !== 'count'
+      || aggregate.distinct
+      || aggregate.distinctVariables !== undefined
+      || (query.groupBy?.length ?? 0) > 0
+      || (query.having?.length ?? 0) > 0
+      || (query.orderBy?.length ?? 0) > 0
+      || query.limit !== undefined
+      || query.offset !== undefined
+      || entry.equalities.length > 0
+      || !this.canUsePgAccelerationCapability('aggregate.count')
+    ) {
+      return undefined;
+    }
+
+    const selectedVariables = query.select && query.select.length > 0 ? query.select : [aggregate.as];
+    if (selectedVariables.some((variableName) => variableName !== aggregate.as)) {
+      return undefined;
+    }
+    if (aggregate.variable && !Object.values(entry.variables).includes(aggregate.variable)) {
+      return undefined;
+    }
+
+    const resolved = await this.resolvePattern(entry.pattern);
+    if (resolved.unresolved) {
+      return undefined;
+    }
+    const customIndexScan = this.compilePgCustomIndexPermScanSql(resolved);
+    if (!customIndexScan) {
+      return undefined;
+    }
+
+    const matchedRows = await this.scalarCount(customIndexScan.countSql, customIndexScan.countParams);
+    const plan = [
+      ...this.pgAccelerationActiveMarkersForQuery(query),
+      `XpodRdfPgHotOperator(${customIndexScan.capability})`,
+      `XpodRdfCustomIndexCount(${customIndexScan.permutation.name},prefix:${customIndexScan.prefixLength})`,
+      ...customIndexScan.queryPlan,
+      aggregatePlan([aggregate], false),
+    ];
+    return {
+      bindings: [{ [aggregate.as]: countLiteral(matchedRows) }],
+      count: matchedRows,
+      metrics: this.localMetrics(
+        start,
+        matchedRows,
+        matchedRows,
+        1,
+        [`${customIndexScan.indexChoice}.count`],
         plan,
         query.filters?.length ?? 0,
       ),

@@ -426,7 +426,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   因此 MVCC 可见性和 stale-index 安全仍由 PG heap 负责。native extension 声明
   `index.xpod_rdf_perm.scan_any` 后，连续 leading prefix 的 `$in` / scalar 混合数组可进一步走
   `xpod_rdf.perm_index_scan_any(...) + heap recheck`。当前不覆盖 graph-prefix、range/text filter、
-  排序/分页、DISTINCT 或 join/aggregate。
+  排序/分页、DISTINCT 或 join/aggregate。单 pattern、非 DISTINCT `COUNT` aggregate 可复用
+  direct custom-index scan 的 `COUNT(*) + heap recheck` SQL，作为 count fast path；完整 grouped /
+  numeric aggregate 仍未进入 custom C/Rust executor。
 - `storageStats().pgAcceleration.customIndexes` 会读取 native
   `xpod_rdf.perm_index_stats(regclass)` 和 `xpod_rdf.perm_index_probe(...)`，报告每个 shadow
   index 的 layout、compression flag、sorted state、tuple/page 分布、prefix distinct / fanout
@@ -447,9 +449,10 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - native PG extension custom hot operators。当前 `scan_quads/count_quads` 单 pattern scan ABI
   已接线；exact leading-prefix 单 pattern 可进一步走 `perm_index_scan + heap recheck` direct
   custom-index path，`$in` leading-prefix 单 pattern 可走 `perm_index_scan_any + heap recheck`
-  direct custom-index path。required BGP join、count/group aggregate 和 numeric aggregate 也能通过
-  `execute_plan_json` 进入 native extension provider。但 join/aggregate 仍复用 compiled PG SQL，
-  不是 custom C/Rust join / aggregate execution。
+  direct custom-index path；单 pattern 非 DISTINCT `COUNT` aggregate 可复用 direct custom-index
+  count SQL。required BGP join、group aggregate 和 numeric aggregate 也能通过 `execute_plan_json`
+  进入 native extension provider。但 join/aggregate 仍复用 compiled PG SQL，不是 custom C/Rust
+  join / aggregate execution。
 - native PG extension medium/large 性能报告；small correctness gate 已有，性能收益仍必须对比
   RDF-3X baseline。
 
