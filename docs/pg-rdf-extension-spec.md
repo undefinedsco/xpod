@@ -318,9 +318,11 @@ P1 的定义：支撑更完整的 SPARQL shape、搜索融合和可观测性。
   recheck` 的 count fast path，不再进入 `execute_plan_json`。
   当前 native `0.1.0` 也提供 `subject_star_join(...)`，`PostgresRdfEngine` 会把受限的
   constant-predicate subject-star join 路由到 native seed/probe/recheck path，并在 metrics
-  plan 中标记 `XpodRdfSubjectStarJoin(subject_star_join)`。`execute_plan_json` 保留为
-  legacy ABI，但普通 required BGP join、group aggregate 和 numeric aggregate 不再通过它执行；
-  它们继续使用 PG RDF-3X baseline / engine-sql hot path。
+  plan 中标记 `XpodRdfSubjectStarJoin(subject_star_join)`；同一受限 shape 的 count /
+  count-distinct aggregate 可以把 `subject_star_join(...)` 作为输入，再由 PG SQL aggregate
+  完成统计。`execute_plan_json` 保留为 legacy ABI，但普通 required BGP join、group
+  aggregate 和 numeric aggregate 不再通过它执行；它们继续使用 PG RDF-3X baseline /
+  engine-sql hot path。
 
 `text_candidates` / `vector_candidates` / `score_fusion`
 

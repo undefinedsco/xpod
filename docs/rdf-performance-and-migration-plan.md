@@ -419,7 +419,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `XpodRdfExtensionScan(scan_quads)`；普通 required BGP join、group aggregate 和 numeric
   aggregate 不再通过 `xpod_rdf.execute_plan_json(...)` 进入 extension wrapper，而是继续走
   direct PG RDF-3X SQL。只有受限 constant-predicate subject-star shape 会走
-  `xpod_rdf.subject_star_join(...)` native seed/probe/recheck path。
+  `xpod_rdf.subject_star_join(...)` native seed/probe/recheck path；这类 shape 的 count /
+  count-distinct aggregate 会复用 native subject-star rows 作为输入，aggregate 本身仍由 PG
+  SQL 执行。
 - `pg-custom-index` profile：只有 native extension 声明 `index.xpod_rdf_perm` 后才启用；
   engine 会创建 6 个 `rdf_quads_*_perm` shadow custom indexes。当前 AM 已写入自有
   index-relation entries，并能生成 `Index Scan` / `Bitmap Index Scan` path；build 阶段会把

@@ -25,6 +25,8 @@ const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
 const STATUS = 'https://undefineds.co/ns#status';
 const THREAD = 'https://undefineds.co/ns#thread';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
+const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
+const MESSAGE_TYPE = 'https://undefineds.co/ns#Message';
 
 describe('PostgresRdfEngine', () => {
   it('stores RDF facts asynchronously while preserving datatype and language terms', async () => {
@@ -2454,6 +2456,134 @@ describe('PostgresRdfEngine', () => {
       expect(result.metrics.plan).toContain('XpodRdfSubjectStarJoin(subject_star_join)');
       expect(result.metrics.plan).toContain('XpodRdfSubjectStarSeed(POS,prefix:2)');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionJoin(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses native subject-star joins as the input for supported pg-custom-index count aggregates', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-subject-star-aggregate-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const observedSql: string[] = [];
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(RDF_TYPE), namedNode(MESSAGE_TYPE), graph),
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(RDF_TYPE), namedNode(MESSAGE_TYPE), graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+      ]);
+      const originalExecutor = internals.requireExecutor();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.subject_star',
+        ],
+        capabilityProviders: {
+          'aggregate.count': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.subject_star': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.subject_star',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for subject-star count aggregates');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.subject_star_join')) {
+            observedSql.push(sql);
+            return [{ a0: 2, a1: 1 }] as T[];
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
+            subject: { variable: 'message' },
+            predicate: namedNode(RDF_TYPE),
+            object: namedNode(MESSAGE_TYPE),
+          },
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'count',
+            as: 'threadCount',
+            variable: 'thread',
+            distinct: true,
+          },
+        ],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.subject_star_join');
+      expect(observedSql[0]).toContain('COUNT(source.v0) AS a0');
+      expect(observedSql[0]).toContain('COUNT(DISTINCT source.v1) AS a1');
+      expect(observedSql[0]).not.toContain('JOIN rdf_quads q1');
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.bindings[0].threadCount.value).toBe('1');
+      expect(result.count).toBe(2);
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.subject_star_join');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.subject_star)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(result.metrics.plan).toContain('XpodRdfSubjectStarJoin(seed:0,probes:1)');
+      expect(result.metrics.plan).toContain('PostgresRdf3xJoinCount');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

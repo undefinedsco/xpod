@@ -3135,12 +3135,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return undefined;
     }
     const visibleVariables = uniqueStrings(query.patterns.flatMap((pattern) => variablesInPattern(pattern)));
-    const compiled = await this.compileJoinSql(patterns, {
+    const joinOptions = {
       project: visibleVariables,
       countMatchedRows: false,
       values,
       fenceGraphPrefix: aggregates.some((aggregate) => aggregate.distinct || (aggregate.distinctVariables ?? []).length > 0),
-    });
+    };
+    const subjectStarJoin = patterns.length > 1 && values.length === 0
+      ? await this.compilePgCustomIndexSubjectStarJoinSql(patterns, joinOptions)
+      : undefined;
+    const compiled = subjectStarJoin ?? await this.compileJoinSql(patterns, joinOptions);
     if (compiled.unresolved) {
       return {
         bindings: [],
