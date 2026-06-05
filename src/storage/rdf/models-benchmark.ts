@@ -851,7 +851,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'provider model credential join query',
     resource: 'aiProvider',
-    purpose: 'non-subject-star provider/model/credential relation join can use native BGP',
+    purpose: 'provider/model/credential relation join can stay on the PostgreSQL RDF-3X join path',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -876,7 +876,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'provider model credential VALUES join query',
     resource: 'aiProvider',
-    purpose: 'VALUES-constrained provider/model/credential relation join can keep native BGP rows',
+    purpose: 'VALUES-constrained provider/model/credential relation join can stay on the RDF-3X values join path',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -911,7 +911,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'provider model credential ordered join query',
     resource: 'aiProvider',
-    purpose: 'non-subject-star native BGP keeps hidden ordering variables for paginated settings lists',
+    purpose: 'PostgreSQL RDF-3X joins keep hidden ordering variables for paginated settings lists',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -943,7 +943,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'provider model credential count query',
     resource: 'aiProvider',
-    purpose: 'non-subject-star count aggregate can stay inside native BGP count summary',
+    purpose: 'count aggregate can stay inside the PostgreSQL RDF-3X count path',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -981,7 +981,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'provider credential grouped count query',
     resource: 'aiProvider',
-    purpose: 'non-subject-star grouped count aggregate can stay inside native BGP group count summary',
+    purpose: 'grouped count aggregate can stay inside the PostgreSQL RDF-3X group count path',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -1028,7 +1028,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'provider credential single-pattern grouped count query',
     resource: 'credential',
-    purpose: 'single-pattern exact graph grouped count aggregate can stay inside native BGP group count summary',
+    purpose: 'single-pattern exact graph grouped count aggregate can stay inside the PostgreSQL RDF-3X group count path',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -1069,7 +1069,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'provider credential priority aggregate query',
     resource: 'aiProvider',
-    purpose: 'non-subject-star grouped numeric aggregate can use native BGP as its input stream',
+    purpose: 'grouped numeric aggregate can use the PostgreSQL RDF-3X join stream',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -1264,7 +1264,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'message join count distinct',
     resource: 'message',
-    purpose: 'message/thread BGP aggregate count stays on the RDF-3X/native subject-star count path',
+    purpose: 'message/thread BGP aggregate count stays on the PostgreSQL RDF-3X count path',
     minScale: 'small',
     query: {
       patterns: [
@@ -2988,8 +2988,7 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
   switch (label) {
     case 'group-count-index':
       return planText.includes('Aggregate(group-count-index)')
-        || planText.includes('PostgresRdf3xGroupCount')
-        || planText.includes('XpodRdfBgpGroupCount(');
+        || planText.includes('PostgresRdf3xGroupCount');
     case 'group-aggregate-index':
       return planText.includes('Aggregate(group-basic-multi-index)')
         || planText.includes('Aggregate(group-basic-index)')
@@ -3022,20 +3021,12 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
     case 'join-index':
       return planText.includes('IndexJoin(')
         && !planText.includes('\nIndexScan(')
-        || planText.includes('PostgresRdf3xJoin(')
-        || planText.includes('XpodRdfBgpJoin(');
+        || planText.includes('PostgresRdf3xJoin(');
     case 'values-recheck':
       return planText.includes('Rdf3xJoinTupleValues(')
         && !planText.includes('PostgresFactsValues(');
     case 'values-join-pushdown':
-      return (
-        planText.includes('Rdf3xJoinTupleValues(')
-          || planText.includes('XpodRdfValuesJoinTuple(')
-      ) && !planText.includes('PostgresFactsValues(');
-    case 'native-values-join':
-      return planText.includes('XpodRdfValuesJoinTuple(')
-        && planText.includes('XpodRdfPgHotOperator(join.values.native)')
-        && !planText.includes('Rdf3xJoinTupleValues(')
+      return planText.includes('Rdf3xJoinTupleValues(')
         && !planText.includes('PostgresFactsValues(');
     case 'join-order-pushdown':
       return (planText.includes('IndexJoinOrder(')
@@ -3056,9 +3047,7 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
       return planText.includes('Aggregate(join-count-distinct-index)')
         && planText.includes('IndexJoinCount(')
         && !planText.includes('\nIndexScan(')
-        || planText.includes('PostgresRdf3xJoinCount')
-        || planText.includes('XpodRdfSubjectStarCount(')
-        || planText.includes('XpodRdfBgpCount(');
+        || planText.includes('PostgresRdf3xJoinCount');
     default:
       return false;
   }

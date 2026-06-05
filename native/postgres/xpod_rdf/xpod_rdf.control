@@ -1,4 +1,0 @@
-comment = 'Xpod native RDF acceleration helpers'
-default_version = '0.1.0'
-module_pathname = '$libdir/xpod_rdf'
-relocatable = false

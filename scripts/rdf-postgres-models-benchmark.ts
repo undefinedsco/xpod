@@ -189,8 +189,7 @@ function nonNegativeInteger(raw: string, name: string): number {
 function isRdfPgAccelerationProfile(value: string): value is RdfPgAccelerationProfile {
   return value === 'baseline'
     || value === 'pg-result-cache'
-    || value === 'pg-hot-operators'
-    || value === 'pg-custom-index';
+    || value === 'pg-hot-operators';
 }
 
 function rdfAccelerationProfileMatched(profile: RdfPgAccelerationProfile, storage: RdfEngineStorageStats): boolean {
@@ -331,7 +330,7 @@ Options:
   --iterations=N                   Iterations per case. Default: 3
   --warmupIterations=N             Warmup runs per case before timing. Default: 1
   --syntheticMessages=N            Override generated message count for storage-size tests
-  --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators|pg-custom-index. Default: baseline
+  --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators. Default: baseline
   --out=PATH                       Output directory. Default: .test-data/rdf-engine
 `);
 }

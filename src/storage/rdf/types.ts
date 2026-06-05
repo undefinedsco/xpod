@@ -49,11 +49,10 @@ export interface RdfQuadIndexOptions {
 }
 
 export type RdfDerivedIndexProfile = 'baseline' | 'rdf3x';
-export type RdfPgAccelerationProfile = 'baseline' | 'pg-result-cache' | 'pg-hot-operators' | 'pg-custom-index';
-export type RdfPgAccelerationProvider = 'extension' | 'sql-abi' | 'engine-sql';
+export type RdfPgAccelerationProfile = 'baseline' | 'pg-result-cache' | 'pg-hot-operators';
+export type RdfPgAccelerationProvider = 'engine-sql';
 export type RdfPgAccelerationFallbackReason =
   | 'profile-disabled'
-  | 'extension-missing'
   | 'capability-missing'
   | 'probe-failed';
 
@@ -132,71 +131,8 @@ export interface RdfPgAccelerationStats {
   requiredCapabilities: string[];
   missingCapabilities: string[];
   activeOperators?: string[];
-  customIndexes?: RdfPgCustomIndexStats[];
   fallbackReason?: RdfPgAccelerationFallbackReason;
   fallbackDetail?: string;
-}
-
-export interface RdfPgCustomIndexStats {
-  name: string;
-  permutation?: string;
-  accessMethod: 'xpod_rdf_perm';
-  layout?: string;
-  compressed: boolean;
-  bytes: number;
-  pages: number;
-  schemaVersion: number;
-  hasMetapage: boolean;
-  globalSorted: boolean;
-  prefixStatsExact: boolean;
-  nkeys: number;
-  tupleCount: number;
-  distinctPrefix1: number;
-  distinctPrefix2: number;
-  distinctPrefix3: number;
-  distinctPrefix4: number;
-  avgPostingsPerPrefix1: number;
-  avgPostingsPerPrefix2: number;
-  avgPostingsPerPrefix3: number;
-  avgPostingsPerPrefix4: number;
-  pageTupleCount: number;
-  itemCount: number;
-  postingCount: number;
-  dataPages: number;
-  emptyPages: number;
-  sortedPages: number;
-  unsortedPages: number;
-  minTuplesPerPage: number;
-  maxTuplesPerPage: number;
-  avgTuplesPerPage: number;
-  avgPostingsPerItem: number;
-  itemBytes: number;
-  freeBytes: number;
-  avgEntryBytes: number;
-  probe?: RdfPgCustomIndexProbeStats;
-}
-
-export interface RdfPgCustomIndexProbeStats {
-  probe: string;
-  layout?: string;
-  nkeys: number;
-  prefixKeys: number;
-  globalSorted: boolean;
-  pages: number;
-  firstDataBlock: number;
-  startBlock: number;
-  dataPages: number;
-  seekPagesExamined: number;
-  pagesVisited: number;
-  pagesSkipped: number;
-  pagesSkippedBeforeLower: number;
-  pagesSkippedPastUpper: number;
-  pagesSkippedByRange: number;
-  stoppedAtUpperBound: boolean;
-  pageLocalSeeks: number;
-  itemsExamined: number;
-  itemsMatched: number;
-  postingsMatched: number;
 }
 
 export interface RdfQueryResultCacheStats {
@@ -218,14 +154,6 @@ export interface RdfDerivedIndexRefreshResult {
     syncedWithFacts: boolean;
     plannerStats?: RdfPlannerStatsRefreshResult;
     rebuild?: Rdf3xRebuildResult;
-  };
-  pgCustomIndex?: {
-    refreshed: boolean;
-    previousFactsDataVersion: number;
-    factsDataVersion: number;
-    syncedWithFacts: boolean;
-    reindexedIndexes: string[];
-    durationMs: number;
   };
 }
 
