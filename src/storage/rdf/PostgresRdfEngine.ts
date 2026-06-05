@@ -101,6 +101,7 @@ const XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY = 'aggregate.subject_star_count';
 const XPOD_RDF_BGP_JOIN_CAPABILITY = 'join.required_bgp.native';
 const XPOD_RDF_VALUES_JOIN_CAPABILITY = 'join.values.native';
 const XPOD_RDF_BGP_COUNT_CAPABILITY = 'aggregate.bgp_count';
+const XPOD_RDF_BGP_GROUP_COUNT_CAPABILITY = 'aggregate.bgp_group_count';
 const XPOD_RDF_PERM_MAX_KEYS = 4;
 const XPOD_RDF_BGP_MAX_PATTERNS = 4;
 const XPOD_RDF_BGP_MAX_VARIABLES = 8;
@@ -1605,6 +1606,101 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
+  private async compilePgCustomIndexSinglePatternJoinSql(
+    entry: PgCompiledJoinPattern,
+    options?: {
+      project?: string[];
+      distinct?: boolean;
+      orderBy?: RdfQuery['orderBy'];
+      limit?: number;
+      offset?: number;
+      values?: PgCompiledValuesSource[];
+      fenceGraphPrefix?: boolean;
+    },
+  ): Promise<PgCompiledJoin | undefined> {
+    if (
+      options?.distinct
+      || (options?.values?.length ?? 0) > 0
+      || (options?.orderBy?.length ?? 0) > 0
+      || options?.limit !== undefined
+      || options?.offset !== undefined
+    ) {
+      return undefined;
+    }
+
+    const resolved = await this.resolvePattern(entry.pattern);
+    if (resolved.unresolved) {
+      return undefined;
+    }
+
+    const builder = new PgSqlBuilder();
+    const alias = 'q';
+    const conditions: string[] = [];
+    const joins: string[] = [];
+    const queryPlan: string[] = [];
+    const scan = this.compilePgCustomIndexPermScanFragment(resolved, alias, 'idx', builder);
+    if (!scan) {
+      return undefined;
+    }
+
+    this.appendResolvedPatternConditions(
+      resolved,
+      alias,
+      conditions,
+      joins,
+      builder,
+      queryPlan,
+      options?.fenceGraphPrefix === true,
+    );
+    this.appendPatternEqualityConditions(entry.equalities, alias, conditions, queryPlan);
+
+    const variableColumns = new Map<string, string>();
+    for (const key of PATTERN_KEYS) {
+      const variableName = entry.variables[key];
+      if (!variableName || variableColumns.has(variableName)) {
+        continue;
+      }
+      variableColumns.set(variableName, `${alias}.${TERM_COLUMN[key]}`);
+    }
+
+    const projectVariables = options?.project ?? [...variableColumns.keys()];
+    if (projectVariables.some((variableName) => !variableColumns.has(variableName))) {
+      return undefined;
+    }
+
+    const variableAliases = new Map<string, string>();
+    const projectionColumns = projectVariables.map((variableName) => {
+      const column = variableColumns.get(variableName);
+      if (!column) {
+        throw new Error(`Postgres RDF custom-index single-pattern join cannot project unbound variable: ${variableName}`);
+      }
+      const aliasName = `v${variableAliases.size}`;
+      variableAliases.set(variableName, aliasName);
+      return `${column} AS ${aliasName}`;
+    });
+    const projection = projectionColumns.length > 0 ? projectionColumns.join(', ') : '1 AS __empty';
+    const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `
+      SELECT ${projection}
+      FROM ${scan.from}${joins.join('')}
+      ${whereClause}
+    `;
+
+    return {
+      sql,
+      params: builder.snapshot(),
+      countParams: [],
+      indexChoice: `${scan.indexChoice}.join`,
+      queryPlan: [
+        ...scan.queryPlan,
+        ...queryPlan,
+        `PostgresRdfCustomIndexSinglePatternJoin(${describePatternSource(entry)})`,
+        sql,
+      ],
+      variableAliases,
+    };
+  }
+
   private compilePgCustomIndexPermScanFragment(
     resolved: PgResolvedPattern,
     alias: string,
@@ -2746,6 +2842,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       XPOD_RDF_SUBJECT_STAR_JOIN_CAPABILITY,
       XPOD_RDF_SUBJECT_STAR_COUNT_CAPABILITY,
       XPOD_RDF_BGP_COUNT_CAPABILITY,
+      XPOD_RDF_BGP_GROUP_COUNT_CAPABILITY,
     ]);
     return capabilities.filter((capability) => wiredOperators.has(capability)).sort();
   }
@@ -3212,10 +3309,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const subjectStarJoin = patterns.length > 1 && values.length === 0
       ? await this.compilePgCustomIndexSubjectStarJoinSql(patterns, joinOptions)
       : undefined;
-    const nativeBgpJoin = !subjectStarJoin && patterns.length > 1
+    const nativeBgpJoin = !subjectStarJoin && patterns.length >= 1
       ? await this.compilePgCustomIndexBgpJoinSql(patterns, joinOptions)
       : undefined;
-    const compiled = subjectStarJoin ?? nativeBgpJoin ?? await this.compileJoinSql(patterns, joinOptions);
+    const customIndexSinglePatternJoin = !subjectStarJoin && !nativeBgpJoin && patterns.length === 1 && values.length === 0
+      ? await this.compilePgCustomIndexSinglePatternJoinSql(patterns[0], joinOptions)
+      : undefined;
+    const compiled = subjectStarJoin ?? nativeBgpJoin ?? customIndexSinglePatternJoin ?? await this.compileJoinSql(patterns, joinOptions);
     if (compiled.unresolved) {
       return {
         bindings: [],
@@ -3229,6 +3329,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const subjectStarCount = await this.queryNativeSubjectStarCountAggregate(query, aggregates, compiled, start);
     if (subjectStarCount) {
       return subjectStarCount;
+    }
+    const bgpGroupCount = await this.queryNativeBgpGroupCountAggregate(query, aggregates, compiled, start);
+    if (bgpGroupCount) {
+      return bgpGroupCount;
     }
     const bgpCount = await this.queryNativeBgpCountAggregate(query, aggregates, compiled, start);
     if (bgpCount) {
@@ -3394,6 +3498,174 @@ export class PostgresRdfEngine implements RdfEngineLike {
       && query.offset === undefined
       && !query.distinct
       && (query.select ?? []).every((variableName) => aggregates.some((aggregate) => aggregate.as === variableName));
+  }
+
+  private async queryNativeBgpGroupCountAggregate(
+    query: RdfQuery,
+    aggregates: ReturnType<typeof queryAggregates>,
+    compiled: PgCompiledJoin,
+    start: number,
+  ): Promise<RdfQueryResult | undefined> {
+    const countPlan = compiled.bgpCount;
+    if (!countPlan || !this.canNativeBgpGroupCountAggregate(query, aggregates, countPlan)) {
+      return undefined;
+    }
+
+    const groupVariables = query.groupBy ?? [];
+    const builder = new PgSqlBuilder();
+    const variableAliases = new Map<string, string>();
+    const aggregateAliases = new Map<string, string>();
+    const aggregateTypes = new Map<string, 'integer' | 'decimal'>();
+    const groupSlots = groupVariables.map((variableName, index) => {
+      const slot = countPlan.variableSlotsByName.get(variableName);
+      if (!slot) {
+        throw new Error(`Postgres RDF native BGP group count cannot group by unbound variable: ${variableName}`);
+      }
+      const alias = `g${index}`;
+      variableAliases.set(variableName, alias);
+      return slot;
+    });
+    const countSlots = aggregates.map((aggregate, index) => {
+      const alias = `a${index}`;
+      aggregateAliases.set(aggregate.as, alias);
+      aggregateTypes.set(aggregate.as, 'integer');
+      if (!aggregate.variable) {
+        return -1;
+      }
+      const slot = countPlan.variableSlotsByName.get(aggregate.variable);
+      if (!slot) {
+        throw new Error(`Postgres RDF native BGP group count cannot read unbound variable: ${aggregate.variable}`);
+      }
+      return slot;
+    });
+    const distinctFlags = aggregates.map((aggregate) => aggregate.distinct ? 1 : 0);
+    const projection = [
+      ...groupVariables.map((_, index) => `summary.group${index + 1} AS g${index}`),
+      ...aggregates.map((_, index) => `summary.count${index + 1} AS a${index}`),
+    ].join(', ');
+    const from = `
+      xpod_rdf.bgp_group_count(
+        '${RDF_FACTS_TABLE}'::regclass,
+        ARRAY[${countPlan.indexOidsSql}]::oid[],
+        ${builder.add(countPlan.constants)}::bigint[],
+        ${builder.add(countPlan.variableSlots)}::smallint[],
+        ${builder.add(countPlan.valueSlots)}::smallint[],
+        ${builder.add(countPlan.valueRows)}::bigint[],
+        ${builder.add(groupSlots)}::smallint[],
+        ${builder.add(countSlots)}::smallint[],
+        ${builder.add(distinctFlags)}::smallint[]
+      ) summary
+    `;
+    const where = this.buildNativeBgpGroupCountHavingClause(query.having ?? [], aggregates, builder);
+    const order = this.buildNativeBgpGroupCountOrderClause(query.orderBy ?? [], groupVariables, aggregates);
+    const paramsBeforePagination = builder.snapshot();
+    const pagination = this.buildPagination(query, builder);
+    const sql = `
+      SELECT ${projection}
+      FROM ${from}
+      ${where}
+      ${order}
+      ${pagination.sql}
+    `;
+    const rows = await this.requireExecutor().query<Record<string, number>>(sql, builder.snapshot());
+    const matchedRows = pagination.sql
+      ? await this.scalarCount(`
+          SELECT COUNT(*) AS count
+          FROM ${from}
+          ${where}
+        `, paramsBeforePagination)
+      : rows.length;
+    const bindings = await this.joinRowsToBindings(rows, variableAliases, aggregateAliases, aggregateTypes);
+    const plan = [
+      ...storagePlanMarkers(compiled.queryPlan),
+      ...this.pgAccelerationActiveMarkersForQuery(query),
+      `XpodRdfPgHotOperator(${XPOD_RDF_BGP_GROUP_COUNT_CAPABILITY})`,
+      `XpodRdfBgpGroupCount(groups:${groupVariables.length},aggregates:${aggregates.length})`,
+      aggregatePlan(aggregates, true),
+      ...((query.having ?? []).length > 0 ? [`PostgresRdf3xAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
+      ...((query.orderBy ?? []).length > 0 ? [`PostgresRdf3xAggregateOrder(${describeQueryOrder(query.orderBy ?? [])})`] : []),
+      ...(pagination.sql ? ['PostgresRdf3xAggregateLimit'] : []),
+      sql,
+    ];
+    const indexChoice = countPlan.indexChoice.replace('xpod_rdf.bgp_count', 'xpod_rdf.bgp_group_count');
+    return {
+      bindings,
+      metrics: this.localMetrics(
+        start,
+        matchedRows,
+        matchedRows,
+        bindings.length,
+        [indexChoice],
+        plan,
+        query.filters?.length ?? 0,
+      ),
+    };
+  }
+
+  private canNativeBgpGroupCountAggregate(
+    query: RdfQuery,
+    aggregates: ReturnType<typeof queryAggregates>,
+    countPlan: PgBgpCountPlan,
+  ): boolean {
+    const groupBy = query.groupBy ?? [];
+    const aggregateVariables = new Set(aggregates.map((aggregate) => aggregate.as));
+    return this.canUsePgAccelerationCapability(XPOD_RDF_BGP_GROUP_COUNT_CAPABILITY)
+      && this.pgAcceleration?.capabilityProviders?.[XPOD_RDF_BGP_GROUP_COUNT_CAPABILITY] === 'extension'
+      && groupBy.length > 0
+      && groupBy.length <= XPOD_RDF_BGP_MAX_VARIABLES
+      && groupBy.every((variableName) => countPlan.variableSlotsByName.has(variableName))
+      && aggregates.length > 0
+      && aggregates.length <= 8
+      && aggregates.every((aggregate) => (
+        aggregate.type === 'count'
+          && aggregate.distinctVariables === undefined
+          && (!aggregate.variable || countPlan.variableSlotsByName.has(aggregate.variable))
+          && (!aggregate.distinct || Boolean(aggregate.variable))
+      ))
+      && (query.having ?? []).every((filter) => this.canNativeAggregateHaving(filter, aggregateVariables))
+      && (query.orderBy ?? []).every((entry) => groupBy.includes(entry.variable) || aggregateVariables.has(entry.variable))
+      && !query.distinct
+      && (query.select ?? []).every((variableName) => groupBy.includes(variableName) || aggregateVariables.has(variableName));
+  }
+
+  private buildNativeBgpGroupCountHavingClause(
+    filters: RdfQueryFilter[],
+    aggregates: ReturnType<typeof queryAggregates>,
+    builder: PgSqlBuilder,
+  ): string {
+    if (filters.length === 0) {
+      return '';
+    }
+    const conditions = filters.map((filter) => {
+      const aggregateIndex = aggregates.findIndex((aggregate) => aggregate.as === filter.variable);
+      if (aggregateIndex < 0) {
+        throw new Error(`Postgres RDF native BGP group count cannot HAVING on unknown aggregate: ${filter.variable}`);
+      }
+      return `summary.count${aggregateIndex + 1} ${aggregateSqlOperator(filter.operator)} ${builder.add(this.aggregateFilterValue(filter.value))}`;
+    });
+    return ` WHERE ${conditions.join(' AND ')}`;
+  }
+
+  private buildNativeBgpGroupCountOrderClause(
+    orderBy: NonNullable<RdfQuery['orderBy']>,
+    groupVariables: string[],
+    aggregates: ReturnType<typeof queryAggregates>,
+  ): string {
+    if (orderBy.length === 0) {
+      return '';
+    }
+    const orders = orderBy.map((entry) => {
+      const groupIndex = groupVariables.indexOf(entry.variable);
+      if (groupIndex >= 0) {
+        return `summary.group${groupIndex + 1} ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`;
+      }
+      const aggregateIndex = aggregates.findIndex((aggregate) => aggregate.as === entry.variable);
+      if (aggregateIndex < 0) {
+        throw new Error(`Postgres RDF native BGP group count cannot order by unbound variable: ${entry.variable}`);
+      }
+      return `summary.count${aggregateIndex + 1} ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`;
+    });
+    return ` ORDER BY ${orders.join(', ')}`;
   }
 
   private async queryNativeBgpCountAggregate(
@@ -4336,7 +4608,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   ): Promise<PgCompiledJoin | undefined> {
     if (
       options?.distinct
-      || patterns.length < 2
+      || patterns.length < 1
       || patterns.length > XPOD_RDF_BGP_MAX_PATTERNS
       || !this.canUsePgCustomIndexPermScan()
       || !this.canUsePgAccelerationCapability(XPOD_RDF_BGP_JOIN_CAPABILITY)
@@ -5988,6 +6260,7 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
       || entry.startsWith('Language(')
       || entry.startsWith('Datatype(')
       || entry.startsWith('XpodRdfCustomIndexScan(')
+      || entry.startsWith('PostgresRdfCustomIndexSinglePatternJoin(')
       || entry.startsWith('XpodRdfSubjectStar')
       || entry.startsWith('XpodRdfBgp')
       || entry.startsWith('XpodRdfValues')

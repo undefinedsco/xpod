@@ -979,6 +979,94 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
     expectedPlan: ['join-count-index'],
   },
   {
+    name: 'provider credential grouped count query',
+    resource: 'aiProvider',
+    purpose: 'non-subject-star grouped count aggregate can stay inside native BGP group count summary',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+          subject: { variable: 'model' },
+          predicate: namedNode(`${UDFS}isProvidedBy`),
+          object: { variable: 'provider' },
+        },
+        {
+          graph: namedNode('https://pod.example/alice/settings/credentials.ttl'),
+          subject: { variable: 'credential' },
+          predicate: namedNode(`${UDFS}provider`),
+          object: { variable: 'provider' },
+        },
+      ],
+      groupBy: ['provider'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'credentialCount',
+          variable: 'credential',
+        },
+      ],
+      having: [
+        {
+          variable: 'credentialCount',
+          operator: '$gt',
+          value: literal('0', namedNode('http://www.w3.org/2001/XMLSchema#integer')),
+        },
+      ],
+      select: ['provider', 'credentialCount'],
+      orderBy: [
+        {
+          variable: 'credentialCount',
+          direction: 'desc',
+        },
+      ],
+      limit: 1,
+    },
+    expectedPlan: ['group-count-index', 'having-pushdown', 'order', 'limit'],
+  },
+  {
+    name: 'provider credential single-pattern grouped count query',
+    resource: 'credential',
+    purpose: 'single-pattern exact graph grouped count aggregate can stay inside native BGP group count summary',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: namedNode('https://pod.example/alice/settings/credentials.ttl'),
+          subject: { variable: 'credential' },
+          predicate: namedNode(`${UDFS}provider`),
+          object: { variable: 'provider' },
+        },
+      ],
+      groupBy: ['provider'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'credentialCount',
+          variable: 'credential',
+        },
+      ],
+      having: [
+        {
+          variable: 'credentialCount',
+          operator: '$gt',
+          value: literal('0', namedNode('http://www.w3.org/2001/XMLSchema#integer')),
+        },
+      ],
+      select: ['provider', 'credentialCount'],
+      orderBy: [
+        {
+          variable: 'credentialCount',
+          direction: 'desc',
+        },
+      ],
+      limit: 1,
+    },
+    expectedPlan: ['group-count-index', 'having-pushdown', 'order', 'limit'],
+  },
+  {
     name: 'provider credential priority aggregate query',
     resource: 'aiProvider',
     purpose: 'non-subject-star grouped numeric aggregate can use native BGP as its input stream',
@@ -2900,7 +2988,8 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
   switch (label) {
     case 'group-count-index':
       return planText.includes('Aggregate(group-count-index)')
-        || planText.includes('PostgresRdf3xGroupCount');
+        || planText.includes('PostgresRdf3xGroupCount')
+        || planText.includes('XpodRdfBgpGroupCount(');
     case 'group-aggregate-index':
       return planText.includes('Aggregate(group-basic-multi-index)')
         || planText.includes('Aggregate(group-basic-index)')

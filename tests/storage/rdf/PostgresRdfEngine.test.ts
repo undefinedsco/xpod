@@ -11,6 +11,7 @@ import {
   rdfModelsBenchmarkSyntheticPodCount,
   runRdfModelsPostgresBenchmark,
   type RdfPgAccelerationStats,
+  type RdfPgAccelerationProfile,
   type RdfQuery,
 } from '../../../src/storage/rdf';
 import { rdfTermValueHead } from '../../../src/storage/rdf/RdfTermDictionary';
@@ -3140,6 +3141,476 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('routes supported required BGP grouped count aggregates through native bgp_group_count', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-bgp-group-count-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread1 = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const thread2 = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_2');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const message3 = namedNode(`${graph.value}#msg_3`);
+    const observedSql: string[] = [];
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(THREAD), thread1, graph),
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(THREAD), thread1, graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message3, namedNode(THREAD), thread2, graph),
+        quad(message3, namedNode(STATUS), literal('open'), graph),
+      ]);
+      const originalExecutor = internals.requireExecutor();
+      const dictionary = internals.requireDictionary();
+      const thread1Id = await dictionary.find(thread1);
+      expect(thread1Id).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.count',
+          'aggregate.bgp_group_count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+        ],
+        capabilityProviders: {
+          'aggregate.count': 'extension',
+          'aggregate.bgp_group_count': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.required_bgp.native': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'aggregate.bgp_group_count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for native BGP grouped count aggregates');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.bgp_group_count')) {
+            observedSql.push(sql);
+            observedParams = params;
+            if (sql.includes('COUNT(*) AS count')) {
+              return [{ count: 1 }] as T[];
+            }
+            return [{ g0: thread1Id, a0: 2 }] as T[];
+          }
+          if (sql.includes('xpod_rdf.bgp_join')) {
+            throw new Error('bgp_group_count aggregate should not materialize bgp_join rows');
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        having: [
+          {
+            variable: 'messageCount',
+            operator: '$gt',
+            value: 1,
+          },
+        ],
+        select: ['thread', 'messageCount'],
+        orderBy: [
+          {
+            variable: 'messageCount',
+            direction: 'desc',
+          },
+        ],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.bgp_group_count');
+      expect(observedSql[0]).toContain('summary.group1 AS g0');
+      expect(observedSql[0]).toContain('summary.count1 AS a0');
+      expect(observedSql[0]).toContain('WHERE summary.count1 >');
+      expect(observedSql[0]).toContain('ORDER BY summary.count1 DESC');
+      expect(observedSql[0]).toContain('LIMIT');
+      expect(observedSql[0]).not.toContain('GROUP BY source');
+      expect(observedSql[0]).not.toContain('xpod_rdf.bgp_join');
+      expect(observedParams?.[0]).toHaveLength(8);
+      expect(observedParams?.[1]).toHaveLength(8);
+      expect(observedParams?.[2]).toEqual([]);
+      expect(observedParams?.[3]).toEqual([]);
+      expect(observedParams?.[4]).toHaveLength(1);
+      expect(observedParams?.[5]).toHaveLength(1);
+      expect(observedParams?.[6]).toEqual([0]);
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].thread.value).toBe(thread1.value);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.bgp_group_count');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp.native)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.bgp_group_count)');
+      expect(result.metrics.plan).toContain('XpodRdfBgpGroupCount(groups:1,aggregates:1)');
+      expect(result.metrics.plan).toContain('PostgresRdf3xAggregateHaving(?messageCount$gt)');
+      expect(result.metrics.plan).toContain('PostgresRdf3xAggregateOrder(desc:messageCount)');
+      expect(result.metrics.plan).toContain('PostgresRdf3xAggregateLimit');
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xGroupCount');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes supported single-pattern grouped count aggregates through native bgp_group_count', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-single-bgp-group-count-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const observedSql: string[] = [];
+    let observedParams: unknown[] | undefined;
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+      ]);
+      const originalExecutor = internals.requireExecutor();
+      const dictionary = internals.requireDictionary();
+      const threadId = await dictionary.find(thread);
+      expect(threadId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.count',
+          'aggregate.bgp_group_count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+        ],
+        capabilityProviders: {
+          'aggregate.count': 'extension',
+          'aggregate.bgp_group_count': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'join.required_bgp': 'extension',
+          'join.required_bgp.native': 'extension',
+        },
+        requiredCapabilities: [
+          'join.required_bgp',
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'aggregate.bgp_group_count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'join.required_bgp',
+          'join.required_bgp.native',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for native single-pattern grouped count aggregates');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.bgp_group_count')) {
+            observedSql.push(sql);
+            observedParams = params;
+            if (sql.includes('COUNT(*) AS count')) {
+              return [{ count: 1 }] as T[];
+            }
+            return [{ g0: threadId, a0: 2 }] as T[];
+          }
+          if (sql.includes('xpod_rdf.bgp_join')) {
+            throw new Error('single-pattern bgp_group_count aggregate should not materialize bgp_join rows');
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        having: [
+          {
+            variable: 'messageCount',
+            operator: '$gte',
+            value: 2,
+          },
+        ],
+        select: ['thread', 'messageCount'],
+        orderBy: [
+          {
+            variable: 'messageCount',
+            direction: 'desc',
+          },
+        ],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(observedSql[0]).toContain('xpod_rdf.bgp_group_count');
+      expect(observedSql[0]).toContain('summary.group1 AS g0');
+      expect(observedSql[0]).toContain('summary.count1 AS a0');
+      expect(observedSql[0]).toContain('WHERE summary.count1 >=');
+      expect(observedSql[0]).toContain('ORDER BY summary.count1 DESC');
+      expect(observedSql[0]).not.toContain('GROUP BY source');
+      expect(observedSql[0]).not.toContain('xpod_rdf.bgp_join');
+      expect(observedParams?.[0]).toHaveLength(4);
+      expect(observedParams?.[1]).toHaveLength(4);
+      expect(observedParams?.[2]).toEqual([]);
+      expect(observedParams?.[3]).toEqual([]);
+      expect(observedParams?.[4]).toHaveLength(1);
+      expect(observedParams?.[5]).toHaveLength(1);
+      expect(observedParams?.[6]).toEqual([0]);
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].thread.value).toBe(thread.value);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.metrics.indexChoices[0]).toContain('xpod_rdf.bgp_group_count');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp.native)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
+      expect(result.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.bgp_group_count)');
+      expect(result.metrics.plan).toContain('XpodRdfBgpGroupCount(groups:1,aggregates:1)');
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xGroupCount');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses custom-index scan rows as graph-prefix single-pattern grouped aggregate input', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-single-pattern-group-scan-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const internals = engine as unknown as {
+      pgAcceleration: RdfPgAccelerationStats;
+      requireDictionary(): {
+        find(term: unknown): Promise<number | undefined>;
+      };
+      requireExecutor(): {
+        query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+      };
+      queryPgExtensionJsonRows<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]>;
+    };
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const observedSql: string[] = [];
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+      ]);
+      const originalExecutor = internals.requireExecutor();
+      const dictionary = internals.requireDictionary();
+      const threadId = await dictionary.find(thread);
+      expect(threadId).toBeDefined();
+
+      internals.pgAcceleration = {
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        capabilities: [
+          'aggregate.count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'scan.graph_prefix',
+        ],
+        capabilityProviders: {
+          'aggregate.count': 'extension',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.scan': 'extension',
+          'scan.graph_prefix': 'extension',
+        },
+        requiredCapabilities: [
+          'index.xpod_rdf_perm',
+        ],
+        missingCapabilities: [],
+        activeOperators: [
+          'aggregate.count',
+          'index.xpod_rdf_perm',
+          'index.xpod_rdf_perm.scan',
+          'scan.graph_prefix',
+        ],
+      };
+      internals.queryPgExtensionJsonRows = async () => {
+        throw new Error('execute_plan_json should not be used for graph-prefix grouped aggregates');
+      };
+      internals.requireExecutor = () => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          if (sql.includes('xpod_rdf.perm_index_scan')) {
+            observedSql.push(sql);
+            if (sql.includes('COUNT(*) AS count')) {
+              return [{ count: 1 }] as T[];
+            }
+            return [{ v1: threadId, a0: 2 }] as T[];
+          }
+          if (sql.includes('xpod_rdf.bgp_group_count') || sql.includes('xpod_rdf.bgp_join')) {
+            throw new Error('graph-prefix single-pattern aggregate should not use exact-id native BGP');
+          }
+          return originalExecutor.query<T>(sql, params);
+        },
+      });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/' },
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        having: [
+          {
+            variable: 'messageCount',
+            operator: '$gte',
+            value: 2,
+          },
+        ],
+        select: ['thread', 'messageCount'],
+        orderBy: [
+          {
+            variable: 'messageCount',
+            direction: 'desc',
+          },
+        ],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      const aggregateSql = observedSql.find((sql) => !sql.includes('COUNT(*) AS count'));
+      expect(aggregateSql).toContain('xpod_rdf.perm_index_scan');
+      expect(aggregateSql).toContain('JOIN rdf_quads');
+      expect(aggregateSql).not.toContain('xpod_rdf.bgp_group_count');
+      expect(aggregateSql).not.toContain('FROM rdf_quads q0');
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].thread.value).toBe(thread.value);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.metrics.plan).toContain('XpodRdfCustomIndexScan(perm_index_scan:PSO,prefix:1)');
+      expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
+      expect(result.metrics.plan.some((entry) => entry.startsWith('PostgresRdfCustomIndexSinglePatternJoin('))).toBe(true);
+      expect(result.metrics.plan).toContain('PostgresRdf3xGroupCount');
+      expect(result.metrics.plan).toContain('PostgresRdf3xAggregateHaving(?messageCount$gte)');
+      expect(result.metrics.plan).not.toContain('XpodRdfBgpGroupCount(groups:1,aggregates:1)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionAggregate(execute_plan_json)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses native subject-star joins as the input for numeric aggregates with term filters', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-extension-subject-star-numeric-'));
     const engine = new PostgresRdfEngine({
@@ -3781,7 +4252,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('wires cloud RDF storage to the PostgreSQL RDF engine', async () => {
+  it('wires cloud RDF storage to PostgreSQL hot operators without requiring a native extension', async () => {
     const cloudConfig = JSON.parse(await readFile(path.join(process.cwd(), 'config/cloud.json'), 'utf8'));
     const engine = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:SolidRdfEngine');
 
@@ -3795,6 +4266,42 @@ describe('PostgresRdfEngine', () => {
       options_rdfAccelerationProfile: 'pg-hot-operators',
       options_autoOpen: true,
     });
+
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-cloud-open-source-'));
+    const cloudProfile = engine.options_rdfAccelerationProfile as RdfPgAccelerationProfile;
+    const openSourceCloudEngine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      rdfAccelerationProfile: cloudProfile,
+    });
+
+    try {
+      await openSourceCloudEngine.open();
+      const stats = (await openSourceCloudEngine.storageStats()).pgAcceleration;
+      expect(stats).toMatchObject({
+        profile: 'pg-hot-operators',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'engine-sql',
+        missingCapabilities: [],
+      });
+      expect(stats?.capabilityProviders).toMatchObject({
+        'cache.result': 'sql-abi',
+        'scan.exact_graph': 'engine-sql',
+        'scan.graph_prefix': 'engine-sql',
+        'scan.term_in': 'engine-sql',
+        'join.required_bgp': 'engine-sql',
+        'join.values': 'engine-sql',
+        'aggregate.count': 'engine-sql',
+        'aggregate.numeric': 'engine-sql',
+      });
+      expect(stats?.fallbackReason).toBeUndefined();
+      expect(stats?.customIndexes).toBeUndefined();
+    } finally {
+      await openSourceCloudEngine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 });
 
