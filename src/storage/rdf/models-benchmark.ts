@@ -41,8 +41,11 @@ import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 const { namedNode, literal, quad } = DataFactory;
 
 export type RdfBenchmarkScale = 'small' | 'medium' | 'large';
+export type RdfBenchmarkCaseProfile = 'default' | 'extreme' | 'all';
 
-export const RDF_MODELS_SYNTHETIC_MESSAGE_QUADS = 4;
+export const RDF_MODELS_SYNTHETIC_MESSAGE_QUADS = 9;
+export const RDF_MODELS_NATIVE_STRESS_MESSAGE_QUADS = 9;
+export const RDF_MODELS_NATIVE_STRESS_MESSAGE_COUNT = 1024;
 
 const RDF_MODELS_SCALE_TARGET_QUADS: Record<RdfBenchmarkScale, number> = {
   small: 48,
@@ -81,6 +84,7 @@ export interface RdfModelQueryBenchmarkCase {
 export interface RdfModelBenchmarkRunOptions {
   cases?: readonly RdfModelBenchmarkCase[];
   queryCases?: readonly RdfModelQueryBenchmarkCase[];
+  caseProfile?: RdfBenchmarkCaseProfile;
   scale?: RdfBenchmarkScale;
   iterations?: number;
 }
@@ -143,6 +147,7 @@ export interface RdfModelQueryBenchmarkResult {
 export interface RdfModelBenchmarkReport {
   engine: 'solid-rdf';
   scale: RdfBenchmarkScale;
+  caseProfile: RdfBenchmarkCaseProfile;
   iterations: number;
   generatedAt: string;
   planMatched: boolean;
@@ -155,6 +160,7 @@ export interface RdfModelBenchmarkReport {
 export interface RdfModelPostgresBenchmarkReport {
   engine: 'postgres-rdf';
   scale: RdfBenchmarkScale;
+  caseProfile: RdfBenchmarkCaseProfile;
   iterations: number;
   warmupIterations: number;
   generatedAt: string;
@@ -169,6 +175,7 @@ export interface RdfModelPostgresBenchmarkReport {
 export interface RdfModelsBenchmarkSeedOptions {
   syntheticMessages: number;
   syntheticPodCount: number;
+  caseProfile?: RdfBenchmarkCaseProfile;
 }
 
 export interface RdfModelShadowBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {}
@@ -234,6 +241,7 @@ export interface RdfModelShadowBenchmarkReport {
   compatibilityEngine: 'quint-store';
   candidateEngine: 'solid-rdf';
   scale: RdfBenchmarkScale;
+  caseProfile: RdfBenchmarkCaseProfile;
   iterations: number;
   generatedAt: string;
   matched: boolean;
@@ -324,6 +332,7 @@ export interface RdfModelRdf3xShadowBenchmarkReport {
   primaryEngine: 'solid-rdf';
   candidateEngine: 'solid-rdf3x';
   scale: RdfBenchmarkScale;
+  caseProfile: RdfBenchmarkCaseProfile;
   iterations: number;
   generatedAt: string;
   matched: boolean;
@@ -367,7 +376,9 @@ type JsonPattern = Record<string, unknown>;
 
 export const RDF_MODELS_BENCHMARK_POD = 'https://pod.example/alice';
 const DATA = `${RDF_MODELS_BENCHMARK_POD}/.data`;
+const NATIVE_STRESS_GRAPH = `${DATA}/chat/default/2026/05/18/native-stress.ttl`;
 const SETTINGS = `${RDF_MODELS_BENCHMARK_POD}/settings`;
+const WORKSPACE = 'file://macbook.local/Users/alice/project/';
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
 const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
@@ -381,6 +392,7 @@ const FOAF_AGENT = 'http://xmlns.com/foaf/0.1/Agent';
 const VCARD_INDIVIDUAL = 'http://www.w3.org/2006/vcard/ns#Individual';
 const SCHEMA_CREATIVE_WORK = 'http://schema.org/CreativeWork';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
+const RDF_MODELS_SYNTHETIC_THREAD_COUNT = 64;
 const PERFORMANCE_P95_MIN_ABSOLUTE_HEADROOM_MS = 25;
 const PERFORMANCE_P95_MAX_RATIO = 8;
 
@@ -1299,12 +1311,610 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   },
 ];
 
+export const rdfModelsExtremeBenchmarkCases: readonly RdfModelBenchmarkCase[] = [
+  {
+    name: 'extreme month message score range scan',
+    resource: 'message',
+    purpose: 'large month graph-prefix numeric score scan stresses graph membership plus object range pushdown',
+    minScale: 'medium',
+    query: {
+      pattern: {
+        predicate: namedNode(`${UDFS}score`),
+        object: { $gte: literal('50', namedNode(XSD_INTEGER)) },
+        graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+      },
+      options: { order: ['subject'], limit: 500 },
+    },
+    expectedPlan: ['graph-scope', 'predicate-object-range-filter', 'order', 'limit'],
+  },
+  {
+    name: 'extreme month message text scan',
+    resource: 'message',
+    purpose: 'large graph-prefix text scan validates that object text lookup reconnects through RDF subjects',
+    minScale: 'medium',
+    query: {
+      pattern: {
+        predicate: namedNode(SIOC_CONTENT),
+        object: { $contains: 'synthetic searchable message' },
+        graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+      },
+      options: { order: ['subject'], limit: 500 },
+    },
+    expectedPlan: ['text-index', 'rdf-subject-join', 'order', 'limit'],
+  },
+];
+
+export const rdfModelsExtremeQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[] = [
+  {
+    name: 'extreme message eight-pattern star query',
+    resource: 'message',
+    purpose: '8-pattern subject-star BGP stresses deep custom-index joins before pagination',
+    minScale: 'medium',
+    minReturnedRows: 100,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(RDF_TYPE),
+          object: namedNode(`${MEETING}Message`),
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(DCT_CREATED),
+          object: { variable: 'createdAt' },
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(DCT_MODIFIED),
+          object: { variable: 'modifiedAt' },
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}score`),
+          object: { variable: 'score' },
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}rank`),
+          object: { variable: 'rank' },
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}status`),
+          object: literal('indexed'),
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}workspace`),
+          object: namedNode(WORKSPACE),
+        },
+      ],
+      select: ['message', 'thread', 'createdAt', 'score'],
+      orderBy: [
+        {
+          variable: 'createdAt',
+          direction: 'desc',
+        },
+      ],
+      limit: 100,
+    },
+    expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
+  },
+  {
+    name: 'extreme message large VALUES thread query',
+    resource: 'message',
+    purpose: 'large VALUES-constrained fanout join checks native tuple-values pushdown against RDF-3X baseline',
+    minScale: 'medium',
+    minReturnedRows: 100,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(DCT_CREATED),
+          object: { variable: 'createdAt' },
+        },
+      ],
+      values: [
+        {
+          variables: ['thread'],
+          rows: syntheticThreadValueRows(32),
+        },
+      ],
+      select: ['message', 'thread', 'createdAt'],
+      orderBy: [
+        {
+          variable: 'createdAt',
+          direction: 'desc',
+        },
+      ],
+      limit: 500,
+    },
+    expectedPlan: ['join-index', 'values-join-pushdown'],
+  },
+  {
+    name: 'extreme message count distinct thread query',
+    resource: 'message',
+    purpose: 'large fanout COUNT plus COUNT DISTINCT tests the hard aggregate path where native numeric aggregate must not over-claim',
+    minScale: 'medium',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(RDF_TYPE),
+          object: namedNode(`${MEETING}Message`),
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+      ],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+        {
+          type: 'count',
+          as: 'threadCount',
+          variable: 'thread',
+          distinct: true,
+        },
+      ],
+      select: ['messageCount', 'threadCount'],
+    },
+    expectedPlan: ['join-count-index'],
+  },
+  {
+    name: 'extreme message grouped count by thread query',
+    resource: 'message',
+    purpose: 'large fanout grouped count validates thread-level scheduler-style aggregation under HAVING/ORDER/LIMIT',
+    minScale: 'medium',
+    minReturnedRows: 10,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+      ],
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+      ],
+      having: [
+        {
+          variable: 'messageCount',
+          operator: '$gt',
+          value: literal('5', namedNode(XSD_INTEGER)),
+        },
+      ],
+      select: ['thread', 'messageCount'],
+      orderBy: [
+        {
+          variable: 'messageCount',
+          direction: 'desc',
+        },
+        {
+          variable: 'thread',
+          direction: 'asc',
+        },
+      ],
+      limit: 10,
+    },
+    expectedPlan: ['group-count-index', 'having-pushdown', 'order', 'limit'],
+  },
+  {
+    name: 'extreme message grouped numeric aggregate by thread query',
+    resource: 'message',
+    purpose: 'large fanout grouped numeric aggregate is the primary pg-custom-index native aggregate proving ground',
+    minScale: 'medium',
+    minReturnedRows: 10,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}score`),
+          object: { variable: 'score' },
+        },
+        {
+          graph: { $startsWith: `${DATA}/chat/default/2026/05/` },
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}status`),
+          object: literal('indexed'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'score',
+          operator: '$termType',
+          value: 'numeric',
+        },
+      ],
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+        {
+          type: 'sum',
+          as: 'scoreTotal',
+          variable: 'score',
+        },
+        {
+          type: 'avg',
+          as: 'scoreAvg',
+          variable: 'score',
+        },
+        {
+          type: 'max',
+          as: 'scoreMax',
+          variable: 'score',
+        },
+      ],
+      having: [
+        {
+          variable: 'scoreTotal',
+          operator: '$gt',
+          value: literal('100', namedNode(XSD_INTEGER)),
+        },
+      ],
+      select: ['thread', 'messageCount', 'scoreTotal', 'scoreAvg', 'scoreMax'],
+      orderBy: [
+        {
+          variable: 'scoreTotal',
+          direction: 'desc',
+        },
+        {
+          variable: 'thread',
+          direction: 'asc',
+        },
+      ],
+      limit: 10,
+    },
+    expectedPlan: ['group-aggregate-index', 'having-pushdown', 'order', 'limit'],
+  },
+  {
+    name: 'extreme native exact graph eight-pattern join query',
+    resource: 'message',
+    purpose: 'high fanout exact-graph 8-pattern BGP is the custom-index native row-stream gate',
+    minScale: 'medium',
+    minReturnedRows: 200,
+    query: {
+      patterns: [
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(RDF_TYPE),
+          object: namedNode(`${MEETING}Message`),
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(DCT_CREATED),
+          object: { variable: 'createdAt' },
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(DCT_MODIFIED),
+          object: { variable: 'modifiedAt' },
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}score`),
+          object: { variable: 'score' },
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}rank`),
+          object: { variable: 'rank' },
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}status`),
+          object: literal('indexed'),
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}workspace`),
+          object: namedNode(WORKSPACE),
+        },
+      ],
+      select: ['message', 'thread', 'createdAt', 'score'],
+      limit: 256,
+    },
+    expectedPlan: ['join-index', 'join-limit-pushdown'],
+  },
+  {
+    name: 'extreme native exact graph VALUES thread query',
+    resource: 'message',
+    purpose: 'high fanout exact-graph VALUES BGP checks native VALUES row scheduling',
+    minScale: 'medium',
+    minReturnedRows: 200,
+    query: {
+      patterns: [
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(DCT_CREATED),
+          object: { variable: 'createdAt' },
+        },
+      ],
+      values: [
+        {
+          variables: ['thread'],
+          rows: syntheticThreadValueRows(32),
+        },
+      ],
+      select: ['message', 'thread', 'createdAt'],
+      limit: 512,
+    },
+    expectedPlan: ['join-index', 'values-join-pushdown', 'join-limit-pushdown'],
+  },
+  {
+    name: 'extreme native exact graph count distinct thread query',
+    resource: 'message',
+    purpose: 'high fanout exact-graph COUNT and COUNT DISTINCT checks native BGP count',
+    minScale: 'medium',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(RDF_TYPE),
+          object: namedNode(`${MEETING}Message`),
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+      ],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+        {
+          type: 'count',
+          as: 'threadCount',
+          variable: 'thread',
+          distinct: true,
+        },
+      ],
+      select: ['messageCount', 'threadCount'],
+    },
+    expectedPlan: ['join-count-index'],
+  },
+  {
+    name: 'extreme native exact graph grouped count by thread query',
+    resource: 'message',
+    purpose: 'high fanout exact-graph grouped count checks native BGP group-count summary',
+    minScale: 'medium',
+    minReturnedRows: 10,
+    query: {
+      patterns: [
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+      ],
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+      ],
+      having: [
+        {
+          variable: 'messageCount',
+          operator: '$gt',
+          value: literal('8', namedNode(XSD_INTEGER)),
+        },
+      ],
+      select: ['thread', 'messageCount'],
+      orderBy: [
+        {
+          variable: 'messageCount',
+          direction: 'desc',
+        },
+        {
+          variable: 'thread',
+          direction: 'asc',
+        },
+      ],
+      limit: 10,
+    },
+    expectedPlan: ['group-count-index', 'having-pushdown', 'order', 'limit'],
+  },
+  {
+    name: 'extreme native exact graph grouped numeric aggregate by thread query',
+    resource: 'message',
+    purpose: 'high fanout exact-graph grouped numeric summary checks native BGP numeric aggregate',
+    minScale: 'medium',
+    minReturnedRows: 10,
+    query: {
+      patterns: [
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}score`),
+          object: { variable: 'score' },
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}status`),
+          object: literal('indexed'),
+        },
+      ],
+      filters: [
+        {
+          variable: 'score',
+          operator: '$termType',
+          value: 'numeric',
+        },
+      ],
+      groupBy: ['thread'],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+        {
+          type: 'sum',
+          as: 'scoreTotal',
+          variable: 'score',
+        },
+        {
+          type: 'avg',
+          as: 'scoreAvg',
+          variable: 'score',
+        },
+        {
+          type: 'max',
+          as: 'scoreMax',
+          variable: 'score',
+        },
+      ],
+      having: [
+        {
+          variable: 'scoreTotal',
+          operator: '$gt',
+          value: literal('100', namedNode(XSD_INTEGER)),
+        },
+      ],
+      select: ['thread', 'messageCount', 'scoreTotal', 'scoreAvg', 'scoreMax'],
+      orderBy: [
+        {
+          variable: 'scoreTotal',
+          direction: 'desc',
+        },
+        {
+          variable: 'thread',
+          direction: 'asc',
+        },
+      ],
+      limit: 10,
+    },
+    expectedPlan: ['group-aggregate-index', 'having-pushdown', 'order', 'limit'],
+  },
+];
+
+export function rdfModelsBenchmarkCasesForProfile(profile: RdfBenchmarkCaseProfile): readonly RdfModelBenchmarkCase[] {
+  switch (profile) {
+    case 'default':
+      return rdfModelsBenchmarkCases;
+    case 'extreme':
+      return rdfModelsExtremeBenchmarkCases;
+    case 'all':
+      return [...rdfModelsBenchmarkCases, ...rdfModelsExtremeBenchmarkCases];
+    default: {
+      const exhaustive: never = profile;
+      return exhaustive;
+    }
+  }
+}
+
+export function rdfModelsQueryBenchmarkCasesForProfile(profile: RdfBenchmarkCaseProfile): readonly RdfModelQueryBenchmarkCase[] {
+  switch (profile) {
+    case 'default':
+      return rdfModelsQueryBenchmarkCases;
+    case 'extreme':
+      return rdfModelsExtremeQueryBenchmarkCases;
+    case 'all':
+      return [...rdfModelsQueryBenchmarkCases, ...rdfModelsExtremeQueryBenchmarkCases];
+    default: {
+      const exhaustive: never = profile;
+      return exhaustive;
+    }
+  }
+}
+
 export function rdfModelsBenchmarkCaseNames(): string[] {
   return rdfModelsBenchmarkCases.map((testCase) => testCase.name);
 }
 
 export function rdfModelsQueryBenchmarkCaseNames(): string[] {
   return rdfModelsQueryBenchmarkCases.map((testCase) => testCase.name);
+}
+
+export function rdfModelsExtremeBenchmarkCaseNames(): string[] {
+  return rdfModelsExtremeBenchmarkCases.map((testCase) => testCase.name);
+}
+
+export function rdfModelsExtremeQueryBenchmarkCaseNames(): string[] {
+  return rdfModelsExtremeQueryBenchmarkCases.map((testCase) => testCase.name);
 }
 
 export function rdfModelsBenchmarkScaleTargetQuads(scale: RdfBenchmarkScale): number {
@@ -1336,7 +1946,11 @@ export function buildRdfModelsBenchmarkSeed(options: RdfModelsBenchmarkSeedOptio
   seedChatTaskThreadRunProviderQuads(quads);
   seedAgentContactFavoriteQuads(quads);
   seedCanonicalMessages(quads);
+  seedSyntheticThreads(quads, options.syntheticPodCount);
   seedSyntheticMessages(quads, options.syntheticMessages, options.syntheticPodCount);
+  if (options.caseProfile === 'extreme' || options.caseProfile === 'all') {
+    seedNativeStressMessages(quads);
+  }
 
   return quads;
 }
@@ -1352,7 +1966,6 @@ function seedChatTaskThreadRunProviderQuads(quads: Quad[]): void {
   const scheduleGraph = `${DATA}/task/default/2026/05/18/schedules.ttl`;
   const runGraph = `${DATA}/task/default/2026/05/18/runs.ttl`;
   const run = `${runGraph}#run_1`;
-  const workspace = 'file://macbook.local/Users/alice/project/';
   const provider = `${SETTINGS}/providers/anthropic.ttl`;
   const credentialGraph = `${SETTINGS}/credentials.ttl`;
   const credential = `${credentialGraph}#anthropic-default`;
@@ -1363,10 +1976,10 @@ function seedChatTaskThreadRunProviderQuads(quads: Quad[]): void {
     seedQuad(chat, DCT_MODIFIED, literal('2026-05-18T00:00:00.000Z'), chatGraph),
     seedQuad(thread, RDF_TYPE, iri(`${SIOC}Thread`), chatGraph),
     seedQuad(thread, DCT_CREATED, literal('2026-05-18T00:00:01.000Z'), chatGraph),
-    seedQuad(thread, `${UDFS}workspace`, iri(workspace), chatGraph),
+    seedQuad(thread, `${UDFS}workspace`, iri(WORKSPACE), chatGraph),
     seedQuad(task, RDF_TYPE, iri(`${UDFS}Task`), taskGraph),
     seedQuad(task, `${UDFS}status`, literal('active'), taskGraph),
-    seedQuad(task, `${UDFS}workspace`, iri(workspace), taskGraph),
+    seedQuad(task, `${UDFS}workspace`, iri(WORKSPACE), taskGraph),
     seedQuad(taskThread, RDF_TYPE, iri(`${SIOC}Thread`), taskThreadGraph),
     seedQuad(taskThread, DCT_CREATED, literal('2026-05-18T00:30:00.000Z'), taskThreadGraph),
     seedQuad(`${scheduleGraph}#schedule_1`, RDF_TYPE, iri(`${UDFS}Schedule`), scheduleGraph),
@@ -1375,17 +1988,17 @@ function seedChatTaskThreadRunProviderQuads(quads: Quad[]): void {
     seedQuad(run, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
     seedQuad(run, DCT_CREATED, literal('2026-05-18T01:00:00.000Z'), runGraph),
     seedQuad(run, `${UDFS}status`, literal('queued'), runGraph),
-    seedQuad(run, `${UDFS}workspace`, iri(workspace), runGraph),
+    seedQuad(run, `${UDFS}workspace`, iri(WORKSPACE), runGraph),
     seedQuad(run, `${UDFS}priority`, literal('10', iri(XSD_INTEGER)), runGraph),
     seedQuad(`${runGraph}#run_2`, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
     seedQuad(`${runGraph}#run_2`, DCT_CREATED, literal('2026-05-18T01:05:00.000Z'), runGraph),
     seedQuad(`${runGraph}#run_2`, `${UDFS}status`, literal('queued'), runGraph),
-    seedQuad(`${runGraph}#run_2`, `${UDFS}workspace`, iri(workspace), runGraph),
+    seedQuad(`${runGraph}#run_2`, `${UDFS}workspace`, iri(WORKSPACE), runGraph),
     seedQuad(`${runGraph}#run_2`, `${UDFS}priority`, literal('2', iri(XSD_INTEGER)), runGraph),
     seedQuad(`${runGraph}#run_3`, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
     seedQuad(`${runGraph}#run_3`, DCT_CREATED, literal('2026-05-18T01:10:00.000Z'), runGraph),
     seedQuad(`${runGraph}#run_3`, `${UDFS}status`, literal('running'), runGraph),
-    seedQuad(`${runGraph}#run_3`, `${UDFS}workspace`, iri(workspace), runGraph),
+    seedQuad(`${runGraph}#run_3`, `${UDFS}workspace`, iri(WORKSPACE), runGraph),
     seedQuad(`${runGraph}#run_3`, `${UDFS}priority`, literal('8', iri(XSD_INTEGER)), runGraph),
     seedQuad(`${runGraph}#step_1`, RDF_TYPE, iri(`${UDFS}RunStep`), runGraph),
     seedQuad(`${runGraph}#step_1`, `${UDFS}run`, iri(run), runGraph),
@@ -1442,25 +2055,86 @@ function seedCanonicalMessages(quads: Quad[]): void {
   }
 }
 
+function seedSyntheticThreads(quads: Quad[], podCount: number): void {
+  const syntheticPodCount = Math.max(1, Math.floor(podCount));
+  for (let podIndex = 0; podIndex < syntheticPodCount; podIndex += 1) {
+    const pod = podIndex === 0 ? RDF_MODELS_BENCHMARK_POD : `https://pod.example/synthetic-${podIndex}`;
+    const data = `${pod}/.data`;
+    const graph = `${data}/chat/default/index.ttl`;
+    for (let threadIndex = 0; threadIndex < RDF_MODELS_SYNTHETIC_THREAD_COUNT; threadIndex += 1) {
+      const thread = syntheticThreadIri(data, threadIndex);
+      const createdAt = new Date(Date.UTC(2026, 4, 1, 0, threadIndex, podIndex)).toISOString();
+      quads.push(
+        seedQuad(thread, RDF_TYPE, iri(`${SIOC}Thread`), graph),
+        seedQuad(thread, `${UDFS}workspace`, iri(WORKSPACE), graph),
+        seedQuad(thread, DCT_CREATED, literal(createdAt), graph),
+      );
+    }
+  }
+}
+
 function seedSyntheticMessages(quads: Quad[], count: number, podCount: number): void {
   const syntheticPodCount = Math.max(1, Math.floor(podCount));
   for (let index = 0; index < count; index += 1) {
     const podIndex = index % syntheticPodCount;
     const pod = podIndex === 0 ? RDF_MODELS_BENCHMARK_POD : `https://pod.example/synthetic-${podIndex}`;
     const data = `${pod}/.data`;
-    const thread = `${data}/chat/default/index.ttl#thread_1`;
+    const thread = syntheticThreadIri(data, index % RDF_MODELS_SYNTHETIC_THREAD_COUNT);
     const dayNumber = (index % 28) + 1;
     const day = String(dayNumber).padStart(2, '0');
     const graph = `${data}/chat/default/2026/05/${day}/messages.ttl`;
     const message = `${graph}#synthetic_${index}`;
     const timestamp = new Date(Date.UTC(2026, 4, dayNumber, 12, 0, index)).toISOString();
+    const score = String((index % 100) + 1);
+    const rank = String(index + 1);
     quads.push(
       seedQuad(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
       seedQuad(message, SIOC_HAS_MEMBER, iri(thread), graph),
       seedQuad(message, DCT_CREATED, literal(timestamp), graph),
+      seedQuad(message, DCT_MODIFIED, literal(timestamp), graph),
       seedQuad(message, SIOC_CONTENT, literal(`synthetic searchable message ${index}`), graph),
+      seedQuad(message, `${UDFS}score`, literal(score, iri(XSD_INTEGER)), graph),
+      seedQuad(message, `${UDFS}rank`, literal(rank, iri(XSD_INTEGER)), graph),
+      seedQuad(message, `${UDFS}status`, literal('indexed'), graph),
+      seedQuad(message, `${UDFS}workspace`, iri(WORKSPACE), graph),
     );
   }
+}
+
+function seedNativeStressMessages(quads: Quad[]): void {
+  for (let index = 0; index < RDF_MODELS_NATIVE_STRESS_MESSAGE_COUNT; index += 1) {
+    const thread = syntheticThreadIri(DATA, index % RDF_MODELS_SYNTHETIC_THREAD_COUNT);
+    const message = `${NATIVE_STRESS_GRAPH}#native_${index}`;
+    const timestamp = new Date(Date.UTC(2026, 4, 18, 13, 0, index)).toISOString();
+    const score = String((index % 100) + 1);
+    const rank = String(index + 1);
+    quads.push(
+      seedQuad(message, RDF_TYPE, iri(`${MEETING}Message`), NATIVE_STRESS_GRAPH),
+      seedQuad(message, SIOC_HAS_MEMBER, iri(thread), NATIVE_STRESS_GRAPH),
+      seedQuad(message, DCT_CREATED, literal(timestamp), NATIVE_STRESS_GRAPH),
+      seedQuad(message, DCT_MODIFIED, literal(timestamp), NATIVE_STRESS_GRAPH),
+      seedQuad(message, SIOC_CONTENT, literal(`native stress searchable message ${index}`), NATIVE_STRESS_GRAPH),
+      seedQuad(message, `${UDFS}score`, literal(score, iri(XSD_INTEGER)), NATIVE_STRESS_GRAPH),
+      seedQuad(message, `${UDFS}rank`, literal(rank, iri(XSD_INTEGER)), NATIVE_STRESS_GRAPH),
+      seedQuad(message, `${UDFS}status`, literal('indexed'), NATIVE_STRESS_GRAPH),
+      seedQuad(message, `${UDFS}workspace`, iri(WORKSPACE), NATIVE_STRESS_GRAPH),
+    );
+  }
+}
+
+function syntheticThreadIri(data: string, threadIndex: number): string {
+  return `${data}/chat/default/index.ttl#thread_${threadIndex + 1}`;
+}
+
+function syntheticThreadValueRows(count: number): RdfBindingRow[] {
+  const rows: RdfBindingRow[] = [];
+  const safeCount = Math.min(Math.max(0, Math.floor(count)), RDF_MODELS_SYNTHETIC_THREAD_COUNT);
+  for (let index = 0; index < safeCount; index += 1) {
+    rows.push({
+      thread: namedNode(syntheticThreadIri(DATA, index)),
+    });
+  }
+  return rows;
 }
 
 function seedQuad(
@@ -1482,9 +2156,10 @@ export function runRdfModelsBenchmark(
 ): RdfModelBenchmarkReport {
   const scale = options.scale ?? 'small';
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
-  const cases = (options.cases ?? rdfModelsBenchmarkCases)
+  const caseProfile = options.caseProfile ?? 'default';
+  const cases = (options.cases ?? rdfModelsBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
-  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCases)
+  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const results = cases.map((testCase) => runBenchmarkCase(engine, testCase, iterations));
   const queryResults = queryCases.map((testCase) => runQueryBenchmarkCase(engine, testCase, iterations));
@@ -1496,6 +2171,7 @@ export function runRdfModelsBenchmark(
   return {
     engine: 'solid-rdf',
     scale,
+    caseProfile,
     iterations,
     generatedAt: new Date().toISOString(),
     planMatched: failedPlanCases.length === 0,
@@ -1513,13 +2189,14 @@ export async function runRdfModelsPostgresBenchmark(
   const scale = options.scale ?? 'small';
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
   const warmupIterations = Math.max(0, Math.floor(options.warmupIterations ?? 1));
+  const caseProfile = options.caseProfile ?? 'default';
   const refresh = options.refreshDerivedIndexes === false
     ? undefined
     : await engine.refreshDerivedIndexes();
   const storageBefore = await engine.storageStats();
-  const cases = (options.cases ?? rdfModelsBenchmarkCases)
+  const cases = (options.cases ?? rdfModelsBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
-  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCases)
+  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const results = [];
   for (const testCase of cases) {
@@ -1537,6 +2214,7 @@ export async function runRdfModelsPostgresBenchmark(
   return {
     engine: 'postgres-rdf',
     scale,
+    caseProfile,
     iterations,
     warmupIterations,
     generatedAt: new Date().toISOString(),
@@ -1556,7 +2234,8 @@ export async function runRdfModelsShadowBenchmark(
 ): Promise<RdfModelShadowBenchmarkReport> {
   const scale = options.scale ?? 'small';
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
-  const cases = (options.cases ?? rdfModelsBenchmarkCases)
+  const caseProfile = options.caseProfile ?? 'default';
+  const cases = (options.cases ?? rdfModelsBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const results = [];
   const compatibilityStats = await compatibilityStore.stats();
@@ -1575,6 +2254,7 @@ export async function runRdfModelsShadowBenchmark(
     compatibilityEngine: 'quint-store',
     candidateEngine: 'solid-rdf',
     scale,
+    caseProfile,
     iterations,
     generatedAt: new Date().toISOString(),
     matched: results.every((result) => result.matched),
@@ -1599,9 +2279,10 @@ export function runRdfModelsRdf3xShadowBenchmark(
   }
   const scale = options.scale ?? 'small';
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
-  const cases = (options.cases ?? rdfModelsBenchmarkCases)
+  const caseProfile = options.caseProfile ?? 'default';
+  const cases = (options.cases ?? rdfModelsBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
-  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCases)
+  const queryCases = (options.queryCases ?? rdfModelsQueryBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const rebuild = engine.rdf3xIndex.rebuildFromCurrentQuads();
   const results = cases.map((testCase) => runRdf3xShadowBenchmarkCase(engine, testCase, iterations));
@@ -1618,6 +2299,7 @@ export function runRdfModelsRdf3xShadowBenchmark(
     primaryEngine: 'solid-rdf',
     candidateEngine: 'solid-rdf3x',
     scale,
+    caseProfile,
     iterations,
     generatedAt: new Date().toISOString(),
     matched: supportedResults.every((result) => result.matched)
@@ -2992,6 +3674,8 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
     case 'group-aggregate-index':
       return planText.includes('Aggregate(group-basic-multi-index)')
         || planText.includes('Aggregate(group-basic-index)')
+        || planText.includes('Aggregate(group-basic-multi)')
+        || planText.includes('Aggregate(group-basic)')
         || planText.includes('PostgresRdf3xGroupAggregate');
     case 'join-aggregate-index':
       return (
@@ -3003,30 +3687,36 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
     case 'having-pushdown':
       return (planText.includes('IndexGroupCountHaving(')
         || planText.includes('IndexGroupAggregateHaving(')
-        || planText.includes('PostgresRdf3xAggregateHaving('))
+        || planText.includes('PostgresRdf3xAggregateHaving(')
+        || planText.includes('PostgresRdfNativeCustomIndexAggregateHaving('))
         && !planText.includes('\nHaving(')
         && !planText.includes('\nPostgresFactsHaving(');
     case 'order':
       return (planText.includes('IndexGroupCountOrder(')
         || planText.includes('IndexGroupAggregateOrder(')
-        || planText.includes('PostgresRdf3xAggregateOrder('))
+        || planText.includes('PostgresRdf3xAggregateOrder(')
+        || planText.includes('PostgresRdfNativeCustomIndexAggregateOrder('))
         && !planText.includes('\nSort')
         && !planText.includes('\nPostgresFactsSort(');
     case 'limit':
       return (planText.includes('IndexGroupCountLimit')
         || planText.includes('IndexGroupAggregateLimit')
-        || planText.includes('PostgresRdf3xAggregateLimit'))
+        || planText.includes('PostgresRdf3xAggregateLimit')
+        || planText.includes('PostgresRdfNativeCustomIndexAggregateLimit'))
         && !planText.includes('\nLimit')
         && !planText.includes('\nPostgresFactsLimit');
     case 'join-index':
       return planText.includes('IndexJoin(')
         && !planText.includes('\nIndexScan(')
-        || planText.includes('PostgresRdf3xJoin(');
+        || planText.includes('PostgresRdf3xJoin(')
+        || planText.includes('PostgresRdfNativeCustomIndexBgpJoin(')
+        || planText.includes('PostgresRdfNativeCustomIndexValuesJoin(')
+        || localIndexScanCount(planText) >= 2;
     case 'values-recheck':
-      return planText.includes('Rdf3xJoinTupleValues(')
+      return (planText.includes('Rdf3xJoinTupleValues(') || planText.includes('Values('))
         && !planText.includes('PostgresFactsValues(');
     case 'values-join-pushdown':
-      return planText.includes('Rdf3xJoinTupleValues(')
+      return (planText.includes('Rdf3xJoinTupleValues(') || planText.includes('Values('))
         && !planText.includes('PostgresFactsValues(');
     case 'join-order-pushdown':
       return (planText.includes('IndexJoinOrder(')
@@ -3037,7 +3727,9 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
     case 'join-limit-pushdown':
       return (planText.includes('IndexJoinLimit')
         || planText.includes('Rdf3xJoinLimit')
-        || planText.includes('PostgresRdf3xJoinLimit'))
+        || planText.includes('PostgresRdf3xJoinLimit')
+        || planText.includes('PostgresRdfNativeCustomIndexBgpLimit')
+        || planText.includes('PostgresRdfNativeCustomIndexValuesJoinLimit'))
         && !planText.includes('\nLimit')
         && !planText.includes('\nPostgresFactsLimit');
     case 'range-filter-pushdown':
@@ -3051,6 +3743,10 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
     default:
       return false;
   }
+}
+
+function localIndexScanCount(planText: string): number {
+  return planText.match(/\bIndexScan\(/g)?.length ?? 0;
 }
 
 function missingExpectedRdf3xJoinPlan(

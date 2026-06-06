@@ -610,6 +610,7 @@ describe('PostgresRdfEngine', () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const message1 = namedNode(`${graph.value}#msg_1`);
     const message2 = namedNode(`${graph.value}#msg_2`);
+    const message3 = namedNode(`${graph.value}#msg_3`);
 
     try {
       await engine.open();
@@ -1145,6 +1146,882 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('falls back the PostgreSQL custom-index profile when the native extension is absent', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-fallback-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const query: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: { mode: 'bypass' },
+    };
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stats).toMatchObject({
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: false,
+        provider: 'engine-sql',
+        capabilities: expect.arrayContaining([
+          'aggregate.count',
+          'aggregate.numeric',
+          'cache.result',
+          'join.required_bgp',
+          'join.values',
+          'scan.exact_graph',
+          'scan.graph_prefix',
+          'scan.term_in',
+        ]),
+        capabilityProviders: {
+          'aggregate.count': 'engine-sql',
+          'aggregate.numeric': 'engine-sql',
+          'cache.result': 'engine-sql',
+          'join.required_bgp': 'engine-sql',
+          'join.values': 'engine-sql',
+          'scan.exact_graph': 'engine-sql',
+          'scan.graph_prefix': 'engine-sql',
+          'scan.term_in': 'engine-sql',
+        },
+        missingCapabilities: ['index.xpod_rdf_perm'],
+        fallbackReason: 'capability-missing',
+      });
+      expect(stringList(stats?.capabilities)).not.toContain('index.xpod_rdf_perm');
+      expect(stats?.activeOperators ?? []).not.toEqual(expect.arrayContaining([
+        'join.required_bgp.order_page.native',
+        'join.required_bgp.native',
+        'join.required_bgp.limit.native',
+        'index.xpod_rdf_perm',
+      ]));
+
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+      const result = await engine.query(query);
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(result.metrics.plan).toContain('PostgresRdfAccelerationFallback(capability-missing)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('activates the wired native custom-index count operator', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-active-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const message3 = namedNode(`${graph.value}#msg_3`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stats).toMatchObject({
+        profile: 'pg-custom-index',
+        requested: true,
+        available: true,
+        enabled: true,
+        provider: 'extension',
+        version: '0.1.0-native',
+        missingCapabilities: [],
+        capabilityProviders: {
+          'aggregate.bgp_count': 'extension',
+          'aggregate.bgp_group_count': 'extension',
+          'aggregate.bgp_numeric': 'extension',
+          'aggregate.count': 'engine-sql',
+          'aggregate.numeric': 'engine-sql',
+          'cache.result': 'engine-sql',
+          'index.xpod_rdf_perm': 'extension',
+          'index.xpod_rdf_perm.count_any': 'extension',
+          'index.xpod_rdf_perm.distinct_any': 'extension',
+          'index.xpod_rdf_perm.scan_any': 'extension',
+          'join.required_bgp': 'engine-sql',
+          'join.values': 'engine-sql',
+          'join.values.limit.native': 'extension',
+          'join.values.native': 'extension',
+          'scan.exact_graph': 'engine-sql',
+          'scan.graph_prefix': 'engine-sql',
+          'scan.term_in': 'engine-sql',
+        },
+      });
+      expect(stringList(stats?.capabilities)).toEqual(expect.arrayContaining([
+        'aggregate.bgp_count',
+        'aggregate.bgp_group_count',
+        'aggregate.bgp_numeric',
+        'index.xpod_rdf_perm',
+        'index.xpod_rdf_perm.count_any',
+        'index.xpod_rdf_perm.distinct_any',
+        'index.xpod_rdf_perm.scan_any',
+        'join.required_bgp.native',
+        'join.required_bgp.order_page.native',
+        'join.values.limit.native',
+        'join.values.native',
+      ]));
+      expect(stats?.activeOperators ?? []).toEqual([
+        'aggregate.bgp_count',
+        'aggregate.bgp_group_count',
+        'aggregate.bgp_numeric',
+        'aggregate.count',
+        'aggregate.numeric',
+        'cache.result',
+        'index.xpod_rdf_perm.count_any',
+        'index.xpod_rdf_perm.distinct_any',
+        'index.xpod_rdf_perm.scan_any',
+        'join.required_bgp',
+        'join.required_bgp.native',
+        'join.values',
+        'join.values.limit.native',
+        'join.values.native',
+        'scan.exact_graph',
+        'scan.graph_prefix',
+        'scan.term_in',
+      ]);
+      expect(stats?.activeOperators ?? []).not.toEqual(expect.arrayContaining([
+        'index.xpod_rdf_perm',
+        'join.required_bgp.order_page.native',
+      ]));
+      expect(stats?.fallbackReason).toBeUndefined();
+      expect(pool.customIndexStatements).toHaveLength(6);
+      expect(pool.customIndexStatements.join('\n')).toContain('rdf_quads_spog_perm');
+      expect(pool.customIndexStatements.join('\n')).toContain('rdf_quads_opsg_perm');
+      expect(stats?.customIndexes).toHaveLength(6);
+      expect(stats?.customIndexes?.[0]).toMatchObject({
+        name: 'rdf_quads_spog_perm',
+        permutation: 'SPO',
+        columns: ['subject_id', 'predicate_id', 'object_id', 'graph_id'],
+        stats: {
+          layout: 'compressed-posting-v1',
+          compressed: true,
+          globalSorted: true,
+        },
+      });
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message1, namedNode(THREAD), namedNode(`${graph.value}#thread_a`), graph),
+        quad(message1, namedNode(PRIORITY), literal('10', namedNode(XSD_INTEGER)), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(THREAD), namedNode(`${graph.value}#thread_a`), graph),
+        quad(message2, namedNode(PRIORITY), literal('4', namedNode(XSD_INTEGER)), graph),
+        quad(message3, namedNode(STATUS), literal('closed'), graph),
+        quad(message3, namedNode(THREAD), namedNode(`${graph.value}#thread_b`), graph),
+        quad(message3, namedNode(PRIORITY), literal('2', namedNode(XSD_INTEGER)), graph),
+      ]);
+      const scanResult = await engine.scan({
+        pattern: {
+          graph,
+          predicate: namedNode(STATUS),
+          object: { $in: [literal('open'), literal('closed')] },
+        },
+      });
+
+      expect(scanResult.quads.map((entry) => entry.subject.value).sort()).toEqual([
+        message1.value,
+        message2.value,
+        message3.value,
+      ]);
+      expect(scanResult.metrics.queryPlan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)');
+      expect(scanResult.metrics.queryPlan).toContain('PostgresRdfNativeCustomIndexScanAny(POS)');
+      expect(scanResult.metrics.queryPlan).not.toContain('Rdf3xPermutationScan(POS)');
+      expect(pool.nativeScanAnyCalls).toHaveLength(1);
+      const scanAnyParams = pool.nativeScanAnyCalls[0].params;
+      expect(scanAnyParams).toHaveLength(8);
+      expect(scanAnyParams[0]).toBe('rdf_quads_posg_perm');
+      expect(scanAnyParams[1]).toEqual(expect.arrayContaining([expect.any(Number)]));
+      expect(scanAnyParams[2]).toEqual(expect.arrayContaining([expect.any(Number), expect.any(Number)]));
+      expect(scanAnyParams[3]).toBeNull();
+      expect(scanAnyParams[4]).toBeNull();
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['messageCount'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.count).toBe(2);
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.metrics.plan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.count_any)');
+      expect(result.metrics.plan).toContain('PostgresRdfNativeCustomIndexCountAny(POS)');
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xJoinCount');
+      expect(pool.nativeCountAnyCalls).toHaveLength(2);
+      const countAnyParams = pool.nativeCountAnyCalls[1].params;
+      expect(countAnyParams).toHaveLength(10);
+      expect(countAnyParams[0]).toBe('rdf_quads');
+      expect(countAnyParams[1]).toBe('rdf_quads_posg_perm');
+      expect(countAnyParams[2]).toEqual(expect.arrayContaining([expect.any(Number)]));
+      expect(countAnyParams[3]).toEqual(expect.arrayContaining([expect.any(Number)]));
+      expect(countAnyParams[4]).toBeNull();
+      expect(countAnyParams[5]).toBeNull();
+      expect(countAnyParams[6]).toEqual(expect.arrayContaining([expect.any(Number)]));
+      expect(countAnyParams[7]).toBeNull();
+      expect(countAnyParams[8]).toEqual(countAnyParams[2]);
+      expect(countAnyParams[9]).toEqual(countAnyParams[3]);
+
+      const distinctResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: { $in: [literal('open'), literal('closed')] },
+          },
+        ],
+        select: ['message'],
+        distinct: true,
+        limit: 2,
+        offset: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(distinctResult.bindings.map((binding) => binding.message.value)).toEqual([
+        message2.value,
+        message3.value,
+      ]);
+      expect(distinctResult.metrics.plan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.distinct_any)');
+      expect(distinctResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexDistinctAny(POS,?message)');
+      expect(distinctResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexDistinctLimit');
+      expect(distinctResult.metrics.plan).not.toContain('PostgresRdf3xJoin(subject:?message');
+      expect(pool.nativeDistinctAnyCalls).toHaveLength(1);
+      const distinctAnyParams = pool.nativeDistinctAnyCalls[0].params;
+      expect(distinctAnyParams).toHaveLength(13);
+      expect(distinctAnyParams[0]).toBe('rdf_quads');
+      expect(distinctAnyParams[1]).toBe('rdf_quads_posg_perm');
+      expect(distinctAnyParams[2]).toBe(2);
+      expect(distinctAnyParams[3]).toEqual(expect.arrayContaining([expect.any(Number)]));
+      expect(distinctAnyParams[4]).toEqual(expect.arrayContaining([expect.any(Number), expect.any(Number)]));
+      expect(distinctAnyParams[5]).toBeNull();
+      expect(distinctAnyParams[6]).toBeNull();
+      expect(distinctAnyParams[7]).toEqual(expect.arrayContaining([expect.any(Number)]));
+      expect(distinctAnyParams[8]).toBeNull();
+      expect(distinctAnyParams[9]).toEqual(distinctAnyParams[3]);
+      expect(distinctAnyParams[10]).toEqual(distinctAnyParams[4]);
+      expect(distinctAnyParams[11]).toBe(2);
+      expect(distinctAnyParams[12]).toBe(1);
+
+      const joinResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        select: ['message', 'thread'],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(joinResult.bindings).toHaveLength(1);
+      expect(joinResult.bindings[0].message.value).toBe(message1.value);
+      expect(joinResult.bindings[0].thread.value).toBe(`${graph.value}#thread_a`);
+      expect(joinResult.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
+      expect(joinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(2)');
+      expect(joinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpLimit');
+      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
+      const bgpParams = pool.nativeBgpJoinCalls[0].params;
+      expect(bgpParams[0]).toBe('rdf_quads');
+      expect(bgpParams.slice(1, 3)).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^rdf_quads_.*_perm$/),
+      ]));
+      expect(bgpParams[3]).toHaveLength(8);
+      expect(bgpParams[4]).toHaveLength(8);
+      expect(bgpParams[5]).toEqual([1, 2]);
+      expect(bgpParams[6]).toBe(1);
+      expect(bgpParams[7]).toBeNull();
+
+      const bgpCountResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'count',
+            as: 'threadCount',
+            variable: 'thread',
+            distinct: true,
+          },
+        ],
+        select: ['messageCount', 'threadCount'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(bgpCountResult.count).toBe(2);
+      expect(bgpCountResult.bindings).toHaveLength(1);
+      expect(bgpCountResult.bindings[0].messageCount.value).toBe('2');
+      expect(bgpCountResult.bindings[0].threadCount.value).toBe('1');
+      expect(bgpCountResult.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
+      expect(bgpCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpCount(2)');
+      expect(bgpCountResult.metrics.plan).not.toContain('PostgresRdf3xJoinCount');
+      expect(pool.nativeBgpCountCalls).toHaveLength(1);
+      const bgpCountParams = pool.nativeBgpCountCalls[0].params;
+      expect(bgpCountParams[0]).toBe('rdf_quads');
+      expect(bgpCountParams.slice(1, 3)).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^rdf_quads_.*_perm$/),
+      ]));
+      expect(bgpCountParams[3]).toHaveLength(8);
+      expect(bgpCountParams[4]).toHaveLength(8);
+      expect(bgpCountParams[5]).toEqual([]);
+      expect(bgpCountParams[6]).toEqual([]);
+      expect(bgpCountParams[7]).toEqual([1, 2]);
+      expect(bgpCountParams[8]).toEqual([0, 1]);
+
+      const valuesJoinResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: { variable: 'status' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        values: [
+          {
+            variables: ['message'],
+            rows: [
+              { message: message2 },
+              { message: message3 },
+            ],
+          },
+        ],
+        select: ['message', 'status', 'thread'],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(valuesJoinResult.bindings).toHaveLength(1);
+      expect(valuesJoinResult.bindings[0].message.value).toBe(message2.value);
+      expect(valuesJoinResult.bindings[0].status.value).toBe('open');
+      expect(valuesJoinResult.bindings[0].thread.value).toBe(`${graph.value}#thread_a`);
+      expect(valuesJoinResult.metrics.plan).toContain('XpodRdfExtensionOperator(join.values.limit.native)');
+      expect(valuesJoinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexValuesJoin(2)');
+      expect(valuesJoinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexValuesJoinLimit');
+      expect(pool.nativeValuesJoinCalls).toHaveLength(1);
+      const valuesJoinParams = pool.nativeValuesJoinCalls[0].params;
+      expect(valuesJoinParams[0]).toBe('rdf_quads');
+      expect(valuesJoinParams.slice(1, 3)).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^rdf_quads_.*_perm$/),
+      ]));
+      expect(valuesJoinParams[3]).toHaveLength(8);
+      expect(valuesJoinParams[4]).toHaveLength(8);
+      expect(valuesJoinParams[5]).toEqual([1, 2, 3]);
+      expect(valuesJoinParams[6]).toEqual([1]);
+      expect(valuesJoinParams[7]).toEqual(expect.arrayContaining([expect.any(Number), expect.any(Number)]));
+      expect(valuesJoinParams[8]).toBe(1);
+      expect(valuesJoinParams[9]).toBeNull();
+
+      const groupCountResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: { variable: 'status' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'count',
+            as: 'statusCount',
+            variable: 'status',
+            distinct: true,
+          },
+        ],
+        having: [
+          {
+            variable: 'messageCount',
+            operator: '$gte',
+            value: 1,
+          },
+        ],
+        orderBy: [
+          {
+            variable: 'messageCount',
+            direction: 'desc',
+          },
+        ],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(groupCountResult.bindings).toHaveLength(1);
+      expect(groupCountResult.bindings[0].thread.value).toBe(`${graph.value}#thread_a`);
+      expect(groupCountResult.bindings[0].messageCount.value).toBe('2');
+      expect(groupCountResult.bindings[0].statusCount.value).toBe('1');
+      expect(groupCountResult.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_group_count)');
+      expect(groupCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpGroupCount(2)');
+      expect(groupCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateHaving(?messageCount$gte)');
+      expect(groupCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateOrder(desc:messageCount)');
+      expect(groupCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateLimit');
+      expect(pool.nativeBgpGroupCountCalls).toHaveLength(1);
+      const groupCountParams = pool.nativeBgpGroupCountCalls[0].params;
+      expect(groupCountParams[0]).toBe('rdf_quads');
+      expect(groupCountParams.slice(1, 3)).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^rdf_quads_.*_perm$/),
+      ]));
+      expect(groupCountParams[3]).toHaveLength(8);
+      expect(groupCountParams[4]).toHaveLength(8);
+      expect(groupCountParams[5]).toEqual([]);
+      expect(groupCountParams[6]).toEqual([]);
+      expect(groupCountParams[7]).toEqual([3]);
+      expect(groupCountParams[8]).toEqual([1, 2]);
+      expect(groupCountParams[9]).toEqual([0, 1]);
+
+      const numericAggregateResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'score' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'score',
+            operator: '$termType',
+            value: 'numeric',
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'sum',
+            as: 'scoreTotal',
+            variable: 'score',
+          },
+          {
+            type: 'avg',
+            as: 'scoreAvg',
+            variable: 'score',
+          },
+          {
+            type: 'max',
+            as: 'scoreMax',
+            variable: 'score',
+          },
+        ],
+        having: [
+          {
+            variable: 'scoreTotal',
+            operator: '$gt',
+            value: 5,
+          },
+        ],
+        orderBy: [
+          {
+            variable: 'scoreTotal',
+            direction: 'desc',
+          },
+        ],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(numericAggregateResult.bindings).toHaveLength(1);
+      expect(numericAggregateResult.bindings[0].thread.value).toBe(`${graph.value}#thread_a`);
+      expect(numericAggregateResult.bindings[0].messageCount.value).toBe('2');
+      expect(numericAggregateResult.bindings[0].scoreTotal.value).toBe('14');
+      expect(numericAggregateResult.bindings[0].scoreAvg.value).toBe('7');
+      expect(numericAggregateResult.bindings[0].scoreMax.value).toBe('10');
+      expect(numericAggregateResult.bindings[0].scoreTotal.datatype.value).toBe(XSD_DECIMAL);
+      expect(numericAggregateResult.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_numeric)');
+      expect(numericAggregateResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpNumericAggregate(2)');
+      expect(numericAggregateResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateHaving(?scoreTotal$gt)');
+      expect(numericAggregateResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateOrder(desc:scoreTotal)');
+      expect(numericAggregateResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateLimit');
+      expect(numericAggregateResult.metrics.plan.join('\n')).not.toContain('SELECT source.');
+      expect(pool.nativeBgpNumericAggregateCalls).toHaveLength(1);
+      const numericAggregateParams = pool.nativeBgpNumericAggregateCalls[0].params;
+      expect(numericAggregateParams[0]).toBe('rdf_quads');
+      expect(numericAggregateParams.slice(1, 3)).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^rdf_quads_.*_perm$/),
+      ]));
+      expect(numericAggregateParams[3]).toHaveLength(8);
+      expect(numericAggregateParams[4]).toHaveLength(8);
+      expect(numericAggregateParams[5]).toEqual([]);
+      expect(numericAggregateParams[6]).toEqual([]);
+      expect(numericAggregateParams[7]).toEqual([2]);
+      expect(numericAggregateParams[8]).toBe(3);
+      expect(numericAggregateParams[9]).toBe(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to RDF-3X join count when the native BGP count operator is absent', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-bgp-count-fallback-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'aggregate.bgp_count'));
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stringList(stats?.capabilities)).not.toContain('aggregate.bgp_count');
+      expect(stats?.activeOperators ?? []).not.toContain('aggregate.bgp_count');
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message1, namedNode(THREAD), namedNode(`${graph.value}#thread_a`), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(THREAD), namedNode(`${graph.value}#thread_a`), graph),
+      ]);
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['messageCount'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.count).toBe(2);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.metrics.plan).toContain('PostgresRdf3xJoinCount');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
+      expect(pool.nativeBgpCountCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to RDF-3X group count when the native BGP group-count operator is absent', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-bgp-group-count-fallback-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'aggregate.bgp_group_count'));
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const thread = namedNode(`${graph.value}#thread_a`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stringList(stats?.capabilities)).not.toContain('aggregate.bgp_group_count');
+      expect(stats?.activeOperators ?? []).not.toContain('aggregate.bgp_group_count');
+
+      await engine.put([
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+      ]);
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: { variable: 'status' },
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.metrics.plan).toContain('PostgresRdf3xGroupCount');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_group_count)');
+      expect(pool.nativeBgpGroupCountCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to RDF-3X numeric aggregate when the native BGP numeric operator is absent', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-bgp-numeric-fallback-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'aggregate.bgp_numeric'));
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const thread = namedNode(`${graph.value}#thread_a`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stringList(stats?.capabilities)).not.toContain('aggregate.bgp_numeric');
+      expect(stats?.activeOperators ?? []).not.toContain('aggregate.bgp_numeric');
+
+      await engine.put([
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message1, namedNode(PRIORITY), literal('10', namedNode(XSD_INTEGER)), graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(PRIORITY), literal('4', namedNode(XSD_INTEGER)), graph),
+      ]);
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'score' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'score',
+            operator: '$termType',
+            value: 'numeric',
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'sum',
+            as: 'scoreTotal',
+            variable: 'score',
+          },
+        ],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].scoreTotal.value).toBe('14');
+      expect(result.metrics.plan).toContain('PostgresRdf3xGroupAggregate');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_numeric)');
+      expect(pool.nativeBgpNumericAggregateCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to RDF-3X count when the native count_any operator is absent', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-count-fallback-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'index.xpod_rdf_perm.count_any'));
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stringList(stats?.capabilities)).not.toContain('index.xpod_rdf_perm.count_any');
+      expect(stats?.activeOperators ?? []).not.toContain('index.xpod_rdf_perm.count_any');
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+      ]);
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['messageCount'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.count).toBe(2);
+      expect(result.bindings[0].messageCount.value).toBe('2');
+      expect(result.metrics.plan).toContain('PostgresRdf3xJoinCount');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.count_any)');
+      expect(pool.nativeCountAnyCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to RDF-3X distinct when the native distinct_any operator is absent', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-distinct-fallback-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'index.xpod_rdf_perm.distinct_any'));
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stringList(stats?.capabilities)).not.toContain('index.xpod_rdf_perm.distinct_any');
+      expect(stats?.activeOperators ?? []).not.toContain('index.xpod_rdf_perm.distinct_any');
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+      ]);
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        select: ['message'],
+        distinct: true,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings.map((binding) => binding.message.value).sort()).toEqual([
+        message1.value,
+        message2.value,
+      ]);
+      expect(result.metrics.plan).toContain('PostgresRdf3xJoinDistinct(?message)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.distinct_any)');
+      expect(pool.nativeDistinctAnyCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('runs shared models benchmark cases on the PostgreSQL RDF engine without result-cache masking', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-models-benchmark-'));
     const engine = new PostgresRdfEngine({
@@ -1251,6 +2128,739 @@ describe('PostgresRdfEngine', () => {
     }
   });
 });
+
+class XpodRdfExtensionPgPool {
+  private readonly db: PGlite;
+  public readonly customIndexStatements: string[] = [];
+  public readonly nativeCountAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
+  public readonly nativeScanAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
+  public readonly nativeDistinctAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
+  public readonly nativeBgpJoinCalls: Array<{ sql: string; params: unknown[] }> = [];
+  public readonly nativeBgpCountCalls: Array<{ sql: string; params: unknown[] }> = [];
+  public readonly nativeValuesJoinCalls: Array<{ sql: string; params: unknown[] }> = [];
+  public readonly nativeBgpGroupCountCalls: Array<{ sql: string; params: unknown[] }> = [];
+  public readonly nativeBgpNumericAggregateCalls: Array<{ sql: string; params: unknown[] }> = [];
+
+  public constructor(
+    dataDir: string,
+    private readonly capabilities: string[] = XPOD_RDF_EXTENSION_CAPABILITIES,
+  ) {
+    this.db = new PGlite(dataDir);
+  }
+
+  public async query(sql: string, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
+    const intercepted = xpodRdfExtensionProbeRows(sql, params, this.capabilities, this.nativeCountAnyCalls);
+    if (intercepted) {
+      return { rows: intercepted };
+    }
+    if (sql.includes('USING xpod_rdf_perm')) {
+      this.customIndexStatements.push(sql);
+      return { rows: [] };
+    }
+    if (sql.includes('xpod_rdf.perm_index_distinct_any(')) {
+      this.nativeDistinctAnyCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionDistinctAnyRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_join(')) {
+      this.nativeBgpJoinCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpJoinRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.values_join(')) {
+      this.nativeValuesJoinCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionValuesJoinRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_group_count(')) {
+      this.nativeBgpGroupCountCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpGroupCountRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_numeric_aggregate(')) {
+      this.nativeBgpNumericAggregateCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpNumericAggregateRows(this.db, sql, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_count(')) {
+      this.nativeBgpCountCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpCountRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.perm_index_scan_any(')) {
+      this.nativeScanAnyCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionScanAnyRows(this.db, params) };
+    }
+    await this.db.waitReady;
+    const result = await this.db.query(sql, params);
+    return {
+      rows: result.rows as Array<Record<string, unknown>>,
+    };
+  }
+
+  public async connect(): Promise<XpodRdfExtensionPgClient> {
+    await this.db.waitReady;
+    return new XpodRdfExtensionPgClient(
+      this.db,
+      this.customIndexStatements,
+      this.nativeCountAnyCalls,
+      this.nativeScanAnyCalls,
+      this.nativeDistinctAnyCalls,
+      this.nativeBgpJoinCalls,
+      this.nativeBgpCountCalls,
+      this.nativeValuesJoinCalls,
+      this.nativeBgpGroupCountCalls,
+      this.nativeBgpNumericAggregateCalls,
+      this.capabilities,
+    );
+  }
+
+  public async end(): Promise<void> {
+    await this.db.close();
+  }
+}
+
+class XpodRdfExtensionPgClient {
+  public constructor(
+    private readonly db: PGlite,
+    private readonly customIndexStatements: string[],
+    private readonly nativeCountAnyCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly nativeScanAnyCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly nativeDistinctAnyCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly nativeBgpJoinCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly nativeBgpCountCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly nativeValuesJoinCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly nativeBgpGroupCountCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly nativeBgpNumericAggregateCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly capabilities: string[],
+  ) {}
+
+  public async query(sql: string, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
+    const intercepted = xpodRdfExtensionProbeRows(sql, params, this.capabilities, this.nativeCountAnyCalls);
+    if (intercepted) {
+      return { rows: intercepted };
+    }
+    if (sql.includes('USING xpod_rdf_perm')) {
+      this.customIndexStatements.push(sql);
+      return { rows: [] };
+    }
+    if (sql.includes('xpod_rdf.perm_index_distinct_any(')) {
+      this.nativeDistinctAnyCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionDistinctAnyRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_join(')) {
+      this.nativeBgpJoinCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpJoinRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.values_join(')) {
+      this.nativeValuesJoinCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionValuesJoinRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_group_count(')) {
+      this.nativeBgpGroupCountCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpGroupCountRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_numeric_aggregate(')) {
+      this.nativeBgpNumericAggregateCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpNumericAggregateRows(this.db, sql, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_count(')) {
+      this.nativeBgpCountCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpCountRows(this.db, params) };
+    }
+    if (sql.includes('xpod_rdf.perm_index_scan_any(')) {
+      this.nativeScanAnyCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionScanAnyRows(this.db, params) };
+    }
+    const result = await this.db.query(sql, params);
+    return {
+      rows: result.rows as Array<Record<string, unknown>>,
+    };
+  }
+
+  public release(): void {}
+}
+
+const XPOD_RDF_EXTENSION_CAPABILITIES = [
+  'scan.exact_graph',
+  'scan.graph_prefix',
+  'scan.term_in',
+  'join.required_bgp',
+  'join.required_bgp.native',
+  'join.required_bgp.order_page.native',
+  'join.values.native',
+  'join.values.limit.native',
+  'join.values',
+  'aggregate.bgp_count',
+  'aggregate.bgp_group_count',
+  'aggregate.bgp_numeric',
+  'aggregate.count',
+  'aggregate.numeric',
+  'cache.result',
+  'index.xpod_rdf_perm',
+  'index.xpod_rdf_perm.count_any',
+  'index.xpod_rdf_perm.distinct_any',
+  'index.xpod_rdf_perm.scan_any',
+];
+
+function xpodRdfExtensionProbeRows(
+  sql: string,
+  params: unknown[],
+  capabilities: string[],
+  nativeCountAnyCalls: Array<{ sql: string; params: unknown[] }>,
+): Array<Record<string, unknown>> | null {
+  if (sql.includes("to_regprocedure('xpod_rdf.version()')")) {
+    return [{
+      extension_version: '0.1.0',
+      has_version: true,
+      has_capabilities: true,
+    }];
+  }
+  if (sql.trim() === 'SELECT xpod_rdf.version() AS version') {
+    return [{ version: '0.1.0-native' }];
+  }
+  if (sql.trim() === 'SELECT xpod_rdf.capabilities() AS capabilities') {
+    return [{
+      capabilities: capabilities.join(','),
+    }];
+  }
+  if (sql.includes('xpod_rdf.perm_index_count_any(')) {
+    nativeCountAnyCalls.push({ sql, params });
+    return [{ count: 2 }];
+  }
+  if (sql.trim() === 'SELECT xpod_rdf.perm_index_stats($1::regclass) AS stats') {
+    return [{
+      stats: JSON.stringify({
+        layout: 'compressed-posting-v1',
+        compressed: true,
+        globalSorted: true,
+      }),
+    }];
+  }
+  return null;
+}
+
+async function xpodRdfExtensionScanAnyRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+  await db.waitReady;
+  const indexName = String(params[0] ?? '');
+  const columns = XPOD_RDF_EXTENSION_INDEX_COLUMNS[indexName] ?? XPOD_RDF_EXTENSION_INDEX_COLUMNS.rdf_quads_spog_perm;
+  const prefixFilters = params.slice(1, 5).map((value) => (
+    Array.isArray(value) ? value.map(Number).filter(Number.isFinite) : null
+  ));
+  const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads');
+  return (result.rows as Array<Record<string, unknown>>)
+    .filter((row) => columns.every((column, index) => {
+      const filter = prefixFilters[index];
+      return !filter || filter.includes(Number(row[column]));
+    }))
+    .sort((left, right) => {
+      for (const column of columns) {
+        const delta = Number(left[column]) - Number(right[column]);
+        if (delta !== 0) return delta;
+      }
+      return 0;
+    });
+}
+
+async function xpodRdfExtensionDistinctAnyRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+  await db.waitReady;
+  const indexName = String(params[1] ?? '');
+  const columns = XPOD_RDF_EXTENSION_INDEX_COLUMNS[indexName] ?? XPOD_RDF_EXTENSION_INDEX_COLUMNS.rdf_quads_spog_perm;
+  const projectColumn = XPOD_RDF_EXTENSION_PROJECT_COLUMNS[Number(params[2])] ?? 'subject_id';
+  const prefixFilters = params.slice(3, 7).map((value) => (
+    Array.isArray(value) ? value.map(Number).filter(Number.isFinite) : null
+  ));
+  const fullFilters = params.slice(7, 11).map((value) => (
+    Array.isArray(value) ? value.map(Number).filter(Number.isFinite) : null
+  ));
+  const limit = typeof params[11] === 'number' ? Math.max(0, params[11]) : undefined;
+  const offset = typeof params[12] === 'number' ? Math.max(0, params[12]) : 0;
+  const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads');
+  const counts = new Map<number, number>();
+  for (const row of result.rows as Array<Record<string, unknown>>) {
+    const prefixMatched = columns.every((column, index) => {
+      const filter = prefixFilters[index];
+      return !filter || filter.includes(Number(row[column]));
+    });
+    const fullMatched = XPOD_RDF_EXTENSION_FULL_FILTER_COLUMNS.every((column, index) => {
+      const filter = fullFilters[index];
+      return !filter || filter.includes(Number(row[column]));
+    });
+    if (!prefixMatched || !fullMatched) {
+      continue;
+    }
+    const value = Number(row[projectColumn]);
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  const rows = [...counts.entries()]
+    .sort(([left], [right]) => left - right)
+    .slice(offset, limit === undefined ? undefined : offset + limit)
+    .map(([value, rowCount]) => ({
+      v0: value,
+      value,
+      row_count: rowCount,
+    }));
+  return rows;
+}
+
+async function xpodRdfExtensionBgpJoinRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+  await db.waitReady;
+  const constantsIndex = params.findIndex((value, index) => (
+    index > 0
+      && Array.isArray(value)
+      && value.length > 0
+      && value.length % 4 === 0
+      && value.every((entry) => entry === null || typeof entry === 'number')
+  ));
+  if (constantsIndex < 0) {
+    return [];
+  }
+  const indexNames = params.slice(1, constantsIndex).map((value) => String(value));
+  const constants = params[constantsIndex] as Array<number | null>;
+  const variableSlots = params[constantsIndex + 1] as number[];
+  const outputSlots = params[constantsIndex + 2] as number[];
+  const limit = typeof params[constantsIndex + 3] === 'number' ? Math.max(0, params[constantsIndex + 3] as number) : undefined;
+  const offset = typeof params[constantsIndex + 4] === 'number' ? Math.max(0, params[constantsIndex + 4] as number) : 0;
+  const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
+  const quads = result.rows as Array<Record<string, unknown>>;
+  const output: Array<Record<string, unknown>> = [];
+
+  const visit = (patternIndex: number, bindings: Map<number, number>): void => {
+    if (patternIndex >= indexNames.length) {
+      const row: Record<string, unknown> = {};
+      outputSlots.forEach((slot, index) => {
+        row[`v${index}`] = bindings.get(slot);
+      });
+      output.push(row);
+      return;
+    }
+
+    const columns = XPOD_RDF_EXTENSION_INDEX_COLUMNS[indexNames[patternIndex]] ?? XPOD_RDF_EXTENSION_INDEX_COLUMNS.rdf_quads_spog_perm;
+    for (const quadRow of quads) {
+      const nextBindings = new Map(bindings);
+      let matched = true;
+      for (const [keyIndex, column] of columns.entries()) {
+        const flatIndex = (patternIndex * 4) + keyIndex;
+        const value = Number(quadRow[column]);
+        const constant = constants[flatIndex];
+        if (constant !== null && constant !== value) {
+          matched = false;
+          break;
+        }
+        const slot = variableSlots[flatIndex] ?? 0;
+        if (slot > 0) {
+          const existing = nextBindings.get(slot);
+          if (existing !== undefined && existing !== value) {
+            matched = false;
+            break;
+          }
+          nextBindings.set(slot, value);
+        }
+      }
+      if (matched) {
+        visit(patternIndex + 1, nextBindings);
+      }
+    }
+  };
+
+  visit(0, new Map());
+  return output.slice(offset, limit === undefined ? undefined : offset + limit);
+}
+
+async function xpodRdfExtensionValuesJoinRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+  await db.waitReady;
+  const constantsIndex = params.findIndex((value, index) => (
+    index > 0
+      && Array.isArray(value)
+      && value.length > 0
+      && value.length % 4 === 0
+      && value.every((entry) => entry === null || typeof entry === 'number')
+  ));
+  if (constantsIndex < 0) {
+    return [];
+  }
+  const indexNames = params.slice(1, constantsIndex).map((value) => String(value));
+  const constants = params[constantsIndex] as Array<number | null>;
+  const variableSlots = params[constantsIndex + 1] as number[];
+  const outputSlots = params[constantsIndex + 2] as number[];
+  const valueSlots = params[constantsIndex + 3] as number[];
+  const valueRows = params[constantsIndex + 4] as number[];
+  const limit = typeof params[constantsIndex + 5] === 'number' ? Math.max(0, params[constantsIndex + 5] as number) : undefined;
+  const offset = typeof params[constantsIndex + 6] === 'number' ? Math.max(0, params[constantsIndex + 6] as number) : 0;
+  const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
+  const quads = result.rows as Array<Record<string, unknown>>;
+  const bindingsList: Array<Map<number, number>> = [];
+
+  const visit = (patternIndex: number, bindings: Map<number, number>): void => {
+    if (patternIndex >= indexNames.length) {
+      bindingsList.push(bindings);
+      return;
+    }
+
+    const columns = XPOD_RDF_EXTENSION_INDEX_COLUMNS[indexNames[patternIndex]] ?? XPOD_RDF_EXTENSION_INDEX_COLUMNS.rdf_quads_spog_perm;
+    for (const quadRow of quads) {
+      const nextBindings = new Map(bindings);
+      let matched = true;
+      for (const [keyIndex, column] of columns.entries()) {
+        const flatIndex = (patternIndex * 4) + keyIndex;
+        const value = Number(quadRow[column]);
+        const constant = constants[flatIndex];
+        if (constant !== null && constant !== value) {
+          matched = false;
+          break;
+        }
+        const slot = variableSlots[flatIndex] ?? 0;
+        if (slot > 0) {
+          const existing = nextBindings.get(slot);
+          if (existing !== undefined && existing !== value) {
+            matched = false;
+            break;
+          }
+          nextBindings.set(slot, value);
+        }
+      }
+      if (matched) {
+        visit(patternIndex + 1, nextBindings);
+      }
+    }
+  };
+
+  visit(0, new Map());
+  return applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows)
+    .slice(offset, limit === undefined ? undefined : offset + limit)
+    .map((bindings) => Object.fromEntries(outputSlots.map((slot, index) => [`v${index}`, bindings.get(slot)])));
+}
+
+async function xpodRdfExtensionBgpCountRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+  await db.waitReady;
+  const constantsIndex = params.findIndex((value, index) => (
+    index > 0
+      && Array.isArray(value)
+      && value.length > 0
+      && value.length % 4 === 0
+      && value.every((entry) => entry === null || typeof entry === 'number')
+  ));
+  if (constantsIndex < 0) {
+    return [];
+  }
+  const indexNames = params.slice(1, constantsIndex).map((value) => String(value));
+  const constants = params[constantsIndex] as Array<number | null>;
+  const variableSlots = params[constantsIndex + 1] as number[];
+  const valueSlots = params[constantsIndex + 2] as number[];
+  const valueRows = params[constantsIndex + 3] as number[];
+  const aggregateSlots = params[constantsIndex + 4] as number[];
+  const aggregateDistinct = params[constantsIndex + 5] as number[];
+  const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
+  const quads = result.rows as Array<Record<string, unknown>>;
+  const bindingsList: Array<Map<number, number>> = [];
+
+  const visit = (patternIndex: number, bindings: Map<number, number>): void => {
+    if (patternIndex >= indexNames.length) {
+      bindingsList.push(bindings);
+      return;
+    }
+
+    const columns = XPOD_RDF_EXTENSION_INDEX_COLUMNS[indexNames[patternIndex]] ?? XPOD_RDF_EXTENSION_INDEX_COLUMNS.rdf_quads_spog_perm;
+    for (const quadRow of quads) {
+      const nextBindings = new Map(bindings);
+      let matched = true;
+      for (const [keyIndex, column] of columns.entries()) {
+        const flatIndex = (patternIndex * 4) + keyIndex;
+        const value = Number(quadRow[column]);
+        const constant = constants[flatIndex];
+        if (constant !== null && constant !== value) {
+          matched = false;
+          break;
+        }
+        const slot = variableSlots[flatIndex] ?? 0;
+        if (slot > 0) {
+          const existing = nextBindings.get(slot);
+          if (existing !== undefined && existing !== value) {
+            matched = false;
+            break;
+          }
+          nextBindings.set(slot, value);
+        }
+      }
+      if (matched) {
+        visit(patternIndex + 1, nextBindings);
+      }
+    }
+  };
+
+  visit(0, new Map());
+  const constrainedBindings = applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows);
+  const row: Record<string, unknown> = {};
+  aggregateSlots.forEach((slot, index) => {
+    const distinct = aggregateDistinct[index] !== 0;
+    if (distinct) {
+      const values = new Set<number>();
+      for (const bindings of constrainedBindings) {
+        const value = bindings.get(slot);
+        if (value !== undefined) {
+          values.add(value);
+        }
+      }
+      row[`a${index}`] = values.size;
+      return;
+    }
+    if (slot < 0) {
+      row[`a${index}`] = constrainedBindings.length;
+      return;
+    }
+    row[`a${index}`] = constrainedBindings.filter((bindings) => bindings.has(slot)).length;
+  });
+  return [row];
+}
+
+async function xpodRdfExtensionBgpGroupCountRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+  await db.waitReady;
+  const constantsIndex = params.findIndex((value, index) => (
+    index > 0
+      && Array.isArray(value)
+      && value.length > 0
+      && value.length % 4 === 0
+      && value.every((entry) => entry === null || typeof entry === 'number')
+  ));
+  if (constantsIndex < 0) {
+    return [];
+  }
+  const indexNames = params.slice(1, constantsIndex).map((value) => String(value));
+  const constants = params[constantsIndex] as Array<number | null>;
+  const variableSlots = params[constantsIndex + 1] as number[];
+  const valueSlots = params[constantsIndex + 2] as number[];
+  const valueRows = params[constantsIndex + 3] as number[];
+  const groupSlots = params[constantsIndex + 4] as number[];
+  const aggregateSlots = params[constantsIndex + 5] as number[];
+  const aggregateDistinct = params[constantsIndex + 6] as number[];
+  const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
+  const quads = result.rows as Array<Record<string, unknown>>;
+  const bindingsList: Array<Map<number, number>> = [];
+
+  const visit = (patternIndex: number, bindings: Map<number, number>): void => {
+    if (patternIndex >= indexNames.length) {
+      bindingsList.push(bindings);
+      return;
+    }
+
+    const columns = XPOD_RDF_EXTENSION_INDEX_COLUMNS[indexNames[patternIndex]] ?? XPOD_RDF_EXTENSION_INDEX_COLUMNS.rdf_quads_spog_perm;
+    for (const quadRow of quads) {
+      const nextBindings = new Map(bindings);
+      let matched = true;
+      for (const [keyIndex, column] of columns.entries()) {
+        const flatIndex = (patternIndex * 4) + keyIndex;
+        const value = Number(quadRow[column]);
+        const constant = constants[flatIndex];
+        if (constant !== null && constant !== value) {
+          matched = false;
+          break;
+        }
+        const slot = variableSlots[flatIndex] ?? 0;
+        if (slot > 0) {
+          const existing = nextBindings.get(slot);
+          if (existing !== undefined && existing !== value) {
+            matched = false;
+            break;
+          }
+          nextBindings.set(slot, value);
+        }
+      }
+      if (matched) {
+        visit(patternIndex + 1, nextBindings);
+      }
+    }
+  };
+
+  visit(0, new Map());
+  const constrainedBindings = applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows);
+  const groups = new Map<string, Array<Map<number, number>>>();
+  for (const bindings of constrainedBindings) {
+    const key = groupSlots.map((slot) => bindings.get(slot) ?? -1).join(':');
+    groups.set(key, [...(groups.get(key) ?? []), bindings]);
+  }
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, groupBindings]) => {
+      const first = groupBindings[0] ?? new Map<number, number>();
+      const row: Record<string, unknown> = {};
+      groupSlots.forEach((slot, index) => {
+        row[`v${index}`] = first.get(slot);
+      });
+      aggregateSlots.forEach((slot, index) => {
+        const distinct = aggregateDistinct[index] !== 0;
+        if (distinct) {
+          const values = new Set<number>();
+          for (const bindings of groupBindings) {
+            const value = bindings.get(slot);
+            if (value !== undefined) {
+              values.add(value);
+            }
+          }
+          row[`a${index}`] = values.size;
+          return;
+        }
+        if (slot < 0) {
+          row[`a${index}`] = groupBindings.length;
+          return;
+        }
+        row[`a${index}`] = groupBindings.filter((bindings) => bindings.has(slot)).length;
+      });
+      return row;
+    });
+}
+
+async function xpodRdfExtensionBgpNumericAggregateRows(db: PGlite, sql: string, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+  await db.waitReady;
+  const constantsIndex = params.findIndex((value, index) => (
+    index > 0
+      && Array.isArray(value)
+      && value.length > 0
+      && value.length % 4 === 0
+      && value.every((entry) => entry === null || typeof entry === 'number')
+  ));
+  if (constantsIndex < 0) {
+    return [];
+  }
+  const indexNames = params.slice(1, constantsIndex).map((value) => String(value));
+  const constants = params[constantsIndex] as Array<number | null>;
+  const variableSlots = params[constantsIndex + 1] as number[];
+  const valueSlots = params[constantsIndex + 2] as number[];
+  const valueRows = params[constantsIndex + 3] as number[];
+  const groupSlots = params[constantsIndex + 4] as number[];
+  const numericSlot = Number(params[constantsIndex + 5]);
+  const numericDistinct = Number(params[constantsIndex + 6] ?? 0) !== 0;
+  const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
+  const quads = result.rows as Array<Record<string, unknown>>;
+  const bindingsList: Array<Map<number, number>> = [];
+
+  const visit = (patternIndex: number, bindings: Map<number, number>): void => {
+    if (patternIndex >= indexNames.length) {
+      bindingsList.push(bindings);
+      return;
+    }
+
+    const columns = XPOD_RDF_EXTENSION_INDEX_COLUMNS[indexNames[patternIndex]] ?? XPOD_RDF_EXTENSION_INDEX_COLUMNS.rdf_quads_spog_perm;
+    for (const quadRow of quads) {
+      const nextBindings = new Map(bindings);
+      let matched = true;
+      for (const [keyIndex, column] of columns.entries()) {
+        const flatIndex = (patternIndex * 4) + keyIndex;
+        const value = Number(quadRow[column]);
+        const constant = constants[flatIndex];
+        if (constant !== null && constant !== value) {
+          matched = false;
+          break;
+        }
+        const slot = variableSlots[flatIndex] ?? 0;
+        if (slot > 0) {
+          const existing = nextBindings.get(slot);
+          if (existing !== undefined && existing !== value) {
+            matched = false;
+            break;
+          }
+          nextBindings.set(slot, value);
+        }
+      }
+      if (matched) {
+        visit(patternIndex + 1, nextBindings);
+      }
+    }
+  };
+
+  visit(0, new Map());
+  const termResult = await db.query('SELECT id, numeric_value FROM rdf_terms WHERE numeric_value IS NOT NULL');
+  const numericValues = new Map<number, number>();
+  for (const row of termResult.rows as Array<Record<string, unknown>>) {
+    const id = Number(row.id);
+    const value = Number(row.numeric_value);
+    if (Number.isFinite(id) && Number.isFinite(value)) {
+      numericValues.set(id, value);
+    }
+  }
+
+  const aggregateAliases = [...sql.matchAll(/native_numeric\.(value_count|value_sum|value_min|value_max|value_avg) AS (a\d+)/g)]
+    .map((match) => ({ column: match[1], alias: match[2] }));
+  const constrainedBindings = applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows)
+    .filter((bindings) => numericValues.has(bindings.get(numericSlot) ?? -1));
+  const groups = new Map<string, Array<Map<number, number>>>();
+  for (const bindings of constrainedBindings) {
+    const key = groupSlots.length === 0
+      ? '__all__'
+      : groupSlots.map((slot) => bindings.get(slot) ?? -1).join(':');
+    groups.set(key, [...(groups.get(key) ?? []), bindings]);
+  }
+  if (groups.size === 0 && groupSlots.length === 0) {
+    groups.set('__all__', []);
+  }
+
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, groupBindings]) => {
+      const first = groupBindings[0] ?? new Map<number, number>();
+      const values = groupBindings
+        .map((bindings) => numericValues.get(bindings.get(numericSlot) ?? -1))
+        .filter((value): value is number => value !== undefined);
+      const aggregateValues = numericDistinct ? [...new Set(values)] : values;
+      const sum = aggregateValues.reduce((total, value) => total + value, 0);
+      const summary: Record<string, number | null> = {
+        value_count: aggregateValues.length,
+        value_sum: sum,
+        value_min: aggregateValues.length > 0 ? Math.min(...aggregateValues) : null,
+        value_max: aggregateValues.length > 0 ? Math.max(...aggregateValues) : null,
+        value_avg: aggregateValues.length > 0 ? sum / aggregateValues.length : null,
+      };
+      const row: Record<string, unknown> = {
+        value_count: summary.value_count,
+      };
+      groupSlots.forEach((slot, index) => {
+        row[`v${index}`] = first.get(slot);
+      });
+      aggregateAliases.forEach(({ column, alias }) => {
+        row[alias] = summary[column];
+      });
+      return row;
+    });
+}
+
+function applyXpodRdfExtensionValues(
+  bindingsList: Array<Map<number, number>>,
+  valueSlots: number[],
+  valueRows: number[],
+): Array<Map<number, number>> {
+  if (valueSlots.length === 0) {
+    return bindingsList;
+  }
+  const output: Array<Map<number, number>> = [];
+  for (let index = 0; index < valueRows.length; index += valueSlots.length) {
+    const tuple = valueRows.slice(index, index + valueSlots.length);
+    for (const bindings of bindingsList) {
+      let matched = true;
+      for (const [slotIndex, slot] of valueSlots.entries()) {
+        const value = bindings.get(slot);
+        if (value !== tuple[slotIndex]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) {
+        output.push(bindings);
+      }
+    }
+  }
+  return output;
+}
+
+const XPOD_RDF_EXTENSION_INDEX_COLUMNS: Record<string, string[]> = {
+  rdf_quads_spog_perm: ['subject_id', 'predicate_id', 'object_id', 'graph_id'],
+  rdf_quads_sopg_perm: ['subject_id', 'object_id', 'predicate_id', 'graph_id'],
+  rdf_quads_psog_perm: ['predicate_id', 'subject_id', 'object_id', 'graph_id'],
+  rdf_quads_posg_perm: ['predicate_id', 'object_id', 'subject_id', 'graph_id'],
+  rdf_quads_ospg_perm: ['object_id', 'subject_id', 'predicate_id', 'graph_id'],
+  rdf_quads_opsg_perm: ['object_id', 'predicate_id', 'subject_id', 'graph_id'],
+};
+
+const XPOD_RDF_EXTENSION_FULL_FILTER_COLUMNS = ['graph_id', 'subject_id', 'predicate_id', 'object_id'];
+
+const XPOD_RDF_EXTENSION_PROJECT_COLUMNS: Record<number, string> = {
+  1: 'graph_id',
+  2: 'subject_id',
+  3: 'predicate_id',
+  4: 'object_id',
+};
 
 class StringIntegerPgPool {
   private readonly db: PGlite;

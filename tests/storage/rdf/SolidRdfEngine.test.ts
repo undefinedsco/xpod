@@ -9,10 +9,15 @@ import {
   RdfQuadIndex,
   Rdf3xIndex,
   SolidRdfEngine,
+  RDF_MODELS_SYNTHETIC_MESSAGE_QUADS,
   defaultSyntheticMessagesForRdfModelsScale,
   estimateRdfModelsSyntheticQuadCount,
   rdfModelsBenchmarkCaseNames,
+  rdfModelsBenchmarkCasesForProfile,
+  rdfModelsExtremeBenchmarkCaseNames,
+  rdfModelsExtremeQueryBenchmarkCaseNames,
   rdfModelsQueryBenchmarkCaseNames,
+  rdfModelsQueryBenchmarkCasesForProfile,
   rdfModelsBenchmarkScaleSatisfied,
   rdfModelsBenchmarkScaleTargetQuads,
   rdfModelsBenchmarkSyntheticPodCount,
@@ -1962,10 +1967,44 @@ describe('SolidRdfEngine', () => {
       'next queued run by workspace query',
       'run steps by run query',
       'task materialization active due query',
+      'provider model credential join query',
+      'provider model credential VALUES join query',
+      'provider model credential ordered join query',
+      'provider model credential count query',
+      'provider credential grouped count query',
+      'provider credential single-pattern grouped count query',
+      'provider credential priority aggregate query',
       'message count by thread with having',
+      'queued run priority numeric aggregate',
       'message score by thread numeric aggregate',
       'message join count distinct',
     ]);
+    expect(rdfModelsExtremeBenchmarkCaseNames()).toEqual([
+      'extreme month message score range scan',
+      'extreme month message text scan',
+    ]);
+    expect(rdfModelsExtremeQueryBenchmarkCaseNames()).toEqual([
+      'extreme message eight-pattern star query',
+      'extreme message large VALUES thread query',
+      'extreme message count distinct thread query',
+      'extreme message grouped count by thread query',
+      'extreme message grouped numeric aggregate by thread query',
+      'extreme native exact graph eight-pattern join query',
+      'extreme native exact graph VALUES thread query',
+      'extreme native exact graph count distinct thread query',
+      'extreme native exact graph grouped count by thread query',
+      'extreme native exact graph grouped numeric aggregate by thread query',
+    ]);
+    expect(rdfModelsBenchmarkCasesForProfile('default').map((testCase) => testCase.name)).toEqual(rdfModelsBenchmarkCaseNames());
+    expect(rdfModelsQueryBenchmarkCasesForProfile('default').map((testCase) => testCase.name)).toEqual(rdfModelsQueryBenchmarkCaseNames());
+    expect(rdfModelsBenchmarkCasesForProfile('extreme').map((testCase) => testCase.name)).toEqual(rdfModelsExtremeBenchmarkCaseNames());
+    expect(rdfModelsQueryBenchmarkCasesForProfile('extreme').map((testCase) => testCase.name)).toEqual(rdfModelsExtremeQueryBenchmarkCaseNames());
+    expect(rdfModelsBenchmarkCasesForProfile('all')).toHaveLength(
+      rdfModelsBenchmarkCaseNames().length + rdfModelsExtremeBenchmarkCaseNames().length,
+    );
+    expect(rdfModelsQueryBenchmarkCasesForProfile('all')).toHaveLength(
+      rdfModelsQueryBenchmarkCaseNames().length + rdfModelsExtremeQueryBenchmarkCaseNames().length,
+    );
   });
 
   it('keeps benchmark scale seed targets aligned with the spec', () => {
@@ -1973,8 +2012,12 @@ describe('SolidRdfEngine', () => {
     expect(rdfModelsBenchmarkScaleTargetQuads('medium')).toBe(10_000);
     expect(rdfModelsBenchmarkScaleTargetQuads('large')).toBe(1_000_000);
     expect(defaultSyntheticMessagesForRdfModelsScale('small')).toBe(12);
-    expect(estimateRdfModelsSyntheticQuadCount(defaultSyntheticMessagesForRdfModelsScale('medium'))).toBe(10_000);
-    expect(estimateRdfModelsSyntheticQuadCount(defaultSyntheticMessagesForRdfModelsScale('large'))).toBe(1_000_000);
+    const mediumSyntheticQuads = estimateRdfModelsSyntheticQuadCount(defaultSyntheticMessagesForRdfModelsScale('medium'));
+    const largeSyntheticQuads = estimateRdfModelsSyntheticQuadCount(defaultSyntheticMessagesForRdfModelsScale('large'));
+    expect(mediumSyntheticQuads).toBeGreaterThanOrEqual(10_000);
+    expect(mediumSyntheticQuads).toBeLessThan(10_000 + RDF_MODELS_SYNTHETIC_MESSAGE_QUADS);
+    expect(largeSyntheticQuads).toBeGreaterThanOrEqual(1_000_000);
+    expect(largeSyntheticQuads).toBeLessThan(1_000_000 + RDF_MODELS_SYNTHETIC_MESSAGE_QUADS);
     expect(rdfModelsBenchmarkSyntheticPodCount('medium')).toBe(1);
     expect(rdfModelsBenchmarkSyntheticPodCount('large')).toBeGreaterThan(1);
     expect(rdfModelsBenchmarkScaleSatisfied('large', 100_000)).toBe(false);
@@ -2200,6 +2243,12 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/settings/credentials.ttl'),
       ),
       quad(
+        namedNode('https://pod.example/alice/settings/credentials.ttl#anthropic-default'),
+        namedNode(`${UDFS}priority`),
+        literal('15', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/settings/credentials.ttl'),
+      ),
+      quad(
         namedNode('https://pod.example/alice/.data/agents/secretary.ttl#this'),
         namedNode(RDF_TYPE),
         namedNode(FOAF_AGENT),
@@ -2223,11 +2272,12 @@ describe('SolidRdfEngine', () => {
     const byName = new Map(report.cases.map((testCase) => [testCase.name, testCase]));
 
     expect(report.engine).toBe('solid-rdf');
+    expect(report.caseProfile).toBe('default');
     expect(report.iterations).toBe(2);
     expect(report.cases).toHaveLength(19);
-    expect(report.queryCases).toHaveLength(7);
-    expect(report.planMatched).toBe(true);
+    expect(report.queryCases).toHaveLength(15);
     expect(report.failedPlanCases).toEqual([]);
+    expect(report.planMatched).toBe(true);
     expect(report.storage.derivedIndexProfile).toBe('rdf3x');
     expect(report.storage.facts.quadCount).toBeGreaterThan(0);
     expect(report.storage.factsBytes).toBeGreaterThan(0);
@@ -2288,7 +2338,7 @@ describe('SolidRdfEngine', () => {
     expect(byName.get('task materialization due time')).toBeUndefined();
     expect(byName.get('list chats')?.checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(byName.get('list chats')?.durationsMs).toHaveLength(2);
-    expect(byName.get('list chats')?.indexStats.quadCount).toBe(39);
+    expect(byName.get('list chats')?.indexStats.quadCount).toBe(40);
     expect(byName.get('list chats')?.indexStats.tableBytes).toBeGreaterThan(0);
     expect(byName.get('list chats')?.indexStats.indexBytes).toBeGreaterThan(0);
     expect(byName.get('list chats')?.indexStats.spaceObjects.some((object) => object.kind === 'table')).toBe(true);
@@ -2987,6 +3037,24 @@ describe('SolidRdfEngine', () => {
         namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
       ),
       quad(
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl#claude-sonnet-4'),
+        namedNode(`${UDFS}isProvidedBy`),
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/settings/credentials.ttl#anthropic-default'),
+        namedNode(`${UDFS}provider`),
+        namedNode('https://pod.example/alice/settings/providers/anthropic.ttl'),
+        namedNode('https://pod.example/alice/settings/credentials.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/alice/settings/credentials.ttl#anthropic-default'),
+        namedNode(`${UDFS}priority`),
+        literal('15', namedNode(XSD_INTEGER)),
+        namedNode('https://pod.example/alice/settings/credentials.ttl'),
+      ),
+      quad(
         namedNode('https://pod.example/alice/.data/task/default/index.ttl#thread_1'),
         namedNode(RDF_TYPE),
         namedNode('http://rdfs.org/sioc/ns#Thread'),
@@ -3082,8 +3150,8 @@ describe('SolidRdfEngine', () => {
     expect(report.skippedCases).not.toContain('runs by numeric priority');
     expect(report.skippedCases).not.toContain('search message literals');
     expect(report.skippedJoinCases).not.toContain('task materialization active due query');
-    expect(report.planMatched).toBe(true);
     expect(report.failedPlanCases).toEqual([]);
+    expect(report.planMatched).toBe(true);
     expect(report.failedJoinCases).toEqual([]);
     expect([...report.cases, ...report.joinCases]
       .filter((testCase) => testCase.supported)

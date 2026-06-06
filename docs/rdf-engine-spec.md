@@ -395,13 +395,15 @@ cloud 的当前路线是把产品级 RDF 查询体验落在 Xpod 自己的 `Soli
 `PostgresRdfEngine` 内：事实源仍是 SolidFS 权威文件和 PostgreSQL facts 表，RDF-3X
 stats、query result cache、planner stats 都是可删除、可重建的 derived space。
 
-公开配置只暴露这几个 profile：
+公开代码支持这几个 profile；cloud 默认仍只打开 `pg-hot-operators`，`pg-custom-index`
+是部署侧安装 `xpod_rdf` native extension 后才会启用的可选 profile：
 
 | Profile | 含义 | 默认用途 |
 | --- | --- | --- |
 | `baseline` | 只使用 facts 表和 RDF-3X derived stats | local / 测试 / 回退 |
 | `pg-result-cache` | 在 baseline 上启用按 facts version 失效的查询结果缓存 | 重复列表页、上下文查询 |
 | `pg-hot-operators` | 在 baseline + result cache 上标记并启用已验证的 PG SQL fast path | cloud 默认 |
+| `pg-custom-index` | 在 `pg-hot-operators` 上要求 native extension 声明 `index.xpod_rdf_perm`，创建 shadow custom permutation indexes；当 extension 声明 `index.xpod_rdf_perm.scan_any` / `index.xpod_rdf_perm.count_any` / `index.xpod_rdf_perm.distinct_any` / `join.required_bgp.native` / `join.values.native` / `join.values.limit.native` / `aggregate.bgp_count` / `aggregate.bgp_group_count` / `aggregate.bgp_numeric` 时，单 pattern scan / scalar `COUNT` / 单变量 `DISTINCT` / 受限 required BGP row stream / 受限 VALUES BGP / 受限 BGP count / grouped count / grouped numeric aggregate 会调用 native `perm_index_scan_any(...)` / `perm_index_count_any(...)` / `perm_index_distinct_any(...)` / `bgp_join(...)` / `values_join(...)` / `bgp_count(...)` / `bgp_group_count(...)` / `bgp_numeric_aggregate(...)` | enterprise / 自托管 PG 扩展验证，不作为开源 cloud 默认 |
 
 这些 profile 都是开源实现的一部分，不要求额外进程，也不要求用户选择查询 backend。对外
 仍只有 `SolidRdfEngine` 行为契约和现有 `/-/sparql` 协议边界。
@@ -418,6 +420,13 @@ SolidFS / journal
        RDF-3X planner stats
        PG SQL scan / BGP join / aggregate fast paths
        result cache by normalized query shape + facts data_version
+       optional xpod_rdf capability probe / custom index shadow DDL gate
+       optional native single-pattern scan via xpod_rdf.perm_index_scan_any + heap recheck
+       optional native single-pattern COUNT via xpod_rdf.perm_index_count_any
+       optional native single-pattern DISTINCT via xpod_rdf.perm_index_distinct_any
+       optional native exact-id required BGP via xpod_rdf.bgp_join
+       optional native tuple VALUES BGP via xpod_rdf.values_join
+       optional native BGP count / grouped count via xpod_rdf.bgp_count / bgp_group_count
 ```
 
 实施顺序保持 benchmark-first：
@@ -448,6 +457,7 @@ space。所有收益都必须通过 models benchmark 和真实 Pod storage profi
 | PG RDF-3X baseline | 覆盖 exact graph / graph prefix、single-pattern scan、BGP join、count / aggregate 等主路径；部署简单 | 仍受 PG btree / SQL executor / JS query layer 开销影响 | cloud/local 默认基础 |
 | PG result cache | 对重复 models 查询、常用列表页、统计页、Agent context 查询降低延迟 | cache invalidation、权限 scope、storage TTL 和 derived space 配额必须严格控制 | 按 profile 启用，绑定 `data_version` |
 | PG SQL hot operators | 让 scan / graph prefix / term-in / required BGP join / count / numeric aggregate 在已验证 fast path 上运行，并通过 metrics 标记 | 仍是 SQL executor 路径，收益依赖 query shape 和 PG stats | cloud 默认 |
+| PG native custom index | 探测 `xpod_rdf` extension 和 `index.xpod_rdf_perm`，满足能力后创建六个 shadow `xpod_rdf_perm` permutation index，并把 `perm_index_stats(regclass)` 投影到 `storageStats().pgAcceleration.customIndexes`；`index.xpod_rdf_perm.scan_any` 已接入单 pattern exact / `$in` leading-prefix scan 并在 heap recheck 后分页，`index.xpod_rdf_perm.count_any` 已接入单 pattern、非 DISTINCT scalar count，`index.xpod_rdf_perm.distinct_any` 已接入单 pattern、单投影变量、exact / `$in` leading-prefix `DISTINCT`，`join.required_bgp.native` 已接入 2..8 pattern、最多 8 变量、无 VALUES/ORDER/GROUP/aggregate/distinct 的 exact-id BGP row stream，`join.values.native` / `join.values.limit.native` 已接入 1..8 pattern、最多 8 变量、单个 tuple VALUES source 的 required BGP row stream，`aggregate.bgp_count` 已接入 2..8 pattern、最多 8 变量、无 GROUP/ORDER/HAVING/pagination 的 `COUNT(*)` / `COUNT(?x)` / `COUNT DISTINCT ?x`，并支持单个 tuple VALUES source；`aggregate.bgp_group_count` 已接入 1..8 pattern、最多 8 变量、GROUP BY 1..8 变量、COUNT / COUNT DISTINCT，HAVING / ORDER / LIMIT 由 xpod 在 native 分组结果上做语义收尾；`aggregate.bgp_numeric` 已接入 1..8 pattern、GROUP BY 最多 8 变量、单 numeric 变量上的非 DISTINCT `SUM/AVG/MIN/MAX` 与非 DISTINCT `COUNT`，HAVING / ORDER / LIMIT 由 xpod 在 native 分组结果上做语义收尾；subject-star / ordered-page join 仍按 query shape gate 逐步接线 | 需要部署匹配 PG major/arch 的 extension artifact；native capability 不等于自动 active operator | 可选，不满足能力时回退 |
 | Text / vector candidate fusion | 搜索和 Agent context 更好用，可先筛候选再结构化 join | 需要 chunk、embedding、score、rerank 和权限 scope 统一 | 后续 benchmark gate |
 
 粗略判断：
@@ -940,8 +950,18 @@ benchmark。
 bun run benchmark:rdf-models
 bun run benchmark:rdf-models -- --scale=small --iterations=1
 bun run benchmark:rdf-models:pg -- --scale=small --iterations=1
+bun run benchmark:rdf-models:pg -- --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme
 bun run test:w3c
 ```
+
+`--caseProfile` 支持 `default` / `extreme` / `all`。默认 profile 保持业务常规
+chat/task/thread/message/run/provider case；`extreme` 只跑高 fanout / 深 BGP /
+large VALUES / COUNT DISTINCT / grouped count / grouped numeric aggregate / graph-prefix
+scan 等压力形状，并额外加入 `native-stress.ttl` exact graph case，强制覆盖
+`pg-custom-index` native extension operator。它用于对比 PG RDF-3X baseline 和
+`pg-custom-index` native extension。
+SQLite shadow benchmark 也能接收该参数，但会同时跑旧 TEXT compatibility store，
+大规模 extreme 主要作为离线对照；PG benchmark 才是 custom-index 发布前的主 gate。
 
 默认输出到 `.test-data/rdf-engine/`：
 
@@ -1036,8 +1056,8 @@ compare(A, B)
 - `ShadowRdfQuintStore.backfillShadowIndex(...)` 已支持从现有 TEXT `QuintStore` 分批回灌 term-id index；这让已有 Pod 持久化数据可以进入 shadow compare，而不是只覆盖新写入。
 - `runRdfModelsBenchmark(...)` 已能基于 `rdfModelsBenchmarkCases` 生成 baseline report，包含 query、返回行数、checksum、p50/p95、physical plan、scanned rows、index choice、join order、fallback reason 和 index 空间统计；空间统计同时记录总 DB bytes、RDF table bytes、RDF index bytes 和 SQLite object breakdown。medium 级 `search message literals` case 会带 `$contains` 条件，证明 literal text index 不是普通 predicate scan。report 同时记录 `planMatched` / `missingPlan` / `failedPlanCases`，把 expected plan 和实际 `metrics.indexChoice` / `metrics.queryPlan` 对齐成可机检 gate。
 - `runRdfModelsShadowBenchmark(...)` 已能对同一 models benchmark case 同时执行旧 TEXT `QuintStore` 和新 term-id `SolidRdfEngine` scan，并记录 matched、orderedMatch、diff、两边 checksum、p50/p95、compatibility store stats、candidate index metrics、performance comparison 和 space comparison；TEXT store stats 与 candidate index stats 都包含 table/index space breakdown。medium/large scale 已把 “term-id quads 不能比 TEXT quints 更差” 做成硬 gate；small scale 只记录空间比较，避免固定 schema/index 页开销误判。
-- `bun run benchmark:rdf-models` 已提供 repo 内可重复执行的基准入口，会构造覆盖 chat/task/thread/message/run/runStep/provider/model/credential 的 deterministic seed data，回灌 shadow index，并把 baseline / shadow / RDF-3X shadow report 保存到 `.test-data/rdf-engine/`。脚本 summary 会打印 baseline/shadow/RDF-3X plan gate、shadow performance gate 和 shadow space gate；任何 shadow diff、plan mismatch、明显 p95 退化或 medium/large 空间退化都会让命令退出非 0。
-- `bun run benchmark:rdf-models:pg` 已提供同 seed / 同 models case 的 PostgreSQL baseline gate，默认使用 PGlite 跑 `PostgresRdfEngine`，默认关闭 query result cache，执行前调用 `refreshDerivedIndexes()`，并把 `models-postgres-*.json` report 保存到 `.test-data/rdf-engine/`；也可用 `--driver=pg --connectionString=... --allowPgWrites` 跑真实 PostgreSQL，但只允许指向 disposable empty database，脚本会在写入前拒绝非空 RDF facts。任何 plan mismatch、seed 未达到目标规模或 derived stats 未同步都会让命令退出非 0。2026-06-04 small PGlite gate 中 seed 为 `114` quads，19 个 scan case 和 8 个 query case 均 plan matched，`queued run priority numeric aggregate` 走 `PostgresRdf3xJoinAggregate`，`message score by thread numeric aggregate` 走 `PostgresRdf3xGroupAggregate`，未落回 `PostgresFactsQuery`。同日真实 PG disposable medium gate 中 seed 为 `10066` quads，22 个 scan case 和 8 个 query case 均 plan matched，storage total/facts ratio 为 `1.39x`；`refreshDerivedIndexes()` 会同步 `ANALYZE` facts / RDF-3X stats 表，benchmark 默认 `warmupIterations=1`，避免把冷启动 planner stats 噪声计入稳态 p95。当前 warm steady-state 中 `latest message by thread query` 为 `17 ms`，`message join count distinct` 为 `8 ms`，PG baseline 可作为 cloud 默认正确性和稳态性能底座；冷启动首轮仍作为独立观测项保留。
+- `bun run benchmark:rdf-models` 已提供 repo 内可重复执行的基准入口，会构造覆盖 chat/task/thread/message/run/runStep/provider/model/credential 的 deterministic seed data，回灌 shadow index，并把 baseline / shadow / RDF-3X shadow report 保存到 `.test-data/rdf-engine/`。合成 message seed 现在按 `9` quads/message 写入 type/thread/created/modified/content/score/rank/status/workspace，并额外生成 64 个 synthetic thread，使深 BGP、VALUES、COUNT DISTINCT 和 grouped numeric aggregate 不再是空测。脚本 summary 会打印 baseline/shadow/RDF-3X plan gate、shadow performance gate 和 shadow space gate；任何 shadow diff、plan mismatch、明显 p95 退化或 medium/large 空间退化都会让命令退出非 0。
+- `bun run benchmark:rdf-models:pg` 已提供同 seed / 同 models case 的 PostgreSQL baseline gate，默认使用 PGlite 跑 `PostgresRdfEngine`，默认关闭 query result cache，执行前调用 `refreshDerivedIndexes()`，并把 `models-postgres-*.json` report 保存到 `.test-data/rdf-engine/`；也可用 `--driver=pg --connectionString=... --allowPgWrites` 跑真实 PostgreSQL，但只允许指向 disposable empty database，脚本会在写入前拒绝非空 RDF facts。任何 plan mismatch、seed 未达到目标规模、derived stats 未同步都会让命令退出非 0；当 `--rdfAccelerationProfile=pg-custom-index` 且 `--caseProfile=extreme|all` 时，还要求 report 中至少出现一个 `XpodRdfExtensionOperator(...)`，避免 custom-index 只启用了 profile 却没有命中 native operator。2026-06-06 PGlite extreme smoke：`bun run benchmark:rdf-models:pg -- --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme --rdfAccelerationProfile=baseline` 生成 `19483` quads，2 个 scan case 和 10 个 query case 均 plan matched，`rdf3x.syncedWithFacts=true`，storage total/facts ratio `1.41x`。同日真实 PG17 extreme gate 证明 `pg-custom-index` 可命中 5 个 native operator case；graph-prefix product cases 仍是 PG SQL hot path，不能算 native custom-index 收益。
 - `rdfModelsQueryBenchmarkCases` 已开始覆盖跨 pattern 的业务查询物理计划，并在 report 中记录 RdfQuery DSL 输入、physical plan 和 checksum：按 thread 拉最新 message 会要求 `ORDER BY createdAt DESC LIMIT 1` 保持在 SQL self-join 内；workspace 内下一条 queued run 会要求 status/workspace/createdAt 三个 pattern 在 SQL self-join 内完成并下推 `ORDER BY createdAt ASC LIMIT 1`；run step 列表会要求 `rdf:type RunStep` 和 `udfs:run` 关系在 SQL self-join 内完成并下推排序/分页；task materialization 会要求 `rdf:type Schedule`、`udfs:status "active"` 和 `udfs:nextRunAt <= cutoff` 在 SQL self-join 内完成，并下推 range filter、排序和分页；这些 timeline/state-center/one-to-many/scheduler 查询会和 non-grouped numeric aggregate、grouped message count、grouped numeric aggregate、message-thread `COUNT DISTINCT` 一起作为 RdfQueryExecutor 的 models-level plan gate。
 - `RdfQueryExecutor` 已开始承接 phase 2 的本地物理查询层，支持 BGP join、OPTIONAL group、COUNT/basic aggregate、FILTER DSL 和 select/order/limit 投影；可下推的 exact/range/prefix filter 会合并到 `RdfQuadIndex.scan(...)`，纯 required-pattern 查询里已经由 index 保证的 filter 不再重复进入后置内存 `Filter(...)`。
 - `RdfQuadIndex.scan(...)` 已把 graph/source prefix scope、lexical range filter 和 RDF term text search 改为显式 `JOIN rdf_terms ...`，避免把前缀 graph、range hit 或 text hit 先展开成巨大 `IN (?, ...)` / `IN (SELECT ...)` 候选列表；`$in` / `$notIn` 这类 VALUES-style term filter 在短列表时保留参数化 `IN`，长列表会写入临时候选表并用 JOIN / anti-JOIN 回连 quad scan，避免长 SQL、参数上限和 planner 误判；medium models benchmark 中 `search message literals` 的 physical plan 可机检到 `prefix_graph_id` 和 `text_object_id_contains` JOIN，`task materialization due time` 可机检到 `object_id_range_lte` JOIN。

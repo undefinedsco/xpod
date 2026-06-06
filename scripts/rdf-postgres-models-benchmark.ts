@@ -11,6 +11,7 @@ import {
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
   runRdfModelsPostgresBenchmark,
+  type RdfBenchmarkCaseProfile,
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
   type RdfPgAccelerationProfile,
@@ -27,6 +28,7 @@ interface CliOptions {
   syntheticMessages: number;
   syntheticMessagesOverridden: boolean;
   syntheticPodCount: number;
+  caseProfile: RdfBenchmarkCaseProfile;
   rdfAccelerationProfile: RdfPgAccelerationProfile;
 }
 
@@ -51,6 +53,7 @@ async function main(): Promise<void> {
       scale: options.scale,
       iterations: options.iterations,
       warmupIterations: options.warmupIterations,
+      caseProfile: options.caseProfile,
     });
 
     await writeJson(paths.postgresReport, {
@@ -61,6 +64,8 @@ async function main(): Promise<void> {
     const fullScale = rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length);
     const synced = report.storage.rdf3x?.syncedWithFacts === true;
     const accelerationMatched = rdfAccelerationProfileMatched(options.rdfAccelerationProfile, report.storage);
+    const nativeExtensionPlanHits = countNativeExtensionPlanHits(report);
+    const nativeExtensionPlanMatched = nativeExtensionPlanRequired(options) ? nativeExtensionPlanHits > 0 : true;
     printSummary({
       options,
       paths,
@@ -73,10 +78,12 @@ async function main(): Promise<void> {
       queryCases: report.queryCases.length,
       planMatched: report.planMatched,
       failedPlanCases: report.failedPlanCases,
+      nativeExtensionPlanHits,
+      nativeExtensionPlanMatched,
       storage: report.storage,
     });
 
-    if (!fullScale || !synced || !report.planMatched || !accelerationMatched) {
+    if (!fullScale || !synced || !report.planMatched || !accelerationMatched || !nativeExtensionPlanMatched) {
       process.exitCode = 1;
     }
   } finally {
@@ -93,6 +100,7 @@ function parseArgs(args: string[]): CliOptions {
   let iterations = 3;
   let warmupIterations = 1;
   let syntheticMessages: number | undefined;
+  let caseProfile: RdfBenchmarkCaseProfile = 'default';
   let rdfAccelerationProfile: RdfPgAccelerationProfile = 'baseline';
 
   for (const arg of args) {
@@ -136,6 +144,14 @@ function parseArgs(args: string[]): CliOptions {
       syntheticMessages = positiveInteger(arg.slice('--syntheticMessages='.length), '--syntheticMessages');
       continue;
     }
+    if (arg.startsWith('--caseProfile=')) {
+      const value = arg.slice('--caseProfile='.length);
+      if (!isRdfBenchmarkCaseProfile(value)) {
+        throw new Error(`Unsupported --caseProfile value: ${value}`);
+      }
+      caseProfile = value;
+      continue;
+    }
     if (arg.startsWith('--rdfAccelerationProfile=')) {
       const value = arg.slice('--rdfAccelerationProfile='.length);
       if (!isRdfPgAccelerationProfile(value)) {
@@ -166,6 +182,7 @@ function parseArgs(args: string[]): CliOptions {
     syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
+    caseProfile,
     rdfAccelerationProfile,
   };
 }
@@ -189,7 +206,12 @@ function nonNegativeInteger(raw: string, name: string): number {
 function isRdfPgAccelerationProfile(value: string): value is RdfPgAccelerationProfile {
   return value === 'baseline'
     || value === 'pg-result-cache'
-    || value === 'pg-hot-operators';
+    || value === 'pg-hot-operators'
+    || value === 'pg-custom-index';
+}
+
+function isRdfBenchmarkCaseProfile(value: string): value is RdfBenchmarkCaseProfile {
+  return value === 'default' || value === 'extreme' || value === 'all';
 }
 
 function rdfAccelerationProfileMatched(profile: RdfPgAccelerationProfile, storage: RdfEngineStorageStats): boolean {
@@ -197,7 +219,24 @@ function rdfAccelerationProfileMatched(profile: RdfPgAccelerationProfile, storag
   if (profile === 'baseline') {
     return stats?.profile === 'baseline' && stats.enabled === false;
   }
+  if (profile === 'pg-custom-index') {
+    return stats?.profile === profile
+      && stats.enabled === true
+      && stats.capabilityProviders?.['index.xpod_rdf_perm'] === 'extension';
+  }
   return stats?.profile === profile && stats.enabled === true;
+}
+
+function nativeExtensionPlanRequired(options: CliOptions): boolean {
+  return options.rdfAccelerationProfile === 'pg-custom-index'
+    && (options.caseProfile === 'extreme' || options.caseProfile === 'all');
+}
+
+function countNativeExtensionPlanHits(report: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>): number {
+  return [
+    ...report.cases.flatMap((testCase) => testCase.physicalPlan),
+    ...report.queryCases.flatMap((testCase) => testCase.physicalPlan),
+  ].filter((entry) => entry.includes('XpodRdfExtensionOperator(')).length;
 }
 
 function createBenchmarkPaths(options: CliOptions): BenchmarkPaths {
@@ -251,6 +290,7 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     syntheticMessages: options.syntheticMessages,
     syntheticMessagesOverridden: options.syntheticMessagesOverridden,
     syntheticPodCount: options.syntheticPodCount,
+    caseProfile: options.caseProfile,
     rdfAccelerationProfile: options.rdfAccelerationProfile,
     seedQuadCount,
     targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
@@ -278,6 +318,8 @@ function printSummary(summary: {
   queryCases: number;
   planMatched: boolean;
   failedPlanCases: string[];
+  nativeExtensionPlanHits: number;
+  nativeExtensionPlanMatched: boolean;
   storage: RdfEngineStorageStats;
 }): void {
   console.log('PostgreSQL RDF models benchmark complete');
@@ -285,6 +327,7 @@ function printSummary(summary: {
   console.log(`  scale: ${summary.options.scale}`);
   console.log(`  iterations: ${summary.options.iterations}`);
   console.log(`  warmup iterations: ${summary.options.warmupIterations}`);
+  console.log(`  case profile: ${summary.options.caseProfile}`);
   console.log(`  requested pg acceleration profile: ${summary.options.rdfAccelerationProfile}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
   console.log(`  target quads: ${summary.targetQuadCount}`);
@@ -296,7 +339,10 @@ function printSummary(summary: {
   console.log(`  pg acceleration profile: ${summary.storage.pgAcceleration?.profile ?? 'unknown'}`);
   console.log(`  pg acceleration enabled: ${summary.storage.pgAcceleration?.enabled ?? false}`);
   console.log(`  pg acceleration matched request: ${summary.accelerationMatched}`);
+  console.log(`  pg acceleration fallback: ${summary.storage.pgAcceleration?.fallbackReason ?? 'none'}`);
+  console.log(`  pg missing capabilities: ${(summary.storage.pgAcceleration?.missingCapabilities ?? []).join(', ') || 'none'}`);
   console.log(`  pg active operators: ${(summary.storage.pgAcceleration?.activeOperators ?? []).join(', ') || 'none'}`);
+  console.log(`  native extension plan hits: ${summary.nativeExtensionPlanHits}`);
   console.log(`  storage facts bytes: ${summary.storage.factsBytes}`);
   console.log(`  storage derived bytes: ${summary.storage.derivedBytes}`);
   console.log(`  storage total/facts ratio: ${formatRatio(summary.storage.totalToFactsRatio)}`);
@@ -312,6 +358,9 @@ function printSummary(summary: {
   }
   if (!summary.accelerationMatched) {
     console.error('  requested pg acceleration profile was not enabled');
+  }
+  if (!summary.nativeExtensionPlanMatched) {
+    console.error('  pg-custom-index extreme/all benchmark did not hit any native extension operator');
   }
 }
 
@@ -330,7 +379,8 @@ Options:
   --iterations=N                   Iterations per case. Default: 3
   --warmupIterations=N             Warmup runs per case before timing. Default: 1
   --syntheticMessages=N            Override generated message count for storage-size tests
-  --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators. Default: baseline
+  --caseProfile=VALUE              default|extreme|all. Default: default
+  --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators|pg-custom-index. Default: baseline
   --out=PATH                       Output directory. Default: .test-data/rdf-engine
 `);
 }

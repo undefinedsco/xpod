@@ -49,8 +49,8 @@ export interface RdfQuadIndexOptions {
 }
 
 export type RdfDerivedIndexProfile = 'baseline' | 'rdf3x';
-export type RdfPgAccelerationProfile = 'baseline' | 'pg-result-cache' | 'pg-hot-operators';
-export type RdfPgAccelerationProvider = 'engine-sql';
+export type RdfPgAccelerationProfile = 'baseline' | 'pg-result-cache' | 'pg-hot-operators' | 'pg-custom-index';
+export type RdfPgAccelerationProvider = 'engine-sql' | 'sql-abi' | 'extension';
 export type RdfPgAccelerationFallbackReason =
   | 'profile-disabled'
   | 'capability-missing'
@@ -131,8 +131,17 @@ export interface RdfPgAccelerationStats {
   requiredCapabilities: string[];
   missingCapabilities: string[];
   activeOperators?: string[];
+  customIndexes?: RdfPgCustomIndexStats[];
   fallbackReason?: RdfPgAccelerationFallbackReason;
   fallbackDetail?: string;
+}
+
+export interface RdfPgCustomIndexStats {
+  name: string;
+  permutation: string;
+  columns: string[];
+  stats?: Record<string, unknown>;
+  error?: string;
 }
 
 export interface RdfQueryResultCacheStats {
