@@ -276,6 +276,52 @@ btree baseline 快，VALUES native 仍接近持平略慢。当前不能把 graph
 shape 宣传为 native custom-index 收益；如果要让常规 Pod 日期桶查询也吃到 native，
 下一步需要为 graph-prefix BGP 设计保持语义正确的 native 下推。
 
+#### 36k Oversized Extreme Rerun
+
+运行时间：2026-06-07 本地 PostgreSQL 17 Docker，`--scale=medium
+--syntheticMessages=3000 --iterations=1 --warmupIterations=0 --caseProfile=extreme`。
+这组比默认 medium smoke 的 `19483` quads 更重，用来回答 native/custom-index
+是否只是小 case 偶然变快。
+
+| Gate | Baseline | `pg-custom-index` |
+| --- | ---: | ---: |
+| seed quads | 36475 | 36475 |
+| query cases | 10 | 10 |
+| plan matched | true | true |
+| `rdf3x.syncedWithFacts` | true | true |
+| native extension plan hits | 0 | 5 |
+| total / facts ratio | 1.40x | 1.24x |
+
+Single-run p95：
+
+| Case | Baseline p95 | `pg-custom-index` p95 | Ratio | Path |
+| --- | ---: | ---: | ---: | --- |
+| message eight-pattern star query | 233 ms | 335 ms | 1.44x | PG SQL graph-prefix |
+| message large VALUES thread query | 46 ms | 57 ms | 1.24x | PG SQL graph-prefix |
+| message count distinct thread query | 22 ms | 27 ms | 1.23x | PG SQL graph-prefix |
+| message grouped count by thread query | 8 ms | 14 ms | 1.75x | PG SQL graph-prefix |
+| message grouped numeric aggregate by thread query | 70 ms | 95 ms | 1.36x | PG SQL graph-prefix |
+| native exact graph eight-pattern join query | 63 ms | 50 ms | 0.79x | `join.required_bgp.native` |
+| native exact graph VALUES thread query | 13 ms | 19 ms | 1.46x | `join.values.limit.native` |
+| native exact graph count distinct thread query | 3 ms | 3 ms | 1.00x | `aggregate.bgp_count` |
+| native exact graph grouped count by thread query | 3 ms | 6 ms | 2.00x | `aggregate.bgp_group_count` |
+| native exact graph grouped numeric aggregate by thread query | 16 ms | 9 ms | 0.56x | `aggregate.bgp_numeric` |
+
+结论：36k seed 下 native exact graph 仍能稳定命中 5 个 extension operator，
+8-pattern join 和 grouped numeric aggregate 继续变快；VALUES 和 grouped count
+仍不是 cutover 依据。graph-prefix product cases 在 `pg-custom-index` profile 下变慢，
+因为它们仍走 PG SQL hot path，却承担了 shadow custom index 的写入/维护成本。
+这再次说明 P0 cutover 不能只看 profile 是否启用，必须按 query shape 区分：
+exact graph native shape 可继续推进，常规日期桶 graph-prefix shape 需要单独做 native
+graph-prefix 下推或保持 RDF-3X / PG SQL baseline。
+
+同时尝试 `--scale=large`（目标 `1_000_000` quads）时，benchmark 长时间停在
+逐条 `INSERT INTO rdf_quads ... ON CONFLICT` seed 阶段；`--syntheticMessages=10000`
+的约 100k seed 在 `pg-custom-index` 下同样主要消耗在写入阶段。这个失败点是
+benchmark 工具 / bulk-load 策略问题，不是 native operator 查询语义失败。正式 large
+gate 前需要把 disposable benchmark 改成 bulk insert 后统一建 custom indexes，或显式
+拆分 write amplification 和 warm query benchmark。
+
 ### PostgreSQL / PGlite Medium RDF-3X Baseline Rerun
 
 这组重跑把 `--rdfAccelerationProfile=baseline` 明确定义为 PG RDF-3X baseline。benchmark
@@ -490,7 +536,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 
 未完成：
 
-- 更大数据量 / 并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，但还需要 large scale 和并发场景。
+- 更大数据量 / 并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。`large=1_000_000` 目前主要卡在 disposable seed 的逐条写入和 custom-index write amplification，正式 gate 前需要 bulk load / 延迟建 custom index。
 - graph-prefix BGP native 下推尚未完成；常规日期桶 product shape 当前仍走 PG SQL hot path，不能把这部分宣传成 custom-index native 收益。
 - `pg-custom-index` 的 native scan limit early-stop、ordered-page join 仍未作为 xpod models cutover gate。VALUES join 已完成受限形状接线并能命中 native operator，但当前 real PG extreme p95 略慢于 RDF-3X / btree baseline。
 - text / vector candidate generation 与 RDF structured join 的一体化。
