@@ -1253,6 +1253,7 @@ describe('PostgresRdfEngine', () => {
           'index.xpod_rdf_perm.distinct_any': 'extension',
           'index.xpod_rdf_perm.scan_any': 'extension',
           'join.required_bgp': 'engine-sql',
+          'join.slot_filter.native': 'extension',
           'join.values': 'engine-sql',
           'join.values.limit.native': 'extension',
           'join.values.native': 'extension',
@@ -1271,6 +1272,7 @@ describe('PostgresRdfEngine', () => {
         'index.xpod_rdf_perm.scan_any',
         'join.required_bgp.native',
         'join.required_bgp.order_page.native',
+        'join.slot_filter.native',
         'join.values.limit.native',
         'join.values.native',
       ]));
@@ -1286,6 +1288,7 @@ describe('PostgresRdfEngine', () => {
         'index.xpod_rdf_perm.scan_any',
         'join.required_bgp',
         'join.required_bgp.native',
+        'join.slot_filter.native',
         'join.values',
         'join.values.limit.native',
         'join.values.native',
@@ -1808,14 +1811,18 @@ describe('PostgresRdfEngine', () => {
         thread1.value,
         thread2.value,
       ]);
-      expect(join.metrics.plan).toContain('XpodRdfExtensionOperator(join.values.native)');
-      expect(join.metrics.plan).toContain('PostgresRdfNativeCustomIndexValuesJoin(2)');
-      expect(join.metrics.plan).toContain('PostgresRdfNativeGraphPrefixValues(2x2)');
+      expect(join.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
+      expect(join.metrics.plan).toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
+      expect(join.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(2)');
+      expect(join.metrics.plan).toContain('PostgresRdfNativeGraphPrefixSlotFilter(2x2)');
       expect(join.metrics.plan).not.toContain('PostgresRdf3xJoin');
-      expect(pool.nativeValuesJoinCalls).toHaveLength(1);
-      const valuesJoinParams = pool.nativeValuesJoinCalls[0].params;
-      expect(valuesJoinParams[6]).toHaveLength(2);
-      expect(valuesJoinParams[7]).toHaveLength(8);
+      expect(pool.nativeValuesJoinCalls).toHaveLength(0);
+      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
+      const bgpJoinParams = pool.nativeBgpJoinCalls[0].params;
+      expect(bgpJoinParams[4]).toHaveLength(8);
+      expect(bgpJoinParams[6]).toHaveLength(2);
+      expect(bgpJoinParams[7]).toEqual([0, 2, 4]);
+      expect(bgpJoinParams[8]).toHaveLength(4);
 
       const count = await engine.query({
         patterns: [
@@ -1845,12 +1852,15 @@ describe('PostgresRdfEngine', () => {
       expect(count.count).toBe(2);
       expect(count.bindings[0].messageCount.value).toBe('2');
       expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
-      expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(join.values.native)');
-      expect(count.metrics.plan).toContain('PostgresRdfNativeGraphPrefixValues(2x2)');
+      expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
+      expect(count.metrics.plan).toContain('PostgresRdfNativeGraphPrefixSlotFilter(2x2)');
       expect(pool.nativeBgpCountCalls).toHaveLength(1);
       const bgpCountParams = pool.nativeBgpCountCalls[0].params;
-      expect(bgpCountParams[5]).toHaveLength(2);
-      expect(bgpCountParams[6]).toHaveLength(8);
+      expect(bgpCountParams[5]).toEqual([]);
+      expect(bgpCountParams[6]).toEqual([]);
+      expect(bgpCountParams[7]).toHaveLength(2);
+      expect(bgpCountParams[8]).toEqual([0, 2, 4]);
+      expect(bgpCountParams[9]).toHaveLength(4);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -2408,6 +2418,7 @@ const XPOD_RDF_EXTENSION_CAPABILITIES = [
   'join.required_bgp.order_page.native',
   'join.values.native',
   'join.values.limit.native',
+  'join.slot_filter.native',
   'join.values',
   'aggregate.bgp_count',
   'aggregate.bgp_group_count',
@@ -2537,14 +2548,23 @@ async function xpodRdfExtensionBgpJoinRows(db: PGlite, params: unknown[]): Promi
   const constants = params[constantsIndex] as Array<number | null>;
   const variableSlots = params[constantsIndex + 1] as number[];
   const outputSlots = params[constantsIndex + 2] as number[];
-  const limit = typeof params[constantsIndex + 3] === 'number' ? Math.max(0, params[constantsIndex + 3] as number) : undefined;
-  const offset = typeof params[constantsIndex + 4] === 'number' ? Math.max(0, params[constantsIndex + 4] as number) : 0;
+  const hasSlotFilters = Array.isArray(params[constantsIndex + 3]);
+  const filterSlots = hasSlotFilters ? params[constantsIndex + 3] as number[] : [];
+  const filterOffsets = hasSlotFilters ? params[constantsIndex + 4] as number[] : [];
+  const filterValues = hasSlotFilters ? params[constantsIndex + 5] as number[] : [];
+  const limitIndex = constantsIndex + (hasSlotFilters ? 6 : 3);
+  const offsetIndex = limitIndex + 1;
+  const limit = typeof params[limitIndex] === 'number' ? Math.max(0, params[limitIndex] as number) : undefined;
+  const offset = typeof params[offsetIndex] === 'number' ? Math.max(0, params[offsetIndex] as number) : 0;
   const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
   const quads = result.rows as Array<Record<string, unknown>>;
   const output: Array<Record<string, unknown>> = [];
 
   const visit = (patternIndex: number, bindings: Map<number, number>): void => {
     if (patternIndex >= indexNames.length) {
+      if (!xpodRdfExtensionSlotFiltersMatch(bindings, filterSlots, filterOffsets, filterValues)) {
+        return;
+      }
       const row: Record<string, unknown> = {};
       outputSlots.forEach((slot, index) => {
         row[`v${index}`] = bindings.get(slot);
@@ -2603,8 +2623,14 @@ async function xpodRdfExtensionValuesJoinRows(db: PGlite, params: unknown[]): Pr
   const outputSlots = params[constantsIndex + 2] as number[];
   const valueSlots = params[constantsIndex + 3] as number[];
   const valueRows = params[constantsIndex + 4] as number[];
-  const limit = typeof params[constantsIndex + 5] === 'number' ? Math.max(0, params[constantsIndex + 5] as number) : undefined;
-  const offset = typeof params[constantsIndex + 6] === 'number' ? Math.max(0, params[constantsIndex + 6] as number) : 0;
+  const hasSlotFilters = Array.isArray(params[constantsIndex + 5]);
+  const filterSlots = hasSlotFilters ? params[constantsIndex + 5] as number[] : [];
+  const filterOffsets = hasSlotFilters ? params[constantsIndex + 6] as number[] : [];
+  const filterValues = hasSlotFilters ? params[constantsIndex + 7] as number[] : [];
+  const limitIndex = constantsIndex + (hasSlotFilters ? 8 : 5);
+  const offsetIndex = limitIndex + 1;
+  const limit = typeof params[limitIndex] === 'number' ? Math.max(0, params[limitIndex] as number) : undefined;
+  const offset = typeof params[offsetIndex] === 'number' ? Math.max(0, params[offsetIndex] as number) : 0;
   const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
   const quads = result.rows as Array<Record<string, unknown>>;
   const bindingsList: Array<Map<number, number>> = [];
@@ -2644,7 +2670,12 @@ async function xpodRdfExtensionValuesJoinRows(db: PGlite, params: unknown[]): Pr
   };
 
   visit(0, new Map());
-  return applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows)
+  return applyXpodRdfExtensionSlotFilters(
+    applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows),
+    filterSlots,
+    filterOffsets,
+    filterValues,
+  )
     .slice(offset, limit === undefined ? undefined : offset + limit)
     .map((bindings) => Object.fromEntries(outputSlots.map((slot, index) => [`v${index}`, bindings.get(slot)])));
 }
@@ -2666,8 +2697,13 @@ async function xpodRdfExtensionBgpCountRows(db: PGlite, params: unknown[]): Prom
   const variableSlots = params[constantsIndex + 1] as number[];
   const valueSlots = params[constantsIndex + 2] as number[];
   const valueRows = params[constantsIndex + 3] as number[];
-  const aggregateSlots = params[constantsIndex + 4] as number[];
-  const aggregateDistinct = params[constantsIndex + 5] as number[];
+  const hasSlotFilters = params.length > constantsIndex + 6;
+  const filterSlots = hasSlotFilters ? params[constantsIndex + 4] as number[] : [];
+  const filterOffsets = hasSlotFilters ? params[constantsIndex + 5] as number[] : [];
+  const filterValues = hasSlotFilters ? params[constantsIndex + 6] as number[] : [];
+  const aggregateSlotsIndex = constantsIndex + (hasSlotFilters ? 7 : 4);
+  const aggregateSlots = params[aggregateSlotsIndex] as number[];
+  const aggregateDistinct = params[aggregateSlotsIndex + 1] as number[];
   const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
   const quads = result.rows as Array<Record<string, unknown>>;
   const bindingsList: Array<Map<number, number>> = [];
@@ -2707,7 +2743,12 @@ async function xpodRdfExtensionBgpCountRows(db: PGlite, params: unknown[]): Prom
   };
 
   visit(0, new Map());
-  const constrainedBindings = applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows);
+  const constrainedBindings = applyXpodRdfExtensionSlotFilters(
+    applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows),
+    filterSlots,
+    filterOffsets,
+    filterValues,
+  );
   const row: Record<string, unknown> = {};
   aggregateSlots.forEach((slot, index) => {
     const distinct = aggregateDistinct[index] !== 0;
@@ -2748,9 +2789,14 @@ async function xpodRdfExtensionBgpGroupCountRows(db: PGlite, params: unknown[]):
   const variableSlots = params[constantsIndex + 1] as number[];
   const valueSlots = params[constantsIndex + 2] as number[];
   const valueRows = params[constantsIndex + 3] as number[];
-  const groupSlots = params[constantsIndex + 4] as number[];
-  const aggregateSlots = params[constantsIndex + 5] as number[];
-  const aggregateDistinct = params[constantsIndex + 6] as number[];
+  const hasSlotFilters = params.length > constantsIndex + 7;
+  const filterSlots = hasSlotFilters ? params[constantsIndex + 4] as number[] : [];
+  const filterOffsets = hasSlotFilters ? params[constantsIndex + 5] as number[] : [];
+  const filterValues = hasSlotFilters ? params[constantsIndex + 6] as number[] : [];
+  const groupSlotsIndex = constantsIndex + (hasSlotFilters ? 7 : 4);
+  const groupSlots = params[groupSlotsIndex] as number[];
+  const aggregateSlots = params[groupSlotsIndex + 1] as number[];
+  const aggregateDistinct = params[groupSlotsIndex + 2] as number[];
   const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
   const quads = result.rows as Array<Record<string, unknown>>;
   const bindingsList: Array<Map<number, number>> = [];
@@ -2790,7 +2836,12 @@ async function xpodRdfExtensionBgpGroupCountRows(db: PGlite, params: unknown[]):
   };
 
   visit(0, new Map());
-  const constrainedBindings = applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows);
+  const constrainedBindings = applyXpodRdfExtensionSlotFilters(
+    applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows),
+    filterSlots,
+    filterOffsets,
+    filterValues,
+  );
   const groups = new Map<string, Array<Map<number, number>>>();
   for (const bindings of constrainedBindings) {
     const key = groupSlots.map((slot) => bindings.get(slot) ?? -1).join(':');
@@ -2844,9 +2895,14 @@ async function xpodRdfExtensionBgpNumericAggregateRows(db: PGlite, sql: string, 
   const variableSlots = params[constantsIndex + 1] as number[];
   const valueSlots = params[constantsIndex + 2] as number[];
   const valueRows = params[constantsIndex + 3] as number[];
-  const groupSlots = params[constantsIndex + 4] as number[];
-  const numericSlot = Number(params[constantsIndex + 5]);
-  const numericDistinct = Number(params[constantsIndex + 6] ?? 0) !== 0;
+  const hasSlotFilters = params.length > constantsIndex + 7;
+  const filterSlots = hasSlotFilters ? params[constantsIndex + 4] as number[] : [];
+  const filterOffsets = hasSlotFilters ? params[constantsIndex + 5] as number[] : [];
+  const filterValues = hasSlotFilters ? params[constantsIndex + 6] as number[] : [];
+  const groupSlotsIndex = constantsIndex + (hasSlotFilters ? 7 : 4);
+  const groupSlots = params[groupSlotsIndex] as number[];
+  const numericSlot = Number(params[groupSlotsIndex + 1]);
+  const numericDistinct = Number(params[groupSlotsIndex + 2] ?? 0) !== 0;
   const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads ORDER BY graph_id, subject_id, predicate_id, object_id');
   const quads = result.rows as Array<Record<string, unknown>>;
   const bindingsList: Array<Map<number, number>> = [];
@@ -2898,7 +2954,12 @@ async function xpodRdfExtensionBgpNumericAggregateRows(db: PGlite, sql: string, 
 
   const aggregateAliases = [...sql.matchAll(/native_numeric\.(value_count|value_sum|value_min|value_max|value_avg) AS (a\d+)/g)]
     .map((match) => ({ column: match[1], alias: match[2] }));
-  const constrainedBindings = applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows)
+  const constrainedBindings = applyXpodRdfExtensionSlotFilters(
+    applyXpodRdfExtensionValues(bindingsList, valueSlots, valueRows),
+    filterSlots,
+    filterOffsets,
+    filterValues,
+  )
     .filter((bindings) => numericValues.has(bindings.get(numericSlot) ?? -1));
   const groups = new Map<string, Array<Map<number, number>>>();
   for (const bindings of constrainedBindings) {
@@ -2966,6 +3027,38 @@ function applyXpodRdfExtensionValues(
     }
   }
   return output;
+}
+
+function applyXpodRdfExtensionSlotFilters(
+  bindingsList: Array<Map<number, number>>,
+  filterSlots: number[],
+  filterOffsets: number[],
+  filterValues: number[],
+): Array<Map<number, number>> {
+  if (filterSlots.length === 0) {
+    return bindingsList;
+  }
+  return bindingsList.filter((bindings) => xpodRdfExtensionSlotFiltersMatch(bindings, filterSlots, filterOffsets, filterValues));
+}
+
+function xpodRdfExtensionSlotFiltersMatch(
+  bindings: Map<number, number>,
+  filterSlots: number[],
+  filterOffsets: number[],
+  filterValues: number[],
+): boolean {
+  for (const [index, slot] of filterSlots.entries()) {
+    const value = bindings.get(slot);
+    if (value === undefined) {
+      return false;
+    }
+    const start = filterOffsets[index] ?? 0;
+    const end = filterOffsets[index + 1] ?? start;
+    if (!filterValues.slice(start, end).includes(value)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const XPOD_RDF_EXTENSION_INDEX_COLUMNS: Record<string, string[]> = {

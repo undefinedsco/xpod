@@ -96,6 +96,7 @@ const PG_NATIVE_CUSTOM_INDEX_OPERATOR_CAPABILITIES = [
   'index.xpod_rdf_perm.count_any',
   'index.xpod_rdf_perm.distinct_any',
   'join.required_bgp.native',
+  'join.slot_filter.native',
   'join.values.native',
   'join.values.limit.native',
 ] as const;
@@ -121,6 +122,7 @@ const NATIVE_EXTENSION_ONLY_CAPABILITIES = [
   'join.required_bgp.limit.native',
   'join.required_bgp.native',
   'join.required_bgp.order_page.native',
+  'join.slot_filter.native',
   'join.subject_star',
   'join.values.limit.native',
   'join.values.native',
@@ -224,6 +226,11 @@ interface PgCompiledValuesSource {
   rows: number[][];
 }
 
+interface PgCompiledSlotFilterSource {
+  variable: string;
+  values: number[];
+}
+
 interface PgJoinSource {
   inputIndex: number;
   alias: string;
@@ -266,7 +273,7 @@ interface PgCustomIndexBgpJoinShape {
   outputSlots: number[];
   variableAliases: Map<string, string>;
   indexChoices: string[];
-  internalValues: PgCompiledValuesSource[];
+  internalFilters: PgCompiledSlotFilterSource[];
 }
 
 interface PgCustomIndexBgpJoinShapeOptions {
@@ -2781,9 +2788,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!shape) {
       return undefined;
     }
-    const valueSources = [...values, ...shape.internalValues];
-    const valuesShape = this.pgCustomIndexValuesShape(valueSources, shape.variableSlotsByName);
-    if (!valuesShape || (valueSources.length > 0 && !this.canUsePgAccelerationCapability('join.values.native'))) {
+    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
+    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
+    if (!valuesShape || !filtersShape) {
+      return undefined;
+    }
+    if (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
+      return undefined;
+    }
+    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
       return undefined;
     }
 
@@ -2811,8 +2824,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const variableSlotsParam = constantsParam + 1;
     const valueSlotsParam = variableSlotsParam + 1;
     const valueRowsParam = valueSlotsParam + 1;
-    const aggregateSlotsParam = valueRowsParam + 1;
+    const filterSlotsParam = valueRowsParam + 1;
+    const filterOffsetsParam = filterSlotsParam + 1;
+    const filterValuesParam = filterOffsetsParam + 1;
+    const aggregateSlotsParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : valueRowsParam + 1;
     const aggregateDistinctParam = aggregateSlotsParam + 1;
+    const filterArguments = shape.internalFilters.length > 0
+      ? `,
+        $${filterSlotsParam}::smallint[],
+        $${filterOffsetsParam}::bigint[],
+        $${filterValuesParam}::bigint[]`
+      : '';
     const projection = aggregates.map((_aggregate, index) => `native_count.count${index + 1} AS a${index}`).join(', ');
     const sql = `
       SELECT ${projection}
@@ -2822,7 +2844,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         $${constantsParam}::bigint[],
         $${variableSlotsParam}::smallint[],
         $${valueSlotsParam}::smallint[],
-        $${valueRowsParam}::bigint[],
+        $${valueRowsParam}::bigint[]${filterArguments},
         $${aggregateSlotsParam}::smallint[],
         $${aggregateDistinctParam}::smallint[]
       ) native_count
@@ -2834,6 +2856,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       shape.variableSlots,
       valuesShape.valueSlots,
       valuesShape.valueRows,
+      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
       aggregateSlots,
       aggregateDistinct,
     ]);
@@ -2851,10 +2874,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
         [
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
-          ...(valueSources.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
+          ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
+          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
           `PostgresRdfNativeCustomIndexBgpCount(${patterns.length})`,
           `PostgresRdf3xJoinCount(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
-          ...this.pgCustomIndexInternalValuesPlan(shape),
+          ...this.pgCustomIndexInternalFiltersPlan(shape),
           aggregatePlan(aggregates, false),
           sql,
         ],
@@ -2915,12 +2939,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!shape) {
       return undefined;
     }
-    const valueSources = [...values, ...shape.internalValues];
-    if (valueSources.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
+    if (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
       return undefined;
     }
-    const valuesShape = this.pgCustomIndexValuesShape(valueSources, shape.variableSlotsByName);
-    if (!valuesShape) {
+    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
+      return undefined;
+    }
+    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
+    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
+    if (!valuesShape || !filtersShape) {
       return undefined;
     }
 
@@ -2949,9 +2976,18 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const variableSlotsParam = constantsParam + 1;
     const valueSlotsParam = variableSlotsParam + 1;
     const valueRowsParam = valueSlotsParam + 1;
-    const groupSlotsParam = valueRowsParam + 1;
+    const filterSlotsParam = valueRowsParam + 1;
+    const filterOffsetsParam = filterSlotsParam + 1;
+    const filterValuesParam = filterOffsetsParam + 1;
+    const groupSlotsParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : valueRowsParam + 1;
     const aggregateSlotsParam = groupSlotsParam + 1;
     const aggregateDistinctParam = aggregateSlotsParam + 1;
+    const filterArguments = shape.internalFilters.length > 0
+      ? `,
+        $${filterSlotsParam}::smallint[],
+        $${filterOffsetsParam}::bigint[],
+        $${filterValuesParam}::bigint[]`
+      : '';
     const groupProjection = groupBy.map((_variableName, index) => `native_group.group${index + 1} AS v${index}`);
     const aggregateProjection = aggregates.map((_aggregate, index) => `native_group.count${index + 1} AS a${index}`);
     const sql = `
@@ -2962,7 +2998,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         $${constantsParam}::bigint[],
         $${variableSlotsParam}::smallint[],
         $${valueSlotsParam}::smallint[],
-        $${valueRowsParam}::bigint[],
+        $${valueRowsParam}::bigint[]${filterArguments},
         $${groupSlotsParam}::smallint[],
         $${aggregateSlotsParam}::smallint[],
         $${aggregateDistinctParam}::smallint[]
@@ -2975,6 +3011,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       shape.variableSlots,
       valuesShape.valueSlots,
       valuesShape.valueRows,
+      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
       groupSlots as number[],
       aggregateSlots,
       aggregateDistinct,
@@ -3004,10 +3041,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
         [
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
-          ...(valueSources.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
+          ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
+          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
           `PostgresRdfNativeCustomIndexBgpGroupCount(${patterns.length})`,
           `PostgresRdf3xGroupCount(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
-          ...this.pgCustomIndexInternalValuesPlan(shape),
+          ...this.pgCustomIndexInternalFiltersPlan(shape),
           aggregatePlan(aggregates, true),
           ...((query.having ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
           ...((query.orderBy ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateOrder(${describeQueryOrder(query.orderBy ?? [])})`] : []),
@@ -3084,12 +3122,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (numericSlot === undefined) {
       return undefined;
     }
-    const valueSources = [...values, ...shape.internalValues];
-    if (valueSources.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
+    if (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
       return undefined;
     }
-    const valuesShape = this.pgCustomIndexValuesShape(valueSources, shape.variableSlotsByName);
-    if (!valuesShape) {
+    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
+      return undefined;
+    }
+    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
+    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
+    if (!valuesShape || !filtersShape) {
       return undefined;
     }
     const groupSlots = groupBy.map((variableName) => shape.variableSlotsByName.get(variableName));
@@ -3109,9 +3150,18 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const variableSlotsParam = constantsParam + 1;
     const valueSlotsParam = variableSlotsParam + 1;
     const valueRowsParam = valueSlotsParam + 1;
-    const groupSlotsParam = valueRowsParam + 1;
+    const filterSlotsParam = valueRowsParam + 1;
+    const filterOffsetsParam = filterSlotsParam + 1;
+    const filterValuesParam = filterOffsetsParam + 1;
+    const groupSlotsParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : valueRowsParam + 1;
     const numericSlotParam = groupSlotsParam + 1;
     const numericDistinctParam = numericSlotParam + 1;
+    const filterArguments = shape.internalFilters.length > 0
+      ? `,
+        $${filterSlotsParam}::smallint[],
+        $${filterOffsetsParam}::bigint[],
+        $${filterValuesParam}::bigint[]`
+      : '';
     const groupProjection = groupBy.map((_variableName, index) => `native_numeric.group${index + 1} AS v${index}`);
     const aggregateProjection = aggregates.map((aggregate, index) => (
       `native_numeric.${this.pgCustomIndexNumericAggregateColumn(aggregate)} AS a${index}`
@@ -3124,7 +3174,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         $${constantsParam}::bigint[],
         $${variableSlotsParam}::smallint[],
         $${valueSlotsParam}::smallint[],
-        $${valueRowsParam}::bigint[],
+        $${valueRowsParam}::bigint[]${filterArguments},
         $${groupSlotsParam}::smallint[],
         $${numericSlotParam}::smallint,
         $${numericDistinctParam}::smallint
@@ -3137,6 +3187,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       shape.variableSlots,
       valuesShape.valueSlots,
       valuesShape.valueRows,
+      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
       groupSlots as number[],
       numericSlot,
       0,
@@ -3169,10 +3220,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
         [
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
-          ...(valueSources.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
+          ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
+          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
           `PostgresRdfNativeCustomIndexBgpNumericAggregate(${patterns.length})`,
           this.postgresRdf3xAggregateMarker(aggregates, groupBy.length > 0),
-          ...this.pgCustomIndexInternalValuesPlan(shape),
+          ...this.pgCustomIndexInternalFiltersPlan(shape),
           aggregatePlan(aggregates, groupBy.length > 0),
           ...((query.having ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
           ...((query.orderBy ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateOrder(${describeQueryOrder(query.orderBy ?? [])})`] : []),
@@ -3361,15 +3413,28 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!shape) {
       return undefined;
     }
-    if (shape.internalValues.length > 0) {
+    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
+      return undefined;
+    }
+    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
+    if (!filtersShape) {
       return undefined;
     }
     const indexPlaceholders = shape.indexNames.map((_, index) => `$${index + 2}::regclass::oid`).join(', ');
     const constantsParam = 2 + shape.indexNames.length;
     const variableSlotsParam = constantsParam + 1;
     const outputSlotsParam = variableSlotsParam + 1;
-    const limitParam = outputSlotsParam + 1;
+    const filterSlotsParam = outputSlotsParam + 1;
+    const filterOffsetsParam = filterSlotsParam + 1;
+    const filterValuesParam = filterOffsetsParam + 1;
+    const limitParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : outputSlotsParam + 1;
     const offsetParam = limitParam + 1;
+    const filterArguments = shape.internalFilters.length > 0
+      ? `,
+        $${filterSlotsParam}::smallint[],
+        $${filterOffsetsParam}::bigint[],
+        $${filterValuesParam}::bigint[]`
+      : '';
     const projection = project.map((_variableName, index) => `native_join.v${index + 1} AS v${index}`).join(', ');
     const sql = `
       SELECT ${projection}
@@ -3378,7 +3443,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ARRAY[${indexPlaceholders}]::oid[],
         $${constantsParam}::bigint[],
         $${variableSlotsParam}::smallint[],
-        $${outputSlotsParam}::smallint[],
+        $${outputSlotsParam}::smallint[]${filterArguments},
         $${limitParam}::bigint,
         $${offsetParam}::bigint
       ) native_join
@@ -3389,6 +3454,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       shape.constants,
       shape.variableSlots,
       shape.outputSlots,
+      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
       query.limit ?? null,
       query.offset ?? null,
     ]);
@@ -3404,8 +3470,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         [
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
+          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
           `PostgresRdfNativeCustomIndexBgpJoin(${patterns.length})`,
           `PostgresRdf3xJoin(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
+          ...this.pgCustomIndexInternalFiltersPlan(shape),
           ...(query.limit !== undefined || query.offset !== undefined ? ['PostgresRdfNativeCustomIndexBgpLimit'] : []),
           sql,
         ],
@@ -3445,12 +3513,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!shape) {
       return undefined;
     }
-    if (values.length === 0 && shape.internalValues.length === 0) {
+    if (values.length === 0) {
       return undefined;
     }
-    const valueSources = [...values, ...shape.internalValues];
-    const valuesShape = this.pgCustomIndexValuesShape(valueSources, shape.variableSlotsByName);
-    if (!valuesShape) {
+    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
+      return undefined;
+    }
+    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
+    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
+    if (!valuesShape || !filtersShape) {
       return undefined;
     }
     if (valuesShape.valueRows.length === 0) {
@@ -3466,7 +3537,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
             ...this.pgAccelerationActiveMarkersForQuery(query),
             `XpodRdfExtensionOperator(${capability})`,
             'PostgresRdfNativeCustomIndexValuesJoin(empty)',
-            ...this.pgCustomIndexInternalValuesPlan(shape),
+            ...this.pgCustomIndexInternalFiltersPlan(shape),
           ],
           query.filters?.length ?? 0,
         ),
@@ -3479,8 +3550,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const outputSlotsParam = variableSlotsParam + 1;
     const valueSlotsParam = outputSlotsParam + 1;
     const valueRowsParam = valueSlotsParam + 1;
-    const limitParam = valueRowsParam + 1;
+    const filterSlotsParam = valueRowsParam + 1;
+    const filterOffsetsParam = filterSlotsParam + 1;
+    const filterValuesParam = filterOffsetsParam + 1;
+    const limitParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : valueRowsParam + 1;
     const offsetParam = limitParam + 1;
+    const filterArguments = shape.internalFilters.length > 0
+      ? `,
+        $${filterSlotsParam}::smallint[],
+        $${filterOffsetsParam}::bigint[],
+        $${filterValuesParam}::bigint[]`
+      : '';
     const projection = project.map((_variableName, index) => `native_join.v${index + 1} AS v${index}`).join(', ');
     const usesPagination = query.limit !== undefined || query.offset !== undefined;
     const sql = `
@@ -3492,7 +3572,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         $${variableSlotsParam}::smallint[],
         $${outputSlotsParam}::smallint[],
         $${valueSlotsParam}::smallint[],
-        $${valueRowsParam}::bigint[]
+        $${valueRowsParam}::bigint[]${filterArguments}
         ${usesPagination ? `, $${limitParam}::bigint, $${offsetParam}::bigint` : ''}
       ) native_join
     `;
@@ -3504,6 +3584,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       shape.outputSlots,
       valuesShape.valueSlots,
       valuesShape.valueRows,
+      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
       ...(usesPagination ? [query.limit ?? null, query.offset ?? null] : []),
     ]);
     const bindings = await this.joinRowsToBindings(rows, shape.variableAliases);
@@ -3518,9 +3599,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         [
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
+          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
           `PostgresRdfNativeCustomIndexValuesJoin(${patterns.length})`,
-          `Rdf3xJoinTupleValues(${valueSources.map((source) => source.variables.map((variableName) => `?${variableName}`).join(',')).join('|')})`,
-          ...this.pgCustomIndexInternalValuesPlan(shape),
+          `Rdf3xJoinTupleValues(${values.map((source) => source.variables.map((variableName) => `?${variableName}`).join(',')).join('|')})`,
+          ...this.pgCustomIndexInternalFiltersPlan(shape),
           ...(usesPagination ? ['PostgresRdfNativeCustomIndexValuesJoinLimit'] : []),
           sql,
         ],
@@ -3539,7 +3621,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const constants: Array<number | null> = [];
     const variableSlots: number[] = [];
     const indexChoices: string[] = [];
-    const internalValues: PgCompiledValuesSource[] = [];
+    const internalFilters: PgCompiledSlotFilterSource[] = [];
 
     const slotFor = (variableName: string): number | undefined => {
       const existing = variableSlotsByName.get(variableName);
@@ -3566,9 +3648,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         if (slot === undefined) {
           return undefined;
         }
-        internalValues.push({
-          variables: [graphPrefixVariableName],
-          rows: (customResolved.graphPrefixIds ?? []).map((id) => [id]),
+        internalFilters.push({
+          variable: graphPrefixVariableName,
+          values: customResolved.graphPrefixIds ?? [],
         });
       }
 
@@ -3607,7 +3689,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       outputSlots,
       variableAliases,
       indexChoices,
-      internalValues,
+      internalFilters,
     };
   }
 
@@ -3668,12 +3750,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return pattern.variables.graph ?? `__xpod_graph_prefix_${patternIndex}`;
   }
 
-  private pgCustomIndexInternalValuesPlan(shape: PgCustomIndexBgpJoinShape): string[] {
-    if (shape.internalValues.length === 0) {
+  private pgCustomIndexInternalFiltersPlan(shape: PgCustomIndexBgpJoinShape): string[] {
+    if (shape.internalFilters.length === 0) {
       return [];
     }
     return [
-      `PostgresRdfNativeGraphPrefixValues(${shape.internalValues.map((source) => source.rows.length).join('x')})`,
+      `PostgresRdfNativeGraphPrefixSlotFilter(${shape.internalFilters.map((source) => source.values.length).join('x')})`,
     ];
   }
 
@@ -3753,6 +3835,39 @@ export class PostgresRdfEngine implements RdfEngineLike {
       valueSlots,
       valueRows: valueSlots.length === 0 ? [] : rows.flat(),
     };
+  }
+
+  private pgCustomIndexSlotFiltersShape(
+    filters: PgCompiledSlotFilterSource[],
+    variableSlotsByName: Map<string, number>,
+  ): { filterSlots: number[]; filterOffsets: number[]; filterValues: number[] } | undefined {
+    if (filters.length === 0) {
+      return { filterSlots: [], filterOffsets: [], filterValues: [] };
+    }
+    const valuesBySlot = new Map<number, Set<number>>();
+    for (const filter of filters) {
+      const slot = variableSlotsByName.get(filter.variable);
+      if (slot === undefined) {
+        return undefined;
+      }
+      const values = new Set(uniqueNumbers(filter.values));
+      const existing = valuesBySlot.get(slot);
+      if (existing) {
+        valuesBySlot.set(slot, new Set([...existing].filter((value) => values.has(value))));
+        continue;
+      }
+      valuesBySlot.set(slot, values);
+    }
+
+    const filterSlots = [...valuesBySlot.keys()].sort((left, right) => left - right);
+    const filterOffsets = [0];
+    const filterValues: number[] = [];
+    for (const slot of filterSlots) {
+      const values = [...(valuesBySlot.get(slot) ?? [])].sort((left, right) => left - right);
+      filterValues.push(...values);
+      filterOffsets.push(filterValues.length);
+    }
+    return { filterSlots, filterOffsets, filterValues };
   }
 
   private pgCustomIndexPrefixFilters(resolved: PgResolvedPattern, permutation: PgPermutation): Array<number[] | null> {

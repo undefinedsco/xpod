@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { Client } from 'pg';
 import {
   RDF_MODELS_BENCHMARK_POD,
   PostgresRdfEngine,
@@ -40,6 +41,7 @@ interface BenchmarkPaths {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   await mkdir(options.outDir, { recursive: true });
+  await installPgCustomIndexExtensionForBenchmark(options);
 
   const paths = createBenchmarkPaths(options);
   const engine = createEngine(options, paths);
@@ -265,6 +267,24 @@ function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEn
     queryResultCacheEnabled: false,
     rdfAccelerationProfile: options.rdfAccelerationProfile,
   });
+}
+
+async function installPgCustomIndexExtensionForBenchmark(options: CliOptions): Promise<void> {
+  if (options.driver !== 'pg' || options.rdfAccelerationProfile !== 'pg-custom-index') {
+    return;
+  }
+  if (!options.allowPgWrites) {
+    throw new Error('--rdfAccelerationProfile=pg-custom-index on --driver=pg installs xpod_rdf; pass --allowPgWrites only for a disposable empty PostgreSQL database');
+  }
+  const client = new Client({ connectionString: options.connectionString });
+  await client.connect();
+  try {
+    await client.query('CREATE EXTENSION IF NOT EXISTS xpod_rdf');
+  } catch (error) {
+    throw new Error(`Failed to install xpod_rdf extension for pg-custom-index benchmark: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await client.end();
+  }
 }
 
 async function assertWritableBenchmarkTarget(engine: PostgresRdfEngine, options: CliOptions): Promise<void> {
