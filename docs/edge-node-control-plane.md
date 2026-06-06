@@ -61,7 +61,7 @@
   - `certificate.dns01`: 携带 `subdomain`/`host`/`value` 用于 DNS-01 TXT 记录。
     - `action`: 默认为 `set`，值为 `remove` 时 cluster 会删除对应 TXT 记录。
 - `tunnel.config`: 控制面返回给 Agent 的隧道配置（frp server、token、remotePort），Agent 可据此生成 `frpc.ini`。
-- cluster 将这些字段存入 `identity_edge_node.metadata`，为控制面 UI、路由决策与告警提供数据支撑。
+- cluster 将这些字段存入 `cluster_node.metadata`，为控制面 UI、路由决策与告警提供数据支撑。
 
 ## 安全性策略
 
@@ -86,7 +86,7 @@
 - **DNS 编排协调器**：`EdgeNodeDnsCoordinator` 会在 `EdgeNodeSignalHandler` 成功落库后自动调用 DNS Provider，同步节点心跳中携带的 `metadata.dns.subdomain` 与 `target` 信息，确保二级域名实时指向最新探测到的出口地址。若缺少有效候选，将记录警告并保持现状。
 - **证书自动化（DNS-01）**：`Dns01CertificateProvisioner` 解析心跳中的 `metadata.certificate.dns01` 字段，为 `_acme-challenge` 写入 TXT 记录，配合外部 ACME 客户端完成证书签发。未提供 challenge 时将跳过处理并输出告警。
 - **隧道协调**：`SimpleEdgeNodeTunnelManager` 监听心跳中的 `reachability` 状态，当检测到直连失败时自动选取兜底入口，将 `metadata.tunnel` 标记为 `active`；直连恢复后切回 `standby`。若需要接入真实隧道控制面，可实现 `EdgeNodeTunnelManager` 接口替换。
-- **健康探测**：`EdgeNodeHealthProbeService` 基于节点上报的 `directCandidates`/`publicAddress` 发起 `HEAD` 探测，写回 `reachability` 的候选列表、延迟和结果，供 DNS 与隧道决策使用。
+- **健康探测**：`EdgeNodeHealthProbeService` 基于节点上报的 `directCandidates` 或隧道入口发起 `HEAD` 探测，写回 `reachability` 的候选列表、延迟和结果，供 DNS 与隧道决策使用。
 - **节点守护 Agent**：`EdgeNodeAgent` 封装心跳上报脚本，可在节点主机启动后自动采集系统指标、Pod 列表并推送给 `EdgeNodeSignalHandler`，同时携带 `metadata.dns`/`certificate.dns01` 触发控制面的自动化流程。
 - **节点 Agent 指南**：详见 `docs/edge-node-agent.md`，提供命令行示例与 systemd 集成建议。
 

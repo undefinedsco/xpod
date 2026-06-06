@@ -2,25 +2,10 @@ import { pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { bigint as pgBigint } from 'drizzle-orm/pg-core/columns/bigint';
 import { integer } from 'drizzle-orm/pg-core/columns/integer';
 
-export const accountUsage = pgTable('identity_account_usage', {
-  accountId: text('account_id').primaryKey(),
-  storageBytes: pgBigint('storage_bytes', { mode: 'number' }).notNull().default(0),
-  ingressBytes: pgBigint('ingress_bytes', { mode: 'number' }).notNull().default(0),
-  egressBytes: pgBigint('egress_bytes', { mode: 'number' }).notNull().default(0),
-  storageLimitBytes: pgBigint('storage_limit_bytes', { mode: 'number' }),
-  bandwidthLimitBps: pgBigint('bandwidth_limit_bps', { mode: 'number' }),
-  computeSeconds: pgBigint('compute_seconds', { mode: 'number' }).notNull().default(0),
-  tokensUsed: pgBigint('tokens_used', { mode: 'number' }).notNull().default(0),
-  computeLimitSeconds: pgBigint('compute_limit_seconds', { mode: 'number' }),
-  tokenLimitMonthly: pgBigint('token_limit_monthly', { mode: 'number' }),
-  periodStart: timestamp('period_start', { withTimezone: true, mode: 'date' }),
-  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-});
-
-export const podUsage = pgTable('identity_pod_usage', {
-  podId: text('pod_id').primaryKey(),
+export const usage = pgTable('identity_usage', {
+  scopeType: text('scope_type').notNull(), // 'account' | 'pod'
+  scopeId: text('scope_id').notNull(),
   accountId: text('account_id').notNull(),
-  storageUrl: text('storage_url'),
   storageBytes: pgBigint('storage_bytes', { mode: 'number' }).notNull().default(0),
   ingressBytes: pgBigint('ingress_bytes', { mode: 'number' }).notNull().default(0),
   egressBytes: pgBigint('egress_bytes', { mode: 'number' }).notNull().default(0),
@@ -35,22 +20,10 @@ export const podUsage = pgTable('identity_pod_usage', {
 });
 
 /**
- * DDNS 域名池表
- * 管理可用的 DDNS 域名
- */
-export const ddnsDomains = pgTable('identity_ddns_domain', {
-  domain: text('domain').primaryKey(),                // undefineds.xyz
-  status: text('status').default('active'),           // 'active' | 'suspended'
-  provider: text('provider'),                         // 'cloudflare' | 'tencent'
-  zoneId: text('zone_id'),                            // DNS Zone ID
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-});
-
-/**
- * DDNS 记录表
+ * Cloud cluster DDNS 记录表
  * 已分配的子域名记录
  */
-export const ddnsRecords = pgTable('identity_ddns_record', {
+export const ddnsRecords = pgTable('cluster_ddns_record', {
   subdomain: text('subdomain').primaryKey(),          // alice
   domain: text('domain').notNull(),                   // undefineds.xyz
   ipAddress: text('ip_address'),
@@ -65,7 +38,7 @@ export const ddnsRecords = pgTable('identity_ddns_record', {
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
-export const edgeNodes = pgTable('identity_edge_node', {
+export const edgeNodes = pgTable('cluster_node', {
   id: text('id').primaryKey(),
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
@@ -75,7 +48,7 @@ export const edgeNodes = pgTable('identity_edge_node', {
   ipv4: text('ipv4'),                          // IPv4 地址
   publicPort: pgBigint('public_port', { mode: 'number' }),
   publicUrl: text('public_url'),                // SP 的公网地址 (e.g. https://sp.example)
-  serviceTokenHash: text('service_token_hash'), // Cloud → SP 回调认证 token (明文)
+  serviceTokenHash: text('service_token_hash'), // Cloud -> SP callback service token hash
   provisionCodeHash: text('provision_code_hash'), // bind 时用户传入的配对码 (hash)
   internalIp: text('internal_ip'),              // Internal network IP
   internalPort: pgBigint('internal_port', { mode: 'number' }),
@@ -86,6 +59,7 @@ export const edgeNodes = pgTable('identity_edge_node', {
   // JSON fields
   capabilities: text('capabilities'),           // JSON string: 能力列表
   metadata: text('metadata'),                   // JSON string: 复杂对象 (tunnel, certificate, metrics)
+  podBaseUrls: text('pod_base_urls'),            // JSON string: node-owned Pod/storage URL prefixes
   connectivityStatus: text('connectivity_status').default('unknown'),
   lastConnectivityCheck: timestamp('last_connectivity_check', { withTimezone: true, mode: 'date' }),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
@@ -93,24 +67,11 @@ export const edgeNodes = pgTable('identity_edge_node', {
   lastSeen: timestamp('last_seen', { withTimezone: true, mode: 'date' }),
 });
 
-export const edgeNodePods = pgTable('identity_edge_node_pod', {
-  nodeId: text('node_id').notNull().references(() => edgeNodes.id, { onDelete: 'cascade' }),
-  baseUrl: text('base_url').notNull(),
-});
-
-export const apiClientCredentials = pgTable('identity_api_client_credentials', {
-  clientId: text('client_id').primaryKey(),
-  webId: text('web_id').notNull(),
-  accountId: text('account_id').notNull(),
-  displayName: text('display_name'),
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-});
-
 /**
- * Service Token 表
+ * Cloud cluster Service Token 表
  * 用于服务间认证 (Business, Local SP, Cloud, Compute)
  */
-export const serviceTokens = pgTable('identity_service_token', {
+export const serviceTokens = pgTable('cluster_service_token', {
   id: text('id').primaryKey(),
   tokenHash: text('token_hash').notNull().unique(),
   serviceType: text('service_type').notNull(), // 'local' | 'business' | 'cloud' | 'compute'

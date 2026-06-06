@@ -1,5 +1,11 @@
 # xpod 架构设计
 
+> Historical note: 本文保留早期架构背景，不是当前身份/集群表设计依据。
+> 当前表边界见 `docs/architecture-v2.md` 和 `docs/storage-overview.md`：
+> Identity 使用 CSS `identity_store`，用量使用 `identity_usage`，
+> Cloud 集群控制面使用 `cluster_node` / `cluster_ddns_record` /
+> `cluster_service_token`。
+
 ## 概述
 
 xpod 是基于 Community Solid Server (CSS) 的扩展，支持：

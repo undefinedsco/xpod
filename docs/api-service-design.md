@@ -30,7 +30,7 @@
 │  - LDP 资源访问                      │  │  - /api/signal/*     节点信令        │
 │  - OIDC 认证                        │  │  - /api/quota/*      配额管理        │
 │  - SPARQL 查询                      │  │  - /api/nodes/*      节点管理        │
-│  - WebSocket 通知                   │  │  - /api/keys/*       API Key 管理    │
+│  - WebSocket 通知                   │  │  - CSS client credentials 透传鉴权     │
 │                                     │  │  - /api/chat/*       AI 能力         │
 │  高稳定性，保守更新                   │  │                                     │
 │                                     │  │  可独立重启，快速迭代                 │
@@ -77,8 +77,8 @@
 │              ┌─────────────────────────────────────────────┐    │
 │              │              PostgreSQL                      │    │
 │              │    ┌─────────┐  ┌─────────┐  ┌─────────┐    │    │
-│              │    │ Quint   │  │ Identity│  │ API Keys│    │    │
-│              │    │ (RDF)   │  │ (用户)  │  │ (鉴权)  │    │    │
+│              │    │ Quint   │  │ Identity│  │ Cluster │    │    │
+│              │    │ (RDF)   │  │ (用户)  │  │ Control │    │    │
 │              │    └─────────┘  └─────────┘  └─────────┘    │    │
 │              └─────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────┘
@@ -98,13 +98,10 @@
 | `/api/nodes` | POST | 创建节点 | Solid Token |
 | `/api/nodes/:id` | GET | 获取节点详情 | Solid Token |
 | `/api/nodes/:id` | DELETE | 删除节点 | Solid Token |
-| `/api/quota/:webId` | GET | 查询配额 | Solid Token / API Key |
-| `/api/quota/:webId` | PUT | 设置配额 | API Key (系统级) |
-| `/api/keys` | GET | 列出用户 API Key | Solid Token |
-| `/api/keys` | POST | 创建 API Key | Solid Token |
-| `/api/keys/:id` | DELETE | 删除 API Key | Solid Token |
-| `/api/chat/completions` | POST | AI 对话 | Solid Token / API Key |
-| `/api/chat/models` | GET | 可用模型列表 | Solid Token / API Key |
+| `/api/quota/:webId` | GET | 查询配额 | Solid Token / CSS client credentials |
+| `/api/quota/:webId` | PUT | 设置配额 | Service Token |
+| `/api/chat/completions` | POST | AI 对话 | Solid Token / CSS client credentials |
+| `/api/chat/models` | GET | 可用模型列表 | Solid Token / CSS client credentials |
 
 ### 3.2 从 CSS 迁移的 Handler
 
@@ -124,39 +121,23 @@
 | 方式 | Header | 验证方法 | 身份信息 |
 |------|--------|---------|---------|
 | Solid Token | `Authorization: Bearer/DPoP xxx` | OIDC JWKS 验签 | webId, clientId |
-| API Key (用户级) | `Authorization: Bearer sk-xxx` | 数据库 hash 比对 | keyOwner (webId) |
-| API Key (系统级) | `Authorization: Bearer sk-xxx` | 数据库 hash 比对 | scopes |
+| CSS client credentials | `Authorization: Bearer sk-base64(client_id:client_secret)` | 交给 CSS token endpoint 换取 Solid token | webId, clientId |
+| Service Token | `Authorization: Bearer svc-xxx` | Cloud 查 `cluster_service_token`；Local 查本机 setup token | serviceType, serviceId, scopes |
 | Node Token | Body: `{nodeId, token}` | 数据库 hash 比对 | nodeId |
 | Internal Token | `X-Internal-Token: jwt` | 共享密钥验签 | isInternal |
 
-### 4.2 API Key 数据模型
+### 4.2 Deprecated: Xpod API Key 管理面
 
-```sql
-CREATE TABLE api_keys (
-  id            TEXT PRIMARY KEY,           -- 'key_xxxxx'
-  hashed_key    TEXT NOT NULL UNIQUE,       -- SHA256(sk-xxx)
-  name          TEXT NOT NULL,              -- 用户命名
-  type          TEXT NOT NULL,              -- 'user' | 'system'
-  owner_webid   TEXT,                       -- user 类型必填
-  scopes        JSONB,                      -- ['chat', 'quota:read']
-  rate_limit    INTEGER,                    -- 每分钟调用限制
-  expires_at    TIMESTAMP,
-  created_at    TIMESTAMP DEFAULT NOW(),
-  last_used_at  TIMESTAMP
-);
+`/api/keys`、`ApiKeyHandler`、`identity_api_client_credentials` 和 `api_keys` 这类本地 key 镜像表已经废弃。
 
-CREATE INDEX idx_api_keys_owner ON api_keys(owner_webid);
-CREATE INDEX idx_api_keys_hashed ON api_keys(hashed_key);
-```
+当前 API Server 不再生成、保存或校验一套独立的用户 API key。第三方调用如需长期凭据，应使用 CSS account 页面创建的 client credentials；API Server 只接受 `sk-base64(client_id:client_secret)` 作为传输包装，然后通过 CSS token endpoint 换取 Solid token。
 
-### 4.3 API Key 格式
+这样只有 CSS account storage 持有 client credentials 的权威记录，避免 Xpod 再维护一份会失效、难撤销、权限语义重复的密钥表。
+
+### 4.3 CSS client credentials 包装格式
 
 ```
-sk-{type}_{random}
-
-示例:
-- sk-user_a1b2c3d4e5f6...   (用户级)
-- sk-sys_x9y8z7w6v5u4...    (系统级)
+sk-base64(client_id:client_secret)
 ```
 
 ---
@@ -200,14 +181,14 @@ const response = await fetch('https://pod.example.com/api/chat/completions', {
 });
 ```
 
-**方式 2: 第三方 App (API Key)**
+**方式 2: 第三方 App (CSS client credentials)**
 
 ```typescript
 // 直接使用 OpenAI SDK
 import OpenAI from 'openai';
 
 const client = new OpenAI({
-  apiKey: 'sk-user_xxx',  // 用户在 Dashboard 生成的 API Key
+  apiKey: 'sk-base64(client_id:client_secret)',
   baseURL: 'https://xpod.example.com/api',
 });
 
@@ -219,19 +200,9 @@ const response = await client.chat.completions.create({
 
 ---
 
-## 6. API Key 管理 API
+## 6. 密钥来源
 
-### 6.1 POST /api/keys (创建)
-
-**Request:**
-
-```json
-{
-  "name": "My App Key",
-  "scopes": ["chat"],
-  "expiresIn": 2592000  // 30 天，可选
-}
-```
+用户级 client credentials 从 CSS account 页面创建和撤销；Xpod API Server 不提供 `/api/keys` 管理 API，也不创建 `identity_api_client_credentials` / `api_keys` 表。
 
 ---
 
@@ -278,8 +249,8 @@ CSS_INTERNAL_URL=http://localhost:3000  # 内网地址
 
 ### Phase 1: 基础架构
 - [x] 创建 `api-server/` 目录结构
-- [x] 实现鉴权中间件 (Solid Token + API Key)
-- [x] 实现 API Key 数据模型和管理 API
+- [x] 实现鉴权中间件 (Solid Token + CSS client credentials wrapper + Service Token)
+- [x] 废弃 Xpod 自建 API Key 数据模型和管理 API，改为透传 CSS client credentials
 
 ### Phase 2: 迁移现有 API
 - [x] 迁移 `/api/signal/*`

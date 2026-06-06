@@ -3,15 +3,10 @@ import { AccountRoleRepository } from '../../src/identity/drizzle/AccountRoleRep
 
 class FakeIdentityDatabase {
   public readonly statements: unknown[] = [];
-  private schemaHandled = false;
   public constructor(private readonly responses: Array<{ rows: any[] }> = []) {}
 
   public async execute(statement: unknown): Promise<{ rows: any[] }> {
     this.statements.push(statement);
-    if (!this.schemaHandled) {
-      this.schemaHandled = true;
-      return { rows: [] };
-    }
     return this.responses.shift() ?? { rows: [] };
   }
 }
@@ -24,7 +19,6 @@ describe('AccountRoleRepository', () => {
     };
     const db = new FakeIdentityDatabase([
       { rows: [ { payload } ] },
-      { rows: [ { role: 'admin' }, { role: 'auditor' } ] },
     ]);
     const repo = new AccountRoleRepository(db as unknown as any);
 
@@ -35,7 +29,7 @@ describe('AccountRoleRepository', () => {
       webId: payload.webId,
       roles: [ 'admin', 'auditor' ],
     });
-    expect(db.statements).toHaveLength(3);
+    expect(db.statements).toHaveLength(1);
   });
 
   it('locates account by webId scanning payloads', async () => {
@@ -44,7 +38,6 @@ describe('AccountRoleRepository', () => {
         { id: 'account-1', payload: { roles: [ 'user' ], pods: [] }},
         { id: 'account-2', payload: { pods: [{ webId: 'https://example.test/admin/profile/card#me' }], roles: ['admin'] }},
       ] },
-      { rows: [ { role: 'admin' } ] },
     ]);
     const repo = new AccountRoleRepository(db as unknown as any);
 

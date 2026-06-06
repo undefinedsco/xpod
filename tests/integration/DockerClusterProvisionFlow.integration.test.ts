@@ -171,11 +171,32 @@ suite('Provision Flow (IdP + SP)', () => {
       expect(body2.serviceToken).toBe('stable-service-token');
     });
 
-    it('should reject missing publicUrl', async () => {
+    it('should allocate managed publicUrl when publicUrl is missing', async () => {
       const res = await fetch(`${CLOUD_BASE_URL}/provision/nodes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ displayName: 'No URL' }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json() as {
+        nodeId?: string;
+        publicUrl?: string;
+        spDomain?: string;
+        provisionCode?: string;
+      };
+      expect(body.nodeId).toBeDefined();
+      expect(body.publicUrl).toBeDefined();
+      expect(body.spDomain).toBeDefined();
+      expect(body.provisionCode).toBeDefined();
+      expect(new URL(body.publicUrl!).origin).toBe(`https://${body.spDomain}`);
+    });
+
+    it('should reject missing publicUrl for self-managed domains', async () => {
+      const res = await fetch(`${CLOUD_BASE_URL}/provision/nodes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: 'No URL', domainMode: 'self-managed' }),
       });
 
       expect(res.status).toBe(400);

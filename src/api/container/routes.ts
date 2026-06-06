@@ -11,7 +11,6 @@ import type { ApiServer } from '../ApiServer';
 import { registerEdgeNodeSignalRoutes } from '../handlers/EdgeNodeSignalHandler';
 import { registerNodeRoutes } from '../handlers/NodeHandler';
 import { registerChatRoutes } from '../handlers/ChatHandler';
-import { registerApiKeyRoutes } from '../handlers/ApiKeyHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
 import { registerSubdomainClientRoutes } from '../handlers/SubdomainClientHandler';
 import { registerDdnsRoutes } from '../handlers/DdnsHandler';
@@ -24,12 +23,11 @@ import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
-import { registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
+import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
-import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
 import { LocalPodProvisioningService } from '../../provision/LocalPodProvisioningService';
@@ -86,7 +84,6 @@ function registerSharedRoutes(
   server: ApiServer,
 ): void {
   const nodeRepo = container.resolve('nodeRepo') as EdgeNodeRepository;
-  const apiKeyStore = container.resolve('apiKeyStore') as DrizzleClientCredentialsStore;
   const chatService = container.resolve('chatService');
   const chatKitService = container.resolve('chatKitService');
   const chatKitStore = container.resolve('chatKitStore');
@@ -102,7 +99,6 @@ function registerSharedRoutes(
     healthProbeService: container.resolve('healthProbeService', { allowUnregistered: true }) as any,
   });
   registerNodeRoutes(server, { repository: nodeRepo });
-  registerApiKeyRoutes(server, { store: apiKeyStore });
   registerChatRoutes(server, { chatService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
@@ -250,6 +246,7 @@ function registerLocalRoutes(
         verifyServiceToken: async (token: string) => token === expectedServiceToken,
         provisioningService,
         podLookupRepository: container.resolve('podLookupRepo', { allowUnregistered: true }),
+        storageProviderBaseUrl: baseUrl,
       });
       console.log(`[Local] Pod provision routes registered (/provision/pods, /provision/webids, ${provisioningService ? 'css-compatible' : 'directory-only'})`);
     } else {
@@ -265,10 +262,30 @@ function registerLocalRoutes(
     registerProvisionStatusRoute(server, {
       cloudUrl: config.cloudApiEndpoint,
       nodeId: config.nodeId,
+      nodeToken: config.nodeToken,
+      serviceToken: process.env.XPOD_SERVICE_TOKEN,
+      publicUrl: process.env.CSS_BASE_URL,
+      spDomain: process.env.XPOD_SP_DOMAIN,
+      localPort: readPositiveInteger(process.env.CSS_PORT ?? process.env.XPOD_PORT ?? process.env.PORT),
+      tunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN ?? process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN,
       cloudBaseUrl: config.oidcIssuer || config.cloudApiEndpoint,
+      provisionCode: process.env.XPOD_PROVISION_CODE,
+      persistState: createLocalSetupProvisionStateWriter(
+        process.env.XPOD_LOCAL_SETUP_PATH,
+        process.env.XPOD_PROVIDER_ID,
+      ),
     });
     console.log('[Local] Provision status route registered (/provision/status)');
   } catch (error) {
     console.log(`[Local] Provision status route not registered: ${error}`);
   }
+}
+
+function readPositiveInteger(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }

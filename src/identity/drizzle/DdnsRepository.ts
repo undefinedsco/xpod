@@ -1,23 +1,18 @@
 /**
  * DDNS Repository
  *
- * 管理 DDNS 域名池和记录
+ * 管理 Cloud 已分配的 DDNS 记录。
+ *
+ * 根域名、DNS provider 和 zone 等属于 Cloud 部署配置，不在控制面表中
+ * 再维护一份域名池，避免配置事实和数据库事实分叉。
  */
 
 import { eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
 import { getLoggerFor } from 'global-logger-factory';
-import { getSchema, toDbTimestamp, fromDbTimestamp } from './db';
+import { ensureCloudClusterTables, getSchema, toDbTimestamp, fromDbTimestamp } from './db';
 
 const logger = getLoggerFor('DdnsRepository');
-
-export interface DdnsDomain {
-  domain: string;
-  status: 'active' | 'suspended';
-  provider?: string;
-  zoneId?: string;
-  createdAt: Date;
-}
 
 export interface DdnsRecord {
   subdomain: string;
@@ -52,70 +47,11 @@ export interface UpdateDdnsRecordInput {
 
 export class DdnsRepository {
   private readonly schema: ReturnType<typeof getSchema>;
+  private readonly ready: Promise<void>;
 
   constructor(private readonly db: IdentityDatabase) {
     this.schema = getSchema(db);
-  }
-
-  // ==================== Domain Pool ====================
-
-  /**
-   * 添加域名到池中
-   */
-  async addDomain(
-    domain: string,
-    provider?: string,
-    zoneId?: string,
-  ): Promise<DdnsDomain> {
-    const now = new Date();
-
-    await this.db.insert(this.schema.ddnsDomains).values({
-      domain,
-      status: 'active',
-      provider,
-      zoneId,
-      createdAt: toDbTimestamp(this.db, now),
-    });
-
-    logger.info(`Added domain to pool: ${domain}`);
-
-    return {
-      domain,
-      status: 'active',
-      provider,
-      zoneId,
-      createdAt: now,
-    };
-  }
-
-  /**
-   * 获取所有活跃的域名
-   */
-  async getActiveDomains(): Promise<DdnsDomain[]> {
-    const results = await this.db
-      .select()
-      .from(this.schema.ddnsDomains)
-      .where(eq(this.schema.ddnsDomains.status, 'active'));
-
-    return results.map((row: typeof results[0]) => ({
-      domain: row.domain,
-      status: row.status as 'active' | 'suspended',
-      provider: row.provider ?? undefined,
-      zoneId: row.zoneId ?? undefined,
-      createdAt: fromDbTimestamp(row.createdAt) ?? new Date(0),
-    }));
-  }
-
-  /**
-   * 暂停域名
-   */
-  async suspendDomain(domain: string): Promise<void> {
-    await this.db
-      .update(this.schema.ddnsDomains)
-      .set({ status: 'suspended' })
-      .where(eq(this.schema.ddnsDomains.domain, domain));
-
-    logger.info(`Suspended domain: ${domain}`);
+    this.ready = ensureCloudClusterTables(db);
   }
 
   // ==================== DDNS Records ====================
@@ -124,6 +60,7 @@ export class DdnsRepository {
    * 分配子域名
    */
   async allocateSubdomain(input: CreateDdnsRecordInput): Promise<DdnsRecord> {
+    await this.ready;
     const { subdomain, domain, ipAddress, ipv6Address, nodeId, username } = input;
 
     // 检查是否已存在
@@ -170,6 +107,7 @@ export class DdnsRepository {
    * 获取 DDNS 记录
    */
   async getRecord(subdomain: string): Promise<DdnsRecord | null> {
+    await this.ready;
     const results = await this.db
       .select()
       .from(this.schema.ddnsRecords)
@@ -204,6 +142,7 @@ export class DdnsRepository {
     subdomain: string,
     input: UpdateDdnsRecordInput,
   ): Promise<DdnsRecord | null> {
+    await this.ready;
     const existing = await this.getRecord(subdomain);
     if (!existing) {
       return null;
@@ -252,6 +191,7 @@ export class DdnsRepository {
    * 封禁子域名
    */
   async banSubdomain(subdomain: string, reason: string): Promise<void> {
+    await this.ready;
     await this.db
       .update(this.schema.ddnsRecords)
       .set({
@@ -268,6 +208,7 @@ export class DdnsRepository {
    * 解封子域名
    */
   async unbanSubdomain(subdomain: string): Promise<void> {
+    await this.ready;
     await this.db
       .update(this.schema.ddnsRecords)
       .set({
@@ -284,6 +225,7 @@ export class DdnsRepository {
    * 释放子域名
    */
   async releaseSubdomain(subdomain: string): Promise<boolean> {
+    await this.ready;
     await this.db
       .delete(this.schema.ddnsRecords)
       .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
@@ -296,6 +238,7 @@ export class DdnsRepository {
    * 获取用户的所有子域名
    */
   async getRecordsByUsername(username: string): Promise<DdnsRecord[]> {
+    await this.ready;
     const results = await this.db
       .select()
       .from(this.schema.ddnsRecords)
@@ -321,6 +264,7 @@ export class DdnsRepository {
    * 获取节点的子域名
    */
   async getRecordByNodeId(nodeId: string): Promise<DdnsRecord | null> {
+    await this.ready;
     const results = await this.db
       .select()
       .from(this.schema.ddnsRecords)
@@ -347,4 +291,5 @@ export class DdnsRepository {
       updatedAt: fromDbTimestamp(row.updatedAt) ?? new Date(0),
     };
   }
+
 }

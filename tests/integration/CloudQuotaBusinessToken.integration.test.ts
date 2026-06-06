@@ -41,7 +41,7 @@ suite('Cloud PG quota regression', () => {
   it('registers the business token in PostgreSQL', async () => {
     const result = await pgClient!.query(`
       SELECT service_type, service_id, scopes
-      FROM identity_service_token
+      FROM cluster_service_token
       WHERE service_type = 'business'
         AND service_id = 'business-default'
     `);
@@ -92,8 +92,9 @@ suite('Cloud PG quota regression', () => {
 
     const dbRes = await pgClient!.query(`
       SELECT storage_limit_bytes, bandwidth_limit_bps, compute_limit_seconds, token_limit_monthly
-      FROM identity_account_usage
-      WHERE account_id = $1
+      FROM identity_usage
+      WHERE scope_type = 'account'
+        AND scope_id = $1
     `, [accountId]);
     expect(dbRes.rows.length).toBe(1);
     expect(Number(dbRes.rows[0].storage_limit_bytes)).toBe(quota.storageLimitBytes);

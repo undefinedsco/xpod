@@ -13,7 +13,10 @@
  *   返回 SP 配置状态，供 Linx 查询
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { ServerResponse, IncomingMessage } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -37,6 +40,7 @@ export interface ProvisionHandlerOptions {
 
 /** 默认 24 小时 */
 const DEFAULT_TTL = 24 * 60 * 60;
+const PROVISION_STATUS_REFRESH_GRACE_SECONDS = 5 * 60;
 
 export function registerProvisionRoutes(
   server: ApiServer,
@@ -54,7 +58,7 @@ export function registerProvisionRoutes(
    *
    * Request:
    *   {
-   *     publicUrl: string,
+   *     publicUrl?: string,
    *     nodeId?: string,
    *     displayName?: string,
    *     ipv4?: string,
@@ -89,43 +93,74 @@ export function registerProvisionRoutes(
       return;
     }
 
-    if (!body.publicUrl) {
-      sendJson(response, 400, { error: 'publicUrl is required' });
-      return;
-    }
-
     try {
-      new URL(body.publicUrl);
-    } catch {
-      sendJson(response, 400, { error: 'Invalid publicUrl format' });
-      return;
-    }
+      const domainMode = body.domainMode === 'self-managed' ? 'self-managed' : 'managed';
+      const requestedManagedDomain = normalizeRequestedManagedDomain(body.spDomain, baseStorageDomain);
+      const shouldAllocateManagedPublicUrl = !body.publicUrl && domainMode === 'managed' && Boolean(baseStorageDomain);
+      const preallocatedNodeId = shouldAllocateManagedPublicUrl
+        ? (body.nodeId ?? randomUUID())
+        : undefined;
+      const preallocatedSubdomainPrefix = preallocatedNodeId
+        ? resolveManagedSubdomainPrefix({
+            domainMode,
+            baseStorageDomain,
+            requestedManagedDomain,
+            nodeId: preallocatedNodeId,
+          })
+        : undefined;
+      const preallocatedSpDomain = preallocatedSubdomainPrefix
+        ? `${preallocatedSubdomainPrefix}.${baseStorageDomain}`
+        : undefined;
+      const effectivePublicUrl = body.publicUrl ?? derivePublicUrlFromSpDomain(preallocatedSpDomain);
 
-    try {
+      if (!effectivePublicUrl) {
+        sendJson(response, 400, { error: 'publicUrl is required' });
+        return;
+      }
+
+      if (preallocatedSubdomainPrefix && baseStorageDomain && options.ddnsRepo) {
+        const existing = await options.ddnsRepo.getRecord(preallocatedSubdomainPrefix);
+        if (existing?.nodeId && existing.nodeId !== preallocatedNodeId) {
+          sendJson(response, 409, {
+            error: 'spDomain already allocated',
+            spDomain: preallocatedSpDomain,
+          });
+          return;
+        }
+      }
+
+      try {
+        new URL(effectivePublicUrl);
+      } catch {
+        sendJson(response, 400, { error: 'Invalid publicUrl format' });
+        return;
+      }
+
       const result = await repository.registerSpNode({
-        publicUrl: body.publicUrl,
+        publicUrl: effectivePublicUrl,
         displayName: body.displayName,
-        nodeId: body.nodeId,
+        nodeId: preallocatedNodeId ?? body.nodeId,
         nodeToken: body.nodeToken,
         serviceToken: body.serviceToken,
       });
 
-      const domainMode = body.domainMode === 'self-managed' ? 'self-managed' : 'managed';
-      const requestedManagedDomain = normalizeRequestedManagedDomain(body.spDomain, baseStorageDomain);
-      const subdomainPrefix = resolveManagedSubdomainPrefix({
-        domainMode,
-        baseStorageDomain,
-        requestedManagedDomain,
-        nodeId: result.nodeId,
-      });
+      const subdomainPrefix = preallocatedSubdomainPrefix
+        ?? resolveManagedSubdomainPrefix({
+          domainMode,
+          baseStorageDomain,
+          requestedManagedDomain,
+          nodeId: result.nodeId,
+        });
       const spDomain = subdomainPrefix
         ? `${subdomainPrefix}.${baseStorageDomain}`
         : undefined;
+      const managedPublicUrl = derivePublicUrlFromSpDomain(spDomain);
+      const provisionSpUrl = body.publicUrl ?? managedPublicUrl ?? effectivePublicUrl;
       const tunnelState = await ensureManagedTunnelState({
         repository,
         nodeId: result.nodeId,
         subdomainPrefix,
-        publicUrl: body.publicUrl,
+        publicUrl: provisionSpUrl,
         localPort: body.localPort,
         ipv4: body.ipv4,
         tunnelToken: body.tunnelToken,
@@ -145,14 +180,14 @@ export function registerProvisionRoutes(
 
       // 生成自包含 provisionCode（编码了 SP 信息，CSS 解码后直接回调 SP）
       const provisionCode = codec.encode({
-        spUrl: body.publicUrl,
+        spUrl: provisionSpUrl,
         serviceToken: result.serviceToken,
         nodeId: result.nodeId,
         spDomain,
         exp: Math.floor(Date.now() / 1000) + ttl,
       });
 
-      logger.info(`Registered SP node ${result.nodeId} at ${body.publicUrl}${spDomain ? `, spDomain: ${spDomain}` : ''}`);
+      logger.info(`Registered SP node ${result.nodeId} at ${provisionSpUrl}${spDomain ? `, spDomain: ${spDomain}` : ''}`);
 
       const responseBody: Record<string, unknown> = {
         nodeId: result.nodeId,
@@ -160,6 +195,9 @@ export function registerProvisionRoutes(
         serviceToken: result.serviceToken,
         provisionCode,
       };
+      if (managedPublicUrl) {
+        responseBody.publicUrl = managedPublicUrl;
+      }
       if (spDomain) {
         responseBody.spDomain = spDomain;
       }
@@ -304,7 +342,6 @@ async function ensureManagedTunnelState(options: {
       localPort,
       configuredAt: new Date().toISOString(),
     },
-    publicAddress: tunnelConfig.endpoint || publicUrl,
   });
 
   return {
@@ -396,7 +433,6 @@ async function ensureManagedTokenTunnelState(options: {
       configuredAt: new Date().toISOString(),
       source: 'client-token',
     },
-    publicAddress: endpoint || publicUrl,
   });
 
   return config;
@@ -472,12 +508,39 @@ export interface ProvisionStatusOptions {
   cloudUrl?: string;
   /** 节点 ID */
   nodeId?: string;
+  /** 节点 Token */
+  nodeToken?: string;
+  /** SP service token，刷新 provisionCode 时回传给 Cloud */
+  serviceToken?: string;
+  /** 当前 SP canonical public URL */
+  publicUrl?: string;
   /** SP 子域名 */
   spDomain?: string;
+  /** 本地端口，供 Cloud 管理 tunnel 元数据 */
+  localPort?: number;
+  /** tunnel token，供 Cloud 维护托管域名连通性 */
+  tunnelToken?: string;
   /** Cloud baseUrl，用于拼 provisionUrl */
   cloudBaseUrl?: string;
   /** provisionCode（可选，由环境变量传入） */
   provisionCode?: string;
+  /** Persist refreshed local-only setup state to the single local setup file. */
+  persistState?: (state: ProvisionStatusStateUpdate) => Promise<void> | void;
+  /** 测试/调试注入 */
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+  refreshGraceSeconds?: number;
+}
+
+export interface ProvisionStatusStateUpdate {
+  nodeId: string;
+  nodeToken: string;
+  serviceToken: string;
+  provisionCode: string;
+  publicUrl?: string;
+  spDomain?: string;
+  cloudUrl?: string;
+  cloudBaseUrl?: string;
 }
 
 export function registerProvisionStatusRoute(
@@ -485,6 +548,18 @@ export function registerProvisionStatusRoute(
   options: ProvisionStatusOptions,
 ): void {
   const logger = getLoggerFor('ProvisionStatusHandler');
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const now = options.now ?? (() => Date.now());
+  const refreshGraceSeconds = options.refreshGraceSeconds ?? PROVISION_STATUS_REFRESH_GRACE_SECONDS;
+  const state: ProvisionStatusState = {
+    provisionCode: options.provisionCode,
+    nodeId: options.nodeId,
+    nodeToken: options.nodeToken,
+    serviceToken: options.serviceToken,
+    publicUrl: normalizeUrl(options.publicUrl),
+    spDomain: options.spDomain,
+  };
+  let refreshPromise: Promise<void> | undefined;
 
   server.get('/provision/status', async (_request, response) => {
     const registered = Boolean(options.nodeId && options.cloudUrl);
@@ -494,14 +569,62 @@ export function registerProvisionStatusRoute(
     };
 
     if (registered) {
+      const canRefresh = canRefreshProvisionStatus(options, state);
+      const currentNow = now();
+      const fresh = isProvisionCodeFresh(state.provisionCode, currentNow, refreshGraceSeconds);
+      const codeState = inspectProvisionCodeExpiration(state.provisionCode);
+      if (!canRefresh && codeState.kind !== 'missing' && !isProvisionCodeUsable(state.provisionCode, currentNow)) {
+        sendJson(response, 503, {
+          registered: true,
+          error: 'provision_refresh_unavailable',
+          message: 'Local provision state is expired and cannot be refreshed. Please restart Local or try again.',
+        });
+        return;
+      }
+
+      if (canRefresh && !fresh) {
+        let didRefresh = false;
+        refreshPromise ??= refreshProvisionStatus({
+          options,
+          state,
+          fetchImpl,
+          logger,
+        }).finally(() => {
+          refreshPromise = undefined;
+        });
+        try {
+          await refreshPromise;
+          didRefresh = true;
+        } catch (error) {
+          logger.warn(`Failed to refresh provisionCode for ${state.nodeId}: ${error}`);
+          if (!isProvisionCodeUsable(state.provisionCode, now())) {
+            sendJson(response, 503, {
+              registered: true,
+              error: 'provision_refresh_failed',
+              message: 'Local provision state could not be refreshed. Please restart Local or try again.',
+            });
+            return;
+          }
+        }
+        if (didRefresh) {
+          await persistProvisionStatusState(options, state, logger);
+        }
+      }
+
       body.cloudUrl = options.cloudUrl;
-      body.nodeId = options.nodeId;
-      if (options.spDomain) {
-        body.spDomain = options.spDomain;
+      body.nodeId = state.nodeId ?? options.nodeId;
+      if (state.spDomain) {
+        body.spDomain = state.spDomain;
+      }
+      if (state.publicUrl) {
+        body.publicUrl = state.publicUrl;
+      }
+      if (state.provisionCode) {
+        body.provisionCode = state.provisionCode;
       }
       if (options.cloudBaseUrl) {
-        const provisionUrl = options.provisionCode
-          ? `${options.cloudBaseUrl.replace(/\/$/, '')}/.account/?provisionCode=${encodeURIComponent(options.provisionCode)}`
+        const provisionUrl = state.provisionCode
+          ? `${options.cloudBaseUrl.replace(/\/$/, '')}/.account/?provisionCode=${encodeURIComponent(state.provisionCode)}`
           : `${options.cloudBaseUrl.replace(/\/$/, '')}/.account/`;
         body.provisionUrl = provisionUrl;
       }
@@ -511,6 +634,253 @@ export function registerProvisionStatusRoute(
   }, { public: true });
 
   logger.info('Provision status route registered');
+}
+
+export function createLocalSetupProvisionStateWriter(
+  setupPath: string | undefined,
+  providerId: string | undefined,
+): ProvisionStatusOptions['persistState'] | undefined {
+  if (!setupPath?.trim() || !providerId?.trim()) {
+    return undefined;
+  }
+
+  const targetPath = path.resolve(setupPath);
+  const targetProviderId = providerId.trim();
+  return async (state): Promise<void> => {
+    upsertLocalSetupFile(targetPath, targetProviderId, state);
+  };
+}
+
+async function persistProvisionStatusState(
+  options: ProvisionStatusOptions,
+  state: ProvisionStatusState,
+  logger: ReturnType<typeof getLoggerFor>,
+): Promise<void> {
+  if (!options.persistState || !state.nodeId || !state.nodeToken || !state.serviceToken || !state.provisionCode) {
+    return;
+  }
+
+  try {
+    await options.persistState({
+      nodeId: state.nodeId,
+      nodeToken: state.nodeToken,
+      serviceToken: state.serviceToken,
+      provisionCode: state.provisionCode,
+      publicUrl: state.publicUrl,
+      spDomain: state.spDomain,
+      cloudUrl: options.cloudUrl,
+      cloudBaseUrl: options.cloudBaseUrl,
+    });
+  } catch (error) {
+    logger.warn(`Failed to persist refreshed local provision state: ${error}`);
+  }
+}
+
+function upsertLocalSetupFile(
+  filePath: string,
+  providerId: string,
+  state: ProvisionStatusStateUpdate,
+): void {
+  const existing = readJsonObjectFile(filePath);
+  const previous = readJsonObject(existing[providerId]);
+  const cloudIdentityUrl = normalizeUrl(state.cloudBaseUrl);
+  const cloudApiUrl = normalizeUrl(state.cloudUrl);
+  const provisionUrl = cloudIdentityUrl
+    ? `${cloudIdentityUrl.replace(/\/+$/u, '')}/.account/?provisionCode=${encodeURIComponent(state.provisionCode)}`
+    : readString(previous.provisionUrl);
+
+  existing[providerId] = {
+    ...previous,
+    nodeId: state.nodeId,
+    nodeToken: state.nodeToken,
+    serviceToken: state.serviceToken,
+    provisionCode: state.provisionCode,
+    publicUrl: normalizeUrl(state.publicUrl),
+    spDomain: readString(state.spDomain),
+    provisionUrl,
+    cloudIdentityUrl,
+    cloudApiUrl,
+    registeredAt: typeof previous.registeredAt === 'number' && Number.isFinite(previous.registeredAt)
+      ? previous.registeredAt
+      : Date.now(),
+  };
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(existing, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    // Some filesystems do not support chmod; the local runtime can still proceed.
+  }
+}
+
+function readJsonObjectFile(filePath: string): Record<string, unknown> {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return {};
+    }
+
+    return readJsonObject(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+  } catch {
+    return {};
+  }
+}
+
+function readJsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+interface ProvisionStatusState {
+  provisionCode?: string;
+  nodeId?: string;
+  nodeToken?: string;
+  serviceToken?: string;
+  publicUrl?: string;
+  spDomain?: string;
+}
+
+interface ProvisionNodeRefreshResponse {
+  nodeId: string;
+  nodeToken: string;
+  serviceToken: string;
+  provisionCode: string;
+  publicUrl?: string;
+  spDomain?: string;
+}
+
+function canRefreshProvisionStatus(options: ProvisionStatusOptions, state: ProvisionStatusState): boolean {
+  return Boolean(
+    options.cloudUrl
+    && state.nodeId
+    && state.nodeToken
+    && state.serviceToken
+    && state.publicUrl,
+  );
+}
+
+async function refreshProvisionStatus(options: {
+  options: ProvisionStatusOptions;
+  state: ProvisionStatusState;
+  fetchImpl: typeof fetch;
+  logger: ReturnType<typeof getLoggerFor>;
+}): Promise<void> {
+  const { options: statusOptions, state, fetchImpl, logger } = options;
+  const endpoint = new URL('/provision/nodes', ensureTrailingSlash(statusOptions.cloudUrl!)).toString();
+  const requestBody: Record<string, unknown> = {
+    publicUrl: state.publicUrl,
+    nodeId: state.nodeId,
+    nodeToken: state.nodeToken,
+    serviceToken: state.serviceToken,
+    domainMode: state.spDomain ? 'managed' : 'self-managed',
+    spDomain: state.spDomain,
+  };
+
+  if (statusOptions.localPort && statusOptions.localPort > 0) {
+    requestBody.localPort = statusOptions.localPort;
+  }
+  if (statusOptions.tunnelToken) {
+    requestBody.tunnelToken = statusOptions.tunnelToken;
+    requestBody.tunnelMode = 'client';
+  }
+
+  const result = await fetchImpl(endpoint, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!result.ok) {
+    const detail = await result.text().catch(() => '');
+    throw new Error(detail || `HTTP ${result.status}`);
+  }
+
+  const payload = await result.json().catch(() => undefined) as Partial<ProvisionNodeRefreshResponse> | undefined;
+  if (
+    !payload
+    || typeof payload.nodeId !== 'string'
+    || typeof payload.nodeToken !== 'string'
+    || typeof payload.serviceToken !== 'string'
+    || typeof payload.provisionCode !== 'string'
+  ) {
+    throw new Error('Cloud returned an incomplete provision refresh response.');
+  }
+
+  state.nodeId = payload.nodeId;
+  state.nodeToken = payload.nodeToken;
+  state.serviceToken = payload.serviceToken;
+  state.provisionCode = payload.provisionCode;
+  state.publicUrl = normalizeUrl(payload.publicUrl) ?? state.publicUrl;
+  state.spDomain = typeof payload.spDomain === 'string' ? payload.spDomain : state.spDomain;
+
+  process.env.XPOD_NODE_ID = state.nodeId;
+  process.env.XPOD_NODE_TOKEN = state.nodeToken;
+  process.env.XPOD_SERVICE_TOKEN = state.serviceToken;
+  process.env.XPOD_PROVISION_CODE = state.provisionCode;
+  if (statusOptions.cloudBaseUrl) {
+    process.env.XPOD_PROVISION_URL = `${statusOptions.cloudBaseUrl.replace(/\/$/u, '')}/.account/?provisionCode=${encodeURIComponent(state.provisionCode)}`;
+  }
+  if (state.spDomain) {
+    process.env.XPOD_SP_DOMAIN = state.spDomain;
+  }
+
+  logger.info(`Refreshed provisionCode for ${state.nodeId}`);
+}
+
+function isProvisionCodeFresh(code: string | undefined, nowMs: number, graceSeconds: number): boolean {
+  const state = inspectProvisionCodeExpiration(code);
+  return state.kind === 'self-contained' && state.expiresAt > Math.floor(nowMs / 1000) + graceSeconds;
+}
+
+function isProvisionCodeUsable(code: string | undefined, nowMs: number): boolean {
+  const state = inspectProvisionCodeExpiration(code);
+  if (state.kind === 'legacy') {
+    return true;
+  }
+  return state.kind === 'self-contained' && state.expiresAt > Math.floor(nowMs / 1000);
+}
+
+function inspectProvisionCodeExpiration(code: string | undefined): { kind: 'missing' | 'legacy' | 'invalid' } | { kind: 'self-contained'; expiresAt: number } {
+  if (!code) {
+    return { kind: 'missing' };
+  }
+  const dotIndex = code.indexOf('.');
+  if (dotIndex <= 0) {
+    return { kind: 'legacy' };
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(code.slice(0, dotIndex), 'base64url').toString('utf8')) as { exp?: unknown };
+    return typeof payload.exp === 'number' && Number.isFinite(payload.exp)
+      ? { kind: 'self-contained', expiresAt: payload.exp }
+      : { kind: 'invalid' };
+  } catch {
+    return { kind: 'invalid' };
+  }
+}
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith('/') ? value : `${value}/`;
+}
+
+function normalizeUrl(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    return new URL(value.trim()).toString().replace(/\/+$/u, '') + '/';
+  } catch {
+    return value.trim().replace(/\/+$/u, '') + '/';
+  }
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -539,6 +909,10 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.statusCode = status;
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(data));
+}
+
+function derivePublicUrlFromSpDomain(spDomain: string | undefined): string | undefined {
+  return spDomain ? `https://${spDomain}/` : undefined;
 }
 
 function normalizeRequestedManagedDomain(value: string | undefined, baseStorageDomain: string | undefined): string | undefined {

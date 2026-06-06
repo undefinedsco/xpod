@@ -1,5 +1,10 @@
 # Schema 统一重构计划
 
+> Superseded note: 本文只保留 PostgreSQL/SQLite 类型统一的历史背景。
+> 当前控制面表名以 `docs/storage-overview.md` 和 `docs/architecture-v2.md`
+> 为准：节点归属使用 `cluster_node`，不再使用旧的
+> `identity_edge_node` / `identity_edge_node_pod` 设计。
+
 ## 目标
 
 1. **统一 timestamp**：PG 和 SQLite 都用 bigint 存储 Unix timestamp
@@ -14,9 +19,9 @@
 {
   lastHeartbeatAt: string,      // ❌ 重复：已有 lastSeen 列
   baseUrl: string,              // ❌ 重复：已有 publicUrl 列
-  publicAddress: string,        // ❌ 重复：已有 publicIp 列
+  legacy public address field   // ❌ 重复：已有 ipv4/public_url 列
   hostname: string,             // ✅ 新字段，需要加列
-  ipv4: string,                 // ❌ 重复：已有 publicIp 列
+  ipv4: string,                 // ❌ 重复：已有 ipv4 列
   ipv6: string,                 // ✅ 新字段，需要加列
   version: string,              // ✅ 新字段，需要加列
   status: string,               // ❌ 重复：已有 connectivityStatus 列
@@ -31,9 +36,8 @@
 ### 重构后的 schema
 
 ```typescript
-export const edgeNodes = pgTable('identity_edge_node', {
+export const edgeNodes = pgTable('cluster_node', {
   id: text('id').primaryKey(),
-  ownerAccountId: text('owner_account_id'),
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
   nodeType: text('node_type').default('edge'),
@@ -41,7 +45,7 @@ export const edgeNodes = pgTable('identity_edge_node', {
   // 网络信息（独立列）
   subdomain: text('subdomain').unique(),
   hostname: text('hostname'),                    // 新增
-  publicIp: text('public_ip'),
+  ipv4: text('ipv4'),
   ipv6: text('ipv6'),                           // 新增
   publicPort: pgBigint('public_port', { mode: 'number' }),
   publicUrl: text('public_url'),
@@ -100,13 +104,13 @@ interface EdgeNodeMetadata {
 
 ```sql
 -- 1. 添加新列
-ALTER TABLE identity_edge_node
+ALTER TABLE cluster_node
   ADD COLUMN hostname text,
   ADD COLUMN ipv6 text,
   ADD COLUMN version text;
 
 -- 2. 从 metadata 提取数据到新列
-UPDATE identity_edge_node
+UPDATE cluster_node
 SET
   hostname = metadata->>'hostname',
   ipv6 = metadata->>'ipv6',
@@ -114,19 +118,19 @@ SET
 WHERE metadata IS NOT NULL;
 
 -- 3. 转换 timestamp 列为 bigint
-ALTER TABLE identity_edge_node
+ALTER TABLE cluster_node
   ALTER COLUMN last_connectivity_check TYPE bigint USING EXTRACT(EPOCH FROM last_connectivity_check)::bigint,
   ALTER COLUMN created_at TYPE bigint USING EXTRACT(EPOCH FROM created_at)::bigint,
   ALTER COLUMN updated_at TYPE bigint USING EXTRACT(EPOCH FROM updated_at)::bigint,
   ALTER COLUMN last_seen TYPE bigint USING EXTRACT(EPOCH FROM last_seen)::bigint;
 
 -- 4. 转换 jsonb 列为 text
-ALTER TABLE identity_edge_node
+ALTER TABLE cluster_node
   ALTER COLUMN capabilities TYPE text USING capabilities::text,
   ALTER COLUMN metadata TYPE text USING metadata::text;
 
 -- 5. 清理 metadata，移除已提取的字段
-UPDATE identity_edge_node
+UPDATE cluster_node
 SET metadata = (
   SELECT jsonb_build_object(
     'tunnel', metadata->'tunnel',
@@ -137,7 +141,7 @@ SET metadata = (
 WHERE metadata IS NOT NULL;
 
 -- 对其他表执行类似操作
--- identity_account_usage, identity_pod_usage, identity_service_token, etc.
+-- identity_usage, cluster_service_token, etc.
 ```
 
 ### SQLite 迁移
@@ -145,7 +149,7 @@ WHERE metadata IS NOT NULL;
 ```sql
 -- SQLite 不支持 ALTER COLUMN TYPE，需要重建表
 -- 1. 创建新表
-CREATE TABLE identity_edge_node_new (
+CREATE TABLE cluster_node_new (
   id TEXT PRIMARY KEY,
   -- ... 所有列定义（使用新的类型）
   hostname TEXT,
@@ -160,7 +164,7 @@ CREATE TABLE identity_edge_node_new (
 );
 
 -- 2. 迁移数据
-INSERT INTO identity_edge_node_new
+INSERT INTO cluster_node_new
 SELECT
   id,
   -- ... 其他列
@@ -177,11 +181,11 @@ SELECT
   created_at,
   updated_at,
   last_seen
-FROM identity_edge_node;
+FROM cluster_node;
 
 -- 3. 替换表
-DROP TABLE identity_edge_node;
-ALTER TABLE identity_edge_node_new RENAME TO identity_edge_node;
+DROP TABLE cluster_node;
+ALTER TABLE cluster_node_new RENAME TO cluster_node;
 ```
 
 ## 第三步：代码修改

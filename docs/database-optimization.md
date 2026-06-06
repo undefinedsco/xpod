@@ -13,20 +13,22 @@ For production deployments with PostgreSQL, it's highly recommended to create th
 -- For very large datasets, consider partitioning or using a BRIN index instead of B-tree.
 
 -- Pod usage queries by account
-CREATE INDEX IF NOT EXISTS idx_pod_usage_account_id ON identity_pod_usage (account_id);
+CREATE INDEX IF NOT EXISTS idx_usage_account_id ON identity_usage (account_id);
 
--- Pod lookup by baseUrl (JSONB index)
--- These GIN indexes significantly speed up JSON field queries used for resource-to-pod mapping
-CREATE INDEX IF NOT EXISTS idx_pod_base_url ON identity_pod USING GIN ((payload->'baseUrl'));
-CREATE INDEX IF NOT EXISTS idx_pod_account_id ON identity_pod USING GIN ((payload->'accountId'));
-
--- Edge node pod lookup
-CREATE INDEX IF NOT EXISTS idx_edge_node_pod_base_url ON identity_edge_node_pod (base_url);
+-- Pod lookup by identity_store account/pod payload fields
+CREATE INDEX IF NOT EXISTS idx_identity_store_pod_base_url
+  ON identity_store (container, (jsonb_extract_path_text(payload, 'baseUrl')))
+  WHERE container = 'pod';
+CREATE INDEX IF NOT EXISTS idx_identity_store_pod_account_id
+  ON identity_store (container, (jsonb_extract_path_text(payload, 'accountId')))
+  WHERE container = 'pod';
 
 -- Optional: If you experience slow LIKE queries on baseUrl, create a trigram index
 -- Requires the pg_trgm extension
 -- CREATE EXTENSION IF NOT EXISTS pg_trgm;
--- CREATE INDEX IF NOT EXISTS idx_pod_base_url_trgm ON identity_pod USING GIN ((payload->>'baseUrl') gin_trgm_ops);
+-- CREATE INDEX IF NOT EXISTS idx_identity_store_pod_base_url_trgm
+--   ON identity_store USING GIN ((jsonb_extract_path_text(payload, 'baseUrl')) gin_trgm_ops)
+--   WHERE container = 'pod';
 ```
 
 These indexes significantly improve:

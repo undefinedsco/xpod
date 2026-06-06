@@ -10,7 +10,7 @@ import type { ApiContainerCradle } from './types';
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
-import { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
+import { LocalSetupServiceTokenRepository } from '../../setup/LocalSetupServiceTokenRepository';
 import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
@@ -53,20 +53,24 @@ export function registerCommonServices(
     }).singleton(),
 
     // 仓库
-    nodeRepo: asFunction(({ db }: ApiContainerCradle) => {
-      return new EdgeNodeRepository(db);
-    }).singleton(),
-
-    apiKeyStore: asFunction(({ db, config }: ApiContainerCradle) => {
-      return new DrizzleClientCredentialsStore({
-        db,
-        isSqlite: config.databaseUrl.startsWith('sqlite:'),
+    nodeRepo: asFunction(({ db, config }: ApiContainerCradle) => {
+      return new EdgeNodeRepository(db, {
+        ensureClusterTables: config.edition === 'cloud',
       });
     }).singleton(),
 
     // 认证
-    serviceTokenRepo: asFunction(({ db }: ApiContainerCradle) => {
-      return new ServiceTokenRepository(db);
+    serviceTokenRepo: asFunction(({ db, config }: ApiContainerCradle) => {
+      if (config.edition === 'cloud') {
+        return new ServiceTokenRepository(db);
+      }
+
+      return new LocalSetupServiceTokenRepository({
+        token: process.env.XPOD_SERVICE_TOKEN,
+        serviceType: 'local',
+        serviceId: config.nodeId ?? 'local-1',
+        scopes: ['quota:write', 'usage:read', 'account:manage'],
+      });
     }).singleton(),
 
     authenticator: asFunction(({ nodeRepo, serviceTokenRepo, config }: ApiContainerCradle) => {

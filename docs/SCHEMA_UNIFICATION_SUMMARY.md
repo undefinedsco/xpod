@@ -1,5 +1,10 @@
 # Schema 统一工作总结
 
+> Superseded note: 本文只保留 PostgreSQL/SQLite 类型统一的历史背景。
+> 当前控制面表名以 `docs/storage-overview.md` 和 `docs/architecture-v2.md`
+> 为准：节点归属使用 `cluster_node`，不再使用旧的
+> `identity_edge_node` / `identity_edge_node_pod` 设计。
+
 ## 完成时间
 2026-03-03
 
@@ -153,12 +158,12 @@ subjectTemplate: '{chatId}/{yyyy}/{MM}/{dd}/messages.ttl#{id}'
 **PostgreSQL 迁移**
 ```sql
 -- 1. 添加新列
-ALTER TABLE identity_edge_node ADD COLUMN hostname TEXT;
-ALTER TABLE identity_edge_node ADD COLUMN ipv6 TEXT;
-ALTER TABLE identity_edge_node ADD COLUMN version TEXT;
+ALTER TABLE cluster_node ADD COLUMN hostname TEXT;
+ALTER TABLE cluster_node ADD COLUMN ipv6 TEXT;
+ALTER TABLE cluster_node ADD COLUMN version TEXT;
 
 -- 2. 提取 metadata 字段
-UPDATE identity_edge_node
+UPDATE cluster_node
 SET
   hostname = metadata->>'hostname',
   ipv6 = metadata->>'ipv6',
@@ -166,7 +171,7 @@ SET
 WHERE metadata IS NOT NULL;
 
 -- 3. 转换时间戳类型
-ALTER TABLE identity_account_usage
+ALTER TABLE identity_usage
   ALTER COLUMN period_start TYPE BIGINT
   USING EXTRACT(EPOCH FROM period_start)::BIGINT;
 -- ... 其他表同理
@@ -175,9 +180,9 @@ ALTER TABLE identity_account_usage
 **SQLite 迁移**
 ```sql
 -- SQLite 只需添加新列
-ALTER TABLE identity_edge_node ADD COLUMN hostname TEXT;
-ALTER TABLE identity_edge_node ADD COLUMN ipv6 TEXT;
-ALTER TABLE identity_edge_node ADD COLUMN version TEXT;
+ALTER TABLE cluster_node ADD COLUMN hostname TEXT;
+ALTER TABLE cluster_node ADD COLUMN ipv6 TEXT;
+ALTER TABLE cluster_node ADD COLUMN version TEXT;
 ```
 
 ### 2. ChatKit PodStore 问题

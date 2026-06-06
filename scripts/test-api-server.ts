@@ -74,12 +74,6 @@ async function main() {
   console.log(`   POST /v1/signal: ${signalRes.status}`);
   console.log(`   Response: ${await signalRes.text()}`);
 
-  // Test API keys endpoint
-  console.log('\n6. Testing /v1/keys with auth...');
-  const keysRes = await session.fetch(`${API_BASE}/v1/keys`);
-  console.log(`   GET /v1/keys: ${keysRes.status}`);
-  console.log(`   Response: ${await keysRes.text()}`);
-
   await session.logout();
   console.log('\n=== Test Complete ===');
 }

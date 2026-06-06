@@ -367,6 +367,41 @@ describe('PodLookupRepository', () => {
         edgeNodeId: 'edge-1',
       });
     });
+
+    it('matches canonical storage from pod settings instead of usage rows', async () => {
+      const { db, execute } = createMockDb();
+      execute!
+        .mockResolvedValueOnce({
+          rows: [
+            accountKvRow('acc-1', {
+              'pod-abc': {
+                baseUrl: 'https://cloud.example.com/alice/',
+                storage: 'https://node-1.nodes.example/alice/',
+              },
+            }),
+          ],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'node-1',
+              pod_base_urls: JSON.stringify(['https://node-1.nodes.example/alice/']),
+            },
+          ],
+        });
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByResourceIdentifier('https://node-1.nodes.example/alice/profile/card');
+
+      expect(result).toEqual({
+        podId: 'pod-abc',
+        accountId: 'acc-1',
+        baseUrl: 'https://cloud.example.com/alice/',
+        storageUrl: 'https://node-1.nodes.example/alice/',
+        nodeId: 'node-1',
+        edgeNodeId: undefined,
+      });
+    });
   });
 
   describe('listAllPods', () => {
@@ -469,110 +504,4 @@ describe('PodLookupRepository', () => {
     });
   });
 
-  describe('getMigrationStatus', () => {
-    it('returns migration status when set', async () => {
-      const { db, execute } = createMockDb();
-      execute!.mockResolvedValueOnce({
-        rows: [
-          {
-            pod_id: 'pod-123',
-            node_id: 'node-1',
-            migration_status: 'syncing',
-            migration_target_node: 'node-2',
-            migration_progress: 50,
-          },
-        ],
-      });
-
-      const repo = new PodLookupRepository(db);
-      const result = await repo.getMigrationStatus('pod-123');
-
-      expect(result).toEqual({
-        podId: 'pod-123',
-        nodeId: 'node-1',
-        migrationStatus: 'syncing',
-        migrationTargetNode: 'node-2',
-        migrationProgress: 50,
-      });
-    });
-
-    it('returns pod-only status when pod not found', async () => {
-      const { db, execute } = createMockDb();
-      execute!.mockResolvedValueOnce({ rows: [] });
-
-      const repo = new PodLookupRepository(db);
-      const result = await repo.getMigrationStatus('non-existent');
-
-      expect(result).toBeUndefined();
-    });
-
-    it('returns status with null migration when not migrating', async () => {
-      const { db, execute } = createMockDb();
-      execute!.mockResolvedValueOnce({
-        rows: [
-          {
-            pod_id: 'pod-123',
-            node_id: 'node-1',
-            migration_status: null,
-            migration_target_node: null,
-            migration_progress: null,
-          },
-        ],
-      });
-
-      const repo = new PodLookupRepository(db);
-      const result = await repo.getMigrationStatus('pod-123');
-
-      expect(result).toEqual({
-        podId: 'pod-123',
-        nodeId: 'node-1',
-        migrationStatus: null,
-        migrationTargetNode: undefined,
-        migrationProgress: undefined,
-      });
-    });
-  });
-
-  describe('setNodeId', () => {
-    it('updates nodeId for PostgreSQL', async () => {
-      const { db, execute } = createMockDb(false);
-      execute!.mockResolvedValueOnce({ rows: [] });
-
-      const repo = new PodLookupRepository(db);
-      await repo.setNodeId('pod-123', 'new-node-id');
-
-      expect(execute).toHaveBeenCalledTimes(1);
-    });
-
-    it('updates nodeId for SQLite', async () => {
-      const { db, run } = createMockDb(true);
-
-      const repo = new PodLookupRepository(db);
-      await repo.setNodeId('pod-123', 'new-node-id');
-
-      expect(run!).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('setMigrationStatus', () => {
-    it('updates migration status for PostgreSQL', async () => {
-      const { db, execute } = createMockDb(false);
-      execute!.mockResolvedValueOnce({ rows: [] });
-
-      const repo = new PodLookupRepository(db);
-      await repo.setMigrationStatus('pod-123', 'syncing', 'target-node', 25);
-
-      expect(execute).toHaveBeenCalledTimes(1);
-    });
-
-    it('clears migration status when null', async () => {
-      const { db, execute } = createMockDb(false);
-      execute!.mockResolvedValueOnce({ rows: [] });
-
-      const repo = new PodLookupRepository(db);
-      await repo.setMigrationStatus('pod-123', null, null, null);
-
-      expect(execute).toHaveBeenCalledTimes(1);
-    });
-  });
 });

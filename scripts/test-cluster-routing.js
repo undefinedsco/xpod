@@ -43,7 +43,7 @@ if (!nodeId || !nodeToken || !connectionString) {
   const now = new Date();
   const tokenHash = createHash('sha256').update(nodeToken).digest('hex');
   await db.query(`
-    INSERT INTO identity_edge_node (id, token_hash, created_at, updated_at)
+    INSERT INTO cluster_node (id, token_hash, created_at, updated_at)
     VALUES ($1, $2, $3, $3)
     ON CONFLICT (id)
     DO UPDATE SET token_hash = EXCLUDED.token_hash,
@@ -54,16 +54,15 @@ if (!nodeId || !nodeToken || !connectionString) {
   const heartbeatPayload = {
     nodeId,
     token: nodeToken,
-    publicAddress: localBaseUrl,
     ipv4: '127.0.0.1',
     status: 'active',
     capabilities: capabilityStrings,
+    directCandidates: [ localBaseUrl ],
     tunnel: {
       status: 'active',
       entrypoint: localBaseUrl,
     },
     metadata: {
-      publicAddress: localBaseUrl,
       subdomain: nodeHost,
     },
   };
@@ -85,7 +84,7 @@ if (!nodeId || !nodeToken || !connectionString) {
   if (nodeHost) {
     const db2 = new Client({ connectionString });
     await db2.connect();
-    await db2.query('UPDATE identity_edge_node SET subdomain = $2 WHERE id = $1', [ nodeId, nodeHost ]);
+    await db2.query('UPDATE cluster_node SET subdomain = $2 WHERE id = $1', [ nodeId, nodeHost ]);
     await db2.end();
   }
 

@@ -1,24 +1,9 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core';
 
-export const accountUsage = sqliteTable('identity_account_usage', {
-  accountId: text('account_id').primaryKey(),
-  storageBytes: integer('storage_bytes').notNull().default(0),
-  ingressBytes: integer('ingress_bytes').notNull().default(0),
-  egressBytes: integer('egress_bytes').notNull().default(0),
-  storageLimitBytes: integer('storage_limit_bytes'),
-  bandwidthLimitBps: integer('bandwidth_limit_bps'),
-  computeSeconds: integer('compute_seconds').notNull().default(0),
-  tokensUsed: integer('tokens_used').notNull().default(0),
-  computeLimitSeconds: integer('compute_limit_seconds'),
-  tokenLimitMonthly: integer('token_limit_monthly'),
-  periodStart: integer('period_start'),
-  updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-});
-
-export const podUsage = sqliteTable('identity_pod_usage', {
-  podId: text('pod_id').primaryKey(),
+export const usage = sqliteTable('identity_usage', {
+  scopeType: text('scope_type').notNull(), // 'account' | 'pod'
+  scopeId: text('scope_id').notNull(),
   accountId: text('account_id').notNull(),
-  storageUrl: text('storage_url'),
   storageBytes: integer('storage_bytes').notNull().default(0),
   ingressBytes: integer('ingress_bytes').notNull().default(0),
   egressBytes: integer('egress_bytes').notNull().default(0),
@@ -30,25 +15,15 @@ export const podUsage = sqliteTable('identity_pod_usage', {
   tokenLimitMonthly: integer('token_limit_monthly'),
   periodStart: integer('period_start'),
   updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-});
+}, (table) => [
+  primaryKey({ columns: [ table.scopeType, table.scopeId ] }),
+]);
 
 /**
- * DDNS 域名池表
- * 管理可用的 DDNS 域名
- */
-export const ddnsDomains = sqliteTable('identity_ddns_domain', {
-  domain: text('domain').primaryKey(),                // undefineds.xyz
-  status: text('status').default('active'),           // 'active' | 'suspended'
-  provider: text('provider'),                         // 'cloudflare' | 'tencent'
-  zoneId: text('zone_id'),                            // DNS Zone ID
-  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-});
-
-/**
- * DDNS 记录表
+ * Cloud cluster DDNS 记录表
  * 已分配的子域名记录
  */
-export const ddnsRecords = sqliteTable('identity_ddns_record', {
+export const ddnsRecords = sqliteTable('cluster_ddns_record', {
   subdomain: text('subdomain').primaryKey(),          // alice
   domain: text('domain').notNull(),                   // undefineds.xyz
   ipAddress: text('ip_address'),
@@ -63,7 +38,7 @@ export const ddnsRecords = sqliteTable('identity_ddns_record', {
   updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
 
-export const edgeNodes = sqliteTable('identity_edge_node', {
+export const edgeNodes = sqliteTable('cluster_node', {
   id: text('id').primaryKey(),
   displayName: text('display_name'),
   tokenHash: text('token_hash').notNull(),
@@ -73,7 +48,7 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
   ipv4: text('ipv4'),                          // IPv4 地址
   publicPort: integer('public_port'),
   publicUrl: text('public_url'),                // SP 的公网地址 (e.g. https://sp.example)
-  serviceTokenHash: text('service_token_hash'), // Cloud → SP 回调认证 token (明文)
+  serviceTokenHash: text('service_token_hash'), // Cloud -> SP callback service token hash
   provisionCodeHash: text('provision_code_hash'), // bind 时用户传入的配对码 (hash)
   internalIp: text('internal_ip'),              // Internal network IP for center nodes
   internalPort: integer('internal_port'),
@@ -84,6 +59,7 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
   // JSON fields
   capabilities: text('capabilities'),           // JSON string: 能力列表
   metadata: text('metadata'),                   // JSON string: 复杂对象 (tunnel, certificate, metrics)
+  podBaseUrls: text('pod_base_urls'),            // JSON string: node-owned Pod/storage URL prefixes
   connectivityStatus: text('connectivity_status').default('unknown'),
   lastConnectivityCheck: integer('last_connectivity_check'),
   createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
@@ -91,24 +67,11 @@ export const edgeNodes = sqliteTable('identity_edge_node', {
   lastSeen: integer('last_seen'),
 });
 
-export const edgeNodePods = sqliteTable('identity_edge_node_pod', {
-  nodeId: text('node_id').notNull().references(() => edgeNodes.id, { onDelete: 'cascade' }),
-  baseUrl: text('base_url').notNull(),
-});
-
-export const apiClientCredentials = sqliteTable('identity_api_client_credentials', {
-  clientId: text('client_id').primaryKey(),
-  webId: text('web_id').notNull(),
-  accountId: text('account_id').notNull(),
-  displayName: text('display_name'),
-  createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
-});
-
 /**
- * Service Token 表
+ * Cloud cluster Service Token 表
  * 用于服务间认证 (Business, Local SP, Cloud, Compute)
  */
-export const serviceTokens = sqliteTable('identity_service_token', {
+export const serviceTokens = sqliteTable('cluster_service_token', {
   id: text('id').primaryKey(),
   tokenHash: text('token_hash').notNull().unique(),
   serviceType: text('service_type').notNull(), // 'local' | 'business' | 'cloud' | 'compute'

@@ -18,14 +18,9 @@ describe('DdnsRepository', () => {
     ]));
   });
 
-  it('supports sqlite identity databases for domain pool and records', async () => {
+  it('supports sqlite identity databases for ddns records', async () => {
     const db = getIdentityDatabase('sqlite::memory:');
     const repo = new DdnsRepository(db);
-
-    await repo.addDomain('nodes.undefineds.co', 'cloudflare', 'zone-1');
-    const domains = await repo.getActiveDomains();
-    expect(domains).toHaveLength(1);
-    expect(domains[0].domain).toBe('nodes.undefineds.co');
 
     const created = await repo.allocateSubdomain({
       subdomain: 'node-1',
@@ -48,7 +43,6 @@ describe('DdnsRepository', () => {
     const db = getIdentityDatabase(`sqlite:${dbPath}`);
     const repo = new DdnsRepository(db);
 
-    await repo.addDomain('nodes.undefineds.co', 'cloudflare', 'zone-1');
     await repo.allocateSubdomain({
       subdomain: 'node-1',
       domain: 'nodes.undefineds.co',

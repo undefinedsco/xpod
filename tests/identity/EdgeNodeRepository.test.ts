@@ -8,7 +8,10 @@ function createRepo() {
     await callback({ execute: txExecute });
     return txExecute;
   });
-  const repo = new EdgeNodeRepository({ execute, transaction } as any);
+  const repo = new EdgeNodeRepository(
+    { execute, transaction } as any,
+    { ensureClusterTables: false },
+  );
   return { repo, execute, transaction };
 }
 
@@ -55,17 +58,16 @@ describe('EdgeNodeRepository', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it('replaceNodePods 使用事务更新', async () => {
-    const { repo, transaction } = createRepo();
-    const txExecute = vi.fn();
-    transaction.mockImplementationOnce(async (callback: any): Promise<any> => {
-      await callback({ execute: txExecute });
-    });
+  it('replaceNodePods 更新节点上的 Pod 前缀列表', async () => {
+    const { repo, execute, transaction } = createRepo();
+    execute
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
 
     await repo.replaceNodePods('node-1', [ 'https://pods.example.com/alice/' ]);
 
-    expect(transaction).toHaveBeenCalledTimes(1);
-    expect(txExecute).toHaveBeenCalledTimes(2);
+    expect(transaction).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it('findNodeByResourcePath 返回匹配记录', async () => {
@@ -73,8 +75,9 @@ describe('EdgeNodeRepository', () => {
     execute.mockResolvedValueOnce({
       rows: [ {
         id: 'node-9',
-        base_url: 'https://pods.example.com/alice/',
-        metadata: { publicAddress: 'https://edge-1.example/' },
+        pod_base_urls: JSON.stringify(['https://pods.example.com/alice/']),
+        public_url: 'https://edge-1.example/',
+        metadata: { baseUrl: 'https://edge-1.example/' },
       } ],
     });
 
@@ -83,7 +86,8 @@ describe('EdgeNodeRepository', () => {
     expect(record).toEqual({
       nodeId: 'node-9',
       baseUrl: 'https://pods.example.com/alice/',
-      metadata: { publicAddress: 'https://edge-1.example/' },
+      publicUrl: 'https://edge-1.example/',
+      metadata: { baseUrl: 'https://edge-1.example/' },
     });
   });
 

@@ -31,12 +31,12 @@ export interface ClientCredentialsAuthenticatorOptions {
 }
 
 /**
- * Authenticator for API Keys in sk-xxx format.
+ * Authenticator for CSS client credentials wrapped in sk-xxx format.
  * 
  * Format: sk-base64(client_id:client_secret)
  * 
  * This authenticator:
- * 1. Decodes the API Key to get client_id and client_secret
+ * 1. Decodes the wrapper to get client_id and client_secret
  * 2. Exchanges them for a Solid Token via CSS token endpoint
  * 3. Extracts webId from the token response
  * 4. Returns a SolidAuthContext
@@ -56,7 +56,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
     if (!auth?.startsWith('Bearer ')) {
       return false;
     }
-    // If there's a DPoP header, it's a Solid Token, not an API Key
+    // If there's a DPoP header, it's a Solid Token, not a credentials wrapper.
     if (request.headers.dpop) {
       return false;
     }
@@ -76,7 +76,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
 
     const token = authorization.slice(7).trim();
     if (!token) {
-      return { success: false, error: 'Empty API Key' };
+      return { success: false, error: 'Empty client credentials wrapper' };
     }
 
     try {
@@ -90,20 +90,20 @@ export class ClientCredentialsAuthenticator implements Authenticator {
           const decoded = Buffer.from(base64, 'base64').toString('utf-8');
           const colonIndex = decoded.indexOf(':');
           if (colonIndex === -1) {
-            return { success: false, error: 'Invalid API Key format: missing colon separator' };
+            return { success: false, error: 'Invalid client credentials wrapper: missing colon separator' };
           }
           clientId = decoded.slice(0, colonIndex);
           clientSecret = decoded.slice(colonIndex + 1);
           
           if (!clientId || !clientSecret) {
-            return { success: false, error: 'Invalid API Key format: empty client_id or client_secret' };
+            return { success: false, error: 'Invalid client credentials wrapper: empty client_id or client_secret' };
           }
         } catch {
-          return { success: false, error: 'Invalid API Key encoding' };
+          return { success: false, error: 'Invalid client credentials wrapper encoding' };
         }
       } else {
         // Non sk- format not supported without database lookup
-        return { success: false, error: 'Invalid API Key format: must start with sk-' };
+        return { success: false, error: 'Invalid client credentials wrapper: must start with sk-' };
       }
 
       // Check cache first
@@ -158,10 +158,10 @@ export class ClientCredentialsAuthenticator implements Authenticator {
         viaApiKey: true,
       };
 
-      this.logger.debug(`Authenticated API Key for webId: ${tokenResult.webId}`);
+      this.logger.debug(`Authenticated client credentials for webId: ${tokenResult.webId}`);
       return { success: true, context };
     } catch (error) {
-      this.logger.error(`API Key authentication error: ${error}`);
+      this.logger.error(`Client credentials authentication error: ${error}`);
       return { success: false, error: 'Authentication failed' };
     }
   }

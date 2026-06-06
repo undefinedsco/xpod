@@ -16,8 +16,10 @@
 
 ```typescript
 // schema.pg.ts - 修改前
-export const accountUsage = pgTable('identity_account_usage', {
-  accountId: text('account_id').primaryKey(),
+export const usage = pgTable('identity_usage', {
+  scopeType: text('scope_type').notNull(),
+  scopeId: text('scope_id').notNull(),
+  accountId: text('account_id').notNull(),
   storageBytes: pgBigint('storage_bytes', { mode: 'number' }).notNull().default(0),
   // ...
   periodStart: timestamp('period_start', { withTimezone: true }),
@@ -25,8 +27,10 @@ export const accountUsage = pgTable('identity_account_usage', {
 });
 
 // schema.pg.ts - 修改后
-export const accountUsage = pgTable('identity_account_usage', {
-  accountId: text('account_id').primaryKey(),
+export const usage = pgTable('identity_usage', {
+  scopeType: text('scope_type').notNull(),
+  scopeId: text('scope_id').notNull(),
+  accountId: text('account_id').notNull(),
   storageBytes: pgBigint('storage_bytes', { mode: 'number' }).notNull().default(0),
   // ...
   periodStart: pgBigint('period_start', { mode: 'number' }),
@@ -38,15 +42,11 @@ export const accountUsage = pgTable('identity_account_usage', {
 
 ```sql
 -- 迁移现有 PG 数据
-ALTER TABLE identity_account_usage
+ALTER TABLE identity_usage
   ALTER COLUMN period_start TYPE bigint USING EXTRACT(EPOCH FROM period_start)::bigint,
   ALTER COLUMN updated_at TYPE bigint USING EXTRACT(EPOCH FROM updated_at)::bigint;
 
-ALTER TABLE identity_pod_usage
-  ALTER COLUMN period_start TYPE bigint USING EXTRACT(EPOCH FROM period_start)::bigint,
-  ALTER COLUMN updated_at TYPE bigint USING EXTRACT(EPOCH FROM updated_at)::bigint;
-
-ALTER TABLE identity_service_token
+ALTER TABLE cluster_service_token
   ALTER COLUMN created_at TYPE bigint USING EXTRACT(EPOCH FROM created_at)::bigint,
   ALTER COLUMN expires_at TYPE bigint USING EXTRACT(EPOCH FROM expires_at)::bigint;
 

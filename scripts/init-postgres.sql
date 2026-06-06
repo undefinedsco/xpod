@@ -1,34 +1,27 @@
 -- PostgreSQL 初始化脚本 for XPod 测试环境
 -- 创建 Identity 相关的表
 
--- API Client Credentials 表
-CREATE TABLE IF NOT EXISTS identity_api_client_credentials (
-    client_id TEXT PRIMARY KEY,
-    client_secret_encrypted TEXT NOT NULL,
-    web_id TEXT NOT NULL,
-    account_id TEXT NOT NULL,
-    display_name TEXT,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
--- Edge Nodes 表
-CREATE TABLE IF NOT EXISTS identity_edge_node (
+-- Cloud cluster Nodes 表
+CREATE TABLE IF NOT EXISTS cluster_node (
     id TEXT PRIMARY KEY,
-    owner_account_id TEXT,
     display_name TEXT,
     token_hash TEXT NOT NULL,
     node_type TEXT DEFAULT 'edge',
     subdomain TEXT UNIQUE,
     access_mode TEXT,
-    public_ip TEXT,
+    ipv4 TEXT,
     public_port BIGINT,
     public_url TEXT,
     service_token_hash TEXT,
     provision_code_hash TEXT,
     internal_ip TEXT,
     internal_port BIGINT,
+    hostname TEXT,
+    ipv6 TEXT,
+    version TEXT,
     capabilities JSONB,
     metadata JSONB,
+    pod_base_urls TEXT,
     connectivity_status TEXT DEFAULT 'unknown',
     last_connectivity_check TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -36,36 +29,8 @@ CREATE TABLE IF NOT EXISTS identity_edge_node (
     last_seen TIMESTAMP WITH TIME ZONE
 );
 
--- Edge Node Pods 表
-CREATE TABLE IF NOT EXISTS identity_edge_node_pod (
-    node_id TEXT NOT NULL REFERENCES identity_edge_node(id) ON DELETE CASCADE,
-    base_url TEXT NOT NULL
-);
-
--- WebID Profiles 表
-CREATE TABLE IF NOT EXISTS identity_webid_profile (
-    username TEXT PRIMARY KEY,
-    webid_url TEXT NOT NULL,
-    storage_url TEXT,
-    storage_mode TEXT DEFAULT 'cloud',
-    oidc_issuer TEXT,
-    profile_data JSONB,
-    account_id TEXT,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
--- DDNS Domains 表
-CREATE TABLE IF NOT EXISTS identity_ddns_domain (
-    domain TEXT PRIMARY KEY,
-    status TEXT DEFAULT 'active',
-    provider TEXT,
-    zone_id TEXT,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
--- DDNS Records 表
-CREATE TABLE IF NOT EXISTS identity_ddns_record (
+-- Cloud cluster DDNS Records 表
+CREATE TABLE IF NOT EXISTS cluster_ddns_record (
     subdomain TEXT PRIMARY KEY,
     domain TEXT NOT NULL,
     ip_address TEXT,
@@ -80,25 +45,10 @@ CREATE TABLE IF NOT EXISTS identity_ddns_record (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
--- Account Usage 表
-CREATE TABLE IF NOT EXISTS identity_account_usage (
-    account_id TEXT PRIMARY KEY,
-    storage_bytes BIGINT NOT NULL DEFAULT 0,
-    ingress_bytes BIGINT NOT NULL DEFAULT 0,
-    egress_bytes BIGINT NOT NULL DEFAULT 0,
-    storage_limit_bytes BIGINT,
-    bandwidth_limit_bps BIGINT,
-    compute_seconds BIGINT NOT NULL DEFAULT 0,
-    tokens_used BIGINT NOT NULL DEFAULT 0,
-    compute_limit_seconds BIGINT,
-    token_limit_monthly BIGINT,
-    period_start TIMESTAMP WITH TIME ZONE,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
--- Pod Usage 表
-CREATE TABLE IF NOT EXISTS identity_pod_usage (
-    pod_id TEXT PRIMARY KEY,
+-- Usage 表：account/pod 通过 scope_type + scope_id 区分，不拆分成多张表
+CREATE TABLE IF NOT EXISTS identity_usage (
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
     account_id TEXT NOT NULL,
     storage_bytes BIGINT NOT NULL DEFAULT 0,
     ingress_bytes BIGINT NOT NULL DEFAULT 0,
@@ -110,11 +60,12 @@ CREATE TABLE IF NOT EXISTS identity_pod_usage (
     compute_limit_seconds BIGINT,
     token_limit_monthly BIGINT,
     period_start TIMESTAMP WITH TIME ZONE,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (scope_type, scope_id)
 );
 
--- Service Token 表
-CREATE TABLE IF NOT EXISTS identity_service_token (
+-- Cloud cluster Service Token 表
+CREATE TABLE IF NOT EXISTS cluster_service_token (
     id TEXT PRIMARY KEY,
     token_hash TEXT NOT NULL UNIQUE,
     service_type TEXT NOT NULL,
@@ -125,9 +76,7 @@ CREATE TABLE IF NOT EXISTS identity_service_token (
 );
 
 -- 创建索引
-CREATE INDEX IF NOT EXISTS idx_edge_node_owner ON identity_edge_node(owner_account_id);
-CREATE INDEX IF NOT EXISTS idx_edge_node_subdomain ON identity_edge_node(subdomain);
-CREATE INDEX IF NOT EXISTS idx_api_credentials_account ON identity_api_client_credentials(account_id);
-CREATE INDEX IF NOT EXISTS idx_api_credentials_webid ON identity_api_client_credentials(web_id);
-CREATE INDEX IF NOT EXISTS idx_ddns_record_domain ON identity_ddns_record(domain);
-CREATE INDEX IF NOT EXISTS idx_ddns_record_node ON identity_ddns_record(node_id);
+CREATE INDEX IF NOT EXISTS idx_cluster_node_subdomain ON cluster_node(subdomain);
+CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_domain ON cluster_ddns_record(domain);
+CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_node ON cluster_ddns_record(node_id);
+CREATE INDEX IF NOT EXISTS idx_usage_account_id ON identity_usage(account_id);

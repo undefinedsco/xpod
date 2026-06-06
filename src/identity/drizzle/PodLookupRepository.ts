@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { type IdentityDatabase, executeQuery, executeStatement } from './db';
+import { type IdentityDatabase, executeQuery } from './db';
 
 export interface PodLookupResult {
   podId: string;
@@ -12,41 +12,25 @@ export interface PodLookupResult {
   edgeNodeId?: string;
 }
 
-export interface PodMigrationStatus {
-  podId: string;
-  nodeId?: string;
-  migrationStatus?: 'syncing' | 'done' | null;
-  migrationTargetNode?: string;
-  migrationProgress?: number;
-}
-
 interface InternalKvRow {
   key?: string;
   value?: string;
-  id?: string;
-  account_id?: string;
-  base_url?: string;
-  storage_url?: string;
-  node_id?: string;
-  edge_node_id?: string;
 }
 
-interface PodUsageRow {
-  pod_id?: string;
-  storage_url?: string | null;
+interface NodeAssignmentRow {
+  node_id?: string | null;
+  base_url?: string | null;
 }
 
 /**
  * Repository for Pod lookup operations.
  *
- * Reads Pod data from CSS's internal_kv table where account data is stored.
- * CSS stores account data at key "accounts/data/{accountId}" with Pod info
- * nested in the "**pod**" field.
+ * Reads Pod facts from the canonical identity_store table and from CSS
+ * WrappedIndexedStorage rows when that storage backend is active.
  */
 export class PodLookupRepository {
   private readonly kvTableName: string;
   private readonly indexedStoreTableName: string;
-  private readonly usageTableName: string;
 
   public constructor(
     private readonly db: IdentityDatabase,
@@ -54,7 +38,6 @@ export class PodLookupRepository {
   ) {
     this.kvTableName = kvTableName ?? 'internal_kv';
     this.indexedStoreTableName = 'identity_store';
-    this.usageTableName = 'identity_pod_usage';
   }
 
   /**
@@ -93,47 +76,26 @@ export class PodLookupRepository {
    * not have to match the storage base URL.
    */
   public async findByWebId(webId: string): Promise<PodLookupResult | undefined> {
-    return (await this.findAllByWebId(webId))[0];
-  }
-
-  /**
-   * Find all Pods linked to a WebID.
-   *
-   * A Cloud WebID can legitimately back both a Cloud Pod and a Local SP Pod.
-   * Callers that are scoped to a storage provider must inspect all candidates
-   * instead of accepting the first account record returned by CSS storage.
-   */
-  public async findAllByWebId(webId: string): Promise<PodLookupResult[]> {
     const normalized = normalizeWebId(webId);
     if (!normalized) {
-      return [];
+      return undefined;
     }
 
-    const results: PodLookupResult[] = [];
     const pods = await this.getAllPods();
     for (const pod of pods) {
       const matchedWebId = getPodWebIds(pod).find((candidate) => normalizeWebId(candidate) === normalized);
       if (matchedWebId) {
-        results.push({
+        return {
           ...pod,
           webId: matchedWebId,
-        });
+        };
       }
     }
-
-    if (results.length > 0) {
-      return results;
-    }
-
     const indexed = await this.findByWebIdIndex(normalized);
     if (!indexed) {
-      return [];
+      return undefined;
     }
-    const usage = await this.getUsageByPodId();
-    return [{
-      ...indexed,
-      storageUrl: indexed.storageUrl ?? usage.get(indexed.podId)?.storageUrl,
-    }];
+    return indexed;
   }
 
   /**
@@ -168,11 +130,7 @@ export class PodLookupRepository {
         }
         const indexed = await this.findByWebIdIndex(normalized);
         if (indexed) {
-          const usage = await this.getUsageByPodId();
-          results.push({
-            ...indexed,
-            storageUrl: indexed.storageUrl ?? usage.get(indexed.podId)?.storageUrl,
-          });
+          results.push(indexed);
         }
       }
     }
@@ -188,89 +146,6 @@ export class PodLookupRepository {
   }
 
   /**
-   * Set the canonical storage URL for a Pod in identity_pod_usage.
-   */
-  public async setStorageUrl(podId: string, accountId: string, storageUrl: string): Promise<void> {
-    const tableId = sql.identifier([this.usageTableName]);
-    await executeStatement(this.db, sql`
-      INSERT INTO ${tableId} (pod_id, account_id, storage_url)
-      VALUES (${podId}, ${accountId}, ${storageUrl})
-      ON CONFLICT (pod_id) DO UPDATE SET
-        account_id = ${accountId},
-        storage_url = ${storageUrl}
-    `);
-  }
-
-  /**
-   * Get migration status for a Pod from identity_pod_usage table.
-   */
-  public async getMigrationStatus(podId: string): Promise<PodMigrationStatus | undefined> {
-    try {
-      const tableId = sql.identifier([this.usageTableName]);
-      const result = await executeQuery<{
-        pod_id?: string;
-        id?: string;
-        node_id?: string | null;
-        migration_status?: string | null;
-        migration_target_node?: string | null;
-        migration_progress?: number | null;
-      }>(this.db, sql`
-        SELECT pod_id, node_id, migration_status, migration_target_node, migration_progress
-        FROM ${tableId}
-        WHERE pod_id = ${podId}
-        LIMIT 1
-      `);
-
-      if (result.rows.length === 0) {
-        return undefined;
-      }
-      const row = result.rows[0];
-      return {
-        podId: row.pod_id ?? row.id ?? podId,
-        nodeId: row.node_id ?? undefined,
-        migrationStatus: row.migration_status as 'syncing' | 'done' | null | undefined,
-        migrationTargetNode: row.migration_target_node ?? undefined,
-        migrationProgress: row.migration_progress ?? undefined,
-      };
-    } catch {
-      // Table might not exist.
-      return undefined;
-    }
-  }
-
-  /**
-   * Set the nodeId for a Pod in identity_pod_usage table.
-   */
-  public async setNodeId(podId: string, nodeId: string): Promise<void> {
-    const tableId = sql.identifier([this.usageTableName]);
-    await executeStatement(this.db, sql`
-      INSERT INTO ${tableId} (pod_id, account_id, node_id)
-      VALUES (${podId}, '', ${nodeId})
-      ON CONFLICT (pod_id) DO UPDATE SET node_id = ${nodeId}
-    `);
-  }
-
-  /**
-   * Update migration status for a Pod in identity_pod_usage table.
-   */
-  public async setMigrationStatus(
-    podId: string,
-    status: 'syncing' | 'done' | null,
-    targetNode?: string | null,
-    progress?: number | null,
-  ): Promise<void> {
-    const tableId = sql.identifier([this.usageTableName]);
-    await executeStatement(this.db, sql`
-      INSERT INTO ${tableId} (pod_id, account_id, migration_status, migration_target_node, migration_progress)
-      VALUES (${podId}, '', ${status}, ${targetNode ?? null}, ${progress ?? 0})
-      ON CONFLICT (pod_id) DO UPDATE SET
-        migration_status = ${status},
-        migration_target_node = ${targetNode ?? null},
-        migration_progress = ${progress ?? 0}
-    `);
-  }
-
-  /**
    * List all pods.
    */
   public async listAllPods(): Promise<PodLookupResult[]> {
@@ -278,36 +153,15 @@ export class PodLookupRepository {
   }
 
   /**
-   * Extract all pods from CSS's internal_kv storage.
-   *
-   * It keeps backward compatibility with legacy rows that already expose
-   * id/account_id/base_url columns (used by some unit tests and older schemas).
+   * Extract all pods from the configured CSS identity storage.
    */
   private async getAllPods(): Promise<PodLookupResult[]> {
-    const kvTableId = sql.identifier([this.kvTableName]);
-
-    const result = await executeQuery<InternalKvRow>(this.db, sql`
-      SELECT key, value FROM ${kvTableId}
-      WHERE key LIKE 'accounts/data/%'
-         OR key LIKE '/.internal/accounts/data/%'
-    `);
-    const usageByPodId = await this.getUsageByPodId();
+    const result = await this.getAccountRowsFromKv();
+    const nodeAssignments = await this.getNodeAssignments();
 
     const pods: PodLookupResult[] = [];
 
-    for (const row of result?.rows ?? []) {
-      if (row.id && row.account_id && row.base_url) {
-        pods.push({
-          podId: String(row.id),
-          accountId: String(row.account_id),
-          baseUrl: String(row.base_url),
-          storageUrl: row.storage_url ? String(row.storage_url) : undefined,
-          nodeId: row.node_id ? String(row.node_id) : undefined,
-          edgeNodeId: row.edge_node_id ? String(row.edge_node_id) : undefined,
-        });
-        continue;
-      }
-
+    for (const row of result) {
       if (!row.key || row.value === undefined) {
         continue;
       }
@@ -325,7 +179,7 @@ export class PodLookupRepository {
         for (const [podId, podData] of Object.entries(podMap)) {
           const pod = podData as Record<string, unknown>;
           if (pod.baseUrl && typeof pod.baseUrl === 'string') {
-            const usage = usageByPodId.get(podId);
+            const storageUrl = stringValue(pod.storageUrl) ?? stringValue(pod.storage);
             const podWebIds = [
               typeof pod.webId === 'string' ? pod.webId : undefined,
               ...extractPodOwnerWebIds(pod),
@@ -335,10 +189,10 @@ export class PodLookupRepository {
               podId,
               accountId,
               baseUrl: pod.baseUrl,
-              storageUrl: stringValue(pod.storageUrl) ?? usage?.storageUrl,
+              storageUrl,
               webId: dedupeStrings(podWebIds)[0],
               ...webIdsProperty(podWebIds),
-              nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : undefined,
+              nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : findNodeIdForPod(nodeAssignments, [storageUrl, pod.baseUrl]),
               edgeNodeId: typeof pod.edgeNodeId === 'string' ? pod.edgeNodeId : undefined,
             });
           }
@@ -350,28 +204,42 @@ export class PodLookupRepository {
 
     return mergePodLookupResults([
       ...pods,
-      ...await this.getPodsFromIndexedStore(),
+      ...await this.getPodsFromIndexedStore(nodeAssignments),
     ]);
   }
 
-  private async getUsageByPodId(): Promise<Map<string, { storageUrl?: string }>> {
-    const tableId = sql.identifier([this.usageTableName]);
+  private async getAccountRowsFromKv(): Promise<InternalKvRow[]> {
+    const kvTableId = sql.identifier([this.kvTableName]);
     try {
-      const result = await executeQuery<PodUsageRow>(this.db, sql`
-        SELECT pod_id, storage_url FROM ${tableId}
+      const result = await executeQuery<InternalKvRow>(this.db, sql`
+        SELECT key, value FROM ${kvTableId}
+        WHERE key LIKE 'accounts/data/%'
+           OR key LIKE '/.internal/accounts/data/%'
       `);
-      const byPodId = new Map<string, { storageUrl?: string }>();
-      for (const row of result.rows) {
-        if (!row.pod_id) {
-          continue;
-        }
-        byPodId.set(row.pod_id, {
-          storageUrl: row.storage_url ?? undefined,
-        });
-      }
-      return byPodId;
+      return result?.rows ?? [];
     } catch {
-      return new Map();
+      return [];
+    }
+  }
+
+  private async getNodeAssignments(): Promise<NodeAssignmentRow[]> {
+    try {
+      const tableId = sql.identifier(['cluster_node']);
+      const result = await executeQuery<{ id?: string | null; pod_base_urls?: unknown }>(this.db, sql`
+        SELECT id, pod_base_urls FROM ${tableId}
+        WHERE pod_base_urls IS NOT NULL AND pod_base_urls <> ''
+      `);
+      return result.rows.flatMap((row) => {
+        if (!row.id) {
+          return [];
+        }
+        return parsePodBaseUrls(row.pod_base_urls).map((baseUrl) => ({
+          node_id: row.id,
+          base_url: baseUrl,
+        }));
+      });
+    } catch {
+      return [];
     }
   }
 
@@ -447,6 +315,7 @@ export class PodLookupRepository {
     for (const [podId, podData] of Object.entries(podMap)) {
       const pod = podData as Record<string, unknown>;
       if (pod.baseUrl && typeof pod.baseUrl === 'string') {
+        const storageUrl = stringValue(pod.storageUrl) ?? stringValue(pod.storage);
         const podWebIds = [
           typeof pod.webId === 'string' ? pod.webId : undefined,
           ...extractPodOwnerWebIds(pod),
@@ -456,7 +325,7 @@ export class PodLookupRepository {
           podId,
           accountId,
           baseUrl: pod.baseUrl,
-          storageUrl: stringValue(pod.storageUrl),
+          storageUrl,
           webId: dedupeStrings(podWebIds)[0],
           ...webIdsProperty(podWebIds),
           nodeId: typeof pod.nodeId === 'string' ? pod.nodeId : undefined,
@@ -469,12 +338,10 @@ export class PodLookupRepository {
   }
 
   /**
-   * Older Xpod/CSS deployments may have used the IndexedStorage-compatible
-   * identity_store table instead of CSS's WrappedIndexedStorage JSON tree in
-   * internal_kv. Keep this as a read-only compatibility source so hosted WebID
-   * profile lookup still works after storage implementation changes.
+   * DrizzleIndexedStorage stores CSS identity facts as typed rows in
+   * identity_store; this is the canonical clustered identity source.
    */
-  private async getPodsFromIndexedStore(): Promise<PodLookupResult[]> {
+  private async getPodsFromIndexedStore(nodeAssignments: NodeAssignmentRow[] = []): Promise<PodLookupResult[]> {
     const storeTableId = sql.identifier([this.indexedStoreTableName]);
     let result: { rows?: Array<{ container?: string; id?: string; payload?: unknown }> } | undefined;
     try {
@@ -534,15 +401,16 @@ export class PodLookupRepository {
         ...(ownerWebIdsByPodId.get(podId) ?? []),
         ...(webIdsByAccountId.get(accountId) ?? []),
       ].filter((value): value is string => typeof value === 'string'));
+      const storageUrl = stringValue(pod.storageUrl) ?? stringValue(pod.storage);
 
       pods.push({
         podId,
         accountId,
         baseUrl,
-        storageUrl: stringValue(pod.storageUrl),
+        storageUrl,
         webId: podWebIds[0],
         ...webIdsProperty(podWebIds),
-        nodeId: stringValue(pod.nodeId),
+        nodeId: stringValue(pod.nodeId) ?? findNodeIdForPod(nodeAssignments, [storageUrl, baseUrl]),
         edgeNodeId: stringValue(pod.edgeNodeId),
       });
     }
@@ -608,6 +476,21 @@ function normalizeWebId(webId: string | undefined): string | undefined {
     return new URL(webId).toString();
   } catch {
     return webId;
+  }
+}
+
+function normalizeUrlRoot(url: string | undefined): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(url);
+    parsed.pathname = parsed.pathname.replace(/\/+$/u, '') || '/';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return url;
   }
 }
 
@@ -697,4 +580,49 @@ function appendMapValue(map: Map<string, string[]>, key: string, value: string):
   const values = map.get(key) ?? [];
   values.push(value);
   map.set(key, values);
+}
+
+function parsePodBaseUrls(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return dedupeStrings(value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0));
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? dedupeStrings(parsed.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function findNodeIdForPod(assignments: NodeAssignmentRow[], urls: Array<string | undefined>): string | undefined {
+  const normalizedUrls = urls.map(normalizeUrlRoot).filter((value): value is string => Boolean(value));
+  if (normalizedUrls.length === 0) {
+    return undefined;
+  }
+
+  let bestMatch: { nodeId: string; length: number } | undefined;
+  for (const assignment of assignments) {
+    if (!assignment.node_id || !assignment.base_url) {
+      continue;
+    }
+    const assignedBase = normalizeUrlRoot(assignment.base_url);
+    if (!assignedBase) {
+      continue;
+    }
+    for (const url of normalizedUrls) {
+      if (url.startsWith(assignedBase) && assignedBase.length > (bestMatch?.length ?? 0)) {
+        bestMatch = {
+          nodeId: assignment.node_id,
+          length: assignedBase.length,
+        };
+      }
+    }
+  }
+
+  return bestMatch?.nodeId;
 }

@@ -18,7 +18,7 @@
    - 切换直连 / FRP 隧道，填写 frps 地址、token、自定义域后缀。
    - 启停本地 `frpc` 进程，查看连接状态、入口 URL。
    - 结合心跳信息，展示 cluster 侧探测结果与故障排查建议。
-   - 引入“网络流量”配额概念：后端已在 `identity_account_usage` / `identity_pod_usage` 表维护 `ingress_bytes` / `egress_bytes` 与带宽上限（默认 10 MiB/s），桌面端需读取统计、展示趋势，并支持阈值告警/重置。
+   - 引入“网络流量”配额概念：后端已在 `identity_usage` 表按 account/pod scope 维护 `ingress_bytes` / `egress_bytes` 与带宽上限（默认 10 MiB/s），桌面端需读取统计、展示趋势，并支持阈值告警/重置。
 
 4. **信令与云边协同**
    - 绑定 `nodeId`/`nodeToken`，查看最近心跳时间、上报的 Pod 列表。

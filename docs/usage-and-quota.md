@@ -20,13 +20,12 @@ Xpod provides built-in usage tracking and quota enforcement. For advanced manage
 ## What's Tracked
 
 ### Storage Usage
-- `identity_account_usage.storage_bytes` - Total storage per account
-- `identity_pod_usage.storage_bytes` - Storage per pod
+- `identity_usage.storage_bytes` where `scope_type = 'account'` - Total storage per account
+- `identity_usage.storage_bytes` where `scope_type = 'pod'` - Storage per pod
 
 ### Bandwidth Usage
-- `identity_account_usage.ingress_bytes` - Upload traffic per account
-- `identity_account_usage.egress_bytes` - Download traffic per account
-- `identity_pod_usage.ingress_bytes` / `egress_bytes` - Per pod
+- `identity_usage.ingress_bytes` / `egress_bytes` with `scope_type = 'account'` - Per account
+- `identity_usage.ingress_bytes` / `egress_bytes` with `scope_type = 'pod'` - Per pod
 
 ### Collection Points
 - `UsageTrackingStore` - Wraps resource operations
@@ -70,15 +69,20 @@ Requires admin Bearer token.
 
 ```bash
 # Get account quota
-GET /api/quota/{accountId}
+GET /v1/quota/accounts/{accountId}
 
 # Set custom quota
-PUT /api/quota/{accountId}
+PUT /v1/quota/accounts/{accountId}
 Content-Type: application/json
 {"storageLimitBytes": 21474836480}
 
 # Reset to default
-DELETE /api/quota/{accountId}
+DELETE /v1/quota/accounts/{accountId}
+
+# Pod-scoped quota uses the same shape
+GET /v1/quota/pods/{podId}
+PUT /v1/quota/pods/{podId}
+DELETE /v1/quota/pods/{podId}
 ```
 
 ## External Service Integration
@@ -86,7 +90,7 @@ DELETE /api/quota/{accountId}
 For production management, integrate with external services:
 
 ### Billing Integration
-- Query `identity_account_usage` / `identity_pod_usage` tables periodically
+- Query `identity_usage` periodically, grouped by `scope_type`
 - Export to billing system or donation/support system if needed
 - 当前免费档建议直接由 `XPOD_DEFAULT_*` 控制，不要求 `billing` 参与基线额度分发
 
@@ -100,15 +104,16 @@ For production management, integrate with external services:
 ```sql
 -- Monthly usage report
 SELECT
-  a.id as account_id,
-  a.payload->>'email' as email,
+  u.scope_id as account_id,
+  account.payload->>'email' as email,
   u.storage_bytes,
   u.ingress_bytes,
   u.egress_bytes,
   u.updated_at
-FROM identity_account a
-JOIN identity_account_usage u ON a.id = u.account_id
-WHERE u.updated_at >= NOW() - INTERVAL '30 days';
+FROM identity_usage u
+LEFT JOIN identity_store account ON account.container = 'account' AND account.id = u.scope_id
+WHERE u.scope_type = 'account'
+  AND u.updated_at >= NOW() - INTERVAL '30 days';
 ```
 
 ### Webhook Integration (Planned)
@@ -121,30 +126,22 @@ Future: Webhook notifications for:
 ## Database Schema
 
 ```sql
--- Account-level usage
-CREATE TABLE identity_account_usage (
-  account_id TEXT PRIMARY KEY,
+-- Account and Pod usage share one shape; scope_type selects the granularity.
+CREATE TABLE identity_usage (
+  scope_type TEXT NOT NULL, -- 'account' | 'pod'
+  scope_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
   storage_bytes BIGINT DEFAULT 0,
   ingress_bytes BIGINT DEFAULT 0,
   egress_bytes BIGINT DEFAULT 0,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Pod-level usage
-CREATE TABLE identity_pod_usage (
-  pod_id TEXT PRIMARY KEY,
-  account_id TEXT,
-  storage_bytes BIGINT DEFAULT 0,
-  ingress_bytes BIGINT DEFAULT 0,
-  egress_bytes BIGINT DEFAULT 0,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Custom quotas (overrides defaults)
-CREATE TABLE identity_account_quota (
-  account_id TEXT PRIMARY KEY,
   storage_limit_bytes BIGINT,
   bandwidth_limit_bps BIGINT,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  compute_seconds BIGINT DEFAULT 0,
+  tokens_used BIGINT DEFAULT 0,
+  compute_limit_seconds BIGINT,
+  token_limit_monthly BIGINT,
+  period_start TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (scope_type, scope_id)
 );
 ```

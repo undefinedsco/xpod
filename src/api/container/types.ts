@@ -8,8 +8,7 @@ import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
-import type { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
-import type { DrizzleClientCredentialsStore } from '../store/DrizzleClientCredentialsStore';
+import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
 import type { SubdomainService } from '../../subdomain/SubdomainService';
 import type { SubdomainClient } from '../../subdomain/SubdomainClient';
@@ -137,8 +136,7 @@ export interface ApiContainerCradle {
 
   // 仓库
   nodeRepo: EdgeNodeRepository;
-  serviceTokenRepo: ServiceTokenRepository;
-  apiKeyStore: DrizzleClientCredentialsStore;
+  serviceTokenRepo: ServiceTokenRepositoryPort;
 
   // 业务服务
   chatService: VercelChatService;

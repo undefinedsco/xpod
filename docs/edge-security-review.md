@@ -3,7 +3,7 @@
 ## 证书与密钥
 - ACME 账号私钥保存在 `XPOD_ACME_ACCOUNT_KEY_PATH`；Cluster 只存储账户级私钥与已签发的证书，节点私钥一直留在本地（`EdgeNodeAgent` 自行生成 CSR）。
 - `/api/signal/certificate` 仅接受已经注册的 nodeId + token；所有响应都包含完整证书链与过期时间，方便节点自行验证。
-- Cluster 端会在 `identity_edge_node.metadata.certificate` 中记录证书颁发时间、域名与到期时间，便于审计。
+- Cluster 端会在 `cluster_node.metadata.certificate` 中记录证书颁发时间、域名与到期时间，便于审计。
 
 ## 隧道/FRP
 - 隧道配置只通过受保护的信令接口下发，payload 内包含 `serverHost/serverPort/token` 等敏感信息；需要确保存储在受控目录（例如 Agent 本地 `./local/frp/`）。
