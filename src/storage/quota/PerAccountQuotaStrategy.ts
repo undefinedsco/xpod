@@ -47,8 +47,8 @@ export class PerAccountQuotaStrategy extends QuotaStrategy {
       return { amount: Number.MAX_SAFE_INTEGER, unit: UNIT_BYTES };
     }
 
-    const limit = await this.quotaService.getAccountLimit(accountId);
-    const accountLimit = (limit ?? this.defaultQuota);
+    const quota = await this.quotaService.getAccountQuota(accountId);
+    const accountLimit = quota.storageLimitBytes ?? this.defaultQuota;
     if (!Number.isFinite(accountLimit)) {
       return { amount: Number.MAX_SAFE_INTEGER, unit: UNIT_BYTES };
     }

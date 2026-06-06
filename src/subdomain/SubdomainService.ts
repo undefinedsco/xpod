@@ -78,7 +78,7 @@ export interface SubdomainServiceOptions {
  * 4. DNS 记录管理
  * 5. 隧道创建
  *
- * 注册信息持久化到 EdgeNodeRepository（identity_edge_node.subdomain 字段）
+ * 注册信息持久化到 EdgeNodeRepository（cluster_node.subdomain 字段）
  */
 export class SubdomainService {
   private readonly baseDomain: string;

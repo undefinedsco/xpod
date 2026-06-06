@@ -317,9 +317,27 @@ Resource .../types.jsonld#QuintStore is not a valid component
 | --- | --- | --- |
 | “Undefined variable …” | resolver 未覆盖变量 / CLI 未传参 | 检查 `config/resolver.json` 是否有该变量 + 默认值，注意同时支持大小写（如 `XPOD_TENCENT_DNS_TOKEN_ID` / `xpodTencentDnsTokenId`） |
 | “Could not find (valid) component types …” | 变量被写成 `Literal`、jsonld 未生成、`@type` 错误 | 确认 config 中引用的是 `@type: Variable`；运行 `yarn build:components` |
+| `Invalid term IRI: file:///.../config/Literal` 或 `.../SequenceHandler` | runtime 复制 JSON-LD config 到带空格路径后，只修了 `import` 的 `file://`，但丢了原始包级 `@base` | 检查生成的 `.xpod/runtime/legacy-css/config/*.json`：`@context` 必须包含对应包的 config base，例如 `https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/` 或 CSS 的 `.../@solid/community-server/^8.0.0/config/` |
 | Handler 未生效 | Override 顺序错误、文件未被 import | 从主配置开始检查 `import` 链，确认 `./xpod.base.json` 在最后被合并 |
 | UI 未更新 | —— | Admin Console 已移除，若需要新的前端入口请在自定义工程中自行托管 |
 | CLI 参数不生效 | `KeyExtractor.key` 拼写错误或者环境变量未被导入 | `console.log(process.env)` 检查值是否存在；查看 CLI 启动日志 |
+
+### 带空格 runtime 路径的硬规则
+
+macOS 桌面运行时默认落在 `~/Library/Application Support/...`，路径里有空格。
+只把 top-level config import 改成 `pathToFileURL(...).href` 不够，原因是
+Components.js 会继续解析被复制 config 内部的裸 `@type`，例如 `Literal`、
+`Variable`、`SequenceHandler`。如果复制后的 JSON-LD 没有保留原始包的
+config base，这些裸类型会被解析成 `file:///.../config/Literal` 这类本地
+文件 IRI，CSS 会在启动阶段失败。
+
+因此任何把 `config/*.json` 复制到 runtime 目录的代码都必须同时做到：
+
+1. 所有相对 `import` 递归改成 escaped `file://` URL，不能留下原始空格。
+2. 被复制的每个 config 都要在 `@context` 中注入原始包级 `@base`。
+3. `node_modules/@solid/community-server/config/*` 使用 CSS config base。
+4. `node_modules/@undefineds.co/xpod/config/*` 使用 Xpod config base。
+5. 回归测试必须包含 `Application Support` 或等价带空格路径，并断言 `@base` 不是本地 `file://` fallback。
 
 ---
 

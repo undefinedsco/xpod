@@ -1,7 +1,7 @@
 # Edge Cluster Performance Notes
 
 ## 带宽与延迟监控
-- `UsageTrackingStore` 仍是唯一的数据来源，所有的 ingress/egress 字节都会落表，可直接根据 `identity_account_usage`、`identity_pod_usage` 统计隧道流量。
+- `UsageTrackingStore` 仍是唯一的数据来源，所有的 ingress/egress 字节都会落到 `identity_usage`，可按 `scope_type` 统计 account/pod 流量。
 - 心跳中的 `tunnel.client` 提供 frpc 运行状态（`running`/`inactive`/`error`），后续可以扩展成报告 RTT、重连次数等指标（当前标记为 TODO）。
 
 ## 手动压测流程（建议）

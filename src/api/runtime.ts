@@ -38,13 +38,13 @@ async function registerPrimaryServiceToken(
 ): Promise<void> {
   try {
     const serviceToken = process.env.XPOD_SERVICE_TOKEN;
-    if (!serviceToken) {
+    if (!serviceToken || config.edition !== 'cloud') {
       return;
     }
 
     const serviceTokenRepo = container.resolve('serviceTokenRepo') as any;
-    const serviceType = config.edition === 'cloud' ? 'cloud' : 'local';
-    const serviceId = process.env.XPOD_NODE_ID || (config.edition === 'cloud' ? 'cloud-1' : 'local-1');
+    const serviceType = 'cloud';
+    const serviceId = process.env.XPOD_NODE_ID || 'cloud-1';
 
     await serviceTokenRepo.registerToken(serviceToken, {
       serviceType,

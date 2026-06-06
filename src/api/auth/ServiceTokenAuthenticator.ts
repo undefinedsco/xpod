@@ -1,10 +1,10 @@
 import type { IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Authenticator, AuthResult } from './Authenticator';
-import type { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
+import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 
 export interface ServiceTokenAuthenticatorOptions {
-  repository: ServiceTokenRepository;
+  repository: ServiceTokenRepositoryPort;
 }
 
 /**
@@ -14,7 +14,7 @@ export interface ServiceTokenAuthenticatorOptions {
  */
 export class ServiceTokenAuthenticator implements Authenticator {
   private readonly logger = getLoggerFor(this);
-  private readonly repo: ServiceTokenRepository;
+  private readonly repo: ServiceTokenRepositoryPort;
 
   public constructor(options: ServiceTokenAuthenticatorOptions) {
     this.repo = options.repository;

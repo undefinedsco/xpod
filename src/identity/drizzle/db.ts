@@ -1,5 +1,6 @@
 import { Pool, types } from 'pg';
 import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
+import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm/sql';
 import * as pgSchema from './schema.pg';
 import * as sqliteSchema from './schema.sqlite';
@@ -17,7 +18,7 @@ export type IdentitySchema = typeof pgSchema | typeof sqliteSchema;
  *
  * @example
  * const schema = getSchema(db);
- * await db.select().from(schema.accountUsage).where(eq(schema.accountUsage.accountId, id));
+ * await db.select().from(schema.usage).where(eq(schema.usage.scopeId, id));
  */
 export function getSchema(db: IdentityDatabase): typeof pgSchema | typeof sqliteSchema {
   return isDatabaseSqlite(db) ? sqliteSchema : pgSchema;
@@ -39,10 +40,11 @@ interface CachedConnection {
 
 const dbCache = new Map<string, CachedConnection>();
 const dbInitPromises = new WeakMap<object, Promise<void>>();
+const cloudClusterInitPromises = new WeakMap<object, Promise<void>>();
 
 const JSON_OIDS = [114, 3802];
 
-type SqliteDdlExecutor = Pick<SqliteDatabase, 'exec' | 'prepare'>;
+type SqliteDdlExecutor = Pick<SqliteDatabase, 'exec'>;
 
 for (const oid of JSON_OIDS) {
   // Explicitly return raw string to avoid "Type Conflict" with CSS
@@ -205,6 +207,156 @@ export async function executeStatement(
   await db.execute(query);
 }
 
+export async function ensureCloudClusterTables(db: IdentityDatabase): Promise<void> {
+  await ensureDatabaseReady(db);
+
+  if (db && typeof db === 'object') {
+    const cached = cloudClusterInitPromises.get(db as object);
+    if (cached) {
+      await cached;
+      return;
+    }
+
+    const initPromise = doEnsureCloudClusterTables(db).catch((error) => {
+      cloudClusterInitPromises.delete(db as object);
+      throw error;
+    });
+    cloudClusterInitPromises.set(db as object, initPromise);
+    await initPromise;
+    return;
+  }
+
+  await doEnsureCloudClusterTables(db);
+}
+
+async function doEnsureCloudClusterTables(db: IdentityDatabase): Promise<void> {
+
+  if (isDatabaseSqlite(db)) {
+    db.run(sql`
+      CREATE TABLE IF NOT EXISTS cluster_ddns_record (
+        subdomain TEXT PRIMARY KEY,
+        domain TEXT NOT NULL,
+        ip_address TEXT,
+        ipv6_address TEXT,
+        record_type TEXT DEFAULT 'A',
+        node_id TEXT,
+        username TEXT,
+        status TEXT DEFAULT 'active',
+        banned_reason TEXT,
+        ttl INTEGER DEFAULT 60,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      )
+    `);
+    db.run(sql`
+      CREATE TABLE IF NOT EXISTS cluster_service_token (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        service_type TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        scopes TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        expires_at INTEGER
+      )
+    `);
+    db.run(sql`
+      CREATE TABLE IF NOT EXISTS cluster_node (
+        id TEXT PRIMARY KEY,
+        display_name TEXT,
+        token_hash TEXT NOT NULL,
+        node_type TEXT DEFAULT 'edge',
+        subdomain TEXT UNIQUE,
+        access_mode TEXT,
+        ipv4 TEXT,
+        public_port INTEGER,
+        public_url TEXT,
+        service_token_hash TEXT,
+        provision_code_hash TEXT,
+        internal_ip TEXT,
+        internal_port INTEGER,
+        hostname TEXT,
+        ipv6 TEXT,
+        version TEXT,
+        capabilities TEXT,
+        metadata TEXT,
+        pod_base_urls TEXT,
+        connectivity_status TEXT DEFAULT 'unknown',
+        last_connectivity_check INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        last_seen INTEGER
+      )
+    `);
+    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_domain ON cluster_ddns_record(domain)`);
+    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_node ON cluster_ddns_record(node_id)`);
+    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_subdomain ON cluster_node(subdomain)`);
+    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_access_mode ON cluster_node(access_mode)`);
+    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_connectivity_status ON cluster_node(connectivity_status)`);
+    return;
+  }
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS cluster_ddns_record (
+      subdomain TEXT PRIMARY KEY,
+      domain TEXT NOT NULL,
+      ip_address TEXT,
+      ipv6_address TEXT,
+      record_type TEXT DEFAULT 'A',
+      node_id TEXT,
+      username TEXT,
+      status TEXT DEFAULT 'active',
+      banned_reason TEXT,
+      ttl INTEGER DEFAULT 60,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS cluster_service_token (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      service_type TEXT NOT NULL,
+      service_id TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS cluster_node (
+      id TEXT PRIMARY KEY,
+      display_name TEXT,
+      token_hash TEXT NOT NULL,
+      node_type TEXT DEFAULT 'edge',
+      subdomain TEXT UNIQUE,
+      access_mode TEXT,
+      ipv4 TEXT,
+      public_port BIGINT,
+      public_url TEXT,
+      service_token_hash TEXT,
+      provision_code_hash TEXT,
+      internal_ip TEXT,
+      internal_port BIGINT,
+      hostname TEXT,
+      ipv6 TEXT,
+      version TEXT,
+      capabilities JSONB,
+      metadata JSONB,
+      pod_base_urls TEXT,
+      connectivity_status TEXT DEFAULT 'unknown',
+      last_connectivity_check TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen TIMESTAMPTZ
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_domain ON cluster_ddns_record(domain)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_node ON cluster_ddns_record(node_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_subdomain ON cluster_node(subdomain)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_access_mode ON cluster_node(access_mode)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_connectivity_status ON cluster_node(connectivity_status)`);
+}
+
 /**
  * Convert a Date to a value suitable for the database.
  * SQLite uses Unix timestamps (seconds), PostgreSQL uses Date objects.
@@ -238,25 +390,10 @@ export function fromDbTimestamp(value: unknown): Date | undefined {
  */
 function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
   sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS identity_account_usage (
-      account_id TEXT PRIMARY KEY,
-      storage_bytes INTEGER NOT NULL DEFAULT 0,
-      ingress_bytes INTEGER NOT NULL DEFAULT 0,
-      egress_bytes INTEGER NOT NULL DEFAULT 0,
-      storage_limit_bytes INTEGER,
-      bandwidth_limit_bps INTEGER,
-      compute_seconds INTEGER NOT NULL DEFAULT 0,
-      tokens_used INTEGER NOT NULL DEFAULT 0,
-      compute_limit_seconds INTEGER,
-      token_limit_monthly INTEGER,
-      period_start INTEGER,
-      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_pod_usage (
-      pod_id TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS identity_usage (
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
-      storage_url TEXT,
       storage_bytes INTEGER NOT NULL DEFAULT 0,
       ingress_bytes INTEGER NOT NULL DEFAULT 0,
       egress_bytes INTEGER NOT NULL DEFAULT 0,
@@ -267,82 +404,10 @@ function ensureSqliteTables(sqlite: SqliteDdlExecutor): void {
       compute_limit_seconds INTEGER,
       token_limit_monthly INTEGER,
       period_start INTEGER,
-      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_edge_node (
-      id TEXT PRIMARY KEY,
-      display_name TEXT,
-      token_hash TEXT NOT NULL,
-      account_id TEXT,
-      node_type TEXT DEFAULT 'edge',
-      subdomain TEXT UNIQUE,
-      access_mode TEXT,
-      ipv4 TEXT,
-      public_port INTEGER,
-      public_url TEXT,
-      service_token_hash TEXT,
-      provision_code_hash TEXT,
-      internal_ip TEXT,
-      internal_port INTEGER,
-      hostname TEXT,
-      ipv6 TEXT,
-      version TEXT,
-      capabilities TEXT,
-      metadata TEXT,
-      connectivity_status TEXT DEFAULT 'unknown',
-      last_connectivity_check INTEGER,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      last_seen INTEGER
+      PRIMARY KEY (scope_type, scope_id)
     );
 
-    CREATE TABLE IF NOT EXISTS identity_edge_node_pod (
-      node_id TEXT NOT NULL REFERENCES identity_edge_node(id) ON DELETE CASCADE,
-      base_url TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS api_client_credentials (
-      client_id TEXT PRIMARY KEY,
-      client_secret_encrypted TEXT NOT NULL,
-      web_id TEXT NOT NULL,
-      account_id TEXT NOT NULL,
-      display_name TEXT,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_ddns_domain (
-      domain TEXT PRIMARY KEY,
-      status TEXT DEFAULT 'active',
-      provider TEXT,
-      zone_id TEXT,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_ddns_record (
-      subdomain TEXT PRIMARY KEY,
-      domain TEXT NOT NULL,
-      ip_address TEXT,
-      ipv6_address TEXT,
-      record_type TEXT DEFAULT 'A',
-      node_id TEXT,
-      username TEXT,
-      status TEXT DEFAULT 'active',
-      banned_reason TEXT,
-      ttl INTEGER DEFAULT 60,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_service_token (
-      id TEXT PRIMARY KEY,
-      token_hash TEXT NOT NULL UNIQUE,
-      service_type TEXT NOT NULL,
-      service_id TEXT NOT NULL,
-      scopes TEXT NOT NULL,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      expires_at INTEGER
-    );
   `);
 
   // Migrate existing tables: add new columns if missing
@@ -362,54 +427,12 @@ function migrateSqliteColumns(sqlite: SqliteDdlExecutor): void {
     }
   };
 
-  if (sqliteColumnExists(sqlite, 'identity_edge_node', 'owner_account_id')) {
-    try {
-      sqlite.exec('ALTER TABLE identity_edge_node DROP COLUMN owner_account_id');
-    } catch {
-      // Older SQLite runtimes may not support DROP COLUMN. Ignore and keep runtime-compatible schema.
-    }
-  }
-  const edgeNodeColumns: Array<[string, string]> = [
-    [ 'node_type', `TEXT DEFAULT 'edge'` ],
-    [ 'subdomain', 'TEXT' ],
-    [ 'access_mode', 'TEXT' ],
-    [ 'ipv4', 'TEXT' ],
-    [ 'public_port', 'INTEGER' ],
-    [ 'public_url', 'TEXT' ],
-    [ 'service_token_hash', 'TEXT' ],
-    [ 'provision_code_hash', 'TEXT' ],
-    [ 'internal_ip', 'TEXT' ],
-    [ 'internal_port', 'INTEGER' ],
-    [ 'hostname', 'TEXT' ],
-    [ 'ipv6', 'TEXT' ],
-    [ 'version', 'TEXT' ],
-    [ 'capabilities', 'TEXT' ],
-    [ 'metadata', 'TEXT' ],
-    [ 'connectivity_status', `TEXT DEFAULT 'unknown'` ],
-    [ 'last_connectivity_check', 'INTEGER' ],
-    [ 'last_seen', 'INTEGER' ],
-  ];
-  for (const [column, type] of edgeNodeColumns) {
-    addColumn('identity_edge_node', column, type);
-  }
-
-  // Usage tables: compute/token columns
-  addColumn('identity_account_usage', 'compute_seconds', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn('identity_account_usage', 'tokens_used', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn('identity_account_usage', 'compute_limit_seconds', 'INTEGER');
-  addColumn('identity_account_usage', 'token_limit_monthly', 'INTEGER');
-  addColumn('identity_account_usage', 'period_start', 'INTEGER');
-  addColumn('identity_pod_usage', 'compute_seconds', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn('identity_pod_usage', 'tokens_used', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn('identity_pod_usage', 'compute_limit_seconds', 'INTEGER');
-  addColumn('identity_pod_usage', 'token_limit_monthly', 'INTEGER');
-  addColumn('identity_pod_usage', 'period_start', 'INTEGER');
-  addColumn('identity_pod_usage', 'storage_url', 'TEXT');
-}
-
-function sqliteColumnExists(sqlite: SqliteDdlExecutor, table: string, column: string): boolean {
-  const rows = sqlite.prepare<{ name: string }>(`PRAGMA table_info(${table})`).all();
-  return rows.some((row) => row.name === column);
+  // Usage table: compute/token columns
+  addColumn('identity_usage', 'compute_seconds', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_usage', 'tokens_used', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('identity_usage', 'compute_limit_seconds', 'INTEGER');
+  addColumn('identity_usage', 'token_limit_monthly', 'INTEGER');
+  addColumn('identity_usage', 'period_start', 'INTEGER');
 }
 
 /**
@@ -434,184 +457,41 @@ async function migratePgColumns(pool: { query: (sql: string) => Promise<any> }):
     }
   };
 
-  // Usage tables: compute/token columns
-  await addColumn('identity_account_usage', 'compute_seconds', 'BIGINT NOT NULL DEFAULT 0');
-  await addColumn('identity_account_usage', 'tokens_used', 'BIGINT NOT NULL DEFAULT 0');
-  await addColumn('identity_account_usage', 'compute_limit_seconds', 'BIGINT');
-  await addColumn('identity_account_usage', 'token_limit_monthly', 'BIGINT');
-  await addColumn('identity_account_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
-  await addColumn('identity_pod_usage', 'compute_seconds', 'BIGINT NOT NULL DEFAULT 0');
-  await addColumn('identity_pod_usage', 'tokens_used', 'BIGINT NOT NULL DEFAULT 0');
-  await addColumn('identity_pod_usage', 'compute_limit_seconds', 'BIGINT');
-  await addColumn('identity_pod_usage', 'token_limit_monthly', 'BIGINT');
-  await addColumn('identity_pod_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
-  await addColumn('identity_pod_usage', 'storage_url', 'TEXT');
+  // Usage table: compute/token columns
+  await addColumn('identity_usage', 'compute_seconds', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_usage', 'tokens_used', 'BIGINT NOT NULL DEFAULT 0');
+  await addColumn('identity_usage', 'compute_limit_seconds', 'BIGINT');
+  await addColumn('identity_usage', 'token_limit_monthly', 'BIGINT');
+  await addColumn('identity_usage', 'period_start', 'TIMESTAMP WITH TIME ZONE');
 
-  // Service token table
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS identity_service_token (
-        id TEXT PRIMARY KEY,
-        token_hash TEXT NOT NULL UNIQUE,
-        service_type TEXT NOT NULL,
-        service_id TEXT NOT NULL,
-        scopes TEXT NOT NULL,
-        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-        expires_at TIMESTAMP WITH TIME ZONE
-      );
-    `);
-  } catch {
-    // Ignore if already exists
-  }
 }
 
 
 async function ensurePostgresTables(pool: Pool): Promise<void> {
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS identity_account_usage (
-      account_id TEXT PRIMARY KEY,
-      storage_bytes BIGINT NOT NULL DEFAULT 0,
-      ingress_bytes BIGINT NOT NULL DEFAULT 0,
-      egress_bytes BIGINT NOT NULL DEFAULT 0,
-      storage_limit_bytes BIGINT,
-      bandwidth_limit_bps BIGINT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_pod_usage (
-      pod_id TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS identity_usage (
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
-      storage_url TEXT,
       storage_bytes BIGINT NOT NULL DEFAULT 0,
       ingress_bytes BIGINT NOT NULL DEFAULT 0,
       egress_bytes BIGINT NOT NULL DEFAULT 0,
       storage_limit_bytes BIGINT,
       bandwidth_limit_bps BIGINT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_edge_node (
-      id TEXT PRIMARY KEY,
-      display_name TEXT,
-      token_hash TEXT NOT NULL,
-      account_id TEXT,
-      node_type TEXT DEFAULT 'edge',
-      subdomain TEXT UNIQUE,
-      access_mode TEXT,
-      ipv4 TEXT,
-      public_port BIGINT,
-      public_url TEXT,
-      service_token_hash TEXT,
-      provision_code_hash TEXT,
-      internal_ip TEXT,
-      internal_port BIGINT,
-      hostname TEXT,
-      ipv6 TEXT,
-      version TEXT,
-      capabilities JSONB,
-      metadata JSONB,
-      connectivity_status TEXT DEFAULT 'unknown',
-      last_connectivity_check TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      compute_seconds BIGINT NOT NULL DEFAULT 0,
+      tokens_used BIGINT NOT NULL DEFAULT 0,
+      compute_limit_seconds BIGINT,
+      token_limit_monthly BIGINT,
+      period_start TIMESTAMPTZ,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_seen TIMESTAMPTZ
+      PRIMARY KEY (scope_type, scope_id)
     );
 
-    CREATE TABLE IF NOT EXISTS identity_edge_node_pod (
-      node_id TEXT NOT NULL REFERENCES identity_edge_node(id) ON DELETE CASCADE,
-      base_url TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS api_client_credentials (
-      client_id TEXT PRIMARY KEY,
-      client_secret_encrypted TEXT NOT NULL,
-      web_id TEXT NOT NULL,
-      account_id TEXT NOT NULL,
-      display_name TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_ddns_domain (
-      domain TEXT PRIMARY KEY,
-      status TEXT DEFAULT 'active',
-      provider TEXT,
-      zone_id TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_ddns_record (
-      subdomain TEXT PRIMARY KEY,
-      domain TEXT NOT NULL,
-      ip_address TEXT,
-      ipv6_address TEXT,
-      record_type TEXT DEFAULT 'A',
-      node_id TEXT,
-      username TEXT,
-      status TEXT DEFAULT 'active',
-      banned_reason TEXT,
-      ttl INTEGER DEFAULT 60,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS identity_service_token (
-      id TEXT PRIMARY KEY,
-      token_hash TEXT NOT NULL UNIQUE,
-      service_type TEXT NOT NULL,
-      service_id TEXT NOT NULL,
-      scopes TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ
-    );
   `);
 
   await migratePostgresColumns(pool);
 }
 
 async function migratePostgresColumns(pool: Pool): Promise<void> {
-  const addColumn = async (table: string, column: string, type: string): Promise<void> => {
-    await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
-  };
-
-  await pool.query('ALTER TABLE identity_edge_node DROP COLUMN IF EXISTS owner_account_id');
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'identity_edge_node' AND column_name = 'public_ip'
-      ) AND NOT EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'identity_edge_node' AND column_name = 'ipv4'
-      ) THEN
-        ALTER TABLE identity_edge_node RENAME COLUMN public_ip TO ipv4;
-      END IF;
-    END $$;
-  `);
-
-  const edgeNodeColumns: Array<[string, string]> = [
-    [ 'node_type', `TEXT DEFAULT 'edge'` ],
-    [ 'subdomain', 'TEXT' ],
-    [ 'access_mode', 'TEXT' ],
-    [ 'ipv4', 'TEXT' ],
-    [ 'public_port', 'BIGINT' ],
-    [ 'public_url', 'TEXT' ],
-    [ 'service_token_hash', 'TEXT' ],
-    [ 'provision_code_hash', 'TEXT' ],
-    [ 'internal_ip', 'TEXT' ],
-    [ 'internal_port', 'BIGINT' ],
-    [ 'hostname', 'TEXT' ],
-    [ 'ipv6', 'TEXT' ],
-    [ 'version', 'TEXT' ],
-    [ 'capabilities', 'JSONB' ],
-    [ 'metadata', 'JSONB' ],
-    [ 'connectivity_status', `TEXT DEFAULT 'unknown'` ],
-    [ 'last_connectivity_check', 'TIMESTAMPTZ' ],
-    [ 'last_seen', 'TIMESTAMPTZ' ],
-  ];
-  for (const [column, type] of edgeNodeColumns) {
-    await addColumn('identity_edge_node', column, type);
-  }
+  void pool;
 }

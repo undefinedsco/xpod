@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from './db';
-import { getSchema, toDbTimestamp, fromDbTimestamp } from './db';
+import { ensureCloudClusterTables, getSchema, toDbTimestamp, fromDbTimestamp } from './db';
 
 export type ServiceType = 'local' | 'business' | 'cloud' | 'compute';
 
@@ -22,18 +22,30 @@ export interface CreateServiceTokenOptions {
   expiresAt?: Date | null;
 }
 
-export class ServiceTokenRepository {
+export interface ServiceTokenRepositoryPort {
+  createToken(options: CreateServiceTokenOptions): Promise<{ id: string; token: string }>;
+  registerToken(token: string, options: CreateServiceTokenOptions): Promise<string>;
+  verifyToken(token: string): Promise<ServiceTokenRecord | undefined>;
+  findByService(serviceType: ServiceType, serviceId: string): Promise<ServiceTokenRecord | undefined>;
+  deleteToken(id: string): Promise<void>;
+  listTokens(): Promise<ServiceTokenRecord[]>;
+}
+
+export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
   private readonly logger = getLoggerFor(this);
   private readonly schema: ReturnType<typeof getSchema>;
+  private readonly ready: Promise<void>;
 
   public constructor(private readonly db: IdentityDatabase) {
     this.schema = getSchema(db);
+    this.ready = ensureCloudClusterTables(db);
   }
 
   /**
    * Create a new service token. Returns the plaintext token (only available at creation time).
    */
   public async createToken(options: CreateServiceTokenOptions): Promise<{ id: string; token: string }> {
+    await this.ready;
     const id = randomUUID();
     const token = `svc-${randomUUID().replace(/-/g, '')}`;
     const tokenHash = this.hashToken(token);
@@ -60,6 +72,7 @@ export class ServiceTokenRepository {
     token: string,
     options: CreateServiceTokenOptions,
   ): Promise<string> {
+    await this.ready;
     const tokenHash = this.hashToken(token);
 
     // Check if a token already exists for this service
@@ -96,6 +109,7 @@ export class ServiceTokenRepository {
    * Verify a plaintext token and return the matching record if valid.
    */
   public async verifyToken(token: string): Promise<ServiceTokenRecord | undefined> {
+    await this.ready;
     const tokenHash = this.hashToken(token);
 
     const rows = await this.db.select()
@@ -125,6 +139,7 @@ export class ServiceTokenRepository {
    * Find a token record by service type and service ID.
    */
   public async findByService(serviceType: ServiceType, serviceId: string): Promise<ServiceTokenRecord | undefined> {
+    await this.ready;
     const rows = await this.db.select()
       .from(this.schema.serviceTokens)
       .where(eq(this.schema.serviceTokens.serviceType, serviceType));
@@ -137,6 +152,7 @@ export class ServiceTokenRepository {
    * Delete a service token by ID.
    */
   public async deleteToken(id: string): Promise<void> {
+    await this.ready;
     await this.db.delete(this.schema.serviceTokens).where(eq(this.schema.serviceTokens.id, id));
     this.logger.info(`Deleted service token ${id}`);
   }
@@ -145,6 +161,7 @@ export class ServiceTokenRepository {
    * List all service tokens (without hashes).
    */
   public async listTokens(): Promise<ServiceTokenRecord[]> {
+    await this.ready;
     const rows = await this.db.select({
       id: this.schema.serviceTokens.id,
       serviceType: this.schema.serviceTokens.serviceType,

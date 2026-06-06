@@ -13,7 +13,7 @@ export interface EdgeNodeAgentOptions {
   nodeId: string;
   nodeToken: string;
   baseUrl?: string;
-  publicAddress?: string;
+  directCandidates?: string | string[];
   pods?: string[];
   includeSystemMetrics?: boolean;
   enableNetworkDetection?: boolean;
@@ -97,7 +97,7 @@ export class EdgeNodeAgent {
       nodeId: options.nodeId,
       nodeToken: options.nodeToken,
       baseUrl: options.baseUrl,
-      publicAddress: options.publicAddress,
+      directCandidates: options.directCandidates,
       pods: options.pods,
       intervalMs: options.intervalMs,
       metadata: this.stringifyIfContent(metadataPayload),

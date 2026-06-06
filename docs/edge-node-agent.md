@@ -15,7 +15,7 @@ node dist/edge-node-agent-start.js \
   --nodeId <NODE_ID> \
   --nodeToken <NODE_TOKEN> \
   --baseUrl https://alice.cluster.example/ \
-  --publicAddress https://203.0.113.10:443/ \
+  --directCandidates https://203.0.113.10:443/ \
   --pods https://alice.cluster.example/
 ```
 
@@ -32,7 +32,7 @@ await agent.start({
   nodeId: process.env.XPOD_NODE_ID!,
   nodeToken: process.env.XPOD_NODE_TOKEN!,
   baseUrl: process.env.CSS_BASE_URL,
-  publicAddress: process.env.XPOD_NODE_PUBLIC_ADDRESS,
+  directCandidates: process.env.XPOD_NODE_DIRECT_CANDIDATES?.split(','),
   pods: process.env.CSS_NODE_PODS?.split(','),
   includeSystemMetrics: true,
   metadata: {

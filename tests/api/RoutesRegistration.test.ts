@@ -69,7 +69,6 @@ describe('registerRoutes mode wiring', () => {
       apiServer: mockServer,
       config: { ...baseConfig, edition },
       nodeRepo: {},
-      apiKeyStore: {},
       chatService: {},
       chatKitService: {},
       chatKitStore: {

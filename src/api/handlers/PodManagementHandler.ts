@@ -16,6 +16,8 @@ export interface PodManagementHandlerOptions {
   };
   /** SP-local Pod lookup used by Cloud consent to scope account WebIDs. */
   podLookupRepository?: Pick<PodLookupRepository, 'findByWebIds'>;
+  /** Canonical storage root for this SP; lookup responses are fail-closed to this root. */
+  storageProviderBaseUrl?: string;
 }
 
 export interface CreatePodRequest {
@@ -71,6 +73,7 @@ export function registerPodManagementRoutes(
 ): void {
   const logger = getLoggerFor('PodManagementHandler');
   const { rootDir, verifyServiceToken, podNameRegex = /^[a-zA-Z0-9_-]+$/, provisioningService, podLookupRepository } = options;
+  const storageProviderRoot = normalizeStorageRoot(options.storageProviderBaseUrl);
 
   /**
    * 验证 service token
@@ -141,6 +144,19 @@ export function registerPodManagementRoutes(
     const podPath = `${rootDir}/${podName}`;
     try {
       const exists = await fileExists(podPath);
+      if (exists && provisioningService) {
+        const existing = await findExistingProvisionedPod(body, podName);
+        if (existing) {
+          logger.info(`Pod ${podName} already exists for ${body.webId}; returning existing SP-local pod`);
+          sendJson(response, 200, {
+            success: true,
+            podUrl: existing.storageUrl,
+            message: `Pod ${podName} already exists for this WebID`,
+          });
+          return;
+        }
+      }
+
       if (exists) {
         sendJson(response, 409, { error: 'Conflict', message: `Pod ${podName} already exists` });
         return;
@@ -207,19 +223,50 @@ export function registerPodManagementRoutes(
     try {
       const webIds = body.webIds as string[];
       const pods = await podLookupRepository.findByWebIds(webIds);
-      const entries = pods
-        .map((pod) => {
-          const webId = resolveMatchedWebId(pod.webId, pod.webIds, webIds);
-          const storageUrl = ensureTrailingSlash(pod.storageUrl ?? pod.baseUrl);
-          return webId
-            ? {
-              webId,
-              podUrl: storageUrl,
-              storageUrl,
-            }
-            : undefined;
-        })
-        .filter((entry): entry is LookupWebIdsResponse['entries'][number] => Boolean(entry));
+      const entries: LookupWebIdsResponse['entries'] = [];
+      const seenEntries = new Set<string>();
+
+      if (!storageProviderRoot) {
+        logger.warn('Refusing to expose provisioned WebIDs because storageProviderBaseUrl is not configured');
+        sendJson(response, 200, { entries });
+        return;
+      }
+
+      for (const pod of pods) {
+        const rawStorageUrl = pod.storageUrl ?? pod.baseUrl;
+        if (!storageUrlBelongsToRoot(rawStorageUrl, storageProviderRoot)) {
+          continue;
+        }
+
+        const podName = getRootRelativePodName(rawStorageUrl, storageProviderRoot);
+        if (!podName || !validatePodName(podName)) {
+          logger.warn(`Refusing to expose provisioned WebID for invalid SP-local Pod URL: ${rawStorageUrl}`);
+          continue;
+        }
+
+        const podPath = `${rootDir}/${podName}`;
+        if (!await fileExists(podPath)) {
+          logger.warn(`Refusing to expose stale provisioned WebID for missing Pod directory: ${podPath}`);
+          continue;
+        }
+
+        const webId = resolveMatchedWebId(pod.webId, pod.webIds, webIds);
+        if (!webId) {
+          continue;
+        }
+
+        const storageUrl = ensureTrailingSlash(rawStorageUrl);
+        const entryKey = `${webId}\u0000${storageUrl}`;
+        if (seenEntries.has(entryKey)) {
+          continue;
+        }
+        seenEntries.add(entryKey);
+        entries.push({
+          webId,
+          podUrl: storageUrl,
+          storageUrl,
+        });
+      }
 
       sendJson(response, 200, { entries });
     } catch (error) {
@@ -227,6 +274,31 @@ export function registerPodManagementRoutes(
       sendJson(response, 500, { error: 'Internal Server Error', message: 'Failed to lookup provisioned WebIDs' });
     }
   }, { public: true });
+
+  async function findExistingProvisionedPod(
+    body: CreatePodRequest,
+    podName: string,
+  ): Promise<{ storageUrl: string } | undefined> {
+    if (!podLookupRepository || !storageProviderRoot || !body.webId) {
+      return undefined;
+    }
+
+    try {
+      const requestedWebId = body.webId;
+      const expectedPodUrl = buildPodUrl(storageProviderRoot, podName);
+      const pods = await podLookupRepository.findByWebIds([requestedWebId]);
+      const match = pods.find((pod) => {
+        const storageUrl = ensureTrailingSlash(pod.storageUrl ?? pod.baseUrl);
+        return storageUrl === expectedPodUrl &&
+          storageUrlBelongsToRoot(storageUrl, storageProviderRoot) &&
+          Boolean(resolveMatchedWebId(pod.webId, pod.webIds, [requestedWebId]));
+      });
+      return match ? { storageUrl: expectedPodUrl } : undefined;
+    } catch (error) {
+      logger.warn(`Failed to verify existing pod ownership for ${podName}: ${(error as Error).message}`);
+      return undefined;
+    }
+  }
 
   /**
    * DELETE /provision/pods/:podName
@@ -378,6 +450,52 @@ function normalizeUrl(value: string): string {
 
 function ensureTrailingSlash(url: string): string {
   return url.replace(/\/+$/u, '') + '/';
+}
+
+function normalizeStorageRoot(url: string | undefined): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+  try {
+    return ensureTrailingSlash(new URL(url).toString());
+  } catch {
+    return undefined;
+  }
+}
+
+function storageUrlBelongsToRoot(storageUrl: string | undefined, storageRoot: string): boolean {
+  if (!storageUrl) {
+    return false;
+  }
+  try {
+    return ensureTrailingSlash(new URL(storageUrl).toString()).startsWith(storageRoot);
+  } catch {
+    return false;
+  }
+}
+
+function buildPodUrl(storageRoot: string, podName: string): string {
+  return ensureTrailingSlash(new URL(`${encodeURIComponent(podName)}/`, storageRoot).toString());
+}
+
+function getRootRelativePodName(storageUrl: string | undefined, storageRoot: string): string | undefined {
+  if (!storageUrl) {
+    return undefined;
+  }
+
+  try {
+    const normalizedStorageUrl = ensureTrailingSlash(new URL(storageUrl).toString());
+    const normalizedRoot = ensureTrailingSlash(new URL(storageRoot).toString());
+    if (!normalizedStorageUrl.startsWith(normalizedRoot)) {
+      return undefined;
+    }
+
+    const relativePath = normalizedStorageUrl.slice(normalizedRoot.length);
+    const segment = relativePath.split('/').find(Boolean);
+    return segment ? decodeURIComponent(segment) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

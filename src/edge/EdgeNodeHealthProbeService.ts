@@ -84,13 +84,36 @@ export class EdgeNodeHealthProbeService {
         candidates.add(candidate.trim());
       }
     }
-    if (typeof metadata.publicAddress === 'string') {
-      candidates.add(metadata.publicAddress.trim());
+    const tunnelEntrypoint = this.extractTunnelEntrypoint(metadata.tunnel) ?? this.extractManagedTunnelEndpoint(metadata.managedTunnel);
+    if (tunnelEntrypoint) {
+      candidates.add(tunnelEntrypoint);
     }
     if (typeof metadata.baseUrl === 'string') {
       candidates.add(metadata.baseUrl.trim());
     }
     return Array.from(candidates);
+  }
+
+  private extractTunnelEntrypoint(value: unknown): string | undefined {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    return this.extractNonEmptyString((value as Record<string, unknown>).entrypoint);
+  }
+
+  private extractManagedTunnelEndpoint(value: unknown): string | undefined {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    return this.extractNonEmptyString((value as Record<string, unknown>).endpoint);
+  }
+
+  private extractNonEmptyString(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
   }
 
   private async ping(candidate: string, location: ProbeLocation): Promise<ProbeResult> {

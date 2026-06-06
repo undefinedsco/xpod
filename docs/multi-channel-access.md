@@ -10,14 +10,14 @@
 - **访问渠道可变**：本机、局域网、公网直连、隧道只是不同 access route。
 - **不要求用户改路由器 DNS**：桌面 App / CLI 可自动选择 route；普通浏览器能力降级。
 - **不分叉身份和权限**：不能为本机、局域网、外网生成三套 WebID 或权限。
-- **Local 首次启动不依赖公网**：没有公网和隧道时，本机和局域网仍可完成验证和使用。
-- **Local 公网 URL 由用户提供**：当前 LinX 产品路径不为 Local SP 自动分配 `node-*.undefineds.co`。
+- **Local 首次启动不依赖公网**：没有可达公网 route 时，本机和局域网仍可完成验证和使用。
+- **Cloud-managed Local 域名由 Cloud 分配**：LinX 不让用户手填平台域名；Cloud 首次注册时可返回随机节点域名，也可返回已预配的测试节点域名，注册后与设备 nodeId 绑定并稳定复用。
 
 关键限制：
 
-- 如果用户创建 Local 时还没有公网 URL，canonical URL 只能是本机/局域网可用的本地地址。
-- 之后再补公网 URL，可以复用同一个本地数据目录和节点配置，但这不是纯 route 切换；如果旧 WebID 或资源 IRI 已经绑定到 localhost/LAN host，就需要身份/存储指针迁移或重新创建 Cloud 侧 Pod 关系。
-- 如果要做到“本机、局域网、外网 URI 始终不变”，必须在创建 Cloud IDP + Local SP 前确定稳定的公网 canonical URL，例如用户自己的域名或稳定隧道域名。
+- Local 默认路径在创建 Cloud IDP + Local SP 前必须先拿到 stable canonical URL。这个 URL 可以是 Cloud-managed 节点域名，也可以是用户自有 HTTPS origin。
+- 没有公网 route 时，canonical URL 仍然不能降级成 localhost/LAN；localhost/LAN 只能作为同一节点的 access route。
+- 之后再补 tunnel token 或可达 route，应复用同一个本地数据目录、nodeId 和 canonical URL，而不是迁移 WebID 或重写资源 IRI。
 
 ---
 
@@ -47,17 +47,16 @@ Solid 层看到的资源地址:
 | 形态 | IDP | SP | canonical URL | access route | 用户感知 |
 |------|-----|----|---------------|--------------|----------|
 | Cloud 全套 | Cloud | Cloud | Cloud SP 域名 | 公网 | 自动生成 Cloud SP 域名 |
-| Local 基础 / LAN | Local | Local | 本地 canonical URL | 本机、局域网 | 不填公网 URL 也能先用 |
-| Cloud IDP + Local SP，公网可直连 | Cloud | Local | 用户提供的公网 URL | 公网直连、本机、局域网 | 用户自备域名、DNS、HTTPS/反代 |
-| Cloud IDP + Local SP，公网不可直连 | Cloud | Local | 用户提供的公网 URL 或稳定隧道域名 | 隧道、本机、局域网 | 用户自备域名/隧道域名和 tunnel token |
+| Cloud IDP + Local SP，Cloud-managed 域名 | Cloud | Local | Cloud 分配的节点域名 | tunnel、本机、局域网 | 默认 Local 路径，用户不填平台域名 |
+| Cloud IDP + Local SP，user-managed 域名 | Cloud | Local | 用户提供的公网 URL | 公网直连/tunnel、本机、局域网 | 用户自备域名、DNS、HTTPS/反代 |
 | Standalone 全本地 | Local | Local | 本地 canonical URL | 本机、局域网 | 不承诺公网身份 |
 
 说明：
 
 - `Cloud IDP + Local SP` 不应把局域网 IP 当公网 canonical URL。局域网 IP 只能作为 managed client 的 access route，否则 WebID 会绑定到不稳定地址，后续加公网或隧道就需要迁移。
-- 当前 LinX 产品路径不使用平台为 Local SP 自动分配的 `node-*.undefineds.co`。Cloud 只负责 Cloud SP 自己的域名。
-- 用户使用第三方隧道时，如果普通浏览器也要访问 Local SP，必须在创建 Cloud IDP + Local SP 前确定最终 canonical URL：可以是用户自己的域名，也可以是隧道供应商稳定分配的 HTTPS 域名。
-- 已经用 localhost/LAN canonical 创建的 Standalone 或 Local 基础数据，后续补公网 URL 时可复用本地数据目录；但旧 WebID 和旧绝对资源 IRI 不会自动变成公网 URL。
+- Cloud-managed 路径中，Cloud 可随机分配 `nodeId.baseStorageDomain` 形态的 canonical 域名，也可返回已经在 Cloudflare/tunnel 后台配置好的 `node-0000.undefineds.co` 等测试域名；LinX 保存 Cloud 返回的 `nodeId/nodeToken/serviceToken/spDomain`，后续续约必须带同一个 nodeId，Cloud 必须稳定返回同一个 canonical 域名。
+- 用户使用自有域名或第三方隧道域名时，必须在创建 Cloud IDP + Local SP 前确定最终 canonical URL。
+- 已经用 localhost/LAN canonical 创建的 Standalone 数据，后续补 Cloud Local 需要按 Local onboarding 重新建立 Cloud WebID 的 `solid:storage` 关系；不能静默把旧绝对 IRI 当作同一个 Cloud Local 空间。
 
 ---
 
@@ -111,9 +110,9 @@ Local 首次启动不能依赖公网 discovery，因此 route 来源分层处理
 
 | 来源 | 内容 | 适用场景 |
 |------|------|----------|
-| 本地配置 | `canonicalUrl`、loopback route、LAN route、tunnel token | Local SP 启动时写入 |
+| 本地配置 | `nodeId`、`canonicalUrl`、loopback route、LAN route、tunnel token | Local SP 启动时写入 |
 | Local 服务 API | 当前监听端口、LAN IP、健康状态 | Desktop / CLI 同机发现 |
-| Cloud 控制面 | 用户提供的 `publicUrl`、provision code、Local SP 注册状态 | Cloud IDP + Local SP |
+| Cloud 控制面 | Cloud-managed `spDomain`、用户提供的 `publicUrl`、provision code、Local SP 注册状态 | Cloud IDP + Local SP |
 | Public discovery | 仅发布 public route | 已有公网或隧道时 |
 
 不建议把 `127.0.0.1` 和 LAN IP 无条件写进 public `/.well-known/solid`。这些地址对远端客户端没有意义，还可能造成误连。若需要发布 route 信息，应使用 Xpod 自有 discovery，例如 `/.well-known/xpod-routes`，并按客户端位置、认证状态和 node proof 过滤。
@@ -122,7 +121,7 @@ Local 首次启动不能依赖公网 discovery，因此 route 来源分层处理
 
 ## Local 隧道职责
 
-`cloudflared` 属于 Local SP 运行时进程，由 xpod local 在启动时根据本地配置拉起，不由 LinX Web 或 Cloud IDP 启动。用户负责在 LinX / xpod 配置里提供 tunnel token 和最终可访问的 `publicUrl`。
+`cloudflared` 属于 Local SP 运行时进程，由 xpod local 在启动时根据本地配置拉起，不由 LinX Web 或 Cloud IDP 启动。Cloud-managed 路径中，Cloud 分配 canonical `spDomain`；用户需要在 Cloudflare tunnel 后台把该 host 指到本机 tunnel。当前没有 Cloud 自动创建 CNAME/route 时，测试仍使用已配置好的 `node-0000.undefineds.co`。
 
 职责边界：
 

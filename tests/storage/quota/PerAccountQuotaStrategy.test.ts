@@ -10,11 +10,15 @@ const usageRepoInstances: Array<{
 }> = [];
 const podLookupInstances: Array<{ findByResourceIdentifier: ReturnType<typeof vi.fn> }> = [];
 const quotaServiceInstances: Array<QuotaService & {
-  getAccountLimit: ReturnType<typeof vi.fn>;
-  getPodLimit: ReturnType<typeof vi.fn>;
-  setAccountLimit: ReturnType<typeof vi.fn>;
-  setPodLimit: ReturnType<typeof vi.fn>;
+  getAccountQuota: ReturnType<typeof vi.fn>;
 }> = [];
+
+const EMPTY_QUOTA = {
+  storageLimitBytes: null,
+  bandwidthLimitBps: null,
+  computeLimitSeconds: null,
+  tokenLimitMonthly: null,
+};
 
 vi.mock('../../../src/storage/quota/UsageRepository', () => ({
   UsageRepository: vi.fn().mockImplementation(() => {
@@ -48,21 +52,17 @@ function last<T>(arr: T[]): T {
 }
 
 function createQuotaService(): QuotaService & {
-  getAccountLimit: ReturnType<typeof vi.fn>;
-  getPodLimit: ReturnType<typeof vi.fn>;
-  setAccountLimit: ReturnType<typeof vi.fn>;
-  setPodLimit: ReturnType<typeof vi.fn>;
+  getAccountQuota: ReturnType<typeof vi.fn>;
 } {
   const service = {
-    getAccountLimit: vi.fn(),
-    getPodLimit: vi.fn(),
-    setAccountLimit: vi.fn(),
-    setPodLimit: vi.fn(),
+    getAccountQuota: vi.fn(),
+    setAccountQuota: vi.fn(),
+    getPodQuota: vi.fn(),
+    setPodQuota: vi.fn(),
+    clearAccountQuota: vi.fn(),
+    clearPodQuota: vi.fn(),
   } as unknown as QuotaService & {
-    getAccountLimit: ReturnType<typeof vi.fn>;
-    getPodLimit: ReturnType<typeof vi.fn>;
-    setAccountLimit: ReturnType<typeof vi.fn>;
-    setPodLimit: ReturnType<typeof vi.fn>;
+    getAccountQuota: ReturnType<typeof vi.fn>;
   };
   quotaServiceInstances.push(service);
   return service;
@@ -108,7 +108,10 @@ describe('PerAccountQuotaStrategy', () => {
     const { strategy, podLookup, usageRepo, reporter, quotaService } = createStrategy();
     const identifier = { path: 'https://pods.example.com/alice/private/data.ttl' } as ResourceIdentifier;
     podLookup.findByResourceIdentifier.mockResolvedValueOnce({ accountId: 'acc-1', podId: 'pod-1', baseUrl: 'https://pods.example.com/alice/' });
-    quotaService.getAccountLimit.mockResolvedValueOnce(2_000);
+    quotaService.getAccountQuota.mockResolvedValueOnce({
+      ...EMPTY_QUOTA,
+      storageLimitBytes: 2_000,
+    });
     reporter.getSize.mockResolvedValueOnce({ amount: 150, unit: UNIT_BYTES });
     usageRepo.getAccountUsage.mockResolvedValueOnce({
       accountId: 'acc-1',
@@ -118,7 +121,7 @@ describe('PerAccountQuotaStrategy', () => {
     });
 
     const result = await strategy.getAvailableSpace(identifier);
-    expect(quotaService.getAccountLimit).toHaveBeenCalledWith('acc-1');
+    expect(quotaService.getAccountQuota).toHaveBeenCalledWith('acc-1');
     expect(usageRepo.getAccountUsage).toHaveBeenCalledWith('acc-1');
     expect(result.amount).toBe(1_350);
   });
@@ -127,7 +130,7 @@ describe('PerAccountQuotaStrategy', () => {
     const { strategy, podLookup, usageRepo, reporter, quotaService } = createStrategy(1_500);
     const identifier = { path: 'https://pods.example.com/carl/' } as ResourceIdentifier;
     podLookup.findByResourceIdentifier.mockResolvedValueOnce({ accountId: 'acc-2', podId: 'pod-2', baseUrl: 'https://pods.example.com/carl/' });
-    quotaService.getAccountLimit.mockResolvedValueOnce(undefined);
+    quotaService.getAccountQuota.mockResolvedValueOnce(EMPTY_QUOTA);
     reporter.getSize.mockResolvedValueOnce({ amount: 50, unit: UNIT_BYTES });
     usageRepo.getAccountUsage.mockResolvedValueOnce({
       accountId: 'acc-2',

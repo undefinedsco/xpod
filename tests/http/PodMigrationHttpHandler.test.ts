@@ -13,11 +13,11 @@ vi.mock('../../src/identity/drizzle/db', () => ({
 const mockPodLookupRepo = {
   findById: vi.fn(),
   listAllPods: vi.fn(),
-  setNodeId: vi.fn(),
 };
 
 const mockEdgeNodeRepo = {
   getCenterNode: vi.fn(),
+  assignPodToNode: vi.fn(),
 };
 
 vi.mock('../../src/identity/drizzle/PodLookupRepository', () => ({
@@ -172,7 +172,7 @@ describe('PodMigrationHttpHandler', () => {
         internalIp: '10.0.0.2',
         internalPort: 3000,
       });
-      mockPodLookupRepo.setNodeId.mockResolvedValueOnce(undefined);
+      mockEdgeNodeRepo.assignPodToNode.mockResolvedValueOnce(undefined);
 
       const request = createMockRequest('POST', '/.cluster/pods/pod-123/migrate', {
         targetNode: 'node-2',
@@ -187,7 +187,7 @@ describe('PodMigrationHttpHandler', () => {
       expect(body.sourceNode).toBe('node-1');
       expect(body.targetNode).toBe('node-2');
       expect(body.migratedAt).toBeDefined();
-      expect(mockPodLookupRepo.setNodeId).toHaveBeenCalledWith('pod-123', 'node-2');
+      expect(mockEdgeNodeRepo.assignPodToNode).toHaveBeenCalledWith('node-2', 'https://example.com/alice/');
     });
 
     it('rejects missing targetNode', async () => {

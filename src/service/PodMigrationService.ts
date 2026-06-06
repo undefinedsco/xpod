@@ -20,7 +20,7 @@ export interface MigrationResult {
  * 
  * Simplified migration process:
  * 1. Validate pod and target node exist
- * 2. Update nodeId to target node (atomic update)
+ * 2. Update the Pod routing assignment to the target node
  * 
  * Data does NOT need to be copied upfront:
  * - Metadata is in shared PostgreSQL (Quadstore), already accessible from all nodes
@@ -45,7 +45,7 @@ export class PodMigrationService {
   /**
    * Migrate a pod to a different node.
    * 
-   * This is instant - only updates the nodeId in database.
+   * This is instant - only updates the routing assignment in the database.
    * Subsequent requests will be routed to the new node.
    * Binary files are read via cross-region fallback if not present locally.
    */
@@ -69,8 +69,8 @@ export class PodMigrationService {
       throw new Error(`Pod ${podId} is already on node ${targetNodeId}`);
     }
 
-    // Update nodeId - this is the only thing we need to do!
-    await this.podLookupRepository.setNodeId(podId, targetNodeId);
+    // Update routing ownership; Pod usage/quota tables must not carry placement state.
+    await this.edgeNodeRepository.assignPodToNode(targetNodeId, pod.storageUrl ?? pod.baseUrl);
 
     this.logger.info(`Pod migrated: pod=${podId}, source=${sourceNodeId}, target=${targetNodeId}`);
 

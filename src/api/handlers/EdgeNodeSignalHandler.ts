@@ -134,13 +134,15 @@ function mergeMetadata(
   };
 
   copyIfPresent('baseUrl');
-  copyIfPresent('publicAddress');
   copyIfPresent('hostname');
   copyIfPresent('ipv4');
   copyIfPresent('ipv6');
   copyIfPresent('version');
   copyIfPresent('status');
   copyIfPresent('capabilities');
+  copyIfPresent('directCandidates');
+  copyIfPresent('tunnel');
+  copyIfPresent('certificate');
   copyIfPresent('metrics');
 
   return next;

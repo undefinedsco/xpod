@@ -16,7 +16,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
-| `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，并把 canonical storage URL 记录到 `identity_pod_usage.storage_url` |
+| `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，canonical storage URL 留在 CSS account Pod 数据中 |
 
 ### Store 调用链对照
 
@@ -84,28 +84,22 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Purpose**: Bandwidth and storage usage monitoring wrapper
 - **Functionality**: 
   - Tracks ingress/egress bytes for all resource operations
-  - Records usage in `identity_account_usage` and `identity_pod_usage` tables
+  - Records account/pod-scoped usage in `identity_usage`
   - Applies bandwidth throttling via `createBandwidthThrottleTransform`
 - **Deployment**: Server mode only
 
 ## Identity & Authentication
 
-### DrizzleAccountLoginStorage
-- **Path**: `src/identity/drizzle/DrizzleAccountLoginStorage.ts`
-- **Purpose**: Database-backed account authentication and management
-- **Schema**: `src/identity/drizzle/schema.ts`
-- **Tables**:
-  - `identity_account` - User accounts with login credentials
-  - `identity_account_role` - Role-based access control (admin, user, etc.)
-  - `identity_pod` - Pod metadata and ownership mapping
-- **Functionality**: Account creation, authentication, role management
-- **Deployment**: Server mode (PostgreSQL), also available for local testing
-
-### DrizzleAccountStorage
-- **Path**: `src/identity/drizzle/DrizzleAccountStorage.ts`
-- **Purpose**: Account data persistence layer for clustered deployments
-- **Integration**: Replaces CSS file-based account storage in server mode
-- **Functionality**: CRUD operations for accounts, pods, and roles
+### DrizzleIndexedStorage
+- **Path**: `src/identity/drizzle/DrizzleIndexedStorage.ts`
+- **Purpose**: CSS IndexedStorage adapter for account authentication and management
+- **Table**: `identity_store(container, id, payload)`
+- **Containers**:
+  - `account` - User account payload, including account-level role flags.
+  - `pod` - Pod metadata and ownership mapping.
+  - `owner` / `webIdLink` - CSS account links used to resolve WebID and storage relationships.
+- **Functionality**: Account creation, authentication, Pod links, and role lookup without side tables.
+- **Deployment**: Server mode (PostgreSQL) and local testing (SQLite).
 
 ### ScopedPickWebIdHandler
 - **Path**: `src/identity/oidc/ScopedPickWebIdHandler.ts`
@@ -121,9 +115,25 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Purpose**: Extend CSS Pod creation without replacing the account/consent flow.
 - **Functionality**:
   - Adds `storage` to Pod resource template settings so generated profile cards include `solid:storage`.
-  - In remote provisioning, calls the selected SP `/provision/pods` endpoint and records the canonical storage URL in `identity_pod_usage.storage_url`.
+  - New Pod templates include `profile/card.acr`, the ACP control resource that grants public `acl:Read` access to the WebID profile. The profile document stays CSS-native and must not be proxied through the API server.
+  - In remote provisioning, calls the selected SP `/provision/pods` endpoint and records the canonical storage URL in CSS account Pod data, not in the usage table.
   - Removes `provisionCode` before handing settings to CSS Pod storage.
 - **Deployment**: All modes through `config/xpod.base.json`.
+
+### ProvisionStatusHandler
+- **Path**: `src/api/handlers/ProvisionHandler.ts`
+- **Purpose**: Expose the selected Local SP provision status to LinX and refresh short-lived `provisionCode` values.
+- **Boundary**: Long-lived Local setup/provision state is a single local setup JSON supplied by `XPOD_LOCAL_SETUP_PATH` and keyed by `XPOD_PROVIDER_ID`. `XPOD_ENV_PATH` is only the runtime input file for process startup; it must not become a second persistent authority for node credentials, canonical SP URL, or refreshed provision tokens.
+- **Storage split**: Local stores its own setup/provision state in that setup file. Cloud stores cluster-coordinated state that needs uniqueness/indexes/concurrency in Cloud cluster tables (`cluster_node`, `cluster_ddns_record`, `cluster_service_token`). Do not persist Local setup-only state into Cloud cluster tables, and do not model Cloud cluster records as identity business tables.
+
+Historical Pods created before the `profile/card.acr` template must be repaired with:
+
+```bash
+bun run repair:profile-acr -- --baseUrl https://id.undefineds.co/ --dry-run
+bun run repair:profile-acr -- --baseUrl https://id.undefineds.co/
+```
+
+The repair reads `CSS_SPARQL_ENDPOINT` (or `--sparqlEndpoint`) and only backfills existing `foaf:PersonalProfileDocument` resources. It is idempotent and does not add public access to ordinary Pod data.
 
 ## Quota & Usage Management
 
@@ -353,11 +363,11 @@ class AccountRepository {
   constructor(private db: DrizzleDatabase) {}
   
   async createAccountWithRole(data: CreateAccountData, role: string) {
-    return this.db.transaction(async (tx) => {
-      const account = await tx.insert(identityAccount).values(data);
-      await tx.insert(identityAccountRole).values({accountId: account.id, role});
-      return account;
+    const account = await this.identityStore.createAccount({
+      ...data,
+      roles: [role],
     });
+    return account;
   }
 }
 ```

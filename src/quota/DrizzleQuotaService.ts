@@ -91,9 +91,8 @@ export class DrizzleQuotaService implements QuotaService {
       accountId = usage?.accountId;
     }
 
-    // If still no accountId, use a placeholder (quota can be set before pod creation)
     if (!accountId) {
-      accountId = 'unknown';
+      throw new Error(`Pod ${podId} not found or has no associated account`);
     }
 
     if (quota.storageLimitBytes !== undefined) {
@@ -126,29 +125,6 @@ export class DrizzleQuotaService implements QuotaService {
       computeLimitSeconds: null,
       tokenLimitMonthly: null,
     });
-  }
-
-  // 向后兼容
-  public async getAccountLimit(accountId: string): Promise<number | null | undefined> {
-    const quota = await this.getAccountQuota(accountId);
-    return quota.storageLimitBytes;
-  }
-
-  public async getPodLimit(podId: string): Promise<number | null | undefined> {
-    const quota = await this.getPodQuota(podId);
-    return quota.storageLimitBytes;
-  }
-
-  public async setAccountLimit(accountId: string, limit: number | null): Promise<void> {
-    await this.usageRepo.setAccountStorageLimit(accountId, limit);
-  }
-
-  public async setPodLimit(podId: string, limit: number | null): Promise<void> {
-    const podInfo = await this.accountRepo.getPodInfo(podId);
-    if (!podInfo?.accountId) {
-      throw new Error(`Pod ${podId} not found or has no associated account`);
-    }
-    await this.usageRepo.setPodStorageLimit(podId, podInfo.accountId, limit);
   }
 
   /**

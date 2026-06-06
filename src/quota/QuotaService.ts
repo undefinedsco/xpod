@@ -18,10 +18,4 @@ export interface QuotaService {
   setPodQuota(podId: string, quota: Partial<AccountQuota>): Promise<void>;
   clearAccountQuota(accountId: string): Promise<void>;
   clearPodQuota(podId: string): Promise<void>;
-
-  // 向后兼容：存储限制快捷方法
-  getAccountLimit(accountId: string): Promise<number | null | undefined>;
-  getPodLimit(podId: string): Promise<number | null | undefined>;
-  setAccountLimit(accountId: string, limit: number | null): Promise<void>;
-  setPodLimit(podId: string, limit: number | null): Promise<void>;
 }

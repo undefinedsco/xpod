@@ -1,27 +1,11 @@
 -- PostgreSQL Schema Definition
 -- Unified with SQLite: uses BIGINT for timestamps (Unix epoch), TEXT for JSON
 
--- Account Usage
-CREATE TABLE IF NOT EXISTS identity_account_usage (
-  account_id TEXT PRIMARY KEY,
-  storage_bytes BIGINT NOT NULL DEFAULT 0,
-  ingress_bytes BIGINT NOT NULL DEFAULT 0,
-  egress_bytes BIGINT NOT NULL DEFAULT 0,
-  storage_limit_bytes BIGINT,
-  bandwidth_limit_bps BIGINT,
-  compute_seconds BIGINT NOT NULL DEFAULT 0,
-  tokens_used BIGINT NOT NULL DEFAULT 0,
-  compute_limit_seconds BIGINT,
-  token_limit_monthly BIGINT,
-  period_start BIGINT,
-  updated_at BIGINT NOT NULL
-);
-
--- Pod Usage
-CREATE TABLE IF NOT EXISTS identity_pod_usage (
-  pod_id TEXT PRIMARY KEY,
+-- Usage
+CREATE TABLE IF NOT EXISTS identity_usage (
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
   account_id TEXT NOT NULL,
-  storage_url TEXT,
   storage_bytes BIGINT NOT NULL DEFAULT 0,
   ingress_bytes BIGINT NOT NULL DEFAULT 0,
   egress_bytes BIGINT NOT NULL DEFAULT 0,
@@ -32,20 +16,12 @@ CREATE TABLE IF NOT EXISTS identity_pod_usage (
   compute_limit_seconds BIGINT,
   token_limit_monthly BIGINT,
   period_start BIGINT,
-  updated_at BIGINT NOT NULL
+  updated_at BIGINT NOT NULL,
+  PRIMARY KEY (scope_type, scope_id)
 );
 
--- DDNS Domains
-CREATE TABLE IF NOT EXISTS identity_ddns_domain (
-  domain TEXT PRIMARY KEY,
-  status TEXT DEFAULT 'active',
-  provider TEXT,
-  zone_id TEXT,
-  created_at BIGINT NOT NULL
-);
-
--- DDNS Records
-CREATE TABLE IF NOT EXISTS identity_ddns_record (
+-- Cloud cluster DDNS Records
+CREATE TABLE IF NOT EXISTS cluster_ddns_record (
   subdomain TEXT PRIMARY KEY,
   domain TEXT NOT NULL,
   ip_address TEXT,
@@ -61,7 +37,7 @@ CREATE TABLE IF NOT EXISTS identity_ddns_record (
 );
 
 -- Edge Nodes
-CREATE TABLE IF NOT EXISTS identity_edge_node (
+CREATE TABLE IF NOT EXISTS cluster_node (
   id TEXT PRIMARY KEY,
   display_name TEXT,
   token_hash TEXT NOT NULL,
@@ -80,6 +56,7 @@ CREATE TABLE IF NOT EXISTS identity_edge_node (
   version TEXT,
   capabilities TEXT,
   metadata TEXT,
+  pod_base_urls TEXT,
   connectivity_status TEXT DEFAULT 'unknown',
   last_connectivity_check BIGINT,
   created_at BIGINT NOT NULL,
@@ -87,23 +64,8 @@ CREATE TABLE IF NOT EXISTS identity_edge_node (
   last_seen BIGINT
 );
 
--- Edge Node Pods
-CREATE TABLE IF NOT EXISTS identity_edge_node_pod (
-  node_id TEXT NOT NULL REFERENCES identity_edge_node(id) ON DELETE CASCADE,
-  base_url TEXT NOT NULL
-);
-
--- API Client Credentials
-CREATE TABLE IF NOT EXISTS identity_api_client_credentials (
-  client_id TEXT PRIMARY KEY,
-  web_id TEXT NOT NULL,
-  account_id TEXT NOT NULL,
-  display_name TEXT,
-  created_at BIGINT NOT NULL
-);
-
--- Service Tokens
-CREATE TABLE IF NOT EXISTS identity_service_token (
+-- Cloud cluster Service Tokens
+CREATE TABLE IF NOT EXISTS cluster_service_token (
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
   service_type TEXT NOT NULL,

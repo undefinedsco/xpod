@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { BadRequestHttpError, FoundHttpError } from '@solid/community-server';
 import { ScopedPickWebIdHandler } from '../../src/identity/oidc/ScopedPickWebIdHandler';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
+import type { PodLookupResult } from '../../src/identity/drizzle/PodLookupRepository';
 
 describe('ScopedPickWebIdHandler', () => {
   const cloudIssuer = 'https://id.example/';
@@ -42,30 +43,36 @@ describe('ScopedPickWebIdHandler', () => {
       create: vi.fn(),
       delete: vi.fn(),
     };
-    const podLookupRepository = {
-      findByWebId: vi.fn(async (webId: string) => {
-        if (webId === aliceWebId) {
-          return {
+    const findByWebId = vi.fn(async (webId: string): Promise<PodLookupResult | undefined> => {
+      if (webId === aliceWebId) {
+        return {
           podId: 'pod-1',
           accountId: 'account-1',
           baseUrl: 'https://node-0000.undefineds.co/alice/',
           storageUrl: 'https://node-0000.undefineds.co/alice/',
           webId,
-          };
-        }
+        };
+      }
 
-        if (webId === bobWebId) {
-          return {
-            podId: 'pod-2',
-            accountId: 'account-1',
-            baseUrl: `${cloudIssuer}bob/`,
-            storageUrl: `${cloudIssuer}bob/`,
-            webId,
-          };
-        }
+      if (webId === bobWebId) {
+        return {
+          podId: 'pod-2',
+          accountId: 'account-1',
+          baseUrl: `${cloudIssuer}bob/`,
+          storageUrl: `${cloudIssuer}bob/`,
+          webId,
+        };
+      }
 
-        return undefined;
-      }),
+      return undefined;
+    });
+    const findByWebIds = vi.fn(async (webIds: string[]): Promise<PodLookupResult[]> => {
+      const pods = await Promise.all(webIds.map(async (webId) => findByWebId(webId)));
+      return pods.filter((pod): pod is PodLookupResult => Boolean(pod));
+    });
+    const podLookupRepository = {
+      findByWebId,
+      findByWebIds,
     };
     const providerFactory = {
       getProvider: vi.fn(async () => ({ issuer: cloudIssuer }) as any),
@@ -173,7 +180,7 @@ describe('ScopedPickWebIdHandler', () => {
       target: { path: '/.account/oidc/pick-webid/' },
     })).rejects.toBeInstanceOf(FoundHttpError);
 
-    expect(interaction.result).toEqual({
+    expect((interaction as any).result).toEqual({
       account: 'account-1',
       login: {
         accountId: aliceWebId,
@@ -185,6 +192,53 @@ describe('ScopedPickWebIdHandler', () => {
 
   it('falls back to the issuer storage when no provisionCode is present', async () => {
     const { handler } = createHandler();
+
+    const view = await handler.getView({
+      method: 'GET',
+      accountId: 'account-1',
+      oidcInteraction: {
+        params: {},
+      } as any,
+      json: {},
+      metadata: {} as any,
+      target: { path: '/.account/oidc/pick-webid/' },
+    });
+
+    expect(view.json.webIds).toEqual([bobWebId]);
+    expect(view.json.entries).toEqual([
+      {
+        webId: bobWebId,
+        storageUrl: `${cloudIssuer}bob/`,
+        storageMode: 'cloud',
+      },
+    ]);
+  });
+
+  it('does not expose split Local Pods on the Cloud route when canonical storage differs from Cloud', async () => {
+    const { handler, podLookupRepository } = createHandler();
+    podLookupRepository.findByWebId.mockImplementation(async (webId: string) => {
+      if (webId === aliceWebId) {
+        return {
+          podId: 'pod-local',
+          accountId: 'account-1',
+          baseUrl: `${cloudIssuer}alice/`,
+          storageUrl: 'https://node-0000.undefineds.co/alice/',
+          webId,
+        };
+      }
+
+      if (webId === bobWebId) {
+        return {
+          podId: 'pod-cloud',
+          accountId: 'account-1',
+          baseUrl: `${cloudIssuer}bob/`,
+          storageUrl: `${cloudIssuer}bob/`,
+          webId,
+        };
+      }
+
+      return undefined;
+    });
 
     const view = await handler.getView({
       method: 'GET',

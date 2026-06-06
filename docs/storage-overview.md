@@ -37,6 +37,9 @@ Xpod 采用分层混合存储模型，支持 **Local (本地单机)** 和 **Serv
 *   **逻辑层**：使用 CSS 原生的 `BaseLoginAccountStorage` (负责过期逻辑) 和 `BaseAccountStore` (负责账号逻辑)。
 *   **数据层**：使用 `DrizzleIndexedStorage`。这是一个通用的 Key-Value 存储适配器，支持 SQLite 和 PostgreSQL。
     *   **单表策略**：所有身份相关数据存储在单一的大表（如 `identity_store`）中，通过 `container` 字段区分数据类型（如 'account', 'session'）。这解决了动态 Key 导致的建表崩溃问题。
+    *   **角色边界**：账号角色存放在 `identity_store` 的 `account` payload 中，不再创建独立的 role 表。
+*   **用量边界**：配额与流量只存 `identity_usage`，通过 `scope_type` / `scope_id` 区分 account 与 pod，不拆分成多张 usage 表，也不存 storage URL 或节点归属。
+*   **控制面边界**：Local 单节点/设备状态归属本机 setup（`XPOD_LOCAL_SETUP_PATH` keyed by `XPOD_PROVIDER_ID`），不应写成集群表。Cloud 需要唯一性、索引和并发约束的控制面状态归属 Cloud cluster 表，目前收敛为 `cluster_node`、`cluster_ddns_record`、`cluster_service_token`。这些都不属于用户 Pod 业务数据，也不应挂在 identity 业务语义下。
 
 ### 2.2 混合数据访问 (MixDataAccessor)
 Pod 数据存储采用“文件权威 + 索引派生”策略：
@@ -67,6 +70,6 @@ Xpod 为每个资源提供了一个 SPARQL 查询端点。
 
 ## 4. 迁移指南
 
-如果您从旧版本升级，由于身份存储架构从“多表”变为“单表”，旧的 SQLite/Postgres 数据将无法读取。
+如果您从旧版本升级，由于身份存储架构已经收敛为 `identity_store` + scoped control-plane tables，旧的 SQLite/Postgres 数据不会在启动路径做隐式兼容迁移。
 *   **开发环境**：建议直接删除 `data/*.db` 文件，重启服务器重新注册。
-*   **生产环境**：需要执行 SQL 迁移脚本，将 `identity_account` 等表的数据迁移至 `identity_store` 表中。
+*   **生产环境**：需要执行显式、可审计的离线迁移脚本，把账号事实迁入 `identity_store`，不要在运行时 bootstrap 中保留旧表别名或旧字段修补逻辑。

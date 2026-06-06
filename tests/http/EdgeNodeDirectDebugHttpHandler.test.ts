@@ -74,7 +74,8 @@ describe('EdgeNodeDirectDebugHttpHandler', () => {
     findNodeMock.mockResolvedValue({
       nodeId: 'node-9',
       baseUrl: 'https://pods.example.com/alice/',
-      metadata: { publicAddress: 'https://edge-1.example:8443/' },
+      publicUrl: 'https://edge-1.example:8443/',
+      metadata: {},
     });
 
     const request = createRequest('GET', '/alice/profile/card?version=1');

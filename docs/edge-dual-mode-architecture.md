@@ -112,7 +112,7 @@ Client → Cluster IP:443
 async updateDnsForNode(node: EdgeNode) {
   if (node.accessMode === 'direct') {
     // DNS → 节点公网 IP
-    await this.dnsProvider.setARecord(node.subdomain, node.publicIp);
+    await this.dnsProvider.setARecord(node.subdomain, node.ipv4);
   } else {
     // DNS → Cluster IP
     await this.dnsProvider.setARecord(node.subdomain, this.clusterIp);

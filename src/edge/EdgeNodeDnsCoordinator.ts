@@ -49,7 +49,7 @@ export class EdgeNodeDnsCoordinator {
 
     const ipv6 = this.extractString(metadata.ipv6);
     const ipv4 = this.extractString(metadata.ipv4);
-    const publicAddress = this.extractString(metadata.publicAddress);
+    const tunnelEntrypoint = this.extractTunnelEntrypoint(metadata.tunnel);
 
     // IPv6 优先
     if (ipv6 && this.isIpv6(ipv6)) {
@@ -57,7 +57,7 @@ export class EdgeNodeDnsCoordinator {
       recordType = 'AAAA';
       this.logger.debug(`Node ${nodeId} 使用 IPv6 地址: ${ipv6}`);
     } else {
-      target = ipv4 ?? publicAddress;
+      target = ipv4 ?? tunnelEntrypoint;
     }
 
     if (!target && hints?.target) {
@@ -119,13 +119,20 @@ export class EdgeNodeDnsCoordinator {
     }
 
     const target = this.extractString((dns as Record<string, unknown>).target)
-      ?? this.extractString(metadata.publicAddress)
+      ?? this.extractTunnelEntrypoint(metadata.tunnel)
       ?? this.extractString(metadata.baseUrl);
 
     if (!target) {
       return undefined;
     }
     return { subdomain, target };
+  }
+
+  private extractTunnelEntrypoint(value: unknown): string | undefined {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    return this.extractString((value as Record<string, unknown>).entrypoint);
   }
 
   private extractString(value: unknown): string | undefined {

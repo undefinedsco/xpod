@@ -27,7 +27,7 @@ interface MigrateRequest {
 /**
  * HTTP Handler for Pod migration operations.
  * 
- * Migration is now instant - it only updates the nodeId in the database.
+ * Migration is now instant - it only updates the Pod routing assignment.
  * Binary files are accessed via presigned URL redirect (302) from object storage.
  * 
  * Endpoints:
@@ -153,7 +153,7 @@ export class PodMigrationHttpHandler extends HttpHandler {
 
   /**
    * Migrate pod to target node.
-   * This is instant - only updates nodeId. Binary files use cross-region fallback.
+   * This is instant - only updates routing ownership. Binary files use cross-region fallback.
    */
   private async handleMigrate(
     podId: string,

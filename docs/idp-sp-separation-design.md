@@ -65,30 +65,22 @@
     solid:storage <https://node1.pods.undefineds.site/alice/>.
 ```
 
-### 数据库表 (IdP)
+### WebID Profile / Pod Storage 关系
+
+IdP 不维护一张额外的 WebID Profile 镜像表。WebID Profile 是 CSS 原生资源，
+`solid:storage` 写在 profile/card 中；Local SP 只负责创建和解析自己能访问的 Pod。
+SP 节点归属写入 `cluster_node.pod_base_urls`，用量与配额写入 `identity_usage`。
 
 ```sql
--- WebID Profile 表
-CREATE TABLE webid_profiles (
-    username TEXT PRIMARY KEY,      -- alice
-    webid_url TEXT NOT NULL,        -- https://id.undefineds.co/alice/profile/card#me
-    storage_url TEXT,               -- https://node1.pods.undefineds.site/alice/
-    storage_mode TEXT DEFAULT 'local-node', -- 'local-node' | 'cloud' | 'external'
-    node_id TEXT,                   -- node1 (关联的 Local 节点)
-    oidc_issuer TEXT NOT NULL,      -- https://id.undefineds.co/
-    account_id TEXT,                -- 关联的账户 ID
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
-
 -- Local Node (SP) 注册表
-CREATE TABLE local_nodes (
-    node_id TEXT PRIMARY KEY,       -- node1
-    domain TEXT NOT NULL,           -- node1.pods.undefineds.site
-    owner_account_id TEXT NOT NULL, -- 谁拥有这个节点
-    status TEXT DEFAULT 'active',   -- active | inactive | suspended
+CREATE TABLE cluster_node (
+    id TEXT PRIMARY KEY,                 -- node1
+    node_type TEXT DEFAULT 'sp',
+    public_url TEXT,                     -- node1.pods.undefineds.site
+    pod_base_urls TEXT,                  -- JSON array of SP-owned Pod/storage URL prefixes
+    connectivity_status TEXT DEFAULT 'unknown',
     created_at TIMESTAMP,
-    last_seen_at TIMESTAMP
+    last_seen TIMESTAMP
 );
 ```
 

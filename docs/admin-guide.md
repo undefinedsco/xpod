@@ -4,17 +4,17 @@
 
 ### Seed File
 
-Copy `config/seeds/admin.example.json` and adjust email, password, pod name, and `webId` for your environment. Pass it via `CSS_SEED_CONFIG` or `--seedConfig`. On first startup, the admin account and pod will be created automatically. If the entry includes `roles` (e.g., `["admin"]`), the system will sync to the `identity_account_role` table.
+Copy `config/seeds/admin.example.json` and adjust email, password, pod name, and `webId` for your environment. Pass it via `CSS_SEED_CONFIG` or `--seedConfig`. On first startup, the admin account and pod will be created automatically.
 
 ### Role Storage
 
-Admin roles are now stored in `identity_account_role(account_id, role)` and can be maintained via SQL or scripts. Legacy fields in `payload` (`roles` / `isAdmin`) are no longer used for authorization - only for backward compatibility.
+Admin roles are stored on the CSS account payload in `identity_store` (`container = 'account'`, `payload.roles`). Xpod no longer creates a separate role table.
 
 ### Storage Implementation
 
 - `yarn local`: Uses SQLite + `.internal/accounts` file storage (via `config/local.json`)
 - `yarn cloud`: Uses PostgreSQL (via `config/cloud.json`)
-- Both modes use the `identity_account_role` database table for admin roles
+- Both modes use the existing CSS account payload for admin roles
 
 ## Authorization
 
@@ -30,7 +30,7 @@ The legacy Admin Console has been removed. All management actions must go throug
 
 ## Bandwidth Usage Tracking
 
-Server mode accumulates ingress/egress traffic in `identity_account_usage` / `identity_pod_usage` tables (`ingress_bytes`, `egress_bytes` fields). Resource writes, reads (including `.sparql` queries) are tracked via `UsageTrackingStore` + `SubgraphSparqlHttpHandler`.
+Server mode accumulates ingress/egress traffic in `identity_usage` (`scope_type`, `scope_id`, `ingress_bytes`, `egress_bytes`). Resource writes, reads (including `.sparql` queries) are tracked via `UsageTrackingStore` + `SubgraphSparqlHttpHandler`.
 
 Default bandwidth limit: 10 MiB/s. Configure via `options_defaultAccountBandwidthLimitBps` in `config/cloud.json`. Set to 0 or remove to disable throttling.
 

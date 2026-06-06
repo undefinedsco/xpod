@@ -126,15 +126,16 @@ suite('Docker Cluster Integration', () => {
       expect(res.status).toBe(200);
     });
 
-    it('Local should proxy JWKS from Cloud IdP', async () => {
-      // Local 模式应该代理 Cloud 的 JWKS
-      const [localJwks, cloudJwks] = await Promise.all([
+    it('Local should serve same-origin OIDC metadata and JWKS', async () => {
+      // Local 的 account/password 可以由 Cloud-backed store 校验，但本地 CSS 颁发的 token
+      // 必须由本地 discovery/JWKS 验证，不能代理 Cloud JWKS。
+      const [localConfig, localJwks] = await Promise.all([
+        fetch(`${SERVICES.local.baseUrl}/.well-known/openid-configuration`).then(r => r.json()),
         fetch(`${SERVICES.local.baseUrl}/.oidc/jwks`).then(r => r.json()),
-        fetch(`${SERVICES.cloud.baseUrl}/.oidc/jwks`).then(r => r.json()),
       ]);
 
+      expect((localConfig as { issuer?: string }).issuer).toContain(`localhost:${LOCAL_PORT}`);
       expect(Array.isArray((localJwks as { keys: unknown[] }).keys)).toBe(true);
-      expect(JSON.stringify(localJwks)).toBe(JSON.stringify(cloudJwks));
     });
 
     it('Local should keep account routes local in SP mode', async () => {
@@ -216,11 +217,11 @@ suite('Docker Cluster Integration', () => {
       expect(result.canRead).toBe(true);
     }, 120000);
 
-    it('Local should accept Cloud IdP token and allow data access', async () => {
+    it('Local should fail safely when a Cloud-issued token is sent to Local storage', async () => {
       // 完整的 IdP/SP 分离测试：
       // 1. 在 Cloud IdP 创建账户
       // 2. 用 Cloud 凭证登录
-      // 3. 用 Cloud token 访问 Local SP 存储
+      // 3. Cloud-issued token 不能直接作为 Local CSS OIDC session 使用；这里验证不会 500。
 
       const cloudCreds = await setupAccount(SERVICES.cloud.baseUrl, 'local-test');
       expect(cloudCreds).not.toBeNull();
@@ -412,8 +413,25 @@ suite('Docker Cluster Integration', () => {
     });
 
     it('should support pod-level quota', async () => {
-      // Use existing seed pod instead of creating a new one
-      const podId = `http://localhost:${LOCAL_PORT}/test/`;
+      const podName = `quota-${Date.now().toString(36)}`;
+      const webId = `http://localhost:${CLOUD_PORT}/${podName}/profile/card#me`;
+
+      const createRes = await fetch(`${SERVICES.local.baseUrl}/provision/pods`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SERVICE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          podName,
+          webId,
+        }),
+      });
+      expect([200, 201]).toContain(createRes.status);
+
+      const created = await createRes.json() as { podUrl?: string };
+      expect(created.podUrl).toBeTruthy();
+      const podId = created.podUrl!;
 
       // Set pod quota
       const setRes = await fetch(`${SERVICES.local.baseUrl}/v1/quota/pods/${encodeURIComponent(podId)}`, {

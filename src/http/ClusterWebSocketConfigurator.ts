@@ -185,8 +185,12 @@ export class ClusterWebSocketConfigurator {
         return entrypoint;
       }
     }
-    if (typeof metadata?.publicAddress === 'string') {
-      return metadata.publicAddress;
+    const managedTunnel = metadata?.managedTunnel;
+    if (managedTunnel && typeof managedTunnel === 'object') {
+      const endpoint = (managedTunnel as Record<string, unknown>).endpoint;
+      if (typeof endpoint === 'string' && endpoint.trim().length > 0) {
+        return endpoint;
+      }
     }
     return undefined;
   }

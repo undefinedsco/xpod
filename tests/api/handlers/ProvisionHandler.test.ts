@@ -1,5 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { registerProvisionRoutes, registerProvisionStatusRoute } from '../../../src/api/handlers/ProvisionHandler';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../../../src/api/handlers/ProvisionHandler';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { ServerResponse } from 'node:http';
 import { ProvisionCodeCodec } from '../../../src/provision/ProvisionCodeCodec';
@@ -118,12 +121,14 @@ describe('ProvisionHandler', () => {
       expect(response.statusCode).toBe(201);
       const body = JSON.parse((response.end as any).mock.calls[0][0]);
       expect(body.spDomain).toBe('abc12345-6789-0000-0000-000000000000.undefineds.site');
+      expect(body.publicUrl).toBe('https://abc12345-6789-0000-0000-000000000000.undefineds.site/');
       expect(body.provisionCode).toBeDefined();
 
       // provisionCode should contain spDomain
       const codec = new ProvisionCodeCodec(baseUrl);
       const payload = codec.decode(body.provisionCode);
       expect(payload).toBeDefined();
+      expect(payload!.spUrl).toBe('https://sp.example.com');
       expect(payload!.spDomain).toBe('abc12345-6789-0000-0000-000000000000.undefineds.site');
 
       // Should have called updateNodeMode with ipv4 and subdomain
@@ -135,6 +140,93 @@ describe('ProvisionHandler', () => {
           subdomain: 'abc12345-6789-0000-0000-000000000000',
         }),
       );
+    });
+
+    it('should allocate a stable managed publicUrl when none is supplied', async () => {
+      routes = {};
+      mockServer = {
+        post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+        get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+        delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
+      } as unknown as ApiServer;
+
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        baseUrl,
+        baseStorageDomain: 'nodes.undefineds.co',
+      });
+
+      mockRepo.registerSpNode.mockImplementation(async (input: { publicUrl: string; nodeId?: string }) => ({
+        nodeId: input.nodeId,
+        nodeToken: 'nt-xxx',
+        serviceToken: 'st-xxx',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      }));
+
+      const request = createMockRequest({ domainMode: 'managed', localPort: 5737 });
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body.nodeId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(body.spDomain).toBe(`${body.nodeId}.nodes.undefineds.co`);
+      expect(body.publicUrl).toBe(`https://${body.spDomain}/`);
+      expect(mockRepo.registerSpNode).toHaveBeenCalledWith(expect.objectContaining({
+        nodeId: body.nodeId,
+        publicUrl: body.publicUrl,
+      }));
+
+      const codec = new ProvisionCodeCodec(baseUrl);
+      const payload = codec.decode(body.provisionCode);
+      expect(payload).toBeDefined();
+      expect(payload!.spUrl).toBe(body.publicUrl);
+      expect(payload!.spDomain).toBe(body.spDomain);
+    });
+
+    it('should reuse a caller supplied nodeId for managed publicUrl allocation', async () => {
+      routes = {};
+      mockServer = {
+        post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+        get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+        delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
+      } as unknown as ApiServer;
+
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        baseUrl,
+        baseStorageDomain: 'nodes.undefineds.co',
+      });
+
+      mockRepo.registerSpNode.mockImplementation(async (input: { publicUrl: string; nodeId?: string; nodeToken?: string }) => ({
+        nodeId: input.nodeId,
+        nodeToken: input.nodeToken,
+        serviceToken: 'st-xxx',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      }));
+
+      const request = createMockRequest({
+        domainMode: 'managed',
+        nodeId: '868c9f63-6b0e-4255-8f7f-f2e347908ba4',
+        nodeToken: 'stable-node-token',
+        localPort: 5737,
+      });
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse((response.end as any).mock.calls[0][0]);
+      expect(body.nodeId).toBe('868c9f63-6b0e-4255-8f7f-f2e347908ba4');
+      expect(body.nodeToken).toBe('stable-node-token');
+      expect(body.spDomain).toBe('868c9f63-6b0e-4255-8f7f-f2e347908ba4.nodes.undefineds.co');
+      expect(body.publicUrl).toBe('https://868c9f63-6b0e-4255-8f7f-f2e347908ba4.nodes.undefineds.co/');
+      expect(mockRepo.registerSpNode).toHaveBeenCalledWith(expect.objectContaining({
+        nodeId: body.nodeId,
+        nodeToken: 'stable-node-token',
+        publicUrl: body.publicUrl,
+      }));
     });
 
     it('should not allocate spDomain for self-managed domains even when baseStorageDomain is configured', async () => {
@@ -219,6 +311,48 @@ describe('ProvisionHandler', () => {
           subdomain: 'node-0000',
         }),
       );
+    });
+
+    it('should reject a managed spDomain that is allocated to another node', async () => {
+      routes = {};
+      const mockDdnsRepo = {
+        getRecord: vi.fn().mockResolvedValue({
+          subdomain: 'node-0000',
+          domain: 'undefineds.co',
+          nodeId: 'other-node',
+          status: 'active',
+        }),
+      };
+      mockServer = {
+        post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+        get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+        delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
+      } as unknown as ApiServer;
+
+      registerProvisionRoutes(mockServer, {
+        repository: mockRepo,
+        ddnsRepo: mockDdnsRepo as any,
+        baseUrl,
+        baseStorageDomain: 'undefineds.co',
+      });
+
+      const request = createMockRequest({
+        domainMode: 'managed',
+        nodeId: 'node-1',
+        spDomain: 'node-0000.undefineds.co',
+        localPort: 5737,
+      });
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse((response.end as any).mock.calls[0][0])).toEqual({
+        error: 'spDomain already allocated',
+        spDomain: 'node-0000.undefineds.co',
+      });
+      expect(mockRepo.registerSpNode).not.toHaveBeenCalled();
+      expect(mockRepo.updateNodeMode).not.toHaveBeenCalled();
     });
 
     it('should provision a managed Cloudflare tunnel from client tunnelToken without cfd_tunnel API', async () => {
@@ -593,8 +727,17 @@ describe('ProvisionHandler', () => {
       expect(body.nodeToken).toBe('stable-node-token');
     });
 
-    it('should reject missing publicUrl', async () => {
+    it('should reject missing publicUrl when no managed storage domain is configured', async () => {
       const request = createMockRequest({});
+      const response = createMockResponse();
+
+      await routes['POST /provision/nodes'](request, response, {});
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('should reject missing publicUrl for self-managed registration', async () => {
+      const request = createMockRequest({ domainMode: 'self-managed' });
       const response = createMockResponse();
 
       await routes['POST /provision/nodes'](request, response, {});
@@ -627,10 +770,20 @@ describe('ProvisionHandler', () => {
 describe('ProvisionStatusHandler', () => {
   let mockServer: ApiServer;
   let routes: Record<string, Function> = {};
+  let originalProvisionEnv: Record<string, string | undefined>;
+  const provisionEnvKeys = [
+    'XPOD_NODE_ID',
+    'XPOD_NODE_TOKEN',
+    'XPOD_SERVICE_TOKEN',
+    'XPOD_PROVISION_CODE',
+    'XPOD_PROVISION_URL',
+    'XPOD_SP_DOMAIN',
+  ];
 
   beforeEach(() => {
     vi.clearAllMocks();
     routes = {};
+    originalProvisionEnv = Object.fromEntries(provisionEnvKeys.map((key) => [key, process.env[key]]));
 
     mockServer = {
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
@@ -639,11 +792,41 @@ describe('ProvisionStatusHandler', () => {
     } as unknown as ApiServer;
   });
 
+  afterEach(() => {
+    for (const key of provisionEnvKeys) {
+      const original = originalProvisionEnv[key];
+      if (original === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original;
+      }
+    }
+  });
+
   const createMockResponse = (): ServerResponse => ({
     statusCode: 0,
     setHeader: vi.fn(),
     end: vi.fn(),
   } as unknown as ServerResponse);
+
+  const parseResponseBody = (response: ServerResponse): any => JSON.parse((response.end as any).mock.calls[0][0]);
+
+  function makeProvisionCode(options: {
+    baseUrl?: string;
+    spUrl?: string;
+    serviceToken?: string;
+    nodeId?: string;
+    spDomain?: string;
+    exp: number;
+  }): string {
+    return new ProvisionCodeCodec(options.baseUrl ?? 'https://id.undefineds.co/').encode({
+      spUrl: options.spUrl ?? 'https://node.example/',
+      serviceToken: options.serviceToken ?? 'st-old',
+      nodeId: options.nodeId ?? 'abc123',
+      spDomain: options.spDomain,
+      exp: options.exp,
+    });
+  }
 
   it('should register GET /provision/status as public', () => {
     registerProvisionStatusRoute(mockServer, {
@@ -672,6 +855,7 @@ describe('ProvisionStatusHandler', () => {
     expect(body.cloudUrl).toBe('https://id.undefineds.co');
     expect(body.nodeId).toBe('abc123');
     expect(body.spDomain).toBe('abc123.undefineds.site');
+    expect(body.provisionCode).toBe('test-code');
     expect(body.provisionUrl).toContain('provisionCode=test-code');
   });
 
@@ -689,5 +873,270 @@ describe('ProvisionStatusHandler', () => {
     expect(body.registered).toBe(false);
     expect(body.cloudUrl).toBeUndefined();
     expect(body.nodeId).toBeUndefined();
+  });
+
+  it('should keep registered status readable when no provisionCode has been issued yet', async () => {
+    const fetchMock = vi.fn();
+
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://api.undefineds.co',
+      cloudBaseUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      serviceToken: 'st-old',
+      fetchImpl: fetchMock as any,
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const body = parseResponseBody(response);
+    expect(body).toMatchObject({
+      registered: true,
+      cloudUrl: 'https://api.undefineds.co',
+      nodeId: 'abc123',
+    });
+    expect(body.provisionCode).toBeUndefined();
+  });
+
+  it('should return a fresh provisionCode without refreshing Cloud', async () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const provisionCode = makeProvisionCode({
+      exp: Math.floor(nowMs / 1000) + 3600,
+    });
+    const fetchMock = vi.fn();
+
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://api.undefineds.co',
+      cloudBaseUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      nodeToken: 'nt-old',
+      serviceToken: 'st-old',
+      publicUrl: 'https://node.example',
+      provisionCode,
+      fetchImpl: fetchMock as any,
+      now: () => nowMs,
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const body = parseResponseBody(response);
+    expect(body.provisionCode).toBe(provisionCode);
+    expect(body.publicUrl).toBe('https://node.example/');
+  });
+
+  it('should lazily refresh an expired provisionCode before returning status', async () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const expiredCode = makeProvisionCode({
+      serviceToken: 'st-old',
+      exp: Math.floor(nowMs / 1000) - 60,
+    });
+    const freshCode = makeProvisionCode({
+      serviceToken: 'st-new',
+      spDomain: 'abc123.undefineds.site',
+      exp: Math.floor(nowMs / 1000) + 3600,
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        nodeId: 'abc123',
+        nodeToken: 'nt-new',
+        serviceToken: 'st-new',
+        provisionCode: freshCode,
+        publicUrl: 'https://node.example/',
+        spDomain: 'abc123.undefineds.site',
+      }),
+    }));
+    const persistState = vi.fn();
+
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://api.undefineds.co',
+      cloudBaseUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      nodeToken: 'nt-old',
+      serviceToken: 'st-old',
+      publicUrl: 'https://node.example',
+      spDomain: 'abc123.undefineds.site',
+      localPort: 5737,
+      tunnelToken: 'tunnel-token',
+      provisionCode: expiredCode,
+      persistState,
+      fetchImpl: fetchMock as any,
+      now: () => nowMs,
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.undefineds.co/provision/nodes');
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(requestBody).toMatchObject({
+      publicUrl: 'https://node.example/',
+      nodeId: 'abc123',
+      nodeToken: 'nt-old',
+      serviceToken: 'st-old',
+      domainMode: 'managed',
+      spDomain: 'abc123.undefineds.site',
+      localPort: 5737,
+      tunnelToken: 'tunnel-token',
+      tunnelMode: 'client',
+    });
+    const body = parseResponseBody(response);
+    expect(body.provisionCode).toBe(freshCode);
+    expect(body.provisionUrl).toContain(encodeURIComponent(freshCode));
+    expect(process.env.XPOD_PROVISION_CODE).toBe(freshCode);
+    expect(process.env.XPOD_PROVISION_URL).toContain(encodeURIComponent(freshCode));
+    expect(persistState).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: 'abc123',
+      nodeToken: 'nt-new',
+      serviceToken: 'st-new',
+      provisionCode: freshCode,
+      publicUrl: 'https://node.example/',
+      spDomain: 'abc123.undefineds.site',
+      cloudUrl: 'https://api.undefineds.co',
+      cloudBaseUrl: 'https://id.undefineds.co',
+    }));
+
+    const secondResponse = createMockResponse();
+    await routes['GET /provision/status']({}, secondResponse, {});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(parseResponseBody(secondResponse).provisionCode).toBe(freshCode);
+  });
+
+  it('should update the shared Local setup file with refreshed provision state', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-provision-setup-'));
+    const setupPath = path.join(dir, 'xpod-cloud-registration.json');
+    fs.writeFileSync(setupPath, JSON.stringify({
+      local: {
+        nodeId: 'old-node',
+        nodeToken: 'old-node-token',
+        serviceToken: 'old-service-token',
+        provisionCode: 'old-code',
+        publicUrl: 'https://old.example/',
+        provisionUrl: 'https://id.undefineds.co/.account/?provisionCode=old-code',
+        cloudIdentityUrl: 'https://id.undefineds.co',
+        cloudApiUrl: 'https://api.undefineds.co',
+        registeredAt: 1760000000000,
+      },
+    }, null, 2), 'utf8');
+
+    const writer = createLocalSetupProvisionStateWriter(setupPath, 'local');
+    expect(writer).toBeDefined();
+    await writer!({
+      nodeId: 'node-new',
+      nodeToken: 'node-token-new',
+      serviceToken: 'service-token-new',
+      provisionCode: 'fresh-code',
+      publicUrl: 'https://node-new.undefineds.co/',
+      spDomain: 'node-new.undefineds.co',
+      cloudUrl: 'https://api.undefineds.co',
+      cloudBaseUrl: 'https://id.undefineds.co',
+    });
+
+    const next = JSON.parse(fs.readFileSync(setupPath, 'utf8')).local;
+    expect(next).toMatchObject({
+      nodeId: 'node-new',
+      nodeToken: 'node-token-new',
+      serviceToken: 'service-token-new',
+      provisionCode: 'fresh-code',
+      publicUrl: 'https://node-new.undefineds.co/',
+      spDomain: 'node-new.undefineds.co',
+      provisionUrl: `https://id.undefineds.co/.account/?provisionCode=${encodeURIComponent('fresh-code')}`,
+      cloudIdentityUrl: 'https://id.undefineds.co/',
+      cloudApiUrl: 'https://api.undefineds.co/',
+      registeredAt: 1760000000000,
+    });
+  });
+
+  it('should fail status instead of returning an expired provisionCode when refresh fails', async () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const expiredCode = makeProvisionCode({
+      exp: Math.floor(nowMs / 1000) - 60,
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      text: async () => 'Cloud unavailable',
+    }));
+
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://api.undefineds.co',
+      cloudBaseUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      nodeToken: 'nt-old',
+      serviceToken: 'st-old',
+      publicUrl: 'https://node.example',
+      provisionCode: expiredCode,
+      fetchImpl: fetchMock as any,
+      now: () => nowMs,
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    expect(response.statusCode).toBe(503);
+    expect(parseResponseBody(response)).toMatchObject({
+      registered: true,
+      error: 'provision_refresh_failed',
+    });
+  });
+
+  it('should not return an expired provisionCode when refresh inputs are incomplete', async () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const expiredCode = makeProvisionCode({
+      exp: Math.floor(nowMs / 1000) - 60,
+    });
+    const fetchMock = vi.fn();
+
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://api.undefineds.co',
+      cloudBaseUrl: 'https://id.undefineds.co',
+      nodeId: 'abc123',
+      provisionCode: expiredCode,
+      fetchImpl: fetchMock as any,
+      now: () => nowMs,
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    expect(response.statusCode).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(parseResponseBody(response)).toMatchObject({
+      registered: true,
+      error: 'provision_refresh_unavailable',
+    });
+  });
+
+  it('should not treat malformed self-contained provisionCode as usable when refresh fails', async () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      text: async () => 'Cloud unavailable',
+    }));
+
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://api.undefineds.co',
+      nodeId: 'abc123',
+      nodeToken: 'nt-old',
+      serviceToken: 'st-old',
+      publicUrl: 'https://node.example',
+      provisionCode: 'not-json.signature',
+      fetchImpl: fetchMock as any,
+      now: () => nowMs,
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    expect(response.statusCode).toBe(503);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

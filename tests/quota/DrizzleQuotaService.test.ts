@@ -171,5 +171,45 @@ describe('DrizzleQuotaService', () => {
     });
     expect(entitlementProvider.getAccountEntitlement).not.toHaveBeenCalled();
   });
-});
 
+  it('设置 Pod 配额时使用 Pod 所属 accountId', async () => {
+    const entitlementProvider = createEntitlementProvider();
+    const service = new DrizzleQuotaService({
+      identityDbUrl: 'postgres://localhost/test',
+      entitlementProvider,
+    });
+    const accountRepo = last(accountRepoInstances);
+    const usageRepo = last(usageRepoInstances);
+
+    accountRepo.getPodInfo.mockResolvedValueOnce({
+      accountId: 'acc-1',
+      baseUrl: 'https://node-1.example/alice/',
+    });
+
+    await service.setPodQuota('pod-1', {
+      storageLimitBytes: 2048,
+      bandwidthLimitBps: 4096,
+    });
+
+    expect(usageRepo.setPodStorageLimit).toHaveBeenCalledWith('pod-1', 'acc-1', 2048);
+    expect(usageRepo.setPodBandwidthLimit).toHaveBeenCalledWith('pod-1', 'acc-1', 4096);
+  });
+
+  it('无法确定 Pod 所属 accountId 时拒绝写入占位 usage owner', async () => {
+    const entitlementProvider = createEntitlementProvider();
+    const service = new DrizzleQuotaService({
+      identityDbUrl: 'postgres://localhost/test',
+      entitlementProvider,
+    });
+    const accountRepo = last(accountRepoInstances);
+    const usageRepo = last(usageRepoInstances);
+
+    accountRepo.getPodInfo.mockResolvedValueOnce(undefined);
+    usageRepo.getPodUsage.mockResolvedValueOnce(undefined);
+
+    await expect(service.setPodQuota('pod-missing', {
+      storageLimitBytes: 2048,
+    })).rejects.toThrow('Pod pod-missing not found or has no associated account');
+    expect(usageRepo.setPodStorageLimit).not.toHaveBeenCalled();
+  });
+});

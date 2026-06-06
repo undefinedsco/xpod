@@ -12,7 +12,9 @@ describe('EdgeNodeHealthProbeService', () => {
     const repo = {
       getNodeMetadata: vi.fn().mockResolvedValue({
         metadata: {
-          publicAddress: 'https://node.example/ping',
+          tunnel: {
+            entrypoint: 'https://node.example/ping',
+          },
         },
       }),
       mergeNodeMetadata: vi.fn(),

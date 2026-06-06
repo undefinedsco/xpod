@@ -71,7 +71,7 @@ export interface ChatHandlerOptions {
  * POST /v1/messages - Create a message (Anthropic/OpenAI Threads compatible)
  * GET  /v1/models - List available models
  * 
- * Supports both Solid Token (frontend) and API Key (third-party)
+ * Supports both Solid Token (frontend) and CSS client credentials (third-party)
  */
 export function registerChatRoutes(server: ApiServer, options: ChatHandlerOptions): void {
   const logger = getLoggerFor('ChatHandler');

@@ -213,6 +213,28 @@ describe('EdgeNodeSignalHandler', () => {
       const body = res._body();
       expect(body.metadata.connectivityStatus).toBe('unreachable');
     });
+
+    it('心跳写入 directCandidates 和 tunnel 作为运行时入口', async () => {
+      const handler = register();
+      const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+      const req = createMockRequest({
+        directCandidates: [ 'https://edge.example/' ],
+        tunnel: {
+          status: 'active',
+          entrypoint: 'https://tunnel.example/',
+        },
+      }, auth);
+      const res = createMockResponse();
+      await handler(req, res, {});
+
+      expect(res.statusCode).toBe(200);
+      const metadata = repo.updateNodeHeartbeat.mock.calls[0][1];
+      expect(metadata.directCandidates).toEqual([ 'https://edge.example/' ]);
+      expect(metadata.tunnel).toEqual({
+        status: 'active',
+        entrypoint: 'https://tunnel.example/',
+      });
+    });
   });
 
   // ── pods 更新 ──

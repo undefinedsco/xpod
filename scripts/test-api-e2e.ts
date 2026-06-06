@@ -24,6 +24,7 @@ const CLIENT_ID = process.env.SOLID_CLIENT_ID;
 const CLIENT_SECRET = process.env.SOLID_CLIENT_SECRET;
 const WEBID = process.env.SOLID_WEBID;
 const API_SERVER_URL = process.env.API_SERVER_URL || 'http://localhost:3001';
+const API_KEY = `sk-${Buffer.from(`${CLIENT_ID ?? ''}:${CLIENT_SECRET ?? ''}`).toString('base64')}`;
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
   console.error('Missing SOLID_CLIENT_ID or SOLID_CLIENT_SECRET in .env.local');
@@ -61,41 +62,6 @@ async function getAccessToken(): Promise<string> {
   const data = await response.json() as any;
   console.log(`Got access token (expires in ${data.expires_in}s)`);
   return data.access_token;
-}
-
-async function storeApiKey(token: string): Promise<void> {
-  console.log('\n--- Store API Key in API Server ---');
-  
-  const response = await fetch(`${API_SERVER_URL}/v1/keys`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      clientId: CLIENT_ID,
-      clientSecret: CLIENT_SECRET,
-      displayName: 'E2E Test Key',
-    }),
-  });
-
-  console.log(`Status: ${response.status}`);
-  const data = await response.json();
-  console.log('Response:', JSON.stringify(data, null, 2));
-}
-
-async function listApiKeys(token: string): Promise<void> {
-  console.log('\n--- List API Keys ---');
-  
-  const response = await fetch(`${API_SERVER_URL}/v1/keys`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-    },
-  });
-
-  console.log(`Status: ${response.status}`);
-  const data = await response.json();
-  console.log('Keys:', JSON.stringify(data, null, 2));
 }
 
 async function testListProviders(token: string) {
@@ -144,13 +110,12 @@ async function testListCredentials(token: string) {
 
 async function testChatCompletion() {
   console.log('\n--- Test: Chat Completion via API Server ---');
-  
-  // API Server expects Bearer <client_id>, then looks up secret from DB
+
   const response = await fetch(`${API_SERVER_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${CLIENT_ID}`,
+      'Authorization': `Bearer ${API_KEY}`,
     },
     body: JSON.stringify({
       model: 'gemini-2.0-flash',
@@ -172,7 +137,7 @@ async function testListModels() {
 
   const response = await fetch(`${API_SERVER_URL}/v1/models`, {
     headers: {
-      'Authorization': `Bearer ${CLIENT_ID}`,
+      'Authorization': `Bearer ${API_KEY}`,
     },
   });
 
@@ -186,7 +151,7 @@ async function testVectorStatus() {
 
   const response = await fetch(`${API_SERVER_URL}/v1/vectors/status`, {
     headers: {
-      'Authorization': `Bearer ${CLIENT_ID}`,
+      'Authorization': `Bearer ${API_KEY}`,
     },
   });
 
@@ -209,7 +174,7 @@ async function testEmbeddings() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${CLIENT_ID}`,
+      'Authorization': `Bearer ${API_KEY}`,
     },
     body: JSON.stringify({
       model: 'text-embedding-004',
@@ -268,16 +233,12 @@ async function main() {
     // 1. Get access token from CSS
     const token = await getAccessToken();
 
-    // 2. Store API Key in API Server (so it can be used for auth)
-    await storeApiKey(token);
-    await listApiKeys(token);
-
-    // 3. Test reading Pod data directly
+    // 2. Test reading Pod data directly
     await testListProviders(token);
     await testListCredentials(token);
 
-    // 4. Test API Server endpoints using API Key auth
-    console.log('\n=== Testing API Server with API Key ===');
+    // 3. Test API Server endpoints using CSS client credentials as sk-* wrapper.
+    console.log('\n=== Testing API Server with CSS Client Credentials ===');
     await testListModels();
     const chatSuccess = await testChatCompletion();
 

@@ -3,7 +3,8 @@
  * 
  * Authenticated caller context.
  * - Solid Token: user provides Bearer or DPoP token
- * - API Key: third-party provides client_id, API Server exchanges for token
+ * - CSS client credentials: third-party provides client_id/client_secret,
+ *   API Server exchanges them for a Solid token
  * - Node Token: edge node provides node API key
  */
 
@@ -17,7 +18,7 @@ export interface SolidAuthContext {
   accessToken?: string;
   tokenType?: 'Bearer' | 'DPoP';
   dpopProof?: string;
-  /** Whether this was authenticated via API Key (client credentials) */
+  /** Whether this was authenticated via the sk-* client credentials wrapper */
   viaApiKey?: boolean;
 }
 

@@ -34,6 +34,7 @@ export interface ScopedPickWebIdHandlerOptions {
   webIdStore: WebIdStore;
   providerFactory: ProviderFactory;
   identityDbUrl?: string;
+  provisionBaseUrl?: string;
   podLookupRepository?: PodWebIdLookupRepository;
   fetch?: FetchLike;
 }
@@ -41,6 +42,7 @@ export interface ScopedPickWebIdHandlerOptions {
 export interface PodWebIdLookupRepository {
   findByWebId: (webId: string) => Promise<PodLookupResult | undefined>;
   findAllByWebId?: (webId: string) => Promise<PodLookupResult[]>;
+  findByWebIds?: (webIds: string[]) => Promise<PodLookupResult[]>;
 }
 
 interface WebIdEntry extends Record<string, Json | undefined> {
@@ -60,6 +62,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
   private readonly logger = getLoggerFor(this);
   private readonly webIdStore: WebIdStore;
   private readonly providerFactory: ProviderFactory;
+  private readonly provisionBaseUrl?: string;
   private readonly podLookupRepository?: PodWebIdLookupRepository;
   private readonly fetch: FetchLike;
 
@@ -67,6 +70,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     super();
     this.webIdStore = options.webIdStore;
     this.providerFactory = options.providerFactory;
+    this.provisionBaseUrl = normalizeOptionalUrl(options.provisionBaseUrl);
     this.podLookupRepository = options.podLookupRepository ??
       (options.identityDbUrl ? new PodLookupRepository(getIdentityDatabase(options.identityDbUrl)) : undefined);
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -151,10 +155,18 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     }
 
     try {
-      const pods = this.podLookupRepository.findAllByWebId
-        ? await this.podLookupRepository.findAllByWebId(webId)
-        : await this.podLookupRepository.findByWebId(webId).then((pod) => pod ? [pod] : []);
-      return pods.find((pod) => matchesTargetStorage(pod, targetStorageUrl));
+      if (this.podLookupRepository.findAllByWebId) {
+        const pods = await this.podLookupRepository.findAllByWebId(webId);
+        return pods.find((pod) => matchesTargetStorage(pod, targetStorageUrl));
+      }
+
+      if (this.podLookupRepository.findByWebIds) {
+        const pods = await this.podLookupRepository.findByWebIds([webId]);
+        return pods.find((pod) => matchesTargetStorage(pod, targetStorageUrl));
+      }
+
+      const pod = await this.podLookupRepository.findByWebId(webId);
+      return pod && matchesTargetStorage(pod, targetStorageUrl) ? pod : undefined;
     } catch (error) {
       this.logger.warn(`Pod lookup unavailable for WebID ${webId}: ${error}`);
       return undefined;
@@ -170,7 +182,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
       return { storageUrl: ensureTrailingSlash(provider.issuer) };
     }
 
-    const payload = new ProvisionCodeCodec(provider.issuer).decode(provisionCode);
+    const payload = new ProvisionCodeCodec(this.provisionBaseUrl ?? provider.issuer).decode(provisionCode);
     if (!payload) {
       throw new BadRequestHttpError('Invalid or expired provisionCode.');
     }
@@ -269,8 +281,14 @@ function ensureTrailingSlash(url: string): string {
   return url.replace(/\/+$/u, '') + '/';
 }
 
+function normalizeOptionalUrl(url: string | undefined): string | undefined {
+  const trimmed = url?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 function matchesTargetStorage(pod: PodLookupResult, targetStorageUrl: string): boolean {
-  const candidateUrls = [pod.storageUrl, pod.baseUrl].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const candidateUrls = (pod.storageUrl ? [pod.storageUrl] : [pod.baseUrl])
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
   const targetRoot = deriveStorageRoot(targetStorageUrl);
   if (!targetRoot) {
     return false;

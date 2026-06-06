@@ -51,10 +51,10 @@ Xpod 在 `config/xpod.base.json` 中覆盖了 CSS 的 `BaseHttpHandler`，将自
 ## 4. 代理 / 重定向层
 
 - **`EdgeNodeProxyHttpHandler`**  
-  - 当节点处于 proxy 模式时匹配请求，基于节点心跳中的 `publicAddress`/隧道入口执行反向代理。  
+  - 当节点处于 proxy 模式时匹配请求，基于节点心跳中的隧道入口执行反向代理。
   - 对响应追加 `X-Xpod-Edge-Node`、`X-Xpod-Proxy-Mode` 等 headers，方便排查。
 - **`EdgeNodeRedirectHttpHandler`**（可选）  
-  - 仅用于调试阶段，按照节点 metadata 中的 `publicAddress` 进行 307 跳转。默认为关闭状态，避免真实流量暴露内部入口。
+  - 仅用于调试阶段，按照节点 `public_url` 或隧道入口进行 307 跳转。默认为关闭状态，避免真实流量暴露内部入口。
 
 ---
 

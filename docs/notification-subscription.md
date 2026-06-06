@@ -109,7 +109,7 @@ export class ClusterWebSocketConfigurator {
     
     if (connectivity.accessMode === 'direct') {
       // 307 重定向到节点直连地址
-      this.sendRedirect(socket, `wss://${connectivity.publicIp}${request.url}`);
+      this.sendRedirect(socket, `wss://${connectivity.ipv4}${request.url}`);
     } else {
       // 通过 FRP 隧道代理
       this.wsProxy.ws(request, socket, head, { target: tunnelUrl });

@@ -24,6 +24,14 @@ export interface ProvisionCodePayload {
   exp: number;
 }
 
+function normalizeProvisionBaseUrl(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).toString().replace(/\/+$/, '') + '/';
+  } catch {
+    return baseUrl.trim().replace(/\/+$/, '') + '/';
+  }
+}
+
 export class ProvisionCodeCodec {
   private readonly secret: Buffer;
 
@@ -31,8 +39,9 @@ export class ProvisionCodeCodec {
    * @param baseUrl — Cloud 的 baseUrl，用于派生签名密钥
    */
   public constructor(baseUrl: string) {
+    const normalizedBaseUrl = normalizeProvisionBaseUrl(baseUrl);
     this.secret = Buffer.from(
-      createHmac('sha256', 'xpod-provision').update(baseUrl).digest(),
+      createHmac('sha256', 'xpod-provision').update(normalizedBaseUrl).digest(),
     );
   }
 

@@ -1,8 +1,12 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
-import { executeStatement, executeQuery, toDbTimestamp, fromDbTimestamp } from './db';
+import { ensureCloudClusterTables, executeStatement, executeQuery, toDbTimestamp, fromDbTimestamp } from './db';
 import { edgeNodes } from './schema';
+
+export interface EdgeNodeRepositoryOptions {
+  ensureClusterTables?: boolean;
+}
 
 export interface EdgeNodeSummary {
   nodeId: string;
@@ -54,9 +58,19 @@ export interface SpNodeInfo {
 }
 
 export class EdgeNodeRepository {
-  public constructor(private readonly db: IdentityDatabase) {}
+  private readonly ready: Promise<void>;
+
+  public constructor(
+    private readonly db: IdentityDatabase,
+    options: EdgeNodeRepositoryOptions = {},
+  ) {
+    this.ready = options.ensureClusterTables === false
+      ? Promise.resolve()
+      : ensureCloudClusterTables(db);
+  }
 
   public async listNodes(): Promise<EdgeNodeSummary[]> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
       SELECT en.id,
              en.display_name,
@@ -65,13 +79,8 @@ export class EdgeNodeRepository {
              en.updated_at,
              en.last_seen,
              en.metadata,
-             COALESCE(pods.count, 0) AS pod_count
-      FROM identity_edge_node en
-      LEFT JOIN (
-        SELECT node_id, COUNT(*) AS count
-        FROM identity_edge_node_pod
-        GROUP BY node_id
-      ) pods ON pods.node_id = en.id
+             en.pod_base_urls
+      FROM cluster_node en
       ORDER BY en.created_at ASC
     `);
 
@@ -79,11 +88,12 @@ export class EdgeNodeRepository {
       const createdAt = fromDbTimestamp(row.created_at);
       const updatedAt = fromDbTimestamp(row.updated_at);
       const lastSeen = fromDbTimestamp(row.last_seen);
+      const podBaseUrls = parsePodBaseUrls(row.pod_base_urls);
       return {
         nodeId: String(row.id),
         displayName: row.display_name == null ? undefined : String(row.display_name),
         nodeType: (['center', 'edge', 'sp'].includes(row.node_type) ? row.node_type : 'edge') as 'center' | 'edge' | 'sp',
-        podCount: Number(row.pod_count ?? 0),
+        podCount: podBaseUrls.length,
         createdAt: createdAt?.toISOString(),
         updatedAt: updatedAt?.toISOString(),
         lastSeen: lastSeen?.toISOString(),
@@ -92,7 +102,8 @@ export class EdgeNodeRepository {
     });
   }
 
-  public async createNode(displayName?: string, _accountId?: string): Promise<CreateEdgeNodeResult> {
+  public async createNode(displayName?: string): Promise<CreateEdgeNodeResult> {
+    await this.ready;
     const nodeId = randomUUID();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -100,7 +111,7 @@ export class EdgeNodeRepository {
     const ts = toDbTimestamp(this.db, now);
 
     await executeStatement(this.db, sql`
-      INSERT INTO identity_edge_node (id, display_name, token_hash, created_at, updated_at)
+      INSERT INTO cluster_node (id, display_name, token_hash, created_at, updated_at)
       VALUES (${nodeId}, ${displayName ?? null}, ${tokenHash}, ${ts}, ${ts})
     `);
 
@@ -111,17 +122,11 @@ export class EdgeNodeRepository {
     };
   }
 
-  /**
-   * Node/account 关系待产品化后单独建模；当前阶段不再在节点表上持久化账号归属。
-   */
-  public async getNodeOwner(_nodeId: string): Promise<string | undefined> {
-    return undefined;
-  }
-
   public async getNodeSecret(nodeId: string): Promise<EdgeNodeSecret | undefined> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
       SELECT id, display_name, token_hash, node_type, metadata
-      FROM identity_edge_node
+      FROM cluster_node
       WHERE id = ${nodeId}
       LIMIT 1
     `);
@@ -139,11 +144,12 @@ export class EdgeNodeRepository {
   }
 
   public async updateNodeHeartbeat(nodeId: string, metadata: Record<string, unknown> | null, timestamp: Date): Promise<void> {
+    await this.ready;
     const payload = metadata == null ? null : JSON.stringify(metadata);
     const ts = toDbTimestamp(this.db, timestamp);
 
     await executeStatement(this.db, sql`
-      UPDATE identity_edge_node
+      UPDATE cluster_node
       SET metadata = ${payload},
           last_seen = ${ts},
           updated_at = ${ts}
@@ -159,12 +165,13 @@ export class EdgeNodeRepository {
     connectivityStatus?: 'unknown' | 'reachable' | 'unreachable';
     capabilities?: Record<string, unknown>;
   }): Promise<void> {
+    await this.ready;
     const capabilitiesPayload = options.capabilities ? JSON.stringify(options.capabilities) : null;
     const now = new Date();
     const ts = toDbTimestamp(this.db, now);
 
     await executeStatement(this.db, sql`
-      UPDATE identity_edge_node
+      UPDATE cluster_node
       SET access_mode = ${options.accessMode},
           ipv4 = ${options.ipv4 ?? null},
           public_port = ${options.publicPort ?? null},
@@ -182,14 +189,16 @@ export class EdgeNodeRepository {
     accessMode?: string;
     ipv4?: string;
     publicPort?: number;
+    publicUrl?: string;
     subdomain?: string;
     connectivityStatus?: string;
     lastConnectivityCheck?: Date;
   } | undefined> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
-      SELECT id, access_mode, ipv4, public_port, subdomain,
+      SELECT id, access_mode, ipv4, public_port, public_url, subdomain,
              connectivity_status, last_connectivity_check
-      FROM identity_edge_node
+      FROM cluster_node
       WHERE id = ${nodeId}
       LIMIT 1
     `);
@@ -204,6 +213,7 @@ export class EdgeNodeRepository {
       accessMode: row.access_mode ? String(row.access_mode) : undefined,
       ipv4: row.ipv4 ? String(row.ipv4) : undefined,
       publicPort: row.public_port ? Number(row.public_port) : undefined,
+      publicUrl: row.public_url ? String(row.public_url) : undefined,
       subdomain: row.subdomain ? String(row.subdomain) : undefined,
       connectivityStatus: row.connectivity_status ? String(row.connectivity_status) : undefined,
       lastConnectivityCheck: fromDbTimestamp(row.last_connectivity_check),
@@ -211,6 +221,7 @@ export class EdgeNodeRepository {
   }
 
   public async mergeNodeMetadata(nodeId: string, patch: Record<string, unknown>): Promise<void> {
+    await this.ready;
     // Read current metadata
     const current = await this.getNodeMetadata(nodeId);
     if (!current) {
@@ -223,7 +234,7 @@ export class EdgeNodeRepository {
     const ts = toDbTimestamp(this.db, new Date());
 
     await executeStatement(this.db, sql`
-      UPDATE identity_edge_node
+      UPDATE cluster_node
       SET metadata = ${payload},
           updated_at = ${ts}
       WHERE id = ${nodeId}
@@ -231,9 +242,10 @@ export class EdgeNodeRepository {
   }
 
   public async getNodeMetadata(nodeId: string): Promise<{ nodeId: string; metadata: Record<string, unknown> | null; lastSeen?: Date } | undefined> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
       SELECT id, metadata, last_seen
-      FROM identity_edge_node
+      FROM cluster_node
       WHERE id = ${nodeId}
       LIMIT 1
     `);
@@ -249,51 +261,70 @@ export class EdgeNodeRepository {
   }
 
   public async replaceNodePods(nodeId: string, pods: string[]): Promise<void> {
-    await this.db.transaction(async (tx: IdentityDatabase) => {
-      await tx.execute(sql`DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}`);
-      if (pods.length > 0) {
-        const values = pods.map((baseUrl) => sql`(${nodeId}, ${baseUrl})`);
-        await tx.execute(sql`
-          INSERT INTO identity_edge_node_pod (node_id, base_url)
-          VALUES ${sql.join(values, sql`, `)}
-          ON CONFLICT DO NOTHING
-        `);
-      }
-    });
+    await this.ready;
+    const targetPods = uniquePodBaseUrls(pods);
+    await this.updateNodePodBaseUrls(nodeId, targetPods);
+    await this.removePodBaseUrlsFromOtherNodes(nodeId, targetPods);
   }
 
-  public async findNodeByResourcePath(path: string): Promise<{ nodeId: string; baseUrl: string; accessMode?: string; metadata?: Record<string, unknown> | null } | undefined> {
+  public async assignPodToNode(nodeId: string, baseUrl: string): Promise<void> {
+    await this.ready;
+    const normalizedBaseUrl = normalizePodBaseUrl(baseUrl);
+    if (!normalizedBaseUrl) {
+      return;
+    }
+
+    const rows = await this.getNodePodRows();
+    for (const row of rows) {
+      const current = parsePodBaseUrls(row.pod_base_urls);
+      const next = row.id === nodeId
+        ? uniquePodBaseUrls([ ...current, normalizedBaseUrl ])
+        : current.filter((value) => value !== normalizedBaseUrl);
+      if (!arraysEqual(current, next)) {
+        await this.updateNodePodBaseUrls(row.id, next);
+      }
+    }
+  }
+
+  public async findNodeByResourcePath(path: string): Promise<{ nodeId: string; baseUrl: string; accessMode?: string; publicUrl?: string; metadata?: Record<string, unknown> | null } | undefined> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
-      SELECT en.id,
-             en.access_mode,
-             en.metadata,
-             pods.base_url
-      FROM identity_edge_node_pod pods
-      JOIN identity_edge_node en ON en.id = pods.node_id
-      WHERE ${path} LIKE pods.base_url || '%'
-      ORDER BY length(pods.base_url) DESC
-      LIMIT 1
+      SELECT id, access_mode, public_url, metadata, pod_base_urls
+      FROM cluster_node
+      WHERE pod_base_urls IS NOT NULL AND pod_base_urls <> ''
     `);
-    if (result.rows.length === 0) {
+
+    let bestMatch: { row: any; baseUrl: string } | undefined;
+    for (const row of result.rows as any[]) {
+      for (const baseUrl of parsePodBaseUrls(row.pod_base_urls)) {
+        if (path.startsWith(baseUrl) && baseUrl.length > (bestMatch?.baseUrl.length ?? 0)) {
+          bestMatch = { row, baseUrl };
+        }
+      }
+    }
+
+    if (!bestMatch) {
       return undefined;
     }
-    const row = result.rows[0] as any;
+
     return {
-      nodeId: String(row.id),
-      baseUrl: String(row.base_url),
-      accessMode: row.access_mode ? String(row.access_mode) : undefined,
-      metadata: row.metadata ?? null,
+      nodeId: String(bestMatch.row.id),
+      baseUrl: bestMatch.baseUrl,
+      accessMode: bestMatch.row.access_mode ? String(bestMatch.row.access_mode) : undefined,
+      publicUrl: bestMatch.row.public_url ? String(bestMatch.row.public_url) : undefined,
+      metadata: parseJsonRecord(bestMatch.row.metadata),
     };
   }
 
-  public async findNodeBySubdomain(hostname: string): Promise<{ nodeId: string; accessMode?: string; metadata?: Record<string, unknown> | null; subdomain?: string } | undefined> {
+  public async findNodeBySubdomain(hostname: string): Promise<{ nodeId: string; accessMode?: string; publicUrl?: string; metadata?: Record<string, unknown> | null; subdomain?: string } | undefined> {
+    await this.ready;
     const normalized = hostname.trim().toLowerCase();
     if (normalized.length === 0) {
       return undefined;
     }
     const result = await executeQuery(this.db, sql`
-      SELECT id, access_mode, metadata, subdomain
-      FROM identity_edge_node
+      SELECT id, access_mode, public_url, metadata, subdomain
+      FROM cluster_node
       WHERE subdomain = ${normalized}
       LIMIT 1
     `);
@@ -304,6 +335,7 @@ export class EdgeNodeRepository {
     return {
       nodeId: String(row.id),
       accessMode: row.access_mode ? String(row.access_mode) : undefined,
+      publicUrl: row.public_url ? String(row.public_url) : undefined,
       metadata: row.metadata ?? null,
       subdomain: row.subdomain ? String(row.subdomain) : undefined,
     };
@@ -336,6 +368,7 @@ export class EdgeNodeRepository {
     lastSeen: Date | null;
     connectivityStatus: string | null;
   } | undefined> {
+    await this.ready;
     const row = await this.db
       .select({
         id: edgeNodes.id,
@@ -377,6 +410,7 @@ export class EdgeNodeRepository {
     lastSeen: Date | null;
     connectivityStatus: string | null;
   }>> {
+    await this.ready;
     const rows = await this.db
       .select({
         id: edgeNodes.id,
@@ -415,13 +449,14 @@ export class EdgeNodeRepository {
     internalIp: string;
     internalPort: number;
   }): Promise<{ nodeId: string; token: string }> {
+    await this.ready;
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
     const now = Math.floor(Date.now() / 1000); // Unix timestamp for SQLite compatibility
 
     // Use upsert pattern: INSERT ... ON CONFLICT UPDATE
     await executeStatement(this.db, sql`
-      INSERT INTO identity_edge_node (
+      INSERT INTO cluster_node (
         id, display_name, token_hash, node_type, internal_ip, internal_port,
         connectivity_status, created_at, updated_at, last_seen
       )
@@ -449,9 +484,10 @@ export class EdgeNodeRepository {
     internalPort: number,
     timestamp: Date,
   ): Promise<void> {
+    await this.ready;
     const ts = Math.floor(timestamp.getTime() / 1000); // Unix timestamp for SQLite compatibility
     await executeStatement(this.db, sql`
-      UPDATE identity_edge_node
+      UPDATE cluster_node
       SET internal_ip = ${internalIp},
           internal_port = ${internalPort},
           last_seen = ${ts},
@@ -465,9 +501,10 @@ export class EdgeNodeRepository {
    * List all center nodes in the cluster.
    */
   public async listCenterNodes(): Promise<CenterNodeInfo[]> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
       SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
-      FROM identity_edge_node
+      FROM cluster_node
       WHERE node_type = 'center'
       ORDER BY created_at ASC
     `);
@@ -486,9 +523,10 @@ export class EdgeNodeRepository {
    * Get a specific center node by ID.
    */
   public async getCenterNode(nodeId: string): Promise<CenterNodeInfo | undefined> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
       SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
-      FROM identity_edge_node
+      FROM cluster_node
       WHERE id = ${nodeId} AND node_type = 'center'
       LIMIT 1
     `);
@@ -512,9 +550,10 @@ export class EdgeNodeRepository {
    * Find a center node by its internal endpoint (for routing).
    */
   public async findCenterNodeByEndpoint(internalIp: string, internalPort: number): Promise<CenterNodeInfo | undefined> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
       SELECT id, display_name, internal_ip, internal_port, connectivity_status, last_seen
-      FROM identity_edge_node
+      FROM cluster_node
       WHERE node_type = 'center' AND internal_ip = ${internalIp} AND internal_port = ${internalPort}
       LIMIT 1
     `);
@@ -538,9 +577,10 @@ export class EdgeNodeRepository {
    * Mark a center node as unreachable (for health checks).
    */
   public async markCenterNodeUnreachable(nodeId: string): Promise<void> {
+    await this.ready;
     const ts = toDbTimestamp(this.db, new Date());
     await executeStatement(this.db, sql`
-      UPDATE identity_edge_node
+      UPDATE cluster_node
       SET connectivity_status = 'unreachable',
           updated_at = ${ts}
       WHERE id = ${nodeId} AND node_type = 'center'
@@ -551,9 +591,10 @@ export class EdgeNodeRepository {
    * Remove a center node from the cluster.
    */
   public async removeCenterNode(nodeId: string): Promise<boolean> {
+    await this.ready;
     // Note: For SQLite, we can't easily get affected row count, so just execute and return true
     await executeStatement(this.db, sql`
-      DELETE FROM identity_edge_node
+      DELETE FROM cluster_node
       WHERE id = ${nodeId} AND node_type = 'center'
     `);
     return true;
@@ -573,6 +614,7 @@ export class EdgeNodeRepository {
     lastSeen: Date | null;
     connectivityStatus: string | null;
   }>> {
+    await this.ready;
     void accountId;
     return [];
   }
@@ -581,19 +623,54 @@ export class EdgeNodeRepository {
    * Delete a node
    */
   public async deleteNode(nodeId: string): Promise<boolean> {
-    // First delete associated pods
-    await executeStatement(this.db, sql`
-      DELETE FROM identity_edge_node_pod WHERE node_id = ${nodeId}
-    `);
-
-    // Then delete the node
+    await this.ready;
     const result = await executeQuery(this.db, sql`
-      DELETE FROM identity_edge_node
+      DELETE FROM cluster_node
       WHERE id = ${nodeId}
       RETURNING id
     `);
 
     return result.rows.length > 0;
+  }
+
+  private async getNodePodRows(): Promise<Array<{ id: string; pod_base_urls?: unknown }>> {
+    const result = await executeQuery(this.db, sql`
+      SELECT id, pod_base_urls
+      FROM cluster_node
+    `);
+    return result.rows.map((row: any) => ({
+      id: String(row.id),
+      pod_base_urls: row.pod_base_urls,
+    }));
+  }
+
+  private async updateNodePodBaseUrls(nodeId: string, pods: string[]): Promise<void> {
+    const payload = pods.length > 0 ? JSON.stringify(pods) : null;
+    const ts = toDbTimestamp(this.db, new Date());
+    await executeStatement(this.db, sql`
+      UPDATE cluster_node
+      SET pod_base_urls = ${payload},
+          updated_at = ${ts}
+      WHERE id = ${nodeId}
+    `);
+  }
+
+  private async removePodBaseUrlsFromOtherNodes(nodeId: string, pods: string[]): Promise<void> {
+    if (pods.length === 0) {
+      return;
+    }
+    const podSet = new Set(pods);
+    const rows = await this.getNodePodRows();
+    for (const row of rows) {
+      if (row.id === nodeId) {
+        continue;
+      }
+      const current = parsePodBaseUrls(row.pod_base_urls);
+      const next = current.filter((value) => !podSet.has(value));
+      if (!arraysEqual(current, next)) {
+        await this.updateNodePodBaseUrls(row.id, next);
+      }
+    }
   }
 
   // ============ SP (Storage Provider) Node Methods ============
@@ -615,6 +692,7 @@ export class EdgeNodeRepository {
     /** SP 提供的 serviceToken，不传则随机生成 */
     serviceToken?: string;
   }): Promise<CreateSpNodeResult> {
+    await this.ready;
     const nodeId = options.nodeId || randomUUID();
     const nodeToken = options.nodeToken || randomBytes(32).toString('base64url');
     const nodeTokenHash = createHash('sha256').update(nodeToken).digest('hex');
@@ -623,7 +701,7 @@ export class EdgeNodeRepository {
     const ts = toDbTimestamp(this.db, now);
 
     await executeStatement(this.db, sql`
-      INSERT INTO identity_edge_node (
+      INSERT INTO cluster_node (
         id, display_name, token_hash, service_token_hash,
         node_type, public_url,
         connectivity_status, created_at, updated_at
@@ -652,9 +730,10 @@ export class EdgeNodeRepository {
    * Get SP node info by nodeId.
    */
   public async getSpNode(nodeId: string): Promise<SpNodeInfo | undefined> {
+    await this.ready;
     const result = await executeQuery(this.db, sql`
       SELECT id, display_name, public_url, service_token_hash, last_seen
-      FROM identity_edge_node
+      FROM cluster_node
       WHERE id = ${nodeId} AND node_type = 'sp'
       LIMIT 1
     `);
@@ -672,4 +751,46 @@ export class EdgeNodeRepository {
       lastSeen: fromDbTimestamp(row.last_seen),
     };
   }
+}
+
+function parsePodBaseUrls(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return uniquePodBaseUrls(value);
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? uniquePodBaseUrls(parsed) : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizePodBaseUrl(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function uniquePodBaseUrls(values: unknown[]): string[] {
+  return [...new Set(values.map(normalizePodBaseUrl).filter((value): value is string => Boolean(value)))];
+}
+
+function arraysEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }

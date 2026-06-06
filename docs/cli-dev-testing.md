@@ -80,7 +80,7 @@ CLI 使用双通道认证：
 | 通道 | 用途 | 方式 |
 |------|------|------|
 | Session | Pod 数据读写（drizzle-solid） | `@inrupt/solid-client-authn-node` Session.login() |
-| API Key | xpod API 调用（LLM 代理等） | `sk-base64(clientId:clientSecret)` Bearer token |
+| CSS client credentials wrapper | xpod API 调用（LLM 代理等） | `sk-base64(clientId:clientSecret)` Bearer token |
 
 ## 运行 CLI 测试脚本
 

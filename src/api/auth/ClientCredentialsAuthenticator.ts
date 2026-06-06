@@ -31,12 +31,12 @@ export interface ClientCredentialsAuthenticatorOptions {
 }
 
 /**
- * Authenticator for API Keys in sk-xxx format.
+ * Authenticator for CSS client credentials in sk-xxx transport format.
  * 
  * Format: sk-base64(client_id:client_secret)
  * 
  * This authenticator:
- * 1. Decodes the API Key to get client_id and client_secret
+ * 1. Decodes the transport token to get client_id and client_secret
  * 2. Exchanges them for a Solid Token via CSS token endpoint
  * 3. Extracts webId from the token response
  * 4. Returns a SolidAuthContext
@@ -56,7 +56,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
     if (!auth?.startsWith('Bearer ')) {
       return false;
     }
-    // If there's a DPoP header, it's a Solid Token, not an API Key
+    // If there's a DPoP header, it's a Solid Token, not a client credentials wrapper
     if (request.headers.dpop) {
       return false;
     }
@@ -102,7 +102,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
           return { success: false, error: 'Invalid API Key encoding' };
         }
       } else {
-        // Non sk- format not supported without database lookup
+        // Non sk- format is intentionally unsupported; Xpod does not keep an API key mirror table.
         return { success: false, error: 'Invalid API Key format: must start with sk-' };
       }
 
@@ -256,17 +256,4 @@ export class ClientCredentialsAuthenticator implements Authenticator {
   private isJwt(token: string): boolean {
     return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
   }
-}
-
-// Re-export for backwards compatibility (these are no longer needed but keep for other code)
-export interface ClientCredentialsRecord {
-  clientId: string;
-  webId: string;
-  accountId: string;
-  displayName?: string;
-  createdAt: Date;
-}
-
-export interface ClientCredentialsStore {
-  findByClientId(clientId: string): Promise<ClientCredentialsRecord | undefined>;
 }

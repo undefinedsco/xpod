@@ -6,7 +6,6 @@ export interface EdgeNodeSignalClientOptions {
   nodeId?: string;
   nodeToken?: string;
   baseUrl?: string;
-  publicAddress?: string;
   ipv4?: string;
   ipv6?: string;
   pods?: string | string[];
@@ -29,7 +28,6 @@ type HeartbeatPayload = {
   nodeId: string;
   token: string;
   baseUrl?: string;
-  publicAddress?: string;
   ipv4?: string;
   ipv6?: string;
   pods?: string[];
@@ -49,7 +47,6 @@ export class EdgeNodeSignalClient {
   private readonly baseNodeId?: string;
   private readonly baseToken?: string;
   private readonly baseUrl?: string;
-  private readonly publicAddress?: string;
   private readonly baseIpv4?: string;
   private readonly baseIpv6?: string;
   private readonly basePods?: string[];
@@ -94,7 +91,6 @@ export class EdgeNodeSignalClient {
     this.baseNodeId = nodeId;
     this.baseToken = nodeToken;
     this.baseUrl = this.normalizeString(options.baseUrl);
-    this.publicAddress = this.normalizeString(options.publicAddress);
     this.baseIpv4 = this.normalizeString(options.ipv4);
     this.baseIpv6 = this.normalizeString(options.ipv6);
     this.basePods = this.normalizePods(options.pods);
@@ -152,9 +148,6 @@ export class EdgeNodeSignalClient {
 
     if (this.baseUrl) {
       payload.baseUrl = this.baseUrl;
-    }
-    if (this.publicAddress) {
-      payload.publicAddress = this.publicAddress;
     }
     
     // 获取网络地址（支持动态检测）

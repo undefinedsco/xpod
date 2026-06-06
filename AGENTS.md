@@ -31,7 +31,7 @@ Gateway (3000) - 统一入口
 | 职责类型 | 放置位置 | 技术栈 | 示例 |
 |----------|----------|--------|------|
 | Solid 协议相关（LDP、SPARQL、认证） | CSS (`src/http/`, `src/storage/`) | Components.js + jsonld | `SubgraphSparqlHttpHandler`, `MixDataAccessor` |
-| 管理/运维 API | API Server (`src/api/handlers/`) | 普通 TypeScript 路由 | `SubdomainHandler`, `NodeHandler`, `ApiKeyHandler` |
+| 管理/运维 API | API Server (`src/api/handlers/`) | 普通 TypeScript 路由 | `SubdomainHandler`, `NodeHandler`, `QuotaAdminHttpHandler` |
 | 数据访问/存储 | 共享 (`src/identity/`, `src/dns/`) | 可被两边复用 | `EdgeNodeRepository`, `TencentDnsProvider` |
 | 业务逻辑服务 | 共享 (`src/subdomain/`, `src/service/`) | 可被两边复用 | `SubdomainService`, `PodMigrationService` |
 
@@ -154,9 +154,9 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 - 管理端策略：cluster 侧运维入口完全依赖外部系统/门户（旧 Admin Console 已退场，不会在仓库内扩展 UI）；local 端若推出桌面版，可在桌面客户端整合这些配置与状态展示。
 
 ### 带宽配额与限速
-- Cloud 配置默认启用带宽统计：`UsageTrackingStore` 负责资源读写、`SubgraphSparqlHttpHandler` 负责 `.sparql` 入口，均会更新 `identity_account_usage` / `identity_pod_usage` 表中的 `ingress_bytes`、`egress_bytes`。
+- Cloud 配置默认启用带宽统计：`UsageTrackingStore` 负责资源读写、`SubgraphSparqlHttpHandler` 负责 `.sparql` 入口，均会更新 `identity_usage` 表中对应 `scope_type` / `scope_id` 的 `ingress_bytes`、`egress_bytes`。
 - 默认限速 10 MiB/s（`config/cloud.json` 中的 `options_defaultAccountBandwidthLimitBps`），设置为 0 或删除该字段即表示不限速。
-- `identity_account_usage.storage_limit_bytes` / `bandwidth_limit_bps` 以及对应的 Pod 字段用于存储配额与带宽上限；未来 Admin/桌面端可直接更新这些列完成覆写。
+- `identity_usage.storage_limit_bytes` / `bandwidth_limit_bps` 用于存储 account/pod scoped 配额与带宽上限；account/pod 只是 usage scope，不再拆成两套表。
 
 ### AI Provider 配置原则
 - **禁止使用环境变量配置用户级 AI 参数**：AI provider 的 API Key、Base URL、Proxy URL 等配置**必须存储在用户 Pod** 中，而非服务器环境变量。

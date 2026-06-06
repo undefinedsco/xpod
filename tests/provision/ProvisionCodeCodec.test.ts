@@ -57,6 +57,19 @@ describe('ProvisionCodeCodec', () => {
     expect(decoded!.spDomain).toBeUndefined();
   });
 
+  it('normalizes provision baseUrl trailing slash for signing', () => {
+    const payload = {
+      spUrl: 'https://sp.example.com',
+      serviceToken: 'st-secret-token',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    };
+    const slashCodec = new ProvisionCodeCodec('https://cloud.example.com/');
+    const noSlashCodec = new ProvisionCodeCodec('https://cloud.example.com');
+
+    expect(noSlashCodec.decode(slashCodec.encode(payload))).toBeDefined();
+    expect(slashCodec.decode(noSlashCodec.encode(payload))).toBeDefined();
+  });
+
   it('rejects expired code', () => {
     const code = codec.encode({
       spUrl: 'https://sp.example.com',

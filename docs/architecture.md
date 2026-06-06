@@ -152,31 +152,35 @@ Edge 节点运行在用户设备上，通过隧道连接到 Center。
 
 ## 五、数据模型
 
-### 5.1 identity_pod 表
+### 5.1 Pod routing and usage
 
 ```sql
-CREATE TABLE identity_pod (
-  pod_id TEXT PRIMARY KEY,
-  base_url TEXT NOT NULL,
-  account_id TEXT,
-  node_id TEXT,                    -- Pod 所在节点
-  migration_status TEXT,           -- null | 'syncing' | 'done'
-  migration_target_node TEXT,
-  migration_progress INT
+CREATE TABLE identity_usage (
+  scope_type TEXT NOT NULL,          -- 'account' | 'pod'
+  scope_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  storage_bytes BIGINT NOT NULL DEFAULT 0,
+  ingress_bytes BIGINT NOT NULL DEFAULT 0,
+  egress_bytes BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (scope_type, scope_id)
 );
 ```
 
-### 5.2 edge_node 表
+Pod 到节点的路由归属记录在 `cluster_node.pod_base_urls`，不再拆单独的 node/pod mapping 表。
+
+### 5.2 cluster_node 表
 
 ```sql
-CREATE TABLE edge_node (
-  node_id TEXT PRIMARY KEY,
-  node_type TEXT DEFAULT 'edge',   -- 'edge' | 'center'
+CREATE TABLE cluster_node (
+  id TEXT PRIMARY KEY,
+  node_type TEXT DEFAULT 'edge',   -- 'edge' | 'center' | 'sp'
   internal_ip TEXT,                -- 内网 IP（Center 节点）
   internal_port INT,               -- 内网端口（Center 节点）
-  public_address TEXT,
-  status TEXT,
-  last_heartbeat TIMESTAMP
+  ipv4 TEXT,
+  public_url TEXT,
+  pod_base_urls TEXT,              -- JSON array of node-owned Pod/storage URL prefixes
+  connectivity_status TEXT,
+  last_seen TIMESTAMP
 );
 ```
 

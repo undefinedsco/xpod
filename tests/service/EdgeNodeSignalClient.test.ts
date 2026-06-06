@@ -17,10 +17,10 @@ afterEach(() => {
   new EdgeNodeSignalClient({
     edgeNodesEnabled: 'true',
     signalEndpoint: 'https://cluster.example/api/signal',
-    nodeId: 'node-1',
-    nodeToken: 'top-secret',
+      nodeId: 'node-1',
+      nodeToken: 'top-secret',
       baseUrl: 'https://pods.example.com/',
-      publicAddress: 'https://edge.example/',
+      directCandidates: 'https://edge.example/',
       pods: 'https://pods.example.com/alice/',
     intervalMs: 1_000,
   });
@@ -33,6 +33,7 @@ afterEach(() => {
 
     const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(payload.nodeId).toBe('node-1');
+    expect(payload.directCandidates).toEqual([ 'https://edge.example/' ]);
     expect(payload.pods).toEqual([ 'https://pods.example.com/alice/' ]);
   });
 

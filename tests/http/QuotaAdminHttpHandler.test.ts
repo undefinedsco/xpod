@@ -13,11 +13,20 @@ import { QuotaAdminHttpHandler } from '../../src/http/quota/QuotaAdminHttpHandle
 const verifyMock = vi.fn();
 const accountRepoInstances: Array<{ getPodInfo: ReturnType<typeof vi.fn> }> = [];
 const quotaServiceInstances: Array<{
-  getAccountLimit: ReturnType<typeof vi.fn>;
-  getPodLimit: ReturnType<typeof vi.fn>;
-  setAccountLimit: ReturnType<typeof vi.fn>;
-  setPodLimit: ReturnType<typeof vi.fn>;
+  getAccountQuota: ReturnType<typeof vi.fn>;
+  getPodQuota: ReturnType<typeof vi.fn>;
+  setAccountQuota: ReturnType<typeof vi.fn>;
+  setPodQuota: ReturnType<typeof vi.fn>;
+  clearAccountQuota: ReturnType<typeof vi.fn>;
+  clearPodQuota: ReturnType<typeof vi.fn>;
 }> = [];
+
+const EMPTY_QUOTA = {
+  storageLimitBytes: null,
+  bandwidthLimitBps: null,
+  computeLimitSeconds: null,
+  tokenLimitMonthly: null,
+};
 
 vi.mock('@solid/access-token-verifier', () => ({
   createSolidTokenVerifier: vi.fn(() => verifyMock),
@@ -106,19 +115,14 @@ function getLastAccountRepo() {
   return accountRepoInstances[accountRepoInstances.length - 1];
 }
 
-function getLastQuotaService() {
-  if (quotaServiceInstances.length === 0) {
-    throw new Error('QuotaService 未被实例化');
-  }
-  return quotaServiceInstances[quotaServiceInstances.length - 1];
-}
-
 function createQuotaService() {
   const service = {
-    getAccountLimit: vi.fn(),
-    getPodLimit: vi.fn(),
-    setAccountLimit: vi.fn(),
-    setPodLimit: vi.fn(),
+    getAccountQuota: vi.fn(),
+    getPodQuota: vi.fn(),
+    setAccountQuota: vi.fn(),
+    setPodQuota: vi.fn(),
+    clearAccountQuota: vi.fn(),
+    clearPodQuota: vi.fn(),
   };
   quotaServiceInstances.push(service);
   return service;
@@ -210,7 +214,10 @@ describe('QuotaAdminHttpHandler', () => {
     const { handler, quotaService } = createHandler();
     const request = createRequest('GET', '/api/quota/accounts/acc-1', undefined, { authorization: 'Bearer good' });
     const response = new MockResponse() as unknown as HttpResponse;
-    vi.mocked(quotaService.getAccountLimit).mockResolvedValueOnce(2_048);
+    vi.mocked(quotaService.getAccountQuota).mockResolvedValueOnce({
+      ...EMPTY_QUOTA,
+      storageLimitBytes: 2_048,
+    });
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
@@ -219,7 +226,10 @@ describe('QuotaAdminHttpHandler', () => {
     expect(JSON.parse((response as unknown as MockResponse).getBody())).toEqual({
       type: 'account',
       accountId: 'acc-1',
-      quotaLimit: 2_048,
+      quota: {
+        ...EMPTY_QUOTA,
+        storageLimitBytes: 2_048,
+      },
     });
   });
 
@@ -229,7 +239,10 @@ describe('QuotaAdminHttpHandler', () => {
     const response = new MockResponse() as unknown as HttpResponse;
     const repo = getLastAccountRepo();
     repo.getPodInfo.mockResolvedValueOnce({ accountId: 'acc-1', baseUrl: 'https://pods.example.com/alice/' });
-    vi.mocked(quotaService.getPodLimit).mockResolvedValueOnce(1_024);
+    vi.mocked(quotaService.getPodQuota).mockResolvedValueOnce({
+      ...EMPTY_QUOTA,
+      storageLimitBytes: 1_024,
+    });
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
@@ -240,58 +253,64 @@ describe('QuotaAdminHttpHandler', () => {
       podId: 'pod-1',
       accountId: 'acc-1',
       baseUrl: 'https://pods.example.com/alice/',
-      quotaLimit: 1_024,
+      quota: {
+        ...EMPTY_QUOTA,
+        storageLimitBytes: 1_024,
+      },
     });
   });
 
   it('PUT /accounts/{id} 更新配额', async () => {
     const { handler, quotaService } = createHandler();
-    const request = createRequest('PUT', '/api/quota/accounts/acc-2', JSON.stringify({ quotaLimit: 512 }), {
+    const request = createRequest('PUT', '/api/quota/accounts/acc-2', JSON.stringify({ storageLimitBytes: 512 }), {
       authorization: 'Bearer good',
       'content-type': 'application/json',
     });
     const response = new MockResponse() as unknown as HttpResponse;
-    vi.mocked(quotaService.setAccountLimit).mockResolvedValueOnce(undefined);
-    vi.mocked(quotaService.getAccountLimit).mockResolvedValueOnce(512);
+    vi.mocked(quotaService.setAccountQuota).mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.getAccountQuota).mockResolvedValueOnce({
+      ...EMPTY_QUOTA,
+      storageLimitBytes: 512,
+    });
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
 
-    expect(quotaService.setAccountLimit).toHaveBeenCalledWith('acc-2', 512);
+    expect(quotaService.setAccountQuota).toHaveBeenCalledWith('acc-2', { storageLimitBytes: 512 });
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse((response as unknown as MockResponse).getBody()).quotaLimit).toBe(512);
+    expect(JSON.parse((response as unknown as MockResponse).getBody()).quota.storageLimitBytes).toBe(512);
   });
 
-  it('PUT /pods/{id} quotaLimit 为 null 时清除配额', async () => {
+  it('PUT /pods/{id} storageLimitBytes 为 null 时清除存储配额', async () => {
     const { handler, quotaService } = createHandler();
-    const request = createRequest('PUT', '/api/quota/pods/pod-2', JSON.stringify({ quotaLimit: null }), {
+    const request = createRequest('PUT', '/api/quota/pods/pod-2', JSON.stringify({ storageLimitBytes: null }), {
       authorization: 'Bearer good',
       'content-type': 'application/json',
     });
     const response = new MockResponse() as unknown as HttpResponse;
     const repo = getLastAccountRepo();
     repo.getPodInfo.mockResolvedValueOnce({ accountId: 'acc-2', baseUrl: 'https://pods.example.com/bob/' });
-    vi.mocked(quotaService.setPodLimit).mockResolvedValueOnce(undefined);
-    vi.mocked(quotaService.getPodLimit).mockResolvedValueOnce(null);
+    vi.mocked(quotaService.setPodQuota).mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.getPodQuota).mockResolvedValueOnce(EMPTY_QUOTA);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
 
-    expect(quotaService.setPodLimit).toHaveBeenCalledWith('pod-2', null);
+    expect(quotaService.setPodQuota).toHaveBeenCalledWith('pod-2', { storageLimitBytes: null });
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse((response as unknown as MockResponse).getBody()).quotaLimit).toBe(null);
+    expect(JSON.parse((response as unknown as MockResponse).getBody()).quota.storageLimitBytes).toBe(null);
   });
 
   it('DELETE /accounts/{id} 清除配额', async () => {
     const { handler, quotaService } = createHandler();
     const request = createRequest('DELETE', '/api/quota/accounts/acc-3', undefined, { authorization: 'Bearer good' });
     const response = new MockResponse() as unknown as HttpResponse;
-    vi.mocked(quotaService.setAccountLimit).mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.clearAccountQuota).mockResolvedValueOnce(undefined);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
 
-    expect(quotaService.setAccountLimit).toHaveBeenCalledWith('acc-3', null);
+    expect(quotaService.clearAccountQuota).toHaveBeenCalledWith('acc-3');
     expect(response.statusCode).toBe(200);
   });
 
@@ -301,12 +320,12 @@ describe('QuotaAdminHttpHandler', () => {
     const response = new MockResponse() as unknown as HttpResponse;
     const repo = getLastAccountRepo();
     repo.getPodInfo.mockResolvedValueOnce({ accountId: 'acc-4', baseUrl: 'https://pods.example.com/carl/' });
-    vi.mocked(quotaService.setPodLimit).mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.clearPodQuota).mockResolvedValueOnce(undefined);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
 
-    expect(quotaService.setPodLimit).toHaveBeenCalledWith('pod-4', null);
+    expect(quotaService.clearPodQuota).toHaveBeenCalledWith('pod-4');
     expect(response.statusCode).toBe(200);
   });
 
@@ -329,17 +348,17 @@ describe('QuotaAdminHttpHandler', () => {
     const { handler, quotaService } = createHandler();
     const request = createRequest('GET', '/api/quota/accounts/acc-6', undefined, { authorization: 'Bearer good' });
     const response = new MockResponse() as unknown as HttpResponse;
-    vi.mocked(quotaService.getAccountLimit).mockResolvedValueOnce(undefined);
+    vi.mocked(quotaService.getAccountQuota).mockResolvedValueOnce(EMPTY_QUOTA);
 
     await handler.handle({ request, response });
     await (response as unknown as MockResponse).done;
 
-    expect(JSON.parse((response as unknown as MockResponse).getBody()).quotaLimit).toBeNull();
+    expect(JSON.parse((response as unknown as MockResponse).getBody()).quota).toEqual(EMPTY_QUOTA);
   });
 
   it('未知 Pod 标识返回 400', async () => {
     const { handler } = createHandler();
-    const request = createRequest('PUT', '/api/quota/pods/ghost', JSON.stringify({ quotaLimit: 10 }), {
+    const request = createRequest('PUT', '/api/quota/pods/ghost', JSON.stringify({ storageLimitBytes: 10 }), {
       authorization: 'Bearer good',
       'content-type': 'application/json',
     });

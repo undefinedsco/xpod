@@ -261,18 +261,6 @@ function extractQuotaFields(payload: Record<string, unknown>): Record<string, nu
     }
   }
 
-  // Backward compat: support legacy 'quotaLimit' field
-  if (!hasField && Object.prototype.hasOwnProperty.call(payload, 'quotaLimit')) {
-    const value = payload.quotaLimit;
-    if (value === null) {
-      result.storageLimitBytes = null;
-      hasField = true;
-    } else if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-      result.storageLimitBytes = value;
-      hasField = true;
-    }
-  }
-
   return hasField ? result : undefined;
 }
 

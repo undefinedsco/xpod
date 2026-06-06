@@ -253,60 +253,55 @@ Authorization: Bearer {NODE_TOKEN}
 ```
 # 节点注册
 POST /api/v1/signal/register
-Body: { "username": "alice", "publicAddress": "..." }
+Body: { "username": "alice", "publicUrl": "..." }
 
 # 心跳上报
 POST /api/v1/signal/heartbeat
 Authorization: Bearer {NODE_TOKEN}
-Body: { "status": "online", "publicAddress": "...", "metrics": {...} }
+Body: { "status": "online", "ipv4": "1.2.3.4", "directCandidates": ["https://edge.example/"], "metrics": {...} }
 ```
 
 ---
 
 ## 8. 数据模型
 
-### 8.1 identity_webid 表 (Cloud)
+### 8.1 WebID Profile / Pod Storage 关系
+
+Cloud 不再用独立业务表复制 WebID Profile。
+WebID Profile 是 CSS 原生 Pod 资源，`solid:storage` 写在 profile/card 里；SP-scoped lookup 从 CSS account Pod 数据和 WebID Profile 关系解析 storage URL。
+节点归属记录在 `cluster_node.pod_base_urls`，用量和配额由 `identity_usage` 负责。
+
+### 8.2 cluster_ddns_record 表 (Cloud)
 
 ```sql
-CREATE TABLE identity_webid (
-  username TEXT PRIMARY KEY,
-  webid_url TEXT NOT NULL,           -- https://id.undefineds.co/alice/profile/card#me
-  storage_url TEXT,                  -- https://alice.undefineds.xyz/ 或 https://pods.undefineds.co/alice/
-  storage_mode TEXT,                 -- 'cloud' | 'local' | 'custom'
-  oidc_issuer TEXT,                  -- https://id.undefineds.co/
-  profile_data JSONB,                -- WebID Profile 的 JSON-LD 表示
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-);
-```
-
-### 8.2 ddns_record 表 (Cloud)
-
-```sql
-CREATE TABLE ddns_record (
+CREATE TABLE cluster_ddns_record (
   subdomain TEXT PRIMARY KEY,        -- alice
   domain TEXT NOT NULL,              -- undefineds.xyz
   ip_address TEXT,
+  ipv6_address TEXT,
   record_type TEXT DEFAULT 'A',      -- 'A' | 'AAAA'
-  node_id TEXT REFERENCES edge_node(node_id),
+  node_id TEXT,
   ttl INT DEFAULT 60,
-  updated_at TIMESTAMP
+  updated_at TIMESTAMP,
+  created_at TIMESTAMP
 );
 ```
 
-### 8.3 edge_node 表 (Cloud)
+### 8.3 cluster_node 表 (Cloud)
 
 ```sql
-CREATE TABLE edge_node (
-  node_id TEXT PRIMARY KEY,
-  username TEXT REFERENCES identity_webid(username),
-  public_address TEXT,               -- 当前公网地址
+CREATE TABLE cluster_node (
+  id TEXT PRIMARY KEY,
+  node_type TEXT DEFAULT 'edge',       -- 'center' | 'edge' | 'sp'
+  subdomain TEXT UNIQUE,
+  ipv4 TEXT,
+  public_url TEXT,                   -- SP 的公网地址
   access_mode TEXT,                  -- 'direct' | 'tunnel'
-  tunnel_provider TEXT,              -- 'cloudflare' | 'sakura' | null
-  tunnel_token TEXT,                 -- Tunnel Token (加密存储)
-  status TEXT,                       -- 'online' | 'offline'
+  connectivity_status TEXT,
+  pod_base_urls TEXT,                 -- JSON array of node-owned Pod/storage URL prefixes
   capabilities JSONB,                -- 节点能力
-  last_heartbeat TIMESTAMP
+  metadata JSONB,                    -- tunnel/certificate/metrics 等复杂对象
+  last_seen TIMESTAMP
 );
 ```
 
@@ -467,9 +462,11 @@ tests/sdk/
 ### 10.3 Phase 3: 身份服务与 DDNS ✅
 
 **新增数据表：**
-- `identity_pod_usage.storage_url` - Pod canonical storage URL，供 SP-scoped lookup 使用
-- `identity_ddns_domain` - DDNS 域名池
-- `identity_ddns_record` - DDNS 记录
+- `identity_store` - CSS IndexedStorage backing table；通过 `container` 区分 account/pod/owner/webIdLink，账号角色存在 account payload，不再单独建 role 表
+- `identity_usage` - Account/Pod usage/quota metrics；通过 `scope_type` + `scope_id` 区分粒度，不存 canonical storage URL、节点归属或迁移状态
+- `cluster_node` - Cloud 集群 node/SP registry；`pod_base_urls` 保存节点拥有的 Pod/storage URL 前缀
+- `cluster_ddns_record` - Cloud 集群 DDNS 记录，负责 subdomain/node/user 查询和唯一性
+- `cluster_service_token` - Cloud 集群 runtime service-to-service token registry；Local 自己的 setup token 不写入该表
 
 **新增 Repository：**
 - `PodLookupRepository` - 从 CSS account/pod facts 解析 WebID 与 SP storage 关系

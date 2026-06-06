@@ -3,7 +3,6 @@ import { getLoggerFor } from 'global-logger-factory';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpRequest, HttpResponse } from '@solid/community-server';
 import {
-  
   BadRequestHttpError,
   ForbiddenHttpError,
   MethodNotAllowedHttpError,
@@ -13,7 +12,7 @@ import {
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { AccountRepository } from '../../identity/drizzle/AccountRepository';
 import { AccountRoleRepository } from '../../identity/drizzle/AccountRoleRepository';
-import type { QuotaService } from '../../quota/QuotaService';
+import type { AccountQuota, QuotaService } from '../../quota/QuotaService';
 
 interface QuotaAdminHttpHandlerOptions {
   identityDbUrl: string;
@@ -80,11 +79,11 @@ export class QuotaAdminHttpHandler extends HttpHandler {
 
   private async handleGet(target: QuotaTarget, response: HttpResponse): Promise<void> {
     if (target.type === 'account') {
-      const quota = await this.quotaService.getAccountLimit(target.id);
+      const quota = await this.quotaService.getAccountQuota(target.id);
       this.writeJson(response, 200, {
         type: 'account',
         accountId: target.id,
-        quotaLimit: quota ?? null,
+        quota,
       });
       return;
     }
@@ -93,13 +92,13 @@ export class QuotaAdminHttpHandler extends HttpHandler {
     if (!podInfo) {
       throw new BadRequestHttpError('Unknown pod identifier.');
     }
-    const quota = await this.quotaService.getPodLimit(target.id);
+    const quota = await this.quotaService.getPodQuota(target.id);
     this.writeJson(response, 200, {
       type: 'pod',
       podId: target.id,
       accountId: podInfo.accountId,
       baseUrl: podInfo.baseUrl ?? null,
-      quotaLimit: quota ?? null,
+      quota,
     });
   }
 
@@ -119,25 +118,25 @@ export class QuotaAdminHttpHandler extends HttpHandler {
     }
 
     if (target.type === 'account') {
-      await this.quotaService.setAccountLimit(target.id, quota);
-      const latest = await this.quotaService.getAccountLimit(target.id);
+      await this.quotaService.setAccountQuota(target.id, quota);
+      const latest = await this.quotaService.getAccountQuota(target.id);
       this.writeJson(response, 200, {
         status: 'updated',
         targetType: target.type,
         targetId: target.id,
-        quotaLimit: latest ?? null,
+        quota: latest,
       });
       return;
     }
 
-    await this.quotaService.setPodLimit(target.id, quota);
-    const latest = await this.quotaService.getPodLimit(target.id);
+    await this.quotaService.setPodQuota(target.id, quota);
+    const latest = await this.quotaService.getPodQuota(target.id);
 
     this.writeJson(response, 200, {
       status: 'updated',
       targetType: target.type,
       targetId: target.id,
-      quotaLimit: latest ?? null,
+      quota: latest,
     });
   }
 
@@ -150,9 +149,9 @@ export class QuotaAdminHttpHandler extends HttpHandler {
     }
 
     if (target.type === 'account') {
-      await this.quotaService.setAccountLimit(target.id, null);
+      await this.quotaService.clearAccountQuota(target.id);
     } else {
-      await this.quotaService.setPodLimit(target.id, null);
+      await this.quotaService.clearPodQuota(target.id);
     }
     this.writeJson(response, 200, {
       status: 'cleared',
@@ -213,18 +212,24 @@ export class QuotaAdminHttpHandler extends HttpHandler {
     }
   }
 
-  private extractQuota(body: Record<string, unknown>): number | null {
-    if (!Object.prototype.hasOwnProperty.call(body, 'quotaLimit')) {
-      throw new BadRequestHttpError('Body must include quotaLimit.');
+  private extractQuota(body: Record<string, unknown>): Partial<AccountQuota> {
+    const quota: Partial<AccountQuota> = {};
+    let hasQuotaField = false;
+    for (const field of [ 'storageLimitBytes', 'bandwidthLimitBps', 'computeLimitSeconds', 'tokenLimitMonthly' ] as const) {
+      if (!Object.prototype.hasOwnProperty.call(body, field)) {
+        continue;
+      }
+      const value = body[field];
+      if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+        throw new BadRequestHttpError(`${field} must be a non-negative number or null.`);
+      }
+      quota[field] = value;
+      hasQuotaField = true;
     }
-    const quotaValue = body.quotaLimit as unknown;
-    if (quotaValue === null) {
-      return null;
+    if (!hasQuotaField) {
+      throw new BadRequestHttpError('Body must include at least one quota field.');
     }
-    if (typeof quotaValue !== 'number' || !Number.isFinite(quotaValue) || quotaValue < 0) {
-      throw new BadRequestHttpError('quotaLimit must be a non-negative number or null.');
-    }
-    return quotaValue;
+    return quota;
   }
 
   private writeOptions(response: HttpResponse): void {

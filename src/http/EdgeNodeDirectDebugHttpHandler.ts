@@ -79,7 +79,7 @@ export class EdgeNodeDirectDebugHttpHandler extends HttpHandler {
       return undefined;
     }
     
-    const target = this.resolveTarget(record.metadata ?? {}, original, record.baseUrl);
+    const target = this.resolveTarget(record.metadata ?? {}, original, record.baseUrl, record.publicUrl);
     if (!target) {
       return undefined;
     }
@@ -90,8 +90,11 @@ export class EdgeNodeDirectDebugHttpHandler extends HttpHandler {
     return this.skipPrefixes.some((prefix) => pathname.startsWith(prefix));
   }
 
-  private resolveTarget(metadata: Record<string, unknown>, original: URL, podBaseUrl: string): URL | undefined {
-    const baseUrl = this.extractUrl(metadata.publicAddress) ?? this.extractUrl(metadata.baseUrl);
+  private resolveTarget(metadata: Record<string, unknown>, original: URL, podBaseUrl: string, publicUrl?: string): URL | undefined {
+    const baseUrl = this.extractUrl(publicUrl)
+      ?? this.extractUrl(this.extractTunnelEntrypoint(metadata.tunnel))
+      ?? this.extractUrl(this.extractManagedTunnelEndpoint(metadata.managedTunnel))
+      ?? this.extractUrl(metadata.baseUrl);
     if (!baseUrl) {
       return undefined;
     }
@@ -109,6 +112,20 @@ export class EdgeNodeDirectDebugHttpHandler extends HttpHandler {
     target.search = original.search;
     target.hash = original.hash;
     return target;
+  }
+
+  private extractTunnelEntrypoint(value: unknown): unknown {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    return (value as Record<string, unknown>).entrypoint;
+  }
+
+  private extractManagedTunnelEndpoint(value: unknown): unknown {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    return (value as Record<string, unknown>).endpoint;
   }
 
   private extractUrl(value: unknown): URL | undefined {
