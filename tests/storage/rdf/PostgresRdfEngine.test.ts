@@ -1733,6 +1733,130 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('pushes bounded graph-prefix joins into native custom-index values', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-graph-prefix-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const prefix = 'https://pod.example/alice/.data/chat/default/2026/05/';
+    const graph1 = namedNode(`${prefix}18/messages.ttl`);
+    const graph2 = namedNode(`${prefix}19/messages.ttl`);
+    const outsideGraph = namedNode('https://pod.example/alice/.data/chat/other/2026/05/19/messages.ttl');
+    const message1 = namedNode(`${graph1.value}#msg_1`);
+    const message2 = namedNode(`${graph2.value}#msg_2`);
+    const message3 = namedNode(`${graph2.value}#msg_3`);
+    const outsideMessage = namedNode(`${outsideGraph.value}#msg_outside`);
+    const thread1 = namedNode(`${graph1.value}#thread_a`);
+    const thread2 = namedNode(`${graph2.value}#thread_b`);
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph1),
+        quad(message1, namedNode(THREAD), thread1, graph1),
+        quad(message2, namedNode(STATUS), literal('open'), graph2),
+        quad(message2, namedNode(THREAD), thread2, graph2),
+        quad(message3, namedNode(STATUS), literal('closed'), graph2),
+        quad(message3, namedNode(THREAD), thread2, graph2),
+      ]);
+
+      const scan = await engine.scan({
+        pattern: {
+          graph: { $startsWith: prefix },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      });
+      expect(scan.quads.map((entry) => entry.subject.value).sort()).toEqual([
+        message1.value,
+        message2.value,
+      ]);
+      expect(scan.metrics.queryPlan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)');
+      expect(scan.metrics.queryPlan?.join('\n')).toContain('GraphPrefixMembershipFilter');
+      expect(pool.nativeScanAnyCalls).toHaveLength(1);
+
+      await engine.put([
+        quad(outsideMessage, namedNode(STATUS), literal('open'), outsideGraph),
+        quad(outsideMessage, namedNode(THREAD), namedNode(`${outsideGraph.value}#thread_outside`), outsideGraph),
+      ]);
+
+      const join = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        select: ['message', 'thread'],
+        cache: { mode: 'bypass' },
+      });
+      expect(join.bindings.map((binding) => binding.message.value).sort()).toEqual([
+        message1.value,
+        message2.value,
+      ]);
+      expect(join.bindings.map((binding) => binding.thread.value).sort()).toEqual([
+        thread1.value,
+        thread2.value,
+      ]);
+      expect(join.metrics.plan).toContain('XpodRdfExtensionOperator(join.values.native)');
+      expect(join.metrics.plan).toContain('PostgresRdfNativeCustomIndexValuesJoin(2)');
+      expect(join.metrics.plan).toContain('PostgresRdfNativeGraphPrefixValues(2x2)');
+      expect(join.metrics.plan).not.toContain('PostgresRdf3xJoin');
+      expect(pool.nativeValuesJoinCalls).toHaveLength(1);
+      const valuesJoinParams = pool.nativeValuesJoinCalls[0].params;
+      expect(valuesJoinParams[6]).toHaveLength(2);
+      expect(valuesJoinParams[7]).toHaveLength(8);
+
+      const count = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['messageCount'],
+        cache: { mode: 'bypass' },
+      });
+      expect(count.count).toBe(2);
+      expect(count.bindings[0].messageCount.value).toBe('2');
+      expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
+      expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(join.values.native)');
+      expect(count.metrics.plan).toContain('PostgresRdfNativeGraphPrefixValues(2x2)');
+      expect(pool.nativeBgpCountCalls).toHaveLength(1);
+      const bgpCountParams = pool.nativeBgpCountCalls[0].params;
+      expect(bgpCountParams[5]).toHaveLength(2);
+      expect(bgpCountParams[6]).toHaveLength(8);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to RDF-3X join count when the native BGP count operator is absent', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-bgp-count-fallback-'));
     const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'aggregate.bgp_count'));

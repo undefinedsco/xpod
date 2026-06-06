@@ -268,13 +268,14 @@ Warm p95：
 | native exact graph grouped count by thread query | 4 ms | 3 ms | 0.75x | `aggregate.bgp_group_count` |
 | native exact graph grouped numeric aggregate by thread query | 14 ms | 6 ms | 0.43x | `aggregate.bgp_numeric` |
 
-结论：原先的 extreme case 不够证明 custom index，因为全是 graph-prefix product
-shape，实际只走 `XpodRdfPgHotOperator(...)`。新增 exact-graph native gate 后，
-`pg-custom-index` 能在 5 个 case 中命中 extension operator；BGP count、grouped
-count、grouped numeric aggregate 和 8-pattern exact graph join 已经比 RDF-3X /
-btree baseline 快，VALUES native 仍接近持平略慢。当前不能把 graph-prefix product
-shape 宣传为 native custom-index 收益；如果要让常规 Pod 日期桶查询也吃到 native，
-下一步需要为 graph-prefix BGP 设计保持语义正确的 native 下推。
+结论：这组运行发生在 graph-prefix native 下推接线前；原先的 extreme case 不够证明
+custom index，因为全是 graph-prefix product shape，实际只走
+`XpodRdfPgHotOperator(...)`。新增 exact-graph native gate 后，`pg-custom-index`
+能在 5 个 case 中命中 extension operator；BGP count、grouped count、grouped
+numeric aggregate 和 8-pattern exact graph join 已经比 RDF-3X / btree baseline 快，
+VALUES native 仍接近持平略慢。后续已补 bounded graph-prefix native 下推，但需要在
+真实 PG native 环境重新 benchmark 后，才能把常规 Pod 日期桶查询算入 custom-index
+收益。
 
 #### 36k Oversized Extreme Rerun
 
@@ -309,11 +310,11 @@ Single-run p95：
 
 结论：36k seed 下 native exact graph 仍能稳定命中 5 个 extension operator，
 8-pattern join 和 grouped numeric aggregate 继续变快；VALUES 和 grouped count
-仍不是 cutover 依据。graph-prefix product cases 在 `pg-custom-index` profile 下变慢，
-因为它们仍走 PG SQL hot path，却承担了 shadow custom index 的写入/维护成本。
-这再次说明 P0 cutover 不能只看 profile 是否启用，必须按 query shape 区分：
-exact graph native shape 可继续推进，常规日期桶 graph-prefix shape 需要单独做 native
-graph-prefix 下推或保持 RDF-3X / PG SQL baseline。
+仍不是 cutover 依据。这组运行里的 graph-prefix product cases 仍在下推接线前，
+因此 `pg-custom-index` profile 下变慢是旧实现承担 shadow custom index 写入/维护成本、
+但查询仍走 PG SQL hot path 的结果。P0 cutover 不能只看 profile 是否启用，必须按
+query shape 区分：exact graph native shape 可继续推进；bounded graph-prefix shape
+已补 native values/aggregate 路径，但性能结论要等真实 PG native rerun。
 
 同时尝试 `--scale=large`（目标 `1_000_000` quads）时，benchmark 长时间停在
 逐条 `INSERT INTO rdf_quads ... ON CONFLICT` seed 阶段；`--syntheticMessages=10000`
@@ -529,7 +530,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
 - `pg-hot-operators` engine-sql provider：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 走已验证的 PG SQL fast path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
 - `pg-custom-index` provider：启动时探测 `xpod_rdf.version()` / `xpod_rdf.capabilities()`，只有 `pg_extension` 里存在 `xpod_rdf` 时才把 native-only capability 标记为 `extension`；满足 `index.xpod_rdf_perm` 后创建六个 shadow custom permutation indexes，并把 `perm_index_stats(regclass)` JSON 投影到 `storageStats().pgAcceleration.customIndexes`；schema-local SQL ABI 只能声明 `cache.result`。
-- `pg-custom-index` native executor：当 extension 声明 `index.xpod_rdf_perm.scan_any` 时，单 pattern exact / `$in` leading-prefix scan 会下沉到 `xpod_rdf.perm_index_scan_any(...)`，再 JOIN `rdf_quads` 做 heap recheck；当 extension 同时声明 `index.xpod_rdf_perm.count_any` 时，单 pattern、非 DISTINCT、无 group/order/pagination/values 的 scalar `COUNT` 会下沉到 `xpod_rdf.perm_index_count_any(...)`；当 extension 声明 `index.xpod_rdf_perm.distinct_any` 时，单 pattern、单投影变量、无 order/group/values 的 `DISTINCT` 会下沉到 `xpod_rdf.perm_index_distinct_any(...)`；当 extension 声明 `join.required_bgp.native` 时，2..8 pattern、最多 8 变量、无 VALUES/ORDER/GROUP/aggregate/distinct 的 exact-id required BGP 会下沉到 `xpod_rdf.bgp_join(...)`；当 extension 声明 `join.values.native` / `join.values.limit.native` 时，受限 required BGP + 单个 tuple `VALUES` source 会下沉到 `xpod_rdf.values_join(...)`；当 extension 声明 `aggregate.bgp_count` 时，2..8 pattern、最多 8 变量、无 GROUP/ORDER/HAVING/pagination 的 `COUNT(*)` / `COUNT(?x)` / `COUNT DISTINCT ?x` 会下沉到 `xpod_rdf.bgp_count(...)`，并支持同 ABI 的单个 tuple `VALUES` source；当 extension 声明 `aggregate.bgp_group_count` 时，1..8 pattern、最多 8 变量、GROUP BY 1..8 变量、COUNT / COUNT DISTINCT 聚合会下沉到 `xpod_rdf.bgp_group_count(...)`，HAVING / ORDER / LIMIT 在返回分组行后由 xpod 做语义收尾；当 extension 声明 `aggregate.bgp_numeric` 时，1..8 pattern、GROUP BY 最多 8 变量、同一个 numeric 变量上的非 DISTINCT `SUM/AVG/MIN/MAX` 和非 DISTINCT `COUNT` 会下沉到 `xpod_rdf.bgp_numeric_aggregate(...)`，只接受该 numeric slot 的 `isNumeric`/`$termType:numeric` guard，HAVING / ORDER / LIMIT 仍由 xpod 对 native grouped rows 做语义收尾。metrics plan 分别标记 `XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)` / `XpodRdfExtensionOperator(index.xpod_rdf_perm.count_any)` / `XpodRdfExtensionOperator(index.xpod_rdf_perm.distinct_any)` / `XpodRdfExtensionOperator(join.required_bgp.native)` / `XpodRdfExtensionOperator(join.values.native|join.values.limit.native)` / `XpodRdfExtensionOperator(aggregate.bgp_count)` / `XpodRdfExtensionOperator(aggregate.bgp_group_count)` / `XpodRdfExtensionOperator(aggregate.bgp_numeric)`；能力缺失或遇到 graph-prefix/range/text/excluded/id-set/multiple VALUES sources、DISTINCT numeric aggregate、多 numeric variable 等不支持 shape 时回退 RDF-3X / PG SQL。
+- `pg-custom-index` native executor：当 extension 声明 `index.xpod_rdf_perm.scan_any` 时，单 pattern exact / `$in` leading-prefix scan 会下沉到 `xpod_rdf.perm_index_scan_any(...)`，再 JOIN `rdf_quads` 做 heap recheck；bounded graph-prefix pattern 会先从真实 facts graph ids 展开候选，再转成 pattern-local hidden VALUES slot 复用 native ABI，避免把多个同前缀 named graph 错误绑定成同一个 graph；当 extension 同时声明 `index.xpod_rdf_perm.count_any` 时，单 pattern、非 DISTINCT、无 group/order/pagination/values 的 scalar `COUNT` 会下沉到 `xpod_rdf.perm_index_count_any(...)`；当 extension 声明 `index.xpod_rdf_perm.distinct_any` 时，单 pattern、单投影变量、无 order/group/values 的 `DISTINCT` 会下沉到 `xpod_rdf.perm_index_distinct_any(...)`；当 extension 声明 `join.required_bgp.native` 时，2..8 pattern、最多 8 变量、无 VALUES/ORDER/GROUP/aggregate/distinct 的 exact-id required BGP 会下沉到 `xpod_rdf.bgp_join(...)`；当 extension 声明 `join.values.native` / `join.values.limit.native` 时，受限 required BGP + tuple `VALUES` source 会下沉到 `xpod_rdf.values_join(...)`，外部 VALUES 和内部 graph-prefix VALUES 会做受限 Cartesian 合并；当 extension 声明 `aggregate.bgp_count` 时，2..8 pattern、最多 8 变量、无 GROUP/ORDER/HAVING/pagination 的 `COUNT(*)` / `COUNT(?x)` / `COUNT DISTINCT ?x` 会下沉到 `xpod_rdf.bgp_count(...)`，并支持同 ABI 的 VALUES source；当 extension 声明 `aggregate.bgp_group_count` 时，1..8 pattern、最多 8 变量、GROUP BY 1..8 变量、COUNT / COUNT DISTINCT 聚合会下沉到 `xpod_rdf.bgp_group_count(...)`，HAVING / ORDER / LIMIT 在返回分组行后由 xpod 做语义收尾；当 extension 声明 `aggregate.bgp_numeric` 时，1..8 pattern、GROUP BY 最多 8 变量、同一个 numeric 变量上的非 DISTINCT `SUM/AVG/MIN/MAX` 和非 DISTINCT `COUNT` 会下沉到 `xpod_rdf.bgp_numeric_aggregate(...)`，只接受该 numeric slot 的 `isNumeric`/`$termType:numeric` guard，HAVING / ORDER / LIMIT 仍由 xpod 对 native grouped rows 做语义收尾。metrics plan 分别标记 `XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)` / `XpodRdfExtensionOperator(index.xpod_rdf_perm.count_any)` / `XpodRdfExtensionOperator(index.xpod_rdf_perm.distinct_any)` / `XpodRdfExtensionOperator(join.required_bgp.native)` / `XpodRdfExtensionOperator(join.values.native|join.values.limit.native)` / `XpodRdfExtensionOperator(aggregate.bgp_count)` / `XpodRdfExtensionOperator(aggregate.bgp_group_count)` / `XpodRdfExtensionOperator(aggregate.bgp_numeric)`；内部 graph-prefix plan 会额外标记 `PostgresRdfNativeGraphPrefixValues(...)`。能力缺失或遇到 graph-prefix 展开超限、VALUES Cartesian 超限、range/text/excluded/id-set、DISTINCT numeric aggregate、多 numeric variable 等不支持 shape 时回退 RDF-3X / PG SQL。
 - `storageStats().pgAcceleration.capabilityProviders` 会按 capability 标记实际来源；`pg-hot-operators` 当前来自 `engine-sql`，`pg-custom-index` 的 custom/native capability 只能来自 `extension`。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases；`--caseProfile=extreme` 已覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、graph-prefix scan，以及 5 个 exact-graph native custom-index gate。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；历史 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case；2026-06-06 PG17 extreme gate 已覆盖 19483 quads、2 个 scan case 和 10 个 query case，并要求 `pg-custom-index` + `extreme/all` 至少命中一次 `XpodRdfExtensionOperator(...)`。
@@ -537,7 +538,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 未完成：
 
 - 更大数据量 / 并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。`large=1_000_000` 目前主要卡在 disposable seed 的逐条写入和 custom-index write amplification，正式 gate 前需要 bulk load / 延迟建 custom index。
-- graph-prefix BGP native 下推尚未完成；常规日期桶 product shape 当前仍走 PG SQL hot path，不能把这部分宣传成 custom-index native 收益。
+- bounded graph-prefix BGP / aggregate native 下推已接线，并通过单测证明 `scan_any`、`join.values.native`、`aggregate.bgp_count` 可命中；但真实 PG17 native rerun 尚未完成，本地 disposable smoke 因环境缺 `index.xpod_rdf_perm` capability 只能报告 `fallback=capability-missing`，不能给性能结论。
 - `pg-custom-index` 的 native scan limit early-stop、ordered-page join 仍未作为 xpod models cutover gate。VALUES join 已完成受限形状接线并能命中 native operator，但当前 real PG extreme p95 略慢于 RDF-3X / btree baseline。
 - text / vector candidate generation 与 RDF structured join 的一体化。
 - query template cache、materialized result 生命周期和 auth-aware cache dashboard。

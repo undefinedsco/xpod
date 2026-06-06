@@ -164,6 +164,7 @@ interface PgResolvedPattern {
   excludedIdSets: Partial<Record<PgPatternKey, number[]>>;
   termFilters: Partial<Record<PgPatternKey, PgResolvedTermFilter>>;
   graphPrefix?: string;
+  graphPrefixIds?: number[];
   objectRange?: PgObjectRange;
   unresolved?: PgPatternKey;
 }
@@ -265,6 +266,7 @@ interface PgCustomIndexBgpJoinShape {
   outputSlots: number[];
   variableAliases: Map<string, string>;
   indexChoices: string[];
+  internalValues: PgCompiledValuesSource[];
 }
 
 interface PgCustomIndexBgpJoinShapeOptions {
@@ -343,6 +345,8 @@ const TERM_PROJECTIONS: PgTermProjection[] = [
 ];
 
 const OBJECT_RANGE_KINDS: RdfTermKind[] = ['iri', 'literal', 'blank'];
+const PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS = 4096;
+const PG_CUSTOM_INDEX_MAX_VALUE_ROWS = 8192;
 
 interface AsyncSqlExecutor {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -1484,12 +1488,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
     start: number,
   ): Promise<RdfQuadIndexScanResult | undefined> {
     const capability = 'index.xpod_rdf_perm.scan_any';
-    if (!this.canUsePgAccelerationCapability(capability) || !this.canUsePgCustomIndexResolvedPattern(resolved)) {
+    const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
+    if (!customResolved || !this.canUsePgAccelerationCapability(capability) || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
       return undefined;
     }
 
-    const permutation = this.choosePermutation(resolved);
-    const prefixFilters = this.pgCustomIndexPrefixFilters(resolved, permutation);
+    const permutation = this.choosePermutation(customResolved);
+    const prefixFilters = this.pgCustomIndexPrefixFilters(customResolved, permutation);
     if (prefixFilters.every((filter) => filter === null)) {
       return undefined;
     }
@@ -1512,7 +1517,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const joins: string[] = [];
     const queryPlan: string[] = [];
     const alias = 'q';
-    this.appendResolvedPatternConditions(resolved, alias, conditions, joins, builder, queryPlan, false);
+    this.appendResolvedPatternConditions(customResolved, alias, conditions, joins, builder, queryPlan, false);
     const order = this.buildOrderClause(options, alias);
     const pagination = this.buildPagination(options, builder);
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
@@ -1530,8 +1535,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ${order || ` ORDER BY ${permutation.columns.map((column) => `${alias}.${column}`).join(', ')}`}
       ${pagination.sql}
     `;
-    const count = await this.pgCustomIndexCountAny(resolved, permutation);
-    const fallbackCount = count === undefined ? this.compileScanSql(resolved, options) : undefined;
+    const count = await this.pgCustomIndexCountAny(customResolved, permutation);
+    const fallbackCount = count === undefined ? this.compileScanSql(customResolved, options) : undefined;
     const matchedRows = count ?? await this.scalarCount(fallbackCount!.countSql, fallbackCount!.countParams);
     const rows = await this.requireExecutor().query<PgQuadIdRow>(sql, builder.snapshot());
     return {
@@ -2657,12 +2662,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return undefined;
     }
     const resolved = await this.resolvePattern(pattern.pattern);
-    if (!this.canUsePgCustomIndexResolvedPattern(resolved)) {
+    const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
+    if (!customResolved || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
       return undefined;
     }
 
-    const permutation = this.choosePermutation(resolved);
-    const count = await this.pgCustomIndexCountAny(resolved, permutation);
+    const permutation = this.choosePermutation(customResolved);
+    const count = await this.pgCustomIndexCountAny(customResolved, permutation);
     if (count === undefined) {
       return undefined;
     }
@@ -2671,15 +2677,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   private async pgCustomIndexCountAny(resolved: PgResolvedPattern, permutation: PgPermutation): Promise<number | undefined> {
     const capability = 'index.xpod_rdf_perm.count_any';
-    if (!this.canUsePgAccelerationCapability(capability) || !this.canUsePgCustomIndexResolvedPattern(resolved)) {
+    const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
+    if (!customResolved || !this.canUsePgAccelerationCapability(capability) || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
       return undefined;
     }
 
-    const fullFilters = this.pgCustomIndexFullFilters(resolved);
+    const fullFilters = this.pgCustomIndexFullFilters(customResolved);
     if (fullFilters.some((filter) => filter?.length === 0)) {
       return 0;
     }
-    const prefixFilters = this.pgCustomIndexPrefixFilters(resolved, permutation);
+    const prefixFilters = this.pgCustomIndexPrefixFilters(customResolved, permutation);
     if (prefixFilters.every((filter) => filter === null)) {
       return undefined;
     }
@@ -2774,8 +2781,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!shape) {
       return undefined;
     }
-    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
-    if (!valuesShape || (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native'))) {
+    const valueSources = [...values, ...shape.internalValues];
+    const valuesShape = this.pgCustomIndexValuesShape(valueSources, shape.variableSlotsByName);
+    if (!valuesShape || (valueSources.length > 0 && !this.canUsePgAccelerationCapability('join.values.native'))) {
       return undefined;
     }
 
@@ -2843,8 +2851,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         [
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
+          ...(valueSources.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
           `PostgresRdfNativeCustomIndexBgpCount(${patterns.length})`,
           `PostgresRdf3xJoinCount(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
+          ...this.pgCustomIndexInternalValuesPlan(shape),
           aggregatePlan(aggregates, false),
           sql,
         ],
@@ -2896,9 +2906,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     ) {
       return undefined;
     }
-    if (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
-      return undefined;
-    }
     if (aggregates.some((aggregate) => aggregate.type !== 'count')) {
       return undefined;
     }
@@ -2908,7 +2915,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!shape) {
       return undefined;
     }
-    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
+    const valueSources = [...values, ...shape.internalValues];
+    if (valueSources.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
+      return undefined;
+    }
+    const valuesShape = this.pgCustomIndexValuesShape(valueSources, shape.variableSlotsByName);
     if (!valuesShape) {
       return undefined;
     }
@@ -2993,9 +3004,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         [
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
-          ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
+          ...(valueSources.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
           `PostgresRdfNativeCustomIndexBgpGroupCount(${patterns.length})`,
           `PostgresRdf3xGroupCount(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
+          ...this.pgCustomIndexInternalValuesPlan(shape),
           aggregatePlan(aggregates, true),
           ...((query.having ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
           ...((query.orderBy ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateOrder(${describeQueryOrder(query.orderBy ?? [])})`] : []),
@@ -3072,7 +3084,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (numericSlot === undefined) {
       return undefined;
     }
-    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
+    const valueSources = [...values, ...shape.internalValues];
+    if (valueSources.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
+      return undefined;
+    }
+    const valuesShape = this.pgCustomIndexValuesShape(valueSources, shape.variableSlotsByName);
     if (!valuesShape) {
       return undefined;
     }
@@ -3153,9 +3169,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         [
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
-          ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
+          ...(valueSources.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
           `PostgresRdfNativeCustomIndexBgpNumericAggregate(${patterns.length})`,
           this.postgresRdf3xAggregateMarker(aggregates, groupBy.length > 0),
+          ...this.pgCustomIndexInternalValuesPlan(shape),
           aggregatePlan(aggregates, groupBy.length > 0),
           ...((query.having ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
           ...((query.orderBy ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateOrder(${describeQueryOrder(query.orderBy ?? [])})`] : []),
@@ -3221,16 +3238,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const resolved = await this.resolvePattern(pattern.pattern);
-    if (!this.canUsePgCustomIndexResolvedPattern(resolved)) {
+    const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
+    if (!customResolved || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
       return undefined;
     }
-    const fullFilters = this.pgCustomIndexFullFilters(resolved);
+    const fullFilters = this.pgCustomIndexFullFilters(customResolved);
     if (fullFilters.some((filter) => filter?.length === 0)) {
       return this.pgCustomIndexDistinctEmptyResult(query, projectVariable, start, capability, 'none');
     }
 
-    const permutation = this.choosePermutation(resolved);
-    const prefixFilters = this.pgCustomIndexPrefixFilters(resolved, permutation);
+    const permutation = this.choosePermutation(customResolved);
+    const prefixFilters = this.pgCustomIndexPrefixFilters(customResolved, permutation);
     if (prefixFilters.every((filter) => filter === null)) {
       return undefined;
     }
@@ -3265,7 +3283,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       query.offset ?? null,
     ]);
     const bindings = await this.joinRowsToBindings(rows, new Map([[projectVariable, 'v0']]));
-    const matchedRows = await this.pgCustomIndexCountAny(resolved, permutation)
+    const matchedRows = await this.pgCustomIndexCountAny(customResolved, permutation)
       ?? rows.reduce((total, row) => total + (pgInteger(row.row_count) ?? 0), 0);
     return {
       bindings,
@@ -3343,6 +3361,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!shape) {
       return undefined;
     }
+    if (shape.internalValues.length > 0) {
+      return undefined;
+    }
     const indexPlaceholders = shape.indexNames.map((_, index) => `$${index + 2}::regclass::oid`).join(', ');
     const constantsParam = 2 + shape.indexNames.length;
     const variableSlotsParam = constantsParam + 1;
@@ -3407,8 +3428,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return undefined;
     }
     if (
-      values.length === 0
-      || query.patterns.length < 1
+      query.patterns.length < 1
       || query.patterns.length > 8
       || patterns.length !== query.patterns.length
       || query.distinct
@@ -3425,7 +3445,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!shape) {
       return undefined;
     }
-    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
+    if (values.length === 0 && shape.internalValues.length === 0) {
+      return undefined;
+    }
+    const valueSources = [...values, ...shape.internalValues];
+    const valuesShape = this.pgCustomIndexValuesShape(valueSources, shape.variableSlotsByName);
     if (!valuesShape) {
       return undefined;
     }
@@ -3442,6 +3466,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
             ...this.pgAccelerationActiveMarkersForQuery(query),
             `XpodRdfExtensionOperator(${capability})`,
             'PostgresRdfNativeCustomIndexValuesJoin(empty)',
+            ...this.pgCustomIndexInternalValuesPlan(shape),
           ],
           query.filters?.length ?? 0,
         ),
@@ -3494,7 +3519,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
           `PostgresRdfNativeCustomIndexValuesJoin(${patterns.length})`,
-          `Rdf3xJoinTupleValues(${values.map((source) => source.variables.map((variableName) => `?${variableName}`).join(',')).join('|')})`,
+          `Rdf3xJoinTupleValues(${valueSources.map((source) => source.variables.map((variableName) => `?${variableName}`).join(',')).join('|')})`,
+          ...this.pgCustomIndexInternalValuesPlan(shape),
           ...(usesPagination ? ['PostgresRdfNativeCustomIndexValuesJoinLimit'] : []),
           sql,
         ],
@@ -3513,6 +3539,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const constants: Array<number | null> = [];
     const variableSlots: number[] = [];
     const indexChoices: string[] = [];
+    const internalValues: PgCompiledValuesSource[] = [];
 
     const slotFor = (variableName: string): number | undefined => {
       const existing = variableSlotsByName.get(variableName);
@@ -3527,18 +3554,33 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return next;
     };
 
-    for (const pattern of patterns) {
+    for (const [patternIndex, pattern] of patterns.entries()) {
       const resolved = await this.resolvePattern(pattern.pattern);
-      if (!this.canUsePgCustomIndexResolvedJoinPattern(resolved, pattern, options) || patternHasIdSet(resolved)) {
+      const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
+      if (!customResolved || !this.canUsePgCustomIndexResolvedJoinPattern(customResolved, pattern, options) || patternHasIdSet(customResolved)) {
         return undefined;
       }
-      const permutation = this.choosePermutation(resolved);
+      const graphPrefixVariableName = this.pgCustomIndexGraphPrefixVariableName(customResolved, pattern, patternIndex);
+      if (graphPrefixVariableName) {
+        const slot = slotFor(graphPrefixVariableName);
+        if (slot === undefined) {
+          return undefined;
+        }
+        internalValues.push({
+          variables: [graphPrefixVariableName],
+          rows: (customResolved.graphPrefixIds ?? []).map((id) => [id]),
+        });
+      }
+
+      const permutation = this.choosePermutation(customResolved);
       indexNames.push(pgCustomPermutationIndexName(permutation));
       indexChoices.push(permutation.name);
       for (const column of permutation.columns) {
         const key = pgPatternKeyForIndexedColumn(column);
-        constants.push(resolved.ids[key] ?? null);
-        const variableName = pattern.variables[key];
+        constants.push(customResolved.ids[key] ?? null);
+        const variableName = key === 'graph' && graphPrefixVariableName
+          ? graphPrefixVariableName
+          : pattern.variables[key];
         const slot = variableName ? slotFor(variableName) : 0;
         if (slot === undefined) {
           return undefined;
@@ -3565,7 +3607,74 @@ export class PostgresRdfEngine implements RdfEngineLike {
       outputSlots,
       variableAliases,
       indexChoices,
+      internalValues,
     };
+  }
+
+  private async resolvePgCustomIndexGraphPrefix(resolved: PgResolvedPattern): Promise<PgResolvedPattern | undefined> {
+    if (resolved.graphPrefix === undefined || resolved.graphPrefixIds !== undefined) {
+      return resolved;
+    }
+    const graphPrefixIds = await this.pgCustomIndexGraphIdsForPrefix(resolved.graphPrefix);
+    if (graphPrefixIds === undefined) {
+      return undefined;
+    }
+    return {
+      ...resolved,
+      graphPrefixIds,
+    };
+  }
+
+  private async pgCustomIndexGraphIdsForPrefix(prefix: string): Promise<number[] | undefined> {
+    const valueHead = rdfTermValueHead(prefix);
+    const rows = await this.requireExecutor().query<{ id: number | string }>(`
+      SELECT DISTINCT graph_term.id, graph_term.value
+      FROM rdf_terms graph_term
+      JOIN ${RDF_FACTS_TABLE} fact ON fact.graph_id = graph_term.id
+      WHERE graph_term.kind = $1
+        AND graph_term.value_head >= $2
+        AND graph_term.value_head < $3
+        AND graph_term.value >= $4
+        AND graph_term.value < $5
+      ORDER BY graph_term.value, graph_term.id
+      LIMIT $6
+    `, [
+      'iri',
+      valueHead,
+      `${valueHead}\uffff`,
+      prefix,
+      `${prefix}\uffff`,
+      PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS + 1,
+    ]);
+    if (rows.length > PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS) {
+      return undefined;
+    }
+    return rows
+      .map((row) => Number(row.id))
+      .filter(Number.isFinite);
+  }
+
+  private pgCustomIndexGraphPrefixVariableName(
+    resolved: PgResolvedPattern,
+    pattern: PgCompiledJoinPattern,
+    patternIndex: number,
+  ): string | undefined {
+    if (resolved.graphPrefix === undefined || resolved.graphPrefixIds === undefined) {
+      return undefined;
+    }
+    if (resolved.ids.graph !== undefined && resolved.graphPrefixIds.includes(resolved.ids.graph)) {
+      return undefined;
+    }
+    return pattern.variables.graph ?? `__xpod_graph_prefix_${patternIndex}`;
+  }
+
+  private pgCustomIndexInternalValuesPlan(shape: PgCustomIndexBgpJoinShape): string[] {
+    if (shape.internalValues.length === 0) {
+      return [];
+    }
+    return [
+      `PostgresRdfNativeGraphPrefixValues(${shape.internalValues.map((source) => source.rows.length).join('x')})`,
+    ];
   }
 
   private canUsePgCustomIndexResolvedJoinPattern(
@@ -3574,7 +3683,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     options: PgCustomIndexBgpJoinShapeOptions,
   ): boolean {
     return resolved.unresolved === undefined
-      && resolved.graphPrefix === undefined
+      && (resolved.graphPrefix === undefined || resolved.graphPrefixIds !== undefined)
       && resolved.objectRange === undefined
       && PATTERN_KEYS.every((key) => {
         if (resolved.excludedIdSets[key]?.length) {
@@ -3592,20 +3701,57 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (values.length === 0) {
       return { valueSlots: [], valueRows: [] };
     }
-    if (values.length > 1) {
-      return undefined;
-    }
-    const [source] = values;
-    if (!source || source.variables.length === 0 || source.variables.length > 8) {
-      return undefined;
-    }
-    const valueSlots = source.variables.map((variableName) => variableSlotsByName.get(variableName));
-    if (valueSlots.some((slot) => slot === undefined)) {
-      return undefined;
+    let valueSlots: number[] = [];
+    let rows: number[][] = [[]];
+    for (const source of values) {
+      if (!source || source.variables.length === 0 || source.variables.length > 8) {
+        return undefined;
+      }
+      const sourceSlots = source.variables.map((variableName) => variableSlotsByName.get(variableName));
+      if (sourceSlots.some((slot) => slot === undefined)) {
+        return undefined;
+      }
+      const nextSlots = [...valueSlots];
+      for (const slot of sourceSlots as number[]) {
+        if (!nextSlots.includes(slot)) {
+          nextSlots.push(slot);
+        }
+      }
+      if (nextSlots.length > 8 || source.rows.some((row) => row.length !== source.variables.length)) {
+        return undefined;
+      }
+      if (source.rows.length === 0) {
+        return { valueSlots: nextSlots, valueRows: [] };
+      }
+      if (rows.length * source.rows.length > PG_CUSTOM_INDEX_MAX_VALUE_ROWS) {
+        return undefined;
+      }
+      const nextRows: number[][] = [];
+      for (const existingRow of rows) {
+        for (const sourceRow of source.rows) {
+          const valuesBySlot = new Map<number, number>();
+          valueSlots.forEach((slot, index) => valuesBySlot.set(slot, existingRow[index]));
+          let matched = true;
+          for (const [index, slot] of (sourceSlots as number[]).entries()) {
+            const value = sourceRow[index];
+            const existing = valuesBySlot.get(slot);
+            if (existing !== undefined && existing !== value) {
+              matched = false;
+              break;
+            }
+            valuesBySlot.set(slot, value);
+          }
+          if (matched) {
+            nextRows.push(nextSlots.map((slot) => valuesBySlot.get(slot)!));
+          }
+        }
+      }
+      valueSlots = nextSlots;
+      rows = nextRows;
     }
     return {
-      valueSlots: valueSlots as number[],
-      valueRows: source.rows.flat(),
+      valueSlots,
+      valueRows: valueSlots.length === 0 ? [] : rows.flat(),
     };
   }
 
@@ -3630,21 +3776,25 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private pgCustomIndexIdFilter(resolved: PgResolvedPattern, key: PgPatternKey): number[] | null {
     const exact = resolved.ids[key];
     const set = resolved.idSets[key];
-    if (exact !== undefined && set?.length) {
-      return set.includes(exact) ? [exact] : [];
+    const graphPrefixSet = key === 'graph' ? resolved.graphPrefixIds : undefined;
+    const mergedSet = set !== undefined && graphPrefixSet !== undefined
+      ? intersectNumbers(set, graphPrefixSet)
+      : set ?? graphPrefixSet;
+    if (exact !== undefined && mergedSet !== undefined) {
+      return mergedSet.includes(exact) ? [exact] : [];
     }
     if (exact !== undefined) {
       return [exact];
     }
-    if (set?.length) {
-      return uniqueNumbers(set).sort((left, right) => left - right);
+    if (mergedSet !== undefined) {
+      return uniqueNumbers(mergedSet).sort((left, right) => left - right);
     }
     return null;
   }
 
   private canUsePgCustomIndexResolvedPattern(resolved: PgResolvedPattern): boolean {
     return resolved.unresolved === undefined
-      && resolved.graphPrefix === undefined
+      && (resolved.graphPrefix === undefined || resolved.graphPrefixIds !== undefined)
       && resolved.objectRange === undefined
       && PATTERN_KEYS.every((key) => !resolved.excludedIdSets[key]?.length && !resolved.termFilters[key]);
   }
@@ -6270,6 +6420,11 @@ function patternHasIdSet(resolved: PgResolvedPattern): boolean {
 
 function uniqueNumbers(values: number[]): number[] {
   return [...new Set(values)];
+}
+
+function intersectNumbers(left: number[], right: number[]): number[] {
+  const rightSet = new Set(right);
+  return uniqueNumbers(left.filter((value) => rightSet.has(value)));
 }
 
 function joinSourceVariables(source: PgJoinSource): string[] {
