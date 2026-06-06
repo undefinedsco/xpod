@@ -25,6 +25,13 @@ const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
 const STATUS = 'https://undefineds.co/ns#status';
 const THREAD = 'https://undefineds.co/ns#thread';
 
+function stringList(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || !(Symbol.iterator in value)) {
+    return [];
+  }
+  return Array.from(value as Iterable<unknown>).filter((entry): entry is string => typeof entry === 'string');
+}
+
 describe('PostgresRdfEngine', () => {
   it('stores RDF facts asynchronously while preserving datatype and language terms', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-'));
@@ -1030,6 +1037,17 @@ describe('PostgresRdfEngine', () => {
           'scan.term_in',
         ],
       });
+      const acceleration = (await engine.storageStats()).pgAcceleration;
+      const activeOperators = stringList(acceleration?.activeOperators);
+      const capabilities = stringList(acceleration?.capabilities);
+      expect(activeOperators).not.toEqual(expect.arrayContaining([
+        'join.required_bgp.order_page.native',
+        'join.required_bgp.native',
+        'join.required_bgp.limit.native',
+        'index.xpod_rdf_perm',
+      ]));
+      expect(capabilities.filter((capability) => capability.includes('.native'))).toEqual([]);
+      expect(capabilities.filter((capability) => capability.startsWith('index.xpod_rdf_perm'))).toEqual([]);
 
       await engine.put([
         quad(message1, namedNode(THREAD), thread, graph),
@@ -1217,6 +1235,15 @@ describe('PostgresRdfEngine', () => {
         'aggregate.count': 'engine-sql',
         'aggregate.numeric': 'engine-sql',
       });
+      expect(stats?.activeOperators ?? []).not.toEqual(expect.arrayContaining([
+        'join.required_bgp.order_page.native',
+        'join.required_bgp.native',
+        'join.required_bgp.limit.native',
+        'index.xpod_rdf_perm',
+      ]));
+      const capabilities = stringList(stats?.capabilities);
+      expect(capabilities.filter((capability) => capability.includes('.native'))).toEqual([]);
+      expect(capabilities.filter((capability) => capability.startsWith('index.xpod_rdf_perm'))).toEqual([]);
       expect(stats?.fallbackReason).toBeUndefined();
     } finally {
       await openSourceCloudEngine.close();
