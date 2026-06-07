@@ -16,7 +16,7 @@ import type { EmbeddingService } from '../../ai/service/EmbeddingService';
 import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
 import type { AiCredential } from '../../ai/service/types';
 import type { ResourceStore, RepresentationPreferences } from '@solid/community-server';
-import { XPOD_AI, XPOD_CREDENTIAL, normalizeAIConfigProviderId } from '@undefineds.co/models';
+import { UDFS, normalizeAIConfigProviderId } from '@undefineds.co/models';
 
 /**
  * VectorStore 定义（从 RDF 读取）
@@ -287,8 +287,8 @@ export class VectorIndexingListener implements ResourceChangeListener {
     try {
       // Credential -> Provider 关联，从 Provider 获取 baseUrl 和 proxyUrl
       const query = `
-        PREFIX cred: <${XPOD_CREDENTIAL.NAMESPACE}>
-        PREFIX ai: <${XPOD_AI.NAMESPACE}>
+        PREFIX cred: <${UDFS.NAMESPACE}>
+        PREFIX ai: <${UDFS.NAMESPACE}>
         SELECT ?apiKey ?baseUrl ?provider ?proxyUrl WHERE {
           ?cred a cred:Credential ;
                 cred:service "ai" ;

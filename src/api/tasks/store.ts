@@ -1,5 +1,4 @@
 import type { WorkspaceRef } from '../workspace/types';
-import { taskResourceId } from '@undefineds.co/models';
 import type { TaskAuthBindingSnapshot } from './TaskAuthBinding';
 import type { TaskStatusType, TaskTriggerKindType } from './schema';
 
@@ -63,7 +62,7 @@ export function generateTaskResourceId(input: string | {
   if (/\.ttl(?:#|$)/i.test(key) || key.includes('/') || key.includes('#')) {
     throw new Error(`Task id generator requires a local key: ${key}`);
   }
-  return taskResourceId(key);
+  return `index.ttl#${key}`;
 }
 
 export function generateDefaultTaskResourceId(key: string): string {

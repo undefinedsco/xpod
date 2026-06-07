@@ -74,7 +74,7 @@ describe('PodMatrixStore query pushdown', () => {
 
     const backwardConditions = flattenExpressions(backwardQuery.where.mock.calls[0][0]);
     expect(backwardConditions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ operator: '=', right: surfaceId('!room:example.com') }),
+      expect.objectContaining({ operator: '=', right: threadResourceUri('!room:example.com') }),
       expect.objectContaining({ operator: '<=', right: '1970-01-01T00:00:00.200Z' }),
     ]));
     expect(backwardConditions).not.toEqual(expect.arrayContaining([
@@ -93,7 +93,7 @@ describe('PodMatrixStore query pushdown', () => {
 
     const forwardConditions = flattenExpressions(forwardQuery.where.mock.calls[0][0]);
     expect(forwardConditions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ operator: '=', right: surfaceId('!room:example.com') }),
+      expect.objectContaining({ operator: '=', right: threadResourceUri('!room:example.com') }),
       expect.objectContaining({ operator: '>', right: '1970-01-01T00:00:00.200Z' }),
     ]));
     expect(forwardConditions).not.toEqual(expect.arrayContaining([
@@ -130,7 +130,7 @@ describe('PodMatrixStore query pushdown', () => {
     expect(event.eventId).toMatch(/^\$/);
     expect(event.depth).toBe(42);
     expect(flattenExpressions(depthQuery.where.mock.calls[0][0])).toEqual(expect.arrayContaining([
-      expect.objectContaining({ operator: '=', right: surfaceId('!room:example.com') }),
+      expect.objectContaining({ operator: '=', right: threadResourceUri('!room:example.com') }),
     ]));
     expect(depthQuery.orderBy.mock.calls[0][0].name).toBe('createdAt');
     expect(db.insert).toHaveBeenCalled();
@@ -139,4 +139,8 @@ describe('PodMatrixStore query pushdown', () => {
 
 function surfaceId(roomId: string): string {
   return `matrix-${createHash('sha256').update(roomId).digest('hex').slice(0, 16)}`;
+}
+
+function threadResourceUri(roomId: string): string {
+  return `https://alice.example/.data/chat/${surfaceId(roomId)}/index.ttl#thread`;
 }

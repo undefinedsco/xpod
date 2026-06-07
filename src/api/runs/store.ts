@@ -1,5 +1,4 @@
 import type { WorkspaceRef } from '../workspace/types';
-import { runResourceId, runStepResourceId } from '@undefineds.co/models';
 import type { RunStatusType, RunStepTypeValue } from './schema';
 
 export interface RunRecordData {
@@ -139,7 +138,8 @@ export function generateRunResourceId(input: {
     throw new Error(`Run id generator requires a local key, got resource id: ${input.key}`);
   }
   assertLocalKey(input.key, 'Run id generator');
-  return runResourceId(input.key, input);
+  const { yyyy, MM, dd } = datePathFromTimestamp(input.createdAt);
+  return `${input.commandKind}/${input.surfaceId}/${yyyy}/${MM}/${dd}/runs.ttl#${input.key}`;
 }
 
 export function generateRunStepResourceId(input: {
@@ -155,10 +155,12 @@ export function generateRunStepResourceId(input: {
   assertLocalKey(input.key, 'RunStep id generator');
 
   if (input.runId && isRunResourceId(input.runId)) {
-    return runStepResourceId(input.key, input);
+    const runDoc = input.runId.slice(0, input.runId.lastIndexOf('#'));
+    return `${runDoc}#${input.key}`;
   }
 
-  return runStepResourceId(input.key, input);
+  const { yyyy, MM, dd } = datePathFromTimestamp(input.createdAt);
+  return `${input.commandKind}/${input.surfaceId}/${yyyy}/${MM}/${dd}/runs.ttl#${input.key}`;
 }
 
 export function buildRunResourceId(input: {

@@ -189,8 +189,10 @@ type RunStepRecordSource = {
   runId?: string | null;
   run?: string | null;
   type?: string | null;
+  stepType?: string | null;
   message?: string | null;
   data?: JsonObjectSource;
+  payload?: JsonObjectSource;
   createdAt?: string | Date | null;
 };
 
@@ -516,9 +518,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
    * ChatKit 边界继续暴露 metadata.chat_id；内部同一值叫 surface_id。
    */
   private threadRecordToMetadata(record: ThreadMetadataSource, chatResourceMap: Map<string, string>): ThreadMetadata {
-    const commandKind = record.commandKind === 'task' ? 'task' : 'chat';
-    const surfaceId = record.surfaceId || this.resolveChatSurfaceFromResource(record.chat, chatResourceMap, PodChatKitStore.DEFAULT_CHAT_ID);
     const extra = this.parseJsonObject(record.metadata);
+    const commandKind = record.commandKind === 'task' || extra?.commandKind === 'task' ? 'task' : 'chat';
+    const surfaceId = record.surfaceId
+      || (typeof extra?.surface_id === 'string' ? extra.surface_id : undefined)
+      || (typeof extra?.chat_id === 'string' ? extra.chat_id : undefined)
+      || this.resolveChatSurfaceFromResource(record.chat, chatResourceMap, PodChatKitStore.DEFAULT_CHAT_ID);
 
     return {
       id: record.id,
@@ -571,6 +576,35 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   private jsonObjectOrNull(value: Record<string, unknown> | undefined): Record<string, unknown> | null {
     return value && Object.keys(value).length > 0 ? value : null;
+  }
+
+  private getXpodMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+    const value = metadata?.xpod;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined;
+  }
+
+  private withXpodMetadata(
+    metadata: Record<string, unknown> | undefined,
+    xpod: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      ...(metadata ?? {}),
+      xpod: {
+        ...(this.getXpodMetadata(metadata) ?? {}),
+        ...xpod,
+      },
+    };
+  }
+
+  private withoutXpodMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+    if (!metadata) {
+      return undefined;
+    }
+    const result = { ...metadata };
+    delete result.xpod;
+    return Object.keys(result).length > 0 ? result : undefined;
   }
 
   private withTaskAuthBindingMetadata(
@@ -727,13 +761,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   private runRecordToData(record: RunRecordSource): RunRecordData {
+    const metadata = this.parseJsonObject(record.metadata);
+    const xpod = this.getXpodMetadata(metadata);
     return {
       id: record.id || '',
-      surfaceId: record.surfaceId || 'default',
+      surfaceId: record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
       task: record.task || undefined,
       thread: record.thread || '',
       workspace: record.workspace || '',
-      commandKind: record.commandKind === 'task' ? 'task' : 'chat',
+      commandKind: record.commandKind === 'task' || xpod?.commandKind === 'task' ? 'task' : 'chat',
       status: (record.status || 'queued') as RunRecordData['status'],
       runner: record.runner || '',
       prompt: record.prompt || undefined,
@@ -743,7 +779,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       heartbeatAt: this.isoToTimestamp(record.heartbeatAt),
       cancelRequestedAt: this.isoToTimestamp(record.cancelRequestedAt),
       error: record.error || undefined,
-      metadata: this.parseJsonObject(record.metadata),
+      metadata,
       createdAt: this.isoToTimestamp(record.createdAt) ?? nowTimestamp(),
       startedAt: this.isoToTimestamp(record.startedAt),
       completedAt: this.isoToTimestamp(record.completedAt),
@@ -752,37 +788,43 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   private runStepRecordToData(record: RunStepRecordSource): RunStepRecordData {
+    const payload = this.parseJsonObject(record.payload) ?? this.parseJsonObject(record.data);
+    const xpod = this.getXpodMetadata(payload);
     return {
       id: record.id || '',
-      commandKind: record.commandKind === 'task' ? 'task' : 'chat',
-      surfaceId: record.surfaceId || 'default',
-      runId: record.runId || '',
+      commandKind: record.commandKind === 'task' || xpod?.commandKind === 'task' ? 'task' : 'chat',
+      surfaceId: record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
+      runId: record.runId || (typeof xpod?.runId === 'string' ? xpod.runId : ''),
       run: record.run || '',
-      type: record.type || 'runtime.event',
+      type: record.type || record.stepType || 'runtime.event',
       message: record.message || undefined,
-      data: this.parseJsonObject(record.data),
+      data: this.withoutXpodMetadata(payload),
       createdAt: this.isoToTimestamp(record.createdAt) ?? nowTimestamp(),
     };
   }
 
   private taskRecordToData(record: TaskRecordSource): TaskRecordData {
+    const metadata = this.parseJsonObject(record.metadata);
+    const xpod = this.getXpodMetadata(metadata);
     return {
       id: record.id || '',
-      surfaceId: record.surfaceId || 'default',
+      surfaceId: record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
       title: record.title || undefined,
       prompt: record.prompt || '',
       thread: record.thread || '',
       workspace: record.workspace || '',
-      runner: record.runner || '',
+      runner: record.runner || (typeof xpod?.runner === 'string' ? xpod.runner : ''),
       status: (record.status || 'active') as TaskRecordData['status'],
-      triggerKind: (record.triggerKind || 'once') as TaskRecordData['triggerKind'],
-      cron: record.cron || undefined,
-      intervalSeconds: typeof record.intervalSeconds === 'number' ? record.intervalSeconds : undefined,
-      eventName: record.eventName || undefined,
-      nextRunAt: this.isoToTimestamp(record.nextRunAt),
-      lastRunAt: this.isoToTimestamp(record.lastRunAt),
-      authBinding: this.parseTaskAuthBinding(this.parseJsonObject(record.metadata)?.authBinding),
-      metadata: this.parseJsonObject(record.metadata),
+      triggerKind: (record.triggerKind || xpod?.triggerKind || 'once') as TaskRecordData['triggerKind'],
+      cron: record.cron || (typeof xpod?.cron === 'string' ? xpod.cron : undefined),
+      intervalSeconds: typeof record.intervalSeconds === 'number'
+        ? record.intervalSeconds
+        : (typeof xpod?.intervalSeconds === 'number' ? xpod.intervalSeconds : undefined),
+      eventName: record.eventName || (typeof xpod?.eventName === 'string' ? xpod.eventName : undefined),
+      nextRunAt: this.isoToTimestamp(record.nextRunAt) ?? (typeof xpod?.nextRunAt === 'number' ? xpod.nextRunAt : undefined),
+      lastRunAt: this.isoToTimestamp(record.lastRunAt) ?? (typeof xpod?.lastRunAt === 'number' ? xpod.lastRunAt : undefined),
+      authBinding: this.parseTaskAuthBinding(metadata?.authBinding),
+      metadata,
       createdAt: this.isoToTimestamp(record.createdAt) ?? nowTimestamp(),
       updatedAt: this.isoToTimestamp(record.updatedAt) ?? nowTimestamp(),
     };
@@ -1166,12 +1208,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       surface_id: surfaceId,
       chat_id: surfaceId,
     };
-    // Persist extended metadata except fields that are derived from first-class columns.
-    const metadataToPersist = { ...(thread.metadata ?? {}) } as Record<string, unknown>;
-    delete (metadataToPersist as any).chat_id;
-    delete (metadataToPersist as any).commandKind;
-    delete (metadataToPersist as any).surface_id;
-    const metadataObject = this.jsonObjectOrNull(metadataToPersist);
+    const metadataObject = this.jsonObjectOrNull(thread.metadata);
 
     if (commandKind === 'chat') {
       await this.ensureChat(surfaceId, context);
@@ -1192,9 +1229,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     if (existing) {
       // Update
       await db.updateByIri(Thread, threadResource, {
-        commandKind,
-        surfaceId,
         chat: commandKind === 'chat' ? this.buildChatResourceId(surfaceId) : null,
+        task: commandKind === 'task' ? buildTaskResourceId(`index.ttl#${surfaceId}`) : null,
         title: thread.title || null,
         status: this.statusToString(thread.status),
         workspace: thread.workspace || null,
@@ -1205,9 +1241,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       // Insert
       await db.insert(Thread).values({
         id: threadResourceId,
-        commandKind,
-        surfaceId,
         chat: commandKind === 'chat' ? this.buildChatResourceId(surfaceId) : null,
+        task: commandKind === 'task' ? buildTaskResourceId(`index.ttl#${surfaceId}`) : null,
         title: thread.title || null,
         status: this.statusToString(thread.status),
         workspace: thread.workspace || null,
@@ -1414,8 +1449,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     const messageRecord = {
       id: itemResourceId,
-      commandKind: resolvedThread.commandKind,
-      surfaceId: resolvedThread.surfaceId,
       chat: resolvedThread.commandKind === 'chat' ? this.buildChatResourceId(resolvedThread.surfaceId) : null,
       thread: resolvedThread.thread,
       maker: role === MessageRole.USER ? webId : null,
@@ -1424,7 +1457,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       status,
       toolName,
       toolCallId,
-      metadata: this.jsonObjectOrNull(metadata ?? undefined),
+      metadata: this.jsonObjectOrNull({
+        ...(metadata ?? {}),
+        commandKind: resolvedThread.commandKind,
+        surface_id: resolvedThread.surfaceId,
+        chat_id: resolvedThread.surfaceId,
+      }),
       createdAt: new Date(item.created_at * 1000).toISOString(),
     };
 
@@ -1671,12 +1709,14 @@ WHERE { ${deletePatterns.join(' ')} }
 
     run.id = buildRunResourceId(run);
     const existing = await db.findById(Run, run.id) as RunRecord | null;
-    const values = {
+    const metadata = this.withXpodMetadata(run.metadata, {
+      commandKind: run.commandKind,
       surfaceId: run.surfaceId,
+    });
+    const values = {
       task: run.task || null,
       thread: run.thread,
       workspace: run.workspace,
-      commandKind: run.commandKind,
       status: run.status,
       runner: run.runner || null,
       prompt: run.prompt || null,
@@ -1686,7 +1726,7 @@ WHERE { ${deletePatterns.join(' ')} }
       heartbeatAt: this.timestampToIso(run.heartbeatAt),
       cancelRequestedAt: this.timestampToIso(run.cancelRequestedAt),
       error: run.error || null,
-      metadata: this.jsonObjectOrNull(run.metadata),
+      metadata: this.jsonObjectOrNull(metadata),
       createdAt: this.timestampToIso(run.createdAt) ?? new Date().toISOString(),
       startedAt: this.timestampToIso(run.startedAt),
       completedAt: this.timestampToIso(run.completedAt),
@@ -1732,9 +1772,6 @@ WHERE { ${deletePatterns.join(' ')} }
     if (options.workspace) {
       conditions.push(eq(Run.workspace, options.workspace));
     }
-    if (options.commandKind) {
-      conditions.push(eq(Run.commandKind, options.commandKind));
-    }
     if (options.status) {
       conditions.push(eq(Run.status, options.status));
     }
@@ -1744,10 +1781,14 @@ WHERE { ${deletePatterns.join(' ')} }
       ? await query.where(and(...conditions)) as RunRecord[]
       : await query as RunRecord[];
 
-    return records
-      .map((record) => this.runRecordToData(record))
+    let runs = records.map((record) => this.runRecordToData(record));
+    if (options.commandKind) {
+      runs = runs.filter((run) => run.commandKind === options.commandKind);
+    }
+
+    return runs
       .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
-      .slice(0, options.limit ?? records.length);
+      .slice(0, options.limit ?? runs.length);
   }
 
   async appendRunStep(event: RunStepRecordData, context: StoreContext): Promise<void> {
@@ -1763,13 +1804,14 @@ WHERE { ${deletePatterns.join(' ')} }
 
     await db.insert(RunStep).values({
       id: event.id,
-      commandKind: event.commandKind,
-      surfaceId: event.surfaceId,
-      runId: event.runId,
       run: event.run,
-      type: event.type,
+      stepType: event.type,
       message: event.message || null,
-      data: this.jsonObjectOrNull(event.data),
+      payload: this.jsonObjectOrNull(this.withXpodMetadata(event.data, {
+        commandKind: event.commandKind,
+        surfaceId: event.surfaceId,
+        runId: event.runId,
+      })),
       createdAt: this.timestampToIso(event.createdAt) ?? new Date().toISOString(),
     });
   }
@@ -1784,8 +1826,7 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error(`loadRunSteps requires a base-relative Run id: ${runId}`);
     }
 
-    // runId is a local query field; RunStep.run remains the semantic RDF relation.
-    const records = await db.select().from(RunStep).where(eq(RunStep.runId, runId)) as RunStepRecord[];
+    const records = await db.select().from(RunStep).where(eq(RunStep.run, this.resolveDataResource(runId, context))) as RunStepRecord[];
     return records
       .map((record) => this.runStepRecordToData(record))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
@@ -1823,21 +1864,26 @@ WHERE { ${deletePatterns.join(' ')} }
 
     task.id = buildTaskResourceId(task.id);
     const existing = await db.findById(Task, task.id) as TaskRecord | null;
+    const metadata = this.withXpodMetadata(
+      this.withTaskAuthBindingMetadata(task.metadata, task.authBinding),
+      {
+        surfaceId: task.surfaceId,
+        runner: task.runner,
+        triggerKind: task.triggerKind,
+        cron: task.cron ?? null,
+        intervalSeconds: task.intervalSeconds ?? null,
+        eventName: task.eventName ?? null,
+        nextRunAt: task.nextRunAt ?? null,
+        lastRunAt: task.lastRunAt ?? null,
+      },
+    );
     const values = {
-      surfaceId: task.surfaceId,
       title: task.title || null,
+      instruction: task.prompt,
       prompt: task.prompt,
-      thread: task.thread,
       workspace: task.workspace,
-      runner: task.runner,
       status: task.status,
-      triggerKind: task.triggerKind,
-      cron: task.cron || null,
-      intervalSeconds: task.intervalSeconds ?? null,
-      eventName: task.eventName || null,
-      nextRunAt: this.timestampToIso(task.nextRunAt),
-      lastRunAt: this.timestampToIso(task.lastRunAt),
-      metadata: this.jsonObjectOrNull(this.withTaskAuthBindingMetadata(task.metadata, task.authBinding)),
+      metadata: this.jsonObjectOrNull(metadata),
       createdAt: this.timestampToIso(task.createdAt) ?? new Date().toISOString(),
       updatedAt: this.timestampToIso(task.updatedAt) ?? new Date().toISOString(),
     };

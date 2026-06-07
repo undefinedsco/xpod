@@ -24,7 +24,7 @@ import type { EmbeddingService } from '../../ai/service/EmbeddingService';
 import type { SparqlEngine } from '../../storage/sparql/SubgraphQueryEngine';
 import type { AiCredential } from '../../ai/service/types';
 import type { VectorSearchOptions } from '../../storage/vector/types';
-import { XPOD_AI, XPOD_CREDENTIAL, normalizeAIConfigProviderId } from '@undefineds.co/models';
+import { UDFS, normalizeAIConfigProviderId } from '@undefineds.co/models';
 
 const ALLOWED_METHODS = ['GET', 'POST', 'OPTIONS'];
 
@@ -300,8 +300,8 @@ export class SearchHttpHandler extends HttpHandler {
   private async getAiCredential(podBaseUrl: string): Promise<AiCredential | null> {
     try {
       const query = `
-        PREFIX cred: <${XPOD_CREDENTIAL.NAMESPACE}>
-        PREFIX ai: <${XPOD_AI.NAMESPACE}>
+        PREFIX cred: <${UDFS.NAMESPACE}>
+        PREFIX ai: <${UDFS.NAMESPACE}>
         SELECT ?apiKey ?baseUrl ?provider ?proxyUrl WHERE {
           ?cred a cred:Credential ;
                 cred:service "ai" ;

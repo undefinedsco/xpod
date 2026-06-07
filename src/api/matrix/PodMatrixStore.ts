@@ -42,7 +42,6 @@ interface MatrixRoomSource {
 
 interface MatrixEventSource {
   id: string;
-  surfaceId?: string | null;
   maker?: string | null;
   content?: JsonObjectSource;
   createdAt?: string | Date | null;
@@ -88,12 +87,16 @@ export class PodMatrixStore {
     });
     await db.insert(threadResource).values({
       id: threadId,
-      commandKind: 'chat',
-      surfaceId: this.surfaceIdFromRoomId(roomId),
       chat: chatId,
       title: input.name ?? roomId,
       status: 'active',
-      metadata: { protocol: 'matrix', roomId },
+      metadata: {
+        protocol: 'matrix',
+        roomId,
+        commandKind: 'chat',
+        surface_id: this.surfaceIdFromRoomId(roomId),
+        chat_id: this.surfaceIdFromRoomId(roomId),
+      },
       createdAt: new Date(now).toISOString(),
       updatedAt: new Date(now).toISOString(),
     });
@@ -172,7 +175,7 @@ export class PodMatrixStore {
     const db = await this.getDb(context);
     await this.ensureRoomExists(db, roomId);
 
-    const existing = await this.findEventByTxnId(db, roomId, txnId);
+    const existing = await this.findEventByTxnId(db, roomId, txnId, context);
     if (existing) {
       return existing;
     }
@@ -198,7 +201,7 @@ export class PodMatrixStore {
     const join: MatrixSyncResponse['rooms']['join'] = {};
 
     for (const room of rooms) {
-      const events = await this.listEvents(db, room.roomId, {
+      const events = await this.listEvents(db, room.roomId, context, {
         sinceTs,
         limit,
       });
@@ -229,7 +232,7 @@ export class PodMatrixStore {
     const limit = options.limit && options.limit > 0 ? options.limit : 50;
     const fromTs = this.parseSyncToken(options.from);
     const forward = options.dir === 'f';
-    const events = await this.listEvents(db, roomId, {
+    const events = await this.listEvents(db, roomId, context, {
       sinceTs: forward && fromTs > 0 ? fromTs : undefined,
       beforeOrAtTs: !forward && fromTs > 0 ? fromTs : undefined,
       limit,
@@ -245,7 +248,7 @@ export class PodMatrixStore {
 
   public async getEvent(roomId: string, eventId: string, context: MatrixStoreContext): Promise<MatrixClientEvent> {
     const db = await this.getDb(context);
-    const event = await this.findEventById(db, roomId, eventId);
+    const event = await this.findEventById(db, roomId, eventId, context);
     if (!event) {
       throw new Error(`Matrix event not found: ${eventId}`);
     }
@@ -259,7 +262,7 @@ export class PodMatrixStore {
     context: MatrixStoreContext,
   ): Promise<Record<string, unknown>> {
     const db = await this.getDb(context);
-    const event = await this.findLatestStateEvent(db, roomId, eventType, stateKey);
+    const event = await this.findLatestStateEvent(db, roomId, eventType, stateKey, context);
     if (!event) {
       throw new Error(`Matrix state not found: ${eventType}/${stateKey}`);
     }
@@ -324,7 +327,7 @@ export class PodMatrixStore {
     context: MatrixStoreContext,
   ): Promise<MatrixEventRecord> {
     const eventId = this.generateEventId(context);
-    const depth = await this.nextEventDepth(db, input.roomId);
+    const depth = await this.nextEventDepth(db, input.roomId, context);
     const originIso = new Date(input.originServerTs).toISOString();
     const record = {
       eventId,
@@ -341,8 +344,6 @@ export class PodMatrixStore {
     };
     await db.insert(messageResource).values({
       id: this.messageResourceIdFromEvent(input.roomId, eventId, input.originServerTs),
-      commandKind: 'chat',
-      surfaceId: this.surfaceIdFromRoomId(input.roomId),
       chat: this.chatResourceIdFromRoomId(input.roomId),
       thread: this.resolveDataResourceUriFromId(this.threadResourceIdFromRoomId(input.roomId), context),
       maker: context.userId,
@@ -361,6 +362,9 @@ export class PodMatrixStore {
         txnId: input.txnId ?? null,
         stateKey: input.stateKey ?? null,
         content: input.content,
+        commandKind: 'chat',
+        surface_id: this.surfaceIdFromRoomId(input.roomId),
+        chat_id: this.surfaceIdFromRoomId(input.roomId),
       },
       createdAt: originIso,
       updatedAt: originIso,
@@ -378,6 +382,7 @@ export class PodMatrixStore {
   private async listEvents(
     db: Db,
     roomId: string,
+    context: MatrixStoreContext,
     options: {
       sinceTs?: number;
       beforeOrAtTs?: number;
@@ -386,7 +391,7 @@ export class PodMatrixStore {
     } = {},
   ): Promise<MatrixEventRecord[]> {
     const conditions = [
-      eq(messageResource.surfaceId, this.surfaceIdFromRoomId(roomId)),
+      eq(messageResource.thread, this.resolveDataResourceUriFromId(this.threadResourceIdFromRoomId(roomId), context)),
       options.sinceTs !== undefined ? gt(messageResource.createdAt, new Date(options.sinceTs).toISOString()) : undefined,
       options.beforeOrAtTs !== undefined ? lte(messageResource.createdAt, new Date(options.beforeOrAtTs).toISOString()) : undefined,
     ];
@@ -401,18 +406,18 @@ export class PodMatrixStore {
     return events.map((event) => this.eventSourceToRecord(event));
   }
 
-  private async findEventByTxnId(db: Db, roomId: string, txnId: string): Promise<MatrixEventRecord | undefined> {
-    const records = await this.listEvents(db, roomId);
+  private async findEventByTxnId(db: Db, roomId: string, txnId: string, context: MatrixStoreContext): Promise<MatrixEventRecord | undefined> {
+    const records = await this.listEvents(db, roomId, context);
     return records.find((record) => record.txnId === txnId);
   }
 
-  private async findEventById(db: Db, roomId: string, eventId: string): Promise<MatrixEventRecord | undefined> {
-    const records = await this.listEvents(db, roomId);
+  private async findEventById(db: Db, roomId: string, eventId: string, context: MatrixStoreContext): Promise<MatrixEventRecord | undefined> {
+    const records = await this.listEvents(db, roomId, context);
     return records.find((record) => record.eventId === eventId);
   }
 
-  private async nextEventDepth(db: Db, roomId: string): Promise<number> {
-    const records = await this.listEvents(db, roomId);
+  private async nextEventDepth(db: Db, roomId: string, context: MatrixStoreContext): Promise<number> {
+    const records = await this.listEvents(db, roomId, context);
     return records.reduce((max, record) => Math.max(max, record.depth ?? 0), 0) + 1;
   }
 
@@ -421,8 +426,9 @@ export class PodMatrixStore {
     roomId: string,
     eventType: string,
     stateKey: string,
+    context: MatrixStoreContext,
   ): Promise<MatrixEventRecord | undefined> {
-    const records = await this.listEvents(db, roomId, { newestFirst: true });
+    const records = await this.listEvents(db, roomId, context, { newestFirst: true });
     return records.find((record) => record.type === eventType && (record.stateKey ?? '') === stateKey);
   }
 

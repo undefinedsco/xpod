@@ -17,8 +17,8 @@
         "@inrupt/solid-client-authn-node": "^3.1.0",
         "@mariozechner/pi-coding-agent": "^0.55.1",
         "@solid/community-server": "8.0.0-alpha.1",
-        "@undefineds.co/drizzle-solid": "0.3.13",
-        "@undefineds.co/models": "0.2.34",
+        "@undefineds.co/drizzle-solid": "0.3.14",
+        "@undefineds.co/models": "0.2.38",
         "abstract-level": "^1.0.4",
         "acme-client": "^5.1.3",
         "ai": "^6.0.6",
@@ -78,12 +78,12 @@
         "vitest": "^1.4.0",
       },
       "optionalDependencies": {
-        "@undefineds.co/xpod-darwin-arm64": "0.3.32",
-        "@undefineds.co/xpod-darwin-x64": "0.3.32",
-        "@undefineds.co/xpod-linux-arm64-gnu": "0.3.32",
-        "@undefineds.co/xpod-linux-arm64-musl": "0.3.32",
-        "@undefineds.co/xpod-linux-x64-gnu": "0.3.32",
-        "@undefineds.co/xpod-linux-x64-musl": "0.3.32",
+        "@undefineds.co/xpod-darwin-arm64": "0.3.33",
+        "@undefineds.co/xpod-darwin-x64": "0.3.33",
+        "@undefineds.co/xpod-linux-arm64-gnu": "0.3.33",
+        "@undefineds.co/xpod-linux-arm64-musl": "0.3.33",
+        "@undefineds.co/xpod-linux-x64-gnu": "0.3.33",
+        "@undefineds.co/xpod-linux-x64-musl": "0.3.33",
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.39",
@@ -1525,9 +1525,9 @@
 
     "@typescript-eslint/visitor-keys": ["@typescript-eslint/visitor-keys@7.18.0", "", { "dependencies": { "@typescript-eslint/types": "7.18.0", "eslint-visitor-keys": "^3.4.3" } }, "sha512-cDF0/Gf81QpY3xYyJKDV14Zwdmid5+uuENhjH2EqFaF0ni+yAyq/LzMaIJdhNJXZI7uLzwIlA+V7oWoyn6Curg=="],
 
-    "@undefineds.co/drizzle-solid": ["@undefineds.co/drizzle-solid@0.3.13", "", { "dependencies": { "@inrupt/solid-client": "^3.0.0", "@inrupt/solid-client-authn-node": "^3.1.1", "@inrupt/universal-fetch": "^1.0.3", "@inrupt/vocab-common-rdf": "^1.0.5", "dotenv": "^17.2.2", "drizzle-orm": "^0.28.0", "n3": "^1.26.0", "node-fetch": "^3.3.2", "sparqljs": "^3.7.3", "zod": "^4.1.8" }, "peerDependencies": { "@comunica/query-sparql-solid": "^4.0.2" }, "optionalPeers": ["@comunica/query-sparql-solid"] }, "sha512-qrn7nH1X46H/l3zaWFN/Fx+vlGNeOfzyw5o+ZKj4TuEK1heLlmzuGR+1j1pzaizXA6wElq8WfNdIJhqZZIJnqA=="],
+    "@undefineds.co/drizzle-solid": ["@undefineds.co/drizzle-solid@0.3.14", "", { "dependencies": { "@inrupt/solid-client": "^3.0.0", "@inrupt/solid-client-authn-node": "^3.1.1", "@inrupt/universal-fetch": "^1.0.3", "@inrupt/vocab-common-rdf": "^1.0.5", "dotenv": "^17.2.2", "drizzle-orm": "^0.28.0", "n3": "^1.26.0", "node-fetch": "^3.3.2", "sparqljs": "^3.7.3", "zod": "^4.1.8" }, "peerDependencies": { "@comunica/query-sparql-solid": "^4.0.2" }, "optionalPeers": ["@comunica/query-sparql-solid"] }, "sha512-oZp6jUgfeDXhTIN+yhZ+nuL2nHsyFDW+jjrxrhVv2VQOjlnJ2pI9mwibJ/Z0UTXZmqgxNUpyb6Zx/bPilnfIhw=="],
 
-    "@undefineds.co/models": ["@undefineds.co/models@0.2.34", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.13", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-I3JkjbA/vX+nEcGOip0WKFcmJz0x2o+vg8AEEhc0/fCCRnx+iBKVIYa3+smS4jxymAADmDdUsqQjBmUfnNxoTg=="],
+    "@undefineds.co/models": ["@undefineds.co/models@0.2.38", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.14", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-lz5ai9/SCyKJLcIJYcohnxy1iAHknQAhHkQujIXIfa9GVefIyKauuNP9N5ujrTa6zS+sb+g4u2jEC05v3cAHDQ=="],
 
     "@vercel/oidc": ["@vercel/oidc@3.1.0", "", {}, "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="],
 
