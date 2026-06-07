@@ -13,6 +13,7 @@ import {
 } from '@solid/community-server';
 import { PERMISSIONS } from '@solidlab/policy-engine';
 import type {
+  Credentials,
   CredentialsExtractor,
   PermissionReader,
   Authorizer,
@@ -34,6 +35,7 @@ import type {
 } from 'sparqljs';
 import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
 import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from '../storage/rdf/RdfSparqlAdapter';
+import type { RdfAccessScope } from '../storage/rdf/RdfAccessScope';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
@@ -66,6 +68,13 @@ type UsageContext = {
   accountId: string;
   podId: string;
 };
+
+interface UpdateAccessPlan {
+  hasInsert: boolean;
+  hasDelete: boolean;
+  needsReadScope: boolean;
+  writeTargets: Map<string, Set<string>>;
+}
 
 export class SubgraphSparqlHttpHandler extends HttpHandler {
   protected readonly logger = getLoggerFor(this);
@@ -202,14 +211,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async executeSelect(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
+    const accessScope = await this.resolveReadAccessScope(baseUrl, request);
 
     let vars: string[] = [];
     const results: Record<string, unknown>[] = [];
     const seenVars = new Set<string>();
 
     try {
-      const bindingsStream: any = await this.engine.queryBindings(query, baseUrl);
+      const bindingsStream: any = await this.engine.queryBindings(query, baseUrl, accessScope);
       const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
       vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
 
@@ -253,8 +262,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async executeAsk(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
-    const result = await this.engine.queryBoolean(query, baseUrl);
+    const accessScope = await this.resolveReadAccessScope(baseUrl, request);
+    const result = await this.engine.queryBoolean(query, baseUrl, accessScope);
     const payload = {
       head: {},
       boolean: result,
@@ -263,8 +272,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
-    const quadStream = await this.engine.queryQuads(query, baseUrl);
+    const accessScope = await this.resolveReadAccessScope(baseUrl, request);
+    const quadStream = await this.engine.queryQuads(query, baseUrl, accessScope);
     const writer = new Writer({ format: 'N-Quads' });
 
     for await (const quad of quadStream) {
@@ -289,20 +298,35 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       throw new MethodNotAllowedHttpError([ 'POST' ]);
     }
 
-    const { hasInsert, hasDelete } = this.inspectUpdateGraphs(parsed, queryRequest.baseUrl);
+    const accessPlan = this.inspectUpdateGraphs(parsed, queryRequest.baseUrl);
     const modes: string[] = [];
-    if (hasInsert) {
+    if (accessPlan.needsReadScope) {
+      modes.push(PERMISSIONS.Read);
+    }
+    if (accessPlan.hasInsert) {
       modes.push(PERMISSIONS.Append);
     }
-    if (hasDelete) {
+    if (accessPlan.hasDelete) {
       modes.push(PERMISSIONS.Delete);
     }
-    await this.authorizeFor(queryRequest.baseUrl, request, modes);
+    const credentials = await this.authorizeFor(queryRequest.baseUrl, request, modes);
+
+    for (const [ graph, graphModes ] of accessPlan.writeTargets) {
+      const resourceUrl = this.resourceUrlForGraphValue(graph);
+      if (resourceUrl === queryRequest.baseUrl) {
+        continue;
+      }
+      await this.authorizeIdentifier(resourceUrl, credentials, [...graphModes]);
+    }
+
+    const readAccessScope = accessPlan.needsReadScope
+      ? await this.resolveReadAccessScopeForCredentials(queryRequest.baseUrl, credentials)
+      : undefined;
 
     const rewritten = this.rewriteDefaultGraphUpdates(parsed, queryRequest.baseUrl);
     this.logger.verbose(`[SubgraphSPARQL] Rewritten Query: ${rewritten}`);
 
-    await this.engine.queryVoid(rewritten, queryRequest.baseUrl);
+    await this.engine.queryVoid(rewritten, queryRequest.baseUrl, readAccessScope);
     await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;
@@ -415,23 +439,74 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     return Math.trunc(value);
   }
 
-  private async authorizeFor(basePath: string, request: HttpRequest, modes: string[]): Promise<void> {
-    if (modes.length === 0) {
-      return;
+  private async resolveReadAccessScope(baseUrl: string, request: HttpRequest): Promise<RdfAccessScope> {
+    const credentials = await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
+    return this.resolveReadAccessScopeForCredentials(baseUrl, credentials);
+  }
+
+  private async resolveReadAccessScopeForCredentials(baseUrl: string, credentials: Credentials): Promise<RdfAccessScope> {
+    const graphs = await this.engine.listGraphs(baseUrl);
+    const deniedGraphUrls: string[] = [];
+
+    for (const graph of graphs) {
+      const resourceUrl = this.resourceUrlForGraphValue(graph);
+      if (!resourceUrl.startsWith(baseUrl)) {
+        continue;
+      }
+      const allowed = await this.canAuthorizeFor(resourceUrl, credentials, [ PERMISSIONS.Read ]);
+      if (!allowed) {
+        deniedGraphUrls.push(graph);
+      }
     }
+    deniedGraphUrls.sort();
+
+    return {
+      basePath: baseUrl,
+      mode: 'read',
+      principal: credentials.agent?.webId ?? credentials.client?.clientId ?? 'anonymous',
+      ...(deniedGraphUrls.length > 0 ? { deniedGraphUrls } : {}),
+      version: deniedGraphUrls.length > 0
+        ? `graphs:${graphs.size}:denied:${deniedGraphUrls.join(',')}`
+        : `graphs:${graphs.size}:inherited`,
+    };
+  }
+
+  private async authorizeFor(basePath: string, request: HttpRequest, modes: string[]): Promise<Credentials> {
+    if (modes.length === 0) {
+      return this.credentialsExtractor.handleSafe(request);
+    }
+    const credentials = await this.credentialsExtractor.handleSafe(request);
+    await this.authorizeIdentifier(basePath, credentials, modes);
+    return credentials;
+  }
+
+  private async canAuthorizeFor(basePath: string, credentials: Credentials, modes: string[]): Promise<boolean> {
+    try {
+      await this.authorizeIdentifier(basePath, credentials, modes);
+      return true;
+    } catch (error) {
+      this.logger.debug(`ACL/ACR graph denied for ${basePath}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  private async authorizeIdentifier(basePath: string, credentials: Credentials, modes: string[]): Promise<void> {
     const identifier = { path: basePath } satisfies ResourceIdentifier;
     const requestedModes = new IdentifierSetMultiMap<string>();
     for (const mode of modes) {
       requestedModes.add(identifier, mode);
     }
-    const credentials = await this.credentialsExtractor.handleSafe(request);
     const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
     await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
   }
 
-  private inspectUpdateGraphs(update: SparqlUpdate, basePath: string): { hasInsert: boolean; hasDelete: boolean } {
-    let hasInsert = false;
-    let hasDelete = false;
+  private inspectUpdateGraphs(update: SparqlUpdate, basePath: string): UpdateAccessPlan {
+    const plan: UpdateAccessPlan = {
+      hasInsert: false,
+      hasDelete: false,
+      needsReadScope: false,
+      writeTargets: new Map(),
+    };
     for (const operation of update.updates ?? []) {
       if (!this.isInsertDeleteOperation(operation)) {
         throw new BadRequestHttpError('SPARQL update management operations are not supported.');
@@ -439,24 +514,32 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
       if (operation.updateType === 'insert' ||
         (operation.updateType === 'insertdelete' && (operation.insert?.length ?? 0) > 0)) {
-        hasInsert = true;
+        plan.hasInsert = true;
       }
 
       if (operation.updateType === 'delete' || operation.updateType === 'deletewhere' ||
         (operation.updateType === 'insertdelete' && (operation.delete?.length ?? 0) > 0)) {
-        hasDelete = true;
+        plan.hasDelete = true;
       }
+
+      const defaultGraph = operation.graph
+        ? this.assertGraphInScope(operation.graph, basePath) ?? basePath
+        : basePath;
 
       if (operation.graph) {
         this.assertGraphInScope(operation.graph, basePath);
       }
 
       if (operation.updateType === 'insert' || operation.updateType === 'insertdelete') {
-        this.inspectQuads(operation.insert ?? [], basePath);
+        this.inspectQuads(operation.insert ?? [], basePath, defaultGraph, plan, [ PERMISSIONS.Append ]);
       }
 
       if (operation.updateType === 'delete' || operation.updateType === 'insertdelete' || operation.updateType === 'deletewhere') {
-        this.inspectQuads(operation.delete ?? [], basePath);
+        this.inspectQuads(operation.delete ?? [], basePath, defaultGraph, plan, [ PERMISSIONS.Delete ]);
+      }
+
+      if (operation.updateType === 'insertdelete' || operation.updateType === 'deletewhere') {
+        plan.needsReadScope = true;
       }
 
       if (operation.updateType === 'insertdelete') {
@@ -471,13 +554,24 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         }
       }
     }
-    return { hasInsert, hasDelete };
+    return plan;
   }
 
-  private inspectQuads(quads: SparqlQuads[], basePath: string): void {
+  private inspectQuads(
+    quads: SparqlQuads[],
+    basePath: string,
+    defaultGraph: string,
+    plan: UpdateAccessPlan,
+    modes: string[],
+  ): void {
     for (const quad of quads) {
       if (quad.type === 'graph') {
-        this.assertGraphTermInScope(quad.name, basePath);
+        const graph = this.assertGraphTermInScope(quad.name, basePath);
+        if (graph) {
+          this.addWriteTarget(plan, graph, modes);
+        }
+      } else {
+        this.addWriteTarget(plan, defaultGraph, modes);
       }
     }
   }
@@ -494,48 +588,53 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
-  private assertGraphInScope(graph: SparqlGraphOrDefault | SparqlIriTerm, basePath: string): void {
+  private assertGraphInScope(graph: SparqlGraphOrDefault | SparqlIriTerm, basePath: string): string | undefined {
     if ('default' in graph && graph.default) {
-      return;
+      return undefined;
     }
     if ('name' in graph) {
       const name = graph.name;
       if (name) {
-        this.assertGraphTermInScope(name, basePath);
+        return this.assertGraphTermInScope(name, basePath);
       }
     } else if ('value' in graph) {
-      this.assertGraphTermInScope(graph, basePath);
+      return this.assertGraphTermInScope(graph, basePath);
     }
+    return undefined;
   }
 
-  private assertGraphTermInScope(term: SparqlTerm, basePath: string): void {
+  private assertGraphTermInScope(term: SparqlTerm, basePath: string): string | undefined {
     if (!term) {
-      return;
+      return undefined;
     }
     if (term.termType === 'Variable') {
       throw new BadRequestHttpError('Graph IRIs must be explicit when using the /-/sparql update endpoint.');
     }
     if (term.termType === 'NamedNode') {
-      // Graph can be either basePath or prefix:basePath (e.g., meta:http://...)
-      // Extract the path part after optional prefix (anything before first colon that's not part of http:)
       const graphValue = term.value;
-      let pathPart = graphValue;
-      
-      // Check if it has a prefix like "meta:" or "acl:" (not "http:" or "https:")
-      const prefixMatch = graphValue.match(/^([a-z]+):(?!\/\/)/i);
-      if (prefixMatch) {
-        pathPart = graphValue.slice(prefixMatch[0].length);
-      }
-      
+      const pathPart = this.resourceUrlForGraphValue(graphValue);
       if (!pathPart.startsWith(basePath)) {
         throw new BadRequestHttpError(`Graph ${term.value} is outside of ${basePath}.`);
       }
-      return;
+      return graphValue;
     }
     if ((term as any).default === true) {
-      return;
+      return undefined;
     }
     throw new BadRequestHttpError('Unsupported graph target in SPARQL update.');
+  }
+
+  private addWriteTarget(plan: UpdateAccessPlan, graph: string, modes: string[]): void {
+    const existing = plan.writeTargets.get(graph) ?? new Set<string>();
+    for (const mode of modes) {
+      existing.add(mode);
+    }
+    plan.writeTargets.set(graph, existing);
+  }
+
+  private resourceUrlForGraphValue(graphValue: string): string {
+    const prefixMatch = graphValue.match(/^([a-z][a-z0-9-]*):(?!\/\/)/i);
+    return prefixMatch ? graphValue.slice(prefixMatch[0].length) : graphValue;
   }
 
   /**

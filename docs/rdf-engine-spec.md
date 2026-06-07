@@ -637,6 +637,60 @@ SPARQL UPDATE/write 路径：
 - `WITH <graph>` 和安全 `USING <graph>` 只影响 update 内部 template / WHERE dataset scope，
   并且仍必须落在 basePath scope 内。写入模板最终必须能落到明确的 named graph。
 
+## ACL / ACR Query Scope
+
+RDF engine 不重新实现 WAC/ACL 或 ACP/ACR 规则。协议入口仍由 CSS 的
+`CredentialsExtractor`、`PermissionReader` 和 `Authorizer` 决定当前请求身份在某个
+resource 上是否具备对应 mode；RDF engine 只接收一个不含 token/secret 的
+`RdfAccessScope`：
+
+```text
+basePath + mode + principal + allowedGraphUrls / deniedGraphUrls / deniedGraphPrefixes + version
+```
+
+读查询的语义：
+
+1. `SubgraphSparqlHttpHandler` 先对 sidecar `baseUrl` 做 `Read` 授权。
+2. handler 用当前 engine 列出 `baseUrl` scope 下的 named graphs。
+3. 对每个 graph/resource，再用同一套 CSS 授权链检查 `Read`。
+4. 大多数 graph 继承父容器权限时，`RdfAccessScope` 不带收紧列表，query 按原 fast path
+   执行。
+5. 如果某个 graph 因 `.acl` 或 `.acr` override 不可读，scope 带
+   `deniedGraphUrls`；`SolidRdfSparqlEngine` 会在编译后的 `RdfQuery` 上把这些 graph 从
+   SELECT / ASK / CONSTRUCT / DESCRIBE / `constructGraph` / `listGraphs` 中排除。
+
+内部 prefixed graph 也必须落到源资源授权，而不是按 graph 字符串跳过检查。例如
+`meta:https://pod/alice/file.png` 作为 engine graph 参与过滤，但授权时要规范化成
+`https://pod/alice/file.png` 交给 CSS 的 `PermissionReader` / `Authorizer`。如果源资源
+不可读，`deniedGraphUrls` 记录的仍是原始 graph 名 `meta:...`，让 engine 精确过滤对应
+graph。
+
+写查询的语义：
+
+1. `SubgraphSparqlHttpHandler` 先检查 UPDATE 中所有显式 graph 都在 sidecar `baseUrl`
+   scope 内；graph 变量不允许进入这个入口。
+2. 没有 `GRAPH` 的 INSERT / DELETE template 会在 handler 层改写到当前 sidecar
+   `baseUrl` graph。
+3. 对 base graph 保留原有 `Append` / `Delete` 授权要求；对每个 child graph 写目标，再用
+   同一套 CSS 授权链检查对应的 `Append` / `Delete` mode。
+4. `DELETE WHERE`、`INSERT ... WHERE` 和 `DELETE/INSERT ... WHERE` 还需要 `Read`，
+   并把 read `RdfAccessScope` 传入 `queryVoid`，让 WHERE 匹配过程同样排除不可读 graph。
+
+这让 ACL 和 ACR 统一落在 CSS 授权组件，不在 RDF 层分叉。切换默认授权模式只改变 CSS
+组件链，RDF query scope 的形状不变。
+
+安全边界：
+
+- 收紧 scope 下禁止 fallback 到不理解 ACL/ACR 的 compatibility engine；unsupported query
+  shape 必须返回明确错误，不能回到只做 graph prefix filter 的路径。
+- query result cache 的 scope key 必须包含 principal、basePath、mode、权限版本和
+  allow/deny graph 列表；不能只用 normalized query + facts `data_version`。
+- 当前第一版按请求实时列 graph 并逐 graph 授权，适合“绝大多数资源继承父权限、少量资源
+  有 override”的业务假设。后续可把 override/resource permission version 做成派生索引，
+  但不能牺牲 per-resource 授权语义。
+- Search/vector 端点的资源级 ACL/ACR 过滤仍需单独落在 search candidate / subject
+  hydration 边界；不能把 `/-/sparql` 的 read scope 证明外推到独立 vector result。
+
 ## Text / Chunk / Vector
 
 全文和向量不是 RDF index 的附属字段，而是并列索引层：

@@ -8,6 +8,13 @@ import type { QuintPattern } from '../quint/types';
 import { DisabledSparqlFeatureError, RdfSparqlAdapter, UnsupportedSparqlQueryError } from './RdfSparqlAdapter';
 import type { ShadowRdfQuintStore } from './ShadowRdfQuintStore';
 import type { RdfBindingRow, RdfEngineLike, RdfQueryResult, RdfQueryTermPattern } from './types';
+import {
+  applyRdfAccessScope,
+  filterRdfAccessGraphs,
+  isRestrictiveRdfAccessScope,
+  rdfAccessGraphAllowed,
+  type RdfAccessScope,
+} from './RdfAccessScope';
 
 export interface SolidRdfSparqlEngineOptions {
   rdfEngine: RdfEngineLike;
@@ -101,74 +108,74 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     this.onFallback = onFallback;
   }
 
-  public async queryBindings(query: string, basePath: string): Promise<BindingsStream> {
+  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<BindingsStream> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryBindings', 'primary disabled', (fallback) => fallback.queryBindings(query, basePath));
+      return this.fallbackWith('queryBindings', 'primary disabled', (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
     try {
       const compiled = this.adapter.compile(query, basePath);
       if (compiled.queryType !== 'SELECT') {
-        return this.fallbackWith('queryBindings', `compiled ${compiled.queryType} cannot produce bindings`, (fallback) => fallback.queryBindings(query, basePath));
+        return this.fallbackWith('queryBindings', `compiled ${compiled.queryType} cannot produce bindings`, (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope);
       }
-      const result = await this.rdfEngine.query(compiled.query);
+      const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
       this.recordPrimary('queryBindings', start, result);
       return this.bindingsStream(result, compiled.variables);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryBindings', fallbackReason(error), (fallback) => fallback.queryBindings(query, basePath));
+      return this.fallbackWith('queryBindings', fallbackReason(error), (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope);
     }
   }
 
-  public async queryBoolean(query: string, basePath: string): Promise<boolean> {
+  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryBoolean', 'primary disabled', (fallback) => fallback.queryBoolean(query, basePath));
+      return this.fallbackWith('queryBoolean', 'primary disabled', (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
     try {
       const compiled = this.adapter.compile(query, basePath);
       if (compiled.queryType !== 'ASK') {
-        return this.fallbackWith('queryBoolean', `compiled ${compiled.queryType} cannot produce boolean`, (fallback) => fallback.queryBoolean(query, basePath));
+        return this.fallbackWith('queryBoolean', `compiled ${compiled.queryType} cannot produce boolean`, (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope);
       }
-      const result = await this.rdfEngine.query(compiled.query);
+      const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
       this.recordPrimary('queryBoolean', start, result);
       return result.bindings.length > 0;
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryBoolean', fallbackReason(error), (fallback) => fallback.queryBoolean(query, basePath));
+      return this.fallbackWith('queryBoolean', fallbackReason(error), (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope);
     }
   }
 
-  public async queryQuads(query: string, basePath: string): Promise<any> {
+  public async queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryQuads', 'primary disabled', (fallback) => fallback.queryQuads(query, basePath));
+      return this.fallbackWith('queryQuads', 'primary disabled', (fallback) => fallback.queryQuads(query, basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
     try {
-      const quads = await this.executeQuadsPrimary(query, basePath, 'queryQuads', start);
+      const quads = await this.executeQuadsPrimary(query, basePath, 'queryQuads', start, accessScope);
       return new ArrayIterator(quads);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryQuads', fallbackReason(error), (fallback) => fallback.queryQuads(query, basePath));
+      return this.fallbackWith('queryQuads', fallbackReason(error), (fallback) => fallback.queryQuads(query, basePath, accessScope), accessScope);
     }
   }
 
-  public async queryVoid(query: string, basePath: string): Promise<void> {
+  public async queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<void> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryVoid', 'primary disabled', (fallback) => fallback.queryVoid(query, basePath));
+      return this.fallbackWith('queryVoid', 'primary disabled', (fallback) => fallback.queryVoid(query, basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
@@ -185,19 +192,19 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
         } else if (operation.type === 'insert') {
           await this.rdfEngine.applyDelta([], operation.quads);
         } else if (operation.type === 'insertDeleteWhere') {
-          const result = await this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const deletes = this.adapter.materializeDeleteWhere(operation.deletes, result.bindings);
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
           computedDeletes += deletes.length;
           computedInserts += inserts.length;
           deletedRows += (await this.rdfEngine.applyDelta(deletes.map(quadToPattern), inserts)).deletedRows;
         } else if (operation.type === 'insertWhere') {
-          const result = await this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
           computedInserts += inserts.length;
           await this.rdfEngine.applyDelta([], inserts);
         } else {
-          const result = await this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const quads = this.adapter.materializeDeleteWhere(operation.template, result.bindings);
           computedDeletes += quads.length;
           deletedRows += (await this.rdfEngine.applyDelta(quads.map(quadToPattern), [])).deletedRows;
@@ -222,16 +229,16 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryVoid', fallbackReason(error), (fallback) => fallback.queryVoid(query, basePath));
+      return this.fallbackWith('queryVoid', fallbackReason(error), (fallback) => fallback.queryVoid(query, basePath, accessScope), accessScope);
     }
   }
 
-  public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
+  public async constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('constructGraph', 'primary disabled', (fallback) => fallback.constructGraph(graph, basePath));
+      return this.fallbackWith('constructGraph', 'primary disabled', (fallback) => fallback.constructGraph(graph, basePath, accessScope), accessScope);
     }
-    if (!graph.startsWith(basePath)) {
+    if (!graph.startsWith(basePath) || (accessScope && !rdfAccessGraphAllowed(graph, accessScope))) {
       return new ArrayIterator([] as Quad[]);
     }
 
@@ -240,27 +247,27 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       const quads = await this.executeConstructPrimary(`
         CONSTRUCT { ?s ?p ?o }
         WHERE { GRAPH <${escapeIri(graph)}> { ?s ?p ?o } }
-      `, basePath, 'constructGraph', start);
+      `, basePath, 'constructGraph', start, accessScope);
       return new ArrayIterator(quads);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('constructGraph', fallbackReason(error), (fallback) => fallback.constructGraph(graph, basePath));
+      return this.fallbackWith('constructGraph', fallbackReason(error), (fallback) => fallback.constructGraph(graph, basePath, accessScope), accessScope);
     }
   }
 
-  public async listGraphs(basePath: string): Promise<Set<string>> {
+  public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('listGraphs', 'primary disabled', (fallback) => fallback.listGraphs(basePath));
+      return this.fallbackWith('listGraphs', 'primary disabled', (fallback) => fallback.listGraphs(basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
     try {
       const result = await this.executeSelectPrimary(`
         SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }
-      `, basePath, 'listGraphs', start);
+      `, basePath, 'listGraphs', start, accessScope);
       const graphs = new Set<string>();
       for (const binding of result.bindings) {
         const graph = binding.g;
@@ -268,12 +275,12 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
           graphs.add(graph.value);
         }
       }
-      return graphs;
+      return filterRdfAccessGraphs(graphs, accessScope);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('listGraphs', fallbackReason(error), (fallback) => fallback.listGraphs(basePath));
+      return this.fallbackWith('listGraphs', fallbackReason(error), (fallback) => fallback.listGraphs(basePath, accessScope), accessScope);
     }
   }
 
@@ -352,7 +359,11 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     operation: SolidRdfSparqlOperation,
     reason: string,
     run: (fallback: SparqlEngine) => Promise<T>,
+    accessScope?: RdfAccessScope,
   ): Promise<T> {
+    if (isRestrictiveRdfAccessScope(accessScope)) {
+      throw new UnsupportedSparqlQueryError(`No ACL/ACR-safe SPARQL fallback configured for ${operation}: ${reason}`);
+    }
     if (!this.fallback) {
       throw new UnsupportedSparqlQueryError(`No compatibility SPARQL fallback configured for ${operation}: ${reason}`);
     }
@@ -376,12 +387,13 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
+    accessScope?: RdfAccessScope,
   ): Promise<RdfQueryResult> {
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType !== 'SELECT') {
       throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce bindings`);
     }
-    const result = await this.rdfEngine.query(compiled.query);
+    const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
     this.recordPrimary(operation, start, result);
     return result;
   }
@@ -391,12 +403,13 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
+    accessScope?: RdfAccessScope,
   ): Promise<Quad[]> {
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType !== 'CONSTRUCT' || !compiled.constructTemplate) {
       throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce quads`);
     }
-    const result = await this.rdfEngine.query(compiled.query);
+    const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
     const quads = this.adapter.materializeConstruct(compiled.constructTemplate, result.bindings, rdfDataFactory.defaultGraph() as Term);
     this.recordPrimary(operation, start, {
       ...result,
@@ -415,10 +428,11 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
+    accessScope?: RdfAccessScope,
   ): Promise<Quad[]> {
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType === 'CONSTRUCT' && compiled.constructTemplate) {
-      const result = await this.rdfEngine.query(compiled.query);
+      const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
       const quads = this.adapter.materializeConstruct(compiled.constructTemplate, result.bindings, rdfDataFactory.defaultGraph() as Term);
       this.recordPrimary(operation, start, {
         ...result,
@@ -432,7 +446,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       return quads;
     }
     if (compiled.queryType === 'DESCRIBE' && compiled.describeTargets) {
-      return this.executeDescribePrimary(compiled.query, compiled.describeTargets, basePath, operation, start);
+      return this.executeDescribePrimary(compiled.query, compiled.describeTargets, basePath, operation, start, accessScope);
     }
     throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce quads`);
   }
@@ -443,8 +457,9 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
+    accessScope?: RdfAccessScope,
   ): Promise<Quad[]> {
-    const seed = await this.rdfEngine.query(query);
+    const seed = await this.rdfEngine.query(applyRdfAccessScope(query, accessScope));
     const quads: Quad[] = [];
     const seen = new Set<string>();
 
@@ -454,7 +469,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
         if (!subject || subject.termType !== 'NamedNode') {
           continue;
         }
-        const describe = await this.rdfEngine.query({
+        const describe = await this.rdfEngine.query(applyRdfAccessScope({
           patterns: [
             {
               subject,
@@ -464,7 +479,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
             },
           ],
           select: ['p', 'o'],
-        });
+        }, accessScope));
         for (const row of describe.bindings) {
           const predicate = row.p;
           const object = row.o;

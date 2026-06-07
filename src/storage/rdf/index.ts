@@ -23,6 +23,15 @@ export {
 } from './RdfContentTypes';
 export { RdfShadowComparator, canonicalQuadKey, diffQuads } from './RdfShadowComparator';
 export { RdfQueryExecutor, variable as rdfVar } from './RdfQueryExecutor';
+export {
+  applyRdfAccessScope,
+  filterRdfAccessGraphs,
+  isRestrictiveRdfAccessScope,
+  rdfAccessCacheScope,
+  rdfAccessGraphAllowed,
+  type RdfAccessMode,
+  type RdfAccessScope,
+} from './RdfAccessScope';
 export { ShadowRdfQuintStore, type ShadowRdfQuintStoreOptions } from './ShadowRdfQuintStore';
 export { SolidRdfEngine, type SolidRdfEngineOptions } from './SolidRdfEngine';
 export { PostgresRdfEngine, type PostgresRdfEngineOptions } from './PostgresRdfEngine';

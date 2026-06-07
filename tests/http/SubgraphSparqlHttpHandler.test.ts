@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Writable } from 'node:stream';
 import { SubgraphSparqlHttpHandler } from '../../src/http/SubgraphSparqlHttpHandler';
 import type { HttpRequest, HttpResponse } from '@solid/community-server';
-import { NotImplementedHttpError, IdentifierSetMultiMap } from '@solid/community-server';
+import { ForbiddenHttpError, NotImplementedHttpError, IdentifierSetMultiMap } from '@solid/community-server';
 import { PERMISSIONS } from '@solidlab/policy-engine';
 import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from '../../src/storage/rdf';
 
@@ -75,6 +75,7 @@ describe('SubgraphSparqlHttpHandler', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockQueryEngine.listGraphs.mockResolvedValue(new Set());
     handler = new SubgraphSparqlHttpHandler(
       mockQueryEngine as any,
       mockCredentialsExtractor as any,
@@ -83,6 +84,28 @@ describe('SubgraphSparqlHttpHandler', () => {
       {},
     );
   });
+
+  async function postUpdate(update: string, path = '/alice/-/sparql'): Promise<HttpResponse> {
+    const request = createMockRequest(path, 'POST', {
+      'content-type': 'application/sparql-update',
+    });
+    const response = createMockResponse();
+    let dataCallback: (chunk: string) => void;
+    let endCallback: () => void;
+    (request as any).on = vi.fn((event: string, cb: any) => {
+      if (event === 'data') dataCallback = cb;
+      if (event === 'end') endCallback = cb;
+    });
+
+    const handlePromise = handler.handle({ request, response });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    dataCallback!(update);
+    endCallback!();
+
+    await handlePromise;
+    return response;
+  }
 
   describe('URL routing (canHandle) - sidecar /-/sparql pattern', () => {
     it('should accept container sidecar endpoint /alice/-/sparql', async () => {
@@ -179,6 +202,10 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
         expect.any(String),
         'http://localhost:3000/alice/.data/',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/.data/',
+          mode: 'read',
+        }),
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
@@ -201,6 +228,10 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
         expect.any(String),
         'http://localhost:3000/alice/profile/card.ttl',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/profile/card.ttl',
+          mode: 'read',
+        }),
       );
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const identifiers = [...authCall.requestedModes.keys()];
@@ -321,6 +352,129 @@ describe('SubgraphSparqlHttpHandler', () => {
       const authCall = mockAuthorizer.handleSafe.mock.calls[0][0];
       const modes = [...authCall.requestedModes.values()].flat();
       expect(modes).toContain(PERMISSIONS.Read);
+    });
+
+    it('should pass denied child graphs as an ACL/ACR access scope for SELECT', async () => {
+      const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
+      const response = createMockResponse();
+      const privateGraph = 'http://localhost:3000/alice/private.ttl';
+
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([
+        'http://localhost:3000/alice/public.ttl',
+        privateGraph,
+      ]));
+      mockAuthorizer.handleSafe.mockImplementation(async ({ requestedModes }: any) => {
+        const identifier = [...requestedModes.keys()][0];
+        if (identifier.path === privateGraph) {
+          throw new Error('child graph read denied');
+        }
+      });
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: [] }),
+      });
+
+      await handler.handle({ request, response });
+
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        expect.any(String),
+        'http://localhost:3000/alice/',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/',
+          mode: 'read',
+          principal: 'https://example.org/alice#me',
+          deniedGraphUrls: [privateGraph],
+        }),
+      );
+      expect(mockAuthorizer.handleSafe).toHaveBeenCalledTimes(3);
+    });
+
+    it('should authorize prefixed metadata graphs against their source resource', async () => {
+      const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20GRAPH%20%3Fg%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D%20%7D');
+      const response = createMockResponse();
+      const privateResource = 'http://localhost:3000/alice/private.png';
+      const privateMetaGraph = `meta:${privateResource}`;
+
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([
+        privateMetaGraph,
+      ]));
+      mockAuthorizer.handleSafe.mockImplementation(async ({ requestedModes }: any) => {
+        const identifier = [...requestedModes.keys()][0];
+        if (identifier.path === privateResource) {
+          throw new Error('source resource read denied');
+        }
+      });
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: [] }),
+      });
+
+      await handler.handle({ request, response });
+
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        expect.any(String),
+        'http://localhost:3000/alice/',
+        expect.objectContaining({
+          deniedGraphUrls: [privateMetaGraph],
+        }),
+      );
+      const checkedIdentifiers = mockAuthorizer.handleSafe.mock.calls.map((call) => [...call[0].requestedModes.keys()][0].path);
+      expect(checkedIdentifiers).toContain(privateResource);
+    });
+
+    it('should reject UPDATE when a target child graph denies the write mode', async () => {
+      const privateGraph = 'http://localhost:3000/alice/private.ttl';
+      mockAuthorizer.handleSafe.mockImplementation(async ({ requestedModes }: any) => {
+        const identifier = [...requestedModes.keys()][0];
+        const modes = [...requestedModes.values()].flat();
+        if (identifier.path === privateGraph && modes.includes(PERMISSIONS.Append)) {
+          throw new ForbiddenHttpError('child graph append denied');
+        }
+      });
+      mockQueryEngine.queryVoid.mockResolvedValue(undefined);
+
+      const response = await postUpdate(`
+        INSERT DATA { GRAPH <${privateGraph}> { <#s> <#p> <#o> } }
+      `);
+
+      expect(response.statusCode).toBe(403);
+      expect(mockQueryEngine.queryVoid).not.toHaveBeenCalled();
+    });
+
+    it('should pass ACL/ACR read scope into UPDATE WHERE execution', async () => {
+      const privateGraph = 'http://localhost:3000/alice/private.ttl';
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([
+        'http://localhost:3000/alice/public.ttl',
+        privateGraph,
+      ]));
+      mockAuthorizer.handleSafe.mockImplementation(async ({ requestedModes }: any) => {
+        const identifier = [...requestedModes.keys()][0];
+        const modes = [...requestedModes.values()].flat();
+        if (identifier.path === privateGraph && modes.includes(PERMISSIONS.Read)) {
+          throw new Error('child graph read denied');
+        }
+      });
+      mockQueryEngine.queryVoid.mockResolvedValue(undefined);
+
+      const response = await postUpdate(`
+        DELETE { GRAPH <${privateGraph}> { ?s ?p ?o } }
+        WHERE { GRAPH <${privateGraph}> { ?s ?p ?o } }
+      `);
+
+      expect(response.statusCode).toBe(204);
+      expect(mockQueryEngine.queryVoid).toHaveBeenCalledWith(
+        expect.any(String),
+        'http://localhost:3000/alice/',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/',
+          mode: 'read',
+          deniedGraphUrls: [privateGraph],
+        }),
+      );
     });
   });
 

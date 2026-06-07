@@ -1,17 +1,18 @@
 import type { Quad } from '@rdfjs/types';
 import type { AsyncIterator } from 'asynciterator';
 import { getLoggerFor } from 'global-logger-factory';
+import type { RdfAccessScope } from '../rdf/RdfAccessScope';
 
 /**
  * SPARQL Engine interface - common abstraction for SPARQL query engines
  */
 export interface SparqlEngine {
-  queryBindings(query: string, basePath: string): Promise<any>;
-  queryQuads(query: string, basePath: string): Promise<any>;
-  queryBoolean(query: string, basePath: string): Promise<boolean>;
-  queryVoid(query: string, basePath: string): Promise<void>;
-  constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>>;
-  listGraphs(basePath: string): Promise<Set<string>>;
+  queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any>;
+  queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any>;
+  queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean>;
+  queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<void>;
+  constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>>;
+  listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>>;
   close(): Promise<void>;
 }
 
@@ -32,28 +33,28 @@ export class SubgraphQueryEngine {
     this.impl = engine;
   }
 
-  public async queryBindings(query: string, basePath: string): Promise<any> {
-    return this.impl.queryBindings(query, basePath);
+  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    return this.impl.queryBindings(query, basePath, accessScope);
   }
 
-  public async queryQuads(query: string, basePath: string): Promise<any> {
-    return this.impl.queryQuads(query, basePath);
+  public async queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    return this.impl.queryQuads(query, basePath, accessScope);
   }
 
-  public async queryBoolean(query: string, basePath: string): Promise<boolean> {
-    return this.impl.queryBoolean(query, basePath);
+  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean> {
+    return this.impl.queryBoolean(query, basePath, accessScope);
   }
 
-  public async queryVoid(query: string, basePath: string): Promise<void> {
-    return this.impl.queryVoid(query, basePath);
+  public async queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<void> {
+    return this.impl.queryVoid(query, basePath, accessScope);
   }
 
-  public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
-    return this.impl.constructGraph(graph, basePath);
+  public async constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>> {
+    return this.impl.constructGraph(graph, basePath, accessScope);
   }
 
-  public async listGraphs(basePath: string): Promise<Set<string>> {
-    return this.impl.listGraphs(basePath);
+  public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
+    return this.impl.listGraphs(basePath, accessScope);
   }
 
   public async close(): Promise<void> {

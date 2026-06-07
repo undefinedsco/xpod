@@ -13,6 +13,7 @@ import {
   SolidRdfSparqlEngine,
   UnsupportedSparqlQueryError,
   type RdfEngineLike,
+  type RdfAccessScope,
   type RdfQuery,
   type RdfQueryResult,
 } from '../../../src/storage/rdf';
@@ -133,6 +134,93 @@ describe('SolidRdfSparqlEngine', () => {
       fallbackRate: 0,
     });
     expect(() => engine.assertFallbackBudget()).not.toThrow();
+  });
+
+  it('filters RDF queries with ACL/ACR graph access scope', async () => {
+    const privateGraph = 'https://pod.example/alice/.data/private/secrets.ttl';
+    rdfEngine.put([
+      quad(
+        namedNode(`${privateGraph}#secret`),
+        namedNode(CONTENT),
+        literal('secret'),
+        namedNode(privateGraph),
+      ),
+      quad(
+        namedNode(`${privateGraph}#secret`),
+        namedNode(RDF_TYPE),
+        namedNode(MESSAGE),
+        namedNode(privateGraph),
+      ),
+    ]);
+
+    const accessScope: RdfAccessScope = {
+      basePath: BASE,
+      mode: 'read',
+      principal: 'https://pod.example/bob#me',
+      deniedGraphUrls: [privateGraph],
+      version: 'test-deny-private',
+    };
+
+    const stream = await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+      }
+      ORDER BY ?content
+    `, BASE, accessScope);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => binding.get('content')?.value)).toEqual(['hello']);
+    await expect(engine.queryBoolean(`
+      ASK {
+        ?message <${CONTENT}> "secret" .
+      }
+    `, BASE, accessScope)).resolves.toBe(false);
+
+    const constructStream = await engine.queryQuads(`
+      CONSTRUCT { ?message <${CONTENT}> ?content }
+      WHERE { ?message <${CONTENT}> ?content }
+    `, BASE, accessScope);
+    const constructed = await arrayFromStream(constructStream);
+    expect(constructed.map((resultQuad) => resultQuad.object.value)).toEqual(['hello']);
+
+    const privateConstruct = await engine.constructGraph(privateGraph, BASE, accessScope);
+    await expect(arrayFromStream(privateConstruct)).resolves.toEqual([]);
+
+    const graphs = await engine.listGraphs(BASE, accessScope);
+    expect(graphs.has(privateGraph)).toBe(false);
+  });
+
+  it('does not use compatibility fallback when ACL/ACR graph scope is restrictive', async () => {
+    await engine.close();
+    const fallbackStub = {
+      queryBindings: vi.fn(async () => {
+        throw new Error('fallback should not be used with ACL/ACR restrictions');
+      }),
+      queryQuads: vi.fn(async () => {
+        throw new Error('fallback should not be used with ACL/ACR restrictions');
+      }),
+      queryBoolean: vi.fn(async () => {
+        throw new Error('fallback should not be used with ACL/ACR restrictions');
+      }),
+      queryVoid: vi.fn(async () => undefined),
+      constructGraph: vi.fn(async () => {
+        throw new Error('fallback should not be used with ACL/ACR restrictions');
+      }),
+      listGraphs: vi.fn(async () => new Set<string>()),
+      close: vi.fn(async () => undefined),
+    };
+    engine = new SolidRdfSparqlEngine(rdfEngine, fallbackStub, undefined, false);
+
+    await expect(engine.queryBindings(`
+      SELECT ?message WHERE {
+        ?message <${CONTENT}> ?content .
+      }
+    `, BASE, {
+      basePath: BASE,
+      mode: 'read',
+      deniedGraphUrls: ['https://pod.example/alice/.data/private/secrets.ttl'],
+    })).rejects.toThrow(/ACL\/ACR-safe SPARQL fallback/);
+    expect(fallbackStub.queryBindings).not.toHaveBeenCalled();
   });
 
   it('awaits async RDF engine implementations on the primary path', async () => {
