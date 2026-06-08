@@ -29,7 +29,15 @@ import {
   RdfSparqlAdapter,
   UnsupportedSparqlQueryError,
 } from '../rdf/RdfSparqlAdapter';
-import type { RdfBindingRow, RdfEngineLike, RdfSourceInput } from '../rdf/types';
+import type {
+  RdfBindingRow,
+  RdfEngineLike,
+  RdfSourceInput,
+  RdfTextChunkInput,
+  RdfTextSourceInput,
+  RdfVectorChunkInput,
+  RdfVectorSourceInput,
+} from '../rdf/types';
 import type { Quint } from '../quint/types';
 
 const { defaultGraph, namedNode, quad } = DataFactory;
@@ -182,6 +190,38 @@ export class SolidRdfDataAccessor implements DataAccessor {
       quads.map((value) => quad(value.subject, value.predicate, value.object, name) as Quad),
       source,
     );
+  }
+
+  public async indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): Promise<void> {
+    await this.initialize();
+    if (!this.rdfEngine.indexTextSource) {
+      throw new Error('SolidRdfDataAccessor text indexing requires an RDF engine with text index support');
+    }
+    await this.rdfEngine.indexTextSource(source, text, chunks);
+  }
+
+  public async deleteTextSource(source: string): Promise<number> {
+    await this.initialize();
+    if (!this.rdfEngine.deleteTextSource) {
+      return 0;
+    }
+    return await this.rdfEngine.deleteTextSource(source);
+  }
+
+  public async indexVectorSource(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void> {
+    await this.initialize();
+    if (!this.rdfEngine.indexVectorSource) {
+      throw new Error('SolidRdfDataAccessor vector indexing requires an RDF engine with vector index support');
+    }
+    await this.rdfEngine.indexVectorSource(source, chunks);
+  }
+
+  public async deleteVectorSource(source: string): Promise<number> {
+    await this.initialize();
+    if (!this.rdfEngine.deleteVectorSource) {
+      return 0;
+    }
+    return await this.rdfEngine.deleteVectorSource(source);
   }
 
   public async deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void> {

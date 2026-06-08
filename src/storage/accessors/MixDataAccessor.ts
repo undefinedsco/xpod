@@ -46,6 +46,10 @@ import type {
   RdfQueryPattern,
   RdfQueryTermPattern,
   RdfSourceInput,
+  RdfTextChunkInput,
+  RdfTextSourceInput,
+  RdfVectorChunkInput,
+  RdfVectorSourceInput,
   RdfValuesBindingSource,
 } from '../rdf/types';
 import { metadataRequestContext } from '../MetadataRequestContext';
@@ -84,6 +88,10 @@ export interface SourceScopedStructuredRdfAccessor {
     source: RdfSourceInput,
   ): Promise<void>;
   deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void>;
+  indexTextSource?(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): Promise<void>;
+  deleteTextSource?(source: string): Promise<number>;
+  indexVectorSource?(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void>;
+  deleteVectorSource?(source: string): Promise<number>;
 }
 
 interface LocalRdfGraphState {
@@ -117,6 +125,7 @@ export class MixDataAccessor implements DataAccessor {
   private readonly rdfFileDataAccessor: DataAccessor;
   private readonly presignedRedirectEnabled: boolean;
   private readonly mirrorContainersToUnstructured: boolean;
+  private readonly textSearchIndexingEnabled: boolean;
 
   constructor(
     structuredDataAccessor: DataAccessor,
@@ -124,12 +133,14 @@ export class MixDataAccessor implements DataAccessor {
     presignedRedirectEnabled = false,
     mirrorContainersToUnstructured = true,
     rdfFileDataAccessor: DataAccessor = unstructuredDataAccessor,
+    textSearchIndexingEnabled = false,
   ) {
     this.structuredDataAccessor = structuredDataAccessor;
     this.unstructuredDataAccessor = unstructuredDataAccessor;
     this.rdfFileDataAccessor = rdfFileDataAccessor;
     this.presignedRedirectEnabled = presignedRedirectEnabled;
     this.mirrorContainersToUnstructured = mirrorContainersToUnstructured;
+    this.textSearchIndexingEnabled = textSearchIndexingEnabled;
   }
 
   /**
@@ -284,6 +295,7 @@ export class MixDataAccessor implements DataAccessor {
     // can operate on real files; remove that mirror together with the index.
     if (this.isLocalMirroredRdf(identifier, metadata)) {
       await this.deleteRdfFileResourceIfPresent(identifier);
+      await this.deleteSearchIndexes(identifier);
     } else if (this.isUnstructured(metadata)) {
       await this.deleteUnstructuredResourceIfPresent(identifier);
     }
@@ -818,6 +830,10 @@ export class MixDataAccessor implements DataAccessor {
           await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
           localAuthorityWritten = true;
           await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+          await this.syncTextSearchIndex(
+            patch.identifier,
+            await this.serializeQuadsForLocalFile(patch.identifier, authorityQuads),
+          );
           applied.push(patch);
         } catch (error) {
           if (localAuthorityWritten) {
@@ -840,9 +856,14 @@ export class MixDataAccessor implements DataAccessor {
           const authorityQuads = patch.previousQuads.map((quad) => this.toDefaultGraphQuad(quad));
           await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
           await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+          await this.syncTextSearchIndex(
+            patch.identifier,
+            await this.serializeQuadsForLocalFile(patch.identifier, authorityQuads),
+          );
         } else {
           await this.deleteRdfFileResourceIfPresent(patch.identifier);
           await this.deleteLocalRdfIndex(patch.identifier);
+          await this.deleteSearchIndexes(patch.identifier);
         }
         this.invalidateMetadataCache(patch.identifier);
       } catch (rollbackError) {
@@ -901,6 +922,10 @@ export class MixDataAccessor implements DataAccessor {
       ...options,
       contentType: localContentType,
     });
+    await this.syncTextSearchIndex(identifier, text, {
+      ...options,
+      contentType: localContentType,
+    });
     this.invalidateMetadataCache(identifier);
   }
 
@@ -912,6 +937,7 @@ export class MixDataAccessor implements DataAccessor {
       } else {
         await this.structuredDataAccessor.deleteResource(identifier);
       }
+      await this.deleteSearchIndexes(identifier);
       this.invalidateMetadataCache(identifier);
     } catch (error) {
       if (!NotFoundHttpError.isInstance(error)) {
@@ -930,17 +956,20 @@ export class MixDataAccessor implements DataAccessor {
     addResourceMetadata(structuredMetadata, false);
     updateModifiedDate(structuredMetadata);
     await this.ensureRdfFileParentContainers(identifier);
+    const text = await this.serializeQuadsForLocalFile(identifier, quads);
 
     await this.rdfFileDataAccessor.writeDocument(
       identifier,
-      guardStream(Readable.from([ await this.serializeQuadsForLocalFile(identifier, quads) ])),
+      guardStream(Readable.from([ text ])),
       this.createLocalRdfMetadata(identifier, metadata),
     );
 
     try {
       await this.writeStructuredRdfIndex(identifier, quads, structuredMetadata);
+      await this.syncTextSearchIndex(identifier, text);
     } catch (error) {
       await this.deleteRdfFileResourceIfPresent(identifier);
+      await this.deleteSearchIndexes(identifier);
       throw error;
     }
   }
@@ -986,11 +1015,13 @@ export class MixDataAccessor implements DataAccessor {
     }
 
     await this.ensureRdfFileParentContainers(identifier);
+    const text = await this.serializeQuadsForLocalFile(identifier, quads);
     await this.rdfFileDataAccessor.writeDocument(
       identifier,
-      guardStream(Readable.from([ await this.serializeQuadsForLocalFile(identifier, quads) ])),
+      guardStream(Readable.from([ text ])),
       this.createLocalRdfMetadata(identifier, metadata),
     );
+    await this.syncTextSearchIndex(identifier, text);
   }
 
   private async getLocalRdfMetadata(
@@ -1046,6 +1077,29 @@ export class MixDataAccessor implements DataAccessor {
       return accessor as SourceScopedStructuredRdfAccessor;
     }
     return undefined;
+  }
+
+  private async syncTextSearchIndex(
+    identifier: ResourceIdentifier,
+    text: string,
+    options: LocalRdfSyncOptions & { contentType?: string } = {},
+  ): Promise<void> {
+    if (!this.textSearchIndexingEnabled || !this.isByLineRdfIdentifier(identifier)) {
+      return;
+    }
+    const accessor = this.sourceScopedStructuredAccessor();
+    if (!accessor?.indexTextSource) {
+      return;
+    }
+    await accessor.indexTextSource(this.rdfSourceInput(identifier, options), text);
+  }
+
+  private async deleteSearchIndexes(identifier: ResourceIdentifier): Promise<void> {
+    if (!this.textSearchIndexingEnabled || !this.isByLineRdfIdentifier(identifier)) {
+      return;
+    }
+    const accessor = this.sourceScopedStructuredAccessor();
+    await accessor?.deleteTextSource?.(identifier.path);
   }
 
   private rdfSourceInput(

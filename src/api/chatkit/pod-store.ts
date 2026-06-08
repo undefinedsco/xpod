@@ -2075,9 +2075,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   private async findConfiguredEmbeddingModel(db: any, providerId: string): Promise<string | undefined> {
     try {
-      if (typeof db.findById !== 'function') {
-        return undefined;
-      }
       const config = await db.findById(AIConfig, 'config');
       const raw = typeof config?.embeddingModel === 'string' ? config.embeddingModel : undefined;
       if (!raw?.trim()) {

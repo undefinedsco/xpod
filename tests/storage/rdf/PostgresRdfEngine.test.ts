@@ -5488,6 +5488,7 @@ describe('PostgresRdfEngine', () => {
     const engine = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:SolidRdfEngine');
     const textIndex = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:PostgresRdfTextIndex');
     const vectorIndex = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:PostgresRdfVectorIndex');
+    const mixAccessor = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:MixDataAccessor');
 
     expect(engine).toMatchObject({
       '@type': 'PostgresRdfEngine',
@@ -5521,6 +5522,10 @@ describe('PostgresRdfEngine', () => {
         '@type': 'Variable',
       },
       options_defaultMetric: 'cosine',
+    });
+    expect(mixAccessor).toMatchObject({
+      '@type': 'MixDataAccessor',
+      textSearchIndexingEnabled: true,
     });
 
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-cloud-open-source-'));

@@ -182,6 +182,48 @@ describe('MixDataAccessor (local profile integration)', () => {
     expect(await fileExists(rdfLink.filePath)).toBe(false);
   });
 
+  it('can index local RDF authority text into the RDF text search index', async () => {
+    const textEngine = new SolidRdfEngine({
+      index: { path: path.join(workDir, 'rdf-text.sqlite') },
+      textIndex: { path: path.join(workDir, 'rdf-text-search.sqlite') },
+    });
+    const textStructuredAccessor = new SolidRdfDataAccessor(textEngine, new SimpleIdentifierStrategy(baseUrl));
+    const textAccessor = new MixDataAccessor(
+      textStructuredAccessor,
+      new FileDataAccessor(mapper),
+      false,
+      true,
+      new FileDataAccessor(mapper),
+      true,
+    );
+    const resourceId = { path: `${baseUrl}alice/searchable.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+
+    try {
+      await textAccessor.writeDocument(resourceId, guardStream(Readable.from([
+        quad(
+          namedNode(resourceId.path),
+          namedNode('https://schema.org/name'),
+          literal('searchable managed runtime note'),
+        )
+      ])), metadata);
+
+      expect(textEngine.searchText({ query: 'managed runtime' })).toMatchObject([
+        expect.objectContaining({
+          source: resourceId.path,
+          content: expect.stringContaining('managed runtime'),
+        }),
+      ]);
+
+      await textAccessor.deleteResource(resourceId);
+      expect(textEngine.searchText({ query: 'managed runtime' })).toEqual([]);
+    } finally {
+      await textStructuredAccessor.finalize().catch(() => {});
+    }
+  });
+
   it('does not persist graph-scoped parser metadata in local RDF mirror metadata', async () => {
     const resourceId = { path: `${baseUrl}alice/profile/card.acr` };
     const metadata = new RepresentationMetadata(resourceId);

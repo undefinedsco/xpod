@@ -1132,6 +1132,10 @@ export interface RdfEngineLike {
   put(quads: Quad | Quad[], options?: RdfIndexPutOptions): void | Promise<void>;
   replaceSource(quads: Quad[], source: RdfSourceInput): void | Promise<void>;
   deleteSource(source: string): number | Promise<number>;
+  indexTextSource?(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void | Promise<void>;
+  deleteTextSource?(source: string): number | Promise<number>;
+  indexVectorSource?(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void | Promise<void>;
+  deleteVectorSource?(source: string): number | Promise<number>;
   delete(pattern: QuintPattern): number | Promise<number>;
   applyDelta(
     deletes: QuintPattern[],
