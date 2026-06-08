@@ -3284,6 +3284,75 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('explains active native operators rejected by query shape gates', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-native-rejection-explain-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const thread = namedNode(`${graph.value}#thread_a`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stats?.activeOperators ?? []).toContain('join.required_bgp.native');
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+      ]);
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        select: ['message', 'thread'],
+        orderBy: [{ variable: 'message' }],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([
+        message1.value,
+        message2.value,
+      ]);
+      expect(result.metrics.plan).toContain('Rdf3xJoinBGP(2)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
+      expect(pool.nativeBgpJoinCalls).toHaveLength(0);
+      expect(result.metrics.explain?.planner).toMatchObject({
+        selectedPath: 'rdf3x',
+        reasons: expect.arrayContaining([
+          'native-operator-rejected',
+        ]),
+        rejectedNativeOperators: expect.arrayContaining([
+          {
+            capability: 'join.required_bgp.native',
+            reason: 'shape-gate',
+          },
+        ]),
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('can defer native custom-index build until after bulk seed', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-deferred-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);

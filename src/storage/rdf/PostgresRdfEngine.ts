@@ -41,6 +41,7 @@ import type {
   RdfQueryCacheExplain,
   RdfQueryMetrics,
   RdfQueryPlannerExplain,
+  RdfQueryPlannerNativeOperatorRejection,
   RdfQueryResultCacheStats,
   RdfQueryTemplateCacheStats,
   RdfQueryResult,
@@ -4034,6 +4035,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const hasPlan = (marker: string): boolean => plan.some((entry) => entry.includes(marker));
     const hasPlanPrefix = (marker: string): boolean => plan.some((entry) => entry.startsWith(marker));
     const rejectedCapabilities = query ? this.unsupportedPgAccelerationCapabilities(query) : [];
+    const usedNativeCapabilities = this.usedPgNativeCapabilities(plan);
     const reasons = new Set<string>();
     const estimateInputs = new Set<string>();
     const availableStats = new Set<string>([
@@ -4062,7 +4064,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (hasPlan('PostgresRdfNativeGraphPrefixSlotFilter')) {
         reasons.add('graph-prefix-slot-filter-pushed-down');
       }
-    } else if (hasPlan('PostgresRdf3x')) {
+    } else if (hasPlan('PostgresRdf3x') || hasPlanPrefix('Rdf3xJoinBGP(')) {
       selectedPath = 'rdf3x';
       reasons.add('rdf3x-sql-path-selected');
       if (hasPlan('Rdf3xJoinOrder(')) {
@@ -4152,6 +4154,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (rejectedCapabilities.length > 0) {
       reasons.add('pg-acceleration-capability-unsupported');
     }
+    const rejectedNativeOperators = query
+      ? this.rejectedPgNativeOperators(query, selectedPath, usedNativeCapabilities, hasPlan)
+      : [];
+    if (rejectedNativeOperators.length > 0) {
+      reasons.add('native-operator-rejected');
+      estimateInputs.add('pgAcceleration.capabilities');
+      if (rejectedNativeOperators.some((entry) => entry.reason === 'cost-cutover-small-grouped-numeric-aggregate')) {
+        reasons.add('native-operator-cost-cutover');
+        estimateInputs.add('facts.exactPatternCounts');
+      }
+    }
     if (runtime.scannedRows > 0) {
       reasons.add('runtime-scan-rows-reported');
       estimateInputs.add('query.metrics.scannedRows');
@@ -4174,7 +4187,75 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...(slowQuery ? { slowQuery } : {}),
       ...(histogramHints.length > 0 ? { histogramHints } : {}),
       ...(rejectedCapabilities.length > 0 ? { rejectedCapabilities } : {}),
+      ...(rejectedNativeOperators.length > 0 ? { rejectedNativeOperators } : {}),
     };
+  }
+
+  private usedPgNativeCapabilities(plan: string[]): Set<string> {
+    const capabilities = new Set<string>();
+    for (const entry of plan) {
+      const match = /^XpodRdfExtensionOperator\(([^)]+)\)/.exec(entry);
+      if (match) {
+        capabilities.add(match[1]);
+      }
+    }
+    return capabilities;
+  }
+
+  private rejectedPgNativeOperators(
+    query: RdfQuery,
+    selectedPath: RdfQueryPlannerExplain['selectedPath'],
+    usedNativeCapabilities: Set<string>,
+    hasPlan: (marker: string) => boolean,
+  ): RdfQueryPlannerNativeOperatorRejection[] {
+    if (!this.pgAcceleration?.enabled || selectedPath === 'native-extension') {
+      return [];
+    }
+    const activeNativeOperators = new Set(
+      this.effectivePgAccelerationActiveOperators(this.pgAcceleration)
+        .filter((capability) => isNativeExtensionOnlyCapability(capability)),
+    );
+    const rejected = new Map<string, string>();
+    const add = (capability: string, reason: string): void => {
+      if (activeNativeOperators.has(capability) && !usedNativeCapabilities.has(capability)) {
+        rejected.set(capability, reason);
+      }
+    };
+
+    const aggregates = queryAggregates(query);
+    const requiredPatternCount = query.patterns.length > 0 ? query.patterns.length : 1;
+    const hasValues = (query.values?.length ?? 0) > 0;
+    if (aggregates.length > 0) {
+      if (aggregates.some((aggregate) => aggregate.type !== 'count')) {
+        add(
+          'aggregate.bgp_numeric',
+          hasPlan('PostgresNumericAggregateFactsCutover')
+            ? 'cost-cutover-small-grouped-numeric-aggregate'
+            : 'shape-gate',
+        );
+      } else if ((query.groupBy?.length ?? 0) > 0) {
+        add('aggregate.bgp_group_count', 'shape-gate');
+      } else if (requiredPatternCount > 1) {
+        add('aggregate.bgp_count', 'shape-gate');
+      } else {
+        add('index.xpod_rdf_perm.count_any', 'shape-gate');
+      }
+      return [...rejected.entries()]
+        .map(([capability, reason]) => ({ capability, reason }))
+        .sort((left, right) => left.capability.localeCompare(right.capability));
+    }
+
+    if (query.distinct && requiredPatternCount === 1 && (query.select?.length ?? 0) === 1) {
+      add('index.xpod_rdf_perm.distinct_any', 'shape-gate');
+    }
+    if (hasValues) {
+      add(query.limit !== undefined || query.offset !== undefined ? 'join.values.limit.native' : 'join.values.native', 'shape-gate');
+    } else if (requiredPatternCount > 1) {
+      add('join.required_bgp.native', 'shape-gate');
+    }
+    return [...rejected.entries()]
+      .map(([capability, reason]) => ({ capability, reason }))
+      .sort((left, right) => left.capability.localeCompare(right.capability));
   }
 
   private queryPlannerRuntimeExplain(metrics: RdfQueryMetrics): RdfQueryPlannerExplain['runtime'] {

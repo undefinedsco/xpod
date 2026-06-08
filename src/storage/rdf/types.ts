@@ -894,6 +894,12 @@ export interface RdfQueryPlannerExplain {
   slowQuery?: RdfQueryPlannerSlowQueryExplain;
   histogramHints?: RdfQueryPlannerHistogramHint[];
   rejectedCapabilities?: string[];
+  rejectedNativeOperators?: RdfQueryPlannerNativeOperatorRejection[];
+}
+
+export interface RdfQueryPlannerNativeOperatorRejection {
+  capability: string;
+  reason: string;
 }
 
 export interface RdfQueryPlannerRuntimeExplain {
