@@ -84,6 +84,7 @@ export interface RdfStorageStats {
     cachePressure: number;
     maxScopeBytes: number;
     scopeVersionCount: number;
+    scopeEntries: RdfDerivedCacheScopeEntry[];
     largestScopeBytes: number;
     largestScopePressure: number;
     largestScopeHash?: string;
@@ -131,6 +132,22 @@ export interface RdfStorageStats {
       error?: string;
     }>;
   };
+}
+
+export interface RdfDerivedCacheScopeEntry {
+  scopeHash: string;
+  factsDataVersion: number;
+  payloadBytes: number;
+  queryResultPayloadBytes: number;
+  materializedResultPayloadBytes: number;
+  queryResultEntries: number;
+  materializedResultEntries: number;
+  scopeShape?: string;
+  principal?: string;
+  basePath?: string;
+  mode?: string;
+  authorizationModel?: string;
+  permissionVersion?: string;
 }
 
 export interface RdfDerivedCacheEvictionStats {

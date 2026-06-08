@@ -21,6 +21,7 @@ import type {
   RdfDerivedIndexRefreshResult,
   RdfDerivedCacheStats,
   RdfDerivedCacheEvictionStats,
+  RdfDerivedCacheScopeEntry,
   RdfEngineLike,
   RdfEngineStorageStats,
   RdfCardinalityDistributions,
@@ -119,6 +120,7 @@ const DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_DERIVED_CACHE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
+const DEFAULT_DERIVED_CACHE_SCOPE_STATS_MAX_ENTRIES = 10;
 const DEFAULT_QUERY_EXPLAIN_SLOW_MS = 1_000;
 const DEFAULT_QUERY_EXPLAIN_LARGE_SCAN_ROWS = 100_000;
 const DEFAULT_QUERY_EXPLAIN_SCAN_AMPLIFICATION = 100;
@@ -389,6 +391,7 @@ interface PgDerivedCacheCandidate {
 
 interface PgDerivedCacheScopeStats {
   scopeVersionCount: number;
+  scopeEntries: RdfDerivedCacheScopeEntry[];
   largestScopeBytes: number;
   largestScopeHash?: string;
   largestScopeFactsDataVersion?: number;
@@ -8217,6 +8220,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       cachePressure: bytePressure(cacheBytes, maxCacheBytes),
       maxScopeBytes,
       scopeVersionCount: scopeStats.scopeVersionCount,
+      scopeEntries: scopeStats.scopeEntries,
       largestScopeBytes: scopeStats.largestScopeBytes,
       largestScopePressure: bytePressure(scopeStats.largestScopeBytes, maxScopeBytes),
       ...(scopeStats.largestScopeHash ? { largestScopeHash: scopeStats.largestScopeHash } : {}),
@@ -8247,30 +8251,89 @@ export class PostgresRdfEngine implements RdfEngineLike {
       scope_hash: string;
       facts_data_version: number | string;
       payload_bytes: number | string;
+      query_result_payload_bytes: number | string;
+      materialized_result_payload_bytes: number | string;
+      query_result_entries: number | string;
+      materialized_result_entries: number | string;
+      scope_shape: string | null;
+      scope_principal: string | null;
+      scope_base_path: string | null;
+      scope_mode: string | null;
+      scope_authorization_model: string | null;
+      scope_permission_version: string | null;
+      scope_version_count: number | string;
     }>(`
-      SELECT
-        scope_hash,
-        facts_data_version,
-        SUM(payload_bytes) AS payload_bytes
-      FROM (
+      WITH scoped_cache AS (
         SELECT
+          'query-result' AS kind,
           scope_hash,
           facts_data_version,
+          scope_shape,
+          scope_principal,
+          scope_base_path,
+          scope_mode,
+          scope_authorization_model,
+          scope_permission_version,
           OCTET_LENGTH(result_json) AS payload_bytes
         FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         UNION ALL
         SELECT
+          'materialized-result' AS kind,
           scope_hash,
           facts_data_version,
+          scope_shape,
+          scope_principal,
+          scope_base_path,
+          scope_mode,
+          scope_authorization_model,
+          scope_permission_version,
           OCTET_LENGTH(result_json) AS payload_bytes
         FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
-      ) scoped_cache
-      GROUP BY scope_hash, facts_data_version
-      ORDER BY SUM(payload_bytes) DESC, scope_hash ASC, facts_data_version DESC
-    `);
+      ),
+      scope_versions AS (
+        SELECT
+          scope_hash,
+          facts_data_version,
+          MAX(scope_shape) AS scope_shape,
+          MAX(scope_principal) AS scope_principal,
+          MAX(scope_base_path) AS scope_base_path,
+          MAX(scope_mode) AS scope_mode,
+          MAX(scope_authorization_model) AS scope_authorization_model,
+          MAX(scope_permission_version) AS scope_permission_version,
+          SUM(payload_bytes) AS payload_bytes,
+          SUM(CASE WHEN kind = 'query-result' THEN payload_bytes ELSE 0 END) AS query_result_payload_bytes,
+          SUM(CASE WHEN kind = 'materialized-result' THEN payload_bytes ELSE 0 END) AS materialized_result_payload_bytes,
+          SUM(CASE WHEN kind = 'query-result' THEN 1 ELSE 0 END) AS query_result_entries,
+          SUM(CASE WHEN kind = 'materialized-result' THEN 1 ELSE 0 END) AS materialized_result_entries
+        FROM scoped_cache
+        GROUP BY scope_hash, facts_data_version
+      )
+      SELECT
+        *,
+        COUNT(*) OVER () AS scope_version_count
+      FROM scope_versions
+      ORDER BY payload_bytes DESC, scope_hash ASC, facts_data_version DESC
+      LIMIT $1
+    `, [DEFAULT_DERIVED_CACHE_SCOPE_STATS_MAX_ENTRIES]);
     const largest = rows[0];
+    const scopeEntries = rows.map((row) => ({
+      scopeHash: row.scope_hash,
+      factsDataVersion: Number(row.facts_data_version),
+      payloadBytes: Number(row.payload_bytes ?? 0) || 0,
+      queryResultPayloadBytes: Number(row.query_result_payload_bytes ?? 0) || 0,
+      materializedResultPayloadBytes: Number(row.materialized_result_payload_bytes ?? 0) || 0,
+      queryResultEntries: Number(row.query_result_entries ?? 0) || 0,
+      materializedResultEntries: Number(row.materialized_result_entries ?? 0) || 0,
+      ...(row.scope_shape ? { scopeShape: row.scope_shape } : {}),
+      ...(row.scope_principal ? { principal: row.scope_principal } : {}),
+      ...(row.scope_base_path ? { basePath: row.scope_base_path } : {}),
+      ...(row.scope_mode ? { mode: row.scope_mode } : {}),
+      ...(row.scope_authorization_model ? { authorizationModel: row.scope_authorization_model } : {}),
+      ...(row.scope_permission_version ? { permissionVersion: row.scope_permission_version } : {}),
+    }));
     return {
-      scopeVersionCount: rows.length,
+      scopeVersionCount: Number(largest?.scope_version_count ?? 0) || 0,
+      scopeEntries,
       largestScopeBytes: largest ? Number(largest.payload_bytes ?? 0) || 0 : 0,
       ...(largest ? { largestScopeHash: largest.scope_hash } : {}),
       ...(largest ? { largestScopeFactsDataVersion: Number(largest.facts_data_version) } : {}),

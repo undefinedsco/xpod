@@ -854,6 +854,90 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('reports PostgreSQL derived cache access-scope drill-down entries', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-cache-scope-stats-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheMaxBytes: 1024 * 1024,
+      materializedResultCacheMaxBytes: 1024 * 1024,
+      derivedCacheScopeMaxBytes: 1024 * 1024,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const scopeFor = (principal: string, permissionVersion: string) => ({
+      principal,
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read',
+      authorizationModel: 'acr',
+      permissionVersion,
+      allowedGraphUrls: [graph.value],
+    });
+    const queryForScope = (
+      scope: ReturnType<typeof scopeFor>,
+      materialized?: string,
+    ): RdfQuery => ({
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(CONTENT),
+          object: { variable: 'content' },
+        },
+      ],
+      select: ['message', 'content'],
+      cache: {
+        scope,
+        ...(materialized ? { materialized } : {}),
+      },
+    });
+    const aliceScope = scopeFor('https://id.example/alice/profile/card#me', 'acl-v1');
+    const bobScope = scopeFor('https://id.example/bob/profile/card#me', 'acl-v2');
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+      await engine.put(quad(message, namedNode(CONTENT), literal('scope drill-down payload'), graph));
+
+      await engine.query(queryForScope(aliceScope));
+      await engine.query(queryForScope(bobScope));
+      await engine.query(queryForScope(bobScope, 'chat/default/open-messages-with-content'));
+
+      const storage = await engine.storageStats();
+      expect(storage.derivedCache?.scopeVersionCount).toBe(2);
+      expect(storage.derivedCache?.scopeEntries).toHaveLength(2);
+
+      const [largest, second] = storage.derivedCache?.scopeEntries ?? [];
+      expect(largest).toMatchObject({
+        principal: 'https://id.example/bob/profile/card#me',
+        basePath: 'https://pod.example/alice/.data/',
+        mode: 'read',
+        authorizationModel: 'acr',
+        permissionVersion: 'acl-v2',
+        queryResultEntries: 1,
+        materializedResultEntries: 1,
+      });
+      expect(largest.payloadBytes).toBeGreaterThan(largest.queryResultPayloadBytes);
+      expect(largest.materializedResultPayloadBytes).toBeGreaterThan(0);
+      expect(second).toMatchObject({
+        principal: 'https://id.example/alice/profile/card#me',
+        permissionVersion: 'acl-v1',
+        queryResultEntries: 1,
+        materializedResultEntries: 0,
+      });
+      expect(second.payloadBytes).toBe(second.queryResultPayloadBytes);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('prunes PostgreSQL query result cache by payload bytes', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-bytes-'));
     const engine = new PostgresRdfEngine({

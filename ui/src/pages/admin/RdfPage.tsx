@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import {
   getRdfStats,
   type RdfDerivedCacheEvictionStats,
+  type RdfDerivedCacheScopeEntry,
   type RdfSlowQueryEntry,
   type RdfStatsSnapshot,
 } from '@/api/admin';
@@ -100,6 +101,7 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
   const rdf3x = stats.rdf3x;
   const slowQueries = stats.slowQueries?.entries ?? [];
   const derivedCache = stats.derivedCache;
+  const cacheScopeEntries = derivedCache?.scopeEntries ?? [];
   const pgAcceleration = stats.pgAcceleration;
 
   return (
@@ -218,6 +220,10 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
         </Card>
       </div>
 
+      <div className="mb-8">
+        <CacheScopeTable entries={cacheScopeEntries} />
+      </div>
+
       <SlowQueryTable entries={slowQueries} />
     </>
   );
@@ -330,6 +336,68 @@ function SlowQueryTable(props: { entries: RdfSlowQueryEntry[] }) {
                     </td>
                     <td className="px-5 py-3">
                       <ReasonList reasons={entry.slowQuery.reasons} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CacheScopeTable(props: { entries: RdfDerivedCacheScopeEntry[] }) {
+  return (
+    <Card variant="bordered">
+      <CardHeader>
+        <CardTitle>权限 Scope 明细</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        {props.entries.length === 0 ? (
+          <div className="px-5 pb-5 pt-4 text-sm text-muted-foreground">暂无缓存 scope</div>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full min-w-[1020px] border-collapse text-left text-sm">
+              <thead className="border-b border-border text-muted-foreground">
+                <tr>
+                  <th className="px-5 py-3 font-medium">Scope</th>
+                  <th className="px-5 py-3 font-medium">Principal</th>
+                  <th className="px-5 py-3 font-medium">Base</th>
+                  <th className="px-5 py-3 font-medium">权限</th>
+                  <th className="px-5 py-3 font-medium">版本</th>
+                  <th className="px-5 py-3 font-medium">Payload</th>
+                  <th className="px-5 py-3 font-medium">Entries</th>
+                </tr>
+              </thead>
+              <tbody>
+                {props.entries.map((entry) => (
+                  <tr key={`${entry.scopeHash}-${entry.factsDataVersion}`} className="border-b border-border/60 last:border-0">
+                    <td className="whitespace-nowrap px-5 py-3 font-mono text-xs">
+                      <div>{shortKey(entry.scopeHash)}</div>
+                      <div className="mt-1 text-muted-foreground">facts {entry.factsDataVersion}</div>
+                    </td>
+                    <td className="px-5 py-3">
+                      <div className="max-w-[220px] truncate">{entry.principal ?? '-'}</div>
+                    </td>
+                    <td className="px-5 py-3">
+                      <div className="max-w-[260px] truncate">{entry.basePath ?? '-'}</div>
+                    </td>
+                    <td className="whitespace-nowrap px-5 py-3 font-mono text-xs">
+                      {(entry.authorizationModel ?? '-')}/{entry.mode ?? '-'}
+                    </td>
+                    <td className="px-5 py-3">
+                      <div className="max-w-[180px] truncate font-mono text-xs">{entry.permissionVersion ?? '-'}</div>
+                    </td>
+                    <td className="whitespace-nowrap px-5 py-3 font-mono">
+                      <div>{formatBytes(entry.payloadBytes)}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        r {formatBytes(entry.queryResultPayloadBytes)} / m {formatBytes(entry.materializedResultPayloadBytes)}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-5 py-3 font-mono">
+                      {formatInteger(entry.queryResultEntries)} / {formatInteger(entry.materializedResultEntries)}
                     </td>
                   </tr>
                 ))}
