@@ -1587,6 +1587,62 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
     expectedPlan: ['join-index', 'range-filter-pushdown', 'join-order-pushdown', 'join-limit-pushdown'],
   },
   {
+    name: 'scheduled task trigger keyset continuation query',
+    resource: 'task',
+    purpose: 'task scheduler keyset continuation keeps cursor range, ordering, and pagination inside SQL self-join',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+          subject: { variable: 'task' },
+          predicate: namedNode(RDF_TYPE),
+          object: namedNode(`${UDFS}Task`),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+          subject: { variable: 'task' },
+          predicate: namedNode(`${UDFS}status`),
+          object: literal('active'),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+          subject: { variable: 'task' },
+          predicate: namedNode(`${UDFS}workspace`),
+          object: namedNode(WORKSPACE),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/task/' },
+          subject: { variable: 'task' },
+          predicate: namedNode(`${UDFS}nextRunAt`),
+          object: { variable: 'nextRunAt' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'nextRunAt',
+          operator: '$gt',
+          value: literal('2026-05-18T00:30:00.000Z'),
+        },
+        {
+          variable: 'nextRunAt',
+          operator: '$lte',
+          value: literal('2026-05-18T01:30:00.000Z'),
+        },
+      ],
+      select: ['task', 'nextRunAt'],
+      orderBy: [
+        {
+          variable: 'nextRunAt',
+          direction: 'asc',
+        },
+      ],
+      limit: 1,
+    },
+    expectedPlan: ['join-index', 'range-filter-pushdown', 'join-order-pushdown', 'join-limit-pushdown'],
+  },
+  {
     name: 'leased running run query',
     resource: 'run',
     purpose: 'run recovery joins running status with worker lease and heartbeat metadata',
@@ -2273,6 +2329,63 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
       limit: 20,
     },
     expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
+  },
+  {
+    name: 'settings owner category keyset query',
+    resource: 'settings',
+    purpose: 'settings screens keep key cursor, ordering, and pagination inside SQL self-join',
+    minScale: 'small',
+    minReturnedRows: 1,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/settings/' },
+          subject: { variable: 'setting' },
+          predicate: namedNode(RDF_TYPE),
+          object: namedNode(SCHEMA_PROPERTY_VALUE),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/settings/' },
+          subject: { variable: 'setting' },
+          predicate: namedNode(DCT_CREATOR),
+          object: namedNode('https://pod.example/alice/profile/card#me'),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/settings/' },
+          subject: { variable: 'setting' },
+          predicate: namedNode(DCT_TYPE),
+          object: literal('ai'),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/settings/' },
+          subject: { variable: 'setting' },
+          predicate: namedNode(`${UDFS}settingKey`),
+          object: { variable: 'key' },
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/settings/' },
+          subject: { variable: 'setting' },
+          predicate: namedNode(`${UDFS}settingValue`),
+          object: { variable: 'value' },
+        },
+      ],
+      filters: [
+        {
+          variable: 'key',
+          operator: '$gt',
+          value: literal('ai.defaultAssistant'),
+        },
+      ],
+      select: ['setting', 'key', 'value'],
+      orderBy: [
+        {
+          variable: 'key',
+          direction: 'asc',
+        },
+      ],
+      limit: 20,
+    },
+    expectedPlan: ['join-index', 'range-filter-pushdown', 'join-order-pushdown', 'join-limit-pushdown'],
   },
   {
     name: 'active session thread hydration query',
