@@ -438,6 +438,9 @@ interface PgResolvedQueryCacheScope {
   mode: string | null;
   authorizationModel: string | null;
   permissionVersion: string | null;
+  allowedGraphUrls: string[] | null;
+  deniedGraphUrls: string[] | null;
+  deniedGraphPrefixes: string[] | null;
 }
 
 interface RdfAccessControlCacheInvalidation {
@@ -1713,14 +1716,42 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const affectedRows = invalidation.basePaths.map((_, index) => `($${index + 1})`).join(', ');
-    const overlapCondition = `
-      scope_base_path IS NULL
-      OR EXISTS (
+    const pathOverlap = (left: string, right: string): string => `
+      (
+        LEFT(${left}, LENGTH(${right})) = ${right}
+        OR LEFT(${right}, LENGTH(${left})) = ${left}
+      )
+    `;
+    const affectedBasePathOverlap = `
+      EXISTS (
         SELECT 1
         FROM affected_access_scope
-        WHERE LEFT(scope_base_path, LENGTH(base_path)) = base_path
-           OR LEFT(base_path, LENGTH(scope_base_path)) = scope_base_path
+        WHERE ${pathOverlap('scope_base_path', 'base_path')}
       )
+    `;
+    const graphScopeOverlap = (column: string): string => `
+      EXISTS (
+        SELECT 1
+        FROM affected_access_scope
+        WHERE EXISTS (
+          SELECT 1
+          FROM UNNEST(COALESCE(${column}, ARRAY[]::text[])) AS graph_scope(value)
+          WHERE ${pathOverlap('graph_scope.value', 'base_path')}
+        )
+      )
+    `;
+    const hasNoAllowedGraphs = 'COALESCE(array_length(scope_allowed_graph_urls, 1), 0) = 0';
+    const overlapCondition = `
+      (
+        ${hasNoAllowedGraphs}
+        AND (
+          scope_base_path IS NULL
+          OR ${affectedBasePathOverlap}
+        )
+      )
+      OR ${graphScopeOverlap('scope_allowed_graph_urls')}
+      OR ${graphScopeOverlap('scope_denied_graph_urls')}
+      OR ${graphScopeOverlap('scope_denied_graph_prefixes')}
     `;
     const resultRows = await executor.query<{ count: number }>(`
       WITH affected_access_scope(base_path) AS (VALUES ${affectedRows}),
@@ -2000,6 +2031,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         scope_mode TEXT,
         scope_authorization_model TEXT,
         scope_permission_version TEXT,
+        scope_allowed_graph_urls TEXT[],
+        scope_denied_graph_urls TEXT[],
+        scope_denied_graph_prefixes TEXT[],
         result_json TEXT NOT NULL,
         row_count BIGINT NOT NULL,
         hit_count BIGINT NOT NULL DEFAULT 0,
@@ -2035,6 +2069,18 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await executor.exec(`
       ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
       ADD COLUMN IF NOT EXISTS scope_permission_version TEXT
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
+      ADD COLUMN IF NOT EXISTS scope_allowed_graph_urls TEXT[]
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
+      ADD COLUMN IF NOT EXISTS scope_denied_graph_urls TEXT[]
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
+      ADD COLUMN IF NOT EXISTS scope_denied_graph_prefixes TEXT[]
     `);
     await executor.exec(`
       ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
@@ -2083,6 +2129,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         scope_mode TEXT,
         scope_authorization_model TEXT,
         scope_permission_version TEXT,
+        scope_allowed_graph_urls TEXT[],
+        scope_denied_graph_urls TEXT[],
+        scope_denied_graph_prefixes TEXT[],
         result_json TEXT NOT NULL,
         row_count BIGINT NOT NULL,
         hit_count BIGINT NOT NULL DEFAULT 0,
@@ -2094,6 +2143,18 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await executor.exec(`
       ALTER TABLE ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
       ADD COLUMN IF NOT EXISTS template_key TEXT NOT NULL DEFAULT 'legacy'
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
+      ADD COLUMN IF NOT EXISTS scope_allowed_graph_urls TEXT[]
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
+      ADD COLUMN IF NOT EXISTS scope_denied_graph_urls TEXT[]
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
+      ADD COLUMN IF NOT EXISTS scope_denied_graph_prefixes TEXT[]
     `);
     await executor.exec(`
       CREATE INDEX IF NOT EXISTS rdf_materialized_result_cache_version
@@ -3378,11 +3439,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
         scope_mode,
         scope_authorization_model,
         scope_permission_version,
+        scope_allowed_graph_urls,
+        scope_denied_graph_urls,
+        scope_denied_graph_prefixes,
         result_json,
         row_count,
         created_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
       ON CONFLICT (cache_key, scope_hash, facts_data_version) DO UPDATE
       SET query_shape = EXCLUDED.query_shape,
           scope_shape = EXCLUDED.scope_shape,
@@ -3391,6 +3455,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
           scope_mode = EXCLUDED.scope_mode,
           scope_authorization_model = EXCLUDED.scope_authorization_model,
           scope_permission_version = EXCLUDED.scope_permission_version,
+          scope_allowed_graph_urls = EXCLUDED.scope_allowed_graph_urls,
+          scope_denied_graph_urls = EXCLUDED.scope_denied_graph_urls,
+          scope_denied_graph_prefixes = EXCLUDED.scope_denied_graph_prefixes,
           result_json = EXCLUDED.result_json,
           row_count = EXCLUDED.row_count,
           created_at = NOW()
@@ -3405,6 +3472,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       cacheScope.mode,
       cacheScope.authorizationModel,
       cacheScope.permissionVersion,
+      cacheScope.allowedGraphUrls,
+      cacheScope.deniedGraphUrls,
+      cacheScope.deniedGraphPrefixes,
       resultJson,
       result.bindings.length,
     ]);
@@ -3432,11 +3502,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
         scope_mode,
         scope_authorization_model,
         scope_permission_version,
+        scope_allowed_graph_urls,
+        scope_denied_graph_urls,
+        scope_denied_graph_prefixes,
         result_json,
         row_count,
         created_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
       ON CONFLICT (cache_key, scope_hash, facts_data_version) DO UPDATE
       SET materialized_shape = EXCLUDED.materialized_shape,
           template_key = EXCLUDED.template_key,
@@ -3447,6 +3520,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
           scope_mode = EXCLUDED.scope_mode,
           scope_authorization_model = EXCLUDED.scope_authorization_model,
           scope_permission_version = EXCLUDED.scope_permission_version,
+          scope_allowed_graph_urls = EXCLUDED.scope_allowed_graph_urls,
+          scope_denied_graph_urls = EXCLUDED.scope_denied_graph_urls,
+          scope_denied_graph_prefixes = EXCLUDED.scope_denied_graph_prefixes,
           result_json = EXCLUDED.result_json,
           row_count = EXCLUDED.row_count,
           created_at = NOW()
@@ -3463,6 +3539,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       template.cacheScope.mode,
       template.cacheScope.authorizationModel,
       template.cacheScope.permissionVersion,
+      template.cacheScope.allowedGraphUrls,
+      template.cacheScope.deniedGraphUrls,
+      template.cacheScope.deniedGraphPrefixes,
       resultJson,
       result.bindings.length,
     ]);
@@ -4157,6 +4236,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         mode: options.template.cacheScope.mode,
         authorizationModel: options.template.cacheScope.authorizationModel,
         permissionVersion: options.template.cacheScope.permissionVersion,
+        allowedGraphUrls: options.template.cacheScope.allowedGraphUrls,
+        deniedGraphUrls: options.template.cacheScope.deniedGraphUrls,
+        deniedGraphPrefixes: options.template.cacheScope.deniedGraphPrefixes,
       },
     };
     const accelerationExplain: RdfSlowQueryStatsEntry['acceleration'] = {
@@ -8826,6 +8908,9 @@ function resolveRdfQueryCacheScope(scope?: RdfQueryCacheScope): PgResolvedQueryC
     mode: lastDescriptorString(descriptors, 'mode'),
     authorizationModel: lastDescriptorString(descriptors, 'authorizationModel'),
     permissionVersion: lastDescriptorString(descriptors, 'permissionVersion'),
+    allowedGraphUrls: descriptorStringArray(descriptors, 'allowedGraphUrls'),
+    deniedGraphUrls: descriptorStringArray(descriptors, 'deniedGraphUrls'),
+    deniedGraphPrefixes: descriptorStringArray(descriptors, 'deniedGraphPrefixes'),
   };
 }
 
@@ -8888,6 +8973,17 @@ function lastDescriptorString(
     }
   }
   return null;
+}
+
+function descriptorStringArray(
+  descriptors: RdfQueryCacheScopeDescriptor[],
+  key: keyof Pick<
+    RdfQueryCacheScopeDescriptor,
+    'allowedGraphUrls' | 'deniedGraphUrls' | 'deniedGraphPrefixes'
+  >,
+): string[] | null {
+  const values = uniqueStrings(descriptors.flatMap((descriptor) => descriptor[key] ?? []));
+  return values.length > 0 ? values.sort() : null;
 }
 
 function queryResultCacheKey(queryShape: string): string {

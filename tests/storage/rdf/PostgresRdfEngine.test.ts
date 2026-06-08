@@ -1722,8 +1722,9 @@ describe('PostgresRdfEngine', () => {
     const message = namedNode(`${graph.value}#msg_1`);
     const otherGraph = namedNode('https://pod.example/bob/.data/chat/default/2026/05/18/messages.ttl');
     const otherMessage = namedNode(`${otherGraph.value}#msg_1`);
-    const aclGraph = namedNode('https://pod.example/alice/profile/card.acl');
-    const acrGraph = namedNode('https://pod.example/alice/profile/.acr');
+    const profileAclGraph = namedNode('https://pod.example/alice/profile/card.acl');
+    const aclGraph = namedNode(`${graph.value}.acl`);
+    const acrGraph = namedNode('https://pod.example/alice/.data/chat/default/.acr');
     const queryFor = (
       targetGraph: typeof graph,
       principal: string,
@@ -1780,6 +1781,23 @@ describe('PostgresRdfEngine', () => {
 
       await engine.replaceSource([
         quad(
+          namedNode(`${profileAclGraph.value}#public`),
+          namedNode('http://www.w3.org/ns/auth/acl#mode'),
+          namedNode('http://www.w3.org/ns/auth/acl#Read'),
+          profileAclGraph,
+        ),
+      ], {
+        source: profileAclGraph.value,
+        workspace: 'https://pod.example/alice/profile/',
+        localPath: 'profile/card.acl',
+        contentType: 'text/turtle',
+        sourceVersion: 'acl-v1',
+      });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 2 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 2 });
+
+      await engine.replaceSource([
+        quad(
           namedNode(`${aclGraph.value}#public`),
           namedNode('http://www.w3.org/ns/auth/acl#mode'),
           namedNode('http://www.w3.org/ns/auth/acl#Read'),
@@ -1787,8 +1805,8 @@ describe('PostgresRdfEngine', () => {
         ),
       ], {
         source: aclGraph.value,
-        workspace: 'https://pod.example/alice/profile/',
-        localPath: 'profile/card.acl',
+        workspace: 'https://pod.example/alice/.data/chat/default/2026/05/18/',
+        localPath: 'messages.ttl.acl',
         contentType: 'text/turtle',
         sourceVersion: 'acl-v1',
       });

@@ -1070,6 +1070,9 @@ export interface RdfQueryCacheScopeExplain {
   mode: string | null;
   authorizationModel: string | null;
   permissionVersion: string | null;
+  allowedGraphUrls?: string[] | null;
+  deniedGraphUrls?: string[] | null;
+  deniedGraphPrefixes?: string[] | null;
 }
 
 export interface RdfQueryResult {
