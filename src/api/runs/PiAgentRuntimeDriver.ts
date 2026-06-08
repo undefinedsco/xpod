@@ -8,7 +8,9 @@ import { getDefaultBaseUrl } from '../service/provider-registry';
 import { getPlatformApiBaseUrl, getPlatformApiKey, getPlatformDefaultModel, getPlatformProviderId } from '../service/platform-ai-config';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
-import { LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, WorkspaceJournaledSolidFsSyncer, type MaterializedWorkspace, type SolidFS, type SolidFsProjection } from '../../solidfs';
+import { CompositeSolidFsSyncer, LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, WorkspaceJournaledSolidFsSyncer, type MaterializedWorkspace, type SolidFS, type SolidFsProjection, type SolidFsSyncer } from '../../solidfs';
+import { RdfSearchIndexingSolidFsSyncer } from '../service/RdfSearchIndexingSolidFsSyncer';
+import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
 import type {
   AgentRuntimeConfig,
   AgentRuntimeEvent,
@@ -95,6 +97,7 @@ export interface PiAgentRuntimeDriverOptions {
   solidfs?: SolidFS;
   solidfsProjection?: SolidFsProjection;
   solidfsJournalRootDir?: string;
+  rdfSearchIndexingService?: RdfSearchIndexingService;
 }
 
 type WarmRuntime = {
@@ -132,11 +135,23 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
   public constructor(private readonly options: PiAgentRuntimeDriverOptions = {}) {
     this.solidfs = options.solidfs ?? new LocalSolidFS({
       syncer: new WorkspaceJournaledSolidFsSyncer({
-        syncer: new PodSolidFsSyncer(),
+        syncer: this.createDefaultSolidFsSyncer(),
         journalRoot: options.solidfsJournalRootDir,
       }),
       hydrator: new PodSolidFsHydrator(),
     });
+  }
+
+  private createDefaultSolidFsSyncer(): SolidFsSyncer {
+    const syncers: SolidFsSyncer[] = [new PodSolidFsSyncer()];
+    if (this.options.rdfSearchIndexingService) {
+      syncers.push(new RdfSearchIndexingSolidFsSyncer({
+        service: this.options.rdfSearchIndexingService,
+      }));
+    }
+    return syncers.length === 1
+      ? syncers[0]
+      : new CompositeSolidFsSyncer({ syncers });
   }
 
   public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {

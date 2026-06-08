@@ -41,6 +41,7 @@ describe('API RDF container services', () => {
       expect(backend.managedRunWorker.contextRetriever).toBe(retriever);
       expect(chatKitService.runStateCenter.contextRetriever).toBe(retriever);
       expect(taskService.materializer.contextRetriever).toBe(retriever);
+      expect(backend.runtimeDriver.options.rdfSearchIndexingService).toBe(indexingService);
     } finally {
       await container.resolve('rdfEngine')?.close?.();
     }

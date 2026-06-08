@@ -156,7 +156,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever }: ApiContainerCradle) => {
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService }: ApiContainerCradle) => {
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
@@ -176,6 +176,7 @@ export function registerCommonServices(
         runtimeDriver: new PiAgentRuntimeDriver({
           agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
           requireSandbox: config.edition === 'cloud',
+          rdfSearchIndexingService,
         }),
       });
     }).singleton(),

@@ -4,5 +4,6 @@ export * from './PodSolidFsHttpClient';
 export * from './PodSolidFsHydrator';
 export * from './RdfIndexSolidFsSyncer';
 export * from './PodSolidFsSyncer';
+export * from './CompositeSolidFsSyncer';
 export * from './LocalFirstRdfRepresentationResolver';
 export * from './SolidFsSyncJournal';
