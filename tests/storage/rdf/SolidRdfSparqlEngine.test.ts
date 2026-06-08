@@ -29,6 +29,10 @@ const HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
 const HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
+const AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
+const AI_BASE_URL = 'https://vocab.xpod.dev/ai#baseUrl';
+const AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
+const CREDENTIAL_PROVIDER = 'https://vocab.xpod.dev/credential#provider';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 
 describe('SolidRdfSparqlEngine', () => {
@@ -294,6 +298,68 @@ describe('SolidRdfSparqlEngine', () => {
     expect(materialized).toMatchObject({ version: 'v1' });
     expect(typeof materialized).toBe('object');
     expect((materialized as { key: string }).key).toMatch(/^chatkit\/thread-history\/[a-f0-9]{16}\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for settings provider list product views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?provider ?baseUrl WHERE {
+        ?provider <${RDF_TYPE}> <${AI_PROVIDER}> .
+        ?provider <${AI_BASE_URL}> ?baseUrl .
+      }
+      ORDER BY ?provider
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/settings\/ai-providers\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for provider model credential product joins', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+    const provider = 'https://pod.example/alice/settings/providers/anthropic.ttl';
+
+    await engine.queryBindings(`
+      SELECT ?model ?credential WHERE {
+        ?model <${AI_IS_PROVIDED_BY}> <${provider}> .
+        ?credential <${CREDENTIAL_PROVIDER}> <${provider}> .
+      }
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/settings\/provider-model-credentials\/[a-f0-9]{16}$/);
   });
 
   it('can disable automatic materialized cache key selection', async () => {

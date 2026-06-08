@@ -30,7 +30,7 @@ export interface SolidRdfSparqlEngineOptions {
   shadowStore?: ShadowRdfQuintStore;
   enablePrimary?: boolean;
   onFallback?: (reason: SolidRdfSparqlFallback) => void;
-  autoMaterializeThreadHistory?: boolean;
+  autoMaterializeProductViews?: boolean;
 }
 
 export interface SolidRdfSparqlFallback {
@@ -91,9 +91,21 @@ interface MutableOperationCount {
 }
 
 const rdfDataFactory = new RdfDataFactory();
+const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const SIOC_HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
 const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
-const CHATKIT_THREAD_HISTORY_MATERIALIZED_VERSION = 'v1';
+const XPOD_AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
+const XPOD_AI_MODEL = 'https://vocab.xpod.dev/ai#Model';
+const XPOD_AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
+const XPOD_CREDENTIAL = 'https://vocab.xpod.dev/credential#Credential';
+const XPOD_CREDENTIAL_PROVIDER = 'https://vocab.xpod.dev/credential#provider';
+const PRODUCT_VIEW_MATERIALIZED_VERSION = 'v1';
+
+const SETTINGS_RESOURCE_TYPE_VIEWS = new Map<string, string>([
+  [XPOD_AI_PROVIDER, 'ai-providers'],
+  [XPOD_AI_MODEL, 'ai-models'],
+  [XPOD_CREDENTIAL, 'credentials'],
+]);
 
 export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly adapter = new RdfSparqlAdapter();
@@ -102,7 +114,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly shadowStore?: ShadowRdfQuintStore;
   private readonly enablePrimary: boolean;
   private readonly onFallback?: (reason: SolidRdfSparqlFallback) => void;
-  private readonly autoMaterializeThreadHistory: boolean;
+  private readonly autoMaterializeProductViews: boolean;
   private readonly operationCounts = new Map<SolidRdfSparqlOperation, MutableOperationCount>();
   private lastPrimary?: SolidRdfSparqlPrimaryMetric;
   private lastFallback?: SolidRdfSparqlFallbackMetric;
@@ -113,14 +125,14 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     shadowStore?: ShadowRdfQuintStore,
     enablePrimary = true,
     onFallback?: (reason: SolidRdfSparqlFallback) => void,
-    autoMaterializeThreadHistory = true,
+    autoMaterializeProductViews = true,
   ) {
     this.rdfEngine = rdfEngine;
     this.fallback = fallback;
     this.shadowStore = shadowStore;
     this.enablePrimary = enablePrimary;
     this.onFallback = onFallback;
-    this.autoMaterializeThreadHistory = autoMaterializeThreadHistory;
+    this.autoMaterializeProductViews = autoMaterializeProductViews;
   }
 
   public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<BindingsStream> {
@@ -366,7 +378,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     operation: 'queryBindings' | 'queryBoolean',
     query: RdfQuery,
   ): RdfQuery {
-    if (query.cache?.materialized || !this.autoMaterializeThreadHistory) {
+    if (query.cache?.materialized || !this.autoMaterializeProductViews) {
       return query;
     }
     const materialized = defaultMaterializedQuerySelector(
@@ -682,13 +694,18 @@ function defaultMaterializedQuerySelector(
   if (operation !== 'queryBindings') {
     return undefined;
   }
+  return threadHistoryMaterializedResult(query)
+    ?? settingsProductViewMaterializedResult(query);
+}
+
+function threadHistoryMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
   const threadIri = threadHistoryQueryThreadIri(query);
   if (!threadIri) {
     return undefined;
   }
   return {
     key: `chatkit/thread-history/${shortHash(threadIri)}/${shortHash(stableQueryFingerprint(query))}`,
-    version: CHATKIT_THREAD_HISTORY_MATERIALIZED_VERSION,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
   };
 }
 
@@ -704,6 +721,51 @@ function threadHistoryQueryThreadIri(query: RdfQuery): string | undefined {
     }
   }
   return undefined;
+}
+
+function settingsProductViewMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const view = settingsProductView(query);
+  if (!view) {
+    return undefined;
+  }
+  return {
+    key: `models/settings/${view}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function settingsProductView(query: RdfQuery): string | undefined {
+  const typeViews = new Set<string>();
+  let hasModelProviderLink = false;
+  let hasCredentialProviderLink = false;
+
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (predicate === RDF_TYPE) {
+      const typeView = SETTINGS_RESOURCE_TYPE_VIEWS.get(namedNodeValue(pattern.object) ?? '');
+      if (typeView) {
+        typeViews.add(typeView);
+      }
+      continue;
+    }
+    if (predicate === XPOD_AI_IS_PROVIDED_BY) {
+      hasModelProviderLink = true;
+      continue;
+    }
+    if (predicate === XPOD_CREDENTIAL_PROVIDER) {
+      hasCredentialProviderLink = true;
+    }
+  }
+
+  if (hasModelProviderLink && hasCredentialProviderLink) {
+    return 'provider-model-credentials';
+  }
+
+  if (typeViews.size === 0) {
+    return undefined;
+  }
+
+  return [...typeViews].sort().join('+');
 }
 
 function namedNodeValue(term: RdfQueryTermPattern | undefined): string | undefined {
