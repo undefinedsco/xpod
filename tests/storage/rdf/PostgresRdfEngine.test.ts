@@ -1927,6 +1927,91 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('narrows access-cache invalidation to known permission versions', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-access-version-index-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const acrGraph = namedNode('https://pod.example/alice/.data/chat/default/.acr');
+    const accessControl = namedNode(`${acrGraph.value}#messageDayAccess`);
+    const queryFor = (permissionVersion: string, materialized?: string): RdfQuery => ({
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: {
+        scope: {
+          principal: 'https://id.example/alice/profile/card#me',
+          basePath: 'https://pod.example/alice/',
+          mode: 'read',
+          authorizationModel: 'acr',
+          permissionVersion,
+          allowedGraphUrls: [graph.value],
+        },
+        ...(materialized ? { materialized } : {}),
+      },
+    });
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      expect((await engine.query(queryFor('acl-v1'))).metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.query(queryFor('acl-v1', 'chat/default/acl-v1/open-messages'))).metrics.plan)
+        .toContain('PostgresMaterializedResultStore');
+      expect((await engine.query(queryFor('acl-v2'))).metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.query(queryFor('acl-v2', 'chat/default/acl-v2/open-messages'))).metrics.plan)
+        .toContain('PostgresMaterializedResultStore');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 2 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 2 });
+
+      await engine.replaceSource([
+        quad(graph, namedNode(`${ACP}accessControl`), accessControl, acrGraph),
+        quad(accessControl, namedNode(`${ACP}apply`), graph, acrGraph),
+        quad(accessControl, namedNode(`${ACP}allow`), namedNode(`${ACP}Read`), acrGraph),
+      ], {
+        source: acrGraph.value,
+        workspace: 'https://pod.example/alice/.data/chat/default/',
+        localPath: '.acr',
+        contentType: 'text/turtle',
+        sourceVersion: 'acl-v1',
+      });
+
+      expect((await engine.storageStats()).accessControlOverrides).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats({ cacheScope: { permissionVersion: 'acl-v2' } })).derivedCache)
+        .toMatchObject({ scopeVersionCount: 1 });
+
+      await engine.replaceSource([
+        quad(graph, namedNode(`${ACP}accessControl`), accessControl, acrGraph),
+        quad(accessControl, namedNode(`${ACP}apply`), graph, acrGraph),
+        quad(accessControl, namedNode(`${ACP}allow`), namedNode(`${ACP}Read`), acrGraph),
+      ], {
+        source: acrGraph.value,
+        workspace: 'https://pod.example/alice/.data/chat/default/',
+        localPath: '.acr',
+        contentType: 'text/turtle',
+        sourceVersion: 'acl-v2',
+      });
+
+      expect((await engine.storageStats()).accessControlOverrides).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 0 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 0 });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('prunes PostgreSQL materialized result cache entries to the configured profile', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-materialized-cache-prune-'));
     const engine = new PostgresRdfEngine({

@@ -450,10 +450,14 @@ interface PgResolvedQueryCacheScope {
 }
 
 interface RdfAccessControlCacheInvalidation {
-  fallbackBasePaths: string[];
+  fallbackScopes: RdfAccessControlInvalidationScope[];
   sourceKeys: string[];
-  targetBasePaths: string[];
   sourceTargets: RdfAccessControlOverrideTargets[];
+}
+
+interface RdfAccessControlInvalidationScope {
+  basePath: string;
+  permissionVersions: string[] | null;
 }
 
 interface RdfAccessControlOverrideTargets {
@@ -1399,7 +1403,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!sourceRow) {
         return 0;
       }
-      const accessCacheInvalidation = rdfSourceAccessControlCacheInvalidation(sourceRow.source, sourceRow.local_path);
+      const accessCacheInvalidation = rdfSourceAccessControlCacheInvalidation(
+        sourceRow.source,
+        sourceRow.local_path,
+        sourceRow.workspace,
+        sourceRow.source_version,
+      );
       const result = await executor.transaction(async (tx) => {
         const deletedRows = await this.quadRowsForSource(sourceRow.id, tx);
         const deleteResult = await tx.query<{ count: number }>('DELETE FROM rdf_quads WHERE source_file_id = $1 RETURNING 1', [sourceRow.id]);
@@ -1733,40 +1742,61 @@ export class PostgresRdfEngine implements RdfEngineLike {
     executor: AsyncSqlExecutor,
     invalidation: RdfAccessControlCacheInvalidation,
   ): Promise<number> {
-    const basePaths = await this.accessControlInvalidationBasePaths(executor, invalidation);
-    if (basePaths.length === 0) {
+    const scopes = await this.accessControlInvalidationScopes(executor, invalidation);
+    if (scopes.length === 0) {
       return this.clearQueryCaches(executor);
     }
 
-    const affectedRows = basePaths.map((_, index) => `($${index + 1})`).join(', ');
+    const affectedRows = scopes.map((_, index) => {
+      const offset = index * 2;
+      return `($${offset + 1}, $${offset + 2}::text[])`;
+    }).join(', ');
+    const affectedParams = scopes.flatMap((scope) => [scope.basePath, scope.permissionVersions]);
     const pathOverlap = (left: string, right: string): string => `
       (
         LEFT(${left}, LENGTH(${right})) = ${right}
         OR LEFT(${right}, LENGTH(${left})) = ${left}
       )
     `;
+    const permissionVersionOverlap = `
+      (
+        affected_access_scope.permission_versions IS NULL
+        OR scope_permission_version IS NULL
+        OR scope_permission_version = ANY(affected_access_scope.permission_versions)
+      )
+    `;
+    const affectedVersionOverlap = `
+      EXISTS (
+        SELECT 1
+        FROM affected_access_scope
+        WHERE ${permissionVersionOverlap}
+      )
+    `;
     const affectedBasePathOverlap = `
       EXISTS (
         SELECT 1
         FROM affected_access_scope
-        WHERE ${pathOverlap('scope_base_path', 'base_path')}
+        WHERE ${permissionVersionOverlap}
+          AND ${pathOverlap('scope_base_path', 'base_path')}
       )
     `;
     const graphScopeOverlap = (column: string): string => `
       EXISTS (
         SELECT 1
         FROM affected_access_scope
-        WHERE EXISTS (
-          SELECT 1
-          FROM UNNEST(COALESCE(${column}, ARRAY[]::text[])) AS graph_scope(value)
-          WHERE ${pathOverlap('graph_scope.value', 'base_path')}
-        )
+        WHERE ${permissionVersionOverlap}
+          AND EXISTS (
+            SELECT 1
+            FROM UNNEST(COALESCE(${column}, ARRAY[]::text[])) AS graph_scope(value)
+            WHERE ${pathOverlap('graph_scope.value', 'base_path')}
+          )
       )
     `;
     const hasNoAllowedGraphs = 'COALESCE(array_length(scope_allowed_graph_urls, 1), 0) = 0';
     const overlapCondition = `
       (
         ${hasNoAllowedGraphs}
+        AND ${affectedVersionOverlap}
         AND (
           scope_base_path IS NULL
           OR ${affectedBasePathOverlap}
@@ -1777,33 +1807,33 @@ export class PostgresRdfEngine implements RdfEngineLike {
       OR ${graphScopeOverlap('scope_denied_graph_prefixes')}
     `;
     const resultRows = await executor.query<{ count: number }>(`
-      WITH affected_access_scope(base_path) AS (VALUES ${affectedRows}),
+      WITH affected_access_scope(base_path, permission_versions) AS (VALUES ${affectedRows}),
       deleted AS (
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE ${overlapCondition}
         RETURNING 1
       )
       SELECT COUNT(*) AS count FROM deleted
-    `, basePaths);
+    `, affectedParams);
     const materializedRows = await executor.query<{ count: number }>(`
-      WITH affected_access_scope(base_path) AS (VALUES ${affectedRows}),
+      WITH affected_access_scope(base_path, permission_versions) AS (VALUES ${affectedRows}),
       deleted AS (
         DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
         WHERE ${overlapCondition}
         RETURNING 1
       )
       SELECT COUNT(*) AS count FROM deleted
-    `, basePaths);
+    `, affectedParams);
     return Number(resultRows[0]?.count ?? 0) + Number(materializedRows[0]?.count ?? 0);
   }
 
-  private async accessControlInvalidationBasePaths(
+  private async accessControlInvalidationScopes(
     executor: AsyncSqlExecutor,
     invalidation: RdfAccessControlCacheInvalidation,
-  ): Promise<string[]> {
-    const stored = await this.accessControlOverrideBasePathsForSources(executor, invalidation.sourceKeys);
-    const exact = uniqueStrings([...stored, ...invalidation.targetBasePaths]);
-    return exact.length > 0 ? exact : invalidation.fallbackBasePaths;
+  ): Promise<RdfAccessControlInvalidationScope[]> {
+    const stored = await this.accessControlOverrideTargetsForSources(executor, invalidation.sourceKeys);
+    const exact = accessControlInvalidationScopesForTargetReplacements(stored, invalidation.sourceTargets);
+    return exact.length > 0 ? exact : invalidation.fallbackScopes;
   }
 
   public async refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): Promise<RdfDerivedIndexRefreshResult> {
@@ -8265,20 +8295,41 @@ export class PostgresRdfEngine implements RdfEngineLike {
     `, [sourceKeys]);
   }
 
-  private async accessControlOverrideBasePathsForSources(
+  private async accessControlOverrideTargetsForSources(
     executor: AsyncSqlExecutor,
     sourceKeys: string[],
-  ): Promise<string[]> {
+  ): Promise<RdfAccessControlOverrideTargets[]> {
     if (sourceKeys.length === 0) {
       return [];
     }
-    const rows = await executor.query<{ affected_base_path: string }>(`
-      SELECT DISTINCT affected_base_path
+    const rows = await executor.query<{
+      source_key: string;
+      affected_base_path: string;
+      source_version: string | null;
+    }>(`
+      SELECT DISTINCT source_key, affected_base_path, source_version
       FROM ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE}
       WHERE source_key = ANY($1::text[])
-      ORDER BY affected_base_path
+      ORDER BY source_key, source_version, affected_base_path
     `, [sourceKeys]);
-    return rows.map((row) => row.affected_base_path);
+    const targetsBySourceVersion = new Map<string, RdfAccessControlOverrideTargets>();
+    for (const row of rows) {
+      const key = `${row.source_key}\0${row.source_version ?? ''}`;
+      const existing = targetsBySourceVersion.get(key);
+      if (existing) {
+        existing.basePaths.push(row.affected_base_path);
+        continue;
+      }
+      targetsBySourceVersion.set(key, {
+        sourceKey: row.source_key,
+        basePaths: [row.affected_base_path],
+        sourceVersion: row.source_version,
+      });
+    }
+    return [...targetsBySourceVersion.values()].map((target) => ({
+      ...target,
+      basePaths: uniqueStrings(target.basePaths).sort(),
+    }));
   }
 
   private async findSourceRow(source: string, executor = this.requireExecutor()): Promise<PostgresRdfSourceRow | undefined> {
@@ -10582,21 +10633,19 @@ function rdfAccessControlCacheInvalidation(
   quads: readonly Quad[],
   source?: RdfSourceInput,
 ): RdfAccessControlCacheInvalidation | undefined {
-  const fallbackBasePaths = [
-    ...accessControlAffectedBasePaths(source?.source, source?.workspace),
-    ...accessControlAffectedBasePaths(source?.localPath, source?.workspace),
-    ...quads.flatMap((value) => accessControlAffectedBasePaths(value.graph.value)),
+  const fallbackScopes = [
+    ...accessControlAffectedScopes(source?.source, source?.workspace, source?.sourceVersion),
+    ...accessControlAffectedScopes(source?.localPath, source?.workspace, source?.sourceVersion),
+    ...quads.flatMap((value) => accessControlAffectedScopes(value.graph.value)),
   ];
   const sourceKeys = accessControlInvalidationSourceKeys(quads, source);
   const sourceTargets = accessControlOverrideTargets(quads, source, sourceKeys);
-  const targetBasePaths = sourceTargets.flatMap((target) => target.basePaths);
-  if (fallbackBasePaths.length === 0 && sourceKeys.length === 0 && targetBasePaths.length === 0) {
+  if (fallbackScopes.length === 0 && sourceKeys.length === 0 && sourceTargets.length === 0) {
     return undefined;
   }
   return {
-    fallbackBasePaths: uniqueStrings(fallbackBasePaths),
+    fallbackScopes: mergeAccessControlInvalidationScopes(fallbackScopes),
     sourceKeys,
-    targetBasePaths: uniqueStrings(targetBasePaths),
     sourceTargets,
   };
 }
@@ -10604,22 +10653,23 @@ function rdfAccessControlCacheInvalidation(
 function rdfSourceAccessControlCacheInvalidation(
   source?: string | null,
   localPath?: string | null,
+  workspace?: string | null,
+  sourceVersion?: string | null,
 ): RdfAccessControlCacheInvalidation | undefined {
-  const fallbackBasePaths = [
-    ...accessControlAffectedBasePaths(source),
-    ...accessControlAffectedBasePaths(localPath),
+  const fallbackScopes = [
+    ...accessControlAffectedScopes(source, workspace, sourceVersion),
+    ...accessControlAffectedScopes(localPath, workspace, sourceVersion),
   ];
   const sourceKeys = uniqueStrings([
-    ...accessControlSourceKeys(source),
-    ...accessControlSourceKeys(localPath),
+    ...accessControlSourceKeys(source, workspace),
+    ...accessControlSourceKeys(localPath, workspace),
   ]);
-  if (fallbackBasePaths.length === 0 && sourceKeys.length === 0) {
+  if (fallbackScopes.length === 0 && sourceKeys.length === 0) {
     return undefined;
   }
   return {
-    fallbackBasePaths: uniqueStrings(fallbackBasePaths),
+    fallbackScopes: mergeAccessControlInvalidationScopes(fallbackScopes),
     sourceKeys,
-    targetBasePaths: [],
     sourceTargets: [],
   };
 }
@@ -10673,6 +10723,73 @@ function accessControlOverrideTargets(
     .filter((target) => target.basePaths.length > 0);
 }
 
+function accessControlInvalidationScopesForTargetReplacements(
+  storedTargets: RdfAccessControlOverrideTargets[],
+  currentTargets: RdfAccessControlOverrideTargets[],
+): RdfAccessControlInvalidationScope[] {
+  const targetsBySource = new Map<string, {
+    basePaths: Set<string>;
+    permissionVersions: Set<string> | null;
+  }>();
+  for (const target of [...storedTargets, ...currentTargets]) {
+    let sourceTargets = targetsBySource.get(target.sourceKey);
+    if (!sourceTargets) {
+      sourceTargets = {
+        basePaths: new Set<string>(),
+        permissionVersions: new Set<string>(),
+      };
+      targetsBySource.set(target.sourceKey, sourceTargets);
+    }
+    for (const basePath of target.basePaths) {
+      sourceTargets.basePaths.add(basePath);
+    }
+    if (target.sourceVersion) {
+      sourceTargets.permissionVersions?.add(target.sourceVersion);
+    } else {
+      sourceTargets.permissionVersions = null;
+    }
+  }
+
+  const scopes: RdfAccessControlInvalidationScope[] = [];
+  for (const sourceTargets of targetsBySource.values()) {
+    const permissionVersions = sourceTargets.permissionVersions === null
+      ? null
+      : [...sourceTargets.permissionVersions].sort();
+    for (const basePath of sourceTargets.basePaths) {
+      scopes.push({ basePath, permissionVersions });
+    }
+  }
+  return mergeAccessControlInvalidationScopes(scopes);
+}
+
+function mergeAccessControlInvalidationScopes(
+  scopes: RdfAccessControlInvalidationScope[],
+): RdfAccessControlInvalidationScope[] {
+  const versionsByBasePath = new Map<string, Set<string> | null>();
+  for (const scope of scopes) {
+    const existing = versionsByBasePath.get(scope.basePath);
+    if (existing === null) {
+      continue;
+    }
+    if (scope.permissionVersions === null) {
+      versionsByBasePath.set(scope.basePath, null);
+      continue;
+    }
+    const next = existing ?? new Set<string>();
+    for (const version of scope.permissionVersions) {
+      next.add(version);
+    }
+    versionsByBasePath.set(scope.basePath, next);
+  }
+
+  return [...versionsByBasePath.entries()]
+    .map(([basePath, versions]) => ({
+      basePath,
+      permissionVersions: versions === null ? null : [...versions].sort(),
+    }))
+    .sort((left, right) => left.basePath.localeCompare(right.basePath));
+}
+
 function addMapSetValue(map: Map<string, Set<string>>, key: string, value: string): void {
   const existing = map.get(key);
   if (existing) {
@@ -10702,6 +10819,17 @@ function accessControlSourceKeys(value?: string | null, workspace?: string | nul
     return [];
   }
   return [normalizeAccessControlResourcePath(value, workspace)];
+}
+
+function accessControlAffectedScopes(
+  value?: string | null,
+  workspace?: string | null,
+  sourceVersion?: string | null,
+): RdfAccessControlInvalidationScope[] {
+  return accessControlAffectedBasePaths(value, workspace).map((basePath) => ({
+    basePath,
+    permissionVersions: sourceVersion ? [sourceVersion] : null,
+  }));
 }
 
 function accessControlAffectedBasePaths(value?: string | null, workspace?: string | null): string[] {

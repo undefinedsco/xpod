@@ -627,7 +627,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   source 实际影响的 resource target；`.acl` / `.acr` source 或 graph 写入已从全表清理收敛为
   resource override target + graph scope overlap 失效，没有显式 target 时才回退 affected basePath：
   无 allow-list 的旧/宽 scope 仍按 basePath overlap 保守删除，有 graph scope 的行按
-  allow/deny/prefix 与 affected base path 重叠删除，会同时清 PG result cache
+  allow/deny/prefix 与 affected base path 重叠删除；已知 sourceVersion 会与 cache
+  scope_permission_version 对齐，只清对应权限版本和未版本化 cache，版本未知时仍全版本保守删除，会同时清 PG result cache
   和 materialized result cache 的相关 scope；写入只推进 facts version，旧 facts version cache 不会命中，但不再由写入路径
   全表删除。result/materialized cache 现在同时按 facts version、TTL、max entries 和 payload
   bytes quota 淘汰，三类可重建 cache 还支持可选 `derivedCacheMaxBytes` 统一 bytes guard；
@@ -648,7 +649,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `totalBytes`、`templateTtl`、`templateMaxEntries`、`templateBytes` 聚合可重建 cache 的
   淘汰原因；该计数不写入 Pod/RDF durable 状态。dashboard RDF 页已展示 result/materialized
   scope count、最大 scope、top scope 明细、scope 搜索、payload bytes、table/index bytes 和 eviction breakdown。
-  后续再把 permissionVersion 接入更精确失效，并把 eviction telemetry 接入慢查询 drill-down。
+  sourceVersion / permissionVersion 版本过滤已接入更精确失效；后续把 eviction telemetry 接入慢查询 drill-down。
 - `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。PG facts 侧另有 `rdf_dirty_sources` source-level queue：带 source 的 put/replace/delete 会登记待维护 source，显式 refresh 成功后 drain queue，并在 `rdf3x.sourceQueue` 中报告 pending/drained source 数。`maintainDerivedIndexes()` 通过同库 `rdf_maintenance_leases` 包住显式 refresh，避免多 xpod worker 同时维护；cloud 配置通过 `options_maintenanceIntervalMs=60000` 启动后台循环。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
 - `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
 - `pg-hot-operators` engine-sql provider：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 走已验证的 PG SQL fast path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
@@ -694,7 +695,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   持久化/外部后端替换。
 - ACL/ACR 写路径已经接入 resource override target + graph scope overlap 的精确 cache invalidation；
   WebACL/ACP target triples 会进入 `rdf_access_control_overrides`，使同一 `.acr` 容器下的显式
-  `acp:apply` 不再误删 sibling graph-scoped cache；未完成的是把 permissionVersion 接入更细粒度失效。
+  `acp:apply` 不再误删 sibling graph-scoped cache；sourceVersion / permissionVersion
+  也已接入更细粒度失效，已知版本只清对应 permissionVersion 和未版本化 cache，版本未知时保守清理。
   materialized result 已在
   `SolidRdfSparqlEngine` 边界为 ChatKit thread history / Managed Run conversation assembly
   自动生成 `chatkit/thread-history/<thread>/<query>` key；业务统计页这类
