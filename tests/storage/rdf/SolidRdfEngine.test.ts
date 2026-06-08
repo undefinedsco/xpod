@@ -164,6 +164,20 @@ describe('SolidRdfEngine', () => {
     expect(result.metrics.engine).toBe('solid-rdf');
   });
 
+  it('ignores empty optional search-index placeholders from configuration', async () => {
+    const placeholderEngine = new SolidRdfEngine({
+      index,
+      textIndex: {} as any,
+      vectorIndex: {} as any,
+      autoOpen: true,
+    });
+
+    expect(() => placeholderEngine.searchText('runtime')).toThrow('SolidRdfEngine text index is not configured');
+    expect(() => placeholderEngine.searchVector({ embedding: [1] })).toThrow('SolidRdfEngine vector index is not configured');
+
+    await placeholderEngine.close();
+  });
+
   it('runs a shadow compare against the RDF-3X shadow index', async () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/index.ttl');
     const type = namedNode('https://undefineds.co/ns#type');

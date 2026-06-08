@@ -6,6 +6,7 @@ import { createSqliteRuntime, type SqliteDatabase, type SqliteStatement } from '
 import type {
   RdfTextChunkInput,
   RdfTextChunkRow,
+  RdfTextIndexLike,
   RdfTextIndexOptions,
   RdfTextSearchOrder,
   RdfTextIndexStats,
@@ -43,7 +44,7 @@ interface TextSearchPredicate {
 
 const RDF_TEXT_TERM_MAX_INDEX_LENGTH = 256;
 
-export class RdfTextIndex {
+export class RdfTextIndex implements RdfTextIndexLike {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
 

@@ -6,6 +6,7 @@ import type {
   RdfVectorChunkRow,
   RdfVectorDistanceMetric,
   RdfSearchCardinalityEstimate,
+  RdfVectorIndexLike,
   RdfVectorIndexOptions,
   RdfVectorIndexStats,
   RdfVectorModelDistribution,
@@ -34,7 +35,7 @@ interface RdfVectorScoredChunkRow extends RdfVectorChunkRow {
   vector_distance_squared: number | null;
 }
 
-export class RdfVectorIndex {
+export class RdfVectorIndex implements RdfVectorIndexLike {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
 

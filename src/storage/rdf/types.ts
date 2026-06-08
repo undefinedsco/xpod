@@ -1140,6 +1140,18 @@ export interface RdfTextIndexOptions {
   path: string;
 }
 
+export interface RdfTextIndexLike {
+  open(): void;
+  close(): void;
+  clear(): void;
+  indexText(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void;
+  deleteSource(source: string): number;
+  search(options: RdfTextSearchOptions): RdfTextSearchResult[];
+  estimateSearchCardinality(options: RdfTextSearchOptions): RdfSearchCardinalityEstimate;
+  stats(): RdfTextIndexStats;
+  termDocumentFrequency(limit?: number): RdfTextTermDocumentFrequency[];
+}
+
 export interface RdfTextSourceInput {
   source: string;
   workspace: string;
@@ -1236,6 +1248,18 @@ export interface RdfTextTermDocumentFrequency {
 export interface RdfVectorIndexOptions {
   path: string;
   defaultMetric?: RdfVectorDistanceMetric;
+}
+
+export interface RdfVectorIndexLike {
+  open(): void;
+  close(): void;
+  clear(): void;
+  indexVector(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void;
+  deleteSource(source: string): number;
+  search(options: RdfVectorSearchOptions): RdfVectorSearchResult[];
+  estimateSearchCardinality(options: RdfVectorSearchOptions): RdfSearchCardinalityEstimate;
+  stats(): RdfVectorIndexStats;
+  modelDistribution(): RdfVectorModelDistribution[];
 }
 
 export interface RdfVectorSourceInput {

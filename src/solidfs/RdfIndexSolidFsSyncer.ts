@@ -4,7 +4,7 @@ import path from 'node:path';
 import { guardStream, type ResourceIdentifier } from '@solid/community-server';
 
 import type { LocalRdfIndexAccessor } from '../storage/accessors/MixDataAccessor';
-import type { RdfTextIndex } from '../storage/rdf';
+import type { RdfTextIndexLike } from '../storage/rdf';
 import {
   isLineAddressableRdf,
   isRdfDocument,
@@ -15,7 +15,7 @@ import type { SolidFsChange, SolidFsManifest, SolidFsSyncer } from './types';
 
 export interface RdfIndexSolidFsSyncerOptions {
   index: LocalRdfIndexAccessor;
-  textIndex?: RdfTextIndex;
+  textIndex?: RdfTextIndexLike;
   resolveIdentifier?: (change: SolidFsChange, workspace: SolidFsManifest) => ResourceIdentifier | undefined;
 }
 
@@ -25,7 +25,7 @@ export interface RdfIndexSolidFsSyncerOptions {
  */
 export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
   private readonly index: LocalRdfIndexAccessor;
-  private readonly textIndex?: RdfTextIndex;
+  private readonly textIndex?: RdfTextIndexLike;
   private readonly resolveIdentifier: NonNullable<RdfIndexSolidFsSyncerOptions['resolveIdentifier']>;
 
   public constructor(options: RdfIndexSolidFsSyncerOptions) {

@@ -4,8 +4,6 @@ import type { QuintPattern, TermMatch } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfQuadIndex } from './RdfQuadIndex';
 import { Rdf3xIndex } from './Rdf3xIndex';
-import type { RdfTextIndex } from './RdfTextIndex';
-import type { RdfVectorIndex } from './RdfVectorIndex';
 import { isFiniteNumericLexical, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
 import type {
   RdfBindExpression,
@@ -45,6 +43,8 @@ import type {
   Rdf3xTriplePattern,
   Rdf3xTripleScanOptions,
   Rdf3xTripleScanResult,
+  RdfTextIndexLike,
+  RdfVectorIndexLike,
 } from './types';
 
 const TERM_KEYS: RdfQueryPatternKey[] = ['graph', 'subject', 'predicate', 'object'];
@@ -142,8 +142,8 @@ interface RequiredSourceEstimate {
 export class RdfQueryExecutor {
   public constructor(
     private readonly index: RdfQuadIndex,
-    private readonly textIndex?: RdfTextIndex,
-    private readonly vectorIndex?: RdfVectorIndex,
+    private readonly textIndex?: RdfTextIndexLike,
+    private readonly vectorIndex?: RdfVectorIndexLike,
     private readonly rdf3xPrimaryIndex?: Rdf3xIndex,
   ) {}
 

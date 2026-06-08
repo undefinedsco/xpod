@@ -36,6 +36,7 @@ import type {
   RdfLiteralDatatypeDistribution,
   RdfMaterializedResultCacheStats,
   RdfTextChunkInput,
+  RdfTextIndexLike,
   RdfTextIndexOptions,
   RdfTextSearchOptions,
   RdfTextSearchPattern,
@@ -78,6 +79,7 @@ import type {
   RdfQuadIndexScanResult,
   RdfSourceInput,
   RdfVectorChunkInput,
+  RdfVectorIndexLike,
   RdfVectorIndexOptions,
   RdfVectorSearchOptions,
   RdfVectorSearchPattern,
@@ -548,6 +550,9 @@ const PG_CUSTOM_INDEX_MAX_VALUE_ROWS = 8192;
 const DEFAULT_RDF_MAINTENANCE_LEASE_TTL_MS = 120_000;
 const DEFAULT_NUMERIC_AGGREGATE_FACTS_CUTOVER_MAX_SOURCE_ROWS = 64;
 
+type RdfTextIndexInput = RdfTextIndexLike | RdfTextIndexOptions;
+type RdfVectorIndexInput = RdfVectorIndexLike | RdfVectorIndexOptions;
+
 interface AsyncSqlExecutor {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
   exec(sql: string, params?: unknown[]): Promise<void>;
@@ -588,8 +593,8 @@ export interface PostgresRdfEngineOptions {
   maintenanceLeaseTtlMs?: number;
   maintenanceLeaseOwner?: string;
   numericAggregateFactsCutoverMaxSourceRows?: number;
-  textIndex?: RdfTextIndex | RdfTextIndexOptions;
-  vectorIndex?: RdfVectorIndex | RdfVectorIndexOptions;
+  textIndex?: RdfTextIndexInput;
+  vectorIndex?: RdfVectorIndexInput;
 }
 
 interface PostgresRdfTermRow {
@@ -1340,8 +1345,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private pglite: PGlite | null = null;
   private pgPool: any = null;
   private pgCustomIndexesReady = false;
-  private readonly textIndex?: RdfTextIndex;
-  private readonly vectorIndex?: RdfVectorIndex;
+  private readonly textIndex?: RdfTextIndexLike;
+  private readonly vectorIndex?: RdfVectorIndexLike;
   private readonly ownsTextIndex: boolean;
   private readonly ownsVectorIndex: boolean;
   private readonly maintenanceLeaseOwner: string;
@@ -1354,21 +1359,21 @@ export class PostgresRdfEngine implements RdfEngineLike {
       driver: options.driver ?? (options.connectionString || options.pool ? 'pg' : 'pglite'),
     };
     this.maintenanceLeaseOwner = options.maintenanceLeaseOwner ?? `xpod-rdf-${process.pid}-${randomUUID()}`;
-    if (options.textIndex instanceof RdfTextIndex) {
-      this.textIndex = options.textIndex;
-      this.ownsTextIndex = false;
-    } else if (isRdfTextIndexOptions(options.textIndex)) {
+    if (isRdfTextIndexOptions(options.textIndex)) {
       this.textIndex = new RdfTextIndex(options.textIndex);
       this.ownsTextIndex = true;
+    } else if (isRdfTextIndexLike(options.textIndex)) {
+      this.textIndex = options.textIndex;
+      this.ownsTextIndex = false;
     } else {
       this.ownsTextIndex = false;
     }
-    if (options.vectorIndex instanceof RdfVectorIndex) {
-      this.vectorIndex = options.vectorIndex;
-      this.ownsVectorIndex = false;
-    } else if (isRdfVectorIndexOptions(options.vectorIndex)) {
+    if (isRdfVectorIndexOptions(options.vectorIndex)) {
       this.vectorIndex = new RdfVectorIndex(options.vectorIndex);
       this.ownsVectorIndex = true;
+    } else if (isRdfVectorIndexLike(options.vectorIndex)) {
+      this.vectorIndex = options.vectorIndex;
+      this.ownsVectorIndex = false;
     } else {
       this.ownsVectorIndex = false;
     }
@@ -9192,14 +9197,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return this.executor;
   }
 
-  private requireTextIndex(): RdfTextIndex {
+  private requireTextIndex(): RdfTextIndexLike {
     if (!this.textIndex) {
       throw new Error('RdfQuery textSearch requires a configured RdfTextIndex');
     }
     return this.textIndex;
   }
 
-  private requireVectorIndex(): RdfVectorIndex {
+  private requireVectorIndex(): RdfVectorIndexLike {
     if (!this.vectorIndex) {
       throw new Error('RdfQuery vectorSearch requires a configured RdfVectorIndex');
     }
@@ -10872,12 +10877,26 @@ function integerLiteral(value: number): Term {
   return DataFactory.literal(String(value), DataFactory.namedNode(XSD_INTEGER)) as Term;
 }
 
-function isRdfTextIndexOptions(input: RdfTextIndex | RdfTextIndexOptions | undefined): input is RdfTextIndexOptions {
-  return input !== undefined && !(input instanceof RdfTextIndex) && typeof input.path === 'string';
+function isRdfTextIndexOptions(input: RdfTextIndexInput | undefined): input is RdfTextIndexOptions {
+  return input !== undefined && typeof (input as RdfTextIndexOptions).path === 'string'
+    && !isRdfTextIndexLike(input);
 }
 
-function isRdfVectorIndexOptions(input: RdfVectorIndex | RdfVectorIndexOptions | undefined): input is RdfVectorIndexOptions {
-  return input !== undefined && !(input instanceof RdfVectorIndex) && typeof input.path === 'string';
+function isRdfTextIndexLike(input: RdfTextIndexInput | undefined): input is RdfTextIndexLike {
+  return input !== undefined
+    && typeof (input as Partial<RdfTextIndexLike>).indexText === 'function'
+    && typeof (input as Partial<RdfTextIndexLike>).search === 'function';
+}
+
+function isRdfVectorIndexOptions(input: RdfVectorIndexInput | undefined): input is RdfVectorIndexOptions {
+  return input !== undefined && typeof (input as RdfVectorIndexOptions).path === 'string'
+    && !isRdfVectorIndexLike(input);
+}
+
+function isRdfVectorIndexLike(input: RdfVectorIndexInput | undefined): input is RdfVectorIndexLike {
+  return input !== undefined
+    && typeof (input as Partial<RdfVectorIndexLike>).indexVector === 'function'
+    && typeof (input as Partial<RdfVectorIndexLike>).search === 'function';
 }
 
 function uniqueStrings(values: string[]): string[] {
