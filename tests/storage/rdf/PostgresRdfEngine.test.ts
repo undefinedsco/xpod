@@ -1912,11 +1912,13 @@ describe('PostgresRdfEngine', () => {
       const open = await engine.query(openQuery);
       expect(open.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
       expect(open.metrics.plan.join('\n')).toContain('PostgresQueryTemplateCacheMiss');
+      expect(open.metrics.plan.join('\n')).toContain('PostgresCompiledSqlTemplateMiss');
       expect(open.metrics.plan.join('\n')).not.toContain('PostgresResultCacheHit');
 
       const closed = await engine.query(closedQuery);
       expect(closed.bindings.map((binding) => binding.message.value)).toEqual([message2.value]);
       expect(closed.metrics.plan.join('\n')).toContain('PostgresQueryTemplateCacheHit');
+      expect(closed.metrics.plan.join('\n')).toContain('PostgresCompiledSqlTemplateHit');
       expect(closed.metrics.plan.join('\n')).not.toContain('PostgresResultCacheHit');
       expect(closed.metrics.explain).toMatchObject({
         engine: 'postgres-rdf',
@@ -1939,11 +1941,16 @@ describe('PostgresRdfEngine', () => {
       });
       expect(distinctClosed.bindings.map((binding) => binding.message.value)).toEqual([message2.value]);
       expect(distinctClosed.metrics.plan.join('\n')).toContain('PostgresQueryTemplateCacheMiss');
+      expect(distinctClosed.metrics.plan.join('\n')).toContain('PostgresCompiledSqlTemplateMiss');
       expect((await engine.storageStats()).queryTemplateCache).toMatchObject({
         entryCount: 1,
         hitCount: 1,
         missCount: 2,
         evictionCount: 1,
+        compiledSqlEntryCount: 1,
+        compiledSqlHitCount: 1,
+        compiledSqlMissCount: 2,
+        compiledSqlEvictionCount: 1,
       });
       expect((await engine.storageStats()).derivedCache).toMatchObject({
         evictions: {

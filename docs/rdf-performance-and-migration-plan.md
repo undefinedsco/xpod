@@ -589,10 +589,14 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   的 cost-based cutover。
 - query template cache by value-stripped query AST；当前是 bounded in-memory derived metadata，
   `storageStats().queryTemplateCache` 暴露 entry/hit/miss/eviction/ttl/bytes，query plan 标记
-  `PostgresQueryTemplateCacheHit(...)` / `PostgresQueryTemplateCacheMiss(...)`；template cache
-  按 idle TTL 和 max entries 淘汰，template bytes 纳入 `storageStats().derivedBytes`，并会被
-  PG 统一 `derivedCacheMaxBytes` bytes guard 约束；template TTL、entry count 和 bytes 淘汰
-  会同步计入 `storageStats().derivedCache.evictions`。
+  `PostgresQueryTemplateCacheHit(...)` / `PostgresQueryTemplateCacheMiss(...)`；RDF-3X SQL
+  编译路径会把 compiled SQL physical shape 绑定到同一个 template entry，plan 标记
+  `PostgresCompiledSqlTemplateHit(...)` / `PostgresCompiledSqlTemplateMiss(...)`，
+  `storageStats().queryTemplateCache` 暴露 compiled SQL shape 数量和 hit/miss/eviction；第一版不跨
+  不同 join order 强行复用，避免改变 cost 决策；template cache 按 idle TTL 和 max entries
+  淘汰，template bytes 纳入 `storageStats().derivedBytes`，并会被 PG 统一
+  `derivedCacheMaxBytes` bytes guard 约束；template TTL、entry count 和 bytes 淘汰会同步计入
+  `storageStats().derivedCache.evictions`。
 - materialized result cache by explicit business view key：`RdfQuery.cache.materialized`
   写入独立 `rdf_materialized_result_cache`，绑定 facts version、query shape、结构化 access
   scope、query template key、TTL、max entries 和 payload bytes quota；新写入行会记录并校验

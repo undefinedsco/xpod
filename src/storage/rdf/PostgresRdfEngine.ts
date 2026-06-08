@@ -121,6 +121,7 @@ const DEFAULT_MATERIALIZED_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_COMPILED_SQL_TEMPLATES_PER_QUERY_TEMPLATE = 8;
 const DEFAULT_DERIVED_CACHE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_STATS_MAX_ENTRIES = 10;
@@ -376,6 +377,15 @@ interface PgQueryResultCacheRow {
 interface PgQueryTemplateCacheEntry {
   templateKey: string;
   templateShape: string;
+  compiledSqlTemplates: Map<string, PgCompiledSqlTemplateCacheEntry>;
+  hitCount: number;
+  createdAtMs: number;
+  lastHitAtMs: number;
+}
+
+interface PgCompiledSqlTemplateCacheEntry {
+  shapeKey: string;
+  physicalShape: string;
   hitCount: number;
   createdAtMs: number;
   lastHitAtMs: number;
@@ -1148,6 +1158,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private queryTemplateCacheHits = 0;
   private queryTemplateCacheMisses = 0;
   private queryTemplateCacheEvictions = 0;
+  private compiledSqlTemplateCacheHits = 0;
+  private compiledSqlTemplateCacheMisses = 0;
+  private compiledSqlTemplateCacheEvictions = 0;
   private derivedCacheEvictions: RdfDerivedCacheEvictionStats = emptyDerivedCacheEvictionStats();
   private slowQueryHistory: RdfSlowQueryStatsEntry[] = [];
   private plannerHistogramCache: {
@@ -1266,6 +1279,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.queryTemplateCacheHits = 0;
     this.queryTemplateCacheMisses = 0;
     this.queryTemplateCacheEvictions = 0;
+    this.compiledSqlTemplateCacheHits = 0;
+    this.compiledSqlTemplateCacheMisses = 0;
+    this.compiledSqlTemplateCacheEvictions = 0;
     this.derivedCacheEvictions = emptyDerivedCacheEvictionStats();
     this.slowQueryHistory = [];
     this.plannerHistogramCache = null;
@@ -1522,7 +1538,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         }
       }
 
-      const rdf3x = await this.queryRdf3x(query);
+      const rdf3x = await this.queryRdf3x(query, template);
       const result = rdf3x ?? await this.queryFacts(query);
       const storePlan = await this.writeMaterializedResultCache(
         materialized,
@@ -1558,7 +1574,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     if (!this.isQueryResultCacheEnabled(query)) {
-      const rdf3x = await this.queryRdf3x(query);
+      const rdf3x = await this.queryRdf3x(query, template);
       return this.withPostgresQueryExplain(this.withPgAccelerationFallbackPlan(withQueryCachePlan(
         rdf3x ?? await this.queryFacts(query),
         template.planMarker,
@@ -1609,7 +1625,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
     }
 
-    const rdf3x = await this.queryRdf3x(query);
+    const rdf3x = await this.queryRdf3x(query, template);
     const result = rdf3x ?? await this.queryFacts(query);
     const storePlan = await this.writeQueryResultCache(
       template.cacheKey,
@@ -2806,7 +2822,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private async queryRdf3x(query: RdfQuery): Promise<RdfQueryResult | undefined> {
+  private async queryRdf3x(
+    query: RdfQuery,
+    template: PgQueryTemplateResolution,
+  ): Promise<RdfQueryResult | undefined> {
     if (!this.canTryRdf3xQuery(query)) {
       return undefined;
     }
@@ -2831,7 +2850,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!query.patterns.length) {
         return undefined;
       }
-      const aggregateResult = await this.queryRdf3xAggregate(query, compiledPatterns, aggregates, compiledValues ?? [], start);
+      const aggregateResult = await this.queryRdf3xAggregate(query, template, compiledPatterns, aggregates, compiledValues ?? [], start);
       return aggregateResult;
     }
 
@@ -2855,6 +2874,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return nativeBgpJoin;
     }
     const joinOptions = {
+      template,
       project,
       distinct: query.distinct,
       orderBy: query.orderBy,
@@ -3246,6 +3266,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.queryTemplateCache.set(templateKey, {
       templateKey,
       templateShape,
+      compiledSqlTemplates: new Map(),
       hitCount: 0,
       createdAtMs: now,
       lastHitAtMs: now,
@@ -3255,7 +3276,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!firstKey) {
         break;
       }
-      this.queryTemplateCache.delete(firstKey);
+      this.deleteQueryTemplateCacheEntry(firstKey);
       this.queryTemplateCacheEvictions += 1;
       this.recordDerivedCacheEviction('templateMaxEntries');
     }
@@ -3273,6 +3294,50 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ttlMs,
       },
     };
+  }
+
+  private recordCompiledSqlTemplate(
+    template: PgQueryTemplateResolution | undefined,
+    physicalShape: string,
+  ): string[] {
+    if (!template || template.templateKey === 'disabled') {
+      return ['PostgresCompiledSqlTemplateBypass'];
+    }
+    const entry = this.queryTemplateCache.get(template.templateKey);
+    if (!entry) {
+      return [`PostgresCompiledSqlTemplateBypass(${shortCacheKey(template.templateKey)})`];
+    }
+
+    const shapeKey = queryTemplateCacheKey(physicalShape);
+    const now = Date.now();
+    const existing = entry.compiledSqlTemplates.get(shapeKey);
+    if (existing) {
+      entry.compiledSqlTemplates.delete(shapeKey);
+      existing.hitCount += 1;
+      existing.lastHitAtMs = now;
+      entry.compiledSqlTemplates.set(shapeKey, existing);
+      this.compiledSqlTemplateCacheHits += 1;
+      return [`PostgresCompiledSqlTemplateHit(${shortCacheKey(template.templateKey)}:${shortCacheKey(shapeKey)})`];
+    }
+
+    this.compiledSqlTemplateCacheMisses += 1;
+    entry.compiledSqlTemplates.set(shapeKey, {
+      shapeKey,
+      physicalShape,
+      hitCount: 0,
+      createdAtMs: now,
+      lastHitAtMs: now,
+    });
+    while (entry.compiledSqlTemplates.size > MAX_COMPILED_SQL_TEMPLATES_PER_QUERY_TEMPLATE) {
+      const firstKey = entry.compiledSqlTemplates.keys().next().value;
+      if (!firstKey) {
+        break;
+      }
+      entry.compiledSqlTemplates.delete(firstKey);
+      this.compiledSqlTemplateCacheEvictions += 1;
+    }
+    this.pruneQueryTemplateCacheByteBudget();
+    return [`PostgresCompiledSqlTemplateMiss(${shortCacheKey(template.templateKey)}:${shortCacheKey(shapeKey)})`];
   }
 
   private resolveMaterializedResult(query: RdfQuery): PgMaterializedResultResolution | undefined {
@@ -3642,7 +3707,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     candidate: PgDerivedCacheCandidate,
   ): Promise<number> {
     if (candidate.kind === 'query-template') {
-      if (this.queryTemplateCache.delete(candidate.cacheKey)) {
+      if (this.deleteQueryTemplateCacheEntry(candidate.cacheKey)) {
         this.queryTemplateCacheEvictions += 1;
         return 1;
       }
@@ -3752,7 +3817,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const expiresBefore = now - ttlMs;
     for (const [key, entry] of this.queryTemplateCache) {
       if (entry.lastHitAtMs < expiresBefore) {
-        this.queryTemplateCache.delete(key);
+        this.deleteQueryTemplateCacheEntry(key);
         this.queryTemplateCacheEvictions += 1;
         this.recordDerivedCacheEviction('templateTtl');
       }
@@ -3771,7 +3836,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         retainedBytes += candidate.bytes;
         continue;
       }
-      if (this.queryTemplateCache.delete(candidate.cacheKey)) {
+      if (this.deleteQueryTemplateCacheEntry(candidate.cacheKey)) {
         this.queryTemplateCacheEvictions += 1;
         this.recordDerivedCacheEviction('templateBytes');
       }
@@ -3788,6 +3853,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
       hitCount: this.queryTemplateCacheHits,
       missCount: this.queryTemplateCacheMisses,
       evictionCount: this.queryTemplateCacheEvictions,
+      compiledSqlEntryCount: this.compiledSqlTemplateCacheEntryCount(),
+      compiledSqlHitCount: this.compiledSqlTemplateCacheHits,
+      compiledSqlMissCount: this.compiledSqlTemplateCacheMisses,
+      compiledSqlEvictionCount: this.compiledSqlTemplateCacheEvictions,
       totalBytes: this.queryTemplateCacheMemoryBytes(),
     };
   }
@@ -3801,9 +3870,33 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private queryTemplateCacheEntryBytes(entry: PgQueryTemplateCacheEntry): number {
-    return Buffer.byteLength(entry.templateKey, 'utf8')
+    let total = Buffer.byteLength(entry.templateKey, 'utf8')
       + Buffer.byteLength(entry.templateShape, 'utf8')
       + 24;
+    for (const compiled of entry.compiledSqlTemplates.values()) {
+      total += Buffer.byteLength(compiled.shapeKey, 'utf8')
+        + Buffer.byteLength(compiled.physicalShape, 'utf8')
+        + 24;
+    }
+    return total;
+  }
+
+  private compiledSqlTemplateCacheEntryCount(): number {
+    let count = 0;
+    for (const entry of this.queryTemplateCache.values()) {
+      count += entry.compiledSqlTemplates.size;
+    }
+    return count;
+  }
+
+  private deleteQueryTemplateCacheEntry(templateKey: string): boolean {
+    const entry = this.queryTemplateCache.get(templateKey);
+    if (!entry) {
+      return false;
+    }
+    this.queryTemplateCache.delete(templateKey);
+    this.compiledSqlTemplateCacheEvictions += entry.compiledSqlTemplates.size;
+    return true;
   }
 
   private async probePgAcceleration(): Promise<RdfPgAccelerationStats> {
@@ -5080,6 +5173,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   private async queryRdf3xAggregate(
     query: RdfQuery,
+    template: PgQueryTemplateResolution,
     patterns: PgCompiledJoinPattern[],
     aggregates: ReturnType<typeof queryAggregates>,
     values: PgCompiledValuesSource[],
@@ -5106,6 +5200,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     const visibleVariables = uniqueStrings(query.patterns.flatMap((pattern) => variablesInPattern(pattern)));
     const joinOptions = {
+      template,
       project: visibleVariables,
       countMatchedRows: false,
       values,
@@ -7115,6 +7210,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private async compileJoinSql(
     patterns: PgCompiledJoinPattern[],
     options?: {
+      template?: PgQueryTemplateResolution;
       project?: string[];
       distinct?: boolean;
       orderBy?: RdfQuery['orderBy'];
@@ -7217,6 +7313,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const orderClause = this.buildJoinOrderClause(options?.orderBy, variableColumns);
     const pagination = this.buildPagination(options, builder);
     const from = `${joins.join('')}${valuesJoins.joins}`;
+    const countSql = pagination.sql && options?.countMatchedRows !== false
+      ? `SELECT COUNT(*) AS count FROM ${from}${orderClause.joins}${whereClause}`
+      : undefined;
+    const countParams = builder.snapshot().slice(0, builder.snapshot().length - pagination.paramCount);
     const sql = `
       SELECT ${projection}
       FROM ${from}${orderClause.joins}
@@ -7224,19 +7324,28 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ${orderClause.orderBy}
       ${pagination.sql}
     `;
+    const indexChoice = `Rdf3xJoinBGP(${indexChoices.join('>')})`;
+    const compiledSqlTemplatePlan = this.recordCompiledSqlTemplate(
+      options?.template,
+      compiledSqlPhysicalShape({
+        sql,
+        countSql,
+        indexChoice,
+        variableAliases,
+      }),
+    );
     return {
       sql,
       params: builder.snapshot(),
-      countSql: pagination.sql && options?.countMatchedRows !== false
-        ? `SELECT COUNT(*) AS count FROM ${from}${orderClause.joins}${whereClause}`
-        : undefined,
-      countParams: builder.snapshot().slice(0, builder.snapshot().length - pagination.paramCount),
-      indexChoice: `Rdf3xJoinBGP(${indexChoices.join('>')})`,
+      countSql,
+      countParams,
+      indexChoice,
       queryPlan: [
         ...queryPlan,
         ...(orderClause.orderBy ? [`Rdf3xJoinOrderBy(${(options?.orderBy ?? []).map((entry) => `${entry.direction ?? 'asc'}:${entry.variable}`).join(',')})`] : []),
         ...(options?.distinct ? [`Rdf3xJoinDistinct(${projectVariables.map((variableName) => `?${variableName}`).join(',')})`] : []),
         ...(pagination.sql ? ['Rdf3xJoinLimit'] : []),
+        ...compiledSqlTemplatePlan,
         sql,
       ],
       variableAliases,
@@ -8828,6 +8937,24 @@ function materializedResultTemplatePlanMarker(template: PgQueryTemplateResolutio
     : `PostgresMaterializedResultTemplate(${shortCacheKey(template.templateKey)})`;
 }
 
+function compiledSqlPhysicalShape(compiled: {
+  sql: string;
+  countSql?: string;
+  indexChoice: string;
+  variableAliases: Map<string, string>;
+}): string {
+  return JSON.stringify({
+    sql: normalizeSqlShape(compiled.sql),
+    ...(compiled.countSql ? { countSql: normalizeSqlShape(compiled.countSql) } : {}),
+    indexChoice: compiled.indexChoice,
+    variableAliases: [...compiled.variableAliases.entries()],
+  });
+}
+
+function normalizeSqlShape(sql: string): string {
+  return sql.replace(/\s+/g, ' ').trim();
+}
+
 function shortCacheKey(cacheKey: string): string {
   return cacheKey.slice(0, 12);
 }
@@ -9308,6 +9435,7 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
       || entry.startsWith('TermType(')
       || entry.startsWith('Language(')
       || entry.startsWith('Datatype(')
+      || entry.startsWith('PostgresCompiledSqlTemplate')
   ));
 }
 

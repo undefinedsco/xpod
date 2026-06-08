@@ -257,6 +257,10 @@ export interface RdfQueryTemplateCacheStats {
   hitCount: number;
   missCount: number;
   evictionCount: number;
+  compiledSqlEntryCount?: number;
+  compiledSqlHitCount?: number;
+  compiledSqlMissCount?: number;
+  compiledSqlEvictionCount?: number;
   totalBytes: number;
 }
 
