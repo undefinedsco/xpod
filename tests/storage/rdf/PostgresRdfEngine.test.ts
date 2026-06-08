@@ -4539,6 +4539,12 @@ describe('PostgresRdfEngine', () => {
       expect(report.engine).toBe('postgres-rdf');
       expect(report.warmupIterations).toBe(1);
       expect(report.concurrency).toBe(2);
+      expect(report.refresh?.rdf3x?.syncedWithFacts).toBe(true);
+      expect(report.refresh?.rdf3x?.plannerStats?.analyzedTables).toEqual(expect.arrayContaining([
+        'rdf_terms',
+        'rdf_quads',
+        'rdf3x_stat_g',
+      ]));
       expect(report.planMatched).toBe(true);
       expect(report.failedPlanCases).toEqual([]);
       expect(report.concurrencyGate).toMatchObject({

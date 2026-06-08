@@ -76,6 +76,8 @@ async function main(): Promise<void> {
 
     const fullScale = rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length);
     const synced = report.storage.rdf3x?.syncedWithFacts === true;
+    const plannerStatsTables = postgresPlannerStatsTables(report);
+    const plannerStatsMatched = plannerStatsTables.length > 0;
     const accelerationMatched = rdfAccelerationProfileMatched(options.rdfAccelerationProfile, report.storage);
     const nativeExtensionPlanHits = countNativeExtensionPlanHits(report);
     const nativeExtensionPlanMatched = nativeExtensionPlanRequired(options) ? nativeExtensionPlanHits > 0 : true;
@@ -87,6 +89,8 @@ async function main(): Promise<void> {
       targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
       fullScale,
       synced,
+      plannerStatsMatched,
+      plannerStatsTables,
       accelerationMatched,
       scanCases: report.cases.length,
       queryCases: report.queryCases.length,
@@ -99,7 +103,7 @@ async function main(): Promise<void> {
       storage: report.storage,
     });
 
-    if (!fullScale || !synced || !report.planMatched || !accelerationMatched || !nativeExtensionPlanMatched || !concurrencyMatched) {
+    if (!fullScale || !synced || !plannerStatsMatched || !report.planMatched || !accelerationMatched || !nativeExtensionPlanMatched || !concurrencyMatched) {
       process.exitCode = 1;
     }
   } finally {
@@ -271,6 +275,14 @@ function countNativeExtensionPlanHits(report: Awaited<ReturnType<typeof runRdfMo
   ].filter((entry) => entry.includes('XpodRdfExtensionOperator(')).length;
 }
 
+function postgresPlannerStatsTables(report: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>): string[] {
+  const rdf3x = report.refresh?.rdf3x;
+  if (rdf3x?.syncedWithFacts !== true) {
+    return [];
+  }
+  return rdf3x.plannerStats?.analyzedTables ?? [];
+}
+
 function createBenchmarkPaths(options: CliOptions): BenchmarkPaths {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runId = `${stamp}-${process.pid}-${randomUUID()}`;
@@ -375,6 +387,8 @@ function printSummary(summary: {
   targetQuadCount: number;
   fullScale: boolean;
   synced: boolean;
+  plannerStatsMatched: boolean;
+  plannerStatsTables: string[];
   accelerationMatched: boolean;
   scanCases: number;
   queryCases: number;
@@ -403,6 +417,8 @@ function printSummary(summary: {
   console.log(`  plan matched: ${summary.planMatched}`);
   console.log(`  concurrency gate matched: ${summary.concurrencyMatched}`);
   console.log(`  rdf3x synced with facts: ${summary.synced}`);
+  console.log(`  planner stats refreshed: ${summary.plannerStatsMatched}`);
+  console.log(`  planner stats tables: ${summary.plannerStatsTables.join(', ') || 'none'}`);
   console.log(`  pg acceleration profile: ${summary.storage.pgAcceleration?.profile ?? 'unknown'}`);
   console.log(`  pg acceleration enabled: ${summary.storage.pgAcceleration?.enabled ?? false}`);
   console.log(`  pg acceleration matched request: ${summary.accelerationMatched}`);
@@ -425,6 +441,9 @@ function printSummary(summary: {
   }
   if (summary.failedConcurrencyCases.length > 0) {
     console.error(`  failed concurrency cases: ${summary.failedConcurrencyCases.join(', ')}`);
+  }
+  if (!summary.plannerStatsMatched) {
+    console.error('  refreshDerivedIndexes did not report planner stats refresh');
   }
   if (!summary.accelerationMatched) {
     console.error('  requested pg acceleration profile was not enabled');
