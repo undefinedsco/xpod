@@ -598,10 +598,11 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - `rdf_query_result_cache.scope_hash` 记录 normalized cache scope 的摘要；结构化 access scope 会把
   principal、base path、mode、authorization model、permission version 以及 allow/deny graph
   列表纳入 cache key，并在 cache table 中保留可观测的 scope 元信息；PG engine 提供 exact
-  scope invalidation 入口。`.acl` / `.acr` source 或 graph 写入第一版会保守清空 PG result
-  cache 和 materialized result cache，后续再收敛为按 basePath / permissionVersion / graph
-  scope 的精确失效。`storageStats()` 中暴露 facts / derived / query cache 统计，包括 cache
-  `entryCount` 和 `scopeCount`。
+  scope invalidation 入口。`.acl` / `.acr` source 或 graph 写入第一版已从全表清理收敛为
+  affected basePath overlap 失效，会同时清 PG result cache 和 materialized result cache
+  的相关 scope；写入只推进 facts version，旧 facts version cache 不会命中，但不再由写入路径
+  全表删除。后续再收敛为按 permissionVersion / graph scope 的更精确失效。`storageStats()`
+  中暴露 facts / derived / query cache 统计，包括 cache `entryCount` 和 `scopeCount`。
 - `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
 - `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
 - `pg-hot-operators` engine-sql provider：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 走已验证的 PG SQL fast path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
@@ -633,9 +634,10 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   search-source 下推；权限候选过滤已先落到 `applyRdfAccessScope` 投影 search source
   allow/deny 条件这层，后续重点是产品 Agent context 调用和 PG text/vector
   持久化/外部后端替换。
-- ACL/ACR 写路径已经接入保守 cache clear；未完成的是把它从全量 result/materialized clear
-  收敛为精确 scope invalidation。materialized result 在 models 列表页 / 统计页 /
-  Agent context 的实际产品调用接线、更大数据量 benchmark 和 auth-aware cache dashboard 仍未完成。
+- ACL/ACR 写路径已经接入 affected basePath overlap 的精确 cache invalidation；未完成的是把它从
+  basePath overlap 进一步收敛到 permissionVersion / graph scope。materialized result 在
+  models 列表页 / 统计页 / Agent context 的实际产品调用接线、更大数据量 benchmark 和
+  auth-aware cache dashboard 仍未完成。
 - ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
   `Message.thread` 查询，Managed Run 组装 conversation / thread items 时不再绕过 shared model
   入口；显式 materialized key 仍需要在 shared query/repository 层继续接线。

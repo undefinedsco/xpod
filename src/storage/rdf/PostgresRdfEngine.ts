@@ -364,6 +364,10 @@ interface PgResolvedQueryCacheScope {
   permissionVersion: string | null;
 }
 
+interface RdfAccessControlCacheInvalidation {
+  basePaths: string[];
+}
+
 interface PgQueryExplainOptions {
   query?: RdfQuery;
   template: PgQueryTemplateResolution;
@@ -1019,7 +1023,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   public async put(quads: Quad | Quad[], options?: RdfIndexPutOptions): Promise<void> {
     await this.ensureReady();
     const quadList = Array.isArray(quads) ? quads : [quads];
-    const shouldInvalidateAccessCache = rdfWriteTouchesAccessControl(quadList, options?.source);
+    const accessCacheInvalidation = rdfAccessControlCacheInvalidation(quadList, options?.source);
     const executor = this.requireExecutor();
     try {
       await executor.transaction(async (tx) => {
@@ -1028,8 +1032,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         const insertedRows = await this.insertQuads(tx, scopedDictionary, quadList, sourceId, options?.sourceLineNo ?? null);
         await this.markDirtyQuadRows(tx, insertedRows);
         await this.bumpFactsDataVersion(tx);
-        if (shouldInvalidateAccessCache) {
-          await this.clearQueryCaches(tx);
+        if (accessCacheInvalidation) {
+          await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
         }
       });
     } catch (error) {
@@ -1039,7 +1043,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   public async replaceSource(quads: Quad[], source: RdfSourceInput): Promise<void> {
     await this.ensureReady();
-    const shouldInvalidateAccessCache = rdfWriteTouchesAccessControl(quads, source);
+    const accessCacheInvalidation = rdfAccessControlCacheInvalidation(quads, source);
     const executor = this.requireExecutor();
     try {
       await executor.transaction(async (tx) => {
@@ -1050,8 +1054,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         const insertedRows = await this.insertQuads(tx, scopedDictionary, quads, sourceId, null);
         await this.markDirtyQuadRows(tx, [...replacedRows, ...insertedRows]);
         await this.bumpFactsDataVersion(tx);
-        if (shouldInvalidateAccessCache) {
-          await this.clearQueryCaches(tx);
+        if (accessCacheInvalidation) {
+          await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
         }
       });
     } catch (error) {
@@ -1067,15 +1071,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!sourceRow) {
         return 0;
       }
-      const shouldInvalidateAccessCache = rdfSourceTouchesAccessControl(sourceRow.source, sourceRow.local_path);
+      const accessCacheInvalidation = rdfSourceAccessControlCacheInvalidation(sourceRow.source, sourceRow.local_path);
       const result = await executor.transaction(async (tx) => {
         const deletedRows = await this.quadRowsForSource(sourceRow.id, tx);
         const deleteResult = await tx.query<{ count: number }>('DELETE FROM rdf_quads WHERE source_file_id = $1 RETURNING 1', [sourceRow.id]);
         await tx.exec('DELETE FROM rdf_sources WHERE id = $1', [sourceRow.id]);
         await this.markDirtyQuadRows(tx, deletedRows);
         await this.bumpFactsDataVersion(tx);
-        if (shouldInvalidateAccessCache && deleteResult.length > 0) {
-          await this.clearQueryCaches(tx);
+        if (accessCacheInvalidation && deleteResult.length > 0) {
+          await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
         }
         return deleteResult.length;
       });
@@ -1091,7 +1095,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (scan.quads.length === 0) {
       return 0;
     }
-    const shouldInvalidateAccessCache = rdfWriteTouchesAccessControl(scan.quads);
+    const accessCacheInvalidation = rdfAccessControlCacheInvalidation(scan.quads);
     const executor = this.requireExecutor();
     try {
       await executor.transaction(async (tx) => {
@@ -1101,8 +1105,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await this.deleteExactQuad(tx, scopedDictionary, value);
         }
         await this.bumpFactsDataVersion(tx);
-        if (shouldInvalidateAccessCache) {
-          await this.clearQueryCaches(tx);
+        if (accessCacheInvalidation) {
+          await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
         }
       });
       return scan.quads.length;
@@ -1122,7 +1126,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       deleteQuads.push(...(await this.scan({ pattern })).quads);
     }
     const uniqueDeleteQuads = uniqueQuads(deleteQuads);
-    const shouldInvalidateAccessCache = rdfWriteTouchesAccessControl([...uniqueDeleteQuads, ...inserts], options?.source);
+    const accessCacheInvalidation = rdfAccessControlCacheInvalidation([...uniqueDeleteQuads, ...inserts], options?.source);
     const executor = this.requireExecutor();
     let deletedRows = 0;
     try {
@@ -1139,8 +1143,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         await this.markDirtyQuadRows(tx, insertedRows);
         if (deletedRows > 0 || inserts.length > 0) {
           await this.bumpFactsDataVersion(tx);
-          if (shouldInvalidateAccessCache) {
-            await this.clearQueryCaches(tx);
+          if (accessCacheInvalidation) {
+            await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
           }
         }
         return deletedRows;
@@ -1376,6 +1380,45 @@ export class PostgresRdfEngine implements RdfEngineLike {
       )
       SELECT COUNT(*) AS count FROM deleted
     `);
+    return Number(resultRows[0]?.count ?? 0) + Number(materializedRows[0]?.count ?? 0);
+  }
+
+  private async invalidateAccessControlQueryCaches(
+    executor: AsyncSqlExecutor,
+    invalidation: RdfAccessControlCacheInvalidation,
+  ): Promise<number> {
+    if (invalidation.basePaths.length === 0) {
+      return this.clearQueryCaches(executor);
+    }
+
+    const affectedRows = invalidation.basePaths.map((_, index) => `($${index + 1})`).join(', ');
+    const overlapCondition = `
+      scope_base_path IS NULL
+      OR EXISTS (
+        SELECT 1
+        FROM affected_access_scope
+        WHERE LEFT(scope_base_path, LENGTH(base_path)) = base_path
+           OR LEFT(base_path, LENGTH(scope_base_path)) = scope_base_path
+      )
+    `;
+    const resultRows = await executor.query<{ count: number }>(`
+      WITH affected_access_scope(base_path) AS (VALUES ${affectedRows}),
+      deleted AS (
+        DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+        WHERE ${overlapCondition}
+        RETURNING 1
+      )
+      SELECT COUNT(*) AS count FROM deleted
+    `, invalidation.basePaths);
+    const materializedRows = await executor.query<{ count: number }>(`
+      WITH affected_access_scope(base_path) AS (VALUES ${affectedRows}),
+      deleted AS (
+        DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
+        WHERE ${overlapCondition}
+        RETURNING 1
+      )
+      SELECT COUNT(*) AS count FROM deleted
+    `, invalidation.basePaths);
     return Number(resultRows[0]?.count ?? 0) + Number(materializedRows[0]?.count ?? 0);
   }
 
@@ -6584,14 +6627,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       SET value = (COALESCE(NULLIF(value, ''), '0')::bigint + 1)::text
       WHERE key = 'data_version'
     `);
-    await executor.exec(`
-      DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
-      WHERE facts_data_version < (
-        SELECT COALESCE(NULLIF(value, ''), '0')::bigint
-        FROM rdf_index_metadata
-        WHERE key = 'data_version'
-      )
-    `);
   }
 
   private async readFactsDataVersion(): Promise<number> {
@@ -8562,15 +8597,42 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-function rdfWriteTouchesAccessControl(quads: readonly Quad[], source?: RdfSourceInput): boolean {
-  return rdfSourceTouchesAccessControl(source?.source, source?.localPath)
-    || quads.some((value) => rdfSourceTouchesAccessControl(value.graph.value));
+function rdfAccessControlCacheInvalidation(
+  quads: readonly Quad[],
+  source?: RdfSourceInput,
+): RdfAccessControlCacheInvalidation | undefined {
+  const basePaths = [
+    ...accessControlAffectedBasePaths(source?.source, source?.workspace),
+    ...accessControlAffectedBasePaths(source?.localPath, source?.workspace),
+    ...quads.flatMap((value) => accessControlAffectedBasePaths(value.graph.value)),
+  ];
+  if (basePaths.length === 0) {
+    return undefined;
+  }
+  return { basePaths: uniqueStrings(basePaths) };
 }
 
-function rdfSourceTouchesAccessControl(source?: string | null, localPath?: string | null): boolean {
-  return [source, localPath]
-    .filter((value): value is string => typeof value === 'string')
-    .some((value) => isAccessControlResourcePath(value));
+function rdfSourceAccessControlCacheInvalidation(
+  source?: string | null,
+  localPath?: string | null,
+): RdfAccessControlCacheInvalidation | undefined {
+  const basePaths = [
+    ...accessControlAffectedBasePaths(source),
+    ...accessControlAffectedBasePaths(localPath),
+  ];
+  if (basePaths.length === 0) {
+    return undefined;
+  }
+  return { basePaths: uniqueStrings(basePaths) };
+}
+
+function accessControlAffectedBasePaths(value?: string | null, workspace?: string | null): string[] {
+  if (typeof value !== 'string' || !isAccessControlResourcePath(value)) {
+    return [];
+  }
+  const normalized = normalizeAccessControlResourcePath(value, workspace);
+  const affected = affectedBasePathForAccessControlResource(normalized);
+  return affected ? [affected] : [];
 }
 
 function isAccessControlResourcePath(value: string): boolean {
@@ -8580,6 +8642,37 @@ function isAccessControlResourcePath(value: string): boolean {
     || normalized.endsWith('.acr')
     || normalized.endsWith('/.acr')
     || normalized.includes('/.acr/');
+}
+
+function normalizeAccessControlResourcePath(value: string, workspace?: string | null): string {
+  try {
+    const url = workspace ? new URL(value, workspace) : new URL(value);
+    url.hash = '';
+    url.search = '';
+    return url.href;
+  } catch {
+    return value.split(/[?#]/, 1)[0] ?? value;
+  }
+}
+
+function affectedBasePathForAccessControlResource(value: string): string | undefined {
+  if (value.endsWith('/.acl')) {
+    return value.slice(0, -'.acl'.length);
+  }
+  if (value.endsWith('.acl')) {
+    return value.slice(0, -'.acl'.length);
+  }
+  if (value.endsWith('/.acr')) {
+    return value.slice(0, -'.acr'.length);
+  }
+  if (value.endsWith('.acr')) {
+    return value.slice(0, -'.acr'.length);
+  }
+  const nestedAcrIndex = value.indexOf('/.acr/');
+  if (nestedAcrIndex >= 0) {
+    return `${value.slice(0, nestedAcrIndex)}/`;
+  }
+  return undefined;
 }
 
 function parsePgAccelerationCapabilities(value: unknown): string[] {

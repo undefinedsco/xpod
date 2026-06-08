@@ -1122,7 +1122,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('clears PostgreSQL result caches when ACL or ACR sources change', async () => {
+  it('invalidates PostgreSQL result caches by overlapping ACL or ACR access scope', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-access-cache-clear-'));
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
@@ -1130,44 +1130,63 @@ describe('PostgresRdfEngine', () => {
     });
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const message = namedNode(`${graph.value}#msg_1`);
+    const otherGraph = namedNode('https://pod.example/bob/.data/chat/default/2026/05/18/messages.ttl');
+    const otherMessage = namedNode(`${otherGraph.value}#msg_1`);
     const aclGraph = namedNode('https://pod.example/alice/profile/card.acl');
     const acrGraph = namedNode('https://pod.example/alice/profile/.acr');
-    const accessScope = {
-      principal: 'https://id.example/alice/profile/card#me',
-      basePath: 'https://pod.example/alice/',
-      mode: 'read',
-      authorizationModel: 'acr',
-      permissionVersion: 'acl-v1',
-      allowedGraphUrls: [graph.value],
-    };
-    const resultQuery: RdfQuery = {
+    const queryFor = (
+      targetGraph: typeof graph,
+      principal: string,
+      basePath: string,
+      materialized?: string,
+    ): RdfQuery => ({
       patterns: [
         {
-          graph,
+          graph: targetGraph,
           subject: { variable: 'message' },
           predicate: namedNode(STATUS),
           object: literal('open'),
         },
       ],
       select: ['message'],
-      cache: { scope: accessScope },
-    };
-    const materializedQuery: RdfQuery = {
-      ...resultQuery,
       cache: {
-        scope: accessScope,
-        materialized: 'chat/default/open-messages',
+        scope: {
+          principal,
+          basePath,
+          mode: 'read',
+          authorizationModel: 'acr',
+          permissionVersion: 'acl-v1',
+          allowedGraphUrls: [targetGraph.value],
+        },
+        ...(materialized ? { materialized } : {}),
       },
-    };
+    });
+    const resultQuery = queryFor(graph, 'https://id.example/alice/profile/card#me', 'https://pod.example/alice/');
+    const materializedQuery = queryFor(
+      graph,
+      'https://id.example/alice/profile/card#me',
+      'https://pod.example/alice/',
+      'chat/default/open-messages',
+    );
+    const otherResultQuery = queryFor(otherGraph, 'https://id.example/bob/profile/card#me', 'https://pod.example/bob/');
+    const otherMaterializedQuery = queryFor(
+      otherGraph,
+      'https://id.example/bob/profile/card#me',
+      'https://pod.example/bob/',
+      'chat/default/open-messages',
+    );
 
     try {
       await engine.open();
       await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+      await engine.put(quad(otherMessage, namedNode(STATUS), literal('open'), otherGraph));
 
       expect((await engine.query(resultQuery)).metrics.plan).toContain('PostgresResultCacheStore');
       expect((await engine.query(materializedQuery)).metrics.plan).toContain('PostgresMaterializedResultStore');
-      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 1 });
-      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.query(otherResultQuery)).metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.query(otherMaterializedQuery)).metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 2 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 2 });
 
       await engine.replaceSource([
         quad(
@@ -1183,13 +1202,15 @@ describe('PostgresRdfEngine', () => {
         contentType: 'text/turtle',
         sourceVersion: 'acl-v1',
       });
-      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 0 });
-      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 0 });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.query(otherResultQuery)).metrics.plan).toContain('PostgresResultCacheMiss');
+      expect((await engine.query(otherMaterializedQuery)).metrics.plan).toContain('PostgresMaterializedResultMiss');
 
       expect((await engine.query(resultQuery)).metrics.plan).toContain('PostgresResultCacheStore');
       expect((await engine.query(materializedQuery)).metrics.plan).toContain('PostgresMaterializedResultStore');
-      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 1 });
-      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 2 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 2 });
 
       await engine.put(quad(
         namedNode(`${acrGraph.value}#publicReadAccess`),
@@ -1197,8 +1218,10 @@ describe('PostgresRdfEngine', () => {
         namedNode('http://www.w3.org/ns/solid/acp#Read'),
         acrGraph,
       ));
-      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 0 });
-      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 0 });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.query(otherResultQuery)).metrics.plan).toContain('PostgresResultCacheMiss');
+      expect((await engine.query(otherMaterializedQuery)).metrics.plan).toContain('PostgresMaterializedResultMiss');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

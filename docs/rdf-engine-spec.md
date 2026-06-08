@@ -504,7 +504,7 @@ P0 先做用户能明显感知或能保护生产正确性的能力：
 | Text / RDF / vector 融合查询 | 第一版本地和 PG gate 已落地：`RdfQuery.textSearch[]`、`vectorSearch[]` 和 required RDF BGP sources 进入同一个 planner；`caseProfile=fusion` seed 会写入文本 chunk / embedding chunk，并用 Agent context 查询验证 text/vector 候选与 message/thread/workspace RDF facts 交集；本地 query layer 已支持 numeric BIND 加权 `fusionScore` 并按数值排序 rerank；`applyRdfAccessScope` 会把 `allowedGraphUrls` / `deniedGraphUrls` / `deniedGraphPrefixes` 投影成 search source allow/deny 条件，纯 text/vector 查询和融合预筛都不会先召回不可读 source；PG engine 可配置同一套 `RdfTextIndex` / `RdfVectorIndex`，第一版在 RDF-3X 不覆盖 search source 时走 `PostgresFactsScan + TextSearch + VectorSearch + PostgresFactsBind + PostgresFactsSort` | 后续补产品 Agent context 调用，以及 PG text/vector 的持久化/外部后端替换 | `agent context text vector fusion query` 返回 2 个命中，local plan 同时出现 `TextSearch(...)`、`VectorSearch(...)`、RDF `IndexScan(...)`、`Bind(?fusionScore:=...)` 和 `Sort`；PG plan 出现 `PostgresFactsScan(...)`、`TextSearch(...)`、`VectorSearch(...)`、`PostgresFactsBind(...)` 和 `PostgresFactsSort(...)`；access-scoped 纯 text/vector 查询只返回 allowed source；结果按 `fusionScore DESC` 排序；缺 text/vector index 必须显式报错 |
 | Ordered-page / keyset join | 第一版 benchmark gate 已落地：消息流 `createdAt < cursor + ORDER BY createdAt DESC + LIMIT` 会要求 range/order/limit 都保持在 SQL self-join / RDF-3X join 内；native ordered-page 仍未作为 cutover gate | 后续对任务流、设置列表这类稳定排序查询补 keyset continuation，并把 native ordered-page 纳入可选 cutover | benchmark 覆盖 ordered page correctness、稳定 cursor、p95 对比 |
 | Incremental derived stats | PG 第一版已落地：写入路径记录 durable dirty graph / pair / term projection key，`refreshDerivedIndexes()` 默认只重算 dirty projection row；SQLite/file-backed `Rdf3xIndex` 第一版也已通过 `rdf_quads` trigger 记录 dirty graph / pair / term key，默认维护刷新走 incremental，`refreshDerivedIndexes({ mode: 'full' })` 保留全量 repair path；dirty 信息缺失时自动回退全量 rebuild | 后续把 source-level dirty queue 接入后台维护任务，并补更大数据量下的 refresh benchmark | 写入高频 source 后 stats synced；增量 refresh 后与 full repair stats 一致；缺 dirty 信息不误报 synced |
-| ACL/ACR-aware cache lifecycle | 第一版已落地到 PG result/materialized cache：`RdfQuery.cache.scope` 支持结构化访问 scope，包含 principal、base path、mode、authorization model、权限版本和 allow/deny graph 列表；`RdfAccessScope` 不再拼裸字符串；PG cache table 记录 scope 元信息并提供 exact scope invalidation 入口；`.acl` / `.acr` 写入会保守清空 PG result 和 materialized result cache | 后续把 `.acl` / `.acr` 写路径从全量 cache clear 收敛为按 basePath / permissionVersion / graph scope 精确失效，并把 template/materialized result 的 TTL/quota 纳入同一 derived cache lifecycle | Alice/Bob/anonymous 查询不串 cache；权限版本变化不命中旧 cache；显式 scope invalidation 后旧 cache 不再命中；ACL/ACR source 写入后旧 result/materialized cache 被清理 |
+| ACL/ACR-aware cache lifecycle | 第一版已落地到 PG result/materialized cache：`RdfQuery.cache.scope` 支持结构化访问 scope，包含 principal、base path、mode、authorization model、权限版本和 allow/deny graph 列表；`RdfAccessScope` 不再拼裸字符串；PG cache table 记录 scope 元信息并提供 exact scope invalidation 入口；`.acl` / `.acr` 写入会从 access-control resource 推导 affected base path，只删除 scope basePath 与其重叠的 result/materialized cache；写入只推进 facts version，旧 facts version cache 不会命中，但不再由写入路径全表删除 | 后续把精确范围从 basePath overlap 进一步收敛到 permissionVersion / graph scope，并把 template/materialized result 的 TTL/quota 纳入同一 derived cache lifecycle | Alice/Bob/anonymous 查询不串 cache；权限版本变化不命中旧 cache；显式 scope invalidation 后旧 cache 不再命中；ACL/ACR source 写入后相关 scope 被清理，无关 scope 不被删除，下一次读取会按新 facts version 重新 miss/store |
 
 P1 做 planner 稳定性、迁移效率和运维可解释性：
 
@@ -521,8 +521,9 @@ P1 做 planner 稳定性、迁移效率和运维可解释性：
 
 1. Query template cache：先做内存模板记录、metrics 和 stats，不改变查询语义。
 2. Cache lifecycle：第一步已完成结构化 access scope 与 PG result cache exact
-   invalidation；`.acl` / `.acr` 写路径第一版已接入保守清理，会同时清普通 result cache
-   和 materialized result cache。后续把它收敛为精确 scope invalidation，并把 template /
+   invalidation；`.acl` / `.acr` 写路径已从全表清理收敛为 affected basePath overlap
+   失效，会同时清普通 result cache 和 materialized result cache 的相关 scope。后续把
+   basePath overlap 继续收窄到 permissionVersion / graph scope，并把 template /
    materialized、TTL 和 quota 统一到同一套 derived cache 口径。
 3. Materialized result：PG 第一版表和 lifecycle 已完成；ChatKit thread history 读路径已回到
    models/drizzle-solid，不再手写 SPARQL 绕开 RDF query 层。下一步优先覆盖 models 列表页、
