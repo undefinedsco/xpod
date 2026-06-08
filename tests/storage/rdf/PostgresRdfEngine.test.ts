@@ -765,6 +765,95 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('prunes PostgreSQL query result cache rows by exact access scope', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-scope-prune-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheMaxBytes: 1024 * 1024,
+      materializedResultCacheMaxBytes: 1024 * 1024,
+      queryTemplateCacheMaxEntries: 8,
+      derivedCacheScopeMaxBytes: 30_000,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const scopeFor = (principal: string, permissionVersion: string) => ({
+      principal,
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read',
+      authorizationModel: 'acr',
+      permissionVersion,
+      allowedGraphUrls: [graph.value],
+    });
+    const queryForScope = (
+      scope: ReturnType<typeof scopeFor>,
+      materialized?: string,
+    ): RdfQuery => ({
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(CONTENT),
+          object: { variable: 'content' },
+        },
+      ],
+      select: ['message', 'content'],
+      cache: {
+        scope,
+        ...(materialized ? { materialized } : {}),
+      },
+    });
+    const aliceScope = scopeFor('https://id.example/alice/profile/card#me', 'acl-v1');
+    const bobScope = scopeFor('https://id.example/bob/profile/card#me', 'acl-v2');
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+      await engine.put(quad(message, namedNode(CONTENT), literal('x'.repeat(20_000)), graph));
+
+      const alice = await engine.query(queryForScope(aliceScope));
+      expect(alice.metrics.plan).toContain('PostgresResultCacheStore');
+
+      const bob = await engine.query(queryForScope(bobScope));
+      expect(bob.metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 2,
+        scopeCount: 2,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const bobMaterialized = await engine.query(queryForScope(
+        bobScope,
+        'chat/default/open-messages-with-content',
+      ));
+      expect(bobMaterialized.metrics.plan).toContain('PostgresMaterializedResultStore');
+
+      const storage = await engine.storageStats();
+      expect(storage.derivedCache?.evictions.scopeBytes).toBeGreaterThan(0);
+      expect(storage.queryResultCache).toMatchObject({
+        entryCount: 1,
+        scopeCount: 1,
+      });
+      expect(storage.materializedResultCache).toMatchObject({
+        entryCount: 1,
+        scopeCount: 1,
+      });
+
+      const aliceAgain = await engine.query(queryForScope(aliceScope));
+      expect(aliceAgain.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(aliceAgain.metrics.plan).toContain('PostgresResultCacheHit');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('prunes PostgreSQL query result cache by payload bytes', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-bytes-'));
     const engine = new PostgresRdfEngine({

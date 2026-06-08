@@ -612,14 +612,17 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   原有 `metrics.plan` 字符串仍用于 benchmark gate 和人工 trace。
 - `rdf_query_result_cache.scope_hash` 记录 normalized cache scope 的摘要；结构化 access scope 会把
   principal、base path、mode、authorization model、permission version 以及 allow/deny graph
-  列表纳入 cache key，并在 cache table 中保留可观测的 scope 元信息；PG engine 提供 exact
-  scope invalidation 入口。`.acl` / `.acr` source 或 graph 写入第一版已从全表清理收敛为
+  列表纳入独立 `scope_hash` 维度，普通 result cache identity 是
+  `query_shape cache_key + scope_hash + facts_data_version`，materialized result cache identity 是
+  `materialized_key + scope_hash + facts_data_version`，cache table 中保留可观测的 scope 元信息；
+  PG engine 提供 exact scope invalidation 入口。`.acl` / `.acr` source 或 graph 写入第一版已从全表清理收敛为
   affected basePath overlap 失效，会同时清 PG result cache 和 materialized result cache
   的相关 scope；写入只推进 facts version，旧 facts version cache 不会命中，但不再由写入路径
   全表删除。result/materialized cache 现在同时按 facts version、TTL、max entries 和 payload
   bytes quota 淘汰，三类可重建 cache 还支持可选 `derivedCacheMaxBytes` 统一 bytes guard；
   result/materialized cache 另外支持 `derivedCacheScopeMaxBytes`，按 access scope + facts
-  version 做共享 payload guard，不会把 template cache 纳入访问 scope 预算。`storageStats()`
+  version 做共享 payload guard，并按 cache key + scope + facts version 精确删除超预算 row，
+  不会把 template cache 纳入访问 scope 预算。`storageStats()`
   暴露 `entryCount`、`scopeCount`、`payloadBytes`、`maxPayloadBytes`、table/index bytes，
   以及 `derivedCache.cacheBytes` / `maxCacheBytes` / `maxScopeBytes` / `largestScopeBytes` /
   `cachePressure` / `largestScopePressure`。`derivedCache.evictions` 第一版提供进程内压力

@@ -106,7 +106,7 @@ const RDF_DERIVED_INDEX_MAINTENANCE_LEASE = 'rdf-derived-indexes';
 const RDF3X_DIRTY_GRAPH_TABLE = 'rdf3x_dirty_graphs';
 const RDF3X_DIRTY_PAIR_TABLE = 'rdf3x_dirty_pairs';
 const RDF3X_DIRTY_TERM_TABLE = 'rdf3x_dirty_terms';
-const RDF_QUERY_RESULT_CACHE_KEY_VERSION = 1;
+const RDF_QUERY_RESULT_CACHE_KEY_VERSION = 2;
 const RDF_MATERIALIZED_RESULT_CACHE_KEY_VERSION = 1;
 const RDF_QUERY_TEMPLATE_CACHE_KEY_VERSION = 1;
 const DEFAULT_QUERY_RESULT_CACHE_MAX_ENTRIES = 512;
@@ -364,6 +364,7 @@ interface PgCustomIndexBgpJoinShapeOptions {
 interface PgQueryResultCacheRow {
   result_json: string;
   row_count: number;
+  query_shape?: string;
 }
 
 interface PgQueryTemplateCacheEntry {
@@ -1573,7 +1574,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const cacheTtlMs = this.queryResultCacheTtlMs(query);
     await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
     if (cacheMode !== 'refresh') {
-      const cached = await this.readQueryResultCache(template.cacheKey, factsDataVersion);
+      const cached = await this.readQueryResultCache(template, factsDataVersion);
       if (cached) {
         return this.withPostgresQueryExplain(this.withPgAccelerationFallbackPlan(withQueryCachePlan(cached, template.planMarker), query), {
           query,
@@ -1974,7 +1975,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         hit_count BIGINT NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         last_hit_at TIMESTAMPTZ,
-        PRIMARY KEY (cache_key, facts_data_version)
+        PRIMARY KEY (cache_key, scope_hash, facts_data_version)
       )
     `);
     await executor.exec(`
@@ -2004,6 +2005,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await executor.exec(`
       ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
       ADD COLUMN IF NOT EXISTS scope_permission_version TEXT
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
+      DROP CONSTRAINT IF EXISTS rdf_query_result_cache_pkey
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_QUERY_RESULT_CACHE_TABLE}
+      ADD PRIMARY KEY (cache_key, scope_hash, facts_data_version)
     `);
     await executor.exec(`
       CREATE INDEX IF NOT EXISTS rdf_query_result_cache_version
@@ -3041,16 +3050,29 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private async readQueryResultCache(cacheKey: string, factsDataVersion: number): Promise<RdfQueryResult | undefined> {
+  private async readQueryResultCache(
+    template: PgQueryTemplateResolution,
+    factsDataVersion: number,
+  ): Promise<RdfQueryResult | undefined> {
     const start = Date.now();
     const rows = await this.requireExecutor().query<PgQueryResultCacheRow>(`
-      SELECT result_json, row_count
+      SELECT result_json, row_count, query_shape
       FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
       WHERE cache_key = $1
-        AND facts_data_version = $2
-    `, [cacheKey, factsDataVersion]);
+        AND scope_hash = $2
+        AND facts_data_version = $3
+    `, [template.cacheKey, template.cacheScope.hash, factsDataVersion]);
     const row = rows[0];
     if (!row) {
+      return undefined;
+    }
+    if (row.query_shape !== template.queryShape) {
+      await this.requireExecutor().exec(`
+        DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+        WHERE cache_key = $1
+          AND scope_hash = $2
+          AND facts_data_version = $3
+      `, [template.cacheKey, template.cacheScope.hash, factsDataVersion]);
       return undefined;
     }
 
@@ -3062,8 +3084,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         SET hit_count = hit_count + 1,
             last_hit_at = NOW()
         WHERE cache_key = $1
-          AND facts_data_version = $2
-      `, [cacheKey, factsDataVersion]);
+          AND scope_hash = $2
+          AND facts_data_version = $3
+      `, [template.cacheKey, template.cacheScope.hash, factsDataVersion]);
       return {
         bindings,
         ...(payload.count !== undefined ? { count: payload.count } : {}),
@@ -3080,8 +3103,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await this.requireExecutor().exec(`
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
-          AND facts_data_version = $2
-      `, [cacheKey, factsDataVersion]);
+          AND scope_hash = $2
+          AND facts_data_version = $3
+      `, [template.cacheKey, template.cacheScope.hash, factsDataVersion]);
       return undefined;
     }
   }
@@ -3270,9 +3294,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         created_at
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
-      ON CONFLICT (cache_key, facts_data_version) DO UPDATE
+      ON CONFLICT (cache_key, scope_hash, facts_data_version) DO UPDATE
       SET query_shape = EXCLUDED.query_shape,
-          scope_hash = EXCLUDED.scope_hash,
           scope_shape = EXCLUDED.scope_shape,
           scope_principal = EXCLUDED.scope_principal,
           scope_base_path = EXCLUDED.scope_base_path,
@@ -3369,18 +3392,19 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const maxEntries = this.queryResultCacheMaxEntries();
-    const rows = await executor.query<{ cache_key: string; facts_data_version: number }>(`
-      SELECT cache_key, facts_data_version
+    const rows = await executor.query<{ cache_key: string; scope_hash: string; facts_data_version: number }>(`
+      SELECT cache_key, scope_hash, facts_data_version
       FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
       WHERE facts_data_version = $1
-      ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC
+      ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC, scope_hash DESC
     `, [factsDataVersion]);
     for (const row of rows.slice(maxEntries)) {
       this.recordDerivedCacheEviction('maxEntries', await this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
-          AND facts_data_version = $2
-      `, [row.cache_key, row.facts_data_version]));
+          AND scope_hash = $2
+          AND facts_data_version = $3
+      `, [row.cache_key, row.scope_hash, row.facts_data_version]));
     }
     await this.pruneQueryResultCachePayloadBytes(executor, factsDataVersion);
     await this.pruneDerivedCacheScopeBudgets(executor, factsDataVersion);
@@ -3429,14 +3453,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (maxBytes <= 0) {
       return;
     }
-    const rows = await executor.query<{ cache_key: string; facts_data_version: number }>(`
-      SELECT cache_key, facts_data_version
+    const rows = await executor.query<{ cache_key: string; scope_hash: string; facts_data_version: number }>(`
+      SELECT cache_key, scope_hash, facts_data_version
       FROM (
         SELECT
           cache_key,
+          scope_hash,
           facts_data_version,
           SUM(OCTET_LENGTH(result_json)) OVER (
-            ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC
+            ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC, scope_hash DESC
           ) AS retained_bytes
         FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE facts_data_version = $1
@@ -3447,8 +3472,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       this.recordDerivedCacheEviction('payloadBytes', await this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
-          AND facts_data_version = $2
-      `, [row.cache_key, row.facts_data_version]));
+          AND scope_hash = $2
+          AND facts_data_version = $3
+      `, [row.cache_key, row.scope_hash, row.facts_data_version]));
     }
   }
 
@@ -3596,8 +3622,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
-          AND facts_data_version = $2
-      `, [candidate.cacheKey, candidate.factsDataVersion ?? 0]);
+          AND scope_hash = $2
+          AND facts_data_version = $3
+      `, [candidate.cacheKey, candidate.scopeHash ?? '', candidate.factsDataVersion ?? 0]);
     }
     return this.deleteRowsAndCount(executor, `
       DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
@@ -8474,10 +8501,7 @@ function compareDerivedCacheCandidates(left: PgDerivedCacheCandidate, right: PgD
 
 function stableRdfQueryShape(query: RdfQuery): string {
   const { cache, ...semanticQuery } = query;
-  return JSON.stringify(normalizeQueryCacheValue({
-    ...semanticQuery,
-    cacheScope: rdfQueryCacheScope(query),
-  }));
+  return JSON.stringify(normalizeQueryCacheValue(semanticQuery));
 }
 
 function stableRdfQueryTemplateShape(query: RdfQuery): string {
