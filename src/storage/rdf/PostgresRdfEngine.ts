@@ -109,6 +109,7 @@ const DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_DERIVED_CACHE_MAX_BYTES = 0;
+const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
 const POSTGRES_RDF_SESSION_OPTIONS = '-c jit=off';
 const RESULT_CACHE_REQUIRED_CAPABILITIES = [
   'cache.result',
@@ -356,6 +357,13 @@ interface PgDerivedCacheCandidate {
   lastUsedAtMs: number;
 }
 
+interface PgDerivedCacheScopeStats {
+  scopeVersionCount: number;
+  largestScopeBytes: number;
+  largestScopeHash?: string;
+  largestScopeFactsDataVersion?: number;
+}
+
 interface PgQueryTemplateResolution {
   queryShape: string;
   cacheScope: PgResolvedQueryCacheScope;
@@ -486,6 +494,7 @@ export interface PostgresRdfEngineOptions {
   materializedResultCacheTtlMs?: number;
   materializedResultCacheMaxBytes?: number;
   derivedCacheMaxBytes?: number;
+  derivedCacheScopeMaxBytes?: number;
   queryTemplateCacheMaxEntries?: number;
   queryTemplateCacheTtlMs?: number;
   rdfAccelerationProfile?: RdfPgAccelerationProfile;
@@ -1500,7 +1509,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const queryResultCache = await this.queryResultCacheStats();
     const materializedResultCache = await this.materializedResultCacheStats();
     const queryTemplateCache = this.queryTemplateCacheStats();
-    const derivedCache = this.derivedCacheStats(queryResultCache, materializedResultCache, queryTemplateCache);
+    const derivedCache = this.derivedCacheStats(
+      queryResultCache,
+      materializedResultCache,
+      queryTemplateCache,
+      await this.derivedCacheScopeStats(),
+    );
     const factsBytes = facts.databaseBytes;
     const derivedBytes = rdf3x.databaseBytes
       + queryResultCache.totalBytes
@@ -2976,6 +2990,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       `, [row.cache_key, row.facts_data_version]);
     }
     await this.pruneQueryResultCachePayloadBytes(executor, factsDataVersion);
+    await this.pruneDerivedCacheScopeBudgets(executor, factsDataVersion);
     await this.pruneDerivedCacheBudget(executor, factsDataVersion);
   }
 
@@ -3012,6 +3027,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       `, [row.cache_key, row.scope_hash, row.facts_data_version]);
     }
     await this.pruneMaterializedResultCachePayloadBytes(executor, factsDataVersion);
+    await this.pruneDerivedCacheScopeBudgets(executor, factsDataVersion);
     await this.pruneDerivedCacheBudget(executor, factsDataVersion);
   }
 
@@ -3095,6 +3111,27 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
   }
 
+  private async pruneDerivedCacheScopeBudgets(executor: AsyncSqlExecutor, factsDataVersion: number): Promise<void> {
+    const maxBytes = this.derivedCacheScopeMaxBytes();
+    if (maxBytes <= 0) {
+      return;
+    }
+    const retainedBytesByScope = new Map<string, number>();
+    const candidates = (await this.derivedCacheRowCandidates(executor, factsDataVersion))
+      .filter((candidate) => candidate.bytes > 0 && candidate.scopeHash);
+    candidates.sort(compareDerivedCacheCandidates);
+
+    for (const candidate of candidates) {
+      const scopeHash = candidate.scopeHash!;
+      const retainedBytes = retainedBytesByScope.get(scopeHash) ?? 0;
+      if (retainedBytes + candidate.bytes <= maxBytes) {
+        retainedBytesByScope.set(scopeHash, retainedBytes + candidate.bytes);
+        continue;
+      }
+      await this.deleteDerivedCacheCandidate(executor, candidate);
+    }
+  }
+
   private async derivedCacheRowCandidates(
     executor: AsyncSqlExecutor,
     factsDataVersion: number,
@@ -3111,7 +3148,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       SELECT
         'query-result' AS kind,
         cache_key,
-        NULL AS scope_hash,
+        scope_hash,
         facts_data_version,
         OCTET_LENGTH(result_json) AS bytes,
         EXTRACT(EPOCH FROM created_at) * 1000 AS created_at_ms,
@@ -3226,6 +3263,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private derivedCacheMaxBytes(): number {
     const configured = this.pgOptions.derivedCacheMaxBytes ?? DEFAULT_DERIVED_CACHE_MAX_BYTES;
     return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_DERIVED_CACHE_MAX_BYTES;
+  }
+
+  private derivedCacheScopeMaxBytes(): number {
+    const configured = this.pgOptions.derivedCacheScopeMaxBytes ?? DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES;
+    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES;
   }
 
   private queryTemplateCacheMaxEntries(): number {
@@ -7193,15 +7235,58 @@ export class PostgresRdfEngine implements RdfEngineLike {
     queryResultCache: RdfQueryResultCacheStats,
     materializedResultCache: RdfMaterializedResultCacheStats,
     queryTemplateCache: RdfQueryTemplateCacheStats,
+    scopeStats: PgDerivedCacheScopeStats,
   ): RdfDerivedCacheStats {
     return {
       cacheBytes: queryResultCache.payloadBytes
         + materializedResultCache.payloadBytes
         + queryTemplateCache.totalBytes,
       maxCacheBytes: this.derivedCacheMaxBytes(),
+      maxScopeBytes: this.derivedCacheScopeMaxBytes(),
+      scopeVersionCount: scopeStats.scopeVersionCount,
+      largestScopeBytes: scopeStats.largestScopeBytes,
+      ...(scopeStats.largestScopeHash ? { largestScopeHash: scopeStats.largestScopeHash } : {}),
+      ...(scopeStats.largestScopeFactsDataVersion !== undefined
+        ? { largestScopeFactsDataVersion: scopeStats.largestScopeFactsDataVersion }
+        : {}),
       queryResultPayloadBytes: queryResultCache.payloadBytes,
       materializedResultPayloadBytes: materializedResultCache.payloadBytes,
       queryTemplateBytes: queryTemplateCache.totalBytes,
+    };
+  }
+
+  private async derivedCacheScopeStats(): Promise<PgDerivedCacheScopeStats> {
+    const rows = await this.requireExecutor().query<{
+      scope_hash: string;
+      facts_data_version: number | string;
+      payload_bytes: number | string;
+    }>(`
+      SELECT
+        scope_hash,
+        facts_data_version,
+        SUM(payload_bytes) AS payload_bytes
+      FROM (
+        SELECT
+          scope_hash,
+          facts_data_version,
+          OCTET_LENGTH(result_json) AS payload_bytes
+        FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+        UNION ALL
+        SELECT
+          scope_hash,
+          facts_data_version,
+          OCTET_LENGTH(result_json) AS payload_bytes
+        FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
+      ) scoped_cache
+      GROUP BY scope_hash, facts_data_version
+      ORDER BY SUM(payload_bytes) DESC, scope_hash ASC, facts_data_version DESC
+    `);
+    const largest = rows[0];
+    return {
+      scopeVersionCount: rows.length,
+      largestScopeBytes: largest ? Number(largest.payload_bytes ?? 0) || 0 : 0,
+      ...(largest ? { largestScopeHash: largest.scope_hash } : {}),
+      ...(largest ? { largestScopeFactsDataVersion: Number(largest.facts_data_version) } : {}),
     };
   }
 

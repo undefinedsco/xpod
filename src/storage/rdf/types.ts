@@ -151,6 +151,11 @@ export interface RdfPgCustomIndexStats {
 export interface RdfDerivedCacheStats {
   cacheBytes: number;
   maxCacheBytes: number;
+  maxScopeBytes: number;
+  scopeVersionCount: number;
+  largestScopeBytes: number;
+  largestScopeHash?: string;
+  largestScopeFactsDataVersion?: number;
   queryResultPayloadBytes: number;
   materializedResultPayloadBytes: number;
   queryTemplateBytes: number;

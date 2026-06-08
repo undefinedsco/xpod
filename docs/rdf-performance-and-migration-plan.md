@@ -605,9 +605,12 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   的相关 scope；写入只推进 facts version，旧 facts version cache 不会命中，但不再由写入路径
   全表删除。result/materialized cache 现在同时按 facts version、TTL、max entries 和 payload
   bytes quota 淘汰，三类可重建 cache 还支持可选 `derivedCacheMaxBytes` 统一 bytes guard；
-  `storageStats()` 暴露 `entryCount`、`scopeCount`、`payloadBytes`、`maxPayloadBytes`、
-  table/index bytes 以及 `derivedCache.cacheBytes` / `maxCacheBytes`。后续再收敛为按
-  permissionVersion / graph scope 的更精确失效和 scope/facts-version 级预算。
+  result/materialized cache 另外支持 `derivedCacheScopeMaxBytes`，按 access scope + facts
+  version 做共享 payload guard，不会把 template cache 纳入访问 scope 预算。`storageStats()`
+  暴露 `entryCount`、`scopeCount`、`payloadBytes`、`maxPayloadBytes`、table/index bytes，
+  以及 `derivedCache.cacheBytes` / `maxCacheBytes` / `maxScopeBytes` / `largestScopeBytes`。
+  后续再收敛为按 permissionVersion / graph scope 的更精确失效，并补 eviction cause /
+  pressure 观测。
 - `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
 - `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
 - `pg-hot-operators` engine-sql provider：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 走已验证的 PG SQL fast path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
