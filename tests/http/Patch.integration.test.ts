@@ -126,6 +126,31 @@ INSERT DATA { <${resourceUrl}> <https://schema.org/url> <https://example.com/hom
     expect(urls).not.toContain('https://example.com/home-1');
   });
 
+  it('applies SPARQL UPDATE patches to container metadata resources', async () => {
+    const metadataUrl = new URL('.meta', containerUrl).toString();
+    const sparql = `
+PREFIX udfs: <https://undefineds.co/ns#>
+INSERT DATA { <${containerUrl}> udfs:runtimeKind "codex" }
+`.trim();
+
+    const res = await doFetch(metadataUrl, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/sparql-update' },
+      body: sparql,
+    });
+    await assertSuccess(res, 'metadata sparql patch');
+
+    const metadata = await doFetch(metadataUrl, { method: 'GET', headers: { accept: 'application/n-quads' } });
+    await assertSuccess(metadata, 'get container metadata');
+    const body = await metadata.text();
+    const quads = new Parser().parse(body);
+    expect(quads.some((quad) =>
+      quad.subject.value === containerUrl &&
+      quad.predicate.value === 'https://undefineds.co/ns#runtimeKind' &&
+      quad.object.value === 'codex'
+    )).toBe(true);
+  });
+
   it('applies N3 InsertDeletePatch with solid:inserts/solid:deletes', async () => {
     const n3Patch = `
 @prefix solid: <http://www.w3.org/ns/solid/terms#> .

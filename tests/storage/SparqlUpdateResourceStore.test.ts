@@ -6,6 +6,7 @@ import {
   BasicRepresentation,
   BadRequestHttpError,
   ForbiddenHttpError,
+  NotImplementedHttpError,
   RepresentationMetadata,
   guardedStreamFrom,
   guardStream,
@@ -196,6 +197,29 @@ describe('SparqlUpdateResourceStore', () => {
   });
 
   describe('default graph normalization', () => {
+    it('does not short-circuit metadata resource PATCH away from the CSS metadata patcher', async () => {
+      const metadataStrategy = {
+        ...mockAuxiliaryStrategy,
+        isAuxiliaryIdentifier: vi.fn(({ path }: { path: string }) => path.endsWith('.meta')),
+      };
+      store = new SparqlUpdateResourceStore({
+        accessor: accessor as any,
+        identifierStrategy: mockIdentifierStrategy as any,
+        auxiliaryStrategy: mockAuxiliaryStrategy as any,
+        metadataStrategy: metadataStrategy as any,
+      });
+
+      const metadataIdentifier = { path: 'http://localhost:3000/alice/agents/__secretary__/.meta' };
+      const patch = createPatch(`
+        INSERT DATA {
+          <http://localhost:3000/alice/agents/__secretary__/> <https://undefineds.co/ns#runtimeKind> "codex" .
+        }
+      `);
+
+      await expect(store.modifyResource(metadataIdentifier, patch)).rejects.toBeInstanceOf(NotImplementedHttpError);
+      expect(accessor.executeSparqlUpdate).not.toHaveBeenCalled();
+    });
+
     it('rejects explicit GRAPH targets outside the identifier space without falling back', async () => {
       mockIdentifierStrategy.supportsIdentifier.mockImplementation(({ path }) =>
         path.startsWith('http://localhost:3000/'));

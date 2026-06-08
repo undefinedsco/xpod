@@ -44,10 +44,12 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
   private readonly generator = new SparqlGenerator();
   private readonly parser = new SparqlParser();
   private readonly localFirstRdfRepresentationResolver: LocalFirstRdfRepresentationResolverLike;
+  private readonly metadataAuxiliaryStrategy: AuxiliaryStrategy;
   protected override readonly logger = getLoggerFor(this);
 
   public constructor(options: SparqlUpdateResourceStoreOptions) {
     super(options.accessor, options.identifierStrategy, options.auxiliaryStrategy, options.metadataStrategy);
+    this.metadataAuxiliaryStrategy = options.metadataStrategy;
     this.localFirstRdfRepresentationResolver = options.localFirstRdfRepresentationResolver ??
       new LocalFirstRdfRepresentationResolver({
         accessor: options.accessor,
@@ -89,6 +91,11 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
         }
       }
       this.validateConditions(conditions, metadata);
+    }
+
+    if (this.metadataAuxiliaryStrategy.isAuxiliaryIdentifier(identifier)) {
+      this.logger.debug(`Metadata PATCH for ${identifier.path} falls back to CSS metadata patcher`);
+      throw new NotImplementedHttpError('Metadata resources must be patched by the CSS metadata patcher');
     }
 
     const sparqlUpdate = await this.toSparqlUpdate(patch, identifier);
