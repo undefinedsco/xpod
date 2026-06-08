@@ -546,7 +546,7 @@ const OBJECT_RANGE_KINDS: RdfTermKind[] = ['iri', 'literal', 'blank'];
 const PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS = 4096;
 const PG_CUSTOM_INDEX_MAX_VALUE_ROWS = 8192;
 const DEFAULT_RDF_MAINTENANCE_LEASE_TTL_MS = 120_000;
-const DEFAULT_NUMERIC_AGGREGATE_FACTS_CUTOVER_MAX_SOURCE_ROWS = 4_096;
+const DEFAULT_NUMERIC_AGGREGATE_FACTS_CUTOVER_MAX_SOURCE_ROWS = 64;
 
 interface AsyncSqlExecutor {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -5641,7 +5641,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const estimates = compiled.sourceEstimates.map((source) => source.estimateRows);
     const minSourceRows = Math.min(...estimates);
     const maxSourceRows = Math.max(...estimates);
-    return minSourceRows <= threshold
+    return maxSourceRows <= threshold
       ? { minSourceRows, maxSourceRows, threshold }
       : undefined;
   }

@@ -4686,6 +4686,106 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('keeps high-fanout exact-graph grouped numeric aggregates on RDF-3X when facts cutover would materialize many rows', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-bgp-numeric-exact-fanout-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'aggregate.bgp_numeric'));
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/native-stress.ttl');
+    const quads = [];
+    for (let index = 0; index < 80; index += 1) {
+      const message = namedNode(`${graph.value}#msg_${index}`);
+      const thread = namedNode(`${graph.value}#thread_${index % 8}`);
+      quads.push(
+        quad(message, namedNode(THREAD), thread, graph),
+        quad(message, namedNode(PRIORITY), literal(String(index + 1), namedNode(XSD_INTEGER)), graph),
+        quad(message, namedNode(STATUS), literal('indexed'), graph),
+      );
+    }
+
+    try {
+      await engine.open();
+      const stats = await engine.storageStats();
+      expect(stringList(stats.pgAcceleration?.capabilities)).not.toContain('aggregate.bgp_numeric');
+      expect(stats.pgAcceleration?.activeOperators ?? []).not.toContain('aggregate.bgp_numeric');
+
+      await engine.put(quads);
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'score' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('indexed'),
+          },
+        ],
+        filters: [
+          {
+            variable: 'score',
+            operator: '$termType',
+            value: 'numeric',
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'sum',
+            as: 'scoreTotal',
+            variable: 'score',
+          },
+        ],
+        having: [
+          {
+            variable: 'scoreTotal',
+            operator: '$gt',
+            value: literal('0', namedNode(XSD_INTEGER)),
+          },
+        ],
+        select: ['thread', 'messageCount', 'scoreTotal'],
+        orderBy: [
+          {
+            variable: 'scoreTotal',
+            direction: 'desc',
+          },
+        ],
+        limit: 4,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings).toHaveLength(4);
+      expect(result.metrics.plan).toContain('PostgresRdf3xGroupAggregate');
+      expect(result.metrics.plan).toContain('PostgresRdf3xAggregateHaving(?scoreTotal$gt)');
+      expect(result.metrics.plan).toContain('PostgresRdf3xAggregateOrder(desc:scoreTotal)');
+      expect(result.metrics.plan).toContain('PostgresRdf3xAggregateLimit');
+      expect(result.metrics.plan).not.toContain('PostgresFactsQuery');
+      expect(result.metrics.plan.some((entry) => entry.startsWith('PostgresNumericAggregateFactsCutover('))).toBe(false);
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_numeric)');
+      expect(pool.nativeBgpNumericAggregateCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps graph-prefix grouped numeric aggregates on RDF-3X when facts cutover would fan out', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-bgp-numeric-prefix-fallback-'));
     const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'aggregate.bgp_numeric'));

@@ -2844,7 +2844,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'message score by thread numeric aggregate',
     resource: 'message',
-    purpose: 'small grouped numeric message score aggregate cuts over from RDF-3X to facts by cost',
+    purpose: 'group-prefix grouped numeric message score aggregate stays on RDF-3X instead of row-materializing facts',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -3700,7 +3700,7 @@ export const rdfModelsExtremeQueryBenchmarkCases: readonly RdfModelQueryBenchmar
       ],
       limit: 10,
     },
-    expectedPlan: ['numeric-aggregate-facts-cutover'],
+    expectedPlan: ['numeric-aggregate'],
   },
 ];
 
