@@ -52,6 +52,126 @@ export interface PublicIpCheckResult {
 
 const API_BASE = '/api/admin';
 
+export type RdfStatsSnapshot =
+  | {
+      available: true;
+      engine: 'postgres-rdf';
+      generatedAt: string;
+      stats: RdfStorageStats;
+    }
+  | {
+      available: false;
+      engine: 'postgres-rdf' | 'unsupported';
+      generatedAt: string;
+      reason: 'not-cloud' | 'missing-sparql-endpoint' | 'unsupported-sparql-endpoint';
+    };
+
+export interface RdfStorageStats {
+  factsBytes: number;
+  derivedBytes: number;
+  totalBytes: number;
+  totalToFactsRatio: number;
+  derivedToFactsRatio: number;
+  rdf3x?: {
+    factsDataVersion: number;
+    rdf3xFactsDataVersion: number;
+    refreshLag: number;
+    syncedWithFacts: boolean;
+  };
+  derivedCache?: {
+    cacheBytes: number;
+    maxCacheBytes: number;
+    cachePressure: number;
+    largestScopeBytes: number;
+    largestScopePressure: number;
+    evictionCount: number;
+  };
+  queryResultCache?: RdfCacheStats;
+  materializedResultCache?: RdfCacheStats;
+  queryTemplateCache?: {
+    entryCount: number;
+    maxEntries: number;
+    hitCount: number;
+    missCount: number;
+    evictionCount: number;
+    totalBytes: number;
+  };
+  slowQueries?: {
+    entryCount: number;
+    maxEntries: number;
+    entries: RdfSlowQueryEntry[];
+  };
+  pgAcceleration?: {
+    profile: string;
+    requested: boolean;
+    available: boolean;
+    enabled: boolean;
+    provider?: string;
+    fallbackReason?: string;
+    activeOperators?: string[];
+    missingCapabilities?: string[];
+  };
+}
+
+export interface RdfCacheStats {
+  entryCount: number;
+  scopeCount: number;
+  maxEntries: number;
+  ttlMs: number;
+  payloadBytes: number;
+  maxPayloadBytes: number;
+  totalBytes: number;
+}
+
+export interface RdfSlowQueryEntry {
+  generatedAt: string;
+  queryKey: string;
+  templateKey?: string;
+  selectedPath: string;
+  reasons: string[];
+  runtime: {
+    durationMs: number;
+    scannedRows: number;
+    joinedRows: number;
+    returnedRows: number;
+    filtersApplied: number;
+    filtersPushedDown: number;
+    indexChoices: string[];
+    planSize: number;
+  };
+  slowQuery: {
+    durationMs: number;
+    thresholdMs: number;
+    scannedRows: number;
+    scannedRowsThreshold: number;
+    scanAmplification: number;
+    reasons: string[];
+  };
+  staleStats?: {
+    factsDataVersion: number;
+    rdf3xFactsDataVersion: number;
+    stale: boolean;
+    lag: number;
+  };
+  cache: {
+    templateStatus?: string;
+    resultStatus?: string;
+    materializedStatus?: string;
+    scopeHash: string;
+    scopeBasePath: string | null;
+    scopePrincipal: string | null;
+  };
+  acceleration: {
+    profile: string;
+    requested: boolean;
+    enabled: boolean;
+    provider?: string;
+    fallbackReason?: string;
+    activeOperators?: string[];
+    unsupportedCapabilities?: string[];
+  };
+}
+
 /**
  * 获取 xpod 状态
  */
@@ -138,6 +258,18 @@ export async function getGatewayStatus(): Promise<ServiceState[] | null> {
     }
   } catch (e) {
     console.error('Failed to get gateway status:', e);
+  }
+  return null;
+}
+
+export async function getRdfStats(): Promise<RdfStatsSnapshot | null> {
+  try {
+    const res = await fetch(`${API_BASE}/rdf/stats`);
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.error('Failed to get RDF stats:', e);
   }
   return null;
 }

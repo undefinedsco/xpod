@@ -133,4 +133,34 @@ describe('RdfStatsHandler', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body()).toEqual(snapshot);
   });
+
+  it('exposes a public admin snapshot for the dashboard without changing the versioned API auth', async () => {
+    const snapshot = {
+      available: true,
+      engine: 'postgres-rdf',
+      generatedAt: '2026-06-08T00:00:00.000Z',
+      stats: {
+        factsBytes: 100,
+        derivedBytes: 40,
+        totalBytes: 140,
+        totalToFactsRatio: 1.4,
+        derivedToFactsRatio: 0.4,
+        slowQueries: {
+          entryCount: 0,
+          maxEntries: 20,
+          entries: [],
+        },
+      },
+    };
+    const { server, routes } = createMockServer();
+    const service = { snapshot: vi.fn().mockResolvedValue(snapshot) };
+    registerRdfStatsRoutes(server, { rdfStorageStatsService: service as any });
+
+    const response = createResponse();
+    await routes['GET /api/admin/rdf/stats'](createRequest(), response, {});
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body()).toEqual(snapshot);
+    expect(service.snapshot).toHaveBeenCalledTimes(1);
+  });
 });

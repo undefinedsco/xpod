@@ -5,7 +5,7 @@
 import { useState, useEffect } from 'react';
 import { Sidebar, type AdminPage } from '@/components/ui/Sidebar';
 import { StatusBar } from '@/components/ui/StatusBar';
-import { DashboardPage, SettingsPage, LogsPage } from '@/pages/admin';
+import { DashboardPage, SettingsPage, LogsPage, RdfPage } from '@/pages/admin';
 import { getGatewayStatus, triggerRestart, type ServiceState } from '@/api/admin';
 
 export function AdminLayout() {
@@ -44,6 +44,7 @@ export function AdminLayout() {
         <Sidebar currentPage={currentPage} onPageChange={setCurrentPage} />
         <main className="flex-1 overflow-auto bg-layout-content">
           {currentPage === 'dashboard' && <DashboardPage />}
+          {currentPage === 'rdf' && <RdfPage />}
           {currentPage === 'settings' && <SettingsPage />}
           {currentPage === 'logs' && <LogsPage />}
         </main>

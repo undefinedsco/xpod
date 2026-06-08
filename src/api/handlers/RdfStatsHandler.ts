@@ -25,6 +25,15 @@ export function registerRdfStatsRoutes(server: ApiServer, options: RdfStatsHandl
       sendJson(response, 500, { error: 'Failed to get RDF storage stats' });
     }
   });
+
+  server.get('/api/admin/rdf/stats', async (_request, response) => {
+    try {
+      sendJson(response, 200, await rdfStorageStatsService.snapshot());
+    } catch (error) {
+      logger.error(`Failed to get RDF storage stats: ${error}`);
+      sendJson(response, 500, { error: 'Failed to get RDF storage stats' });
+    }
+  }, { public: true });
 }
 
 function requireRdfStatsRead(request: AuthenticatedRequest, response: ServerResponse): boolean {

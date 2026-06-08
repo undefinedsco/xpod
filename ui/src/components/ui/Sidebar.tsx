@@ -1,8 +1,8 @@
 import type { ComponentType, Dispatch, SetStateAction } from 'react';
 import { clsx } from 'clsx';
-import { LayoutDashboard, Settings, FileText } from 'lucide-react';
+import { Database, LayoutDashboard, Settings, FileText } from 'lucide-react';
 
-export type AdminPage = 'dashboard' | 'logs' | 'settings';
+export type AdminPage = 'dashboard' | 'rdf' | 'logs' | 'settings';
 
 export function Sidebar(props: {
   currentPage: AdminPage;
@@ -12,6 +12,7 @@ export function Sidebar(props: {
 
   const items: Array<{ id: AdminPage; label: string; icon: ComponentType<{ className?: string }> }> = [
     { id: 'dashboard', label: '监控', icon: LayoutDashboard },
+    { id: 'rdf', label: 'RDF', icon: Database },
     { id: 'logs', label: '日志', icon: FileText },
     { id: 'settings', label: '设置', icon: Settings },
   ];
