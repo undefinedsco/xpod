@@ -298,7 +298,7 @@ function deriveStorageMode(webId: string, storageUrl: string): 'cloud' | 'local'
   if (!webIdRoot || !storageRoot) {
     return 'custom';
   }
-  return webIdRoot === storageRoot ? 'cloud' : 'local';
+  return sameStorageRoot(webIdRoot, storageRoot) ? 'cloud' : 'local';
 }
 
 function deriveStorageRoot(url: string): string | undefined {
@@ -345,17 +345,91 @@ function matchesTargetStorage(pod: PodLookupResult, targetStorageUrl: string): b
 
   for (const candidate of candidateUrls) {
     const candidateRoot = deriveStorageRoot(candidate);
-    if (candidateRoot && candidateRoot === targetRoot) {
+    if (candidateRoot && sameStorageRoot(candidateRoot, targetRoot)) {
       return true;
     }
 
-    const candidateUrl = ensureTrailingSlash(candidate);
-    if (candidateUrl.startsWith(targetRoot) || targetRoot.startsWith(candidateUrl)) {
+    if (sameStorageScope(candidate, targetRoot)) {
       return true;
     }
   }
 
   return false;
+}
+
+function sameStorageRoot(left: string, right: string): boolean {
+  if (ensureTrailingSlash(left) === ensureTrailingSlash(right)) {
+    return true;
+  }
+
+  const leftUrl = parseUrl(left);
+  const rightUrl = parseUrl(right);
+  if (!leftUrl || !rightUrl) {
+    return false;
+  }
+
+  return sameUrlAuthority(leftUrl, rightUrl)
+    && normalizeUrlPath(leftUrl.pathname) === normalizeUrlPath(rightUrl.pathname);
+}
+
+function sameStorageScope(candidate: string, targetRoot: string): boolean {
+  const candidateUrl = parseUrl(candidate);
+  const targetUrl = parseUrl(targetRoot);
+  if (!candidateUrl || !targetUrl || !sameUrlAuthority(candidateUrl, targetUrl)) {
+    return false;
+  }
+
+  const candidatePath = normalizeUrlPath(candidateUrl.pathname);
+  const targetPath = normalizeUrlPath(targetUrl.pathname);
+  return candidatePath.startsWith(targetPath) || targetPath.startsWith(candidatePath);
+}
+
+function sameUrlAuthority(left: URL, right: URL): boolean {
+  if (left.protocol !== right.protocol) {
+    return false;
+  }
+
+  if (normalizePort(left) !== normalizePort(right)) {
+    return false;
+  }
+
+  if (left.hostname === right.hostname) {
+    return true;
+  }
+
+  return isLoopbackHostname(left.hostname) && isLoopbackHostname(right.hostname);
+}
+
+function parseUrl(url: string): URL | undefined {
+  try {
+    return new URL(url);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizePort(url: URL): string {
+  if (url.port) {
+    return url.port;
+  }
+
+  if (url.protocol === 'http:') {
+    return '80';
+  }
+
+  if (url.protocol === 'https:') {
+    return '443';
+  }
+
+  return '';
+}
+
+function normalizeUrlPath(pathname: string): string {
+  return ensureTrailingSlash(pathname || '/');
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }
 
 function extractProvisionCode(oidcInteraction: JsonInteractionHandlerInput['oidcInteraction']): string | undefined {
