@@ -19,6 +19,7 @@ import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
+import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
@@ -141,6 +142,14 @@ export function registerCommonServices(
 
     runContextRetriever: asFunction(({ rdfEngine }: ApiContainerCradle) => {
       return createApiRunContextRetriever(rdfEngine);
+    }).singleton(),
+
+    rdfStorageStatsService: asFunction(({ config, rdfEngine }: ApiContainerCradle) => {
+      return new RdfStorageStatsService({
+        edition: config.edition,
+        sparqlEndpoint: config.sparqlEndpoint,
+        rdfEngine,
+      });
     }).singleton(),
 
     runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever }: ApiContainerCradle) => {

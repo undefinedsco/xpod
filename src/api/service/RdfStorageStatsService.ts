@@ -1,5 +1,6 @@
 import {
   PostgresRdfEngine,
+  type RdfEngineLike,
   type RdfEngineStorageStats,
   type RdfPgAccelerationProfile,
   type RdfStorageStatsOptions,
@@ -9,6 +10,7 @@ export interface RdfStorageStatsServiceOptions {
   edition: 'cloud' | 'local';
   sparqlEndpoint?: string;
   rdfAccelerationProfile?: RdfPgAccelerationProfile;
+  rdfEngine?: Pick<RdfEngineLike, 'storageStats'>;
 }
 
 export type RdfStorageStatsSnapshot =
@@ -36,6 +38,15 @@ export class RdfStorageStatsService {
         engine: 'unsupported',
         generatedAt,
         reason: 'not-cloud',
+      };
+    }
+
+    if (this.options.rdfEngine) {
+      return {
+        available: true,
+        engine: 'postgres-rdf',
+        generatedAt,
+        stats: await this.options.rdfEngine.storageStats(options),
       };
     }
 

@@ -32,7 +32,6 @@ import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeReposito
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
 import { LocalPodProvisioningService } from '../../provision/LocalPodProvisioningService';
-import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime';
 
@@ -93,6 +92,7 @@ function registerSharedRoutes(
   const matrixStore = container.resolve('matrixStore');
   const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
+  const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const config = container.resolve('config') as ApiContainerConfig;
 
   registerEdgeNodeSignalRoutes(server, {
@@ -112,10 +112,7 @@ function registerSharedRoutes(
     runtimeConfig: inngestRuntimeConfig,
   });
   registerRdfStatsRoutes(server, {
-    rdfStorageStatsService: new RdfStorageStatsService({
-      edition: config.edition,
-      sparqlEndpoint: config.sparqlEndpoint,
-    }),
+    rdfStorageStatsService,
   });
 
   // Quota & Usage API (Business 对接)

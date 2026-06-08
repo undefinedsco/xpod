@@ -23,6 +23,7 @@ import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
+import type { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
 import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestService';
@@ -162,6 +163,7 @@ export interface ApiContainerCradle {
   providerRegistry: ProviderRegistry;
   embeddingService: EmbeddingService;
   vectorService: VectorService;
+  rdfStorageStatsService: RdfStorageStatsService;
 
   // Cloud 模式: 身份服务
   ddnsRepo?: DdnsRepository;
