@@ -376,7 +376,7 @@ Manifest 至少记录：
 - `PodSolidFsHydrator` 通过 Pod HTTP `GET` 下载对象资源到本地工作目录，记录 `ETag` / `Last-Modified` 为本次 manifest 的 `sourceVersion`；提交 dirty hydrated 文件时用 `PUT` 写回并带 `If-Match`，`409` / `412` 转成 `SolidFsConflictError`。
 - `PodSolidFsSyncer` 只跟踪 `http:` / `https:` workspace。提交 `.ttl` / `.jsonld` 变更时通过 Pod HTTP `PUT` / `DELETE` 写回 CSS，让 `MixDataAccessor` 完成真实文件写入和 structured index 刷新；`file://` workspace 不走这个远程 syncer。
 - durable callback 可使用请求时记录的 Solid auth context：已有 access token 时直接使用；只有 client credentials 时先向 CSS token endpoint 换 token，再写回 Pod。
-- `RdfIndexSolidFsSyncer` 是同进程 adapter，用于测试或嵌入式场景直接刷新 `LocalRdfIndexAccessor`。跨进程 API worker 不应依赖它访问 CSS DI 内部对象。
+- `RdfIndexSolidFsSyncer` 是同进程 adapter，用于测试或嵌入式场景直接刷新 `LocalRdfIndexAccessor`、可选 `RdfTextIndexLike` 和可选 `RdfVectorIndexLike`。vector index 必须显式传入 `vectorizeText`，避免 SolidFS 默认路径绑定具体 embedding provider；跨进程 API worker 不应依赖它访问 CSS DI 内部对象。
 - `SqliteSolidFsSyncJournal` 已实现第一版 per-Pod / workspace outbox：记录本地权威文件提交后的 `local_committed` op，replay 时校验当前文件 hash，成功后写 checkpoint 并标记 `done`，失败则进入 `failed_retryable`，文件已被更新则进入 `reconcile_required`。
 - `JournaledSolidFsSyncer` 可以包装单个 `SolidFsSyncer` + 显式 journal；`WorkspaceJournaledSolidFsSyncer` 按 workspace 自动解析持久 journal 路径，让 RDF/text index 刷新或 Pod HTTP sync 共享同一套 journal、bootstrap、replay 和 compaction 机制；journal 只保存 metadata，不保存文件正文。
 - journal compaction 已按第一版生命周期执行：`done` op 默认 7 天且必须被 checkpoint 覆盖后删除，delete/tombstone 默认 30 天，`failed_retryable` 和未完成 op 不会被普通 compaction 删除。

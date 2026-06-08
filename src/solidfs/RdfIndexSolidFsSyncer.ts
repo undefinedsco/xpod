@@ -4,7 +4,13 @@ import path from 'node:path';
 import { guardStream, type ResourceIdentifier } from '@solid/community-server';
 
 import type { LocalRdfIndexAccessor } from '../storage/accessors/MixDataAccessor';
-import type { RdfTextIndexLike } from '../storage/rdf';
+import type {
+  RdfTextIndexLike,
+  RdfTextSourceInput,
+  RdfVectorChunkInput,
+  RdfVectorIndexLike,
+  RdfVectorSourceInput,
+} from '../storage/rdf';
 import {
   isLineAddressableRdf,
   isRdfDocument,
@@ -13,10 +19,18 @@ import {
 } from '../storage/rdf/RdfContentTypes';
 import type { SolidFsChange, SolidFsManifest, SolidFsSyncer } from './types';
 
+type MaybePromise<T> = T | Promise<T>;
+
 export interface RdfIndexSolidFsSyncerOptions {
   index: LocalRdfIndexAccessor;
   textIndex?: RdfTextIndexLike;
+  vectorIndex?: RdfVectorIndexLike;
+  vectorizeText?: (input: RdfIndexSolidFsVectorizeInput) => MaybePromise<RdfVectorChunkInput[]>;
   resolveIdentifier?: (change: SolidFsChange, workspace: SolidFsManifest) => ResourceIdentifier | undefined;
+}
+
+export interface RdfIndexSolidFsVectorizeInput extends RdfVectorSourceInput {
+  text: string;
 }
 
 /**
@@ -26,16 +40,24 @@ export interface RdfIndexSolidFsSyncerOptions {
 export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
   private readonly index: LocalRdfIndexAccessor;
   private readonly textIndex?: RdfTextIndexLike;
+  private readonly vectorIndex?: RdfVectorIndexLike;
+  private readonly vectorizeText?: NonNullable<RdfIndexSolidFsSyncerOptions['vectorizeText']>;
   private readonly resolveIdentifier: NonNullable<RdfIndexSolidFsSyncerOptions['resolveIdentifier']>;
 
   public constructor(options: RdfIndexSolidFsSyncerOptions) {
+    if (options.vectorIndex && !options.vectorizeText) {
+      throw new Error('RdfIndexSolidFsSyncer vectorIndex requires vectorizeText');
+    }
     this.index = options.index;
     this.textIndex = options.textIndex;
+    this.vectorIndex = options.vectorIndex;
+    this.vectorizeText = options.vectorizeText;
     this.resolveIdentifier = options.resolveIdentifier ?? defaultResolveIdentifier;
   }
 
   public shouldTrackPath(relativePath: string): boolean {
-    return isRdfPath(relativePath) || (this.textIndex ? isTextPath(relativePath) : false);
+    const needsTextSource = Boolean(this.textIndex || this.vectorIndex);
+    return isRdfPath(relativePath) || (needsTextSource ? isTextPath(relativePath) : false);
   }
 
   public async sync(change: SolidFsChange, workspace: SolidFsManifest): Promise<void> {
@@ -44,45 +66,54 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     }
 
     const identifier = this.resolveIdentifier(change, workspace);
-    if (!identifier && isRdfChange(change) && !this.textIndex) {
+    if (!identifier && isRdfChange(change) && !this.textIndex && !this.vectorIndex) {
       return;
     }
 
     if (change.type === 'deleted') {
+      const source = this.sourceInput(change, workspace).source;
       if (identifier && isRdfChange(change)) {
         await this.index.deleteLocalRdfIndex(identifier);
       }
       if (this.textIndex && isTextIndexableChange(change)) {
-        await this.textIndex.deleteSource(change.resource ?? sourceFromWorkspace(change, workspace));
+        await this.textIndex.deleteSource(source);
+      }
+      if (this.vectorIndex && isTextIndexableChange(change)) {
+        await this.vectorIndex.deleteSource(source);
       }
       return;
     }
 
+    const source = this.sourceInput(change, workspace);
     if (identifier && isRdfChange(change)) {
-      const localPath = change.path.split(path.sep).join('/');
       await this.index.syncLocalRdfDocument(
         identifier,
         guardStream(createReadStream(change.sourcePath)),
         change.contentType,
-        {
-          source: change.resource ?? sourceFromWorkspace(change, workspace),
-          workspace: workspace.workspace,
-          localPath,
-          sourceVersion: change.sourceVersion,
-        },
+        source,
       );
     }
 
-    if (this.textIndex && isTextIndexableChange(change)) {
+    if ((this.textIndex || this.vectorIndex) && isTextIndexableChange(change)) {
       const text = await readFile(change.sourcePath, 'utf8');
-      await this.textIndex.indexText({
-        source: change.resource ?? sourceFromWorkspace(change, workspace),
-        workspace: workspace.workspace,
-        localPath: change.path.split(path.sep).join('/'),
-        contentType: change.contentType,
-        sourceVersion: change.sourceVersion,
-      }, text);
+      if (this.textIndex) {
+        await this.textIndex.indexText(source, text);
+      }
+      if (this.vectorIndex && this.vectorizeText) {
+        const chunks = await this.vectorizeText({ ...source, text });
+        await this.vectorIndex.indexVector(source, chunks);
+      }
     }
+  }
+
+  private sourceInput(change: SolidFsChange, workspace: SolidFsManifest): RdfTextSourceInput & RdfVectorSourceInput {
+    return {
+      source: change.resource ?? sourceFromWorkspace(change, workspace),
+      workspace: workspace.workspace,
+      localPath: change.path.split(path.sep).join('/'),
+      contentType: change.contentType,
+      sourceVersion: change.sourceVersion,
+    };
   }
 }
 
