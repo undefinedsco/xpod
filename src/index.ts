@@ -27,7 +27,7 @@ export type {
   RdfSourceInput,
 } from './storage/rdf/types';
 export type { RdfSparqlCompileResult } from './storage/rdf/RdfSparqlAdapter';
-export type { RdfAccessMode, RdfAccessScope } from './storage/rdf/RdfAccessScope';
+export type { RdfAccessScope } from './storage/rdf/RdfAccessScope';
 export type { ShadowRdfQuintStoreOptions } from './storage/rdf/ShadowRdfQuintStore';
 export type {
   SolidRdfSparqlEngineOptions,

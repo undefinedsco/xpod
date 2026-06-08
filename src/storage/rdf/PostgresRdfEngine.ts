@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DataFactory, termToId } from 'n3';
 import type { Quad, Term } from '@rdfjs/types';
 import { PGlite } from '@electric-sql/pglite';
+import { getLoggerFor } from 'global-logger-factory';
 import { getSharedPool, releaseSharedPool } from '../database/PostgresPoolManager';
 import { RDF_TERM_VALUE_HEAD_LENGTH, rdfTermValueHead } from './RdfTermDictionary';
 import { isFiniteNumericLexical, isRdfNumericDatatype, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
@@ -15,6 +16,7 @@ import {
 } from './Rdf3xSchema';
 import type {
   RdfBindingRow,
+  RdfDerivedIndexMaintenanceResult,
   RdfDerivedIndexRefreshOptions,
   RdfDerivedIndexRefreshResult,
   RdfDerivedCacheStats,
@@ -96,6 +98,8 @@ const PG_STRING_ESCAPE = '\u001f';
 const RDF_QUERY_RESULT_CACHE_TABLE = 'rdf_query_result_cache';
 const RDF_MATERIALIZED_RESULT_CACHE_TABLE = 'rdf_materialized_result_cache';
 const RDF_DIRTY_SOURCE_TABLE = 'rdf_dirty_sources';
+const RDF_MAINTENANCE_LEASE_TABLE = 'rdf_maintenance_leases';
+const RDF_DERIVED_INDEX_MAINTENANCE_LEASE = 'rdf-derived-indexes';
 const RDF3X_DIRTY_GRAPH_TABLE = 'rdf3x_dirty_graphs';
 const RDF3X_DIRTY_PAIR_TABLE = 'rdf3x_dirty_pairs';
 const RDF3X_DIRTY_TERM_TABLE = 'rdf3x_dirty_terms';
@@ -475,6 +479,7 @@ const TERM_PROJECTIONS: PgTermProjection[] = [
 const OBJECT_RANGE_KINDS: RdfTermKind[] = ['iri', 'literal', 'blank'];
 const PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS = 4096;
 const PG_CUSTOM_INDEX_MAX_VALUE_ROWS = 8192;
+const DEFAULT_RDF_MAINTENANCE_LEASE_TTL_MS = 120_000;
 
 interface AsyncSqlExecutor {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -511,6 +516,9 @@ export interface PostgresRdfEngineOptions {
   rdfAccelerationProfile?: RdfPgAccelerationProfile;
   rdfAccelerationRequiredCapabilities?: string[];
   deferPgCustomIndexInitialization?: boolean;
+  maintenanceIntervalMs?: number;
+  maintenanceLeaseTtlMs?: number;
+  maintenanceLeaseOwner?: string;
   textIndex?: RdfTextIndex | RdfTextIndexOptions;
   vectorIndex?: RdfVectorIndex | RdfVectorIndexOptions;
 }
@@ -1098,6 +1106,7 @@ class PostgresRdfTermDictionary {
 }
 
 export class PostgresRdfEngine implements RdfEngineLike {
+  private readonly logger = getLoggerFor(this);
   private executor: AsyncSqlExecutor | null = null;
   private termDictionary: PostgresRdfTermDictionary | null = null;
   private initialized = false;
@@ -1130,12 +1139,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private readonly vectorIndex?: RdfVectorIndex;
   private readonly ownsTextIndex: boolean;
   private readonly ownsVectorIndex: boolean;
+  private readonly maintenanceLeaseOwner: string;
+  private maintenanceTimer?: NodeJS.Timeout;
+  private maintenanceRunning: Promise<void> | null = null;
 
   public constructor(options: PostgresRdfEngineOptions) {
     this.pgOptions = {
       ...options,
       driver: options.driver ?? (options.connectionString || options.pool ? 'pg' : 'pglite'),
     };
+    this.maintenanceLeaseOwner = options.maintenanceLeaseOwner ?? `xpod-rdf-${process.pid}-${randomUUID()}`;
     if (options.textIndex instanceof RdfTextIndex) {
       this.textIndex = options.textIndex;
       this.ownsTextIndex = false;
@@ -1177,6 +1190,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await this.initializePgCustomIndexes();
         }
         this.initialized = true;
+        this.startMaintenanceScheduler();
       })
       .finally(() => {
         this.initializing = null;
@@ -1188,6 +1202,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
   public async close(): Promise<void> {
     if (this.initializing) {
       await this.initializing.catch(() => {});
+    }
+    this.stopMaintenanceScheduler();
+    if (this.maintenanceRunning) {
+      await this.maintenanceRunning.catch(() => {});
     }
     if (this.ownsVectorIndex) {
       this.vectorIndex?.close();
@@ -1218,6 +1236,43 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.queryTemplateCacheEvictions = 0;
     this.derivedCacheEvictions = emptyDerivedCacheEvictionStats();
     this.plannerHistogramCache = null;
+  }
+
+  public async maintainDerivedIndexes(): Promise<RdfDerivedIndexMaintenanceResult> {
+    await this.ensureReady();
+    const pendingSources = await this.dirtySourceQueueCount();
+    const factsDataVersion = await this.readFactsDataVersion();
+    const rdf3xFactsDataVersion = await this.readRdf3xFactsDataVersion();
+    if (pendingSources === 0 && factsDataVersion === rdf3xFactsDataVersion) {
+      return {
+        attempted: false,
+        claimed: false,
+        refreshed: false,
+        reason: 'idle',
+        pendingSources,
+      };
+    }
+
+    const claimed = await this.tryClaimMaintenanceLease();
+    if (!claimed) {
+      return {
+        attempted: true,
+        claimed: false,
+        refreshed: false,
+        reason: 'lease_busy',
+        pendingSources,
+      };
+    }
+
+    const refresh = await this.refreshDerivedIndexes();
+    const drainedSources = refresh.rdf3x?.sourceQueue?.drainedSources ?? 0;
+    return {
+      attempted: true,
+      claimed: true,
+      refreshed: Boolean(refresh.rdf3x?.refreshed || drainedSources > 0),
+      pendingSources,
+      refresh,
+    };
   }
 
   public async put(quads: Quad | Quad[], options?: RdfIndexPutOptions): Promise<void> {
@@ -2012,6 +2067,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await tx.exec('DROP TABLE IF EXISTS rdf_sources');
       await tx.exec('DROP TABLE IF EXISTS rdf_terms');
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_DIRTY_SOURCE_TABLE}`);
+      await tx.exec(`DROP TABLE IF EXISTS ${RDF_MAINTENANCE_LEASE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_QUERY_RESULT_CACHE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}`);
       await tx.exec('DELETE FROM rdf_index_metadata');
@@ -2111,6 +2167,19 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await executor.exec(`
       CREATE INDEX IF NOT EXISTS rdf_dirty_sources_changed_at
       ON ${RDF_DIRTY_SOURCE_TABLE} (changed_at)
+    `);
+    await executor.exec(`
+      CREATE TABLE IF NOT EXISTS ${RDF_MAINTENANCE_LEASE_TABLE} (
+        name TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        claimed_at_ms BIGINT NOT NULL,
+        heartbeat_at_ms BIGINT NOT NULL,
+        expires_at_ms BIGINT NOT NULL
+      )
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_maintenance_leases_expires_at
+      ON ${RDF_MAINTENANCE_LEASE_TABLE} (expires_at_ms)
     `);
   }
 
@@ -2424,6 +2493,70 @@ export class PostgresRdfEngine implements RdfEngineLike {
       SELECT COUNT(*) AS count FROM deleted
     `);
     return Number(rows[0]?.count ?? 0) || 0;
+  }
+
+  private async tryClaimMaintenanceLease(
+    name = RDF_DERIVED_INDEX_MAINTENANCE_LEASE,
+    executor = this.requireExecutor(),
+  ): Promise<boolean> {
+    const leaseTtlMs = this.pgOptions.maintenanceLeaseTtlMs ?? DEFAULT_RDF_MAINTENANCE_LEASE_TTL_MS;
+    const rows = await executor.query<{ count: number }>(`
+      WITH now_value AS (
+        SELECT FLOOR(EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT AS now_ms
+      ),
+      claimed AS (
+        INSERT INTO ${RDF_MAINTENANCE_LEASE_TABLE} (
+          name,
+          owner,
+          claimed_at_ms,
+          heartbeat_at_ms,
+          expires_at_ms
+        )
+        SELECT $1, $2, now_ms, now_ms, now_ms + $3
+        FROM now_value
+        ON CONFLICT (name) DO UPDATE
+        SET
+          owner = EXCLUDED.owner,
+          claimed_at_ms = EXCLUDED.claimed_at_ms,
+          heartbeat_at_ms = EXCLUDED.heartbeat_at_ms,
+          expires_at_ms = EXCLUDED.expires_at_ms
+        WHERE ${RDF_MAINTENANCE_LEASE_TABLE}.expires_at_ms <= (
+          SELECT now_ms FROM now_value
+        ) OR ${RDF_MAINTENANCE_LEASE_TABLE}.owner = $2
+        RETURNING 1
+      )
+      SELECT COUNT(*) AS count FROM claimed
+    `, [name, this.maintenanceLeaseOwner, leaseTtlMs]);
+    return (Number(rows[0]?.count ?? 0) || 0) > 0;
+  }
+
+  private startMaintenanceScheduler(): void {
+    const intervalMs = this.pgOptions.maintenanceIntervalMs ?? 0;
+    if (intervalMs <= 0 || this.maintenanceTimer) {
+      return;
+    }
+    this.maintenanceTimer = setInterval(() => {
+      if (this.maintenanceRunning) {
+        return;
+      }
+      this.maintenanceRunning = this.maintainDerivedIndexes()
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          this.logger.warn(`RDF derived index maintenance failed: ${(error as Error).message}`);
+        })
+        .finally(() => {
+          this.maintenanceRunning = null;
+        });
+    }, intervalMs);
+    this.maintenanceTimer.unref?.();
+  }
+
+  private stopMaintenanceScheduler(): void {
+    if (!this.maintenanceTimer) {
+      return;
+    }
+    clearInterval(this.maintenanceTimer);
+    this.maintenanceTimer = undefined;
   }
 
   private async estimateDirtyRefreshScanRows(): Promise<number> {
@@ -7941,7 +8074,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ...PAIR_PROJECTIONS.map((projection) => projection.table),
           ...TERM_PROJECTIONS.map((projection) => projection.table),
         ]
-        : ['rdf_terms', 'rdf_sources', RDF_DIRTY_SOURCE_TABLE, RDF_FACTS_TABLE, 'rdf_index_metadata'];
+        : ['rdf_terms', 'rdf_sources', RDF_DIRTY_SOURCE_TABLE, RDF_MAINTENANCE_LEASE_TABLE, RDF_FACTS_TABLE, 'rdf_index_metadata'];
       const rows = await Promise.all(tables.map(async (table) => ({
         name: table,
         kind: 'table' as const,

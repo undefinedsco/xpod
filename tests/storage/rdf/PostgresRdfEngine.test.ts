@@ -2318,6 +2318,150 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('maintains dirty source queue through a leased maintenance cycle', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-maintenance-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      maintenanceLeaseOwner: 'test-worker-a',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const source = {
+      source: graph.value,
+      workspace: 'alice',
+      localPath: '/.data/chat/default/2026/05/18/messages.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'v1',
+    };
+    const message = namedNode(`${graph.value}#msg_1`);
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(message, namedNode(STATUS), literal('open'), graph),
+      ], source);
+
+      const maintained = await engine.maintainDerivedIndexes();
+      expect(maintained).toMatchObject({
+        attempted: true,
+        claimed: true,
+        refreshed: true,
+        pendingSources: 1,
+      });
+      expect(maintained.refresh?.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+
+      const idle = await engine.maintainDerivedIndexes();
+      expect(idle).toEqual({
+        attempted: false,
+        claimed: false,
+        refreshed: false,
+        reason: 'idle',
+        pendingSources: 0,
+      });
+
+      const executor = (engine as unknown as {
+        requireExecutor(): { exec(sql: string, params?: unknown[]): Promise<void> };
+      }).requireExecutor();
+      await executor.exec(`
+        INSERT INTO rdf_dirty_sources (
+          source,
+          workspace,
+          local_path,
+          content_type,
+          source_version,
+          operation
+        )
+        VALUES ($1, $2, $3, $4, $5, 'upsert')
+      `, [
+        source.source,
+        source.workspace,
+        source.localPath,
+        source.contentType,
+        'v2',
+      ]);
+
+      const drainedOnly = await engine.maintainDerivedIndexes();
+      expect(drainedOnly).toMatchObject({
+        attempted: true,
+        claimed: true,
+        refreshed: true,
+        pendingSources: 1,
+      });
+      expect(drainedOnly.refresh?.rdf3x).toMatchObject({
+        refreshed: false,
+        previousFactsDataVersion: 1,
+        factsDataVersion: 1,
+        syncedWithFacts: true,
+      });
+      expect(drainedOnly.refresh?.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips maintenance when another worker owns the lease', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-maintenance-lease-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      maintenanceLeaseOwner: 'test-worker-a',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const source = {
+      source: graph.value,
+      workspace: 'alice',
+      localPath: '/.data/task/secretary/2026/05/18/runs.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'v1',
+    };
+    const run = namedNode(`${graph.value}#run_1`);
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(run, namedNode(STATUS), literal('queued'), graph),
+      ], source);
+      const executor = (engine as unknown as {
+        requireExecutor(): { exec(sql: string, params?: unknown[]): Promise<void> };
+      }).requireExecutor();
+      await executor.exec(`
+        INSERT INTO rdf_maintenance_leases (
+          name,
+          owner,
+          claimed_at_ms,
+          heartbeat_at_ms,
+          expires_at_ms
+        )
+        VALUES ('rdf-derived-indexes', 'test-worker-b', 0, 0, 9999999999999)
+      `);
+
+      const busy = await engine.maintainDerivedIndexes();
+      expect(busy).toEqual({
+        attempted: true,
+        claimed: false,
+        refreshed: false,
+        reason: 'lease_busy',
+        pendingSources: 1,
+      });
+
+      const manualRefresh = await engine.refreshDerivedIndexes();
+      expect(manualRefresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('restores PostgreSQL string integer aliases for PG SQL group joins', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-pg-strings-'));
     const pool = new StringIntegerPgPool(dataDir);

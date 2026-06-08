@@ -18,7 +18,14 @@ import type {
   RdfVectorSearchPattern,
 } from './types';
 
-export type RdfAccessMode = 'read' | 'append' | 'delete' | 'write';
+export const RdfAccessMode = {
+  READ: 'read',
+  APPEND: 'append',
+  DELETE: 'delete',
+  WRITE: 'write',
+} as const;
+
+export type RdfAccessMode = typeof RdfAccessMode[keyof typeof RdfAccessMode];
 
 export interface RdfAccessScope {
   basePath: string;

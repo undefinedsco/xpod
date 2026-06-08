@@ -178,7 +178,8 @@
         "@type": "Variable"
       },
       "options_rdfAccelerationProfile": "pg-hot-operators",
-      "options_autoOpen": true
+      "options_autoOpen": true,
+      "options_maintenanceIntervalMs": 60000
     },
     {
       "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",

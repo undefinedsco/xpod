@@ -231,6 +231,15 @@ export interface RdfDerivedIndexRefreshOptions {
   mode?: 'auto' | 'full';
 }
 
+export interface RdfDerivedIndexMaintenanceResult {
+  attempted: boolean;
+  claimed: boolean;
+  refreshed: boolean;
+  reason?: 'idle' | 'lease_busy';
+  pendingSources: number;
+  refresh?: RdfDerivedIndexRefreshResult;
+}
+
 export interface RdfDirtySourceQueueRefreshResult {
   pendingSources: number;
   drainedSources: number;
