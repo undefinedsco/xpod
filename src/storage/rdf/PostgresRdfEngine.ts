@@ -6,7 +6,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import { getSharedPool, releaseSharedPool } from '../database/PostgresPoolManager';
 import { RDF_TERM_VALUE_HEAD_LENGTH, rdfTermValueHead } from './RdfTermDictionary';
 import { isFiniteNumericLexical, isRdfNumericDatatype, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
-import { rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
+import { rdfSubjectStarJoinKey, rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
 import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
 import {
@@ -164,12 +164,14 @@ const PG_NATIVE_CUSTOM_INDEX_OPERATOR_CAPABILITIES = [
   'aggregate.bgp_count',
   'aggregate.bgp_group_count',
   'aggregate.bgp_numeric',
+  'aggregate.subject_star_count',
   'index.xpod_rdf_perm.scan_any',
   'index.xpod_rdf_perm.scan_any.limit',
   'index.xpod_rdf_perm.count_any',
   'index.xpod_rdf_perm.distinct_any',
   'join.required_bgp.native',
   'join.slot_filter.native',
+  'join.subject_star',
   'join.values.native',
   'join.values.limit.native',
 ] as const;
@@ -5786,10 +5788,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     values: PgCompiledValuesSource[],
     start: number,
   ): Promise<RdfQueryResult | undefined> {
-    const capability = 'aggregate.bgp_count';
-    if (!this.canUsePgAccelerationCapability(capability)) {
-      return undefined;
-    }
     if (
       query.patterns.length < 2
       || query.patterns.length > 8
@@ -5803,6 +5801,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
       || query.limit !== undefined
       || query.offset !== undefined
     ) {
+      return undefined;
+    }
+
+    const subjectStarKey = rdfSubjectStarJoinKey(patterns);
+    const capability = subjectStarKey && this.canUsePgAccelerationCapability('aggregate.subject_star_count')
+      ? 'aggregate.subject_star_count'
+      : 'aggregate.bgp_count';
+    if (!this.canUsePgAccelerationCapability(capability)) {
       return undefined;
     }
 
@@ -5900,7 +5906,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
           `XpodRdfExtensionOperator(${capability})`,
           ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
           ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
+          ...(capability === 'aggregate.subject_star_count' ? [`PostgresRdfNativeCustomIndexSubjectStarCount(${subjectStarKey};patterns:${patterns.length})`] : []),
           `PostgresRdfNativeCustomIndexBgpCount(${patterns.length})`,
+          ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
           `PostgresRdf3xJoinCount(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
           ...this.pgCustomIndexInternalFiltersPlan(shape),
           aggregatePlan(aggregates, false),
@@ -6414,10 +6422,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     project: string[],
     start: number,
   ): Promise<RdfQueryResult | undefined> {
-    const capability = 'join.required_bgp.native';
-    if (!this.canUsePgAccelerationCapability(capability)) {
-      return undefined;
-    }
     if (
       query.patterns.length < 2
       || query.patterns.length > 8
@@ -6430,6 +6434,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
       || (query.having ?? []).length > 0
       || (query.orderBy ?? []).length > 0
     ) {
+      return undefined;
+    }
+
+    const subjectStarKey = rdfSubjectStarJoinKey(patterns);
+    const capability = subjectStarKey && this.canUsePgAccelerationCapability('join.subject_star')
+      ? 'join.subject_star'
+      : 'join.required_bgp.native';
+    if (!this.canUsePgAccelerationCapability(capability)) {
       return undefined;
     }
 
@@ -6495,6 +6507,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ...this.pgAccelerationActiveMarkersForQuery(query),
           `XpodRdfExtensionOperator(${capability})`,
           ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
+          ...(capability === 'join.subject_star' ? [`PostgresRdfNativeCustomIndexSubjectStarJoin(${subjectStarKey};patterns:${patterns.length})`] : []),
           `PostgresRdfNativeCustomIndexBgpJoin(${patterns.length})`,
           ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
           `PostgresRdf3xJoin(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,

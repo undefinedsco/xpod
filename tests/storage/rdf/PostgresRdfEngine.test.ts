@@ -3286,6 +3286,7 @@ describe('PostgresRdfEngine', () => {
           'aggregate.bgp_numeric': 'extension',
           'aggregate.count': 'engine-sql',
           'aggregate.numeric': 'engine-sql',
+          'aggregate.subject_star_count': 'extension',
           'cache.result': 'engine-sql',
           'index.xpod_rdf_perm': 'extension',
           'index.xpod_rdf_perm.count_any': 'extension',
@@ -3294,6 +3295,7 @@ describe('PostgresRdfEngine', () => {
           'index.xpod_rdf_perm.scan_any.limit': 'extension',
           'join.required_bgp': 'engine-sql',
           'join.slot_filter.native': 'extension',
+          'join.subject_star': 'extension',
           'join.values': 'engine-sql',
           'join.values.limit.native': 'extension',
           'join.values.native': 'extension',
@@ -3306,6 +3308,7 @@ describe('PostgresRdfEngine', () => {
         'aggregate.bgp_count',
         'aggregate.bgp_group_count',
         'aggregate.bgp_numeric',
+        'aggregate.subject_star_count',
         'index.xpod_rdf_perm',
         'index.xpod_rdf_perm.count_any',
         'index.xpod_rdf_perm.distinct_any',
@@ -3314,6 +3317,7 @@ describe('PostgresRdfEngine', () => {
         'join.required_bgp.native',
         'join.required_bgp.order_page.native',
         'join.slot_filter.native',
+        'join.subject_star',
         'join.values.limit.native',
         'join.values.native',
       ]));
@@ -3323,6 +3327,7 @@ describe('PostgresRdfEngine', () => {
         'aggregate.bgp_numeric',
         'aggregate.count',
         'aggregate.numeric',
+        'aggregate.subject_star_count',
         'cache.result',
         'index.xpod_rdf_perm.count_any',
         'index.xpod_rdf_perm.distinct_any',
@@ -3331,6 +3336,7 @@ describe('PostgresRdfEngine', () => {
         'join.required_bgp',
         'join.required_bgp.native',
         'join.slot_filter.native',
+        'join.subject_star',
         'join.values',
         'join.values.limit.native',
         'join.values.native',
@@ -3534,6 +3540,42 @@ describe('PostgresRdfEngine', () => {
       expect(bgpParams[6]).toBe(1);
       expect(bgpParams[7]).toBeNull();
 
+      const subjectStarJoinResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        select: ['message', 'thread', 'priority'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(subjectStarJoinResult.bindings.map((binding) => binding.message.value).sort()).toEqual([
+        message1.value,
+        message2.value,
+      ]);
+      expect(subjectStarJoinResult.metrics.plan).toContain('XpodRdfExtensionOperator(join.subject_star)');
+      expect(subjectStarJoinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexSubjectStarJoin(?message;patterns:3)');
+      expect(subjectStarJoinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(3)');
+      expect(subjectStarJoinResult.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(subjectStarJoinResult.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
+      expect(pool.nativeBgpJoinCalls).toHaveLength(2);
+
       const bgpCountResult = await engine.query({
         patterns: [
           {
@@ -3585,6 +3627,48 @@ describe('PostgresRdfEngine', () => {
       expect(bgpCountParams[6]).toEqual([]);
       expect(bgpCountParams[7]).toEqual([1, 2]);
       expect(bgpCountParams[8]).toEqual([0, 1]);
+
+      const subjectStarCountResult = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['messageCount'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(subjectStarCountResult.count).toBe(2);
+      expect(subjectStarCountResult.bindings).toHaveLength(1);
+      expect(subjectStarCountResult.bindings[0].messageCount.value).toBe('2');
+      expect(subjectStarCountResult.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.subject_star_count)');
+      expect(subjectStarCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexSubjectStarCount(?message;patterns:3)');
+      expect(subjectStarCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpCount(3)');
+      expect(subjectStarCountResult.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(subjectStarCountResult.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
+      expect(pool.nativeBgpCountCalls).toHaveLength(2);
 
       const valuesJoinResult = await engine.query({
         patterns: [
@@ -4227,6 +4311,126 @@ describe('PostgresRdfEngine', () => {
       expect(result.metrics.plan).toContain('PostgresRdf3xJoinCount');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
       expect(pool.nativeBgpCountCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses generic native BGP operators when subject-star extension operators are absent', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-subject-star-fallback-'));
+    const pool = new XpodRdfExtensionPgPool(
+      dataDir,
+      XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => ![
+        'aggregate.subject_star_count',
+        'join.subject_star',
+      ].includes(capability)),
+    );
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stringList(stats?.capabilities)).not.toContain('aggregate.subject_star_count');
+      expect(stringList(stats?.capabilities)).not.toContain('join.subject_star');
+      expect(stats?.activeOperators ?? []).not.toContain('aggregate.subject_star_count');
+      expect(stats?.activeOperators ?? []).not.toContain('join.subject_star');
+      expect(stats?.activeOperators ?? []).toEqual(expect.arrayContaining([
+        'aggregate.bgp_count',
+        'join.required_bgp.native',
+      ]));
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message1, namedNode(THREAD), namedNode(`${graph.value}#thread_a`), graph),
+        quad(message1, namedNode(PRIORITY), literal('10', namedNode(XSD_INTEGER)), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(THREAD), namedNode(`${graph.value}#thread_a`), graph),
+        quad(message2, namedNode(PRIORITY), literal('4', namedNode(XSD_INTEGER)), graph),
+      ]);
+
+      const join = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        select: ['message', 'thread', 'priority'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(join.bindings.map((binding) => binding.message.value).sort()).toEqual([
+        message1.value,
+        message2.value,
+      ]);
+      expect(join.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
+      expect(join.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(3)');
+      expect(join.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(join.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.subject_star)');
+      expect(join.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexSubjectStarJoin');
+      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
+
+      const count = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['messageCount'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(count.count).toBe(2);
+      expect(count.bindings[0].messageCount.value).toBe('2');
+      expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
+      expect(count.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpCount(3)');
+      expect(count.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(count.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.subject_star_count)');
+      expect(count.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexSubjectStarCount');
+      expect(pool.nativeBgpCountCalls).toHaveLength(1);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -5025,6 +5229,7 @@ const XPOD_RDF_EXTENSION_CAPABILITIES = [
   'join.required_bgp',
   'join.required_bgp.native',
   'join.required_bgp.order_page.native',
+  'join.subject_star',
   'join.values.native',
   'join.values.limit.native',
   'join.slot_filter.native',
@@ -5032,6 +5237,7 @@ const XPOD_RDF_EXTENSION_CAPABILITIES = [
   'aggregate.bgp_count',
   'aggregate.bgp_group_count',
   'aggregate.bgp_numeric',
+  'aggregate.subject_star_count',
   'aggregate.count',
   'aggregate.numeric',
   'cache.result',
