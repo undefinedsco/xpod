@@ -82,9 +82,17 @@ export interface RdfStorageStats {
     cacheBytes: number;
     maxCacheBytes: number;
     cachePressure: number;
+    maxScopeBytes: number;
+    scopeVersionCount: number;
     largestScopeBytes: number;
     largestScopePressure: number;
+    largestScopeHash?: string;
+    largestScopeFactsDataVersion?: number;
     evictionCount: number;
+    evictions: RdfDerivedCacheEvictionStats;
+    queryResultPayloadBytes: number;
+    materializedResultPayloadBytes: number;
+    queryTemplateBytes: number;
   };
   queryResultCache?: RdfCacheStats;
   materializedResultCache?: RdfCacheStats;
@@ -107,10 +115,34 @@ export interface RdfStorageStats {
     available: boolean;
     enabled: boolean;
     provider?: string;
+    version?: string;
+    capabilities: string[];
+    capabilityProviders?: Record<string, string>;
+    requiredCapabilities: string[];
     fallbackReason?: string;
+    fallbackDetail?: string;
     activeOperators?: string[];
     missingCapabilities?: string[];
+    customIndexes?: Array<{
+      name: string;
+      permutation: string;
+      columns: string[];
+      stats?: Record<string, unknown>;
+      error?: string;
+    }>;
   };
+}
+
+export interface RdfDerivedCacheEvictionStats {
+  factsVersion: number;
+  ttl: number;
+  maxEntries: number;
+  payloadBytes: number;
+  scopeBytes: number;
+  totalBytes: number;
+  templateTtl: number;
+  templateMaxEntries: number;
+  templateBytes: number;
 }
 
 export interface RdfCacheStats {
@@ -120,6 +152,8 @@ export interface RdfCacheStats {
   ttlMs: number;
   payloadBytes: number;
   maxPayloadBytes: number;
+  tableBytes: number;
+  indexBytes: number;
   totalBytes: number;
 }
 

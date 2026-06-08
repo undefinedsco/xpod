@@ -8,7 +8,12 @@ import { Activity, AlertTriangle, Database, Gauge, RefreshCw } from 'lucide-reac
 import { clsx } from 'clsx';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { getRdfStats, type RdfSlowQueryEntry, type RdfStatsSnapshot } from '@/api/admin';
+import {
+  getRdfStats,
+  type RdfDerivedCacheEvictionStats,
+  type RdfSlowQueryEntry,
+  type RdfStatsSnapshot,
+} from '@/api/admin';
 
 const unavailableReasonText: Record<NonNullable<Extract<RdfStatsSnapshot, { available: false }>['reason']>, string> = {
   'not-cloud': '非 Cloud 模式',
@@ -34,7 +39,7 @@ export function RdfPage() {
       if (next) {
         setSnapshot(next);
       } else {
-        setError('RDF stats unavailable');
+        setError('RDF 统计不可用');
       }
     } finally {
       setLoading(false);
@@ -94,6 +99,8 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
   const stats = snapshot.stats;
   const rdf3x = stats.rdf3x;
   const slowQueries = stats.slowQueries?.entries ?? [];
+  const derivedCache = stats.derivedCache;
+  const pgAcceleration = stats.pgAcceleration;
 
   return (
     <>
@@ -102,8 +109,8 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
           icon={Database}
           label="引擎"
           value={snapshot.engine}
-          detail={stats.pgAcceleration?.profile ?? 'baseline'}
-          tone={stats.pgAcceleration?.enabled ? 'good' : 'neutral'}
+          detail={pgAcceleration?.profile ?? 'baseline'}
+          tone={pgAcceleration?.enabled ? 'good' : 'neutral'}
         />
         <MetricCard
           icon={Activity}
@@ -128,7 +135,7 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
         />
       </div>
 
-      <div className="mb-8 grid grid-cols-1 gap-5 xl:grid-cols-3">
+      <div className="mb-8 grid grid-cols-1 gap-5 xl:grid-cols-4">
         <Card variant="bordered">
           <CardHeader>
             <CardTitle>空间占用</CardTitle>
@@ -148,10 +155,25 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
           </CardHeader>
           <CardContent className="space-y-3">
             <KeyValue label="result entries" value={`${stats.queryResultCache?.entryCount ?? 0}`} />
+            <KeyValue label="result scopes" value={`${stats.queryResultCache?.scopeCount ?? 0}`} />
             <KeyValue label="materialized entries" value={`${stats.materializedResultCache?.entryCount ?? 0}`} />
+            <KeyValue label="materialized scopes" value={`${stats.materializedResultCache?.scopeCount ?? 0}`} />
             <KeyValue label="template entries" value={`${stats.queryTemplateCache?.entryCount ?? 0}`} />
-            <KeyValue label="cache pressure" value={formatPercent(stats.derivedCache?.cachePressure ?? 0)} />
-            <KeyValue label="evictions" value={`${stats.derivedCache?.evictionCount ?? 0}`} />
+            <KeyValue label="cache pressure" value={formatPercent(derivedCache?.cachePressure ?? 0)} />
+          </CardContent>
+        </Card>
+
+        <Card variant="bordered">
+          <CardHeader>
+            <CardTitle>权限 Scope</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <KeyValue label="scope versions" value={`${derivedCache?.scopeVersionCount ?? 0}`} />
+            <KeyValue label="max scope" value={formatBytes(derivedCache?.maxScopeBytes ?? 0)} />
+            <KeyValue label="largest scope" value={formatBytes(derivedCache?.largestScopeBytes ?? 0)} />
+            <KeyValue label="scope pressure" value={formatPercent(derivedCache?.largestScopePressure ?? 0)} />
+            <KeyValue label="scope hash" value={shortKey(derivedCache?.largestScopeHash ?? '-')} />
+            <KeyValue label="facts version" value={`${derivedCache?.largestScopeFactsDataVersion ?? '-'}`} />
           </CardContent>
         </Card>
 
@@ -160,11 +182,38 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
             <CardTitle>PG 加速</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <KeyValue label="profile" value={stats.pgAcceleration?.profile ?? 'baseline'} />
-            <KeyValue label="provider" value={stats.pgAcceleration?.provider ?? '-'} />
-            <KeyValue label="enabled" value={stats.pgAcceleration?.enabled ? 'true' : 'false'} />
-            <KeyValue label="active operators" value={`${stats.pgAcceleration?.activeOperators?.length ?? 0}`} />
-            <KeyValue label="missing caps" value={`${stats.pgAcceleration?.missingCapabilities?.length ?? 0}`} />
+            <KeyValue label="profile" value={pgAcceleration?.profile ?? 'baseline'} />
+            <KeyValue label="provider" value={pgAcceleration?.provider ?? '-'} />
+            <KeyValue label="enabled" value={pgAcceleration?.enabled ? 'true' : 'false'} />
+            <KeyValue label="capabilities" value={`${pgAcceleration?.capabilities?.length ?? 0}`} />
+            <KeyValue label="active operators" value={formatListSummary(pgAcceleration?.activeOperators)} />
+            <KeyValue label="missing caps" value={formatListSummary(pgAcceleration?.missingCapabilities)} />
+            <KeyValue label="fallback" value={pgAcceleration?.fallbackReason ?? '-'} />
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="mb-8 grid grid-cols-1 gap-5 xl:grid-cols-2">
+        <Card variant="bordered">
+          <CardHeader>
+            <CardTitle>Cache 淘汰</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <KeyValue label="total" value={`${derivedCache?.evictionCount ?? 0}`} />
+            <EvictionBreakdown evictions={derivedCache?.evictions} />
+          </CardContent>
+        </Card>
+
+        <Card variant="bordered">
+          <CardHeader>
+            <CardTitle>Cache 载荷</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <KeyValue label="result payload" value={formatBytes(derivedCache?.queryResultPayloadBytes ?? 0)} />
+            <KeyValue label="materialized payload" value={formatBytes(derivedCache?.materializedResultPayloadBytes ?? 0)} />
+            <KeyValue label="template bytes" value={formatBytes(derivedCache?.queryTemplateBytes ?? 0)} />
+            <KeyValue label="result table/index" value={`${formatBytes(stats.queryResultCache?.tableBytes ?? 0)} / ${formatBytes(stats.queryResultCache?.indexBytes ?? 0)}`} />
+            <KeyValue label="materialized table/index" value={`${formatBytes(stats.materializedResultCache?.tableBytes ?? 0)} / ${formatBytes(stats.materializedResultCache?.indexBytes ?? 0)}`} />
           </CardContent>
         </Card>
       </div>
@@ -273,6 +322,11 @@ function SlowQueryTable(props: { entries: RdfSlowQueryEntry[] }) {
                       <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground">
                         {entry.cache.scopeBasePath ?? entry.cache.scopeHash}
                       </div>
+                      {entry.cache.scopePrincipal && (
+                        <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground">
+                          {entry.cache.scopePrincipal}
+                        </div>
+                      )}
                     </td>
                     <td className="px-5 py-3">
                       <ReasonList reasons={entry.slowQuery.reasons} />
@@ -285,6 +339,23 @@ function SlowQueryTable(props: { entries: RdfSlowQueryEntry[] }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function EvictionBreakdown(props: { evictions?: RdfDerivedCacheEvictionStats }) {
+  const entries = Object.entries(props.evictions ?? {}).filter(([, count]) => count > 0);
+  if (entries.length === 0) {
+    return <div className="text-sm text-muted-foreground">暂无淘汰</div>;
+  }
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {entries.map(([name, count]) => (
+        <div key={name} className="flex items-center justify-between gap-3 rounded-md bg-muted px-3 py-2 text-sm">
+          <span className="min-w-0 truncate text-muted-foreground">{name}</span>
+          <span className="font-mono">{formatInteger(count)}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -352,4 +423,14 @@ function formatDateTime(value: string): string {
 
 function shortKey(value: string): string {
   return value.length <= 16 ? value : `${value.slice(0, 12)}...${value.slice(-4)}`;
+}
+
+function formatListSummary(values?: string[]): string {
+  if (!values?.length) {
+    return '-';
+  }
+  if (values.length <= 2) {
+    return values.join(', ');
+  }
+  return `${values.slice(0, 2).join(', ')} +${values.length - 2}`;
 }

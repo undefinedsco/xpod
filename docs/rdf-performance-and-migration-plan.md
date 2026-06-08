@@ -625,8 +625,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `cachePressure` / `largestScopePressure`。`derivedCache.evictions` 第一版提供进程内压力
   观测，按 `factsVersion`、`ttl`、`maxEntries`、`payloadBytes`、`scopeBytes`、
   `totalBytes`、`templateTtl`、`templateMaxEntries`、`templateBytes` 聚合可重建 cache 的
-  淘汰原因；该计数不写入 Pod/RDF durable 状态。后续再收敛为按 permissionVersion /
-  graph scope 的更精确失效，并把 eviction telemetry 接入慢查询报告和运维面板。
+  淘汰原因；该计数不写入 Pod/RDF durable 状态。dashboard RDF 页已展示 result/materialized
+  scope count、最大 scope、payload bytes、table/index bytes 和 eviction breakdown。后续再收敛为按
+  permissionVersion / graph scope 的更精确失效，并把 eviction telemetry 接入慢查询 drill-down。
 - `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。PG facts 侧另有 `rdf_dirty_sources` source-level queue：带 source 的 put/replace/delete 会登记待维护 source，显式 refresh 成功后 drain queue，并在 `rdf3x.sourceQueue` 中报告 pending/drained source 数。`maintainDerivedIndexes()` 通过同库 `rdf_maintenance_leases` 包住显式 refresh，避免多 xpod worker 同时维护；cloud 配置通过 `options_maintenanceIntervalMs=60000` 启动后台循环。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
 - `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
 - `pg-hot-operators` engine-sql provider：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 走已验证的 PG SQL fast path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
@@ -675,8 +676,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `models/settings/<view>/<query>` key；chat/thread/message、task/run/schedule/session/agent
   等稳定产品读视图会按共享 RDF 类型和产品 graph-scoped relation/status/timeline 谓词自动生成
   `models/product-views/<view>/<query>` key。自由 text/vector search / fusion query 暂不自动物化，
-  避免按用户输入制造过宽 cache key 空间；统计页、更大数据量 benchmark 和 auth-aware cache
-  dashboard 细节仍未完成。
+  避免按用户输入制造过宽 cache key 空间；统计页和 auth/cache scope 的 dashboard 首版已能看
+  entry/scope/payload/eviction，后续仍缺按租户/权限 scope drill-down 和更大数据量 benchmark。
 - ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
   `Message.thread` 查询，Managed Run 组装 conversation / thread items 时不再绕过 shared model
   入口；SPARQL 边界 selector 会识别 `sioc:has_container` / `sioc:has_member` thread-history
@@ -686,9 +687,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   query/repository 层后续只需要继续覆盖统计页和非 thread-history 高频产品查询。
 - SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair。PG 已补第一版 source-level dirty queue，并通过 `maintainDerivedIndexes()` / `rdf_maintenance_leases` 接到后台维护入口；未完成的是更大数据量下的 refresh benchmark、按 source 批量调度策略优化和运维面板。
 - 冷启动 stats refresh / warm steady-state 的自动化运维指标；`GET /v1/rdf/stats` 和 dashboard
-  RDF 页已先暴露 `storageStats()`、`rdf3x.refreshLag` 和 process-local `slowQueries` 快照，
-  `metrics.explain` 已有第一版查询级 runtime/stale/slow 结构化观测，但还没有按租户/权限
-  drill-down 的 dashboard 细节。
+  RDF 页已先暴露 `storageStats()`、`rdf3x.refreshLag`、auth/cache scope、cache eviction
+  breakdown 和 process-local `slowQueries` 快照，`metrics.explain` 已有第一版查询级
+  runtime/stale/slow 结构化观测，但还没有按租户/权限 drill-down 的 dashboard 细节。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration。真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 ## Migration Strategy
@@ -816,5 +817,5 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 
 - 优化或禁用当前 SQLite/file-backed numeric aggregate 的 RDF-3X unconditional path。
 - 增加真实 PG cold-start benchmark case：区分首次连接/首次执行、stats refresh 后首轮、warm steady-state 三个口径。
-- 在 RDF dashboard 上补按租户/权限 scope 的 drill-down，并接入冷启动 / warm steady-state
+- 在 RDF dashboard 上继续补按租户/权限 scope 的 drill-down，并接入冷启动 / warm steady-state
   自动化指标。
