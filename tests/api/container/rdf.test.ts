@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { DataFactory } from 'n3';
+import { describe, expect, it, vi } from 'vitest';
 import { createApiContainer, type ApiContainerConfig } from '../../../src/api/container';
+import { createApiRunContextRetriever } from '../../../src/api/container/rdf';
 import { RdfRunContextRetriever } from '../../../src/api/runs/RdfRunContextRetriever';
+import type { RunContextRetrievalInput } from '../../../src/api/runs/RunExecutionBackend';
+import type { RdfEngineLike, RdfQuery, RdfQueryResult } from '../../../src/storage/rdf';
+
+const { literal, namedNode } = DataFactory;
 
 function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerConfig {
   return {
@@ -51,4 +57,115 @@ describe('API RDF container services', () => {
     expect(sqliteContainer.resolve('rdfEngine')).toBeUndefined();
     expect(sqliteContainer.resolve('runContextRetriever')).toBeUndefined();
   });
+
+  it('adds vector retrieval to the product Run context path when Pod embedding config exists', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([
+      {
+        source: namedNode('file://localhost/workspace/notes.md'),
+        textContent: literal('Runtime approvals'),
+        textScore: literal('0.8'),
+        vectorContent: literal('Runtime approval vector match'),
+        vectorScore: literal('0.9'),
+        fusionScore: literal('0.845'),
+      },
+    ]));
+    const embed = vi.fn(async () => [0.1, 0.2, 0.3]);
+    const getAiConfig = vi.fn(async () => ({
+      providerId: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      credentialId: 'cred-1',
+      embeddingModel: 'text-embedding-3-small',
+    }));
+    const retriever = createApiRunContextRetriever(
+      { query: queryMock } as unknown as RdfEngineLike,
+      { chatKitStore: { getAiConfig }, embeddingService: { embed } },
+    );
+
+    const result = await retriever?.retrieve(runContextInput());
+    const query = queryMock.mock.calls[0][0];
+
+    expect(getAiConfig).toHaveBeenCalledTimes(1);
+    expect(embed).toHaveBeenCalledWith('runtime approvals', {
+      provider: 'openai',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      proxyUrl: undefined,
+    }, 'text-embedding-3-small');
+    expect(query.vectorSearch).toEqual([expect.objectContaining({
+      embedding: [0.1, 0.2, 0.3],
+      vectorModel: 'text-embedding-3-small',
+    })]);
+    expect(result?.items[0]).toMatchObject({
+      source: 'file://localhost/workspace/notes.md',
+      score: 0.845,
+      metadata: {
+        textScore: 0.8,
+        vectorScore: 0.9,
+      },
+    });
+  });
+
+  it('keeps the product Run context path text-only when Pod embedding config is absent', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([
+      {
+        source: namedNode('file://localhost/workspace/notes.md'),
+        textContent: literal('Runtime approvals'),
+        textScore: literal('0.8'),
+      },
+    ]));
+    const embed = vi.fn(async () => [0.1, 0.2, 0.3]);
+    const getAiConfig = vi.fn(async () => ({
+      providerId: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      credentialId: 'cred-1',
+    }));
+    const retriever = createApiRunContextRetriever(
+      { query: queryMock } as unknown as RdfEngineLike,
+      { chatKitStore: { getAiConfig }, embeddingService: { embed } },
+    );
+
+    await retriever?.retrieve(runContextInput());
+    const query = queryMock.mock.calls[0][0];
+
+    expect(getAiConfig).toHaveBeenCalledTimes(1);
+    expect(embed).not.toHaveBeenCalled();
+    expect(query.textSearch).toHaveLength(1);
+    expect(query.vectorSearch).toBeUndefined();
+  });
 });
+
+function runContextInput(): RunContextRetrievalInput {
+  return {
+    runId: 'chat/default/2026/06/09/runs.ttl#run_product_context',
+    threadId: 'chat/default/index.ttl#thread_product_context',
+    prompt: 'runtime approvals',
+    conversation: [],
+    config: {
+      workspace: 'file://localhost/workspace',
+      runner: { type: 'codex', protocol: 'acp' },
+    },
+    context: {
+      userId: 'alice',
+    },
+  };
+}
+
+function queryResult(bindings: RdfQueryResult['bindings']): RdfQueryResult {
+  return {
+    bindings,
+    metrics: {
+      engine: 'postgres-rdf',
+      plan: ['PostgresFactsScan', 'TextSearch(query:runtime approvals)'],
+      scannedRows: bindings.length,
+      joinedRows: bindings.length,
+      returnedRows: bindings.length,
+      durationMs: 1,
+      indexChoices: [],
+      filtersApplied: 0,
+      filtersPushedDown: 0,
+      planSize: 2,
+    } as any,
+  };
+}

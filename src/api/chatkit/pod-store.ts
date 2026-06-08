@@ -73,9 +73,10 @@ import type { AuthContext } from '../auth/AuthContext';
 import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
+import { AIConfig } from '../../ai/schema/config';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
-import { normalizeAIConfigProviderId, normalizeAIConfigResourceId } from '@undefineds.co/models';
+import { normalizeAIConfigModelId, normalizeAIConfigProviderId, normalizeAIConfigResourceId } from '@undefineds.co/models';
 
 const schema = {
   chat: Chat,
@@ -86,6 +87,7 @@ const schema = {
   task: Task,
   provider: Provider,
   model: Model,
+  aiConfig: AIConfig,
   credential: Credential,
 };
 
@@ -256,7 +258,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
         this.logger.info(`Initializing tables for Pod (access token): ${auth.webId}`);
         try {
-          await db.init(Chat, Thread, Message, Run, RunStep, Task, Credential);
+          await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
           this.logger.info('Tables initialized successfully');
         } catch (initError) {
           this.logger.error(`Failed to init tables: ${initError}`);
@@ -295,7 +297,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
       this.logger.info(`Initializing tables for Pod: ${webId}`);
       try {
-        await db.init(Chat, Thread, Message, Run, RunStep, Task, Credential);
+        await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
         this.logger.info('Tables initialized successfully');
       } catch (initError) {
         this.logger.error(`Failed to init tables: ${initError}`);
@@ -2071,6 +2073,23 @@ WHERE { ${deletePatterns.join(' ')} }
     return null;
   }
 
+  private async findConfiguredEmbeddingModel(db: any, providerId: string): Promise<string | undefined> {
+    try {
+      if (typeof db.findById !== 'function') {
+        return undefined;
+      }
+      const config = await db.findById(AIConfig, 'config');
+      const raw = typeof config?.embeddingModel === 'string' ? config.embeddingModel : undefined;
+      if (!raw?.trim()) {
+        return undefined;
+      }
+      return normalizeAIConfigModelId(raw, providerId) || undefined;
+    } catch (error) {
+      this.logger.debug(`Failed to read configured embedding model: ${error}`);
+      return undefined;
+    }
+  }
+
   private sortAiCredentialCandidates<T extends AiCredentialCandidate>(credentials: T[]): T[] {
     return [...credentials].sort((left, right) => {
       const defaultDelta = Number(this.isTruthyValue(right.isDefault)) - Number(this.isTruthyValue(left.isDefault));
@@ -2118,6 +2137,7 @@ WHERE { ${deletePatterns.join(' ')} }
     baseUrl: string;
     proxyUrl?: string;
     defaultModel?: string;
+    embeddingModel?: string;
     apiKey: string;
     credentialId: string;
   } | undefined> {
@@ -2155,6 +2175,7 @@ WHERE { ${deletePatterns.join(' ')} }
           : undefined;
 
         const providerId = this.extractProviderId(provider.id || cred.provider);
+        const embeddingModel = await this.findConfiguredEmbeddingModel(db, providerId);
         this.logger.debug(`Using credential ${cred.id} with provider ${providerId}`);
 
         return {
@@ -2162,6 +2183,7 @@ WHERE { ${deletePatterns.join(' ')} }
           baseUrl,
           proxyUrl: provider.proxyUrl || undefined,
           defaultModel,
+          embeddingModel,
           apiKey: cred.apiKey!,
           credentialId: cred.id!,
         };

@@ -140,8 +140,8 @@ export function registerCommonServices(
       return createApiRdfEngine(config);
     }).singleton(),
 
-    runContextRetriever: asFunction(({ rdfEngine }: ApiContainerCradle) => {
-      return createApiRunContextRetriever(rdfEngine);
+    runContextRetriever: asFunction(({ rdfEngine, chatKitStore, embeddingService }: ApiContainerCradle) => {
+      return createApiRunContextRetriever(rdfEngine, { chatKitStore, embeddingService });
     }).singleton(),
 
     rdfStorageStatsService: asFunction(({ config, rdfEngine }: ApiContainerCradle) => {
