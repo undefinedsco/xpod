@@ -683,14 +683,17 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - ACL/ACR 写路径已经接入 affected basePath overlap 的精确 cache invalidation；未完成的是把它从
   basePath overlap 进一步收敛到 permissionVersion / graph scope。materialized result 已在
   `SolidRdfSparqlEngine` 边界为 ChatKit thread history / Managed Run conversation assembly
-  自动生成 `chatkit/thread-history/<thread>/<query>` key；settings Provider/Model/Credential
-  product-view 查询也会按类型列表或 provider-model-credential 关系 join 自动生成
+  自动生成 `chatkit/thread-history/<thread>/<query>` key；业务统计页这类
+  aggregate/groupBy/having 查询会按 message/thread、run priority、provider credential 等稳定
+  形状自动生成 `models/stats/<view>/<query>` key；settings Provider/Model/Credential
+  product-view 查询会按类型列表或 provider-model-credential 关系 join 自动生成
   `models/settings/<view>/<query>` key；chat/thread/message、task/run/schedule/session/agent
   等稳定产品读视图会按共享 RDF 类型和产品 graph-scoped relation/status/timeline 谓词自动生成
   `models/product-views/<view>/<query>` key；active session + chat/thread 这类非 thread-history
   Agent context hydration 查询会自动生成 `models/agent-context/<view>/<query>` key。
   自由 text/vector search / fusion query 暂不自动物化，
-  避免按用户输入制造过宽 cache key 空间；统计页和 auth/cache scope 的 dashboard 首版已能看
+  避免按用户输入制造过宽 cache key 空间；RDF 运维统计页走 `storageStats()`，不进入 query
+  result materialized cache；auth/cache scope 的 dashboard 首版已能看
   entry/scope/payload/eviction/top scope drill-down，并能按 principal/base/version 搜索 scope；
   后续仍缺更大数据量 benchmark。
 - ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
@@ -699,7 +702,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   形状并挂 materialized key。AI provider/settings 读路径仍走 models/drizzle-solid，SPARQL 边界
   selector 会识别 `ai:Provider` / `ai:Model` / `cred:Credential` 类型列表和
   `ai:isProvidedBy` + `cred:provider` 关系 join，避免为这类产品路径手写 SPARQL。shared
-  query/repository 层后续只需要继续覆盖统计页和其他高频产品查询。
+  query/repository 层后续只需要继续覆盖其他高频产品查询。
 - SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair。PG 已补第一版 source-level dirty queue，并通过 `maintainDerivedIndexes()` / `rdf_maintenance_leases` 接到后台维护入口；未完成的是更大数据量下的 refresh benchmark、按 source 批量调度策略优化和运维面板。
 - 冷启动 stats refresh / warm steady-state 的自动化运维指标；`GET /v1/rdf/stats` 和 dashboard
   RDF 页已先暴露 `storageStats()`、`rdf3x.refreshLag`、auth/cache scope、cache eviction

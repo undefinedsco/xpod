@@ -123,11 +123,14 @@ const UDFS_LEASE_OWNER = 'https://undefineds.co/ns#leaseOwner';
 const UDFS_SESSION_STATUS = 'https://undefineds.co/ns#sessionStatus';
 const UDFS_CONVERSATION = 'https://undefineds.co/ns#conversation';
 const UDFS_TOKEN_USAGE = 'https://undefineds.co/ns#tokenUsage';
+const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
+const UDFS_SCORE = 'https://undefineds.co/ns#score';
 const XPOD_AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
 const XPOD_AI_MODEL = 'https://vocab.xpod.dev/ai#Model';
 const XPOD_AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
 const XPOD_CREDENTIAL = 'https://vocab.xpod.dev/credential#Credential';
 const XPOD_CREDENTIAL_PROVIDER = 'https://vocab.xpod.dev/credential#provider';
+const XPOD_CREDENTIAL_FAIL_COUNT = 'https://vocab.xpod.dev/credential#failCount';
 const PRODUCT_VIEW_MATERIALIZED_VERSION = 'v1';
 
 const SETTINGS_RESOURCE_TYPE_VIEWS = new Map<string, string>([
@@ -758,10 +761,102 @@ function defaultMaterializedQuerySelector(
   if (hasSearchSources(query)) {
     return undefined;
   }
-  return threadHistoryMaterializedResult(query)
+  return statsProductViewMaterializedResult(query)
+    ?? threadHistoryMaterializedResult(query)
     ?? settingsProductViewMaterializedResult(query)
     ?? agentContextMaterializedResult(query)
     ?? stableProductViewMaterializedResult(query);
+}
+
+function statsProductViewMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const view = statsProductView(query);
+  if (!view) {
+    return undefined;
+  }
+  return {
+    key: `models/stats/${view}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function statsProductView(query: RdfQuery): string | undefined {
+  if (!hasStatsShape(query) || !hasProductGraphScope(query)) {
+    return undefined;
+  }
+
+  const predicates = new Set<string>();
+  const hasType = new Set<string>();
+
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (!predicate) {
+      continue;
+    }
+    predicates.add(predicate);
+    if (predicate === RDF_TYPE) {
+      const type = namedNodeValue(pattern.object);
+      if (type) {
+        hasType.add(type);
+      }
+    }
+  }
+
+  if (predicates.has(XPOD_AI_IS_PROVIDED_BY) && predicates.has(XPOD_CREDENTIAL_PROVIDER)) {
+    return predicates.has(XPOD_CREDENTIAL_FAIL_COUNT)
+      ? 'provider-credential-failures'
+      : 'provider-credential-counts';
+  }
+
+  if (predicates.has(SIOC_HAS_CONTAINER) || predicates.has(SIOC_HAS_MEMBER)) {
+    return predicates.has(UDFS_SCORE)
+      ? 'message-score-by-thread'
+      : 'message-count-by-thread';
+  }
+
+  if (predicates.has(UDFS_STATUS) && predicates.has(UDFS_PRIORITY)) {
+    return 'run-priority-summary';
+  }
+
+  const views = new Set<string>();
+  for (const type of hasType) {
+    const view = SETTINGS_RESOURCE_TYPE_VIEWS.get(type) ?? PRODUCT_RESOURCE_TYPE_VIEWS.get(type);
+    if (view) {
+      views.add(view);
+    }
+  }
+  for (const predicate of predicates) {
+    const view = PRODUCT_RELATION_PREDICATE_VIEWS.get(predicate);
+    if (view) {
+      views.add(view);
+    }
+  }
+
+  if (views.size === 0) {
+    return undefined;
+  }
+  return `${[...views].sort().join('+')}-${statsAggregateKind(query)}`;
+}
+
+function hasStatsShape(query: RdfQuery): boolean {
+  return queryAggregates(query).length > 0
+    || (query.groupBy?.length ?? 0) > 0
+    || (query.having?.length ?? 0) > 0;
+}
+
+function statsAggregateKind(query: RdfQuery): string {
+  const aggregates = queryAggregates(query);
+  const aggregateKind = aggregates.every((aggregate) => aggregate.type === 'count')
+    ? 'counts'
+    : 'numeric-summary';
+  return (query.groupBy?.length ?? 0) > 0 ? `grouped-${aggregateKind}` : aggregateKind;
+}
+
+function queryAggregates(query: RdfQuery): NonNullable<RdfQuery['aggregates']> {
+  return query.aggregates && query.aggregates.length > 0
+    ? query.aggregates
+    : query.aggregate
+      ? [query.aggregate]
+      : [];
 }
 
 function threadHistoryMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
@@ -929,16 +1024,37 @@ function hasSearchSources(query: RdfQuery): boolean {
 
 function isProductGraphScoped(pattern: RdfQueryPattern): boolean {
   const graph = namedNodeValue(pattern.graph) ?? graphPrefixValue(pattern.graph);
-  return Boolean(graph && (
-    graph.includes('/.data/chat/')
-      || graph.includes('/.data/task/')
-      || graph.includes('/.data/sessions/')
-      || graph.includes('/.data/agents/')
-      || graph.includes('/.data/approvals/')
-      || graph.includes('/.data/audits/')
-      || graph.includes('/.data/issues/')
-      || graph.includes('/settings/')
+  return Boolean(graph && isProductGraphPath(graph));
+}
+
+function hasProductGraphScope(query: RdfQuery): boolean {
+  if (query.patterns.some(isProductGraphScoped)) {
+    return true;
+  }
+  const graphVariables = new Set(query.patterns
+    .map((pattern) => variableValue(pattern.graph))
+    .filter((variable): variable is string => Boolean(variable)));
+  if (graphVariables.size === 0) {
+    return false;
+  }
+  return (query.filters ?? []).some((filter) => (
+    graphVariables.has(filter.variable)
+      && filter.operator === '$startsWith'
+      && filter.operand === 'stringValue'
+      && typeof filter.value === 'string'
+      && isProductGraphPath(filter.value)
   ));
+}
+
+function isProductGraphPath(graph: string): boolean {
+  return graph.includes('/.data/chat/')
+    || graph.includes('/.data/task/')
+    || graph.includes('/.data/sessions/')
+    || graph.includes('/.data/agents/')
+    || graph.includes('/.data/approvals/')
+    || graph.includes('/.data/audits/')
+    || graph.includes('/.data/issues/')
+    || graph.includes('/settings/');
 }
 
 function graphPrefixValue(term: RdfQueryTermPattern | undefined): string | undefined {
@@ -955,6 +1071,13 @@ function namedNodeValue(term: RdfQueryTermPattern | undefined): string | undefin
     return undefined;
   }
   return term.termType === 'NamedNode' ? term.value : undefined;
+}
+
+function variableValue(term: RdfQueryTermPattern | undefined): string | undefined {
+  if (!term || typeof term !== 'object' || !('variable' in term)) {
+    return undefined;
+  }
+  return term.variable;
 }
 
 function stableQueryFingerprint(query: RdfQuery): string {

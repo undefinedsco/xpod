@@ -44,6 +44,7 @@ const AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
 const AI_BASE_URL = 'https://vocab.xpod.dev/ai#baseUrl';
 const AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
 const CREDENTIAL_PROVIDER = 'https://vocab.xpod.dev/credential#provider';
+const CREDENTIAL_FAIL_COUNT = 'https://vocab.xpod.dev/credential#failCount';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 
 describe('SolidRdfSparqlEngine', () => {
@@ -440,6 +441,81 @@ describe('SolidRdfSparqlEngine', () => {
     expect(materialized).toMatchObject({ version: 'v1' });
     expect(typeof materialized).toBe('object');
     expect((materialized as { key: string }).key).toMatch(/^models\/product-views\/schedules\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for message aggregate stats views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?thread (COUNT(?message) AS ?count) WHERE {
+        GRAPH ?graph {
+          ?message <${HAS_MEMBER}> ?thread .
+        }
+        FILTER(STRSTARTS(STR(?graph), "https://pod.example/alice/.data/chat/default/"))
+      }
+      GROUP BY ?thread
+      HAVING (?count > 2)
+      ORDER BY DESC(?count)
+      LIMIT 10
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/stats\/message-count-by-thread\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for provider credential aggregate stats views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?provider (COUNT(?credential) AS ?credentialCount) (SUM(?failCount) AS ?failCountTotal) WHERE {
+        GRAPH <https://pod.example/alice/settings/providers/anthropic.ttl> {
+          ?model <${AI_IS_PROVIDED_BY}> ?provider .
+        }
+        GRAPH <https://pod.example/alice/settings/credentials.ttl> {
+          ?credential <${CREDENTIAL_PROVIDER}> ?provider .
+          ?credential <${CREDENTIAL_FAIL_COUNT}> ?failCount .
+        }
+        FILTER(isNumeric(?failCount))
+      }
+      GROUP BY ?provider
+      ORDER BY DESC(?failCountTotal)
+      LIMIT 10
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/stats\/provider-credential-failures\/[a-f0-9]{16}$/);
   });
 
   it('adds a materialized cache key for agent context session hydration views', async () => {
