@@ -58,6 +58,9 @@ export interface ApiContainerConfig {
   /** 数据库连接 URL */
   databaseUrl: string;
 
+  /** RDF/SPARQL facts database connection URL. */
+  sparqlEndpoint?: string;
+
   /** Redis connection URL, used by embedded infrastructure such as Inngest in cloud mode. */
   redisUrl?: string;
 

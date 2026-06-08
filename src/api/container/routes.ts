@@ -27,10 +27,12 @@ import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, register
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
+import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
 import { LocalPodProvisioningService } from '../../provision/LocalPodProvisioningService';
+import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime';
 
@@ -108,6 +110,12 @@ function registerSharedRoutes(
     backend: runExecutionBackend,
     taskScheduler: inngestTaskScheduler,
     runtimeConfig: inngestRuntimeConfig,
+  });
+  registerRdfStatsRoutes(server, {
+    rdfStorageStatsService: new RdfStorageStatsService({
+      edition: config.edition,
+      sparqlEndpoint: config.sparqlEndpoint,
+    }),
   });
 
   // Quota & Usage API (Business 对接)

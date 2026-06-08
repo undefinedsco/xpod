@@ -88,6 +88,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     authMode: resolveAuthModeFromEnv(process.env),
     rdfIndexPath: process.env.CSS_RDF_INDEX_PATH,
     databaseUrl: process.env.CSS_IDENTITY_DB_URL ?? process.env.DATABASE_URL ?? '',
+    sparqlEndpoint: process.env.CSS_SPARQL_ENDPOINT ?? process.env.SPARQL_ENDPOINT,
     redisUrl: process.env.CSS_REDIS_CLIENT ?? process.env.REDIS_URL,
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),

@@ -10,5 +10,6 @@ export * from './SubdomainClientHandler';
 export * from './ChatKitHandler';
 export * from './MatrixHandler';
 export * from './RunHandler';
+export * from './RdfStatsHandler';
 export * from './ProvisionHandler';
 export * from './PodManagementHandler';
