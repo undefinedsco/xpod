@@ -184,6 +184,18 @@ export interface RdfDerivedCacheStats {
   queryTemplateBytes: number;
 }
 
+export interface RdfSlowQueryDerivedCacheExplain {
+  cacheBytes: number;
+  maxCacheBytes: number;
+  cachePressure: number;
+  largestScopeBytes: number;
+  largestScopePressure: number;
+  largestScopeHash?: string;
+  largestScopeFactsDataVersion?: number;
+  evictionCount: number;
+  evictions: RdfDerivedCacheEvictionStats;
+}
+
 export interface RdfDerivedCacheScopeEntry {
   scopeHash: string;
   factsDataVersion: number;
@@ -263,6 +275,7 @@ export interface RdfSlowQueryStatsEntry {
   runtime: RdfQueryPlannerRuntimeExplain;
   slowQuery: RdfQueryPlannerSlowQueryExplain;
   staleStats?: RdfQueryPlannerStaleStatsExplain;
+  derivedCache: RdfSlowQueryDerivedCacheExplain;
   cache: {
     templateStatus?: RdfQueryTemplateCacheExplain['status'];
     resultStatus?: RdfQueryCacheStatus;

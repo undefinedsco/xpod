@@ -23,6 +23,7 @@ import type {
   RdfDerivedCacheEvictionStats,
   RdfDerivedCacheScopeEntry,
   RdfDerivedCacheScopeStatsOptions,
+  RdfSlowQueryDerivedCacheExplain,
   RdfEngineLike,
   RdfEngineStorageStats,
   RdfStorageStatsOptions,
@@ -4053,7 +4054,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...(acceleration?.activeOperators ? { activeOperators: this.effectivePgAccelerationActiveOperators(acceleration) } : {}),
       ...(options.query ? { unsupportedCapabilities: this.unsupportedPgAccelerationCapabilities(options.query) } : {}),
     };
-    this.recordSlowQuerySnapshot(planner, options, cache.scope, accelerationExplain);
+    await this.recordSlowQuerySnapshot(planner, options, cache.scope, accelerationExplain);
     return {
       ...result,
       metrics: {
@@ -4364,7 +4365,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private recordSlowQuerySnapshot(
+  private async recordSlowQuerySnapshot(
     planner: RdfQueryPlannerExplain,
     options: PgQueryExplainOptions,
     cacheScope: {
@@ -4373,7 +4374,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       principal: string | null;
     },
     acceleration: RdfSlowQueryStatsEntry['acceleration'],
-  ): void {
+  ): Promise<void> {
     if (!planner.slowQuery) {
       return;
     }
@@ -4382,6 +4383,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       this.slowQueryHistory = [];
       return;
     }
+    const derivedCache = await this.slowQueryDerivedCacheExplain();
 
     this.slowQueryHistory.push({
       generatedAt: new Date().toISOString(),
@@ -4398,6 +4400,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         reasons: [...planner.slowQuery.reasons],
       },
       ...(planner.staleStats ? { staleStats: { ...planner.staleStats } } : {}),
+      derivedCache,
       cache: {
         templateStatus: options.template.explain.status,
         ...(options.resultCache ? { resultStatus: options.resultCache.status } : {}),
@@ -4413,6 +4416,31 @@ export class PostgresRdfEngine implements RdfEngineLike {
       },
     });
     this.trimSlowQueryHistory(maxEntries);
+  }
+
+  private async slowQueryDerivedCacheExplain(): Promise<RdfSlowQueryDerivedCacheExplain> {
+    const queryResultCache = await this.queryResultCacheStats();
+    const materializedResultCache = await this.materializedResultCacheStats();
+    const queryTemplateCache = this.queryTemplateCacheStats();
+    const derivedCache = this.derivedCacheStats(
+      queryResultCache,
+      materializedResultCache,
+      queryTemplateCache,
+      await this.derivedCacheScopeStats({ limit: 1 }),
+    );
+    return {
+      cacheBytes: derivedCache.cacheBytes,
+      maxCacheBytes: derivedCache.maxCacheBytes,
+      cachePressure: derivedCache.cachePressure,
+      largestScopeBytes: derivedCache.largestScopeBytes,
+      largestScopePressure: derivedCache.largestScopePressure,
+      ...(derivedCache.largestScopeHash ? { largestScopeHash: derivedCache.largestScopeHash } : {}),
+      ...(derivedCache.largestScopeFactsDataVersion !== undefined
+        ? { largestScopeFactsDataVersion: derivedCache.largestScopeFactsDataVersion }
+        : {}),
+      evictionCount: derivedCache.evictionCount,
+      evictions: { ...derivedCache.evictions },
+    };
   }
 
   private slowQueryStats(): RdfSlowQueryStats {
@@ -4439,6 +4467,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
           reasons: [...entry.slowQuery.reasons],
         },
         ...(entry.staleStats ? { staleStats: { ...entry.staleStats } } : {}),
+        derivedCache: {
+          ...entry.derivedCache,
+          evictions: { ...entry.derivedCache.evictions },
+        },
         cache: { ...entry.cache },
         acceleration: {
           ...entry.acceleration,
