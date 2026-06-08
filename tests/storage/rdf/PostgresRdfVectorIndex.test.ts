@@ -1,0 +1,475 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { PGlite } from '@electric-sql/pglite';
+import { DataFactory } from 'n3';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { PostgresRdfEngine, PostgresRdfVectorIndex, rdfVar } from '../../../src/storage/rdf';
+
+const { literal, namedNode, quad } = DataFactory;
+const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
+
+describe('PostgresRdfVectorIndex', () => {
+  let dataDir: string;
+  let index: PostgresRdfVectorIndex;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-pg-rdf-vector-index-'));
+    index = new PostgresRdfVectorIndex({ driver: 'pglite', dataDir });
+    await index.open();
+  });
+
+  afterEach(async () => {
+    await index.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('ranks vector chunks by cosine similarity with workspace and model scope', async () => {
+    await index.indexVector({
+      source: 'https://pod.example/alice/docs/guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/guide.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'v1',
+    }, [
+      {
+        chunkKey: 'intro',
+        ordinal: 0,
+        level: 1,
+        heading: 'Intro',
+        path: ['Intro'],
+        content: 'Alpha overview.',
+        startOffset: 0,
+        endOffset: 15,
+        embedding: [1, 0, 0],
+        model: 'test-embed',
+      },
+      {
+        chunkKey: 'details',
+        ordinal: 1,
+        level: 2,
+        heading: 'Details',
+        path: ['Intro', 'Details'],
+        content: 'Gamma details.',
+        startOffset: 16,
+        endOffset: 30,
+        embedding: [0, 1, 0],
+        model: 'test-embed',
+      },
+    ]);
+    await index.indexVector({
+      source: 'https://pod.example/bob/docs/guide.md',
+      workspace: 'https://pod.example/bob/',
+      localPath: 'docs/guide.md',
+      contentType: 'text/markdown',
+    }, [
+      {
+        chunkKey: 'bob',
+        ordinal: 0,
+        level: 1,
+        content: 'Bob overview.',
+        startOffset: 0,
+        endOffset: 13,
+        embedding: [1, 0, 0],
+        model: 'test-embed',
+      },
+    ]);
+
+    const results = await index.search({
+      embedding: [0.9, 0.1, 0],
+      workspace: 'https://pod.example/alice/',
+      model: 'test-embed',
+      limit: 2,
+    });
+
+    expect(results.map((result) => result.chunkKey)).toEqual(['intro', 'details']);
+    expect(results[0]).toMatchObject({
+      source: 'https://pod.example/alice/docs/guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/guide.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'v1',
+      chunkKey: 'intro',
+      level: 1,
+      heading: 'Intro',
+      path: ['Intro'],
+      content: 'Alpha overview.',
+      model: 'test-embed',
+    });
+    expect(results[0].score).toBeGreaterThan(results[1].score);
+    expect(results[0].distance).toBeLessThan(results[1].distance);
+    await expect(index.stats()).resolves.toMatchObject({
+      sourceCount: 2,
+      chunkCount: 3,
+      componentCount: 9,
+    });
+  });
+
+  it('supports dot-product and euclidean metrics, source replacement, and delete', async () => {
+    const source = {
+      source: 'https://pod.example/alice/docs/metrics.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/metrics.md',
+      contentType: 'text/markdown',
+    };
+
+    await index.indexVector(source, [
+      {
+        chunkKey: 'aligned-small',
+        ordinal: 0,
+        level: 1,
+        content: 'Aligned but small.',
+        startOffset: 0,
+        endOffset: 18,
+        embedding: [1, 0],
+      },
+      {
+        chunkKey: 'aligned-large',
+        ordinal: 1,
+        level: 1,
+        content: 'Aligned and large.',
+        startOffset: 19,
+        endOffset: 37,
+        embedding: [2, 0],
+      },
+      {
+        chunkKey: 'near-euclidean',
+        ordinal: 2,
+        level: 1,
+        content: 'Closest by euclidean distance.',
+        startOffset: 38,
+        endOffset: 66,
+        embedding: [1, 1],
+      },
+    ]);
+
+    await expect(index.search({ embedding: [1, 0], metric: 'dot', limit: 2 })).resolves.toMatchObject([
+      {
+        chunkKey: 'aligned-large',
+        distance: -2,
+        score: 2,
+      },
+      {
+        chunkKey: 'aligned-small',
+      },
+    ]);
+    await expect(index.search({ embedding: [1, 1], metric: 'euclidean', limit: 2 })).resolves.toMatchObject([
+      {
+        chunkKey: 'near-euclidean',
+        distance: 0,
+        score: -0,
+      },
+      {
+        chunkKey: 'aligned-small',
+      },
+    ]);
+
+    await index.indexVector(source, [
+      {
+        chunkKey: 'replacement',
+        ordinal: 0,
+        level: 1,
+        content: 'Replacement.',
+        startOffset: 0,
+        endOffset: 12,
+        embedding: [0, 1],
+      },
+    ]);
+    await expect(index.search({ embedding: [1, 0], threshold: 0.5 })).resolves.toEqual([]);
+    await expect(index.deleteSource(source.source)).resolves.toBe(1);
+    await expect(index.stats()).resolves.toMatchObject({
+      sourceCount: 0,
+      chunkCount: 0,
+      componentCount: 0,
+    });
+  });
+
+  it('filters search by workspace and source constraints and estimates cardinality', async () => {
+    await index.indexVector({
+      source: 'https://pod.example/alice/docs/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, [
+      {
+        chunkKey: 'a-0',
+        ordinal: 0,
+        level: 1,
+        content: 'A zero.',
+        startOffset: 0,
+        endOffset: 7,
+        embedding: [1, 0],
+        model: 'embed-small',
+      },
+      {
+        chunkKey: 'a-1',
+        ordinal: 1,
+        level: 1,
+        content: 'A one.',
+        startOffset: 8,
+        endOffset: 14,
+        embedding: [0, 1],
+        model: 'embed-small',
+      },
+    ]);
+    await index.indexVector({
+      source: 'https://pod.example/alice/tasks/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'tasks/a.md',
+      contentType: 'text/markdown',
+    }, [
+      {
+        chunkKey: 'task-0',
+        ordinal: 0,
+        level: 1,
+        content: 'Task.',
+        startOffset: 0,
+        endOffset: 5,
+        embedding: [1, 0],
+        model: 'embed-small',
+      },
+    ]);
+
+    await expect(index.search({
+      embedding: [1, 0],
+      model: 'embed-small',
+      source: 'https://pod.example/alice/tasks/a.md',
+    })).resolves.toMatchObject([
+      {
+        source: 'https://pod.example/alice/tasks/a.md',
+      },
+    ]);
+    await expect(index.search({
+      embedding: [1, 0],
+      model: 'embed-small',
+      allowedSources: [],
+    })).resolves.toEqual([]);
+    await expect(index.estimateSearchCardinality({
+      embedding: [1, 0],
+      model: 'embed-small',
+      workspace: 'https://pod.example/alice/',
+      sourcePrefix: 'https://pod.example/alice/docs/',
+    })).resolves.toMatchObject({
+      rows: 2,
+      source: 'vector-candidate-count',
+      indexChoice: 'vector-candidate-count',
+    });
+    await expect(index.estimateSearchCardinality({
+      embedding: [1, 0],
+      model: 'embed-small',
+      workspace: 'https://pod.example/alice/',
+      threshold: 0.9,
+    })).resolves.toMatchObject({
+      rows: 2,
+      source: 'vector-component-score',
+      indexChoice: 'vector-component-score',
+    });
+  });
+
+  it('backfills vector components when opening a legacy vector index', async () => {
+    await index.close();
+    await rm(dataDir, { recursive: true, force: true });
+    const db = new PGlite(dataDir);
+    await db.exec(`
+      CREATE TABLE rdf_vector_sources (
+        id BIGSERIAL PRIMARY KEY,
+        source TEXT NOT NULL UNIQUE,
+        workspace TEXT NOT NULL,
+        local_path TEXT,
+        content_type TEXT,
+        source_version TEXT,
+        source_hash TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE rdf_vector_chunks (
+        id BIGSERIAL PRIMARY KEY,
+        source_id BIGINT NOT NULL REFERENCES rdf_vector_sources(id) ON DELETE CASCADE,
+        chunk_key TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        level INTEGER NOT NULL,
+        heading TEXT,
+        path TEXT,
+        content TEXT NOT NULL,
+        start_offset INTEGER NOT NULL,
+        end_offset INTEGER NOT NULL,
+        embedding_json TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        magnitude DOUBLE PRECISION NOT NULL,
+        model TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (source_id, chunk_key)
+      );
+    `);
+    const sourceRows = await db.query<{ id: number | string }>(`
+      INSERT INTO rdf_vector_sources (
+        source,
+        workspace,
+        local_path,
+        content_type,
+        source_version,
+        source_hash
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id
+    `, [
+      'https://pod.example/alice/docs/legacy.md',
+      'https://pod.example/alice/',
+      'docs/legacy.md',
+      'text/markdown',
+      'legacy-v1',
+      'legacy-hash',
+    ]);
+    await db.query(`
+      INSERT INTO rdf_vector_chunks (
+        source_id,
+        chunk_key,
+        ordinal,
+        level,
+        heading,
+        path,
+        content,
+        start_offset,
+        end_offset,
+        embedding_json,
+        dimensions,
+        magnitude,
+        model
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    `, [
+      sourceRows.rows[0].id,
+      'legacy-0',
+      0,
+      1,
+      'Legacy',
+      '["Legacy"]',
+      'Legacy vector content.',
+      0,
+      22,
+      '[1,0]',
+      2,
+      1,
+      'legacy-embed',
+    ]);
+    await db.close();
+
+    index = new PostgresRdfVectorIndex({ driver: 'pglite', dataDir });
+    await index.open();
+
+    await expect(index.stats()).resolves.toMatchObject({
+      sourceCount: 1,
+      chunkCount: 1,
+      componentCount: 2,
+    });
+    await expect(index.search({
+      embedding: [1, 0],
+      model: 'legacy-embed',
+    })).resolves.toMatchObject([
+      {
+        source: 'https://pod.example/alice/docs/legacy.md',
+        chunkKey: 'legacy-0',
+        heading: 'Legacy',
+        score: 1,
+      },
+    ]);
+  });
+
+  it('can be used by PostgresRdfEngine for async vector-search joins', async () => {
+    const engineDir = await mkdtemp(path.join(tmpdir(), 'xpod-pg-rdf-vector-engine-'));
+    const engineVectorIndexDir = await mkdtemp(path.join(tmpdir(), 'xpod-pg-rdf-vector-engine-index-'));
+    const engineVectorIndex = new PostgresRdfVectorIndex({
+      driver: 'pglite',
+      dataDir: engineVectorIndexDir,
+    });
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir: engineDir,
+      queryResultCacheEnabled: false,
+      vectorIndex: engineVectorIndex,
+    });
+    const selected = namedNode('https://pod.example/alice/projects/demo/selected-vector.md');
+    const unrelated = namedNode('https://pod.example/alice/projects/demo/unrelated-vector.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(selected, namedNode(RDF_TYPE), docType, selected),
+        quad(unrelated, namedNode(RDF_TYPE), docType, unrelated),
+        quad(selected, namedNode('https://schema.org/name'), literal('Selected Vector'), selected),
+      ]);
+      await engine.indexVectorSource({
+        source: selected.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'selected-vector.md',
+        contentType: 'text/markdown',
+      }, [
+        {
+          chunkKey: 'selected',
+          ordinal: 0,
+          level: 1,
+          heading: 'Overview',
+          path: ['Overview'],
+          content: 'Managed runtime orchestration notes.',
+          startOffset: 0,
+          endOffset: 36,
+          embedding: [1, 0],
+          model: 'test-embed',
+        },
+      ]);
+      await engine.indexVectorSource({
+        source: unrelated.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'unrelated-vector.md',
+        contentType: 'text/markdown',
+      }, [
+        {
+          chunkKey: 'unrelated',
+          ordinal: 0,
+          level: 1,
+          content: 'Different topic.',
+          startOffset: 0,
+          endOffset: 16,
+          embedding: [0, 1],
+          model: 'test-embed',
+        },
+      ]);
+
+      const result = await engine.query({
+        vectorSearch: [
+          {
+            embedding: [0.95, 0.05],
+            vectorModel: 'test-embed',
+            scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+            source: 'source',
+            content: 'snippet',
+            heading: 'heading',
+            score: 'score',
+          },
+        ],
+        patterns: [
+          {
+            graph: selected,
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        project: ['source', 'snippet', 'heading', 'score'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].source?.value).toBe(selected.value);
+      expect(result.bindings[0].snippet?.value).toContain('Managed runtime');
+      expect(result.bindings[0].heading?.value).toBe('Overview');
+      expect(result.bindings[0].score?.value).toMatch(/^0\./);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('VectorSearch('))).toBe(true);
+    } finally {
+      await engine.close();
+      await engineVectorIndex.close();
+      await rm(engineDir, { recursive: true, force: true });
+      await rm(engineVectorIndexDir, { recursive: true, force: true });
+    }
+  });
+});

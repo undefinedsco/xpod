@@ -28,7 +28,7 @@ interface RdfVectorSourceRow {
   updated_at: string;
 }
 
-interface RdfVectorScoredChunkRow extends RdfVectorChunkRow {
+export interface RdfVectorScoredChunkRow extends RdfVectorChunkRow {
   dot_product: number;
   vector_score: number;
   vector_distance: number | null;
@@ -446,11 +446,11 @@ export class RdfVectorIndex implements RdfVectorIndexSyncLike {
   }
 }
 
-function normalizeEmbedding(embedding: number[]): number[] {
+export function normalizeEmbedding(embedding: number[]): number[] {
   return embedding.filter((value) => Number.isFinite(value));
 }
 
-function parseEmbedding(value: string): number[] {
+export function parseEmbedding(value: string): number[] {
   try {
     const parsed = JSON.parse(value);
     return Array.isArray(parsed) ? normalizeEmbedding(parsed) : [];
@@ -459,11 +459,11 @@ function parseEmbedding(value: string): number[] {
   }
 }
 
-function vectorMagnitude(embedding: number[]): number {
+export function vectorMagnitude(embedding: number[]): number {
   return Math.sqrt(embedding.reduce((sum, value) => sum + value * value, 0));
 }
 
-function vectorScore(distance: number, metric: RdfVectorDistanceMetric): number {
+export function vectorScore(distance: number, metric: RdfVectorDistanceMetric): number {
   if (!Number.isFinite(distance)) {
     return Number.NEGATIVE_INFINITY;
   }
@@ -473,7 +473,7 @@ function vectorScore(distance: number, metric: RdfVectorDistanceMetric): number 
   return -distance;
 }
 
-function scoredVectorDistance(row: RdfVectorScoredChunkRow, metric: RdfVectorDistanceMetric): number {
+export function scoredVectorDistance(row: RdfVectorScoredChunkRow, metric: RdfVectorDistanceMetric): number {
   if (metric === 'euclidean') {
     const squared = row.vector_distance_squared ?? Number.POSITIVE_INFINITY;
     const stableSquared = Math.abs(squared) < 1e-12 ? 0 : squared;
@@ -490,13 +490,13 @@ function dotProduct(left: number[], right: number[]): number {
   return sum;
 }
 
-function insertVectorComponents(insertComponent: { run(...params: unknown[]): unknown }, chunkId: number, embedding: number[]): void {
+export function insertVectorComponents(insertComponent: { run(...params: unknown[]): unknown }, chunkId: number, embedding: number[]): void {
   for (let dimension = 0; dimension < embedding.length; dimension++) {
     insertComponent.run(chunkId, dimension, embedding[dimension]);
   }
 }
 
-function parsePath(value: string | null): string[] {
+export function parsePath(value: string | null): string[] {
   if (!value) {
     return [];
   }
@@ -628,7 +628,7 @@ function buildVectorScoredBaseQuery(
   };
 }
 
-function buildVectorOrderClause(
+export function buildVectorOrderClause(
   metric: RdfVectorDistanceMetric,
   orderBy: RdfVectorSearchOrder[] | undefined,
 ): string {
@@ -677,7 +677,7 @@ function buildVectorWindowClause(limit: number | undefined, offset: number | und
   return { sql: 'LIMIT -1 OFFSET ?', params: [Math.max(0, offset ?? 0)] };
 }
 
-function vectorScoreSql(metric: RdfVectorDistanceMetric, queryMagnitude: number): string {
+export function vectorScoreSql(metric: RdfVectorDistanceMetric, queryMagnitude: number): string {
   switch (metric) {
     case 'cosine':
       return `dot_product / (${sqlNumber(queryMagnitude)} * magnitude)`;
@@ -692,7 +692,7 @@ function vectorScoreSql(metric: RdfVectorDistanceMetric, queryMagnitude: number)
   }
 }
 
-function vectorDistanceSql(metric: RdfVectorDistanceMetric, queryMagnitude: number): string {
+export function vectorDistanceSql(metric: RdfVectorDistanceMetric, queryMagnitude: number): string {
   switch (metric) {
     case 'cosine':
       return `1 - (${vectorScoreSql(metric, queryMagnitude)})`;
@@ -707,11 +707,11 @@ function vectorDistanceSql(metric: RdfVectorDistanceMetric, queryMagnitude: numb
   }
 }
 
-function vectorSquaredDistanceSql(queryMagnitude: number): string {
+export function vectorSquaredDistanceSql(queryMagnitude: number): string {
   return `(${sqlNumber(queryMagnitude * queryMagnitude)} + magnitude * magnitude - 2 * dot_product)`;
 }
 
-function vectorThresholdSql(metric: RdfVectorDistanceMetric, queryMagnitude: number, threshold: number): string {
+export function vectorThresholdSql(metric: RdfVectorDistanceMetric, queryMagnitude: number, threshold: number): string {
   if (!Number.isFinite(threshold)) {
     return threshold === Number.NEGATIVE_INFINITY ? '1 = 1' : '1 = 0';
   }
@@ -731,7 +731,7 @@ function vectorThresholdSql(metric: RdfVectorDistanceMetric, queryMagnitude: num
   }
 }
 
-function applyResultWindow(rows: number, offset: number | undefined, limit: number | undefined): number {
+export function applyResultWindow(rows: number, offset: number | undefined, limit: number | undefined): number {
   const start = Math.max(0, offset ?? 0);
   if (rows <= start) {
     return 0;
@@ -747,7 +747,7 @@ function sqlInteger(value: number): string {
   return String(value);
 }
 
-function sqlNumber(value: number): string {
+export function sqlNumber(value: number): string {
   if (!Number.isFinite(value)) {
     throw new Error(`Invalid RDF vector SQL number: ${value}`);
   }

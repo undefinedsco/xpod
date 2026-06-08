@@ -11,6 +11,7 @@ export { Rdf3xIndex } from './Rdf3xIndex';
 export { RdfTextIndex } from './RdfTextIndex';
 export { PostgresRdfTextIndex, type PostgresRdfTextIndexOptions } from './PostgresRdfTextIndex';
 export { RdfVectorIndex } from './RdfVectorIndex';
+export { PostgresRdfVectorIndex, type PostgresRdfVectorIndexOptions } from './PostgresRdfVectorIndex';
 export {
   isLineAddressableRdf,
   isLineAddressableRdfContentType,
