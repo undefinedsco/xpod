@@ -22,7 +22,7 @@ interface WelcomePageProps {
 }
 
 export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
-  const { controls, idpIndex, isLoggedIn, authenticating } = useAuth();
+  const { controls, idpIndex, isLoggedIn, hasOidcPending, authenticating } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(initialIsRegister);
@@ -92,9 +92,9 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     };
   }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
-  // If already logged in, redirect to dashboard
+  // If already logged in, make sure the selected storage provider has a Pod before dashboard/consent.
   if (isLoggedIn) {
-    return <Navigate to="/.account/account/" replace />;
+    return <Navigate to="/.account/create-pod/" replace state={{ next: hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/' }} />;
   }
 
   const features = [
@@ -154,7 +154,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
               idpIndex,
               username: normalizedUsername,
             });
-            window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/account/';
+            window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/create-pod/';
             return;
           }
 
@@ -198,7 +198,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           idpIndex,
           username: normalizedUsername,
         });
-        window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/account/';
+        window.location.href = result.redirectedToConsent ? '/.account/oidc/consent/' : '/.account/create-pod/';
       } else {
         const res = await fetch(controls?.password?.login || '/.account/login/password/', {
           method: 'POST',
@@ -244,7 +244,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
             // No OIDC flow, continue to dashboard
           }
           
-          window.location.href = '/.account/account/';
+          window.location.href = '/.account/create-pod/';
         } else {
           setFormError(json.message || 'Login failed');
         }

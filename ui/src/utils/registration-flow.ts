@@ -1,6 +1,6 @@
-import { buildPodCreatePayload, getStoredProvisionCode } from './pod';
+import { buildPodCreatePayload, getStoredProvisionCode, resolveProvisionCodeForPodCreate } from './pod';
 import { accountTokenHeaders } from './account-session';
-import { lookupProvisionScopedWebIds, parseProvisionScope } from './storage-scope';
+import { lookupProvisionScopedWebIds } from './provision-scope';
 
 export interface RegistrationFlowResult {
   createdPod: boolean;
@@ -144,8 +144,7 @@ async function hasExistingProvisionScopedPod(
   accountToken: string,
   provisionCode: string,
 ): Promise<boolean> {
-  const scope = parseProvisionScope(provisionCode);
-  if (!scope || !accountWebIdUrl) {
+  if (!accountWebIdUrl) {
     return false;
   }
 
@@ -159,8 +158,8 @@ async function hasExistingProvisionScopedPod(
 
   const data = await res.json().catch(() => ({})) as AccountWebIdResponse;
   const webIds = Object.keys(data.webIdLinks ?? {});
-  const entries = await lookupProvisionScopedWebIds(fetchImpl, webIds, scope);
-  return entries.some((entry) => podUrlMatchesUsername(entry.storageUrl, username));
+  const entries = await lookupProvisionScopedWebIds(fetchImpl, webIds, provisionCode);
+  return (entries ?? []).some((entry) => podUrlMatchesUsername(entry.storageUrl, username));
 }
 
 export async function bootstrapAccountPasswordLogin(
@@ -266,7 +265,6 @@ export async function defaultWaitForWebIdReady(
   const deadline = Date.now() + timeoutMs;
   let accountPodUrl = endpoints?.pod;
   let accountWebIdUrl = endpoints?.webId;
-  const provisionScope = parseProvisionScope(provisionCode);
 
   while (Date.now() < deadline) {
     try {
@@ -290,12 +288,12 @@ export async function defaultWaitForWebIdReady(
         if (webIdRes.ok) {
           const data = await webIdRes.json().catch(() => ({})) as AccountWebIdResponse;
           const webIds = Object.keys(data.webIdLinks ?? {});
-          if (provisionScope) {
-            const entries = await lookupProvisionScopedWebIds(fetchImpl, webIds, provisionScope);
-            if (entries.length > 0) {
+          if (provisionCode) {
+            const entries = await lookupProvisionScopedWebIds(fetchImpl, webIds, provisionCode);
+            if ((entries ?? []).length > 0) {
               return true;
             }
-          } else if (!provisionCode && webIds.length > 0) {
+          } else if (webIds.length > 0) {
             return true;
           }
         }
@@ -328,7 +326,10 @@ export async function completeRegistrationProvisioning(
 ): Promise<RegistrationFlowResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const { accountToken, idpIndex, username } = options;
-  const provisionCode = options.provisionCode ?? getStoredProvisionCode();
+  const provisionCode = await resolveProvisionCodeForPodCreate(
+    fetchImpl,
+    options.provisionCode ?? getStoredProvisionCode(),
+  );
 
   let res = await fetchImpl(idpIndex, {
     headers: accountTokenHeaders(accountToken),

@@ -7,6 +7,7 @@ import { IndexPage } from './pages/IndexPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { AboutPage } from './pages/AboutPage';
 import { AccountPage } from './pages/AccountPage';
+import { FirstPodPage } from './pages/FirstPodPage';
 import { ConsentPage } from './pages/ConsentPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
@@ -25,6 +26,7 @@ function AppRoutes() {
       <Route path="/.account/" element={<IndexPage />} />
       <Route path="/.account/about/" element={<AboutPage />} />
       <Route path="/.account/account/" element={<ProtectedRoute allowOidcPending><AccountPage /></ProtectedRoute>} />
+      <Route path="/.account/create-pod/" element={<ProtectedRoute allowOidcPending><FirstPodPage /></ProtectedRoute>} />
       <Route path="/.account/settings/" element={<ProtectedRoute allowOidcPending><SettingsPage /></ProtectedRoute>} />
       <Route path="/chat/" element={<ChatPage />} />
       <Route path="/.account/login/" element={<LoginSelectPage />} />
