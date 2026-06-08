@@ -2993,6 +2993,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!customResolved || !this.canUsePgAccelerationCapability(baseCapability) || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
       return undefined;
     }
+    if (customResolved.graphPrefix !== undefined) {
+      return undefined;
+    }
 
     const permutation = this.choosePermutation(customResolved);
     const prefixFilters = this.pgCustomIndexPrefixFilters(customResolved, permutation);
@@ -4654,7 +4657,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (rejectedNativeOperators.length > 0) {
       reasons.add('native-operator-rejected');
       estimateInputs.add('pgAcceleration.capabilities');
-      if (rejectedNativeOperators.some((entry) => entry.reason === 'cost-cutover-small-grouped-numeric-aggregate')) {
+      if (rejectedNativeOperators.some((entry) => entry.reason.startsWith('cost-cutover-'))) {
         reasons.add('native-operator-cost-cutover');
         estimateInputs.add('facts.exactPatternCounts');
       }
@@ -4719,20 +4722,32 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const aggregates = queryAggregates(query);
     const requiredPatternCount = query.patterns.length > 0 ? query.patterns.length : 1;
     const hasValues = (query.values?.length ?? 0) > 0;
+    const hasGraphPrefix = this.queryHasGraphPrefix(query);
     if (aggregates.length > 0) {
       if (aggregates.some((aggregate) => aggregate.type !== 'count')) {
         add(
           'aggregate.bgp_numeric',
-          hasPlan('PostgresNumericAggregateFactsCutover')
+          hasValues
+            ? 'cost-cutover-values-native-regression'
+            : hasPlan('PostgresNumericAggregateFactsCutover')
             ? 'cost-cutover-small-grouped-numeric-aggregate'
             : 'shape-gate',
         );
       } else if ((query.groupBy?.length ?? 0) > 0) {
-        add('aggregate.bgp_group_count', 'shape-gate');
+        add('aggregate.bgp_group_count', 'cost-cutover-group-count-native-regression');
       } else if (requiredPatternCount > 1) {
-        add('aggregate.bgp_count', 'shape-gate');
+        const countReason = aggregates.some((aggregate) => aggregate.distinct || (aggregate.distinctVariables ?? []).length > 0)
+          ? 'cost-cutover-count-distinct-native-regression'
+          : 'cost-cutover-bgp-count-native-regression';
+        add('aggregate.bgp_count', countReason);
+        if (this.queryHasSubjectStarShape(query)) {
+          add('aggregate.subject_star_count', countReason);
+        }
       } else {
-        add('index.xpod_rdf_perm.count_any', 'shape-gate');
+        add(
+          'index.xpod_rdf_perm.count_any',
+          hasGraphPrefix ? 'cost-cutover-graph-prefix-native-regression' : 'shape-gate',
+        );
       }
       return [...rejected.entries()]
         .map(([capability, reason]) => ({ capability, reason }))
@@ -4743,13 +4758,38 @@ export class PostgresRdfEngine implements RdfEngineLike {
       add('index.xpod_rdf_perm.distinct_any', 'shape-gate');
     }
     if (hasValues) {
-      add(query.limit !== undefined || query.offset !== undefined ? 'join.values.limit.native' : 'join.values.native', 'shape-gate');
+      add(query.limit !== undefined || query.offset !== undefined ? 'join.values.limit.native' : 'join.values.native', 'cost-cutover-values-native-regression');
     } else if (requiredPatternCount > 1) {
-      add('join.required_bgp.native', 'shape-gate');
+      if (this.queryHasSubjectStarShape(query) && !hasGraphPrefix) {
+        add('join.subject_star', 'shape-gate');
+      }
+      add(
+        'join.required_bgp.native',
+        hasGraphPrefix
+          ? 'cost-cutover-graph-prefix-native-regression'
+          : 'cost-cutover-generic-bgp-native-regression',
+      );
     }
     return [...rejected.entries()]
       .map(([capability, reason]) => ({ capability, reason }))
       .sort((left, right) => left.capability.localeCompare(right.capability));
+  }
+
+  private queryHasGraphPrefix(query: RdfQuery): boolean {
+    return query.patterns.some((pattern) => (
+      isQueryTermOperator(pattern.graph) && typeof pattern.graph.$startsWith === 'string'
+    ));
+  }
+
+  private queryHasSubjectStarShape(query: RdfQuery): boolean {
+    if (query.patterns.length < 3) {
+      return false;
+    }
+    const subjectVariables = query.patterns.map((pattern) => (
+      isVariable(pattern.subject) ? pattern.subject.variable : undefined
+    ));
+    const first = subjectVariables[0];
+    return Boolean(first && subjectVariables.every((variableName) => variableName === first));
   }
 
   private queryPlannerRuntimeExplain(metrics: RdfQueryMetrics): RdfQueryPlannerExplain['runtime'] {
@@ -5713,6 +5753,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!customResolved || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
       return undefined;
     }
+    if (customResolved.graphPrefix !== undefined) {
+      return undefined;
+    }
 
     const permutation = this.choosePermutation(customResolved);
     const count = await this.pgCustomIndexCountAny(customResolved, permutation);
@@ -5726,6 +5769,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const capability = 'index.xpod_rdf_perm.count_any';
     const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
     if (!customResolved || !this.canUsePgAccelerationCapability(capability) || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
+      return undefined;
+    }
+    if (customResolved.graphPrefix !== undefined) {
       return undefined;
     }
 
@@ -5822,7 +5868,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const capability = subjectStarKey && this.canUsePgAccelerationCapability('aggregate.subject_star_count')
       ? 'aggregate.subject_star_count'
       : 'aggregate.bgp_count';
-    if (!this.canUsePgAccelerationCapability(capability)) {
+    if (
+      !subjectStarKey
+      || !this.canUsePgAccelerationCapability('aggregate.subject_star_count')
+      || aggregates.some((aggregate) => aggregate.distinct || (aggregate.distinctVariables ?? []).length > 0)
+    ) {
       return undefined;
     }
 
@@ -5841,6 +5891,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return undefined;
     }
     if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
+      return undefined;
+    }
+    if (shape.internalFilters.length > 0) {
       return undefined;
     }
 
@@ -5964,146 +6017,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!this.canUsePgAccelerationCapability(capability)) {
       return undefined;
     }
-    if (
-      query.patterns.length < 1
-      || query.patterns.length > 8
-      || patterns.length !== query.patterns.length
-      || aggregates.length === 0
-      || aggregates.length > 8
-      || query.distinct
-      || (query.groupBy ?? []).length === 0
-      || (query.groupBy ?? []).length > 8
-    ) {
-      return undefined;
-    }
-    if (aggregates.some((aggregate) => aggregate.type !== 'count')) {
-      return undefined;
-    }
-
-    const subjectStarKey = rdfSubjectStarJoinKey(patterns);
-    const groupBy = query.groupBy ?? [];
-    const shape = await this.pgCustomIndexBgpJoinShape(patterns, groupBy);
-    if (!shape) {
-      return undefined;
-    }
-    if (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
-      return undefined;
-    }
-    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
-      return undefined;
-    }
-    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
-    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
-    if (!valuesShape || !filtersShape) {
-      return undefined;
-    }
-
-    const groupSlots = groupBy.map((variableName) => shape.variableSlotsByName.get(variableName));
-    if (groupSlots.some((slot) => slot === undefined)) {
-      return undefined;
-    }
-
-    const aggregateSlots: number[] = [];
-    const aggregateDistinct: number[] = [];
-    const aggregateAliases = new Map<string, string>();
-    const aggregateTypes = new Map<string, 'integer' | 'decimal'>();
-    for (const [index, aggregate] of aggregates.entries()) {
-      const slot = this.pgCustomIndexBgpCountAggregateSlot(aggregate, shape.variableSlotsByName);
-      if (slot === undefined) {
-        return undefined;
-      }
-      aggregateSlots.push(slot);
-      aggregateDistinct.push(aggregate.distinct ? 1 : 0);
-      aggregateAliases.set(aggregate.as, `a${index}`);
-      aggregateTypes.set(aggregate.as, 'integer');
-    }
-
-    const indexPlaceholders = shape.indexNames.map((_, index) => `$${index + 2}::regclass::oid`).join(', ');
-    const constantsParam = 2 + shape.indexNames.length;
-    const variableSlotsParam = constantsParam + 1;
-    const valueSlotsParam = variableSlotsParam + 1;
-    const valueRowsParam = valueSlotsParam + 1;
-    const filterSlotsParam = valueRowsParam + 1;
-    const filterOffsetsParam = filterSlotsParam + 1;
-    const filterValuesParam = filterOffsetsParam + 1;
-    const groupSlotsParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : valueRowsParam + 1;
-    const aggregateSlotsParam = groupSlotsParam + 1;
-    const aggregateDistinctParam = aggregateSlotsParam + 1;
-    const filterArguments = shape.internalFilters.length > 0
-      ? `,
-        $${filterSlotsParam}::smallint[],
-        $${filterOffsetsParam}::bigint[],
-        $${filterValuesParam}::bigint[]`
-      : '';
-    const groupProjection = groupBy.map((_variableName, index) => `native_group.group${index + 1} AS v${index}`);
-    const aggregateProjection = aggregates.map((_aggregate, index) => `native_group.count${index + 1} AS a${index}`);
-    const sql = `
-      SELECT ${[...groupProjection, ...aggregateProjection].join(', ')}
-      FROM xpod_rdf.bgp_group_count(
-        $1::regclass,
-        ARRAY[${indexPlaceholders}]::oid[],
-        $${constantsParam}::bigint[],
-        $${variableSlotsParam}::smallint[],
-        $${valueSlotsParam}::smallint[],
-        $${valueRowsParam}::bigint[]${filterArguments},
-        $${groupSlotsParam}::smallint[],
-        $${aggregateSlotsParam}::smallint[],
-        $${aggregateDistinctParam}::smallint[]
-      ) native_group
-    `;
-    const rows = await this.requireExecutor().query<Record<string, number>>(sql, [
-      RDF_FACTS_TABLE,
-      ...shape.indexNames,
-      shape.constants,
-      shape.variableSlots,
-      valuesShape.valueSlots,
-      valuesShape.valueRows,
-      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
-      groupSlots as number[],
-      aggregateSlots,
-      aggregateDistinct,
-    ]);
-    let bindings = await this.joinRowsToBindings(
-      rows,
-      new Map(groupBy.map((variableName, index) => [variableName, `v${index}`])),
-      aggregateAliases,
-      aggregateTypes,
-    );
-    if ((query.having ?? []).length > 0) {
-      bindings = bindings.filter((binding) => matchesBindingFilters(binding, query.having ?? []));
-    }
-    if ((query.orderBy ?? []).length > 0) {
-      bindings = orderBindingsForQuery(bindings, query.orderBy ?? []);
-    }
-    const offset = Math.max(0, query.offset ?? 0);
-    const pagedBindings = bindings.slice(offset, query.limit === undefined ? undefined : offset + Math.max(0, query.limit));
-    return {
-      bindings: pagedBindings,
-      metrics: this.localMetrics(
-        start,
-        rows.length,
-        rows.length,
-        pagedBindings.length,
-        [`PostgresNativeBgpGroupCount(${shape.indexChoices.join('>')})`],
-        [
-          ...this.pgAccelerationActiveMarkersForQuery(query),
-          `XpodRdfExtensionOperator(${capability})`,
-          ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
-          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
-          ...(subjectStarKey ? [`PostgresRdfNativeCustomIndexSubjectStarGroupCount(${subjectStarKey};patterns:${patterns.length})`] : []),
-          `PostgresRdfNativeCustomIndexBgpGroupCount(${patterns.length})`,
-          ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
-          `PostgresRdf3xGroupCount(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
-          ...this.pgCustomIndexInternalFiltersPlan(shape),
-          aggregatePlan(aggregates, true),
-          ...((query.having ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
-          ...((query.orderBy ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateOrder(${describeQueryOrder(query.orderBy ?? [])})`] : []),
-          ...(query.limit !== undefined || query.offset !== undefined ? ['PostgresRdfNativeCustomIndexAggregateLimit'] : []),
-          sql,
-        ],
-        query.filters?.length ?? 0,
-      ),
-    };
+    return undefined;
   }
 
   private async tryQueryPgCustomIndexBgpNumericAggregate(
@@ -6115,6 +6029,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
   ): Promise<RdfQueryResult | undefined> {
     const capability = 'aggregate.bgp_numeric';
     if (!this.canUsePgAccelerationCapability(capability)) {
+      return undefined;
+    }
+    if (values.length > 0) {
       return undefined;
     }
     if (
@@ -6468,7 +6385,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const subjectStarKey = rdfSubjectStarJoinKey(patterns);
-    const capability = !usesOrderPage && subjectStarKey && this.canUsePgAccelerationCapability('join.subject_star')
+    if (!usesOrderPage && !subjectStarKey) {
+      return undefined;
+    }
+    const capability = !usesOrderPage
       ? 'join.subject_star'
       : 'join.required_bgp.native';
     if (!this.canUsePgAccelerationCapability(capability)) {
@@ -6482,6 +6402,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     const shape = await this.pgCustomIndexBgpJoinShape(patterns, project);
     if (!shape) {
+      return undefined;
+    }
+    if (shape.internalFilters.length > 0) {
       return undefined;
     }
     if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
@@ -6582,6 +6505,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ? 'join.values.limit.native'
       : 'join.values.native';
     if (!this.canUsePgAccelerationCapability(capability)) {
+      return undefined;
+    }
+    if (values.length > 0) {
       return undefined;
     }
     if (

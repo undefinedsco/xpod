@@ -1405,13 +1405,14 @@ describe('PostgresRdfEngine', () => {
         entryCount: 1,
         scopeCount: 1,
       });
+      const factsVersionEvictions = storage.derivedCache?.evictions.factsVersion;
       expect(storage.derivedCache).toMatchObject({
         evictionCount: expect.any(Number),
         evictions: {
           factsVersion: expect.any(Number),
         },
       });
-      expect(storage.derivedCache?.evictions.factsVersion).toBeGreaterThan(0);
+      expect(factsVersionEvictions).toBeGreaterThan(0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -1461,13 +1462,14 @@ describe('PostgresRdfEngine', () => {
         maxPayloadBytes: 1,
       });
       const storage = await engine.storageStats();
+      const payloadBytesEvictions = storage.derivedCache?.evictions.payloadBytes;
       expect(storage.derivedCache).toMatchObject({
         cachePressure: 0,
         evictions: {
           payloadBytes: expect.any(Number),
         },
       });
-      expect(storage.derivedCache?.evictions.payloadBytes).toBeGreaterThan(0);
+      expect(payloadBytesEvictions).toBeGreaterThan(0);
 
       const second = await engine.query(query);
       expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
@@ -1523,6 +1525,8 @@ describe('PostgresRdfEngine', () => {
       expect(materialized.metrics.plan).toContain('PostgresMaterializedResultStore');
 
       const storage = await engine.storageStats();
+      const totalBytesEvictions = storage.derivedCache?.evictions.totalBytes;
+      const templateBytesEvictions = storage.derivedCache?.evictions.templateBytes;
       expect(storage.derivedCache).toMatchObject({
         cacheBytes: 0,
         maxCacheBytes: 1,
@@ -1535,8 +1539,8 @@ describe('PostgresRdfEngine', () => {
           templateBytes: expect.any(Number),
         },
       });
-      expect(storage.derivedCache?.evictions.totalBytes).toBeGreaterThan(0);
-      expect(storage.derivedCache?.evictions.templateBytes).toBeGreaterThan(0);
+      expect(totalBytesEvictions).toBeGreaterThan(0);
+      expect(templateBytesEvictions).toBeGreaterThan(0);
       expect(storage.queryResultCache).toMatchObject({
         entryCount: 0,
         maxPayloadBytes: perCacheMaxBytes,
@@ -1615,6 +1619,7 @@ describe('PostgresRdfEngine', () => {
       expect(materialized.metrics.plan).toContain('PostgresMaterializedResultStore');
 
       const storage = await engine.storageStats();
+      const scopeBytesEvictions = storage.derivedCache?.evictions.scopeBytes;
       expect(storage.derivedCache).toMatchObject({
         maxCacheBytes: 0,
         maxScopeBytes: 1,
@@ -1627,7 +1632,7 @@ describe('PostgresRdfEngine', () => {
           scopeBytes: expect.any(Number),
         },
       });
-      expect(storage.derivedCache?.evictions.scopeBytes).toBeGreaterThan(0);
+      expect(scopeBytesEvictions).toBeGreaterThan(0);
       expect(storage.derivedCache?.queryTemplateBytes).toBeGreaterThan(0);
       expect(storage.queryResultCache).toMatchObject({
         entryCount: 0,
@@ -3530,20 +3535,11 @@ describe('PostgresRdfEngine', () => {
       expect(joinResult.bindings).toHaveLength(1);
       expect(joinResult.bindings[0].message.value).toBe(message1.value);
       expect(joinResult.bindings[0].thread.value).toBe(`${graph.value}#thread_a`);
-      expect(joinResult.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
-      expect(joinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(2)');
-      expect(joinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpLimit');
-      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
-      const bgpParams = pool.nativeBgpJoinCalls[0].params;
-      expect(bgpParams[0]).toBe('rdf_quads');
-      expect(bgpParams.slice(1, 3)).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^rdf_quads_.*_perm$/),
-      ]));
-      expect(bgpParams[3]).toHaveLength(8);
-      expect(bgpParams[4]).toHaveLength(8);
-      expect(bgpParams[5]).toEqual([1, 2]);
-      expect(bgpParams[6]).toBe(1);
-      expect(bgpParams[7]).toBeNull();
+      expect(joinResult.metrics.plan).toContain('Rdf3xJoinBGP(2)');
+      expect(joinResult.metrics.plan).toContain('PostgresRdf3xJoinLimit');
+      expect(joinResult.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
+      expect(joinResult.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexBgpJoin(2)');
+      expect(pool.nativeBgpJoinCalls).toHaveLength(0);
 
       const subjectStarJoinResult = await engine.query({
         patterns: [
@@ -3579,7 +3575,7 @@ describe('PostgresRdfEngine', () => {
       expect(subjectStarJoinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(3)');
       expect(subjectStarJoinResult.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
       expect(subjectStarJoinResult.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
-      expect(pool.nativeBgpJoinCalls).toHaveLength(2);
+      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
 
       const orderedPageResult = await engine.query({
         patterns: [
@@ -3615,10 +3611,10 @@ describe('PostgresRdfEngine', () => {
       expect(orderedPageResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(2)');
       expect(orderedPageResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpLimit');
       expect(orderedPageResult.metrics.plan).not.toContain('PostgresRdf3xJoinLimit');
-      expect(pool.nativeBgpJoinCalls).toHaveLength(3);
-      expect(pool.nativeBgpJoinCalls[2].sql).toContain('ORDER BY join_order_t0.value DESC');
-      expect(pool.nativeBgpJoinCalls[2].sql).toMatch(/LIMIT\s+\$\d+/);
-      const orderedPageParams = pool.nativeBgpJoinCalls[2].params;
+      expect(pool.nativeBgpJoinCalls).toHaveLength(2);
+      expect(pool.nativeBgpJoinCalls[1].sql).toContain('ORDER BY join_order_t0.value DESC');
+      expect(pool.nativeBgpJoinCalls[1].sql).toMatch(/LIMIT\s+\$\d+/);
+      const orderedPageParams = pool.nativeBgpJoinCalls[1].params;
       expect(orderedPageParams[orderedPageParams.length - 1]).toBe(1);
 
       const bgpCountResult = await engine.query({
@@ -3657,21 +3653,10 @@ describe('PostgresRdfEngine', () => {
       expect(bgpCountResult.bindings).toHaveLength(1);
       expect(bgpCountResult.bindings[0].messageCount.value).toBe('2');
       expect(bgpCountResult.bindings[0].threadCount.value).toBe('1');
-      expect(bgpCountResult.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
-      expect(bgpCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpCount(2)');
-      expect(bgpCountResult.metrics.plan).not.toContain('PostgresRdf3xJoinCount');
-      expect(pool.nativeBgpCountCalls).toHaveLength(1);
-      const bgpCountParams = pool.nativeBgpCountCalls[0].params;
-      expect(bgpCountParams[0]).toBe('rdf_quads');
-      expect(bgpCountParams.slice(1, 3)).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^rdf_quads_.*_perm$/),
-      ]));
-      expect(bgpCountParams[3]).toHaveLength(8);
-      expect(bgpCountParams[4]).toHaveLength(8);
-      expect(bgpCountParams[5]).toEqual([]);
-      expect(bgpCountParams[6]).toEqual([]);
-      expect(bgpCountParams[7]).toEqual([1, 2]);
-      expect(bgpCountParams[8]).toEqual([0, 1]);
+      expect(bgpCountResult.metrics.plan).toContain('PostgresRdf3xJoinCount');
+      expect(bgpCountResult.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
+      expect(bgpCountResult.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexBgpCount(2)');
+      expect(pool.nativeBgpCountCalls).toHaveLength(0);
 
       const subjectStarCountResult = await engine.query({
         patterns: [
@@ -3713,7 +3698,7 @@ describe('PostgresRdfEngine', () => {
       expect(subjectStarCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpCount(3)');
       expect(subjectStarCountResult.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
       expect(subjectStarCountResult.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
-      expect(pool.nativeBgpCountCalls).toHaveLength(2);
+      expect(pool.nativeBgpCountCalls).toHaveLength(1);
 
       const valuesJoinResult = await engine.query({
         patterns: [
@@ -3748,22 +3733,10 @@ describe('PostgresRdfEngine', () => {
       expect(valuesJoinResult.bindings[0].message.value).toBe(message2.value);
       expect(valuesJoinResult.bindings[0].status.value).toBe('open');
       expect(valuesJoinResult.bindings[0].thread.value).toBe(`${graph.value}#thread_a`);
-      expect(valuesJoinResult.metrics.plan).toContain('XpodRdfExtensionOperator(join.values.limit.native)');
-      expect(valuesJoinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexValuesJoin(2)');
-      expect(valuesJoinResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexValuesJoinLimit');
-      expect(pool.nativeValuesJoinCalls).toHaveLength(1);
-      const valuesJoinParams = pool.nativeValuesJoinCalls[0].params;
-      expect(valuesJoinParams[0]).toBe('rdf_quads');
-      expect(valuesJoinParams.slice(1, 3)).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^rdf_quads_.*_perm$/),
-      ]));
-      expect(valuesJoinParams[3]).toHaveLength(8);
-      expect(valuesJoinParams[4]).toHaveLength(8);
-      expect(valuesJoinParams[5]).toEqual([1, 2, 3]);
-      expect(valuesJoinParams[6]).toEqual([1]);
-      expect(valuesJoinParams[7]).toEqual(expect.arrayContaining([expect.any(Number), expect.any(Number)]));
-      expect(valuesJoinParams[8]).toBe(1);
-      expect(valuesJoinParams[9]).toBeNull();
+      expect(valuesJoinResult.metrics.plan).toContain('Rdf3xJoinTupleValues(?message)');
+      expect(valuesJoinResult.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.values.limit.native)');
+      expect(valuesJoinResult.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexValuesJoin(2)');
+      expect(pool.nativeValuesJoinCalls).toHaveLength(0);
 
       const groupCountResult = await engine.query({
         patterns: [
@@ -3815,24 +3788,13 @@ describe('PostgresRdfEngine', () => {
       expect(groupCountResult.bindings[0].thread.value).toBe(`${graph.value}#thread_a`);
       expect(groupCountResult.bindings[0].messageCount.value).toBe('2');
       expect(groupCountResult.bindings[0].statusCount.value).toBe('1');
-      expect(groupCountResult.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_group_count)');
-      expect(groupCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpGroupCount(2)');
-      expect(groupCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateHaving(?messageCount$gte)');
-      expect(groupCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateOrder(desc:messageCount)');
-      expect(groupCountResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateLimit');
-      expect(pool.nativeBgpGroupCountCalls).toHaveLength(1);
-      const groupCountParams = pool.nativeBgpGroupCountCalls[0].params;
-      expect(groupCountParams[0]).toBe('rdf_quads');
-      expect(groupCountParams.slice(1, 3)).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^rdf_quads_.*_perm$/),
-      ]));
-      expect(groupCountParams[3]).toHaveLength(8);
-      expect(groupCountParams[4]).toHaveLength(8);
-      expect(groupCountParams[5]).toEqual([]);
-      expect(groupCountParams[6]).toEqual([]);
-      expect(groupCountParams[7]).toEqual([3]);
-      expect(groupCountParams[8]).toEqual([1, 2]);
-      expect(groupCountParams[9]).toEqual([0, 1]);
+      expect(groupCountResult.metrics.plan).toContain('PostgresRdf3xGroupCount');
+      expect(groupCountResult.metrics.plan).toContain('PostgresRdf3xAggregateHaving(?messageCount$gte)');
+      expect(groupCountResult.metrics.plan).toContain('PostgresRdf3xAggregateOrder(desc:messageCount)');
+      expect(groupCountResult.metrics.plan).toContain('PostgresRdf3xAggregateLimit');
+      expect(groupCountResult.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_group_count)');
+      expect(groupCountResult.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexBgpGroupCount(2)');
+      expect(pool.nativeBgpGroupCountCalls).toHaveLength(0);
 
       const numericAggregateResult = await engine.query({
         patterns: [
@@ -3987,7 +3949,7 @@ describe('PostgresRdfEngine', () => {
         rejectedNativeOperators: expect.arrayContaining([
           {
             capability: 'join.required_bgp.native',
-            reason: 'shape-gate',
+            reason: 'cost-cutover-generic-bgp-native-regression',
           },
         ]),
       });
@@ -4171,7 +4133,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('pushes bounded graph-prefix joins into native custom-index values', async () => {
+  it('keeps bounded graph-prefix joins on RDF-3X instead of native custom-index values', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-graph-prefix-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
     const engine = new PostgresRdfEngine({
@@ -4211,9 +4173,9 @@ describe('PostgresRdfEngine', () => {
         message1.value,
         message2.value,
       ]);
-      expect(scan.metrics.queryPlan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)');
       expect(scan.metrics.queryPlan?.join('\n')).toContain('GraphPrefixMembershipFilter');
-      expect(pool.nativeScanAnyCalls).toHaveLength(1);
+      expect(scan.metrics.queryPlan).not.toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)');
+      expect(pool.nativeScanAnyCalls).toHaveLength(0);
 
       await engine.put([
         quad(outsideMessage, namedNode(STATUS), literal('open'), outsideGraph),
@@ -4246,18 +4208,13 @@ describe('PostgresRdfEngine', () => {
         thread1.value,
         thread2.value,
       ]);
-      expect(join.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
-      expect(join.metrics.plan).toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
-      expect(join.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(2)');
-      expect(join.metrics.plan).toContain('PostgresRdfNativeGraphPrefixSlotFilter(2x2)');
-      expect(join.metrics.plan).not.toContain('PostgresRdf3xJoin');
+      expect(join.metrics.plan).toContain('Rdf3xJoinBGP(2)');
+      expect(join.metrics.plan.join('\n')).toContain('GraphPrefixMembershipFilter');
+      expect(join.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
+      expect(join.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
+      expect(join.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexBgpJoin(2)');
       expect(pool.nativeValuesJoinCalls).toHaveLength(0);
-      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
-      const bgpJoinParams = pool.nativeBgpJoinCalls[0].params;
-      expect(bgpJoinParams[4]).toHaveLength(8);
-      expect(bgpJoinParams[6]).toHaveLength(2);
-      expect(bgpJoinParams[7]).toEqual([0, 2, 4]);
-      expect(bgpJoinParams[8]).toHaveLength(4);
+      expect(pool.nativeBgpJoinCalls).toHaveLength(0);
 
       const count = await engine.query({
         patterns: [
@@ -4286,16 +4243,11 @@ describe('PostgresRdfEngine', () => {
       });
       expect(count.count).toBe(2);
       expect(count.bindings[0].messageCount.value).toBe('2');
-      expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
-      expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
-      expect(count.metrics.plan).toContain('PostgresRdfNativeGraphPrefixSlotFilter(2x2)');
-      expect(pool.nativeBgpCountCalls).toHaveLength(1);
-      const bgpCountParams = pool.nativeBgpCountCalls[0].params;
-      expect(bgpCountParams[5]).toEqual([]);
-      expect(bgpCountParams[6]).toEqual([]);
-      expect(bgpCountParams[7]).toHaveLength(2);
-      expect(bgpCountParams[8]).toEqual([0, 2, 4]);
-      expect(bgpCountParams[9]).toHaveLength(4);
+      expect(count.metrics.plan).toContain('PostgresRdf3xJoinCount');
+      expect(count.metrics.plan.join('\n')).toContain('GraphPrefixMembershipFilter');
+      expect(count.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
+      expect(count.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
+      expect(pool.nativeBgpCountCalls).toHaveLength(0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -4362,7 +4314,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('uses generic native BGP operators when subject-star extension operators are absent', async () => {
+  it('falls back to RDF-3X when subject-star extension operators are absent', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-subject-star-fallback-'));
     const pool = new XpodRdfExtensionPgPool(
       dataDir,
@@ -4429,12 +4381,12 @@ describe('PostgresRdfEngine', () => {
         message1.value,
         message2.value,
       ]);
-      expect(join.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
-      expect(join.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(3)');
+      expect(join.metrics.plan).toContain('Rdf3xJoinBGP(3)');
       expect(join.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(join.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.required_bgp.native)');
       expect(join.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.subject_star)');
       expect(join.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexSubjectStarJoin');
-      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
+      expect(pool.nativeBgpJoinCalls).toHaveLength(0);
 
       const count = await engine.query({
         patterns: [
@@ -4470,19 +4422,18 @@ describe('PostgresRdfEngine', () => {
 
       expect(count.count).toBe(2);
       expect(count.bindings[0].messageCount.value).toBe('2');
-      expect(count.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
-      expect(count.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpCount(3)');
-      expect(count.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(count.metrics.plan).toContain('PostgresRdf3xJoinCount');
+      expect(count.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
       expect(count.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.subject_star_count)');
       expect(count.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexSubjectStarCount');
-      expect(pool.nativeBgpCountCalls).toHaveLength(1);
+      expect(pool.nativeBgpCountCalls).toHaveLength(0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
 
-  it('marks subject-star grouped aggregate native paths', async () => {
+  it('uses native subject-star numeric aggregates while keeping grouped counts on RDF-3X', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-subject-star-grouped-aggregate-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
     const engine = new PostgresRdfEngine({
@@ -4553,11 +4504,11 @@ describe('PostgresRdfEngine', () => {
       expect(groupCount.bindings).toHaveLength(1);
       expect(groupCount.bindings[0].thread.value).toBe(threadA.value);
       expect(groupCount.bindings[0].messageCount.value).toBe('2');
-      expect(groupCount.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_group_count)');
-      expect(groupCount.metrics.plan).toContain('PostgresRdfNativeCustomIndexSubjectStarGroupCount(?message;patterns:3)');
-      expect(groupCount.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpGroupCount(3)');
-      expect(groupCount.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
-      expect(pool.nativeBgpGroupCountCalls).toHaveLength(1);
+      expect(groupCount.metrics.plan).toContain('PostgresRdf3xGroupCount');
+      expect(groupCount.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_group_count)');
+      expect(groupCount.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexSubjectStarGroupCount(?message;patterns:3)');
+      expect(groupCount.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexBgpGroupCount(3)');
+      expect(pool.nativeBgpGroupCountCalls).toHaveLength(0);
 
       const numericAggregate = await engine.query({
         patterns: [
