@@ -636,6 +636,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - ACL/ACR 写路径已经接入保守 cache clear；未完成的是把它从全量 result/materialized clear
   收敛为精确 scope invalidation。materialized result 在 models 列表页 / 统计页 /
   Agent context 的实际产品调用接线、更大数据量 benchmark 和 auth-aware cache dashboard 仍未完成。
+- ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
+  `Message.thread` 查询，Managed Run 组装 conversation / thread items 时不再绕过 shared model
+  入口；显式 materialized key 仍需要在 shared query/repository 层继续接线。
 - SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair；后台维护任务还没有按 source-level dirty queue 做批量调度。
 - 冷启动 stats refresh / warm steady-state 的自动化运维指标；`metrics.explain` 已有第一版查询级
   结构化观测，但还没有慢查询 UI / dashboard。

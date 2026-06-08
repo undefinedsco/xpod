@@ -108,6 +108,10 @@ type QueriedMessageRecord = {
   resource?: string | null;
 };
 
+type MessageThreadProjection = Omit<QueriedMessageRecord, 'status' | 'resource'> & {
+  '@id'?: string;
+};
+
 type AiCredentialCandidate = {
   id?: string | null;
   provider?: string | null;
@@ -998,93 +1002,65 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return cache?.get(threadId);
   }
 
-  private getCachedFetch(context: StoreContext): typeof fetch | undefined {
-    return (context as any)._cachedFetch as typeof fetch | undefined;
-  }
-
   private getCachedPodBaseUrl(context: StoreContext): string | undefined {
     const cachedWebId = (context as any)._cachedWebId as string | undefined;
     return this.derivePodBaseUrl(cachedWebId);
-  }
-
-  private parseSparqlBindingValue(binding: Record<string, { value?: string }> | undefined, key: string): string | null {
-    return binding?.[key]?.value ?? null;
   }
 
   private async selectMessagesForThread(
     thread: ThreadRef,
     context: StoreContext,
   ): Promise<QueriedMessageRecord[]> {
-    await this.getDb(context);
-
-    const cachedFetch = this.getCachedFetch(context);
-    const podBaseUrl = this.getCachedPodBaseUrl(context);
-    if (!cachedFetch || !podBaseUrl) {
+    const db = await this.getDb(context);
+    if (!db) {
       return [];
     }
 
     const resolvedThread = await this.resolveThreadRef(thread, context);
-    const endpoint = `${podBaseUrl}/.data/chat/-/sparql`;
-    const query = `
-      PREFIX meeting: <http://www.w3.org/ns/pim/meeting#>
-      PREFIX sioc: <http://rdfs.org/sioc/ns#>
-      PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-      PREFIX dcterms: <http://purl.org/dc/terms/>
-      PREFIX udfs: <https://undefineds.co/ns#>
-      SELECT ?msg ?maker ?messageType ?legacyRole ?content ?messageStatus ?legacyStatus ?createdAt ?legacyCreatedAt ?toolName ?toolCallId ?metadata
-      WHERE {
-        ?msg a meeting:Message ;
-             sioc:has_container <${resolvedThread.thread}> .
-        OPTIONAL { ?msg foaf:maker ?maker . }
-        OPTIONAL { ?msg udfs:messageType ?messageType . }
-        OPTIONAL { ?msg udfs:role ?legacyRole . }
-        OPTIONAL { ?msg sioc:content ?content . }
-        OPTIONAL { ?msg udfs:messageStatus ?messageStatus . }
-        OPTIONAL { ?msg udfs:status ?legacyStatus . }
-        OPTIONAL { ?msg dcterms:created ?createdAt . }
-        OPTIONAL { ?msg udfs:createdAt ?legacyCreatedAt . }
-        OPTIONAL { ?msg udfs:toolName ?toolName . }
-        OPTIONAL { ?msg udfs:toolCallId ?toolCallId . }
-        OPTIONAL { ?msg udfs:metadata ?metadata . }
-      }
-      ORDER BY ?createdAt
-    `.trim();
+    const records = await db
+      .select({
+        id: Message.id,
+        chat: Message.chat,
+        thread: Message.thread,
+        maker: Message.maker,
+        role: Message.role,
+        content: Message.content,
+        createdAt: Message.createdAt,
+        toolName: Message.toolName,
+        toolCallId: Message.toolCallId,
+        metadata: Message.metadata,
+      })
+      .from(Message)
+      .where(eq(Message.thread, resolvedThread.thread)) as MessageThreadProjection[];
 
-    const response = await cachedFetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/sparql-query',
-        Accept: 'application/sparql-results+json',
-      },
-      body: query,
-    });
+    const statusRows = await db
+      .select({
+        id: Message.id,
+        status: Message.status,
+      })
+      .from(Message)
+      .where(eq(Message.thread, resolvedThread.thread)) as Array<{ id: string; status?: string | null }>;
+    const statusById = new Map(statusRows.map((row) => [row.id, row.status ?? null]));
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`Failed to query thread messages: ${response.status} ${response.statusText} - ${text}`);
-    }
-
-    const json = await response.json() as {
-      results?: {
-        bindings?: Array<Record<string, { value?: string }>>;
+    return records.map((record) => {
+      const resource = typeof (record as any)['@id'] === 'string'
+        ? (record as any)['@id'] as string
+        : this.resolveDataResource(record.id, context);
+      return {
+        id: this.baseRelativeIdFromResource(resource, context),
+        chat: record.chat ?? null,
+        thread: record.thread ?? resolvedThread.thread,
+        maker: record.maker ?? null,
+        role: record.role ?? null,
+        content: record.content ?? null,
+        status: statusById.get(record.id) ?? null,
+        createdAt: record.createdAt ?? null,
+        toolName: record.toolName ?? null,
+        toolCallId: record.toolCallId ?? null,
+        metadata: record.metadata ?? null,
+        resource,
       };
-    };
-
-    const bindings = json.results?.bindings ?? [];
-    return bindings.map((binding) => ({
-      id: this.baseRelativeIdFromResource(this.parseSparqlBindingValue(binding, 'msg') ?? '', context),
-      chat: null,
-      thread: resolvedThread.thread,
-      maker: this.parseSparqlBindingValue(binding, 'maker'),
-      role: this.parseSparqlBindingValue(binding, 'messageType') ?? this.parseSparqlBindingValue(binding, 'legacyRole'),
-      content: this.parseSparqlBindingValue(binding, 'content'),
-      status: this.parseSparqlBindingValue(binding, 'messageStatus') ?? this.parseSparqlBindingValue(binding, 'legacyStatus'),
-      createdAt: this.parseSparqlBindingValue(binding, 'createdAt') ?? this.parseSparqlBindingValue(binding, 'legacyCreatedAt'),
-      toolName: this.parseSparqlBindingValue(binding, 'toolName'),
-      toolCallId: this.parseSparqlBindingValue(binding, 'toolCallId'),
-      metadata: this.parseSparqlBindingValue(binding, 'metadata'),
-      resource: this.parseSparqlBindingValue(binding, 'msg'),
-    }));
+    });
   }
 
   private datePathFromTimestamp(timestamp: number | undefined): { yyyy: string; MM: string; dd: string } {
@@ -1386,6 +1362,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         .map((c) => (c as any).text)
         .join('\n');
       role = MessageRole.USER;
+      status = MessageStatus.COMPLETED;
     } else if (item.type === 'assistant_message') {
       const assistantItem = item as AssistantMessageItem;
       content = assistantItem.content
@@ -1410,6 +1387,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       // 其他类型暂时存储为 JSON
       content = JSON.stringify(item);
       role = MessageRole.SYSTEM;
+      status = MessageStatus.COMPLETED;
     }
 
     const messageRecord = {
