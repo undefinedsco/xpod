@@ -1,4 +1,5 @@
 import { ArrayIterator } from 'asynciterator';
+import { createHash } from 'node:crypto';
 import type { AsyncIterator } from 'asynciterator';
 import type { DefaultGraph, Quad, Quad_Object, Term, Variable } from '@rdfjs/types';
 import { DataFactory as RdfDataFactory } from 'rdf-data-factory';
@@ -7,7 +8,14 @@ import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
 import type { QuintPattern } from '../quint/types';
 import { DisabledSparqlFeatureError, RdfSparqlAdapter, UnsupportedSparqlQueryError } from './RdfSparqlAdapter';
 import type { ShadowRdfQuintStore } from './ShadowRdfQuintStore';
-import type { RdfBindingRow, RdfEngineLike, RdfQueryResult, RdfQueryTermPattern } from './types';
+import type {
+  RdfBindingRow,
+  RdfEngineLike,
+  RdfQuery,
+  RdfQueryMaterializedResultOptions,
+  RdfQueryResult,
+  RdfQueryTermPattern,
+} from './types';
 import {
   applyRdfAccessScope,
   filterRdfAccessGraphs,
@@ -22,6 +30,7 @@ export interface SolidRdfSparqlEngineOptions {
   shadowStore?: ShadowRdfQuintStore;
   enablePrimary?: boolean;
   onFallback?: (reason: SolidRdfSparqlFallback) => void;
+  autoMaterializeThreadHistory?: boolean;
 }
 
 export interface SolidRdfSparqlFallback {
@@ -82,6 +91,9 @@ interface MutableOperationCount {
 }
 
 const rdfDataFactory = new RdfDataFactory();
+const SIOC_HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
+const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
+const CHATKIT_THREAD_HISTORY_MATERIALIZED_VERSION = 'v1';
 
 export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly adapter = new RdfSparqlAdapter();
@@ -90,6 +102,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly shadowStore?: ShadowRdfQuintStore;
   private readonly enablePrimary: boolean;
   private readonly onFallback?: (reason: SolidRdfSparqlFallback) => void;
+  private readonly autoMaterializeThreadHistory: boolean;
   private readonly operationCounts = new Map<SolidRdfSparqlOperation, MutableOperationCount>();
   private lastPrimary?: SolidRdfSparqlPrimaryMetric;
   private lastFallback?: SolidRdfSparqlFallbackMetric;
@@ -100,12 +113,14 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     shadowStore?: ShadowRdfQuintStore,
     enablePrimary = true,
     onFallback?: (reason: SolidRdfSparqlFallback) => void,
+    autoMaterializeThreadHistory = true,
   ) {
     this.rdfEngine = rdfEngine;
     this.fallback = fallback;
     this.shadowStore = shadowStore;
     this.enablePrimary = enablePrimary;
     this.onFallback = onFallback;
+    this.autoMaterializeThreadHistory = autoMaterializeThreadHistory;
   }
 
   public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<BindingsStream> {
@@ -120,7 +135,8 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (compiled.queryType !== 'SELECT') {
         return this.fallbackWith('queryBindings', `compiled ${compiled.queryType} cannot produce bindings`, (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope);
       }
-      const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
+      const selectedQuery = this.applyMaterializedQuerySelector('queryBindings', compiled.query);
+      const result = await this.rdfEngine.query(applyRdfAccessScope(selectedQuery, accessScope));
       this.recordPrimary('queryBindings', start, result);
       return this.bindingsStream(result, compiled.variables);
     } catch (error) {
@@ -143,7 +159,8 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (compiled.queryType !== 'ASK') {
         return this.fallbackWith('queryBoolean', `compiled ${compiled.queryType} cannot produce boolean`, (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope);
       }
-      const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
+      const selectedQuery = this.applyMaterializedQuerySelector('queryBoolean', compiled.query);
+      const result = await this.rdfEngine.query(applyRdfAccessScope(selectedQuery, accessScope));
       this.recordPrimary('queryBoolean', start, result);
       return result.bindings.length > 0;
     } catch (error) {
@@ -343,6 +360,29 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       variables: projectedVariables.map((variableName) => rdfDataFactory.variable(variableName) as import('@rdfjs/types').Variable),
     });
     return iterator;
+  }
+
+  private applyMaterializedQuerySelector(
+    operation: 'queryBindings' | 'queryBoolean',
+    query: RdfQuery,
+  ): RdfQuery {
+    if (query.cache?.materialized || !this.autoMaterializeThreadHistory) {
+      return query;
+    }
+    const materialized = defaultMaterializedQuerySelector(
+      operation,
+      query,
+    );
+    if (!materialized) {
+      return query;
+    }
+    return {
+      ...query,
+      cache: {
+        ...query.cache,
+        materialized,
+      },
+    };
   }
 
   private bindings(binding: RdfBindingRow, variables: string[]): RdfBindings {
@@ -633,6 +673,66 @@ function operationCountSnapshot(
 
 function ratio(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : numerator / denominator;
+}
+
+function defaultMaterializedQuerySelector(
+  operation: 'queryBindings' | 'queryBoolean',
+  query: RdfQuery,
+): RdfQueryMaterializedResultOptions | undefined {
+  if (operation !== 'queryBindings') {
+    return undefined;
+  }
+  const threadIri = threadHistoryQueryThreadIri(query);
+  if (!threadIri) {
+    return undefined;
+  }
+  return {
+    key: `chatkit/thread-history/${shortHash(threadIri)}/${shortHash(stableQueryFingerprint(query))}`,
+    version: CHATKIT_THREAD_HISTORY_MATERIALIZED_VERSION,
+  };
+}
+
+function threadHistoryQueryThreadIri(query: RdfQuery): string | undefined {
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (predicate !== SIOC_HAS_CONTAINER && predicate !== SIOC_HAS_MEMBER) {
+      continue;
+    }
+    const object = namedNodeValue(pattern.object);
+    if (object) {
+      return object;
+    }
+  }
+  return undefined;
+}
+
+function namedNodeValue(term: RdfQueryTermPattern | undefined): string | undefined {
+  if (!term || typeof term !== 'object' || 'variable' in term || !('termType' in term)) {
+    return undefined;
+  }
+  return term.termType === 'NamedNode' ? term.value : undefined;
+}
+
+function stableQueryFingerprint(query: RdfQuery): string {
+  const { cache: _cache, ...rest } = query;
+  return stableStringify(rest);
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => typeof entry !== 'function' && entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`).join(',')}}`;
+}
+
+function shortHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
 function implicitUpdateDefaultGraph(basePath: string): string | undefined {

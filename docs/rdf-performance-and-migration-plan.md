@@ -657,12 +657,15 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   allow/deny 条件这层，后续重点是产品 Agent context 调用和 PG text/vector
   持久化/外部后端替换。
 - ACL/ACR 写路径已经接入 affected basePath overlap 的精确 cache invalidation；未完成的是把它从
-  basePath overlap 进一步收敛到 permissionVersion / graph scope。materialized result 在
-  models 列表页 / 统计页 / Agent context 的实际产品调用接线、更大数据量 benchmark 和
-  auth-aware cache dashboard 仍未完成。
+  basePath overlap 进一步收敛到 permissionVersion / graph scope。materialized result 已在
+  `SolidRdfSparqlEngine` 边界为 ChatKit thread history / Managed Run conversation assembly
+  自动生成 `chatkit/thread-history/<thread>/<query>` key；models 列表页 / 统计页、非
+  thread-history 的 Agent context、更大数据量 benchmark 和 auth-aware cache dashboard 仍未完成。
 - ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
   `Message.thread` 查询，Managed Run 组装 conversation / thread items 时不再绕过 shared model
-  入口；显式 materialized key 仍需要在 shared query/repository 层继续接线。
+  入口；SPARQL 边界 selector 会识别 `sioc:has_container` / `sioc:has_member` thread-history
+  形状并挂 materialized key，shared query/repository 层后续只需要继续覆盖非 thread-history
+  高频产品查询。
 - SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair。PG 已补第一版 source-level dirty queue，并通过 `maintainDerivedIndexes()` / `rdf_maintenance_leases` 接到后台维护入口；未完成的是更大数据量下的 refresh benchmark、按 source 批量调度策略优化和运维面板。
 - 冷启动 stats refresh / warm steady-state 的自动化运维指标；`metrics.explain` 已有第一版查询级
   runtime/stale/slow 结构化观测，但还没有慢查询 UI / dashboard。

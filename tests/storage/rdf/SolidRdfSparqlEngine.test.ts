@@ -25,6 +25,7 @@ const BASE = 'https://pod.example/alice/';
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 const CONTENT = 'http://rdfs.org/sioc/ns#content';
+const HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
 const HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
@@ -261,6 +262,66 @@ describe('SolidRdfSparqlEngine', () => {
       returnedRows: 1,
       plan: ['AsyncRdfEngineFake'],
     });
+  });
+
+  it('adds a materialized cache key for ChatKit thread history queries', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+    const thread = 'https://pod.example/alice/.data/chat/default/index.ttl#thread_1';
+
+    await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${HAS_CONTAINER}> <${thread}> .
+        ?message <${CONTENT}> ?content .
+      }
+      ORDER BY ?message
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^chatkit\/thread-history\/[a-f0-9]{16}\/[a-f0-9]{16}$/);
+  });
+
+  it('can disable automatic materialized cache key selection', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine, undefined, undefined, true, undefined, false);
+    const thread = 'https://pod.example/alice/.data/chat/default/index.ttl#thread_1';
+
+    await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${HAS_CONTAINER}> <${thread}> .
+        ?message <${CONTENT}> ?content .
+      }
+    `, BASE);
+
+    expect(asyncEngine.queries[0]?.cache?.materialized).toBeUndefined();
   });
 
   it('scopes implicit default graph reads exactly for resource base paths', async () => {
@@ -5616,6 +5677,7 @@ describe('SolidRdfSparqlEngine', () => {
 
 class AsyncRdfEngineFake implements RdfEngineLike {
   public readonly calls: string[] = [];
+  public readonly queries: RdfQuery[] = [];
 
   public constructor(private readonly result: RdfQueryResult) {}
 
@@ -5663,8 +5725,9 @@ class AsyncRdfEngineFake implements RdfEngineLike {
     };
   }
 
-  public async query(_query: RdfQuery): Promise<RdfQueryResult> {
+  public async query(query: RdfQuery): Promise<RdfQueryResult> {
     this.calls.push('query');
+    this.queries.push(query);
     return this.result;
   }
 
