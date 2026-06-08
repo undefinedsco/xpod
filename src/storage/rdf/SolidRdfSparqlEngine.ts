@@ -477,11 +477,12 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     run: (fallback: SparqlEngine) => Promise<T>,
     accessScope?: RdfAccessScope,
   ): Promise<T> {
+    const embeddedReason = embeddedUnsupportedReason(reason);
     if (isRestrictiveRdfAccessScope(accessScope)) {
-      throw new UnsupportedSparqlQueryError(`No ACL/ACR-safe SPARQL fallback configured for ${operation}: ${reason}`);
+      throw new UnsupportedSparqlQueryError(`No ACL/ACR-safe SPARQL fallback configured for ${operation}: ${embeddedReason}`);
     }
     if (!this.fallback) {
-      throw new UnsupportedSparqlQueryError(`No compatibility SPARQL fallback configured for ${operation}: ${reason}`);
+      throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation}: ${embeddedReason}`);
     }
     this.onFallback?.({ operation, reason });
     const start = Date.now();
@@ -729,6 +730,12 @@ function fallbackReason(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function embeddedUnsupportedReason(reason: string): string {
+  return reason
+    .replace(/\s+fallback to compatibility engine\b/gi, ' is not supported by the embedded RDF engine')
+    .replace(/\bis handled by the compatibility engine\b/gi, 'is not supported by the embedded RDF engine');
 }
 
 function operationCountSnapshot(

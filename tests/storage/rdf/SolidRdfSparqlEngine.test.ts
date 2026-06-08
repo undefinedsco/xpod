@@ -4379,7 +4379,7 @@ describe('SolidRdfSparqlEngine', () => {
       INSERT DATA {
         <${containerBase}#msg_container_default_graph> <${CONTENT}> "container default graph" .
       }
-    `, containerBase)).rejects.toThrow('No compatibility SPARQL fallback configured for queryVoid');
+    `, containerBase)).rejects.toThrow('Embedded SPARQL engine cannot execute queryVoid');
 
     await expect(engine.queryBoolean(`
       ASK {
@@ -5795,13 +5795,23 @@ describe('SolidRdfSparqlEngine', () => {
       onFallback,
     );
 
-    await expect(engine.queryQuads(`
-      DESCRIBE ?message WHERE {
-        OPTIONAL {
-          ?message a <${MESSAGE}> .
+    let unsupportedError: unknown;
+    try {
+      await engine.queryBindings(`
+        SELECT ?message WHERE {
+          {
+            SELECT ?message WHERE {
+              ?message a <${MESSAGE}> .
+            }
+          }
         }
-      }
-    `, BASE)).rejects.toThrow(UnsupportedSparqlQueryError);
+      `, BASE);
+    } catch (error) {
+      unsupportedError = error;
+    }
+    expect(unsupportedError).toBeInstanceOf(UnsupportedSparqlQueryError);
+    expect((unsupportedError as Error).message).toMatch(/Embedded SPARQL engine cannot execute queryBindings: .*not supported by the embedded RDF engine/);
+    expect((unsupportedError as Error).message).not.toMatch(/compatibility fallback|fallback to compatibility engine/i);
 
     expect(onFallback).not.toHaveBeenCalled();
     expect(engine.getMetrics()).toEqual({
