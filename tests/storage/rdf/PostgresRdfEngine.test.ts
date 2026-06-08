@@ -2679,10 +2679,15 @@ describe('PostgresRdfEngine', () => {
       expect(aggregateResult.bindings).toHaveLength(1);
       expect(aggregateResult.bindings[0].messageCount.value).toBe('2');
       expect(aggregateResult.bindings[0].priorityTotal.value).toBe('30');
-      expect(aggregateResult.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.count)');
-      expect(aggregateResult.metrics.plan).toContain('XpodRdfPgHotOperator(aggregate.numeric)');
-      expect(aggregateResult.metrics.plan).toContain('XpodRdfPgHotOperator(join.required_bgp)');
-      expect(aggregateResult.metrics.plan).toContain('PostgresRdf3xGroupAggregate');
+      expect(aggregateResult.metrics.plan).toContain('PostgresFactsQuery');
+      expect(aggregateResult.metrics.plan.some((entry) => entry.startsWith('PostgresNumericAggregateFactsCutover('))).toBe(true);
+      expect(aggregateResult.metrics.explain?.planner).toMatchObject({
+        selectedPath: 'facts',
+        reasons: expect.arrayContaining([
+          'numeric-aggregate-cost-cutover',
+        ]),
+      });
+      expect(aggregateResult.metrics.plan).not.toContain('PostgresRdf3xGroupAggregate');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -3650,7 +3655,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('falls back to RDF-3X numeric aggregate when the native BGP numeric operator is absent', async () => {
+  it('cuts small grouped numeric aggregates to facts when the native BGP numeric operator is absent', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-bgp-numeric-fallback-'));
     const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'aggregate.bgp_numeric'));
     const engine = new PostgresRdfEngine({
@@ -3709,7 +3714,15 @@ describe('PostgresRdfEngine', () => {
 
       expect(result.bindings).toHaveLength(1);
       expect(result.bindings[0].scoreTotal.value).toBe('14');
-      expect(result.metrics.plan).toContain('PostgresRdf3xGroupAggregate');
+      expect(result.metrics.plan).toContain('PostgresFactsQuery');
+      expect(result.metrics.plan.some((entry) => entry.startsWith('PostgresNumericAggregateFactsCutover('))).toBe(true);
+      expect(result.metrics.explain?.planner).toMatchObject({
+        selectedPath: 'facts',
+        reasons: expect.arrayContaining([
+          'numeric-aggregate-cost-cutover',
+        ]),
+      });
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xGroupAggregate');
       expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_numeric)');
       expect(pool.nativeBgpNumericAggregateCalls).toHaveLength(0);
     } finally {
@@ -3911,7 +3924,6 @@ describe('PostgresRdfEngine', () => {
         'provider model credential count query',
         'provider credential grouped count query',
         'provider credential single-pattern grouped count query',
-        'provider credential fail count aggregate query',
         'oauth credential expiry query',
         'settings owner category query',
         'favorite target chat join query',
@@ -3931,12 +3943,21 @@ describe('PostgresRdfEngine', () => {
         expect(result?.physicalPlan).not.toContain('PostgresFactsQuery');
       }
 
+      const providerNumericAggregate = report.queryCases.find((testCase) => testCase.name === 'provider credential fail count aggregate query');
+      expect(providerNumericAggregate).toBeDefined();
+      expect(providerNumericAggregate?.planMatched).toBe(true);
+      expect(providerNumericAggregate?.returnedRows).toBeGreaterThan(0);
+      expect(providerNumericAggregate?.physicalPlan).toContain('PostgresFactsQuery');
+      expect(providerNumericAggregate?.physicalPlan.some((entry) => entry.startsWith('PostgresNumericAggregateFactsCutover('))).toBe(true);
+      expect(providerNumericAggregate?.physicalPlan).not.toContain('PostgresRdf3xGroupAggregate');
+
       const numericAggregate = report.queryCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
       expect(numericAggregate).toBeDefined();
       expect(numericAggregate?.planMatched).toBe(true);
       expect(numericAggregate?.returnedRows).toBeGreaterThan(0);
-      expect(numericAggregate?.physicalPlan).toContain('PostgresRdf3xGroupAggregate');
-      expect(numericAggregate?.physicalPlan).not.toContain('PostgresFactsQuery');
+      expect(numericAggregate?.physicalPlan).toContain('PostgresFactsQuery');
+      expect(numericAggregate?.physicalPlan.some((entry) => entry.startsWith('PostgresNumericAggregateFactsCutover('))).toBe(true);
+      expect(numericAggregate?.physicalPlan).not.toContain('PostgresRdf3xGroupAggregate');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

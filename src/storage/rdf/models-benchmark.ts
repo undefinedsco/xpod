@@ -1931,7 +1931,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'provider credential fail count aggregate query',
     resource: 'aiProvider',
-    purpose: 'grouped numeric aggregate over credential failCount can use the PostgreSQL RDF-3X join stream',
+    purpose: 'small grouped numeric aggregate over credential failCount can cut over from RDF-3X to facts by cost',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -1970,7 +1970,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
       ],
       select: ['provider', 'credentialCount', 'failCountTotal'],
     },
-    expectedPlan: ['group-aggregate-index'],
+    expectedPlan: ['numeric-aggregate-facts-cutover'],
   },
   {
     name: 'oauth credential expiry query',
@@ -2696,7 +2696,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
   {
     name: 'message score by thread numeric aggregate',
     resource: 'message',
-    purpose: 'grouped numeric message score aggregate stays inside SQL/RDF-3X GROUP BY',
+    purpose: 'small grouped numeric message score aggregate cuts over from RDF-3X to facts by cost',
     minScale: 'small',
     minReturnedRows: 1,
     query: {
@@ -2755,7 +2755,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
       ],
       limit: 1,
     },
-    expectedPlan: ['group-aggregate-index', 'having-pushdown', 'order', 'limit'],
+    expectedPlan: ['numeric-aggregate-facts-cutover'],
   },
   {
     name: 'message join count distinct',
@@ -5701,6 +5701,10 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
         && (planText.includes('IndexJoinAggregate(')
           || planText.includes('Rdf3xPrimaryJoinAggregate('))
       ) || planText.includes('PostgresRdf3xJoinAggregate');
+    case 'numeric-aggregate-facts-cutover':
+      return planText.includes('PostgresFactsQuery')
+        && planText.includes('PostgresNumericAggregateFactsCutover(')
+        && !planText.includes('PostgresRdf3xGroupAggregate');
     case 'having-pushdown':
       return (planText.includes('IndexGroupCountHaving(')
         || planText.includes('IndexGroupAggregateHaving(')

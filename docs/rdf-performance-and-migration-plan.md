@@ -577,13 +577,16 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - grouped count / grouped and non-grouped numeric aggregate PG SQL path。
 - query result cache by facts data version。
 - facts histogram stats：`storageStats().facts` 在 PG 与 SQLite/file-backed engine 上都暴露
-  literal datatype、graph、predicate、predicate/object、subject/predicate 热点分布，供后续
+  literal datatype、graph、predicate、predicate/object、subject/predicate 热点分布，供
   cost model、慢查询 explain 和 skew benchmark 使用；PG `metrics.explain.planner`
   已先把 selected path、路径选择原因、估算输入和可用统计暴露出来，并把当前 query exact
   graph / predicate / predicate-object / subject-predicate 命中的 histogram 条目作为
   `histogramHints` 和 `histogram-*` reason 暴露出来。该 hint 使用短 TTL 的 facts-version
-  snapshot，cache hit 路径不会额外拉 histogram；后续仍需把这些 histogram 真正接入
-  native/RDF-3X/facts 的 cost-based cutover。
+  snapshot，cache hit 路径不会额外拉 histogram；PG grouped numeric aggregate 已补第一版
+  cost cutover：native numeric operator 未命中、且 RDF-3X join source 估算低于阈值时走
+  facts path，并在 plan/explain 中标记 `PostgresNumericAggregateFactsCutover(...)` /
+  `numeric-aggregate-cost-cutover`。后续仍需把 histogram 继续接入更多 native/RDF-3X/facts
+  的 cost-based cutover。
 - query template cache by value-stripped query AST；当前是 bounded in-memory derived metadata，
   `storageStats().queryTemplateCache` 暴露 entry/hit/miss/eviction/ttl/bytes，query plan 标记
   `PostgresQueryTemplateCacheHit(...)` / `PostgresQueryTemplateCacheMiss(...)`；template cache
@@ -634,7 +637,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 未完成：
 
 - 更大数据量 / 并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。custom-index write amplification 已有第一版缓解：真实 PG + `pg-custom-index` benchmark 默认延迟创建 native permutation indexes，facts 写入内部已使用批量 term upsert + 批量 quad upsert，seed 完成后显式 `ensurePgCustomIndexes()`；后续仍需要 COPY/staging-table 导入、一次性 refresh / ANALYZE，以及 `large=1_000_000` / 并发 benchmark 重跑。
-- bounded graph-prefix BGP / aggregate native 下推已接线并完成真实 PG17 rerun；slot-filter 修复了 hidden VALUES 笛卡尔成本，但 `COUNT DISTINCT` 和 grouped count 仍未超过 RDF-3X / btree baseline，不能作为 cutover 依据。subject-star 第一版已落地为 local/PG plan marker 和 models benchmark gate；native `join.subject_star` / `aggregate.subject_star_count` 仍未接线。
+- bounded graph-prefix BGP / aggregate native 下推已接线并完成真实 PG17 rerun；slot-filter 修复了 hidden VALUES 笛卡尔成本，但 `COUNT DISTINCT` 和 grouped count 仍未超过 RDF-3X / btree baseline，不能作为 cutover 依据。小 grouped numeric aggregate 已有 facts cost cutover，避免把已知低收益 shape 强压到 RDF-3X；subject-star 第一版已落地为 local/PG plan marker 和 models benchmark gate；native `join.subject_star` / `aggregate.subject_star_count` 仍未接线。
 - `pg-custom-index` 的 native scan limit early-stop、ordered-page join 仍未作为 xpod models cutover gate。消息流 keyset page 已作为 RDF-3X / PG SQL baseline benchmark gate；VALUES join 已完成受限形状接线并能命中 native operator，但当前 real PG extreme p95 略慢于 RDF-3X / btree baseline。
 - text / vector candidate generation 与 RDF structured join 的本地和 PG 第一版已接到
   `bun run benchmark:rdf-models -- --scale=small --iterations=1 --caseProfile=fusion`。

@@ -309,6 +309,7 @@ interface PgCompiledJoin {
   indexChoice: string;
   queryPlan: string[];
   variableAliases: Map<string, string>;
+  sourceEstimates: Array<{ inputIndex: number; estimateRows: number }>;
   unresolved?: PgPatternKey;
 }
 
@@ -324,6 +325,17 @@ interface PgAggregateSqlExpression {
   type: 'integer' | 'decimal';
   expression: string;
   sql: string;
+}
+
+interface PgFactsQueryOptions {
+  start?: number;
+  planPrefix?: string[];
+}
+
+interface PgNumericAggregateFactsCutoverDecision {
+  minSourceRows: number;
+  maxSourceRows: number;
+  threshold: number;
 }
 
 interface PgCustomIndexBgpJoinShape {
@@ -480,6 +492,7 @@ const OBJECT_RANGE_KINDS: RdfTermKind[] = ['iri', 'literal', 'blank'];
 const PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS = 4096;
 const PG_CUSTOM_INDEX_MAX_VALUE_ROWS = 8192;
 const DEFAULT_RDF_MAINTENANCE_LEASE_TTL_MS = 120_000;
+const DEFAULT_NUMERIC_AGGREGATE_FACTS_CUTOVER_MAX_SOURCE_ROWS = 4_096;
 
 interface AsyncSqlExecutor {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -519,6 +532,7 @@ export interface PostgresRdfEngineOptions {
   maintenanceIntervalMs?: number;
   maintenanceLeaseTtlMs?: number;
   maintenanceLeaseOwner?: string;
+  numericAggregateFactsCutoverMaxSourceRows?: number;
   textIndex?: RdfTextIndex | RdfTextIndexOptions;
   vectorIndex?: RdfVectorIndex | RdfVectorIndexOptions;
 }
@@ -2846,9 +2860,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private async queryFacts(query: RdfQuery): Promise<RdfQueryResult> {
-    const start = Date.now();
-    const metrics = this.localMetrics(start, 0, 0, 0, ['facts-post-filter'], ['PostgresFactsQuery']);
+  private async queryFacts(query: RdfQuery, options?: PgFactsQueryOptions): Promise<RdfQueryResult> {
+    const start = options?.start ?? Date.now();
+    const metrics = this.localMetrics(start, 0, 0, 0, ['facts-post-filter'], [
+      'PostgresFactsQuery',
+      ...(options?.planPrefix ?? []),
+    ]);
     const hasNonPatternSource = (query.values?.length ?? 0) > 0
       || (query.textSearch?.length ?? 0) > 0
       || (query.vectorSearch?.length ?? 0) > 0;
@@ -4067,6 +4084,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     } else if (hasPlan('PostgresFactsQuery')) {
       selectedPath = 'facts';
       reasons.add('facts-fallback-selected');
+      if (hasPlan('PostgresNumericAggregateFactsCutover')) {
+        reasons.add('numeric-aggregate-cost-cutover');
+        estimateInputs.add('facts.exactPatternCounts');
+      }
       if ((query?.optional?.length ?? 0) > 0) reasons.add('optional-shape-requires-facts-fallback');
       if ((query?.unions?.length ?? 0) > 0) reasons.add('union-shape-requires-facts-fallback');
       if ((query?.minus?.length ?? 0) > 0) reasons.add('minus-shape-requires-facts-fallback');
@@ -4812,6 +4833,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ], query.filters?.length ?? 0),
       };
     }
+    const factsCutover = this.numericAggregateFactsCutoverDecision(query, aggregates, compiled);
+    if (factsCutover) {
+      return this.queryFacts(query, {
+        start,
+        planPrefix: [
+          `PostgresNumericAggregateFactsCutover(minSourceRows=${factsCutover.minSourceRows},maxSourceRows=${factsCutover.maxSourceRows},threshold=${factsCutover.threshold})`,
+        ],
+      });
+    }
     const aggregateAliases = new Map<string, string>();
     const aggregateTypes = new Map<string, 'integer' | 'decimal'>();
     const numericJoins = new Map<string, string>();
@@ -4885,6 +4915,37 @@ export class PostgresRdfEngine implements RdfEngineLike {
         query.filters?.length ?? 0,
       ),
     };
+  }
+
+  private numericAggregateFactsCutoverDecision(
+    query: RdfQuery,
+    aggregates: ReturnType<typeof queryAggregates>,
+    compiled: PgCompiledJoin,
+  ): PgNumericAggregateFactsCutoverDecision | undefined {
+    if (
+      (query.groupBy?.length ?? 0) === 0
+      || !aggregates.some((aggregate) => aggregate.type !== 'count')
+    ) {
+      return undefined;
+    }
+    const threshold = this.numericAggregateFactsCutoverMaxSourceRows();
+    if (threshold <= 0 || compiled.sourceEstimates.length === 0) {
+      return undefined;
+    }
+    const estimates = compiled.sourceEstimates.map((source) => source.estimateRows);
+    const minSourceRows = Math.min(...estimates);
+    const maxSourceRows = Math.max(...estimates);
+    return minSourceRows <= threshold
+      ? { minSourceRows, maxSourceRows, threshold }
+      : undefined;
+  }
+
+  private numericAggregateFactsCutoverMaxSourceRows(): number {
+    return Math.max(
+      0,
+      this.pgOptions.numericAggregateFactsCutoverMaxSourceRows
+        ?? DEFAULT_NUMERIC_AGGREGATE_FACTS_CUTOVER_MAX_SOURCE_ROWS,
+    );
   }
 
   private async tryQueryPgCustomIndexCount(
@@ -6790,6 +6851,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
       });
     }
     const orderedSources = this.orderJoinSources(resolvedSources);
+    const sourceEstimates = orderedSources.map((source) => ({
+      inputIndex: source.inputIndex,
+      estimateRows: source.estimateRows,
+    }));
     const builder = new PgSqlBuilder();
     const conditions: string[] = [];
     const joins: string[] = [];
@@ -6810,6 +6875,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           indexChoice: 'none',
           queryPlan,
           variableAliases,
+          sourceEstimates,
           unresolved: source.resolved.unresolved,
         };
       }
@@ -6885,6 +6951,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         sql,
       ],
       variableAliases,
+      sourceEstimates,
     };
   }
 
