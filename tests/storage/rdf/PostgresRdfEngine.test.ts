@@ -1837,6 +1837,7 @@ describe('PostgresRdfEngine', () => {
       driver: 'pglite',
       dataDir,
       queryExplainSlowMs: 0,
+      queryExplainSlowQueryMaxEntries: 1,
     });
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const message1 = namedNode(`${graph.value}#msg_1`);
@@ -1888,6 +1889,67 @@ describe('PostgresRdfEngine', () => {
           reasons: expect.arrayContaining(['duration-threshold']),
         },
       });
+
+      const repeated = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(CONTENT),
+            object: { variable: 'content' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'content',
+            operator: '$regex',
+            value: 'Draft',
+            flags: 'i',
+          },
+        ],
+        select: ['message'],
+      });
+      expect(repeated.bindings.map((binding) => binding.message.value)).toEqual([message2.value]);
+      const slowQueryStats = (await engine.storageStats()).slowQueries;
+      expect(slowQueryStats).toMatchObject({
+        entryCount: 1,
+        maxEntries: 1,
+        entries: [
+          {
+            queryKey: repeated.metrics.explain?.cache?.result?.key,
+            templateKey: repeated.metrics.explain?.cache?.template?.key,
+            selectedPath: 'facts',
+            reasons: expect.arrayContaining([
+              'facts-fallback-selected',
+              'regex-filter-requires-facts-fallback',
+              'slow-query-detected',
+            ]),
+            runtime: {
+              scannedRows: 2,
+              returnedRows: 1,
+            },
+            slowQuery: {
+              thresholdMs: 0,
+              scannedRows: 2,
+              reasons: expect.arrayContaining(['duration-threshold']),
+            },
+            cache: {
+              templateStatus: 'hit',
+              resultStatus: 'miss',
+              materializedStatus: 'not-applicable',
+              scopeHash: expect.any(String),
+              scopeBasePath: null,
+              scopePrincipal: null,
+            },
+            acceleration: {
+              profile: 'baseline',
+              requested: false,
+              enabled: false,
+            },
+          },
+        ],
+      });
+      expect(slowQueryStats?.entries[0].generatedAt).toEqual(expect.any(String));
       const files = await readdir(dataDir);
       expect(files.some((entry) => entry.includes('rdf-cache.sqlite'))).toBe(false);
     } finally {

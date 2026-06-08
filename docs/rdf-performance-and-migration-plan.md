@@ -606,7 +606,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   会把 `materialized-result-cache` / `query-result-cache` / `native-extension` / `rdf3x` /
   `facts` 的 selected path、选择原因、估算输入、query-specific histogram hints、
   runtime scan/join/return rows、RDF-3X stale facts version、slow-query 触发原因和
-  rejected capabilities 暴露给慢查询分析。
+  rejected capabilities 暴露给慢查询分析。`storageStats().slowQueries` 会保留 bounded
+  process-local 最近慢查询快照，包含 query/cache key、selected path、reason、runtime、
+  stale stats、cache scope 摘要和 acceleration 摘要；该快照不写入 Pod/RDF durable 状态。
   原有 `metrics.plan` 字符串仍用于 benchmark gate 和人工 trace。
 - `rdf_query_result_cache.scope_hash` 记录 normalized cache scope 的摘要；结构化 access scope 会把
   principal、base path、mode、authorization model、permission version 以及 allow/deny graph
@@ -634,8 +636,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - API 运维观测入口第一版已接上 `GET /v1/rdf/stats`：cloud + PostgreSQL SPARQL endpoint
   下由 API 侧 transient `PostgresRdfEngine.storageStats()` 返回 facts bytes、derived bytes、
   cache bytes、facts data version、RDF-3X facts data version、refresh lag、synced boolean、
-  PG acceleration capability 和 cache scope 统计；local / 非 PostgreSQL endpoint 返回
-  `available=false`，避免 API 进程并发打开 CSS
+  PG acceleration capability、cache scope 统计和 `slowQueries` 最近慢查询快照；local / 非
+  PostgreSQL endpoint 返回 `available=false`，避免 API 进程并发打开 CSS
   sqlite RDF index。该端点需要普通 API 鉴权，service caller 需要 `usage:read` scope。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases；默认 PG query cases 会覆盖消息流 latest-message、keyset page、Agent thread context、run state center、run steps、Task/Run/Thread/RunStep detail hydration、SessionManager hydration、audit approval trace、task materialization、AI credential selection、AI config/model selection、vector store/indexed-file metadata、provider/model/credential、profile/access-control、approval-grant、contact/favorite 等业务查询，并会在通用业务查询外额外跑 5 个 materialized warm-path case。普通 query 仍强制 bypass result cache，避免把 engine baseline 测成 cache hit；`--caseProfile=extreme` 已覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、graph-prefix scan，以及 5 个 exact-graph native custom-index gate。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；历史 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case；2026-06-06 PG17 extreme gate 已覆盖 19483 quads、2 个 scan case 和 10 个 query case，并要求 `pg-custom-index` + `extreme/all` 至少命中一次 `XpodRdfExtensionOperator(...)`。
@@ -681,8 +683,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   query/repository 层后续只需要继续覆盖统计页和非 thread-history 高频产品查询。
 - SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair。PG 已补第一版 source-level dirty queue，并通过 `maintainDerivedIndexes()` / `rdf_maintenance_leases` 接到后台维护入口；未完成的是更大数据量下的 refresh benchmark、按 source 批量调度策略优化和运维面板。
 - 冷启动 stats refresh / warm steady-state 的自动化运维指标；`GET /v1/rdf/stats` 已先暴露
-  `storageStats()` 和 `rdf3x.refreshLag`，`metrics.explain` 已有第一版查询级 runtime/stale/slow
-  结构化观测，但还没有慢查询 UI / dashboard。
+  `storageStats()`、`rdf3x.refreshLag` 和 process-local `slowQueries` 快照，`metrics.explain`
+  已有第一版查询级 runtime/stale/slow 结构化观测，但还没有慢查询 UI / dashboard。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration。真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 ## Migration Strategy

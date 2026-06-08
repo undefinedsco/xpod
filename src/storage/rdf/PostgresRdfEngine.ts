@@ -51,6 +51,8 @@ import type {
   RdfPgAccelerationProfile,
   RdfPgAccelerationProvider,
   RdfPgAccelerationStats,
+  RdfSlowQueryStats,
+  RdfSlowQueryStatsEntry,
   RdfPatternQuery,
   RdfQueryFilter,
   RdfQueryPattern,
@@ -120,6 +122,7 @@ const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
 const DEFAULT_QUERY_EXPLAIN_SLOW_MS = 1_000;
 const DEFAULT_QUERY_EXPLAIN_LARGE_SCAN_ROWS = 100_000;
 const DEFAULT_QUERY_EXPLAIN_SCAN_AMPLIFICATION = 100;
+const DEFAULT_QUERY_EXPLAIN_SLOW_QUERY_MAX_ENTRIES = 20;
 const PLANNER_HISTOGRAM_CACHE_TTL_MS = 5_000;
 const PLANNER_HISTOGRAM_HINT_LIMIT = 100;
 const POSTGRES_RDF_SESSION_OPTIONS = '-c jit=off';
@@ -527,6 +530,7 @@ export interface PostgresRdfEngineOptions {
   queryTemplateCacheTtlMs?: number;
   queryExplainSlowMs?: number;
   queryExplainLargeScanRows?: number;
+  queryExplainSlowQueryMaxEntries?: number;
   rdfAccelerationProfile?: RdfPgAccelerationProfile;
   rdfAccelerationRequiredCapabilities?: string[];
   deferPgCustomIndexInitialization?: boolean;
@@ -1133,6 +1137,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private queryTemplateCacheMisses = 0;
   private queryTemplateCacheEvictions = 0;
   private derivedCacheEvictions: RdfDerivedCacheEvictionStats = emptyDerivedCacheEvictionStats();
+  private slowQueryHistory: RdfSlowQueryStatsEntry[] = [];
   private plannerHistogramCache: {
     factsDataVersion: number;
     createdAtMs: number;
@@ -1250,6 +1255,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.queryTemplateCacheMisses = 0;
     this.queryTemplateCacheEvictions = 0;
     this.derivedCacheEvictions = emptyDerivedCacheEvictionStats();
+    this.slowQueryHistory = [];
     this.plannerHistogramCache = null;
   }
 
@@ -1795,6 +1801,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       queryResultCache,
       materializedResultCache,
       queryTemplateCache,
+      slowQueries: this.slowQueryStats(),
       pgAcceleration: await this.pgAccelerationStats(),
       factsBytes,
       derivedBytes,
@@ -3987,6 +3994,33 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   private async withPostgresQueryExplain(result: RdfQueryResult, options: PgQueryExplainOptions): Promise<RdfQueryResult> {
     const acceleration = this.pgAcceleration;
+    const planner = await this.postgresQueryPlannerExplain(result, options.query, options.factsDataVersion);
+    const cache = {
+      template: options.template.explain,
+      result: options.resultCache,
+      materialized: options.materializedCache,
+      scope: {
+        hash: options.template.cacheScope.hash,
+        shape: options.template.cacheScope.shape,
+        principal: options.template.cacheScope.principal,
+        basePath: options.template.cacheScope.basePath,
+        mode: options.template.cacheScope.mode,
+        authorizationModel: options.template.cacheScope.authorizationModel,
+        permissionVersion: options.template.cacheScope.permissionVersion,
+      },
+    };
+    const accelerationExplain: RdfSlowQueryStatsEntry['acceleration'] = {
+      profile: this.pgOptions.rdfAccelerationProfile ?? 'baseline',
+      requested: Boolean(acceleration?.requested),
+      enabled: Boolean(acceleration?.enabled),
+      ...(acceleration?.provider ? { provider: acceleration.provider } : {}),
+      ...(this.pgCustomIndexBuildIsDeferred(acceleration)
+        ? { fallbackReason: 'index-build-deferred' as const }
+        : acceleration?.fallbackReason ? { fallbackReason: acceleration.fallbackReason } : {}),
+      ...(acceleration?.activeOperators ? { activeOperators: this.effectivePgAccelerationActiveOperators(acceleration) } : {}),
+      ...(options.query ? { unsupportedCapabilities: this.unsupportedPgAccelerationCapabilities(options.query) } : {}),
+    };
+    this.recordSlowQuerySnapshot(planner, options, cache.scope, accelerationExplain);
     return {
       ...result,
       metrics: {
@@ -3999,32 +4033,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
             profile: 'rdf3x',
             ...(options.factsDataVersion !== undefined ? { factsDataVersion: options.factsDataVersion } : {}),
           },
-          planner: await this.postgresQueryPlannerExplain(result, options.query, options.factsDataVersion),
-          cache: {
-            template: options.template.explain,
-            result: options.resultCache,
-            materialized: options.materializedCache,
-            scope: {
-              hash: options.template.cacheScope.hash,
-              shape: options.template.cacheScope.shape,
-              principal: options.template.cacheScope.principal,
-              basePath: options.template.cacheScope.basePath,
-              mode: options.template.cacheScope.mode,
-              authorizationModel: options.template.cacheScope.authorizationModel,
-              permissionVersion: options.template.cacheScope.permissionVersion,
-            },
-          },
-          acceleration: {
-            profile: this.pgOptions.rdfAccelerationProfile ?? 'baseline',
-            requested: Boolean(acceleration?.requested),
-            enabled: Boolean(acceleration?.enabled),
-            ...(acceleration?.provider ? { provider: acceleration.provider } : {}),
-            ...(this.pgCustomIndexBuildIsDeferred(acceleration)
-              ? { fallbackReason: 'index-build-deferred' as const }
-              : acceleration?.fallbackReason ? { fallbackReason: acceleration.fallbackReason } : {}),
-            ...(acceleration?.activeOperators ? { activeOperators: this.effectivePgAccelerationActiveOperators(acceleration) } : {}),
-            ...(options.query ? { unsupportedCapabilities: this.unsupportedPgAccelerationCapabilities(options.query) } : {}),
-          },
+          planner,
+          cache,
+          acceleration: accelerationExplain,
         },
       },
     };
@@ -4320,12 +4331,117 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
+  private recordSlowQuerySnapshot(
+    planner: RdfQueryPlannerExplain,
+    options: PgQueryExplainOptions,
+    cacheScope: {
+      hash: string;
+      basePath: string | null;
+      principal: string | null;
+    },
+    acceleration: RdfSlowQueryStatsEntry['acceleration'],
+  ): void {
+    if (!planner.slowQuery) {
+      return;
+    }
+    const maxEntries = this.queryExplainSlowQueryMaxEntries();
+    if (maxEntries <= 0) {
+      this.slowQueryHistory = [];
+      return;
+    }
+
+    this.slowQueryHistory.push({
+      generatedAt: new Date().toISOString(),
+      queryKey: options.template.cacheKey,
+      ...(options.template.templateKey !== 'disabled' ? { templateKey: options.template.templateKey } : {}),
+      selectedPath: planner.selectedPath,
+      reasons: [...planner.reasons],
+      runtime: {
+        ...planner.runtime,
+        indexChoices: [...planner.runtime.indexChoices],
+      },
+      slowQuery: {
+        ...planner.slowQuery,
+        reasons: [...planner.slowQuery.reasons],
+      },
+      ...(planner.staleStats ? { staleStats: { ...planner.staleStats } } : {}),
+      cache: {
+        templateStatus: options.template.explain.status,
+        ...(options.resultCache ? { resultStatus: options.resultCache.status } : {}),
+        ...(options.materializedCache ? { materializedStatus: options.materializedCache.status } : {}),
+        scopeHash: cacheScope.hash,
+        scopeBasePath: cacheScope.basePath,
+        scopePrincipal: cacheScope.principal,
+      },
+      acceleration: {
+        ...acceleration,
+        ...(acceleration.activeOperators ? { activeOperators: [...acceleration.activeOperators] } : {}),
+        ...(acceleration.unsupportedCapabilities ? { unsupportedCapabilities: [...acceleration.unsupportedCapabilities] } : {}),
+      },
+    });
+    this.trimSlowQueryHistory(maxEntries);
+  }
+
+  private slowQueryStats(): RdfSlowQueryStats {
+    const maxEntries = this.queryExplainSlowQueryMaxEntries();
+    this.trimSlowQueryHistory(maxEntries);
+    if (maxEntries <= 0) {
+      return {
+        entryCount: 0,
+        maxEntries,
+        entries: [],
+      };
+    }
+    const entries = [...this.slowQueryHistory]
+      .reverse()
+      .map((entry) => ({
+        ...entry,
+        reasons: [...entry.reasons],
+        runtime: {
+          ...entry.runtime,
+          indexChoices: [...entry.runtime.indexChoices],
+        },
+        slowQuery: {
+          ...entry.slowQuery,
+          reasons: [...entry.slowQuery.reasons],
+        },
+        ...(entry.staleStats ? { staleStats: { ...entry.staleStats } } : {}),
+        cache: { ...entry.cache },
+        acceleration: {
+          ...entry.acceleration,
+          ...(entry.acceleration.activeOperators ? { activeOperators: [...entry.acceleration.activeOperators] } : {}),
+          ...(entry.acceleration.unsupportedCapabilities ? { unsupportedCapabilities: [...entry.acceleration.unsupportedCapabilities] } : {}),
+        },
+      }));
+    return {
+      entryCount: entries.length,
+      maxEntries,
+      entries,
+    };
+  }
+
+  private trimSlowQueryHistory(maxEntries = this.queryExplainSlowQueryMaxEntries()): void {
+    if (maxEntries <= 0) {
+      this.slowQueryHistory = [];
+      return;
+    }
+    const extra = this.slowQueryHistory.length - maxEntries;
+    if (extra > 0) {
+      this.slowQueryHistory.splice(0, extra);
+    }
+  }
+
   private queryExplainSlowMs(): number {
     return Math.max(0, this.pgOptions.queryExplainSlowMs ?? DEFAULT_QUERY_EXPLAIN_SLOW_MS);
   }
 
   private queryExplainLargeScanRows(): number {
     return Math.max(0, this.pgOptions.queryExplainLargeScanRows ?? DEFAULT_QUERY_EXPLAIN_LARGE_SCAN_ROWS);
+  }
+
+  private queryExplainSlowQueryMaxEntries(): number {
+    const configured = this.pgOptions.queryExplainSlowQueryMaxEntries ?? DEFAULT_QUERY_EXPLAIN_SLOW_QUERY_MAX_ENTRIES;
+    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_EXPLAIN_SLOW_QUERY_MAX_ENTRIES;
   }
 
   private async queryPlannerHistogramHints(

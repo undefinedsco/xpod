@@ -118,6 +118,7 @@ export interface RdfEngineStorageStats {
   queryResultCache?: RdfQueryResultCacheStats;
   materializedResultCache?: RdfMaterializedResultCacheStats;
   queryTemplateCache?: RdfQueryTemplateCacheStats;
+  slowQueries?: RdfSlowQueryStats;
   pgAcceleration?: RdfPgAccelerationStats;
   factsBytes: number;
   derivedBytes: number;
@@ -214,6 +215,40 @@ export interface RdfQueryTemplateCacheStats {
   missCount: number;
   evictionCount: number;
   totalBytes: number;
+}
+
+export interface RdfSlowQueryStats {
+  entryCount: number;
+  maxEntries: number;
+  entries: RdfSlowQueryStatsEntry[];
+}
+
+export interface RdfSlowQueryStatsEntry {
+  generatedAt: string;
+  queryKey: string;
+  templateKey?: string;
+  selectedPath: RdfQueryPlannerSelectedPath;
+  reasons: string[];
+  runtime: RdfQueryPlannerRuntimeExplain;
+  slowQuery: RdfQueryPlannerSlowQueryExplain;
+  staleStats?: RdfQueryPlannerStaleStatsExplain;
+  cache: {
+    templateStatus?: RdfQueryTemplateCacheExplain['status'];
+    resultStatus?: RdfQueryCacheStatus;
+    materializedStatus?: RdfQueryCacheStatus;
+    scopeHash: string;
+    scopeBasePath: string | null;
+    scopePrincipal: string | null;
+  };
+  acceleration: {
+    profile: RdfPgAccelerationProfile;
+    requested: boolean;
+    enabled: boolean;
+    provider?: RdfPgAccelerationProvider;
+    fallbackReason?: RdfPgAccelerationFallbackReason;
+    activeOperators?: string[];
+    unsupportedCapabilities?: string[];
+  };
 }
 
 export interface RdfDerivedIndexRefreshResult {
