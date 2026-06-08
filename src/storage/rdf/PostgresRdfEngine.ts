@@ -165,6 +165,7 @@ const PG_NATIVE_CUSTOM_INDEX_OPERATOR_CAPABILITIES = [
   'aggregate.bgp_group_count',
   'aggregate.bgp_numeric',
   'index.xpod_rdf_perm.scan_any',
+  'index.xpod_rdf_perm.scan_any.limit',
   'index.xpod_rdf_perm.count_any',
   'index.xpod_rdf_perm.distinct_any',
   'join.required_bgp.native',
@@ -2980,9 +2981,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
     options: QueryOptions | undefined,
     start: number,
   ): Promise<RdfQuadIndexScanResult | undefined> {
-    const capability = 'index.xpod_rdf_perm.scan_any';
+    const baseCapability = 'index.xpod_rdf_perm.scan_any';
+    const limitCapability = 'index.xpod_rdf_perm.scan_any.limit';
+    const canUseLimitEarlyStop = this.nativeScanCanUseLimitEarlyStop(options)
+      && this.canUsePgAccelerationCapability(limitCapability);
+    const capability = canUseLimitEarlyStop ? limitCapability : baseCapability;
     const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
-    if (!customResolved || !this.canUsePgAccelerationCapability(capability) || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
+    if (!customResolved || !this.canUsePgAccelerationCapability(baseCapability) || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
       return undefined;
     }
 
@@ -3037,6 +3042,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       metrics: this.indexMetrics(permutation.name, matchedRows, rows.length, start, [
         ...this.pgAccelerationActiveMarkersForScan(pattern),
         `XpodRdfExtensionOperator(${capability})`,
+        ...(canUseLimitEarlyStop ? [`PostgresRdfNativeCustomIndexScanAnyLimit(${permutation.name})`] : []),
         `PostgresRdfNativeCustomIndexScanAny(${permutation.name})`,
         ...queryPlan,
         ...(order ? [`Rdf3xJoinOrder(${describeScanOrder(options)})`] : []),
@@ -3044,6 +3050,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         sql,
       ]),
     };
+  }
+
+  private nativeScanCanUseLimitEarlyStop(options?: QueryOptions): boolean {
+    return options?.limit !== undefined && (!options.order || options.order.length === 0);
   }
 
   private async scanPostFilter(pattern: QuintPattern, options?: QueryOptions): Promise<RdfQuadIndexScanResult> {

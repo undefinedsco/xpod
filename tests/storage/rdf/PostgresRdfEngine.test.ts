@@ -3291,6 +3291,7 @@ describe('PostgresRdfEngine', () => {
           'index.xpod_rdf_perm.count_any': 'extension',
           'index.xpod_rdf_perm.distinct_any': 'extension',
           'index.xpod_rdf_perm.scan_any': 'extension',
+          'index.xpod_rdf_perm.scan_any.limit': 'extension',
           'join.required_bgp': 'engine-sql',
           'join.slot_filter.native': 'extension',
           'join.values': 'engine-sql',
@@ -3309,6 +3310,7 @@ describe('PostgresRdfEngine', () => {
         'index.xpod_rdf_perm.count_any',
         'index.xpod_rdf_perm.distinct_any',
         'index.xpod_rdf_perm.scan_any',
+        'index.xpod_rdf_perm.scan_any.limit',
         'join.required_bgp.native',
         'join.required_bgp.order_page.native',
         'join.slot_filter.native',
@@ -3325,6 +3327,7 @@ describe('PostgresRdfEngine', () => {
         'index.xpod_rdf_perm.count_any',
         'index.xpod_rdf_perm.distinct_any',
         'index.xpod_rdf_perm.scan_any',
+        'index.xpod_rdf_perm.scan_any.limit',
         'join.required_bgp',
         'join.required_bgp.native',
         'join.slot_filter.native',
@@ -3391,6 +3394,27 @@ describe('PostgresRdfEngine', () => {
       expect(scanAnyParams[3]).toBeNull();
       expect(scanAnyParams[4]).toBeNull();
 
+      const limitedScanResult = await engine.scan({
+        pattern: {
+          graph,
+          predicate: namedNode(STATUS),
+          object: { $in: [literal('open'), literal('closed')] },
+        },
+        options: { limit: 2 },
+      });
+
+      expect(limitedScanResult.quads.map((entry) => entry.subject.value)).toEqual([
+        message1.value,
+        message2.value,
+      ]);
+      expect(limitedScanResult.metrics.queryPlan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any.limit)');
+      expect(limitedScanResult.metrics.queryPlan).toContain('PostgresRdfNativeCustomIndexScanAnyLimit(POS)');
+      expect(limitedScanResult.metrics.queryPlan).toContain('PostgresRdfNativeCustomIndexScanAny(POS)');
+      expect(limitedScanResult.metrics.queryPlan).not.toContain('Rdf3xPermutationScan(POS)');
+      expect(pool.nativeScanAnyCalls).toHaveLength(2);
+      const limitedScanAnyParams = pool.nativeScanAnyCalls[1].params;
+      expect(limitedScanAnyParams[limitedScanAnyParams.length - 1]).toBe(2);
+
       const result = await engine.query({
         patterns: [
           {
@@ -3417,8 +3441,8 @@ describe('PostgresRdfEngine', () => {
       expect(result.metrics.plan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.count_any)');
       expect(result.metrics.plan).toContain('PostgresRdfNativeCustomIndexCountAny(POS)');
       expect(result.metrics.plan).not.toContain('PostgresRdf3xJoinCount');
-      expect(pool.nativeCountAnyCalls).toHaveLength(2);
-      const countAnyParams = pool.nativeCountAnyCalls[1].params;
+      expect(pool.nativeCountAnyCalls).toHaveLength(3);
+      const countAnyParams = pool.nativeCountAnyCalls[2].params;
       expect(countAnyParams).toHaveLength(10);
       expect(countAnyParams[0]).toBe('rdf_quads');
       expect(countAnyParams[1]).toBe('rdf_quads_posg_perm');
@@ -4467,6 +4491,49 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('uses regular native scan when scan limit early-stop capability is absent', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-scan-limit-fallback-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'index.xpod_rdf_perm.scan_any.limit'));
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stringList(stats?.capabilities)).not.toContain('index.xpod_rdf_perm.scan_any.limit');
+      expect(stats?.activeOperators ?? []).not.toContain('index.xpod_rdf_perm.scan_any.limit');
+      expect(stats?.activeOperators ?? []).toContain('index.xpod_rdf_perm.scan_any');
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+      ]);
+      const result = await engine.scan({
+        pattern: {
+          graph,
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+        options: { limit: 1 },
+      });
+
+      expect(result.quads.map((entry) => entry.subject.value)).toEqual([message1.value]);
+      expect(result.metrics.queryPlan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)');
+      expect(result.metrics.queryPlan).toContain('PostgresRdfNativeCustomIndexScanAny(POS)');
+      expect(result.metrics.queryPlan).not.toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any.limit)');
+      expect(result.metrics.queryPlan).not.toContain('PostgresRdfNativeCustomIndexScanAnyLimit(POS)');
+      expect(pool.nativeScanAnyCalls).toHaveLength(1);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to RDF-3X distinct when the native distinct_any operator is absent', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-distinct-fallback-'));
     const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'index.xpod_rdf_perm.distinct_any'));
@@ -4856,7 +4923,7 @@ class XpodRdfExtensionPgPool {
     }
     if (sql.includes('xpod_rdf.perm_index_scan_any(')) {
       this.nativeScanAnyCalls.push({ sql, params });
-      return { rows: await xpodRdfExtensionScanAnyRows(this.db, params) };
+      return { rows: await xpodRdfExtensionScanAnyRows(this.db, sql, params) };
     }
     await this.db.waitReady;
     const result = await this.db.query(sql, params);
@@ -4940,7 +5007,7 @@ class XpodRdfExtensionPgClient {
     }
     if (sql.includes('xpod_rdf.perm_index_scan_any(')) {
       this.nativeScanAnyCalls.push({ sql, params });
-      return { rows: await xpodRdfExtensionScanAnyRows(this.db, params) };
+      return { rows: await xpodRdfExtensionScanAnyRows(this.db, sql, params) };
     }
     const result = await this.db.query(sql, params);
     return {
@@ -4972,6 +5039,7 @@ const XPOD_RDF_EXTENSION_CAPABILITIES = [
   'index.xpod_rdf_perm.count_any',
   'index.xpod_rdf_perm.distinct_any',
   'index.xpod_rdf_perm.scan_any',
+  'index.xpod_rdf_perm.scan_any.limit',
 ];
 
 function xpodRdfExtensionProbeRows(
@@ -5011,7 +5079,7 @@ function xpodRdfExtensionProbeRows(
   return null;
 }
 
-async function xpodRdfExtensionScanAnyRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+async function xpodRdfExtensionScanAnyRows(db: PGlite, sql: string, params: unknown[]): Promise<Array<Record<string, unknown>>> {
   await db.waitReady;
   const indexName = String(params[0] ?? '');
   const columns = XPOD_RDF_EXTENSION_INDEX_COLUMNS[indexName] ?? XPOD_RDF_EXTENSION_INDEX_COLUMNS.rdf_quads_spog_perm;
@@ -5019,7 +5087,7 @@ async function xpodRdfExtensionScanAnyRows(db: PGlite, params: unknown[]): Promi
     Array.isArray(value) ? value.map(Number).filter(Number.isFinite) : null
   ));
   const result = await db.query('SELECT graph_id, subject_id, predicate_id, object_id FROM rdf_quads');
-  return (result.rows as Array<Record<string, unknown>>)
+  const rows = (result.rows as Array<Record<string, unknown>>)
     .filter((row) => columns.every((column, index) => {
       const filter = prefixFilters[index];
       return !filter || filter.includes(Number(row[column]));
@@ -5031,6 +5099,17 @@ async function xpodRdfExtensionScanAnyRows(db: PGlite, params: unknown[]): Promi
       }
       return 0;
     });
+  const limit = sqlPlaceholderNumber(sql, params, 'LIMIT');
+  const offset = sqlPlaceholderNumber(sql, params, 'OFFSET') ?? 0;
+  return rows.slice(offset, limit === undefined ? undefined : offset + limit);
+}
+
+function sqlPlaceholderNumber(sql: string, params: unknown[], keyword: 'LIMIT' | 'OFFSET'): number | undefined {
+  const match = new RegExp(`${keyword}\\s+\\$(\\d+)`, 'i').exec(sql);
+  if (!match) return undefined;
+  const value = params[Number(match[1]) - 1];
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.max(0, value);
 }
 
 async function xpodRdfExtensionDistinctAnyRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
