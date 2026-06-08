@@ -630,7 +630,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `PostgresFactsScan(...)`、`TextSearch(...)`、`VectorSearch(...)`、
   `PostgresFactsBind(?fusionScore:=...)` 和 `PostgresFactsSort(desc:fusionScore,asc:message)`。
   这证明 PG 已能执行 fusion 语义，但第一版仍是 PG facts fallback，不是 RDF-3X/native
-  search-source 下推；后续重点是产品 Agent context 调用、权限候选过滤和 PG text/vector
+  search-source 下推；权限候选过滤已先落到 `applyRdfAccessScope` 投影 search source
+  allow/deny 条件这层，后续重点是产品 Agent context 调用和 PG text/vector
   持久化/外部后端替换。
 - ACL/ACR 写路径已经接入保守 cache clear；未完成的是把它从全量 result/materialized clear
   收敛为精确 scope invalidation。materialized result 在 models 列表页 / 统计页 /

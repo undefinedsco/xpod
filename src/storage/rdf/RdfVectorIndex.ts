@@ -14,6 +14,7 @@ import type {
   RdfVectorSearchResult,
   RdfVectorSourceInput,
 } from './types';
+import { appendRdfSearchSourceFilters } from './RdfSearchSourceFilter';
 
 interface RdfVectorSourceRow {
   id: number;
@@ -203,14 +204,7 @@ export class RdfVectorIndex {
       conditions.push('source.workspace = ?');
       params.push(options.workspace);
     }
-    if (options.source) {
-      conditions.push('source.source = ?');
-      params.push(options.source);
-    }
-    if (options.sourcePrefix) {
-      conditions.push('source.source >= ? AND source.source < ?');
-      params.push(options.sourcePrefix, `${options.sourcePrefix}\uffff`);
-    }
+    appendRdfSearchSourceFilters(options, conditions, params);
     if (options.model !== undefined) {
       conditions.push('chunk.model = ?');
       params.push(options.model);
@@ -579,14 +573,7 @@ function buildVectorScoredBaseQuery(
     conditions.push('source.workspace = ?');
     params.push(options.workspace);
   }
-  if (options.source) {
-    conditions.push('source.source = ?');
-    params.push(options.source);
-  }
-  if (options.sourcePrefix) {
-    conditions.push('source.source >= ? AND source.source < ?');
-    params.push(options.sourcePrefix, `${options.sourcePrefix}\uffff`);
-  }
+  appendRdfSearchSourceFilters(options, conditions, params);
   if (options.model !== undefined) {
     conditions.push('chunk.model = ?');
     params.push(options.model);

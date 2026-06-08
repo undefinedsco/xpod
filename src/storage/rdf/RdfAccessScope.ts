@@ -13,6 +13,9 @@ import type {
   RdfOptionalQueryGroup,
   RdfQueryVariable,
   RdfQueryCacheScope,
+  RdfSearchScope,
+  RdfTextSearchPattern,
+  RdfVectorSearchPattern,
 } from './types';
 
 export type RdfAccessMode = 'read' | 'append' | 'delete' | 'write';
@@ -122,7 +125,7 @@ export function rdfAccessGraphAllowed(graph: string, scope: RdfAccessScope): boo
 
 function applyScopeToQuery(query: RdfQuery, scope: RdfAccessScope, state: ApplyState): RdfQuery {
   const rootFilters: RdfQueryFilter[] = [...(query.filters ?? [])];
-  const patterns = query.patterns.map((pattern) => scopePattern(pattern, rootFilters, scope, state));
+  const patterns = (query.patterns ?? []).map((pattern) => scopePattern(pattern, rootFilters, scope, state));
   return {
     ...query,
     patterns,
@@ -131,6 +134,22 @@ function applyScopeToQuery(query: RdfQuery, scope: RdfAccessScope, state: ApplyS
     minus: query.minus?.map((group) => scopeMinusGroup(group, scope, state)),
     exists: query.exists?.map((group) => scopeExistsGroup(group, scope, state)),
     optional: query.optional?.map((group) => scopeOptionalGroup(group, scope, state)),
+    textSearch: query.textSearch?.map((pattern) => scopeTextSearch(pattern, scope)),
+    vectorSearch: query.vectorSearch?.map((pattern) => scopeVectorSearch(pattern, scope)),
+  };
+}
+
+function scopeTextSearch(pattern: RdfTextSearchPattern, scope: RdfAccessScope): RdfTextSearchPattern {
+  return {
+    ...pattern,
+    scope: scopeSearchSources(pattern.scope, scope),
+  };
+}
+
+function scopeVectorSearch(pattern: RdfVectorSearchPattern, scope: RdfAccessScope): RdfVectorSearchPattern {
+  return {
+    ...pattern,
+    scope: scopeSearchSources(pattern.scope, scope),
   };
 }
 
@@ -309,4 +328,84 @@ function unionTermArrays(existing: unknown, incoming: Term[]): Term[] {
     byValue.set(term.value, term);
   }
   return [...byValue.values()];
+}
+
+function scopeSearchSources(existing: RdfSearchScope | undefined, scope: RdfAccessScope): RdfSearchScope {
+  const prefix = intersectSourcePrefix(existing?.sourcePrefix, scope.basePath);
+  const deniedPrefixes = unionStringArrays(existing?.deniedSourcePrefixes, scope.deniedGraphPrefixes);
+  const deniedSources = unionStringArrays(existing?.deniedSources, scope.deniedGraphUrls);
+
+  if (prefix === false) {
+    return {
+      ...existing,
+      allowedSources: [],
+      deniedSources,
+      deniedSourcePrefixes: deniedPrefixes,
+    };
+  }
+
+  const allowedFromScope = scope.allowedGraphUrls
+    ? scope.allowedGraphUrls.filter((source) => sourceMatchesPrefix(source, prefix))
+    : undefined;
+  const allowedSources = filterStringsByPrefix(
+    intersectStringArrays(existing?.allowedSources, allowedFromScope),
+    prefix,
+  );
+
+  return {
+    ...existing,
+    ...(prefix ? { sourcePrefix: prefix } : {}),
+    ...(allowedSources ? { allowedSources } : {}),
+    ...(deniedSources ? { deniedSources } : {}),
+    ...(deniedPrefixes ? { deniedSourcePrefixes: deniedPrefixes } : {}),
+  };
+}
+
+function intersectSourcePrefix(left: string | undefined, right: string | undefined): string | false | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  if (left.startsWith(right)) {
+    return left;
+  }
+  if (right.startsWith(left)) {
+    return right;
+  }
+  return false;
+}
+
+function intersectStringArrays(left: string[] | undefined, right: string[] | undefined): string[] | undefined {
+  if (!left) {
+    return right ? uniqueStrings(right) : undefined;
+  }
+  if (!right) {
+    return uniqueStrings(left);
+  }
+  const rightSet = new Set(right);
+  return uniqueStrings(left.filter((value) => rightSet.has(value)));
+}
+
+function unionStringArrays(left: string[] | undefined, right: string[] | undefined): string[] | undefined {
+  if (!left && !right) {
+    return undefined;
+  }
+  return uniqueStrings([...(left ?? []), ...(right ?? [])]);
+}
+
+function filterStringsByPrefix(values: string[] | undefined, prefix: string | undefined): string[] | undefined {
+  if (!values || !prefix) {
+    return values;
+  }
+  return values.filter((value) => value.startsWith(prefix));
+}
+
+function sourceMatchesPrefix(source: string, prefix: string | undefined): boolean {
+  return !prefix || source.startsWith(prefix);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))].sort();
 }

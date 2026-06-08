@@ -15,6 +15,7 @@ import type {
   RdfTextSourceInput,
   RdfTextTermDocumentFrequency,
 } from './types';
+import { appendRdfSearchSourceFilters } from './RdfSearchSourceFilter';
 
 interface RdfTextSourceRow {
   id: number;
@@ -160,14 +161,7 @@ export class RdfTextIndex {
       conditions.push('source.workspace = ?');
       params.push(options.workspace);
     }
-    if (options.source) {
-      conditions.push('source.source = ?');
-      params.push(options.source);
-    }
-    if (options.sourcePrefix) {
-      conditions.push('source.source >= ? AND source.source < ?');
-      params.push(options.sourcePrefix, `${options.sourcePrefix}\uffff`);
-    }
+    appendRdfSearchSourceFilters(options, conditions, params);
 
     const sql = `
       SELECT
@@ -223,14 +217,7 @@ export class RdfTextIndex {
       conditions.push('source.workspace = ?');
       params.push(options.workspace);
     }
-    if (options.source) {
-      conditions.push('source.source = ?');
-      params.push(options.source);
-    }
-    if (options.sourcePrefix) {
-      conditions.push('source.source >= ? AND source.source < ?');
-      params.push(options.sourcePrefix, `${options.sourcePrefix}\uffff`);
-    }
+    appendRdfSearchSourceFilters(options, conditions, params);
 
     const rows = this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count

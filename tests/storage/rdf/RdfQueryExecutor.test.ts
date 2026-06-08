@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { DataFactory, termToId } from 'n3';
 import {
+  applyRdfAccessScope,
   RdfQuadIndex,
   SolidRdfEngine,
   rdfVar,
@@ -4225,6 +4226,97 @@ describe('RdfQueryExecutor', () => {
       expect(result.metrics.plan).toContain(`IndexScan(graph:?source,subject:?source,predicate:${RDF_TYPE},object:?type)`);
     } finally {
       await textEngine.close();
+    }
+  });
+
+  it('filters text and vector search candidates through RDF access scope', async () => {
+    const searchEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const publicSource = namedNode('https://pod.example/alice/.data/public/runbook.md');
+    const privateSource = namedNode('https://pod.example/alice/.data/private/runbook.md');
+    const accessScope = {
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read' as const,
+      principal: 'https://id.example/alice/profile/card#me',
+      allowedGraphUrls: [publicSource.value],
+      deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
+      version: 'acl-v1',
+    };
+
+    try {
+      searchEngine.indexTextSource({
+        source: publicSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Public\n\nManaged runtime handoff.\n');
+      searchEngine.indexTextSource({
+        source: privateSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/private/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Private\n\nManaged runtime handoff.\n');
+      searchEngine.indexVectorSource({
+        source: publicSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/runbook.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'public',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime handoff.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [1, 0],
+        model: 'test-embedding',
+      }]);
+      searchEngine.indexVectorSource({
+        source: privateSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/private/runbook.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'private',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime handoff.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [1, 0],
+        model: 'test-embedding',
+      }]);
+
+      const text = searchEngine.query(applyRdfAccessScope({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        select: ['source', 'snippet'],
+      }, accessScope));
+      expect(text.bindings.map((binding) => binding.source.value)).toEqual([publicSource.value]);
+      expect(text.metrics.scannedRows).toBe(1);
+
+      const vector = searchEngine.query(applyRdfAccessScope({
+        vectorSearch: [{
+          embedding: [1, 0],
+          vectorModel: 'test-embedding',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        select: ['source', 'snippet'],
+      }, accessScope));
+      expect(vector.bindings.map((binding) => binding.source.value)).toEqual([publicSource.value]);
+      expect(vector.metrics.scannedRows).toBe(1);
+    } finally {
+      await searchEngine.close();
     }
   });
 

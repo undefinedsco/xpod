@@ -600,6 +600,9 @@ export interface RdfValuesBindingSource {
 export interface RdfSearchScope {
   workspace?: string;
   sourcePrefix?: string;
+  allowedSources?: string[];
+  deniedSources?: string[];
+  deniedSourcePrefixes?: string[];
 }
 
 export interface RdfTextSearchPattern {
@@ -972,6 +975,9 @@ export interface RdfTextSearchOptions {
   source?: string;
   workspace?: string;
   sourcePrefix?: string;
+  allowedSources?: string[];
+  deniedSources?: string[];
+  deniedSourcePrefixes?: string[];
   limit?: number;
   offset?: number;
   orderBy?: RdfTextSearchOrder[];
@@ -1073,6 +1079,9 @@ export interface RdfVectorSearchOptions {
   source?: string;
   workspace?: string;
   sourcePrefix?: string;
+  allowedSources?: string[];
+  deniedSources?: string[];
+  deniedSourcePrefixes?: string[];
   limit?: number;
   offset?: number;
   threshold?: number;
