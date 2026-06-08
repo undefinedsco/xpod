@@ -118,6 +118,10 @@
         "providerFactory": {
           "@id": "urn:solid-server:default:IdentityProviderFactory"
         },
+        "provisionBaseUrl": {
+          "@id": "urn:solid-server:default:variable:oidcIssuer",
+          "@type": "Variable"
+        },
         "identityDbUrl": {
           "@id": "urn:solid-server:default:variable:identityDbUrl",
           "@type": "Variable"
@@ -159,6 +163,14 @@
       "overrideParameters": {
         "@type": "ProvisionPodCreator",
         "baseUrl": { "@id": "urn:solid-server:default:variable:baseUrl" },
+        "provisionBaseUrl": {
+          "@id": "urn:solid-server:default:variable:oidcIssuer",
+          "@type": "Variable"
+        },
+        "nodeId": {
+          "@id": "urn:solid-server:default:variable:nodeId",
+          "@type": "Variable"
+        },
         "identifierGenerator": { "@id": "urn:solid-server:default:IdentifierGenerator" },
         "relativeWebIdPath": "/profile/card#me",
         "webIdStore": { "@id": "urn:solid-server:default:WebIdStore" },
