@@ -151,14 +151,30 @@ export interface RdfPgCustomIndexStats {
 export interface RdfDerivedCacheStats {
   cacheBytes: number;
   maxCacheBytes: number;
+  cachePressure: number;
   maxScopeBytes: number;
   scopeVersionCount: number;
   largestScopeBytes: number;
+  largestScopePressure: number;
   largestScopeHash?: string;
   largestScopeFactsDataVersion?: number;
+  evictionCount: number;
+  evictions: RdfDerivedCacheEvictionStats;
   queryResultPayloadBytes: number;
   materializedResultPayloadBytes: number;
   queryTemplateBytes: number;
+}
+
+export interface RdfDerivedCacheEvictionStats {
+  factsVersion: number;
+  ttl: number;
+  maxEntries: number;
+  payloadBytes: number;
+  scopeBytes: number;
+  totalBytes: number;
+  templateTtl: number;
+  templateMaxEntries: number;
+  templateBytes: number;
 }
 
 export interface RdfQueryResultCacheStats {

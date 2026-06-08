@@ -583,7 +583,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `storageStats().queryTemplateCache` 暴露 entry/hit/miss/eviction/ttl/bytes，query plan 标记
   `PostgresQueryTemplateCacheHit(...)` / `PostgresQueryTemplateCacheMiss(...)`；template cache
   按 idle TTL 和 max entries 淘汰，template bytes 纳入 `storageStats().derivedBytes`，并会被
-  PG 统一 `derivedCacheMaxBytes` bytes guard 约束。
+  PG 统一 `derivedCacheMaxBytes` bytes guard 约束；template TTL、entry count 和 bytes 淘汰
+  会同步计入 `storageStats().derivedCache.evictions`。
 - materialized result cache by explicit business view key：`RdfQuery.cache.materialized`
   写入独立 `rdf_materialized_result_cache`，绑定 facts version、query shape、结构化 access
   scope、TTL、max entries 和 payload bytes quota；命中时 plan 标记
@@ -608,9 +609,12 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   result/materialized cache 另外支持 `derivedCacheScopeMaxBytes`，按 access scope + facts
   version 做共享 payload guard，不会把 template cache 纳入访问 scope 预算。`storageStats()`
   暴露 `entryCount`、`scopeCount`、`payloadBytes`、`maxPayloadBytes`、table/index bytes，
-  以及 `derivedCache.cacheBytes` / `maxCacheBytes` / `maxScopeBytes` / `largestScopeBytes`。
-  后续再收敛为按 permissionVersion / graph scope 的更精确失效，并补 eviction cause /
-  pressure 观测。
+  以及 `derivedCache.cacheBytes` / `maxCacheBytes` / `maxScopeBytes` / `largestScopeBytes` /
+  `cachePressure` / `largestScopePressure`。`derivedCache.evictions` 第一版提供进程内压力
+  观测，按 `factsVersion`、`ttl`、`maxEntries`、`payloadBytes`、`scopeBytes`、
+  `totalBytes`、`templateTtl`、`templateMaxEntries`、`templateBytes` 聚合可重建 cache 的
+  淘汰原因；该计数不写入 Pod/RDF durable 状态。后续再收敛为按 permissionVersion /
+  graph scope 的更精确失效，并把 eviction telemetry 接入慢查询报告和运维面板。
 - `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
 - `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
 - `pg-hot-operators` engine-sql provider：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 走已验证的 PG SQL fast path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。

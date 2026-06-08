@@ -1098,10 +1098,18 @@ describe('PostgresRdfEngine', () => {
       expect(afterWrite.metrics.plan).toContain('PostgresMaterializedResultMiss');
       expect(afterWrite.metrics.plan).toContain('PostgresMaterializedResultStore');
       expect(afterWrite.metrics.plan).not.toContain('PostgresMaterializedResultHit');
-      expect((await engine.storageStats()).materializedResultCache).toMatchObject({
+      const storage = await engine.storageStats();
+      expect(storage.materializedResultCache).toMatchObject({
         entryCount: 1,
         scopeCount: 1,
       });
+      expect(storage.derivedCache).toMatchObject({
+        evictionCount: expect.any(Number),
+        evictions: {
+          factsVersion: expect.any(Number),
+        },
+      });
+      expect(storage.derivedCache?.evictions.factsVersion).toBeGreaterThan(0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -1150,6 +1158,14 @@ describe('PostgresRdfEngine', () => {
         payloadBytes: 0,
         maxPayloadBytes: 1,
       });
+      const storage = await engine.storageStats();
+      expect(storage.derivedCache).toMatchObject({
+        cachePressure: 0,
+        evictions: {
+          payloadBytes: expect.any(Number),
+        },
+      });
+      expect(storage.derivedCache?.evictions.payloadBytes).toBeGreaterThan(0);
 
       const second = await engine.query(query);
       expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
@@ -1208,10 +1224,17 @@ describe('PostgresRdfEngine', () => {
       expect(storage.derivedCache).toMatchObject({
         cacheBytes: 0,
         maxCacheBytes: 1,
+        cachePressure: 0,
         queryResultPayloadBytes: 0,
         materializedResultPayloadBytes: 0,
         queryTemplateBytes: 0,
+        evictions: {
+          totalBytes: expect.any(Number),
+          templateBytes: expect.any(Number),
+        },
       });
+      expect(storage.derivedCache?.evictions.totalBytes).toBeGreaterThan(0);
+      expect(storage.derivedCache?.evictions.templateBytes).toBeGreaterThan(0);
       expect(storage.queryResultCache).toMatchObject({
         entryCount: 0,
         maxPayloadBytes: perCacheMaxBytes,
@@ -1295,9 +1318,14 @@ describe('PostgresRdfEngine', () => {
         maxScopeBytes: 1,
         scopeVersionCount: 0,
         largestScopeBytes: 0,
+        largestScopePressure: 0,
         queryResultPayloadBytes: 0,
         materializedResultPayloadBytes: 0,
+        evictions: {
+          scopeBytes: expect.any(Number),
+        },
       });
+      expect(storage.derivedCache?.evictions.scopeBytes).toBeGreaterThan(0);
       expect(storage.derivedCache?.queryTemplateBytes).toBeGreaterThan(0);
       expect(storage.queryResultCache).toMatchObject({
         entryCount: 0,
@@ -1526,9 +1554,15 @@ describe('PostgresRdfEngine', () => {
       expect(open.metrics.plan).toContain('PostgresMaterializedResultStore');
       const closed = await engine.query(queryForStatus('closed', 'chat/default/closed-messages'));
       expect(closed.metrics.plan).toContain('PostgresMaterializedResultStore');
-      expect((await engine.storageStats()).materializedResultCache).toMatchObject({
+      const storage = await engine.storageStats();
+      expect(storage.materializedResultCache).toMatchObject({
         entryCount: 1,
         scopeCount: 1,
+      });
+      expect(storage.derivedCache).toMatchObject({
+        evictions: {
+          maxEntries: 1,
+        },
       });
     } finally {
       await engine.close();
@@ -1613,6 +1647,11 @@ describe('PostgresRdfEngine', () => {
         missCount: 2,
         evictionCount: 1,
       });
+      expect((await engine.storageStats()).derivedCache).toMatchObject({
+        evictions: {
+          templateMaxEntries: 1,
+        },
+      });
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -1681,6 +1720,11 @@ describe('PostgresRdfEngine', () => {
         hitCount: 0,
         missCount: 2,
         evictionCount: 1,
+      });
+      expect(storage.derivedCache).toMatchObject({
+        evictions: {
+          templateTtl: 1,
+        },
       });
       expect(storage.queryTemplateCache?.totalBytes).toBeGreaterThan(0);
       expect(storage.derivedBytes).toBeGreaterThanOrEqual(storage.queryTemplateCache?.totalBytes ?? 0);

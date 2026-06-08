@@ -18,6 +18,7 @@ import type {
   RdfDerivedIndexRefreshOptions,
   RdfDerivedIndexRefreshResult,
   RdfDerivedCacheStats,
+  RdfDerivedCacheEvictionStats,
   RdfEngineLike,
   RdfEngineStorageStats,
   RdfCardinalityDistributions,
@@ -946,6 +947,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private queryTemplateCacheHits = 0;
   private queryTemplateCacheMisses = 0;
   private queryTemplateCacheEvictions = 0;
+  private derivedCacheEvictions: RdfDerivedCacheEvictionStats = emptyDerivedCacheEvictionStats();
   private sharedPoolConfig: {
     connectionString?: string;
     host?: string;
@@ -1048,6 +1050,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.queryTemplateCacheHits = 0;
     this.queryTemplateCacheMisses = 0;
     this.queryTemplateCacheEvictions = 0;
+    this.derivedCacheEvictions = emptyDerivedCacheEvictionStats();
   }
 
   public async put(quads: Quad | Quad[], options?: RdfIndexPutOptions): Promise<void> {
@@ -2817,6 +2820,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
       this.queryTemplateCache.delete(firstKey);
       this.queryTemplateCacheEvictions += 1;
+      this.recordDerivedCacheEviction('templateMaxEntries');
     }
     this.pruneQueryTemplateCacheByteBudget();
     return {
@@ -2963,16 +2967,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   private async pruneQueryResultCache(factsDataVersion: number, ttlMs = this.queryResultCacheTtlMs()): Promise<void> {
     const executor = this.requireExecutor();
-    await executor.exec(`
+    this.recordDerivedCacheEviction('factsVersion', await this.deleteRowsAndCount(executor, `
       DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
       WHERE facts_data_version < $1
-    `, [factsDataVersion]);
+    `, [factsDataVersion]));
 
     if (ttlMs > 0) {
-      await executor.exec(`
+      this.recordDerivedCacheEviction('ttl', await this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE created_at < $1::timestamptz
-      `, [new Date(Date.now() - ttlMs).toISOString()]);
+      `, [new Date(Date.now() - ttlMs).toISOString()]));
     }
 
     const maxEntries = this.queryResultCacheMaxEntries();
@@ -2983,11 +2987,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC
     `, [factsDataVersion]);
     for (const row of rows.slice(maxEntries)) {
-      await executor.exec(`
+      this.recordDerivedCacheEviction('maxEntries', await this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
           AND facts_data_version = $2
-      `, [row.cache_key, row.facts_data_version]);
+      `, [row.cache_key, row.facts_data_version]));
     }
     await this.pruneQueryResultCachePayloadBytes(executor, factsDataVersion);
     await this.pruneDerivedCacheScopeBudgets(executor, factsDataVersion);
@@ -2999,16 +3003,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
     ttlMs = this.materializedResultCacheTtlMs(),
   ): Promise<void> {
     const executor = this.requireExecutor();
-    await executor.exec(`
+    this.recordDerivedCacheEviction('factsVersion', await this.deleteRowsAndCount(executor, `
       DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
       WHERE facts_data_version < $1
-    `, [factsDataVersion]);
+    `, [factsDataVersion]));
 
     if (ttlMs > 0) {
-      await executor.exec(`
+      this.recordDerivedCacheEviction('ttl', await this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
         WHERE created_at < $1::timestamptz
-      `, [new Date(Date.now() - ttlMs).toISOString()]);
+      `, [new Date(Date.now() - ttlMs).toISOString()]));
     }
 
     const maxEntries = this.materializedResultCacheMaxEntries();
@@ -3019,12 +3023,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC, scope_hash DESC
     `, [factsDataVersion]);
     for (const row of rows.slice(maxEntries)) {
-      await executor.exec(`
+      this.recordDerivedCacheEviction('maxEntries', await this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
           AND scope_hash = $2
           AND facts_data_version = $3
-      `, [row.cache_key, row.scope_hash, row.facts_data_version]);
+      `, [row.cache_key, row.scope_hash, row.facts_data_version]));
     }
     await this.pruneMaterializedResultCachePayloadBytes(executor, factsDataVersion);
     await this.pruneDerivedCacheScopeBudgets(executor, factsDataVersion);
@@ -3051,11 +3055,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
       WHERE retained_bytes > $2
     `, [factsDataVersion, maxBytes]);
     for (const row of rows) {
-      await executor.exec(`
+      this.recordDerivedCacheEviction('payloadBytes', await this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
           AND facts_data_version = $2
-      `, [row.cache_key, row.facts_data_version]);
+      `, [row.cache_key, row.facts_data_version]));
     }
   }
 
@@ -3080,12 +3084,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
       WHERE retained_bytes > $2
     `, [factsDataVersion, maxBytes]);
     for (const row of rows) {
-      await executor.exec(`
+      this.recordDerivedCacheEviction('payloadBytes', await this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
           AND scope_hash = $2
           AND facts_data_version = $3
-      `, [row.cache_key, row.scope_hash, row.facts_data_version]);
+      `, [row.cache_key, row.scope_hash, row.facts_data_version]));
     }
   }
 
@@ -3107,7 +3111,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         retainedBytes += candidate.bytes;
         continue;
       }
-      await this.deleteDerivedCacheCandidate(executor, candidate);
+      this.recordDerivedCacheEviction('totalBytes', await this.deleteDerivedCacheCandidate(executor, candidate));
     }
   }
 
@@ -3128,7 +3132,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         retainedBytesByScope.set(scopeHash, retainedBytes + candidate.bytes);
         continue;
       }
-      await this.deleteDerivedCacheCandidate(executor, candidate);
+      this.recordDerivedCacheEviction('scopeBytes', await this.deleteDerivedCacheCandidate(executor, candidate));
     }
   }
 
@@ -3191,27 +3195,42 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private async deleteDerivedCacheCandidate(
     executor: AsyncSqlExecutor,
     candidate: PgDerivedCacheCandidate,
-  ): Promise<void> {
+  ): Promise<number> {
     if (candidate.kind === 'query-template') {
       if (this.queryTemplateCache.delete(candidate.cacheKey)) {
         this.queryTemplateCacheEvictions += 1;
+        return 1;
       }
-      return;
+      return 0;
     }
     if (candidate.kind === 'query-result') {
-      await executor.exec(`
+      return this.deleteRowsAndCount(executor, `
         DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
           AND facts_data_version = $2
       `, [candidate.cacheKey, candidate.factsDataVersion ?? 0]);
-      return;
     }
-    await executor.exec(`
+    return this.deleteRowsAndCount(executor, `
       DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
       WHERE cache_key = $1
         AND scope_hash = $2
         AND facts_data_version = $3
     `, [candidate.cacheKey, candidate.scopeHash ?? '', candidate.factsDataVersion ?? 0]);
+  }
+
+  private async deleteRowsAndCount(
+    executor: AsyncSqlExecutor,
+    deleteSql: string,
+    params: unknown[],
+  ): Promise<number> {
+    const rows = await executor.query<{ count: number | string }>(`
+      WITH deleted AS (
+        ${deleteSql}
+        RETURNING 1
+      )
+      SELECT COUNT(*) AS count FROM deleted
+    `, params);
+    return Number(rows[0]?.count ?? 0) || 0;
   }
 
   private isQueryResultCacheEnabled(query?: RdfQuery): boolean {
@@ -3289,6 +3308,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (entry.lastHitAtMs < expiresBefore) {
         this.queryTemplateCache.delete(key);
         this.queryTemplateCacheEvictions += 1;
+        this.recordDerivedCacheEviction('templateTtl');
       }
     }
   }
@@ -3307,6 +3327,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
       if (this.queryTemplateCache.delete(candidate.cacheKey)) {
         this.queryTemplateCacheEvictions += 1;
+        this.recordDerivedCacheEviction('templateBytes');
       }
     }
   }
@@ -7237,22 +7258,40 @@ export class PostgresRdfEngine implements RdfEngineLike {
     queryTemplateCache: RdfQueryTemplateCacheStats,
     scopeStats: PgDerivedCacheScopeStats,
   ): RdfDerivedCacheStats {
+    const cacheBytes = queryResultCache.payloadBytes
+      + materializedResultCache.payloadBytes
+      + queryTemplateCache.totalBytes;
+    const maxCacheBytes = this.derivedCacheMaxBytes();
+    const maxScopeBytes = this.derivedCacheScopeMaxBytes();
     return {
-      cacheBytes: queryResultCache.payloadBytes
-        + materializedResultCache.payloadBytes
-        + queryTemplateCache.totalBytes,
-      maxCacheBytes: this.derivedCacheMaxBytes(),
-      maxScopeBytes: this.derivedCacheScopeMaxBytes(),
+      cacheBytes,
+      maxCacheBytes,
+      cachePressure: bytePressure(cacheBytes, maxCacheBytes),
+      maxScopeBytes,
       scopeVersionCount: scopeStats.scopeVersionCount,
       largestScopeBytes: scopeStats.largestScopeBytes,
+      largestScopePressure: bytePressure(scopeStats.largestScopeBytes, maxScopeBytes),
       ...(scopeStats.largestScopeHash ? { largestScopeHash: scopeStats.largestScopeHash } : {}),
       ...(scopeStats.largestScopeFactsDataVersion !== undefined
         ? { largestScopeFactsDataVersion: scopeStats.largestScopeFactsDataVersion }
         : {}),
+      evictionCount: this.derivedCacheEvictionCount(),
+      evictions: { ...this.derivedCacheEvictions },
       queryResultPayloadBytes: queryResultCache.payloadBytes,
       materializedResultPayloadBytes: materializedResultCache.payloadBytes,
       queryTemplateBytes: queryTemplateCache.totalBytes,
     };
+  }
+
+  private recordDerivedCacheEviction(cause: keyof RdfDerivedCacheEvictionStats, count = 1): void {
+    if (count <= 0) {
+      return;
+    }
+    this.derivedCacheEvictions[cause] += count;
+  }
+
+  private derivedCacheEvictionCount(): number {
+    return Object.values(this.derivedCacheEvictions).reduce((sum, count) => sum + count, 0);
   }
 
   private async derivedCacheScopeStats(): Promise<PgDerivedCacheScopeStats> {
@@ -7484,6 +7523,24 @@ function restoreRow<T>(row: T): T {
     restored[key] = restoreValue(key, value);
   }
   return restored as T;
+}
+
+function emptyDerivedCacheEvictionStats(): RdfDerivedCacheEvictionStats {
+  return {
+    factsVersion: 0,
+    ttl: 0,
+    maxEntries: 0,
+    payloadBytes: 0,
+    scopeBytes: 0,
+    totalBytes: 0,
+    templateTtl: 0,
+    templateMaxEntries: 0,
+    templateBytes: 0,
+  };
+}
+
+function bytePressure(bytes: number, maxBytes: number): number {
+  return maxBytes > 0 ? bytes / maxBytes : 0;
 }
 
 function compareDerivedCacheCandidates(left: PgDerivedCacheCandidate, right: PgDerivedCacheCandidate): number {
