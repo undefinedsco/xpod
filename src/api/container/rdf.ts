@@ -5,10 +5,11 @@ import { PostgresRdfEngine, type RdfEngineLike } from '../../storage/rdf';
 import type { ApiContainerConfig } from './types';
 import type { PodChatKitStore } from '../chatkit';
 import type { EmbeddingService } from '../../ai/service';
+import { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
 
 export interface ApiRunContextRetrieverDependencies {
   chatKitStore?: Pick<PodChatKitStore, 'getAiConfig'>;
-  embeddingService?: Pick<EmbeddingService, 'embed'>;
+  embeddingService?: Partial<Pick<EmbeddingService, 'embed' | 'embedBatch'>>;
 }
 
 export function createApiRdfEngine(config: ApiContainerConfig): RdfEngineLike | undefined {
@@ -48,11 +49,29 @@ export function createApiRunContextRetriever(
   });
 }
 
+export function createApiRdfSearchIndexingService(
+  rdfEngine: RdfEngineLike | undefined,
+  dependencies: ApiRunContextRetrieverDependencies = {},
+): RdfSearchIndexingService | undefined {
+  const { chatKitStore, embeddingService } = dependencies;
+  const embedBatch = embeddingService?.embedBatch;
+  if (!rdfEngine || !chatKitStore || !embedBatch) {
+    return undefined;
+  }
+
+  return new RdfSearchIndexingService({
+    rdfEngine,
+    store: chatKitStore,
+    embeddingService: { embedBatch },
+  });
+}
+
 function createRunContextEmbeddingProvider(
   dependencies: ApiRunContextRetrieverDependencies,
 ): RdfRunContextRetrieverOptions<StoreContext>['embedding'] | undefined {
   const { chatKitStore, embeddingService } = dependencies;
-  if (!chatKitStore || !embeddingService) {
+  const embed = embeddingService?.embed;
+  if (!chatKitStore || !embed) {
     return undefined;
   }
 
@@ -63,7 +82,7 @@ function createRunContextEmbeddingProvider(
     }
 
     return {
-      embedding: await embeddingService.embed(input.prompt, {
+      embedding: await embed(input.prompt, {
         provider: config.providerId,
         apiKey: config.apiKey,
         baseUrl: config.baseUrl,

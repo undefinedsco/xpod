@@ -23,6 +23,7 @@ import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
+import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
 import type { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
@@ -154,6 +155,7 @@ export interface ApiContainerCradle {
   runAuthContextRegistry: RunAuthContextRegistry;
   rdfEngine: RdfEngineLike | undefined;
   runContextRetriever: RunContextRetriever<StoreContext> | undefined;
+  rdfSearchIndexingService: RdfSearchIndexingService | undefined;
   runExecutionBackend: InngestRunExecutionBackend;
   taskAuthBindingService: TaskAuthBindingService<StoreContext>;
   taskService: TaskService<StoreContext>;

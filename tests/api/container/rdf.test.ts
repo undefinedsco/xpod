@@ -1,8 +1,9 @@
 import { DataFactory } from 'n3';
 import { describe, expect, it, vi } from 'vitest';
 import { createApiContainer, type ApiContainerConfig } from '../../../src/api/container';
-import { createApiRunContextRetriever } from '../../../src/api/container/rdf';
+import { createApiRdfSearchIndexingService, createApiRunContextRetriever } from '../../../src/api/container/rdf';
 import { RdfRunContextRetriever } from '../../../src/api/runs/RdfRunContextRetriever';
+import { RdfSearchIndexingService } from '../../../src/api/service/RdfSearchIndexingService';
 import type { RunContextRetrievalInput } from '../../../src/api/runs/RunExecutionBackend';
 import type { RdfEngineLike, RdfQuery, RdfQueryResult } from '../../../src/storage/rdf';
 
@@ -29,7 +30,9 @@ describe('API RDF container services', () => {
 
     try {
       const retriever = container.resolve('runContextRetriever');
+      const indexingService = container.resolve('rdfSearchIndexingService');
       expect(retriever).toBeInstanceOf(RdfRunContextRetriever);
+      expect(indexingService).toBeInstanceOf(RdfSearchIndexingService);
 
       const backend = container.resolve('runExecutionBackend') as any;
       const chatKitService = container.resolve('chatKitService') as any;
@@ -54,8 +57,23 @@ describe('API RDF container services', () => {
 
     expect(localContainer.resolve('rdfEngine')).toBeUndefined();
     expect(localContainer.resolve('runContextRetriever')).toBeUndefined();
+    expect(localContainer.resolve('rdfSearchIndexingService')).toBeUndefined();
     expect(sqliteContainer.resolve('rdfEngine')).toBeUndefined();
     expect(sqliteContainer.resolve('runContextRetriever')).toBeUndefined();
+    expect(sqliteContainer.resolve('rdfSearchIndexingService')).toBeUndefined();
+  });
+
+  it('creates the RDF vector indexing service at the same product boundary as Run retrieval', () => {
+    const indexVectorSource = vi.fn();
+    const service = createApiRdfSearchIndexingService(
+      { indexVectorSource } as unknown as RdfEngineLike,
+      {
+        chatKitStore: { getAiConfig: vi.fn() },
+        embeddingService: { embedBatch: vi.fn() },
+      },
+    );
+
+    expect(service).toBeInstanceOf(RdfSearchIndexingService);
   });
 
   it('adds vector retrieval to the product Run context path when Pod embedding config exists', async () => {

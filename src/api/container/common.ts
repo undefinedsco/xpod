@@ -28,7 +28,7 @@ import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
 import { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import { InngestTaskScheduler, TaskAuthBindingService, TaskService } from '../tasks';
 import { EmbeddingServiceImpl, ProviderRegistryImpl } from '../../ai/service';
-import { createApiRdfEngine, createApiRunContextRetriever } from './rdf';
+import { createApiRdfEngine, createApiRdfSearchIndexingService, createApiRunContextRetriever } from './rdf';
 
 function resolveCssServiceBaseUrl(): string {
   if (process.env.CSS_INTERNAL_URL) {
@@ -142,6 +142,10 @@ export function registerCommonServices(
 
     runContextRetriever: asFunction(({ rdfEngine, chatKitStore, embeddingService }: ApiContainerCradle) => {
       return createApiRunContextRetriever(rdfEngine, { chatKitStore, embeddingService });
+    }).singleton(),
+
+    rdfSearchIndexingService: asFunction(({ rdfEngine, chatKitStore, embeddingService }: ApiContainerCradle) => {
+      return createApiRdfSearchIndexingService(rdfEngine, { chatKitStore, embeddingService });
     }).singleton(),
 
     rdfStorageStatsService: asFunction(({ config, rdfEngine }: ApiContainerCradle) => {
