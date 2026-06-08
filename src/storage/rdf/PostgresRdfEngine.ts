@@ -21,6 +21,9 @@ import type {
   RdfDerivedIndexMaintenanceResult,
   RdfDerivedIndexRefreshOptions,
   RdfDerivedIndexRefreshResult,
+  RdfEngineColdStartPhaseStats,
+  RdfEngineColdStartStats,
+  RdfEngineLifecycleStats,
   RdfDerivedCacheStats,
   RdfDerivedCacheEvictionStats,
   RdfDerivedCacheScopeEntry,
@@ -1354,6 +1357,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private readonly maintenanceLeaseOwner: string;
   private maintenanceTimer?: NodeJS.Timeout;
   private maintenanceRunning: Promise<void> | null = null;
+  private lifecycleStatus: RdfEngineLifecycleStats['status'] = 'closed';
+  private lifecycleOpenCount = 0;
+  private lastOpenStartedAt?: string;
+  private lastReadyAt?: string;
+  private lastOpenDurationMs?: number;
+  private lastOpenFailedAt?: string;
+  private lastOpenError?: string;
+  private lastColdStart?: RdfEngineColdStartStats;
 
   public constructor(options: PostgresRdfEngineOptions) {
     this.pgOptions = {
@@ -1397,18 +1408,67 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     this.initializing ??= Promise.resolve()
       .then(async () => {
-        await this.openExecutor();
-        await this.textIndex?.open();
-        await this.vectorIndex?.open();
-        this.termDictionary = new PostgresRdfTermDictionary(this.requireExecutor());
-        await this.termDictionary.initialize();
-        await this.initializeSchema();
-        this.pgAcceleration = await this.probePgAcceleration();
-        if (!this.pgOptions.deferPgCustomIndexInitialization) {
-          await this.initializePgCustomIndexes();
+        const startedAtMs = Date.now();
+        const startedAt = new Date(startedAtMs).toISOString();
+        const phases: RdfEngineColdStartPhaseStats[] = [];
+        const runPhase = async <T>(name: RdfEngineColdStartPhaseStats['name'], run: () => Promise<T>): Promise<T> => {
+          const phaseStartedAtMs = Date.now();
+          try {
+            return await run();
+          } finally {
+            phases.push({
+              name,
+              durationMs: Date.now() - phaseStartedAtMs,
+            });
+          }
+        };
+
+        this.lifecycleStatus = 'opening';
+        this.lifecycleOpenCount += 1;
+        this.lastOpenStartedAt = startedAt;
+        this.lastOpenFailedAt = undefined;
+        this.lastOpenError = undefined;
+        try {
+          await runPhase('executor', () => this.openExecutor());
+          await runPhase('text-index', async () => {
+            await this.textIndex?.open();
+          });
+          await runPhase('vector-index', async () => {
+            await this.vectorIndex?.open();
+          });
+          this.termDictionary = new PostgresRdfTermDictionary(this.requireExecutor());
+          await runPhase('term-dictionary', () => this.termDictionary!.initialize());
+          await runPhase('schema', () => this.initializeSchema());
+          this.pgAcceleration = await runPhase('acceleration-probe', () => this.probePgAcceleration());
+          if (!this.pgOptions.deferPgCustomIndexInitialization) {
+            await runPhase('custom-indexes', () => this.initializePgCustomIndexes());
+          }
+          this.initialized = true;
+          await runPhase('maintenance-scheduler', async () => {
+            this.startMaintenanceScheduler();
+          });
+
+          const readyAtMs = Date.now();
+          const readyAt = new Date(readyAtMs).toISOString();
+          this.lastReadyAt = readyAt;
+          this.lastOpenDurationMs = readyAtMs - startedAtMs;
+          this.lastColdStart = {
+            startedAt,
+            readyAt,
+            durationMs: this.lastOpenDurationMs,
+            phases,
+            customIndexDeferred: Boolean(this.pgOptions.deferPgCustomIndexInitialization),
+            maintenanceEnabled: (this.pgOptions.maintenanceIntervalMs ?? 0) > 0,
+            ownsTextIndex: this.ownsTextIndex,
+            ownsVectorIndex: this.ownsVectorIndex,
+          };
+          this.lifecycleStatus = 'ready';
+        } catch (error) {
+          this.lifecycleStatus = 'failed';
+          this.lastOpenFailedAt = new Date().toISOString();
+          this.lastOpenError = errorMessage(error);
+          throw error;
         }
-        this.initialized = true;
-        this.startMaintenanceScheduler();
       })
       .finally(() => {
         this.initializing = null;
@@ -1458,6 +1518,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.derivedCacheEvictions = emptyDerivedCacheEvictionStats();
     this.slowQueryHistory = [];
     this.plannerHistogramCache = null;
+    this.lifecycleStatus = 'closed';
   }
 
   public async maintainDerivedIndexes(): Promise<RdfDerivedIndexMaintenanceResult> {
@@ -2066,6 +2127,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const totalBytes = factsBytes + derivedBytes;
     return {
       derivedIndexProfile: 'rdf3x',
+      lifecycle: this.lifecycleStats(),
       facts,
       rdf3x: {
         stats: rdf3x,
@@ -2086,6 +2148,20 @@ export class PostgresRdfEngine implements RdfEngineLike {
       totalBytes,
       derivedToFactsRatio: factsBytes === 0 ? 0 : derivedBytes / factsBytes,
       totalToFactsRatio: factsBytes === 0 ? 0 : totalBytes / factsBytes,
+    };
+  }
+
+  private lifecycleStats(): RdfEngineLifecycleStats {
+    return {
+      status: this.lifecycleStatus,
+      driver: this.pgOptions.driver,
+      openCount: this.lifecycleOpenCount,
+      ...(this.lastOpenStartedAt ? { lastOpenStartedAt: this.lastOpenStartedAt } : {}),
+      ...(this.lastReadyAt ? { lastReadyAt: this.lastReadyAt } : {}),
+      ...(this.lastOpenDurationMs !== undefined ? { lastOpenDurationMs: this.lastOpenDurationMs } : {}),
+      ...(this.lastOpenFailedAt ? { lastOpenFailedAt: this.lastOpenFailedAt } : {}),
+      ...(this.lastOpenError ? { lastOpenError: this.lastOpenError } : {}),
+      ...(this.lastColdStart ? { coldStart: this.lastColdStart } : {}),
     };
   }
 

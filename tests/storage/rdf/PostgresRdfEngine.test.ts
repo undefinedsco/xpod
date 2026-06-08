@@ -237,6 +237,50 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('reports cold-start lifecycle stats in storage stats', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-lifecycle-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      maintenanceIntervalMs: 0,
+    });
+
+    try {
+      await engine.open();
+      const storage = await engine.storageStats();
+
+      expect(storage.lifecycle).toMatchObject({
+        status: 'ready',
+        driver: 'pglite',
+        openCount: 1,
+        coldStart: {
+          customIndexDeferred: false,
+          maintenanceEnabled: false,
+          ownsTextIndex: false,
+          ownsVectorIndex: false,
+        },
+      });
+      expect(storage.lifecycle?.lastOpenStartedAt).toEqual(expect.any(String));
+      expect(storage.lifecycle?.lastReadyAt).toEqual(expect.any(String));
+      expect(storage.lifecycle?.lastOpenDurationMs).toEqual(expect.any(Number));
+      expect(storage.lifecycle?.lastOpenDurationMs).toBeGreaterThanOrEqual(0);
+      expect(storage.lifecycle?.coldStart?.durationMs).toBe(storage.lifecycle?.lastOpenDurationMs);
+      expect(storage.lifecycle?.coldStart?.phases.map((phase) => phase.name)).toEqual(expect.arrayContaining([
+        'executor',
+        'text-index',
+        'vector-index',
+        'term-dictionary',
+        'schema',
+        'acceleration-probe',
+        'custom-indexes',
+        'maintenance-scheduler',
+      ]));
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('reports PostgreSQL facts histogram distributions for planner cost input', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-facts-histogram-'));
     const engine = new PostgresRdfEngine({

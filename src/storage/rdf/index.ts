@@ -114,6 +114,9 @@ export {
 } from './models-benchmark';
 export type {
   RdfEngineLike,
+  RdfEngineColdStartPhaseStats,
+  RdfEngineColdStartStats,
+  RdfEngineLifecycleStats,
   RdfEngineStorageStats,
   RdfStorageStatsOptions,
   RdfDerivedCacheScopeStatsOptions,

@@ -120,6 +120,7 @@ export interface RdfDerivedCacheScopeStatsOptions {
 
 export interface RdfEngineStorageStats {
   derivedIndexProfile: RdfDerivedIndexProfile;
+  lifecycle?: RdfEngineLifecycleStats;
   facts: RdfIndexStats;
   rdf3x?: {
     stats: Rdf3xIndexStats;
@@ -140,6 +141,42 @@ export interface RdfEngineStorageStats {
   totalBytes: number;
   derivedToFactsRatio: number;
   totalToFactsRatio: number;
+}
+
+export interface RdfEngineLifecycleStats {
+  status: 'closed' | 'opening' | 'ready' | 'failed';
+  driver?: string;
+  openCount: number;
+  lastOpenStartedAt?: string;
+  lastReadyAt?: string;
+  lastOpenDurationMs?: number;
+  lastOpenFailedAt?: string;
+  lastOpenError?: string;
+  coldStart?: RdfEngineColdStartStats;
+}
+
+export interface RdfEngineColdStartStats {
+  startedAt: string;
+  readyAt: string;
+  durationMs: number;
+  phases: RdfEngineColdStartPhaseStats[];
+  customIndexDeferred: boolean;
+  maintenanceEnabled: boolean;
+  ownsTextIndex: boolean;
+  ownsVectorIndex: boolean;
+}
+
+export interface RdfEngineColdStartPhaseStats {
+  name:
+    | 'executor'
+    | 'text-index'
+    | 'vector-index'
+    | 'term-dictionary'
+    | 'schema'
+    | 'acceleration-probe'
+    | 'custom-indexes'
+    | 'maintenance-scheduler';
+  durationMs: number;
 }
 
 export interface RdfAccessControlOverrideIndexStats {

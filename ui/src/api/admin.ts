@@ -72,6 +72,29 @@ export interface RdfStorageStats {
   totalBytes: number;
   totalToFactsRatio: number;
   derivedToFactsRatio: number;
+  lifecycle?: {
+    status: 'closed' | 'opening' | 'ready' | 'failed';
+    driver?: string;
+    openCount: number;
+    lastOpenStartedAt?: string;
+    lastReadyAt?: string;
+    lastOpenDurationMs?: number;
+    lastOpenFailedAt?: string;
+    lastOpenError?: string;
+    coldStart?: {
+      startedAt: string;
+      readyAt: string;
+      durationMs: number;
+      phases: Array<{
+        name: string;
+        durationMs: number;
+      }>;
+      customIndexDeferred: boolean;
+      maintenanceEnabled: boolean;
+      ownsTextIndex: boolean;
+      ownsVectorIndex: boolean;
+    };
+  };
   rdf3x?: {
     factsDataVersion: number;
     rdf3xFactsDataVersion: number;

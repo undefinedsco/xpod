@@ -155,10 +155,16 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
   const derivedCache = stats.derivedCache;
   const cacheScopeEntries = derivedCache?.scopeEntries ?? [];
   const pgAcceleration = stats.pgAcceleration;
+  const lifecycle = stats.lifecycle;
+  const coldStart = lifecycle?.coldStart;
+  const slowestColdStartPhase = coldStart?.phases.reduce(
+    (slowest, phase) => phase.durationMs > slowest.durationMs ? phase : slowest,
+    { name: '-', durationMs: 0 },
+  );
 
   return (
     <>
-      <div className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard
           icon={Database}
           label="引擎"
@@ -181,6 +187,13 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
           tone="neutral"
         />
         <MetricCard
+          icon={RefreshCw}
+          label="冷启动"
+          value={formatMs(coldStart?.durationMs ?? lifecycle?.lastOpenDurationMs ?? 0)}
+          detail={`${lifecycle?.status ?? 'unknown'} / open ${lifecycle?.openCount ?? 0}`}
+          tone={lifecycle?.status === 'failed' ? 'warn' : 'neutral'}
+        />
+        <MetricCard
           icon={AlertTriangle}
           label="慢查询"
           value={`${stats.slowQueries?.entryCount ?? 0}`}
@@ -189,7 +202,7 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
         />
       </div>
 
-      <div className="mb-8 grid grid-cols-1 gap-5 xl:grid-cols-4">
+      <div className="mb-8 grid grid-cols-1 gap-5 xl:grid-cols-5">
         <Card variant="bordered">
           <CardHeader>
             <CardTitle>空间占用</CardTitle>
@@ -214,6 +227,19 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
             <KeyValue label="materialized scopes" value={`${stats.materializedResultCache?.scopeCount ?? 0}`} />
             <KeyValue label="template entries" value={`${stats.queryTemplateCache?.entryCount ?? 0}`} />
             <KeyValue label="cache pressure" value={formatPercent(derivedCache?.cachePressure ?? 0)} />
+          </CardContent>
+        </Card>
+
+        <Card variant="bordered">
+          <CardHeader>
+            <CardTitle>生命周期</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <KeyValue label="driver" value={lifecycle?.driver ?? '-'} />
+            <KeyValue label="ready at" value={lifecycle?.lastReadyAt ? formatDateTime(lifecycle.lastReadyAt) : '-'} />
+            <KeyValue label="slowest phase" value={`${slowestColdStartPhase?.name ?? '-'} ${formatMs(slowestColdStartPhase?.durationMs ?? 0)}`} />
+            <KeyValue label="custom index" value={coldStart ? (coldStart.customIndexDeferred ? 'deferred' : 'startup') : '-'} />
+            <KeyValue label="maintenance" value={coldStart ? (coldStart.maintenanceEnabled ? 'enabled' : 'disabled') : '-'} />
           </CardContent>
         </Card>
 
