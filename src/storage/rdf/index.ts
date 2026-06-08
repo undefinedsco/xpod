@@ -9,6 +9,7 @@ export {
 export { RdfQuadIndex } from './RdfQuadIndex';
 export { Rdf3xIndex } from './Rdf3xIndex';
 export { RdfTextIndex } from './RdfTextIndex';
+export { PostgresRdfTextIndex, type PostgresRdfTextIndexOptions } from './PostgresRdfTextIndex';
 export { RdfVectorIndex } from './RdfVectorIndex';
 export {
   isLineAddressableRdf,
@@ -183,6 +184,7 @@ export type {
   RdfTextChunkRow,
   RdfTextIndexLike,
   RdfTextIndexOptions,
+  RdfTextIndexSyncLike,
   RdfTextIndexStats,
   RdfTextSearchOptions,
   RdfTextSearchPattern,
@@ -194,6 +196,7 @@ export type {
   RdfVectorDistanceMetric,
   RdfVectorIndexLike,
   RdfVectorIndexOptions,
+  RdfVectorIndexSyncLike,
   RdfVectorIndexStats,
   RdfVectorModelDistribution,
   RdfVectorSearchOptions,

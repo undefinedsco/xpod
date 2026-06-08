@@ -6,8 +6,8 @@ import { createSqliteRuntime, type SqliteDatabase, type SqliteStatement } from '
 import type {
   RdfTextChunkInput,
   RdfTextChunkRow,
-  RdfTextIndexLike,
   RdfTextIndexOptions,
+  RdfTextIndexSyncLike,
   RdfTextSearchOrder,
   RdfTextIndexStats,
   RdfSearchCardinalityEstimate,
@@ -42,9 +42,9 @@ interface TextSearchPredicate {
   indexChoice: 'text-normalized-scan' | 'text-term-posting';
 }
 
-const RDF_TEXT_TERM_MAX_INDEX_LENGTH = 256;
+export const RDF_TEXT_TERM_MAX_INDEX_LENGTH = 256;
 
-export class RdfTextIndex implements RdfTextIndexLike {
+export class RdfTextIndex implements RdfTextIndexSyncLike {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
 
@@ -393,26 +393,7 @@ export class RdfTextIndex implements RdfTextIndexLike {
   }
 
   private chunkText(source: RdfTextSourceInput, text: string): RdfTextChunkInput[] {
-    if (!text) {
-      return [];
-    }
-    if (isMarkdownSource(source)) {
-      const chunker = new HeadingChunker();
-      return chunker.flatten(chunker.chunk(text))
-        .filter((chunk) => chunk.content.trim().length > 0)
-        .map((chunk, index) => ({
-          chunkKey: deterministicChunkKey(source.source, index),
-          ordinal: index,
-          level: chunk.level,
-          heading: chunk.heading || undefined,
-          path: chunk.path,
-          content: chunk.content,
-          startOffset: chunk.startOffset,
-          endOffset: chunk.endOffset,
-        }));
-    }
-
-    return chunkPlainText(source.source, text);
+    return chunkRdfTextSource(source, text);
   }
 
   private estimateDatabaseBytes(): number {
@@ -452,6 +433,29 @@ export class RdfTextIndex implements RdfTextIndexLike {
     }
     return this.db;
   }
+}
+
+export function chunkRdfTextSource(source: RdfTextSourceInput, text: string): RdfTextChunkInput[] {
+  if (!text) {
+    return [];
+  }
+  if (isMarkdownSource(source)) {
+    const chunker = new HeadingChunker();
+    return chunker.flatten(chunker.chunk(text))
+      .filter((chunk) => chunk.content.trim().length > 0)
+      .map((chunk, index) => ({
+        chunkKey: deterministicChunkKey(source.source, index),
+        ordinal: index,
+        level: chunk.level,
+        heading: chunk.heading || undefined,
+        path: chunk.path,
+        content: chunk.content,
+        startOffset: chunk.startOffset,
+        endOffset: chunk.endOffset,
+      }));
+  }
+
+  return chunkPlainText(source.source, text);
 }
 
 function isMarkdownSource(source: RdfTextSourceInput): boolean {
@@ -524,7 +528,7 @@ function pushPlainChunk(
   return ordinal + 1;
 }
 
-function deterministicChunkKey(source: string, ordinal: number): string {
+export function deterministicRdfTextChunkKey(source: string, ordinal: number): string {
   return createHash('sha256')
     .update(source)
     .update('\0')
@@ -533,21 +537,31 @@ function deterministicChunkKey(source: string, ordinal: number): string {
     .slice(0, 24);
 }
 
-function sha256(value: string): string {
+const deterministicChunkKey = deterministicRdfTextChunkKey;
+
+export function rdfTextSha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function normalizeText(value: string): string {
+const sha256 = rdfTextSha256;
+
+export function normalizeRdfText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-function tokenCountNormalized(value: string): number {
+const normalizeText = normalizeRdfText;
+
+export function normalizedRdfTextTokenCount(value: string): number {
   return tokenizeNormalizedText(value).length;
 }
 
-function tokenizeNormalizedText(value: string): string[] {
+const tokenCountNormalized = normalizedRdfTextTokenCount;
+
+export function tokenizeNormalizedRdfText(value: string): string[] {
   return value ? value.split(' ').filter(Boolean) : [];
 }
+
+const tokenizeNormalizedText = tokenizeNormalizedRdfText;
 
 function insertTermOccurrences(
   insertTerm: SqliteStatement,
@@ -563,13 +577,15 @@ function insertTermOccurrences(
   }
 }
 
-function termOccurrences(normalizedText: string): Map<string, number> {
+export function rdfTextTermOccurrences(normalizedText: string): Map<string, number> {
   const terms = new Map<string, number>();
   for (const term of tokenizeNormalizedText(normalizedText)) {
     terms.set(term, (terms.get(term) ?? 0) + 1);
   }
   return terms;
 }
+
+const termOccurrences = rdfTextTermOccurrences;
 
 function buildTextSearchPredicate(query: string): TextSearchPredicate {
   const terms = [...new Set(tokenizeNormalizedText(query))]
@@ -609,7 +625,7 @@ function buildTextSearchPredicate(query: string): TextSearchPredicate {
   };
 }
 
-function occurrenceCount(haystack: string, needle: string): number {
+export function rdfTextOccurrenceCount(haystack: string, needle: string): number {
   if (!needle) {
     return 0;
   }
@@ -627,7 +643,9 @@ function occurrenceCount(haystack: string, needle: string): number {
   return count;
 }
 
-function applyResultWindow(rows: number, offset: number | undefined, limit: number | undefined): number {
+const occurrenceCount = rdfTextOccurrenceCount;
+
+export function applyRdfTextResultWindow(rows: number, offset: number | undefined, limit: number | undefined): number {
   const start = Math.max(0, offset ?? 0);
   if (rows <= start) {
     return 0;
@@ -636,7 +654,9 @@ function applyResultWindow(rows: number, offset: number | undefined, limit: numb
   return limit === undefined ? remaining : Math.min(remaining, Math.max(0, limit));
 }
 
-function compareTextSearchHits(
+const applyResultWindow = applyRdfTextResultWindow;
+
+export function compareRdfTextSearchHits(
   left: { row: RdfTextChunkRow; score: number },
   right: { row: RdfTextChunkRow; score: number },
   orderBy: RdfTextSearchOrder[] | undefined,
@@ -651,6 +671,8 @@ function compareTextSearchHits(
   }
   return left.row.source_id - right.row.source_id || left.row.ordinal - right.row.ordinal;
 }
+
+const compareTextSearchHits = compareRdfTextSearchHits;
 
 function compareTextSearchField(
   left: { row: RdfTextChunkRow; score: number },
@@ -677,11 +699,13 @@ function compareTextSearchField(
   }
 }
 
-function escapeLikePattern(value: string): string {
+export function escapeRdfTextLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
-function parsePath(value: string | null): string[] {
+const escapeLikePattern = escapeRdfTextLikePattern;
+
+export function parseRdfTextPath(value: string | null): string[] {
   if (!value) {
     return [];
   }
@@ -692,3 +716,5 @@ function parsePath(value: string | null): string[] {
     return [];
   }
 }
+
+const parsePath = parseRdfTextPath;

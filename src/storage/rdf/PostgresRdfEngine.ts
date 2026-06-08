@@ -1390,8 +1390,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.initializing ??= Promise.resolve()
       .then(async () => {
         await this.openExecutor();
-        this.textIndex?.open();
-        this.vectorIndex?.open();
+        await this.textIndex?.open();
+        await this.vectorIndex?.open();
         this.termDictionary = new PostgresRdfTermDictionary(this.requireExecutor());
         await this.termDictionary.initialize();
         await this.initializeSchema();
@@ -1418,10 +1418,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await this.maintenanceRunning.catch(() => {});
     }
     if (this.ownsVectorIndex) {
-      this.vectorIndex?.close();
+      await this.vectorIndex?.close();
     }
     if (this.ownsTextIndex) {
-      this.textIndex?.close();
+      await this.textIndex?.close();
     }
     this.executor = null;
     if (this.pglite) {
@@ -1654,28 +1654,28 @@ export class PostgresRdfEngine implements RdfEngineLike {
       : this.scanPostFilter(query.pattern, query.options);
   }
 
-  public indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void {
-    this.requireTextIndex().indexText(source, text, chunks);
+  public async indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): Promise<void> {
+    await this.requireTextIndex().indexText(source, text, chunks);
   }
 
-  public deleteTextSource(source: string): number {
-    return this.requireTextIndex().deleteSource(source);
+  public async deleteTextSource(source: string): Promise<number> {
+    return await this.requireTextIndex().deleteSource(source);
   }
 
-  public searchText(options: RdfTextSearchOptions | string): RdfTextSearchResult[] {
-    return this.requireTextIndex().search(typeof options === 'string' ? { query: options } : options);
+  public async searchText(options: RdfTextSearchOptions | string): Promise<RdfTextSearchResult[]> {
+    return await this.requireTextIndex().search(typeof options === 'string' ? { query: options } : options);
   }
 
-  public indexVectorSource(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void {
-    this.requireVectorIndex().indexVector(source, chunks);
+  public async indexVectorSource(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void> {
+    await this.requireVectorIndex().indexVector(source, chunks);
   }
 
-  public deleteVectorSource(source: string): number {
-    return this.requireVectorIndex().deleteSource(source);
+  public async deleteVectorSource(source: string): Promise<number> {
+    return await this.requireVectorIndex().deleteSource(source);
   }
 
-  public searchVector(options: RdfVectorSearchOptions): RdfVectorSearchResult[] {
-    return this.requireVectorIndex().search(options);
+  public async searchVector(options: RdfVectorSearchOptions): Promise<RdfVectorSearchResult[]> {
+    return await this.requireVectorIndex().search(options);
   }
 
   public async query(query: RdfQuery): Promise<RdfQueryResult> {
@@ -3261,7 +3261,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     if (bindings.length > 0) {
       for (const pattern of query.textSearch ?? []) {
-        bindings = this.joinFactsTextSearch(bindings, pattern, metrics);
+        bindings = await this.joinFactsTextSearch(bindings, pattern, metrics);
         metrics.plan.push(`TextSearch(${describeTextSearch(pattern)})`);
         if (bindings.length === 0) {
           break;
@@ -3271,7 +3271,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     if (bindings.length > 0) {
       for (const pattern of query.vectorSearch ?? []) {
-        bindings = this.joinFactsVectorSearch(bindings, pattern, metrics);
+        bindings = await this.joinFactsVectorSearch(bindings, pattern, metrics);
         metrics.plan.push(`VectorSearch(${describeVectorSearch(pattern)})`);
         if (bindings.length === 0) {
           break;
@@ -5177,18 +5177,18 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return output;
   }
 
-  private joinFactsTextSearch(
+  private async joinFactsTextSearch(
     input: RdfBindingRow[],
     pattern: RdfTextSearchPattern,
     metrics: RdfQueryMetrics,
-  ): RdfBindingRow[] {
+  ): Promise<RdfBindingRow[]> {
     metrics.indexChoices.push('text-chunk');
     const sourceVariable = pattern.source;
     if (sourceVariable && canUseBoundSourceSearch(input, pattern, sourceVariable)) {
-      return this.joinFactsTextSearchByBoundSource(input, pattern, sourceVariable, metrics);
+      return await this.joinFactsTextSearchByBoundSource(input, pattern, sourceVariable, metrics);
     }
 
-    const results = this.textSearchResults(pattern);
+    const results = await this.textSearchResults(pattern);
     metrics.scannedRows += results.length;
 
     const output: RdfBindingRow[] = [];
@@ -5203,18 +5203,18 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return output;
   }
 
-  private joinFactsVectorSearch(
+  private async joinFactsVectorSearch(
     input: RdfBindingRow[],
     pattern: RdfVectorSearchPattern,
     metrics: RdfQueryMetrics,
-  ): RdfBindingRow[] {
+  ): Promise<RdfBindingRow[]> {
     metrics.indexChoices.push('vector-chunk');
     const sourceVariable = pattern.source;
     if (sourceVariable && canUseBoundSourceSearch(input, pattern, sourceVariable)) {
-      return this.joinFactsVectorSearchByBoundSource(input, pattern, sourceVariable, metrics);
+      return await this.joinFactsVectorSearchByBoundSource(input, pattern, sourceVariable, metrics);
     }
 
-    const results = this.vectorSearchResults(pattern);
+    const results = await this.vectorSearchResults(pattern);
     metrics.scannedRows += results.length;
 
     const output: RdfBindingRow[] = [];
@@ -5229,12 +5229,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return output;
   }
 
-  private joinFactsTextSearchByBoundSource(
+  private async joinFactsTextSearchByBoundSource(
     input: RdfBindingRow[],
     pattern: RdfTextSearchPattern,
     sourceVariable: string,
     metrics: RdfQueryMetrics,
-  ): RdfBindingRow[] {
+  ): Promise<RdfBindingRow[]> {
     const cache = new Map<string, RdfTextSearchResult[]>();
     const countedSources = new Set<string>();
     let globalResults: RdfTextSearchResult[] | undefined;
@@ -5245,7 +5245,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       const term = binding[sourceVariable];
       let results: RdfTextSearchResult[];
       if (!term) {
-        globalResults ??= this.textSearchResults(pattern);
+        globalResults ??= await this.textSearchResults(pattern);
         results = globalResults;
         if (!countedGlobal) {
           metrics.scannedRows += results.length;
@@ -5255,7 +5255,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         continue;
       } else {
         if (!cache.has(term.value)) {
-          cache.set(term.value, this.textSearchResults(pattern, term.value));
+          cache.set(term.value, await this.textSearchResults(pattern, term.value));
         }
         results = cache.get(term.value) ?? [];
         if (!countedSources.has(term.value)) {
@@ -5275,12 +5275,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return output;
   }
 
-  private joinFactsVectorSearchByBoundSource(
+  private async joinFactsVectorSearchByBoundSource(
     input: RdfBindingRow[],
     pattern: RdfVectorSearchPattern,
     sourceVariable: string,
     metrics: RdfQueryMetrics,
-  ): RdfBindingRow[] {
+  ): Promise<RdfBindingRow[]> {
     const cache = new Map<string, RdfVectorSearchResult[]>();
     const countedSources = new Set<string>();
     let globalResults: RdfVectorSearchResult[] | undefined;
@@ -5291,7 +5291,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       const term = binding[sourceVariable];
       let results: RdfVectorSearchResult[];
       if (!term) {
-        globalResults ??= this.vectorSearchResults(pattern);
+        globalResults ??= await this.vectorSearchResults(pattern);
         results = globalResults;
         if (!countedGlobal) {
           metrics.scannedRows += results.length;
@@ -5301,7 +5301,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         continue;
       } else {
         if (!cache.has(term.value)) {
-          cache.set(term.value, this.vectorSearchResults(pattern, term.value));
+          cache.set(term.value, await this.vectorSearchResults(pattern, term.value));
         }
         results = cache.get(term.value) ?? [];
         if (!countedSources.has(term.value)) {
@@ -5321,12 +5321,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return output;
   }
 
-  private textSearchResults(pattern: RdfTextSearchPattern, exactSource?: string): RdfTextSearchResult[] {
-    return this.requireTextIndex().search(textSearchOptions(pattern, exactSource));
+  private async textSearchResults(pattern: RdfTextSearchPattern, exactSource?: string): Promise<RdfTextSearchResult[]> {
+    return await this.requireTextIndex().search(textSearchOptions(pattern, exactSource));
   }
 
-  private vectorSearchResults(pattern: RdfVectorSearchPattern, exactSource?: string): RdfVectorSearchResult[] {
-    return this.requireVectorIndex().search(vectorSearchOptions(pattern, exactSource));
+  private async vectorSearchResults(pattern: RdfVectorSearchPattern, exactSource?: string): Promise<RdfVectorSearchResult[]> {
+    return await this.requireVectorIndex().search(vectorSearchOptions(pattern, exactSource));
   }
 
   private async joinFactsOptionalGroup(

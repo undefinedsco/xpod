@@ -53,7 +53,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
         await this.index.deleteLocalRdfIndex(identifier);
       }
       if (this.textIndex && isTextIndexableChange(change)) {
-        this.textIndex.deleteSource(change.resource ?? sourceFromWorkspace(change, workspace));
+        await this.textIndex.deleteSource(change.resource ?? sourceFromWorkspace(change, workspace));
       }
       return;
     }
@@ -75,7 +75,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
 
     if (this.textIndex && isTextIndexableChange(change)) {
       const text = await readFile(change.sourcePath, 'utf8');
-      this.textIndex.indexText({
+      await this.textIndex.indexText({
         source: change.resource ?? sourceFromWorkspace(change, workspace),
         workspace: workspace.workspace,
         localPath: change.path.split(path.sep).join('/'),

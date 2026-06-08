@@ -43,8 +43,8 @@ import type {
   Rdf3xTriplePattern,
   Rdf3xTripleScanOptions,
   Rdf3xTripleScanResult,
-  RdfTextIndexLike,
-  RdfVectorIndexLike,
+  RdfTextIndexSyncLike,
+  RdfVectorIndexSyncLike,
 } from './types';
 
 const TERM_KEYS: RdfQueryPatternKey[] = ['graph', 'subject', 'predicate', 'object'];
@@ -142,8 +142,8 @@ interface RequiredSourceEstimate {
 export class RdfQueryExecutor {
   public constructor(
     private readonly index: RdfQuadIndex,
-    private readonly textIndex?: RdfTextIndexLike,
-    private readonly vectorIndex?: RdfVectorIndexLike,
+    private readonly textIndex?: RdfTextIndexSyncLike,
+    private readonly vectorIndex?: RdfVectorIndexSyncLike,
     private readonly rdf3xPrimaryIndex?: Rdf3xIndex,
   ) {}
 

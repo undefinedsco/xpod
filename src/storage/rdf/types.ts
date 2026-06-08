@@ -1140,7 +1140,21 @@ export interface RdfTextIndexOptions {
   path: string;
 }
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export interface RdfTextIndexLike {
+  open(): MaybePromise<void>;
+  close(): MaybePromise<void>;
+  clear(): MaybePromise<void>;
+  indexText(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): MaybePromise<void>;
+  deleteSource(source: string): MaybePromise<number>;
+  search(options: RdfTextSearchOptions): MaybePromise<RdfTextSearchResult[]>;
+  estimateSearchCardinality(options: RdfTextSearchOptions): MaybePromise<RdfSearchCardinalityEstimate>;
+  stats(): MaybePromise<RdfTextIndexStats>;
+  termDocumentFrequency(limit?: number): MaybePromise<RdfTextTermDocumentFrequency[]>;
+}
+
+export interface RdfTextIndexSyncLike extends RdfTextIndexLike {
   open(): void;
   close(): void;
   clear(): void;
@@ -1251,6 +1265,18 @@ export interface RdfVectorIndexOptions {
 }
 
 export interface RdfVectorIndexLike {
+  open(): MaybePromise<void>;
+  close(): MaybePromise<void>;
+  clear(): MaybePromise<void>;
+  indexVector(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): MaybePromise<void>;
+  deleteSource(source: string): MaybePromise<number>;
+  search(options: RdfVectorSearchOptions): MaybePromise<RdfVectorSearchResult[]>;
+  estimateSearchCardinality(options: RdfVectorSearchOptions): MaybePromise<RdfSearchCardinalityEstimate>;
+  stats(): MaybePromise<RdfVectorIndexStats>;
+  modelDistribution(): MaybePromise<RdfVectorModelDistribution[]>;
+}
+
+export interface RdfVectorIndexSyncLike extends RdfVectorIndexLike {
   open(): void;
   close(): void;
   clear(): void;
