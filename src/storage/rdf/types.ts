@@ -104,6 +104,20 @@ export interface RdfIndexStats {
   cardinalityDistributions: RdfCardinalityDistributions;
 }
 
+export interface RdfStorageStatsOptions {
+  cacheScope?: RdfDerivedCacheScopeStatsOptions;
+}
+
+export interface RdfDerivedCacheScopeStatsOptions {
+  query?: string;
+  principal?: string;
+  basePath?: string;
+  mode?: string;
+  authorizationModel?: string;
+  permissionVersion?: string;
+  limit?: number;
+}
+
 export interface RdfEngineStorageStats {
   derivedIndexProfile: RdfDerivedIndexProfile;
   facts: RdfIndexStats;
@@ -1062,7 +1076,7 @@ export interface RdfEngineLike {
   query(query: RdfQuery): RdfQueryResult | Promise<RdfQueryResult>;
   invalidateQueryResultCache?(scope?: RdfQueryCacheScope): number | Promise<number>;
   refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): RdfDerivedIndexRefreshResult | Promise<RdfDerivedIndexRefreshResult>;
-  storageStats(): RdfEngineStorageStats | Promise<RdfEngineStorageStats>;
+  storageStats(options?: RdfStorageStatsOptions): RdfEngineStorageStats | Promise<RdfEngineStorageStats>;
 }
 
 export type RdfQueryPatternKey = TermName;

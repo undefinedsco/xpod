@@ -35,6 +35,7 @@ import type {
   RdfVectorSearchResult,
   RdfVectorSourceInput,
   RdfEngineLike,
+  RdfStorageStatsOptions,
 } from './types';
 import { RdfQuadIndex } from './RdfQuadIndex';
 import { Rdf3xIndex } from './Rdf3xIndex';
@@ -293,7 +294,7 @@ export class SolidRdfEngine implements RdfEngineLike {
     }
   }
 
-  public storageStats(): RdfEngineStorageStats {
+  public storageStats(_options?: RdfStorageStatsOptions): RdfEngineStorageStats {
     const facts = this.index.stats();
     const rdf3x = this.rdf3xIndex
       ? (() => {

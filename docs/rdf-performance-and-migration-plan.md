@@ -628,11 +628,14 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `cachePressure` / `largestScopePressure` / `scopeEntries` top access-scope drill-down。
   `scopeEntries` 会按 payload bytes 排序展示 principal、basePath、mode、authorization model、
   permission version、facts version、result/materialized payload 和 entry count，便于定位哪个
-  用户/权限范围在制造 cache pressure。`derivedCache.evictions` 第一版提供进程内压力
+  用户/权限范围在制造 cache pressure。`storageStats({ cacheScope })` 支持
+  `query` 跨 scope hash/principal/basePath/mode/auth model/permission version 模糊匹配，
+  也支持 principal/basePath/mode/auth model/permission version 精确过滤和有上限的
+  `limit`。`derivedCache.evictions` 第一版提供进程内压力
   观测，按 `factsVersion`、`ttl`、`maxEntries`、`payloadBytes`、`scopeBytes`、
   `totalBytes`、`templateTtl`、`templateMaxEntries`、`templateBytes` 聚合可重建 cache 的
   淘汰原因；该计数不写入 Pod/RDF durable 状态。dashboard RDF 页已展示 result/materialized
-  scope count、最大 scope、top scope 明细、payload bytes、table/index bytes 和 eviction breakdown。
+  scope count、最大 scope、top scope 明细、scope 搜索、payload bytes、table/index bytes 和 eviction breakdown。
   后续再收敛为按 permissionVersion / graph scope 的更精确失效，并把 eviction telemetry 接入慢查询 drill-down。
 - `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。PG facts 侧另有 `rdf_dirty_sources` source-level queue：带 source 的 put/replace/delete 会登记待维护 source，显式 refresh 成功后 drain queue，并在 `rdf3x.sourceQueue` 中报告 pending/drained source 数。`maintainDerivedIndexes()` 通过同库 `rdf_maintenance_leases` 包住显式 refresh，避免多 xpod worker 同时维护；cloud 配置通过 `options_maintenanceIntervalMs=60000` 启动后台循环。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
 - `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
@@ -648,7 +651,10 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   PostgreSQL endpoint 返回 `available=false`，避免 API 进程并发打开 CSS
   sqlite RDF index。版本化端点需要普通 API 鉴权，service caller 需要 `usage:read` scope；
   dashboard RDF 页通过 `/api/admin/rdf/stats` 展示 refresh lag、cache/storage、PG acceleration
-  和最近慢查询快照。
+  和最近慢查询快照。两个 stats 入口都支持 `cacheScopeQuery`、`cacheScopePrincipal`、
+  `cacheScopeBasePath`、`cacheScopeMode`、`cacheScopeAuthorizationModel`、
+  `cacheScopePermissionVersion` 和 `cacheScopeLimit` query 参数，用于服务端过滤
+  `derivedCache.scopeEntries`，避免 dashboard 只在默认 top-N 上二次过滤。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases；默认 PG query cases 会覆盖消息流 latest-message、keyset page、Agent thread context、run state center、run steps、Task/Run/Thread/RunStep detail hydration、SessionManager hydration、audit approval trace、task materialization、AI credential selection、AI config/model selection、vector store/indexed-file metadata、provider/model/credential、profile/access-control、approval-grant、contact/favorite 等业务查询，并会在通用业务查询外额外跑 5 个 materialized warm-path case。普通 query 仍强制 bypass result cache，避免把 engine baseline 测成 cache hit；`--caseProfile=extreme` 已覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、graph-prefix scan，以及 5 个 exact-graph native custom-index gate。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；历史 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case；2026-06-06 PG17 extreme gate 已覆盖 19483 quads、2 个 scan case 和 10 个 query case，并要求 `pg-custom-index` + `extreme/all` 至少命中一次 `XpodRdfExtensionOperator(...)`。
 
@@ -683,7 +689,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   等稳定产品读视图会按共享 RDF 类型和产品 graph-scoped relation/status/timeline 谓词自动生成
   `models/product-views/<view>/<query>` key。自由 text/vector search / fusion query 暂不自动物化，
   避免按用户输入制造过宽 cache key 空间；统计页和 auth/cache scope 的 dashboard 首版已能看
-  entry/scope/payload/eviction/top scope drill-down，后续仍缺租户筛选/搜索和更大数据量 benchmark。
+  entry/scope/payload/eviction/top scope drill-down，并能按 principal/base/version 搜索 scope；
+  后续仍缺更大数据量 benchmark。
 - ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
   `Message.thread` 查询，Managed Run 组装 conversation / thread items 时不再绕过 shared model
   入口；SPARQL 边界 selector 会识别 `sioc:has_container` / `sioc:has_member` thread-history
@@ -823,4 +830,4 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 
 - 优化或禁用当前 SQLite/file-backed numeric aggregate 的 RDF-3X unconditional path。
 - 增加真实 PG cold-start benchmark case：区分首次连接/首次执行、stats refresh 后首轮、warm steady-state 三个口径。
-- 在 RDF dashboard 上继续补租户筛选/搜索，并接入冷启动 / warm steady-state 自动化指标。
+- 在 RDF dashboard 上继续接入冷启动 / warm steady-state 自动化指标。

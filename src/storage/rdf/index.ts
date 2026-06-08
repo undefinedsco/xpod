@@ -111,6 +111,8 @@ export {
 export type {
   RdfEngineLike,
   RdfEngineStorageStats,
+  RdfStorageStatsOptions,
+  RdfDerivedCacheScopeStatsOptions,
   RdfDerivedIndexMaintenanceResult,
   RdfDerivedIndexRefreshResult,
   RdfPlannerStatsRefreshResult,

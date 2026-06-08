@@ -14,9 +14,10 @@ function createMockServer(): { server: ApiServer; routes: Record<string, Functio
   return { server, routes };
 }
 
-function createRequest(auth?: AuthenticatedRequest['auth']): AuthenticatedRequest {
+function createRequest(auth?: AuthenticatedRequest['auth'], url = '/v1/rdf/stats'): AuthenticatedRequest {
   return {
     auth,
+    url,
     headers: {},
   } as unknown as AuthenticatedRequest;
 }
@@ -83,6 +84,48 @@ describe('RdfStatsHandler', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body()).toEqual(snapshot);
     expect(service.snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes cache scope filters to the stats service', async () => {
+    const snapshot = {
+      available: true,
+      engine: 'postgres-rdf',
+      generatedAt: '2026-06-08T00:00:00.000Z',
+      stats: {
+        factsBytes: 100,
+        derivedBytes: 40,
+        totalBytes: 140,
+        totalToFactsRatio: 1.4,
+        derivedToFactsRatio: 0.4,
+      },
+    };
+    const { server, routes } = createMockServer();
+    const service = { snapshot: vi.fn().mockResolvedValue(snapshot) };
+    registerRdfStatsRoutes(server, { rdfStorageStatsService: service as any });
+
+    const response = createResponse();
+    await routes['GET /v1/rdf/stats'](
+      createRequest(
+        {
+          type: 'service',
+          serviceType: 'cloud',
+          serviceId: 'ops',
+          scopes: ['usage:read'],
+        },
+        '/v1/rdf/stats?cacheScopeQuery=alice&cacheScopePrincipal=https%3A%2F%2Fid.example%2Falice%23me&cacheScopeLimit=25',
+      ),
+      response,
+      {},
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(service.snapshot).toHaveBeenCalledWith({
+      cacheScope: {
+        query: 'alice',
+        principal: 'https://id.example/alice#me',
+        limit: 25,
+      },
+    });
   });
 
   it('requires usage:read for service callers', async () => {

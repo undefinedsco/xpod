@@ -932,6 +932,22 @@ describe('PostgresRdfEngine', () => {
         materializedResultEntries: 0,
       });
       expect(second.payloadBytes).toBe(second.queryResultPayloadBytes);
+
+      const limitedStorage = await engine.storageStats({ cacheScope: { limit: 1 } });
+      expect(limitedStorage.derivedCache?.scopeVersionCount).toBe(2);
+      expect(limitedStorage.derivedCache?.scopeEntries).toHaveLength(1);
+
+      const aliceStorage = await engine.storageStats({ cacheScope: { query: 'acl-v1' } });
+      expect(aliceStorage.derivedCache?.scopeVersionCount).toBe(1);
+      expect(aliceStorage.derivedCache?.scopeEntries).toHaveLength(1);
+      expect(aliceStorage.derivedCache?.scopeEntries[0]).toMatchObject({
+        principal: 'https://id.example/alice/profile/card#me',
+        permissionVersion: 'acl-v1',
+      });
+
+      const emptyStorage = await engine.storageStats({ cacheScope: { query: 'charlie' } });
+      expect(emptyStorage.derivedCache?.scopeVersionCount).toBe(0);
+      expect(emptyStorage.derivedCache?.scopeEntries).toEqual([]);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

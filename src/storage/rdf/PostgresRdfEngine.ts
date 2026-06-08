@@ -22,8 +22,10 @@ import type {
   RdfDerivedCacheStats,
   RdfDerivedCacheEvictionStats,
   RdfDerivedCacheScopeEntry,
+  RdfDerivedCacheScopeStatsOptions,
   RdfEngineLike,
   RdfEngineStorageStats,
+  RdfStorageStatsOptions,
   RdfCardinalityDistributions,
   RdfCardinalityTerm,
   RdfIndexMetrics,
@@ -121,6 +123,7 @@ const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_DERIVED_CACHE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_STATS_MAX_ENTRIES = 10;
+const MAX_DERIVED_CACHE_SCOPE_STATS_ENTRIES = 100;
 const DEFAULT_QUERY_EXPLAIN_SLOW_MS = 1_000;
 const DEFAULT_QUERY_EXPLAIN_LARGE_SCAN_ROWS = 100_000;
 const DEFAULT_QUERY_EXPLAIN_SCAN_AMPLIFICATION = 100;
@@ -1771,7 +1774,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return this.pgAccelerationStats();
   }
 
-  public async storageStats(): Promise<RdfEngineStorageStats> {
+  public async storageStats(options: RdfStorageStatsOptions = {}): Promise<RdfEngineStorageStats> {
     await this.ensureReady();
     const facts = await this.factsStats();
     const rdf3x = await this.rdf3xStats();
@@ -1783,7 +1786,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       queryResultCache,
       materializedResultCache,
       queryTemplateCache,
-      await this.derivedCacheScopeStats(),
+      await this.derivedCacheScopeStats(options.cacheScope),
     );
     const factsBytes = facts.databaseBytes;
     const derivedBytes = rdf3x.databaseBytes
@@ -8246,7 +8249,43 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return Object.values(this.derivedCacheEvictions).reduce((sum, count) => sum + count, 0);
   }
 
-  private async derivedCacheScopeStats(): Promise<PgDerivedCacheScopeStats> {
+  private async derivedCacheScopeStats(options: RdfDerivedCacheScopeStatsOptions = {}): Promise<PgDerivedCacheScopeStats> {
+    const scopeOptions = normalizeDerivedCacheScopeStatsOptions(options);
+    const params: unknown[] = [];
+    const filters: string[] = [];
+    const addParam = (value: unknown): string => {
+      params.push(value);
+      return `$${params.length}`;
+    };
+    if (scopeOptions.query) {
+      const queryParam = addParam(sqlLikeContains(scopeOptions.query));
+      filters.push(`LOWER(
+        COALESCE(scope_hash, '') || ' ' ||
+        COALESCE(scope_shape, '') || ' ' ||
+        COALESCE(scope_principal, '') || ' ' ||
+        COALESCE(scope_base_path, '') || ' ' ||
+        COALESCE(scope_mode, '') || ' ' ||
+        COALESCE(scope_authorization_model, '') || ' ' ||
+        COALESCE(scope_permission_version, '')
+      ) LIKE ${queryParam} ESCAPE '\\'`);
+    }
+    if (scopeOptions.principal) {
+      filters.push(`scope_principal = ${addParam(scopeOptions.principal)}`);
+    }
+    if (scopeOptions.basePath) {
+      filters.push(`scope_base_path = ${addParam(scopeOptions.basePath)}`);
+    }
+    if (scopeOptions.mode) {
+      filters.push(`scope_mode = ${addParam(scopeOptions.mode)}`);
+    }
+    if (scopeOptions.authorizationModel) {
+      filters.push(`scope_authorization_model = ${addParam(scopeOptions.authorizationModel)}`);
+    }
+    if (scopeOptions.permissionVersion) {
+      filters.push(`scope_permission_version = ${addParam(scopeOptions.permissionVersion)}`);
+    }
+    const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+    const limitParam = addParam(scopeOptions.limit);
     const rows = await this.requireExecutor().query<{
       scope_hash: string;
       facts_data_version: number | string;
@@ -8290,6 +8329,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
           OCTET_LENGTH(result_json) AS payload_bytes
         FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
       ),
+      filtered_scope AS (
+        SELECT *
+        FROM scoped_cache
+        ${whereClause}
+      ),
       scope_versions AS (
         SELECT
           scope_hash,
@@ -8305,7 +8349,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           SUM(CASE WHEN kind = 'materialized-result' THEN payload_bytes ELSE 0 END) AS materialized_result_payload_bytes,
           SUM(CASE WHEN kind = 'query-result' THEN 1 ELSE 0 END) AS query_result_entries,
           SUM(CASE WHEN kind = 'materialized-result' THEN 1 ELSE 0 END) AS materialized_result_entries
-        FROM scoped_cache
+        FROM filtered_scope
         GROUP BY scope_hash, facts_data_version
       )
       SELECT
@@ -8313,8 +8357,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         COUNT(*) OVER () AS scope_version_count
       FROM scope_versions
       ORDER BY payload_bytes DESC, scope_hash ASC, facts_data_version DESC
-      LIMIT $1
-    `, [DEFAULT_DERIVED_CACHE_SCOPE_STATS_MAX_ENTRIES]);
+      LIMIT ${limitParam}
+    `, params);
     const largest = rows[0];
     const scopeEntries = rows.map((row) => ({
       scopeHash: row.scope_hash,
@@ -8552,6 +8596,31 @@ function emptyDerivedCacheEvictionStats(): RdfDerivedCacheEvictionStats {
 
 function bytePressure(bytes: number, maxBytes: number): number {
   return maxBytes > 0 ? bytes / maxBytes : 0;
+}
+
+function normalizeDerivedCacheScopeStatsOptions(
+  options: RdfDerivedCacheScopeStatsOptions,
+): Required<RdfDerivedCacheScopeStatsOptions> {
+  const limit = Number.isFinite(options.limit)
+    ? Math.min(MAX_DERIVED_CACHE_SCOPE_STATS_ENTRIES, Math.max(1, Math.floor(Number(options.limit))))
+    : DEFAULT_DERIVED_CACHE_SCOPE_STATS_MAX_ENTRIES;
+  return {
+    query: normalizeStatsFilterText(options.query),
+    principal: normalizeStatsFilterText(options.principal),
+    basePath: normalizeStatsFilterText(options.basePath),
+    mode: normalizeStatsFilterText(options.mode),
+    authorizationModel: normalizeStatsFilterText(options.authorizationModel),
+    permissionVersion: normalizeStatsFilterText(options.permissionVersion),
+    limit,
+  };
+}
+
+function normalizeStatsFilterText(value: string | undefined): string {
+  return value?.trim().slice(0, 512) ?? '';
+}
+
+function sqlLikeContains(value: string): string {
+  return `%${value.toLowerCase().replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
 }
 
 function compareDerivedCacheCandidates(left: PgDerivedCacheCandidate, right: PgDerivedCacheCandidate): number {

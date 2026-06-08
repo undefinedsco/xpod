@@ -134,6 +134,16 @@ export interface RdfStorageStats {
   };
 }
 
+export interface RdfStatsOptions {
+  cacheScopeQuery?: string;
+  cacheScopePrincipal?: string;
+  cacheScopeBasePath?: string;
+  cacheScopeMode?: string;
+  cacheScopeAuthorizationModel?: string;
+  cacheScopePermissionVersion?: string;
+  cacheScopeLimit?: number;
+}
+
 export interface RdfDerivedCacheScopeEntry {
   scopeHash: string;
   factsDataVersion: number;
@@ -313,9 +323,11 @@ export async function getGatewayStatus(): Promise<ServiceState[] | null> {
   return null;
 }
 
-export async function getRdfStats(): Promise<RdfStatsSnapshot | null> {
+export async function getRdfStats(options: RdfStatsOptions = {}): Promise<RdfStatsSnapshot | null> {
   try {
-    const res = await fetch(`${API_BASE}/rdf/stats`);
+    const params = rdfStatsSearchParams(options);
+    const query = params.toString();
+    const res = await fetch(`${API_BASE}/rdf/stats${query ? `?${query}` : ''}`);
     if (res.ok) {
       return await res.json();
     }
@@ -323,6 +335,24 @@ export async function getRdfStats(): Promise<RdfStatsSnapshot | null> {
     console.error('Failed to get RDF stats:', e);
   }
   return null;
+}
+
+function rdfStatsSearchParams(options: RdfStatsOptions): URLSearchParams {
+  const params = new URLSearchParams();
+  appendParam(params, 'cacheScopeQuery', options.cacheScopeQuery);
+  appendParam(params, 'cacheScopePrincipal', options.cacheScopePrincipal);
+  appendParam(params, 'cacheScopeBasePath', options.cacheScopeBasePath);
+  appendParam(params, 'cacheScopeMode', options.cacheScopeMode);
+  appendParam(params, 'cacheScopeAuthorizationModel', options.cacheScopeAuthorizationModel);
+  appendParam(params, 'cacheScopePermissionVersion', options.cacheScopePermissionVersion);
+  appendParam(params, 'cacheScopeLimit', options.cacheScopeLimit);
+  return params;
+}
+
+function appendParam(params: URLSearchParams, name: string, value: string | number | undefined): void {
+  if (value !== undefined && value !== '') {
+    params.set(name, String(value));
+  }
 }
 
 /**

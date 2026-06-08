@@ -1,4 +1,9 @@
-import { PostgresRdfEngine, type RdfEngineStorageStats, type RdfPgAccelerationProfile } from '../../storage/rdf';
+import {
+  PostgresRdfEngine,
+  type RdfEngineStorageStats,
+  type RdfPgAccelerationProfile,
+  type RdfStorageStatsOptions,
+} from '../../storage/rdf';
 
 export interface RdfStorageStatsServiceOptions {
   edition: 'cloud' | 'local';
@@ -23,7 +28,7 @@ export type RdfStorageStatsSnapshot =
 export class RdfStorageStatsService {
   public constructor(private readonly options: RdfStorageStatsServiceOptions) {}
 
-  public async snapshot(): Promise<RdfStorageStatsSnapshot> {
+  public async snapshot(options: RdfStorageStatsOptions = {}): Promise<RdfStorageStatsSnapshot> {
     const generatedAt = new Date().toISOString();
     if (this.options.edition !== 'cloud') {
       return {
@@ -64,7 +69,7 @@ export class RdfStorageStatsService {
         available: true,
         engine: 'postgres-rdf',
         generatedAt,
-        stats: await engine.storageStats(),
+        stats: await engine.storageStats(options),
       };
     } finally {
       await engine.close();

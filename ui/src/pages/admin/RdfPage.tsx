@@ -2,12 +2,13 @@
  * RDF 页面 - 索引与查询观测
  */
 
-import type { ComponentType } from 'react';
-import { useCallback, useEffect, useState } from 'react';
-import { Activity, AlertTriangle, Database, Gauge, RefreshCw } from 'lucide-react';
+import type { ComponentType, FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Activity, AlertTriangle, Database, Gauge, RefreshCw, Search, X } from 'lucide-react';
 import { clsx } from 'clsx';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Input } from '@/components/ui/Input';
 import {
   getRdfStats,
   type RdfDerivedCacheEvictionStats,
@@ -22,13 +23,24 @@ const unavailableReasonText: Record<NonNullable<Extract<RdfStatsSnapshot, { avai
   'unsupported-sparql-endpoint': '非 PostgreSQL 端点',
 };
 
+function rdfStatsOptionsForScopeQuery(query: string) {
+  const normalized = query.trim();
+  return normalized ? { cacheScopeQuery: normalized, cacheScopeLimit: 50 } : {};
+}
+
 export function RdfPage() {
   const [snapshot, setSnapshot] = useState<RdfStatsSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [cacheScopeQuery, setCacheScopeQuery] = useState('');
+  const [appliedCacheScopeQuery, setAppliedCacheScopeQuery] = useState('');
+  const initialLoadStarted = useRef(false);
 
-  const loadStats = useCallback(async (initial = false): Promise<void> => {
+  const loadStats = useCallback(async (
+    initial = false,
+    cacheScopeQueryOverride = appliedCacheScopeQuery,
+  ): Promise<void> => {
     if (initial) {
       setLoading(true);
     } else {
@@ -36,7 +48,7 @@ export function RdfPage() {
     }
     setError('');
     try {
-      const next = await getRdfStats();
+      const next = await getRdfStats(rdfStatsOptionsForScopeQuery(cacheScopeQueryOverride));
       if (next) {
         setSnapshot(next);
       } else {
@@ -46,13 +58,31 @@ export function RdfPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [appliedCacheScopeQuery]);
 
   useEffect(() => {
+    if (initialLoadStarted.current) return;
+    initialLoadStarted.current = true;
     void loadStats(true);
+  }, [loadStats]);
+
+  useEffect(() => {
     const interval = setInterval(() => void loadStats(false), 10_000);
     return () => clearInterval(interval);
   }, [loadStats]);
+
+  const handleScopeSearchSubmit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    const next = cacheScopeQuery.trim();
+    setAppliedCacheScopeQuery(next);
+    void loadStats(false, next);
+  };
+
+  const clearScopeSearch = (): void => {
+    setCacheScopeQuery('');
+    setAppliedCacheScopeQuery('');
+    void loadStats(false, '');
+  };
 
   const generatedAt = snapshot ? formatDateTime(snapshot.generatedAt) : '-';
 
@@ -67,17 +97,39 @@ export function RdfPage() {
           <h1 className="type-h1">RDF 索引</h1>
           <div className="mt-1 text-sm text-muted-foreground">更新时间 {generatedAt}</div>
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          onClick={() => void loadStats(false)}
-          disabled={refreshing}
-          className="gap-2"
-        >
-          <RefreshCw className={clsx('h-4 w-4', refreshing && 'animate-spin')} />
-          刷新
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <form className="flex min-w-0 items-center gap-2" onSubmit={handleScopeSearchSubmit}>
+            <div className="relative w-72 max-w-[70vw]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={cacheScopeQuery}
+                onChange={(event) => setCacheScopeQuery(event.target.value)}
+                className="pl-9"
+                placeholder="principal / base / version"
+              />
+            </div>
+            <Button type="submit" variant="secondary" size="sm" className="gap-2">
+              <Search className="h-4 w-4" />
+              搜索
+            </Button>
+            {appliedCacheScopeQuery && (
+              <Button type="button" variant="ghost" size="sm" onClick={clearScopeSearch} aria-label="清除 scope 搜索">
+                <X className="h-4 w-4" />
+              </Button>
+            )}
+          </form>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => void loadStats(false)}
+            disabled={refreshing}
+            className="gap-2"
+          >
+            <RefreshCw className={clsx('h-4 w-4', refreshing && 'animate-spin')} />
+            刷新
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -89,14 +141,14 @@ export function RdfPage() {
       {!snapshot?.available ? (
         <UnavailablePanel snapshot={snapshot} />
       ) : (
-        <AvailableStats snapshot={snapshot} />
+        <AvailableStats snapshot={snapshot} scopeQuery={appliedCacheScopeQuery} />
       )}
     </div>
   );
 }
 
-function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available: true }> }) {
-  const { snapshot } = props;
+function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available: true }>; scopeQuery: string }) {
+  const { snapshot, scopeQuery } = props;
   const stats = snapshot.stats;
   const rdf3x = stats.rdf3x;
   const slowQueries = stats.slowQueries?.entries ?? [];
@@ -221,7 +273,7 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
       </div>
 
       <div className="mb-8">
-        <CacheScopeTable entries={cacheScopeEntries} />
+        <CacheScopeTable entries={cacheScopeEntries} totalCount={derivedCache?.scopeVersionCount ?? 0} query={scopeQuery} />
       </div>
 
       <SlowQueryTable entries={slowQueries} />
@@ -348,15 +400,20 @@ function SlowQueryTable(props: { entries: RdfSlowQueryEntry[] }) {
   );
 }
 
-function CacheScopeTable(props: { entries: RdfDerivedCacheScopeEntry[] }) {
+function CacheScopeTable(props: { entries: RdfDerivedCacheScopeEntry[]; totalCount: number; query: string }) {
   return (
     <Card variant="bordered">
-      <CardHeader>
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
         <CardTitle>权限 Scope 明细</CardTitle>
+        <div className="text-sm text-muted-foreground">
+          {formatInteger(props.entries.length)} / {formatInteger(props.totalCount)}
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         {props.entries.length === 0 ? (
-          <div className="px-5 pb-5 pt-4 text-sm text-muted-foreground">暂无缓存 scope</div>
+          <div className="px-5 pb-5 pt-4 text-sm text-muted-foreground">
+            {props.query ? '没有匹配的缓存 scope' : '暂无缓存 scope'}
+          </div>
         ) : (
           <div className="overflow-auto">
             <table className="w-full min-w-[1020px] border-collapse text-left text-sm">
