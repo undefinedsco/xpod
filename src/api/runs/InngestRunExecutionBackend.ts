@@ -223,6 +223,14 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
     return this.managedRunWorker.loadExecutionInput(runId, context);
   }
 
+  public async close(): Promise<void> {
+    for (const pending of this.pendingRuns.values()) {
+      pending.queue.close();
+    }
+    this.pendingRuns.clear();
+    await (this.runtimeDriver as { close?: () => void | Promise<void> }).close?.();
+  }
+
   private createInlineContext(input: RunExecutionInput): InngestHandlerContext {
     const executionKey = this.executionKeyForInput(input);
     return {

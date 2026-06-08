@@ -27,6 +27,7 @@ import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
 import { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import { InngestTaskScheduler, TaskAuthBindingService, TaskService } from '../tasks';
 import { EmbeddingServiceImpl, ProviderRegistryImpl } from '../../ai/service';
+import { createApiRdfEngine, createApiRunContextRetriever } from './rdf';
 
 function resolveCssServiceBaseUrl(): string {
   if (process.env.CSS_INTERNAL_URL) {
@@ -134,7 +135,15 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry }: ApiContainerCradle) => {
+    rdfEngine: asFunction(({ config }: ApiContainerCradle) => {
+      return createApiRdfEngine(config);
+    }).singleton(),
+
+    runContextRetriever: asFunction(({ rdfEngine }: ApiContainerCradle) => {
+      return createApiRunContextRetriever(rdfEngine);
+    }).singleton(),
+
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever }: ApiContainerCradle) => {
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
@@ -142,6 +151,7 @@ export function registerCommonServices(
         isDev: inngestRuntimeConfig?.enabled ? !inngestRuntimeConfig.durableDelivery : true,
         durableDelivery: inngestRuntimeConfig?.durableDelivery ?? false,
         store: chatKitStore,
+        contextRetriever: runContextRetriever,
         contextRecorder: (context) => runAuthContextRegistry.remember(context),
         contextResolver: async (data) => {
           const fallback = runAuthContextRegistry.resolve({ webId: data.webId });
@@ -157,19 +167,21 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider, config, runExecutionBackend }: ApiContainerCradle) => {
+    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider, runExecutionBackend, runContextRetriever }: ApiContainerCradle) => {
       return new ChatKitService({
         store: chatKitStore,
         aiProvider: chatKitAiProvider,
         enableAgentRuntime: true,
         runExecutionBackend,
+        contextRetriever: runContextRetriever,
       });
     }).singleton(),
 
-    taskService: asFunction(({ chatKitStore, runExecutionBackend }: ApiContainerCradle) => {
+    taskService: asFunction(({ chatKitStore, runExecutionBackend, runContextRetriever }: ApiContainerCradle) => {
       return new TaskService({
         store: chatKitStore,
         executionBackend: runExecutionBackend,
+        contextRetriever: runContextRetriever,
       });
     }).singleton(),
 

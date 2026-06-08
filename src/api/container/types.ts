@@ -24,11 +24,13 @@ import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
 import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
+import type { RunContextRetriever } from '../runs/RunExecutionBackend';
 import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestService';
 import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import type { TaskAuthBindingService, TaskService, InngestTaskScheduler } from '../tasks';
 import type { PodMatrixStore } from '../matrix';
 import type { AuthMode } from '../../authorization/AuthMode';
+import type { RdfEngineLike } from '../../storage/rdf';
 
 /**
  * 容器配置
@@ -149,6 +151,8 @@ export interface ApiContainerCradle {
   chatKitAiProvider: AiProvider;
   inngestRuntimeConfig: EmbeddedInngestRuntimeConfig | undefined;
   runAuthContextRegistry: RunAuthContextRegistry;
+  rdfEngine: RdfEngineLike | undefined;
+  runContextRetriever: RunContextRetriever<StoreContext> | undefined;
   runExecutionBackend: InngestRunExecutionBackend;
   taskAuthBindingService: TaskAuthBindingService<StoreContext>;
   taskService: TaskService<StoreContext>;
