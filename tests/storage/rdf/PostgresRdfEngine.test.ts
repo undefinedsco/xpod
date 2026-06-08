@@ -3927,7 +3927,8 @@ describe('PostgresRdfEngine', () => {
       deferPgCustomIndexInitialization: true,
     });
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
-    const quads = Array.from({ length: 40 }, (_, index) => {
+    const messageCount = 650;
+    const quads = Array.from({ length: messageCount }, (_, index) => {
       const message = namedNode(`${graph.value}#msg_${index}`);
       return [
         quad(message, namedNode(STATUS), literal(index % 2 === 0 ? 'open' : 'closed'), graph),
@@ -3946,11 +3947,13 @@ describe('PostgresRdfEngine', () => {
       const quadInsertStatements = pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_quads ('));
       expect(termInsertStatements).toHaveLength(2);
       expect(quadInsertStatements).toHaveLength(1);
-      expect(termInsertStatements[0]).toContain('VALUES');
-      expect(quadInsertStatements[0]).toContain('VALUES');
+      expect(termInsertStatements[0]).toContain('FROM UNNEST');
+      expect(quadInsertStatements[0]).toContain('FROM UNNEST');
+      expect(termInsertStatements[0]).not.toContain('VALUES');
+      expect(quadInsertStatements[0]).not.toContain('VALUES');
 
       const stats = await engine.storageStats();
-      expect(stats.facts.quadCount).toBe(80);
+      expect(stats.facts.quadCount).toBe(messageCount * 2);
       expect((await engine.storageStats()).pgAcceleration?.fallbackReason).toBe('index-build-deferred');
 
       await engine.ensurePgCustomIndexes();

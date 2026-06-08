@@ -128,6 +128,7 @@ const DEFAULT_DERIVED_CACHE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_STATS_MAX_ENTRIES = 10;
 const MAX_DERIVED_CACHE_SCOPE_STATS_ENTRIES = 100;
+const POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE = 5000;
 const DEFAULT_QUERY_EXPLAIN_SLOW_MS = 1_000;
 const DEFAULT_QUERY_EXPLAIN_LARGE_SCAN_ROWS = 100_000;
 const DEFAULT_QUERY_EXPLAIN_SCAN_AMPLIFICATION = 100;
@@ -866,20 +867,7 @@ class PostgresRdfTermDictionary {
     }
 
     const missingEntries = [...missing.values()];
-    for (const chunk of chunkArray(missingEntries, 500)) {
-      const builder = new PgSqlBuilder();
-      const values = chunk
-        .map(({ identity }) => `(${[
-          builder.add(identity.kind),
-          builder.add(identity.value),
-          builder.add(identity.valueHead),
-          builder.add(identity.datatypeId),
-          builder.add(identity.lang),
-          builder.add(identity.hash),
-          builder.add(identity.normalizedText),
-          builder.add(identity.numericValue),
-        ].join(', ')})`)
-        .join(', ');
+    for (const chunk of chunkArray(missingEntries, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       await this.executor.exec(`
         INSERT INTO rdf_terms (
           kind,
@@ -891,13 +879,49 @@ class PostgresRdfTermDictionary {
           normalized_text,
           numeric_value
         )
-        VALUES ${values}
+        SELECT
+          kind,
+          value,
+          value_head,
+          datatype_id,
+          lang,
+          hash,
+          normalized_text,
+          numeric_value
+        FROM UNNEST(
+          $1::text[],
+          $2::text[],
+          $3::text[],
+          $4::bigint[],
+          $5::text[],
+          $6::text[],
+          $7::text[],
+          $8::double precision[]
+        ) AS input(
+          kind,
+          value,
+          value_head,
+          datatype_id,
+          lang,
+          hash,
+          normalized_text,
+          numeric_value
+        )
         ON CONFLICT (hash) DO NOTHING
-      `, builder.snapshot());
+      `, [
+        chunk.map(({ identity }) => identity.kind),
+        chunk.map(({ identity }) => identity.value),
+        chunk.map(({ identity }) => identity.valueHead),
+        chunk.map(({ identity }) => identity.datatypeId),
+        chunk.map(({ identity }) => identity.lang),
+        chunk.map(({ identity }) => identity.hash),
+        chunk.map(({ identity }) => identity.normalizedText),
+        chunk.map(({ identity }) => identity.numericValue),
+      ]);
     }
 
     const rowsByHash = new Map<string, PostgresRdfTermRow[]>();
-    for (const hashChunk of chunkArray(missingEntries.map(({ identity }) => identity.hash), 500)) {
+    for (const hashChunk of chunkArray(missingEntries.map(({ identity }) => identity.hash), POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       const rows = await this.executor.query<PostgresRdfTermRow>(
         'SELECT * FROM rdf_terms WHERE hash = ANY($1::text[])',
         [hashChunk],
@@ -7983,18 +8007,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const rows = [...rowsByKey.values()];
-    for (const chunk of chunkArray(rows, 500)) {
-      const builder = new PgSqlBuilder();
-      const values = chunk
-        .map((row) => `(${[
-          builder.add(row.graph_id),
-          builder.add(row.subject_id),
-          builder.add(row.predicate_id),
-          builder.add(row.object_id),
-          builder.add(sourceId),
-          builder.add(sourceLineNo),
-        ].join(', ')})`)
-        .join(', ');
+    for (const chunk of chunkArray(rows, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       await executor.exec(`
         INSERT INTO rdf_quads (
           graph_id,
@@ -8004,12 +8017,36 @@ export class PostgresRdfEngine implements RdfEngineLike {
           source_file_id,
           source_line_no
         )
-        VALUES ${values}
+        SELECT
+          graph_id,
+          subject_id,
+          predicate_id,
+          object_id,
+          $5::bigint AS source_file_id,
+          $6::bigint AS source_line_no
+        FROM UNNEST(
+          $1::bigint[],
+          $2::bigint[],
+          $3::bigint[],
+          $4::bigint[]
+        ) AS input(
+          graph_id,
+          subject_id,
+          predicate_id,
+          object_id
+        )
         ON CONFLICT (graph_id, subject_id, predicate_id, object_id)
         DO UPDATE SET
           source_file_id = EXCLUDED.source_file_id,
           source_line_no = EXCLUDED.source_line_no
-      `, builder.snapshot());
+      `, [
+        chunk.map((row) => row.graph_id),
+        chunk.map((row) => row.subject_id),
+        chunk.map((row) => row.predicate_id),
+        chunk.map((row) => row.object_id),
+        sourceId,
+        sourceLineNo,
+      ]);
     }
     return rows;
   }
@@ -8084,15 +8121,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private async insertDirtyGraphIds(executor: AsyncSqlExecutor, graphIds: number[]): Promise<void> {
-    for (const chunk of chunkArray(graphIds, 500)) {
+    for (const chunk of chunkArray(graphIds, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       if (chunk.length === 0) continue;
-      const builder = new PgSqlBuilder();
-      const values = chunk.map((id) => `(${builder.add(id)})`).join(', ');
       await executor.exec(`
         INSERT INTO ${RDF3X_DIRTY_GRAPH_TABLE} (graph_id)
-        VALUES ${values}
+        SELECT graph_id
+        FROM UNNEST($1::bigint[]) AS input(graph_id)
         ON CONFLICT DO NOTHING
-      `, builder.snapshot());
+      `, [chunk]);
     }
   }
 
@@ -8100,17 +8136,22 @@ export class PostgresRdfEngine implements RdfEngineLike {
     executor: AsyncSqlExecutor,
     pairs: Array<{ projection: string; leftId: number; rightId: number }>,
   ): Promise<void> {
-    for (const chunk of chunkArray(pairs, 500)) {
+    for (const chunk of chunkArray(pairs, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       if (chunk.length === 0) continue;
-      const builder = new PgSqlBuilder();
-      const values = chunk
-        .map((row) => `(${builder.add(row.projection)}, ${builder.add(row.leftId)}, ${builder.add(row.rightId)})`)
-        .join(', ');
       await executor.exec(`
         INSERT INTO ${RDF3X_DIRTY_PAIR_TABLE} (projection, left_id, right_id)
-        VALUES ${values}
+        SELECT projection, left_id, right_id
+        FROM UNNEST(
+          $1::text[],
+          $2::bigint[],
+          $3::bigint[]
+        ) AS input(projection, left_id, right_id)
         ON CONFLICT DO NOTHING
-      `, builder.snapshot());
+      `, [
+        chunk.map((row) => row.projection),
+        chunk.map((row) => row.leftId),
+        chunk.map((row) => row.rightId),
+      ]);
     }
   }
 
@@ -8118,17 +8159,20 @@ export class PostgresRdfEngine implements RdfEngineLike {
     executor: AsyncSqlExecutor,
     terms: Array<{ projection: string; termId: number }>,
   ): Promise<void> {
-    for (const chunk of chunkArray(terms, 500)) {
+    for (const chunk of chunkArray(terms, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       if (chunk.length === 0) continue;
-      const builder = new PgSqlBuilder();
-      const values = chunk
-        .map((row) => `(${builder.add(row.projection)}, ${builder.add(row.termId)})`)
-        .join(', ');
       await executor.exec(`
         INSERT INTO ${RDF3X_DIRTY_TERM_TABLE} (projection, term_id)
-        VALUES ${values}
+        SELECT projection, term_id
+        FROM UNNEST(
+          $1::text[],
+          $2::bigint[]
+        ) AS input(projection, term_id)
         ON CONFLICT DO NOTHING
-      `, builder.snapshot());
+      `, [
+        chunk.map((row) => row.projection),
+        chunk.map((row) => row.termId),
+      ]);
     }
   }
 
