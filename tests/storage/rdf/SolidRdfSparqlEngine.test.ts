@@ -28,12 +28,18 @@ const CONTENT = 'http://rdfs.org/sioc/ns#content';
 const HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
 const HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
 const MEETING_LONG_CHAT = 'http://www.w3.org/ns/pim/meeting#LongChat';
+const SIOC_THREAD = 'http://rdfs.org/sioc/ns#Thread';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
 const UDFS_LAST_MESSAGE = 'https://undefineds.co/ns#lastMessage';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
+const UDFS_SESSION = 'https://undefineds.co/ns#Session';
 const UDFS_SCHEDULE = 'https://undefineds.co/ns#Schedule';
 const UDFS_STATUS = 'https://undefineds.co/ns#status';
 const UDFS_NEXT_RUN_AT = 'https://undefineds.co/ns#nextRunAt';
+const UDFS_SESSION_STATUS = 'https://undefineds.co/ns#sessionStatus';
+const UDFS_CONVERSATION = 'https://undefineds.co/ns#conversation';
+const UDFS_IN_THREAD = 'https://undefineds.co/ns#inThread';
+const UDFS_TOKEN_USAGE = 'https://undefineds.co/ns#tokenUsage';
 const AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
 const AI_BASE_URL = 'https://vocab.xpod.dev/ai#baseUrl';
 const AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
@@ -434,6 +440,48 @@ describe('SolidRdfSparqlEngine', () => {
     expect(materialized).toMatchObject({ version: 'v1' });
     expect(typeof materialized).toBe('object');
     expect((materialized as { key: string }).key).toMatch(/^models\/product-views\/schedules\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for agent context session hydration views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?session ?chat ?thread ?tokenUsage WHERE {
+        GRAPH ?sessionGraph {
+          ?session <${RDF_TYPE}> <${UDFS_SESSION}> .
+          ?session <${UDFS_SESSION_STATUS}> "active" .
+          ?session <${UDFS_CONVERSATION}> ?chat .
+          ?session <${UDFS_IN_THREAD}> ?thread .
+          ?session <${UDFS_TOKEN_USAGE}> ?tokenUsage .
+        }
+        GRAPH <https://pod.example/alice/.data/chat/default/index.ttl> {
+          ?chat <${RDF_TYPE}> <${MEETING_LONG_CHAT}> .
+          ?thread <${RDF_TYPE}> <${SIOC_THREAD}> .
+        }
+        FILTER(STRSTARTS(STR(?sessionGraph), "https://pod.example/alice/.data/sessions/"))
+      }
+      ORDER BY DESC(?tokenUsage)
+      LIMIT 5
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/agent-context\/active-session-thread-usage\/[a-f0-9]{16}$/);
   });
 
   it('can disable automatic materialized cache key selection', async () => {

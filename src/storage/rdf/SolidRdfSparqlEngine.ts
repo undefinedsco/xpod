@@ -121,6 +121,8 @@ const UDFS_IN_THREAD = 'https://undefineds.co/ns#inThread';
 const UDFS_NEXT_RUN_AT = 'https://undefineds.co/ns#nextRunAt';
 const UDFS_LEASE_OWNER = 'https://undefineds.co/ns#leaseOwner';
 const UDFS_SESSION_STATUS = 'https://undefineds.co/ns#sessionStatus';
+const UDFS_CONVERSATION = 'https://undefineds.co/ns#conversation';
+const UDFS_TOKEN_USAGE = 'https://undefineds.co/ns#tokenUsage';
 const XPOD_AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
 const XPOD_AI_MODEL = 'https://vocab.xpod.dev/ai#Model';
 const XPOD_AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
@@ -758,6 +760,7 @@ function defaultMaterializedQuerySelector(
   }
   return threadHistoryMaterializedResult(query)
     ?? settingsProductViewMaterializedResult(query)
+    ?? agentContextMaterializedResult(query)
     ?? stableProductViewMaterializedResult(query);
 }
 
@@ -829,6 +832,55 @@ function settingsProductView(query: RdfQuery): string | undefined {
   }
 
   return [...typeViews].sort().join('+');
+}
+
+function agentContextMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const view = agentContextProductView(query);
+  if (!view) {
+    return undefined;
+  }
+  return {
+    key: `models/agent-context/${view}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function agentContextProductView(query: RdfQuery): string | undefined {
+  if (!query.patterns.some(isProductGraphScoped)) {
+    return undefined;
+  }
+
+  const types = new Set<string>();
+  const predicates = new Set<string>();
+
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (!predicate) {
+      continue;
+    }
+    predicates.add(predicate);
+    if (predicate === RDF_TYPE) {
+      const type = namedNodeValue(pattern.object);
+      if (type) {
+        types.add(type);
+      }
+    }
+  }
+
+  if (
+    types.has(UDFS_SESSION)
+    && types.has(MEETING_LONG_CHAT)
+    && types.has(SIOC_THREAD)
+    && predicates.has(UDFS_SESSION_STATUS)
+    && predicates.has(UDFS_CONVERSATION)
+    && predicates.has(UDFS_IN_THREAD)
+  ) {
+    return predicates.has(UDFS_TOKEN_USAGE)
+      ? 'active-session-thread-usage'
+      : 'active-session-thread-hydration';
+  }
+
+  return undefined;
 }
 
 function stableProductViewMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
