@@ -142,7 +142,7 @@ describe('RdfRunContextRetriever', () => {
     });
   });
 
-  it('fails open by default when the RDF context query is unavailable', async () => {
+  it('fails closed by default when the RDF context query is unavailable', async () => {
     const retriever = new RdfRunContextRetriever({
       rdfEngine: {
         query: vi.fn(async () => {
@@ -151,19 +151,19 @@ describe('RdfRunContextRetriever', () => {
       } as unknown as RdfEngineLike,
     });
 
-    await expect(retriever.retrieve(input)).resolves.toBeUndefined();
+    await expect(retriever.retrieve(input)).rejects.toThrow('RdfQuery textSearch requires a configured RdfTextIndex');
   });
 
-  it('can be configured to fail closed for required retrieval paths', async () => {
+  it('can be configured to fail open for optional retrieval paths', async () => {
     const retriever = new RdfRunContextRetriever({
       rdfEngine: {
         query: vi.fn(async () => {
-          throw new Error('required context unavailable');
+          throw new Error('optional context unavailable');
         }),
       } as unknown as RdfEngineLike,
-      failOpen: false,
+      failOpen: true,
     });
 
-    await expect(retriever.retrieve(input)).rejects.toThrow('required context unavailable');
+    await expect(retriever.retrieve(input)).resolves.toBeUndefined();
   });
 });

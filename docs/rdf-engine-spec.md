@@ -553,10 +553,11 @@ P1 做 planner 稳定性、迁移效率和运维可解释性：
    `retrievedContext` 不进入队列 payload，只进入当次 `RunExecutionInput`。
    第一版 `RdfRunContextRetriever` 通过 `RdfEngineLike.query()` 生成 workspace-scoped
    `textSearch`，有 embedding 函数时追加同 source 的 `vectorSearch` 和
-   `fusionScore` rerank；默认 fail-open，避免缺 text/vector index 让普通 Run 失败。
-   `RdfTextIndexLike` / `RdfVectorIndexLike` 已把上层调用从具体 SQLite 类中解开，后续要补
-   PG text/vector 持久化或外部后端，再把 CSS/API 部署侧的 text/vector index path、同步策略
-   和默认启用开关补齐。
+   `fusionScore` rerank；默认 fail-closed，缺 text/vector index 会沿 Run 启动路径显式报错，
+   只有明确设置 `failOpen: true` 的可选检索场景才允许 best-effort 退化。`RdfTextIndexLike` /
+   `RdfVectorIndexLike` 已把上层调用从具体 SQLite 类中解开，PG text/vector 持久化和 cloud
+   默认组件注入已完成；后续补外部 vector backend 替换，以及默认部署 text/vector 同步开关的
+   产品入口。
 6. Bulk load + delayed index build：PG custom-index 在 disposable benchmark / 迁移导入时的
    第一层 write amplification 已缓解；`pg-custom-index` 可以先以 PG SQL hot path 写入 facts，
    facts 写入内部使用数组 staging / `UNNEST` 批量 dirty queue upsert；大批 term dictionary 和 `rdf_quads` 写入会先进入 transaction-local temp staging table，再一次性 upsert 到 facts，seed 完成后显式

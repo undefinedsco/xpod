@@ -20,6 +20,12 @@ export type RdfRunContextEmbedding =
 export interface RdfRunContextRetrieverOptions<TContext = StoreContext> {
   rdfEngine: RdfEngineLike;
   limit?: number;
+  /**
+   * Keep normal product paths fail-closed so missing text/vector indexes are
+   * exposed at startup or request execution instead of silently degrading Run
+   * context. Tests and optional deployments can still opt into best-effort
+   * retrieval explicitly.
+   */
   failOpen?: boolean;
   textWeight?: number;
   vectorWeight?: number;
@@ -68,10 +74,10 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
         plan: result.metrics.plan,
       };
     } catch (error) {
-      if (this.options.failOpen === false) {
-        throw error;
+      if (this.options.failOpen === true) {
+        return undefined;
       }
-      return undefined;
+      throw error;
     }
   }
 
