@@ -32,6 +32,7 @@ const PRIORITY = 'https://undefineds.co/ns#priority';
 const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
 const STATUS = 'https://undefineds.co/ns#status';
 const THREAD = 'https://undefineds.co/ns#thread';
+const ACP = 'http://www.w3.org/ns/solid/acp#';
 
 function stringList(value: unknown): string[] {
   if (!value || typeof value !== 'object' || !(Symbol.iterator in value)) {
@@ -1830,6 +1831,96 @@ describe('PostgresRdfEngine', () => {
       expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
       expect((await engine.query(otherResultQuery)).metrics.plan).toContain('PostgresResultCacheMiss');
       expect((await engine.query(otherMaterializedQuery)).metrics.plan).toContain('PostgresMaterializedResultMiss');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses explicit ACL or ACR target triples to narrow access-cache invalidation', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-access-override-index-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const siblingGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/19/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const siblingMessage = namedNode(`${siblingGraph.value}#msg_1`);
+    const acrGraph = namedNode('https://pod.example/alice/.data/chat/default/.acr');
+    const accessControl = namedNode(`${acrGraph.value}#messageDayAccess`);
+    const queryFor = (targetGraph: typeof graph, materialized?: string): RdfQuery => ({
+      patterns: [
+        {
+          graph: targetGraph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: {
+        scope: {
+          principal: 'https://id.example/alice/profile/card#me',
+          basePath: 'https://pod.example/alice/',
+          mode: 'read',
+          authorizationModel: 'acr',
+          permissionVersion: 'acl-v1',
+          allowedGraphUrls: [targetGraph.value],
+        },
+        ...(materialized ? { materialized } : {}),
+      },
+    });
+    const targetResultQuery = queryFor(graph);
+    const targetMaterializedQuery = queryFor(graph, 'chat/default/2026-05-18/open-messages');
+    const siblingResultQuery = queryFor(siblingGraph);
+    const siblingMaterializedQuery = queryFor(siblingGraph, 'chat/default/2026-05-19/open-messages');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message, namedNode(STATUS), literal('open'), graph),
+        quad(siblingMessage, namedNode(STATUS), literal('open'), siblingGraph),
+      ]);
+
+      expect((await engine.query(targetResultQuery)).metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.query(targetMaterializedQuery)).metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect((await engine.query(siblingResultQuery)).metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.query(siblingMaterializedQuery)).metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 2 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 2 });
+
+      await engine.replaceSource([
+        quad(graph, namedNode(`${ACP}accessControl`), accessControl, acrGraph),
+        quad(accessControl, namedNode(`${ACP}apply`), graph, acrGraph),
+        quad(accessControl, namedNode(`${ACP}allow`), namedNode(`${ACP}Read`), acrGraph),
+      ], {
+        source: acrGraph.value,
+        workspace: 'https://pod.example/alice/.data/chat/default/',
+        localPath: '.acr',
+        contentType: 'text/turtle',
+        sourceVersion: 'acl-v1',
+      });
+
+      expect((await engine.storageStats()).accessControlOverrides).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
+
+      await engine.replaceSource([
+        quad(siblingGraph, namedNode(`${ACP}accessControl`), accessControl, acrGraph),
+        quad(accessControl, namedNode(`${ACP}apply`), siblingGraph, acrGraph),
+        quad(accessControl, namedNode(`${ACP}allow`), namedNode(`${ACP}Read`), acrGraph),
+      ], {
+        source: acrGraph.value,
+        workspace: 'https://pod.example/alice/.data/chat/default/',
+        localPath: '.acr',
+        contentType: 'text/turtle',
+        sourceVersion: 'acl-v2',
+      });
+
+      expect((await engine.storageStats()).accessControlOverrides).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 0 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 0 });
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

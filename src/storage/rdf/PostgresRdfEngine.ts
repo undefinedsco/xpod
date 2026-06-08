@@ -48,6 +48,7 @@ import type {
   RdfQueryPlannerNativeOperatorRejection,
   RdfQueryResultCacheStats,
   RdfQueryTemplateCacheStats,
+  RdfAccessControlOverrideIndexStats,
   RdfQueryResult,
   RdfQueryTemplateCacheExplain,
   RdfPlannerStatsRefreshResult,
@@ -106,6 +107,7 @@ const RDF_QUERY_RESULT_CACHE_TABLE = 'rdf_query_result_cache';
 const RDF_MATERIALIZED_RESULT_CACHE_TABLE = 'rdf_materialized_result_cache';
 const RDF_DIRTY_SOURCE_TABLE = 'rdf_dirty_sources';
 const RDF_MAINTENANCE_LEASE_TABLE = 'rdf_maintenance_leases';
+const RDF_ACCESS_CONTROL_OVERRIDE_TABLE = 'rdf_access_control_overrides';
 const RDF_DERIVED_INDEX_MAINTENANCE_LEASE = 'rdf-derived-indexes';
 const RDF3X_DIRTY_GRAPH_TABLE = 'rdf3x_dirty_graphs';
 const RDF3X_DIRTY_PAIR_TABLE = 'rdf3x_dirty_pairs';
@@ -136,6 +138,10 @@ const POSTGRES_RDF_SESSION_OPTIONS = '-c jit=off';
 const RESULT_CACHE_REQUIRED_CAPABILITIES = [
   'cache.result',
 ];
+const ACL_ACCESS_TO = 'http://www.w3.org/ns/auth/acl#accessTo';
+const ACL_DEFAULT = 'http://www.w3.org/ns/auth/acl#default';
+const ACP_ACCESS_CONTROL = 'http://www.w3.org/ns/solid/acp#accessControl';
+const ACP_APPLY = 'http://www.w3.org/ns/solid/acp#apply';
 const PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES = [
   'scan.exact_graph',
   'scan.graph_prefix',
@@ -444,7 +450,16 @@ interface PgResolvedQueryCacheScope {
 }
 
 interface RdfAccessControlCacheInvalidation {
+  fallbackBasePaths: string[];
+  sourceKeys: string[];
+  targetBasePaths: string[];
+  sourceTargets: RdfAccessControlOverrideTargets[];
+}
+
+interface RdfAccessControlOverrideTargets {
+  sourceKey: string;
   basePaths: string[];
+  sourceVersion: string | null;
 }
 
 interface PgQueryExplainOptions {
@@ -1344,6 +1359,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         await this.bumpFactsDataVersion(tx);
         if (accessCacheInvalidation) {
           await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
+          await this.mergeAccessControlOverrideTargets(tx, accessCacheInvalidation);
         }
       });
     } catch (error) {
@@ -1367,6 +1383,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         await this.bumpFactsDataVersion(tx);
         if (accessCacheInvalidation) {
           await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
+          await this.replaceAccessControlOverrideTargets(tx, accessCacheInvalidation);
         }
       });
     } catch (error) {
@@ -1390,8 +1407,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         await tx.exec('DELETE FROM rdf_sources WHERE id = $1', [sourceRow.id]);
         await this.markDirtyQuadRows(tx, deletedRows);
         await this.bumpFactsDataVersion(tx);
-        if (accessCacheInvalidation && deleteResult.length > 0) {
+        if (accessCacheInvalidation) {
           await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
+          await this.deleteAccessControlOverrideTargets(tx, accessCacheInvalidation.sourceKeys);
         }
         return deleteResult.length;
       });
@@ -1439,6 +1457,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     const uniqueDeleteQuads = uniqueQuads(deleteQuads);
     const accessCacheInvalidation = rdfAccessControlCacheInvalidation([...uniqueDeleteQuads, ...inserts], options?.source);
+    const accessControlOverrideMerge = rdfAccessControlCacheInvalidation(inserts, options?.source);
     const executor = this.requireExecutor();
     let deletedRows = 0;
     try {
@@ -1460,6 +1479,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await this.bumpFactsDataVersion(tx);
           if (accessCacheInvalidation) {
             await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
+          }
+          if (accessControlOverrideMerge) {
+            await this.mergeAccessControlOverrideTargets(tx, accessControlOverrideMerge);
           }
         }
         return deletedRows;
@@ -1711,11 +1733,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     executor: AsyncSqlExecutor,
     invalidation: RdfAccessControlCacheInvalidation,
   ): Promise<number> {
-    if (invalidation.basePaths.length === 0) {
+    const basePaths = await this.accessControlInvalidationBasePaths(executor, invalidation);
+    if (basePaths.length === 0) {
       return this.clearQueryCaches(executor);
     }
 
-    const affectedRows = invalidation.basePaths.map((_, index) => `($${index + 1})`).join(', ');
+    const affectedRows = basePaths.map((_, index) => `($${index + 1})`).join(', ');
     const pathOverlap = (left: string, right: string): string => `
       (
         LEFT(${left}, LENGTH(${right})) = ${right}
@@ -1761,7 +1784,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         RETURNING 1
       )
       SELECT COUNT(*) AS count FROM deleted
-    `, invalidation.basePaths);
+    `, basePaths);
     const materializedRows = await executor.query<{ count: number }>(`
       WITH affected_access_scope(base_path) AS (VALUES ${affectedRows}),
       deleted AS (
@@ -1770,8 +1793,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
         RETURNING 1
       )
       SELECT COUNT(*) AS count FROM deleted
-    `, invalidation.basePaths);
+    `, basePaths);
     return Number(resultRows[0]?.count ?? 0) + Number(materializedRows[0]?.count ?? 0);
+  }
+
+  private async accessControlInvalidationBasePaths(
+    executor: AsyncSqlExecutor,
+    invalidation: RdfAccessControlCacheInvalidation,
+  ): Promise<string[]> {
+    const stored = await this.accessControlOverrideBasePathsForSources(executor, invalidation.sourceKeys);
+    const exact = uniqueStrings([...stored, ...invalidation.targetBasePaths]);
+    return exact.length > 0 ? exact : invalidation.fallbackBasePaths;
   }
 
   public async refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): Promise<RdfDerivedIndexRefreshResult> {
@@ -1837,6 +1869,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const queryResultCache = await this.queryResultCacheStats();
     const materializedResultCache = await this.materializedResultCacheStats();
     const queryTemplateCache = this.queryTemplateCacheStats();
+    const accessControlOverrides = await this.accessControlOverrideStats();
     const derivedCache = this.derivedCacheStats(
       queryResultCache,
       materializedResultCache,
@@ -1847,7 +1880,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const derivedBytes = rdf3x.databaseBytes
       + queryResultCache.totalBytes
       + materializedResultCache.totalBytes
-      + queryTemplateCache.totalBytes;
+      + queryTemplateCache.totalBytes
+      + accessControlOverrides.totalBytes;
     const totalBytes = factsBytes + derivedBytes;
     return {
       derivedIndexProfile: 'rdf3x',
@@ -1863,6 +1897,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       queryResultCache,
       materializedResultCache,
       queryTemplateCache,
+      accessControlOverrides,
       slowQueries: this.slowQueryStats(),
       pgAcceleration: await this.pgAccelerationStats(),
       factsBytes,
@@ -1941,6 +1976,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       )
     `);
     await this.initializeDirtySourceQueueSchema(executor);
+    await this.initializeAccessControlOverrideSchema(executor);
     await executor.exec(`
       CREATE TABLE IF NOT EXISTS rdf_quads (
         graph_id BIGINT NOT NULL,
@@ -2199,6 +2235,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await tx.exec('DROP TABLE IF EXISTS rdf_terms');
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_DIRTY_SOURCE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_MAINTENANCE_LEASE_TABLE}`);
+      await tx.exec(`DROP TABLE IF EXISTS ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_QUERY_RESULT_CACHE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}`);
       await tx.exec('DELETE FROM rdf_index_metadata');
@@ -2311,6 +2348,26 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await executor.exec(`
       CREATE INDEX IF NOT EXISTS rdf_maintenance_leases_expires_at
       ON ${RDF_MAINTENANCE_LEASE_TABLE} (expires_at_ms)
+    `);
+  }
+
+  private async initializeAccessControlOverrideSchema(executor: AsyncSqlExecutor): Promise<void> {
+    await executor.exec(`
+      CREATE TABLE IF NOT EXISTS ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE} (
+        source_key TEXT NOT NULL,
+        affected_base_path TEXT NOT NULL,
+        source_version TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (source_key, affected_base_path)
+      )
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_access_control_overrides_affected
+      ON ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE} (affected_base_path)
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_access_control_overrides_updated_at
+      ON ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE} (updated_at)
     `);
   }
 
@@ -8152,6 +8209,78 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }, operation);
   }
 
+  private async replaceAccessControlOverrideTargets(
+    executor: AsyncSqlExecutor,
+    invalidation: RdfAccessControlCacheInvalidation,
+  ): Promise<void> {
+    if (invalidation.sourceKeys.length === 0) {
+      return;
+    }
+    await this.deleteAccessControlOverrideTargets(executor, invalidation.sourceKeys);
+    await this.mergeAccessControlOverrideTargets(executor, invalidation);
+  }
+
+  private async mergeAccessControlOverrideTargets(
+    executor: AsyncSqlExecutor,
+    invalidation: RdfAccessControlCacheInvalidation,
+  ): Promise<void> {
+    const rows = invalidation.sourceTargets.flatMap((target) => target.basePaths.map((basePath) => ({
+      sourceKey: target.sourceKey,
+      basePath,
+      sourceVersion: target.sourceVersion,
+    })));
+    if (rows.length === 0) {
+      return;
+    }
+
+    const values = rows.map((_, index) => {
+      const offset = index * 3;
+      return `($${offset + 1}, $${offset + 2}, $${offset + 3}, NOW())`;
+    }).join(', ');
+    const params = rows.flatMap((row) => [row.sourceKey, row.basePath, row.sourceVersion]);
+    await executor.exec(`
+      INSERT INTO ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE} (
+        source_key,
+        affected_base_path,
+        source_version,
+        updated_at
+      )
+      VALUES ${values}
+      ON CONFLICT (source_key, affected_base_path) DO UPDATE
+      SET source_version = EXCLUDED.source_version,
+          updated_at = NOW()
+    `, params);
+  }
+
+  private async deleteAccessControlOverrideTargets(
+    executor: AsyncSqlExecutor,
+    sourceKeys: string[],
+  ): Promise<void> {
+    if (sourceKeys.length === 0) {
+      return;
+    }
+    await executor.exec(`
+      DELETE FROM ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE}
+      WHERE source_key = ANY($1::text[])
+    `, [sourceKeys]);
+  }
+
+  private async accessControlOverrideBasePathsForSources(
+    executor: AsyncSqlExecutor,
+    sourceKeys: string[],
+  ): Promise<string[]> {
+    if (sourceKeys.length === 0) {
+      return [];
+    }
+    const rows = await executor.query<{ affected_base_path: string }>(`
+      SELECT DISTINCT affected_base_path
+      FROM ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE}
+      WHERE source_key = ANY($1::text[])
+      ORDER BY affected_base_path
+    `, [sourceKeys]);
+    return rows.map((row) => row.affected_base_path);
+  }
+
   private async findSourceRow(source: string, executor = this.requireExecutor()): Promise<PostgresRdfSourceRow | undefined> {
     const rows = await executor.query<PostgresRdfSourceRow>('SELECT * FROM rdf_sources WHERE source = $1', [source]);
     return rows[0];
@@ -8452,6 +8581,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
+  private async accessControlOverrideStats(): Promise<RdfAccessControlOverrideIndexStats> {
+    const spaceObjects = await this.collectCacheSpaceObjects(RDF_ACCESS_CONTROL_OVERRIDE_TABLE);
+    return {
+      entryCount: await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE}`),
+      tableBytes: sumSpaceObjects(spaceObjects, 'table'),
+      indexBytes: sumSpaceObjects(spaceObjects, 'index'),
+      totalBytes: spaceObjects.reduce((sum, object) => sum + object.bytes, 0),
+    };
+  }
+
   private derivedCacheStats(
     queryResultCache: RdfQueryResultCacheStats,
     materializedResultCache: RdfMaterializedResultCacheStats,
@@ -8700,7 +8839,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
               AND rel.relname <> '${RDF_QUERY_RESULT_CACHE_TABLE}'
               AND COALESCE(tbl.relname, '') <> '${RDF_QUERY_RESULT_CACHE_TABLE}'
               AND rel.relname <> '${RDF_MATERIALIZED_RESULT_CACHE_TABLE}'
-              AND COALESCE(tbl.relname, '') <> '${RDF_MATERIALIZED_RESULT_CACHE_TABLE}'`}
+              AND COALESCE(tbl.relname, '') <> '${RDF_MATERIALIZED_RESULT_CACHE_TABLE}'
+              AND rel.relname <> '${RDF_ACCESS_CONTROL_OVERRIDE_TABLE}'
+              AND COALESCE(tbl.relname, '') <> '${RDF_ACCESS_CONTROL_OVERRIDE_TABLE}'`}
         ORDER BY rel.relname
       `);
       return rows.map((row) => ({
@@ -10441,29 +10582,126 @@ function rdfAccessControlCacheInvalidation(
   quads: readonly Quad[],
   source?: RdfSourceInput,
 ): RdfAccessControlCacheInvalidation | undefined {
-  const basePaths = [
+  const fallbackBasePaths = [
     ...accessControlAffectedBasePaths(source?.source, source?.workspace),
     ...accessControlAffectedBasePaths(source?.localPath, source?.workspace),
     ...quads.flatMap((value) => accessControlAffectedBasePaths(value.graph.value)),
   ];
-  if (basePaths.length === 0) {
+  const sourceKeys = accessControlInvalidationSourceKeys(quads, source);
+  const sourceTargets = accessControlOverrideTargets(quads, source, sourceKeys);
+  const targetBasePaths = sourceTargets.flatMap((target) => target.basePaths);
+  if (fallbackBasePaths.length === 0 && sourceKeys.length === 0 && targetBasePaths.length === 0) {
     return undefined;
   }
-  return { basePaths: uniqueStrings(basePaths) };
+  return {
+    fallbackBasePaths: uniqueStrings(fallbackBasePaths),
+    sourceKeys,
+    targetBasePaths: uniqueStrings(targetBasePaths),
+    sourceTargets,
+  };
 }
 
 function rdfSourceAccessControlCacheInvalidation(
   source?: string | null,
   localPath?: string | null,
 ): RdfAccessControlCacheInvalidation | undefined {
-  const basePaths = [
+  const fallbackBasePaths = [
     ...accessControlAffectedBasePaths(source),
     ...accessControlAffectedBasePaths(localPath),
   ];
-  if (basePaths.length === 0) {
+  const sourceKeys = uniqueStrings([
+    ...accessControlSourceKeys(source),
+    ...accessControlSourceKeys(localPath),
+  ]);
+  if (fallbackBasePaths.length === 0 && sourceKeys.length === 0) {
     return undefined;
   }
-  return { basePaths: uniqueStrings(basePaths) };
+  return {
+    fallbackBasePaths: uniqueStrings(fallbackBasePaths),
+    sourceKeys,
+    targetBasePaths: [],
+    sourceTargets: [],
+  };
+}
+
+function accessControlInvalidationSourceKeys(
+  quads: readonly Quad[],
+  source?: RdfSourceInput,
+): string[] {
+  return uniqueStrings([
+    ...accessControlSourceKeys(source?.source, source?.workspace),
+    ...accessControlSourceKeys(source?.localPath, source?.workspace),
+    ...quads.flatMap((value) => accessControlSourceKeys(value.graph.value)),
+  ]);
+}
+
+function accessControlOverrideTargets(
+  quads: readonly Quad[],
+  source: RdfSourceInput | undefined,
+  sourceKeys: string[],
+): RdfAccessControlOverrideTargets[] {
+  const targetsBySource = new Map<string, Set<string>>();
+  const sourceInputKeys = uniqueStrings([
+    ...accessControlSourceKeys(source?.source, source?.workspace),
+    ...accessControlSourceKeys(source?.localPath, source?.workspace),
+  ]);
+  const allTargetBasePaths = new Set<string>();
+
+  for (const value of quads) {
+    const target = accessControlOverrideTargetBasePath(value);
+    if (!target) {
+      continue;
+    }
+    allTargetBasePaths.add(target);
+    for (const sourceKey of accessControlSourceKeys(value.graph.value)) {
+      addMapSetValue(targetsBySource, sourceKey, target);
+    }
+  }
+
+  for (const sourceKey of sourceInputKeys) {
+    for (const target of allTargetBasePaths) {
+      addMapSetValue(targetsBySource, sourceKey, target);
+    }
+  }
+
+  return sourceKeys
+    .map((sourceKey) => ({
+      sourceKey,
+      basePaths: [...(targetsBySource.get(sourceKey) ?? new Set<string>())].sort(),
+      sourceVersion: source?.sourceVersion ?? null,
+    }))
+    .filter((target) => target.basePaths.length > 0);
+}
+
+function addMapSetValue(map: Map<string, Set<string>>, key: string, value: string): void {
+  const existing = map.get(key);
+  if (existing) {
+    existing.add(value);
+    return;
+  }
+  map.set(key, new Set([value]));
+}
+
+function accessControlOverrideTargetBasePath(value: Quad): string | undefined {
+  const predicate = value.predicate.value;
+  if (predicate === ACL_ACCESS_TO || predicate === ACL_DEFAULT || predicate === ACP_APPLY) {
+    return value.object.termType === 'NamedNode'
+      ? normalizeAccessControlTargetPath(value.object.value)
+      : undefined;
+  }
+  if (predicate === ACP_ACCESS_CONTROL) {
+    return value.subject.termType === 'NamedNode'
+      ? normalizeAccessControlTargetPath(value.subject.value)
+      : undefined;
+  }
+  return undefined;
+}
+
+function accessControlSourceKeys(value?: string | null, workspace?: string | null): string[] {
+  if (typeof value !== 'string' || !isAccessControlResourcePath(value)) {
+    return [];
+  }
+  return [normalizeAccessControlResourcePath(value, workspace)];
 }
 
 function accessControlAffectedBasePaths(value?: string | null, workspace?: string | null): string[] {
@@ -10487,6 +10725,17 @@ function isAccessControlResourcePath(value: string): boolean {
 function normalizeAccessControlResourcePath(value: string, workspace?: string | null): string {
   try {
     const url = workspace ? new URL(value, workspace) : new URL(value);
+    url.hash = '';
+    url.search = '';
+    return url.href;
+  } catch {
+    return value.split(/[?#]/, 1)[0] ?? value;
+  }
+}
+
+function normalizeAccessControlTargetPath(value: string): string {
+  try {
+    const url = new URL(value);
     url.hash = '';
     url.search = '';
     return url.href;

@@ -132,6 +132,7 @@ export interface RdfEngineStorageStats {
   queryResultCache?: RdfQueryResultCacheStats;
   materializedResultCache?: RdfMaterializedResultCacheStats;
   queryTemplateCache?: RdfQueryTemplateCacheStats;
+  accessControlOverrides?: RdfAccessControlOverrideIndexStats;
   slowQueries?: RdfSlowQueryStats;
   pgAcceleration?: RdfPgAccelerationStats;
   factsBytes: number;
@@ -139,6 +140,13 @@ export interface RdfEngineStorageStats {
   totalBytes: number;
   derivedToFactsRatio: number;
   totalToFactsRatio: number;
+}
+
+export interface RdfAccessControlOverrideIndexStats {
+  entryCount: number;
+  totalBytes: number;
+  tableBytes: number;
+  indexBytes: number;
 }
 
 export interface RdfPgAccelerationStats {
