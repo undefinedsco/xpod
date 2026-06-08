@@ -4292,6 +4292,75 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('keeps graph-prefix grouped numeric aggregates on RDF-3X when facts cutover would fan out', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-bgp-numeric-prefix-fallback-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'aggregate.bgp_numeric'));
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const prefix = 'https://pod.example/alice/.data/chat/default/2026/05/';
+    const graph1 = namedNode(`${prefix}18/messages.ttl`);
+    const graph2 = namedNode(`${prefix}19/messages.ttl`);
+    const message1 = namedNode(`${graph1.value}#msg_1`);
+    const message2 = namedNode(`${graph2.value}#msg_2`);
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_a');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(THREAD), thread, graph1),
+        quad(message1, namedNode(PRIORITY), literal('10', namedNode(XSD_INTEGER)), graph1),
+        quad(message2, namedNode(THREAD), thread, graph2),
+        quad(message2, namedNode(PRIORITY), literal('4', namedNode(XSD_INTEGER)), graph2),
+      ]);
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'score' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'score',
+            operator: '$termType',
+            value: 'numeric',
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'sum',
+            as: 'scoreTotal',
+            variable: 'score',
+          },
+        ],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].scoreTotal.value).toBe('14');
+      expect(result.metrics.plan).toContain('PostgresRdf3xGroupAggregate');
+      expect(result.metrics.plan).toContain('GraphPrefixMembershipFilter');
+      expect(result.metrics.plan).not.toContain('PostgresFactsQuery');
+      expect(result.metrics.plan.some((entry) => entry.startsWith('PostgresNumericAggregateFactsCutover('))).toBe(false);
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_numeric)');
+      expect(pool.nativeBgpNumericAggregateCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to RDF-3X count when the native count_any operator is absent', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-count-fallback-'));
     const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'index.xpod_rdf_perm.count_any'));
@@ -4516,9 +4585,10 @@ describe('PostgresRdfEngine', () => {
       expect(numericAggregate).toBeDefined();
       expect(numericAggregate?.planMatched).toBe(true);
       expect(numericAggregate?.returnedRows).toBeGreaterThan(0);
-      expect(numericAggregate?.physicalPlan).toContain('PostgresFactsQuery');
-      expect(numericAggregate?.physicalPlan.some((entry) => entry.startsWith('PostgresNumericAggregateFactsCutover('))).toBe(true);
-      expect(numericAggregate?.physicalPlan).not.toContain('PostgresRdf3xGroupAggregate');
+      expect(numericAggregate?.physicalPlan).toContain('PostgresRdf3xGroupAggregate');
+      expect(numericAggregate?.physicalPlan).toContain('GraphPrefixMembershipFilter');
+      expect(numericAggregate?.physicalPlan).not.toContain('PostgresFactsQuery');
+      expect(numericAggregate?.physicalPlan.some((entry) => entry.startsWith('PostgresNumericAggregateFactsCutover('))).toBe(false);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

@@ -671,12 +671,14 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `derivedCache.scopeEntries`，避免 dashboard 只在默认 top-N 上二次过滤。
 - `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases；默认 PG query cases 会覆盖消息流 latest-message、keyset page、Agent thread context、run state center、run steps、Task/Run/Thread/RunStep detail hydration、SessionManager hydration、audit approval trace、task materialization、AI credential selection、AI config/model selection、vector store/indexed-file metadata、provider/model/credential、profile/access-control、approval-grant、contact/favorite 等业务查询，并会在通用业务查询外额外跑 5 个 materialized warm-path case。普通 query 仍强制 bypass result cache，避免把 engine baseline 测成 cache hit；`--caseProfile=extreme` 已覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、graph-prefix scan，以及 5 个 exact-graph native custom-index gate。
 - 2026-06-08 UNNEST bulk-write 后重跑 PGlite medium/extreme baseline：
-  `bun run benchmark:rdf-models:pg -- --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-bulk-unnest-extreme-baseline-fixed`
+  `bun run benchmark:rdf-models:pg -- --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-prefix-cutover-fixed`
   通过。seed `19664` quads，2 个 scan case、10 个 query case 全部 plan matched，
   `rdf3x.syncedWithFacts=true`，facts bytes `35315712`，derived bytes `31435882`，
-  total/facts ratio `1.89x`。两个 grouped numeric aggregate extreme case 在 baseline
-  下按 cost model 命中 `PostgresNumericAggregateFactsCutover(...)`，benchmark gate
-  已改为验收 facts cutover，而不是旧的 group-aggregate pushdown。
+  total/facts ratio `1.89x`。graph-prefix grouped numeric aggregate 不能因为小 source
+  estimate 切到 facts path，否则会把多图 prefix fanout 放大成慢查询；gate 保持验收
+  `PostgresRdf3xGroupAggregate`，最终复跑该 case 没有 slow-query 标记。exact-graph
+  grouped numeric aggregate 在 baseline 下按 cost model 命中
+  `PostgresNumericAggregateFactsCutover(...)`，gate 验收 facts cutover。
 - `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；历史 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case；2026-06-06 PG17 extreme gate 已覆盖 19483 quads、2 个 scan case 和 10 个 query case，并要求 `pg-custom-index` + `extreme/all` 至少命中一次 `XpodRdfExtensionOperator(...)`。
 
 未完成：

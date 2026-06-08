@@ -327,7 +327,7 @@ interface PgCompiledJoin {
   indexChoice: string;
   queryPlan: string[];
   variableAliases: Map<string, string>;
-  sourceEstimates: Array<{ inputIndex: number; estimateRows: number }>;
+  sourceEstimates: Array<{ inputIndex: number; estimateRows: number; hasGraphPrefixFanout: boolean }>;
   unresolved?: PgPatternKey;
 }
 
@@ -5509,6 +5509,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (threshold <= 0 || compiled.sourceEstimates.length === 0) {
       return undefined;
     }
+    if (compiled.sourceEstimates.some((source) => source.hasGraphPrefixFanout)) {
+      return undefined;
+    }
     const estimates = compiled.sourceEstimates.map((source) => source.estimateRows);
     const minSourceRows = Math.min(...estimates);
     const maxSourceRows = Math.max(...estimates);
@@ -7432,6 +7435,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const sourceEstimates = orderedSources.map((source) => ({
       inputIndex: source.inputIndex,
       estimateRows: source.estimateRows,
+      hasGraphPrefixFanout: source.resolved.graphPrefix !== undefined && source.resolved.ids.graph === undefined,
     }));
     const builder = new PgSqlBuilder();
     const conditions: string[] = [];
