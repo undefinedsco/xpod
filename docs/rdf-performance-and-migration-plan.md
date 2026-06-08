@@ -661,8 +661,11 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `SolidRdfSparqlEngine` 边界为 ChatKit thread history / Managed Run conversation assembly
   自动生成 `chatkit/thread-history/<thread>/<query>` key；settings Provider/Model/Credential
   product-view 查询也会按类型列表或 provider-model-credential 关系 join 自动生成
-  `models/settings/<view>/<query>` key；统计页、非 thread-history 的 Agent context、更大数据量
-  benchmark 和 auth-aware cache dashboard 仍未完成。
+  `models/settings/<view>/<query>` key；chat/thread/message、task/run/schedule/session/agent
+  等稳定产品读视图会按共享 RDF 类型和产品 graph-scoped relation/status/timeline 谓词自动生成
+  `models/product-views/<view>/<query>` key。自由 text/vector search / fusion query 暂不自动物化，
+  避免按用户输入制造过宽 cache key 空间；统计页、更大数据量 benchmark 和 auth-aware cache
+  dashboard 仍未完成。
 - ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
   `Message.thread` 查询，Managed Run 组装 conversation / thread items 时不再绕过 shared model
   入口；SPARQL 边界 selector 会识别 `sioc:has_container` / `sioc:has_member` thread-history

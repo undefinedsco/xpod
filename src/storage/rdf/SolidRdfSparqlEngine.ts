@@ -13,6 +13,7 @@ import type {
   RdfEngineLike,
   RdfQuery,
   RdfQueryMaterializedResultOptions,
+  RdfQueryPattern,
   RdfQueryResult,
   RdfQueryTermPattern,
 } from './types';
@@ -92,8 +93,34 @@ interface MutableOperationCount {
 
 const rdfDataFactory = new RdfDataFactory();
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
+const DCT_CREATED = 'http://purl.org/dc/terms/created';
+const DCT_TITLE = 'http://purl.org/dc/terms/title';
 const SIOC_HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
 const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
+const SIOC_HAS_PARENT = 'http://rdfs.org/sioc/ns#has_parent';
+const SIOC_THREAD = 'http://rdfs.org/sioc/ns#Thread';
+const MEETING_MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
+const MEETING_LONG_CHAT = 'http://www.w3.org/ns/pim/meeting#LongChat';
+const FOAF_AGENT = 'http://xmlns.com/foaf/0.1/Agent';
+const VCARD_INDIVIDUAL = 'http://www.w3.org/2006/vcard/ns#Individual';
+const SCHEMA_CREATIVE_WORK = 'http://schema.org/CreativeWork';
+const SCHEMA_PROPERTY_VALUE = 'http://schema.org/PropertyValue';
+const UDFS_TASK = 'https://undefineds.co/ns#Task';
+const UDFS_RUN = 'https://undefineds.co/ns#Run';
+const UDFS_RUN_STEP = 'https://undefineds.co/ns#RunStep';
+const UDFS_SCHEDULE = 'https://undefineds.co/ns#Schedule';
+const UDFS_SESSION = 'https://undefineds.co/ns#Session';
+const UDFS_ISSUE = 'https://undefineds.co/ns#Issue';
+const UDFS_LAST_MESSAGE = 'https://undefineds.co/ns#lastMessage';
+const UDFS_STATUS = 'https://undefineds.co/ns#status';
+const UDFS_MESSAGE_STATUS = 'https://undefineds.co/ns#messageStatus';
+const UDFS_WORKSPACE = 'https://undefineds.co/ns#workspace';
+const UDFS_RUN_RELATION = 'https://undefineds.co/ns#run';
+const UDFS_TASK_RELATION = 'https://undefineds.co/ns#task';
+const UDFS_IN_THREAD = 'https://undefineds.co/ns#inThread';
+const UDFS_NEXT_RUN_AT = 'https://undefineds.co/ns#nextRunAt';
+const UDFS_LEASE_OWNER = 'https://undefineds.co/ns#leaseOwner';
+const UDFS_SESSION_STATUS = 'https://undefineds.co/ns#sessionStatus';
 const XPOD_AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
 const XPOD_AI_MODEL = 'https://vocab.xpod.dev/ai#Model';
 const XPOD_AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
@@ -105,6 +132,38 @@ const SETTINGS_RESOURCE_TYPE_VIEWS = new Map<string, string>([
   [XPOD_AI_PROVIDER, 'ai-providers'],
   [XPOD_AI_MODEL, 'ai-models'],
   [XPOD_CREDENTIAL, 'credentials'],
+]);
+
+const PRODUCT_RESOURCE_TYPE_VIEWS = new Map<string, string>([
+  [MEETING_LONG_CHAT, 'chats'],
+  [MEETING_MESSAGE, 'messages'],
+  [SIOC_THREAD, 'threads'],
+  [UDFS_TASK, 'tasks'],
+  [UDFS_RUN, 'runs'],
+  [UDFS_RUN_STEP, 'run-steps'],
+  [UDFS_SCHEDULE, 'schedules'],
+  [UDFS_SESSION, 'sessions'],
+  [UDFS_ISSUE, 'issues'],
+  [FOAF_AGENT, 'agents'],
+  [VCARD_INDIVIDUAL, 'contacts'],
+  [SCHEMA_CREATIVE_WORK, 'favorites'],
+  [SCHEMA_PROPERTY_VALUE, 'settings'],
+]);
+
+const PRODUCT_RELATION_PREDICATE_VIEWS = new Map<string, string>([
+  [DCT_CREATED, 'created-timeline'],
+  [DCT_TITLE, 'title-hydration'],
+  [SIOC_HAS_PARENT, 'threads-by-chat'],
+  [UDFS_LAST_MESSAGE, 'chat-latest-message'],
+  [UDFS_STATUS, 'status-index'],
+  [UDFS_MESSAGE_STATUS, 'message-status-index'],
+  [UDFS_WORKSPACE, 'runs-by-workspace'],
+  [UDFS_RUN_RELATION, 'steps-by-run'],
+  [UDFS_TASK_RELATION, 'runs-by-task'],
+  [UDFS_IN_THREAD, 'runs-by-thread'],
+  [UDFS_NEXT_RUN_AT, 'schedules-by-due-time'],
+  [UDFS_LEASE_OWNER, 'runs-by-lease-owner'],
+  [UDFS_SESSION_STATUS, 'sessions-by-status'],
 ]);
 
 export class SolidRdfSparqlEngine implements SparqlEngine {
@@ -694,8 +753,12 @@ function defaultMaterializedQuerySelector(
   if (operation !== 'queryBindings') {
     return undefined;
   }
+  if (hasSearchSources(query)) {
+    return undefined;
+  }
   return threadHistoryMaterializedResult(query)
-    ?? settingsProductViewMaterializedResult(query);
+    ?? settingsProductViewMaterializedResult(query)
+    ?? stableProductViewMaterializedResult(query);
 }
 
 function threadHistoryMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
@@ -766,6 +829,73 @@ function settingsProductView(query: RdfQuery): string | undefined {
   }
 
   return [...typeViews].sort().join('+');
+}
+
+function stableProductViewMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const view = stableProductView(query);
+  if (!view) {
+    return undefined;
+  }
+  return {
+    key: `models/product-views/${view}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function stableProductView(query: RdfQuery): string | undefined {
+  const views = new Set<string>();
+
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (predicate === RDF_TYPE) {
+      const typeView = PRODUCT_RESOURCE_TYPE_VIEWS.get(namedNodeValue(pattern.object) ?? '');
+      if (typeView) {
+        views.add(typeView);
+      }
+      continue;
+    }
+
+    const predicateView = isProductGraphScoped(pattern)
+      ? PRODUCT_RELATION_PREDICATE_VIEWS.get(predicate ?? '')
+      : undefined;
+    if (predicateView) {
+      views.add(predicateView);
+    }
+  }
+
+  if (views.size === 0) {
+    return undefined;
+  }
+
+  return [...views].sort().join('+');
+}
+
+function hasSearchSources(query: RdfQuery): boolean {
+  return (query.textSearch?.length ?? 0) > 0
+    || (query.vectorSearch?.length ?? 0) > 0;
+}
+
+function isProductGraphScoped(pattern: RdfQueryPattern): boolean {
+  const graph = namedNodeValue(pattern.graph) ?? graphPrefixValue(pattern.graph);
+  return Boolean(graph && (
+    graph.includes('/.data/chat/')
+      || graph.includes('/.data/task/')
+      || graph.includes('/.data/sessions/')
+      || graph.includes('/.data/agents/')
+      || graph.includes('/.data/approvals/')
+      || graph.includes('/.data/audits/')
+      || graph.includes('/.data/issues/')
+      || graph.includes('/settings/')
+  ));
+}
+
+function graphPrefixValue(term: RdfQueryTermPattern | undefined): string | undefined {
+  if (!term || typeof term !== 'object' || 'variable' in term || 'termType' in term) {
+    return undefined;
+  }
+  return '$startsWith' in term && typeof term.$startsWith === 'string'
+    ? term.$startsWith
+    : undefined;
 }
 
 function namedNodeValue(term: RdfQueryTermPattern | undefined): string | undefined {

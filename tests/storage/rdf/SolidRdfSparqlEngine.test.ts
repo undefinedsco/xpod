@@ -27,8 +27,13 @@ const MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 const CONTENT = 'http://rdfs.org/sioc/ns#content';
 const HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
 const HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
+const MEETING_LONG_CHAT = 'http://www.w3.org/ns/pim/meeting#LongChat';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
+const UDFS_LAST_MESSAGE = 'https://undefineds.co/ns#lastMessage';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
+const UDFS_SCHEDULE = 'https://undefineds.co/ns#Schedule';
+const UDFS_STATUS = 'https://undefineds.co/ns#status';
+const UDFS_NEXT_RUN_AT = 'https://undefineds.co/ns#nextRunAt';
 const AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
 const AI_BASE_URL = 'https://vocab.xpod.dev/ai#baseUrl';
 const AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
@@ -360,6 +365,75 @@ describe('SolidRdfSparqlEngine', () => {
     expect(materialized).toMatchObject({ version: 'v1' });
     expect(typeof materialized).toBe('object');
     expect((materialized as { key: string }).key).toMatch(/^models\/settings\/provider-model-credentials\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for chat hydration product views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?chat ?message WHERE {
+        GRAPH <https://pod.example/alice/.data/chat/default/index.ttl> {
+          ?chat <${RDF_TYPE}> <${MEETING_LONG_CHAT}> .
+          ?chat <${UDFS_LAST_MESSAGE}> ?message .
+        }
+      }
+      LIMIT 10
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/product-views\/chat-latest-message\+chats\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for task scheduler product views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?schedule ?nextRunAt WHERE {
+        GRAPH ?graph {
+          ?schedule <${RDF_TYPE}> <${UDFS_SCHEDULE}> .
+          ?schedule <${UDFS_STATUS}> "active" .
+          ?schedule <${UDFS_NEXT_RUN_AT}> ?nextRunAt .
+        }
+        FILTER(STRSTARTS(STR(?graph), "https://pod.example/alice/.data/task/default/"))
+      }
+      ORDER BY ?nextRunAt
+      LIMIT 20
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/product-views\/schedules\/[a-f0-9]{16}$/);
   });
 
   it('can disable automatic materialized cache key selection', async () => {
