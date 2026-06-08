@@ -3134,6 +3134,49 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('batch upserts terms and quads during deferred custom-index seed', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-bulk-upsert-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+      deferPgCustomIndexInitialization: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const quads = Array.from({ length: 40 }, (_, index) => {
+      const message = namedNode(`${graph.value}#msg_${index}`);
+      return [
+        quad(message, namedNode(STATUS), literal(index % 2 === 0 ? 'open' : 'closed'), graph),
+        quad(message, namedNode(PRIORITY), literal(String(index), namedNode(XSD_INTEGER)), graph),
+      ];
+    }).flat();
+    quads.push(quads[0]);
+
+    try {
+      await engine.open();
+      pool.executedSql.length = 0;
+
+      await engine.put(quads);
+
+      const termInsertStatements = pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_terms ('));
+      const quadInsertStatements = pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_quads ('));
+      expect(termInsertStatements).toHaveLength(2);
+      expect(quadInsertStatements).toHaveLength(1);
+      expect(termInsertStatements[0]).toContain('VALUES');
+      expect(quadInsertStatements[0]).toContain('VALUES');
+
+      const stats = await engine.storageStats();
+      expect(stats.facts.quadCount).toBe(80);
+      expect((await engine.storageStats()).pgAcceleration?.fallbackReason).toBe('index-build-deferred');
+
+      await engine.ensurePgCustomIndexes();
+      expect(pool.customIndexStatements).toHaveLength(6);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('pushes bounded graph-prefix joins into native custom-index values', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-graph-prefix-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
@@ -3806,6 +3849,7 @@ describe('PostgresRdfEngine', () => {
 
 class XpodRdfExtensionPgPool {
   private readonly db: PGlite;
+  public readonly executedSql: string[] = [];
   public readonly customIndexStatements: string[] = [];
   public readonly nativeCountAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
   public readonly nativeScanAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
@@ -3824,6 +3868,7 @@ class XpodRdfExtensionPgPool {
   }
 
   public async query(sql: string, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
+    this.executedSql.push(sql);
     const intercepted = xpodRdfExtensionProbeRows(sql, params, this.capabilities, this.nativeCountAnyCalls);
     if (intercepted) {
       return { rows: intercepted };
@@ -3871,6 +3916,7 @@ class XpodRdfExtensionPgPool {
     await this.db.waitReady;
     return new XpodRdfExtensionPgClient(
       this.db,
+      this.executedSql,
       this.customIndexStatements,
       this.nativeCountAnyCalls,
       this.nativeScanAnyCalls,
@@ -3892,6 +3938,7 @@ class XpodRdfExtensionPgPool {
 class XpodRdfExtensionPgClient {
   public constructor(
     private readonly db: PGlite,
+    private readonly executedSql: string[],
     private readonly customIndexStatements: string[],
     private readonly nativeCountAnyCalls: Array<{ sql: string; params: unknown[] }>,
     private readonly nativeScanAnyCalls: Array<{ sql: string; params: unknown[] }>,
@@ -3905,6 +3952,7 @@ class XpodRdfExtensionPgClient {
   ) {}
 
   public async query(sql: string, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
+    this.executedSql.push(sql);
     const intercepted = xpodRdfExtensionProbeRows(sql, params, this.capabilities, this.nativeCountAnyCalls);
     if (intercepted) {
       return { rows: intercepted };

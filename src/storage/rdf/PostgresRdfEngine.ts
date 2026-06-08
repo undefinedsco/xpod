@@ -762,6 +762,99 @@ class PostgresRdfTermDictionary {
     return resolvedId;
   }
 
+  public async getOrCreateMany(terms: Term[]): Promise<number[]> {
+    if (terms.length === 0) {
+      return [];
+    }
+
+    const identities = await this.identitiesForTerms(terms);
+    const result = new Array<number>(terms.length);
+    const missing = new Map<string, { identity: RdfTermIdentity; term: Term; indexes: number[] }>();
+
+    for (const [index, identity] of identities.entries()) {
+      const cacheKey = this.identityCacheKey(identity);
+      const cached = this.termCache.get(cacheKey);
+      if (cached !== undefined) {
+        result[index] = cached;
+        continue;
+      }
+
+      const entry = missing.get(cacheKey);
+      if (entry) {
+        entry.indexes.push(index);
+      } else {
+        missing.set(cacheKey, { identity, term: terms[index], indexes: [index] });
+      }
+    }
+
+    if (missing.size === 0) {
+      return result;
+    }
+
+    const missingEntries = [...missing.values()];
+    for (const chunk of chunkArray(missingEntries, 500)) {
+      const builder = new PgSqlBuilder();
+      const values = chunk
+        .map(({ identity }) => `(${[
+          builder.add(identity.kind),
+          builder.add(identity.value),
+          builder.add(identity.valueHead),
+          builder.add(identity.datatypeId),
+          builder.add(identity.lang),
+          builder.add(identity.hash),
+          builder.add(identity.normalizedText),
+          builder.add(identity.numericValue),
+        ].join(', ')})`)
+        .join(', ');
+      await this.executor.exec(`
+        INSERT INTO rdf_terms (
+          kind,
+          value,
+          value_head,
+          datatype_id,
+          lang,
+          hash,
+          normalized_text,
+          numeric_value
+        )
+        VALUES ${values}
+        ON CONFLICT (hash) DO NOTHING
+      `, builder.snapshot());
+    }
+
+    const rowsByHash = new Map<string, PostgresRdfTermRow[]>();
+    for (const hashChunk of chunkArray(missingEntries.map(({ identity }) => identity.hash), 500)) {
+      const rows = await this.executor.query<PostgresRdfTermRow>(
+        'SELECT * FROM rdf_terms WHERE hash = ANY($1::text[])',
+        [hashChunk],
+      );
+      for (const row of rows) {
+        const rowsForHash = rowsByHash.get(row.hash);
+        if (rowsForHash) {
+          rowsForHash.push(row);
+        } else {
+          rowsByHash.set(row.hash, [row]);
+        }
+      }
+    }
+
+    for (const { identity, term, indexes } of missingEntries) {
+      const row = rowsByHash.get(identity.hash)?.find((candidate) => this.rowMatchesIdentity(candidate, identity));
+      if (!row) {
+        throw new Error('Failed to insert or load RDF term');
+      }
+      const id = row.id;
+      const cacheKey = this.identityCacheKey(identity);
+      this.termCache.set(cacheKey, id);
+      this.idCache.set(id, term);
+      for (const index of indexes) {
+        result[index] = id;
+      }
+    }
+
+    return result;
+  }
+
   public async find(term: Term): Promise<number | undefined> {
     const identity = await this.toIdentity(term);
     const cacheKey = this.identityCacheKey(identity);
@@ -847,6 +940,64 @@ class PostgresRdfTermDictionary {
           'literal',
           term.value,
           datatypeId,
+          term.language || null,
+          term.value,
+          this.numericValueForLiteral(term.value, datatypeValue),
+        );
+      }
+      case 'Variable':
+        throw new Error(`Variables cannot be indexed as RDF terms: ${term.value}`);
+      case 'Quad':
+        throw new Error('Nested RDF-star quads are not supported by the first PostgresRdfEngine index');
+      default: {
+        const exhaustive: never = term;
+        throw new Error(`Unsupported RDF term: ${String(exhaustive)}`);
+      }
+    }
+  }
+
+  private async identitiesForTerms(terms: Term[]): Promise<RdfTermIdentity[]> {
+    const datatypeValues = new Set<string>();
+    for (const term of terms) {
+      if (term.termType !== 'Literal') {
+        continue;
+      }
+      const datatypeValue = term.datatype?.value || XSD_STRING;
+      if (datatypeValue !== XSD_STRING || term.language) {
+        datatypeValues.add(datatypeValue);
+      }
+    }
+
+    const datatypeIds = new Map<string, number>();
+    const datatypeTerms = [...datatypeValues].map((value) => namedNode(value));
+    const resolvedDatatypeIds = await this.getOrCreateMany(datatypeTerms);
+    for (const [index, value] of [...datatypeValues].entries()) {
+      datatypeIds.set(value, resolvedDatatypeIds[index]);
+    }
+
+    return terms.map((term) => this.toIdentityWithDatatypeIds(term, datatypeIds));
+  }
+
+  private toIdentityWithDatatypeIds(term: Term, datatypeIds: Map<string, number>): RdfTermIdentity {
+    switch (term.termType) {
+      case 'NamedNode':
+        return this.identity('iri', term.value, null, null, term.value, null);
+      case 'BlankNode':
+        return this.identity('blank', term.value, null, null, term.value, null);
+      case 'DefaultGraph':
+        return this.identity('default_graph', '', null, null, null, null);
+      case 'Literal': {
+        const datatypeValue = term.datatype?.value || XSD_STRING;
+        const datatypeId = datatypeValue === XSD_STRING && !term.language
+          ? null
+          : datatypeIds.get(datatypeValue);
+        if (datatypeId === undefined && (datatypeValue !== XSD_STRING || term.language)) {
+          throw new Error(`Failed to resolve RDF literal datatype term: ${datatypeValue}`);
+        }
+        return this.identity(
+          'literal',
+          term.value,
+          datatypeId ?? null,
           term.language || null,
           term.value,
           this.numericValueForLiteral(term.value, datatypeValue),
@@ -6979,18 +7130,41 @@ export class PostgresRdfEngine implements RdfEngineLike {
     sourceId: number | null,
     sourceLineNo: number | null,
   ): Promise<PgQuadIdRow[]> {
-    const rows: PgQuadIdRow[] = [];
-    for (const quadValue of quads) {
-      const graphId = await dictionary.getOrCreate(quadValue.graph);
-      const subjectId = await dictionary.getOrCreate(quadValue.subject);
-      const predicateId = await dictionary.getOrCreate(quadValue.predicate);
-      const objectId = await dictionary.getOrCreate(quadValue.object);
-      rows.push({
-        graph_id: graphId,
-        subject_id: subjectId,
-        predicate_id: predicateId,
-        object_id: objectId,
-      });
+    if (quads.length === 0) {
+      return [];
+    }
+
+    const termIds = await dictionary.getOrCreateMany(quads.flatMap((quadValue) => [
+      quadValue.graph,
+      quadValue.subject,
+      quadValue.predicate,
+      quadValue.object,
+    ]));
+    const rowsByKey = new Map<string, PgQuadIdRow>();
+    for (let index = 0; index < quads.length; index += 1) {
+      const offset = index * 4;
+      const row = {
+        graph_id: termIds[offset],
+        subject_id: termIds[offset + 1],
+        predicate_id: termIds[offset + 2],
+        object_id: termIds[offset + 3],
+      };
+      rowsByKey.set(`${row.graph_id}\u001f${row.subject_id}\u001f${row.predicate_id}\u001f${row.object_id}`, row);
+    }
+
+    const rows = [...rowsByKey.values()];
+    for (const chunk of chunkArray(rows, 500)) {
+      const builder = new PgSqlBuilder();
+      const values = chunk
+        .map((row) => `(${[
+          builder.add(row.graph_id),
+          builder.add(row.subject_id),
+          builder.add(row.predicate_id),
+          builder.add(row.object_id),
+          builder.add(sourceId),
+          builder.add(sourceLineNo),
+        ].join(', ')})`)
+        .join(', ');
       await executor.exec(`
         INSERT INTO rdf_quads (
           graph_id,
@@ -7000,12 +7174,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
           source_file_id,
           source_line_no
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES ${values}
         ON CONFLICT (graph_id, subject_id, predicate_id, object_id)
         DO UPDATE SET
           source_file_id = EXCLUDED.source_file_id,
           source_line_no = EXCLUDED.source_line_no
-      `, [graphId, subjectId, predicateId, objectId, sourceId, sourceLineNo]);
+      `, builder.snapshot());
     }
     return rows;
   }

@@ -511,7 +511,7 @@ P1 做 planner 稳定性、迁移效率和运维可解释性：
 | 能力 | 当前状态 | 第一版落地要求 | 验收证据 |
 | --- | --- | --- | --- |
 | Cost model / histogram | 第一版 stats surface 已补齐：SQLite/file-backed 与 PG facts stats 都通过 `storageStats().facts` 暴露 literal datatype、graph、predicate、predicate/object、subject/predicate 热点分布；PG `refreshDerivedIndexes()` 仍会 `ANALYZE` facts 与 RDF-3X stats 表；PG `metrics.explain.planner` 已把命中当前 query exact graph/predicate/predicate-object/subject-predicate 的 histogram hint 接入 reason、estimate input 和 `histogramHints`，cache hit 路径不拉 histogram | 后续把 histogram 从可观测 reason 继续接入 native/RDF-3X/facts 的 cost-based cutover，并补 join fanout / skew benchmark | slow query plan 能解释当前 query 用到了哪些 histogram 输入；benchmark 覆盖高偏斜数据 |
-| Bulk load + delayed index build | 第一版正在落地：PG custom-index profile 支持启动时延迟创建 native permutation indexes，导入完成后显式 `ensurePgCustomIndexes()` 再进入 native cutover；benchmark 脚本在真实 PG + `pg-custom-index` 下默认使用该路径 | 后续把 term/quad 写入本身也改成批量 upsert / copy，并让 large benchmark 在 seed 完成后一次 refresh / ANALYZE | benchmark 可选择延迟 custom-index build；延迟期间 native-only operator 不 active、不会 500；ensure 后 6 个 custom permutation index 创建并恢复 native operator；million-scale dry run 不逐条维护 custom index |
+| Bulk load + delayed index build | 第一版已落地：PG custom-index profile 支持启动时延迟创建 native permutation indexes，导入完成后显式 `ensurePgCustomIndexes()` 再进入 native cutover；PG facts 写入已把 term dictionary resolve 和 `rdf_quads` upsert 改成分块批量 `VALUES`，并对 batch 内重复 quad 去重，避免 bulk seed 按 quad 逐条维护 native/custom index | 后续补 COPY/staging-table 导入、大数据量 seed 完成后一次 refresh / ANALYZE，以及 large/concurrency benchmark | benchmark 可选择延迟 custom-index build；延迟期间 native-only operator 不 active、不会 500；ensure 后 6 个 custom permutation index 创建并恢复 native operator；bulk seed 只发固定批次数量的 term/quad insert；million-scale gate 仍需重跑 |
 | Subject-star / star join operator | 第一版已落地为可观测 gate：local `RdfQuadIndex` 和 PG RDF-3X join 会识别 3+ pattern 共享同一 subject 的 star BGP，并在 plan 中标记 `SubjectStarJoin(...)` / `PostgresRdf3xSubjectStarJoin(...)`；默认 models benchmark 已覆盖 Agent thread context 和 run state center，extreme benchmark 覆盖 8-pattern message star | 后续把 native `join.subject_star` / `aggregate.subject_star_count` operator 接到同一 gate；当前第一版不改变 SQL join 语义，只锁住 planner 可观测性和 benchmark coverage | subject-star benchmark 命中专门 plan marker，且语义与 RDF-3X baseline 一致 |
 | Native operator cutover 策略 | native operator 有些 shape 快、有些不如 btree/RDF-3X | planner 依据 shape、stats、limit/order/group 特征选择 native 或 baseline，不能只看 capability 存在 | metrics 标记 rejected native reason；真实 PG benchmark 不因 native profile 退化 |
 | Explain / observability | 第一版已落地到 PG query metrics：`metrics.explain` 结构化输出 engine、facts version、derived profile、template/result/materialized cache 状态、结构化 access scope、acceleration/fallback 摘要、planner histogram hints、runtime 扫描/返回行数、RDF-3X stale stats 和 slow-query 诊断；原有 plan 字符串继续保留给 benchmark gate | 后续把 slow-query 事件接入运维面板，并把 histogram / scan rows 真正接入 cost-based cutover | 慢查询报告可直接定位 fallback / cache miss / stale stats / 扫描放大 |
@@ -533,10 +533,11 @@ P1 做 planner 稳定性、迁移效率和运维可解释性：
    统计页和 Agent context 的显式 materialized key。
 4. Ordered-page / keyset join 与 subject-star：消息流 keyset case 和 subject-star plan marker 已先作为 models benchmark gate；后续继续以 benchmark case 驱动 native cutover。
 5. Text / RDF / vector fusion：在 Agent context 和搜索场景中接入候选生成与 rerank。
-6. Bulk load + delayed index build：先解决 PG custom-index 在 disposable benchmark / 迁移导入时的
-   write amplification；`pg-custom-index` 可以先以 PG SQL hot path 写入 facts，seed 完成后显式
+6. Bulk load + delayed index build：PG custom-index 在 disposable benchmark / 迁移导入时的
+   第一层 write amplification 已缓解；`pg-custom-index` 可以先以 PG SQL hot path 写入 facts，
+   facts 写入内部使用批量 term upsert 和批量 quad upsert，seed 完成后显式
    `ensurePgCustomIndexes()` 创建 native permutation index，再执行 `refreshDerivedIndexes()` /
-   benchmark。后续再把 term/quad 写入本身改成批量 upsert / copy。
+   benchmark。后续再补 COPY/staging-table 导入和 large/concurrency gate。
 7. Incremental stats：PG 与 SQLite/file-backed dirty projection refresh 第一版已完成；PG
    query explain 已能报告 runtime scan rows、RDF-3X stale facts version 和 slow-query
    触发原因；后续补 source-level 后台维护任务、更大数据量 benchmark 和慢查询运维面板。

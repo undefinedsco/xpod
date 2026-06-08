@@ -370,7 +370,9 @@ grouped numeric aggregate 已从 94ms 降到 28ms。`COUNT DISTINCT` 和 grouped
 的约 100k seed 在 `pg-custom-index` 下同样主要消耗在写入阶段。这个失败点是
 benchmark 工具 / bulk-load 策略问题，不是 native operator 查询语义失败。正式 large
 gate 前需要把 disposable benchmark 改成 bulk insert 后统一建 custom indexes，或显式
-拆分 write amplification 和 warm query benchmark。
+拆分 write amplification 和 warm query benchmark。后续第一版已把 PG facts 写入改成
+批量 term upsert + 批量 quad upsert；这一历史记录仍保留，用来说明 large gate 需要重跑，
+不能沿用当时逐条写入阶段的耗时结论。
 
 ### PostgreSQL / PGlite Medium RDF-3X Baseline Rerun
 
@@ -631,7 +633,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 
 未完成：
 
-- 更大数据量 / 并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。`large=1_000_000` 目前主要卡在 disposable seed 的逐条写入。custom-index write amplification 已有第一版缓解：真实 PG + `pg-custom-index` benchmark 默认延迟创建 native permutation indexes，seed 完成后显式 `ensurePgCustomIndexes()`，后续还需要把 term/quad 写入本身改成批量 upsert / copy。
+- 更大数据量 / 并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。custom-index write amplification 已有第一版缓解：真实 PG + `pg-custom-index` benchmark 默认延迟创建 native permutation indexes，facts 写入内部已使用批量 term upsert + 批量 quad upsert，seed 完成后显式 `ensurePgCustomIndexes()`；后续仍需要 COPY/staging-table 导入、一次性 refresh / ANALYZE，以及 `large=1_000_000` / 并发 benchmark 重跑。
 - bounded graph-prefix BGP / aggregate native 下推已接线并完成真实 PG17 rerun；slot-filter 修复了 hidden VALUES 笛卡尔成本，但 `COUNT DISTINCT` 和 grouped count 仍未超过 RDF-3X / btree baseline，不能作为 cutover 依据。subject-star 第一版已落地为 local/PG plan marker 和 models benchmark gate；native `join.subject_star` / `aggregate.subject_star_count` 仍未接线。
 - `pg-custom-index` 的 native scan limit early-stop、ordered-page join 仍未作为 xpod models cutover gate。消息流 keyset page 已作为 RDF-3X / PG SQL baseline benchmark gate；VALUES join 已完成受限形状接线并能命中 native operator，但当前 real PG extreme p95 略慢于 RDF-3X / btree baseline。
 - text / vector candidate generation 与 RDF structured join 的本地和 PG 第一版已接到
