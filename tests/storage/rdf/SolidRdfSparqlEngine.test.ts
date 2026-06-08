@@ -228,15 +228,26 @@ describe('SolidRdfSparqlEngine', () => {
     };
     engine = new SolidRdfSparqlEngine(rdfEngine, fallbackStub, undefined, false);
 
-    await expect(engine.queryBindings(`
-      SELECT ?message WHERE {
-        ?message <${CONTENT}> ?content .
-      }
-    `, BASE, {
-      basePath: BASE,
-      mode: 'read',
-      deniedGraphUrls: ['https://pod.example/alice/.data/private/secrets.ttl'],
-    })).rejects.toThrow(/ACL\/ACR-safe SPARQL fallback/);
+    let restrictedError: unknown;
+    try {
+      await engine.queryBindings(`
+        SELECT ?message WHERE {
+          ?message <${CONTENT}> ?content .
+        }
+      `, BASE, {
+        basePath: BASE,
+        mode: 'read',
+        deniedGraphUrls: ['https://pod.example/alice/.data/private/secrets.ttl'],
+      });
+    } catch (error) {
+      restrictedError = error;
+    }
+    expect(restrictedError).toBeInstanceOf(UnsupportedSparqlQueryError);
+    expect((restrictedError as Error).message).toMatch(/Embedded SPARQL engine cannot execute queryBindings inside ACL\/ACR-restricted scope/);
+    expect(restrictedError).toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability: 'sparql.query.shape',
+    });
     expect(fallbackStub.queryBindings).not.toHaveBeenCalled();
   });
 
@@ -5812,6 +5823,11 @@ describe('SolidRdfSparqlEngine', () => {
     expect(unsupportedError).toBeInstanceOf(UnsupportedSparqlQueryError);
     expect((unsupportedError as Error).message).toMatch(/Embedded SPARQL engine cannot execute queryBindings: .*not supported by the embedded RDF engine/);
     expect((unsupportedError as Error).message).not.toMatch(/compatibility fallback|fallback to compatibility engine/i);
+    expect(unsupportedError).toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability: 'sparql.query.subquery',
+      hint: expect.stringContaining('Flatten the subquery'),
+    });
 
     expect(onFallback).not.toHaveBeenCalled();
     expect(engine.getMetrics()).toEqual({

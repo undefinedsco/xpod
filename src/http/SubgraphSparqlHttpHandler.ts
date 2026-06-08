@@ -69,6 +69,15 @@ type UsageContext = {
   podId: string;
 };
 
+interface SparqlErrorResponse {
+  error: {
+    code: string;
+    message: string;
+    capability?: string;
+    hint?: string;
+  };
+}
+
 interface UpdateAccessPlan {
   hasInsert: boolean;
   hasDelete: boolean;
@@ -185,17 +194,36 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         const errorName = error.name || error.constructor.name || 'HttpError';
         const errorMessage = error.message || 'No message';
         this.logger.error(`SPARQL sidecar error ${error.statusCode} (${this.getRequestId(request)}): ${errorName} - ${errorMessage}`);
-        this.sendErrorResponse(response, error.statusCode, errorMessage);
+        this.sendErrorResponse(request, response, error.statusCode, errorMessage, {
+          error: {
+            code: `http.${error.statusCode}`,
+            message: errorMessage,
+          },
+        });
         return;
       }
       if (error instanceof DisabledSparqlFeatureError) {
         this.logger.warn(`SPARQL sidecar disabled feature (${this.getRequestId(request)}): ${error.message}`);
-        this.sendErrorResponse(response, 403, error.message);
+        this.sendErrorResponse(request, response, 403, error.message, {
+          error: {
+            code: 'rdf.sparql.disabled_feature',
+            message: error.message,
+            capability: 'sparql.federation.service',
+            hint: 'Disable SERVICE federation for server-owned Pod queries, or execute it from a trusted client-side/federated query layer.',
+          },
+        });
         return;
       }
       if (error instanceof UnsupportedSparqlQueryError) {
         this.logger.warn(`SPARQL sidecar unsupported query (${this.getRequestId(request)}): ${error.message}`);
-        this.sendErrorResponse(response, 400, error.message);
+        this.sendErrorResponse(request, response, 400, error.message, {
+          error: {
+            code: error.code,
+            message: error.message,
+            capability: error.capability,
+            hint: error.hint,
+          },
+        });
         return;
       }
       // Re-throw unknown errors for CSS error handling
@@ -204,10 +232,27 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
-  private sendErrorResponse(response: HttpResponse, statusCode: number, message: string): void {
+  private sendErrorResponse(
+    request: HttpRequest,
+    response: HttpResponse,
+    statusCode: number,
+    message: string,
+    jsonPayload: SparqlErrorResponse,
+  ): void {
     response.statusCode = statusCode;
+    if (this.acceptsJson(request)) {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8');
+      response.end(JSON.stringify(jsonPayload));
+      return;
+    }
     response.setHeader('Content-Type', 'text/plain; charset=utf-8');
     response.end(message);
+  }
+
+  private acceptsJson(request: HttpRequest): boolean {
+    const accept = request.headers.accept;
+    const values = Array.isArray(accept) ? accept : [ accept ];
+    return values.some(value => typeof value === 'string' && /\bapplication\/json\b/i.test(value));
   }
 
   private async executeSelect(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {

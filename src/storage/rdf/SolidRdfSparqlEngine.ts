@@ -479,7 +479,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   ): Promise<T> {
     const embeddedReason = embeddedUnsupportedReason(reason);
     if (isRestrictiveRdfAccessScope(accessScope)) {
-      throw new UnsupportedSparqlQueryError(`No ACL/ACR-safe SPARQL fallback configured for ${operation}: ${embeddedReason}`);
+      throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation} inside ACL/ACR-restricted scope: ${embeddedReason}`);
     }
     if (!this.fallback) {
       throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation}: ${embeddedReason}`);

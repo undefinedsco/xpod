@@ -65,6 +65,7 @@ function createMockResponse(): HttpResponse {
     getHeaders: vi.fn(() => ({})),
     flushHeaders: vi.fn(),
     writeHead: vi.fn(),
+    bodyText: () => Buffer.concat(chunks).toString('utf8'),
   }) as unknown as HttpResponse;
 
   return response;
@@ -491,6 +492,32 @@ describe('SubgraphSparqlHttpHandler', () => {
 
       expect(response.statusCode).toBe(400);
       expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain; charset=utf-8');
+    });
+
+    it('should return structured unsupported query details when JSON is accepted', async () => {
+      const request = createMockRequest(
+        '/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D',
+        'GET',
+        { accept: 'application/json' },
+      );
+      const response = createMockResponse();
+
+      mockQueryEngine.queryBindings.mockRejectedValueOnce(
+        new UnsupportedSparqlQueryError('Embedded SPARQL engine cannot execute queryBindings: Subqueries is not supported by the embedded RDF engine'),
+      );
+
+      await expect(handler.handle({ request, response })).resolves.toBeUndefined();
+
+      expect(response.statusCode).toBe(400);
+      expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'application/json; charset=utf-8');
+      expect(JSON.parse((response as unknown as { bodyText: () => string }).bodyText())).toEqual({
+        error: {
+          code: 'rdf.sparql.unsupported_query_shape',
+          message: 'Embedded SPARQL engine cannot execute queryBindings: Subqueries is not supported by the embedded RDF engine',
+          capability: 'sparql.query.subquery',
+          hint: expect.stringContaining('Flatten the subquery'),
+        },
+      });
     });
 
     it('should return 403 when a disabled SPARQL feature is requested', async () => {

@@ -169,10 +169,23 @@ export interface RdfSparqlUpdateCompileOptions {
   defaultGraph?: string | NamedNode;
 }
 
+export interface UnsupportedSparqlQueryErrorOptions {
+  code?: string;
+  capability?: string;
+  hint?: string;
+}
+
 export class UnsupportedSparqlQueryError extends Error {
-  public constructor(message: string) {
+  public readonly code: string;
+  public readonly capability: string;
+  public readonly hint: string;
+
+  public constructor(message: string, options: UnsupportedSparqlQueryErrorOptions = {}) {
     super(message);
     this.name = 'UnsupportedSparqlQueryError';
+    this.code = options.code ?? 'rdf.sparql.unsupported_query_shape';
+    this.capability = options.capability ?? inferUnsupportedSparqlCapability(message);
+    this.hint = options.hint ?? unsupportedSparqlHint(this.capability);
   }
 }
 
@@ -180,6 +193,63 @@ export class DisabledSparqlFeatureError extends Error {
   public constructor(message: string) {
     super(message);
     this.name = 'DisabledSparqlFeatureError';
+  }
+}
+
+function inferUnsupportedSparqlCapability(message: string): string {
+  const normalized = message.toLowerCase();
+  if (normalized.includes('subquer')) {
+    return 'sparql.query.subquery';
+  }
+  if (normalized.includes('property path')) {
+    return 'sparql.query.property_path';
+  }
+  if (normalized.includes('default graph')) {
+    return 'sparql.graph.default';
+  }
+  if (normalized.includes('graph variable')) {
+    return 'sparql.graph.variable';
+  }
+  if (normalized.includes('update')) {
+    return 'sparql.update.embedded_delta';
+  }
+  if (normalized.includes('aggregate')) {
+    return 'sparql.query.aggregate';
+  }
+  if (normalized.includes('optional')) {
+    return 'sparql.query.optional';
+  }
+  if (normalized.includes('union')) {
+    return 'sparql.query.union';
+  }
+  if (normalized.includes('filter')) {
+    return 'sparql.query.filter';
+  }
+  return 'sparql.query.shape';
+}
+
+function unsupportedSparqlHint(capability: string): string {
+  switch (capability) {
+    case 'sparql.query.subquery':
+      return 'Flatten the subquery into required graph patterns, materialize the intermediate result, or route it through a trusted external SPARQL executor for this access scope.';
+    case 'sparql.query.property_path':
+      return 'Rewrite property paths as explicit predicate patterns before sending the query to the embedded RDF engine.';
+    case 'sparql.graph.default':
+      return 'Use explicit named GRAPH clauses inside the Pod base path instead of relying on default graph semantics.';
+    case 'sparql.graph.variable':
+      return 'Constrain graph variables with finite named graph filters before executing the query.';
+    case 'sparql.update.embedded_delta':
+      return 'Use embedded SPARQL UPDATE shapes that resolve to explicit local graph documents, or apply the change through a higher-level write API.';
+    case 'sparql.query.aggregate':
+      return 'Use supported grouped aggregate shapes with variables bound by required graph patterns.';
+    case 'sparql.query.optional':
+      return 'Keep OPTIONAL branches tied to variables already bound by required graph patterns.';
+    case 'sparql.query.union':
+      return 'Keep UNION branches as required graph-pattern branches with compatible projected variables.';
+    case 'sparql.query.filter':
+      return 'Use simple FILTER expressions over variables bound by required graph patterns.';
+    default:
+      return 'Rewrite the query to an embedded RDF engine supported shape, or route it through a trusted external SPARQL executor for this access scope.';
   }
 }
 
