@@ -599,7 +599,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   derived profile、template/result/materialized cache 状态、结构化 access scope，以及
   acceleration profile / fallback / unsupported capability 摘要；`metrics.explain.planner`
   会把 `materialized-result-cache` / `query-result-cache` / `native-extension` / `rdf3x` /
-  `facts` 的 selected path、选择原因、估算输入、query-specific histogram hints 和
+  `facts` 的 selected path、选择原因、估算输入、query-specific histogram hints、
+  runtime scan/join/return rows、RDF-3X stale facts version、slow-query 触发原因和
   rejected capabilities 暴露给慢查询分析。
   原有 `metrics.plan` 字符串仍用于 benchmark gate 和人工 trace。
 - `rdf_query_result_cache.scope_hash` 记录 normalized cache scope 的摘要；结构化 access scope 会把
@@ -659,7 +660,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   入口；显式 materialized key 仍需要在 shared query/repository 层继续接线。
 - SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair；后台维护任务还没有按 source-level dirty queue 做批量调度。
 - 冷启动 stats refresh / warm steady-state 的自动化运维指标；`metrics.explain` 已有第一版查询级
-  结构化观测，但还没有慢查询 UI / dashboard。
+  runtime/stale/slow 结构化观测，但还没有慢查询 UI / dashboard。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration。真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 ## Migration Strategy

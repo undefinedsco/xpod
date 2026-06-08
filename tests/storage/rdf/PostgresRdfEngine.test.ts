@@ -345,12 +345,27 @@ describe('PostgresRdfEngine', () => {
           'histogram-graph-cardinality-available',
           'histogram-predicate-cardinality-available',
           'histogram-predicate-object-cardinality-available',
+          'runtime-scan-rows-reported',
         ]),
         estimateInputs: expect.arrayContaining([
           'facts.graphCardinality',
           'facts.predicateCardinality',
           'facts.predicateObjectCardinality',
+          'query.metrics.scannedRows',
         ]),
+        runtime: {
+          scannedRows: 2,
+          joinedRows: 2,
+          returnedRows: 2,
+          indexChoices: expect.arrayContaining([expect.any(String)]),
+          planSize: expect.any(Number),
+        },
+        staleStats: {
+          factsDataVersion: 1,
+          rdf3xFactsDataVersion: 0,
+          stale: true,
+          lag: 1,
+        },
         histogramHints: expect.arrayContaining([
           expect.objectContaining({
             kind: 'graph',
@@ -1821,6 +1836,7 @@ describe('PostgresRdfEngine', () => {
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
       dataDir,
+      queryExplainSlowMs: 0,
     });
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const message1 = namedNode(`${graph.value}#msg_1`);
@@ -1863,7 +1879,14 @@ describe('PostgresRdfEngine', () => {
         reasons: expect.arrayContaining([
           'facts-fallback-selected',
           'regex-filter-requires-facts-fallback',
+          'slow-query-detected',
+          'slow-query-duration-threshold',
         ]),
+        slowQuery: {
+          thresholdMs: 0,
+          scannedRows: 2,
+          reasons: expect.arrayContaining(['duration-threshold']),
+        },
       });
       const files = await readdir(dataDir);
       expect(files.some((entry) => entry.includes('rdf-cache.sqlite'))).toBe(false);
@@ -2133,6 +2156,21 @@ describe('PostgresRdfEngine', () => {
 
       expect(query.bindings.map((binding) => binding.run.value)).toEqual([run1.value, run2.value]);
       expect(query.metrics.plan).not.toContain('PostgresRdf3xFallback');
+      expect(query.metrics.explain?.planner).toMatchObject({
+        reasons: expect.arrayContaining([
+          'rdf3x-stats-stale',
+        ]),
+        estimateInputs: expect.arrayContaining([
+          'facts.dataVersion',
+          'rdf3x.factsDataVersion',
+        ]),
+        staleStats: {
+          factsDataVersion: 2,
+          rdf3xFactsDataVersion: 1,
+          stale: true,
+          lag: 1,
+        },
+      });
       const storage = await engine.storageStats();
       expect(storage.facts.quadCount).toBe(2);
       expect(storage.rdf3x).toMatchObject({

@@ -111,6 +111,9 @@ const DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_DERIVED_CACHE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
+const DEFAULT_QUERY_EXPLAIN_SLOW_MS = 1_000;
+const DEFAULT_QUERY_EXPLAIN_LARGE_SCAN_ROWS = 100_000;
+const DEFAULT_QUERY_EXPLAIN_SCAN_AMPLIFICATION = 100;
 const PLANNER_HISTOGRAM_CACHE_TTL_MS = 5_000;
 const PLANNER_HISTOGRAM_HINT_LIMIT = 100;
 const POSTGRES_RDF_SESSION_OPTIONS = '-c jit=off';
@@ -500,6 +503,8 @@ export interface PostgresRdfEngineOptions {
   derivedCacheScopeMaxBytes?: number;
   queryTemplateCacheMaxEntries?: number;
   queryTemplateCacheTtlMs?: number;
+  queryExplainSlowMs?: number;
+  queryExplainLargeScanRows?: number;
   rdfAccelerationProfile?: RdfPgAccelerationProfile;
   rdfAccelerationRequiredCapabilities?: string[];
   deferPgCustomIndexInitialization?: boolean;
@@ -3673,6 +3678,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       'rdf3x.projectionStats',
       'pg.tableStats',
     ]);
+    const runtime = this.queryPlannerRuntimeExplain(result.metrics);
 
     let selectedPath: RdfQueryPlannerExplain['selectedPath'] = 'unknown';
     if (hasPlan('PostgresMaterializedResultHit')) {
@@ -3747,6 +3753,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
     }
 
+    const shouldExplainDerivedStats = selectedPath !== 'materialized-result-cache'
+      && selectedPath !== 'query-result-cache';
+    const staleStats = shouldExplainDerivedStats
+      ? await this.queryPlannerStaleStatsExplain(factsDataVersion)
+      : undefined;
+    if (staleStats?.stale) {
+      reasons.add('rdf3x-stats-stale');
+      estimateInputs.add('facts.dataVersion');
+      estimateInputs.add('rdf3x.factsDataVersion');
+    }
+
     if (hasPlanPrefix('XpodRdfPgHotOperator(')) {
       reasons.add('pg-hot-operator-enabled');
       estimateInputs.add('pgAcceleration.capabilities');
@@ -3767,15 +3784,95 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (rejectedCapabilities.length > 0) {
       reasons.add('pg-acceleration-capability-unsupported');
     }
+    if (runtime.scannedRows > 0) {
+      reasons.add('runtime-scan-rows-reported');
+      estimateInputs.add('query.metrics.scannedRows');
+    }
+    const slowQuery = this.queryPlannerSlowQueryExplain(runtime);
+    if (slowQuery) {
+      reasons.add('slow-query-detected');
+      for (const reason of slowQuery.reasons) {
+        reasons.add(`slow-query-${reason}`);
+      }
+    }
 
     return {
       selectedPath,
       reasons: [...reasons],
       estimateInputs: [...estimateInputs],
       availableStats: [...availableStats],
+      runtime,
+      ...(staleStats ? { staleStats } : {}),
+      ...(slowQuery ? { slowQuery } : {}),
       ...(histogramHints.length > 0 ? { histogramHints } : {}),
       ...(rejectedCapabilities.length > 0 ? { rejectedCapabilities } : {}),
     };
+  }
+
+  private queryPlannerRuntimeExplain(metrics: RdfQueryMetrics): RdfQueryPlannerExplain['runtime'] {
+    return {
+      durationMs: metrics.durationMs,
+      scannedRows: metrics.scannedRows,
+      joinedRows: metrics.joinedRows,
+      returnedRows: metrics.returnedRows,
+      filtersApplied: metrics.filtersApplied,
+      filtersPushedDown: metrics.filtersPushedDown,
+      indexChoices: [...metrics.indexChoices],
+      planSize: metrics.plan.length,
+    };
+  }
+
+  private async queryPlannerStaleStatsExplain(
+    factsDataVersion?: number,
+  ): Promise<RdfQueryPlannerExplain['staleStats']> {
+    const resolvedFactsDataVersion = factsDataVersion ?? await this.readFactsDataVersion();
+    const rdf3xFactsDataVersion = await this.readRdf3xFactsDataVersion();
+    return {
+      factsDataVersion: resolvedFactsDataVersion,
+      rdf3xFactsDataVersion,
+      stale: rdf3xFactsDataVersion !== resolvedFactsDataVersion,
+      lag: Math.max(0, resolvedFactsDataVersion - rdf3xFactsDataVersion),
+    };
+  }
+
+  private queryPlannerSlowQueryExplain(runtime: RdfQueryPlannerExplain['runtime']): RdfQueryPlannerExplain['slowQuery'] | undefined {
+    const thresholdMs = this.queryExplainSlowMs();
+    const scannedRowsThreshold = this.queryExplainLargeScanRows();
+    const scanAmplification = runtime.returnedRows <= 0
+      ? runtime.scannedRows
+      : runtime.scannedRows / runtime.returnedRows;
+    const reasons: string[] = [];
+    if (runtime.durationMs >= thresholdMs) {
+      reasons.push('duration-threshold');
+    }
+    if (runtime.scannedRows >= scannedRowsThreshold) {
+      reasons.push('scan-rows-threshold');
+    }
+    if (
+      runtime.scannedRows >= scannedRowsThreshold
+      && scanAmplification >= DEFAULT_QUERY_EXPLAIN_SCAN_AMPLIFICATION
+    ) {
+      reasons.push('scan-amplification');
+    }
+    if (reasons.length === 0) {
+      return undefined;
+    }
+    return {
+      durationMs: runtime.durationMs,
+      thresholdMs,
+      scannedRows: runtime.scannedRows,
+      scannedRowsThreshold,
+      scanAmplification,
+      reasons,
+    };
+  }
+
+  private queryExplainSlowMs(): number {
+    return Math.max(0, this.pgOptions.queryExplainSlowMs ?? DEFAULT_QUERY_EXPLAIN_SLOW_MS);
+  }
+
+  private queryExplainLargeScanRows(): number {
+    return Math.max(0, this.pgOptions.queryExplainLargeScanRows ?? DEFAULT_QUERY_EXPLAIN_LARGE_SCAN_ROWS);
   }
 
   private async queryPlannerHistogramHints(

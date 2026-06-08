@@ -874,8 +874,38 @@ export interface RdfQueryPlannerExplain {
   reasons: string[];
   estimateInputs: string[];
   availableStats: string[];
+  runtime: RdfQueryPlannerRuntimeExplain;
+  staleStats?: RdfQueryPlannerStaleStatsExplain;
+  slowQuery?: RdfQueryPlannerSlowQueryExplain;
   histogramHints?: RdfQueryPlannerHistogramHint[];
   rejectedCapabilities?: string[];
+}
+
+export interface RdfQueryPlannerRuntimeExplain {
+  durationMs: number;
+  scannedRows: number;
+  joinedRows: number;
+  returnedRows: number;
+  filtersApplied: number;
+  filtersPushedDown: number;
+  indexChoices: string[];
+  planSize: number;
+}
+
+export interface RdfQueryPlannerStaleStatsExplain {
+  factsDataVersion: number;
+  rdf3xFactsDataVersion: number;
+  stale: boolean;
+  lag: number;
+}
+
+export interface RdfQueryPlannerSlowQueryExplain {
+  durationMs: number;
+  thresholdMs: number;
+  scannedRows: number;
+  scannedRowsThreshold: number;
+  scanAmplification: number;
+  reasons: string[];
 }
 
 export type RdfQueryPlannerHistogramHintKind =
