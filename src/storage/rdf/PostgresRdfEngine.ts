@@ -416,6 +416,10 @@ interface PgMaterializedResultResolution {
   planMarker: string;
 }
 
+interface PgMaterializedResultCacheRow extends PgQueryResultCacheRow {
+  template_key?: string;
+}
+
 interface PgResolvedQueryCacheScope {
   shape: string;
   hash: string;
@@ -1505,6 +1509,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
             materializedCache: {
               status: 'hit',
               key: materialized.cacheKey,
+              templateKey: template.templateKey,
               factsDataVersion,
               ttlMs: cacheTtlMs,
               maxEntries: this.materializedResultCacheMaxEntries(),
@@ -1539,6 +1544,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         materializedCache: {
           status: cacheMode === 'refresh' ? 'refresh' : 'miss',
           key: materialized.cacheKey,
+          templateKey: template.templateKey,
           factsDataVersion,
           ttlMs: cacheTtlMs,
           maxEntries: this.materializedResultCacheMaxEntries(),
@@ -1568,6 +1574,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ? {
               status: 'bypass',
               key: materialized.cacheKey,
+              templateKey: template.templateKey,
               maxEntries: this.materializedResultCacheMaxEntries(),
               maxBytes: this.materializedResultCacheMaxBytes(),
             }
@@ -2051,6 +2058,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         cache_key TEXT NOT NULL,
         facts_data_version BIGINT NOT NULL,
         materialized_shape TEXT NOT NULL,
+        template_key TEXT NOT NULL DEFAULT 'legacy',
         query_shape TEXT NOT NULL,
         scope_hash TEXT NOT NULL,
         scope_shape TEXT NOT NULL,
@@ -2066,6 +2074,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         last_hit_at TIMESTAMPTZ,
         PRIMARY KEY (cache_key, scope_hash, facts_data_version)
       )
+    `);
+    await executor.exec(`
+      ALTER TABLE ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
+      ADD COLUMN IF NOT EXISTS template_key TEXT NOT NULL DEFAULT 'legacy'
     `);
     await executor.exec(`
       CREATE INDEX IF NOT EXISTS rdf_materialized_result_cache_version
@@ -3123,8 +3135,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
     factsDataVersion: number,
   ): Promise<RdfQueryResult | undefined> {
     const start = Date.now();
-    const rows = await this.requireExecutor().query<PgQueryResultCacheRow & { query_shape: string }>(`
-      SELECT result_json, row_count, query_shape
+    const rows = await this.requireExecutor().query<PgMaterializedResultCacheRow>(`
+      SELECT result_json, row_count, query_shape, template_key
       FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
       WHERE cache_key = $1
         AND scope_hash = $2
@@ -3134,7 +3146,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!row) {
       return undefined;
     }
-    if (row.query_shape !== template.queryShape) {
+    const cachedTemplateKey = row.template_key ?? 'legacy';
+    if (
+      row.query_shape !== template.queryShape
+      || (cachedTemplateKey !== 'legacy' && cachedTemplateKey !== template.templateKey)
+    ) {
       await this.requireExecutor().exec(`
         DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
@@ -3163,6 +3179,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ...(payload.sourceIndexChoices ?? []),
         ], [
           'PostgresMaterializedResultHit',
+          materializedResultTemplatePlanMarker(template),
           ...(payload.sourcePlan ?? []),
           `PostgresMaterializedResultVersion(${factsDataVersion})`,
         ]),
@@ -3341,6 +3358,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         cache_key,
         facts_data_version,
         materialized_shape,
+        template_key,
         query_shape,
         scope_hash,
         scope_shape,
@@ -3353,9 +3371,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         row_count,
         created_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
       ON CONFLICT (cache_key, scope_hash, facts_data_version) DO UPDATE
       SET materialized_shape = EXCLUDED.materialized_shape,
+          template_key = EXCLUDED.template_key,
           query_shape = EXCLUDED.query_shape,
           scope_shape = EXCLUDED.scope_shape,
           scope_principal = EXCLUDED.scope_principal,
@@ -3370,6 +3389,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       materialized.cacheKey,
       factsDataVersion,
       materialized.shape,
+      template.templateKey,
       template.queryShape,
       template.cacheScope.hash,
       template.cacheScope.shape,
@@ -3381,7 +3401,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
       resultJson,
       result.bindings.length,
     ]);
-    return ['PostgresMaterializedResultStore'];
+    return [
+      'PostgresMaterializedResultStore',
+      materializedResultTemplatePlanMarker(template),
+    ];
   }
 
   private async pruneQueryResultCache(factsDataVersion: number, ttlMs = this.queryResultCacheTtlMs()): Promise<void> {
@@ -8797,6 +8820,12 @@ function queryTemplateCacheKey(templateShape: string): string {
     .update('\0')
     .update(templateShape)
     .digest('hex');
+}
+
+function materializedResultTemplatePlanMarker(template: PgQueryTemplateResolution): string {
+  return template.templateKey === 'disabled'
+    ? 'PostgresMaterializedResultTemplate(disabled)'
+    : `PostgresMaterializedResultTemplate(${shortCacheKey(template.templateKey)})`;
 }
 
 function shortCacheKey(cacheKey: string): string {

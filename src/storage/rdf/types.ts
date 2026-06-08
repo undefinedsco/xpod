@@ -1050,6 +1050,7 @@ export interface RdfQueryTemplateCacheExplain {
 export interface RdfQueryCacheExplain {
   status: RdfQueryCacheStatus;
   key?: string;
+  templateKey?: string;
   factsDataVersion?: number;
   ttlMs?: number;
   maxEntries?: number;

@@ -1346,6 +1346,7 @@ describe('PostgresRdfEngine', () => {
       const second = await engine.query(query);
       expect(second.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
       expect(second.metrics.plan).toContain('PostgresMaterializedResultHit');
+      expect(second.metrics.plan.some((entry) => entry.startsWith('PostgresMaterializedResultTemplate('))).toBe(true);
       expect(second.metrics.plan.join('\n')).not.toContain('PostgresResultCacheHit');
       expect(second.metrics.explain).toMatchObject({
         engine: 'postgres-rdf',
@@ -1358,6 +1359,8 @@ describe('PostgresRdfEngine', () => {
           },
         },
       });
+      const templateKey = second.metrics.explain?.cache?.template?.key;
+      expect(templateKey).toEqual(expect.any(String));
       expect(second.metrics.explain?.planner).toMatchObject({
         selectedPath: 'materialized-result-cache',
         reasons: expect.arrayContaining([
@@ -1369,7 +1372,16 @@ describe('PostgresRdfEngine', () => {
         ]),
       });
       expect(second.metrics.explain?.cache?.materialized?.key).toEqual(expect.any(String));
+      expect(second.metrics.explain?.cache?.materialized?.templateKey).toBe(templateKey);
       expect(second.metrics.explain?.cache?.materialized?.factsDataVersion).toBeGreaterThan(0);
+      const executor = (engine as unknown as {
+        requireExecutor(): { query<T>(sql: string, params?: unknown[]): Promise<T[]> };
+      }).requireExecutor();
+      const materializedRows = await executor.query<{ template_key: string }>(`
+        SELECT template_key
+        FROM rdf_materialized_result_cache
+      `);
+      expect(materializedRows).toEqual([{ template_key: templateKey }]);
       expect((await engine.storageStats()).materializedResultCache).toMatchObject({
         entryCount: 1,
         scopeCount: 1,

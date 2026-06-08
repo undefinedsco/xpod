@@ -595,7 +595,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   会同步计入 `storageStats().derivedCache.evictions`。
 - materialized result cache by explicit business view key：`RdfQuery.cache.materialized`
   写入独立 `rdf_materialized_result_cache`，绑定 facts version、query shape、结构化 access
-  scope、TTL、max entries 和 payload bytes quota；命中时 plan 标记
+  scope、query template key、TTL、max entries 和 payload bytes quota；新写入行会记录并校验
+  `template_key`，命中 / 写入 plan 标记 `PostgresMaterializedResultTemplate(...)`，
+  `metrics.explain.cache.materialized.templateKey` 也会暴露同一模板 key；命中时 plan 标记
   `PostgresMaterializedResultHit`，并且不再重复写普通 result cache。PG models benchmark 已补 latest-message、thread-context、run-steps、
   due-schedule 和 provider/model/credential 5 个 warm-path materialized case，要求 warmup 后命中
   `PostgresMaterializedResultHit` / `PostgresQueryTemplateCacheHit`。`storageStats().materializedResultCache`
