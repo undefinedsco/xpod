@@ -201,6 +201,9 @@ function inferUnsupportedSparqlCapability(message: string): string {
   if (normalized.includes('subquer')) {
     return 'sparql.query.subquery';
   }
+  if (normalized.includes('rdf-star')) {
+    return 'sparql.query.rdf_star';
+  }
   if (normalized.includes('property path')) {
     return 'sparql.query.property_path';
   }
@@ -210,11 +213,41 @@ function inferUnsupportedSparqlCapability(message: string): string {
   if (normalized.includes('graph variable')) {
     return 'sparql.graph.variable';
   }
+  if (normalized.includes('graph outside') || normalized.includes('dataset scope')) {
+    return 'sparql.graph.scope';
+  }
   if (normalized.includes('update')) {
     return 'sparql.update.embedded_delta';
   }
+  if (normalized.includes('construct')) {
+    return 'sparql.query.construct';
+  }
+  if (normalized.includes('describe')) {
+    return 'sparql.query.describe';
+  }
+  if (normalized.includes('wildcard')) {
+    return 'sparql.query.wildcard_projection';
+  }
+  if (normalized.includes('having')) {
+    return 'sparql.query.having';
+  }
+  if (normalized.includes('group by') || normalized.includes('grouped')) {
+    return 'sparql.query.group';
+  }
   if (normalized.includes('aggregate')) {
     return 'sparql.query.aggregate';
+  }
+  if (normalized.includes('values')) {
+    return 'sparql.query.values';
+  }
+  if (/\bbind\b/.test(normalized)) {
+    return 'sparql.query.bind';
+  }
+  if (normalized.includes('minus')) {
+    return 'sparql.query.minus';
+  }
+  if (normalized.includes('exists')) {
+    return 'sparql.query.exists';
   }
   if (normalized.includes('optional')) {
     return 'sparql.query.optional';
@@ -224,6 +257,9 @@ function inferUnsupportedSparqlCapability(message: string): string {
   }
   if (normalized.includes('filter')) {
     return 'sparql.query.filter';
+  }
+  if (normalized.includes('function')) {
+    return 'sparql.query.function';
   }
   return 'sparql.query.shape';
 }
@@ -238,16 +274,40 @@ function unsupportedSparqlHint(capability: string): string {
       return 'Use explicit named GRAPH clauses inside the Pod base path instead of relying on default graph semantics.';
     case 'sparql.graph.variable':
       return 'Constrain graph variables with finite named graph filters before executing the query.';
+    case 'sparql.graph.scope':
+      return 'Limit GRAPH/FROM/USING targets to explicit graph documents inside the current Pod base path.';
     case 'sparql.update.embedded_delta':
       return 'Use embedded SPARQL UPDATE shapes that resolve to explicit local graph documents, or apply the change through a higher-level write API.';
+    case 'sparql.query.construct':
+      return 'Use CONSTRUCT templates made of ordinary triples with IRI or variable predicates, and keep the WHERE shape within the embedded query subset.';
+    case 'sparql.query.describe':
+      return 'Describe explicit IRIs or variables bound by required graph patterns; avoid DESCRIBE shapes that depend on optional-only bindings.';
+    case 'sparql.query.wildcard_projection':
+      return 'Project explicit variables for grouped or expression SELECT queries instead of mixing wildcard and computed projections.';
+    case 'sparql.query.having':
+      return 'Keep HAVING as simple comparisons between supported aggregate aliases and RDF terms.';
+    case 'sparql.query.group':
+      return 'Group only variables bound by required graph patterns or local BINDs, and project grouped variables or aggregate aliases.';
     case 'sparql.query.aggregate':
       return 'Use supported grouped aggregate shapes with variables bound by required graph patterns.';
+    case 'sparql.query.values':
+      return 'Bind VALUES variables from required graph patterns first, and avoid VALUES rows that introduce only standalone bindings.';
+    case 'sparql.query.bind':
+      return 'Order BIND expressions after the required graph patterns that bind every variable they reference.';
+    case 'sparql.query.minus':
+      return 'Make MINUS share at least one variable with the required query shape, and avoid nested dependent groups.';
+    case 'sparql.query.exists':
+      return 'Make FILTER EXISTS/NOT EXISTS share variables with required graph patterns, and avoid nested dependent groups.';
     case 'sparql.query.optional':
       return 'Keep OPTIONAL branches tied to variables already bound by required graph patterns.';
     case 'sparql.query.union':
       return 'Keep UNION branches as required graph-pattern branches with compatible projected variables.';
     case 'sparql.query.filter':
       return 'Use simple FILTER expressions over variables bound by required graph patterns.';
+    case 'sparql.query.function':
+      return 'Use the embedded engine supported XPath string functions, or precompute unsupported function results with BIND/materialized data.';
+    case 'sparql.query.rdf_star':
+      return 'Materialize RDF-star annotations as ordinary RDF resources or reification before querying this embedded engine.';
     default:
       return 'Rewrite the query to an embedded RDF engine supported shape, or route it through a trusted external SPARQL executor for this access scope.';
   }
