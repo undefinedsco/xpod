@@ -1,6 +1,9 @@
 import type { SqliteDatabase } from '../SqliteRuntime';
 
 export const RDF3X_GRAPH_PROJECTION_TABLE = 'rdf3x_stat_g';
+export const RDF3X_DIRTY_GRAPH_TABLE = 'rdf3x_dirty_graphs';
+export const RDF3X_DIRTY_PAIR_TABLE = 'rdf3x_dirty_pairs';
+export const RDF3X_DIRTY_TERM_TABLE = 'rdf3x_dirty_terms';
 
 export const RDF3X_PAIR_PROJECTION_TABLE_BY_NAME = {
   SP: 'rdf3x_stat_sp',
@@ -22,6 +25,9 @@ export const RDF3X_DERIVED_TABLES = [
   RDF3X_GRAPH_PROJECTION_TABLE,
   ...Object.values(RDF3X_PAIR_PROJECTION_TABLE_BY_NAME),
   ...Object.values(RDF3X_TERM_PROJECTION_TABLE_BY_NAME),
+  RDF3X_DIRTY_GRAPH_TABLE,
+  RDF3X_DIRTY_PAIR_TABLE,
+  RDF3X_DIRTY_TERM_TABLE,
 ] as const;
 
 export const RDF3X_MATERIALIZED_FACT_COPY_TABLES = [
@@ -40,6 +46,12 @@ export const RDF3X_DERIVED_INDEXES = [
   'rdf3x_membership_source',
 ] as const;
 
+export const RDF3X_DIRTY_TRIGGERS = [
+  'rdf3x_dirty_quads_insert',
+  'rdf3x_dirty_quads_delete',
+  'rdf3x_dirty_quads_update',
+] as const;
+
 export function dropRdf3xMaterializedFactCopies(db: SqliteDatabase): void {
   dropRdf3xObjects(db, RDF3X_MATERIALIZED_FACT_COPY_TABLES, RDF3X_DERIVED_INDEXES);
 }
@@ -49,6 +61,7 @@ export function dropRdf3xDerivedSchemaObjects(db: SqliteDatabase): void {
     db,
     [...RDF3X_DERIVED_TABLES, ...RDF3X_MATERIALIZED_FACT_COPY_TABLES],
     RDF3X_DERIVED_INDEXES,
+    RDF3X_DIRTY_TRIGGERS,
   );
 }
 
@@ -56,7 +69,11 @@ function dropRdf3xObjects(
   db: SqliteDatabase,
   names: readonly string[],
   indexes: readonly string[],
+  triggers: readonly string[] = [],
 ): void {
+  if (triggers.length > 0) {
+    db.exec(triggers.map((trigger) => `DROP TRIGGER IF EXISTS ${trigger};`).join('\n'));
+  }
   db.exec(indexes.map((index) => `DROP INDEX IF EXISTS ${index};`).join('\n'));
   if (names.length === 0) {
     return;

@@ -359,7 +359,7 @@ export class SolidRdfEngine implements RdfEngineLike {
         syncedWithFacts: true,
       };
     }
-    const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
+    const rebuild = rdf3xIndex.rebuildFromCurrentQuads({ mode: force ? 'full' : 'auto' });
     return {
       refreshed: true,
       previousFactsDataVersion,

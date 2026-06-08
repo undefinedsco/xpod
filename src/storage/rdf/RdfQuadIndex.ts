@@ -153,9 +153,12 @@ export class RdfQuadIndex {
       return 0;
     }
 
-    const result = db.prepare('DELETE FROM rdf_quads WHERE source_file_id = ?').run(row.id);
+    const deletedRows = db
+      .prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads WHERE source_file_id = ?')
+      .get(row.id)?.count ?? 0;
+    db.prepare('DELETE FROM rdf_quads WHERE source_file_id = ?').run(row.id);
     db.prepare('DELETE FROM rdf_sources WHERE id = ?').run(row.id);
-    return result.changes;
+    return deletedRows;
   }
 
   public multiPut(quads: Quad[], options?: RdfIndexPutOptions): void {
@@ -241,13 +244,16 @@ export class RdfQuadIndex {
     const db = this.requireDb();
     const { joins, whereClause, params } = this.buildWhereClause(pattern, false);
     if (!whereClause) {
-      const result = db.prepare('DELETE FROM rdf_quads').run();
-      return result.changes;
+      const deletedRows = db.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads').get()?.count ?? 0;
+      db.prepare('DELETE FROM rdf_quads').run();
+      return deletedRows;
     }
+    const deletedRows = db.prepare<{ count: number }>(`SELECT COUNT(*) AS count FROM rdf_quads${joins}${whereClause}`).get(...params)?.count ?? 0;
     const sql = joins
       ? `DELETE FROM rdf_quads WHERE rowid IN (SELECT rdf_quads.rowid FROM rdf_quads${joins}${whereClause})`
       : `DELETE FROM rdf_quads${whereClause}`;
-    return db.prepare(sql).run(...params).changes;
+    db.prepare(sql).run(...params);
+    return deletedRows;
   }
 
   public dataVersion(): number {
