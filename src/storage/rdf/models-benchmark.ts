@@ -3477,6 +3477,38 @@ export const rdfModelsExtremeQueryBenchmarkCases: readonly RdfModelQueryBenchmar
     expectedPlan: ['join-index', 'join-limit-pushdown'],
   },
   {
+    name: 'extreme native exact graph ordered-page query',
+    resource: 'message',
+    purpose: 'high fanout exact-graph ordered page checks native BGP row stream plus projected order pagination',
+    minScale: 'medium',
+    minReturnedRows: 100,
+    query: {
+      patterns: [
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}status`),
+          object: literal('indexed'),
+        },
+        {
+          graph: namedNode(NATIVE_STRESS_GRAPH),
+          subject: { variable: 'message' },
+          predicate: namedNode(DCT_CREATED),
+          object: { variable: 'createdAt' },
+        },
+      ],
+      select: ['message', 'createdAt'],
+      orderBy: [
+        {
+          variable: 'createdAt',
+          direction: 'desc',
+        },
+      ],
+      limit: 128,
+    },
+    expectedPlan: ['join-index', 'join-order-pushdown', 'join-limit-pushdown'],
+  },
+  {
     name: 'extreme native exact graph VALUES thread query',
     resource: 'message',
     purpose: 'high fanout exact-graph VALUES BGP checks native VALUES row scheduling',
@@ -6014,7 +6046,8 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
     case 'join-order-pushdown':
       return (planText.includes('IndexJoinOrder(')
         || planText.includes('Rdf3xJoinOrder(')
-        || planText.includes('Rdf3xJoinOrderBy('))
+        || planText.includes('Rdf3xJoinOrderBy(')
+        || planText.includes('PostgresRdfNativeCustomIndexBgpOrderPage('))
         && !planText.includes('\nSort')
         && !planText.includes('\nPostgresFactsSort(');
     case 'join-limit-pushdown':

@@ -5058,6 +5058,51 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('covers native ordered-page cutover in the PostgreSQL custom-index models benchmark gate', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-ordered-page-benchmark-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+      queryResultCacheEnabled: false,
+    });
+    const orderedPageCase = rdfModelsPostgresQueryBenchmarkCasesForProfile('extreme')
+      .find((testCase) => testCase.name === 'extreme native exact graph ordered-page query');
+
+    try {
+      expect(orderedPageCase).toBeDefined();
+      await engine.open();
+      await engine.put(buildRdfModelsBenchmarkSeed({
+        syntheticMessages: defaultSyntheticMessagesForRdfModelsScale('small'),
+        syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
+        caseProfile: 'extreme',
+      }));
+
+      const report = await runRdfModelsPostgresBenchmark(engine, {
+        scale: 'medium',
+        iterations: 1,
+        warmupIterations: 0,
+        caseProfile: 'extreme',
+        queryCases: [orderedPageCase!],
+      });
+
+      expect(report.planMatched).toBe(true);
+      expect(report.failedPlanCases).toEqual([]);
+      expect(report.queryCases).toHaveLength(1);
+      const result = report.queryCases[0];
+      expect(result.name).toBe('extreme native exact graph ordered-page query');
+      expect(result.returnedRows).toBe(128);
+      expect(result.physicalPlan).toContain('XpodRdfExtensionOperator(join.required_bgp.order_page.native)');
+      expect(result.physicalPlan).toContain('PostgresRdfNativeCustomIndexBgpOrderPage(desc:createdAt)');
+      expect(result.physicalPlan).toContain('PostgresRdfNativeCustomIndexBgpLimit');
+      expect(result.physicalPlan).not.toContain('PostgresRdf3xJoinLimit');
+      expect(pool.nativeBgpJoinCalls.length).toBeGreaterThan(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('runs text/vector fusion benchmark cases on PostgreSQL facts with configured search indexes', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-benchmark-'));
     const engine = new PostgresRdfEngine({
