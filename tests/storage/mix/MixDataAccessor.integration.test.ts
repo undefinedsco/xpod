@@ -236,6 +236,45 @@ INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.
     expect(resultQuads[0].object.value).toBe('after patch');
   });
 
+  it('materializes resources created through SPARQL UPDATE on a missing RDF document', async () => {
+    const resourceId = { path: `${baseUrl}alice/agents/__secretary__/profile/card` };
+
+    await accessor.executeSparqlUpdate(`
+INSERT DATA {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#me> <https://schema.org/name> "AI Secretary" .
+  }
+}
+`.trim(), resourceId.path);
+
+    await expect(accessor.getMetadata(resourceId)).resolves.toBeInstanceOf(RepresentationMetadata);
+    const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
+    expect(resultQuads).toHaveLength(1);
+    expect(resultQuads[0].subject.value).toBe(`${resourceId.path}#me`);
+    expect(resultQuads[0].object.value).toBe('AI Secretary');
+
+    const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+    const localRdf = await readFile(rdfLink.filePath, 'utf8');
+    expect(localRdf).toContain('AI Secretary');
+  });
+
+  it('creates missing parent containers before writing nested unstructured documents', async () => {
+    const resourceId = { path: `${baseUrl}alice/agents/__secretary__/skills/README.md` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'text/markdown';
+
+    await accessor.writeDocument(
+      resourceId,
+      guardStream(Readable.from([ '# Skills\n' ])),
+      metadata,
+    );
+
+    await expect(accessor.getMetadata(resourceId)).resolves.toBeInstanceOf(RepresentationMetadata);
+    const fileLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, metadata.contentType);
+    expect(await fileExists(fileLink.filePath)).toBe(true);
+    expect(await readFile(fileLink.filePath, 'utf8')).toBe('# Skills\n');
+  });
+
   it('applies supported SPARQL UPDATE directly to the local RDF authority file', async () => {
     const resourceId = { path: `${baseUrl}alice/embedded-update.ttl` };
     const metadata = new RepresentationMetadata(resourceId);
