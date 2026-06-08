@@ -5,6 +5,7 @@ import type { Quad, Term } from '@rdfjs/types';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
+import { rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
 import {
   RDF3X_DERIVED_INDEXES,
   RDF3X_DERIVED_TABLES,
@@ -266,6 +267,7 @@ export class Rdf3xIndex {
 
     const stats = this.stats();
     return {
+      mode: 'full',
       scannedQuads,
       uniqueTriples: stats.uniqueTriples,
       memberships: stats.membershipCount,
@@ -1436,6 +1438,7 @@ export class Rdf3xIndex {
     const indexOnly = this.canUseIndexOnlyJoin(sources, options);
     const queryPlan: string[] = [
       `Rdf3xJoinBGP(${patterns.length})`,
+      ...rdfSubjectStarJoinPlanMarker('SubjectStarJoin', patterns),
       `Rdf3xJoinOrder(${orderedSources.map((source) => `?${source.inputIndex}:${source.estimate.indexChoice}`).join('>')})`,
       ...(indexOnly ? ['Rdf3xIndexOnlyJoin'] : []),
     ];

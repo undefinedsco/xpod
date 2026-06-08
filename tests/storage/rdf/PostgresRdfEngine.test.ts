@@ -8,8 +8,14 @@ import {
   PostgresRdfEngine,
   buildRdfModelsBenchmarkSeed,
   defaultSyntheticMessagesForRdfModelsScale,
+  rdfModelsBenchmarkCasesForProfile,
+  rdfModelsQueryBenchmarkCasesForProfile,
+  rdfModelsPostgresMaterializedQueryBenchmarkCaseNames,
+  rdfModelsPostgresQueryBenchmarkCasesForProfile,
+  rdfModelsSearchFusionQueryBenchmarkCaseNames,
   rdfModelsBenchmarkSyntheticPodCount,
   runRdfModelsPostgresBenchmark,
+  seedRdfModelsSearchFusionIndexes,
   type RdfPgAccelerationProfile,
   type RdfQuery,
 } from '../../../src/storage/rdf';
@@ -19,6 +25,7 @@ const { literal, namedNode, quad } = DataFactory;
 
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
+const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
 const CONTENT = 'http://rdfs.org/sioc/ns#content';
 const PRIORITY = 'https://undefineds.co/ns#priority';
 const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
@@ -33,6 +40,110 @@ function stringList(value: unknown): string[] {
 }
 
 describe('PostgresRdfEngine', () => {
+  it('covers shared models resource surfaces in the RDF benchmark definitions', () => {
+    const scanCaseNames = new Set(rdfModelsBenchmarkCasesForProfile('default').map((testCase) => testCase.name));
+    const queryCaseNames = new Set(rdfModelsQueryBenchmarkCasesForProfile('default').map((testCase) => testCase.name));
+
+    for (const caseName of [
+      'list chats',
+      'list tasks',
+      'list threads by chat',
+      'threads by modeled chat relation',
+      'list threads by task',
+      'messages by modeled thread relation',
+      'chat latest message pointer',
+      'list messages by thread',
+      'latest message',
+      'latest run',
+      'pending runs',
+      'running runs',
+      'runs by workspace',
+      'runs by numeric priority',
+      'run with steps',
+      'task materialization due time',
+      'cron tasks due time',
+      'waiting input runs',
+      'runs by lease owner',
+      'search message literals',
+      'load by exact id',
+      'acl graph prefix scoped query',
+      'load webid profile',
+      'profile public read acl',
+      'profile public read acr',
+      'list issues',
+      'pending approvals',
+      'active autonomy grants',
+      'list inbox notifications',
+      'list providers',
+      'models by provider',
+      'credentials by provider',
+      'list agents',
+      'list contacts',
+      'list favorites',
+      'list sessions',
+      'active sessions',
+      'audit entries by actor',
+      'list settings',
+      'sensitive settings',
+      'list ai configs',
+      'active vector stores',
+      'indexed files by status',
+      'running agent statuses',
+      'oauth credentials expiring',
+      'reply messages',
+      'routed messages by target agent',
+    ]) {
+      expect(scanCaseNames.has(caseName), `${caseName} should be in shared models scan benchmark cases`).toBe(true);
+    }
+
+    for (const caseName of [
+      'latest message by thread query',
+      'thread message keyset page query',
+      'thread context window query',
+      'modeled thread message page query',
+      'chat latest message hydration query',
+      'thread chat hydration query',
+      'next queued run by workspace query',
+      'run steps by run query',
+      'task run execution detail query',
+      'task materialization active due query',
+      'scheduled task trigger query',
+      'leased running run query',
+      'provider model credential join query',
+      'provider model credential VALUES join query',
+      'provider model credential ordered join query',
+      'ai credential selection query',
+      'provider model credential count query',
+      'provider credential grouped count query',
+      'provider credential single-pattern grouped count query',
+      'provider credential fail count aggregate query',
+      'oauth credential expiry query',
+      'profile acl authorization join query',
+      'profile acr authorization join query',
+      'profile inbox activity join query',
+      'approval grant action match query',
+      'settings owner category query',
+      'favorite target chat join query',
+      'contact entity profile join query',
+      'active session thread hydration query',
+      'message reply chain query',
+      'routed message agent query',
+      'audit approval policy trace query',
+      'ai config embedding model query',
+      'vector indexed file store query',
+      'message count by thread with having',
+      'queued run priority numeric aggregate',
+      'message score by thread numeric aggregate',
+      'message join count distinct',
+    ]) {
+      expect(queryCaseNames.has(caseName), `${caseName} should be in shared models query benchmark cases`).toBe(true);
+    }
+
+    expect(rdfModelsPostgresQueryBenchmarkCasesForProfile('fusion').map((testCase) => testCase.name)).toEqual(
+      rdfModelsSearchFusionQueryBenchmarkCaseNames(),
+    );
+  });
+
   it('stores RDF facts asynchronously while preserving datatype and language terms', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-'));
     const engine = new PostgresRdfEngine({
@@ -115,6 +226,103 @@ describe('PostgresRdfEngine', () => {
       } finally {
         await reopened.close();
       }
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports PostgreSQL facts histogram distributions for planner cost input', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-facts-histogram-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const messageType = namedNode('https://type/Message');
+    const tag = namedNode('https://p/tag');
+    const chatGraph = namedNode('https://g/chat');
+    const taskGraph = namedNode('https://g/task');
+    const message1 = namedNode('https://message/1');
+    const message2 = namedNode('https://message/2');
+    const task1 = namedNode('https://task/1');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, rdfType, messageType, chatGraph),
+        quad(message2, rdfType, messageType, chatGraph),
+        quad(message1, namedNode(STATUS), literal('open'), chatGraph),
+        quad(message2, namedNode(STATUS), literal('open'), chatGraph),
+        quad(message1, tag, literal('alpha', 'en'), chatGraph),
+        quad(message1, tag, literal('beta', 'en'), chatGraph),
+        quad(task1, namedNode(STATUS), literal('open'), taskGraph),
+        quad(task1, namedNode(PRIORITY), literal('10', namedNode(XSD_INTEGER)), taskGraph),
+      ]);
+
+      const facts = (await engine.storageStats()).facts;
+
+      expect(facts.literalDatatypeDistribution[0]).toMatchObject({
+        datatype: XSD_STRING,
+        termCount: 1,
+        objectQuadCount: 3,
+      });
+      expect(facts.literalDatatypeDistribution).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          datatype: 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString',
+          termCount: 2,
+          objectQuadCount: 2,
+        }),
+        expect.objectContaining({
+          datatype: XSD_INTEGER,
+          termCount: 1,
+          objectQuadCount: 1,
+        }),
+      ]));
+      expect(facts.cardinalityDistributions.graphs[0]).toMatchObject({
+        graph: {
+          value: chatGraph.value,
+          kind: 'iri',
+        },
+        quadCount: 6,
+        distinctSubjects: 2,
+        distinctPredicates: 3,
+        distinctObjects: 4,
+      });
+      expect(facts.cardinalityDistributions.predicates[0]).toMatchObject({
+        predicate: {
+          value: STATUS,
+          kind: 'iri',
+        },
+        quadCount: 3,
+        graphCount: 2,
+        distinctSubjects: 3,
+        distinctObjects: 1,
+      });
+      expect(facts.cardinalityDistributions.predicateObjects[0]).toMatchObject({
+        predicate: {
+          value: STATUS,
+        },
+        object: {
+          value: 'open',
+          kind: 'literal',
+          datatype: XSD_STRING,
+        },
+        quadCount: 3,
+        graphCount: 2,
+        distinctSubjects: 3,
+      });
+      expect(facts.cardinalityDistributions.subjectPredicates[0]).toMatchObject({
+        subject: {
+          value: message1.value,
+        },
+        predicate: {
+          value: tag.value,
+        },
+        quadCount: 2,
+        graphCount: 1,
+        distinctObjects: 2,
+      });
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -227,9 +435,75 @@ describe('PostgresRdfEngine', () => {
       expect(join.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
       expect(join.metrics.plan.some((entry) => entry.startsWith('PostgresRdf3xJoin('))).toBe(true);
       expect(join.metrics.plan).not.toContain('PostgresRdf3xFallback');
+      expect(join.metrics.explain?.planner).toMatchObject({
+        selectedPath: 'rdf3x',
+        reasons: expect.arrayContaining([
+          'rdf3x-sql-path-selected',
+          'join-order-by-pattern-cardinality',
+        ]),
+        estimateInputs: expect.arrayContaining([
+          'facts.exactPatternCounts',
+        ]),
+        availableStats: expect.arrayContaining([
+          'facts.cardinalityDistributions',
+          'rdf3x.projectionStats',
+        ]),
+      });
 
       const files = await readdir(dataDir);
       expect(files.some((entry) => entry.includes('rdf-cache.sqlite'))).toBe(false);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks PostgreSQL RDF-3X subject-star joins for product detail queries', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-subject-star-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const thread = namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1');
+    const message = namedNode(`${graph.value}#msg_1`);
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message, namedNode(THREAD), thread, graph),
+        quad(message, namedNode(STATUS), literal('open'), graph),
+        quad(message, namedNode(PRIORITY), literal('5', namedNode(XSD_INTEGER)), graph),
+      ]);
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: thread,
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: { variable: 'status' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        select: ['message', 'status', 'priority'],
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(result.metrics.plan.some((entry) => entry.startsWith('PostgresRdf3xJoin('))).toBe(true);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -383,6 +657,102 @@ describe('PostgresRdfEngine', () => {
 
       const aliceAgain = await engine.query(queryForScope('principal:alice'));
       expect(aliceAgain.metrics.plan).toContain('PostgresResultCacheHit');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 2,
+        scopeCount: 2,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('isolates and invalidates PostgreSQL query result cache entries by structured access scope', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-access-scope-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const accessScope = (permissionVersion: string, allowedGraphUrls = [graph.value, 'https://pod.example/alice/.data/profile/card']) => ({
+      principal: 'https://id.example/alice/profile/card#me',
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read',
+      authorizationModel: 'acr',
+      permissionVersion,
+      allowedGraphUrls,
+    });
+    const queryForScope = (scope: ReturnType<typeof accessScope>): RdfQuery => ({
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: { scope },
+    });
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const v1 = await engine.query(queryForScope(accessScope('acl-v1')));
+      expect(v1.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(v1.metrics.plan).toContain('PostgresResultCacheStore');
+      expect(v1.metrics.explain).toMatchObject({
+        engine: 'postgres-rdf',
+        cache: {
+          result: {
+            status: 'miss',
+            stored: true,
+          },
+          materialized: {
+            status: 'not-applicable',
+          },
+          scope: {
+            principal: 'https://id.example/alice/profile/card#me',
+            basePath: 'https://pod.example/alice/.data/',
+            mode: 'read',
+            authorizationModel: 'acr',
+            permissionVersion: 'acl-v1',
+          },
+        },
+      });
+      expect(v1.metrics.explain?.factsDataVersion).toBeGreaterThan(0);
+      expect(v1.metrics.explain?.cache?.scope?.hash).toEqual(expect.any(String));
+      expect(v1.metrics.explain?.cache?.scope?.shape).toEqual(expect.any(String));
+
+      const v1SameScopeDifferentOrder = await engine.query(queryForScope(accessScope(
+        'acl-v1',
+        ['https://pod.example/alice/.data/profile/card', graph.value],
+      )));
+      expect(v1SameScopeDifferentOrder.metrics.plan).toContain('PostgresResultCacheHit');
+      expect(v1SameScopeDifferentOrder.metrics.explain?.cache?.result).toMatchObject({
+        status: 'hit',
+      });
+
+      const v2 = await engine.query(queryForScope(accessScope('acl-v2')));
+      expect(v2.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(v2.metrics.plan).toContain('PostgresResultCacheStore');
+      expect(v2.metrics.plan).not.toContain('PostgresResultCacheHit');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 2,
+        scopeCount: 2,
+      });
+
+      const deleted = await engine.invalidateQueryResultCache(accessScope('acl-v1'));
+      expect(deleted).toBe(1);
+
+      const afterInvalidation = await engine.query(queryForScope(accessScope('acl-v1')));
+      expect(afterInvalidation.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(afterInvalidation.metrics.plan).toContain('PostgresResultCacheStore');
+
+      const v2StillCached = await engine.query(queryForScope(accessScope('acl-v2')));
+      expect(v2StillCached.metrics.plan).toContain('PostgresResultCacheHit');
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 2,
         scopeCount: 2,
@@ -601,6 +971,367 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('uses PostgreSQL materialized result cache by facts version without populating the ordinary result cache', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-materialized-cache-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const query: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      orderBy: [{ variable: 'message' }],
+      cache: {
+        materialized: { key: 'chat/default/open-messages', version: 'v1' },
+      },
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message1, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(query);
+      expect(first.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(first.metrics.plan).toContain('PostgresMaterializedResultMiss');
+      expect(first.metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect(first.metrics.plan.join('\n')).not.toContain('PostgresResultCacheStore');
+
+      const second = await engine.query(query);
+      expect(second.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(second.metrics.plan).toContain('PostgresMaterializedResultHit');
+      expect(second.metrics.plan.join('\n')).not.toContain('PostgresResultCacheHit');
+      expect(second.metrics.explain).toMatchObject({
+        engine: 'postgres-rdf',
+        cache: {
+          materialized: {
+            status: 'hit',
+          },
+          result: {
+            status: 'not-applicable',
+          },
+        },
+      });
+      expect(second.metrics.explain?.planner).toMatchObject({
+        selectedPath: 'materialized-result-cache',
+        reasons: expect.arrayContaining([
+          'materialized-result-cache-hit',
+        ]),
+        estimateInputs: expect.arrayContaining([
+          'facts.dataVersion',
+          'query.cache.scope',
+        ]),
+      });
+      expect(second.metrics.explain?.cache?.materialized?.key).toEqual(expect.any(String));
+      expect(second.metrics.explain?.cache?.materialized?.factsDataVersion).toBeGreaterThan(0);
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({
+        entryCount: 1,
+        scopeCount: 1,
+      });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 0,
+      });
+
+      await engine.put(quad(message2, namedNode(STATUS), literal('open'), graph));
+      const afterWrite = await engine.query(query);
+      expect(afterWrite.bindings.map((binding) => binding.message.value)).toEqual([message1.value, message2.value]);
+      expect(afterWrite.metrics.plan).toContain('PostgresMaterializedResultMiss');
+      expect(afterWrite.metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect(afterWrite.metrics.plan).not.toContain('PostgresMaterializedResultHit');
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({
+        entryCount: 1,
+        scopeCount: 1,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('isolates and invalidates PostgreSQL materialized result cache entries by structured access scope', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-materialized-cache-scope-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const accessScope = (principal: string) => ({
+      principal,
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read',
+      authorizationModel: 'acr',
+      permissionVersion: 'acl-v1',
+      allowedGraphUrls: [graph.value],
+    });
+    const queryForScope = (scope: ReturnType<typeof accessScope>): RdfQuery => ({
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: {
+        scope,
+        materialized: 'chat/default/open-messages',
+      },
+    });
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const alice = await engine.query(queryForScope(accessScope('https://id.example/alice/profile/card#me')));
+      expect(alice.metrics.plan).toContain('PostgresMaterializedResultMiss');
+      expect(alice.metrics.plan).toContain('PostgresMaterializedResultStore');
+
+      const bob = await engine.query(queryForScope(accessScope('https://id.example/bob/profile/card#me')));
+      expect(bob.metrics.plan).toContain('PostgresMaterializedResultMiss');
+      expect(bob.metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect(bob.metrics.plan).not.toContain('PostgresMaterializedResultHit');
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({
+        entryCount: 2,
+        scopeCount: 2,
+      });
+
+      const aliceAgain = await engine.query(queryForScope(accessScope('https://id.example/alice/profile/card#me')));
+      expect(aliceAgain.metrics.plan).toContain('PostgresMaterializedResultHit');
+
+      const deleted = await engine.invalidateQueryResultCache(accessScope('https://id.example/alice/profile/card#me'));
+      expect(deleted).toBe(1);
+      const aliceAfterInvalidation = await engine.query(queryForScope(accessScope('https://id.example/alice/profile/card#me')));
+      expect(aliceAfterInvalidation.metrics.plan).toContain('PostgresMaterializedResultMiss');
+      expect(aliceAfterInvalidation.metrics.plan).toContain('PostgresMaterializedResultStore');
+      const bobStillCached = await engine.query(queryForScope(accessScope('https://id.example/bob/profile/card#me')));
+      expect(bobStillCached.metrics.plan).toContain('PostgresMaterializedResultHit');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('clears PostgreSQL result caches when ACL or ACR sources change', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-access-cache-clear-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const aclGraph = namedNode('https://pod.example/alice/profile/card.acl');
+    const acrGraph = namedNode('https://pod.example/alice/profile/.acr');
+    const accessScope = {
+      principal: 'https://id.example/alice/profile/card#me',
+      basePath: 'https://pod.example/alice/',
+      mode: 'read',
+      authorizationModel: 'acr',
+      permissionVersion: 'acl-v1',
+      allowedGraphUrls: [graph.value],
+    };
+    const resultQuery: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: { scope: accessScope },
+    };
+    const materializedQuery: RdfQuery = {
+      ...resultQuery,
+      cache: {
+        scope: accessScope,
+        materialized: 'chat/default/open-messages',
+      },
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      expect((await engine.query(resultQuery)).metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.query(materializedQuery)).metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
+
+      await engine.replaceSource([
+        quad(
+          namedNode(`${aclGraph.value}#public`),
+          namedNode('http://www.w3.org/ns/auth/acl#mode'),
+          namedNode('http://www.w3.org/ns/auth/acl#Read'),
+          aclGraph,
+        ),
+      ], {
+        source: aclGraph.value,
+        workspace: 'https://pod.example/alice/profile/',
+        localPath: 'profile/card.acl',
+        contentType: 'text/turtle',
+        sourceVersion: 'acl-v1',
+      });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 0 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 0 });
+
+      expect((await engine.query(resultQuery)).metrics.plan).toContain('PostgresResultCacheStore');
+      expect((await engine.query(materializedQuery)).metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 1 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 1 });
+
+      await engine.put(quad(
+        namedNode(`${acrGraph.value}#publicReadAccess`),
+        namedNode('http://www.w3.org/ns/solid/acp#allow'),
+        namedNode('http://www.w3.org/ns/solid/acp#Read'),
+        acrGraph,
+      ));
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({ entryCount: 0 });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({ entryCount: 0 });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prunes PostgreSQL materialized result cache entries to the configured profile', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-materialized-cache-prune-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      materializedResultCacheMaxEntries: 1,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const queryForStatus = (status: string, materialized: string): RdfQuery => ({
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal(status),
+        },
+      ],
+      select: ['message'],
+      cache: { materialized },
+    });
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('closed'), graph),
+      ]);
+
+      const open = await engine.query(queryForStatus('open', 'chat/default/open-messages'));
+      expect(open.metrics.plan).toContain('PostgresMaterializedResultStore');
+      const closed = await engine.query(queryForStatus('closed', 'chat/default/closed-messages'));
+      expect(closed.metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({
+        entryCount: 1,
+        scopeCount: 1,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records PostgreSQL query template cache hits without caching results', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-template-cache-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      queryTemplateCacheMaxEntries: 1,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const openQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+    };
+    const closedQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('closed'),
+        },
+      ],
+      select: ['message'],
+    };
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('closed'), graph),
+      ]);
+
+      const open = await engine.query(openQuery);
+      expect(open.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(open.metrics.plan.join('\n')).toContain('PostgresQueryTemplateCacheMiss');
+      expect(open.metrics.plan.join('\n')).not.toContain('PostgresResultCacheHit');
+
+      const closed = await engine.query(closedQuery);
+      expect(closed.bindings.map((binding) => binding.message.value)).toEqual([message2.value]);
+      expect(closed.metrics.plan.join('\n')).toContain('PostgresQueryTemplateCacheHit');
+      expect(closed.metrics.plan.join('\n')).not.toContain('PostgresResultCacheHit');
+      expect(closed.metrics.explain).toMatchObject({
+        engine: 'postgres-rdf',
+        cache: {
+          template: {
+            status: 'hit',
+            maxEntries: 1,
+          },
+          result: {
+            status: 'disabled',
+            maxEntries: expect.any(Number),
+          },
+        },
+      });
+      expect(closed.metrics.explain?.cache?.template?.key).toEqual(expect.any(String));
+
+      const distinctClosed = await engine.query({
+        ...closedQuery,
+        distinct: true,
+      });
+      expect(distinctClosed.bindings.map((binding) => binding.message.value)).toEqual([message2.value]);
+      expect(distinctClosed.metrics.plan.join('\n')).toContain('PostgresQueryTemplateCacheMiss');
+      expect((await engine.storageStats()).queryTemplateCache).toMatchObject({
+        entryCount: 1,
+        hitCount: 1,
+        missCount: 2,
+        evictionCount: 1,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to PostgreSQL facts for query shapes outside the RDF-3X fast path', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-facts-query-'));
     const engine = new PostgresRdfEngine({
@@ -643,6 +1374,13 @@ describe('PostgresRdfEngine', () => {
       expect(result.metrics.plan).toContain('PostgresFactsQuery');
       expect(result.metrics.plan).toContain('PostgresFactsFilter(?content$regex)');
       expect(result.metrics.plan).not.toContain('PostgresRdf3xFallback');
+      expect(result.metrics.explain?.planner).toMatchObject({
+        selectedPath: 'facts',
+        reasons: expect.arrayContaining([
+          'facts-fallback-selected',
+          'regex-filter-requires-facts-fallback',
+        ]),
+      });
       const files = await readdir(dataDir);
       expect(files.some((entry) => entry.includes('rdf-cache.sqlite'))).toBe(false);
     } finally {
@@ -860,6 +1598,7 @@ describe('PostgresRdfEngine', () => {
     const graph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
     const run1 = namedNode(`${graph.value}#run_1`);
     const run2 = namedNode(`${graph.value}#run_2`);
+    const run3 = namedNode(`${graph.value}#run_3`);
 
     try {
       await engine.open();
@@ -868,6 +1607,11 @@ describe('PostgresRdfEngine', () => {
       expect(firstRefresh.rdf3x).toMatchObject({
         factsDataVersion: 1,
         syncedWithFacts: true,
+      });
+      expect(firstRefresh.rdf3x?.rebuild).toMatchObject({
+        mode: 'incremental',
+        dirtyGraphs: 1,
+        factsDataVersion: 1,
       });
       expect(firstRefresh.rdf3x?.plannerStats?.analyzedTables).toEqual(expect.arrayContaining([
         'rdf_terms',
@@ -912,6 +1656,62 @@ describe('PostgresRdfEngine', () => {
         stats: expect.objectContaining({
           factsDataVersion: 1,
         }),
+      });
+
+      const incrementalRefresh = await engine.refreshDerivedIndexes();
+      expect(incrementalRefresh.rdf3x?.rebuild).toMatchObject({
+        mode: 'incremental',
+        dirtyGraphs: 1,
+        factsDataVersion: 2,
+      });
+      const syncedAfterIncremental = await engine.storageStats();
+      expect(syncedAfterIncremental.rdf3x).toMatchObject({
+        syncedWithFacts: true,
+        stats: expect.objectContaining({
+          factsDataVersion: 2,
+          membershipCount: 2,
+          graphCount: 1,
+        }),
+      });
+
+      const delta = await engine.applyDelta(
+        [{ graph, subject: run1 }],
+        [quad(run3, namedNode(STATUS), literal('open'), graph)],
+      );
+      expect(delta).toEqual({ deletedRows: 1, insertedRows: 1 });
+      const deltaRefresh = await engine.refreshDerivedIndexes();
+      expect(deltaRefresh.rdf3x?.rebuild).toMatchObject({
+        mode: 'incremental',
+        dirtyGraphs: 1,
+        factsDataVersion: 3,
+      });
+      const updatedQuery = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'run' },
+            predicate: namedNode(STATUS),
+            object: { variable: 'status' },
+          },
+        ],
+        orderBy: [{ variable: 'run' }],
+      });
+      expect(updatedQuery.bindings.map((binding) => binding.run.value)).toEqual([run2.value, run3.value]);
+
+      const incrementalStats = (await engine.storageStats()).rdf3x?.stats;
+      const fullRepair = await engine.refreshDerivedIndexes({ mode: 'full' });
+      expect(fullRepair.rdf3x?.rebuild).toMatchObject({
+        mode: 'full',
+        factsDataVersion: 3,
+      });
+      const fullStats = (await engine.storageStats()).rdf3x?.stats;
+      expect(fullStats).toMatchObject({
+        uniqueTriples: incrementalStats?.uniqueTriples,
+        membershipCount: incrementalStats?.membershipCount,
+        graphCount: incrementalStats?.graphCount,
+        pairProjectionRows: incrementalStats?.pairProjectionRows,
+        termProjectionRows: incrementalStats?.termProjectionRows,
+        factsDataVersion: incrementalStats?.factsDataVersion,
       });
     } finally {
       await engine.close();
@@ -1736,6 +2536,82 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('can defer native custom-index build until after bulk seed', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-deferred-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+      deferPgCustomIndexInitialization: true,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+
+    const countOpenMessages: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      aggregates: [
+        {
+          type: 'count',
+          as: 'messageCount',
+          variable: 'message',
+        },
+      ],
+      select: ['messageCount'],
+      cache: { mode: 'bypass' },
+    };
+
+    try {
+      await engine.open();
+      const deferredStats = (await engine.storageStats()).pgAcceleration;
+      expect(pool.customIndexStatements).toHaveLength(0);
+      expect(deferredStats).toMatchObject({
+        profile: 'pg-custom-index',
+        enabled: true,
+        fallbackReason: 'index-build-deferred',
+      });
+      expect(deferredStats?.activeOperators ?? []).toContain('aggregate.count');
+      expect(deferredStats?.activeOperators ?? []).not.toContain('index.xpod_rdf_perm.count_any');
+      expect(deferredStats?.customIndexes).toBeUndefined();
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+      ]);
+
+      const beforeBuild = await engine.query(countOpenMessages);
+      expect(beforeBuild.bindings[0].messageCount.value).toBe('2');
+      expect(beforeBuild.metrics.plan).not.toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.count_any)');
+      expect(pool.nativeCountAnyCalls).toHaveLength(0);
+
+      const readyStats = await engine.ensurePgCustomIndexes();
+      expect(pool.customIndexStatements).toHaveLength(6);
+      expect(readyStats).toMatchObject({
+        profile: 'pg-custom-index',
+        enabled: true,
+      });
+      expect(readyStats.fallbackReason).toBeUndefined();
+      expect(readyStats.activeOperators ?? []).toContain('index.xpod_rdf_perm.count_any');
+      expect(readyStats.customIndexes).toHaveLength(6);
+
+      const afterBuild = await engine.query(countOpenMessages);
+      expect(afterBuild.bindings[0].messageCount.value).toBe('2');
+      expect(afterBuild.metrics.plan).toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.count_any)');
+      expect(afterBuild.metrics.plan).toContain('PostgresRdfNativeCustomIndexCountAny(POS)');
+      expect(pool.nativeCountAnyCalls).toHaveLength(1);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('pushes bounded graph-prefix joins into native custom-index values', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-graph-prefix-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
@@ -2180,6 +3056,10 @@ describe('PostgresRdfEngine', () => {
       expect(report.warmupIterations).toBe(1);
       expect(report.planMatched).toBe(true);
       expect(report.failedPlanCases).toEqual([]);
+      const smallQueryCaseCount = rdfModelsPostgresQueryBenchmarkCasesForProfile('default')
+        .filter((testCase) => testCase.minScale === 'small')
+        .length;
+      expect(report.queryCases).toHaveLength(smallQueryCaseCount);
       expect(report.storage.derivedIndexProfile).toBe('rdf3x');
       expect(report.storage.rdf3x?.syncedWithFacts).toBe(true);
       expect(report.storage.pgAcceleration).toMatchObject({
@@ -2190,12 +3070,151 @@ describe('PostgresRdfEngine', () => {
       expect(report.cases.every((testCase) => testCase.durationsMs.length === 1)).toBe(true);
       expect(report.queryCases.every((testCase) => testCase.durationsMs.length === 1)).toBe(true);
 
+      for (const caseName of [
+        'threads by modeled chat relation',
+        'messages by modeled thread relation',
+        'chat latest message pointer',
+        'cron tasks due time',
+        'waiting input runs',
+        'runs by lease owner',
+        'list providers',
+        'models by provider',
+        'credentials by provider',
+        'list agents',
+        'list contacts',
+        'list favorites',
+        'list sessions',
+        'active sessions',
+        'list settings',
+        'sensitive settings',
+        'list ai configs',
+        'active vector stores',
+        'indexed files by status',
+        'running agent statuses',
+        'oauth credentials expiring',
+        'reply messages',
+        'routed messages by target agent',
+      ]) {
+        const result = report.cases.find((testCase) => testCase.name === caseName);
+        expect(result, `${caseName} should execute in the PostgreSQL models scan benchmark`).toBeDefined();
+        expect(result?.planMatched).toBe(true);
+        expect(result?.returnedRows).toBeGreaterThan(0);
+      }
+
+      const materializedCaseNames = rdfModelsPostgresMaterializedQueryBenchmarkCaseNames();
+      const materializedCases = report.queryCases.filter((testCase) => materializedCaseNames.includes(testCase.name));
+      expect(materializedCases.map((testCase) => testCase.name)).toEqual(materializedCaseNames);
+      expect(materializedCases.every((testCase) => testCase.planMatched)).toBe(true);
+      expect(materializedCases.every((testCase) => testCase.physicalPlan.includes('PostgresMaterializedResultHit'))).toBe(true);
+      expect(materializedCases.every((testCase) => testCase.physicalPlan.some((entry) => entry.startsWith('PostgresQueryTemplateCacheHit')))).toBe(true);
+      expect(report.storage.materializedResultCache?.entryCount).toBeGreaterThanOrEqual(materializedCaseNames.length);
+      expect(report.storage.queryResultCache?.entryCount).toBe(0);
+      expect(report.storage.queryTemplateCache?.hitCount).toBeGreaterThan(0);
+
+      for (const caseName of [
+        'modeled thread message page query',
+        'chat latest message hydration query',
+        'thread chat hydration query',
+        'task run execution detail query',
+        'scheduled task trigger query',
+        'leased running run query',
+        'provider model credential join query',
+        'provider model credential VALUES join query',
+        'provider model credential ordered join query',
+        'ai credential selection query',
+        'provider model credential count query',
+        'provider credential grouped count query',
+        'provider credential single-pattern grouped count query',
+        'provider credential fail count aggregate query',
+        'oauth credential expiry query',
+        'settings owner category query',
+        'favorite target chat join query',
+        'contact entity profile join query',
+        'active session thread hydration query',
+        'message reply chain query',
+        'routed message agent query',
+        'ai config embedding model query',
+        'vector indexed file store query',
+        'queued run priority numeric aggregate',
+      ]) {
+        const result = report.queryCases.find((testCase) => testCase.name === caseName);
+        expect(result, `${caseName} should be covered by the PostgreSQL models benchmark`).toBeDefined();
+        expect(result?.planMatched).toBe(true);
+        expect(result?.returnedRows).toBeGreaterThan(0);
+        expect(result?.physicalPlan.some((entry) => entry.startsWith('PostgresRdf3x'))).toBe(true);
+        expect(result?.physicalPlan).not.toContain('PostgresFactsQuery');
+      }
+
       const numericAggregate = report.queryCases.find((testCase) => testCase.name === 'message score by thread numeric aggregate');
       expect(numericAggregate).toBeDefined();
       expect(numericAggregate?.planMatched).toBe(true);
       expect(numericAggregate?.returnedRows).toBeGreaterThan(0);
       expect(numericAggregate?.physicalPlan).toContain('PostgresRdf3xGroupAggregate');
       expect(numericAggregate?.physicalPlan).not.toContain('PostgresFactsQuery');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs text/vector fusion benchmark cases on PostgreSQL facts with configured search indexes', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-benchmark-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+    });
+
+    try {
+      await engine.open();
+      await engine.put(buildRdfModelsBenchmarkSeed({
+        syntheticMessages: defaultSyntheticMessagesForRdfModelsScale('small'),
+        syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
+        caseProfile: 'fusion',
+      }));
+      seedRdfModelsSearchFusionIndexes(engine);
+
+      const report = await runRdfModelsPostgresBenchmark(engine, {
+        scale: 'small',
+        iterations: 1,
+        warmupIterations: 0,
+        caseProfile: 'fusion',
+      });
+
+      expect(report.planMatched).toBe(true);
+      expect(report.failedPlanCases).toEqual([]);
+      expect(report.cases).toHaveLength(0);
+      expect(report.queryCases.map((testCase) => testCase.name)).toEqual(rdfModelsSearchFusionQueryBenchmarkCaseNames());
+
+      const fusion = report.queryCases[0];
+      expect(fusion.returnedRows).toBe(2);
+      expect(fusion.indexChoices).toEqual(expect.arrayContaining(['text-chunk', 'vector-chunk']));
+      expect(fusion.physicalPlan.some((entry) => entry.startsWith('TextSearch('))).toBe(true);
+      expect(fusion.physicalPlan.some((entry) => entry.startsWith('VectorSearch('))).toBe(true);
+      expect(fusion.physicalPlan.some((entry) => entry.startsWith('PostgresFactsScan('))).toBe(true);
+      expect(fusion.physicalPlan.some((entry) => entry.startsWith('PostgresFactsBind(?fusionScore:='))).toBe(true);
+      expect(fusion.physicalPlan).toContain('PostgresFactsSort(desc:fusionScore,asc:message)');
+      expect(fusion.physicalPlan.join('\n')).not.toContain('PostgresResultCache');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects PostgreSQL text/vector fusion queries before cache lookup when search indexes are not configured', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-missing-index-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: true,
+    });
+
+    try {
+      await engine.open();
+      const [fusion] = rdfModelsPostgresQueryBenchmarkCasesForProfile('fusion');
+      await expect(engine.query(fusion.query)).rejects.toThrow('RdfQuery textSearch requires a configured RdfTextIndex');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

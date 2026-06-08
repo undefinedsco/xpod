@@ -17,6 +17,7 @@ const SIOC_THREAD = 'http://rdfs.org/sioc/ns#Thread';
 const MEETING_MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
+const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 
 describe('RdfQueryExecutor', () => {
   let index: RdfQuadIndex;
@@ -1438,6 +1439,65 @@ describe('RdfQueryExecutor', () => {
     expect(result.bindings).toHaveLength(1);
     expect(result.bindings[0].contentSlice.value).toBe('ello');
     expect(result.metrics.plan).toContain('Bind(?start:=2,?length:=STRLEN(?content),?contentSlice:=SUBSTR(STR(?content),?start,?length))');
+  });
+
+  it('evaluates numeric BIND expressions and orders numeric literals by value', () => {
+    const result = engine.query({
+      patterns: [],
+      values: [
+        {
+          variables: ['item', 'textScore', 'vectorScore'],
+          rows: [
+            {
+              item: namedNode('https://pod.example/alice/.data/search.ttl#low'),
+              textScore: literal('10', namedNode(XSD_DECIMAL)),
+              vectorScore: literal('0', namedNode(XSD_DECIMAL)),
+            },
+            {
+              item: namedNode('https://pod.example/alice/.data/search.ttl#high'),
+              textScore: literal('2', namedNode(XSD_DECIMAL)),
+              vectorScore: literal('20', namedNode(XSD_DECIMAL)),
+            },
+          ],
+        },
+      ],
+      binds: [
+        {
+          variable: 'fusionScore',
+          expression: {
+            type: 'add',
+            expressions: [
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'textScore' } },
+                  { type: 'term', term: literal('0.4', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'vectorScore' } },
+                  { type: 'term', term: literal('0.6', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      select: ['item', 'fusionScore'],
+      orderBy: [{ variable: 'fusionScore', direction: 'desc' }],
+    });
+
+    expect(result.bindings.map((binding) => termToId(binding.item as any))).toEqual([
+      'https://pod.example/alice/.data/search.ttl#high',
+      'https://pod.example/alice/.data/search.ttl#low',
+    ]);
+    expect(result.bindings.map((binding) => binding.fusionScore.value)).toEqual(['12.8', '4']);
+    expect(result.metrics.plan).toContain(
+      'Bind(?fusionScore:=((NUM(?textScore)*0.4)+(NUM(?vectorScore)*0.6)))',
+    );
+    expect(result.metrics.plan).toContain('Sort');
   });
 
   it('evaluates optional BIND expressions inside OPTIONAL joins', () => {

@@ -3192,8 +3192,11 @@ function variablesInBindExpression(expression: RdfBindExpression): string[] {
       return [expression.variable];
     case 'lowerCase':
     case 'upperCase':
+    case 'numericValue':
       return variablesInBindExpression(expression.expression);
     case 'coalesce':
+    case 'add':
+    case 'multiply':
       return unique(expression.expressions.flatMap((item) => variablesInBindExpression(item)));
     case 'if':
       return unique([

@@ -7,6 +7,7 @@ import type { QueryOptions, QuintPattern, TermOperators } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
 import { dropRdf3xDerivedSchemaObjects } from './Rdf3xSchema';
+import { rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
 import type {
   RdfCardinalityEstimate,
   RdfCardinalityDistributions,
@@ -566,7 +567,10 @@ export class RdfQuadIndex {
     const joins: string[] = [];
     const conditions: string[] = [];
     const params: unknown[] = [];
-    const queryPlan: string[] = [`JoinBGP(${patterns.length})`];
+    const queryPlan: string[] = [
+      `JoinBGP(${patterns.length})`,
+      ...rdfSubjectStarJoinPlanMarker('SubjectStarJoin', patterns),
+    ];
     const variableColumns = new Map<string, string>();
     const variableAliases = new Map<string, string>();
     const indexChoices: string[] = [];

@@ -1861,6 +1861,26 @@ export class RdfQueryExecutor {
         return this.matchesFilters(binding, expression.condition)
           ? this.evaluateBindExpression(expression.then, binding)
           : this.evaluateBindExpression(expression.else, binding);
+      case 'numericValue': {
+        const value = this.evaluateBindExpression(expression.expression, binding);
+        const numeric = value ? finiteBindNumber(value) : undefined;
+        return numeric === undefined ? undefined : decimalLiteral(numeric);
+      }
+      case 'add': {
+        const values = expression.expressions.map((item) => this.evaluateBindNumber(item, binding));
+        return values.every((value): value is number => value !== undefined)
+          ? decimalLiteral(values.reduce((total, value) => total + value, 0))
+          : undefined;
+      }
+      case 'multiply': {
+        if (expression.expressions.length === 0) {
+          return undefined;
+        }
+        const values = expression.expressions.map((item) => this.evaluateBindNumber(item, binding));
+        return values.every((value): value is number => value !== undefined)
+          ? decimalLiteral(values.reduce((total, value) => total * value, 1))
+          : undefined;
+      }
       case 'substring': {
         const value = this.evaluateBindExpression(expression.expression, binding);
         const startTerm = this.evaluateBindExpression(expression.start, binding);
@@ -1912,6 +1932,11 @@ export class RdfQueryExecutor {
         throw new Error(`Unsupported RDF local BIND expression: ${JSON.stringify(exhaustive)}`);
       }
     }
+  }
+
+  private evaluateBindNumber(expression: RdfBindExpression, binding: RdfBindingRow): number | undefined {
+    const value = this.evaluateBindExpression(expression, binding);
+    return value ? finiteBindNumber(value) : undefined;
   }
 
   private singleScanPushdown(
@@ -3255,14 +3280,29 @@ function compareBindings(
   orderBy: NonNullable<RdfQuery['orderBy']>,
 ): number {
   for (const order of orderBy) {
-    const leftValue = left[order.variable] ? termToId(left[order.variable] as any) : '';
-    const rightValue = right[order.variable] ? termToId(right[order.variable] as any) : '';
-    const comparison = leftValue.localeCompare(rightValue);
+    const comparison = compareBindingTerms(left[order.variable], right[order.variable]);
     if (comparison !== 0) {
       return order.direction === 'desc' ? -comparison : comparison;
     }
   }
   return 0;
+}
+
+function compareBindingTerms(left: Term | undefined, right: Term | undefined): number {
+  if (!left && !right) {
+    return 0;
+  }
+  if (!left) {
+    return -1;
+  }
+  if (!right) {
+    return 1;
+  }
+  if (isNumericTerm(left) && isNumericTerm(right)) {
+    const difference = rdfNumericValue(left.value) - rdfNumericValue(right.value);
+    return difference < 0 ? -1 : difference > 0 ? 1 : 0;
+  }
+  return termToId(left as any).localeCompare(termToId(right as any));
 }
 
 function bindingKey(binding: RdfBindingRow, variables?: string[]): string {
@@ -3429,6 +3469,12 @@ function describeBindExpression(expression: RdfBindExpression): string {
       return `COALESCE(${expression.expressions.map(describeBindExpression).join(',')})`;
     case 'if':
       return `IF(${expression.condition.map(describeFilter).join('&')},${describeBindExpression(expression.then)},${describeBindExpression(expression.else)})`;
+    case 'numericValue':
+      return `NUM(${describeBindExpression(expression.expression)})`;
+    case 'add':
+      return `(${expression.expressions.map(describeBindExpression).join('+')})`;
+    case 'multiply':
+      return `(${expression.expressions.map(describeBindExpression).join('*')})`;
     case 'substring':
       return `SUBSTR(${[
         describeBindExpression(expression.expression),
@@ -3484,6 +3530,7 @@ function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
       || entry.startsWith('JoinOrder(')
       || entry.startsWith('JoinDistinct(')
       || entry.startsWith('JoinLimit')
+      || entry.startsWith('SubjectStarJoin(')
       || entry.startsWith('JoinGroupCountHaving(')
       || entry.startsWith('JoinGroupAggregateHaving(')
       || entry.startsWith('JoinGroupAggregateNumeric(')

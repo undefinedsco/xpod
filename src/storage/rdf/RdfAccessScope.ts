@@ -12,6 +12,7 @@ import type {
   RdfExistsQueryGroup,
   RdfOptionalQueryGroup,
   RdfQueryVariable,
+  RdfQueryCacheScope,
 } from './types';
 
 export type RdfAccessMode = 'read' | 'append' | 'delete' | 'write';
@@ -41,22 +42,19 @@ export function isRestrictiveRdfAccessScope(scope?: RdfAccessScope): boolean {
   );
 }
 
-export function rdfAccessCacheScope(scope?: RdfAccessScope): string | undefined {
+export function rdfAccessCacheScope(scope?: RdfAccessScope): RdfQueryCacheScope | undefined {
   if (!scope) {
     return undefined;
   }
-  const allowedGraphUrls = [...(scope.allowedGraphUrls ?? [])].sort();
-  const deniedGraphUrls = [...(scope.deniedGraphUrls ?? [])].sort();
-  const deniedGraphPrefixes = [...(scope.deniedGraphPrefixes ?? [])].sort();
-  return [
-    scope.mode,
-    scope.principal ?? 'anonymous',
-    scope.basePath,
-    scope.version ?? 'unversioned',
-    ...allowedGraphUrls.map((graph) => `allow:${graph}`),
-    ...deniedGraphUrls.map((graph) => `deny:${graph}`),
-    ...deniedGraphPrefixes.map((prefix) => `deny-prefix:${prefix}`),
-  ].join('\u001f');
+  return {
+    mode: scope.mode,
+    principal: scope.principal ?? 'anonymous',
+    basePath: scope.basePath,
+    permissionVersion: scope.version ?? 'unversioned',
+    allowedGraphUrls: scope.allowedGraphUrls,
+    deniedGraphUrls: scope.deniedGraphUrls,
+    deniedGraphPrefixes: scope.deniedGraphPrefixes,
+  };
 }
 
 export function applyRdfAccessScope(query: RdfQuery, scope?: RdfAccessScope): RdfQuery {
@@ -67,7 +65,7 @@ export function applyRdfAccessScope(query: RdfQuery, scope?: RdfAccessScope): Rd
           ...query,
           cache: {
             ...query.cache,
-            scope: query.cache?.scope ? `${query.cache.scope}\u001f${cacheScope}` : cacheScope,
+            scope: mergeRdfQueryCacheScopes(query.cache?.scope, cacheScope),
           },
         }
       : query;
@@ -81,9 +79,22 @@ export function applyRdfAccessScope(query: RdfQuery, scope?: RdfAccessScope): Rd
     ...scoped,
     cache: {
       ...scoped.cache,
-      scope: scoped.cache?.scope && cacheScope ? `${scoped.cache.scope}\u001f${cacheScope}` : cacheScope,
+      scope: mergeRdfQueryCacheScopes(scoped.cache?.scope, cacheScope),
     },
   };
+}
+
+function mergeRdfQueryCacheScopes(
+  existing: RdfQueryCacheScope | undefined,
+  access: RdfQueryCacheScope | undefined,
+): RdfQueryCacheScope | undefined {
+  if (!existing) {
+    return access;
+  }
+  if (!access) {
+    return existing;
+  }
+  return [existing, access];
 }
 
 export function filterRdfAccessGraphs(graphs: Iterable<string>, scope?: RdfAccessScope): Set<string> {

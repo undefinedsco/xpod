@@ -11,7 +11,9 @@ import {
   rdfModelsBenchmarkScaleSatisfied,
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
+  rdfModelsBenchmarkProfileRequiresSearchFusion,
   runRdfModelsPostgresBenchmark,
+  seedRdfModelsSearchFusionIndexes,
   type RdfBenchmarkCaseProfile,
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
@@ -31,6 +33,7 @@ interface CliOptions {
   syntheticPodCount: number;
   caseProfile: RdfBenchmarkCaseProfile;
   rdfAccelerationProfile: RdfPgAccelerationProfile;
+  deferPgCustomIndexBuild: boolean;
 }
 
 interface BenchmarkPaths {
@@ -51,6 +54,12 @@ async function main(): Promise<void> {
     await assertWritableBenchmarkTarget(engine, options);
     const seedQuads = buildRdfModelsBenchmarkSeed(options);
     await engine.put(seedQuads);
+    if (rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile)) {
+      seedRdfModelsSearchFusionIndexes(engine);
+    }
+    if (options.deferPgCustomIndexBuild) {
+      await engine.ensurePgCustomIndexes();
+    }
     const report = await runRdfModelsPostgresBenchmark(engine, {
       scale: options.scale,
       iterations: options.iterations,
@@ -104,6 +113,7 @@ function parseArgs(args: string[]): CliOptions {
   let syntheticMessages: number | undefined;
   let caseProfile: RdfBenchmarkCaseProfile = 'default';
   let rdfAccelerationProfile: RdfPgAccelerationProfile = 'baseline';
+  let deferPgCustomIndexBuild: boolean | undefined;
 
   for (const arg of args) {
     if (arg.startsWith('--out=')) {
@@ -162,6 +172,14 @@ function parseArgs(args: string[]): CliOptions {
       rdfAccelerationProfile = value;
       continue;
     }
+    if (arg === '--deferPgCustomIndexBuild') {
+      deferPgCustomIndexBuild = true;
+      continue;
+    }
+    if (arg === '--noDeferPgCustomIndexBuild') {
+      deferPgCustomIndexBuild = false;
+      continue;
+    }
     if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -186,6 +204,7 @@ function parseArgs(args: string[]): CliOptions {
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
     caseProfile,
     rdfAccelerationProfile,
+    deferPgCustomIndexBuild: deferPgCustomIndexBuild ?? (driver === 'pg' && rdfAccelerationProfile === 'pg-custom-index'),
   };
 }
 
@@ -213,7 +232,7 @@ function isRdfPgAccelerationProfile(value: string): value is RdfPgAccelerationPr
 }
 
 function isRdfBenchmarkCaseProfile(value: string): value is RdfBenchmarkCaseProfile {
-  return value === 'default' || value === 'extreme' || value === 'all';
+  return value === 'default' || value === 'extreme' || value === 'fusion' || value === 'all';
 }
 
 function rdfAccelerationProfileMatched(profile: RdfPgAccelerationProfile, storage: RdfEngineStorageStats): boolean {
@@ -253,12 +272,20 @@ function createBenchmarkPaths(options: CliOptions): BenchmarkPaths {
 }
 
 function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEngine {
+  const searchIndexes = rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile)
+    ? {
+        textIndex: { path: ':memory:' },
+        vectorIndex: { path: ':memory:' },
+      }
+    : {};
   if (options.driver === 'pglite') {
     return new PostgresRdfEngine({
       driver: 'pglite',
       dataDir: paths.pgliteDataDir,
       queryResultCacheEnabled: false,
       rdfAccelerationProfile: options.rdfAccelerationProfile,
+      deferPgCustomIndexInitialization: options.deferPgCustomIndexBuild,
+      ...searchIndexes,
     });
   }
   return new PostgresRdfEngine({
@@ -266,6 +293,8 @@ function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEn
     connectionString: options.connectionString,
     queryResultCacheEnabled: false,
     rdfAccelerationProfile: options.rdfAccelerationProfile,
+    deferPgCustomIndexInitialization: options.deferPgCustomIndexBuild,
+    ...searchIndexes,
   });
 }
 
@@ -312,6 +341,7 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     syntheticPodCount: options.syntheticPodCount,
     caseProfile: options.caseProfile,
     rdfAccelerationProfile: options.rdfAccelerationProfile,
+    deferPgCustomIndexBuild: options.deferPgCustomIndexBuild,
     seedQuadCount,
     targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
     fullScale: rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuadCount),
@@ -349,6 +379,7 @@ function printSummary(summary: {
   console.log(`  warmup iterations: ${summary.options.warmupIterations}`);
   console.log(`  case profile: ${summary.options.caseProfile}`);
   console.log(`  requested pg acceleration profile: ${summary.options.rdfAccelerationProfile}`);
+  console.log(`  defer pg custom index build: ${summary.options.deferPgCustomIndexBuild}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
   console.log(`  target quads: ${summary.targetQuadCount}`);
   console.log(`  full scale seed: ${summary.fullScale}`);
@@ -399,8 +430,11 @@ Options:
   --iterations=N                   Iterations per case. Default: 3
   --warmupIterations=N             Warmup runs per case before timing. Default: 1
   --syntheticMessages=N            Override generated message count for storage-size tests
-  --caseProfile=VALUE              default|extreme|all. Default: default
+  --caseProfile=VALUE              default|extreme|fusion|all. Default: default
+                                   fusion seeds in-process text/vector indexes for PG facts join
   --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators|pg-custom-index. Default: baseline
+  --deferPgCustomIndexBuild        Build pg-custom-index indexes after seeding. Default for --driver=pg + pg-custom-index
+  --noDeferPgCustomIndexBuild      Keep old eager custom-index build behavior
   --out=PATH                       Output directory. Default: .test-data/rdf-engine
 `);
 }

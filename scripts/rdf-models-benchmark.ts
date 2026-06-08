@@ -17,9 +17,11 @@ import {
   rdfModelsBenchmarkScaleSatisfied,
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
+  rdfModelsBenchmarkProfileRequiresSearchFusion,
   type RdfBenchmarkCaseProfile,
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
+  seedRdfModelsSearchFusionIndexes,
 } from '../src/storage/rdf';
 
 interface CliOptions {
@@ -35,6 +37,8 @@ interface CliOptions {
 interface BenchmarkPaths {
   compatibilityDb: string;
   indexDb: string;
+  textIndexDb: string;
+  vectorIndexDb: string;
   baselineReport: string;
   shadowReport: string;
   rdf3xShadowReport: string;
@@ -63,10 +67,21 @@ async function main(): Promise<void> {
 
     const rdf3xIndex = new Rdf3xIndex({ path: paths.indexDb });
     rdf3xIndex.open();
+    const searchFusion = rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile);
     const engine = new SolidRdfEngine({
       index: shadowStore.index,
       rdf3xIndex,
+      ...(searchFusion
+        ? {
+            textIndex: { path: paths.textIndexDb },
+            vectorIndex: { path: paths.vectorIndexDb },
+          }
+        : {}),
     });
+    if (searchFusion) {
+      engine.open();
+      seedRdfModelsSearchFusionIndexes(engine);
+    }
     const baseline = runRdfModelsBenchmark(engine, {
       scale: options.scale,
       iterations: options.iterations,
@@ -218,7 +233,7 @@ function positiveInteger(raw: string, name: string): number {
 }
 
 function isRdfBenchmarkCaseProfile(value: string): value is RdfBenchmarkCaseProfile {
-  return value === 'default' || value === 'extreme' || value === 'all';
+  return value === 'default' || value === 'extreme' || value === 'fusion' || value === 'all';
 }
 
 function createBenchmarkPaths(outDir: string): BenchmarkPaths {
@@ -227,6 +242,8 @@ function createBenchmarkPaths(outDir: string): BenchmarkPaths {
   return {
     compatibilityDb: path.join(outDir, `rdf-models-compat-${runId}.sqlite`),
     indexDb: path.join(outDir, `rdf-models-index-${runId}.sqlite`),
+    textIndexDb: path.join(outDir, `rdf-models-text-${runId}.sqlite`),
+    vectorIndexDb: path.join(outDir, `rdf-models-vector-${runId}.sqlite`),
     baselineReport: path.join(outDir, `models-baseline-${runId}.json`),
     shadowReport: path.join(outDir, `models-shadow-${runId}.json`),
     rdf3xShadowReport: path.join(outDir, `models-rdf3x-shadow-${runId}.json`),
@@ -364,7 +381,8 @@ Options:
   --scale=small|medium|large       Select benchmark case scale. Default: medium
   --iterations=N                   Iterations per case. Default: 3
   --syntheticMessages=N            Override generated message count for storage-size tests
-  --caseProfile=VALUE              default|extreme|all. Default: default
+  --caseProfile=VALUE              default|extreme|fusion|all. Default: default
+                                   fusion is local-only and seeds derived text/vector indexes
   --out=PATH                       Output directory. Default: .test-data/rdf-engine
 `);
 }

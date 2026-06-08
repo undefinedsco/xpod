@@ -54,7 +54,8 @@ export type RdfPgAccelerationProvider = 'engine-sql' | 'sql-abi' | 'extension';
 export type RdfPgAccelerationFallbackReason =
   | 'profile-disabled'
   | 'capability-missing'
-  | 'probe-failed';
+  | 'probe-failed'
+  | 'index-build-deferred';
 
 export interface RdfShadowAutoBackfillOptions {
   enabled?: boolean;
@@ -111,6 +112,8 @@ export interface RdfEngineStorageStats {
     syncedWithFacts: boolean;
   };
   queryResultCache?: RdfQueryResultCacheStats;
+  materializedResultCache?: RdfMaterializedResultCacheStats;
+  queryTemplateCache?: RdfQueryTemplateCacheStats;
   pgAcceleration?: RdfPgAccelerationStats;
   factsBytes: number;
   derivedBytes: number;
@@ -153,6 +156,23 @@ export interface RdfQueryResultCacheStats {
   spaceObjects: RdfIndexSpaceObject[];
 }
 
+export interface RdfMaterializedResultCacheStats {
+  entryCount: number;
+  scopeCount: number;
+  tableBytes: number;
+  indexBytes: number;
+  totalBytes: number;
+  spaceObjects: RdfIndexSpaceObject[];
+}
+
+export interface RdfQueryTemplateCacheStats {
+  entryCount: number;
+  maxEntries: number;
+  hitCount: number;
+  missCount: number;
+  evictionCount: number;
+}
+
 export interface RdfDerivedIndexRefreshResult {
   derivedIndexProfile: RdfDerivedIndexProfile;
   factsDataVersion: number;
@@ -164,6 +184,10 @@ export interface RdfDerivedIndexRefreshResult {
     plannerStats?: RdfPlannerStatsRefreshResult;
     rebuild?: Rdf3xRebuildResult;
   };
+}
+
+export interface RdfDerivedIndexRefreshOptions {
+  mode?: 'auto' | 'full';
 }
 
 export interface RdfPlannerStatsRefreshResult {
@@ -346,12 +370,16 @@ export interface Rdf3xJoinScanResult {
 }
 
 export interface Rdf3xRebuildResult {
+  mode?: 'full' | 'incremental';
   scannedQuads: number;
   uniqueTriples: number;
   memberships: number;
   projectionRows: number;
   factsDataVersion: number;
   durationMs: number;
+  dirtyGraphs?: number;
+  dirtyPairs?: number;
+  dirtyTerms?: number;
 }
 
 export interface Rdf3xCardinalityEstimate {
@@ -499,6 +527,9 @@ export type RdfBindExpression =
   | { type: 'upperCase'; expression: RdfBindExpression }
   | { type: 'coalesce'; expressions: RdfBindExpression[] }
   | { type: 'if'; condition: RdfQueryFilter[]; then: RdfBindExpression; else: RdfBindExpression }
+  | { type: 'numericValue'; expression: RdfBindExpression }
+  | { type: 'add'; expressions: RdfBindExpression[] }
+  | { type: 'multiply'; expressions: RdfBindExpression[] }
   | {
     type: 'substring';
     expression: RdfBindExpression;
@@ -634,9 +665,30 @@ export interface RdfVectorSearchPattern {
 
 export type RdfQueryCacheMode = 'default' | 'bypass' | 'refresh';
 
+export interface RdfQueryMaterializedResultOptions {
+  key: string;
+  version?: string | number;
+  ttlMs?: number;
+}
+
+export interface RdfQueryCacheScopeDescriptor {
+  principal?: string;
+  basePath?: string;
+  mode?: string;
+  authorizationModel?: string;
+  permissionVersion?: string | number;
+  allowedGraphUrls?: string[];
+  deniedGraphUrls?: string[];
+  deniedGraphPrefixes?: string[];
+  components?: RdfQueryCacheScope[];
+}
+
+export type RdfQueryCacheScope = string | RdfQueryCacheScopeDescriptor | RdfQueryCacheScope[];
+
 export interface RdfQueryCacheOptions {
   /** Auth/principal/business scope that must be isolated in the cache key. */
-  scope?: string;
+  scope?: RdfQueryCacheScope;
+  materialized?: string | RdfQueryMaterializedResultOptions;
   mode?: RdfQueryCacheMode;
   ttlMs?: number;
 }
@@ -727,6 +779,7 @@ export type RdfQuadJoinGroupCountOptions = RdfQuadJoinGroupAggregateOptions;
 export interface RdfQueryMetrics {
   engine: 'solid-rdf';
   plan: string[];
+  explain?: RdfQueryExplain;
   scannedRows: number;
   joinedRows: number;
   returnedRows: number;
@@ -737,6 +790,82 @@ export interface RdfQueryMetrics {
   searchCardinalityEstimates?: number;
   filtersApplied: number;
   filtersPushedDown: number;
+}
+
+export interface RdfQueryExplain {
+  engine: 'solid-rdf' | 'postgres-rdf';
+  factsDataVersion?: number;
+  derived?: {
+    profile: RdfDerivedIndexProfile;
+    factsDataVersion?: number;
+    syncedWithFacts?: boolean;
+  };
+  planner?: RdfQueryPlannerExplain;
+  cache?: {
+    template?: RdfQueryTemplateCacheExplain;
+    result?: RdfQueryCacheExplain;
+    materialized?: RdfQueryCacheExplain;
+    scope?: RdfQueryCacheScopeExplain;
+  };
+  acceleration?: {
+    profile: RdfPgAccelerationProfile;
+    requested: boolean;
+    enabled: boolean;
+    provider?: RdfPgAccelerationProvider;
+    fallbackReason?: RdfPgAccelerationFallbackReason;
+    activeOperators?: string[];
+    unsupportedCapabilities?: string[];
+  };
+}
+
+export type RdfQueryPlannerSelectedPath =
+  | 'materialized-result-cache'
+  | 'query-result-cache'
+  | 'native-extension'
+  | 'rdf3x'
+  | 'facts'
+  | 'unknown';
+
+export interface RdfQueryPlannerExplain {
+  selectedPath: RdfQueryPlannerSelectedPath;
+  reasons: string[];
+  estimateInputs: string[];
+  availableStats: string[];
+  rejectedCapabilities?: string[];
+}
+
+export type RdfQueryCacheStatus =
+  | 'hit'
+  | 'miss'
+  | 'refresh'
+  | 'store'
+  | 'bypass'
+  | 'disabled'
+  | 'not-applicable';
+
+export interface RdfQueryTemplateCacheExplain {
+  status: 'hit' | 'miss' | 'bypass';
+  key?: string;
+  maxEntries: number;
+}
+
+export interface RdfQueryCacheExplain {
+  status: RdfQueryCacheStatus;
+  key?: string;
+  factsDataVersion?: number;
+  ttlMs?: number;
+  maxEntries?: number;
+  stored?: boolean;
+}
+
+export interface RdfQueryCacheScopeExplain {
+  hash: string;
+  shape: string;
+  principal: string | null;
+  basePath: string | null;
+  mode: string | null;
+  authorizationModel: string | null;
+  permissionVersion: string | null;
 }
 
 export interface RdfQueryResult {
@@ -759,7 +888,8 @@ export interface RdfEngineLike {
   ): { deletedRows: number; insertedRows: number } | Promise<{ deletedRows: number; insertedRows: number }>;
   scan(query: RdfPatternQuery): RdfQuadIndexScanResult | Promise<RdfQuadIndexScanResult>;
   query(query: RdfQuery): RdfQueryResult | Promise<RdfQueryResult>;
-  refreshDerivedIndexes(): RdfDerivedIndexRefreshResult | Promise<RdfDerivedIndexRefreshResult>;
+  invalidateQueryResultCache?(scope?: RdfQueryCacheScope): number | Promise<number>;
+  refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): RdfDerivedIndexRefreshResult | Promise<RdfDerivedIndexRefreshResult>;
   storageStats(): RdfEngineStorageStats | Promise<RdfEngineStorageStats>;
 }
 

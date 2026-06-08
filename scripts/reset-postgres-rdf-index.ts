@@ -8,6 +8,7 @@ const RDF_FACT_TABLES = [
 
 const RDF_DERIVED_TABLES = [
   'rdf_query_result_cache',
+  'rdf_materialized_result_cache',
   'rdf3x_stat_g',
   'rdf3x_stat_sp',
   'rdf3x_stat_so',
@@ -235,9 +236,9 @@ Modes:
   Derived/cache only confirmation: --confirm=RESET_XPOD_RDF_DERIVED
   Facts reset confirmation:        --confirm=RESET_XPOD_RDF_FACTS
 
-The script only targets xpod RDF facts, RDF-3X derived stats, and RDF query
-cache tables. It never touches identity, auth, quota, billing, AI gateway, or
-blob/object storage tables.
+The script only targets xpod RDF facts, RDF-3X derived stats, and RDF query /
+materialized-result cache tables. It never touches identity, auth, quota,
+billing, AI gateway, or blob/object storage tables.
 `.trim());
 }
 

@@ -13,6 +13,7 @@ import type {
   Rdf3xIndexOptions,
   Rdf3xTriplePattern,
   RdfDerivedIndexProfile,
+  RdfDerivedIndexRefreshOptions,
   RdfDerivedIndexRefreshResult,
   RdfEngineStorageStats,
   RdfIndexPutOptions,
@@ -196,9 +197,9 @@ export class SolidRdfEngine implements RdfEngineLike {
     return result;
   }
 
-  public refreshDerivedIndexes(): RdfDerivedIndexRefreshResult {
+  public refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): RdfDerivedIndexRefreshResult {
     const factsDataVersion = this.index.dataVersion();
-    const rdf3x = this.refreshRdf3xDerivedIndex(factsDataVersion);
+    const rdf3x = this.refreshRdf3xDerivedIndex(factsDataVersion, options?.mode === 'full');
     return {
       derivedIndexProfile: this.derivedIndexProfile,
       factsDataVersion,
@@ -340,14 +341,17 @@ export class SolidRdfEngine implements RdfEngineLike {
     return Boolean(this.rdf3xPrimary && this.rdf3xIndex?.isSyncedWithCurrentQuads());
   }
 
-  private refreshRdf3xDerivedIndex(factsDataVersion = this.index.dataVersion()): RdfDerivedIndexRefreshResult['rdf3x'] {
+  private refreshRdf3xDerivedIndex(
+    factsDataVersion = this.index.dataVersion(),
+    force = false,
+  ): RdfDerivedIndexRefreshResult['rdf3x'] {
     if (!this.rdf3xIndex) {
       return undefined;
     }
     const dataVersion = factsDataVersion;
     const rdf3xIndex = this.rdf3xIndex;
     const previousFactsDataVersion = rdf3xIndex.factsDataVersion();
-    if (previousFactsDataVersion === dataVersion) {
+    if (!force && previousFactsDataVersion === dataVersion) {
       return {
         refreshed: false,
         previousFactsDataVersion,
