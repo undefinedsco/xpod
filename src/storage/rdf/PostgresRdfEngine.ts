@@ -95,6 +95,7 @@ const POSTGRES_RDF3X_SCHEMA_VERSION = 1;
 const PG_STRING_ESCAPE = '\u001f';
 const RDF_QUERY_RESULT_CACHE_TABLE = 'rdf_query_result_cache';
 const RDF_MATERIALIZED_RESULT_CACHE_TABLE = 'rdf_materialized_result_cache';
+const RDF_DIRTY_SOURCE_TABLE = 'rdf_dirty_sources';
 const RDF3X_DIRTY_GRAPH_TABLE = 'rdf3x_dirty_graphs';
 const RDF3X_DIRTY_PAIR_TABLE = 'rdf3x_dirty_pairs';
 const RDF3X_DIRTY_TERM_TABLE = 'rdf3x_dirty_terms';
@@ -259,6 +260,8 @@ interface PgDirtyProjectionStats {
   pairs: number;
   terms: number;
 }
+
+type PgDirtySourceOperation = 'upsert' | 'delete';
 
 interface PgCompiledScan {
   sql: string;
@@ -1226,6 +1229,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await executor.transaction(async (tx) => {
         const scopedDictionary = new PostgresRdfTermDictionary(tx);
         const sourceId = options?.source ? await this.upsertSource(options.source, tx) : null;
+        if (options?.source) {
+          await this.markDirtySource(tx, options.source, 'upsert');
+        }
         const insertedRows = await this.insertQuads(tx, scopedDictionary, quadList, sourceId, options?.sourceLineNo ?? null);
         await this.markDirtyQuadRows(tx, insertedRows);
         await this.bumpFactsDataVersion(tx);
@@ -1246,6 +1252,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await executor.transaction(async (tx) => {
         const scopedDictionary = new PostgresRdfTermDictionary(tx);
         const sourceId = await this.upsertSource(source, tx);
+        await this.markDirtySource(tx, source, 'upsert');
         const replacedRows = await this.quadRowsForSource(sourceId, tx);
         await tx.exec('DELETE FROM rdf_quads WHERE source_file_id = $1', [sourceId]);
         const insertedRows = await this.insertQuads(tx, scopedDictionary, quads, sourceId, null);
@@ -1272,6 +1279,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       const result = await executor.transaction(async (tx) => {
         const deletedRows = await this.quadRowsForSource(sourceRow.id, tx);
         const deleteResult = await tx.query<{ count: number }>('DELETE FROM rdf_quads WHERE source_file_id = $1 RETURNING 1', [sourceRow.id]);
+        await this.markDirtySourceRow(tx, sourceRow, 'delete');
         await tx.exec('DELETE FROM rdf_sources WHERE id = $1', [sourceRow.id]);
         await this.markDirtyQuadRows(tx, deletedRows);
         await this.bumpFactsDataVersion(tx);
@@ -1336,6 +1344,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
           deletedRows += deleted;
         }
         const sourceId = options?.source ? await this.upsertSource(options.source, tx) : null;
+        if (options?.source) {
+          await this.markDirtySource(tx, options.source, 'upsert');
+        }
         const insertedRows = await this.insertQuads(tx, scopedDictionary, inserts, sourceId, options?.sourceLineNo ?? null);
         await this.markDirtyQuadRows(tx, insertedRows);
         if (deletedRows > 0 || inserts.length > 0) {
@@ -1629,9 +1640,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.ensureReady();
     const factsDataVersion = await this.readFactsDataVersion();
     const previousFactsDataVersion = await this.readRdf3xFactsDataVersion();
+    const pendingSources = await this.dirtySourceQueueCount();
     const forceFull = options?.mode === 'full';
     if (!forceFull && previousFactsDataVersion === factsDataVersion) {
       const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
+      const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor());
       return {
         derivedIndexProfile: 'rdf3x',
         factsDataVersion,
@@ -1641,6 +1654,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
           factsDataVersion,
           syncedWithFacts: true,
           plannerStats,
+          sourceQueue: {
+            pendingSources,
+            drainedSources,
+          },
         },
       };
     }
@@ -1649,6 +1666,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ? await this.rebuildRdf3xDerivedIndexes(factsDataVersion)
       : await this.refreshRdf3xDirtyDerivedIndexes(factsDataVersion, dirtyStats);
     const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
+    const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor());
     return {
       derivedIndexProfile: 'rdf3x',
       factsDataVersion,
@@ -1659,6 +1677,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         syncedWithFacts: true,
         plannerStats,
         rebuild,
+        sourceQueue: {
+          pendingSources,
+          drainedSources,
+        },
       },
     };
   }
@@ -1775,6 +1797,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         source_version TEXT
       )
     `);
+    await this.initializeDirtySourceQueueSchema(executor);
     await executor.exec(`
       CREATE TABLE IF NOT EXISTS rdf_quads (
         graph_id BIGINT NOT NULL,
@@ -1988,6 +2011,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await tx.exec('DROP TABLE IF EXISTS rdf_quads');
       await tx.exec('DROP TABLE IF EXISTS rdf_sources');
       await tx.exec('DROP TABLE IF EXISTS rdf_terms');
+      await tx.exec(`DROP TABLE IF EXISTS ${RDF_DIRTY_SOURCE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_QUERY_RESULT_CACHE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}`);
       await tx.exec('DELETE FROM rdf_index_metadata');
@@ -2069,6 +2093,24 @@ export class PostgresRdfEngine implements RdfEngineLike {
       INSERT INTO rdf3x_metadata (key, value)
       VALUES ('facts_data_version', '0')
       ON CONFLICT (key) DO NOTHING
+    `);
+  }
+
+  private async initializeDirtySourceQueueSchema(executor: AsyncSqlExecutor): Promise<void> {
+    await executor.exec(`
+      CREATE TABLE IF NOT EXISTS ${RDF_DIRTY_SOURCE_TABLE} (
+        source TEXT PRIMARY KEY,
+        workspace TEXT,
+        local_path TEXT,
+        content_type TEXT,
+        source_version TEXT,
+        operation TEXT NOT NULL,
+        changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_dirty_sources_changed_at
+      ON ${RDF_DIRTY_SOURCE_TABLE} (changed_at)
     `);
   }
 
@@ -2361,6 +2403,27 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await executor.exec(`DELETE FROM ${RDF3X_DIRTY_GRAPH_TABLE}`);
     await executor.exec(`DELETE FROM ${RDF3X_DIRTY_PAIR_TABLE}`);
     await executor.exec(`DELETE FROM ${RDF3X_DIRTY_TERM_TABLE}`);
+  }
+
+  private async dirtySourceQueueCount(executor = this.requireExecutor()): Promise<number> {
+    try {
+      const rows = await executor.query<{ count: number }>(`SELECT COUNT(*) AS count FROM ${RDF_DIRTY_SOURCE_TABLE}`);
+      return Number(rows[0]?.count ?? 0) || 0;
+    } catch {
+      await this.initializeDirtySourceQueueSchema(executor);
+      return 0;
+    }
+  }
+
+  private async clearDirtySourceQueue(executor: AsyncSqlExecutor): Promise<number> {
+    const rows = await executor.query<{ count: number }>(`
+      WITH deleted AS (
+        DELETE FROM ${RDF_DIRTY_SOURCE_TABLE}
+        RETURNING 1
+      )
+      SELECT COUNT(*) AS count FROM deleted
+    `);
+    return Number(rows[0]?.count ?? 0) || 0;
   }
 
   private async estimateDirtyRefreshScanRows(): Promise<number> {
@@ -7361,6 +7424,54 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return id;
   }
 
+  private async markDirtySource(
+    executor: AsyncSqlExecutor,
+    source: RdfSourceInput,
+    operation: PgDirtySourceOperation,
+  ): Promise<void> {
+    await executor.exec(`
+      INSERT INTO ${RDF_DIRTY_SOURCE_TABLE} (
+        source,
+        workspace,
+        local_path,
+        content_type,
+        source_version,
+        operation,
+        changed_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      ON CONFLICT (source) DO UPDATE
+      SET
+        workspace = EXCLUDED.workspace,
+        local_path = EXCLUDED.local_path,
+        content_type = EXCLUDED.content_type,
+        source_version = EXCLUDED.source_version,
+        operation = EXCLUDED.operation,
+        changed_at = NOW()
+    `, [
+      source.source,
+      source.workspace,
+      source.localPath ?? null,
+      source.contentType ?? null,
+      source.sourceVersion ?? null,
+      operation,
+    ]);
+  }
+
+  private async markDirtySourceRow(
+    executor: AsyncSqlExecutor,
+    source: PostgresRdfSourceRow,
+    operation: PgDirtySourceOperation,
+  ): Promise<void> {
+    await this.markDirtySource(executor, {
+      source: source.source,
+      workspace: source.workspace,
+      localPath: source.local_path ?? undefined,
+      contentType: source.content_type ?? undefined,
+      sourceVersion: source.source_version ?? undefined,
+    }, operation);
+  }
+
   private async findSourceRow(source: string, executor = this.requireExecutor()): Promise<PostgresRdfSourceRow | undefined> {
     const rows = await executor.query<PostgresRdfSourceRow>('SELECT * FROM rdf_sources WHERE source = $1', [source]);
     return rows[0];
@@ -7830,7 +7941,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ...PAIR_PROJECTIONS.map((projection) => projection.table),
           ...TERM_PROJECTIONS.map((projection) => projection.table),
         ]
-        : ['rdf_terms', 'rdf_sources', RDF_FACTS_TABLE, 'rdf_index_metadata'];
+        : ['rdf_terms', 'rdf_sources', RDF_DIRTY_SOURCE_TABLE, RDF_FACTS_TABLE, 'rdf_index_metadata'];
       const rows = await Promise.all(tables.map(async (table) => ({
         name: table,
         kind: 'table' as const,

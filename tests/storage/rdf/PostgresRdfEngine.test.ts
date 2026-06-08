@@ -2103,17 +2103,28 @@ describe('PostgresRdfEngine', () => {
       dataDir,
     });
     const graph = namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl');
+    const source = {
+      source: graph.value,
+      workspace: 'alice',
+      localPath: '/.data/task/secretary/2026/05/18/runs.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'v1',
+    };
     const run1 = namedNode(`${graph.value}#run_1`);
     const run2 = namedNode(`${graph.value}#run_2`);
     const run3 = namedNode(`${graph.value}#run_3`);
 
     try {
       await engine.open();
-      await engine.put(quad(run1, namedNode(STATUS), literal('open'), graph));
+      await engine.put(quad(run1, namedNode(STATUS), literal('open'), graph), { source });
       const firstRefresh = await engine.refreshDerivedIndexes();
       expect(firstRefresh.rdf3x).toMatchObject({
         factsDataVersion: 1,
         syncedWithFacts: true,
+      });
+      expect(firstRefresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
       });
       expect(firstRefresh.rdf3x?.rebuild).toMatchObject({
         mode: 'incremental',
@@ -2133,6 +2144,10 @@ describe('PostgresRdfEngine', () => {
         factsDataVersion: 1,
         syncedWithFacts: true,
       });
+      expect(secondRefresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 0,
+        drainedSources: 0,
+      });
       expect(secondRefresh.rdf3x?.plannerStats?.analyzedTables).toEqual(expect.arrayContaining([
         'rdf_terms',
         'rdf_quads',
@@ -2141,7 +2156,12 @@ describe('PostgresRdfEngine', () => {
       expect(secondRefresh.rdf3x?.plannerStats?.durationMs).toEqual(expect.any(Number));
       expect(secondRefresh.rdf3x?.rebuild).toBeUndefined();
 
-      await engine.put(quad(run2, namedNode(STATUS), literal('closed'), graph));
+      await engine.put(quad(run2, namedNode(STATUS), literal('closed'), graph), {
+        source: {
+          ...source,
+          sourceVersion: 'v2',
+        },
+      });
       const query = await engine.query({
         patterns: [
           {
@@ -2181,6 +2201,10 @@ describe('PostgresRdfEngine', () => {
       });
 
       const incrementalRefresh = await engine.refreshDerivedIndexes();
+      expect(incrementalRefresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
       expect(incrementalRefresh.rdf3x?.rebuild).toMatchObject({
         mode: 'incremental',
         dirtyGraphs: 1,
@@ -2234,6 +2258,59 @@ describe('PostgresRdfEngine', () => {
         pairProjectionRows: incrementalStats?.pairProjectionRows,
         termProjectionRows: incrementalStats?.termProjectionRows,
         factsDataVersion: incrementalStats?.factsDataVersion,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('drains dirty source queue for replaced and deleted sources', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-source-queue-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const source = {
+      source: graph.value,
+      workspace: 'alice',
+      localPath: '/.data/chat/default/2026/05/18/messages.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'v1',
+    };
+    const message = namedNode(`${graph.value}#msg_1`);
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(message, namedNode(STATUS), literal('open'), graph),
+      ], source);
+
+      const replaceRefresh = await engine.refreshDerivedIndexes();
+      expect(replaceRefresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+      expect((await engine.storageStats()).rdf3x).toMatchObject({
+        syncedWithFacts: true,
+        stats: expect.objectContaining({
+          membershipCount: 1,
+        }),
+      });
+
+      const deleted = await engine.deleteSource(source.source);
+      expect(deleted).toBe(1);
+      const deleteRefresh = await engine.refreshDerivedIndexes();
+      expect(deleteRefresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+      expect((await engine.storageStats()).rdf3x).toMatchObject({
+        syncedWithFacts: true,
+        stats: expect.objectContaining({
+          membershipCount: 0,
+        }),
       });
     } finally {
       await engine.close();

@@ -622,7 +622,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   `totalBytes`、`templateTtl`、`templateMaxEntries`、`templateBytes` 聚合可重建 cache 的
   淘汰原因；该计数不写入 Pod/RDF durable 状态。后续再收敛为按 permissionVersion /
   graph scope 的更精确失效，并把 eviction telemetry 接入慢查询报告和运维面板。
-- `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
+- `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。PG facts 侧另有 `rdf_dirty_sources` source-level queue：带 source 的 put/replace/delete 会登记待维护 source，显式 refresh 成功后 drain queue，并在 `rdf3x.sourceQueue` 中报告 pending/drained source 数。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
 - `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
 - `pg-hot-operators` engine-sql provider：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 走已验证的 PG SQL fast path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
 - `pg-custom-index` provider：启动时探测 `xpod_rdf.version()` / `xpod_rdf.capabilities()`，只有 `pg_extension` 里存在 `xpod_rdf` 时才把 native-only capability 标记为 `extension`；满足 `index.xpod_rdf_perm` 后创建六个 shadow custom permutation indexes，并把 `perm_index_stats(regclass)` JSON 投影到 `storageStats().pgAcceleration.customIndexes`；schema-local SQL ABI 只能声明 `cache.result`。
@@ -660,7 +660,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
   `Message.thread` 查询，Managed Run 组装 conversation / thread items 时不再绕过 shared model
   入口；显式 materialized key 仍需要在 shared query/repository 层继续接线。
-- SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair；后台维护任务还没有按 source-level dirty queue 做批量调度。
+- SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair。PG 已补第一版 source-level dirty queue 并绑定到显式 refresh drain；未完成的是把它接到独立后台 scheduler / lease，按 source 批量调度维护和暴露运维面板。
 - 冷启动 stats refresh / warm steady-state 的自动化运维指标；`metrics.explain` 已有第一版查询级
   runtime/stale/slow 结构化观测，但还没有慢查询 UI / dashboard。
 

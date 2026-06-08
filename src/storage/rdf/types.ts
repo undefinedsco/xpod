@@ -223,11 +223,17 @@ export interface RdfDerivedIndexRefreshResult {
     syncedWithFacts: boolean;
     plannerStats?: RdfPlannerStatsRefreshResult;
     rebuild?: Rdf3xRebuildResult;
+    sourceQueue?: RdfDirtySourceQueueRefreshResult;
   };
 }
 
 export interface RdfDerivedIndexRefreshOptions {
   mode?: 'auto' | 'full';
+}
+
+export interface RdfDirtySourceQueueRefreshResult {
+  pendingSources: number;
+  drainedSources: number;
 }
 
 export interface RdfPlannerStatsRefreshResult {
