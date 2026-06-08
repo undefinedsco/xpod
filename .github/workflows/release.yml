@@ -19,7 +19,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS npm cold installs can spend many minutes resolving xpod's large
+        # dependency tree. Keep pre-publish npm smoke on Ubuntu and leave macOS
+        # coverage to the Bun matrix plus post-publish non-blocking consumers.
+        os: [ubuntu-latest]
         node-version: [22, 24, 25]
     steps:
       - uses: actions/checkout@v4
