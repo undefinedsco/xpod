@@ -20,6 +20,12 @@ export type {
   RdfPatternQuery,
   RdfQuadIndexOptions,
   RdfQuadIndexScanResult,
+  RdfTextIndexLike,
+  RdfTextIndexOptions,
+  RdfTextIndexSyncLike,
+  RdfVectorIndexLike,
+  RdfVectorIndexOptions,
+  RdfVectorIndexSyncLike,
   RdfShadowBackfillOptions,
   RdfShadowBackfillResult,
   RdfShadowDiff,
@@ -34,6 +40,8 @@ export type {
   SolidRdfSparqlFallback,
 } from './storage/rdf/SolidRdfSparqlEngine';
 export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';
+export type { PostgresRdfTextIndexOptions } from './storage/rdf/PostgresRdfTextIndex';
+export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVectorIndex';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
@@ -78,6 +86,10 @@ import { PgQuintStore } from './storage/quint/PgQuintStore';
 import { QuintStore } from './storage/quint/types';
 import { RdfQuadIndex } from './storage/rdf/RdfQuadIndex';
 import { Rdf3xIndex } from './storage/rdf/Rdf3xIndex';
+import { RdfTextIndex } from './storage/rdf/RdfTextIndex';
+import { RdfVectorIndex } from './storage/rdf/RdfVectorIndex';
+import { PostgresRdfTextIndex } from './storage/rdf/PostgresRdfTextIndex';
+import { PostgresRdfVectorIndex } from './storage/rdf/PostgresRdfVectorIndex';
 import { RdfSparqlAdapter } from './storage/rdf/RdfSparqlAdapter';
 import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
 import { ShadowRdfQuintStore } from './storage/rdf/ShadowRdfQuintStore';
@@ -200,6 +212,10 @@ export {
   RdfTermDictionary,
   RdfQuadIndex,
   Rdf3xIndex,
+  RdfTextIndex,
+  RdfVectorIndex,
+  PostgresRdfTextIndex,
+  PostgresRdfVectorIndex,
   RdfSparqlAdapter,
   ShadowRdfQuintStore,
   SolidRdfEngine,

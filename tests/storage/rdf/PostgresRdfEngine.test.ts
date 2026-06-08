@@ -5362,9 +5362,88 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('owns PostgreSQL text and vector indexes configured through engine options', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-owned-index-engine-'));
+    const textIndexDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-owned-text-'));
+    const vectorIndexDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-owned-vector-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      textIndex: {
+        driver: 'pglite',
+        dataDir: textIndexDir,
+      },
+      vectorIndex: {
+        driver: 'pglite',
+        dataDir: vectorIndexDir,
+        defaultMetric: 'cosine',
+      },
+    });
+
+    try {
+      await engine.open();
+      await engine.indexTextSource({
+        source: 'https://pod.example/alice/docs/owned-text.md',
+        workspace: 'https://pod.example/alice/docs/',
+        localPath: 'owned-text.md',
+        contentType: 'text/markdown',
+      }, '# Owned Search\n\nalpha beta runtime');
+      await engine.indexVectorSource({
+        source: 'https://pod.example/alice/docs/owned-vector.md',
+        workspace: 'https://pod.example/alice/docs/',
+        localPath: 'owned-vector.md',
+        contentType: 'text/markdown',
+      }, [
+        {
+          chunkKey: 'owned-vector-0',
+          ordinal: 0,
+          level: 1,
+          heading: 'Owned Vector',
+          path: ['Owned Vector'],
+          content: 'alpha vector runtime',
+          startOffset: 0,
+          endOffset: 20,
+          embedding: [1, 0],
+          model: 'test-embed',
+        },
+      ]);
+
+      const textResults = await engine.searchText({
+        query: 'alpha',
+        workspace: 'https://pod.example/alice/docs/',
+      });
+      expect(textResults).toEqual([
+        expect.objectContaining({
+          source: 'https://pod.example/alice/docs/owned-text.md',
+          chunkKey: expect.any(String),
+        }),
+      ]);
+
+      const vectorResults = await engine.searchVector({
+        embedding: [1, 0],
+        workspace: 'https://pod.example/alice/docs/',
+        limit: 1,
+      });
+      expect(vectorResults).toEqual([
+        expect.objectContaining({
+          source: 'https://pod.example/alice/docs/owned-vector.md',
+          chunkKey: 'owned-vector-0',
+          score: 1,
+        }),
+      ]);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+      await rm(textIndexDir, { recursive: true, force: true });
+      await rm(vectorIndexDir, { recursive: true, force: true });
+    }
+  });
+
   it('wires cloud RDF storage to PostgreSQL hot operators in the open-source config', async () => {
     const cloudConfig = JSON.parse(await readFile(path.join(process.cwd(), 'config/cloud.json'), 'utf8'));
     const engine = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:SolidRdfEngine');
+    const textIndex = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:PostgresRdfTextIndex');
+    const vectorIndex = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:PostgresRdfVectorIndex');
 
     expect(engine).toMatchObject({
       '@type': 'PostgresRdfEngine',
@@ -5373,8 +5452,31 @@ describe('PostgresRdfEngine', () => {
         '@id': 'urn:solid-server:default:variable:sparqlEndpoint',
         '@type': 'Variable',
       },
+      options_textIndex: {
+        '@id': 'urn:undefineds:xpod:PostgresRdfTextIndex',
+      },
+      options_vectorIndex: {
+        '@id': 'urn:undefineds:xpod:PostgresRdfVectorIndex',
+      },
       options_rdfAccelerationProfile: 'pg-hot-operators',
       options_autoOpen: true,
+    });
+    expect(textIndex).toMatchObject({
+      '@type': 'PostgresRdfTextIndex',
+      options_driver: 'pg',
+      options_connectionString: {
+        '@id': 'urn:solid-server:default:variable:sparqlEndpoint',
+        '@type': 'Variable',
+      },
+    });
+    expect(vectorIndex).toMatchObject({
+      '@type': 'PostgresRdfVectorIndex',
+      options_driver: 'pg',
+      options_connectionString: {
+        '@id': 'urn:solid-server:default:variable:sparqlEndpoint',
+        '@type': 'Variable',
+      },
+      options_defaultMetric: 'cosine',
     });
 
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-cloud-open-source-'));

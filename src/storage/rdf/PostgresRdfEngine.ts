@@ -9,6 +9,8 @@ import { isFiniteNumericLexical, isRdfNumericDatatype, isRdfNumericTerm, rdfNume
 import { rdfSubjectStarJoinKey, rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
 import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
+import { PostgresRdfTextIndex, type PostgresRdfTextIndexOptions } from './PostgresRdfTextIndex';
+import { PostgresRdfVectorIndex, type PostgresRdfVectorIndexOptions } from './PostgresRdfVectorIndex';
 import {
   RDF3X_GRAPH_PROJECTION_TABLE,
   RDF3X_PAIR_PROJECTION_TABLE_BY_NAME,
@@ -550,8 +552,8 @@ const PG_CUSTOM_INDEX_MAX_VALUE_ROWS = 8192;
 const DEFAULT_RDF_MAINTENANCE_LEASE_TTL_MS = 120_000;
 const DEFAULT_NUMERIC_AGGREGATE_FACTS_CUTOVER_MAX_SOURCE_ROWS = 64;
 
-type RdfTextIndexInput = RdfTextIndexLike | RdfTextIndexOptions;
-type RdfVectorIndexInput = RdfVectorIndexLike | RdfVectorIndexOptions;
+type RdfTextIndexInput = PostgresRdfTextIndexOptions | RdfTextIndexOptions | RdfTextIndexLike;
+type RdfVectorIndexInput = PostgresRdfVectorIndexOptions | RdfVectorIndexOptions | RdfVectorIndexLike;
 
 interface AsyncSqlExecutor {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -1359,21 +1361,27 @@ export class PostgresRdfEngine implements RdfEngineLike {
       driver: options.driver ?? (options.connectionString || options.pool ? 'pg' : 'pglite'),
     };
     this.maintenanceLeaseOwner = options.maintenanceLeaseOwner ?? `xpod-rdf-${process.pid}-${randomUUID()}`;
-    if (isRdfTextIndexOptions(options.textIndex)) {
-      this.textIndex = new RdfTextIndex(options.textIndex);
-      this.ownsTextIndex = true;
-    } else if (isRdfTextIndexLike(options.textIndex)) {
+    if (isRdfTextIndexLike(options.textIndex)) {
       this.textIndex = options.textIndex;
       this.ownsTextIndex = false;
+    } else if (isPostgresRdfTextIndexOptions(options.textIndex)) {
+      this.textIndex = new PostgresRdfTextIndex(options.textIndex);
+      this.ownsTextIndex = true;
+    } else if (isRdfTextIndexOptions(options.textIndex)) {
+      this.textIndex = new RdfTextIndex(options.textIndex);
+      this.ownsTextIndex = true;
     } else {
       this.ownsTextIndex = false;
     }
-    if (isRdfVectorIndexOptions(options.vectorIndex)) {
-      this.vectorIndex = new RdfVectorIndex(options.vectorIndex);
-      this.ownsVectorIndex = true;
-    } else if (isRdfVectorIndexLike(options.vectorIndex)) {
+    if (isRdfVectorIndexLike(options.vectorIndex)) {
       this.vectorIndex = options.vectorIndex;
       this.ownsVectorIndex = false;
+    } else if (isPostgresRdfVectorIndexOptions(options.vectorIndex)) {
+      this.vectorIndex = new PostgresRdfVectorIndex(options.vectorIndex);
+      this.ownsVectorIndex = true;
+    } else if (isRdfVectorIndexOptions(options.vectorIndex)) {
+      this.vectorIndex = new RdfVectorIndex(options.vectorIndex);
+      this.ownsVectorIndex = true;
     } else {
       this.ownsVectorIndex = false;
     }
@@ -10882,6 +10890,24 @@ function isRdfTextIndexOptions(input: RdfTextIndexInput | undefined): input is R
     && !isRdfTextIndexLike(input);
 }
 
+function isPostgresRdfTextIndexOptions(input: RdfTextIndexInput | undefined): input is PostgresRdfTextIndexOptions {
+  if (input === undefined || isRdfTextIndexLike(input) || isRdfTextIndexOptions(input)) {
+    return false;
+  }
+  const options = input as PostgresRdfTextIndexOptions;
+  return options.driver === 'pg'
+    || options.driver === 'pglite'
+    || typeof options.connectionString === 'string'
+    || typeof options.dataDir === 'string'
+    || typeof options.host === 'string'
+    || typeof options.port === 'number'
+    || typeof options.database === 'string'
+    || typeof options.user === 'string'
+    || typeof options.password === 'string'
+    || options.pool !== undefined
+    || typeof options.autoOpen === 'boolean';
+}
+
 function isRdfTextIndexLike(input: RdfTextIndexInput | undefined): input is RdfTextIndexLike {
   return input !== undefined
     && typeof (input as Partial<RdfTextIndexLike>).indexText === 'function'
@@ -10891,6 +10917,24 @@ function isRdfTextIndexLike(input: RdfTextIndexInput | undefined): input is RdfT
 function isRdfVectorIndexOptions(input: RdfVectorIndexInput | undefined): input is RdfVectorIndexOptions {
   return input !== undefined && typeof (input as RdfVectorIndexOptions).path === 'string'
     && !isRdfVectorIndexLike(input);
+}
+
+function isPostgresRdfVectorIndexOptions(input: RdfVectorIndexInput | undefined): input is PostgresRdfVectorIndexOptions {
+  if (input === undefined || isRdfVectorIndexLike(input) || isRdfVectorIndexOptions(input)) {
+    return false;
+  }
+  const options = input as PostgresRdfVectorIndexOptions;
+  return options.driver === 'pg'
+    || options.driver === 'pglite'
+    || typeof options.connectionString === 'string'
+    || typeof options.dataDir === 'string'
+    || typeof options.host === 'string'
+    || typeof options.port === 'number'
+    || typeof options.database === 'string'
+    || typeof options.user === 'string'
+    || typeof options.password === 'string'
+    || options.pool !== undefined
+    || typeof options.autoOpen === 'boolean';
 }
 
 function isRdfVectorIndexLike(input: RdfVectorIndexInput | undefined): input is RdfVectorIndexLike {
