@@ -117,6 +117,22 @@ type AiCredentialCandidate = {
   failCount?: number | null;
 };
 
+type AiConfigSelection = {
+  providerId: string;
+  baseUrl: string;
+  proxyUrl?: string;
+  defaultModel?: string;
+  apiKey: string;
+  credentialId: string;
+};
+
+type AiCredentialSparqlCandidate = AiCredentialCandidate & {
+  providerId?: string | null;
+  baseUrl?: string | null;
+  proxyUrl?: string | null;
+  defaultModel?: string | null;
+};
+
 type JsonObjectSource = string | Record<string, unknown> | null | undefined;
 
 type ThreadMetadataSource = {
@@ -263,6 +279,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         (context as any)._cachedDb = db;
         (context as any)._cachedFetch = authFetch;
         (context as any)._cachedWebId = auth.webId;
+        this.ensurePodBaseUrlCache(context, db, auth.webId);
         return db;
       } catch (error) {
         this.logger.error(`Failed to get Pod db with access token: ${error}`);
@@ -302,6 +319,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       (context as any)._cachedDb = db;
       (context as any)._cachedFetch = authFetch;
       (context as any)._cachedWebId = webId;
+      this.ensurePodBaseUrlCache(context, db, webId);
       (context as any)._cachedAccessToken = token.accessToken;
       (context as any)._cachedTokenType = token.tokenType;
 
@@ -407,6 +425,122 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       }
       return podBase.endsWith('/') ? podBase.slice(0, -1) : podBase;
     }
+  }
+
+  private normalizePodBaseUrl(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    return trimmed.replace(/\/+$/, '');
+  }
+
+  private readPodUrlFromRuntimeSource(source: unknown): string | undefined {
+    if (!source || typeof source !== 'object') {
+      return undefined;
+    }
+
+    const record = source as Record<string, unknown>;
+    const getPodUrl = record.getPodUrl;
+    if (typeof getPodUrl === 'function') {
+      try {
+        const value = getPodUrl.call(source);
+        const normalized = this.normalizePodBaseUrl(value);
+        if (normalized) {
+          return normalized;
+        }
+      } catch {
+        // Ignore and continue with direct properties.
+      }
+    }
+
+    for (const key of ['podUrl', 'podBaseUrl', 'storageUrl', 'storageProviderUrl']) {
+      const normalized = this.normalizePodBaseUrl(record[key]);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    const runtime = record.runtime;
+    if (runtime && runtime !== source) {
+      return this.readPodUrlFromRuntimeSource(runtime);
+    }
+
+    return undefined;
+  }
+
+  private readPodUrlFromDatabase(db: unknown): string | undefined {
+    if (!db || typeof db !== 'object') {
+      return undefined;
+    }
+
+    const record = db as Record<string, unknown>;
+    const getDialect = record.getDialect;
+    if (typeof getDialect === 'function') {
+      try {
+        const value = this.readPodUrlFromRuntimeSource(getDialect.call(db));
+        if (value) {
+          return value;
+        }
+      } catch {
+        // Ignore and continue with session.
+      }
+    }
+
+    const getSession = record.getSession;
+    if (typeof getSession === 'function') {
+      try {
+        const value = this.readPodUrlFromRuntimeSource(getSession.call(db));
+        if (value) {
+          return value;
+        }
+      } catch {
+        // Ignore and continue with direct session property.
+      }
+    }
+
+    return this.readPodUrlFromRuntimeSource(record.session);
+  }
+
+  private readExplicitPodBaseUrl(context: StoreContext): string | undefined {
+    const record = context as Record<string, unknown>;
+    for (const key of ['podBaseUrl', 'podUrl', 'storageUrl', 'storageProviderUrl']) {
+      const normalized = this.normalizePodBaseUrl(record[key]);
+      if (normalized) {
+        return normalized;
+      }
+    }
+    return undefined;
+  }
+
+  private ensurePodBaseUrlCache(
+    context: StoreContext,
+    db?: unknown,
+    fallbackWebId?: string,
+  ): string | undefined {
+    const authoritativePodBaseUrl = this.readExplicitPodBaseUrl(context)
+      ?? this.readPodUrlFromDatabase(db);
+    if (authoritativePodBaseUrl) {
+      (context as any)._cachedPodBaseUrl = authoritativePodBaseUrl;
+      return authoritativePodBaseUrl;
+    }
+
+    const cached = this.getCachedPodBaseUrl(context);
+    if (cached) {
+      return cached;
+    }
+
+    const podBaseUrl = this.derivePodBaseUrl(fallbackWebId ?? this.getWebId(context));
+    if (podBaseUrl) {
+      (context as any)._cachedPodBaseUrl = podBaseUrl;
+    }
+
+    return podBaseUrl;
   }
 
   /**
@@ -735,8 +869,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     if (/^https?:\/\//.test(resourceId)) {
       return resourceId;
     }
-    const podBaseUrl = this.getCachedPodBaseUrl(context)
-      ?? this.derivePodBaseUrl(this.getWebId(context));
+    const podBaseUrl = this.ensurePodBaseUrlCache(context);
     if (!podBaseUrl) {
       throw new Error(`Cannot resolve Pod base URL for resource id: ${resourceId}`);
     }
@@ -744,8 +877,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   private baseRelativeIdFromResource(resource: string, context: StoreContext): string {
-    const podBaseUrl = this.getCachedPodBaseUrl(context)
-      ?? this.derivePodBaseUrl(this.getWebId(context));
+    const podBaseUrl = this.ensurePodBaseUrlCache(context);
     if (podBaseUrl) {
       const dataPrefix = `${podBaseUrl.replace(/\/$/, '')}/.data/`;
       if (resource.startsWith(dataPrefix)) {
@@ -753,6 +885,25 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       }
     }
     const marker = '/.data/';
+    const markerIndex = resource.indexOf(marker);
+    if (markerIndex >= 0) {
+      return resource.slice(markerIndex + marker.length);
+    }
+    return resource;
+  }
+
+  private baseRelativeIdFromPodPath(resource: string, context: StoreContext, podPath: string): string {
+    const normalizedPath = podPath.replace(/^\/+|\/+$/g, '');
+    const podBaseUrl = this.ensurePodBaseUrlCache(context);
+
+    if (podBaseUrl) {
+      const prefix = `${podBaseUrl.replace(/\/$/, '')}/${normalizedPath}/`;
+      if (resource.startsWith(prefix)) {
+        return resource.slice(prefix.length);
+      }
+    }
+
+    const marker = `/${normalizedPath}/`;
     const markerIndex = resource.indexOf(marker);
     if (markerIndex >= 0) {
       return resource.slice(markerIndex + marker.length);
@@ -1045,8 +1196,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   private getCachedPodBaseUrl(context: StoreContext): string | undefined {
-    const cachedWebId = (context as any)._cachedWebId as string | undefined;
-    return this.derivePodBaseUrl(cachedWebId);
+    const cachedPodBaseUrl = (context as any)._cachedPodBaseUrl as string | undefined;
+    if (cachedPodBaseUrl) {
+      return cachedPodBaseUrl.replace(/\/$/, '');
+    }
+    return undefined;
   }
 
   private parseSparqlBindingValue(binding: Record<string, { value?: string }> | undefined, key: string): string | null {
@@ -1075,8 +1229,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       PREFIX udfs: <https://undefineds.co/ns#>
       SELECT ?msg ?maker ?messageType ?legacyRole ?content ?messageStatus ?legacyStatus ?createdAt ?legacyCreatedAt ?toolName ?toolCallId ?metadata
       WHERE {
-        ?msg a meeting:Message ;
-             sioc:has_container <${resolvedThread.thread}> .
+        <${resolvedThread.thread}> sioc:has_member ?msg .
+        ?msg a meeting:Message .
         OPTIONAL { ?msg foaf:maker ?maker . }
         OPTIONAL { ?msg udfs:messageType ?messageType . }
         OPTIONAL { ?msg udfs:role ?legacyRole . }
@@ -2101,8 +2255,7 @@ WHERE { ${deletePatterns.join(' ')} }
     if (/^https?:\/\//.test(resource)) {
       return resource;
     }
-    const podBaseUrl = this.getCachedPodBaseUrl(context)
-      ?? this.derivePodBaseUrl(this.getWebId(context));
+    const podBaseUrl = this.ensurePodBaseUrlCache(context);
     if (!podBaseUrl) {
       throw new Error(`Cannot resolve Pod base URL for resource: ${resource}`);
     }
@@ -2181,6 +2334,120 @@ WHERE { ${deletePatterns.join(' ')} }
     return 0;
   }
 
+  private parseIntegerValue(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number.parseInt(value, 10);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  private extractModelId(model: string | null | undefined): string | undefined {
+    if (!model) {
+      return undefined;
+    }
+    const hashIndex = model.lastIndexOf('#');
+    if (hashIndex >= 0 && hashIndex < model.length - 1) {
+      return model.slice(hashIndex + 1) || undefined;
+    }
+    const clean = model.replace(/\/+$/, '');
+    const slashIndex = clean.lastIndexOf('/');
+    const tail = slashIndex >= 0 ? clean.slice(slashIndex + 1) : clean;
+    return tail || undefined;
+  }
+
+  private async queryAiConfigFromSettingsSparql(context: StoreContext): Promise<AiConfigSelection | null | undefined> {
+    const cachedFetch = this.getCachedFetch(context);
+    const podBaseUrl = this.ensurePodBaseUrlCache(context);
+    if (!cachedFetch || !podBaseUrl) {
+      return null;
+    }
+
+    const endpoint = `${podBaseUrl.replace(/\/$/, '')}/settings/-/sparql`;
+    const query = `
+      PREFIX udfs: <https://undefineds.co/ns#>
+      SELECT ?cred ?provider ?apiKey ?isDefault ?lastUsedAt ?failCount ?baseUrl ?proxyUrl ?defaultModel ?hasModel
+      WHERE {
+        ?cred a udfs:Credential ;
+              udfs:service "ai" ;
+              udfs:status "active" ;
+              udfs:apiKey ?apiKey .
+        OPTIONAL { ?cred udfs:provider ?provider . }
+        OPTIONAL { ?cred udfs:isDefault ?isDefault . }
+        OPTIONAL { ?cred udfs:lastUsedAt ?lastUsedAt . }
+        OPTIONAL { ?cred udfs:failCount ?failCount . }
+        OPTIONAL { ?provider udfs:baseUrl ?baseUrl . }
+        OPTIONAL { ?provider udfs:proxyUrl ?proxyUrl . }
+        OPTIONAL { ?provider udfs:defaultModel ?defaultModel . }
+        OPTIONAL { ?provider udfs:hasModel ?hasModel . }
+      }
+    `.trim();
+
+    const response = await cachedFetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/sparql-query',
+        Accept: 'application/sparql-results+json',
+      },
+      body: query,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Failed to query settings AI config: ${response.status} ${response.statusText} - ${text}`);
+    }
+
+    const json = await response.json() as {
+      results?: {
+        bindings?: Array<Record<string, { value?: string }>>;
+      };
+    };
+
+    const credentials = (json.results?.bindings ?? []).map((binding): AiCredentialSparqlCandidate => {
+      const credentialIri = this.parseSparqlBindingValue(binding, 'cred') ?? '';
+      const providerRef = this.parseSparqlBindingValue(binding, 'provider');
+      return {
+        id: this.baseRelativeIdFromPodPath(credentialIri, context, '/settings/'),
+        provider: providerRef,
+        providerId: providerRef ? this.extractProviderId(providerRef) : null,
+        apiKey: this.parseSparqlBindingValue(binding, 'apiKey'),
+        isDefault: this.parseSparqlBindingValue(binding, 'isDefault'),
+        lastUsedAt: this.parseSparqlBindingValue(binding, 'lastUsedAt'),
+        failCount: this.parseIntegerValue(this.parseSparqlBindingValue(binding, 'failCount')),
+        baseUrl: this.parseSparqlBindingValue(binding, 'baseUrl'),
+        proxyUrl: this.parseSparqlBindingValue(binding, 'proxyUrl'),
+        defaultModel: this.parseSparqlBindingValue(binding, 'defaultModel')
+          ?? this.parseSparqlBindingValue(binding, 'hasModel'),
+      };
+    });
+
+    for (const cred of this.sortAiCredentialCandidates(credentials)) {
+      if (!cred.provider || !cred.apiKey || !cred.baseUrl) {
+        continue;
+      }
+
+      const providerId = cred.providerId || this.extractProviderId(cred.provider);
+      if (!providerId) {
+        continue;
+      }
+
+      this.logger.debug(`Using credential ${cred.id} with provider ${providerId}`);
+      return {
+        providerId,
+        baseUrl: cred.baseUrl,
+        proxyUrl: cred.proxyUrl || undefined,
+        defaultModel: this.extractModelId(cred.defaultModel),
+        apiKey: cred.apiKey,
+        credentialId: cred.id!,
+      };
+    }
+
+    return undefined;
+  }
+
   async getAiConfig(context: StoreContext): Promise<{
     providerId: string;
     baseUrl: string;
@@ -2193,8 +2460,14 @@ WHERE { ${deletePatterns.join(' ')} }
     if (!db) {
       return undefined;
     }
+    this.ensurePodBaseUrlCache(context, db);
 
     try {
+      const sparqlConfig = await this.queryAiConfigFromSettingsSparql(context);
+      if (sparqlConfig !== null) {
+        return sparqlConfig ?? undefined;
+      }
+
       // 查询活跃的 AI 凭据
       const credentials = await db.select()
         .from(Credential)

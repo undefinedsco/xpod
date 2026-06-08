@@ -33,6 +33,7 @@ const inSchema = object({
 export interface ScopedPickWebIdHandlerOptions {
   webIdStore: WebIdStore;
   providerFactory: ProviderFactory;
+  storageBaseUrl?: string;
   identityDbUrl?: string;
   provisionBaseUrl?: string;
   podLookupRepository?: PodWebIdLookupRepository;
@@ -63,6 +64,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
   private readonly logger = getLoggerFor(this);
   private readonly webIdStore: WebIdStore;
   private readonly providerFactory: ProviderFactory;
+  private readonly storageBaseUrl?: string;
   private readonly provisionBaseUrl?: string;
   private readonly podLookupRepository?: PodWebIdLookupRepository;
   private readonly fetch: FetchLike;
@@ -71,6 +73,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     super();
     this.webIdStore = options.webIdStore;
     this.providerFactory = options.providerFactory;
+    this.storageBaseUrl = normalizeOptionalUrl(options.storageBaseUrl);
     this.provisionBaseUrl = normalizeOptionalUrl(options.provisionBaseUrl);
     this.podLookupRepository = options.podLookupRepository ??
       (options.identityDbUrl ? new PodLookupRepository(getIdentityDatabase(options.identityDbUrl)) : undefined);
@@ -217,7 +220,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
   ): Promise<TargetStorage> {
     const provisionCode = extractProvisionCode(oidcInteraction);
     if (!provisionCode) {
-      return { storageUrl: ensureTrailingSlash(provider.issuer) };
+      return { storageUrl: ensureTrailingSlash(this.storageBaseUrl ?? provider.issuer) };
     }
 
     const payload = new ProvisionCodeCodec(this.provisionBaseUrl ?? provider.issuer).decode(provisionCode);

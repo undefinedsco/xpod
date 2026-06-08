@@ -740,14 +740,14 @@ suite('ChatKit PodStore Integration', () => {
 
       // Create a provider
       await db.insert(Provider).values({
-        id: 'test-openai',
+        id: 'test-openai.ttl',
         displayName: 'Test OpenAI',
         baseUrl: 'https://api.openai.com/v1',
       });
 
       // Create a credential
       await db.insert(Credential).values({
-        id: 'cred-test-001',
+        id: 'credentials.ttl#cred-test-001',
         provider: `${podUrl}settings/providers/test-openai.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
@@ -772,14 +772,14 @@ suite('ChatKit PodStore Integration', () => {
 
       // Create provider with baseUrl
       await db.insert(Provider).values({
-        id: 'custom-provider',
+        id: 'custom-provider.ttl',
         displayName: 'Custom Provider',
         baseUrl: 'https://default.api.com/v1',
       });
 
       // Create credential
       await db.insert(Credential).values({
-        id: 'cred-custom-001',
+        id: 'credentials.ttl#cred-custom-001',
         provider: `${podUrl}settings/providers/custom-provider.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
@@ -802,14 +802,14 @@ suite('ChatKit PodStore Integration', () => {
 
       // Create provider
       await db.insert(Provider).values({
-        id: 'inactive-provider',
+        id: 'inactive-provider.ttl',
         displayName: 'Inactive Provider',
         baseUrl: 'https://inactive.api.com/v1',
       });
 
       // Create inactive credential
       await db.insert(Credential).values({
-        id: 'cred-inactive-001',
+        id: 'credentials.ttl#cred-inactive-001',
         provider: `${podUrl}settings/providers/inactive-provider.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.INACTIVE,
@@ -820,7 +820,7 @@ suite('ChatKit PodStore Integration', () => {
       // Should not return the inactive credential (should get previously created active one)
       const config = await store.getAiConfig(testContext);
       expect(config).toBeDefined();
-      expect(config!.credentialId).not.toBe('cred-inactive-001');
+      expect(config!.credentialId).not.toBe('credentials.ttl#cred-inactive-001');
     });
 
     it('should update credential status to rate limited', async () => {
@@ -829,7 +829,7 @@ suite('ChatKit PodStore Integration', () => {
 
       // Create a credential for status update test
       await db.insert(Credential).values({
-        id: 'cred-status-test',
+        id: 'credentials.ttl#cred-status-test',
         provider: `${podUrl}settings/providers/test-openai.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,
@@ -842,13 +842,13 @@ suite('ChatKit PodStore Integration', () => {
       const resetAt = new Date(Date.now() + 60000);
       await store.updateCredentialStatus(
         testContext,
-        'cred-status-test',
+        'credentials.ttl#cred-status-test',
         CredentialStatus.RATE_LIMITED,
         { rateLimitResetAt: resetAt, incrementFailCount: true },
       );
 
       // Verify the update
-      const credential = await db.findById(Credential, 'cred-status-test');
+      const credential = await db.findById(Credential, 'credentials.ttl#cred-status-test');
       expect(credential).toBeTruthy();
       expect(credential.status).toBe(CredentialStatus.RATE_LIMITED);
       expect(credential.failCount).toBe(1);
@@ -860,7 +860,7 @@ suite('ChatKit PodStore Integration', () => {
 
       // Create a credential with some failures
       await db.insert(Credential).values({
-        id: 'cred-success-test',
+        id: 'credentials.ttl#cred-success-test',
         provider: `${podUrl}settings/providers/test-openai.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.RATE_LIMITED,
@@ -870,10 +870,10 @@ suite('ChatKit PodStore Integration', () => {
       });
 
       // Record success
-      await store.recordCredentialSuccess(testContext, 'cred-success-test');
+      await store.recordCredentialSuccess(testContext, 'credentials.ttl#cred-success-test');
 
       // Verify the update
-      const credential = await db.findById(Credential, 'cred-success-test');
+      const credential = await db.findById(Credential, 'credentials.ttl#cred-success-test');
       expect(credential).toBeTruthy();
       expect(credential.status).toBe(CredentialStatus.ACTIVE);
       expect(credential.failCount).toBe(0);
@@ -886,7 +886,7 @@ suite('ChatKit PodStore Integration', () => {
 
       // Create provider with proxyUrl
       await db.insert(Provider).values({
-        id: 'proxy-provider',
+        id: 'proxy-provider.ttl',
         displayName: 'Proxy Provider',
         baseUrl: 'https://proxy-api.com/v1',
         proxyUrl: 'http://proxy.example.com:8080',
@@ -894,7 +894,7 @@ suite('ChatKit PodStore Integration', () => {
 
       // Create credential
       await db.insert(Credential).values({
-        id: 'cred-proxy-001',
+        id: 'credentials.ttl#cred-proxy-001',
         provider: `${podUrl}settings/providers/proxy-provider.ttl`,
         service: ServiceType.AI,
         status: CredentialStatus.ACTIVE,

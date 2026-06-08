@@ -394,4 +394,71 @@ describe('ScopedPickWebIdHandler', () => {
       remember: true,
     });
   });
+
+  it('uses the configured storage base URL when the OIDC provider issuer is the internal CSS origin', async () => {
+    const storageBaseUrl = 'http://localhost:55303/';
+    const internalIssuer = 'http://localhost:55304/';
+    const webId = 'http://localhost:55303/alice/profile/card#me';
+    const webIdStore = {
+      findLinks: vi.fn().mockResolvedValue([{ id: 'link-local', webId }]),
+      isLinked: vi.fn(async (candidate: string, accountId: string) => accountId === 'account-1' && candidate === webId),
+      get: vi.fn(),
+      create: vi.fn(),
+      delete: vi.fn(),
+    };
+    const podLookupRepository = {
+      findByWebId: vi.fn(),
+      findAllByWebId: vi.fn(async (candidate: string) => candidate === webId
+        ? [{
+          podId: 'pod-local',
+          accountId: 'account-1',
+          baseUrl: 'http://localhost:55303/alice/',
+          webId,
+        }]
+        : []),
+      listByAccountId: vi.fn(async () => [{
+        podId: 'pod-local',
+        accountId: 'account-1',
+        baseUrl: 'http://localhost:55303/alice/',
+        webId,
+      }]),
+    };
+    const interaction = {
+      params: {},
+      lastSubmission: { account: 'account-1' },
+      persist: vi.fn(),
+      returnTo: 'http://localhost:5173/auth/callback',
+    };
+    const handler = new ScopedPickWebIdHandler({
+      webIdStore,
+      providerFactory: {
+        getProvider: vi.fn(async () => ({ issuer: internalIssuer }) as any),
+      },
+      storageBaseUrl,
+      podLookupRepository,
+    });
+
+    const view = await handler.getView({
+      method: 'GET',
+      accountId: 'account-1',
+      oidcInteraction: interaction as any,
+      json: {},
+      metadata: {} as any,
+      target: { path: '/.account/oidc/pick-webid/' },
+    });
+
+    expect(view.json.webIds).toEqual([webId]);
+    await expect(handler.handle({
+      method: 'POST',
+      accountId: 'account-1',
+      oidcInteraction: interaction as any,
+      json: { webId, remember: true },
+      metadata: {} as any,
+      target: { path: '/.account/oidc/pick-webid/' },
+    })).rejects.toBeInstanceOf(FoundHttpError);
+    expect((interaction as any).result.login).toEqual({
+      accountId: webId,
+      remember: true,
+    });
+  });
 });

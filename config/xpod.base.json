@@ -118,6 +118,10 @@
         "providerFactory": {
           "@id": "urn:solid-server:default:IdentityProviderFactory"
         },
+        "storageBaseUrl": {
+          "@id": "urn:solid-server:default:variable:baseUrl",
+          "@type": "Variable"
+        },
         "provisionBaseUrl": {
           "@id": "urn:solid-server:default:variable:oidcIssuer",
           "@type": "Variable"

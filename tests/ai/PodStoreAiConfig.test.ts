@@ -208,6 +208,135 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config!.credentialId).toBe('cred-001');
     });
 
+    it('should read AI config through settings-scoped SPARQL when a cached Solid fetch is available', async () => {
+      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        results: {
+          bindings: [
+            {
+              cred: { value: 'http://localhost:3000/test/settings/credentials.ttl#cred-sparql' },
+              provider: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl' },
+              apiKey: { value: 'sk-sparql-key' },
+              isDefault: { value: 'true' },
+              failCount: { value: '0' },
+              baseUrl: { value: 'https://openrouter.ai/api/v1' },
+              proxyUrl: { value: 'http://proxy.example.com:8080' },
+              defaultModel: { value: 'http://localhost:3000/test/settings/providers/openrouter.ttl#openrouter/auto' },
+            },
+          ],
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/sparql-results+json' },
+      }));
+      (mockContext as any)._cachedFetch = sparqlFetch;
+      (mockContext as any)._cachedWebId = mockContext.auth?.webId;
+      mockDb.select = vi.fn(() => {
+        throw new Error('document-mode collection query should not be used');
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toEqual({
+        providerId: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        proxyUrl: 'http://proxy.example.com:8080',
+        defaultModel: 'openrouter/auto',
+        apiKey: 'sk-sparql-key',
+        credentialId: 'credentials.ttl#cred-sparql',
+      });
+      expect(sparqlFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/test/settings/-/sparql',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/sparql-query',
+            Accept: 'application/sparql-results+json',
+          }),
+        }),
+      );
+      expect(mockDb.select).not.toHaveBeenCalled();
+    });
+
+    it('should query AI config from the resolved storage provider when WebID is on a different origin', async () => {
+      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        results: {
+          bindings: [
+            {
+              cred: { value: 'https://node-0000.undefineds.co/glocal/settings/credentials.ttl#cred-local' },
+              provider: { value: 'https://node-0000.undefineds.co/glocal/settings/providers/openrouter.ttl' },
+              apiKey: { value: 'sk-local-key' },
+              baseUrl: { value: 'https://openrouter.ai/api/v1' },
+            },
+          ],
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/sparql-results+json' },
+      }));
+      (mockContext as any)._cachedFetch = sparqlFetch;
+      (mockContext as any)._cachedWebId = 'https://id.undefineds.co/glocal/profile/card#me';
+      (mockContext as any)._cachedPodBaseUrl = 'https://node-0000.undefineds.co/glocal/';
+      mockDb.select = vi.fn(() => {
+        throw new Error('document-mode collection query should not be used');
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toMatchObject({
+        providerId: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'sk-local-key',
+        credentialId: 'credentials.ttl#cred-local',
+      });
+      expect(sparqlFetch).toHaveBeenCalledWith(
+        'https://node-0000.undefineds.co/glocal/settings/-/sparql',
+        expect.any(Object),
+      );
+      expect(mockDb.select).not.toHaveBeenCalled();
+    });
+
+    it('should let the resolved database Pod URL override a stale WebID-derived cache', async () => {
+      const sparqlFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        results: {
+          bindings: [
+            {
+              cred: { value: 'https://node-0000.undefineds.co/glocal/settings/credentials.ttl#cred-local' },
+              provider: { value: 'https://node-0000.undefineds.co/glocal/settings/providers/openrouter.ttl' },
+              apiKey: { value: 'sk-local-key' },
+              baseUrl: { value: 'https://openrouter.ai/api/v1' },
+            },
+          ],
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/sparql-results+json' },
+      }));
+      (mockContext as any)._cachedFetch = sparqlFetch;
+      (mockContext as any)._cachedWebId = 'https://id.undefineds.co/glocal/profile/card#me';
+      (mockContext as any)._cachedPodBaseUrl = 'https://id.undefineds.co/glocal';
+      mockDb.getDialect = vi.fn(() => ({
+        getPodUrl: () => 'https://node-0000.undefineds.co/glocal/',
+      }));
+      mockDb.select = vi.fn(() => {
+        throw new Error('document-mode collection query should not be used');
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toMatchObject({
+        providerId: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'sk-local-key',
+        credentialId: 'credentials.ttl#cred-local',
+      });
+      expect(sparqlFetch).toHaveBeenCalledWith(
+        'https://node-0000.undefineds.co/glocal/settings/-/sparql',
+        expect.any(Object),
+      );
+      expect((mockContext as any)._cachedPodBaseUrl).toBe('https://node-0000.undefineds.co/glocal');
+      expect(mockDb.select).not.toHaveBeenCalled();
+    });
+
     it('should use provider baseUrl', async () => {
       const config = await store.getAiConfig(mockContext);
 
