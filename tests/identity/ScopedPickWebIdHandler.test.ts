@@ -70,9 +70,17 @@ describe('ScopedPickWebIdHandler', () => {
       const pods = await Promise.all(webIds.map(async (webId) => findByWebId(webId)));
       return pods.filter((pod): pod is PodLookupResult => Boolean(pod));
     });
+    const listByAccountId = vi.fn(async (accountId: string): Promise<PodLookupResult[]> => {
+      if (accountId !== 'account-1') {
+        return [];
+      }
+      const pods = await Promise.all([aliceWebId, bobWebId].map(async (webId) => findByWebId(webId)));
+      return pods.filter((pod): pod is PodLookupResult => Boolean(pod));
+    });
     const podLookupRepository = {
       findByWebId,
       findByWebIds,
+      listByAccountId,
     };
     const providerFactory = {
       getProvider: vi.fn(async () => ({ issuer: cloudIssuer }) as any),
@@ -145,6 +153,38 @@ describe('ScopedPickWebIdHandler', () => {
     expect(podLookupRepository.findByWebId).not.toHaveBeenCalled();
   });
 
+  it('recovers candidate WebIDs from account-scoped Pod facts when WebIdStore links are empty', async () => {
+    const { handler, webIdStore, podLookupRepository, fetchMock } = createHandler();
+    webIdStore.findLinks.mockResolvedValueOnce([]);
+
+    const view = await handler.getView({
+      method: 'GET',
+      accountId: 'account-1',
+      oidcInteraction: {
+        params: { provisionCode },
+      } as any,
+      json: {},
+      metadata: {} as any,
+      target: { path: '/.account/oidc/pick-webid/' },
+    });
+
+    expect(view.json.webIds).toEqual([aliceWebId]);
+    expect(view.json.entries).toEqual([
+      {
+        webId: aliceWebId,
+        storageUrl: 'https://node-0000.undefineds.co/alice/',
+        storageMode: 'local',
+      },
+    ]);
+    expect(podLookupRepository.listByAccountId).toHaveBeenCalledWith('account-1');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://node-0000.undefineds.co/provision/webids',
+      expect.objectContaining({
+        body: JSON.stringify({ webIds: [aliceWebId, bobWebId] }),
+      }),
+    );
+  });
+
   it('rejects an account-linked WebID that the current storage provider cannot resolve', async () => {
     const { handler } = createHandler();
 
@@ -188,6 +228,33 @@ describe('ScopedPickWebIdHandler', () => {
       },
     });
     expect(interaction.persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a scoped WebID backed by account Pod facts when WebIdStore link lookup is stale', async () => {
+    const { handler, webIdStore, podLookupRepository } = createHandler();
+    webIdStore.isLinked.mockResolvedValueOnce(false);
+
+    const interaction = {
+      params: { provisionCode },
+      lastSubmission: { account: 'account-1' },
+      persist: vi.fn(),
+      returnTo: 'https://client.example/callback',
+    };
+
+    await expect(handler.handle({
+      method: 'POST',
+      accountId: 'account-1',
+      oidcInteraction: interaction as any,
+      json: { webId: aliceWebId, remember: true },
+      metadata: {} as any,
+      target: { path: '/.account/oidc/pick-webid/' },
+    })).rejects.toBeInstanceOf(FoundHttpError);
+
+    expect(podLookupRepository.listByAccountId).toHaveBeenCalledWith('account-1');
+    expect((interaction as any).result.login).toEqual({
+      accountId: aliceWebId,
+      remember: true,
+    });
   });
 
   it('falls back to the issuer storage when no provisionCode is present', async () => {

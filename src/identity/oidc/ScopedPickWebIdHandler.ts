@@ -43,6 +43,7 @@ export interface PodWebIdLookupRepository {
   findByWebId: (webId: string) => Promise<PodLookupResult | undefined>;
   findAllByWebId?: (webId: string) => Promise<PodLookupResult[]>;
   findByWebIds?: (webIds: string[]) => Promise<PodLookupResult[]>;
+  listByAccountId?: (accountId: string) => Promise<PodLookupResult[]>;
 }
 
 interface WebIdEntry extends Record<string, Json | undefined> {
@@ -99,7 +100,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     const provider = await this.providerFactory.getProvider();
     const target = await this.resolveTargetStorage(provider, oidcInteraction);
 
-    if (!await this.webIdStore.isLinked(webId, accountId)) {
+    if (!await this.isLinkedToAccount(webId, accountId)) {
       this.logger.warn(`Trying to pick WebID ${webId} which does not belong to account ${accountId}`);
       throw new BadRequestHttpError('WebID does not belong to this account.');
     }
@@ -120,7 +121,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
   }
 
   private async resolveScopedEntries(accountId: string, target: TargetStorage): Promise<WebIdEntry[]> {
-    const webIds = (await this.webIdStore.findLinks(accountId)).map((link) => link.webId);
+    const webIds = await this.resolveCandidateWebIds(accountId);
     if (target.serviceToken) {
       return this.resolveRemoteSpEntries(webIds, target);
     }
@@ -139,6 +140,43 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
       });
     }
     return entries;
+  }
+
+  private async resolveCandidateWebIds(accountId: string): Promise<string[]> {
+    const linkedWebIds = (await this.webIdStore.findLinks(accountId)).map((link) => link.webId);
+    if (linkedWebIds.length > 0) {
+      return dedupeStrings(linkedWebIds);
+    }
+
+    if (!this.podLookupRepository?.listByAccountId) {
+      return [];
+    }
+
+    try {
+      const pods = await this.podLookupRepository.listByAccountId(accountId);
+      return dedupeStrings(pods.flatMap(getPodCandidateWebIds));
+    } catch (error) {
+      this.logger.warn(`Pod lookup unavailable for account ${accountId}: ${error}`);
+      return [];
+    }
+  }
+
+  private async isLinkedToAccount(webId: string, accountId: string): Promise<boolean> {
+    if (await this.webIdStore.isLinked(webId, accountId)) {
+      return true;
+    }
+
+    if (!this.podLookupRepository?.listByAccountId) {
+      return false;
+    }
+
+    try {
+      const pods = await this.podLookupRepository.listByAccountId(accountId);
+      return pods.some((pod) => getPodCandidateWebIds(pod).includes(webId));
+    } catch (error) {
+      this.logger.warn(`Pod lookup unavailable for account ${accountId}: ${error}`);
+      return false;
+    }
   }
 
   private async isResolvableByCurrentSp(webId: string, target: TargetStorage): Promise<boolean> {
@@ -284,6 +322,17 @@ function ensureTrailingSlash(url: string): string {
 function normalizeOptionalUrl(url: string | undefined): string | undefined {
   const trimmed = url?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function getPodCandidateWebIds(pod: PodLookupResult): string[] {
+  return dedupeStrings([
+    pod.webId,
+    ...(pod.webIds ?? []),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0));
 }
 
 function matchesTargetStorage(pod: PodLookupResult, targetStorageUrl: string): boolean {
