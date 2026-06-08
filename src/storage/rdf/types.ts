@@ -874,7 +874,28 @@ export interface RdfQueryPlannerExplain {
   reasons: string[];
   estimateInputs: string[];
   availableStats: string[];
+  histogramHints?: RdfQueryPlannerHistogramHint[];
   rejectedCapabilities?: string[];
+}
+
+export type RdfQueryPlannerHistogramHintKind =
+  | 'graph'
+  | 'predicate'
+  | 'predicate-object'
+  | 'subject-predicate';
+
+export interface RdfQueryPlannerHistogramHint {
+  kind: RdfQueryPlannerHistogramHintKind;
+  patternIndex: number;
+  quadCount: number;
+  graphCount?: number;
+  distinctSubjects?: number;
+  distinctPredicates?: number;
+  distinctObjects?: number;
+  subject?: RdfCardinalityTerm;
+  predicate?: RdfCardinalityTerm;
+  object?: RdfCardinalityTerm;
+  graph?: RdfCardinalityTerm;
 }
 
 export type RdfQueryCacheStatus =

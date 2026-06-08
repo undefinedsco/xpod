@@ -111,6 +111,8 @@ const DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_DERIVED_CACHE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
+const PLANNER_HISTOGRAM_CACHE_TTL_MS = 5_000;
+const PLANNER_HISTOGRAM_HINT_LIMIT = 100;
 const POSTGRES_RDF_SESSION_OPTIONS = '-c jit=off';
 const RESULT_CACHE_REQUIRED_CAPABILITIES = [
   'cache.result',
@@ -948,6 +950,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private queryTemplateCacheMisses = 0;
   private queryTemplateCacheEvictions = 0;
   private derivedCacheEvictions: RdfDerivedCacheEvictionStats = emptyDerivedCacheEvictionStats();
+  private plannerHistogramCache: {
+    factsDataVersion: number;
+    createdAtMs: number;
+    distributions: RdfCardinalityDistributions;
+  } | null = null;
   private sharedPoolConfig: {
     connectionString?: string;
     host?: string;
@@ -1051,6 +1058,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.queryTemplateCacheMisses = 0;
     this.queryTemplateCacheEvictions = 0;
     this.derivedCacheEvictions = emptyDerivedCacheEvictionStats();
+    this.plannerHistogramCache = null;
   }
 
   public async put(quads: Quad | Quad[], options?: RdfIndexPutOptions): Promise<void> {
@@ -3603,7 +3611,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       .filter((capability) => !activeOperators.has(capability));
   }
 
-  private withPostgresQueryExplain(result: RdfQueryResult, options: PgQueryExplainOptions): RdfQueryResult {
+  private async withPostgresQueryExplain(result: RdfQueryResult, options: PgQueryExplainOptions): Promise<RdfQueryResult> {
     const acceleration = this.pgAcceleration;
     return {
       ...result,
@@ -3617,7 +3625,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
             profile: 'rdf3x',
             ...(options.factsDataVersion !== undefined ? { factsDataVersion: options.factsDataVersion } : {}),
           },
-          planner: this.postgresQueryPlannerExplain(result, options.query),
+          planner: await this.postgresQueryPlannerExplain(result, options.query, options.factsDataVersion),
           cache: {
             template: options.template.explain,
             result: options.resultCache,
@@ -3648,7 +3656,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private postgresQueryPlannerExplain(result: RdfQueryResult, query?: RdfQuery): RdfQueryPlannerExplain {
+  private async postgresQueryPlannerExplain(
+    result: RdfQueryResult,
+    query?: RdfQuery,
+    factsDataVersion?: number,
+  ): Promise<RdfQueryPlannerExplain> {
     const plan = result.metrics.plan ?? [];
     const hasPlan = (marker: string): boolean => plan.some((entry) => entry.includes(marker));
     const hasPlanPrefix = (marker: string): boolean => plan.some((entry) => entry.startsWith(marker));
@@ -3713,6 +3725,28 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
     }
 
+    const shouldExplainHistograms = query
+      && selectedPath !== 'materialized-result-cache'
+      && selectedPath !== 'query-result-cache';
+    const histogramHints = shouldExplainHistograms
+      ? await this.queryPlannerHistogramHints(query, factsDataVersion)
+      : [];
+    for (const hint of histogramHints) {
+      if (hint.kind === 'graph') {
+        reasons.add('histogram-graph-cardinality-available');
+        estimateInputs.add('facts.graphCardinality');
+      } else if (hint.kind === 'predicate') {
+        reasons.add('histogram-predicate-cardinality-available');
+        estimateInputs.add('facts.predicateCardinality');
+      } else if (hint.kind === 'predicate-object') {
+        reasons.add('histogram-predicate-object-cardinality-available');
+        estimateInputs.add('facts.predicateObjectCardinality');
+      } else if (hint.kind === 'subject-predicate') {
+        reasons.add('histogram-subject-predicate-cardinality-available');
+        estimateInputs.add('facts.subjectPredicateCardinality');
+      }
+    }
+
     if (hasPlanPrefix('XpodRdfPgHotOperator(')) {
       reasons.add('pg-hot-operator-enabled');
       estimateInputs.add('pgAcceleration.capabilities');
@@ -3739,8 +3773,112 @@ export class PostgresRdfEngine implements RdfEngineLike {
       reasons: [...reasons],
       estimateInputs: [...estimateInputs],
       availableStats: [...availableStats],
+      ...(histogramHints.length > 0 ? { histogramHints } : {}),
       ...(rejectedCapabilities.length > 0 ? { rejectedCapabilities } : {}),
     };
+  }
+
+  private async queryPlannerHistogramHints(
+    query: RdfQuery,
+    factsDataVersion?: number,
+  ): Promise<NonNullable<RdfQueryPlannerExplain['histogramHints']>> {
+    if (query.patterns.length === 0) {
+      return [];
+    }
+    const distributions = await this.cachedPlannerHistogramDistributions(factsDataVersion);
+    const hints: NonNullable<RdfQueryPlannerExplain['histogramHints']> = [];
+    query.patterns.forEach((pattern, patternIndex) => {
+      const graph = cardinalityTermFromQueryPattern(pattern.graph);
+      if (graph) {
+        const match = distributions.graphs.find((entry) => sameCardinalityTerm(entry.graph, graph));
+        if (match) {
+          hints.push({
+            kind: 'graph',
+            patternIndex,
+            graph: match.graph,
+            quadCount: match.quadCount,
+            distinctSubjects: match.distinctSubjects,
+            distinctPredicates: match.distinctPredicates,
+            distinctObjects: match.distinctObjects,
+          });
+        }
+      }
+
+      const predicate = cardinalityTermFromQueryPattern(pattern.predicate);
+      if (!predicate) {
+        return;
+      }
+      const predicateMatch = distributions.predicates.find((entry) => sameCardinalityTerm(entry.predicate, predicate));
+      if (predicateMatch) {
+        hints.push({
+          kind: 'predicate',
+          patternIndex,
+          predicate: predicateMatch.predicate,
+          quadCount: predicateMatch.quadCount,
+          graphCount: predicateMatch.graphCount,
+          distinctSubjects: predicateMatch.distinctSubjects,
+          distinctObjects: predicateMatch.distinctObjects,
+        });
+      }
+
+      const object = cardinalityTermFromQueryPattern(pattern.object);
+      if (object) {
+        const match = distributions.predicateObjects.find((entry) => (
+          sameCardinalityTerm(entry.predicate, predicate)
+          && sameCardinalityTerm(entry.object, object)
+        ));
+        if (match) {
+          hints.push({
+            kind: 'predicate-object',
+            patternIndex,
+            predicate: match.predicate,
+            object: match.object,
+            quadCount: match.quadCount,
+            graphCount: match.graphCount,
+            distinctSubjects: match.distinctSubjects,
+          });
+        }
+      }
+
+      const subject = cardinalityTermFromQueryPattern(pattern.subject);
+      if (subject) {
+        const match = distributions.subjectPredicates.find((entry) => (
+          sameCardinalityTerm(entry.subject, subject)
+          && sameCardinalityTerm(entry.predicate, predicate)
+        ));
+        if (match) {
+          hints.push({
+            kind: 'subject-predicate',
+            patternIndex,
+            subject: match.subject,
+            predicate: match.predicate,
+            quadCount: match.quadCount,
+            graphCount: match.graphCount,
+            distinctObjects: match.distinctObjects,
+          });
+        }
+      }
+    });
+    return hints;
+  }
+
+  private async cachedPlannerHistogramDistributions(factsDataVersion?: number): Promise<RdfCardinalityDistributions> {
+    const resolvedFactsDataVersion = factsDataVersion ?? await this.readFactsDataVersion();
+    const now = Date.now();
+    if (
+      this.plannerHistogramCache
+      && this.plannerHistogramCache.factsDataVersion === resolvedFactsDataVersion
+      && now - this.plannerHistogramCache.createdAtMs <= PLANNER_HISTOGRAM_CACHE_TTL_MS
+    ) {
+      return this.plannerHistogramCache.distributions;
+    }
+    const distributions = await this.cardinalityDistributions(PLANNER_HISTOGRAM_HINT_LIMIT);
+    this.plannerHistogramCache = {
+      factsDataVersion: resolvedFactsDataVersion,
+      createdAtMs: now,
+      distributions,
+    };
+    return distributions;
   }
 
   private pgAccelerationCapabilitiesForQuery(query: RdfQuery): string[] {
@@ -7917,6 +8055,33 @@ function pgNumber(value: unknown): number | undefined {
 
 function isVariable(value: RdfQueryTermPattern | undefined): value is { variable: string } {
   return Boolean(value && typeof value === 'object' && 'variable' in value);
+}
+
+function cardinalityTermFromQueryPattern(value: RdfQueryTermPattern | undefined): RdfCardinalityTerm | undefined {
+  if (!value || isVariable(value) || !isTerm(value as any)) {
+    return undefined;
+  }
+  const term = value as Term;
+  const result: RdfCardinalityTerm = {
+    value: term.value,
+    kind: postgresRdfTermKind(term),
+  };
+  if (term.termType === 'Literal') {
+    if (term.datatype.value) {
+      result.datatype = term.datatype.value;
+    }
+    if (term.language) {
+      result.language = term.language;
+    }
+  }
+  return result;
+}
+
+function sameCardinalityTerm(left: RdfCardinalityTerm, right: RdfCardinalityTerm): boolean {
+  return left.value === right.value
+    && left.kind === right.kind
+    && (left.datatype ?? '') === (right.datatype ?? '')
+    && (left.language ?? '') === (right.language ?? '');
 }
 
 function variablesInPattern(pattern: RdfQueryPattern): string[] {

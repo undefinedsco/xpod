@@ -324,6 +324,88 @@ describe('PostgresRdfEngine', () => {
         graphCount: 1,
         distinctObjects: 2,
       });
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: chatGraph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+        ],
+        select: ['message'],
+      });
+      expect(result.bindings.map((binding) => binding.message.value).sort()).toEqual([
+        message1.value,
+        message2.value,
+      ]);
+      expect(result.metrics.explain?.planner).toMatchObject({
+        reasons: expect.arrayContaining([
+          'histogram-graph-cardinality-available',
+          'histogram-predicate-cardinality-available',
+          'histogram-predicate-object-cardinality-available',
+        ]),
+        estimateInputs: expect.arrayContaining([
+          'facts.graphCardinality',
+          'facts.predicateCardinality',
+          'facts.predicateObjectCardinality',
+        ]),
+        histogramHints: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'graph',
+            patternIndex: 0,
+            graph: expect.objectContaining({ value: chatGraph.value }),
+            quadCount: 6,
+          }),
+          expect.objectContaining({
+            kind: 'predicate',
+            patternIndex: 0,
+            predicate: expect.objectContaining({ value: STATUS }),
+            quadCount: 3,
+          }),
+          expect.objectContaining({
+            kind: 'predicate-object',
+            patternIndex: 0,
+            predicate: expect.objectContaining({ value: STATUS }),
+            object: expect.objectContaining({ value: 'open', datatype: XSD_STRING }),
+            quadCount: 3,
+          }),
+        ]),
+      });
+
+      const subjectPredicateResult = await engine.query({
+        patterns: [
+          {
+            graph: chatGraph,
+            subject: message1,
+            predicate: tag,
+            object: { variable: 'tag' },
+          },
+        ],
+        select: ['tag'],
+      });
+      expect(subjectPredicateResult.bindings.map((binding) => binding.tag.value).sort()).toEqual([
+        'alpha',
+        'beta',
+      ]);
+      expect(subjectPredicateResult.metrics.explain?.planner).toMatchObject({
+        reasons: expect.arrayContaining([
+          'histogram-subject-predicate-cardinality-available',
+        ]),
+        estimateInputs: expect.arrayContaining([
+          'facts.subjectPredicateCardinality',
+        ]),
+        histogramHints: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'subject-predicate',
+            patternIndex: 0,
+            subject: expect.objectContaining({ value: message1.value }),
+            predicate: expect.objectContaining({ value: tag.value }),
+            quadCount: 2,
+          }),
+        ]),
+      });
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

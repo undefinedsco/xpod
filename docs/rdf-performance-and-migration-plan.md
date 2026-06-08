@@ -577,8 +577,11 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 - facts histogram stats：`storageStats().facts` 在 PG 与 SQLite/file-backed engine 上都暴露
   literal datatype、graph、predicate、predicate/object、subject/predicate 热点分布，供后续
   cost model、慢查询 explain 和 skew benchmark 使用；PG `metrics.explain.planner`
-  已先把 selected path、路径选择原因、估算输入和可用统计暴露出来，后续仍需把这些
-  histogram 真正接入 native/RDF-3X/facts 的 cost-based cutover。
+  已先把 selected path、路径选择原因、估算输入和可用统计暴露出来，并把当前 query exact
+  graph / predicate / predicate-object / subject-predicate 命中的 histogram 条目作为
+  `histogramHints` 和 `histogram-*` reason 暴露出来。该 hint 使用短 TTL 的 facts-version
+  snapshot，cache hit 路径不会额外拉 histogram；后续仍需把这些 histogram 真正接入
+  native/RDF-3X/facts 的 cost-based cutover。
 - query template cache by value-stripped query AST；当前是 bounded in-memory derived metadata，
   `storageStats().queryTemplateCache` 暴露 entry/hit/miss/eviction/ttl/bytes，query plan 标记
   `PostgresQueryTemplateCacheHit(...)` / `PostgresQueryTemplateCacheMiss(...)`；template cache
@@ -596,7 +599,8 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   derived profile、template/result/materialized cache 状态、结构化 access scope，以及
   acceleration profile / fallback / unsupported capability 摘要；`metrics.explain.planner`
   会把 `materialized-result-cache` / `query-result-cache` / `native-extension` / `rdf3x` /
-  `facts` 的 selected path、选择原因、估算输入和 rejected capabilities 暴露给慢查询分析。
+  `facts` 的 selected path、选择原因、估算输入、query-specific histogram hints 和
+  rejected capabilities 暴露给慢查询分析。
   原有 `metrics.plan` 字符串仍用于 benchmark gate 和人工 trace。
 - `rdf_query_result_cache.scope_hash` 记录 normalized cache scope 的摘要；结构化 access scope 会把
   principal、base path、mode、authorization model、permission version 以及 allow/deny graph
