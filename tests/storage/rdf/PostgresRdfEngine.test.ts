@@ -3966,7 +3966,7 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
-  it('uses a temporary staging table for large RDF quad bulk inserts', async () => {
+  it('uses temporary staging tables for large RDF term and quad bulk inserts', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-bulk-stage-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
     const engine = new PostgresRdfEngine({ pool });
@@ -3987,17 +3987,28 @@ describe('PostgresRdfEngine', () => {
 
       await engine.put(quads);
 
-      const createStageStatements = pool.executedSql.filter((sql) => sql.includes('CREATE TEMP TABLE rdf_quads_bulk_stage_'));
-      const stageInsertStatements = pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_quads_bulk_stage_'));
-      const finalInsertStatements = pool.executedSql.filter((sql) => (
+      const createTermStageStatements = pool.executedSql.filter((sql) => sql.includes('CREATE TEMP TABLE rdf_terms_bulk_stage_'));
+      const termStageInsertStatements = pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_terms_bulk_stage_'));
+      const finalTermInsertStatements = pool.executedSql.filter((sql) => (
+        sql.includes('INSERT INTO rdf_terms (') && sql.includes('FROM rdf_terms_bulk_stage_')
+      ));
+      const dropTermStageStatements = pool.executedSql.filter((sql) => sql.includes('DROP TABLE IF EXISTS rdf_terms_bulk_stage_'));
+      const createQuadStageStatements = pool.executedSql.filter((sql) => sql.includes('CREATE TEMP TABLE rdf_quads_bulk_stage_'));
+      const quadStageInsertStatements = pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_quads_bulk_stage_'));
+      const finalQuadInsertStatements = pool.executedSql.filter((sql) => (
         sql.includes('INSERT INTO rdf_quads (') && sql.includes('FROM rdf_quads_bulk_stage_')
       ));
-      const dropStageStatements = pool.executedSql.filter((sql) => sql.includes('DROP TABLE IF EXISTS rdf_quads_bulk_stage_'));
-      expect(createStageStatements).toHaveLength(1);
-      expect(stageInsertStatements.length).toBeGreaterThanOrEqual(1);
-      expect(finalInsertStatements).toHaveLength(1);
-      expect(finalInsertStatements[0]).toContain('SELECT DISTINCT');
-      expect(dropStageStatements).toHaveLength(1);
+      const dropQuadStageStatements = pool.executedSql.filter((sql) => sql.includes('DROP TABLE IF EXISTS rdf_quads_bulk_stage_'));
+      expect(createTermStageStatements).toHaveLength(1);
+      expect(termStageInsertStatements.length).toBeGreaterThanOrEqual(1);
+      expect(finalTermInsertStatements).toHaveLength(1);
+      expect(finalTermInsertStatements[0]).toContain('SELECT DISTINCT');
+      expect(dropTermStageStatements).toHaveLength(1);
+      expect(createQuadStageStatements).toHaveLength(1);
+      expect(quadStageInsertStatements.length).toBeGreaterThanOrEqual(1);
+      expect(finalQuadInsertStatements).toHaveLength(1);
+      expect(finalQuadInsertStatements[0]).toContain('SELECT DISTINCT');
+      expect(dropQuadStageStatements).toHaveLength(1);
 
       const stats = await engine.storageStats();
       expect(stats.facts.quadCount).toBe(messageCount * 2);

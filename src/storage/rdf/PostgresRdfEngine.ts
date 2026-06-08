@@ -622,6 +622,12 @@ interface RdfTermIdentity {
   hash: string;
 }
 
+interface RdfTermDictionaryMissingEntry {
+  identity: RdfTermIdentity;
+  term: Term;
+  indexes: number[];
+}
+
 function toPgSafe(value: string): string {
   return value
     .replaceAll(PG_STRING_ESCAPE, `${PG_STRING_ESCAPE}${PG_STRING_ESCAPE}`)
@@ -845,7 +851,7 @@ class PostgresRdfTermDictionary {
 
     const identities = await this.identitiesForTerms(terms);
     const result = new Array<number>(terms.length);
-    const missing = new Map<string, { identity: RdfTermIdentity; term: Term; indexes: number[] }>();
+    const missing = new Map<string, RdfTermDictionaryMissingEntry>();
 
     for (const [index, identity] of identities.entries()) {
       const cacheKey = this.identityCacheKey(identity);
@@ -868,6 +874,46 @@ class PostgresRdfTermDictionary {
     }
 
     const missingEntries = [...missing.values()];
+    if (missingEntries.length >= POSTGRES_RDF_BULK_STAGING_MIN_ROWS) {
+      await this.insertMissingTermsViaStagingTable(missingEntries);
+    } else {
+      await this.insertMissingTermsViaUnnest(missingEntries);
+    }
+
+    const rowsByHash = new Map<string, PostgresRdfTermRow[]>();
+    for (const hashChunk of chunkArray(missingEntries.map(({ identity }) => identity.hash), POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
+      const rows = await this.executor.query<PostgresRdfTermRow>(
+        'SELECT * FROM rdf_terms WHERE hash = ANY($1::text[])',
+        [hashChunk],
+      );
+      for (const row of rows) {
+        const rowsForHash = rowsByHash.get(row.hash);
+        if (rowsForHash) {
+          rowsForHash.push(row);
+        } else {
+          rowsByHash.set(row.hash, [row]);
+        }
+      }
+    }
+
+    for (const { identity, term, indexes } of missingEntries) {
+      const row = rowsByHash.get(identity.hash)?.find((candidate) => this.rowMatchesIdentity(candidate, identity));
+      if (!row) {
+        throw new Error('Failed to insert or load RDF term');
+      }
+      const id = row.id;
+      const cacheKey = this.identityCacheKey(identity);
+      this.termCache.set(cacheKey, id);
+      this.idCache.set(id, term);
+      for (const index of indexes) {
+        result[index] = id;
+      }
+    }
+
+    return result;
+  }
+
+  private async insertMissingTermsViaUnnest(missingEntries: RdfTermDictionaryMissingEntry[]): Promise<void> {
     for (const chunk of chunkArray(missingEntries, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       await this.executor.exec(`
         INSERT INTO rdf_terms (
@@ -920,38 +966,101 @@ class PostgresRdfTermDictionary {
         chunk.map(({ identity }) => identity.numericValue),
       ]);
     }
+  }
 
-    const rowsByHash = new Map<string, PostgresRdfTermRow[]>();
-    for (const hashChunk of chunkArray(missingEntries.map(({ identity }) => identity.hash), POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
-      const rows = await this.executor.query<PostgresRdfTermRow>(
-        'SELECT * FROM rdf_terms WHERE hash = ANY($1::text[])',
-        [hashChunk],
-      );
-      for (const row of rows) {
-        const rowsForHash = rowsByHash.get(row.hash);
-        if (rowsForHash) {
-          rowsForHash.push(row);
-        } else {
-          rowsByHash.set(row.hash, [row]);
-        }
+  private async insertMissingTermsViaStagingTable(missingEntries: RdfTermDictionaryMissingEntry[]): Promise<void> {
+    const stageTable = `rdf_terms_bulk_stage_${randomUUID().replace(/-/g, '')}`;
+    await this.executor.exec(`
+      CREATE TEMP TABLE ${stageTable} (
+        kind TEXT NOT NULL,
+        value TEXT NOT NULL,
+        value_head TEXT NOT NULL,
+        datatype_id BIGINT,
+        lang TEXT,
+        hash TEXT NOT NULL,
+        normalized_text TEXT,
+        numeric_value DOUBLE PRECISION
+      )
+    `);
+    try {
+      for (const chunk of chunkArray(missingEntries, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
+        await this.executor.exec(`
+          INSERT INTO ${stageTable} (
+            kind,
+            value,
+            value_head,
+            datatype_id,
+            lang,
+            hash,
+            normalized_text,
+            numeric_value
+          )
+          SELECT
+            kind,
+            value,
+            value_head,
+            datatype_id,
+            lang,
+            hash,
+            normalized_text,
+            numeric_value
+          FROM UNNEST(
+            $1::text[],
+            $2::text[],
+            $3::text[],
+            $4::bigint[],
+            $5::text[],
+            $6::text[],
+            $7::text[],
+            $8::double precision[]
+          ) AS input(
+            kind,
+            value,
+            value_head,
+            datatype_id,
+            lang,
+            hash,
+            normalized_text,
+            numeric_value
+          )
+        `, [
+          chunk.map(({ identity }) => identity.kind),
+          chunk.map(({ identity }) => identity.value),
+          chunk.map(({ identity }) => identity.valueHead),
+          chunk.map(({ identity }) => identity.datatypeId),
+          chunk.map(({ identity }) => identity.lang),
+          chunk.map(({ identity }) => identity.hash),
+          chunk.map(({ identity }) => identity.normalizedText),
+          chunk.map(({ identity }) => identity.numericValue),
+        ]);
       }
+
+      await this.executor.exec(`
+        INSERT INTO rdf_terms (
+          kind,
+          value,
+          value_head,
+          datatype_id,
+          lang,
+          hash,
+          normalized_text,
+          numeric_value
+        )
+        SELECT DISTINCT
+          kind,
+          value,
+          value_head,
+          datatype_id,
+          lang,
+          hash,
+          normalized_text,
+          numeric_value
+        FROM ${stageTable}
+        ON CONFLICT (hash) DO NOTHING
+      `);
+    } finally {
+      await this.executor.exec(`DROP TABLE IF EXISTS ${stageTable}`);
     }
-
-    for (const { identity, term, indexes } of missingEntries) {
-      const row = rowsByHash.get(identity.hash)?.find((candidate) => this.rowMatchesIdentity(candidate, identity));
-      if (!row) {
-        throw new Error('Failed to insert or load RDF term');
-      }
-      const id = row.id;
-      const cacheKey = this.identityCacheKey(identity);
-      this.termCache.set(cacheKey, id);
-      this.idCache.set(id, term);
-      for (const index of indexes) {
-        result[index] = id;
-      }
-    }
-
-    return result;
   }
 
   public async find(term: Term): Promise<number | undefined> {
