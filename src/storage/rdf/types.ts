@@ -111,6 +111,7 @@ export interface RdfEngineStorageStats {
     stats: Rdf3xIndexStats;
     syncedWithFacts: boolean;
   };
+  derivedCache?: RdfDerivedCacheStats;
   queryResultCache?: RdfQueryResultCacheStats;
   materializedResultCache?: RdfMaterializedResultCacheStats;
   queryTemplateCache?: RdfQueryTemplateCacheStats;
@@ -145,6 +146,14 @@ export interface RdfPgCustomIndexStats {
   columns: string[];
   stats?: Record<string, unknown>;
   error?: string;
+}
+
+export interface RdfDerivedCacheStats {
+  cacheBytes: number;
+  maxCacheBytes: number;
+  queryResultPayloadBytes: number;
+  materializedResultPayloadBytes: number;
+  queryTemplateBytes: number;
 }
 
 export interface RdfQueryResultCacheStats {

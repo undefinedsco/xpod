@@ -1161,6 +1161,79 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('enforces a shared PostgreSQL derived cache byte budget', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-derived-cache-budget-'));
+    const perCacheMaxBytes = 1024 * 1024;
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheMaxBytes: perCacheMaxBytes,
+      materializedResultCacheMaxBytes: perCacheMaxBytes,
+      queryTemplateCacheMaxEntries: 8,
+      derivedCacheMaxBytes: 1,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const query: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+    };
+    const materializedQuery: RdfQuery = {
+      ...query,
+      cache: {
+        materialized: 'chat/default/open-messages',
+      },
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const result = await engine.query(query);
+      expect(result.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(result.metrics.plan).toContain('PostgresResultCacheStore');
+
+      const materialized = await engine.query(materializedQuery);
+      expect(materialized.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(materialized.metrics.plan).toContain('PostgresMaterializedResultStore');
+
+      const storage = await engine.storageStats();
+      expect(storage.derivedCache).toMatchObject({
+        cacheBytes: 0,
+        maxCacheBytes: 1,
+        queryResultPayloadBytes: 0,
+        materializedResultPayloadBytes: 0,
+        queryTemplateBytes: 0,
+      });
+      expect(storage.queryResultCache).toMatchObject({
+        entryCount: 0,
+        maxPayloadBytes: perCacheMaxBytes,
+      });
+      expect(storage.materializedResultCache).toMatchObject({
+        entryCount: 0,
+        maxPayloadBytes: perCacheMaxBytes,
+      });
+      expect(storage.queryTemplateCache).toMatchObject({
+        entryCount: 0,
+      });
+
+      const second = await engine.query(query);
+      expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(second.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(second.metrics.plan).not.toContain('PostgresResultCacheHit');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('isolates and invalidates PostgreSQL materialized result cache entries by structured access scope', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-materialized-cache-scope-'));
     const engine = new PostgresRdfEngine({
