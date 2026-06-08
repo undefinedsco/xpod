@@ -12,7 +12,12 @@ import {
   toThreadRef,
 } from '../chatkit/types';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
-import type { RunExecutionBackend } from '../runs/RunExecutionBackend';
+import type {
+  RunContextRetriever,
+  RunConversationMessage,
+  RunExecutionBackend,
+  RunRetrievedContext,
+} from '../runs/RunExecutionBackend';
 import { RunStatus, XpodRunStepType as RunStepType } from '../runs/schema';
 import {
   generateRunResourceId,
@@ -38,17 +43,20 @@ export interface TaskMaterializerOptions<TContext = StoreContext> {
   store: ChatKitStore<TContext> & RunStore<TContext>;
   executionBackend?: RunExecutionBackend;
   executeRuns?: boolean;
+  contextRetriever?: RunContextRetriever<TContext>;
 }
 
 export class TaskMaterializer<TContext = StoreContext> {
   private readonly store: ChatKitStore<TContext> & RunStore<TContext>;
   private readonly executionBackend: RunExecutionBackend;
   private readonly executeRuns: boolean;
+  private readonly contextRetriever?: RunContextRetriever<TContext>;
 
   public constructor(options: TaskMaterializerOptions<TContext>) {
     this.store = options.store;
     this.executionBackend = options.executionBackend ?? new InngestRunExecutionBackend();
     this.executeRuns = options.executeRuns ?? true;
+    this.contextRetriever = options.contextRetriever;
   }
 
   public async materialize(input: {
@@ -127,13 +135,24 @@ export class TaskMaterializer<TContext = StoreContext> {
 
     let fullText = '';
     let runtimeError: string | undefined;
+    const prompt = run.prompt ?? task.prompt;
+    const conversation = await this.loadConversation(threadRef, userMessage.id, context);
+    const retrievedContext = await this.retrieveRunContext({
+      runId: run.id,
+      threadId: thread.id,
+      prompt,
+      conversation,
+      config: runtimeConfig,
+      context,
+    });
 
     for await (
       const event of this.executionBackend.start({
         runId: run.id,
         threadId: thread.id,
-        prompt: run.prompt ?? task.prompt,
-        conversation: await this.loadConversation(threadRef, userMessage.id, context),
+        prompt,
+        conversation,
+        retrievedContext,
         config: runtimeConfig,
         authBindingId: task.authBinding?.id,
         context: context as StoreContext,
@@ -206,6 +225,21 @@ export class TaskMaterializer<TContext = StoreContext> {
       runtimeError,
     );
     return assistantItem;
+  }
+
+  private async retrieveRunContext(input: {
+    runId: string;
+    threadId: string;
+    prompt: string;
+    conversation: RunConversationMessage[];
+    config: AgentRuntimeConfig;
+    context: TContext;
+  }): Promise<RunRetrievedContext | undefined> {
+    const retrieved = await this.contextRetriever?.retrieve(input);
+    if (!retrieved || retrieved.items.length === 0) {
+      return undefined;
+    }
+    return retrieved;
   }
 
   private async ensureThread(task: TaskRecordData, context: TContext): Promise<ThreadMetadata> {

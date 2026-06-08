@@ -4,7 +4,7 @@ import type { StoreContext } from '../chatkit/store';
 import type { AgentRuntimeEvent } from './AgentRuntimeTypes';
 import { ManagedRunWorker, type ManagedRunStore } from './ManagedRunWorker';
 import { PiAgentRuntimeDriver } from './PiAgentRuntimeDriver';
-import type { RunExecutionBackend, RunExecutionInput } from './RunExecutionBackend';
+import type { RunContextRetriever, RunExecutionBackend, RunExecutionInput } from './RunExecutionBackend';
 
 export const XPOD_RUN_REQUESTED_EVENT = 'xpod/run.requested';
 export const XPOD_RUN_CONTINUE_REQUESTED_EVENT = 'xpod/run.continue_requested';
@@ -32,6 +32,7 @@ export interface InngestRunExecutionBackendOptions {
   runtimeDriver?: RunExecutionBackend;
   store?: ManagedRunStore<StoreContext>;
   managedRunWorker?: ManagedRunWorker<StoreContext>;
+  contextRetriever?: RunContextRetriever<StoreContext>;
   contextResolver?: (data: XpodRunRequestedEventData) => StoreContext | Promise<StoreContext | undefined> | undefined;
   contextRecorder?: (context: StoreContext | undefined) => void;
   durableDelivery?: boolean;
@@ -90,7 +91,13 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
     });
     this.runtimeDriver = options.runtimeDriver ?? new PiAgentRuntimeDriver();
     this.managedRunWorker = options.managedRunWorker
-      ?? (options.store ? new ManagedRunWorker({ store: options.store, runtimeDriver: this.runtimeDriver }) : undefined);
+      ?? (options.store
+        ? new ManagedRunWorker({
+          store: options.store,
+          runtimeDriver: this.runtimeDriver,
+          contextRetriever: options.contextRetriever,
+        })
+        : undefined);
     this.contextResolver = options.contextResolver;
     this.contextRecorder = options.contextRecorder;
     this.durableDelivery = options.durableDelivery ?? true;

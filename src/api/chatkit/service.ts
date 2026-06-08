@@ -46,7 +46,7 @@ import {
   extractUserMessageText,
 } from './types';
 import { RunStateCenter, type RunStateEvent } from '../runs/RunStateCenter';
-import type { RunExecutionBackend } from '../runs/RunExecutionBackend';
+import type { RunContextRetriever, RunExecutionBackend } from '../runs/RunExecutionBackend';
 import { isWorkspaceRef } from '../workspace/types';
 import type { WorkspaceRef } from '../workspace/types';
 
@@ -86,6 +86,7 @@ export interface ChatKitServiceOptions<TContext = StoreContext> {
   enableAgentRuntime?: boolean;
   allowDirectAiFallback?: boolean;
   runExecutionBackend?: RunExecutionBackend;
+  contextRetriever?: RunContextRetriever<TContext>;
 }
 
 /**
@@ -126,6 +127,7 @@ export class ChatKitService<TContext = StoreContext> {
       store: this.store,
       enableAgentRuntime: options.enableAgentRuntime ?? true,
       executionBackend: options.runExecutionBackend,
+      contextRetriever: options.contextRetriever,
     });
   }
 

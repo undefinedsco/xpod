@@ -6,7 +6,7 @@ import { TaskStatus, TaskTriggerKind } from '../../src/api/tasks/schema';
 import { RunStepType, RunStatus } from '../../src/api/runs/schema';
 import { extractResourceLocalId } from '../../src/api/runs/store';
 import { resolveTaskResource } from '../../src/api/tasks/store';
-import type { RunExecutionBackend, RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
+import type { RunContextRetrievalInput, RunExecutionBackend, RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
 
 const workspaceRef = `file://localhost${process.cwd()}`;
@@ -111,6 +111,61 @@ describe('Task service Run materialization', () => {
     expect(events.every((event) => event.commandKind === 'task' && event.surfaceId === result.task.surfaceId)).toBe(true);
     expect(events.every((event) => event.runId === result.run!.id)).toBe(true);
     expect(events.every((event) => extractResourceLocalId(event.id).startsWith('run-step_'))).toBe(true);
+  });
+
+  it('passes retrieved context into task Run execution', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const backend = new RecordingRunBackend();
+    const contextRetriever = {
+      retrieve: async (input: RunContextRetrievalInput) => ({
+        query: input.prompt,
+        items: [
+          {
+            kind: 'vector_chunk' as const,
+            source: `${workspaceRef}/plan.md`,
+            text: `retrieved for ${input.threadId}`,
+            score: 0.77,
+          },
+        ],
+      }),
+    };
+    const service = new TaskService({
+      store,
+      executionBackend: backend,
+      contextRetriever,
+    });
+    const context = {
+      userId: 'u1',
+      auth: {
+        type: 'solid',
+        webId: 'http://localhost/alice/profile/card#me',
+        clientId: 'task-client-id',
+        clientSecret: 'task-client-secret',
+      },
+    };
+    const authBinding = await createTaskAuthBinding(store, context);
+
+    const result = await service.createTask({
+      title: 'Context task',
+      prompt: 'summarize plan',
+      workspace: workspaceRef,
+      runner: 'pi:codex',
+      triggerKind: TaskTriggerKind.ONCE,
+      authBinding,
+    }, context);
+
+    expect(backend.inputs).toHaveLength(1);
+    expect(backend.inputs[0].retrievedContext).toEqual({
+      query: 'summarize plan',
+      items: [
+        {
+          kind: 'vector_chunk',
+          source: `${workspaceRef}/plan.md`,
+          text: `retrieved for ${backend.inputs[0].threadId}`,
+          score: 0.77,
+        },
+      ],
+    });
   });
 
   it('uses explicit surfaceId as the task command surface', async () => {

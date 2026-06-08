@@ -5,7 +5,7 @@ import {
   generateId,
   nowTimestamp,
 } from '../chatkit/types';
-import type { RunExecutionBackend } from '../runs/RunExecutionBackend';
+import type { RunContextRetriever, RunExecutionBackend } from '../runs/RunExecutionBackend';
 import { resolveDataResource, type RunStore } from '../runs/store';
 import { isWorkspaceRef, type WorkspaceRef } from '../workspace/types';
 import { TaskMaterializer, type MaterializedTaskRun } from './TaskMaterializer';
@@ -37,6 +37,7 @@ export interface TaskServiceOptions<TContext = StoreContext> {
   store: ChatKitStore<TContext> & RunStore<TContext> & TaskStore<TContext>;
   executionBackend?: RunExecutionBackend;
   executeRuns?: boolean;
+  contextRetriever?: RunContextRetriever<TContext>;
 }
 
 export class TaskService<TContext = StoreContext> {
@@ -49,6 +50,7 @@ export class TaskService<TContext = StoreContext> {
       store: options.store,
       executionBackend: options.executionBackend,
       executeRuns: options.executeRuns,
+      contextRetriever: options.contextRetriever,
     });
   }
 
