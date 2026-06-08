@@ -3966,6 +3966,47 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('uses a temporary staging table for large RDF quad bulk inserts', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-bulk-stage-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({ pool });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const messageCount = 2601;
+    const quads = Array.from({ length: messageCount }, (_, index) => {
+      const message = namedNode(`${graph.value}#msg_${index}`);
+      return [
+        quad(message, namedNode(STATUS), literal(index % 2 === 0 ? 'open' : 'closed'), graph),
+        quad(message, namedNode(PRIORITY), literal(String(index), namedNode(XSD_INTEGER)), graph),
+      ];
+    }).flat();
+    quads.push(quads[0]);
+
+    try {
+      await engine.open();
+      pool.executedSql.length = 0;
+
+      await engine.put(quads);
+
+      const createStageStatements = pool.executedSql.filter((sql) => sql.includes('CREATE TEMP TABLE rdf_quads_bulk_stage_'));
+      const stageInsertStatements = pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_quads_bulk_stage_'));
+      const finalInsertStatements = pool.executedSql.filter((sql) => (
+        sql.includes('INSERT INTO rdf_quads (') && sql.includes('FROM rdf_quads_bulk_stage_')
+      ));
+      const dropStageStatements = pool.executedSql.filter((sql) => sql.includes('DROP TABLE IF EXISTS rdf_quads_bulk_stage_'));
+      expect(createStageStatements).toHaveLength(1);
+      expect(stageInsertStatements.length).toBeGreaterThanOrEqual(1);
+      expect(finalInsertStatements).toHaveLength(1);
+      expect(finalInsertStatements[0]).toContain('SELECT DISTINCT');
+      expect(dropStageStatements).toHaveLength(1);
+
+      const stats = await engine.storageStats();
+      expect(stats.facts.quadCount).toBe(messageCount * 2);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('pushes bounded graph-prefix joins into native custom-index values', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-graph-prefix-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);

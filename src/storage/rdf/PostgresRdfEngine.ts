@@ -129,6 +129,7 @@ const DEFAULT_DERIVED_CACHE_SCOPE_MAX_BYTES = 0;
 const DEFAULT_DERIVED_CACHE_SCOPE_STATS_MAX_ENTRIES = 10;
 const MAX_DERIVED_CACHE_SCOPE_STATS_ENTRIES = 100;
 const POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE = 5000;
+const POSTGRES_RDF_BULK_STAGING_MIN_ROWS = 5001;
 const DEFAULT_QUERY_EXPLAIN_SLOW_MS = 1_000;
 const DEFAULT_QUERY_EXPLAIN_LARGE_SCAN_ROWS = 100_000;
 const DEFAULT_QUERY_EXPLAIN_SCAN_AMPLIFICATION = 100;
@@ -8011,6 +8012,21 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     const rows = [...rowsByKey.values()];
+    if (rows.length >= POSTGRES_RDF_BULK_STAGING_MIN_ROWS) {
+      await this.insertQuadRowsViaStagingTable(executor, rows, sourceId, sourceLineNo);
+      return rows;
+    }
+
+    await this.insertQuadRowsViaUnnest(executor, rows, sourceId, sourceLineNo);
+    return rows;
+  }
+
+  private async insertQuadRowsViaUnnest(
+    executor: AsyncSqlExecutor,
+    rows: PgQuadIdRow[],
+    sourceId: number | null,
+    sourceLineNo: number | null,
+  ): Promise<void> {
     for (const chunk of chunkArray(rows, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       await executor.exec(`
         INSERT INTO rdf_quads (
@@ -8052,7 +8068,89 @@ export class PostgresRdfEngine implements RdfEngineLike {
         sourceLineNo,
       ]);
     }
-    return rows;
+  }
+
+  private async insertQuadRowsViaStagingTable(
+    executor: AsyncSqlExecutor,
+    rows: PgQuadIdRow[],
+    sourceId: number | null,
+    sourceLineNo: number | null,
+  ): Promise<void> {
+    const stageTable = `rdf_quads_bulk_stage_${randomUUID().replace(/-/g, '')}`;
+    await executor.exec(`
+      CREATE TEMP TABLE ${stageTable} (
+        graph_id BIGINT NOT NULL,
+        subject_id BIGINT NOT NULL,
+        predicate_id BIGINT NOT NULL,
+        object_id BIGINT NOT NULL,
+        source_file_id BIGINT,
+        source_line_no BIGINT
+      )
+    `);
+    try {
+      for (const chunk of chunkArray(rows, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
+        await executor.exec(`
+          INSERT INTO ${stageTable} (
+            graph_id,
+            subject_id,
+            predicate_id,
+            object_id,
+            source_file_id,
+            source_line_no
+          )
+          SELECT
+            graph_id,
+            subject_id,
+            predicate_id,
+            object_id,
+            $5::bigint AS source_file_id,
+            $6::bigint AS source_line_no
+          FROM UNNEST(
+            $1::bigint[],
+            $2::bigint[],
+            $3::bigint[],
+            $4::bigint[]
+          ) AS input(
+            graph_id,
+            subject_id,
+            predicate_id,
+            object_id
+          )
+        `, [
+          chunk.map((row) => row.graph_id),
+          chunk.map((row) => row.subject_id),
+          chunk.map((row) => row.predicate_id),
+          chunk.map((row) => row.object_id),
+          sourceId,
+          sourceLineNo,
+        ]);
+      }
+
+      await executor.exec(`
+        INSERT INTO rdf_quads (
+          graph_id,
+          subject_id,
+          predicate_id,
+          object_id,
+          source_file_id,
+          source_line_no
+        )
+        SELECT DISTINCT
+          graph_id,
+          subject_id,
+          predicate_id,
+          object_id,
+          source_file_id,
+          source_line_no
+        FROM ${stageTable}
+        ON CONFLICT (graph_id, subject_id, predicate_id, object_id)
+        DO UPDATE SET
+          source_file_id = EXCLUDED.source_file_id,
+          source_line_no = EXCLUDED.source_line_no
+      `);
+    } finally {
+      await executor.exec(`DROP TABLE IF EXISTS ${stageTable}`);
+    }
   }
 
   private async quadRowsForSource(sourceId: number, executor = this.requireExecutor()): Promise<PgQuadIdRow[]> {

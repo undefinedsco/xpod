@@ -372,7 +372,8 @@ benchmark 工具 / bulk-load 策略问题，不是 native operator 查询语义�
 gate 前需要把 disposable benchmark 改成 bulk insert 后统一建 custom indexes，或显式
 拆分 write amplification 和 warm query benchmark。后续第一版先把 PG facts 写入改成
 批量 term upsert + 批量 quad upsert；当前又进一步换成数组 staging / `UNNEST` bulk
-insert，并覆盖 dirty queue upsert。这一历史记录仍保留，用来说明 large gate 需要重跑，
+insert，并覆盖 dirty queue upsert；大批 `rdf_quads` 会先写入 transaction-local temp
+staging table，再一次性 upsert 到 facts。这一历史记录仍保留，用来说明 large gate 需要重跑，
 不能沿用当时逐条写入阶段的耗时结论。
 
 ### PostgreSQL / PGlite Medium RDF-3X Baseline Rerun
@@ -683,7 +684,7 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
 
 未完成：
 
-- 更大数据量 / 真实 PG 高并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。custom-index write amplification 已有第一版缓解：真实 PG + `pg-custom-index` benchmark 默认延迟创建 native permutation indexes，facts 写入内部已使用数组 staging / `UNNEST` 批量 term upsert、quad upsert 和 dirty queue upsert，seed 完成后显式 `ensurePgCustomIndexes()`；PG models benchmark 已补 `--concurrency=N` consistency gate，会用串行基线对消息分页、任务调度 keyset、settings keyset、provider/model/credential ordered join 的并发复跑做 plan / row count / checksum / ordered checksum 验收；后续仍需要真 PG COPY/staging-table 导入、一次性 refresh / ANALYZE，以及 `large=1_000_000` / 真实 PG 高并发 benchmark 重跑。
+- 更大数据量 / 真实 PG 高并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。custom-index write amplification 已有第一版缓解：真实 PG + `pg-custom-index` benchmark 默认延迟创建 native permutation indexes，facts 写入内部已使用数组 staging / `UNNEST` 批量 term upsert、dirty queue upsert，大批 `rdf_quads` 会通过 transaction-local temp staging table 再 upsert 到 facts，seed 完成后显式 `ensurePgCustomIndexes()`；PG models benchmark 已补 `--concurrency=N` consistency gate，会用串行基线对消息分页、任务调度 keyset、settings keyset、provider/model/credential ordered join 的并发复跑做 plan / row count / checksum / ordered checksum 验收；后续仍需要真实 PG COPY stream、term dictionary staging table、一次性 refresh / ANALYZE，以及 `large=1_000_000` / 真实 PG 高并发 benchmark 重跑。
 - bounded graph-prefix BGP / aggregate native 下推已接线并完成真实 PG17 rerun；slot-filter 修复了 hidden VALUES 笛卡尔成本，但 `COUNT DISTINCT` 和 grouped count 仍未超过 RDF-3X / btree baseline，不能作为 cutover 依据。小 grouped numeric aggregate 已有 facts cost cutover，避免把已知低收益 shape 强压到 RDF-3X；planner explain 第一版已能在 capability 激活但 native 未选中时记录 `rejectedNativeOperators`，区分 `shape-gate` 和小 grouped numeric 的 cost cutover；subject-star 第一版已落地为 local/PG plan marker 和 models benchmark gate；native `join.subject_star` / `aggregate.subject_star_count` 仍未接线。
 - `pg-custom-index` 的 native scan limit early-stop、ordered-page join 仍未作为 xpod models cutover gate。消息流 keyset page、任务调度 `nextRunAt` continuation 和 settings `settingKey` continuation 已作为 RDF-3X / PG SQL baseline benchmark gate；VALUES join 已完成受限形状接线并能命中 native operator，但当前 real PG extreme p95 略慢于 RDF-3X / btree baseline。
 - text / vector candidate generation 与 RDF structured join 的本地和 PG 第一版已接到
