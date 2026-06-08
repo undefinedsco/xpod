@@ -104,6 +104,7 @@ const DEFAULT_QUERY_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_ENTRIES = 256;
 const DEFAULT_MATERIALIZED_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES = 512;
+const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const POSTGRES_RDF_SESSION_OPTIONS = '-c jit=off';
 const RESULT_CACHE_REQUIRED_CAPABILITIES = [
   'cache.result',
@@ -467,6 +468,7 @@ export interface PostgresRdfEngineOptions {
   materializedResultCacheMaxEntries?: number;
   materializedResultCacheTtlMs?: number;
   queryTemplateCacheMaxEntries?: number;
+  queryTemplateCacheTtlMs?: number;
   rdfAccelerationProfile?: RdfPgAccelerationProfile;
   rdfAccelerationRequiredCapabilities?: string[];
   deferPgCustomIndexInitialization?: boolean;
@@ -1474,7 +1476,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const materializedResultCache = await this.materializedResultCacheStats();
     const queryTemplateCache = this.queryTemplateCacheStats();
     const factsBytes = facts.databaseBytes;
-    const derivedBytes = rdf3x.databaseBytes + queryResultCache.totalBytes + materializedResultCache.totalBytes;
+    const derivedBytes = rdf3x.databaseBytes
+      + queryResultCache.totalBytes
+      + materializedResultCache.totalBytes
+      + queryTemplateCache.totalBytes;
     const totalBytes = factsBytes + derivedBytes;
     return {
       derivedIndexProfile: 'rdf3x',
@@ -2714,6 +2719,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const cacheScope = resolveRdfQueryCacheScope(query.cache?.scope);
     const cacheKey = queryResultCacheKey(queryShape);
     const maxEntries = this.queryTemplateCacheMaxEntries();
+    const ttlMs = this.queryTemplateCacheTtlMs();
     if (maxEntries <= 0) {
       return {
         queryShape,
@@ -2724,6 +2730,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         explain: {
           status: 'bypass',
           maxEntries,
+          ttlMs,
         },
       };
     }
@@ -2731,6 +2738,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const templateShape = stableRdfQueryTemplateShape(query);
     const templateKey = queryTemplateCacheKey(templateShape);
     const now = Date.now();
+    this.pruneQueryTemplateCache(now, ttlMs);
     const existing = this.queryTemplateCache.get(templateKey);
     if (existing) {
       this.queryTemplateCache.delete(templateKey);
@@ -2748,6 +2756,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           status: 'hit',
           key: templateKey,
           maxEntries,
+          ttlMs,
         },
       };
     }
@@ -2778,6 +2787,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         status: 'miss',
         key: templateKey,
         maxEntries,
+        ttlMs,
       },
     };
   }
@@ -3014,14 +3024,45 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES;
   }
 
+  private queryTemplateCacheTtlMs(): number {
+    const configured = this.pgOptions.queryTemplateCacheTtlMs ?? DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS;
+    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS;
+  }
+
+  private pruneQueryTemplateCache(now = Date.now(), ttlMs = this.queryTemplateCacheTtlMs()): void {
+    if (ttlMs <= 0 || this.queryTemplateCache.size === 0) {
+      return;
+    }
+    const expiresBefore = now - ttlMs;
+    for (const [key, entry] of this.queryTemplateCache) {
+      if (entry.lastHitAtMs < expiresBefore) {
+        this.queryTemplateCache.delete(key);
+        this.queryTemplateCacheEvictions += 1;
+      }
+    }
+  }
+
   private queryTemplateCacheStats(): RdfQueryTemplateCacheStats {
+    this.pruneQueryTemplateCache();
     return {
       entryCount: this.queryTemplateCache.size,
       maxEntries: this.queryTemplateCacheMaxEntries(),
+      ttlMs: this.queryTemplateCacheTtlMs(),
       hitCount: this.queryTemplateCacheHits,
       missCount: this.queryTemplateCacheMisses,
       evictionCount: this.queryTemplateCacheEvictions,
+      totalBytes: this.queryTemplateCacheMemoryBytes(),
     };
+  }
+
+  private queryTemplateCacheMemoryBytes(): number {
+    let totalBytes = 0;
+    for (const entry of this.queryTemplateCache.values()) {
+      totalBytes += Buffer.byteLength(entry.templateKey, 'utf8');
+      totalBytes += Buffer.byteLength(entry.templateShape, 'utf8');
+      totalBytes += 24;
+    }
+    return totalBytes;
   }
 
   private async probePgAcceleration(): Promise<RdfPgAccelerationStats> {

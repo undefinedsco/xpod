@@ -168,9 +168,11 @@ export interface RdfMaterializedResultCacheStats {
 export interface RdfQueryTemplateCacheStats {
   entryCount: number;
   maxEntries: number;
+  ttlMs: number;
   hitCount: number;
   missCount: number;
   evictionCount: number;
+  totalBytes: number;
 }
 
 export interface RdfDerivedIndexRefreshResult {
@@ -850,6 +852,7 @@ export interface RdfQueryTemplateCacheExplain {
   status: 'hit' | 'miss' | 'bypass';
   key?: string;
   maxEntries: number;
+  ttlMs: number;
 }
 
 export interface RdfQueryCacheExplain {

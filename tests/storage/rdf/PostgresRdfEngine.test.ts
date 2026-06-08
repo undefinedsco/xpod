@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DataFactory } from 'n3';
 import { PGlite } from '@electric-sql/pglite';
 import {
@@ -18,6 +18,7 @@ import {
   seedRdfModelsSearchFusionIndexes,
   type RdfPgAccelerationProfile,
   type RdfQuery,
+  type RdfQueryResult,
 } from '../../../src/storage/rdf';
 import { rdfTermValueHead } from '../../../src/storage/rdf/RdfTermDictionary';
 
@@ -1349,6 +1350,77 @@ describe('PostgresRdfEngine', () => {
         missCount: 2,
         evictionCount: 1,
       });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('expires PostgreSQL query template cache entries and reports memory size', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-template-cache-ttl-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      queryTemplateCacheMaxEntries: 4,
+      queryTemplateCacheTtlMs: 60_000,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const queryForStatus = (status: string): RdfQuery => ({
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal(status),
+        },
+      ],
+      select: ['message'],
+    });
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('closed'), graph),
+      ]);
+
+      const open = await engine.query(queryForStatus('open'));
+      expect(open.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(open.metrics.plan.join('\n')).toContain('PostgresQueryTemplateCacheMiss');
+
+      const dateNow = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_001);
+      let closed!: RdfQueryResult;
+      try {
+        closed = await engine.query(queryForStatus('closed'));
+      } finally {
+        dateNow.mockRestore();
+      }
+      expect(closed.bindings.map((binding) => binding.message.value)).toEqual([message2.value]);
+      expect(closed.metrics.plan.join('\n')).toContain('PostgresQueryTemplateCacheMiss');
+      expect(closed.metrics.explain).toMatchObject({
+        cache: {
+          template: {
+            status: 'miss',
+            maxEntries: 4,
+            ttlMs: 60_000,
+          },
+        },
+      });
+
+      const storage = await engine.storageStats();
+      expect(storage.queryTemplateCache).toMatchObject({
+        entryCount: 1,
+        maxEntries: 4,
+        ttlMs: 60_000,
+        hitCount: 0,
+        missCount: 2,
+        evictionCount: 1,
+      });
+      expect(storage.queryTemplateCache?.totalBytes).toBeGreaterThan(0);
+      expect(storage.derivedBytes).toBeGreaterThanOrEqual(storage.queryTemplateCache?.totalBytes ?? 0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

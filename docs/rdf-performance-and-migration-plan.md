@@ -580,8 +580,9 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   已先把 selected path、路径选择原因、估算输入和可用统计暴露出来，后续仍需把这些
   histogram 真正接入 native/RDF-3X/facts 的 cost-based cutover。
 - query template cache by value-stripped query AST；当前是 bounded in-memory derived metadata，
-  `storageStats().queryTemplateCache` 暴露 entry/hit/miss/eviction，query plan 标记
-  `PostgresQueryTemplateCacheHit(...)` / `PostgresQueryTemplateCacheMiss(...)`。
+  `storageStats().queryTemplateCache` 暴露 entry/hit/miss/eviction/ttl/bytes，query plan 标记
+  `PostgresQueryTemplateCacheHit(...)` / `PostgresQueryTemplateCacheMiss(...)`；template cache
+  按 idle TTL 和 max entries 淘汰，template bytes 纳入 `storageStats().derivedBytes`。
 - materialized result cache by explicit business view key：`RdfQuery.cache.materialized`
   写入独立 `rdf_materialized_result_cache`，绑定 facts version、query shape、结构化 access
   scope、TTL 和 max entries；命中时 plan 标记 `PostgresMaterializedResultHit`，并且不再重复
