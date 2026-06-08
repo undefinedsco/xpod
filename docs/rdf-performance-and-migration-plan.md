@@ -570,6 +570,79 @@ physical plan 中出现 `XpodRdfPgHotOperator(scan.graph_prefix)` 18 次、`scan
 plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 profile/metrics/部署
 边界的 product-grade 化，不是额外数据库扩展的性能结论。
 
+### Real PostgreSQL / Extreme RDF-3X vs Hot-operators Rerun
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:<port>/xpod_rdf_base_20260609 --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --concurrency=4 --caseProfile=extreme --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-real-extreme-rerun-baseline-20260609
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:<port>/xpod_rdf_hot_20260609 --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --concurrency=4 --caseProfile=extreme --rdfAccelerationProfile=pg-hot-operators --out=.test-data/rdf-pg-real-extreme-rerun-hot-20260609
+```
+
+运行时间：2026-06-09，本机 disposable `postgres:17-alpine` 容器，PG data dir
+挂载 tmpfs。容器内 `pg_available_extensions` 没有 `xpod_rdf`，因此本节只证明真实
+PG 上的 RDF-3X baseline 和公开 `pg-hot-operators` profile；不把结果当成
+`pg-custom-index` native extension p95。
+
+报告：
+
+- `.test-data/rdf-pg-real-extreme-rerun-baseline-20260609/models-postgres-2026-06-08T18-14-07-149Z-80770-5992b4c7-5a2c-4f72-a30c-867e370d60d9.json`
+- `.test-data/rdf-pg-real-extreme-rerun-hot-20260609/models-postgres-2026-06-08T18-15-28-754Z-80918-d1fbcef6-d872-43f3-89a2-35aff1e38c6c.json`
+
+Gate：
+
+| Gate | RDF-3X baseline | `pg-hot-operators` |
+| --- | ---: | ---: |
+| seed quads | 19664 | 19664 |
+| scan cases | 2 | 2 |
+| query cases | 11 | 11 |
+| iterations / warmup | 3 / 1 | 3 / 1 |
+| concurrency lanes | 4 | 4 |
+| plan matched | true | true |
+| concurrency gate matched | true | true |
+| `rdf3x.syncedWithFacts` | true | true |
+| planner stats refreshed | true | true |
+| active operators | none | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `join.values`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+| facts bytes | 32907264 | 32907264 |
+| derived bytes | 24760787 | 29848019 |
+| total / facts ratio | 1.75x | 1.91x |
+
+Warm p95：
+
+| Case | RDF-3X baseline p95 | `pg-hot-operators` p95 | Ratio | Plan note |
+| --- | ---: | ---: | ---: | --- |
+| month message score range scan | 26 ms | 18 ms | 0.69x | graph-prefix scan hot marker |
+| month message text scan | 23 ms | 21 ms | 0.91x | graph-prefix scan hot marker |
+| message eight-pattern star query | 175 ms | 139 ms | 0.79x | subject-star plan marker + hot BGP marker |
+| message large VALUES thread query | 28 ms | 30 ms | 1.07x | hot BGP + VALUES markers |
+| message count distinct thread query | 13 ms | 19 ms | 1.46x | hot count marker, slower than baseline |
+| message grouped count by thread query | 15 ms | 20 ms | 1.33x | grouped count still not a hot cutover proof |
+| message grouped numeric aggregate by thread query | 63 ms | 67 ms | 1.06x | high-fanout numeric stays RDF-3X aggregate |
+| native exact graph eight-pattern join query | 66 ms | 62 ms | 0.94x | subject-star plan marker + hot BGP marker |
+| native exact graph ordered-page query | 18 ms | 23 ms | 1.28x | ordered-page still needs native early-stop |
+| native exact graph VALUES thread query | 17 ms | 23 ms | 1.35x | hot VALUES marker, slower than baseline |
+| native exact graph count distinct thread query | 5 ms | 4 ms | 0.80x | exact graph count improves slightly |
+| native exact graph grouped count by thread query | 6 ms | 5 ms | 0.83x | exact graph grouped count improves slightly |
+| native exact graph grouped numeric aggregate by thread query | 15 ms | 15 ms | 1.00x | no regression, no clear gain |
+
+并发一致性 gate：
+
+| Case | RDF-3X baseline p95 | `pg-hot-operators` p95 | Matched |
+| --- | ---: | ---: | --- |
+| message eight-pattern star query | 316 ms | 380 ms | true |
+| message large VALUES thread query | 70 ms | 62 ms | true |
+| message count distinct thread query | 25 ms | 27 ms | true |
+| message grouped count by thread query | 12 ms | 11 ms | true |
+
+结论：真实 PG medium/extreme 下，公开 `pg-hot-operators` profile 能保持 correctness、
+plan gate 和并发一致性，并对 graph-prefix scan、8-pattern subject-star BGP、exact-graph
+count 有局部收益；但 grouped count、count distinct、VALUES 和 ordered-page 仍不能只因
+hot marker 存在就作为默认 cutover 胜出。`pg-hot-operators` 的 derived space 也从
+RDF-3X baseline 的 `1.75x` 增加到 `1.91x`。下一步需要用带 `xpod_rdf`
+extension 的 disposable PG 环境重跑 `pg-custom-index`，才能给 ordered-page native marker、
+subject-star grouped/numeric native marker 和 graph-prefix native aggregate 下最终 cutover
+结论。
+
 ## PostgreSQL Status
 
 `PostgresRdfEngine` 当前已有：
@@ -687,13 +760,13 @@ plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 pro
   作为 gate：report 必须包含 `refresh.rdf3x.plannerStats.analyzedTables`，summary 会输出
   `planner stats refreshed` 和 analyzed table 列表；缺失时命令退出非 0，避免 large /
   real-PG benchmark 在未 `ANALYZE` facts / RDF-3X stats 表时被误判为 steady-state。
-- `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；历史 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case；2026-06-06 PG17 extreme gate 已覆盖 19483 quads、2 个 scan case 和 10 个 query case，并要求 `pg-custom-index` + `extreme/all` 至少命中一次 `XpodRdfExtensionOperator(...)`。
+- `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；历史 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case；2026-06-06 PG17 extreme gate 已覆盖 19483 quads、2 个 scan case 和 10 个 query case，并要求 `pg-custom-index` + `extreme/all` 至少命中一次 `XpodRdfExtensionOperator(...)`；2026-06-09 真实 PG17 medium/extreme baseline vs `pg-hot-operators` rerun 覆盖 19664 quads、2 个 scan case、11 个 query case、`--concurrency=4` consistency gate，二者均 plan matched 且 planner stats refreshed。
 
 未完成：
 
-- 更大数据量 / 真实 PG 高并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。custom-index write amplification 已有第一版缓解：真实 PG + `pg-custom-index` benchmark 默认延迟创建 native permutation indexes，facts 写入内部已使用数组 staging / `UNNEST` 批量 dirty queue upsert，大批 term dictionary / `rdf_quads` 会通过 transaction-local temp staging table 再 upsert 到 facts，seed 完成后显式 `ensurePgCustomIndexes()`；PG models benchmark 已补 `--concurrency=N` consistency gate，会用串行基线对消息分页、任务调度 keyset、settings keyset、provider/model/credential ordered join 的并发复跑做 plan / row count / checksum / ordered checksum 验收，并强制验收 seed 后 planner stats refresh；后续仍需要真实 PG COPY stream，以及 `large=1_000_000` / 真实 PG 高并发 benchmark 重跑。
-- bounded graph-prefix BGP / aggregate native 下推已接线并完成真实 PG17 rerun；slot-filter 修复了 hidden VALUES 笛卡尔成本，但 `COUNT DISTINCT` 和 grouped count 仍未超过 RDF-3X / btree baseline，不能作为 cutover 依据。低基数配置类 grouped numeric aggregate 已有 facts cost cutover；message / high-fanout grouped numeric aggregate 保持 RDF-3X/native，避免把 facts path 当成通用优化。planner explain 第一版已能在 capability 激活但 native 未选中时记录 `rejectedNativeOperators`，区分 `shape-gate` 和低基数 grouped numeric 的 cost cutover；subject-star 第一版已落地为 local/PG plan marker 和 models benchmark gate，native `join.subject_star` / `aggregate.subject_star_count` 已接到非 grouped row stream / scalar count gate，并在缺专用 capability 时回退 generic native BGP / BGP count；grouped count / grouped numeric subject-star 第一版复用现有 native aggregate ABI，并输出 `PostgresRdfNativeCustomIndexSubjectStarGroupCount(...)` / `PostgresRdfNativeCustomIndexSubjectStarNumericAggregate(...)` 专用 marker；后续仍需要真实 PG p95 rerun。
-- `pg-custom-index` 的 native scan limit early-stop 已有单测 gate：无显式 order 的 limited scan 会要求 `index.xpod_rdf_perm.scan_any.limit` active 并标记 `PostgresRdfNativeCustomIndexScanAnyLimit(...)`；ordered-page join 第一版已接入 native cutover gate，会要求 `join.required_bgp.order_page.native` active 并标记 `PostgresRdfNativeCustomIndexBgpOrderPage(...)`，capability 缺失时回退 RDF-3X ordered join。消息流 keyset page、任务调度 `nextRunAt` continuation 和 settings `settingKey` continuation 已作为 RDF-3X / PG SQL baseline benchmark gate；后续仍需真实 PG p95、xpod models cutover gate，以及 extension-level ordered early-stop。VALUES join 已完成受限形状接线并能命中 native operator，但当前 real PG extreme p95 略慢于 RDF-3X / btree baseline。
+- 更大数据量 / 真实 PG 高并发 benchmark gate；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k oversized smoke。custom-index write amplification 已有第一版缓解：真实 PG + `pg-custom-index` benchmark 默认延迟创建 native permutation indexes，facts 写入内部已使用数组 staging / `UNNEST` 批量 dirty queue upsert，大批 term dictionary / `rdf_quads` 会通过 transaction-local temp staging table 再 upsert 到 facts，seed 完成后显式 `ensurePgCustomIndexes()`；PG models benchmark 已补 `--concurrency=N` consistency gate，会用串行基线对消息分页、任务调度 keyset、settings keyset、provider/model/credential ordered join 的并发复跑做 plan / row count / checksum / ordered checksum 验收，并强制验收 seed 后 planner stats refresh；2026-06-09 已用真实 PG17 `--concurrency=4` 跑过 medium/extreme baseline 与公开 hot profile 并通过一致性 gate；后续仍需要真实 PG COPY stream，以及 `large=1_000_000` / 更高并发 benchmark 重跑。
+- bounded graph-prefix BGP / aggregate native 下推已接线并完成真实 PG17 rerun；slot-filter 修复了 hidden VALUES 笛卡尔成本，但 `COUNT DISTINCT` 和 grouped count 仍未超过 RDF-3X / btree baseline，不能作为 cutover 依据。低基数配置类 grouped numeric aggregate 已有 facts cost cutover；message / high-fanout grouped numeric aggregate 保持 RDF-3X/native，避免把 facts path 当成通用优化。planner explain 第一版已能在 capability 激活但 native 未选中时记录 `rejectedNativeOperators`，区分 `shape-gate` 和低基数 grouped numeric 的 cost cutover；subject-star 第一版已落地为 local/PG plan marker 和 models benchmark gate，真实 PG17 baseline / hot-profile p95 已证明公开 profile 下 subject-star marker 可观测且语义稳定；native `join.subject_star` / `aggregate.subject_star_count` 已接到非 grouped row stream / scalar count gate，并在缺专用 capability 时回退 generic native BGP / BGP count；grouped count / grouped numeric subject-star 第一版复用现有 native aggregate ABI，并输出 `PostgresRdfNativeCustomIndexSubjectStarGroupCount(...)` / `PostgresRdfNativeCustomIndexSubjectStarNumericAggregate(...)` 专用 marker；后续仍需要带 `xpod_rdf` extension 的真实 PG p95 rerun 来决定 native grouped/numeric 是否进入默认 cutover。
+- `pg-custom-index` 的 native scan limit early-stop 已有单测 gate：无显式 order 的 limited scan 会要求 `index.xpod_rdf_perm.scan_any.limit` active 并标记 `PostgresRdfNativeCustomIndexScanAnyLimit(...)`；ordered-page join 第一版已接入 native cutover gate，会要求 `join.required_bgp.order_page.native` active 并标记 `PostgresRdfNativeCustomIndexBgpOrderPage(...)`，capability 缺失时回退 RDF-3X ordered join。消息流 keyset page、任务调度 `nextRunAt` continuation 和 settings `settingKey` continuation 已作为 RDF-3X / PG SQL baseline benchmark gate；2026-06-09 真实 PG17 baseline/hot rerun 显示 exact-graph ordered-page p95 为 `18 ms` vs `23 ms`，公开 hot profile 不能作为 ordered-page cutover 依据；后续仍需带 extension 的真实 PG p95、xpod models cutover gate，以及 extension-level ordered early-stop。VALUES join 已完成受限形状接线并能命中 native operator，但当前 real PG extreme p95 仍有慢于 RDF-3X / btree baseline 的 case。
 - text / vector candidate generation 与 RDF structured join 的本地和 PG 第一版已接到
   `bun run benchmark:rdf-models -- --scale=small --iterations=1 --caseProfile=fusion`。
   2026-06-08 smoke seed `548` quads，baseline `queryCases=1`，`agent context text vector fusion query`
