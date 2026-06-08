@@ -4548,6 +4548,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (hasPlan('PostgresRdfNativeCustomIndexBgpOrderPage')) {
         reasons.add('order-pagination-pushed-down');
       }
+      if (hasPlanPrefix('PostgresRdfNativeCustomIndexSubjectStar')) {
+        reasons.add('subject-star-shape-detected');
+      }
+      if (
+        hasPlanPrefix('PostgresRdfNativeCustomIndexBgpCount')
+        || hasPlanPrefix('PostgresRdfNativeCustomIndexBgpGroupCount')
+        || hasPlanPrefix('PostgresRdfNativeCustomIndexBgpNumericAggregate')
+      ) {
+        reasons.add('aggregate-pushed-down');
+      }
     } else if (hasPlan('PostgresRdf3x') || hasPlanPrefix('Rdf3xJoinBGP(')) {
       selectedPath = 'rdf3x';
       reasons.add('rdf3x-sql-path-selected');
@@ -5970,6 +5980,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return undefined;
     }
 
+    const subjectStarKey = rdfSubjectStarJoinKey(patterns);
     const groupBy = query.groupBy ?? [];
     const shape = await this.pgCustomIndexBgpJoinShape(patterns, groupBy);
     if (!shape) {
@@ -6079,7 +6090,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
           `XpodRdfExtensionOperator(${capability})`,
           ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
           ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
+          ...(subjectStarKey ? [`PostgresRdfNativeCustomIndexSubjectStarGroupCount(${subjectStarKey};patterns:${patterns.length})`] : []),
           `PostgresRdfNativeCustomIndexBgpGroupCount(${patterns.length})`,
+          ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
           `PostgresRdf3xGroupCount(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
           ...this.pgCustomIndexInternalFiltersPlan(shape),
           aggregatePlan(aggregates, true),
@@ -6140,6 +6153,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return undefined;
     }
 
+    const subjectStarKey = rdfSubjectStarJoinKey(patterns);
     const groupBy = query.groupBy ?? [];
     const aggregateNames = new Set(aggregates.map((aggregate) => aggregate.as));
     if ((query.select ?? []).some((variableName) => !aggregateNames.has(variableName) && !groupBy.includes(variableName))) {
@@ -6258,7 +6272,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
           `XpodRdfExtensionOperator(${capability})`,
           ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
           ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
+          ...(subjectStarKey ? [`PostgresRdfNativeCustomIndexSubjectStarNumericAggregate(${subjectStarKey};patterns:${patterns.length})`] : []),
           `PostgresRdfNativeCustomIndexBgpNumericAggregate(${patterns.length})`,
+          ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
           this.postgresRdf3xAggregateMarker(aggregates, groupBy.length > 0),
           ...this.pgCustomIndexInternalFiltersPlan(shape),
           aggregatePlan(aggregates, groupBy.length > 0),

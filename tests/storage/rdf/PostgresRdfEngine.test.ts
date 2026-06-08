@@ -4482,6 +4482,150 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('marks subject-star grouped aggregate native paths', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-subject-star-grouped-aggregate-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const message3 = namedNode(`${graph.value}#msg_3`);
+    const threadA = namedNode(`${graph.value}#thread_a`);
+    const threadB = namedNode(`${graph.value}#thread_b`);
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message1, namedNode(THREAD), threadA, graph),
+        quad(message1, namedNode(PRIORITY), literal('10', namedNode(XSD_INTEGER)), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(THREAD), threadA, graph),
+        quad(message2, namedNode(PRIORITY), literal('4', namedNode(XSD_INTEGER)), graph),
+        quad(message3, namedNode(STATUS), literal('closed'), graph),
+        quad(message3, namedNode(THREAD), threadB, graph),
+        quad(message3, namedNode(PRIORITY), literal('1', namedNode(XSD_INTEGER)), graph),
+      ]);
+
+      const groupCount = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'priority' },
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['thread', 'messageCount'],
+        orderBy: [
+          {
+            variable: 'messageCount',
+            direction: 'desc',
+          },
+        ],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(groupCount.bindings).toHaveLength(1);
+      expect(groupCount.bindings[0].thread.value).toBe(threadA.value);
+      expect(groupCount.bindings[0].messageCount.value).toBe('2');
+      expect(groupCount.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_group_count)');
+      expect(groupCount.metrics.plan).toContain('PostgresRdfNativeCustomIndexSubjectStarGroupCount(?message;patterns:3)');
+      expect(groupCount.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpGroupCount(3)');
+      expect(groupCount.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(pool.nativeBgpGroupCountCalls).toHaveLength(1);
+
+      const numericAggregate = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(PRIORITY),
+            object: { variable: 'score' },
+          },
+        ],
+        filters: [
+          {
+            variable: 'score',
+            operator: '$termType',
+            value: 'numeric',
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+          {
+            type: 'sum',
+            as: 'scoreTotal',
+            variable: 'score',
+          },
+        ],
+        select: ['thread', 'messageCount', 'scoreTotal'],
+        orderBy: [
+          {
+            variable: 'scoreTotal',
+            direction: 'desc',
+          },
+        ],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(numericAggregate.bindings).toHaveLength(1);
+      expect(numericAggregate.bindings[0].thread.value).toBe(threadA.value);
+      expect(numericAggregate.bindings[0].messageCount.value).toBe('2');
+      expect(numericAggregate.bindings[0].scoreTotal.value).toBe('14');
+      expect(numericAggregate.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_numeric)');
+      expect(numericAggregate.metrics.plan).toContain('PostgresRdfNativeCustomIndexSubjectStarNumericAggregate(?message;patterns:3)');
+      expect(numericAggregate.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpNumericAggregate(3)');
+      expect(numericAggregate.metrics.plan).toContain('PostgresRdf3xSubjectStarJoin(?message;patterns:3)');
+      expect(pool.nativeBgpNumericAggregateCalls).toHaveLength(1);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to RDF-3X ordered joins when the native order-page operator is absent', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-order-page-fallback-'));
     const pool = new XpodRdfExtensionPgPool(

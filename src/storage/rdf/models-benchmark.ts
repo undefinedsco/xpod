@@ -6036,7 +6036,8 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
         || localIndexScanCount(planText) >= 2;
     case 'subject-star-join':
       return planText.includes('SubjectStarJoin(')
-        || planText.includes('PostgresRdf3xSubjectStarJoin(');
+        || planText.includes('PostgresRdf3xSubjectStarJoin(')
+        || planText.includes('PostgresRdfNativeCustomIndexSubjectStar');
     case 'values-recheck':
       return (planText.includes('Rdf3xJoinTupleValues(') || planText.includes('Values('))
         && !planText.includes('PostgresFactsValues(');
