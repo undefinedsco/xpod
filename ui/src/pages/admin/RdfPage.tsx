@@ -225,6 +225,8 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
             <KeyValue label="result scopes" value={`${stats.queryResultCache?.scopeCount ?? 0}`} />
             <KeyValue label="materialized entries" value={`${stats.materializedResultCache?.entryCount ?? 0}`} />
             <KeyValue label="materialized scopes" value={`${stats.materializedResultCache?.scopeCount ?? 0}`} />
+            <KeyValue label="result hit rate" value={formatCacheHitRate(stats.queryResultCache)} />
+            <KeyValue label="materialized hit rate" value={formatCacheHitRate(stats.materializedResultCache)} />
             <KeyValue label="template entries" value={`${stats.queryTemplateCache?.entryCount ?? 0}`} />
             <KeyValue label="cache pressure" value={formatPercent(derivedCache?.cachePressure ?? 0)} />
           </CardContent>
@@ -548,6 +550,16 @@ function formatPercent(value: number): string {
     return '0%';
   }
   return `${Math.round(value * 100)}%`;
+}
+
+function formatCacheHitRate(cache: { hitCount: number; missCount: number } | undefined): string {
+  const hits = cache?.hitCount ?? 0;
+  const misses = cache?.missCount ?? 0;
+  const total = hits + misses;
+  if (total <= 0) {
+    return '-';
+  }
+  return `${formatPercent(hits / total)} (${formatInteger(hits)}/${formatInteger(total)})`;
 }
 
 function formatMs(value: number): string {

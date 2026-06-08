@@ -697,6 +697,9 @@ describe('PostgresRdfEngine', () => {
       expect(storage.queryResultCache).toMatchObject({
         entryCount: 1,
         scopeCount: 1,
+        hitCount: 1,
+        missCount: 1,
+        storeCount: 1,
       });
       expect(storage.derivedBytes).toBeGreaterThanOrEqual(storage.queryResultCache?.totalBytes ?? 0);
 
@@ -1433,6 +1436,9 @@ describe('PostgresRdfEngine', () => {
       expect((await engine.storageStats()).materializedResultCache).toMatchObject({
         entryCount: 1,
         scopeCount: 1,
+        hitCount: 1,
+        missCount: 1,
+        storeCount: 1,
       });
       expect((await engine.storageStats()).queryResultCache).toMatchObject({
         entryCount: 0,
@@ -1448,6 +1454,9 @@ describe('PostgresRdfEngine', () => {
       expect(storage.materializedResultCache).toMatchObject({
         entryCount: 1,
         scopeCount: 1,
+        hitCount: 1,
+        missCount: 2,
+        storeCount: 2,
       });
       const factsVersionEvictions = storage.derivedCache?.evictions.factsVersion;
       expect(storage.derivedCache).toMatchObject({

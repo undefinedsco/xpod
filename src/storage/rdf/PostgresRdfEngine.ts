@@ -412,6 +412,17 @@ interface PgCompiledSqlTemplateCacheEntry {
 
 type PgDerivedCacheCandidateKind = 'query-result' | 'materialized-result' | 'query-template';
 
+interface PgCacheCounterStats {
+  hitCount: number;
+  missCount: number;
+  refreshCount: number;
+  storeCount: number;
+  bypassCount: number;
+  disabledCount: number;
+}
+
+type PgCacheCounterKind = keyof PgCacheCounterStats;
+
 interface PgDerivedCacheCandidate {
   kind: PgDerivedCacheCandidateKind;
   cacheKey: string;
@@ -1331,6 +1342,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private compiledSqlTemplateCacheHits = 0;
   private compiledSqlTemplateCacheMisses = 0;
   private compiledSqlTemplateCacheEvictions = 0;
+  private queryResultCacheCounters: PgCacheCounterStats = emptyPgCacheCounterStats();
+  private materializedResultCacheCounters: PgCacheCounterStats = emptyPgCacheCounterStats();
   private derivedCacheEvictions: RdfDerivedCacheEvictionStats = emptyDerivedCacheEvictionStats();
   private slowQueryHistory: RdfSlowQueryStatsEntry[] = [];
   private plannerHistogramCache: {
@@ -1515,6 +1528,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.compiledSqlTemplateCacheHits = 0;
     this.compiledSqlTemplateCacheMisses = 0;
     this.compiledSqlTemplateCacheEvictions = 0;
+    this.queryResultCacheCounters = emptyPgCacheCounterStats();
+    this.materializedResultCacheCounters = emptyPgCacheCounterStats();
     this.derivedCacheEvictions = emptyDerivedCacheEvictionStats();
     this.slowQueryHistory = [];
     this.plannerHistogramCache = null;
@@ -1760,6 +1775,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (cacheMode !== 'refresh') {
         const cached = await this.readMaterializedResultCache(materialized, template, factsDataVersion);
         if (cached) {
+          this.recordMaterializedResultCacheCounter('hitCount');
           return this.withPostgresQueryExplain(this.withPgAccelerationFallbackPlan(withQueryCachePlan(
             cached,
             template.planMarker,
@@ -1786,12 +1802,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
       const rdf3x = await this.queryRdf3x(query, template);
       const result = rdf3x ?? await this.queryFacts(query);
+      this.recordMaterializedResultCacheCounter(cacheMode === 'refresh' ? 'refreshCount' : 'missCount');
       const storePlan = await this.writeMaterializedResultCache(
         materialized,
         template,
         factsDataVersion,
         result,
       );
+      this.recordMaterializedResultCacheCounter('storeCount');
       await this.pruneMaterializedResultCache(factsDataVersion, cacheTtlMs);
       return this.withPostgresQueryExplain(this.withPgAccelerationFallbackPlan(withQueryCachePlan(
         result,
@@ -1821,6 +1839,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     if (!this.isQueryResultCacheEnabled(query)) {
       const rdf3x = await this.queryRdf3x(query, template);
+      this.recordQueryResultCacheCounter(query.cache?.mode === 'bypass' ? 'bypassCount' : 'disabledCount');
+      if (materialized) {
+        this.recordMaterializedResultCacheCounter('bypassCount');
+      }
       return this.withPostgresQueryExplain(this.withPgAccelerationFallbackPlan(withQueryCachePlan(
         rdf3x ?? await this.queryFacts(query),
         template.planMarker,
@@ -1852,6 +1874,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (cacheMode !== 'refresh') {
       const cached = await this.readQueryResultCache(template, factsDataVersion);
       if (cached) {
+        this.recordQueryResultCacheCounter('hitCount');
         return this.withPostgresQueryExplain(this.withPgAccelerationFallbackPlan(withQueryCachePlan(cached, template.planMarker), query), {
           query,
           template,
@@ -1873,6 +1896,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
     const rdf3x = await this.queryRdf3x(query, template);
     const result = rdf3x ?? await this.queryFacts(query);
+    this.recordQueryResultCacheCounter(cacheMode === 'refresh' ? 'refreshCount' : 'missCount');
     const storePlan = await this.writeQueryResultCache(
       template.cacheKey,
       factsDataVersion,
@@ -1880,6 +1904,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       template.cacheScope,
       result,
     );
+    this.recordQueryResultCacheCounter('storeCount');
     await this.pruneQueryResultCache(factsDataVersion, cacheTtlMs);
     return this.withPostgresQueryExplain(this.withPgAccelerationFallbackPlan(withQueryCachePlan(
       result,
@@ -8951,6 +8976,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       scopeCount: await this.scalarCount(`SELECT COUNT(DISTINCT scope_hash) AS count FROM ${RDF_QUERY_RESULT_CACHE_TABLE}`),
       maxEntries: this.queryResultCacheMaxEntries(),
       ttlMs: this.queryResultCacheTtlMs(),
+      ...this.queryResultCacheCounters,
       payloadBytes: await this.cachePayloadBytes(RDF_QUERY_RESULT_CACHE_TABLE),
       maxPayloadBytes: this.queryResultCacheMaxBytes(),
       tableBytes: sumSpaceObjects(spaceObjects, 'table'),
@@ -8967,6 +8993,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       scopeCount: await this.scalarCount(`SELECT COUNT(DISTINCT scope_hash) AS count FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}`),
       maxEntries: this.materializedResultCacheMaxEntries(),
       ttlMs: this.materializedResultCacheTtlMs(),
+      ...this.materializedResultCacheCounters,
       payloadBytes: await this.cachePayloadBytes(RDF_MATERIALIZED_RESULT_CACHE_TABLE),
       maxPayloadBytes: this.materializedResultCacheMaxBytes(),
       tableBytes: sumSpaceObjects(spaceObjects, 'table'),
@@ -9023,6 +9050,20 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return;
     }
     this.derivedCacheEvictions[cause] += count;
+  }
+
+  private recordQueryResultCacheCounter(kind: PgCacheCounterKind, count = 1): void {
+    if (count <= 0) {
+      return;
+    }
+    this.queryResultCacheCounters[kind] += count;
+  }
+
+  private recordMaterializedResultCacheCounter(kind: PgCacheCounterKind, count = 1): void {
+    if (count <= 0) {
+      return;
+    }
+    this.materializedResultCacheCounters[kind] += count;
   }
 
   private derivedCacheEvictionCount(): number {
@@ -9373,6 +9414,17 @@ function emptyDerivedCacheEvictionStats(): RdfDerivedCacheEvictionStats {
     templateTtl: 0,
     templateMaxEntries: 0,
     templateBytes: 0,
+  };
+}
+
+function emptyPgCacheCounterStats(): PgCacheCounterStats {
+  return {
+    hitCount: 0,
+    missCount: 0,
+    refreshCount: 0,
+    storeCount: 0,
+    bypassCount: 0,
+    disabledCount: 0,
   };
 }
 

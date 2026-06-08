@@ -274,6 +274,12 @@ export interface RdfQueryResultCacheStats {
   scopeCount: number;
   maxEntries: number;
   ttlMs: number;
+  hitCount: number;
+  missCount: number;
+  refreshCount: number;
+  storeCount: number;
+  bypassCount: number;
+  disabledCount: number;
   payloadBytes: number;
   maxPayloadBytes: number;
   tableBytes: number;
@@ -287,6 +293,12 @@ export interface RdfMaterializedResultCacheStats {
   scopeCount: number;
   maxEntries: number;
   ttlMs: number;
+  hitCount: number;
+  missCount: number;
+  refreshCount: number;
+  storeCount: number;
+  bypassCount: number;
+  disabledCount: number;
   payloadBytes: number;
   maxPayloadBytes: number;
   tableBytes: number;
