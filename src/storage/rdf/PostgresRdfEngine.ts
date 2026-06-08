@@ -1765,6 +1765,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.ensureReady();
     const facts = await this.factsStats();
     const rdf3x = await this.rdf3xStats();
+    const factsDataVersion = await this.readFactsDataVersion();
     const queryResultCache = await this.queryResultCacheStats();
     const materializedResultCache = await this.materializedResultCacheStats();
     const queryTemplateCache = this.queryTemplateCacheStats();
@@ -1785,7 +1786,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
       facts,
       rdf3x: {
         stats: rdf3x,
-        syncedWithFacts: rdf3x.factsDataVersion === await this.readFactsDataVersion(),
+        factsDataVersion,
+        rdf3xFactsDataVersion: rdf3x.factsDataVersion,
+        refreshLag: Math.max(0, factsDataVersion - rdf3x.factsDataVersion),
+        syncedWithFacts: rdf3x.factsDataVersion === factsDataVersion,
       },
       derivedCache,
       queryResultCache,

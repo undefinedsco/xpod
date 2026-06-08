@@ -411,6 +411,9 @@ describe('SolidRdfEngine', () => {
       expect(storage.derivedIndexProfile).toBe('rdf3x');
       expect(storage.facts.quadCount).toBe(4);
       expect(storage.rdf3x).toMatchObject({
+        factsDataVersion: autoEngine.index.dataVersion(),
+        rdf3xFactsDataVersion: autoEngine.index.dataVersion(),
+        refreshLag: 0,
         syncedWithFacts: true,
         stats: {
           membershipCount: 4,
@@ -446,6 +449,9 @@ describe('SolidRdfEngine', () => {
       ]);
 
       expect(autoEngine.storageStats().rdf3x).toMatchObject({
+        factsDataVersion: autoEngine.index.dataVersion(),
+        rdf3xFactsDataVersion: 0,
+        refreshLag: autoEngine.index.dataVersion(),
         syncedWithFacts: false,
         stats: {
           factsDataVersion: 0,
@@ -497,6 +503,9 @@ describe('SolidRdfEngine', () => {
       ]);
       expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(true);
       expect(autoEngine.storageStats().rdf3x).toMatchObject({
+        factsDataVersion: dataVersion,
+        rdf3xFactsDataVersion: dataVersion,
+        refreshLag: 0,
         syncedWithFacts: true,
         stats: {
           membershipCount: 2,
@@ -770,6 +779,12 @@ describe('SolidRdfEngine', () => {
       expect(needsRefreshResult.metrics.plan).toContain('Rdf3xPrimaryNeedsRefreshFallback');
       expect(needsRefreshResult.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(true);
       expect(needsRefreshResult.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(false);
+      expect(autoEngine.storageStats().rdf3x).toMatchObject({
+        factsDataVersion: externalIndex.dataVersion(),
+        rdf3xFactsDataVersion: 0,
+        refreshLag: externalIndex.dataVersion(),
+        syncedWithFacts: false,
+      });
 
       const refresh = autoEngine.refreshDerivedIndexes();
       expect(refresh.rdf3x).toMatchObject({
@@ -793,6 +808,12 @@ describe('SolidRdfEngine', () => {
       ]);
       expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryScan('))).toBe(true);
       expect(result.metrics.plan.some((entry) => entry.startsWith('IndexScan('))).toBe(false);
+      expect(autoEngine.storageStats().rdf3x).toMatchObject({
+        factsDataVersion: externalIndex.dataVersion(),
+        rdf3xFactsDataVersion: externalIndex.dataVersion(),
+        refreshLag: 0,
+        syncedWithFacts: true,
+      });
     } finally {
       externalIndex.close();
       await autoEngine.close();

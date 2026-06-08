@@ -109,6 +109,9 @@ export interface RdfEngineStorageStats {
   facts: RdfIndexStats;
   rdf3x?: {
     stats: Rdf3xIndexStats;
+    factsDataVersion: number;
+    rdf3xFactsDataVersion: number;
+    refreshLag: number;
     syncedWithFacts: boolean;
   };
   derivedCache?: RdfDerivedCacheStats;

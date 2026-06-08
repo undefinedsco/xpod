@@ -296,10 +296,17 @@ export class SolidRdfEngine implements RdfEngineLike {
   public storageStats(): RdfEngineStorageStats {
     const facts = this.index.stats();
     const rdf3x = this.rdf3xIndex
-      ? {
-          stats: this.rdf3xIndex.stats(),
-          syncedWithFacts: this.rdf3xIndex.isSyncedWithCurrentQuads(),
-        }
+      ? (() => {
+          const stats = this.rdf3xIndex!.stats();
+          const factsDataVersion = this.index.dataVersion();
+          return {
+            stats,
+            factsDataVersion,
+            rdf3xFactsDataVersion: stats.factsDataVersion,
+            refreshLag: Math.max(0, factsDataVersion - stats.factsDataVersion),
+            syncedWithFacts: stats.factsDataVersion === factsDataVersion,
+          };
+        })()
       : undefined;
     const factsBytes = facts.databaseBytes;
     const derivedBytes = rdf3x?.stats.databaseBytes ?? 0;

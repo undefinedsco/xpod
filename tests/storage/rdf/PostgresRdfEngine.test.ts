@@ -2194,6 +2194,9 @@ describe('PostgresRdfEngine', () => {
       const storage = await engine.storageStats();
       expect(storage.facts.quadCount).toBe(2);
       expect(storage.rdf3x).toMatchObject({
+        factsDataVersion: 2,
+        rdf3xFactsDataVersion: 1,
+        refreshLag: 1,
         syncedWithFacts: false,
         stats: expect.objectContaining({
           factsDataVersion: 1,
@@ -2212,6 +2215,9 @@ describe('PostgresRdfEngine', () => {
       });
       const syncedAfterIncremental = await engine.storageStats();
       expect(syncedAfterIncremental.rdf3x).toMatchObject({
+        factsDataVersion: 2,
+        rdf3xFactsDataVersion: 2,
+        refreshLag: 0,
         syncedWithFacts: true,
         stats: expect.objectContaining({
           factsDataVersion: 2,

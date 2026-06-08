@@ -46,6 +46,24 @@ describe('RdfStatsHandler', () => {
         totalBytes: 140,
         totalToFactsRatio: 1.4,
         derivedToFactsRatio: 0.4,
+        rdf3x: {
+          factsDataVersion: 4,
+          rdf3xFactsDataVersion: 3,
+          refreshLag: 1,
+          syncedWithFacts: false,
+          stats: {
+            membershipCount: 10,
+            uniqueTripleCount: 10,
+            graphCount: 2,
+            pairProjectionRows: 20,
+            termProjectionRows: 30,
+            databaseBytes: 40,
+            tableBytes: 30,
+            indexBytes: 10,
+            factsDataVersion: 3,
+            spaceObjects: [],
+          },
+        },
       },
     };
     const { server, routes } = createMockServer();

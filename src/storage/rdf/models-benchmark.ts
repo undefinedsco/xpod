@@ -1970,7 +1970,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
       ],
       select: ['provider', 'credentialCount', 'failCountTotal'],
     },
-    expectedPlan: ['numeric-aggregate-facts-cutover'],
+    expectedPlan: ['numeric-aggregate'],
   },
   {
     name: 'oauth credential expiry query',
@@ -2755,7 +2755,7 @@ export const rdfModelsQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[]
       ],
       limit: 1,
     },
-    expectedPlan: ['numeric-aggregate-facts-cutover'],
+    expectedPlan: ['numeric-aggregate'],
   },
   {
     name: 'message join count distinct',
@@ -5701,6 +5701,13 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
         && (planText.includes('IndexJoinAggregate(')
           || planText.includes('Rdf3xPrimaryJoinAggregate('))
       ) || planText.includes('PostgresRdf3xJoinAggregate');
+    case 'numeric-aggregate':
+      return planText.includes('JoinGroupAggregateNumeric(')
+        || planText.includes('Aggregate(group-basic-multi)')
+        || planText.includes('Aggregate(group-basic-index)')
+        || planText.includes('Rdf3xJoinGroupAggregateNumeric(')
+        || planText.includes('PostgresRdf3xGroupAggregate')
+        || planText.includes('PostgresNumericAggregateFactsCutover(');
     case 'numeric-aggregate-facts-cutover':
       return planText.includes('PostgresFactsQuery')
         && planText.includes('PostgresNumericAggregateFactsCutover(')
@@ -5809,6 +5816,9 @@ function matchesExpectedRdf3xJoinPlanLabel(label: string, metrics: Rdf3xJoinMetr
     case 'group-aggregate-index':
       return planText.includes('Rdf3xJoinGroupAggregate(')
         || planText.includes('Rdf3xJoinGroupAggregateNumeric(');
+    case 'numeric-aggregate':
+      return planText.includes('Rdf3xJoinGroupAggregateNumeric(')
+        || planText.includes('Rdf3xJoinAggregateNumeric(');
     case 'join-aggregate-index':
       return planText.includes('Rdf3xJoinAggregate(')
         || planText.includes('Rdf3xJoinAggregateNumeric(');

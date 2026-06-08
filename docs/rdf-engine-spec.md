@@ -95,7 +95,7 @@ SolidRdfEngine
 - facts 主路径必须同步可见。`put`、`replaceSource`、`deleteSource`、`delete`、`applyDelta` 返回成功后，同一个 `RdfEngineLike` 的 `scan` / `query` 必须能立即读到新的 facts。
 - RDF-3X projection / graph stats 是异步派生层。写入只推进 facts `data_version` 并把派生层标记为 needs-refresh，不在请求路径自动重建 stats。
 - `scan` / `query` 以 facts + covering index 为可用主路径，不能依赖 RDF-3X stats 已同步；当前 planner 可表达的 shape 可以直接走 PG facts SQL。
-- `storageStats()` 只报告当前 facts 与 derived stats 的同步状态，不触发补建。`rdf3x.syncedWithFacts=false` 是合法运行态。
+- `storageStats()` 只报告当前 facts 与 derived stats 的同步状态，不触发补建。`rdf3x.factsDataVersion`、`rdf3x.rdf3xFactsDataVersion` 和 `rdf3x.refreshLag` 必须直接来自 durable metadata；`rdf3x.syncedWithFacts=false` / `refreshLag>0` 是合法运行态。
 - `refreshDerivedIndexes()` 是显式补建入口，供启动、维护任务、测试或运维调用。它可以从当前 facts 重建 `rdf3x_*` stats，但不是普通查询的隐式前置步骤。PostgreSQL backend 每次显式 refresh 都会同步执行 facts / RDF-3X stats 表的 planner stats refresh，并在返回值里暴露 `plannerStats.analyzedTables` 与耗时；即使派生 stats 已追上 facts、无需 rebuild，也不能跳过这个显式运维动作。
 - SolidFS journal 只负责本地权威文件到 Pod HTTP / index syncer 的 outbox、replay 和 compaction；它不是 RDF-3X 派生索引新鲜度证明。即使 journal 已 replay 完，仍必须用 facts `data_version` 与 `rdf3x_metadata.facts_data_version` 判断派生索引是否 needs-refresh。
 - SQLite/file-backed `SolidRdfEngine` 和 PostgreSQL `PostgresRdfEngine` 都不维护第二套内存 refresh guard；query readiness、refresh skip 和 storage stats 都直接读取 durable metadata。backend 差异只保留在同步/异步 executor 与 SQL 方言上。
@@ -188,7 +188,9 @@ RDF engine 不能按“每吸收一个算法就永久多存一整套数据”的
 - authority space：SolidFS 中的 `.ttl` / `.jsonld` / by-line 文件，才是内容权威，不由 RDF engine 预算口径重复计为 RDF index facts。
 
 `SolidRdfEngine.storageStats()` 必须暴露 `factsBytes`、`derivedBytes`、`totalBytes`
-和 `totalToFactsRatio`。benchmark report 也要带这份 storage profile 数据。
+和 `totalToFactsRatio`；启用 RDF-3X 时还要在 `rdf3x` 里暴露 facts data version、
+RDF-3X facts data version、refresh lag 和 synced boolean。benchmark report 也要带这份
+storage profile 数据。
 空间放大只能作为显式 profile 决策或 benchmark gate 的结果进入默认配置，不能因为
 实现了 RDF-3X / QLever-style 能力就默认叠满所有物化结构。
 cloud `PostgresRdfEngine` 也遵循同一口径：facts 表和 facts covering index 是同步查询主路径，
@@ -514,7 +516,7 @@ P1 做 planner 稳定性、迁移效率和运维可解释性：
 | Bulk load + delayed index build | 第一版已落地：PG custom-index profile 支持启动时延迟创建 native permutation indexes，导入完成后显式 `ensurePgCustomIndexes()` 再进入 native cutover；PG facts 写入已把 term dictionary resolve 和 `rdf_quads` upsert 改成分块批量 `VALUES`，并对 batch 内重复 quad 去重，避免 bulk seed 按 quad 逐条维护 native/custom index | 后续补 COPY/staging-table 导入、大数据量 seed 完成后一次 refresh / ANALYZE，以及 large/concurrency benchmark | benchmark 可选择延迟 custom-index build；延迟期间 native-only operator 不 active、不会 500；ensure 后 6 个 custom permutation index 创建并恢复 native operator；bulk seed 只发固定批次数量的 term/quad insert；million-scale gate 仍需重跑 |
 | Subject-star / star join operator | 第一版已落地为可观测 gate：local `RdfQuadIndex` 和 PG RDF-3X join 会识别 3+ pattern 共享同一 subject 的 star BGP，并在 plan 中标记 `SubjectStarJoin(...)` / `PostgresRdf3xSubjectStarJoin(...)`；默认 models benchmark 已覆盖 Agent thread context 和 run state center，extreme benchmark 覆盖 8-pattern message star | 后续把 native `join.subject_star` / `aggregate.subject_star_count` operator 接到同一 gate；当前第一版不改变 SQL join 语义，只锁住 planner 可观测性和 benchmark coverage | subject-star benchmark 命中专门 plan marker，且语义与 RDF-3X baseline 一致 |
 | Native operator cutover 策略 | 第一版 explain 已能区分 capability 缺失和 capability 已激活但未被选中的 native 候选：当 query 具备 `pg-custom-index` native 候选、最终却走 RDF-3X / facts 时，`metrics.explain.planner.rejectedNativeOperators` 会记录 capability 和 `shape-gate` / `cost-cutover-small-grouped-numeric-aggregate` reason；native operator 仍按 shape/cost gate 启用，不能只看 capability 存在 | 后续继续把更多真实 PG benchmark 结果接入 cost gate，尤其是 ordered-page、subject-star 和 graph-prefix aggregate | metrics 标记 rejected native reason；真实 PG benchmark 不因 native profile 退化 |
-| Explain / observability | 第一版已落地到 PG query metrics：`metrics.explain` 结构化输出 engine、facts version、derived profile、template/result/materialized cache 状态、结构化 access scope、acceleration/fallback 摘要、planner histogram hints、runtime 扫描/返回行数、RDF-3X stale stats 和 slow-query 诊断；原有 plan 字符串继续保留给 benchmark gate | 后续把 slow-query 事件接入运维面板，并把 histogram / scan rows 真正接入 cost-based cutover | 慢查询报告可直接定位 fallback / cache miss / stale stats / 扫描放大 |
+| Explain / observability | 第一版已落地到 PG query metrics：`metrics.explain` 结构化输出 engine、facts version、derived profile、template/result/materialized cache 状态、结构化 access scope、acceleration/fallback 摘要、planner histogram hints、runtime 扫描/返回行数、RDF-3X stale stats 和 slow-query 诊断；`storageStats().rdf3x` 暴露 facts / RDF-3X facts version、refresh lag 和 synced boolean，可直接给 API / dashboard 使用；原有 plan 字符串继续保留给 benchmark gate | 后续把 slow-query 事件接入运维面板，并把 histogram / scan rows 真正接入 cost-based cutover | 慢查询报告可直接定位 fallback / cache miss / stale stats / refresh lag / 扫描放大 |
 | Cache quota / TTL / eviction | result/materialized cache 有 TTL、max entries、payload bytes quota、PG table/index bytes 和 payload bytes stats；template cache 已补 max entries、idle TTL、eviction count 和 in-memory bytes 估算，`storageStats().derivedBytes` 汇总三类 cache；`storageStats().derivedCache` 暴露三类 cache 的统一 bytes 占用、可选 `derivedCacheMaxBytes` 总预算、可选 `derivedCacheScopeMaxBytes` scope/facts-version 预算、最大 scope 占用、`cachePressure` / `largestScopePressure`，以及 `factsVersion`、`ttl`、`maxEntries`、`payloadBytes`、`scopeBytes`、`totalBytes`、`templateTtl`、`templateMaxEntries`、`templateBytes` eviction cause 计数 | 后续把 eviction telemetry 汇总进慢查询报告和运维面板；当前计数是进程内压力观测，不作为 durable Pod/RDF 状态 | cache 压测后不会无限增长；不同 scope 的淘汰互不污染；template TTL 过期后不会继续命中；result/materialized payload quota、scope quota 或统一 derived cache quota 超限后不会留下可命中的 cache row，并能通过 `storageStats().derivedCache.evictions` 定位淘汰原因 |
 
 落地顺序：
