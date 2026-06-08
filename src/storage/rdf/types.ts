@@ -150,6 +150,10 @@ export interface RdfPgCustomIndexStats {
 export interface RdfQueryResultCacheStats {
   entryCount: number;
   scopeCount: number;
+  maxEntries: number;
+  ttlMs: number;
+  payloadBytes: number;
+  maxPayloadBytes: number;
   tableBytes: number;
   indexBytes: number;
   totalBytes: number;
@@ -159,6 +163,10 @@ export interface RdfQueryResultCacheStats {
 export interface RdfMaterializedResultCacheStats {
   entryCount: number;
   scopeCount: number;
+  maxEntries: number;
+  ttlMs: number;
+  payloadBytes: number;
+  maxPayloadBytes: number;
   tableBytes: number;
   indexBytes: number;
   totalBytes: number;
@@ -861,6 +869,7 @@ export interface RdfQueryCacheExplain {
   factsDataVersion?: number;
   ttlMs?: number;
   maxEntries?: number;
+  maxBytes?: number;
   stored?: boolean;
 }
 

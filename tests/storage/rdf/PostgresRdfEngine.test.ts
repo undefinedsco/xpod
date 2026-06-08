@@ -668,6 +668,56 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('prunes PostgreSQL query result cache by payload bytes', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-bytes-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheMaxBytes: 1,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const query: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(query);
+      expect(first.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(first.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(first.metrics.plan).toContain('PostgresResultCacheStore');
+      expect(first.metrics.explain?.cache?.result).toMatchObject({
+        status: 'miss',
+        maxBytes: 1,
+        stored: true,
+      });
+      expect((await engine.storageStats()).queryResultCache).toMatchObject({
+        entryCount: 0,
+        payloadBytes: 0,
+        maxPayloadBytes: 1,
+      });
+
+      const second = await engine.query(query);
+      expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(second.metrics.plan).toContain('PostgresResultCacheMiss');
+      expect(second.metrics.plan).not.toContain('PostgresResultCacheHit');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('isolates and invalidates PostgreSQL query result cache entries by structured access scope', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-access-scope-'));
     const engine = new PostgresRdfEngine({
@@ -1052,6 +1102,59 @@ describe('PostgresRdfEngine', () => {
         entryCount: 1,
         scopeCount: 1,
       });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prunes PostgreSQL materialized result cache by payload bytes', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-materialized-cache-bytes-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      materializedResultCacheMaxBytes: 1,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const query: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+      ],
+      select: ['message'],
+      cache: {
+        materialized: 'chat/default/open-messages',
+      },
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+
+      const first = await engine.query(query);
+      expect(first.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(first.metrics.plan).toContain('PostgresMaterializedResultMiss');
+      expect(first.metrics.plan).toContain('PostgresMaterializedResultStore');
+      expect(first.metrics.explain?.cache?.materialized).toMatchObject({
+        status: 'miss',
+        maxBytes: 1,
+        stored: true,
+      });
+      expect((await engine.storageStats()).materializedResultCache).toMatchObject({
+        entryCount: 0,
+        payloadBytes: 0,
+        maxPayloadBytes: 1,
+      });
+
+      const second = await engine.query(query);
+      expect(second.bindings.map((binding) => binding.message.value)).toEqual([message.value]);
+      expect(second.metrics.plan).toContain('PostgresMaterializedResultMiss');
+      expect(second.metrics.plan).not.toContain('PostgresMaterializedResultHit');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

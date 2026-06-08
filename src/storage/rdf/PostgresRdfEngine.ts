@@ -101,8 +101,10 @@ const RDF_MATERIALIZED_RESULT_CACHE_KEY_VERSION = 1;
 const RDF_QUERY_TEMPLATE_CACHE_KEY_VERSION = 1;
 const DEFAULT_QUERY_RESULT_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_QUERY_RESULT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_ENTRIES = 256;
 const DEFAULT_MATERIALIZED_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const POSTGRES_RDF_SESSION_OPTIONS = '-c jit=off';
@@ -464,9 +466,11 @@ export interface PostgresRdfEngineOptions {
   queryResultCacheEnabled?: boolean;
   queryResultCacheMaxEntries?: number;
   queryResultCacheTtlMs?: number;
+  queryResultCacheMaxBytes?: number;
   materializedResultCacheEnabled?: boolean;
   materializedResultCacheMaxEntries?: number;
   materializedResultCacheTtlMs?: number;
+  materializedResultCacheMaxBytes?: number;
   queryTemplateCacheMaxEntries?: number;
   queryTemplateCacheTtlMs?: number;
   rdfAccelerationProfile?: RdfPgAccelerationProfile;
@@ -1218,6 +1222,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
               factsDataVersion,
               ttlMs: cacheTtlMs,
               maxEntries: this.materializedResultCacheMaxEntries(),
+              maxBytes: this.materializedResultCacheMaxBytes(),
             },
             resultCache: {
               status: 'not-applicable',
@@ -1251,6 +1256,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           factsDataVersion,
           ttlMs: cacheTtlMs,
           maxEntries: this.materializedResultCacheMaxEntries(),
+          maxBytes: this.materializedResultCacheMaxBytes(),
           stored: true,
         },
         resultCache: {
@@ -1270,12 +1276,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
         resultCache: {
           status: query.cache?.mode === 'bypass' ? 'bypass' : 'disabled',
           maxEntries: this.queryResultCacheMaxEntries(),
+          maxBytes: this.queryResultCacheMaxBytes(),
         },
         materializedCache: materialized
           ? {
               status: 'bypass',
               key: materialized.cacheKey,
               maxEntries: this.materializedResultCacheMaxEntries(),
+              maxBytes: this.materializedResultCacheMaxBytes(),
             }
           : {
               status: 'not-applicable',
@@ -1299,6 +1307,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
             factsDataVersion,
             ttlMs: cacheTtlMs,
             maxEntries: this.queryResultCacheMaxEntries(),
+            maxBytes: this.queryResultCacheMaxBytes(),
           },
           materializedCache: {
             status: 'not-applicable',
@@ -1332,6 +1341,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         factsDataVersion,
         ttlMs: cacheTtlMs,
         maxEntries: this.queryResultCacheMaxEntries(),
+        maxBytes: this.queryResultCacheMaxBytes(),
         stored: true,
       },
       materializedCache: {
@@ -2947,6 +2957,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           AND facts_data_version = $2
       `, [row.cache_key, row.facts_data_version]);
     }
+    await this.pruneQueryResultCachePayloadBytes(executor, factsDataVersion);
   }
 
   private async pruneMaterializedResultCache(
@@ -2974,6 +2985,65 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC, scope_hash DESC
     `, [factsDataVersion]);
     for (const row of rows.slice(maxEntries)) {
+      await executor.exec(`
+        DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
+        WHERE cache_key = $1
+          AND scope_hash = $2
+          AND facts_data_version = $3
+      `, [row.cache_key, row.scope_hash, row.facts_data_version]);
+    }
+    await this.pruneMaterializedResultCachePayloadBytes(executor, factsDataVersion);
+  }
+
+  private async pruneQueryResultCachePayloadBytes(executor: AsyncSqlExecutor, factsDataVersion: number): Promise<void> {
+    const maxBytes = this.queryResultCacheMaxBytes();
+    if (maxBytes <= 0) {
+      return;
+    }
+    const rows = await executor.query<{ cache_key: string; facts_data_version: number }>(`
+      SELECT cache_key, facts_data_version
+      FROM (
+        SELECT
+          cache_key,
+          facts_data_version,
+          SUM(OCTET_LENGTH(result_json)) OVER (
+            ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC
+          ) AS retained_bytes
+        FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+        WHERE facts_data_version = $1
+      ) retained
+      WHERE retained_bytes > $2
+    `, [factsDataVersion, maxBytes]);
+    for (const row of rows) {
+      await executor.exec(`
+        DELETE FROM ${RDF_QUERY_RESULT_CACHE_TABLE}
+        WHERE cache_key = $1
+          AND facts_data_version = $2
+      `, [row.cache_key, row.facts_data_version]);
+    }
+  }
+
+  private async pruneMaterializedResultCachePayloadBytes(executor: AsyncSqlExecutor, factsDataVersion: number): Promise<void> {
+    const maxBytes = this.materializedResultCacheMaxBytes();
+    if (maxBytes <= 0) {
+      return;
+    }
+    const rows = await executor.query<{ cache_key: string; scope_hash: string; facts_data_version: number }>(`
+      SELECT cache_key, scope_hash, facts_data_version
+      FROM (
+        SELECT
+          cache_key,
+          scope_hash,
+          facts_data_version,
+          SUM(OCTET_LENGTH(result_json)) OVER (
+            ORDER BY COALESCE(last_hit_at, created_at) DESC, created_at DESC, cache_key DESC, scope_hash DESC
+          ) AS retained_bytes
+        FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
+        WHERE facts_data_version = $1
+      ) retained
+      WHERE retained_bytes > $2
+    `, [factsDataVersion, maxBytes]);
+    for (const row of rows) {
       await executor.exec(`
         DELETE FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}
         WHERE cache_key = $1
@@ -3011,12 +3081,22 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_RESULT_CACHE_TTL_MS;
   }
 
+  private queryResultCacheMaxBytes(): number {
+    const configured = this.pgOptions.queryResultCacheMaxBytes ?? DEFAULT_QUERY_RESULT_CACHE_MAX_BYTES;
+    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_QUERY_RESULT_CACHE_MAX_BYTES;
+  }
+
   private materializedResultCacheTtlMs(query?: RdfQuery): number {
     const configured = materializedResultConfigTtlMs(query?.cache?.materialized)
       ?? query?.cache?.ttlMs
       ?? this.pgOptions.materializedResultCacheTtlMs
       ?? DEFAULT_MATERIALIZED_RESULT_CACHE_TTL_MS;
     return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_MATERIALIZED_RESULT_CACHE_TTL_MS;
+  }
+
+  private materializedResultCacheMaxBytes(): number {
+    const configured = this.pgOptions.materializedResultCacheMaxBytes ?? DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_BYTES;
+    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_BYTES;
   }
 
   private queryTemplateCacheMaxEntries(): number {
@@ -6930,6 +7010,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return {
       entryCount: await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF_QUERY_RESULT_CACHE_TABLE}`),
       scopeCount: await this.scalarCount(`SELECT COUNT(DISTINCT scope_hash) AS count FROM ${RDF_QUERY_RESULT_CACHE_TABLE}`),
+      maxEntries: this.queryResultCacheMaxEntries(),
+      ttlMs: this.queryResultCacheTtlMs(),
+      payloadBytes: await this.cachePayloadBytes(RDF_QUERY_RESULT_CACHE_TABLE),
+      maxPayloadBytes: this.queryResultCacheMaxBytes(),
       tableBytes: sumSpaceObjects(spaceObjects, 'table'),
       indexBytes: sumSpaceObjects(spaceObjects, 'index'),
       totalBytes: spaceObjects.reduce((sum, object) => sum + object.bytes, 0),
@@ -6942,11 +7026,19 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return {
       entryCount: await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}`),
       scopeCount: await this.scalarCount(`SELECT COUNT(DISTINCT scope_hash) AS count FROM ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}`),
+      maxEntries: this.materializedResultCacheMaxEntries(),
+      ttlMs: this.materializedResultCacheTtlMs(),
+      payloadBytes: await this.cachePayloadBytes(RDF_MATERIALIZED_RESULT_CACHE_TABLE),
+      maxPayloadBytes: this.materializedResultCacheMaxBytes(),
       tableBytes: sumSpaceObjects(spaceObjects, 'table'),
       indexBytes: sumSpaceObjects(spaceObjects, 'index'),
       totalBytes: spaceObjects.reduce((sum, object) => sum + object.bytes, 0),
       spaceObjects,
     };
+  }
+
+  private async cachePayloadBytes(tableName: string): Promise<number> {
+    return this.scalarCount(`SELECT COALESCE(SUM(OCTET_LENGTH(result_json)), 0) AS count FROM ${tableName}`);
   }
 
   private async collectCacheSpaceObjects(tableName: string): Promise<RdfIndexSpaceObject[]> {
