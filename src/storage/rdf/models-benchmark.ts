@@ -3264,7 +3264,7 @@ export const rdfModelsExtremeQueryBenchmarkCases: readonly RdfModelQueryBenchmar
       ],
       limit: 10,
     },
-    expectedPlan: ['group-aggregate-index', 'having-pushdown', 'order', 'limit'],
+    expectedPlan: ['numeric-aggregate-facts-cutover'],
   },
   {
     name: 'extreme native exact graph eight-pattern join query',
@@ -3520,7 +3520,7 @@ export const rdfModelsExtremeQueryBenchmarkCases: readonly RdfModelQueryBenchmar
       ],
       limit: 10,
     },
-    expectedPlan: ['group-aggregate-index', 'having-pushdown', 'order', 'limit'],
+    expectedPlan: ['numeric-aggregate-facts-cutover'],
   },
 ];
 
