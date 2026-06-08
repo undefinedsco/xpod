@@ -516,6 +516,13 @@ describe('SubgraphSparqlHttpHandler', () => {
           message: 'Embedded SPARQL engine cannot execute queryBindings: Subqueries is not supported by the embedded RDF engine',
           capability: 'sparql.query.subquery',
           hint: expect.stringContaining('Flatten the subquery'),
+          correction: {
+            capability: 'sparql.query.subquery',
+            primaryAction: 'materialize_intermediate',
+            availableActions: [ 'materialize_intermediate', 'rewrite_query', 'route_external_executor' ],
+            target: 'embedded_rdf_engine',
+            message: expect.stringContaining('Materialize the unsupported intermediate result'),
+          },
         },
       });
     });
@@ -532,6 +539,39 @@ describe('SubgraphSparqlHttpHandler', () => {
 
       expect(response.statusCode).toBe(403);
       expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain; charset=utf-8');
+    });
+
+    it('should return structured federation correction details when JSON is accepted', async () => {
+      const request = createMockRequest(
+        '/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20SERVICE%20%3Chttps%3A%2F%2Fremote.example%2Fsparql%3E%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D%20%7D',
+        'GET',
+        { accept: 'application/json' },
+      );
+      const response = createMockResponse();
+
+      mockQueryEngine.queryBindings.mockRejectedValueOnce(
+        new DisabledSparqlFeatureError('SPARQL SERVICE federation is disabled for server-owned Pod queries'),
+      );
+
+      await expect(handler.handle({ request, response })).resolves.toBeUndefined();
+
+      expect(response.statusCode).toBe(403);
+      expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'application/json; charset=utf-8');
+      expect(JSON.parse((response as unknown as { bodyText: () => string }).bodyText())).toEqual({
+        error: {
+          code: 'rdf.sparql.disabled_feature',
+          message: 'SPARQL SERVICE federation is disabled for server-owned Pod queries',
+          capability: 'sparql.federation.service',
+          hint: expect.stringContaining('trusted client-side/federated query layer'),
+          correction: {
+            capability: 'sparql.federation.service',
+            primaryAction: 'route_external_executor',
+            availableActions: [ 'route_external_executor' ],
+            target: 'trusted_client_or_federated_engine',
+            message: expect.stringContaining('trusted client-side or federated query layer'),
+          },
+        },
+      });
     });
   });
 

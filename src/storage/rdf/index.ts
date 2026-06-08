@@ -41,6 +41,7 @@ export {
   DisabledSparqlFeatureError,
   RdfSparqlAdapter,
   UnsupportedSparqlQueryError,
+  sparqlCorrectionForCapability,
   type RdfSparqlCompileResult,
   type RdfSparqlDeleteOperation,
   type RdfSparqlDeleteWhereOperation,
@@ -48,6 +49,9 @@ export {
   type RdfSparqlInsertOperation,
   type RdfSparqlUpdateDelta,
   type RdfSparqlUpdateDeltaOperation,
+  type SparqlCorrection,
+  type SparqlCorrectionAction,
+  type SparqlCorrectionTarget,
 } from './RdfSparqlAdapter';
 export {
   SolidRdfSparqlEngine,

@@ -34,7 +34,12 @@ import type {
   UpdateOperation,
 } from 'sparqljs';
 import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
-import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from '../storage/rdf/RdfSparqlAdapter';
+import {
+  DisabledSparqlFeatureError,
+  UnsupportedSparqlQueryError,
+  sparqlCorrectionForCapability,
+} from '../storage/rdf/RdfSparqlAdapter';
+import type { SparqlCorrection } from '../storage/rdf/RdfSparqlAdapter';
 import type { RdfAccessScope } from '../storage/rdf/RdfAccessScope';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
@@ -75,6 +80,7 @@ interface SparqlErrorResponse {
     message: string;
     capability?: string;
     hint?: string;
+    correction?: SparqlCorrection;
   };
 }
 
@@ -210,6 +216,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
             message: error.message,
             capability: 'sparql.federation.service',
             hint: 'Disable SERVICE federation for server-owned Pod queries, or execute it from a trusted client-side/federated query layer.',
+            correction: sparqlCorrectionForCapability('sparql.federation.service'),
           },
         });
         return;
@@ -222,6 +229,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
             message: error.message,
             capability: error.capability,
             hint: error.hint,
+            correction: error.correction,
           },
         });
         return;

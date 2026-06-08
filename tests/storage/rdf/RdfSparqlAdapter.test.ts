@@ -35,7 +35,14 @@ describe('RdfSparqlAdapter', () => {
       code: 'rdf.sparql.unsupported_query_shape',
       capability,
     });
-    expect((thrown as UnsupportedSparqlQueryError).hint).toMatch(hint);
+    const error = thrown as UnsupportedSparqlQueryError;
+    expect(error.hint).toMatch(hint);
+    expect(error.correction).toMatchObject({
+      capability,
+      primaryAction: expect.any(String),
+      target: expect.any(String),
+    });
+    expect(error.correction.availableActions.length).toBeGreaterThan(0);
   }
 
   it('compiles SELECT BGP, filters, ordering, and pagination into embedded query shape', () => {

@@ -173,12 +173,34 @@ export interface UnsupportedSparqlQueryErrorOptions {
   code?: string;
   capability?: string;
   hint?: string;
+  correction?: SparqlCorrection;
+}
+
+export type SparqlCorrectionAction =
+  | 'rewrite_query'
+  | 'constrain_graph_scope'
+  | 'materialize_intermediate'
+  | 'route_external_executor'
+  | 'use_write_api';
+
+export type SparqlCorrectionTarget =
+  | 'embedded_rdf_engine'
+  | 'trusted_client_or_federated_engine'
+  | 'pod_write_api';
+
+export interface SparqlCorrection {
+  capability: string;
+  primaryAction: SparqlCorrectionAction;
+  availableActions: SparqlCorrectionAction[];
+  target: SparqlCorrectionTarget;
+  message: string;
 }
 
 export class UnsupportedSparqlQueryError extends Error {
   public readonly code: string;
   public readonly capability: string;
   public readonly hint: string;
+  public readonly correction: SparqlCorrection;
 
   public constructor(message: string, options: UnsupportedSparqlQueryErrorOptions = {}) {
     super(message);
@@ -186,6 +208,7 @@ export class UnsupportedSparqlQueryError extends Error {
     this.code = options.code ?? 'rdf.sparql.unsupported_query_shape';
     this.capability = options.capability ?? inferUnsupportedSparqlCapability(message);
     this.hint = options.hint ?? unsupportedSparqlHint(this.capability);
+    this.correction = options.correction ?? sparqlCorrectionForCapability(this.capability);
   }
 }
 
@@ -311,6 +334,63 @@ function unsupportedSparqlHint(capability: string): string {
     default:
       return 'Rewrite the query to an embedded RDF engine supported shape, or route it through a trusted external SPARQL executor for this access scope.';
   }
+}
+
+export function sparqlCorrectionForCapability(capability: string): SparqlCorrection {
+  if (capability === 'sparql.federation.service') {
+    return {
+      capability,
+      primaryAction: 'route_external_executor',
+      availableActions: [ 'route_external_executor' ],
+      target: 'trusted_client_or_federated_engine',
+      message: 'Execute SERVICE federation from a trusted client-side or federated query layer instead of the server-owned Pod embedded engine.',
+    };
+  }
+
+  if (capability === 'sparql.update.embedded_delta') {
+    return {
+      capability,
+      primaryAction: 'use_write_api',
+      availableActions: [ 'use_write_api', 'rewrite_query' ],
+      target: 'pod_write_api',
+      message: 'Apply the write through a higher-level Pod write API, or rewrite the update so it targets explicit local graph documents.',
+    };
+  }
+
+  if (capability.startsWith('sparql.graph.')) {
+    return {
+      capability,
+      primaryAction: 'constrain_graph_scope',
+      availableActions: [ 'constrain_graph_scope', 'rewrite_query' ],
+      target: 'embedded_rdf_engine',
+      message: 'Constrain graph scope to explicit named graph documents inside the current Pod base path before retrying.',
+    };
+  }
+
+  if (
+    capability === 'sparql.query.subquery'
+    || capability === 'sparql.query.aggregate'
+    || capability === 'sparql.query.group'
+    || capability === 'sparql.query.having'
+    || capability === 'sparql.query.function'
+    || capability === 'sparql.query.rdf_star'
+  ) {
+    return {
+      capability,
+      primaryAction: 'materialize_intermediate',
+      availableActions: [ 'materialize_intermediate', 'rewrite_query', 'route_external_executor' ],
+      target: 'embedded_rdf_engine',
+      message: 'Materialize the unsupported intermediate result or rewrite the query into the embedded RDF subset before retrying.',
+    };
+  }
+
+  return {
+    capability,
+    primaryAction: 'rewrite_query',
+    availableActions: [ 'rewrite_query', 'route_external_executor' ],
+    target: 'embedded_rdf_engine',
+    message: 'Rewrite the query into the embedded RDF engine supported subset before retrying, or route it through a trusted external executor.',
+  };
 }
 
 export class RdfSparqlAdapter {
