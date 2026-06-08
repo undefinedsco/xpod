@@ -4481,12 +4481,30 @@ describe('PostgresRdfEngine', () => {
       const report = await runRdfModelsPostgresBenchmark(engine, {
         scale: 'small',
         iterations: 1,
+        concurrency: 2,
       });
 
       expect(report.engine).toBe('postgres-rdf');
       expect(report.warmupIterations).toBe(1);
+      expect(report.concurrency).toBe(2);
       expect(report.planMatched).toBe(true);
       expect(report.failedPlanCases).toEqual([]);
+      expect(report.concurrencyGate).toMatchObject({
+        enabled: true,
+        concurrency: 2,
+        matched: true,
+        failedCases: [],
+      });
+      expect(report.concurrencyGate.cases.map((testCase) => testCase.name)).toEqual([
+        'modeled thread message page query',
+        'scheduled task trigger keyset continuation query',
+        'settings owner category keyset query',
+        'provider model credential ordered join query',
+      ]);
+      expect(report.concurrencyGate.cases.every((testCase) => testCase.planMatched)).toBe(true);
+      expect(report.concurrencyGate.cases.every((testCase) => testCase.returnedRows.every((rows) => rows === testCase.expectedReturnedRows))).toBe(true);
+      expect(report.concurrencyGate.cases.every((testCase) => testCase.checksums.every((value) => value === testCase.expectedChecksum))).toBe(true);
+      expect(report.concurrencyGate.cases.every((testCase) => testCase.orderedChecksums.every((value) => value === testCase.expectedOrderedChecksum))).toBe(true);
       const smallQueryCaseCount = rdfModelsPostgresQueryBenchmarkCasesForProfile('default')
         .filter((testCase) => testCase.minScale === 'small')
         .length;

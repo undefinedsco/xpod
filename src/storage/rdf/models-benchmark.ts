@@ -98,6 +98,7 @@ export interface RdfModelBenchmarkRunOptions {
 export interface RdfModelPostgresBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {
   refreshDerivedIndexes?: boolean;
   warmupIterations?: number;
+  concurrency?: number;
 }
 
 export interface RdfModelBenchmarkResult {
@@ -169,13 +170,41 @@ export interface RdfModelPostgresBenchmarkReport {
   caseProfile: RdfBenchmarkCaseProfile;
   iterations: number;
   warmupIterations: number;
+  concurrency: number;
   generatedAt: string;
   planMatched: boolean;
   failedPlanCases: string[];
+  concurrencyGate: RdfModelPostgresConcurrencyGate;
   refresh?: RdfDerivedIndexRefreshResult;
   storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
   queryCases: RdfModelQueryBenchmarkResult[];
+}
+
+export interface RdfModelPostgresConcurrencyGate {
+  enabled: boolean;
+  concurrency: number;
+  cases: RdfModelPostgresConcurrencyGateCase[];
+  matched: boolean;
+  failedCases: string[];
+}
+
+export interface RdfModelPostgresConcurrencyGateCase {
+  name: string;
+  concurrency: number;
+  iterationsPerLane: number;
+  matched: boolean;
+  planMatched: boolean;
+  expectedReturnedRows: number;
+  returnedRows: number[];
+  expectedChecksum: string;
+  checksums: string[];
+  expectedOrderedChecksum: string;
+  orderedChecksums: string[];
+  missingPlan: string[];
+  durationsMs: number[];
+  p50DurationMs: number;
+  p95DurationMs: number;
 }
 
 export interface RdfModelsBenchmarkSeedOptions {
@@ -430,6 +459,12 @@ const ODRL = 'http://www.w3.org/ns/odrl/2/';
 const RDF_MODELS_SYNTHETIC_THREAD_COUNT = 64;
 const PERFORMANCE_P95_MIN_ABSOLUTE_HEADROOM_MS = 25;
 const PERFORMANCE_P95_MAX_RATIO = 8;
+const POSTGRES_CONCURRENCY_GATE_QUERY_CASE_NAMES = [
+  'modeled thread message page query',
+  'scheduled task trigger keyset continuation query',
+  'settings owner category keyset query',
+  'provider model credential ordered join query',
+] as const;
 
 export const rdfModelsBenchmarkCases: readonly RdfModelBenchmarkCase[] = [
   {
@@ -4295,6 +4330,7 @@ export async function runRdfModelsPostgresBenchmark(
   const scale = options.scale ?? 'small';
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
   const warmupIterations = Math.max(0, Math.floor(options.warmupIterations ?? 1));
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
   const caseProfile = options.caseProfile ?? 'default';
   const refresh = options.refreshDerivedIndexes === false
     ? undefined
@@ -4312,9 +4348,17 @@ export async function runRdfModelsPostgresBenchmark(
   for (const testCase of queryCases) {
     queryResults.push(await runAsyncQueryBenchmarkCase(engine, testCase, iterations, storageBefore.facts, warmupIterations));
   }
+  const concurrencyGate = await runPostgresConcurrencyGate(
+    engine,
+    queryCases,
+    queryResults,
+    concurrency,
+    storageBefore.facts,
+  );
   const failedPlanCases = [
     ...results.filter((result) => !result.planMatched).map((result) => result.name),
     ...queryResults.filter((result) => !result.planMatched).map((result) => result.name),
+    ...concurrencyGate.failedCases.map((caseName) => `concurrency:${caseName}`),
   ];
 
   return {
@@ -4323,14 +4367,119 @@ export async function runRdfModelsPostgresBenchmark(
     caseProfile,
     iterations,
     warmupIterations,
+    concurrency,
     generatedAt: new Date().toISOString(),
     planMatched: failedPlanCases.length === 0,
     failedPlanCases,
+    concurrencyGate,
     ...(refresh ? { refresh } : {}),
     storage: await engine.storageStats(),
     cases: results,
     queryCases: queryResults,
   };
+}
+
+async function runPostgresConcurrencyGate(
+  engine: RdfEngineLike,
+  queryCases: readonly RdfModelQueryBenchmarkCase[],
+  baselineResults: readonly RdfModelQueryBenchmarkResult[],
+  concurrency: number,
+  indexStats: RdfIndexStats,
+): Promise<RdfModelPostgresConcurrencyGate> {
+  if (concurrency <= 1) {
+    return {
+      enabled: false,
+      concurrency,
+      cases: [],
+      matched: true,
+      failedCases: [],
+    };
+  }
+
+  const baselineByName = new Map(baselineResults.map((result) => [result.name, result]));
+  const selectedCases = selectPostgresConcurrencyGateCases(queryCases, baselineByName);
+  const cases: RdfModelPostgresConcurrencyGateCase[] = [];
+
+  for (const testCase of selectedCases) {
+    const baseline = baselineByName.get(testCase.name);
+    if (!baseline) {
+      cases.push({
+        name: testCase.name,
+        concurrency,
+        iterationsPerLane: 1,
+        matched: false,
+        planMatched: false,
+        expectedReturnedRows: 0,
+        returnedRows: [],
+        expectedChecksum: '',
+        checksums: [],
+        expectedOrderedChecksum: '',
+        orderedChecksums: [],
+        missingPlan: ['missing serial benchmark baseline'],
+        durationsMs: [],
+        p50DurationMs: 0,
+        p95DurationMs: 0,
+      });
+      continue;
+    }
+
+    const laneResults = await Promise.all(Array.from({ length: concurrency }, () => (
+      runAsyncQueryBenchmarkCase(engine, testCase, 1, indexStats, 0)
+    )));
+    const returnedRows = laneResults.map((result) => result.returnedRows);
+    const checksums = laneResults.map((result) => result.checksum);
+    const orderedChecksums = laneResults.map((result) => result.orderedChecksum);
+    const durationsMs = laneResults.flatMap((result) => result.durationsMs);
+    const missingPlan = [...new Set(laneResults.flatMap((result) => result.missingPlan))];
+    const planMatched = laneResults.every((result) => result.planMatched);
+    const matched = planMatched
+      && returnedRows.every((rowCount) => rowCount === baseline.returnedRows)
+      && checksums.every((value) => value === baseline.checksum)
+      && orderedChecksums.every((value) => value === baseline.orderedChecksum);
+
+    cases.push({
+      name: testCase.name,
+      concurrency,
+      iterationsPerLane: 1,
+      matched,
+      planMatched,
+      expectedReturnedRows: baseline.returnedRows,
+      returnedRows,
+      expectedChecksum: baseline.checksum,
+      checksums,
+      expectedOrderedChecksum: baseline.orderedChecksum,
+      orderedChecksums,
+      missingPlan,
+      durationsMs,
+      p50DurationMs: percentile(durationsMs, 0.5),
+      p95DurationMs: percentile(durationsMs, 0.95),
+    });
+  }
+
+  const failedCases = cases.filter((result) => !result.matched).map((result) => result.name);
+  return {
+    enabled: true,
+    concurrency,
+    cases,
+    matched: failedCases.length === 0,
+    failedCases,
+  };
+}
+
+function selectPostgresConcurrencyGateCases(
+  queryCases: readonly RdfModelQueryBenchmarkCase[],
+  baselineByName: ReadonlyMap<string, RdfModelQueryBenchmarkResult>,
+): RdfModelQueryBenchmarkCase[] {
+  const preferred = POSTGRES_CONCURRENCY_GATE_QUERY_CASE_NAMES
+    .map((name) => queryCases.find((testCase) => testCase.name === name))
+    .filter((testCase): testCase is RdfModelQueryBenchmarkCase => Boolean(testCase))
+    .filter((testCase) => baselineByName.has(testCase.name));
+  if (preferred.length > 0) {
+    return preferred;
+  }
+  return queryCases
+    .filter((testCase) => baselineByName.has(testCase.name))
+    .slice(0, Math.min(4, queryCases.length));
 }
 
 export async function runRdfModelsShadowBenchmark(

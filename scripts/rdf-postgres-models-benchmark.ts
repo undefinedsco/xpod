@@ -28,6 +28,7 @@ interface CliOptions {
   scale: RdfBenchmarkScale;
   iterations: number;
   warmupIterations: number;
+  concurrency: number;
   syntheticMessages: number;
   syntheticMessagesOverridden: boolean;
   syntheticPodCount: number;
@@ -64,6 +65,7 @@ async function main(): Promise<void> {
       scale: options.scale,
       iterations: options.iterations,
       warmupIterations: options.warmupIterations,
+      concurrency: options.concurrency,
       caseProfile: options.caseProfile,
     });
 
@@ -77,6 +79,7 @@ async function main(): Promise<void> {
     const accelerationMatched = rdfAccelerationProfileMatched(options.rdfAccelerationProfile, report.storage);
     const nativeExtensionPlanHits = countNativeExtensionPlanHits(report);
     const nativeExtensionPlanMatched = nativeExtensionPlanRequired(options) ? nativeExtensionPlanHits > 0 : true;
+    const concurrencyMatched = report.concurrencyGate.matched;
     printSummary({
       options,
       paths,
@@ -89,12 +92,14 @@ async function main(): Promise<void> {
       queryCases: report.queryCases.length,
       planMatched: report.planMatched,
       failedPlanCases: report.failedPlanCases,
+      concurrencyMatched,
+      failedConcurrencyCases: report.concurrencyGate.failedCases,
       nativeExtensionPlanHits,
       nativeExtensionPlanMatched,
       storage: report.storage,
     });
 
-    if (!fullScale || !synced || !report.planMatched || !accelerationMatched || !nativeExtensionPlanMatched) {
+    if (!fullScale || !synced || !report.planMatched || !accelerationMatched || !nativeExtensionPlanMatched || !concurrencyMatched) {
       process.exitCode = 1;
     }
   } finally {
@@ -110,6 +115,7 @@ function parseArgs(args: string[]): CliOptions {
   let scale: RdfBenchmarkScale = 'medium';
   let iterations = 3;
   let warmupIterations = 1;
+  let concurrency = 1;
   let syntheticMessages: number | undefined;
   let caseProfile: RdfBenchmarkCaseProfile = 'default';
   let rdfAccelerationProfile: RdfPgAccelerationProfile = 'baseline';
@@ -150,6 +156,10 @@ function parseArgs(args: string[]): CliOptions {
     }
     if (arg.startsWith('--warmupIterations=')) {
       warmupIterations = nonNegativeInteger(arg.slice('--warmupIterations='.length), '--warmupIterations');
+      continue;
+    }
+    if (arg.startsWith('--concurrency=')) {
+      concurrency = positiveInteger(arg.slice('--concurrency='.length), '--concurrency');
       continue;
     }
     if (arg.startsWith('--syntheticMessages=')) {
@@ -199,6 +209,7 @@ function parseArgs(args: string[]): CliOptions {
     scale,
     iterations,
     warmupIterations,
+    concurrency,
     syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
@@ -336,6 +347,7 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     scale: options.scale,
     iterations: options.iterations,
     warmupIterations: options.warmupIterations,
+    concurrency: options.concurrency,
     syntheticMessages: options.syntheticMessages,
     syntheticMessagesOverridden: options.syntheticMessagesOverridden,
     syntheticPodCount: options.syntheticPodCount,
@@ -368,6 +380,8 @@ function printSummary(summary: {
   queryCases: number;
   planMatched: boolean;
   failedPlanCases: string[];
+  concurrencyMatched: boolean;
+  failedConcurrencyCases: string[];
   nativeExtensionPlanHits: number;
   nativeExtensionPlanMatched: boolean;
   storage: RdfEngineStorageStats;
@@ -377,6 +391,7 @@ function printSummary(summary: {
   console.log(`  scale: ${summary.options.scale}`);
   console.log(`  iterations: ${summary.options.iterations}`);
   console.log(`  warmup iterations: ${summary.options.warmupIterations}`);
+  console.log(`  concurrency: ${summary.options.concurrency}`);
   console.log(`  case profile: ${summary.options.caseProfile}`);
   console.log(`  requested pg acceleration profile: ${summary.options.rdfAccelerationProfile}`);
   console.log(`  defer pg custom index build: ${summary.options.deferPgCustomIndexBuild}`);
@@ -386,6 +401,7 @@ function printSummary(summary: {
   console.log(`  scan cases: ${summary.scanCases}`);
   console.log(`  query cases: ${summary.queryCases}`);
   console.log(`  plan matched: ${summary.planMatched}`);
+  console.log(`  concurrency gate matched: ${summary.concurrencyMatched}`);
   console.log(`  rdf3x synced with facts: ${summary.synced}`);
   console.log(`  pg acceleration profile: ${summary.storage.pgAcceleration?.profile ?? 'unknown'}`);
   console.log(`  pg acceleration enabled: ${summary.storage.pgAcceleration?.enabled ?? false}`);
@@ -406,6 +422,9 @@ function printSummary(summary: {
   }
   if (summary.failedPlanCases.length > 0) {
     console.error(`  failed plan cases: ${summary.failedPlanCases.join(', ')}`);
+  }
+  if (summary.failedConcurrencyCases.length > 0) {
+    console.error(`  failed concurrency cases: ${summary.failedConcurrencyCases.join(', ')}`);
   }
   if (!summary.accelerationMatched) {
     console.error('  requested pg acceleration profile was not enabled');
@@ -429,6 +448,7 @@ Options:
   --scale=small|medium|large       Select benchmark case scale. Default: medium
   --iterations=N                   Iterations per case. Default: 3
   --warmupIterations=N             Warmup runs per case before timing. Default: 1
+  --concurrency=N                  Concurrent query lanes for consistency gate. Default: 1
   --syntheticMessages=N            Override generated message count for storage-size tests
   --caseProfile=VALUE              default|extreme|fusion|all. Default: default
                                    fusion seeds in-process text/vector indexes for PG facts join
