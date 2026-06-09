@@ -13,6 +13,25 @@
 - `pg-custom-index` 不改变 cloud 默认；它要求部署侧 PostgreSQL 安装 `xpod_rdf` native extension 并声明 `index.xpod_rdf_perm`。缺 extension 或缺能力时，`storageStats().pgAcceleration` 必须报告 `fallbackReason=capability-missing` 和 `missingCapabilities`，查询语义回退 RDF-3X / PG SQL baseline。
 - 开源 cloud 不依赖额外数据库扩展；缺少部署侧定制能力时，Pod 读写和查询语义不受影响。
 
+## Product-grade P0/P1 Backlog
+
+P0 是 cloud 默认可上线路径必须满足的能力；P1 是性能、运维体验或 enterprise/custom-index
+增强，不阻塞开源默认路径。
+
+| Priority | Item | Status | Evidence / Exit criteria |
+| --- | --- | --- | --- |
+| P0 | Cloud default 不依赖 PostgreSQL native extension | Done | 默认 profile 为 `pg-hot-operators`；缺 `xpod_rdf` 时 `pg-custom-index` 只能 fallback，不影响 Pod 读写和查询语义。 |
+| P0 | 36k oversized PGlite correctness/capacity gate | Done | `--targetQuads=36000 --caseProfile=extreme` baseline 与 `pg-hot-operators` 均通过，seed `45656` quads、plan matched、planner stats refreshed。 |
+| P0 | 真实 PG medium/extreme baseline / hot / custom consistency gate | Done | 2026-06-09 PG17 rerun 覆盖 `--concurrency=4`，三种 profile 均 plan matched 且 planner stats refreshed；custom 只作为可观测/局部收益证据。 |
+| P0 | Numeric aggregate 不无条件切到 RDF-3X/native | Done | SQLite/file-backed 默认保留 `RdfQuadIndex` SQL aggregate path；PG high-fanout grouped numeric 保持 RDF-3X/native shape gate，不把低基数 facts cutover 泛化。 |
+| P0 | 真实 PG COPY stream bulk ingest | Open | large / high-write gate 前需要 real `pg` driver 的 COPY path；PGlite 继续保留 staging/UNNEST fallback。 |
+| P0 | `large=1_000_000` / 更高并发真实 PG release gate | Open | 需要在 COPY 或等价 ingest path 后重跑；必须记录 warm steady-state p95、cold first query、planner stats refresh 和 storage ratio。 |
+| P0 | Profile / models / ACL/ACR smoke gate | Open | 发布前必须覆盖 profile 401、models 读取、WebACL/ACP 查询和不同 access scope 的 result/materialized cache 隔离。 |
+| P1 | Extension-level ordered top-N early-stop | Open | 当前 ordered-page wrapper 语义正确但不是 native top-N early-stop；需要 `xpod_rdf` ABI 和 real PG benefit gate。 |
+| P1 | Graph-prefix grouped count / count distinct native cost gate | Open | 当前部分 graph-prefix native/custom case 仍慢于 RDF-3X / btree baseline，不能默认 cutover。 |
+| P1 | PG text/vector persistent backend | Open | fusion smoke 语义已通，PG 第一版仍是 facts fallback + in-process text/vector seed，不是持久化搜索后端。 |
+| P1 | Benchmark report ingest 到 dashboard | Open | dashboard 只展示 live `storageStats()`；warm steady-state p50/p95 仍是 benchmark report artifact。 |
+
 ## Benchmark Evidence
 
 ### SQLite / File-backed RDF-3X
