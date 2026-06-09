@@ -1092,6 +1092,10 @@ large:  多 Pod scope、1M+ quads，用于索引空间和 planner 选择
 `--syntheticMessages=N` 可以降规模做 smoke run，但报告里的 `seed.fullScale`
 必须为 `false`，CLI 也会非零退出，避免把低规模 override 当成完整 large
 benchmark。
+需要 36k、100k 等中间规模 gate 时，使用
+`--targetQuads=N` 覆盖 seed/full-scale 目标；它会同步调整默认 synthetic
+message 数，避免为了中间档把 `large` 的 1M+ 语义改弱。`scale` 仍决定 case
+集合和默认规模，`targetQuads` 只改变本次 benchmark 的规模门槛。
 
 每个 benchmark case 必须记录：
 
@@ -1108,6 +1112,7 @@ benchmark。
 bun run benchmark:rdf-models
 bun run benchmark:rdf-models -- --scale=small --iterations=1
 bun run benchmark:rdf-models -- --scale=small --iterations=1 --caseProfile=fusion
+bun run benchmark:rdf-models -- --scale=medium --targetQuads=36000 --iterations=1
 bun run benchmark:rdf-models:pg -- --scale=small --iterations=1
 bun run benchmark:rdf-models:pg -- --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme
 bun run test:w3c

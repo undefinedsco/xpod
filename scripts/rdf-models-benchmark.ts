@@ -14,10 +14,11 @@ import {
   runRdfModelsBenchmark,
   runRdfModelsRdf3xShadowBenchmark,
   runRdfModelsShadowBenchmark,
-  rdfModelsBenchmarkScaleSatisfied,
+  rdfModelsBenchmarkTargetSatisfied,
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
   rdfModelsBenchmarkProfileRequiresSearchFusion,
+  syntheticMessagesForRdfModelsTargetQuads,
   type RdfBenchmarkCaseProfile,
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
@@ -27,6 +28,8 @@ import {
 interface CliOptions {
   outDir: string;
   scale: RdfBenchmarkScale;
+  targetQuads: number;
+  targetQuadsOverridden: boolean;
   iterations: number;
   syntheticMessages: number;
   syntheticMessagesOverridden: boolean;
@@ -115,8 +118,8 @@ async function main(): Promise<void> {
       options,
       paths,
       seedQuadCount: seedQuads.length,
-      targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
-      fullScale: rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length),
+      targetQuadCount: options.targetQuads,
+      fullScale: rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuads.length),
       syntheticPodCount: options.syntheticPodCount,
       backfilledRows: backfill.indexedRows,
       baselineCases: baseline.cases.length,
@@ -161,7 +164,7 @@ async function main(): Promise<void> {
       || !rdf3xShadow.planMatched
       || !shadow.performanceMatched
       || !shadow.spaceMatched
-      || !rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length)
+      || !rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuads.length)
     ) {
       process.exitCode = 1;
     }
@@ -173,6 +176,7 @@ async function main(): Promise<void> {
 function parseArgs(args: string[]): CliOptions {
   let outDir = path.join(process.cwd(), '.test-data', 'rdf-engine');
   let scale: RdfBenchmarkScale = 'medium';
+  let targetQuads: number | undefined;
   let iterations = 3;
   let syntheticMessages: number | undefined;
   let caseProfile: RdfBenchmarkCaseProfile = 'default';
@@ -188,6 +192,10 @@ function parseArgs(args: string[]): CliOptions {
         throw new Error(`Unsupported --scale value: ${value}`);
       }
       scale = value;
+      continue;
+    }
+    if (arg.startsWith('--targetQuads=')) {
+      targetQuads = positiveInteger(arg.slice('--targetQuads='.length), '--targetQuads');
       continue;
     }
     if (arg.startsWith('--iterations=')) {
@@ -213,11 +221,18 @@ function parseArgs(args: string[]): CliOptions {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
+  const resolvedTargetQuads = targetQuads ?? rdfModelsBenchmarkScaleTargetQuads(scale);
   return {
     outDir,
     scale,
+    targetQuads: resolvedTargetQuads,
+    targetQuadsOverridden: targetQuads !== undefined,
     iterations,
-    syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
+    syntheticMessages: syntheticMessages ?? (
+      targetQuads !== undefined
+        ? syntheticMessagesForRdfModelsTargetQuads(resolvedTargetQuads)
+        : defaultSyntheticMessagesForRdfModelsScale(scale)
+    ),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
     caseProfile,
@@ -259,13 +274,15 @@ function seedSummary(
     pod: RDF_MODELS_BENCHMARK_POD,
     scale: options.scale,
     iterations: options.iterations,
+    targetQuads: options.targetQuads,
+    targetQuadsOverridden: options.targetQuadsOverridden,
     syntheticMessages: options.syntheticMessages,
     syntheticMessagesOverridden: options.syntheticMessagesOverridden,
     syntheticPodCount: options.syntheticPodCount,
     caseProfile: options.caseProfile,
     seedQuadCount,
-    targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
-    fullScale: rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuadCount),
+    targetQuadCount: options.targetQuads,
+    fullScale: rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuadCount),
     backfill,
   };
 }
@@ -314,6 +331,7 @@ function printSummary(summary: {
 }): void {
   console.log('RDF models benchmark complete');
   console.log(`  scale: ${summary.options.scale}`);
+  console.log(`  target quads overridden: ${summary.options.targetQuadsOverridden}`);
   console.log(`  iterations: ${summary.options.iterations}`);
   console.log(`  case profile: ${summary.options.caseProfile}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
@@ -321,7 +339,7 @@ function printSummary(summary: {
   console.log(`  full scale seed: ${summary.fullScale}`);
   console.log(`  synthetic pods: ${summary.syntheticPodCount}`);
   if (summary.options.syntheticMessagesOverridden && !summary.fullScale) {
-    console.error('  syntheticMessages override is below the selected scale target');
+    console.error('  syntheticMessages override is below the selected target quads');
   }
   console.log(`  backfilled rows: ${summary.backfilledRows}`);
   console.log(`  baseline cases: ${summary.baselineCases}`);
@@ -379,6 +397,7 @@ function printHelp(): void {
 
 Options:
   --scale=small|medium|large       Select benchmark case scale. Default: medium
+  --targetQuads=N                  Override seed/full-scale gate target and default synthetic message count
   --iterations=N                   Iterations per case. Default: 3
   --syntheticMessages=N            Override generated message count for storage-size tests
   --caseProfile=VALUE              default|extreme|fusion|all. Default: default

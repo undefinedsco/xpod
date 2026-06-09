@@ -22,12 +22,14 @@ import {
   rdfModelsPostgresQueryBenchmarkCasesForProfile,
   rdfModelsSearchFusionQueryBenchmarkCaseNames,
   rdfModelsBenchmarkScaleSatisfied,
+  rdfModelsBenchmarkTargetSatisfied,
   rdfModelsBenchmarkScaleTargetQuads,
   rdfModelsBenchmarkSyntheticPodCount,
   runRdfModelsBenchmark,
   runRdfModelsRdf3xShadowBenchmark,
   runRdfModelsShadowBenchmark,
   seedRdfModelsSearchFusionIndexes,
+  syntheticMessagesForRdfModelsTargetQuads,
 } from '../../../src/storage/rdf';
 
 const { namedNode, literal, quad } = DataFactory;
@@ -2256,10 +2258,15 @@ describe('SolidRdfEngine', () => {
     expect(mediumSyntheticQuads).toBeLessThan(10_000 + RDF_MODELS_SYNTHETIC_MESSAGE_QUADS);
     expect(largeSyntheticQuads).toBeGreaterThanOrEqual(1_000_000);
     expect(largeSyntheticQuads).toBeLessThan(1_000_000 + RDF_MODELS_SYNTHETIC_MESSAGE_QUADS);
+    const targetSyntheticQuads = estimateRdfModelsSyntheticQuadCount(syntheticMessagesForRdfModelsTargetQuads(36_000));
+    expect(targetSyntheticQuads).toBeGreaterThanOrEqual(36_000);
+    expect(targetSyntheticQuads).toBeLessThan(36_000 + RDF_MODELS_SYNTHETIC_MESSAGE_QUADS);
     expect(rdfModelsBenchmarkSyntheticPodCount('medium')).toBe(1);
     expect(rdfModelsBenchmarkSyntheticPodCount('large')).toBeGreaterThan(1);
     expect(rdfModelsBenchmarkScaleSatisfied('large', 100_000)).toBe(false);
     expect(rdfModelsBenchmarkScaleSatisfied('large', 1_000_000)).toBe(true);
+    expect(rdfModelsBenchmarkTargetSatisfied(36_000, 35_999)).toBe(false);
+    expect(rdfModelsBenchmarkTargetSatisfied(36_000, 36_000)).toBe(true);
   });
 
   it('covers profile, access-control, and control-plane model cases in the benchmark seed', () => {

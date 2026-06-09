@@ -3898,15 +3898,23 @@ export function estimateRdfModelsSyntheticQuadCount(syntheticMessages: number): 
   return Math.max(0, Math.floor(syntheticMessages)) * RDF_MODELS_SYNTHETIC_MESSAGE_QUADS;
 }
 
+export function syntheticMessagesForRdfModelsTargetQuads(targetQuads: number): number {
+  return Math.ceil(Math.max(0, Math.floor(targetQuads)) / RDF_MODELS_SYNTHETIC_MESSAGE_QUADS);
+}
+
 export function defaultSyntheticMessagesForRdfModelsScale(scale: RdfBenchmarkScale): number {
   if (scale === 'small') {
     return 12;
   }
-  return Math.ceil(rdfModelsBenchmarkScaleTargetQuads(scale) / RDF_MODELS_SYNTHETIC_MESSAGE_QUADS);
+  return syntheticMessagesForRdfModelsTargetQuads(rdfModelsBenchmarkScaleTargetQuads(scale));
 }
 
 export function rdfModelsBenchmarkScaleSatisfied(scale: RdfBenchmarkScale, seedQuadCount: number): boolean {
   return seedQuadCount >= rdfModelsBenchmarkScaleTargetQuads(scale);
+}
+
+export function rdfModelsBenchmarkTargetSatisfied(targetQuads: number, seedQuadCount: number): boolean {
+  return seedQuadCount >= Math.max(0, Math.floor(targetQuads));
 }
 
 export function buildRdfModelsBenchmarkSeed(options: RdfModelsBenchmarkSeedOptions): Quad[] {

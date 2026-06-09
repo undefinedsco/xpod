@@ -8,12 +8,13 @@ import {
   PostgresRdfEngine,
   buildRdfModelsBenchmarkSeed,
   defaultSyntheticMessagesForRdfModelsScale,
-  rdfModelsBenchmarkScaleSatisfied,
+  rdfModelsBenchmarkTargetSatisfied,
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
   rdfModelsBenchmarkProfileRequiresSearchFusion,
   runRdfModelsPostgresBenchmark,
   seedRdfModelsSearchFusionIndexes,
+  syntheticMessagesForRdfModelsTargetQuads,
   type RdfBenchmarkCaseProfile,
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
@@ -26,6 +27,8 @@ interface CliOptions {
   connectionString?: string;
   allowPgWrites: boolean;
   scale: RdfBenchmarkScale;
+  targetQuads: number;
+  targetQuadsOverridden: boolean;
   iterations: number;
   warmupIterations: number;
   concurrency: number;
@@ -78,7 +81,7 @@ async function main(): Promise<void> {
       report,
     });
 
-    const fullScale = rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length);
+    const fullScale = rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuads.length);
     const synced = report.storage.rdf3x?.syncedWithFacts === true;
     const plannerStatsTables = postgresPlannerStatsTables(report);
     const plannerStatsMatched = plannerStatsTables.length > 0;
@@ -92,7 +95,7 @@ async function main(): Promise<void> {
       options,
       paths,
       seedQuadCount: seedQuads.length,
-      targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
+      targetQuadCount: options.targetQuads,
       fullScale,
       synced,
       plannerStatsMatched,
@@ -127,6 +130,7 @@ function parseArgs(args: string[]): CliOptions {
   let connectionString: string | undefined;
   let allowPgWrites = false;
   let scale: RdfBenchmarkScale = 'medium';
+  let targetQuads: number | undefined;
   let iterations = 3;
   let warmupIterations = 1;
   let concurrency = 1;
@@ -164,6 +168,10 @@ function parseArgs(args: string[]): CliOptions {
         throw new Error(`Unsupported --scale value: ${value}`);
       }
       scale = value;
+      continue;
+    }
+    if (arg.startsWith('--targetQuads=')) {
+      targetQuads = positiveInteger(arg.slice('--targetQuads='.length), '--targetQuads');
       continue;
     }
     if (arg.startsWith('--iterations=')) {
@@ -225,18 +233,25 @@ function parseArgs(args: string[]): CliOptions {
     throw new Error('--driver=pg requires --connectionString=...');
   }
 
+  const resolvedTargetQuads = targetQuads ?? rdfModelsBenchmarkScaleTargetQuads(scale);
   return {
     outDir,
     driver,
     connectionString,
     allowPgWrites,
     scale,
+    targetQuads: resolvedTargetQuads,
+    targetQuadsOverridden: targetQuads !== undefined,
     iterations,
     warmupIterations,
     concurrency,
     refreshMutationSources,
     refreshMutationQuadsPerSource,
-    syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
+    syntheticMessages: syntheticMessages ?? (
+      targetQuads !== undefined
+        ? syntheticMessagesForRdfModelsTargetQuads(resolvedTargetQuads)
+        : defaultSyntheticMessagesForRdfModelsScale(scale)
+    ),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
     caseProfile,
@@ -379,6 +394,8 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     pod: RDF_MODELS_BENCHMARK_POD,
     driver: options.driver,
     scale: options.scale,
+    targetQuads: options.targetQuads,
+    targetQuadsOverridden: options.targetQuadsOverridden,
     iterations: options.iterations,
     warmupIterations: options.warmupIterations,
     concurrency: options.concurrency,
@@ -391,8 +408,8 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     rdfAccelerationProfile: options.rdfAccelerationProfile,
     deferPgCustomIndexBuild: options.deferPgCustomIndexBuild,
     seedQuadCount,
-    targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
-    fullScale: rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuadCount),
+    targetQuadCount: options.targetQuads,
+    fullScale: rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuadCount),
   };
 }
 
@@ -431,6 +448,7 @@ function printSummary(summary: {
   console.log('PostgreSQL RDF models benchmark complete');
   console.log(`  driver: ${summary.options.driver}`);
   console.log(`  scale: ${summary.options.scale}`);
+  console.log(`  target quads overridden: ${summary.options.targetQuadsOverridden}`);
   console.log(`  iterations: ${summary.options.iterations}`);
   console.log(`  warmup iterations: ${summary.options.warmupIterations}`);
   console.log(`  concurrency: ${summary.options.concurrency}`);
@@ -484,7 +502,7 @@ function printSummary(summary: {
   }
   console.log(`  postgres report: ${summary.paths.postgresReport}`);
   if (summary.options.syntheticMessagesOverridden && !summary.fullScale) {
-    console.error('  syntheticMessages override is below the selected scale target');
+    console.error('  syntheticMessages override is below the selected target quads');
   }
   if (summary.failedPlanCases.length > 0) {
     console.error(`  failed plan cases: ${summary.failedPlanCases.join(', ')}`);
@@ -518,6 +536,7 @@ Options:
   --connectionString=URL            PostgreSQL URL for --driver=pg
   --allowPgWrites                   Required for --driver=pg; only use with a disposable empty database
   --scale=small|medium|large       Select benchmark case scale. Default: medium
+  --targetQuads=N                  Override seed/full-scale gate target and default synthetic message count
   --iterations=N                   Iterations per case. Default: 3
   --warmupIterations=N             Warmup runs per case before timing. Default: 1
   --concurrency=N                  Concurrent query lanes for consistency gate. Default: 1
