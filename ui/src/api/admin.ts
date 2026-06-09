@@ -58,13 +58,63 @@ export type RdfStatsSnapshot =
       engine: 'postgres-rdf';
       generatedAt: string;
       stats: RdfStorageStats;
+      benchmarkReports?: RdfBenchmarkReportCatalogSnapshot;
     }
   | {
       available: false;
       engine: 'postgres-rdf' | 'unsupported';
       generatedAt: string;
       reason: 'not-cloud' | 'missing-sparql-endpoint' | 'unsupported-sparql-endpoint';
+      benchmarkReports?: RdfBenchmarkReportCatalogSnapshot;
     };
+
+export interface RdfBenchmarkReportCatalogSnapshot {
+  roots: string[];
+  reportCount: number;
+  skippedFiles: number;
+  errors: Array<{
+    path: string;
+    message: string;
+  }>;
+  reports: RdfBenchmarkReportSummary[];
+}
+
+export interface RdfBenchmarkReportSummary {
+  id: string;
+  path: string;
+  generatedAt: string;
+  engine: string;
+  driver?: string;
+  scale?: string;
+  caseProfile?: string;
+  rdfAccelerationProfile?: string;
+  seedQuadCount?: number;
+  targetQuadCount?: number;
+  fullScale?: boolean;
+  iterations?: number;
+  warmupIterations?: number;
+  concurrency?: number;
+  planMatched?: boolean;
+  failedPlanCases: string[];
+  concurrencyMatched?: boolean;
+  failedConcurrencyCases: string[];
+  ingestDurationMs?: number;
+  copyRows?: number;
+  copyFallbacks?: number;
+  refreshDurationMs?: number;
+  plannerStatsDurationMs?: number;
+  coldStartDurationMs?: number;
+  firstQueryDurationMs?: number;
+  warmP50DurationMs?: number;
+  warmP95DurationMs?: number;
+  storageFactsBytes?: number;
+  storageDerivedBytes?: number;
+  storageTotalBytes?: number;
+  storageTotalToFactsRatio?: number;
+  pgAccelerationEnabled?: boolean;
+  pgAccelerationFallbackReason?: string;
+  pgActiveOperators: string[];
+}
 
 export interface RdfStorageStats {
   factsBytes: number;

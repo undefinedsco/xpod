@@ -4,13 +4,15 @@
 
 import type { ComponentType, FormEvent } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Database, Gauge, RefreshCw, Search, X } from 'lucide-react';
+import { Activity, AlertTriangle, BarChart3, Database, Gauge, RefreshCw, Search, X } from 'lucide-react';
 import { clsx } from 'clsx';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import {
   getRdfStats,
+  type RdfBenchmarkReportCatalogSnapshot,
+  type RdfBenchmarkReportSummary,
   type RdfDerivedCacheEvictionStats,
   type RdfDerivedCacheScopeEntry,
   type RdfSlowQueryEntry,
@@ -139,7 +141,12 @@ export function RdfPage() {
       )}
 
       {!snapshot?.available ? (
-        <UnavailablePanel snapshot={snapshot} />
+        <>
+          <UnavailablePanel snapshot={snapshot} />
+          <div className="mt-8">
+            <BenchmarkReportsTable snapshot={snapshot?.benchmarkReports} />
+          </div>
+        </>
       ) : (
         <AvailableStats snapshot={snapshot} scopeQuery={appliedCacheScopeQuery} />
       )}
@@ -303,6 +310,10 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
 
       <div className="mb-8">
         <CacheScopeTable entries={cacheScopeEntries} totalCount={derivedCache?.scopeVersionCount ?? 0} query={scopeQuery} />
+      </div>
+
+      <div className="mb-8">
+        <BenchmarkReportsTable snapshot={snapshot.benchmarkReports} />
       </div>
 
       <SlowQueryTable entries={slowQueries} />
@@ -531,6 +542,134 @@ function EvictionBreakdown(props: { evictions?: RdfDerivedCacheEvictionStats }) 
         </div>
       ))}
     </div>
+  );
+}
+
+function BenchmarkReportsTable(props: { snapshot?: RdfBenchmarkReportCatalogSnapshot }) {
+  const reports = props.snapshot?.reports ?? [];
+  const errors = props.snapshot?.errors ?? [];
+  return (
+    <Card variant="bordered">
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
+        <div>
+          <CardTitle>Benchmark 报告</CardTitle>
+          <div className="mt-1 max-w-[720px] truncate text-sm text-muted-foreground">
+            {(props.snapshot?.roots ?? []).join(', ') || '未配置目录'}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <BarChart3 className="h-4 w-4" />
+          {formatInteger(props.snapshot?.reportCount ?? reports.length)}
+        </div>
+      </CardHeader>
+      <CardContent className="p-0">
+        {errors.length > 0 && (
+          <div className="border-b border-border px-5 py-3 text-sm text-yellow-700">
+            {formatInteger(errors.length)} 个报告读取失败，最近一个：{errors[0].path} - {errors[0].message}
+          </div>
+        )}
+        {reports.length === 0 ? (
+          <div className="px-5 pb-5 pt-4 text-sm text-muted-foreground">暂无 benchmark report</div>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
+              <thead className="border-b border-border text-muted-foreground">
+                <tr>
+                  <th className="px-5 py-3 font-medium">时间</th>
+                  <th className="px-5 py-3 font-medium">Profile</th>
+                  <th className="px-5 py-3 font-medium">规模</th>
+                  <th className="px-5 py-3 font-medium">Gate</th>
+                  <th className="px-5 py-3 font-medium">Ingest</th>
+                  <th className="px-5 py-3 font-medium">Refresh</th>
+                  <th className="px-5 py-3 font-medium">Cold / Warm</th>
+                  <th className="px-5 py-3 font-medium">Storage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reports.map((report) => (
+                  <BenchmarkReportRow key={`${report.path}-${report.generatedAt}`} report={report} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function BenchmarkReportRow(props: { report: RdfBenchmarkReportSummary }) {
+  const report = props.report;
+  const failedPlanCount = report.failedPlanCases.length;
+  const failedConcurrencyCount = report.failedConcurrencyCases.length;
+  return (
+    <tr className="border-b border-border/60 last:border-0">
+      <td className="whitespace-nowrap px-5 py-3">
+        <div className="font-mono text-xs">{formatDateTime(report.generatedAt)}</div>
+        <div className="mt-1 max-w-[220px] truncate font-mono text-xs text-muted-foreground">{report.path}</div>
+      </td>
+      <td className="px-5 py-3">
+        <div className="font-medium">{report.rdfAccelerationProfile ?? report.engine}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {report.driver ?? report.engine} / {report.caseProfile ?? '-'}
+        </div>
+        <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground">
+          {report.pgAccelerationFallbackReason ?? formatListSummary(report.pgActiveOperators)}
+        </div>
+      </td>
+      <td className="whitespace-nowrap px-5 py-3 font-mono">
+        <div>{formatInteger(report.seedQuadCount ?? 0)} / {formatInteger(report.targetQuadCount ?? 0)}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {report.scale ?? '-'} / {report.fullScale === false ? 'partial' : 'full'}
+        </div>
+      </td>
+      <td className="px-5 py-3">
+        <StatusPill ok={report.planMatched !== false && failedPlanCount === 0} label={`plan ${report.planMatched === false ? 'fail' : 'ok'}`} />
+        <div className="mt-1">
+          <StatusPill ok={report.concurrencyMatched !== false && failedConcurrencyCount === 0} label={`conc ${report.concurrency ?? 1}`} />
+        </div>
+        {(failedPlanCount > 0 || failedConcurrencyCount > 0) && (
+          <div className="mt-1 text-xs text-yellow-700">
+            fail {formatInteger(failedPlanCount + failedConcurrencyCount)}
+          </div>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-5 py-3 font-mono">
+        <div>{formatMs(report.ingestDurationMs ?? 0)}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          COPY {formatInteger(report.copyRows ?? 0)} / fb {formatInteger(report.copyFallbacks ?? 0)}
+        </div>
+      </td>
+      <td className="whitespace-nowrap px-5 py-3 font-mono">
+        <div>{formatMs(report.refreshDurationMs ?? 0)}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          planner {formatMs(report.plannerStatsDurationMs ?? 0)}
+        </div>
+      </td>
+      <td className="whitespace-nowrap px-5 py-3 font-mono">
+        <div>{formatMs(report.coldStartDurationMs ?? 0)} / {formatMs(report.firstQueryDurationMs ?? 0)}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          p50/p95 {formatMs(report.warmP50DurationMs ?? 0)} / {formatMs(report.warmP95DurationMs ?? 0)}
+        </div>
+      </td>
+      <td className="whitespace-nowrap px-5 py-3 font-mono">
+        <div>{formatRatio(report.storageTotalToFactsRatio ?? 0)}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {formatBytes(report.storageTotalBytes ?? 0)}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function StatusPill(props: { ok: boolean; label: string }) {
+  return (
+    <span className={clsx(
+      'inline-flex rounded-md px-2 py-0.5 text-xs',
+      props.ok ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-800',
+    )}>
+      {props.label}
+    </span>
   );
 }
 
