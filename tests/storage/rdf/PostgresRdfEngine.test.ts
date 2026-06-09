@@ -5605,6 +5605,67 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('reports post-write incremental refresh cost for dirty source calibration', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-refresh-mutation-benchmark-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+
+    try {
+      await engine.open();
+      await engine.put(buildRdfModelsBenchmarkSeed({
+        syntheticMessages: defaultSyntheticMessagesForRdfModelsScale('small'),
+        syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
+      }));
+
+      const report = await runRdfModelsPostgresBenchmark(engine, {
+        scale: 'small',
+        iterations: 1,
+        cases: [],
+        queryCases: [],
+        refreshMutationSources: 3,
+        refreshMutationQuadsPerSource: 4,
+      });
+
+      expect(report.refreshBenchmark).toMatchObject({
+        refreshed: true,
+        sourceQueue: {
+          pendingSources: 0,
+          drainedSources: 0,
+        },
+      });
+      expect(report.postWriteRefreshBenchmark).toMatchObject({
+        mutationSources: 3,
+        mutationQuadsPerSource: 4,
+        mutationQuads: 12,
+        pendingSourcesBeforeRefresh: 3,
+        durationMs: expect.any(Number),
+        refreshed: true,
+        syncedWithFacts: true,
+        rebuildMode: 'incremental',
+        dirtyGraphs: 3,
+        factsDataVersionBeforeRefresh: expect.any(Number),
+        sourceQueue: {
+          pendingSources: 3,
+          drainedSources: 3,
+        },
+      });
+      expect(report.postWriteRefreshBenchmark?.factsDataVersion).toBe(report.postWriteRefreshBenchmark?.factsDataVersionBeforeRefresh);
+      expect(report.storage.rdf3x).toMatchObject({
+        pendingSources: 0,
+        refreshLag: 0,
+        syncedWithFacts: true,
+      });
+      expect(report.cases).toEqual([]);
+      expect(report.queryCases).toEqual([]);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('covers native ordered-page cutover in the PostgreSQL custom-index models benchmark gate', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-ordered-page-benchmark-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);

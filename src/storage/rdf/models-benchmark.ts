@@ -97,6 +97,8 @@ export interface RdfModelBenchmarkRunOptions {
 
 export interface RdfModelPostgresBenchmarkRunOptions extends RdfModelBenchmarkRunOptions {
   refreshDerivedIndexes?: boolean;
+  refreshMutationSources?: number;
+  refreshMutationQuadsPerSource?: number;
   warmupIterations?: number;
   concurrency?: number;
 }
@@ -177,6 +179,7 @@ export interface RdfModelPostgresBenchmarkReport {
   concurrencyGate: RdfModelPostgresConcurrencyGate;
   refresh?: RdfDerivedIndexRefreshResult;
   refreshBenchmark?: RdfModelPostgresRefreshBenchmark;
+  postWriteRefreshBenchmark?: RdfModelPostgresPostWriteRefreshBenchmark;
   storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
   queryCases: RdfModelQueryBenchmarkResult[];
@@ -198,6 +201,14 @@ export interface RdfModelPostgresRefreshBenchmark {
     pendingSources: number;
     drainedSources: number;
   };
+}
+
+export interface RdfModelPostgresPostWriteRefreshBenchmark extends RdfModelPostgresRefreshBenchmark {
+  mutationSources: number;
+  mutationQuadsPerSource: number;
+  mutationQuads: number;
+  pendingSourcesBeforeRefresh: number;
+  factsDataVersionBeforeRefresh?: number;
 }
 
 export interface RdfModelPostgresConcurrencyGate {
@@ -4415,12 +4426,22 @@ export async function runRdfModelsPostgresBenchmark(
   const warmupIterations = Math.max(0, Math.floor(options.warmupIterations ?? 1));
   const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
   const caseProfile = options.caseProfile ?? 'default';
+  const refreshMutationSources = Math.max(0, Math.floor(options.refreshMutationSources ?? 0));
+  const refreshMutationQuadsPerSource = Math.max(1, Math.floor(options.refreshMutationQuadsPerSource ?? 6));
   let refresh: RdfDerivedIndexRefreshResult | undefined;
   let refreshBenchmark: RdfModelPostgresRefreshBenchmark | undefined;
+  let postWriteRefreshBenchmark: RdfModelPostgresPostWriteRefreshBenchmark | undefined;
   if (options.refreshDerivedIndexes !== false) {
     const refreshStartedAt = Date.now();
     refresh = await engine.refreshDerivedIndexes();
     refreshBenchmark = postgresRefreshBenchmark(refresh, Date.now() - refreshStartedAt);
+  }
+  if (refreshMutationSources > 0) {
+    postWriteRefreshBenchmark = await runPostWriteRefreshBenchmark(
+      engine,
+      refreshMutationSources,
+      refreshMutationQuadsPerSource,
+    );
   }
   const storageBefore = await engine.storageStats();
   const cases = (options.cases ?? rdfModelsBenchmarkCasesForProfile(caseProfile))
@@ -4461,6 +4482,7 @@ export async function runRdfModelsPostgresBenchmark(
     concurrencyGate,
     ...(refresh ? { refresh } : {}),
     ...(refreshBenchmark ? { refreshBenchmark } : {}),
+    ...(postWriteRefreshBenchmark ? { postWriteRefreshBenchmark } : {}),
     storage: await engine.storageStats(),
     cases: results,
     queryCases: queryResults,
@@ -4485,6 +4507,71 @@ function postgresRefreshBenchmark(
     plannerStatsDurationMs: rdf3x?.plannerStats?.durationMs,
     analyzedTables: rdf3x?.plannerStats?.analyzedTables,
     sourceQueue: rdf3x?.sourceQueue,
+  };
+}
+
+async function runPostWriteRefreshBenchmark(
+  engine: RdfEngineLike,
+  mutationSources: number,
+  mutationQuadsPerSource: number,
+): Promise<RdfModelPostgresPostWriteRefreshBenchmark> {
+  let mutationQuads = 0;
+  for (let index = 0; index < mutationSources; index += 1) {
+    const mutation = rdfModelsRefreshMutationSource(index, mutationQuadsPerSource);
+    mutationQuads += mutation.quads.length;
+    await engine.replaceSource(mutation.quads, mutation.source);
+  }
+
+  const storageBeforeRefresh = await engine.storageStats();
+  const refreshStartedAt = Date.now();
+  const refresh = await engine.refreshDerivedIndexes();
+  return {
+    ...postgresRefreshBenchmark(refresh, Date.now() - refreshStartedAt),
+    mutationSources,
+    mutationQuadsPerSource,
+    mutationQuads,
+    pendingSourcesBeforeRefresh: storageBeforeRefresh.rdf3x?.pendingSources ?? 0,
+    factsDataVersionBeforeRefresh: storageBeforeRefresh.rdf3x?.factsDataVersion,
+  };
+}
+
+function rdfModelsRefreshMutationSource(index: number, quadsPerSource: number): {
+  quads: Quad[];
+  source: {
+    source: string;
+    workspace: string;
+    localPath: string;
+    contentType: string;
+    sourceVersion: string;
+  };
+} {
+  const ordinal = index + 1;
+  const graph = `${DATA}/task/default/2026/05/19/refresh-mutation-${ordinal}.ttl`;
+  const run = `${graph}#run_${ordinal}`;
+  const step = `${graph}#step_${ordinal}`;
+  const thread = `${DATA}/task/default/index.ttl#thread_1`;
+  const allQuads = [
+    seedQuad(run, RDF_TYPE, iri(`${UDFS}Run`), graph),
+    seedQuad(run, `${UDFS}status`, literal(index % 2 === 0 ? 'queued' : 'running'), graph),
+    seedQuad(run, `${UDFS}workspace`, iri(WORKSPACE), graph),
+    seedQuad(run, `${UDFS}priority`, literal(String((index % 20) + 1), iri(XSD_INTEGER)), graph),
+    seedQuad(run, `${UDFS}inThread`, iri(thread), graph),
+    seedQuad(run, DCT_CREATED, literal(new Date(Date.UTC(2026, 4, 19, 0, 0, index)).toISOString()), graph),
+    seedQuad(step, RDF_TYPE, iri(`${UDFS}RunStep`), graph),
+    seedQuad(step, `${UDFS}run`, iri(run), graph),
+    seedQuad(step, `${UDFS}status`, literal('run.refresh_mutation'), graph),
+    seedQuad(step, DCT_CREATED, literal(new Date(Date.UTC(2026, 4, 19, 0, 1, index)).toISOString()), graph),
+  ];
+  const quads = allQuads.slice(0, Math.max(1, Math.min(allQuads.length, Math.floor(quadsPerSource))));
+  return {
+    quads,
+    source: {
+      source: graph,
+      workspace: RDF_MODELS_BENCHMARK_POD,
+      localPath: `/.data/task/default/2026/05/19/refresh-mutation-${ordinal}.ttl`,
+      contentType: 'text/turtle',
+      sourceVersion: `refresh-mutation-${ordinal}`,
+    },
   };
 }
 

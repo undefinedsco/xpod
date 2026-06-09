@@ -29,6 +29,8 @@ interface CliOptions {
   iterations: number;
   warmupIterations: number;
   concurrency: number;
+  refreshMutationSources: number;
+  refreshMutationQuadsPerSource: number;
   syntheticMessages: number;
   syntheticMessagesOverridden: boolean;
   syntheticPodCount: number;
@@ -66,6 +68,8 @@ async function main(): Promise<void> {
       iterations: options.iterations,
       warmupIterations: options.warmupIterations,
       concurrency: options.concurrency,
+      refreshMutationSources: options.refreshMutationSources,
+      refreshMutationQuadsPerSource: options.refreshMutationQuadsPerSource,
       caseProfile: options.caseProfile,
     });
 
@@ -92,6 +96,7 @@ async function main(): Promise<void> {
       plannerStatsMatched,
       plannerStatsTables,
       refreshBenchmark: report.refreshBenchmark,
+      postWriteRefreshBenchmark: report.postWriteRefreshBenchmark,
       accelerationMatched,
       scanCases: report.cases.length,
       queryCases: report.queryCases.length,
@@ -121,6 +126,8 @@ function parseArgs(args: string[]): CliOptions {
   let iterations = 3;
   let warmupIterations = 1;
   let concurrency = 1;
+  let refreshMutationSources = 0;
+  let refreshMutationQuadsPerSource = 6;
   let syntheticMessages: number | undefined;
   let caseProfile: RdfBenchmarkCaseProfile = 'default';
   let rdfAccelerationProfile: RdfPgAccelerationProfile = 'baseline';
@@ -165,6 +172,14 @@ function parseArgs(args: string[]): CliOptions {
     }
     if (arg.startsWith('--concurrency=')) {
       concurrency = positiveInteger(arg.slice('--concurrency='.length), '--concurrency');
+      continue;
+    }
+    if (arg.startsWith('--refreshMutationSources=')) {
+      refreshMutationSources = nonNegativeInteger(arg.slice('--refreshMutationSources='.length), '--refreshMutationSources');
+      continue;
+    }
+    if (arg.startsWith('--refreshMutationQuadsPerSource=')) {
+      refreshMutationQuadsPerSource = positiveInteger(arg.slice('--refreshMutationQuadsPerSource='.length), '--refreshMutationQuadsPerSource');
       continue;
     }
     if (arg.startsWith('--syntheticMessages=')) {
@@ -215,6 +230,8 @@ function parseArgs(args: string[]): CliOptions {
     iterations,
     warmupIterations,
     concurrency,
+    refreshMutationSources,
+    refreshMutationQuadsPerSource,
     syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
@@ -361,6 +378,8 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     iterations: options.iterations,
     warmupIterations: options.warmupIterations,
     concurrency: options.concurrency,
+    refreshMutationSources: options.refreshMutationSources,
+    refreshMutationQuadsPerSource: options.refreshMutationQuadsPerSource,
     syntheticMessages: options.syntheticMessages,
     syntheticMessagesOverridden: options.syntheticMessagesOverridden,
     syntheticPodCount: options.syntheticPodCount,
@@ -391,6 +410,7 @@ function printSummary(summary: {
   plannerStatsMatched: boolean;
   plannerStatsTables: string[];
   refreshBenchmark?: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>['refreshBenchmark'];
+  postWriteRefreshBenchmark?: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>['postWriteRefreshBenchmark'];
   accelerationMatched: boolean;
   scanCases: number;
   queryCases: number;
@@ -425,6 +445,14 @@ function printSummary(summary: {
     console.log(`  refresh duration ms: ${summary.refreshBenchmark.durationMs}`);
     console.log(`  refresh rebuild mode: ${summary.refreshBenchmark.rebuildMode ?? 'none'}`);
     console.log(`  refresh source queue: ${summary.refreshBenchmark.sourceQueue?.drainedSources ?? 0}/${summary.refreshBenchmark.sourceQueue?.pendingSources ?? 0}`);
+  }
+  if (summary.postWriteRefreshBenchmark) {
+    console.log(`  post-write refresh mutation sources: ${summary.postWriteRefreshBenchmark.mutationSources}`);
+    console.log(`  post-write refresh mutation quads: ${summary.postWriteRefreshBenchmark.mutationQuads}`);
+    console.log(`  post-write pending sources before refresh: ${summary.postWriteRefreshBenchmark.pendingSourcesBeforeRefresh}`);
+    console.log(`  post-write refresh duration ms: ${summary.postWriteRefreshBenchmark.durationMs}`);
+    console.log(`  post-write refresh rebuild mode: ${summary.postWriteRefreshBenchmark.rebuildMode ?? 'none'}`);
+    console.log(`  post-write refresh source queue: ${summary.postWriteRefreshBenchmark.sourceQueue?.drainedSources ?? 0}/${summary.postWriteRefreshBenchmark.sourceQueue?.pendingSources ?? 0}`);
   }
   console.log(`  pg acceleration profile: ${summary.storage.pgAcceleration?.profile ?? 'unknown'}`);
   console.log(`  pg acceleration enabled: ${summary.storage.pgAcceleration?.enabled ?? false}`);
@@ -475,6 +503,8 @@ Options:
   --iterations=N                   Iterations per case. Default: 3
   --warmupIterations=N             Warmup runs per case before timing. Default: 1
   --concurrency=N                  Concurrent query lanes for consistency gate. Default: 1
+  --refreshMutationSources=N       Write N dirty sources after seed refresh, then time incremental refresh. Default: 0
+  --refreshMutationQuadsPerSource=N Quads per mutation source when refreshMutationSources is enabled. Default: 6
   --syntheticMessages=N            Override generated message count for storage-size tests
   --caseProfile=VALUE              default|extreme|fusion|all. Default: default
                                    fusion seeds in-process text/vector indexes for PG facts join

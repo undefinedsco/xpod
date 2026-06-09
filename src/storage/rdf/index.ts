@@ -107,6 +107,8 @@ export {
   type RdfModelPostgresConcurrencyGateCase,
   type RdfModelPostgresBenchmarkReport,
   type RdfModelPostgresBenchmarkRunOptions,
+  type RdfModelPostgresPostWriteRefreshBenchmark,
+  type RdfModelPostgresRefreshBenchmark,
   type RdfModelsBenchmarkSeedOptions,
   type RdfModelShadowBenchmarkReport,
   type RdfModelRdf3xShadowBenchmarkReport,
