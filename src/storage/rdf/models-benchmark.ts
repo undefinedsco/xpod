@@ -3094,6 +3094,38 @@ export const rdfModelsPostgresMaterializedQueryBenchmarkCases: readonly RdfModel
       version: 'v1',
     },
   }),
+  postgresMaterializedQueryBenchmarkCase('settings owner category keyset query', {
+    name: 'materialized settings owner category keyset query',
+    purpose: 'settings list drill-down reuses owner/category/keyset pagination after warmup',
+    materialized: {
+      key: 'models/settings/owner-category/keyset-ai',
+      version: 'cursor:ai.defaultAssistant',
+    },
+  }),
+  postgresMaterializedQueryBenchmarkCase('active session thread hydration query', {
+    name: 'materialized active session thread hydration query',
+    purpose: 'agent session drill-down reuses active session/chat/thread hydration after warmup',
+    materialized: {
+      key: 'models/agent-context/active-session-thread-usage',
+      version: 'v1',
+    },
+  }),
+  postgresMaterializedQueryBenchmarkCase('ai config embedding model query', {
+    name: 'materialized ai config embedding model query',
+    purpose: 'AI settings drill-down reuses embedding model/provider hydration after warmup',
+    materialized: {
+      key: 'models/settings/ai/config/embedding-model',
+      version: 'v1',
+    },
+  }),
+  postgresMaterializedQueryBenchmarkCase('vector indexed file store query', {
+    name: 'materialized vector indexed file store query',
+    purpose: 'vector store drill-down reuses indexed-file/store metadata join after warmup',
+    materialized: {
+      key: 'models/settings/ai/vector-store/indexed-files',
+      version: 'v1',
+    },
+  }),
 ];
 
 export const rdfModelsPostgresQueryBenchmarkCases: readonly RdfModelQueryBenchmarkCase[] = [
