@@ -137,11 +137,28 @@ export interface RdfEngineStorageStats {
   accessControlOverrides?: RdfAccessControlOverrideIndexStats;
   slowQueries?: RdfSlowQueryStats;
   pgAcceleration?: RdfPgAccelerationStats;
+  bulkLoad?: RdfBulkLoadStats;
   factsBytes: number;
   derivedBytes: number;
   totalBytes: number;
   derivedToFactsRatio: number;
   totalToFactsRatio: number;
+}
+
+export interface RdfBulkLoadStats {
+  copyFromRows: {
+    attempts: number;
+    succeeded: number;
+    fallbacks: number;
+    rows: number;
+    tables: RdfBulkLoadCopyTableStats[];
+  };
+}
+
+export interface RdfBulkLoadCopyTableStats {
+  kind: string;
+  statements: number;
+  rows: number;
 }
 
 export interface RdfEngineLifecycleStats {

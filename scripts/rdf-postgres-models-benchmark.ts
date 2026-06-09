@@ -59,7 +59,10 @@ async function main(): Promise<void> {
     await engine.open();
     await assertWritableBenchmarkTarget(engine, options);
     const seedQuads = buildRdfModelsBenchmarkSeed(options);
+    const seedStartedAt = Date.now();
     await engine.put(seedQuads);
+    const seedIngestDurationMs = Date.now() - seedStartedAt;
+    const seedStorage = await engine.storageStats();
     if (rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile)) {
       seedRdfModelsSearchFusionIndexes(engine);
     }
@@ -77,7 +80,7 @@ async function main(): Promise<void> {
     });
 
     await writeJson(paths.postgresReport, {
-      seed: seedSummary(options, seedQuads.length),
+      seed: seedSummary(options, seedQuads.length, seedIngestDurationMs, seedStorage),
       report,
     });
 
@@ -96,6 +99,8 @@ async function main(): Promise<void> {
       paths,
       seedQuadCount: seedQuads.length,
       targetQuadCount: options.targetQuads,
+      seedIngestDurationMs,
+      seedBulkLoad: seedStorage.bulkLoad,
       fullScale,
       synced,
       plannerStatsMatched,
@@ -389,7 +394,12 @@ async function assertWritableBenchmarkTarget(engine: PostgresRdfEngine, options:
   }
 }
 
-function seedSummary(options: CliOptions, seedQuadCount: number): Record<string, unknown> {
+function seedSummary(
+  options: CliOptions,
+  seedQuadCount: number,
+  ingestDurationMs: number,
+  storage: RdfEngineStorageStats,
+): Record<string, unknown> {
   return {
     pod: RDF_MODELS_BENCHMARK_POD,
     driver: options.driver,
@@ -410,6 +420,8 @@ function seedSummary(options: CliOptions, seedQuadCount: number): Record<string,
     seedQuadCount,
     targetQuadCount: options.targetQuads,
     fullScale: rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuadCount),
+    ingestDurationMs,
+    bulkLoad: storage.bulkLoad,
   };
 }
 
@@ -426,6 +438,8 @@ function printSummary(summary: {
   paths: BenchmarkPaths;
   seedQuadCount: number;
   targetQuadCount: number;
+  seedIngestDurationMs: number;
+  seedBulkLoad?: RdfEngineStorageStats['bulkLoad'];
   fullScale: boolean;
   synced: boolean;
   plannerStatsMatched: boolean;
@@ -457,6 +471,12 @@ function printSummary(summary: {
   console.log(`  defer pg custom index build: ${summary.options.deferPgCustomIndexBuild}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
   console.log(`  target quads: ${summary.targetQuadCount}`);
+  console.log(`  seed ingest duration ms: ${summary.seedIngestDurationMs}`);
+  if (summary.seedBulkLoad) {
+    console.log(`  seed COPY rows: ${summary.seedBulkLoad.copyFromRows.rows}`);
+    console.log(`  seed COPY succeeded/fallbacks: ${summary.seedBulkLoad.copyFromRows.succeeded}/${summary.seedBulkLoad.copyFromRows.fallbacks}`);
+    console.log(`  seed COPY tables: ${summary.seedBulkLoad.copyFromRows.tables.map((table) => `${table.kind}:${table.statements}/${table.rows}`).join(', ') || 'none'}`);
+  }
   console.log(`  full scale seed: ${summary.fullScale}`);
   console.log(`  scan cases: ${summary.scanCases}`);
   console.log(`  query cases: ${summary.queryCases}`);

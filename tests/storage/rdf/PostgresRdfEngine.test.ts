@@ -4499,6 +4499,23 @@ describe('PostgresRdfEngine', () => {
 
       const stats = await engine.storageStats();
       expect(stats.facts.quadCount).toBe(messageCount * 2);
+      expect(stats.bulkLoad?.copyFromRows).toMatchObject({
+        attempts: 2,
+        succeeded: 2,
+        fallbacks: 0,
+      });
+      expect(stats.bulkLoad?.copyFromRows.rows).toBeGreaterThan(messageCount * 2);
+      expect(stats.bulkLoad?.copyFromRows.tables).toEqual([
+        expect.objectContaining({
+          kind: 'rdf_quads_bulk_stage',
+          statements: 1,
+          rows: messageCount * 2,
+        }),
+        expect.objectContaining({
+          kind: 'rdf_terms_bulk_stage',
+          statements: 1,
+        }),
+      ]);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -4548,6 +4565,9 @@ describe('PostgresRdfEngine', () => {
       expect(scan.metrics.queryPlan?.join('\n')).toContain('GraphPrefixMembershipFilter');
       expect(scan.metrics.queryPlan).not.toContain('XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)');
       expect(pool.nativeScanAnyCalls).toHaveLength(0);
+      expect(pool.executedSql.some((sql) => (
+        sql.includes('starts_with(') && sql.includes('value_head COLLATE "C"')
+      ))).toBe(true);
 
       await engine.put([
         quad(outsideMessage, namedNode(STATUS), literal('open'), outsideGraph),

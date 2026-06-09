@@ -97,6 +97,7 @@ import type {
   Rdf3xTermMetadataPattern,
   Rdf3xTermProjectionName,
   Rdf3xTermTypePatternValue,
+  RdfBulkLoadStats,
   RdfQueryPlannerHistogramHint,
   RdfTermKind,
 } from './types';
@@ -584,6 +585,14 @@ interface AsyncSqlCopyFromRowsInput {
   rows: Iterable<readonly unknown[]>;
 }
 
+interface PgCopyFromRowsStats {
+  attempts: number;
+  succeeded: number;
+  fallbacks: number;
+  rows: number;
+  tables: Map<string, { statements: number; rows: number }>;
+}
+
 export interface PostgresRdfEngineOptions {
   driver?: 'pglite' | 'pg';
   dataDir?: string;
@@ -732,7 +741,11 @@ class PgliteExecutor implements AsyncSqlExecutor {
 }
 
 class PgPoolExecutor implements AsyncSqlExecutor {
-  public constructor(private readonly pool: any, private readonly client?: any) {}
+  public constructor(
+    private readonly pool: any,
+    private readonly client?: any,
+    private readonly copyFromRowsStats?: PgCopyFromRowsStats,
+  ) {}
 
   public async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
     const result = this.client
@@ -751,11 +764,15 @@ class PgPoolExecutor implements AsyncSqlExecutor {
 
   public async copyFromRows(input: AsyncSqlCopyFromRowsInput): Promise<boolean> {
     const client = this.client ?? await this.pool.connect();
+    const rowCount = copyFromRowsInputRowCount(input);
+    this.copyFromRowsStats && recordCopyFromRowsAttempt(this.copyFromRowsStats);
     try {
       if (!pgClientSupportsCopyFromRows(client)) {
+        this.copyFromRowsStats && recordCopyFromRowsFallback(this.copyFromRowsStats);
         return false;
       }
       await pgCopyFromRows(client, input);
+      this.copyFromRowsStats && recordCopyFromRowsSuccess(this.copyFromRowsStats, input.table, rowCount);
       return true;
     } finally {
       if (!this.client) {
@@ -771,7 +788,7 @@ class PgPoolExecutor implements AsyncSqlExecutor {
     }
 
     const client = await this.pool.connect();
-    const tx = new PgPoolExecutor(this.pool, client);
+    const tx = new PgPoolExecutor(this.pool, client, this.copyFromRowsStats);
     try {
       await client.query('BEGIN');
       const result = await fn(tx);
@@ -921,6 +938,69 @@ function pgCopyCsvValue(value: unknown): string {
     return '\\N';
   }
   return `"${String(normalized).replaceAll('"', '""')}"`;
+}
+
+function emptyPgCopyFromRowsStats(): PgCopyFromRowsStats {
+  return {
+    attempts: 0,
+    succeeded: 0,
+    fallbacks: 0,
+    rows: 0,
+    tables: new Map(),
+  };
+}
+
+function recordCopyFromRowsAttempt(stats: PgCopyFromRowsStats): void {
+  stats.attempts += 1;
+}
+
+function recordCopyFromRowsFallback(stats: PgCopyFromRowsStats): void {
+  stats.fallbacks += 1;
+}
+
+function recordCopyFromRowsSuccess(stats: PgCopyFromRowsStats, table: string, rows: number): void {
+  stats.succeeded += 1;
+  stats.rows += rows;
+  const kind = copyFromRowsTableKind(table);
+  const existing = stats.tables.get(kind) ?? { statements: 0, rows: 0 };
+  existing.statements += 1;
+  existing.rows += rows;
+  stats.tables.set(kind, existing);
+}
+
+function copyFromRowsInputRowCount(input: AsyncSqlCopyFromRowsInput): number {
+  if (Array.isArray(input.rows)) {
+    return input.rows.length;
+  }
+  return 0;
+}
+
+function copyFromRowsTableKind(table: string): string {
+  if (table.startsWith('rdf_terms_bulk_stage_')) {
+    return 'rdf_terms_bulk_stage';
+  }
+  if (table.startsWith('rdf_quads_bulk_stage_')) {
+    return 'rdf_quads_bulk_stage';
+  }
+  return table;
+}
+
+function snapshotBulkLoadStats(stats: PgCopyFromRowsStats): RdfBulkLoadStats {
+  return {
+    copyFromRows: {
+      attempts: stats.attempts,
+      succeeded: stats.succeeded,
+      fallbacks: stats.fallbacks,
+      rows: stats.rows,
+      tables: Array.from(stats.tables.entries())
+        .map(([kind, tableStats]) => ({
+          kind,
+          statements: tableStats.statements,
+          rows: tableStats.rows,
+        }))
+        .sort((left, right) => left.kind.localeCompare(right.kind)),
+    },
+  };
 }
 
 class PgSqlBuilder {
@@ -1521,6 +1601,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private queryResultCacheCounters: PgCacheCounterStats = emptyPgCacheCounterStats();
   private materializedResultCacheCounters: PgCacheCounterStats = emptyPgCacheCounterStats();
   private derivedCacheEvictions: RdfDerivedCacheEvictionStats = emptyDerivedCacheEvictionStats();
+  private readonly copyFromRowsStats = emptyPgCopyFromRowsStats();
   private slowQueryHistory: RdfSlowQueryStatsEntry[] = [];
   private plannerHistogramCache: {
     factsDataVersion: number;
@@ -2350,6 +2431,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       accessControlOverrides,
       slowQueries: this.slowQueryStats(),
       pgAcceleration: await this.pgAccelerationStats(),
+      bulkLoad: snapshotBulkLoadStats(this.copyFromRowsStats),
       factsBytes,
       derivedBytes,
       totalBytes,
@@ -7085,18 +7167,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
       FROM rdf_terms graph_term
       JOIN ${RDF_FACTS_TABLE} fact ON fact.graph_id = graph_term.id
       WHERE graph_term.kind = $1
-        AND graph_term.value_head >= $2
-        AND graph_term.value_head < $3
-        AND graph_term.value >= $4
-        AND graph_term.value < $5
+        AND graph_term.value_head COLLATE "C" >= $2
+        AND graph_term.value_head COLLATE "C" < $3
+        AND starts_with(graph_term.value, $4)
       ORDER BY graph_term.value, graph_term.id
-      LIMIT $6
+      LIMIT $5
     `, [
       'iri',
       valueHead,
       `${valueHead}\uffff`,
       prefix,
-      `${prefix}\uffff`,
       PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS + 1,
     ]);
     if (rows.length > PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS) {
@@ -7105,6 +7185,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return rows
       .map((row) => Number(row.id))
       .filter(Number.isFinite);
+  }
+
+  private pgValuePrefixConditions(alias: string, prefix: string, builder: PgSqlBuilder): string[] {
+    const valueHead = rdfTermValueHead(prefix);
+    return [
+      `${alias}.kind = ${builder.add('iri')}`,
+      `${alias}.value_head COLLATE "C" >= ${builder.add(valueHead)}`,
+      `${alias}.value_head COLLATE "C" < ${builder.add(`${valueHead}\uffff`)}`,
+      `starts_with(${alias}.value, ${builder.add(prefix)})`,
+    ];
   }
 
   private pgCustomIndexGraphPrefixVariableName(
@@ -8052,24 +8142,17 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (resolved.graphPrefix !== undefined) {
       const graphAlias = `${alias}_graph_prefix`;
       if (fenceGraphPrefix) {
+        const prefixConditions = this.pgValuePrefixConditions(graphAlias, resolved.graphPrefix, builder);
         conditions.push(`EXISTS (
           SELECT 1
           FROM rdf_terms ${graphAlias}
           WHERE ${graphAlias}.id = ${alias}.graph_id
-            AND ${graphAlias}.kind = ${builder.add('iri')}
-            AND ${graphAlias}.value_head >= ${builder.add(rdfTermValueHead(resolved.graphPrefix))}
-            AND ${graphAlias}.value_head < ${builder.add(`${rdfTermValueHead(resolved.graphPrefix)}\uffff`)}
-            AND ${graphAlias}.value >= ${builder.add(resolved.graphPrefix)}
-            AND ${graphAlias}.value < ${builder.add(`${resolved.graphPrefix}\uffff`)}
+            AND ${prefixConditions.join('\n            AND ')}
           OFFSET 0
         )`);
       } else {
         joins.push(` JOIN rdf_terms ${graphAlias} ON ${graphAlias}.id = ${alias}.graph_id`);
-        conditions.push(`${graphAlias}.kind = ${builder.add('iri')}`);
-        conditions.push(`${graphAlias}.value_head >= ${builder.add(rdfTermValueHead(resolved.graphPrefix))}`);
-        conditions.push(`${graphAlias}.value_head < ${builder.add(`${rdfTermValueHead(resolved.graphPrefix)}\uffff`)}`);
-        conditions.push(`${graphAlias}.value >= ${builder.add(resolved.graphPrefix)}`);
-        conditions.push(`${graphAlias}.value < ${builder.add(`${resolved.graphPrefix}\uffff`)}`);
+        conditions.push(...this.pgValuePrefixConditions(graphAlias, resolved.graphPrefix, builder));
       }
       queryPlan.push('GraphPrefixMembershipFilter');
     }
@@ -9630,7 +9713,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (this.pgOptions.pool) {
       this.pgPool = this.pgOptions.pool;
       this.sharedPoolConfig = null;
-      this.executor = new PgPoolExecutor(this.pgPool);
+      this.executor = new PgPoolExecutor(this.pgPool, undefined, this.copyFromRowsStats);
       return;
     }
 
@@ -9651,7 +9734,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       options: POSTGRES_RDF_SESSION_OPTIONS,
     };
     this.pgPool = getSharedPool(this.sharedPoolConfig);
-    this.executor = new PgPoolExecutor(this.pgPool);
+    this.executor = new PgPoolExecutor(this.pgPool, undefined, this.copyFromRowsStats);
   }
 }
 
