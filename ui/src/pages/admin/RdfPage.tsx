@@ -409,6 +409,9 @@ function SlowQueryTable(props: { entries: RdfSlowQueryEntry[] }) {
                         {formatSlowQueryCacheTarget(entry)}
                       </div>
                       <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground">
+                        {formatSlowQueryDerivedCache(entry)}
+                      </div>
+                      <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground">
                         {entry.cache.scopeBasePath ?? entry.cache.scopeHash}
                       </div>
                       {entry.cache.scopePrincipal && (
@@ -572,6 +575,14 @@ function formatSlowQueryCacheTarget(entry: RdfSlowQueryEntry): string {
   }
   const resultKey = entry.cache.result?.key ?? entry.queryKey;
   return `res ${shortKey(resultKey)}`;
+}
+
+function formatSlowQueryDerivedCache(entry: RdfSlowQueryEntry): string {
+  const cache = entry.derivedCache;
+  const pressure = formatPercent(cache.cachePressure);
+  const scopePressure = formatPercent(cache.largestScopePressure);
+  const evictions = cache.evictionCount;
+  return `pressure ${pressure} / scope ${scopePressure} / evict ${formatInteger(evictions)}`;
 }
 
 function formatMs(value: number): string {

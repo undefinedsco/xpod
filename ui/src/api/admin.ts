@@ -243,6 +243,7 @@ export interface RdfSlowQueryEntry {
     stale: boolean;
     lag: number;
   };
+  derivedCache: RdfSlowQueryDerivedCache;
   cache: {
     templateStatus?: string;
     resultStatus?: string;
@@ -262,6 +263,18 @@ export interface RdfSlowQueryEntry {
     activeOperators?: string[];
     unsupportedCapabilities?: string[];
   };
+}
+
+export interface RdfSlowQueryDerivedCache {
+  cacheBytes: number;
+  maxCacheBytes: number;
+  cachePressure: number;
+  largestScopeBytes: number;
+  largestScopePressure: number;
+  largestScopeHash?: string;
+  largestScopeFactsDataVersion?: number;
+  evictionCount: number;
+  evictions: RdfDerivedCacheEvictionStats;
 }
 
 export interface RdfSlowQueryCacheExplain {
