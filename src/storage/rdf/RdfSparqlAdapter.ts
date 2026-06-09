@@ -203,10 +203,11 @@ export class UnsupportedSparqlQueryError extends Error {
   public readonly correction: SparqlCorrection;
 
   public constructor(message: string, options: UnsupportedSparqlQueryErrorOptions = {}) {
-    super(message);
+    const normalizedMessage = normalizeUnsupportedSparqlMessage(message);
+    super(normalizedMessage);
     this.name = 'UnsupportedSparqlQueryError';
     this.code = options.code ?? 'rdf.sparql.unsupported_query_shape';
-    this.capability = options.capability ?? inferUnsupportedSparqlCapability(message);
+    this.capability = options.capability ?? inferUnsupportedSparqlCapability(normalizedMessage);
     this.hint = options.hint ?? unsupportedSparqlHint(this.capability);
     this.correction = options.correction ?? sparqlCorrectionForCapability(this.capability);
   }
@@ -217,6 +218,25 @@ export class DisabledSparqlFeatureError extends Error {
     super(message);
     this.name = 'DisabledSparqlFeatureError';
   }
+}
+
+function normalizeUnsupportedSparqlMessage(message: string): string {
+  const noFallbackMatch = /^No compatibility SPARQL fallback configured for ([^:]+):\s*(.+)$/i.exec(message);
+  if (noFallbackMatch) {
+    return `Embedded SPARQL engine cannot execute ${noFallbackMatch[1]}: ${normalizeEmbeddedUnsupportedReason(noFallbackMatch[2])}`;
+  }
+  return normalizeEmbeddedUnsupportedReason(message);
+}
+
+function normalizeEmbeddedUnsupportedReason(reason: string): string {
+  let normalized = reason
+    .replace(/\s+fallback to compatibility engine\b/gi, ' is not supported by the embedded RDF engine')
+    .replace(/\bis handled by the compatibility engine\b/gi, 'is not supported by the embedded RDF engine')
+    .replace(/\bcompatibility fallback\b/gi, 'embedded RDF engine');
+  if (/^unsupported shape$/i.test(normalized.trim())) {
+    normalized = 'Query shape is not supported by the embedded RDF engine';
+  }
+  return normalized;
 }
 
 function inferUnsupportedSparqlCapability(message: string): string {

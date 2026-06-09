@@ -45,6 +45,17 @@ describe('RdfSparqlAdapter', () => {
     expect(error.correction.availableActions.length).toBeGreaterThan(0);
   }
 
+  it('normalizes legacy compatibility fallback wording on unsupported errors', () => {
+    const directFallback = new UnsupportedSparqlQueryError('Subqueries fallback to compatibility engine');
+    expect(directFallback.message).toBe('Subqueries is not supported by the embedded RDF engine');
+    expect(directFallback.message).not.toMatch(/compatibility|fallback/i);
+    expect(directFallback.capability).toBe('sparql.query.subquery');
+
+    const missingFallback = new UnsupportedSparqlQueryError('No compatibility SPARQL fallback configured for queryBindings: unsupported shape');
+    expect(missingFallback.message).toBe('Embedded SPARQL engine cannot execute queryBindings: Query shape is not supported by the embedded RDF engine');
+    expect(missingFallback.message).not.toMatch(/compatibility|fallback/i);
+  });
+
   it('compiles SELECT BGP, filters, ordering, and pagination into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?content WHERE {

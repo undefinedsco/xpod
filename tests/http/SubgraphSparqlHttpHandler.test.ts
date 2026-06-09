@@ -492,6 +492,10 @@ describe('SubgraphSparqlHttpHandler', () => {
 
       expect(response.statusCode).toBe(400);
       expect(response.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain; charset=utf-8');
+      expect((response as unknown as { bodyText: () => string }).bodyText()).toBe(
+        'Embedded SPARQL engine cannot execute queryBindings: Query shape is not supported by the embedded RDF engine',
+      );
+      expect((response as unknown as { bodyText: () => string }).bodyText()).not.toMatch(/compatibility|fallback/i);
     });
 
     it('should return structured unsupported query details when JSON is accepted', async () => {
