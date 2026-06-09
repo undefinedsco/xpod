@@ -4468,6 +4468,43 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('uses COPY stream capability for large RDF term and quad staging inserts', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-bulk-copy-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir, XPOD_RDF_EXTENSION_CAPABILITIES, true);
+    const engine = new PostgresRdfEngine({ pool });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const messageCount = 2601;
+    const quads = Array.from({ length: messageCount }, (_, index) => {
+      const message = namedNode(`${graph.value}#msg_${index}`);
+      return [
+        quad(message, namedNode(STATUS), literal(index % 2 === 0 ? 'open' : 'closed'), graph),
+        quad(message, namedNode(PRIORITY), literal(String(index), namedNode(XSD_INTEGER)), graph),
+      ];
+    }).flat();
+    quads.push(quads[0]);
+
+    try {
+      await engine.open();
+      pool.executedSql.length = 0;
+      pool.copyFromRowsStatements.length = 0;
+
+      await engine.put(quads);
+
+      const copiedTables = pool.copyFromRowsStatements.map((entry) => entry.table);
+      expect(copiedTables.some((table) => table.startsWith('rdf_terms_bulk_stage_'))).toBe(true);
+      expect(copiedTables.some((table) => table.startsWith('rdf_quads_bulk_stage_'))).toBe(true);
+      expect(pool.copyFromRowsStatements.reduce((total, entry) => total + entry.rowCount, 0)).toBeGreaterThan(messageCount * 2);
+      expect(pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_terms_bulk_stage_'))).toHaveLength(0);
+      expect(pool.executedSql.filter((sql) => sql.includes('INSERT INTO rdf_quads_bulk_stage_'))).toHaveLength(0);
+
+      const stats = await engine.storageStats();
+      expect(stats.facts.quadCount).toBe(messageCount * 2);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps bounded graph-prefix joins on RDF-3X instead of native custom-index values', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-graph-prefix-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
@@ -5986,6 +6023,7 @@ describe('PostgresRdfEngine', () => {
 class XpodRdfExtensionPgPool {
   private readonly db: PGlite;
   public readonly executedSql: string[] = [];
+  public readonly copyFromRowsStatements: Array<{ sql: string; table: string; rowCount: number }> = [];
   public readonly customIndexStatements: string[] = [];
   public readonly nativeCountAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
   public readonly nativeScanAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
@@ -5999,6 +6037,7 @@ class XpodRdfExtensionPgPool {
   public constructor(
     dataDir: string,
     private readonly capabilities: string[] = XPOD_RDF_EXTENSION_CAPABILITIES,
+    private readonly copyFromRows = false,
   ) {
     this.db = new PGlite(dataDir);
   }
@@ -6063,6 +6102,8 @@ class XpodRdfExtensionPgPool {
       this.nativeBgpGroupCountCalls,
       this.nativeBgpNumericAggregateCalls,
       this.capabilities,
+      this.copyFromRows,
+      this.copyFromRowsStatements,
     );
   }
 
@@ -6085,9 +6126,33 @@ class XpodRdfExtensionPgClient {
     private readonly nativeBgpGroupCountCalls: Array<{ sql: string; params: unknown[] }>,
     private readonly nativeBgpNumericAggregateCalls: Array<{ sql: string; params: unknown[] }>,
     private readonly capabilities: string[],
-  ) {}
+    copyFromRows: boolean,
+    private readonly copyFromRowsStatements: Array<{ sql: string; table: string; rowCount: number }>,
+  ) {
+    if (copyFromRows) {
+      this.connection = new XpodRdfCopyConnection(this.db, this.copyFromRowsStatements);
+    }
+  }
 
-  public async query(sql: string, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
+  public readonly connection?: XpodRdfCopyConnection;
+
+  public async query(sql: any, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
+    if (sql && typeof sql === 'object' && typeof sql.submit === 'function') {
+      if (!this.connection) {
+        throw new Error('COPY query received by a fake client without COPY support');
+      }
+      const submitError = sql.submit(this.connection);
+      if (submitError) {
+        sql.handleError(submitError);
+        return { rows: [] };
+      }
+      sql.handleCopyInResponse(this.connection);
+      await this.connection.flushCopy();
+      sql.handleCommandComplete?.({}, this.connection);
+      sql.handleReadyForQuery(this.connection);
+      return { rows: [] };
+    }
+
     this.executedSql.push(sql);
     const intercepted = xpodRdfExtensionProbeRows(sql, params, this.capabilities, this.nativeCountAnyCalls);
     if (intercepted) {
@@ -6132,6 +6197,144 @@ class XpodRdfExtensionPgClient {
   }
 
   public release(): void {}
+}
+
+class XpodRdfCopyConnection {
+  private sql = '';
+  private chunks: Buffer[] = [];
+
+  public constructor(
+    private readonly db: PGlite,
+    private readonly copyFromRowsStatements: Array<{ sql: string; table: string; rowCount: number }>,
+  ) {}
+
+  public query(sql: string): void {
+    this.sql = sql;
+    this.chunks = [];
+  }
+
+  public sendCopyFromChunk(chunk: Buffer): void {
+    this.chunks.push(Buffer.from(chunk));
+  }
+
+  public endCopyFrom(): void {
+  }
+
+  public sendCopyFail(message: string): void {
+    throw new Error(message);
+  }
+
+  public async flushCopy(): Promise<void> {
+    const parsed = parseCopyFromSql(this.sql);
+    const rows = parseCopyCsvRows(Buffer.concat(this.chunks).toString('utf8'));
+    this.copyFromRowsStatements.push({
+      sql: this.sql,
+      table: parsed.table,
+      rowCount: rows.length,
+    });
+
+    for (const chunk of chunkArray(rows, 500)) {
+      if (chunk.length === 0) {
+        continue;
+      }
+      const params: unknown[] = [];
+      const rowSql = chunk.map((row) => {
+        const start = params.length;
+        const placeholders = parsed.columns.map((_, columnIndex) => `$${start + columnIndex + 1}`);
+        params.push(...row);
+        return `(${placeholders.join(', ')})`;
+      });
+      await this.db.query(
+        `INSERT INTO ${testPgIdentifier(parsed.table)} (${parsed.columns.map(testPgIdentifier).join(', ')}) VALUES ${rowSql.join(', ')}`,
+        params,
+      );
+    }
+  }
+}
+
+function parseCopyFromSql(sql: string): { table: string; columns: string[] } {
+  const match = sql.match(/^COPY\s+"([^"]+)"\s+\(([^)]+)\)\s+FROM STDIN/i);
+  if (!match) {
+    throw new Error(`Unexpected COPY statement: ${sql}`);
+  }
+  return {
+    table: match[1].replaceAll('""', '"'),
+    columns: match[2].split(',').map((column) => column.trim().replace(/^"|"$/g, '').replaceAll('""', '"')),
+  };
+}
+
+function chunkArray<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function parseCopyCsvRows(input: string): Array<Array<string | null>> {
+  const rows: Array<Array<string | null>> = [];
+  let row: Array<string | null> = [];
+  let field = '';
+  let quoted = false;
+  let inQuotes = false;
+  let fieldStarted = false;
+
+  const pushField = (): void => {
+    row.push(!quoted && field === '\\N' ? null : field);
+    field = '';
+    quoted = false;
+    inQuotes = false;
+    fieldStarted = false;
+  };
+  const pushRow = (): void => {
+    pushField();
+    rows.push(row);
+    row = [];
+  };
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    if (inQuotes) {
+      if (char === '"') {
+        if (input[index + 1] === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+    if (char === '"' && !fieldStarted) {
+      quoted = true;
+      inQuotes = true;
+      fieldStarted = true;
+      continue;
+    }
+    if (char === ',') {
+      pushField();
+      continue;
+    }
+    if (char === '\n') {
+      pushRow();
+      continue;
+    }
+    if (char === '\r') {
+      continue;
+    }
+    field += char;
+    fieldStarted = true;
+  }
+  if (fieldStarted || field.length > 0 || row.length > 0) {
+    pushRow();
+  }
+  return rows;
+}
+
+function testPgIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 const XPOD_RDF_EXTENSION_CAPABILITIES = [

@@ -573,8 +573,15 @@ type RdfVectorIndexInput = PostgresRdfVectorIndexOptions | RdfVectorIndexOptions
 interface AsyncSqlExecutor {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
   exec(sql: string, params?: unknown[]): Promise<void>;
+  copyFromRows?(input: AsyncSqlCopyFromRowsInput): Promise<boolean>;
   transaction<T>(fn: (tx: AsyncSqlExecutor) => Promise<T>): Promise<T>;
   close(): Promise<void>;
+}
+
+interface AsyncSqlCopyFromRowsInput {
+  table: string;
+  columns: string[];
+  rows: Iterable<readonly unknown[]>;
 }
 
 export interface PostgresRdfEngineOptions {
@@ -742,6 +749,21 @@ class PgPoolExecutor implements AsyncSqlExecutor {
     await this.pool.query(sql, params.map((value) => normalizePgValue(value)));
   }
 
+  public async copyFromRows(input: AsyncSqlCopyFromRowsInput): Promise<boolean> {
+    const client = this.client ?? await this.pool.connect();
+    try {
+      if (!pgClientSupportsCopyFromRows(client)) {
+        return false;
+      }
+      await pgCopyFromRows(client, input);
+      return true;
+    } finally {
+      if (!this.client) {
+        client.release();
+      }
+    }
+  }
+
   public async transaction<T>(fn: (tx: AsyncSqlExecutor) => Promise<T>): Promise<T> {
     if (this.client) {
       const result = await fn(this);
@@ -772,6 +794,133 @@ class PgPoolExecutor implements AsyncSqlExecutor {
     }
     await this.pool.end();
   }
+}
+
+class PgCopyFromRowsQuery {
+  public callback?: (error: Error | null) => void;
+  private completed = false;
+
+  public constructor(
+    private readonly sql: string,
+    private readonly columns: string[],
+    private readonly rows: Iterable<readonly unknown[]>,
+  ) {}
+
+  public submit(connection: any): Error | void {
+    connection.query(this.sql);
+  }
+
+  public handleCopyInResponse(connection: any): void {
+    try {
+      for (const chunk of pgCopyCsvChunks(this.rows, this.columns.length)) {
+        connection.sendCopyFromChunk(chunk);
+      }
+      connection.endCopyFrom();
+    } catch (error) {
+      const copyError = error instanceof Error ? error : new Error(String(error));
+      try {
+        connection.sendCopyFail(copyError.message);
+      } catch {
+      }
+      this.handleError(copyError);
+    }
+  }
+
+  public handleCopyData(): void {
+  }
+
+  public handleCommandComplete(): void {
+  }
+
+  public handleReadyForQuery(): void {
+    this.finish(null);
+  }
+
+  public handleError(error: Error): void {
+    this.finish(error);
+  }
+
+  private finish(error: Error | null): void {
+    if (this.completed) {
+      return;
+    }
+    this.completed = true;
+    this.callback?.(error);
+  }
+}
+
+function pgClientSupportsCopyFromRows(client: any): boolean {
+  return typeof client?.query === 'function'
+    && typeof client?.connection?.sendCopyFromChunk === 'function'
+    && typeof client?.connection?.endCopyFrom === 'function'
+    && typeof client?.connection?.sendCopyFail === 'function';
+}
+
+async function pgCopyFromRows(client: any, input: AsyncSqlCopyFromRowsInput): Promise<void> {
+  const query = new PgCopyFromRowsQuery(pgCopyFromRowsSql(input.table, input.columns), input.columns, input.rows);
+  await new Promise<void>((resolve, reject) => {
+    query.callback = (error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    try {
+      client.query(query);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function pgCopyFromRowsSql(table: string, columns: string[]): string {
+  if (columns.length === 0) {
+    throw new Error('COPY requires at least one column');
+  }
+  return `COPY ${pgIdentifier(table)} (${columns.map((column) => pgIdentifier(column)).join(', ')}) FROM STDIN WITH (FORMAT csv, NULL '\\N')`;
+}
+
+function pgIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function* pgCopyCsvChunks(
+  rows: Iterable<readonly unknown[]>,
+  columnCount: number,
+  maxBytes = 256 * 1024,
+): Iterable<Buffer> {
+  let lines: string[] = [];
+  let bytes = 0;
+  for (const row of rows) {
+    const line = pgCopyCsvLine(row, columnCount);
+    const lineBytes = Buffer.byteLength(line);
+    if (lines.length > 0 && bytes + lineBytes > maxBytes) {
+      yield Buffer.from(lines.join(''), 'utf8');
+      lines = [];
+      bytes = 0;
+    }
+    lines.push(line);
+    bytes += lineBytes;
+  }
+  if (lines.length > 0) {
+    yield Buffer.from(lines.join(''), 'utf8');
+  }
+}
+
+function pgCopyCsvLine(row: readonly unknown[], columnCount: number): string {
+  if (row.length !== columnCount) {
+    throw new Error(`COPY row has ${row.length} values, expected ${columnCount}`);
+  }
+  return `${row.map((value) => pgCopyCsvValue(value)).join(',')}\n`;
+}
+
+function pgCopyCsvValue(value: unknown): string {
+  const normalized = normalizePgValue(value);
+  if (normalized === null || normalized === undefined) {
+    return '\\N';
+  }
+  return `"${String(normalized).replaceAll('"', '""')}"`;
 }
 
 class PgSqlBuilder {
@@ -1010,56 +1159,81 @@ class PostgresRdfTermDictionary {
       )
     `);
     try {
-      for (const chunk of chunkArray(missingEntries, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
-        await this.executor.exec(`
-          INSERT INTO ${stageTable} (
-            kind,
-            value,
-            value_head,
-            datatype_id,
-            lang,
-            hash,
-            normalized_text,
-            numeric_value
-          )
-          SELECT
-            kind,
-            value,
-            value_head,
-            datatype_id,
-            lang,
-            hash,
-            normalized_text,
-            numeric_value
-          FROM UNNEST(
-            $1::text[],
-            $2::text[],
-            $3::text[],
-            $4::bigint[],
-            $5::text[],
-            $6::text[],
-            $7::text[],
-            $8::double precision[]
-          ) AS input(
-            kind,
-            value,
-            value_head,
-            datatype_id,
-            lang,
-            hash,
-            normalized_text,
-            numeric_value
-          )
-        `, [
-          chunk.map(({ identity }) => identity.kind),
-          chunk.map(({ identity }) => identity.value),
-          chunk.map(({ identity }) => identity.valueHead),
-          chunk.map(({ identity }) => identity.datatypeId),
-          chunk.map(({ identity }) => identity.lang),
-          chunk.map(({ identity }) => identity.hash),
-          chunk.map(({ identity }) => identity.normalizedText),
-          chunk.map(({ identity }) => identity.numericValue),
-        ]);
+      const copied = await this.executor.copyFromRows?.({
+        table: stageTable,
+        columns: [
+          'kind',
+          'value',
+          'value_head',
+          'datatype_id',
+          'lang',
+          'hash',
+          'normalized_text',
+          'numeric_value',
+        ],
+        rows: missingEntries.map(({ identity }) => [
+          identity.kind,
+          identity.value,
+          identity.valueHead,
+          identity.datatypeId,
+          identity.lang,
+          identity.hash,
+          identity.normalizedText,
+          identity.numericValue,
+        ]),
+      });
+      if (!copied) {
+        for (const chunk of chunkArray(missingEntries, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
+          await this.executor.exec(`
+            INSERT INTO ${stageTable} (
+              kind,
+              value,
+              value_head,
+              datatype_id,
+              lang,
+              hash,
+              normalized_text,
+              numeric_value
+            )
+            SELECT
+              kind,
+              value,
+              value_head,
+              datatype_id,
+              lang,
+              hash,
+              normalized_text,
+              numeric_value
+            FROM UNNEST(
+              $1::text[],
+              $2::text[],
+              $3::text[],
+              $4::bigint[],
+              $5::text[],
+              $6::text[],
+              $7::text[],
+              $8::double precision[]
+            ) AS input(
+              kind,
+              value,
+              value_head,
+              datatype_id,
+              lang,
+              hash,
+              normalized_text,
+              numeric_value
+            )
+          `, [
+            chunk.map(({ identity }) => identity.kind),
+            chunk.map(({ identity }) => identity.value),
+            chunk.map(({ identity }) => identity.valueHead),
+            chunk.map(({ identity }) => identity.datatypeId),
+            chunk.map(({ identity }) => identity.lang),
+            chunk.map(({ identity }) => identity.hash),
+            chunk.map(({ identity }) => identity.normalizedText),
+            chunk.map(({ identity }) => identity.numericValue),
+          ]);
+        }
       }
 
       await this.executor.exec(`
@@ -8379,42 +8553,63 @@ export class PostgresRdfEngine implements RdfEngineLike {
       )
     `);
     try {
-      for (const chunk of chunkArray(rows, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
-        await executor.exec(`
-          INSERT INTO ${stageTable} (
-            graph_id,
-            subject_id,
-            predicate_id,
-            object_id,
-            source_file_id,
-            source_line_no
-          )
-          SELECT
-            graph_id,
-            subject_id,
-            predicate_id,
-            object_id,
-            $5::bigint AS source_file_id,
-            $6::bigint AS source_line_no
-          FROM UNNEST(
-            $1::bigint[],
-            $2::bigint[],
-            $3::bigint[],
-            $4::bigint[]
-          ) AS input(
-            graph_id,
-            subject_id,
-            predicate_id,
-            object_id
-          )
-        `, [
-          chunk.map((row) => row.graph_id),
-          chunk.map((row) => row.subject_id),
-          chunk.map((row) => row.predicate_id),
-          chunk.map((row) => row.object_id),
+      const copied = await executor.copyFromRows?.({
+        table: stageTable,
+        columns: [
+          'graph_id',
+          'subject_id',
+          'predicate_id',
+          'object_id',
+          'source_file_id',
+          'source_line_no',
+        ],
+        rows: rows.map((row) => [
+          row.graph_id,
+          row.subject_id,
+          row.predicate_id,
+          row.object_id,
           sourceId,
           sourceLineNo,
-        ]);
+        ]),
+      });
+      if (!copied) {
+        for (const chunk of chunkArray(rows, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
+          await executor.exec(`
+            INSERT INTO ${stageTable} (
+              graph_id,
+              subject_id,
+              predicate_id,
+              object_id,
+              source_file_id,
+              source_line_no
+            )
+            SELECT
+              graph_id,
+              subject_id,
+              predicate_id,
+              object_id,
+              $5::bigint AS source_file_id,
+              $6::bigint AS source_line_no
+            FROM UNNEST(
+              $1::bigint[],
+              $2::bigint[],
+              $3::bigint[],
+              $4::bigint[]
+            ) AS input(
+              graph_id,
+              subject_id,
+              predicate_id,
+              object_id
+            )
+          `, [
+            chunk.map((row) => row.graph_id),
+            chunk.map((row) => row.subject_id),
+            chunk.map((row) => row.predicate_id),
+            chunk.map((row) => row.object_id),
+            sourceId,
+            sourceLineNo,
+          ]);
+        }
       }
 
       await executor.exec(`
