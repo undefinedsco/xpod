@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { PodLookupRepository } from '../../src/identity/drizzle/PodLookupRepository';
+import { executeStatement, getIdentityDatabase } from '../../src/identity/drizzle/db';
 
 function createMockDb(isSqlite = false) {
   if (isSqlite) {
@@ -57,6 +59,26 @@ describe('PodLookupRepository', () => {
     vi.clearAllMocks();
   });
 
+  async function createRealSqliteIdentityDb(name: string) {
+    const db = getIdentityDatabase(`sqlite::memory:${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await executeStatement(db, sql`
+      CREATE TABLE IF NOT EXISTS internal_kv (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER
+      )
+    `);
+    await executeStatement(db, sql`
+      CREATE TABLE IF NOT EXISTS identity_store (
+        container TEXT NOT NULL,
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (container, id)
+      )
+    `);
+    return db;
+  }
+
   describe('findById', () => {
     it('returns pod info when found', async () => {
       const { db, execute } = createMockDb();
@@ -95,6 +117,34 @@ describe('PodLookupRepository', () => {
   });
 
   describe('findByWebId', () => {
+    it('reads pods from real SQLite identity_store rows', async () => {
+      const db = await createRealSqliteIdentityDb('pod-lookup-identity-store');
+      await executeStatement(db, sql`
+        INSERT INTO identity_store (container, id, payload)
+        VALUES ('pod', 'pod-local', ${JSON.stringify({
+          accountId: 'acc-local',
+          baseUrl: 'http://localhost:58211/linxq5uue9m3xd/',
+        })})
+      `);
+      await executeStatement(db, sql`
+        INSERT INTO identity_store (container, id, payload)
+        VALUES ('webIdLink', 'webid-local', ${JSON.stringify({
+          accountId: 'acc-local',
+          webId: 'http://localhost:58211/linxq5uue9m3xd/profile/card#me',
+        })})
+      `);
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.findByWebId('http://localhost:58211/linxq5uue9m3xd/profile/card#me');
+
+      expect(result).toMatchObject({
+        podId: 'pod-local',
+        accountId: 'acc-local',
+        baseUrl: 'http://localhost:58211/linxq5uue9m3xd/',
+        webId: 'http://localhost:58211/linxq5uue9m3xd/profile/card#me',
+      });
+    });
+
     it('returns pod info from account WebID links when storage uses a different origin', async () => {
       const { db, execute } = createMockDb();
       execute!.mockResolvedValueOnce({
@@ -405,6 +455,40 @@ describe('PodLookupRepository', () => {
   });
 
   describe('listAllPods', () => {
+    it('reads pods from real SQLite internal_kv account rows', async () => {
+      const db = await createRealSqliteIdentityDb('pod-lookup-internal-kv');
+      await executeStatement(db, sql`
+        INSERT INTO internal_kv (key, value)
+        VALUES ('accounts/data/acc-local', ${JSON.stringify({
+          '**pod**': {
+            'pod-local': {
+              baseUrl: 'http://localhost:58211/linxq5uue9m3xd/',
+              '**owner**': {
+                'owner-local': {
+                  webId: 'http://localhost:58211/linxq5uue9m3xd/profile/card#me',
+                },
+              },
+            },
+          },
+        })})
+      `);
+
+      const repo = new PodLookupRepository(db);
+      const result = await repo.listAllPods();
+
+      expect(result).toEqual([
+        {
+          podId: 'pod-local',
+          accountId: 'acc-local',
+          baseUrl: 'http://localhost:58211/linxq5uue9m3xd/',
+          webId: 'http://localhost:58211/linxq5uue9m3xd/profile/card#me',
+          storageUrl: undefined,
+          nodeId: undefined,
+          edgeNodeId: undefined,
+        },
+      ]);
+    });
+
     it('returns all pods', async () => {
       const { db, execute } = createMockDb();
       execute!.mockResolvedValueOnce({

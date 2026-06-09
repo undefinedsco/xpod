@@ -61,7 +61,7 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
     if (this.ready) return;
     
     const jsonType = isDatabaseSqlite(this.db) ? sql.raw('TEXT') : sql.raw('JSONB');
-    const tableNameId = sql.identifier([this.tableName]);
+    const tableNameId = sql.identifier(this.tableName);
     
     await executeStatement(this.db, sql`
       CREATE TABLE IF NOT EXISTS ${tableNameId} (
@@ -112,7 +112,7 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
     await this.ensureTable();
     const id = crypto.randomUUID();
     const payload = serializePayload(value as Record<string, unknown>);
-    const tableNameId = sql.identifier([this.tableName]);
+    const tableNameId = sql.identifier(this.tableName);
 
     await executeStatement(this.db, sql`
       INSERT INTO ${tableNameId} (container, id, payload)
@@ -125,7 +125,7 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
   public async has(type: string, id: string): Promise<boolean> {
     const started = Date.now();
     await this.ensureTable();
-    const tableNameId = sql.identifier([this.tableName]);
+    const tableNameId = sql.identifier(this.tableName);
     const result = await executeQuery(this.db, sql`SELECT 1 FROM ${tableNameId} WHERE container = ${type} AND id = ${id} LIMIT 1`);
     this.logDuration('has', started, { type, id }, 50, 500);
     return result.rows.length > 0;
@@ -134,7 +134,7 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
   public async get(type: string, id: string): Promise<any | undefined> {
     const started = Date.now();
     await this.ensureTable();
-    const tableNameId = sql.identifier([this.tableName]);
+    const tableNameId = sql.identifier(this.tableName);
     const result = await executeQuery(this.db, sql`SELECT payload FROM ${tableNameId} WHERE container = ${type} AND id = ${id} LIMIT 1`);
     this.logDuration('get', started, { type, id }, 50, 500);
     if (result.rows.length === 0) {
@@ -147,7 +147,7 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
   public async find(type: string, query: any): Promise<any[]> {
     const started = Date.now();
     await this.ensureTable();
-    const tableNameId = sql.identifier([this.tableName]);
+    const tableNameId = sql.identifier(this.tableName);
     const normalizedQuery = (query ?? {}) as Record<string, unknown>;
     const pushdown = this.canPushDownQuery(normalizedQuery);
     const result = pushdown
@@ -180,7 +180,7 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
   public async set(type: string, value: any): Promise<void> {
     const started = Date.now();
     await this.ensureTable();
-    const tableNameId = sql.identifier([this.tableName]);
+    const tableNameId = sql.identifier(this.tableName);
     const { id, ...rest } = value as Record<string, unknown>;
     const payload = serializePayload(rest);
     
@@ -204,14 +204,14 @@ export class DrizzleIndexedStorage implements IndexedStorage<any> {
   public async delete(type: string, id: string): Promise<void> {
     const started = Date.now();
     await this.ensureTable();
-    const tableNameId = sql.identifier([this.tableName]);
+    const tableNameId = sql.identifier(this.tableName);
     await executeStatement(this.db, sql`DELETE FROM ${tableNameId} WHERE container = ${type} AND id = ${id}`);
     this.logDuration('delete', started, { type, id }, 50, 500);
   }
 
   public async *entries(type: string): AsyncIterableIterator<any> {
     await this.ensureTable();
-    const tableNameId = sql.identifier([this.tableName]);
+    const tableNameId = sql.identifier(this.tableName);
     const result = await executeQuery(this.db, sql`SELECT id, payload FROM ${tableNameId} WHERE container = ${type}`);
     for (const row of result.rows) {
       yield {

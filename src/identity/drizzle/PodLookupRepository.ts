@@ -228,7 +228,7 @@ export class PodLookupRepository {
   }
 
   private async getAccountRowsFromKv(): Promise<InternalKvRow[]> {
-    const kvTableId = sql.identifier([this.kvTableName]);
+    const kvTableId = sql.identifier(this.kvTableName);
     try {
       const result = await executeQuery<InternalKvRow>(this.db, sql`
         SELECT key, value FROM ${kvTableId}
@@ -243,7 +243,7 @@ export class PodLookupRepository {
 
   private async getNodeAssignments(): Promise<NodeAssignmentRow[]> {
     try {
-      const tableId = sql.identifier(['cluster_node']);
+      const tableId = sql.identifier('cluster_node');
       const result = await executeQuery<{ id?: string | null; pod_base_urls?: unknown }>(this.db, sql`
         SELECT id, pod_base_urls FROM ${tableId}
         WHERE pod_base_urls IS NOT NULL AND pod_base_urls <> ''
@@ -310,7 +310,7 @@ export class PodLookupRepository {
   }
 
   private async readKvValue(key: string): Promise<unknown> {
-    const tableId = sql.identifier([this.kvTableName]);
+    const tableId = sql.identifier(this.kvTableName);
     try {
       const result = await executeQuery<{ value?: unknown }>(this.db, sql`
         SELECT value FROM ${tableId}
@@ -361,7 +361,7 @@ export class PodLookupRepository {
    * identity_store; this is the canonical clustered identity source.
    */
   private async getPodsFromIndexedStore(nodeAssignments: NodeAssignmentRow[] = []): Promise<PodLookupResult[]> {
-    const storeTableId = sql.identifier([this.indexedStoreTableName]);
+    const storeTableId = sql.identifier(this.indexedStoreTableName);
     let result: { rows?: Array<{ container?: string; id?: string; payload?: unknown }> } | undefined;
     try {
       result = await executeQuery(this.db, sql`

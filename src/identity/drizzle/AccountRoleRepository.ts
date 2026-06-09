@@ -183,7 +183,7 @@ export class AccountRoleRepository {
   }
 
   private async loadIdentityStoreAccounts(accounts: Map<string, AccountPayloadRecord>): Promise<void> {
-    const tableId = sql.identifier([IDENTITY_STORE_TABLE]);
+    const tableId = sql.identifier(IDENTITY_STORE_TABLE);
     let rows: Array<{ container?: string; id?: string; payload?: unknown }> = [];
     try {
       const result = await executeQuery<{ container?: string; id?: string; payload?: unknown }>(this.db, sql`
@@ -257,7 +257,7 @@ export class AccountRoleRepository {
   }
 
   private async loadInternalKvAccounts(accounts: Map<string, AccountPayloadRecord>): Promise<void> {
-    const tableId = sql.identifier([INTERNAL_KV_TABLE]);
+    const tableId = sql.identifier(INTERNAL_KV_TABLE);
     try {
       const result = await executeQuery<{ key?: string; value?: unknown }>(this.db, sql`
         SELECT key, value
@@ -315,7 +315,7 @@ export class AccountRoleRepository {
 
   private async updateAccountRecord(record: AccountPayloadRecord, payload: Record<string, unknown>): Promise<void> {
     if (record.source === 'identity-store') {
-      const tableId = sql.identifier([IDENTITY_STORE_TABLE]);
+      const tableId = sql.identifier(IDENTITY_STORE_TABLE);
       await executeStatement(this.db, sql`
         UPDATE ${tableId}
         SET payload = ${this.toJsonSql(payload)}
@@ -324,7 +324,7 @@ export class AccountRoleRepository {
       return;
     }
     if (record.source === 'internal-kv' && record.key) {
-      const tableId = sql.identifier([INTERNAL_KV_TABLE]);
+      const tableId = sql.identifier(INTERNAL_KV_TABLE);
       await executeStatement(this.db, sql`
         UPDATE ${tableId}
         SET value = ${JSON.stringify(payload)}
