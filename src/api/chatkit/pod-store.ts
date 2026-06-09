@@ -1191,6 +1191,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return cache?.get(threadId);
   }
 
+  private getCachedThreadMetadataList(context: StoreContext): ThreadMetadata[] {
+    const cache = (context as any)._threadMetadataCache as Map<string, ThreadMetadata> | undefined;
+    return cache ? Array.from(cache.values()) : [];
+  }
+
   private getCachedFetch(context: StoreContext): typeof fetch | undefined {
     return (context as any)._cachedFetch as typeof fetch | undefined;
   }
@@ -1432,36 +1437,45 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     try {
       const threads = await db.select().from(Thread) as ThreadRecord[];
+      const chatResourceMap = await this.getChatResourceMap(context);
+      const metadataById = new Map<string, ThreadMetadata>();
+      for (const thread of threads) {
+        const metadata = this.threadRecordToMetadata(thread, chatResourceMap);
+        metadataById.set(metadata.id, metadata);
+      }
+      for (const cached of this.getCachedThreadMetadataList(context)) {
+        metadataById.set(cached.id, cached);
+      }
+      const threadMetadata = Array.from(metadataById.values());
 
       // 排序
-      threads.sort((a: ThreadRecord, b: ThreadRecord) => {
-        const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      threadMetadata.sort((a: ThreadMetadata, b: ThreadMetadata) => {
+        const aTime = (a.created_at ?? 0) * 1000;
+        const bTime = (b.created_at ?? 0) * 1000;
         return order === 'desc' ? bTime - aTime : aTime - bTime;
       });
 
       // 分页
       let startIndex = 0;
       if (after) {
-        const afterIndex = threads.findIndex((t: ThreadRecord) => t.id === after);
+        const afterIndex = threadMetadata.findIndex((t: ThreadMetadata) => t.id === after);
         if (afterIndex !== -1) {
           startIndex = afterIndex + 1;
         }
       }
 
-      const slice = threads.slice(startIndex, startIndex + limit);
-      const hasMore = startIndex + limit < threads.length;
-
-      const chatResourceMap = await this.getChatResourceMap(context);
+      const slice = threadMetadata.slice(startIndex, startIndex + limit);
+      const hasMore = startIndex + limit < threadMetadata.length;
 
       return {
-        data: slice.map((t: ThreadRecord) => this.threadRecordToMetadata(t, chatResourceMap)),
+        data: slice,
         has_more: hasMore,
         after: slice.length > 0 ? slice[slice.length - 1].id : undefined,
       };
     } catch (error) {
       this.logger.error(`Failed to load threads: ${error}`);
-      return { data: [], has_more: false };
+      const cached = this.getCachedThreadMetadataList(context);
+      return { data: cached.slice(0, limit), has_more: cached.length > limit };
     }
   }
 
