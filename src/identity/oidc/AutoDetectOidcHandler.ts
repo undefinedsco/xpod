@@ -6,24 +6,22 @@ import {
 } from '@solid/community-server';
 
 export interface AutoDetectOidcHandlerOptions {
-  /** External account authority used by Local SP mode. It must not provide local OIDC JWKS. */
+  /** External account authority used by Cloud+Local provisioning metadata. */
   oidcIssuer?: string;
   /** Explanation used when this handler declines OIDC routes. */
   message?: string;
-  /** @deprecated Local OIDC routes must pass through to CSS; this value is ignored. */
+  /** @deprecated This handler does not cache or proxy OIDC metadata. */
   cacheMs?: number;
 }
 
 /**
  * Auto-detect OIDC Handler
  *
- * 自动检测运行模式：
- * - 如果配置了 oidcIssuer -> Local SP 模式：OIDC discovery/token/JWKS 仍全部由本地 CSS 处理
- * - 如果没有配置 oidcIssuer -> 标准模式：所有 OIDC 请求透传（由 CSS 默认 Handler 处理）
- *
- * 注意：Local SP 模式不能禁用本地 account/consent。OIDC 交互页面和
- * scoped WebID picker 必须继续由本地 CSS 提供。Cloud 只作为账号密码校验和
- * Cloud WebID/profile 权威；本地 CSS 颁发的 token 必须由本地 JWKS 验证。
+ * This component does not make Local SP the Cloud+Local OIDC issuer.
+ * Cloud+Local clients obtain tokens from the configured Cloud issuer; Local is
+ * only the storage/provision target. OIDC routes that still exist on this CSS
+ * instance are passed through to the normal CSS handler for same-origin or
+ * Standalone compatibility.
  *
  * 使用方式：在 HTTP pipeline 中替换默认的 OidcHandler
  */
@@ -35,10 +33,10 @@ export class AutoDetectOidcHandler extends HttpHandler {
   constructor(options: AutoDetectOidcHandlerOptions = {}) {
     super();
     this.oidcIssuer = options.oidcIssuer;
-    this.message = options.message ?? 'OIDC route handled by local CSS OIDC handler';
+    this.message = options.message ?? 'OIDC route passed through to CSS OIDC handler';
 
     if (this.oidcIssuer) {
-      this.logger.info(`Local SP mode enabled, account issuer: ${this.oidcIssuer}; OIDC routes pass through to local CSS`);
+      this.logger.info(`Cloud+Local storage mode enabled, token issuer: ${this.oidcIssuer}; OIDC routes pass through to CSS`);
     } else {
       this.logger.info('Standard mode enabled, OIDC requests will pass through');
     }
@@ -46,8 +44,8 @@ export class AutoDetectOidcHandler extends HttpHandler {
 
   /**
    * 判断是否处理请求
-   * - Local SP 模式：所有 OIDC 请求透传给 CSS 本地 OIDC handler
-   * - 标准模式：不处理任何请求（透传给 CSS 默认 Handler）
+   * - Cloud+Local: do not handle OIDC here; clients use the Cloud issuer
+   * - Standard/Standalone: pass through to the configured CSS OIDC handler
    */
   public override async canHandle({ request }: HttpHandlerInput): Promise<void> {
     const url = request.url ?? '';

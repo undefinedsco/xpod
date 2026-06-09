@@ -6,7 +6,7 @@ import {
 } from '@solid/community-server';
 
 export interface AutoDetectIdentityProviderHandlerOptions {
-  /** 外部 IdP 的基础 URL，如果提供则启用 Local SP mode. */
+  /** External account authority used by Cloud+Local provisioning metadata. */
   oidcIssuer?: string;
   /** Message used when no source handler is available. */
   message?: string;
@@ -17,10 +17,10 @@ export interface AutoDetectIdentityProviderHandlerOptions {
 /**
  * Auto-detect Identity Provider Handler
  *
- * Local SP mode still needs the local `/.account/*` surface: CSS keeps the
- * OIDC interaction and the scoped WebID picker here, while token validation can
- * trust the configured external issuer. Disabling this surface makes LinX fall
- * back to the Cloud issuer and lets Cloud Pods leak into a Local login flow.
+ * This handler only keeps CSS identity/account pages wired when they are
+ * intentionally opened on this server. It does not make Local SP the token
+ * issuer for Cloud+Local. LinX Cloud+Local login uses Cloud as OIDC issuer and
+ * carries provision scope so storage selection stays bound to the selected SP.
  */
 export class AutoDetectIdentityProviderHandler extends HttpHandler {
   private readonly logger = getLoggerFor(this);
@@ -35,7 +35,7 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
     this.source = options.source;
 
     if (this.oidcIssuer) {
-      this.logger.info(`Local SP mode enabled: account and consent routes stay local, external issuer: ${this.oidcIssuer}`);
+      this.logger.info(`Cloud+Local storage mode enabled: external token issuer ${this.oidcIssuer}`);
     } else {
       this.logger.info('Standard mode enabled: delegating identity routes to source IdentityProviderHandler');
     }
@@ -43,8 +43,7 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
 
   /**
    * 判断是否处理请求
-   * - Local SP mode: delegate local account/consent routes to source Handler
-   * - Standard mode: delegate to source Handler
+   * - Cloud+Local/standard/standalone: delegate account routes to source Handler
    */
   public override async canHandle(input: HttpHandlerInput): Promise<void> {
     const url = input.request.url ?? '';
@@ -63,8 +62,7 @@ export class AutoDetectIdentityProviderHandler extends HttpHandler {
 
   /**
    * 处理请求
-   * - Local SP mode: delegate to source Handler so consent remains scoped by SP
-   * - Standard mode: delegate to source Handler
+   * - Cloud+Local/standard/standalone: delegate to source Handler
    */
   public override async handle(input: HttpHandlerInput): Promise<void> {
     if (this.source) {

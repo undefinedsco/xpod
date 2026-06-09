@@ -139,9 +139,8 @@ export class LocalPodProvisioningService {
   public async createPod(input: LocalPodProvisioningInput): Promise<LocalPodProvisioningResult> {
     const podUrl = ensureTrailingSlash(new URL(`${encodeURIComponent(input.podName)}/`, this.baseUrl).toString());
     const webId = input.webId ?? buildWebIdFromIssuer(this.oidcIssuer, input.podName) ?? `${podUrl}profile/card#me`;
-    // Local storage resources are protected by the Local SP issuer even when
-    // their owner WebID is a Cloud identity.
-    const oidcIssuer = this.baseUrl;
+    // Local stores the Pod, but the owner WebID trusts the actual token issuer.
+    const oidcIssuer = this.oidcIssuer ?? this.baseUrl;
     const accountId = stableUuid(`account:${podUrl}:${webId}`);
     const podId = stableUuid(`pod:${podUrl}:${webId}`);
     const ownerId = stableUuid(`owner:${podId}:${webId}`);

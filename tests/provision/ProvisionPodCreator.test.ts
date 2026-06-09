@@ -136,7 +136,7 @@ describe('ProvisionPodCreator', () => {
         'account-1',
         expect.objectContaining({
           base: { path: `${localBaseUrl}alice/` },
-          oidcIssuer: localBaseUrl,
+          oidcIssuer: baseUrl,
           storage: `${localBaseUrl}alice/`,
           webId: `${baseUrl}alice/profile/card#me`,
         }),
@@ -187,7 +187,7 @@ describe('ProvisionPodCreator', () => {
         'account-1',
         expect.objectContaining({
           base: { path: `https://${managedDomain}/alice/` },
-          oidcIssuer: `https://${managedDomain}/`,
+          oidcIssuer: baseUrl,
           storage: `https://${managedDomain}/alice/`,
           webId: `${baseUrl}alice/profile/card#me`,
         }),
@@ -251,7 +251,7 @@ describe('ProvisionPodCreator', () => {
         'account-1',
         expect.objectContaining({
           base: { path: `${localBaseUrl}glocal99/` },
-          oidcIssuer: localBaseUrl,
+          oidcIssuer: baseUrl,
           storage: `${localBaseUrl}glocal99/`,
           webId: `${baseUrl}glocal99/profile/card#me`,
         }),

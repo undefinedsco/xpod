@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { credentialDescriptor } from '@undefineds.co/models';
 import {
   buildSecretPlan,
   buildSecretUpsertSparql,
@@ -14,7 +15,7 @@ describe('secret command helpers', () => {
       json: false,
     });
 
-    expect(plan.schemaUri).toBe('https://vocab.xpod.dev/credential#Credential');
+    expect(plan.schemaUri).toBe(credentialDescriptor.uri);
     expect(plan.subject).toBe('https://pod.example/alice/settings/credentials.ttl#infra-cloudflare-tunnel-token');
     expect(plan.resourceUrl).toBe('https://pod.example/alice/settings/credentials.ttl');
     expect(plan.redacted).toBe(true);
@@ -32,9 +33,9 @@ describe('secret command helpers', () => {
       label: 'OpenAI',
     });
 
-    expect(sparql).toContain('<https://vocab.xpod.dev/credential#apiKey> "sk-secret"');
-    expect(sparql).toContain('<https://vocab.xpod.dev/credential#provider> "openai"');
-    expect(sparql).toContain('<https://vocab.xpod.dev/credential#secretType> "api-key"');
+    expect(sparql).toContain(`<${credentialDescriptor.fields.apiKey.predicate}> "sk-secret"`);
+    expect(sparql).toContain(`<${credentialDescriptor.fields.providerId.predicate}> "openai"`);
+    expect(sparql).toContain(`<${credentialDescriptor.fields.secretType.predicate}> "api-key"`);
   });
 
   it('deletes existing secret material when revoking', () => {
@@ -47,8 +48,8 @@ describe('secret command helpers', () => {
     const sparql = buildSecretUpsertSparql(plan, { revoke: true });
 
     expect(sparql).toContain('?oldApiKey');
-    expect(sparql).toContain('<https://vocab.xpod.dev/credential#status> "revoked"');
-    expect(sparql).not.toContain('<https://vocab.xpod.dev/credential#apiKey> "');
+    expect(sparql).toContain(`<${credentialDescriptor.fields.status.predicate}> "revoked"`);
+    expect(sparql).not.toContain(`<${credentialDescriptor.fields.apiKey.predicate}> "`);
   });
 
   it('resolves compact secret selectors without exposing values', () => {

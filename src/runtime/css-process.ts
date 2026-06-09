@@ -86,6 +86,7 @@ export function createCssChildRuntimeConfig(options: {
     Boolean(options.externalOidcIssuer),
   );
   const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
+
   fs.writeFileSync(runtimeConfigPath, JSON.stringify({
     '@context': [
       CSS_COMPONENTS_CONTEXT,
@@ -100,6 +101,7 @@ export function createCssChildRuntimeConfig(options: {
   }, null, 2), 'utf-8');
 
   if (options.externalOidcIssuer) {
+    // CSS only reads package settings when the child cwd contains package.json.
     fs.writeFileSync(path.join(options.runtimeRoot, 'package.json'), JSON.stringify({
       private: true,
       name: 'xpod-css-runtime',

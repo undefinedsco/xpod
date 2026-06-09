@@ -43,8 +43,8 @@ describe('obj command helpers', () => {
     );
 
     expect(sparql).toContain(`<${credentialDescriptor.class}>`);
-    expect(sparql).toContain('<https://vocab.xpod.dev/credential#provider> "openai"');
-    expect(sparql).toContain('<https://vocab.xpod.dev/credential#apiKey> "sk-secret"');
+    expect(sparql).toContain(`<${credentialDescriptor.fields.providerId.predicate}> "openai"`);
+    expect(sparql).toContain(`<${credentialDescriptor.fields.apiKey.predicate}> "sk-secret"`);
     expect(sparql).not.toContain('udfs:');
   });
 
@@ -56,8 +56,8 @@ describe('obj command helpers', () => {
     );
 
     expect(sparql).toContain('?old_label');
-    expect(sparql).toContain('<https://vocab.xpod.dev/credential#label> "OpenAI"');
-    expect(sparql).toContain('<https://vocab.xpod.dev/credential#status> "active"');
+    expect(sparql).toContain(`<${credentialDescriptor.fields.label.predicate}> "OpenAI"`);
+    expect(sparql).toContain(`<${credentialDescriptor.fields.status.predicate}> "active"`);
   });
 
   it('builds descriptor-backed relation and delete SPARQL without inventing semantics', () => {
@@ -81,7 +81,7 @@ describe('obj command helpers', () => {
     });
 
     expect(query).toContain(`?subject a <${credentialDescriptor.class}>`);
-    expect(query).toContain('<https://vocab.xpod.dev/credential#status> "active"');
+    expect(query).toContain(`<${credentialDescriptor.fields.status.predicate}> "active"`);
     expect(query).toContain('LIMIT 25');
   });
 

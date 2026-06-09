@@ -75,10 +75,6 @@ function buildPodUrl(storageRoot: string, podName: string): string {
   return joinUrlPath(storageRoot, `${encodeURIComponent(podName)}/`);
 }
 
-function buildStorageOidcIssuer(storageRoot: string): string {
-  return normalizeUrlRoot(storageRoot) ?? joinUrlPath(storageRoot, '');
-}
-
 function stripProvisionCode(settings: PodCreatorInput['settings']): Record<string, unknown> | undefined {
   if (!settings) {
     return undefined;
@@ -175,7 +171,7 @@ export class ProvisionPodCreator extends BasePodCreator {
     const webId = input.webId ?? buildDefaultWebId(this.oidcIssuer ?? this.baseUrl, podName, this.relativeWebIdPath);
     const targetStorageRoot = buildStorageRoot(payload);
     const canonicalStorageUrl = buildPodUrl(targetStorageRoot, podName);
-    const storageOidcIssuer = buildStorageOidcIssuer(targetStorageRoot);
+    const tokenOidcIssuer = normalizeUrlRoot(this.oidcIssuer ?? this.baseUrl) ?? this.oidcIssuer ?? this.baseUrl;
 
     if (this.targetsCurrentStorageProvider(payload, targetStorageRoot)) {
       this.provisionLogger.info(
@@ -184,7 +180,7 @@ export class ProvisionPodCreator extends BasePodCreator {
       return this.handleStandardPodCreate(input, {
         baseIdentifier: { path: canonicalStorageUrl },
         linkWebId: !input.webId,
-        oidcIssuer: storageOidcIssuer,
+        oidcIssuer: tokenOidcIssuer,
         storageUrl: canonicalStorageUrl,
         webId,
       });
@@ -228,12 +224,12 @@ export class ProvisionPodCreator extends BasePodCreator {
       ...inputSettings,
       base: localBase,
       webId,
-      oidcIssuer: storageOidcIssuer,
+      oidcIssuer: tokenOidcIssuer,
       storage: canonicalStorageUrl,
     };
 
     const webIdLink = await this.prepareWebIdLink(!input.webId, webId, input.accountId, podSettings);
-    podSettings.oidcIssuer = storageOidcIssuer;
+    podSettings.oidcIssuer = tokenOidcIssuer;
     const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink.cleanupWebIdLink);
 
     this.provisionLogger.info(`Provisioned pod ${podName} on SP ${payload.spUrl}, podUrl: ${podUrl}`);

@@ -272,7 +272,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const supervisor = new Supervisor();
   const cssBinary = require.resolve('@solid/community-server/bin/server.js');
-  const cssModuleRoot = path.dirname(require.resolve('@solid/community-server/package.json'));
+  const cssModuleRoot = PACKAGE_ROOT;
   const externalOidcIssuer = resolveExternalOidcIssuer(process.env);
   const authMode = resolveAuthModeFromEnv(process.env);
   if (externalOidcIssuer) {

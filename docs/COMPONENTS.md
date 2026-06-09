@@ -115,6 +115,7 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Purpose**: Extend CSS Pod creation without replacing the account/consent flow.
 - **Functionality**:
   - Adds `storage` to Pod resource template settings so generated profile cards include `solid:storage`.
+  - Writes `solid:oidcIssuer` for the actual token issuer and `solid:storage` for the selected storage provider. In Cloud WebID + Local SP mode the WebID subject and `solid:oidcIssuer` stay on Cloud, while `solid:storage` points at the Local SP.
   - New Pod templates include `profile/card.acr`, the ACP control resource that grants public `acl:Read` access to the WebID profile. The profile document stays CSS-native and must not be proxied through the API server.
   - In remote provisioning, calls the selected SP `/provision/pods` endpoint and records the canonical storage URL in CSS account Pod data, not in the usage table.
   - Removes `provisionCode` before handing settings to CSS Pod storage.

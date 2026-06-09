@@ -75,7 +75,7 @@ describe('LocalPodProvisioningService', () => {
       expect(hasQuad(
         'https://id.undefineds.co/alice/profile/card#me',
         'http://www.w3.org/ns/solid/terms#oidcIssuer',
-        'https://node-0000.undefineds.co/',
+        'https://id.undefineds.co/',
       )).toBe(true);
       expect(hasQuad(
         'https://id.undefineds.co/alice/profile/card#me',
@@ -155,7 +155,7 @@ describe('LocalPodProvisioningService', () => {
       expect(hasQuad(
         'https://id.undefineds.co/alice/profile/card#me',
         'http://www.w3.org/ns/solid/terms#oidcIssuer',
-        'https://node-0000.undefineds.co/',
+        'https://id.undefineds.co/',
       )).toBe(true);
       expect(hasQuad(
         'https://id.undefineds.co/alice/profile/card#me',

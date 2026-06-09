@@ -67,7 +67,7 @@ describe('CSS child process env and args', () => {
     expect(apiEnv.XPOD_AUTH_MODE).toBeUndefined();
   });
 
-  it('injects external oidcIssuer through CSS package settings for legacy CSS children', () => {
+  it('injects external oidcIssuer through CSS package settings', () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-css-runtime-'));
     const configPath = path.join(runtimeRoot, 'local.json');
     fs.writeFileSync(configPath, '{"@graph":[]}', 'utf-8');
@@ -91,6 +91,10 @@ describe('CSS child process env and args', () => {
     expect(fs.existsSync(path.join(runtimeRoot, 'config', 'local.json'))).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(runtimeRoot, '.community-solid-server.config.json'), 'utf-8'))).toEqual({
       oidcIssuer: 'https://id.undefineds.co/',
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'package.json'), 'utf-8'))).toEqual({
+      private: true,
+      name: 'xpod-css-runtime',
     });
   });
 

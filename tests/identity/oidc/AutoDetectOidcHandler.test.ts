@@ -17,7 +17,7 @@ describe('AutoDetectOidcHandler', () => {
   const createRequest = (url: string): HttpRequest =>
     ({ url, method: 'GET' } as unknown as HttpRequest);
 
-  it('passes local JWKS through to the CSS OIDC handler in Local SP mode', async () => {
+  it('passes local JWKS through to the CSS OIDC handler in Cloud+Local storage mode', async () => {
     const handler = new AutoDetectOidcHandler({
       oidcIssuer: 'https://id.undefineds.co/',
     });
@@ -25,7 +25,7 @@ describe('AutoDetectOidcHandler', () => {
     await expect(handler.canHandle({
       request: createRequest('/.oidc/jwks'),
       response: mockResponse,
-    })).rejects.toThrow('OIDC route handled by local CSS OIDC handler');
+    })).rejects.toThrow('OIDC route passed through to CSS OIDC handler');
 
     expect(mockResponse.setHeader).not.toHaveBeenCalled();
     expect(mockResponse.end).not.toHaveBeenCalled();
@@ -39,11 +39,11 @@ describe('AutoDetectOidcHandler', () => {
     await expect(handler.canHandle({
       request: createRequest('/.oidc/token'),
       response: mockResponse,
-    })).rejects.toThrow('OIDC route handled by local CSS OIDC handler');
+    })).rejects.toThrow('OIDC route passed through to CSS OIDC handler');
     await expect(handler.canHandle({
       request: createRequest('/.well-known/openid-configuration'),
       response: mockResponse,
-    })).rejects.toThrow('OIDC route handled by local CSS OIDC handler');
+    })).rejects.toThrow('OIDC route passed through to CSS OIDC handler');
   });
 
   it('still rejects non-OIDC requests', async () => {

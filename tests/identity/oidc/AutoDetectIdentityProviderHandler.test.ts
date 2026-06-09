@@ -36,7 +36,7 @@ describe('AutoDetectIdentityProviderHandler', () => {
     expect(mockResponse.writeHead).not.toHaveBeenCalled();
   });
 
-  it('delegates consent routes to the source handler in Local SP mode', async () => {
+  it('delegates consent routes to the source handler in Cloud+Local storage mode', async () => {
     const handler = new AutoDetectIdentityProviderHandler({
       oidcIssuer: 'https://id.undefineds.co/',
       source,
