@@ -341,6 +341,8 @@ export interface RdfSlowQueryStatsEntry {
     templateStatus?: RdfQueryTemplateCacheExplain['status'];
     resultStatus?: RdfQueryCacheStatus;
     materializedStatus?: RdfQueryCacheStatus;
+    result?: RdfSlowQueryCacheExplain;
+    materialized?: RdfSlowQueryCacheExplain;
     scopeHash: string;
     scopeBasePath: string | null;
     scopePrincipal: string | null;
@@ -354,6 +356,17 @@ export interface RdfSlowQueryStatsEntry {
     activeOperators?: string[];
     unsupportedCapabilities?: string[];
   };
+}
+
+export interface RdfSlowQueryCacheExplain {
+  status: RdfQueryCacheStatus;
+  key?: string;
+  templateKey?: string;
+  factsDataVersion?: number;
+  ttlMs?: number;
+  maxEntries?: number;
+  maxBytes?: number;
+  stored?: boolean;
 }
 
 export interface RdfDerivedIndexRefreshResult {

@@ -247,6 +247,8 @@ export interface RdfSlowQueryEntry {
     templateStatus?: string;
     resultStatus?: string;
     materializedStatus?: string;
+    result?: RdfSlowQueryCacheExplain;
+    materialized?: RdfSlowQueryCacheExplain;
     scopeHash: string;
     scopeBasePath: string | null;
     scopePrincipal: string | null;
@@ -260,6 +262,17 @@ export interface RdfSlowQueryEntry {
     activeOperators?: string[];
     unsupportedCapabilities?: string[];
   };
+}
+
+export interface RdfSlowQueryCacheExplain {
+  status: string;
+  key?: string;
+  templateKey?: string;
+  factsDataVersion?: number;
+  ttlMs?: number;
+  maxEntries?: number;
+  maxBytes?: number;
+  stored?: boolean;
 }
 
 /**

@@ -403,7 +403,10 @@ function SlowQueryTable(props: { entries: RdfSlowQueryEntry[] }) {
                     </td>
                     <td className="px-5 py-3">
                       <div className="font-mono text-xs">
-                        tpl {entry.cache.templateStatus ?? '-'} / res {entry.cache.resultStatus ?? '-'}
+                        tpl {entry.cache.templateStatus ?? '-'} / res {entry.cache.resultStatus ?? '-'} / mat {entry.cache.materializedStatus ?? '-'}
+                      </div>
+                      <div className="mt-1 max-w-[220px] truncate font-mono text-xs text-muted-foreground">
+                        {formatSlowQueryCacheTarget(entry)}
                       </div>
                       <div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground">
                         {entry.cache.scopeBasePath ?? entry.cache.scopeHash}
@@ -560,6 +563,15 @@ function formatCacheHitRate(cache: { hitCount: number; missCount: number } | und
     return '-';
   }
   return `${formatPercent(hits / total)} (${formatInteger(hits)}/${formatInteger(total)})`;
+}
+
+function formatSlowQueryCacheTarget(entry: RdfSlowQueryEntry): string {
+  const materializedKey = entry.cache.materialized?.key;
+  if (materializedKey) {
+    return `mat ${shortKey(materializedKey)}`;
+  }
+  const resultKey = entry.cache.result?.key ?? entry.queryKey;
+  return `res ${shortKey(resultKey)}`;
 }
 
 function formatMs(value: number): string {

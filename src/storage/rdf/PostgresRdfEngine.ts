@@ -5004,6 +5004,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         templateStatus: options.template.explain.status,
         ...(options.resultCache ? { resultStatus: options.resultCache.status } : {}),
         ...(options.materializedCache ? { materializedStatus: options.materializedCache.status } : {}),
+        ...(options.resultCache ? { result: cloneQueryCacheExplain(options.resultCache) } : {}),
+        ...(options.materializedCache ? { materialized: cloneQueryCacheExplain(options.materializedCache) } : {}),
         scopeHash: cacheScope.hash,
         scopeBasePath: cacheScope.basePath,
         scopePrincipal: cacheScope.principal,
@@ -5070,7 +5072,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ...entry.derivedCache,
           evictions: { ...entry.derivedCache.evictions },
         },
-        cache: { ...entry.cache },
+        cache: {
+          ...entry.cache,
+          ...(entry.cache.result ? { result: cloneQueryCacheExplain(entry.cache.result) } : {}),
+          ...(entry.cache.materialized ? { materialized: cloneQueryCacheExplain(entry.cache.materialized) } : {}),
+        },
         acceleration: {
           ...entry.acceleration,
           ...(entry.acceleration.activeOperators ? { activeOperators: [...entry.acceleration.activeOperators] } : {}),
@@ -9426,6 +9432,10 @@ function emptyPgCacheCounterStats(): PgCacheCounterStats {
     bypassCount: 0,
     disabledCount: 0,
   };
+}
+
+function cloneQueryCacheExplain<T extends RdfQueryCacheExplain>(cache: T): T {
+  return { ...cache };
 }
 
 function bytePressure(bytes: number, maxBytes: number): number {

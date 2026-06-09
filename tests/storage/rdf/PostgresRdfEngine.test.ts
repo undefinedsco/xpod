@@ -1364,6 +1364,8 @@ describe('PostgresRdfEngine', () => {
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
       dataDir,
+      queryExplainSlowMs: 0,
+      queryExplainSlowQueryMaxEntries: 2,
     });
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const message1 = namedNode(`${graph.value}#msg_1`);
@@ -1457,6 +1459,24 @@ describe('PostgresRdfEngine', () => {
         hitCount: 1,
         missCount: 2,
         storeCount: 2,
+      });
+      expect(storage.slowQueries?.entries[0]).toMatchObject({
+        templateKey: afterWrite.metrics.explain?.cache?.template?.key,
+        selectedPath: 'rdf3x',
+        cache: {
+          resultStatus: 'not-applicable',
+          materializedStatus: 'miss',
+          result: {
+            status: 'not-applicable',
+          },
+          materialized: {
+            status: 'miss',
+            key: afterWrite.metrics.explain?.cache?.materialized?.key,
+            templateKey: afterWrite.metrics.explain?.cache?.template?.key,
+            factsDataVersion: afterWrite.metrics.explain?.cache?.materialized?.factsDataVersion,
+            stored: true,
+          },
+        },
       });
       const factsVersionEvictions = storage.derivedCache?.evictions.factsVersion;
       expect(storage.derivedCache).toMatchObject({
@@ -2419,6 +2439,15 @@ describe('PostgresRdfEngine', () => {
               templateStatus: 'hit',
               resultStatus: 'miss',
               materializedStatus: 'not-applicable',
+              result: {
+                status: 'miss',
+                key: repeated.metrics.explain?.cache?.result?.key,
+                factsDataVersion: repeated.metrics.explain?.cache?.result?.factsDataVersion,
+                stored: true,
+              },
+              materialized: {
+                status: 'not-applicable',
+              },
               scopeHash: expect.any(String),
               scopeBasePath: null,
               scopePrincipal: null,
