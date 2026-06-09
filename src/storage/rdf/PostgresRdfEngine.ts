@@ -2078,11 +2078,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.ensureReady();
     const factsDataVersion = await this.readFactsDataVersion();
     const previousFactsDataVersion = await this.readRdf3xFactsDataVersion();
-    const pendingSources = await this.dirtySourceQueueCount();
+    const sourceQueueCutoff = await this.dirtySourceQueueCutoff();
+    const pendingSources = await this.dirtySourceQueueCount(this.requireExecutor(), sourceQueueCutoff);
     const forceFull = options?.mode === 'full';
     if (!forceFull && previousFactsDataVersion === factsDataVersion) {
       const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
-      const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor());
+      const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor(), sourceQueueCutoff);
       return {
         derivedIndexProfile: 'rdf3x',
         factsDataVersion,
@@ -2104,7 +2105,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ? await this.rebuildRdf3xDerivedIndexes(factsDataVersion)
       : await this.refreshRdf3xDirtyDerivedIndexes(factsDataVersion, dirtyStats);
     const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
-    const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor());
+    const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor(), sourceQueueCutoff);
     return {
       derivedIndexProfile: 'rdf3x',
       factsDataVersion,
@@ -2614,7 +2615,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         content_type TEXT,
         source_version TEXT,
         operation TEXT NOT NULL,
-        changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        changed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
       )
     `);
     await executor.exec(`
@@ -2947,9 +2948,22 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await executor.exec(`DELETE FROM ${RDF3X_DIRTY_TERM_TABLE}`);
   }
 
-  private async dirtySourceQueueCount(executor = this.requireExecutor()): Promise<number> {
+  private async dirtySourceQueueCutoff(executor = this.requireExecutor()): Promise<string> {
+    const rows = await executor.query<{ cutoff: string }>('SELECT clock_timestamp()::text AS cutoff');
+    return rows[0]?.cutoff ?? new Date().toISOString();
+  }
+
+  private async dirtySourceQueueCount(
+    executor = this.requireExecutor(),
+    changedAtCutoff?: string,
+  ): Promise<number> {
     try {
-      const rows = await executor.query<{ count: number }>(`SELECT COUNT(*) AS count FROM ${RDF_DIRTY_SOURCE_TABLE}`);
+      const rows = changedAtCutoff
+        ? await executor.query<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM ${RDF_DIRTY_SOURCE_TABLE} WHERE changed_at <= $1::timestamptz`,
+            [changedAtCutoff],
+          )
+        : await executor.query<{ count: number }>(`SELECT COUNT(*) AS count FROM ${RDF_DIRTY_SOURCE_TABLE}`);
       return Number(rows[0]?.count ?? 0) || 0;
     } catch {
       await this.initializeDirtySourceQueueSchema(executor);
@@ -2957,14 +2971,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
   }
 
-  private async clearDirtySourceQueue(executor: AsyncSqlExecutor): Promise<number> {
+  private async clearDirtySourceQueue(executor: AsyncSqlExecutor, changedAtCutoff: string): Promise<number> {
     const rows = await executor.query<{ count: number }>(`
       WITH deleted AS (
         DELETE FROM ${RDF_DIRTY_SOURCE_TABLE}
+        WHERE changed_at <= $1::timestamptz
         RETURNING 1
       )
       SELECT COUNT(*) AS count FROM deleted
-    `);
+    `, [changedAtCutoff]);
     return Number(rows[0]?.count ?? 0) || 0;
   }
 
@@ -8592,7 +8607,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         operation,
         changed_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp())
       ON CONFLICT (source) DO UPDATE
       SET
         workspace = EXCLUDED.workspace,
@@ -8600,7 +8615,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         content_type = EXCLUDED.content_type,
         source_version = EXCLUDED.source_version,
         operation = EXCLUDED.operation,
-        changed_at = NOW()
+        changed_at = clock_timestamp()
     `, [
       source.source,
       source.workspace,

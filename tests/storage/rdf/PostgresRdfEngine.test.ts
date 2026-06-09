@@ -3003,6 +3003,84 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('does not drain dirty source writes newer than the refresh cutoff', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-source-cutoff-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const lateGraph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/19/messages.ttl');
+    const source = {
+      source: graph.value,
+      workspace: 'alice',
+      localPath: '/.data/chat/default/2026/05/18/messages.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'v1',
+    };
+    const lateSource = {
+      source: lateGraph.value,
+      workspace: 'alice',
+      localPath: '/.data/chat/default/2026/05/19/messages.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'v2',
+    };
+    const message = namedNode(`${graph.value}#msg_1`);
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(message, namedNode(STATUS), literal('open'), graph),
+      ], source);
+      const executor = (engine as unknown as {
+        requireExecutor(): { exec(sql: string, params?: unknown[]): Promise<void> };
+      }).requireExecutor();
+      await executor.exec(`
+        INSERT INTO rdf_dirty_sources (
+          source,
+          workspace,
+          local_path,
+          content_type,
+          source_version,
+          operation,
+          changed_at
+        )
+        VALUES ($1, $2, $3, $4, $5, 'upsert', $6::timestamptz)
+      `, [
+        lateSource.source,
+        lateSource.workspace,
+        lateSource.localPath,
+        lateSource.contentType,
+        lateSource.sourceVersion,
+        '2999-01-01T00:00:00.000Z',
+      ]);
+      expect((await engine.storageStats()).rdf3x?.pendingSources).toBe(2);
+
+      const refresh = await engine.refreshDerivedIndexes();
+      expect(refresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+      expect((await engine.storageStats()).rdf3x?.pendingSources).toBe(1);
+
+      await executor.exec(`
+        UPDATE rdf_dirty_sources
+        SET changed_at = $2::timestamptz
+        WHERE source = $1
+      `, [lateSource.source, '2000-01-01T00:00:00.000Z']);
+
+      const drainLateSource = await engine.refreshDerivedIndexes();
+      expect(drainLateSource.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+      expect((await engine.storageStats()).rdf3x?.pendingSources).toBe(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('skips maintenance when another worker owns the lease', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-maintenance-lease-'));
     const engine = new PostgresRdfEngine({
