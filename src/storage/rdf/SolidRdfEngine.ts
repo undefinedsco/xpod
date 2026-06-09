@@ -311,6 +311,7 @@ export class SolidRdfEngine implements RdfEngineLike {
             rdf3xFactsDataVersion: stats.factsDataVersion,
             refreshLag: Math.max(0, factsDataVersion - stats.factsDataVersion),
             syncedWithFacts: stats.factsDataVersion === factsDataVersion,
+            pendingSources: 0,
           };
         })()
       : undefined;

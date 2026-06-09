@@ -176,7 +176,7 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
           icon={Activity}
           label="RDF-3X"
           value={rdf3x?.syncedWithFacts ? '已同步' : `${rdf3x?.refreshLag ?? 0} 版本延迟`}
-          detail={`facts ${rdf3x?.factsDataVersion ?? 0} / rdf3x ${rdf3x?.rdf3xFactsDataVersion ?? 0}`}
+          detail={`facts ${rdf3x?.factsDataVersion ?? 0} / rdf3x ${rdf3x?.rdf3xFactsDataVersion ?? 0} / pending ${rdf3x?.pendingSources ?? 0}`}
           tone={rdf3x?.syncedWithFacts ? 'good' : 'warn'}
         />
         <MetricCard
@@ -240,6 +240,7 @@ function AvailableStats(props: { snapshot: Extract<RdfStatsSnapshot, { available
             <KeyValue label="driver" value={lifecycle?.driver ?? '-'} />
             <KeyValue label="ready at" value={lifecycle?.lastReadyAt ? formatDateTime(lifecycle.lastReadyAt) : '-'} />
             <KeyValue label="slowest phase" value={`${slowestColdStartPhase?.name ?? '-'} ${formatMs(slowestColdStartPhase?.durationMs ?? 0)}`} />
+            <KeyValue label="dirty sources" value={`${rdf3x?.pendingSources ?? 0}`} />
             <KeyValue label="custom index" value={coldStart ? (coldStart.customIndexDeferred ? 'deferred' : 'startup') : '-'} />
             <KeyValue label="maintenance" value={coldStart ? (coldStart.maintenanceEnabled ? 'enabled' : 'disabled') : '-'} />
           </CardContent>

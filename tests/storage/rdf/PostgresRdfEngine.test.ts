@@ -2706,6 +2706,7 @@ describe('PostgresRdfEngine', () => {
     try {
       await engine.open();
       await engine.put(quad(run1, namedNode(STATUS), literal('open'), graph), { source });
+      expect((await engine.storageStats()).rdf3x?.pendingSources).toBe(1);
       const firstRefresh = await engine.refreshDerivedIndexes();
       expect(firstRefresh.rdf3x).toMatchObject({
         factsDataVersion: 1,
@@ -2726,6 +2727,7 @@ describe('PostgresRdfEngine', () => {
         'rdf3x_stat_g',
       ]));
       expect(firstRefresh.rdf3x?.plannerStats?.durationMs).toEqual(expect.any(Number));
+      expect((await engine.storageStats()).rdf3x?.pendingSources).toBe(0);
       const secondRefresh = await engine.refreshDerivedIndexes();
       expect(secondRefresh.rdf3x).toMatchObject({
         refreshed: false,

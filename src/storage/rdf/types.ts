@@ -128,6 +128,7 @@ export interface RdfEngineStorageStats {
     rdf3xFactsDataVersion: number;
     refreshLag: number;
     syncedWithFacts: boolean;
+    pendingSources: number;
   };
   derivedCache?: RdfDerivedCacheStats;
   queryResultCache?: RdfQueryResultCacheStats;

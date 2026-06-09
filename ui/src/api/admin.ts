@@ -100,6 +100,7 @@ export interface RdfStorageStats {
     rdf3xFactsDataVersion: number;
     refreshLag: number;
     syncedWithFacts: boolean;
+    pendingSources: number;
   };
   derivedCache?: {
     cacheBytes: number;
