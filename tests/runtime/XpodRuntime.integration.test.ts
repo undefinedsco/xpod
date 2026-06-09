@@ -221,8 +221,12 @@ describe('XpodRuntime SP provisioning authorization', () => {
 
     expect(profileResponse.status).toBe(200);
     const body = await profileResponse.text();
+    const storageUrl = new URL('/alice/', runtime.baseUrl).toString();
     expect(body).toContain('https://id.undefineds.co/alice/profile/card#me');
     expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+    expect(body).toContain(runtime.baseUrl);
+    expect(body).toContain('http://www.w3.org/ns/solid/terms#storage');
+    expect(body).toContain(storageUrl);
 
     const profileContainerResponse = await runtime.fetch('/alice/profile/', {
       headers: {

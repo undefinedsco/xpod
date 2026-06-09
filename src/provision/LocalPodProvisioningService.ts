@@ -70,18 +70,6 @@ function stableUuid(input: string): string {
   ].join('-');
 }
 
-function inferIssuerFromWebId(webId: string | undefined): string | undefined {
-  if (!webId) {
-    return undefined;
-  }
-  try {
-    const url = new URL(webId);
-    return `${url.origin}/`;
-  } catch {
-    return undefined;
-  }
-}
-
 function buildWebIdFromIssuer(oidcIssuer: string | undefined, podName: string): string | undefined {
   if (!oidcIssuer) {
     return undefined;
@@ -151,7 +139,9 @@ export class LocalPodProvisioningService {
   public async createPod(input: LocalPodProvisioningInput): Promise<LocalPodProvisioningResult> {
     const podUrl = ensureTrailingSlash(new URL(`${encodeURIComponent(input.podName)}/`, this.baseUrl).toString());
     const webId = input.webId ?? buildWebIdFromIssuer(this.oidcIssuer, input.podName) ?? `${podUrl}profile/card#me`;
-    const oidcIssuer = this.oidcIssuer ?? inferIssuerFromWebId(webId) ?? this.baseUrl;
+    // Local storage resources are protected by the Local SP issuer even when
+    // their owner WebID is a Cloud identity.
+    const oidcIssuer = this.baseUrl;
     const accountId = stableUuid(`account:${podUrl}:${webId}`);
     const podId = stableUuid(`pod:${podUrl}:${webId}`);
     const ownerId = stableUuid(`owner:${podId}:${webId}`);
@@ -288,6 +278,7 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(cardUrl), namedNode(`${FOAF}primaryTopic`), namedNode(webId), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${RDF}type`), namedNode(`${FOAF}Person`), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${SOLID}oidcIssuer`), namedNode(oidcIssuer), cardGraph));
+    out.push(quad(namedNode(webId), namedNode(`${SOLID}storage`), namedNode(podUrl), cardGraph));
 
     out.push(...authorizationResources.quads);
 
