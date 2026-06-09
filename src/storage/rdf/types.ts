@@ -388,6 +388,7 @@ export interface RdfDerivedIndexRefreshResult {
 
 export interface RdfDerivedIndexRefreshOptions {
   mode?: 'auto' | 'full';
+  maxDirtySources?: number;
 }
 
 export interface RdfDerivedIndexMaintenanceResult {

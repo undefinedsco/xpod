@@ -2915,6 +2915,71 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('can drain dirty source queue in bounded batches', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-source-batch-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graphs = [
+      namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl'),
+      namedNode('https://pod.example/alice/.data/chat/default/2026/05/19/messages.ttl'),
+    ];
+    const sources = graphs.map((graph, index) => ({
+      source: graph.value,
+      workspace: 'alice',
+      localPath: `/.data/chat/default/2026/05/${18 + index}/messages.ttl`,
+      contentType: 'text/turtle',
+      sourceVersion: `v${index + 1}`,
+    }));
+    const messages = graphs.map((graph, index) => namedNode(`${graph.value}#msg_${index + 1}`));
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(messages[0], namedNode(STATUS), literal('open'), graphs[0]),
+      ], sources[0]);
+      await engine.replaceSource([
+        quad(messages[1], namedNode(STATUS), literal('closed'), graphs[1]),
+      ], sources[1]);
+      expect((await engine.storageStats()).rdf3x?.pendingSources).toBe(2);
+
+      const firstRefresh = await engine.refreshDerivedIndexes({ maxDirtySources: 1 });
+      expect(firstRefresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 2,
+        drainedSources: 1,
+      });
+      expect(firstRefresh.rdf3x?.rebuild).toMatchObject({
+        mode: 'incremental',
+        dirtyGraphs: 2,
+        factsDataVersion: 2,
+      });
+      expect((await engine.storageStats()).rdf3x).toMatchObject({
+        factsDataVersion: 2,
+        rdf3xFactsDataVersion: 2,
+        syncedWithFacts: true,
+        pendingSources: 1,
+      });
+
+      const secondRefresh = await engine.refreshDerivedIndexes({ maxDirtySources: 1 });
+      expect(secondRefresh.rdf3x).toMatchObject({
+        refreshed: false,
+        previousFactsDataVersion: 2,
+        factsDataVersion: 2,
+        syncedWithFacts: true,
+      });
+      expect(secondRefresh.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+      expect(secondRefresh.rdf3x?.rebuild).toBeUndefined();
+      expect((await engine.storageStats()).rdf3x?.pendingSources).toBe(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('maintains dirty source queue through a leased maintenance cycle', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-maintenance-'));
     const engine = new PostgresRdfEngine({
@@ -2996,6 +3061,86 @@ describe('PostgresRdfEngine', () => {
       expect(drainedOnly.refresh?.rdf3x?.sourceQueue).toEqual({
         pendingSources: 1,
         drainedSources: 1,
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies source batch size during leased maintenance cycles', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-maintenance-batch-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      maintenanceLeaseOwner: 'test-worker-a',
+      maintenanceSourceBatchSize: 1,
+    });
+    const graphs = [
+      namedNode('https://pod.example/alice/.data/task/secretary/2026/05/18/runs.ttl'),
+      namedNode('https://pod.example/alice/.data/task/secretary/2026/05/19/runs.ttl'),
+    ];
+    const sources = graphs.map((graph, index) => ({
+      source: graph.value,
+      workspace: 'alice',
+      localPath: `/.data/task/secretary/2026/05/${18 + index}/runs.ttl`,
+      contentType: 'text/turtle',
+      sourceVersion: `v${index + 1}`,
+    }));
+    const runs = graphs.map((graph, index) => namedNode(`${graph.value}#run_${index + 1}`));
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(runs[0], namedNode(STATUS), literal('queued'), graphs[0]),
+      ], sources[0]);
+      await engine.replaceSource([
+        quad(runs[1], namedNode(STATUS), literal('running'), graphs[1]),
+      ], sources[1]);
+
+      const firstCycle = await engine.maintainDerivedIndexes();
+      expect(firstCycle).toMatchObject({
+        attempted: true,
+        claimed: true,
+        refreshed: true,
+        pendingSources: 2,
+      });
+      expect(firstCycle.refresh?.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 2,
+        drainedSources: 1,
+      });
+      expect((await engine.storageStats()).rdf3x).toMatchObject({
+        factsDataVersion: 2,
+        rdf3xFactsDataVersion: 2,
+        syncedWithFacts: true,
+        pendingSources: 1,
+      });
+
+      const secondCycle = await engine.maintainDerivedIndexes();
+      expect(secondCycle).toMatchObject({
+        attempted: true,
+        claimed: true,
+        refreshed: true,
+        pendingSources: 1,
+      });
+      expect(secondCycle.refresh?.rdf3x).toMatchObject({
+        refreshed: false,
+        previousFactsDataVersion: 2,
+        factsDataVersion: 2,
+        syncedWithFacts: true,
+      });
+      expect(secondCycle.refresh?.rdf3x?.sourceQueue).toEqual({
+        pendingSources: 1,
+        drainedSources: 1,
+      });
+
+      const idle = await engine.maintainDerivedIndexes();
+      expect(idle).toEqual({
+        attempted: false,
+        claimed: false,
+        refreshed: false,
+        reason: 'idle',
+        pendingSources: 0,
       });
     } finally {
       await engine.close();

@@ -607,6 +607,7 @@ export interface PostgresRdfEngineOptions {
   rdfAccelerationRequiredCapabilities?: string[];
   deferPgCustomIndexInitialization?: boolean;
   maintenanceIntervalMs?: number;
+  maintenanceSourceBatchSize?: number;
   maintenanceLeaseTtlMs?: number;
   maintenanceLeaseOwner?: string;
   numericAggregateFactsCutoverMaxSourceRows?: number;
@@ -1563,7 +1564,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       };
     }
 
-    const refresh = await this.refreshDerivedIndexes();
+    const refresh = await this.refreshDerivedIndexes({
+      maxDirtySources: this.normalizeDirtySourceBatchSize(this.pgOptions.maintenanceSourceBatchSize),
+    });
     const drainedSources = refresh.rdf3x?.sourceQueue?.drainedSources ?? 0;
     return {
       attempted: true,
@@ -2080,10 +2083,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const previousFactsDataVersion = await this.readRdf3xFactsDataVersion();
     const sourceQueueCutoff = await this.dirtySourceQueueCutoff();
     const pendingSources = await this.dirtySourceQueueCount(this.requireExecutor(), sourceQueueCutoff);
+    const maxDirtySources = this.normalizeDirtySourceBatchSize(options?.maxDirtySources);
     const forceFull = options?.mode === 'full';
     if (!forceFull && previousFactsDataVersion === factsDataVersion) {
       const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
-      const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor(), sourceQueueCutoff);
+      const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor(), sourceQueueCutoff, maxDirtySources);
       return {
         derivedIndexProfile: 'rdf3x',
         factsDataVersion,
@@ -2105,7 +2109,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ? await this.rebuildRdf3xDerivedIndexes(factsDataVersion)
       : await this.refreshRdf3xDirtyDerivedIndexes(factsDataVersion, dirtyStats);
     const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
-    const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor(), sourceQueueCutoff);
+    const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor(), sourceQueueCutoff, maxDirtySources);
     return {
       derivedIndexProfile: 'rdf3x',
       factsDataVersion,
@@ -2971,7 +2975,39 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
   }
 
-  private async clearDirtySourceQueue(executor: AsyncSqlExecutor, changedAtCutoff: string): Promise<number> {
+  private normalizeDirtySourceBatchSize(value: number | undefined): number | undefined {
+    if (value === undefined || !Number.isFinite(value)) {
+      return undefined;
+    }
+    const batchSize = Math.floor(value);
+    return batchSize > 0 ? batchSize : undefined;
+  }
+
+  private async clearDirtySourceQueue(
+    executor: AsyncSqlExecutor,
+    changedAtCutoff: string,
+    maxSources?: number,
+  ): Promise<number> {
+    if (maxSources !== undefined) {
+      const rows = await executor.query<{ count: number }>(`
+        WITH selected AS (
+          SELECT source
+          FROM ${RDF_DIRTY_SOURCE_TABLE}
+          WHERE changed_at <= $1::timestamptz
+          ORDER BY changed_at, source
+          LIMIT $2
+        ),
+        deleted AS (
+          DELETE FROM ${RDF_DIRTY_SOURCE_TABLE} dirty
+          USING selected
+          WHERE dirty.source = selected.source
+            AND dirty.changed_at <= $1::timestamptz
+          RETURNING 1
+        )
+        SELECT COUNT(*) AS count FROM deleted
+      `, [changedAtCutoff, maxSources]);
+      return Number(rows[0]?.count ?? 0) || 0;
+    }
     const rows = await executor.query<{ count: number }>(`
       WITH deleted AS (
         DELETE FROM ${RDF_DIRTY_SOURCE_TABLE}
