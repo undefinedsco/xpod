@@ -1,5 +1,6 @@
 import { DataFactory } from 'n3';
 import type { StoreContext } from '../chatkit/store';
+import { applyRdfAccessScope, type RdfAccessScope } from '../../storage/rdf/RdfAccessScope';
 import type { RdfBindingRow, RdfEngineLike, RdfQuery, RdfQueryCacheScope, RdfSearchScope } from '../../storage/rdf/types';
 import type {
   RunContextRetrievalInput,
@@ -32,6 +33,7 @@ export interface RdfRunContextRetrieverOptions<TContext = StoreContext> {
   vectorModel?: string;
   sourcePrefix?: string | ((input: RunContextRetrievalInput<TContext>) => string | undefined);
   cacheScope?: RdfQueryCacheScope | ((input: RunContextRetrievalInput<TContext>) => RdfQueryCacheScope | undefined);
+  accessScope?: RdfAccessScope | ((input: RunContextRetrievalInput<TContext>) => RdfAccessScope | undefined);
   embedding?: (input: RunContextRetrievalInput<TContext>) => Promise<RdfRunContextEmbedding | undefined>;
   buildQuery?: (input: RunContextRetrievalInput<TContext>, embedding?: RdfRunContextEmbedding) => RdfQuery | Promise<RdfQuery>;
 }
@@ -57,7 +59,7 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
       const query = this.options.buildQuery
         ? await this.options.buildQuery(input, embedding)
         : this.buildDefaultQuery(input, embedding);
-      const result = await this.options.rdfEngine.query(query);
+      const result = await this.options.rdfEngine.query(this.withAccessScope(query, input));
       const items = result.bindings
         .map((row) => this.bindingToContextItem(row))
         .filter((item): item is RunRetrievedContextItem => item !== undefined)
@@ -197,6 +199,13 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
     return typeof this.options.cacheScope === 'function'
       ? this.options.cacheScope(input)
       : this.options.cacheScope;
+  }
+
+  private withAccessScope(query: RdfQuery, input: RunContextRetrievalInput<TContext>): RdfQuery {
+    const accessScope = typeof this.options.accessScope === 'function'
+      ? this.options.accessScope(input)
+      : this.options.accessScope;
+    return accessScope ? applyRdfAccessScope(query, accessScope) : query;
   }
 
   private bindingToContextItem(row: RdfBindingRow): RunRetrievedContextItem | undefined {

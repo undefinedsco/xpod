@@ -153,20 +153,55 @@ describe('API RDF container services', () => {
     expect(query.textSearch).toHaveLength(1);
     expect(query.vectorSearch).toBeUndefined();
   });
+
+  it('passes request RDF access scope into product Run context retrieval', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
+    const retriever = createApiRunContextRetriever(
+      { query: queryMock } as unknown as RdfEngineLike,
+    );
+
+    await retriever?.retrieve(runContextInput({
+      workspace: 'https://pod.example/alice/.data/',
+      rdfAccessScope: {
+        basePath: 'https://pod.example/alice/.data/',
+        mode: 'read',
+        principal: 'https://id.example/alice/profile/card#me',
+        allowedGraphUrls: ['https://pod.example/alice/.data/public/notes.md'],
+        deniedGraphUrls: ['https://pod.example/alice/.data/private/secret.md'],
+        version: 'acr-v4',
+      },
+    }));
+    const query = queryMock.mock.calls[0][0];
+
+    expect(query.textSearch?.[0].scope).toEqual(expect.objectContaining({
+      workspace: 'https://pod.example/alice/.data/',
+      sourcePrefix: 'https://pod.example/alice/.data/',
+      allowedSources: ['https://pod.example/alice/.data/public/notes.md'],
+      deniedSources: ['https://pod.example/alice/.data/private/secret.md'],
+    }));
+    expect(query.cache?.scope).toEqual(expect.objectContaining({
+      principal: 'https://id.example/alice/profile/card#me',
+      permissionVersion: 'acr-v4',
+    }));
+  });
 });
 
-function runContextInput(): RunContextRetrievalInput {
+function runContextInput(options: {
+  workspace?: string;
+  rdfAccessScope?: Record<string, unknown>;
+} = {}): RunContextRetrievalInput {
   return {
     runId: 'chat/default/2026/06/09/runs.ttl#run_product_context',
     threadId: 'chat/default/index.ttl#thread_product_context',
     prompt: 'runtime approvals',
     conversation: [],
     config: {
-      workspace: 'file://localhost/workspace',
+      workspace: options.workspace ?? 'file://localhost/workspace',
       runner: { type: 'codex', protocol: 'acp' },
     },
     context: {
       userId: 'alice',
+      ...(options.rdfAccessScope ? { rdfAccessScope: options.rdfAccessScope } : {}),
     },
   };
 }

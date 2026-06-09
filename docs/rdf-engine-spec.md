@@ -781,8 +781,13 @@ graph。
 - 当前第一版按请求实时列 graph 并逐 graph 授权，适合“绝大多数资源继承父权限、少量资源
   有 override”的业务假设。后续可把 override/resource permission version 做成派生索引，
   但不能牺牲 per-resource 授权语义。
-- Search/vector 端点的资源级 ACL/ACR 过滤仍需单独落在 search candidate / subject
-  hydration 边界；不能把 `/-/sparql` 的 read scope 证明外推到独立 vector result。
+- Search/vector 端点的资源级 ACL/ACR 过滤必须单独落在 search candidate / subject
+  hydration 边界；不能把 `/-/sparql` 的 read scope 证明外推到独立 vector result。第一版已把
+  `RdfRunContextRetriever` 接到 `RdfAccessScope`，让产品 Run context 的 text/vector 检索复用
+  source allow/deny/prefix 条件和 cache scope；旧 OpenAI-compatible `VectorStoreService.search`
+  会对当前 vector store 下已索引文件做有界 read prefilter，把不可读 `vectorId` 作为
+  `excludeIds` 下推给 `/-/vector/search`，并在 hydrate 成 fileUrl 后再次用当前 access token
+  做 read proof，无法证明可读或无法映射 fileUrl 的结果不返回。
 
 ## Text / Chunk / Vector
 

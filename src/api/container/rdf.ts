@@ -1,7 +1,7 @@
 import type { StoreContext } from '../chatkit/store';
 import { RdfRunContextRetriever, type RdfRunContextRetrieverOptions } from '../runs/RdfRunContextRetriever';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
-import { PostgresRdfEngine, type RdfEngineLike } from '../../storage/rdf';
+import { PostgresRdfEngine, type RdfAccessScope, type RdfEngineLike } from '../../storage/rdf';
 import type { ApiContainerConfig } from './types';
 import type { PodChatKitStore } from '../chatkit';
 import type { EmbeddingService } from '../../ai/service';
@@ -46,6 +46,7 @@ export function createApiRunContextRetriever(
   return new RdfRunContextRetriever({
     rdfEngine,
     embedding: createRunContextEmbeddingProvider(dependencies),
+    accessScope: (input) => contextRdfAccessScope(input.context),
   });
 }
 
@@ -95,4 +96,16 @@ function createRunContextEmbeddingProvider(
 
 export function isPostgresConnectionString(value: string): boolean {
   return value.startsWith('postgres://') || value.startsWith('postgresql://');
+}
+
+function contextRdfAccessScope(context: StoreContext): RdfAccessScope | undefined {
+  const candidate = context.rdfAccessScope;
+  if (!candidate || typeof candidate !== 'object') {
+    return undefined;
+  }
+  const scope = candidate as Partial<RdfAccessScope>;
+  if (typeof scope.basePath !== 'string' || !scope.basePath || typeof scope.mode !== 'string') {
+    return undefined;
+  }
+  return scope as RdfAccessScope;
 }

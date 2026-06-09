@@ -31,6 +31,8 @@ const schema = {
   credential: Credential,
 };
 
+const VECTOR_SEARCH_ACL_PREFILTER_LIMIT = 512;
+
 // ============================================
 // Types - OpenAI Compatible
 // ============================================
@@ -654,8 +656,10 @@ export class VectorStoreService {
 
     // 调用 CSS vector search，使用 subjectPrefix 过滤只搜索该 VectorStore 的文件
     const limit = request.max_num_results || 10;
+    const excludedVectorIds = await this.unreadableVectorIdsForContainer(store.url, auth, accessToken);
     const results = await this.searchVectors(aiConfig.embeddingModel, queryEmbedding, limit, accessToken, {
       subjectPrefix: store.url,  // Container URL 作为 subject 前缀
+      excludeIds: excludedVectorIds,
     });
 
     // 构建搜索结果，使用 vectorId -> fileUrl 映射
@@ -663,11 +667,14 @@ export class VectorStoreService {
     for (const r of results) {
       const vectorId = typeof r.id === 'number' ? r.id : parseInt(String(r.id), 10);
       const fileUrl = await this.getFileUrlByVectorId(vectorId, auth);
+      if (!fileUrl || !await this.canReadResource(fileUrl, accessToken)) {
+        continue;
+      }
 
       searchResults.push({
         file_id: String(r.id),
-        file_url: fileUrl || '',
-        filename: fileUrl ? this.extractFilename(fileUrl) : '',
+        file_url: fileUrl,
+        filename: this.extractFilename(fileUrl),
         score: r.score,
         attributes: {},
         content: [], // TODO: 可选返回内容片段
@@ -1132,7 +1139,7 @@ export class VectorStoreService {
     vector: number[],
     limit: number,
     accessToken: string,
-    options?: { subjectPrefix?: string },
+    options?: { subjectPrefix?: string; excludeIds?: number[] },
   ): Promise<any[]> {
     const url = `${this.cssBaseUrl}/-/vector/search`;
     
@@ -1143,6 +1150,9 @@ export class VectorStoreService {
       body.filter = {
         subject: { $startsWith: options.subjectPrefix },
       };
+    }
+    if (options?.excludeIds?.length) {
+      body.excludeIds = options.excludeIds;
     }
     
     const response = await fetch(url, {
@@ -1160,6 +1170,66 @@ export class VectorStoreService {
 
     const data = await response.json() as { results?: any[] };
     return data.results || [];
+  }
+
+  private async unreadableVectorIdsForContainer(
+    containerUrl: string,
+    auth: AuthContext,
+    accessToken: string,
+  ): Promise<number[]> {
+    const db = await this.getPodDb(auth);
+    if (!db) {
+      return [];
+    }
+
+    const allFiles = await db.select().from(IndexedFile) as any[];
+    const containerPrefix = containerUrl.endsWith('/') ? containerUrl : `${containerUrl}/`;
+    const candidates = allFiles.filter((file: any) => {
+      return typeof file.fileUrl === 'string'
+        && file.fileUrl.startsWith(containerPrefix)
+        && Number.isFinite(Number(file.vectorId));
+    });
+
+    if (candidates.length > VECTOR_SEARCH_ACL_PREFILTER_LIMIT) {
+      this.logger.warn(`Vector store ACL prefilter skipped for ${containerUrl}: ${candidates.length} indexed files exceeds limit ${VECTOR_SEARCH_ACL_PREFILTER_LIMIT}`);
+      return [];
+    }
+
+    const excluded: number[] = [];
+    for (const file of candidates) {
+      if (!await this.canReadResource(file.fileUrl, accessToken)) {
+        excluded.push(Number(file.vectorId));
+      }
+    }
+    return excluded;
+  }
+
+  private async canReadResource(resourceUrl: string, accessToken: string): Promise<boolean> {
+    if (!isHttpUrl(resourceUrl)) {
+      return false;
+    }
+
+    try {
+      const headers = { Authorization: `Bearer ${accessToken}` };
+      const head = await fetch(resourceUrl, { method: 'HEAD', headers });
+      if (head.ok) {
+        return true;
+      }
+      if (head.status !== 405) {
+        return false;
+      }
+
+      const get = await fetch(resourceUrl, {
+        method: 'GET',
+        headers: {
+          ...headers,
+          Range: 'bytes=0-0',
+        },
+      });
+      return get.ok;
+    } catch {
+      return false;
+    }
   }
 
   // ============================================
@@ -1288,5 +1358,14 @@ export class VectorStoreService {
       }
     }
     return null;
+  }
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
   }
 }

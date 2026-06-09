@@ -142,6 +142,48 @@ describe('RdfRunContextRetriever', () => {
     });
   });
 
+  it('applies RDF access scope to product Run context search candidates', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
+    const publicSource = 'https://pod.example/alice/.data/public/notes.md';
+    const accessScope = {
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read' as const,
+      principal: 'https://id.example/alice/profile/card#me',
+      allowedGraphUrls: [publicSource],
+      deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
+      version: 'acl-v2',
+    };
+    const retriever = new RdfRunContextRetriever({
+      rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
+      sourcePrefix: 'https://pod.example/alice/.data/',
+      accessScope,
+    });
+
+    await expect(retriever.retrieve({
+      ...input,
+      config: {
+        ...input.config,
+        workspace: 'https://pod.example/alice/.data/',
+      },
+    })).resolves.toBeUndefined();
+
+    const query = queryMock.mock.calls[0][0];
+    expect(query.textSearch?.[0].scope).toEqual(expect.objectContaining({
+      workspace: 'https://pod.example/alice/.data/',
+      sourcePrefix: 'https://pod.example/alice/.data/',
+      allowedSources: [publicSource],
+      deniedSourcePrefixes: ['https://pod.example/alice/.data/private/'],
+    }));
+    expect(query.cache?.scope).toEqual(expect.objectContaining({
+      mode: 'read',
+      principal: 'https://id.example/alice/profile/card#me',
+      basePath: 'https://pod.example/alice/.data/',
+      permissionVersion: 'acl-v2',
+      allowedGraphUrls: [publicSource],
+      deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
+    }));
+  });
+
   it('fails closed by default when the RDF context query is unavailable', async () => {
     const retriever = new RdfRunContextRetriever({
       rdfEngine: {
