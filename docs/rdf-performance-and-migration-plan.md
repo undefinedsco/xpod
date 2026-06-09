@@ -122,6 +122,19 @@ RDF-3X stats:
 - numeric aggregate 不能直接按“所有 aggregate 都更快”宣传。当前第一版 cutover 已让 SQLite/file-backed `RdfQueryExecutor` 对 `SUM/AVG/MIN/MAX` 回到 `RdfQuadIndex` SQL aggregate path；`Rdf3xIndex` 仍保留 numeric aggregate 能力用于 shadow/后续 cost gate。
 - Product-grade P0 不应该先做新存储；应先巩固已经证明有收益的大 BGP join、count distinct、result cache，再处理 numeric aggregate。
 
+2026-06-09 targeted rerun 只选 local/SQLite models 的两个 numeric aggregate case，
+使用当前 `default` seed（10448 quads）和 3 次迭代：
+
+| Case | Index p95 | RDF-3X shadow p95 | Ratio | Decision |
+| --- | ---: | ---: | ---: | --- |
+| queued run priority numeric aggregate | 4 ms | 2 ms | 0.50x | 低风险，但收益不构成单独 cutover 理由 |
+| message score by thread numeric aggregate | 607 ms | 539 ms | 0.89x | 不再退化，但两条路径都偏慢 |
+
+这证明当前 RDF-3X numeric aggregate 已经不是历史 2 秒级退化状态，但还不足以作为默认
+cutover：收益不稳定，且高 fanout grouped numeric 仍暴露出 500ms 级尾延迟。SQLite/file-backed
+默认继续走 `RdfQuadIndex` SQL aggregate path；重新打开 RDF-3X numeric path 前必须先有
+基于真实 workload 的 cost gate，并把 high-fanout grouped numeric 的 p95 降到发布阈值内。
+
 ### Historical PostgreSQL / PGlite Baseline Gate
 
 执行命令：
@@ -953,6 +966,7 @@ delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension sha
 
 ## Open Follow-ups
 
-- 继续用真实负载评估 SQLite/file-backed numeric aggregate 是否可以重新按 cost gate 打开 RDF-3X path。
+- 若要重新打开 SQLite/file-backed RDF-3X numeric aggregate path，需要先补 cost gate 和 high-fanout
+  grouped numeric 发布阈值；当前 P0 默认保持 `RdfQuadIndex` SQL aggregate path。
 - 如需在 RDF dashboard 展示 refresh 后首轮 / warm steady-state p50/p95，先设计 benchmark report
   ingest/retention；当前 dashboard 已覆盖 live lifecycle startup/open drill-down。
