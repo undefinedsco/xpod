@@ -4693,6 +4693,59 @@ describe('PostgresRdfEngine', () => {
         ]),
       });
       expect(pool.nativeBgpCountCalls).toHaveLength(0);
+
+      const groupCount = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        groupBy: ['thread'],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'messageCount',
+            variable: 'message',
+          },
+        ],
+        select: ['thread', 'messageCount'],
+        cache: { mode: 'bypass' },
+      });
+      expect(groupCount.bindings.map((binding) => [
+        binding.thread.value,
+        binding.messageCount.value,
+      ]).sort(([leftThread], [rightThread]) => leftThread.localeCompare(rightThread))).toEqual([
+        [thread1.value, '1'],
+        [thread2.value, '1'],
+      ]);
+      expect(groupCount.metrics.plan).toContain('PostgresRdf3xGroupCount');
+      expect(groupCount.metrics.plan.join('\n')).toContain('GraphPrefixMembershipFilter');
+      expect(groupCount.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_group_count)');
+      expect(groupCount.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
+      expect(groupCount.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexBgpGroupCount(2)');
+      expect(groupCount.metrics.explain?.planner).toMatchObject({
+        selectedPath: 'rdf3x',
+        reasons: expect.arrayContaining([
+          'native-operator-rejected',
+          'native-operator-cost-cutover',
+        ]),
+        rejectedNativeOperators: expect.arrayContaining([
+          {
+            capability: 'aggregate.bgp_group_count',
+            reason: 'cost-cutover-group-count-native-regression',
+          },
+        ]),
+      });
+      expect(pool.nativeBgpGroupCountCalls).toHaveLength(0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
