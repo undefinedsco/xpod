@@ -821,11 +821,13 @@ delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension sha
 - 冷启动 stats refresh / warm steady-state 的自动化运维指标第一版已接入 benchmark report：
   `runRdfModelsPostgresBenchmark()` 会输出 `coldStartBenchmark`，区分 startup/open duration、
   stats refresh 后首轮 query duration，以及同一 query 的 warm steady-state p50/p95；CLI summary
-  会直接打印这三段。`GET /v1/rdf/stats` 和 dashboard
-  RDF 页已先暴露 `storageStats()`、`rdf3x.refreshLag`、auth/cache scope、cache eviction
-  breakdown、top scope drill-down 和 process-local `slowQueries` 快照；慢查询条目已带 derived
-  cache pressure / eviction 摘要，`metrics.explain` 已有第一版查询级 runtime/stale/slow
-  结构化观测；后续还需要把 benchmark 口径进一步接入 dashboard drill-down。
+  会直接打印这三段。`GET /v1/rdf/stats` 和 dashboard RDF 页暴露的是 live
+  `storageStats()` 口径：engine lifecycle startup/open duration、phase timings、ready/open
+  timestamp、`rdf3x.refreshLag`、pending source、auth/cache scope、cache eviction breakdown、top
+  scope drill-down 和 process-local `slowQueries` 快照；慢查询条目已带 derived cache pressure /
+  eviction 摘要，`metrics.explain` 已有第一版查询级 runtime/stale/slow 结构化观测。refresh 后首轮
+  query 与 warm steady-state p50/p95 属于 benchmark report，不伪装成实时状态；如果后续要进
+  dashboard，应先定义稳定的 benchmark report ingest/retention 来源。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration。真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 ## Migration Strategy
@@ -952,4 +954,5 @@ delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension sha
 ## Open Follow-ups
 
 - 继续用真实负载评估 SQLite/file-backed numeric aggregate 是否可以重新按 cost gate 打开 RDF-3X path。
-- 在 RDF dashboard 上继续接入 cold-start benchmark 的 startup / refresh 后首轮 / warm steady-state drill-down。
+- 如需在 RDF dashboard 展示 refresh 后首轮 / warm steady-state p50/p95，先设计 benchmark report
+  ingest/retention；当前 dashboard 已覆盖 live lifecycle startup/open drill-down。
