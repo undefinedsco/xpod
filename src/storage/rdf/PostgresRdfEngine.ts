@@ -390,6 +390,7 @@ interface PgCustomIndexBgpJoinShapeOptions {
     key: PgPatternKey,
     filter: PgResolvedTermFilter,
   ) => boolean;
+  preferredLeadingVariables?: string[];
 }
 
 interface PgQueryResultCacheRow {
@@ -6824,6 +6825,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const canUseOrderPageWrapper = usesOrderPage
       && this.canUsePgAccelerationCapability('join.required_bgp.order_page.native');
     const usesOrderPageTopN = usesOrderPage
+      && orderBy.length === 1
       && this.canUsePgAccelerationCapability('join.required_bgp.order_page.topn.native');
     if (usesOrderPage && !canUseOrderPageWrapper && !usesOrderPageTopN) {
       return undefined;
@@ -6846,7 +6848,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...(usesOrderPage && subjectStarKey && this.canUsePgAccelerationCapability('join.subject_star') ? ['join.subject_star'] : []),
     ];
 
-    const shape = await this.pgCustomIndexBgpJoinShape(patterns, project);
+    const shape = await this.pgCustomIndexBgpJoinShape(patterns, project, usesOrderPageTopN
+      ? { preferredLeadingVariables: orderBy.map((entry) => entry.variable) }
+      : {});
     if (!shape) {
       return undefined;
     }
@@ -7172,7 +7176,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
         });
       }
 
-      const permutation = this.choosePermutation(customResolved);
+      const preferredLeadingVariables = new Set(options.preferredLeadingVariables ?? []);
+      const preferredKey = TERM_KEYS.find((key) => {
+        const variableName = pattern.variables[key];
+        return variableName !== undefined && preferredLeadingVariables.has(variableName);
+      });
+      const permutation = this.choosePermutation(customResolved, preferredKey);
       indexNames.push(pgCustomPermutationIndexName(permutation));
       indexChoices.push(permutation.name);
       for (const column of permutation.columns) {
@@ -8418,9 +8427,24 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return conditions;
   }
 
-  private choosePermutation(resolved: PgResolvedPattern): PgPermutation {
+  private choosePermutation(resolved: PgResolvedPattern, preferredKey?: PgTermKey): PgPermutation {
     const has = (key: PgTermKey): boolean => resolved.ids[key] !== undefined || Boolean(resolved.idSets[key]?.length);
     const hasObjectConstraint = has('object') || Boolean(resolved.objectRange) || Boolean(resolved.termFilters.object);
+    if (preferredKey === 'subject') {
+      if (has('predicate')) return this.permutation('PSO');
+      if (hasObjectConstraint) return this.permutation('OSP');
+      return this.permutation('SPO');
+    }
+    if (preferredKey === 'predicate') {
+      if (has('subject')) return this.permutation('SPO');
+      if (hasObjectConstraint) return this.permutation('OPS');
+      return this.permutation('PSO');
+    }
+    if (preferredKey === 'object') {
+      if (has('predicate')) return this.permutation('POS');
+      if (has('subject')) return this.permutation('SOP');
+      return this.permutation('OSP');
+    }
     if (has('subject') && has('predicate')) return this.permutation('SPO');
     if (has('subject') && hasObjectConstraint) return this.permutation('SOP');
     if (has('predicate') && has('subject')) return this.permutation('PSO');

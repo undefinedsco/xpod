@@ -3944,6 +3944,17 @@ describe('PostgresRdfEngine', () => {
       expect(pool.nativeBgpOrderPageCalls[0].sql).toContain('xpod_rdf.bgp_order_page(');
       expect(pool.nativeBgpOrderPageCalls[0].sql).not.toContain('ORDER BY join_order_t0.value DESC');
       const orderedPageParams = pool.nativeBgpOrderPageCalls[0].params;
+      const orderedPageConstantsIndex = orderedPageParams.findIndex((value, index) => (
+        index > 0
+          && Array.isArray(value)
+          && value.length > 0
+          && value.length % 4 === 0
+          && value.every((entry) => entry === null || typeof entry === 'number')
+      ));
+      expect(orderedPageParams.slice(1, orderedPageConstantsIndex)).toEqual([
+        'rdf_quads_posg_perm',
+        'rdf_quads_posg_perm',
+      ]);
       expect(orderedPageParams[orderedPageParams.length - 3]).toBe(1);
       expect(orderedPageParams[orderedPageParams.length - 1]).toBe('rdf_terms');
 
@@ -5685,6 +5696,10 @@ describe('PostgresRdfEngine', () => {
         iterations: 1,
         concurrency: 2,
       });
+      const firstQueryCase = report.coldStartBenchmark?.firstQueryAfterRefresh?.queryCase;
+      const firstQueryReturnedRows = report.coldStartBenchmark?.firstQueryAfterRefresh?.returnedRows;
+      const warmQueryCase = report.coldStartBenchmark?.warmSteadyState?.queryCase;
+      const warmReturnedRows = report.coldStartBenchmark?.warmSteadyState?.returnedRows;
 
       expect(report.engine).toBe('postgres-rdf');
       expect(report.warmupIterations).toBe(1);
@@ -5743,13 +5758,9 @@ describe('PostgresRdfEngine', () => {
           returnedRows: expect.any(Number),
         },
       });
-      expect(report.coldStartBenchmark?.warmSteadyState?.queryCase).toBe(
-        report.coldStartBenchmark?.firstQueryAfterRefresh?.queryCase,
-      );
-      expect(report.coldStartBenchmark?.firstQueryAfterRefresh?.returnedRows).toBeGreaterThan(0);
-      expect(report.coldStartBenchmark?.warmSteadyState?.returnedRows).toBe(
-        report.coldStartBenchmark?.firstQueryAfterRefresh?.returnedRows,
-      );
+      expect(warmQueryCase).toBe(firstQueryCase);
+      expect(firstQueryReturnedRows).toBeGreaterThan(0);
+      expect(warmReturnedRows).toBe(firstQueryReturnedRows);
       expect(report.planMatched).toBe(true);
       expect(report.failedPlanCases).toEqual([]);
       expect(report.concurrencyGate).toMatchObject({
@@ -5903,6 +5914,8 @@ describe('PostgresRdfEngine', () => {
         refreshMutationSources: 3,
         refreshMutationQuadsPerSource: 4,
       });
+      const postWriteFactsDataVersion = report.postWriteRefreshBenchmark?.factsDataVersion;
+      const postWriteFactsDataVersionBeforeRefresh = report.postWriteRefreshBenchmark?.factsDataVersionBeforeRefresh;
 
       expect(report.refreshBenchmark).toMatchObject({
         refreshed: true,
@@ -5929,7 +5942,7 @@ describe('PostgresRdfEngine', () => {
           drainedSources: 3,
         },
       });
-      expect(report.postWriteRefreshBenchmark?.factsDataVersion).toBe(report.postWriteRefreshBenchmark?.factsDataVersionBeforeRefresh);
+      expect(postWriteFactsDataVersion).toBe(postWriteFactsDataVersionBeforeRefresh);
       expect(report.storage.rdf3x).toMatchObject({
         pendingSources: 0,
         refreshLag: 0,
