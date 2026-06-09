@@ -117,6 +117,7 @@ const RDF_MATERIALIZED_RESULT_CACHE_TABLE = 'rdf_materialized_result_cache';
 const RDF_DIRTY_SOURCE_TABLE = 'rdf_dirty_sources';
 const RDF_MAINTENANCE_LEASE_TABLE = 'rdf_maintenance_leases';
 const RDF_ACCESS_CONTROL_OVERRIDE_TABLE = 'rdf_access_control_overrides';
+const RDF_TERMS_TABLE = 'rdf_terms';
 const RDF_DERIVED_INDEX_MAINTENANCE_LEASE = 'rdf-derived-indexes';
 const RDF3X_DIRTY_GRAPH_TABLE = 'rdf3x_dirty_graphs';
 const RDF3X_DIRTY_PAIR_TABLE = 'rdf3x_dirty_pairs';
@@ -180,6 +181,7 @@ const PG_NATIVE_CUSTOM_INDEX_OPERATOR_CAPABILITIES = [
   'index.xpod_rdf_perm.distinct_any',
   'join.required_bgp.native',
   'join.required_bgp.order_page.native',
+  'join.required_bgp.order_page.topn.native',
   'join.slot_filter.native',
   'join.subject_star',
   'join.values.native',
@@ -207,6 +209,7 @@ const NATIVE_EXTENSION_ONLY_CAPABILITIES = [
   'join.required_bgp.limit.native',
   'join.required_bgp.native',
   'join.required_bgp.order_page.native',
+  'join.required_bgp.order_page.topn.native',
   'join.slot_filter.native',
   'join.subject_star',
   'join.values.limit.native',
@@ -6818,7 +6821,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (usesOrderPage && orderBy.some((entry) => !project.includes(entry.variable))) {
       return undefined;
     }
-    if (usesOrderPage && !this.canUsePgAccelerationCapability('join.required_bgp.order_page.native')) {
+    const canUseOrderPageWrapper = usesOrderPage
+      && this.canUsePgAccelerationCapability('join.required_bgp.order_page.native');
+    const usesOrderPageTopN = usesOrderPage
+      && this.canUsePgAccelerationCapability('join.required_bgp.order_page.topn.native');
+    if (usesOrderPage && !canUseOrderPageWrapper && !usesOrderPageTopN) {
       return undefined;
     }
 
@@ -6834,7 +6841,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     const operatorCapabilities = [
       capability,
-      ...(usesOrderPage ? ['join.required_bgp.order_page.native'] : []),
+      ...(canUseOrderPageWrapper ? ['join.required_bgp.order_page.native'] : []),
+      ...(usesOrderPageTopN ? ['join.required_bgp.order_page.topn.native'] : []),
       ...(usesOrderPage && subjectStarKey && this.canUsePgAccelerationCapability('join.subject_star') ? ['join.subject_star'] : []),
     ];
 
@@ -6850,6 +6858,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
     if (!filtersShape) {
+      return undefined;
+    }
+    const orderSlots = usesOrderPage
+      ? orderBy.map((entry) => shape.variableSlotsByName.get(entry.variable))
+      : [];
+    if (orderSlots.some((slot) => slot === undefined)) {
       return undefined;
     }
     const indexPlaceholders = shape.indexNames.map((_, index) => `$${index + 2}::regclass::oid`).join(', ');
@@ -6868,7 +6882,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
         $${filterValuesParam}::bigint[]`
       : '';
     const projection = project.map((_variableName, index) => `native_join.v${index + 1} AS v${index}`).join(', ');
-    const nativeSql = `
+    const nativeSql = usesOrderPageTopN
+      ? this.pgCustomIndexBgpOrderPageTopNSql({
+        projection,
+        indexPlaceholders,
+        constantsParam,
+        variableSlotsParam,
+        outputSlotsParam,
+      })
+      : `
       SELECT ${projection}
       FROM xpod_rdf.bgp_join(
         $1::regclass,
@@ -6880,22 +6902,35 @@ export class PostgresRdfEngine implements RdfEngineLike {
         $${offsetParam}::bigint
       ) native_join
     `;
-    const nativeParams = [
-      RDF_FACTS_TABLE,
-      ...shape.indexNames,
-      shape.constants,
-      shape.variableSlots,
-      shape.outputSlots,
-      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
-      usesOrderPage ? null : query.limit ?? null,
-      usesOrderPage ? null : query.offset ?? null,
-    ];
+    const nativeParams = usesOrderPageTopN
+      ? [
+        RDF_FACTS_TABLE,
+        ...shape.indexNames,
+        shape.constants,
+        shape.variableSlots,
+        shape.outputSlots,
+        orderSlots as number[],
+        orderBy.map((entry) => entry.direction === 'desc'),
+        query.limit ?? null,
+        query.offset ?? null,
+        RDF_TERMS_TABLE,
+      ]
+      : [
+        RDF_FACTS_TABLE,
+        ...shape.indexNames,
+        shape.constants,
+        shape.variableSlots,
+        shape.outputSlots,
+        ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
+        usesOrderPage ? null : query.limit ?? null,
+        usesOrderPage ? null : query.offset ?? null,
+      ];
     const builder = new PgSqlBuilder(nativeParams);
-    const orderClause = usesOrderPage
+    const orderClause = usesOrderPage && !usesOrderPageTopN
       ? this.buildJoinOrderClause(orderBy, new Map(project.map((variableName, index) => [variableName, `ordered.v${index}`])))
       : { joins: '', orderBy: '' };
-    const pagination = usesOrderPage ? this.buildPagination(query, builder) : { sql: '', paramCount: 0 };
-    const sql = usesOrderPage
+    const pagination = usesOrderPage && !usesOrderPageTopN ? this.buildPagination(query, builder) : { sql: '', paramCount: 0 };
+    const sql = usesOrderPage && !usesOrderPageTopN
       ? `
         SELECT ${project.map((_variableName, index) => `ordered.v${index} AS v${index}`).join(', ')}
         FROM (${nativeSql}) ordered
@@ -6921,6 +6956,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ...(operatorCapabilities.includes('join.subject_star') ? [`PostgresRdfNativeCustomIndexSubjectStarJoin(${subjectStarKey};patterns:${patterns.length})`] : []),
           `PostgresRdfNativeCustomIndexBgpJoin(${patterns.length})`,
           ...(usesOrderPage ? [`PostgresRdfNativeCustomIndexBgpOrderPage(${describeQueryOrder(orderBy)})`] : []),
+          ...(usesOrderPageTopN ? [`PostgresRdfNativeCustomIndexBgpOrderPageTopN(${describeQueryOrder(orderBy)})`] : []),
           ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
           `PostgresRdf3xJoin(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
           ...this.pgCustomIndexInternalFiltersPlan(shape),
@@ -6930,6 +6966,35 @@ export class PostgresRdfEngine implements RdfEngineLike {
         query.filters?.length ?? 0,
       ),
     };
+  }
+
+  private pgCustomIndexBgpOrderPageTopNSql(options: {
+    projection: string;
+    indexPlaceholders: string;
+    constantsParam: number;
+    variableSlotsParam: number;
+    outputSlotsParam: number;
+  }): string {
+    const orderSlotsParam = options.outputSlotsParam + 1;
+    const orderDescParam = orderSlotsParam + 1;
+    const limitParam = orderDescParam + 1;
+    const offsetParam = limitParam + 1;
+    const termsTableParam = offsetParam + 1;
+    return `
+      SELECT ${options.projection}
+      FROM xpod_rdf.bgp_order_page(
+        $1::regclass,
+        $${termsTableParam}::regclass,
+        ARRAY[${options.indexPlaceholders}]::oid[],
+        $${options.constantsParam}::bigint[],
+        $${options.variableSlotsParam}::smallint[],
+        $${options.outputSlotsParam}::smallint[],
+        $${orderSlotsParam}::smallint[],
+        $${orderDescParam}::boolean[],
+        $${limitParam}::bigint,
+        $${offsetParam}::bigint
+      ) native_join
+    `;
   }
 
   private async tryQueryPgCustomIndexValuesJoin(

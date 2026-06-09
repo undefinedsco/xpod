@@ -3624,6 +3624,7 @@ describe('PostgresRdfEngine', () => {
           'index.xpod_rdf_perm.scan_any.limit': 'extension',
           'join.required_bgp': 'engine-sql',
           'join.required_bgp.order_page.native': 'extension',
+          'join.required_bgp.order_page.topn.native': 'extension',
           'join.slot_filter.native': 'extension',
           'join.subject_star': 'extension',
           'join.values': 'engine-sql',
@@ -3646,6 +3647,7 @@ describe('PostgresRdfEngine', () => {
         'index.xpod_rdf_perm.scan_any.limit',
         'join.required_bgp.native',
         'join.required_bgp.order_page.native',
+        'join.required_bgp.order_page.topn.native',
         'join.slot_filter.native',
         'join.subject_star',
         'join.values.limit.native',
@@ -3666,6 +3668,7 @@ describe('PostgresRdfEngine', () => {
         'join.required_bgp',
         'join.required_bgp.native',
         'join.required_bgp.order_page.native',
+        'join.required_bgp.order_page.topn.native',
         'join.slot_filter.native',
         'join.subject_star',
         'join.values',
@@ -3930,15 +3933,19 @@ describe('PostgresRdfEngine', () => {
       expect(orderedPageResult.bindings[0].message.value).toBe(message2.value);
       expect(orderedPageResult.bindings[0].createdAt.value).toBe('2026-05-18T01:10:00.000Z');
       expect(orderedPageResult.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.order_page.native)');
+      expect(orderedPageResult.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.order_page.topn.native)');
       expect(orderedPageResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpOrderPage(desc:createdAt)');
+      expect(orderedPageResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpOrderPageTopN(desc:createdAt)');
       expect(orderedPageResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpJoin(2)');
       expect(orderedPageResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpLimit');
       expect(orderedPageResult.metrics.plan).not.toContain('PostgresRdf3xJoinLimit');
-      expect(pool.nativeBgpJoinCalls).toHaveLength(2);
-      expect(pool.nativeBgpJoinCalls[1].sql).toContain('ORDER BY join_order_t0.value DESC');
-      expect(pool.nativeBgpJoinCalls[1].sql).toMatch(/LIMIT\s+\$\d+/);
-      const orderedPageParams = pool.nativeBgpJoinCalls[1].params;
-      expect(orderedPageParams[orderedPageParams.length - 1]).toBe(1);
+      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
+      expect(pool.nativeBgpOrderPageCalls).toHaveLength(1);
+      expect(pool.nativeBgpOrderPageCalls[0].sql).toContain('xpod_rdf.bgp_order_page(');
+      expect(pool.nativeBgpOrderPageCalls[0].sql).not.toContain('ORDER BY join_order_t0.value DESC');
+      const orderedPageParams = pool.nativeBgpOrderPageCalls[0].params;
+      expect(orderedPageParams[orderedPageParams.length - 3]).toBe(1);
+      expect(orderedPageParams[orderedPageParams.length - 1]).toBe('rdf_terms');
 
       const bgpCountResult = await engine.query({
         patterns: [
@@ -5015,11 +5022,83 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('keeps the native ordered-page wrapper when the extension lacks the top-N ABI', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-order-page-wrapper-'));
+    const pool = new XpodRdfExtensionPgPool(
+      dataDir,
+      XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'join.required_bgp.order_page.topn.native'),
+    );
+    const engine = new PostgresRdfEngine({
+      pool,
+      rdfAccelerationProfile: 'pg-custom-index',
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+
+    try {
+      await engine.open();
+      const stats = (await engine.storageStats()).pgAcceleration;
+      expect(stringList(stats?.capabilities)).toContain('join.required_bgp.order_page.native');
+      expect(stringList(stats?.capabilities)).not.toContain('join.required_bgp.order_page.topn.native');
+      expect(stats?.activeOperators ?? []).toContain('join.required_bgp.order_page.native');
+      expect(stats?.activeOperators ?? []).not.toContain('join.required_bgp.order_page.topn.native');
+
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message1, namedNode(CREATED), literal('2026-05-18T01:00:00.000Z'), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(CREATED), literal('2026-05-18T01:10:00.000Z'), graph),
+      ]);
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(CREATED),
+            object: { variable: 'createdAt' },
+          },
+        ],
+        select: ['message', 'createdAt'],
+        orderBy: [
+          {
+            variable: 'createdAt',
+            direction: 'desc',
+          },
+        ],
+        limit: 1,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].message.value).toBe(message2.value);
+      expect(result.metrics.plan).toContain('XpodRdfExtensionOperator(join.required_bgp.order_page.native)');
+      expect(result.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpOrderPage(desc:createdAt)');
+      expect(result.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.required_bgp.order_page.topn.native)');
+      expect(result.metrics.plan).not.toContain('PostgresRdfNativeCustomIndexBgpOrderPageTopN');
+      expect(result.metrics.plan).not.toContain('PostgresRdf3xJoinLimit');
+      expect(pool.nativeBgpJoinCalls).toHaveLength(1);
+      expect(pool.nativeBgpJoinCalls[0].sql).toContain('ORDER BY join_order_t0.value DESC');
+      expect(pool.nativeBgpJoinCalls[0].sql).toMatch(/LIMIT\s+\$\d+/);
+      expect(pool.nativeBgpOrderPageCalls).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to RDF-3X ordered joins when the native order-page operator is absent', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-order-page-fallback-'));
     const pool = new XpodRdfExtensionPgPool(
       dataDir,
-      XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => capability !== 'join.required_bgp.order_page.native'),
+      XPOD_RDF_EXTENSION_CAPABILITIES.filter((capability) => !capability.startsWith('join.required_bgp.order_page')),
     );
     const engine = new PostgresRdfEngine({
       pool,
@@ -5033,7 +5112,9 @@ describe('PostgresRdfEngine', () => {
       await engine.open();
       const stats = (await engine.storageStats()).pgAcceleration;
       expect(stringList(stats?.capabilities)).not.toContain('join.required_bgp.order_page.native');
+      expect(stringList(stats?.capabilities)).not.toContain('join.required_bgp.order_page.topn.native');
       expect(stats?.activeOperators ?? []).not.toContain('join.required_bgp.order_page.native');
+      expect(stats?.activeOperators ?? []).not.toContain('join.required_bgp.order_page.topn.native');
       expect(stats?.activeOperators ?? []).toContain('join.required_bgp.native');
 
       await engine.put([
@@ -5844,10 +5925,12 @@ describe('PostgresRdfEngine', () => {
       expect(result.name).toBe('extreme native exact graph ordered-page query');
       expect(result.returnedRows).toBe(128);
       expect(result.physicalPlan).toContain('XpodRdfExtensionOperator(join.required_bgp.order_page.native)');
+      expect(result.physicalPlan).toContain('XpodRdfExtensionOperator(join.required_bgp.order_page.topn.native)');
       expect(result.physicalPlan).toContain('PostgresRdfNativeCustomIndexBgpOrderPage(desc:createdAt)');
+      expect(result.physicalPlan).toContain('PostgresRdfNativeCustomIndexBgpOrderPageTopN(desc:createdAt)');
       expect(result.physicalPlan).toContain('PostgresRdfNativeCustomIndexBgpLimit');
       expect(result.physicalPlan).not.toContain('PostgresRdf3xJoinLimit');
-      expect(pool.nativeBgpJoinCalls.length).toBeGreaterThan(0);
+      expect(pool.nativeBgpOrderPageCalls.length).toBeGreaterThan(0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -6095,6 +6178,7 @@ class XpodRdfExtensionPgPool {
   public readonly nativeScanAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
   public readonly nativeDistinctAnyCalls: Array<{ sql: string; params: unknown[] }> = [];
   public readonly nativeBgpJoinCalls: Array<{ sql: string; params: unknown[] }> = [];
+  public readonly nativeBgpOrderPageCalls: Array<{ sql: string; params: unknown[] }> = [];
   public readonly nativeBgpCountCalls: Array<{ sql: string; params: unknown[] }> = [];
   public readonly nativeValuesJoinCalls: Array<{ sql: string; params: unknown[] }> = [];
   public readonly nativeBgpGroupCountCalls: Array<{ sql: string; params: unknown[] }> = [];
@@ -6125,6 +6209,10 @@ class XpodRdfExtensionPgPool {
     if (sql.includes('xpod_rdf.bgp_join(')) {
       this.nativeBgpJoinCalls.push({ sql, params });
       return { rows: await xpodRdfExtensionBgpJoinRows(this.db, sql, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_order_page(')) {
+      this.nativeBgpOrderPageCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpOrderPageRows(this.db, params) };
     }
     if (sql.includes('xpod_rdf.values_join(')) {
       this.nativeValuesJoinCalls.push({ sql, params });
@@ -6163,6 +6251,7 @@ class XpodRdfExtensionPgPool {
       this.nativeScanAnyCalls,
       this.nativeDistinctAnyCalls,
       this.nativeBgpJoinCalls,
+      this.nativeBgpOrderPageCalls,
       this.nativeBgpCountCalls,
       this.nativeValuesJoinCalls,
       this.nativeBgpGroupCountCalls,
@@ -6187,6 +6276,7 @@ class XpodRdfExtensionPgClient {
     private readonly nativeScanAnyCalls: Array<{ sql: string; params: unknown[] }>,
     private readonly nativeDistinctAnyCalls: Array<{ sql: string; params: unknown[] }>,
     private readonly nativeBgpJoinCalls: Array<{ sql: string; params: unknown[] }>,
+    private readonly nativeBgpOrderPageCalls: Array<{ sql: string; params: unknown[] }>,
     private readonly nativeBgpCountCalls: Array<{ sql: string; params: unknown[] }>,
     private readonly nativeValuesJoinCalls: Array<{ sql: string; params: unknown[] }>,
     private readonly nativeBgpGroupCountCalls: Array<{ sql: string; params: unknown[] }>,
@@ -6235,6 +6325,10 @@ class XpodRdfExtensionPgClient {
     if (sql.includes('xpod_rdf.bgp_join(')) {
       this.nativeBgpJoinCalls.push({ sql, params });
       return { rows: await xpodRdfExtensionBgpJoinRows(this.db, sql, params) };
+    }
+    if (sql.includes('xpod_rdf.bgp_order_page(')) {
+      this.nativeBgpOrderPageCalls.push({ sql, params });
+      return { rows: await xpodRdfExtensionBgpOrderPageRows(this.db, params) };
     }
     if (sql.includes('xpod_rdf.values_join(')) {
       this.nativeValuesJoinCalls.push({ sql, params });
@@ -6410,6 +6504,7 @@ const XPOD_RDF_EXTENSION_CAPABILITIES = [
   'join.required_bgp',
   'join.required_bgp.native',
   'join.required_bgp.order_page.native',
+  'join.required_bgp.order_page.topn.native',
   'join.subject_star',
   'join.values.native',
   'join.values.limit.native',
@@ -6612,6 +6707,59 @@ async function xpodRdfExtensionBgpJoinRows(db: PGlite, sql: string, params: unkn
   visit(0, new Map());
   const nativeRows = output.slice(offset, limit === undefined ? undefined : offset + limit);
   return xpodRdfExtensionApplyOuterOrderPage(db, sql, params, nativeRows);
+}
+
+async function xpodRdfExtensionBgpOrderPageRows(db: PGlite, params: unknown[]): Promise<Array<Record<string, unknown>>> {
+  await db.waitReady;
+  const constantsIndex = params.findIndex((value, index) => (
+    index > 0
+      && Array.isArray(value)
+      && value.length > 0
+      && value.length % 4 === 0
+      && value.every((entry) => entry === null || typeof entry === 'number')
+  ));
+  if (constantsIndex < 0) {
+    return [];
+  }
+  const outputSlots = params[constantsIndex + 2] as number[];
+  const orderSlots = params[constantsIndex + 3] as number[];
+  const orderDesc = params[constantsIndex + 4] as boolean[];
+  const limit = typeof params[constantsIndex + 5] === 'number' ? Math.max(0, params[constantsIndex + 5] as number) : undefined;
+  const offset = typeof params[constantsIndex + 6] === 'number' ? Math.max(0, params[constantsIndex + 6] as number) : 0;
+  const joinRows = await xpodRdfExtensionBgpJoinRows(
+    db,
+    'SELECT * FROM xpod_rdf.bgp_join(',
+    [
+      params[0],
+      ...params.slice(1, constantsIndex),
+      params[constantsIndex],
+      params[constantsIndex + 1],
+      outputSlots,
+      null,
+      null,
+    ],
+  );
+  const terms = await db.query('SELECT id, value FROM rdf_terms');
+  const valueById = new Map((terms.rows as Array<Record<string, unknown>>).map((term) => [
+    Number(term.id),
+    String(term.value ?? ''),
+  ]));
+  const orderColumns = orderSlots.map((slot) => outputSlots.indexOf(slot));
+  if (orderColumns.some((index) => index < 0)) {
+    return [];
+  }
+  const ordered = [...joinRows].sort((left, right) => {
+    for (const [index, outputIndex] of orderColumns.entries()) {
+      const leftValue = valueById.get(Number(left[`v${outputIndex}`])) ?? '';
+      const rightValue = valueById.get(Number(right[`v${outputIndex}`])) ?? '';
+      const comparison = leftValue.localeCompare(rightValue);
+      if (comparison !== 0) {
+        return orderDesc[index] ? -comparison : comparison;
+      }
+    }
+    return 0;
+  });
+  return ordered.slice(offset, limit === undefined ? undefined : offset + limit);
 }
 
 async function xpodRdfExtensionApplyOuterOrderPage(
