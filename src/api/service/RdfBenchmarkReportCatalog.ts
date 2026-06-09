@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { PACKAGE_ROOT } from '../../runtime';
+import { PACKAGE_ROOT } from '../../runtime/package-root';
 
 const DEFAULT_MAX_REPORTS = 20;
 const DEFAULT_MAX_DEPTH = 4;
@@ -52,6 +52,7 @@ export interface RdfBenchmarkReportSummary {
   copyFallbacks?: number;
   refreshDurationMs?: number;
   plannerStatsDurationMs?: number;
+  plannerStatsAnalyzedTables: string[];
   coldStartDurationMs?: number;
   firstQueryDurationMs?: number;
   warmP50DurationMs?: number;
@@ -211,6 +212,8 @@ function summarizeBenchmarkReport(input: unknown, reportPath: string): RdfBenchm
   const storage = recordValue(report.storage);
   const pgAcceleration = recordValue(storage?.pgAcceleration);
   const refresh = recordValue(report.refreshBenchmark) ?? recordValue(report.refresh);
+  const rdf3xRefresh = recordValue(recordValue(report.refresh)?.rdf3x);
+  const plannerStats = recordValue(rdf3xRefresh?.plannerStats);
   const coldStart = recordValue(report.coldStartBenchmark);
   const startup = recordValue(coldStart?.startup);
   const firstQuery = recordValue(coldStart?.firstQueryAfterRefresh);
@@ -243,6 +246,7 @@ function summarizeBenchmarkReport(input: unknown, reportPath: string): RdfBenchm
     copyFallbacks: numberValue(copyFromRows?.fallbacks),
     refreshDurationMs: numberValue(refresh?.durationMs),
     plannerStatsDurationMs: numberValue(refresh?.plannerStatsDurationMs),
+    plannerStatsAnalyzedTables: stringArrayValue(plannerStats?.analyzedTables),
     coldStartDurationMs: numberValue(startup?.durationMs),
     firstQueryDurationMs: numberValue(firstQuery?.durationMs),
     warmP50DurationMs: numberValue(warmSteadyState?.p50DurationMs),

@@ -643,7 +643,7 @@ function BenchmarkReportRow(props: { report: RdfBenchmarkReportSummary }) {
       <td className="whitespace-nowrap px-5 py-3 font-mono">
         <div>{formatMs(report.refreshDurationMs ?? 0)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          planner {formatMs(report.plannerStatsDurationMs ?? 0)}
+          planner {formatMs(report.plannerStatsDurationMs ?? 0)} / {formatInteger(report.plannerStatsAnalyzedTables?.length ?? 0)}
         </div>
       </td>
       <td className="whitespace-nowrap px-5 py-3 font-mono">

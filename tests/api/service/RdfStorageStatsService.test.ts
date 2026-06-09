@@ -61,6 +61,7 @@ describe('RdfStorageStatsService', () => {
         engine: 'postgres-rdf',
         failedPlanCases: [],
         failedConcurrencyCases: [],
+        plannerStatsAnalyzedTables: [],
         pgActiveOperators: [],
       }],
     };

@@ -102,6 +102,7 @@
     "test:storage": "vitest --run tests/storage/",
     "benchmark:rdf-models": "bun scripts/rdf-models-benchmark.ts",
     "benchmark:rdf-models:pg": "bun scripts/rdf-postgres-models-benchmark.ts",
+    "benchmark:rdf-models:pg:gate": "bun scripts/assert-rdf-benchmark-report-gate.ts",
     "test:rdf:access-smoke": "bun scripts/run-rdf-access-smoke.ts",
     "ops:rdf:reset:pg": "bun scripts/reset-postgres-rdf-index.ts",
     "dev:cluster:lite": "docker compose -f docker-compose.standalone.yml up --build",

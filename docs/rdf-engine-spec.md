@@ -1115,6 +1115,7 @@ bun run benchmark:rdf-models -- --scale=small --iterations=1 --caseProfile=fusio
 bun run benchmark:rdf-models -- --scale=medium --targetQuads=36000 --iterations=1
 bun run benchmark:rdf-models:pg -- --scale=small --iterations=1
 bun run benchmark:rdf-models:pg -- --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme
+bun run benchmark:rdf-models:pg:gate -- --root=.test-data/rdf-engine
 bun run test:w3c
 ```
 

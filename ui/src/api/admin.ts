@@ -103,6 +103,7 @@ export interface RdfBenchmarkReportSummary {
   copyFallbacks?: number;
   refreshDurationMs?: number;
   plannerStatsDurationMs?: number;
+  plannerStatsAnalyzedTables?: string[];
   coldStartDurationMs?: number;
   firstQueryDurationMs?: number;
   warmP50DurationMs?: number;

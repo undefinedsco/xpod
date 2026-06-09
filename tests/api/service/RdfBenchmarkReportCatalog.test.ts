@@ -53,6 +53,13 @@ describe('RdfBenchmarkReportCatalog', () => {
             durationMs: 1416,
             plannerStatsDurationMs: 512,
           },
+          refresh: {
+            rdf3x: {
+              plannerStats: {
+                analyzedTables: ['rdf_quads', 'rdf3x_graph_stats'],
+              },
+            },
+          },
           coldStartBenchmark: {
             startup: { durationMs: 106 },
             firstQueryAfterRefresh: { durationMs: 402 },
@@ -99,6 +106,7 @@ describe('RdfBenchmarkReportCatalog', () => {
       copyFallbacks: 0,
       refreshDurationMs: 1416,
       plannerStatsDurationMs: 512,
+      plannerStatsAnalyzedTables: ['rdf_quads', 'rdf3x_graph_stats'],
       coldStartDurationMs: 106,
       firstQueryDurationMs: 402,
       warmP50DurationMs: 311,
