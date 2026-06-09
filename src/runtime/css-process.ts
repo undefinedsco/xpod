@@ -1,11 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { extractComponentParameterContext, normalizeComponentParameterKeys } from './component-parameter-keys';
+import { rewriteConfigAssetPaths } from './config-asset-paths';
 import { oidcTokenEndpoint } from './oidc-issuer';
 import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, isAuthModeEnvKey, resolveAuthModeInput } from '../authorization/AuthMode';
 import { cssAuthModeConfigImports } from './bootstrap';
 
+const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
+const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
 const CSS_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld';
 const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
 const ASYNC_HANDLERS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld';
@@ -79,6 +83,7 @@ export function createCssChildRuntimeConfig(options: {
   const configImportPath = rewriteConfigForFileUrlImportsIfNeeded(
     path.resolve(options.configPath),
     path.join(options.runtimeRoot, 'config'),
+    Boolean(options.externalOidcIssuer),
   );
   const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
   fs.writeFileSync(runtimeConfigPath, JSON.stringify({
@@ -113,9 +118,11 @@ export function createCssChildRuntimeConfig(options: {
 function rewriteConfigForFileUrlImportsIfNeeded(
   configPath: string,
   outputDir: string,
+  forceCopy = false,
   rewritten = new Map<string, string>(),
 ): string {
-  if (!pathNeedsEscapedFileUrl(configPath)) {
+  const componentContext = readPackageComponentContext(configPath);
+  if (!forceCopy && !pathNeedsEscapedFileUrl(configPath) && !componentContext) {
     return configPath;
   }
 
@@ -129,10 +136,62 @@ function rewriteConfigForFileUrlImportsIfNeeded(
   rewritten.set(configPath, outputPath);
 
   const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+  preserveConfigBase(parsed, configPath);
+  normalizeComponentParameterKeys(parsed, componentContext);
+  rewriteConfigAssetPaths(parsed, configPath, resolveConfigAssetPath);
   parsed.import = rewriteConfigImports(configPath, parsed.import, outputDir, rewritten);
   fs.writeFileSync(outputPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf-8');
 
   return outputPath;
+}
+
+function readPackageComponentContext(configPath: string): ReturnType<typeof extractComponentParameterContext> {
+  const contextPath = path.join(resolveConfigAssetBase(configPath), 'dist', 'components', 'context.jsonld');
+  try {
+    return extractComponentParameterContext(JSON.parse(fs.readFileSync(contextPath, 'utf-8')));
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveConfigAssetPath(sourceConfigPath: string, assetPath: string): string {
+  return path.resolve(resolveConfigAssetBase(sourceConfigPath), assetPath);
+}
+
+function resolveConfigAssetBase(sourceConfigPath: string): string {
+  const normalized = sourceConfigPath.replace(/\\/g, '/');
+  const configMarker = '/config/';
+  const markerIndex = normalized.lastIndexOf(configMarker);
+  if (markerIndex >= 0) {
+    return normalized.slice(0, markerIndex);
+  }
+  return path.dirname(sourceConfigPath);
+}
+
+function preserveConfigBase(parsed: Record<string, unknown>, configPath: string): void {
+  const context = parsed['@context'];
+  const contexts = Array.isArray(context)
+    ? [...context]
+    : context === undefined
+      ? []
+      : [context];
+  const withoutExistingBase = contexts.filter((entry) => (
+    !entry || typeof entry !== 'object' || !('@base' in entry)
+  ));
+  withoutExistingBase.push({ '@base': resolveConfigBase(configPath) });
+  parsed['@context'] = withoutExistingBase;
+  delete parsed['@base'];
+}
+
+function resolveConfigBase(configPath: string): string {
+  const normalized = configPath.replace(/\\/g, '/');
+  if (normalized.includes('/node_modules/@solid/community-server/config/')) {
+    return CSS_CONFIG_BASE;
+  }
+  if (normalized.includes('/node_modules/@undefineds.co/xpod/config/')) {
+    return XPOD_CONFIG_BASE;
+  }
+  return pathToFileURL(path.dirname(configPath) + path.sep).href;
 }
 
 function rewriteConfigImports(
@@ -165,7 +224,7 @@ function rewriteConfigImport(
   }
 
   const targetPath = path.resolve(path.dirname(sourceConfigPath), importValue);
-  const rewrittenTargetPath = rewriteConfigForFileUrlImportsIfNeeded(targetPath, outputDir, rewritten);
+  const rewrittenTargetPath = rewriteConfigForFileUrlImportsIfNeeded(targetPath, outputDir, true, rewritten);
   return pathToFileURL(rewrittenTargetPath).href;
 }
 

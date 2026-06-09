@@ -317,6 +317,78 @@ describe('runtime bootstrap helpers', () => {
     ]);
   });
 
+  it('should copy package config without spaces when component context is available', () => {
+    const writes = new Map<string, string>();
+    const writeTextFile = vi.fn((filePath: string, content: string) => {
+      writes.set(filePath, content);
+    });
+    const readTextFile = vi.fn((filePath: string): string => {
+      const byPath: Record<string, unknown> = {
+        '/package/config/local.json': {
+          '@context': [
+            'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+            'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+          ],
+          '@graph': [
+            {
+              '@id': 'urn:test:SolidRdfDataAccessor',
+              '@type': 'SolidRdfDataAccessor',
+              rdfEngine: {
+                '@id': 'urn:undefineds:xpod:SolidRdfEngine',
+              },
+            },
+          ],
+        },
+        '/package/dist/components/context.jsonld': {
+          '@context': [
+            {},
+            {
+              SolidRdfDataAccessor: {
+                '@id': 'urn:test:SolidRdfDataAccessor',
+                '@context': {
+                  rdfEngine: {
+                    '@id': 'urn:test:SolidRdfDataAccessor_rdfEngine',
+                  },
+                },
+              },
+            },
+          ],
+        },
+      };
+      return JSON.stringify(byPath[filePath] ?? {});
+    });
+    const runtimeConfigPath = createCssRuntimeConfig({
+      id: 'package-context',
+      mode: 'local',
+      runtimeRoot: '/runtime',
+      cssAuthMode: 'acp',
+    } as any, true, {
+      dirname: (filePath: string): string => path.posix.dirname(filePath),
+      ensureDir: vi.fn(),
+      joinPath: (...segments: string[]): string => {
+        if (segments[0] === PACKAGE_ROOT) {
+          return path.posix.join('/package', ...segments.slice(1));
+        }
+        return path.posix.join(...segments);
+      },
+      readTextFile,
+      writeTextFile,
+    });
+
+    expect(runtimeConfigPath).toBe('/runtime/css-runtime.config.json');
+    const parsed = JSON.parse(writes.get(runtimeConfigPath) ?? '{}');
+    expect(parsed.import).toEqual([
+      './config/local.json',
+      ...ACP_AUTH_IMPORTS,
+    ]);
+
+    const rewrittenLocal = JSON.parse(writes.get('/runtime/config/local.json') ?? '{}');
+    expect(rewrittenLocal['@graph']?.[0]?.['SolidRdfDataAccessor:_rdfEngine']).toEqual({
+      '@id': 'urn:undefineds:xpod:SolidRdfEngine',
+    });
+    expect(rewrittenLocal['@graph']?.[0]?.rdfEngine).toBeUndefined();
+  });
+
   it('should escape Components config imports when runtime paths contain spaces', () => {
     const writes = new Map<string, string>();
     const writeTextFile = vi.fn((filePath: string, content: string) => {
@@ -325,25 +397,79 @@ describe('runtime bootstrap helpers', () => {
     const ensureDir = vi.fn();
     const joinPath = (...segments: string[]): string => {
       if (segments[0] === PACKAGE_ROOT) {
-        return path.posix.join('/Users/alice/Application Support/@undefineds.co/xpod', ...segments.slice(1));
+        return path.posix.join('/Users/alice/Application Support/node_modules/@undefineds.co/xpod', ...segments.slice(1));
       }
       return path.posix.join(...segments);
     };
     const readTextFile = vi.fn((filePath: string): string => {
       const byPath: Record<string, unknown> = {
-        '/Users/alice/Application Support/@undefineds.co/xpod/config/local.json': {
+        '/Users/alice/Application Support/node_modules/@undefineds.co/xpod/config/local.json': {
+          '@context': [
+            'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+            'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+          ],
           import: ['./main.json', './xpod.base.json', './terminal.json', './extensions.local.initializer.json'],
         },
-        '/Users/alice/Application Support/@undefineds.co/xpod/config/main.json': {
+        '/Users/alice/Application Support/node_modules/@undefineds.co/xpod/config/main.json': {
+          '@context': 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
           import: ['css:config/app/main/default.json'],
         },
-        '/Users/alice/Application Support/@undefineds.co/xpod/config/xpod.base.json': {
+        '/Users/alice/Application Support/node_modules/@undefineds.co/xpod/config/xpod.base.json': {
+          '@context': [
+            'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+            'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+          ],
           import: ['./cli.json', './resolver.json'],
+          '@graph': [
+            {
+              '@id': 'urn:test:LiteralValue',
+              '@type': 'Literal',
+              value: 0,
+            },
+            {
+              '@id': 'urn:test:PodResourcesGenerator',
+              '@type': 'StaticFolderGenerator',
+              templateFolder: './templates/pod',
+            },
+            {
+              '@id': 'urn:test:AuthHtml',
+              '@type': 'ReactAppViewHandler',
+              htmlFile: './static/app/auth.html',
+            },
+            {
+              '@id': 'urn:test:SparqlQuadstoreResourceStore',
+              '@type': 'SparqlUpdateResourceStore',
+              identifierStrategy: {
+                '@id': 'urn:solid-server:default:IdentifierStrategy',
+              },
+              accessor: {
+                '@id': 'urn:undefineds:xpod:MixDataAccessor',
+              },
+            },
+          ],
         },
-        '/Users/alice/Application Support/@undefineds.co/xpod/config/cli.json': {},
-        '/Users/alice/Application Support/@undefineds.co/xpod/config/resolver.json': {},
-        '/Users/alice/Application Support/@undefineds.co/xpod/config/terminal.json': {},
-        '/Users/alice/Application Support/@undefineds.co/xpod/config/extensions.local.initializer.json': {},
+        '/Users/alice/Application Support/node_modules/@undefineds.co/xpod/dist/components/context.jsonld': {
+          '@context': [
+            {},
+            {
+              SparqlUpdateResourceStore: {
+                '@id': 'urn:test:SparqlUpdateResourceStore',
+                '@context': {
+                  identifierStrategy: {
+                    '@id': 'urn:test:SparqlUpdateResourceStore_options_identifierStrategy',
+                  },
+                  accessor: {
+                    '@id': 'urn:test:SparqlUpdateResourceStore_options_accessor',
+                  },
+                },
+              },
+            },
+          ],
+        },
+        '/Users/alice/Application Support/node_modules/@undefineds.co/xpod/config/cli.json': {},
+        '/Users/alice/Application Support/node_modules/@undefineds.co/xpod/config/resolver.json': {},
+        '/Users/alice/Application Support/node_modules/@undefineds.co/xpod/config/terminal.json': {},
+        '/Users/alice/Application Support/node_modules/@undefineds.co/xpod/config/extensions.local.initializer.json': {},
       };
       return JSON.stringify(byPath[filePath] ?? {});
     });
@@ -376,12 +502,33 @@ describe('runtime bootstrap helpers', () => {
       'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/terminal.json',
       'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/extensions.local.initializer.json',
     ]);
+    expect(rewrittenLocal['@context']).toContainEqual({
+      '@base': 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/',
+    });
 
     const rewrittenBase = JSON.parse(writes.get('/Users/alice/Application Support/@linx/local/runtimes/xpod/config/xpod.base.json') ?? '{}');
     expect(rewrittenBase.import).toEqual([
       'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/cli.json',
       'file:///Users/alice/Application%20Support/@linx/local/runtimes/xpod/config/resolver.json',
     ]);
+    expect(rewrittenBase['@graph']?.[1]?.templateFolder).toBe('/Users/alice/Application Support/node_modules/@undefineds.co/xpod/templates/pod');
+    expect(rewrittenBase['@graph']?.[2]?.htmlFile).toBe('/Users/alice/Application Support/node_modules/@undefineds.co/xpod/static/app/auth.html');
+    expect(rewrittenBase['@graph']?.[3]?.['SparqlUpdateResourceStore:_options_identifierStrategy']).toEqual({
+      '@id': 'urn:solid-server:default:IdentifierStrategy',
+    });
+    expect(rewrittenBase['@graph']?.[3]?.['SparqlUpdateResourceStore:_options_accessor']).toEqual({
+      '@id': 'urn:undefineds:xpod:MixDataAccessor',
+    });
+    expect(rewrittenBase['@graph']?.[3]?.identifierStrategy).toBeUndefined();
+    expect(rewrittenBase['@graph']?.[3]?.accessor).toBeUndefined();
+    expect(rewrittenBase['@context']).toContainEqual({
+      '@base': 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/',
+    });
+
+    const rewrittenMain = JSON.parse(writes.get('/Users/alice/Application Support/@linx/local/runtimes/xpod/config/main.json') ?? '{}');
+    expect(rewrittenMain['@context']).toContainEqual({
+      '@base': 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/',
+    });
   });
 
   it('should write Components config imports from a package-local runtime dir on Windows cross-drive paths', () => {

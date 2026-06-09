@@ -86,16 +86,172 @@ describe('CSS child process env and args', () => {
       import?: string[]
       '@graph'?: Array<Record<string, unknown>>
     };
-    expect(parsed.import).toEqual(['./local.json', ...ACP_AUTH_IMPORTS]);
+    expect(parsed.import).toEqual(['./config/local.json', ...ACP_AUTH_IMPORTS]);
     expect(parsed['@graph']).toEqual([]);
+    expect(fs.existsSync(path.join(runtimeRoot, 'config', 'local.json'))).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(runtimeRoot, '.community-solid-server.config.json'), 'utf-8'))).toEqual({
       oidcIssuer: 'https://id.undefineds.co/',
     });
   });
 
+  it('copies config and pins package assets when legacy CSS cwd is the runtime root', () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-css-runtime-'));
+    const packageRoot = path.join(runtimeRoot, 'node_modules', '@undefineds.co', 'xpod');
+    const configPath = path.join(packageRoot, 'config', 'local.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.mkdirSync(path.join(packageRoot, 'dist', 'components'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'components', 'context.jsonld'), JSON.stringify({
+      '@context': [
+        {},
+        {
+          SolidRdfDataAccessor: {
+            '@id': 'urn:test:SolidRdfDataAccessor',
+            '@context': {
+              identifierStrategy: {
+                '@id': 'urn:test:SolidRdfDataAccessor_identifierStrategy',
+              },
+            },
+          },
+        },
+      ],
+    }), 'utf-8');
+    fs.writeFileSync(configPath, JSON.stringify({
+      '@context': [
+        'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+        'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+      ],
+      import: ['./xpod.base.json'],
+      '@graph': [],
+    }), 'utf-8');
+    fs.writeFileSync(path.join(path.dirname(configPath), 'xpod.base.json'), JSON.stringify({
+      '@context': [
+        'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+        'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+      ],
+      '@graph': [
+        {
+          '@id': 'urn:test:PodResourcesGenerator',
+          '@type': 'StaticFolderGenerator',
+          templateFolder: './templates/pod',
+        },
+        {
+          '@id': 'urn:test:AuthHtml',
+          '@type': 'ReactAppViewHandler',
+          htmlFile: './static/app/auth.html',
+        },
+        {
+          '@id': 'urn:test:SolidRdfDataAccessor',
+          '@type': 'SolidRdfDataAccessor',
+          identifierStrategy: {
+            '@id': 'urn:solid-server:default:IdentifierStrategy',
+          },
+        },
+      ],
+    }), 'utf-8');
+
+    const runtimeConfig = createCssChildRuntimeConfig({
+      configPath,
+      runtimeRoot,
+      externalOidcIssuer: 'https://id.undefineds.co/',
+    });
+
+    const parsed = JSON.parse(fs.readFileSync(runtimeConfig.configPath, 'utf-8')) as {
+      import?: string[]
+    };
+    expect(parsed.import).toEqual(['./config/local.json', ...ACP_AUTH_IMPORTS]);
+
+    const rewrittenBase = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'config', 'xpod.base.json'), 'utf-8')) as {
+      '@graph'?: Array<Record<string, unknown>>
+    };
+    expect(rewrittenBase['@graph']?.[0]?.templateFolder).toBe(path.join(packageRoot, 'templates', 'pod'));
+    expect(rewrittenBase['@graph']?.[1]?.htmlFile).toBe(path.join(packageRoot, 'static', 'app', 'auth.html'));
+    expect(rewrittenBase['@graph']?.[2]?.['SolidRdfDataAccessor:_identifierStrategy']).toEqual({
+      '@id': 'urn:solid-server:default:IdentifierStrategy',
+    });
+    expect(rewrittenBase['@graph']?.[2]?.identifierStrategy).toBeUndefined();
+  });
+
+  it('copies package config without external issuer so component keys are normalized', () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-css-runtime-'));
+    const packageRoot = path.join(runtimeRoot, 'package');
+    const configPath = path.join(packageRoot, 'config', 'local.json');
+    fs.mkdirSync(path.join(packageRoot, 'dist', 'components'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'components', 'context.jsonld'), JSON.stringify({
+      '@context': [
+        {},
+        {
+          SolidRdfDataAccessor: {
+            '@id': 'urn:test:SolidRdfDataAccessor',
+            '@context': {
+              rdfEngine: {
+                '@id': 'urn:test:SolidRdfDataAccessor_rdfEngine',
+              },
+            },
+          },
+          ReservedSuffixIdentifierGenerator: {
+            '@id': 'urn:test:ReservedSuffixIdentifierGenerator',
+            '@context': {
+              reserved: {
+                '@id': 'urn:test:ReservedSuffixIdentifierGenerator_options_reserved',
+                '@container': '@list',
+              },
+            },
+          },
+        },
+      ],
+    }), 'utf-8');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      '@context': [
+        'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+        'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+      ],
+      '@graph': [
+        {
+          '@id': 'urn:test:SolidRdfDataAccessor',
+          '@type': 'SolidRdfDataAccessor',
+          rdfEngine: {
+            '@id': 'urn:undefineds:xpod:SolidRdfEngine',
+          },
+        },
+        {
+          '@id': 'urn:test:ReservedSuffixIdentifierGenerator',
+          '@type': 'ReservedSuffixIdentifierGenerator',
+          reserved: [
+            'admin',
+          ],
+        },
+      ],
+    }), 'utf-8');
+
+    const runtimeConfig = createCssChildRuntimeConfig({
+      configPath,
+      runtimeRoot,
+    });
+
+    const parsed = JSON.parse(fs.readFileSync(runtimeConfig.configPath, 'utf-8')) as {
+      import?: string[]
+    };
+    expect(parsed.import).toEqual(['./config/local.json', ...ACP_AUTH_IMPORTS]);
+
+    const rewrittenLocal = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'config', 'local.json'), 'utf-8')) as {
+      '@graph'?: Array<Record<string, unknown>>
+    };
+    expect(rewrittenLocal['@graph']?.[0]?.['SolidRdfDataAccessor:_rdfEngine']).toEqual({
+      '@id': 'urn:undefineds:xpod:SolidRdfEngine',
+    });
+    expect(rewrittenLocal['@graph']?.[0]?.rdfEngine).toBeUndefined();
+    expect(rewrittenLocal['@graph']?.[1]?.['ReservedSuffixIdentifierGenerator:_options_reserved']).toEqual({
+      '@list': [
+        'admin',
+      ],
+    });
+    expect(rewrittenLocal['@graph']?.[1]?.reserved).toBeUndefined();
+  });
+
   it('escapes legacy CSS runtime config imports when runtime paths contain spaces', () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod css runtime-'));
-    const configDir = path.join(runtimeRoot, 'Application Support', '@undefineds.co', 'xpod');
+    const configDir = path.join(runtimeRoot, 'Application Support', 'node_modules', '@undefineds.co', 'xpod');
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = path.join(configDir, 'config', 'local.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -107,7 +263,28 @@ describe('CSS child process env and args', () => {
       import: ['css:config/app/main/default.json'],
     }), 'utf-8');
     fs.writeFileSync(path.join(path.dirname(configPath), 'xpod.base.json'), JSON.stringify({
+      '@context': [
+        'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+        'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+      ],
       import: ['./resolver.json'],
+      '@graph': [
+        {
+          '@id': 'urn:test:LiteralValue',
+          '@type': 'Literal',
+          value: 0,
+        },
+        {
+          '@id': 'urn:test:PodResourcesGenerator',
+          '@type': 'StaticFolderGenerator',
+          templateFolder: './templates/pod',
+        },
+        {
+          '@id': 'urn:test:AuthHtml',
+          '@type': 'ReactAppViewHandler',
+          htmlFile: './static/app/auth.html',
+        },
+      ],
     }), 'utf-8');
     fs.writeFileSync(path.join(path.dirname(configPath), 'resolver.json'), '{}', 'utf-8');
 
@@ -140,13 +317,28 @@ describe('CSS child process env and args', () => {
 
     const rewrittenBase = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'config', 'xpod.base.json'), 'utf-8')) as {
       import?: string[]
+      '@context'?: unknown[]
+      '@graph'?: Array<Record<string, unknown>>
     };
     expect(rewrittenBase.import).toEqual([
       expect.stringContaining('/config/resolver.json'),
     ]);
-    expect(JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'config', 'main.json'), 'utf-8')).import).toEqual([
+    expect(rewrittenBase['@graph']?.[1]?.templateFolder).toBe(path.join(configDir, 'templates', 'pod'));
+    expect(rewrittenBase['@graph']?.[2]?.htmlFile).toBe(path.join(configDir, 'static', 'app', 'auth.html'));
+    expect(rewrittenBase['@context']).toContainEqual({
+      '@base': 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/',
+    });
+
+    const rewrittenMain = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'config', 'main.json'), 'utf-8')) as {
+      import?: string[]
+      '@context'?: unknown[]
+    };
+    expect(rewrittenMain.import).toEqual([
       'css:config/app/main/default.json',
     ]);
+    expect(rewrittenMain['@context']).toContainEqual({
+      '@base': 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/',
+    });
   });
 
   it('injects ACL authorization imports into legacy CSS runtime configs', () => {

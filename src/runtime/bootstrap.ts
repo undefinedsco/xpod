@@ -11,7 +11,11 @@ import { loadEnvFile } from './env-utils';
 import type { XpodRuntimeOptions, XpodRuntimePorts, XpodRuntimeSockets } from './runtime-types';
 import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, resolveAuthModeInput } from '../authorization/AuthMode';
+import { extractComponentParameterContext, normalizeComponentParameterKeys } from './component-parameter-keys';
+import { rewriteConfigAssetPaths } from './config-asset-paths';
 
+const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
+const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
 const CSS_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld';
 const ASYNC_HANDLERS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld';
 
@@ -349,7 +353,11 @@ function rewriteConfigForFileUrlImportsIfNeeded(
   rewritten = new Map<string, string>(),
 ): string {
   const normalizedConfigPath = normalizeWindowsAbsolutePath(configPath);
-  if (isWindowsAbsolutePath(normalizedConfigPath) || !pathNeedsEscapedFileUrl(normalizedConfigPath)) {
+  const componentContext = readPackageComponentContext(normalizedConfigPath, platform);
+  if (
+    isWindowsAbsolutePath(normalizedConfigPath) ||
+    (!pathNeedsEscapedFileUrl(normalizedConfigPath) && !componentContext)
+  ) {
     return normalizedConfigPath;
   }
 
@@ -363,6 +371,9 @@ function rewriteConfigForFileUrlImportsIfNeeded(
   rewritten.set(normalizedConfigPath, outputPath);
 
   const parsed = JSON.parse(platform.readTextFile(normalizedConfigPath)) as Record<string, unknown>;
+  preserveConfigBase(parsed, normalizedConfigPath);
+  normalizeComponentParameterKeys(parsed, componentContext);
+  rewriteConfigAssetPaths(parsed, normalizedConfigPath, resolveConfigAssetPath);
   parsed.import = rewriteConfigImports(
     normalizedConfigPath,
     parsed.import,
@@ -372,6 +383,72 @@ function rewriteConfigForFileUrlImportsIfNeeded(
   );
   platform.writeTextFile(outputPath, `${JSON.stringify(parsed, null, 2)}\n`);
   return outputPath;
+}
+
+function readPackageComponentContext(
+  configPath: string,
+  platform: Pick<RuntimePlatform, 'readTextFile'>,
+): ReturnType<typeof extractComponentParameterContext> {
+  const normalizedConfigPath = normalizeWindowsAbsolutePath(configPath);
+  const useWindowsPaths = isWindowsAbsolutePath(normalizedConfigPath);
+  const pathApi = useWindowsPaths ? path.win32 : path.posix;
+  const contextPath = normalizeWindowsAbsolutePath(pathApi.join(
+    resolveConfigAssetBase(normalizedConfigPath),
+    'dist',
+    'components',
+    'context.jsonld',
+  ));
+  try {
+    return extractComponentParameterContext(JSON.parse(platform.readTextFile(contextPath)));
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveConfigAssetPath(sourceConfigPath: string, assetPath: string): string {
+  const normalizedSourcePath = normalizeWindowsAbsolutePath(sourceConfigPath);
+  const useWindowsPaths = isWindowsAbsolutePath(normalizedSourcePath);
+  const pathApi = useWindowsPaths ? path.win32 : path.posix;
+  return normalizeWindowsAbsolutePath(pathApi.resolve(resolveConfigAssetBase(normalizedSourcePath), assetPath));
+}
+
+function resolveConfigAssetBase(sourceConfigPath: string): string {
+  const normalized = normalizeWindowsAbsolutePath(sourceConfigPath);
+  const useWindowsPaths = isWindowsAbsolutePath(normalized);
+  const pathApi = useWindowsPaths ? path.win32 : path.posix;
+  const normalizedForSearch = normalized.replace(/\\/g, '/');
+  const markerIndex = normalizedForSearch.lastIndexOf('/config/');
+  if (markerIndex >= 0) {
+    const packageRoot = normalizedForSearch.slice(0, markerIndex);
+    return useWindowsPaths ? packageRoot.replace(/\//g, '\\') : packageRoot;
+  }
+  return pathApi.dirname(normalized);
+}
+
+function preserveConfigBase(parsed: Record<string, unknown>, configPath: string): void {
+  const context = parsed['@context'];
+  const contexts = Array.isArray(context)
+    ? [...context]
+    : context === undefined
+      ? []
+      : [context];
+  const withoutExistingBase = contexts.filter((entry) => (
+    !entry || typeof entry !== 'object' || !('@base' in entry)
+  ));
+  withoutExistingBase.push({ '@base': resolveConfigBase(configPath) });
+  parsed['@context'] = withoutExistingBase;
+  delete parsed['@base'];
+}
+
+function resolveConfigBase(configPath: string): string {
+  const normalized = normalizeWindowsAbsolutePath(configPath).replace(/\\/g, '/');
+  if (normalized.includes('/node_modules/@solid/community-server/config/')) {
+    return CSS_CONFIG_BASE;
+  }
+  if (normalized.includes('/node_modules/@undefineds.co/xpod/config/')) {
+    return XPOD_CONFIG_BASE;
+  }
+  return pathToFileURL(path.posix.dirname(normalized) + '/').href;
 }
 
 function rewriteConfigImports(
