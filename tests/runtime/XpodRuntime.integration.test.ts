@@ -1,8 +1,28 @@
+import http from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
 import { setupAccount, type AccountSetup } from '../integration/helpers/solidAccount';
 import { createTestDir } from '../utils/sqlite';
+
+function listen(server: http.Server): Promise<{ origin: string }> {
+  return new Promise((resolve, reject) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('mock server did not bind to a TCP port'));
+        return;
+      }
+      resolve({ origin: `http://127.0.0.1:${address.port}` });
+    });
+  });
+}
+
+function close(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
 
 describe('XpodRuntime', () => {
   let runtime: XpodRuntimeHandle;
@@ -100,6 +120,61 @@ describe('XpodRuntime standalone profile authorization', () => {
     });
 
     expect(profileContainerResponse.status).toBe(200);
+  });
+});
+
+describe('XpodRuntime Local SP OIDC key material', () => {
+  let runtime: XpodRuntimeHandle;
+  let cloudServer: http.Server;
+  let cloudOrigin = '';
+  const cloudRequests: string[] = [];
+
+  beforeAll(async () => {
+    cloudServer = http.createServer((request, response) => {
+      cloudRequests.push(request.url ?? '');
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        keys: [{ kid: 'external-cloud-key', kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }],
+      }));
+    });
+    cloudOrigin = (await listen(cloudServer)).origin;
+
+    runtime = await startXpodRuntime({
+      mode: 'local',
+      transport: resolveTestRuntimeTransport('port'),
+      runtimeRoot: createTestDir('xpod-runtime-local-sp-oidc'),
+      logLevel: 'warn',
+      env: {
+        oidcIssuer: `${cloudOrigin}/`,
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await runtime?.stop();
+    await close(cloudServer);
+  });
+
+  it('serves discovery and JWKS from the local SP, not the external account issuer', async () => {
+    const [configResponse, jwksResponse] = await Promise.all([
+      runtime.fetch('/.well-known/openid-configuration', {
+        headers: { accept: 'application/json' },
+      }),
+      runtime.fetch('/.oidc/jwks', {
+        headers: { accept: 'application/json' },
+      }),
+    ]);
+
+    expect(configResponse.status).toBe(200);
+    expect(jwksResponse.status).toBe(200);
+
+    const config = await configResponse.json() as { issuer?: string; jwks_uri?: string };
+    const jwks = await jwksResponse.json() as { keys?: Array<{ kid?: string }> };
+
+    expect(config.issuer).toContain(new URL(runtime.baseUrl).host);
+    expect(config.jwks_uri).toContain(new URL(runtime.baseUrl).host);
+    expect(jwks.keys?.some((key) => key.kid === 'external-cloud-key')).toBe(false);
+    expect(cloudRequests).toEqual([]);
   });
 });
 

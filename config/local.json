@@ -26,7 +26,7 @@
       "@type": "Variable"
     },
     {
-      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时代理外部 issuer 的 JWKS，其它 OIDC 路由保持 CSS 本地处理",
+      "comment": "Auto-detect OIDC pass-through - 有 oidcIssuer 时也保持本地 CSS OIDC discovery/token/JWKS 同源",
       "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
       "@type": "AutoDetectOidcHandler",
       "AutoDetectOidcHandler:_options_oidcIssuer": {
@@ -315,7 +315,7 @@
             "@id": "urn:solid-server:default:StaticAssetHandler"
           },
           {
-            "comment": "Local 模式下代理外部 issuer JWKS；其它 OIDC 路由由 CSS 默认 OIDC handler 处理",
+            "comment": "Local 模式下 OIDC discovery/token/JWKS 全部由 CSS 默认 OIDC handler 处理，避免本地 token 与外部 JWKS 错配",
             "@id": "urn:undefineds:xpod:AutoDetectOidcHandler"
           },
           {
