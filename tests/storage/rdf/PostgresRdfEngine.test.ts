@@ -4640,6 +4640,52 @@ describe('PostgresRdfEngine', () => {
       expect(count.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
       expect(count.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
       expect(pool.nativeBgpCountCalls).toHaveLength(0);
+
+      const distinctCount = await engine.query({
+        patterns: [
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(STATUS),
+            object: literal('open'),
+          },
+          {
+            graph: { $startsWith: prefix },
+            subject: { variable: 'message' },
+            predicate: namedNode(THREAD),
+            object: { variable: 'thread' },
+          },
+        ],
+        aggregates: [
+          {
+            type: 'count',
+            as: 'threadCount',
+            variable: 'thread',
+            distinct: true,
+          },
+        ],
+        select: ['threadCount'],
+        cache: { mode: 'bypass' },
+      });
+      expect(distinctCount.bindings[0].threadCount.value).toBe('2');
+      expect(distinctCount.metrics.plan).toContain('PostgresRdf3xJoinCount');
+      expect(distinctCount.metrics.plan.join('\n')).toContain('GraphPrefixMembershipFilter');
+      expect(distinctCount.metrics.plan).not.toContain('XpodRdfExtensionOperator(aggregate.bgp_count)');
+      expect(distinctCount.metrics.plan).not.toContain('XpodRdfExtensionOperator(join.slot_filter.native)');
+      expect(distinctCount.metrics.explain?.planner).toMatchObject({
+        selectedPath: 'rdf3x',
+        reasons: expect.arrayContaining([
+          'native-operator-rejected',
+          'native-operator-cost-cutover',
+        ]),
+        rejectedNativeOperators: expect.arrayContaining([
+          {
+            capability: 'aggregate.bgp_count',
+            reason: 'cost-cutover-count-distinct-native-regression',
+          },
+        ]),
+      });
+      expect(pool.nativeBgpCountCalls).toHaveLength(0);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
