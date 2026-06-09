@@ -1742,7 +1742,7 @@ describe('SolidRdfEngine', () => {
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoinCount('))).toBe(false);
   });
 
-  it('can opt supported numeric aggregate local queries into RDF-3X primary execution', () => {
+  it('keeps supported numeric aggregate local queries on the index aggregate path', () => {
     const primaryEngine = new SolidRdfEngine({
       index,
       rdf3xIndex,
@@ -1802,10 +1802,9 @@ describe('SolidRdfEngine', () => {
         avg: '6',
       },
     ]);
-    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
-    expect(result.metrics.plan).toContain('Rdf3xJoinAggregateNumeric(?score)');
-    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoinAggregate('))).toBe(true);
-    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoinAggregate('))).toBe(false);
+    expect(result.metrics.indexChoices[0]).toMatch(/^JoinBGP/);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexJoinAggregate('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryJoinAggregate('))).toBe(false);
   });
 
   it('can opt supported grouped count local queries into RDF-3X primary execution', () => {
@@ -1887,7 +1886,7 @@ describe('SolidRdfEngine', () => {
     expect(result.metrics.plan.some((entry) => entry.startsWith('IndexGroupCount('))).toBe(false);
   });
 
-  it('can opt supported grouped numeric aggregate local queries into RDF-3X primary execution', () => {
+  it('keeps supported grouped numeric aggregate local queries on the index aggregate path', () => {
     const primaryEngine = new SolidRdfEngine({
       index,
       rdf3xIndex,
@@ -1980,12 +1979,12 @@ describe('SolidRdfEngine', () => {
         scoreAvg: '6',
       },
     ]);
-    expect(result.metrics.indexChoices[0]).toMatch(/^Rdf3xJoinBGP/);
-    expect(result.metrics.plan).toContain('Rdf3xJoinGroupAggregateNumeric(?score)');
-    expect(result.metrics.plan).toContain('Rdf3xPrimaryGroupAggregateHaving(?scoreTotal$gt)');
-    expect(result.metrics.plan).toContain('Rdf3xPrimaryGroupAggregateLimit');
-    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryGroupAggregate('))).toBe(true);
-    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexGroupAggregate('))).toBe(false);
+    expect(result.metrics.indexChoices[0]).toMatch(/^JoinBGP/);
+    expect(result.metrics.plan).toContain('JoinGroupAggregateNumeric(?score)');
+    expect(result.metrics.plan).toContain('IndexGroupAggregateHaving(?scoreTotal$gt)');
+    expect(result.metrics.plan).toContain('IndexGroupAggregateLimit');
+    expect(result.metrics.plan.some((entry) => entry.startsWith('IndexGroupAggregate('))).toBe(true);
+    expect(result.metrics.plan.some((entry) => entry.startsWith('Rdf3xPrimaryGroupAggregate('))).toBe(false);
   });
 
   it('keeps object text filters on the RDF-3X primary path', () => {

@@ -265,7 +265,8 @@ export class RdfQueryExecutor {
     }
 
     if (joinBasicAggregatePushdown) {
-      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(joinBasicAggregatePushdown.patterns);
+      const useRdf3xPrimary = !hasNumericAggregates(aggregates)
+        && this.canUseRdf3xPrimaryJoin(joinBasicAggregatePushdown.patterns);
       const scan = useRdf3xPrimary
         ? this.rdf3xPrimaryIndex!.aggregateJoinPatterns(joinBasicAggregatePushdown.patterns, {
           aggregates,
@@ -300,7 +301,8 @@ export class RdfQueryExecutor {
       const rdf3xGroupAggregatePatterns = groupAggregatePushdown.countOnly
         ? groupAggregatePushdown.patterns
         : stripRdf3xNumericAggregateGuards(groupAggregatePushdown.patterns, aggregates);
-      const useRdf3xPrimary = this.canUseRdf3xPrimaryJoin(rdf3xGroupAggregatePatterns);
+      const useRdf3xPrimary = !hasNumericAggregates(aggregates)
+        && this.canUseRdf3xPrimaryJoin(rdf3xGroupAggregatePatterns);
       const groupOptions = {
         groupBy: query.groupBy ?? [],
         aggregates,
@@ -3849,6 +3851,10 @@ function bindVectorSearchResult(
 
 function queryAggregates(query: RdfQuery): RdfQueryAggregate[] {
   return query.aggregates ?? (query.aggregate ? [query.aggregate] : []);
+}
+
+function hasNumericAggregates(aggregates: RdfQueryAggregate[]): boolean {
+  return aggregates.some((aggregate) => aggregate.type !== 'count');
 }
 
 function aggregatePlan(aggregates: RdfQueryAggregate[], grouped: boolean): string {

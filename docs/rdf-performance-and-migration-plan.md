@@ -114,12 +114,12 @@ RDF-3X stats:
 | message join count distinct | 1539 ms | 96 ms | 16x | count + distinct over message/thread |
 | next queued run by workspace query | 4 ms | 5 ms | 0.8x | tiny result set, noise level |
 | message count by thread with having | 3 ms | 5 ms | 0.6x | small grouped count |
-| message score by thread numeric aggregate | 4 ms | 2006 ms | regression | current numeric aggregate plan is not ready as unconditional fast path |
+| message score by thread numeric aggregate | 4 ms | 2006 ms | regression | historical RDF-3X numeric aggregate plan is not ready as unconditional fast path |
 
 结论：
 
 - RDF-3X 作为默认 profile 是合理的，因为核心 chat/message 逆向关系和 count distinct 从秒级降到几十毫秒。
-- 但当前 numeric aggregate 不能直接按“所有 aggregate 都更快”宣传。下一步要么优化 `Rdf3xJoinGroupAggregateNumeric`，要么让 planner 对小样本/低选择性 numeric aggregate 回退 baseline。
+- numeric aggregate 不能直接按“所有 aggregate 都更快”宣传。当前第一版 cutover 已让 SQLite/file-backed `RdfQueryExecutor` 对 `SUM/AVG/MIN/MAX` 回到 `RdfQuadIndex` SQL aggregate path；`Rdf3xIndex` 仍保留 numeric aggregate 能力用于 shadow/后续 cost gate。
 - Product-grade P0 不应该先做新存储；应先巩固已经证明有收益的大 BGP join、count distinct、result cache，再处理 numeric aggregate。
 
 ### Historical PostgreSQL / PGlite Baseline Gate
@@ -948,6 +948,6 @@ delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension sha
 
 ## Open Follow-ups
 
-- 优化或禁用当前 SQLite/file-backed numeric aggregate 的 RDF-3X unconditional path。
+- 继续用真实负载评估 SQLite/file-backed numeric aggregate 是否可以重新按 cost gate 打开 RDF-3X path。
 - 增加真实 PG cold-start benchmark case：区分首次连接/首次执行、stats refresh 后首轮、warm steady-state 三个口径。
 - 在 RDF dashboard 上继续接入冷启动 / warm steady-state 自动化指标。
