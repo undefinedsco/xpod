@@ -18,6 +18,7 @@ import { DataFactory } from 'n3';
 import { MixDataAccessor } from '../../../src/storage/accessors/MixDataAccessor';
 import { SolidRdfDataAccessor } from '../../../src/storage/accessors/SolidRdfDataAccessor';
 import { DisabledSparqlFeatureError, SolidRdfEngine, UnsupportedSparqlQueryError } from '../../../src/storage/rdf';
+import { SqliteSolidFsSyncJournal } from '../../../src/solidfs';
 
 type ResourceIdentifier = { path: string };
 
@@ -1799,6 +1800,93 @@ WHERE {
     expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['multi target other after']);
   });
 
+  it('records multi-target local RDF authority patches in one SolidFS journal tx', async () => {
+    const journal = new SqliteSolidFsSyncJournal({ path: path.join(workDir, 'rdf-authority-journal.sqlite') });
+    const journaledAccessor = new MixDataAccessor(
+      structuredAccessor,
+      new FileDataAccessor(mapper),
+      false,
+      true,
+      new FileDataAccessor(mapper),
+      false,
+      mapper,
+      journal,
+    );
+    const resourceId = { path: `${baseUrl}alice/multi-target-journal.ttl` };
+    const otherResourceId = { path: `${baseUrl}alice/multi-target-journal-other.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+
+    try {
+      await journaledAccessor.writeDocument(resourceId, guardStream(Readable.from([
+        quad(
+          namedNode(`${resourceId.path}#first`),
+          namedNode('https://schema.org/name'),
+          literal('journal before')
+        )
+      ])), metadata);
+      const otherMetadata = new RepresentationMetadata(otherResourceId);
+      otherMetadata.contentType = 'internal/quads';
+      await journaledAccessor.writeDocument(otherResourceId, guardStream(Readable.from([
+        quad(
+          namedNode(`${otherResourceId.path}#second`),
+          namedNode('https://schema.org/name'),
+          literal('journal other before')
+        )
+      ])), otherMetadata);
+
+      await journaledAccessor.executeSparqlUpdate(`
+DELETE {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
+  }
+}
+INSERT {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> "journal after" .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> "journal other after" .
+  }
+}
+WHERE {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
+  }
+}
+`.trim(), resourceId.path);
+
+      const operations = journal.listOperations();
+      expect(operations).toHaveLength(2);
+      expect(operations.map((operation) => operation.stage)).toEqual(['done', 'done']);
+      expect(new Set(operations.map((operation) => operation.txId)).size).toBe(1);
+      expect(operations[0].txId).toMatch(/^solidfs_tx_/u);
+      expect(operations.map((operation) => operation.workspace.workspace)).toEqual([
+        `${baseUrl}alice/`,
+        `${baseUrl}alice/`,
+      ]);
+      expect(operations.map((operation) => operation.change.path).sort()).toEqual([
+        'multi-target-journal-other.ttl',
+        'multi-target-journal.ttl',
+      ]);
+      expect(operations.every((operation) => operation.afterHash)).toBe(true);
+
+      const resultQuads = await arrayifyStream(await journaledAccessor.getData(resourceId));
+      expect(resultQuads.map((quad) => quad.object.value)).toEqual(['journal after']);
+      const otherResultQuads = await arrayifyStream(await journaledAccessor.getData(otherResourceId));
+      expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['journal other after']);
+    } finally {
+      journal.close();
+    }
+  });
+
   it('rolls back multi-target local RDF authority patches when index refresh fails', async () => {
     const resourceId = { path: `${baseUrl}alice/multi-target-rollback.ttl` };
     const otherResourceId = { path: `${baseUrl}alice/multi-target-rollback-other.ttl` };
@@ -1874,6 +1962,103 @@ WHERE {
     const otherResultQuads = await arrayifyStream(await accessor.getData(otherResourceId));
     expect(otherResultQuads.map((quad) => quad.object.value)).toEqual(['rollback other before']);
     expect(writeCalls).toBeGreaterThanOrEqual(4);
+  });
+
+  it('keeps failed multi-target local RDF authority patches visible for journal reconcile', async () => {
+    const journal = new SqliteSolidFsSyncJournal({ path: path.join(workDir, 'rdf-authority-failure-journal.sqlite') });
+    const journaledAccessor = new MixDataAccessor(
+      structuredAccessor,
+      new FileDataAccessor(mapper),
+      false,
+      true,
+      new FileDataAccessor(mapper),
+      false,
+      mapper,
+      journal,
+    );
+    const resourceId = { path: `${baseUrl}alice/multi-target-journal-rollback.ttl` };
+    const otherResourceId = { path: `${baseUrl}alice/multi-target-journal-rollback-other.ttl` };
+    const metadata = new RepresentationMetadata(resourceId);
+    metadata.contentType = 'internal/quads';
+    const { quad, namedNode, literal } = DataFactory;
+
+    try {
+      await journaledAccessor.writeDocument(resourceId, guardStream(Readable.from([
+        quad(
+          namedNode(`${resourceId.path}#first`),
+          namedNode('https://schema.org/name'),
+          literal('journal rollback before')
+        )
+      ])), metadata);
+      const otherMetadata = new RepresentationMetadata(otherResourceId);
+      otherMetadata.contentType = 'internal/quads';
+      await journaledAccessor.writeDocument(otherResourceId, guardStream(Readable.from([
+        quad(
+          namedNode(`${otherResourceId.path}#second`),
+          namedNode('https://schema.org/name'),
+          literal('journal rollback other before')
+        )
+      ])), otherMetadata);
+
+      const originalWrite = structuredAccessor.writeRdfSourceDocument.bind(structuredAccessor);
+      let writeCalls = 0;
+      vi.spyOn(structuredAccessor, 'writeRdfSourceDocument').mockImplementation(async (...args) => {
+        writeCalls += 1;
+        if (writeCalls === 2) {
+          throw new Error('simulated journaled index refresh failure');
+        }
+        return originalWrite(...args);
+      });
+
+      await expect(journaledAccessor.executeSparqlUpdate(`
+DELETE {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
+  }
+}
+INSERT {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> "journal rollback after" .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> "journal rollback other after" .
+  }
+}
+WHERE {
+  GRAPH <${resourceId.path}> {
+    <${resourceId.path}#first> <https://schema.org/name> ?targetOld .
+  }
+  GRAPH <${otherResourceId.path}> {
+    <${otherResourceId.path}#second> <https://schema.org/name> ?otherOld .
+  }
+}
+`.trim(), resourceId.path)).rejects.toThrow('simulated journaled index refresh failure');
+
+      const operations = journal.listOperations();
+      expect(operations).toHaveLength(2);
+      expect(new Set(operations.map((operation) => operation.txId)).size).toBe(1);
+      expect(operations[0].txId).toMatch(/^solidfs_tx_/u);
+      expect(operations.map((operation) => operation.stage)).toEqual([
+        'reconcile_required',
+        'reconcile_required',
+      ]);
+      expect(operations.every((operation) => operation.lastError?.includes('rollback/reconcile required'))).toBe(true);
+
+      const rdfLink = await mapper.mapUrlToFilePath(resourceId as ResourceIdentifier, false, 'text/turtle');
+      const localRdf = await readFile(rdfLink.filePath, 'utf8');
+      expect(localRdf).toContain('journal rollback before');
+      expect(localRdf).not.toContain('journal rollback after');
+
+      const otherRdfLink = await mapper.mapUrlToFilePath(otherResourceId as ResourceIdentifier, false, 'text/turtle');
+      const otherLocalRdf = await readFile(otherRdfLink.filePath, 'utf8');
+      expect(otherLocalRdf).toContain('journal rollback other before');
+      expect(otherLocalRdf).not.toContain('journal rollback other after');
+    } finally {
+      journal.close();
+    }
   });
 
   it('rejects SERVICE updates before the structured accessor fallback path', async () => {

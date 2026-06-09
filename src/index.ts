@@ -125,6 +125,7 @@ import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
+import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
 
 export type {
   DnsProvider,
@@ -251,4 +252,6 @@ export {
   ProvisionPodCreator,
   ProvisionCodeCodec,
   LocalPodProvisioningService,
+  // SolidFS recovery exports
+  SqliteSolidFsSyncJournal,
 };
