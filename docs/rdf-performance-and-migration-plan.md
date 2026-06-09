@@ -26,7 +26,7 @@ P0 是 cloud 默认可上线路径必须满足的能力；P1 是性能、运维�
 | P0 | Numeric aggregate 不无条件切到 RDF-3X/native | Done | SQLite/file-backed 默认保留 `RdfQuadIndex` SQL aggregate path；PG high-fanout grouped numeric 保持 RDF-3X/native shape gate，不把低基数 facts cutover 泛化。 |
 | P0 | 真实 PG COPY stream bulk ingest | Open | large / high-write gate 前需要 real `pg` driver 的 COPY path；PGlite 继续保留 staging/UNNEST fallback。 |
 | P0 | `large=1_000_000` / 更高并发真实 PG release gate | Open | 需要在 COPY 或等价 ingest path 后重跑；必须记录 warm steady-state p95、cold first query、planner stats refresh 和 storage ratio。 |
-| P0 | Profile / models / ACL/ACR smoke gate | Open | 发布前必须覆盖 profile 401、models 读取、WebACL/ACP 查询和不同 access scope 的 result/materialized cache 隔离。 |
+| P0 | Profile / models / ACL/ACR smoke gate | Done | `bun run test:rdf:access-smoke` 覆盖 profile 匿名读取、models/profile/ACL/ACR benchmark seed、WebACL/ACP graph access scope、RDF stats cache-scope filter，以及 PG result/materialized cache 的 principal/access-scope 隔离和 ACL/ACR invalidation。cloud/standalone Docker profile GET 仍由 `bun run test:integration:full` 覆盖。 |
 | P1 | Extension-level ordered top-N early-stop | Open | 当前 ordered-page wrapper 语义正确但不是 native top-N early-stop；需要 `xpod_rdf` ABI 和 real PG benefit gate。 |
 | P1 | Graph-prefix grouped count / count distinct native cost gate | Open | 当前部分 graph-prefix native/custom case 仍慢于 RDF-3X / btree baseline，不能默认 cutover。 |
 | P1 | PG text/vector persistent backend | Open | fusion smoke 语义已通，PG 第一版仍是 facts fallback + in-process text/vector seed，不是持久化搜索后端。 |
@@ -955,11 +955,11 @@ delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension sha
    `storageStats().rdf3x.refreshLag=0`，并确认 refresh 返回值包含
    `plannerStats.analyzedTables`。
 9. 跑 smoke：
-   - GET WebID profile
+   - `bun run test:rdf:access-smoke`
+   - GET WebID profile from the deployed cloud URL
    - list chat/task
    - load message by id
    - run/task scheduler query
-   - ACL/ACR profile access
    - SPARQL graph prefix query
 10. 检查 `storageStats().queryResultCache.scopeCount` 和
     `storageStats().materializedResultCache.scopeCount` 能随不同 principal / workspace cache
@@ -991,9 +991,12 @@ delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension sha
 - `storageStats().totalToFactsRatio` 可接受；当前 medium 参考值为 SQLite/file-backed 1.18x、真实 PG 1.39x。
 - `rdf3x.syncedWithFacts=true` 且 `rdf3x.refreshLag=0`。
 - profile / schema version 不一致时重建逻辑可重复执行。
-- profile 401、models 读取、ACL/ACR 查询 smoke 通过。
-- result cache smoke 需要覆盖不同 cache scope：同一 query 在 Alice/Bob scope 下应产生不同 cache
-  entry，`storageStats().queryResultCache.scopeCount` 应反映该隔离。
+- `bun run test:rdf:access-smoke` 通过：profile 匿名读取不能回 401；models/profile/ACL/ACR
+  benchmark seed 必须返回数据；SPARQL graph access scope 必须过滤被 deny 的 graph；PG
+  result/materialized cache 必须按 Alice/Bob 或 structured access scope 产生隔离 entry，并且
+  ACL/ACR 写入能失效相关 cache。
+- cloud 部署后再用真实 URL GET WebID profile，确认部署配置没有把本地 profile smoke 重新变成
+  401。
 
 ## Open Follow-ups
 
