@@ -5647,6 +5647,8 @@ describe('PostgresRdfEngine', () => {
         rebuildMode: 'incremental',
         dirtyGraphs: 3,
         factsDataVersionBeforeRefresh: expect.any(Number),
+        matched: true,
+        failedReasons: [],
         sourceQueue: {
           pendingSources: 3,
           drainedSources: 3,

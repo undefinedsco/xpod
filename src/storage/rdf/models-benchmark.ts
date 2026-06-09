@@ -209,6 +209,8 @@ export interface RdfModelPostgresPostWriteRefreshBenchmark extends RdfModelPostg
   mutationQuads: number;
   pendingSourcesBeforeRefresh: number;
   factsDataVersionBeforeRefresh?: number;
+  matched: boolean;
+  failedReasons: string[];
 }
 
 export interface RdfModelPostgresConcurrencyGate {
@@ -4428,6 +4430,9 @@ export async function runRdfModelsPostgresBenchmark(
   const caseProfile = options.caseProfile ?? 'default';
   const refreshMutationSources = Math.max(0, Math.floor(options.refreshMutationSources ?? 0));
   const refreshMutationQuadsPerSource = Math.max(1, Math.floor(options.refreshMutationQuadsPerSource ?? 6));
+  if (refreshMutationSources > 0 && options.refreshDerivedIndexes === false) {
+    throw new Error('refreshMutationSources requires the initial refreshDerivedIndexes pass');
+  }
   let refresh: RdfDerivedIndexRefreshResult | undefined;
   let refreshBenchmark: RdfModelPostgresRefreshBenchmark | undefined;
   let postWriteRefreshBenchmark: RdfModelPostgresPostWriteRefreshBenchmark | undefined;
@@ -4525,7 +4530,7 @@ async function runPostWriteRefreshBenchmark(
   const storageBeforeRefresh = await engine.storageStats();
   const refreshStartedAt = Date.now();
   const refresh = await engine.refreshDerivedIndexes();
-  return {
+  const benchmark = {
     ...postgresRefreshBenchmark(refresh, Date.now() - refreshStartedAt),
     mutationSources,
     mutationQuadsPerSource,
@@ -4533,6 +4538,43 @@ async function runPostWriteRefreshBenchmark(
     pendingSourcesBeforeRefresh: storageBeforeRefresh.rdf3x?.pendingSources ?? 0,
     factsDataVersionBeforeRefresh: storageBeforeRefresh.rdf3x?.factsDataVersion,
   };
+  const failedReasons = postWriteRefreshFailedReasons(benchmark);
+  return {
+    ...benchmark,
+    matched: failedReasons.length === 0,
+    failedReasons,
+  };
+}
+
+function postWriteRefreshFailedReasons(
+  benchmark: Omit<RdfModelPostgresPostWriteRefreshBenchmark, 'matched' | 'failedReasons'>,
+): string[] {
+  const failedReasons: string[] = [];
+  if (benchmark.pendingSourcesBeforeRefresh !== benchmark.mutationSources) {
+    failedReasons.push('pending-sources-before-refresh-mismatch');
+  }
+  if (benchmark.sourceQueue?.pendingSources !== benchmark.mutationSources) {
+    failedReasons.push('source-queue-pending-mismatch');
+  }
+  if (benchmark.sourceQueue?.drainedSources !== benchmark.mutationSources) {
+    failedReasons.push('source-queue-drained-mismatch');
+  }
+  if (benchmark.refreshed !== true) {
+    failedReasons.push('not-refreshed');
+  }
+  if (benchmark.syncedWithFacts !== true) {
+    failedReasons.push('not-synced-with-facts');
+  }
+  if (benchmark.rebuildMode !== 'incremental') {
+    failedReasons.push('not-incremental-rebuild');
+  }
+  if (benchmark.factsDataVersionBeforeRefresh === undefined) {
+    failedReasons.push('missing-facts-data-version-before-refresh');
+  }
+  if (benchmark.factsDataVersion !== benchmark.factsDataVersionBeforeRefresh) {
+    failedReasons.push('facts-data-version-mismatch');
+  }
+  return failedReasons;
 }
 
 function rdfModelsRefreshMutationSource(index: number, quadsPerSource: number): {

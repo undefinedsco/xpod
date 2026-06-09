@@ -86,6 +86,8 @@ async function main(): Promise<void> {
     const nativeExtensionPlanHits = countNativeExtensionPlanHits(report);
     const nativeExtensionPlanMatched = nativeExtensionPlanRequired(options) ? nativeExtensionPlanHits > 0 : true;
     const concurrencyMatched = report.concurrencyGate.matched;
+    const postWriteRefreshMatched = options.refreshMutationSources === 0
+      || report.postWriteRefreshBenchmark?.matched === true;
     printSummary({
       options,
       paths,
@@ -104,12 +106,13 @@ async function main(): Promise<void> {
       failedPlanCases: report.failedPlanCases,
       concurrencyMatched,
       failedConcurrencyCases: report.concurrencyGate.failedCases,
+      postWriteRefreshMatched,
       nativeExtensionPlanHits,
       nativeExtensionPlanMatched,
       storage: report.storage,
     });
 
-    if (!fullScale || !synced || !plannerStatsMatched || !report.planMatched || !accelerationMatched || !nativeExtensionPlanMatched || !concurrencyMatched) {
+    if (!fullScale || !synced || !plannerStatsMatched || !report.planMatched || !accelerationMatched || !nativeExtensionPlanMatched || !concurrencyMatched || !postWriteRefreshMatched) {
       process.exitCode = 1;
     }
   } finally {
@@ -418,6 +421,7 @@ function printSummary(summary: {
   failedPlanCases: string[];
   concurrencyMatched: boolean;
   failedConcurrencyCases: string[];
+  postWriteRefreshMatched: boolean;
   nativeExtensionPlanHits: number;
   nativeExtensionPlanMatched: boolean;
   storage: RdfEngineStorageStats;
@@ -438,6 +442,7 @@ function printSummary(summary: {
   console.log(`  query cases: ${summary.queryCases}`);
   console.log(`  plan matched: ${summary.planMatched}`);
   console.log(`  concurrency gate matched: ${summary.concurrencyMatched}`);
+  console.log(`  post-write refresh gate matched: ${summary.postWriteRefreshMatched}`);
   console.log(`  rdf3x synced with facts: ${summary.synced}`);
   console.log(`  planner stats refreshed: ${summary.plannerStatsMatched}`);
   console.log(`  planner stats tables: ${summary.plannerStatsTables.join(', ') || 'none'}`);
@@ -453,6 +458,7 @@ function printSummary(summary: {
     console.log(`  post-write refresh duration ms: ${summary.postWriteRefreshBenchmark.durationMs}`);
     console.log(`  post-write refresh rebuild mode: ${summary.postWriteRefreshBenchmark.rebuildMode ?? 'none'}`);
     console.log(`  post-write refresh source queue: ${summary.postWriteRefreshBenchmark.sourceQueue?.drainedSources ?? 0}/${summary.postWriteRefreshBenchmark.sourceQueue?.pendingSources ?? 0}`);
+    console.log(`  post-write refresh gate failed reasons: ${summary.postWriteRefreshBenchmark.failedReasons.join(', ') || 'none'}`);
   }
   console.log(`  pg acceleration profile: ${summary.storage.pgAcceleration?.profile ?? 'unknown'}`);
   console.log(`  pg acceleration enabled: ${summary.storage.pgAcceleration?.enabled ?? false}`);
@@ -476,6 +482,9 @@ function printSummary(summary: {
   }
   if (summary.failedConcurrencyCases.length > 0) {
     console.error(`  failed concurrency cases: ${summary.failedConcurrencyCases.join(', ')}`);
+  }
+  if (!summary.postWriteRefreshMatched) {
+    console.error(`  post-write refresh gate failed: ${summary.postWriteRefreshBenchmark?.failedReasons.join(', ') || 'missing benchmark result'}`);
   }
   if (!summary.plannerStatsMatched) {
     console.error('  refreshDerivedIndexes did not report planner stats refresh');
