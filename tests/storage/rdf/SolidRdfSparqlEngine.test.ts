@@ -4298,6 +4298,47 @@ describe('SolidRdfSparqlEngine', () => {
     });
   });
 
+  it('rejects static embedded updates outside an explicit write access scope', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const allowedGraph = 'https://pod.example/alice/.data/public/allowed.ttl';
+    const deniedGraph = 'https://pod.example/alice/.data/private/denied.ttl';
+    await expect(engine.queryVoid(`
+      INSERT DATA {
+        GRAPH <${deniedGraph}> {
+          <${deniedGraph}#msg_denied> <${CONTENT}> "blocked" .
+        }
+      }
+    `, BASE, {
+      basePath: BASE,
+      mode: 'write',
+      principal: 'https://pod.example/alice#me',
+      allowedGraphUrls: [allowedGraph],
+      version: 'write-scope-public-only',
+    })).rejects.toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability: 'sparql.update.access_scope',
+    });
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${deniedGraph}> {
+          <${deniedGraph}#msg_denied> <${CONTENT}> "blocked" .
+        }
+      }
+    `, BASE)).resolves.toBe(false);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+  });
+
   it('applies DELETE WHERE on the embedded update delta path', async () => {
     const onFallback = vi.fn();
     const voidSpy = vi.spyOn(fallback, 'queryVoid');
@@ -4763,6 +4804,52 @@ describe('SolidRdfSparqlEngine', () => {
       }
     `, BASE)).resolves.toBe(true);
 
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects materialized embedded update targets outside an explicit write access scope', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const allowedGraph = 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl';
+    const deniedGraph = 'https://pod.example/alice/.data/private/denied.ttl';
+    await expect(engine.queryVoid(`
+      INSERT {
+        GRAPH <${deniedGraph}> {
+          ?message <${CONTENT}> "blocked materialized write" .
+        }
+      }
+      WHERE {
+        GRAPH <${allowedGraph}> {
+          ?message a <${MESSAGE}> .
+        }
+      }
+    `, BASE, {
+      basePath: BASE,
+      mode: 'write',
+      principal: 'https://pod.example/alice#me',
+      allowedGraphUrls: [allowedGraph],
+      version: 'write-scope-chat-only',
+    })).rejects.toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability: 'sparql.update.access_scope',
+    });
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${deniedGraph}> {
+          ?message <${CONTENT}> "blocked materialized write" .
+        }
+      }
+    `, BASE)).resolves.toBe(false);
     expect(onFallback).not.toHaveBeenCalled();
     expect(voidSpy).not.toHaveBeenCalled();
   });

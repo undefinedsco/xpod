@@ -22,6 +22,7 @@ import {
   filterRdfAccessGraphs,
   isRestrictiveRdfAccessScope,
   rdfAccessGraphAllowed,
+  RdfAccessMode,
   type RdfAccessScope,
 } from './RdfAccessScope';
 
@@ -219,7 +220,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryBindings', fallbackReason(error), (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope);
+      return this.fallbackWith('queryBindings', fallbackReason(error), (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope, error);
     }
   }
 
@@ -243,7 +244,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryBoolean', fallbackReason(error), (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope);
+      return this.fallbackWith('queryBoolean', fallbackReason(error), (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope, error);
     }
   }
 
@@ -261,7 +262,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryQuads', fallbackReason(error), (fallback) => fallback.queryQuads(query, basePath, accessScope), accessScope);
+      return this.fallbackWith('queryQuads', fallbackReason(error), (fallback) => fallback.queryQuads(query, basePath, accessScope), accessScope, error);
     }
   }
 
@@ -281,24 +282,29 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       let computedInserts = 0;
       for (const operation of delta.operations) {
         if (operation.type === 'delete') {
+          this.assertUpdateQuadsAllowedByAccessScope(operation.quads, basePath, accessScope);
           deletedRows += (await this.rdfEngine.applyDelta(operation.quads.map(quadToPattern), [])).deletedRows;
         } else if (operation.type === 'insert') {
+          this.assertUpdateQuadsAllowedByAccessScope(operation.quads, basePath, accessScope);
           await this.rdfEngine.applyDelta([], operation.quads);
         } else if (operation.type === 'insertDeleteWhere') {
           const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const deletes = this.adapter.materializeDeleteWhere(operation.deletes, result.bindings);
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
+          this.assertUpdateQuadsAllowedByAccessScope([...deletes, ...inserts], basePath, accessScope);
           computedDeletes += deletes.length;
           computedInserts += inserts.length;
           deletedRows += (await this.rdfEngine.applyDelta(deletes.map(quadToPattern), inserts)).deletedRows;
         } else if (operation.type === 'insertWhere') {
           const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
+          this.assertUpdateQuadsAllowedByAccessScope(inserts, basePath, accessScope);
           computedInserts += inserts.length;
           await this.rdfEngine.applyDelta([], inserts);
         } else {
           const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const quads = this.adapter.materializeDeleteWhere(operation.template, result.bindings);
+          this.assertUpdateQuadsAllowedByAccessScope(quads, basePath, accessScope);
           computedDeletes += quads.length;
           deletedRows += (await this.rdfEngine.applyDelta(quads.map(quadToPattern), [])).deletedRows;
         }
@@ -322,7 +328,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryVoid', fallbackReason(error), (fallback) => fallback.queryVoid(query, basePath, accessScope), accessScope);
+      return this.fallbackWith('queryVoid', fallbackReason(error), (fallback) => fallback.queryVoid(query, basePath, accessScope), accessScope, error);
     }
   }
 
@@ -346,7 +352,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('constructGraph', fallbackReason(error), (fallback) => fallback.constructGraph(graph, basePath, accessScope), accessScope);
+      return this.fallbackWith('constructGraph', fallbackReason(error), (fallback) => fallback.constructGraph(graph, basePath, accessScope), accessScope, error);
     }
   }
 
@@ -373,7 +379,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('listGraphs', fallbackReason(error), (fallback) => fallback.listGraphs(basePath, accessScope), accessScope);
+      return this.fallbackWith('listGraphs', fallbackReason(error), (fallback) => fallback.listGraphs(basePath, accessScope), accessScope, error);
     }
   }
 
@@ -476,13 +482,22 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     reason: string,
     run: (fallback: SparqlEngine) => Promise<T>,
     accessScope?: RdfAccessScope,
+    cause?: unknown,
   ): Promise<T> {
     const embeddedReason = embeddedUnsupportedReason(reason);
+    const inherited = cause instanceof UnsupportedSparqlQueryError
+      ? {
+          code: cause.code,
+          capability: cause.capability,
+          hint: cause.hint,
+          correction: cause.correction,
+        }
+      : undefined;
     if (isRestrictiveRdfAccessScope(accessScope)) {
-      throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation} inside ACL/ACR-restricted scope: ${embeddedReason}`);
+      throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation} inside ACL/ACR-restricted scope: ${embeddedReason}`, inherited);
     }
     if (!this.fallback) {
-      throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation}: ${embeddedReason}`);
+      throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation}: ${embeddedReason}`, inherited);
     }
     this.onFallback?.({ operation, reason });
     const start = Date.now();
@@ -513,6 +528,28 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
     this.recordPrimary(operation, start, result);
     return result;
+  }
+
+  private assertUpdateQuadsAllowedByAccessScope(
+    quads: readonly Quad[],
+    basePath: string,
+    accessScope?: RdfAccessScope,
+  ): void {
+    if (!isWriteAccessScope(accessScope) || !isRestrictiveRdfAccessScope(accessScope)) {
+      return;
+    }
+    for (const quad of quads) {
+      const graph = quad.graph.termType === 'DefaultGraph' ? basePath : quad.graph.value;
+      if (!rdfAccessGraphAllowed(graph, accessScope)) {
+        throw new UnsupportedSparqlQueryError(
+          `Embedded SPARQL engine cannot execute queryVoid: update target graph is outside the authorized RDF access scope: ${graph}`,
+          {
+            capability: 'sparql.update.access_scope',
+            hint: 'Authorize the target graph for this write, or split the update so each write target is inside the granted graph scope.',
+          },
+        );
+      }
+    }
   }
 
   private async executeConstructPrimary(
@@ -719,6 +756,17 @@ function isQuadObjectTerm(term: Term | undefined): term is Quad_Object {
       && term.termType !== 'Variable'
       && term.termType !== 'DefaultGraph'
       && term.termType !== 'Quad',
+  );
+}
+
+function isWriteAccessScope(scope?: RdfAccessScope): scope is RdfAccessScope {
+  return Boolean(
+    scope
+      && (
+        scope.mode === RdfAccessMode.APPEND
+        || scope.mode === RdfAccessMode.DELETE
+        || scope.mode === RdfAccessMode.WRITE
+      ),
   );
 }
 
