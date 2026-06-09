@@ -176,9 +176,28 @@ export interface RdfModelPostgresBenchmarkReport {
   failedPlanCases: string[];
   concurrencyGate: RdfModelPostgresConcurrencyGate;
   refresh?: RdfDerivedIndexRefreshResult;
+  refreshBenchmark?: RdfModelPostgresRefreshBenchmark;
   storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
   queryCases: RdfModelQueryBenchmarkResult[];
+}
+
+export interface RdfModelPostgresRefreshBenchmark {
+  durationMs: number;
+  refreshed: boolean;
+  previousFactsDataVersion?: number;
+  factsDataVersion?: number;
+  syncedWithFacts?: boolean;
+  rebuildMode?: string;
+  dirtyGraphs?: number;
+  dirtyPairs?: number;
+  dirtyTerms?: number;
+  plannerStatsDurationMs?: number;
+  analyzedTables?: string[];
+  sourceQueue?: {
+    pendingSources: number;
+    drainedSources: number;
+  };
 }
 
 export interface RdfModelPostgresConcurrencyGate {
@@ -4364,9 +4383,13 @@ export async function runRdfModelsPostgresBenchmark(
   const warmupIterations = Math.max(0, Math.floor(options.warmupIterations ?? 1));
   const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
   const caseProfile = options.caseProfile ?? 'default';
-  const refresh = options.refreshDerivedIndexes === false
-    ? undefined
-    : await engine.refreshDerivedIndexes();
+  let refresh: RdfDerivedIndexRefreshResult | undefined;
+  let refreshBenchmark: RdfModelPostgresRefreshBenchmark | undefined;
+  if (options.refreshDerivedIndexes !== false) {
+    const refreshStartedAt = Date.now();
+    refresh = await engine.refreshDerivedIndexes();
+    refreshBenchmark = postgresRefreshBenchmark(refresh, Date.now() - refreshStartedAt);
+  }
   const storageBefore = await engine.storageStats();
   const cases = (options.cases ?? rdfModelsBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
@@ -4405,9 +4428,31 @@ export async function runRdfModelsPostgresBenchmark(
     failedPlanCases,
     concurrencyGate,
     ...(refresh ? { refresh } : {}),
+    ...(refreshBenchmark ? { refreshBenchmark } : {}),
     storage: await engine.storageStats(),
     cases: results,
     queryCases: queryResults,
+  };
+}
+
+function postgresRefreshBenchmark(
+  refresh: RdfDerivedIndexRefreshResult,
+  durationMs: number,
+): RdfModelPostgresRefreshBenchmark {
+  const rdf3x = refresh.rdf3x;
+  return {
+    durationMs,
+    refreshed: rdf3x?.refreshed ?? false,
+    previousFactsDataVersion: rdf3x?.previousFactsDataVersion,
+    factsDataVersion: rdf3x?.factsDataVersion ?? refresh.factsDataVersion,
+    syncedWithFacts: rdf3x?.syncedWithFacts,
+    rebuildMode: rdf3x?.rebuild?.mode,
+    dirtyGraphs: rdf3x?.rebuild && 'dirtyGraphs' in rdf3x.rebuild ? rdf3x.rebuild.dirtyGraphs : undefined,
+    dirtyPairs: rdf3x?.rebuild && 'dirtyPairs' in rdf3x.rebuild ? rdf3x.rebuild.dirtyPairs : undefined,
+    dirtyTerms: rdf3x?.rebuild && 'dirtyTerms' in rdf3x.rebuild ? rdf3x.rebuild.dirtyTerms : undefined,
+    plannerStatsDurationMs: rdf3x?.plannerStats?.durationMs,
+    analyzedTables: rdf3x?.plannerStats?.analyzedTables,
+    sourceQueue: rdf3x?.sourceQueue,
   };
 }
 

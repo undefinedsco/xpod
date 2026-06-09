@@ -91,6 +91,7 @@ async function main(): Promise<void> {
       synced,
       plannerStatsMatched,
       plannerStatsTables,
+      refreshBenchmark: report.refreshBenchmark,
       accelerationMatched,
       scanCases: report.cases.length,
       queryCases: report.queryCases.length,
@@ -389,6 +390,7 @@ function printSummary(summary: {
   synced: boolean;
   plannerStatsMatched: boolean;
   plannerStatsTables: string[];
+  refreshBenchmark?: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>['refreshBenchmark'];
   accelerationMatched: boolean;
   scanCases: number;
   queryCases: number;
@@ -419,6 +421,11 @@ function printSummary(summary: {
   console.log(`  rdf3x synced with facts: ${summary.synced}`);
   console.log(`  planner stats refreshed: ${summary.plannerStatsMatched}`);
   console.log(`  planner stats tables: ${summary.plannerStatsTables.join(', ') || 'none'}`);
+  if (summary.refreshBenchmark) {
+    console.log(`  refresh duration ms: ${summary.refreshBenchmark.durationMs}`);
+    console.log(`  refresh rebuild mode: ${summary.refreshBenchmark.rebuildMode ?? 'none'}`);
+    console.log(`  refresh source queue: ${summary.refreshBenchmark.sourceQueue?.drainedSources ?? 0}/${summary.refreshBenchmark.sourceQueue?.pendingSources ?? 0}`);
+  }
   console.log(`  pg acceleration profile: ${summary.storage.pgAcceleration?.profile ?? 'unknown'}`);
   console.log(`  pg acceleration enabled: ${summary.storage.pgAcceleration?.enabled ?? false}`);
   console.log(`  pg acceleration matched request: ${summary.accelerationMatched}`);

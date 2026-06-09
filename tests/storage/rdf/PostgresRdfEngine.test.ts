@@ -5458,6 +5458,23 @@ describe('PostgresRdfEngine', () => {
         'rdf_quads',
         'rdf3x_stat_g',
       ]));
+      expect(report.refreshBenchmark).toMatchObject({
+        durationMs: expect.any(Number),
+        refreshed: true,
+        previousFactsDataVersion: 0,
+        factsDataVersion: 1,
+        syncedWithFacts: true,
+        plannerStatsDurationMs: expect.any(Number),
+        analyzedTables: expect.arrayContaining([
+          'rdf_terms',
+          'rdf_quads',
+          'rdf3x_stat_g',
+        ]),
+        sourceQueue: {
+          pendingSources: 0,
+          drainedSources: 0,
+        },
+      });
       expect(report.planMatched).toBe(true);
       expect(report.failedPlanCases).toEqual([]);
       expect(report.concurrencyGate).toMatchObject({
