@@ -422,6 +422,7 @@ function SlowQueryTable(props: { entries: RdfSlowQueryEntry[] }) {
                     </td>
                     <td className="px-5 py-3">
                       <ReasonList reasons={entry.slowQuery.reasons} />
+                      <SlowQueryPlannerDiagnostics entry={entry} />
                     </td>
                   </tr>
                 ))}
@@ -431,6 +432,20 @@ function SlowQueryTable(props: { entries: RdfSlowQueryEntry[] }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function SlowQueryPlannerDiagnostics(props: { entry: RdfSlowQueryEntry }) {
+  const histogram = formatSlowQueryHistogramHints(props.entry);
+  const rejectedNative = formatSlowQueryRejectedNativeOperators(props.entry);
+  if (!histogram && !rejectedNative) {
+    return null;
+  }
+  return (
+    <div className="mt-2 max-w-[320px] space-y-1 text-xs text-muted-foreground">
+      {histogram && <div className="truncate">{histogram}</div>}
+      {rejectedNative && <div className="truncate">{rejectedNative}</div>}
+    </div>
   );
 }
 
@@ -583,6 +598,24 @@ function formatSlowQueryDerivedCache(entry: RdfSlowQueryEntry): string {
   const scopePressure = formatPercent(cache.largestScopePressure);
   const evictions = cache.evictionCount;
   return `pressure ${pressure} / scope ${scopePressure} / evict ${formatInteger(evictions)}`;
+}
+
+function formatSlowQueryHistogramHints(entry: RdfSlowQueryEntry): string {
+  const hints = entry.histogramHints ?? [];
+  if (hints.length === 0) {
+    return '';
+  }
+  const summary = hints.map((hint) => `${hint.kind}:${formatInteger(hint.quadCount)}`);
+  return `hist ${formatInteger(hints.length)} ${formatListSummary(summary)}`;
+}
+
+function formatSlowQueryRejectedNativeOperators(entry: RdfSlowQueryEntry): string {
+  const rejected = entry.rejectedNativeOperators ?? [];
+  if (rejected.length === 0) {
+    return '';
+  }
+  const summary = rejected.map((operator) => `${operator.capability}:${operator.reason}`);
+  return `native rejected ${formatInteger(rejected.length)} ${formatListSummary(summary)}`;
 }
 
 function formatMs(value: number): string {

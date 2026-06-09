@@ -97,6 +97,7 @@ import type {
   Rdf3xTermMetadataPattern,
   Rdf3xTermProjectionName,
   Rdf3xTermTypePatternValue,
+  RdfQueryPlannerHistogramHint,
   RdfTermKind,
 } from './types';
 import type { QueryOptions, QuintPattern, TermMatch, TermName, TermOperators } from '../quint/types';
@@ -4999,6 +5000,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
         reasons: [...planner.slowQuery.reasons],
       },
       ...(planner.staleStats ? { staleStats: { ...planner.staleStats } } : {}),
+      ...(planner.histogramHints ? { histogramHints: planner.histogramHints.map(clonePlannerHistogramHint) } : {}),
+      ...(planner.rejectedNativeOperators
+        ? { rejectedNativeOperators: planner.rejectedNativeOperators.map((entry) => ({ ...entry })) }
+        : {}),
       derivedCache,
       cache: {
         templateStatus: options.template.explain.status,
@@ -5068,6 +5073,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
           reasons: [...entry.slowQuery.reasons],
         },
         ...(entry.staleStats ? { staleStats: { ...entry.staleStats } } : {}),
+        ...(entry.histogramHints ? { histogramHints: entry.histogramHints.map(clonePlannerHistogramHint) } : {}),
+        ...(entry.rejectedNativeOperators
+          ? { rejectedNativeOperators: entry.rejectedNativeOperators.map((operator) => ({ ...operator })) }
+          : {}),
         derivedCache: {
           ...entry.derivedCache,
           evictions: { ...entry.derivedCache.evictions },
@@ -9436,6 +9445,16 @@ function emptyPgCacheCounterStats(): PgCacheCounterStats {
 
 function cloneQueryCacheExplain<T extends RdfQueryCacheExplain>(cache: T): T {
   return { ...cache };
+}
+
+function clonePlannerHistogramHint(hint: RdfQueryPlannerHistogramHint): RdfQueryPlannerHistogramHint {
+  return {
+    ...hint,
+    ...(hint.subject ? { subject: { ...hint.subject } } : {}),
+    ...(hint.predicate ? { predicate: { ...hint.predicate } } : {}),
+    ...(hint.object ? { object: { ...hint.object } } : {}),
+    ...(hint.graph ? { graph: { ...hint.graph } } : {}),
+  };
 }
 
 function bytePressure(bytes: number, maxBytes: number): number {

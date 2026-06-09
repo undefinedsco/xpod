@@ -336,6 +336,8 @@ export interface RdfSlowQueryStatsEntry {
   runtime: RdfQueryPlannerRuntimeExplain;
   slowQuery: RdfQueryPlannerSlowQueryExplain;
   staleStats?: RdfQueryPlannerStaleStatsExplain;
+  histogramHints?: RdfQueryPlannerHistogramHint[];
+  rejectedNativeOperators?: RdfQueryPlannerNativeOperatorRejection[];
   derivedCache: RdfSlowQueryDerivedCacheExplain;
   cache: {
     templateStatus?: RdfQueryTemplateCacheExplain['status'];

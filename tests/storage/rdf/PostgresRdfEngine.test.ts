@@ -286,6 +286,8 @@ describe('PostgresRdfEngine', () => {
     const engine = new PostgresRdfEngine({
       driver: 'pglite',
       dataDir,
+      queryExplainSlowMs: 0,
+      queryExplainSlowQueryMaxEntries: 4,
     });
     const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
     const messageType = namedNode('https://type/Message');
@@ -459,6 +461,20 @@ describe('PostgresRdfEngine', () => {
         estimateInputs: expect.arrayContaining([
           'facts.subjectPredicateCardinality',
         ]),
+        histogramHints: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'subject-predicate',
+            patternIndex: 0,
+            subject: expect.objectContaining({ value: message1.value }),
+            predicate: expect.objectContaining({ value: tag.value }),
+            quadCount: 2,
+          }),
+        ]),
+      });
+
+      const slowQueryStats = (await engine.storageStats()).slowQueries;
+      expect(slowQueryStats?.entries[0]).toMatchObject({
+        selectedPath: 'rdf3x',
         histogramHints: expect.arrayContaining([
           expect.objectContaining({
             kind: 'subject-predicate',
@@ -3978,6 +3994,8 @@ describe('PostgresRdfEngine', () => {
     const engine = new PostgresRdfEngine({
       pool,
       rdfAccelerationProfile: 'pg-custom-index',
+      queryExplainSlowMs: 0,
+      queryExplainSlowQueryMaxEntries: 1,
     });
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const message1 = namedNode(`${graph.value}#msg_1`);
@@ -4028,6 +4046,16 @@ describe('PostgresRdfEngine', () => {
         reasons: expect.arrayContaining([
           'native-operator-rejected',
         ]),
+        rejectedNativeOperators: expect.arrayContaining([
+          {
+            capability: 'join.required_bgp.native',
+            reason: 'cost-cutover-generic-bgp-native-regression',
+          },
+        ]),
+      });
+      const slowQueryStats = (await engine.storageStats()).slowQueries;
+      expect(slowQueryStats?.entries[0]).toMatchObject({
+        selectedPath: 'rdf3x',
         rejectedNativeOperators: expect.arrayContaining([
           {
             capability: 'join.required_bgp.native',

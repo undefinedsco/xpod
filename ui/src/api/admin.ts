@@ -243,6 +243,8 @@ export interface RdfSlowQueryEntry {
     stale: boolean;
     lag: number;
   };
+  histogramHints?: RdfPlannerHistogramHint[];
+  rejectedNativeOperators?: RdfPlannerNativeOperatorRejection[];
   derivedCache: RdfSlowQueryDerivedCache;
   cache: {
     templateStatus?: string;
@@ -263,6 +265,32 @@ export interface RdfSlowQueryEntry {
     activeOperators?: string[];
     unsupportedCapabilities?: string[];
   };
+}
+
+export interface RdfPlannerCardinalityTerm {
+  value: string;
+  kind: string;
+  datatype?: string;
+  language?: string;
+}
+
+export interface RdfPlannerHistogramHint {
+  kind: 'graph' | 'predicate' | 'predicate-object' | 'subject-predicate';
+  patternIndex: number;
+  quadCount: number;
+  graphCount?: number;
+  distinctSubjects?: number;
+  distinctPredicates?: number;
+  distinctObjects?: number;
+  subject?: RdfPlannerCardinalityTerm;
+  predicate?: RdfPlannerCardinalityTerm;
+  object?: RdfPlannerCardinalityTerm;
+  graph?: RdfPlannerCardinalityTerm;
+}
+
+export interface RdfPlannerNativeOperatorRejection {
+  capability: string;
+  reason: string;
 }
 
 export interface RdfSlowQueryDerivedCache {
