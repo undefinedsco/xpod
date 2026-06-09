@@ -1287,7 +1287,7 @@ compare(A, B)
 
 阶段 4：Update delta
 
-- `INSERT DATA` / `DELETE DATA` / `DELETE WHERE` / 安全 `DELETE/INSERT WHERE` / 安全 `INSERT WHERE` 的 embedded index delta 和单文档 authority file patch 已完成第一步；后续需要把这些文件 patch 纳入 SolidFS sync journal，避免 crash 后只靠进程内 rollback。
+- `INSERT DATA` / `DELETE DATA` / `DELETE WHERE` / 安全 `DELETE/INSERT WHERE` / 安全 `INSERT WHERE` 的 embedded index delta 和单文档 authority file patch 已完成第一步；SolidFS 层已具备默认 runtime journal/bootstrap/replay/compact，且同一次多文件 commit 会写入同一个 `tx_id`；后续需要继续把更多 SPARQL 多文件 patch 的失败/reconcile 细节纳入同一恢复视图，避免 crash 后只靠进程内 rollback。
 - 安全的 `FILTER` / `VALUES` / `BIND` / `OPTIONAL` / 受控 `UNION` / 受控 anti-join / semi-join local WHERE 子集已在 embedded update delta 路径覆盖：先用本地查询层计算 bindings，再 materialize delete/insert quads，最后 patch 文件权威并刷新 RDF index。`BIND` 保持 expression-layer 语义，不当作 join source；template 可读取派生 binding。
 - Embedded index delta 已有 operation 级 `applyDelta(...)` 事务边界；文件权威层已支持多 default `USING` 和 `USING NAMED` 读取多个本地 RDF authority files，并支持一个安全 UPDATE 同时 patch 多个明确的本地 by-line RDF authority files；`GRAPH ?g` 模板在 `?g` 有 finite named graph scope 时也可 materialize 成多文件写入，且不再必须依赖 `USING NAMED`，显式 finite graph filter 和 finite `VALUES` graph rows 也可证明安全。多文件 patch 已有进程内尽力 rollback：任一目标写入或 index 刷新失败时，已写目标会恢复到更新前 quads。下一步继续扩大复杂 update 覆盖，例如更多 FILTER 表达式、更复杂 named graph shape 的安全映射评估，以及 crash/retry 级 SolidFS sync journal。无法安全映射的 shape 必须保留明确 fallback/错误和指标。
 - 复杂 update 逐步消灭全量重写。

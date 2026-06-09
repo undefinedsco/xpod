@@ -117,7 +117,7 @@ export interface SolidFsSyncer {
   shouldTrack?(input: SolidFsPrepareInput): boolean;
   shouldTrackPath?(relativePath: string): boolean;
   initializeWorkspace?(workspace: SolidFsManifest, context?: unknown): Promise<void>;
-  sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown): Promise<void>;
+  sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown, txId?: string): Promise<void>;
 }
 
 export interface SolidFsHydrateInput {

@@ -1,4 +1,8 @@
 import {
+  createHash,
+  randomUUID,
+} from 'node:crypto';
+import {
   cp,
   mkdir,
   mkdtemp,
@@ -548,8 +552,9 @@ class LocalMaterializedWorkspace implements MaterializedWorkspace {
     if (!this.syncer) {
       return;
     }
+    const txId = solidFsCommitTxId(this.manifest, changes);
     for (const change of changes) {
-      await this.syncer.sync(change, this.manifest, this.context);
+      await this.syncer.sync(change, this.manifest, this.context, txId);
     }
   }
 
@@ -562,4 +567,28 @@ class LocalMaterializedWorkspace implements MaterializedWorkspace {
 
 function isLineAddressableRdfPath(filePath: string): boolean {
   return isRdfPath(filePath);
+}
+
+function solidFsCommitTxId(manifest: SolidFsManifest, changes: SolidFsChange[]): string | undefined {
+  if (changes.length <= 1) {
+    return undefined;
+  }
+
+  const digest = createHash('sha256')
+    .update(JSON.stringify({
+      workspace: manifest.workspace,
+      projection: manifest.projection,
+      cwd: manifest.cwd,
+      changes: changes.map((change) => ({
+        path: change.path,
+        type: change.type,
+        resource: change.resource,
+        sourcePath: change.sourcePath,
+        sourceVersion: change.sourceVersion,
+      })),
+      nonce: randomUUID(),
+    }))
+    .digest('hex')
+    .slice(0, 32);
+  return `solidfs_tx_${digest}`;
 }

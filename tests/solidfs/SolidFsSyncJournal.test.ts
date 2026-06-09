@@ -98,6 +98,51 @@ describe('SolidFS sync journal', () => {
     replayJournal.close();
   });
 
+  it('groups multi-file commit journal entries with the same transaction id', async () => {
+    await writeFile(path.join(workspaceRoot, 'one.ttl'), '<#one> <https://schema.org/name> "One" .\n', 'utf8');
+    await writeFile(path.join(workspaceRoot, 'two.ttl'), '<#two> <https://schema.org/name> "Two" .\n', 'utf8');
+
+    const journal = openJournal();
+    const solidfs = new LocalSolidFS({
+      syncer: new JournaledSolidFsSyncer({
+        journal,
+        syncer: {
+          shouldTrackPath: (relativePath): boolean => relativePath.endsWith('.ttl'),
+          async sync(): Promise<void> {
+            // Journal tx grouping is independent of the concrete sync target.
+          },
+        },
+      }),
+    });
+    const workspace = await solidfs.prepare({
+      workspace: 'https://pod.example/alice/projects/demo/',
+      sourcePath: workspaceRoot,
+      projection: 'direct',
+    });
+
+    await writeFile(path.join(workspace.cwd, 'one.ttl'), '<#one> <https://schema.org/name> "One updated" .\n', 'utf8');
+    await writeFile(path.join(workspace.cwd, 'two.ttl'), '<#two> <https://schema.org/name> "Two updated" .\n', 'utf8');
+    await workspace.commit();
+
+    const operations = journal.listOperations()
+      .filter((op) => op.change.path === 'one.ttl' || op.change.path === 'two.ttl');
+    const txIds = new Set(operations.map((op) => op.txId));
+    expect(operations).toHaveLength(2);
+    expect([...txIds]).toHaveLength(1);
+    expect([...txIds][0]).toMatch(/^solidfs_tx_/u);
+    expect(operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        change: expect.objectContaining({ path: 'one.ttl' }),
+        stage: 'done',
+      }),
+      expect.objectContaining({
+        change: expect.objectContaining({ path: 'two.ttl' }),
+        stage: 'done',
+      }),
+    ]));
+    journal.close();
+  });
+
   it('bootstraps existing workspace files into replayable journal work without duplicating checkpointed files', async () => {
     await mkdir(path.join(workspaceRoot, 'notes'), { recursive: true });
     await writeFile(path.join(workspaceRoot, 'data.ttl'), '<#me> <https://schema.org/name> "Alice" .\n', 'utf8');

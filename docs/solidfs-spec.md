@@ -379,6 +379,7 @@ Manifest 至少记录：
 - `RdfIndexSolidFsSyncer` 是同进程 adapter，用于测试或嵌入式场景直接刷新 `LocalRdfIndexAccessor`、可选 `RdfTextIndexLike` 和可选 `RdfVectorIndexLike`。vector index 必须显式传入 `vectorizeText`，避免 SolidFS 默认路径绑定具体 embedding provider；跨进程 API worker 不应依赖它访问 CSS DI 内部对象。
 - `SqliteSolidFsSyncJournal` 已实现第一版 per-Pod / workspace outbox：记录本地权威文件提交后的 `local_committed` op，replay 时校验当前文件 hash，成功后写 checkpoint 并标记 `done`，失败则进入 `failed_retryable`，文件已被更新则进入 `reconcile_required`。
 - `JournaledSolidFsSyncer` 可以包装单个 `SolidFsSyncer` + 显式 journal；`WorkspaceJournaledSolidFsSyncer` 按 workspace 自动解析持久 journal 路径，让 RDF/text index 刷新或 Pod HTTP sync 共享同一套 journal、bootstrap、replay 和 compaction 机制；journal 只保存 metadata，不保存文件正文。
+- `LocalSolidFS.commit()` 会把同一次多文件提交里的 journal entry 绑定到同一个 `tx_id`，便于 replay、reconcile 和运维视图把批量文件 commit 识别为同一恢复单元；单文件提交仍不额外生成 tx。
 - journal compaction 已按第一版生命周期执行：`done` op 默认 7 天且必须被 checkpoint 覆盖后删除，delete/tombstone 默认 30 天，`failed_retryable` 和未完成 op 不会被普通 compaction 删除。
 - `LocalSolidFS.prepare()` 已调用 syncer 的 workspace 初始化钩子；默认 `PiAgentRuntimeDriver` 使用 `WorkspaceJournaledSolidFsSyncer(PodSolidFsSyncer)`，所以每次 Agent Loop 启动前都会对当前 workspace 执行 bootstrap、pending replay 和 compaction。带用户/任务 auth context 的下一次 Run 会继续上次崩溃或网络失败后留下的 pending sync。
 - `PiAgentRuntimeDriver` 启动 pi AgentSession 前统一调用 `SolidFS.prepare()`，runtime 只拿 `workspace.cwd`，完成后 `commit()`，失败或 runtime error 后 `rollback()`；默认 SolidFS 同时配置 journaled Pod HTTP RDF syncer 和对象 hydrator。pi 的 read/edit/write 工具路径已包装 `workspace.hydrate(relativePath)`，对象文件缺失时会先显式 hydrate 再交给工具读取或修改。
@@ -389,7 +390,7 @@ Manifest 至少记录：
 后续增强，不阻塞当前 journal 恢复语义：
 
 - service 级无请求后台 worker 只能做不需要用户/任务 auth context 的 compact/reconcile；Pod HTTP replay 需要沿用下一次 Run 的 context，当前已在默认 runtime prepare 阶段执行。
-- 多实例 cloud 的 PG lease、远端 listing 对账、shadow checkpoint 原子切换和多文件 `tx_id` 调度可以继续增强；当前恢复路径已经覆盖 SQLite outbox、checkpoint、bootstrap、replay、stale-file reconcile 标记、生命周期压缩和默认 runtime 接入。
+- 多实例 cloud 的 PG lease、远端 listing 对账和 shadow checkpoint 原子切换可以继续增强；当前恢复路径已经覆盖 SQLite outbox、checkpoint、bootstrap、replay、同 commit `tx_id` 绑定、stale-file reconcile 标记、生命周期压缩和默认 runtime 接入。
 - `hydrated-object` 已经具备 Pod HTTP hydrate / commit adapter；尚未做 MinIO/COS SDK 直连 adapter，也没有 FUSE 级裸 bash 自动 hydrate。
 - cloud 持久 workspace 与 COS 冷备的同步策略还没有完整实现。
 - `LocalFirstRdfRepresentationResolver` 目前仍由 `SparqlUpdateResourceStore` 构造和调用；后续如果 GET 链路继续拆分，可以把它挂到更靠近 HTTP 内容读取的 Store/handler 层，但语义已经从 SPARQL PATCH 逻辑中抽离。
