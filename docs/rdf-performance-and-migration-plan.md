@@ -818,11 +818,14 @@ delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension sha
   `ai:isProvidedBy` + `cred:provider` 关系 join，避免为这类产品路径手写 SPARQL。shared
   query/repository 层后续只需要继续覆盖其他高频产品查询。
 - SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair。PG 已补第一版 source-level dirty queue，并通过 `maintainDerivedIndexes()` / `rdf_maintenance_leases` 接到后台维护入口；未完成的是更大数据量下的 refresh benchmark、按 source 批量调度策略优化和运维面板。
-- 冷启动 stats refresh / warm steady-state 的自动化运维指标；`GET /v1/rdf/stats` 和 dashboard
+- 冷启动 stats refresh / warm steady-state 的自动化运维指标第一版已接入 benchmark report：
+  `runRdfModelsPostgresBenchmark()` 会输出 `coldStartBenchmark`，区分 startup/open duration、
+  stats refresh 后首轮 query duration，以及同一 query 的 warm steady-state p50/p95；CLI summary
+  会直接打印这三段。`GET /v1/rdf/stats` 和 dashboard
   RDF 页已先暴露 `storageStats()`、`rdf3x.refreshLag`、auth/cache scope、cache eviction
   breakdown、top scope drill-down 和 process-local `slowQueries` 快照；慢查询条目已带 derived
   cache pressure / eviction 摘要，`metrics.explain` 已有第一版查询级 runtime/stale/slow
-  结构化观测，但还没有冷启动 / warm steady-state 的自动化指标。
+  结构化观测；后续还需要把 benchmark 口径进一步接入 dashboard drill-down。
 
 因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration。真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
 ## Migration Strategy
@@ -949,5 +952,4 @@ delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension sha
 ## Open Follow-ups
 
 - 继续用真实负载评估 SQLite/file-backed numeric aggregate 是否可以重新按 cost gate 打开 RDF-3X path。
-- 增加真实 PG cold-start benchmark case：区分首次连接/首次执行、stats refresh 后首轮、warm steady-state 三个口径。
-- 在 RDF dashboard 上继续接入冷启动 / warm steady-state 自动化指标。
+- 在 RDF dashboard 上继续接入 cold-start benchmark 的 startup / refresh 后首轮 / warm steady-state drill-down。

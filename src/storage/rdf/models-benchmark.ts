@@ -17,6 +17,7 @@ import type {
   Rdf3xTriplePattern,
   RdfBindingRow,
   RdfDerivedIndexRefreshResult,
+  RdfEngineColdStartPhaseStats,
   RdfEngineLike,
   RdfEngineStorageStats,
   RdfIndexMetrics,
@@ -180,9 +181,47 @@ export interface RdfModelPostgresBenchmarkReport {
   refresh?: RdfDerivedIndexRefreshResult;
   refreshBenchmark?: RdfModelPostgresRefreshBenchmark;
   postWriteRefreshBenchmark?: RdfModelPostgresPostWriteRefreshBenchmark;
+  coldStartBenchmark?: RdfModelPostgresColdStartBenchmark;
   storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
   queryCases: RdfModelQueryBenchmarkResult[];
+}
+
+export interface RdfModelPostgresColdStartBenchmark {
+  startup?: {
+    status: NonNullable<RdfEngineStorageStats['lifecycle']>['status'];
+    driver?: string;
+    openCount: number;
+    startedAt?: string;
+    readyAt?: string;
+    durationMs?: number;
+    phases: RdfEngineColdStartPhaseStats[];
+  };
+  firstQueryAfterRefresh?: RdfModelPostgresColdStartQueryBenchmark;
+  warmSteadyState?: RdfModelPostgresWarmSteadyStateBenchmark;
+}
+
+export interface RdfModelPostgresColdStartQueryBenchmark {
+  queryCase: string;
+  durationMs: number;
+  planMatched: boolean;
+  missingPlan: string[];
+  physicalPlan: string[];
+  indexChoices: string[];
+  scannedRows: number;
+  returnedRows: number;
+  cacheMode: 'bypass';
+}
+
+export interface RdfModelPostgresWarmSteadyStateBenchmark {
+  queryCase: string;
+  iterations: number;
+  warmupIterations: number;
+  durationsMs: number[];
+  p50DurationMs: number;
+  p95DurationMs: number;
+  planMatched: boolean;
+  returnedRows: number;
 }
 
 export interface RdfModelPostgresRefreshBenchmark {
@@ -4453,6 +4492,9 @@ export async function runRdfModelsPostgresBenchmark(
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
   const queryCases = (options.queryCases ?? rdfModelsPostgresQueryBenchmarkCasesForProfile(caseProfile))
     .filter((testCase) => scaleRank(testCase.minScale) <= scaleRank(scale));
+  const firstQueryAfterRefresh = refresh
+    ? await runPostgresColdStartFirstQuery(engine, queryCases)
+    : undefined;
   const results = [];
   for (const testCase of cases) {
     results.push(await runAsyncBenchmarkCase(engine, testCase, iterations, storageBefore.facts, warmupIterations));
@@ -4467,6 +4509,12 @@ export async function runRdfModelsPostgresBenchmark(
     queryResults,
     concurrency,
     storageBefore.facts,
+  );
+  const coldStartBenchmark = postgresColdStartBenchmark(
+    storageBefore,
+    firstQueryAfterRefresh,
+    queryResults,
+    warmupIterations,
   );
   const failedPlanCases = [
     ...results.filter((result) => !result.planMatched).map((result) => result.name),
@@ -4488,9 +4536,94 @@ export async function runRdfModelsPostgresBenchmark(
     ...(refresh ? { refresh } : {}),
     ...(refreshBenchmark ? { refreshBenchmark } : {}),
     ...(postWriteRefreshBenchmark ? { postWriteRefreshBenchmark } : {}),
+    ...(coldStartBenchmark ? { coldStartBenchmark } : {}),
     storage: await engine.storageStats(),
     cases: results,
     queryCases: queryResults,
+  };
+}
+
+async function runPostgresColdStartFirstQuery(
+  engine: RdfEngineLike,
+  queryCases: readonly RdfModelQueryBenchmarkCase[],
+): Promise<RdfModelPostgresColdStartQueryBenchmark | undefined> {
+  const testCase = selectPostgresColdStartQueryCase(queryCases);
+  if (!testCase) {
+    return undefined;
+  }
+
+  const query = {
+    ...testCase.query,
+    cache: {
+      ...(testCase.query.cache ?? {}),
+      mode: 'bypass' as const,
+    },
+  };
+  const startedAt = Date.now();
+  const result = await engine.query(query);
+  const durationMs = Math.max(0, Date.now() - startedAt);
+  const keys = result.bindings.map(bindingKey);
+  const missingPlan = missingExpectedQueryPlan(testCase, result.metrics, keys.length);
+
+  return {
+    queryCase: testCase.name,
+    durationMs,
+    planMatched: missingPlan.length === 0,
+    missingPlan,
+    physicalPlan: result.metrics.plan,
+    indexChoices: result.metrics.indexChoices,
+    scannedRows: result.metrics.scannedRows,
+    returnedRows: keys.length,
+    cacheMode: 'bypass',
+  };
+}
+
+function selectPostgresColdStartQueryCase(
+  queryCases: readonly RdfModelQueryBenchmarkCase[],
+): RdfModelQueryBenchmarkCase | undefined {
+  return queryCases.find((testCase) => testCase.benchmarkCache !== 'preserve') ?? queryCases[0];
+}
+
+function postgresColdStartBenchmark(
+  storageBefore: RdfEngineStorageStats,
+  firstQueryAfterRefresh: RdfModelPostgresColdStartQueryBenchmark | undefined,
+  queryResults: readonly RdfModelQueryBenchmarkResult[],
+  warmupIterations: number,
+): RdfModelPostgresColdStartBenchmark | undefined {
+  const lifecycle = storageBefore.lifecycle;
+  const startup = lifecycle
+    ? {
+        status: lifecycle.status,
+        ...(lifecycle.driver ? { driver: lifecycle.driver } : {}),
+        openCount: lifecycle.openCount,
+        ...(lifecycle.coldStart?.startedAt ? { startedAt: lifecycle.coldStart.startedAt } : {}),
+        ...(lifecycle.coldStart?.readyAt ? { readyAt: lifecycle.coldStart.readyAt } : {}),
+        ...(lifecycle.coldStart?.durationMs !== undefined ? { durationMs: lifecycle.coldStart.durationMs } : {}),
+        phases: lifecycle.coldStart?.phases ?? [],
+      }
+    : undefined;
+  const warmResult = firstQueryAfterRefresh
+    ? queryResults.find((result) => result.name === firstQueryAfterRefresh.queryCase)
+    : undefined;
+  const warmSteadyState = warmResult
+    ? {
+        queryCase: warmResult.name,
+        iterations: warmResult.durationsMs.length,
+        warmupIterations,
+        durationsMs: warmResult.durationsMs,
+        p50DurationMs: warmResult.p50DurationMs,
+        p95DurationMs: warmResult.p95DurationMs,
+        planMatched: warmResult.planMatched,
+        returnedRows: warmResult.returnedRows,
+      }
+    : undefined;
+  if (!startup && !firstQueryAfterRefresh && !warmSteadyState) {
+    return undefined;
+  }
+  return {
+    ...(startup ? { startup } : {}),
+    ...(firstQueryAfterRefresh ? { firstQueryAfterRefresh } : {}),
+    ...(warmSteadyState ? { warmSteadyState } : {}),
   };
 }
 

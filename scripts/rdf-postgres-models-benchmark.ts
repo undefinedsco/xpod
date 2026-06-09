@@ -99,6 +99,7 @@ async function main(): Promise<void> {
       plannerStatsTables,
       refreshBenchmark: report.refreshBenchmark,
       postWriteRefreshBenchmark: report.postWriteRefreshBenchmark,
+      coldStartBenchmark: report.coldStartBenchmark,
       accelerationMatched,
       scanCases: report.cases.length,
       queryCases: report.queryCases.length,
@@ -414,6 +415,7 @@ function printSummary(summary: {
   plannerStatsTables: string[];
   refreshBenchmark?: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>['refreshBenchmark'];
   postWriteRefreshBenchmark?: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>['postWriteRefreshBenchmark'];
+  coldStartBenchmark?: Awaited<ReturnType<typeof runRdfModelsPostgresBenchmark>>['coldStartBenchmark'];
   accelerationMatched: boolean;
   scanCases: number;
   queryCases: number;
@@ -459,6 +461,13 @@ function printSummary(summary: {
     console.log(`  post-write refresh rebuild mode: ${summary.postWriteRefreshBenchmark.rebuildMode ?? 'none'}`);
     console.log(`  post-write refresh source queue: ${summary.postWriteRefreshBenchmark.sourceQueue?.drainedSources ?? 0}/${summary.postWriteRefreshBenchmark.sourceQueue?.pendingSources ?? 0}`);
     console.log(`  post-write refresh gate failed reasons: ${summary.postWriteRefreshBenchmark.failedReasons.join(', ') || 'none'}`);
+  }
+  if (summary.coldStartBenchmark) {
+    console.log(`  cold start open duration ms: ${summary.coldStartBenchmark.startup?.durationMs ?? 'unknown'}`);
+    console.log(`  cold start phase count: ${summary.coldStartBenchmark.startup?.phases.length ?? 0}`);
+    console.log(`  first query after refresh: ${summary.coldStartBenchmark.firstQueryAfterRefresh?.queryCase ?? 'none'}`);
+    console.log(`  first query after refresh duration ms: ${summary.coldStartBenchmark.firstQueryAfterRefresh?.durationMs ?? 'unknown'}`);
+    console.log(`  warm steady query p50/p95 ms: ${summary.coldStartBenchmark.warmSteadyState ? `${summary.coldStartBenchmark.warmSteadyState.p50DurationMs}/${summary.coldStartBenchmark.warmSteadyState.p95DurationMs}` : 'unknown'}`);
   }
   console.log(`  pg acceleration profile: ${summary.storage.pgAcceleration?.profile ?? 'unknown'}`);
   console.log(`  pg acceleration enabled: ${summary.storage.pgAcceleration?.enabled ?? false}`);

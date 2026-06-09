@@ -5475,6 +5475,44 @@ describe('PostgresRdfEngine', () => {
           drainedSources: 0,
         },
       });
+      expect(report.coldStartBenchmark).toMatchObject({
+        startup: {
+          status: 'ready',
+          driver: 'pglite',
+          openCount: 1,
+          durationMs: expect.any(Number),
+          phases: expect.arrayContaining([
+            expect.objectContaining({ name: 'executor', durationMs: expect.any(Number) }),
+            expect.objectContaining({ name: 'schema', durationMs: expect.any(Number) }),
+            expect.objectContaining({ name: 'maintenance-scheduler', durationMs: expect.any(Number) }),
+          ]),
+        },
+        firstQueryAfterRefresh: {
+          queryCase: expect.any(String),
+          durationMs: expect.any(Number),
+          planMatched: true,
+          missingPlan: [],
+          cacheMode: 'bypass',
+          returnedRows: expect.any(Number),
+        },
+        warmSteadyState: {
+          queryCase: expect.any(String),
+          iterations: 1,
+          warmupIterations: 1,
+          durationsMs: [expect.any(Number)],
+          p50DurationMs: expect.any(Number),
+          p95DurationMs: expect.any(Number),
+          planMatched: true,
+          returnedRows: expect.any(Number),
+        },
+      });
+      expect(report.coldStartBenchmark?.warmSteadyState?.queryCase).toBe(
+        report.coldStartBenchmark?.firstQueryAfterRefresh?.queryCase,
+      );
+      expect(report.coldStartBenchmark?.firstQueryAfterRefresh?.returnedRows).toBeGreaterThan(0);
+      expect(report.coldStartBenchmark?.warmSteadyState?.returnedRows).toBe(
+        report.coldStartBenchmark?.firstQueryAfterRefresh?.returnedRows,
+      );
       expect(report.planMatched).toBe(true);
       expect(report.failedPlanCases).toEqual([]);
       expect(report.concurrencyGate).toMatchObject({
