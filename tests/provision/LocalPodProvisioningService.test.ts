@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LocalPodProvisioningService } from '../../src/provision/LocalPodProvisioningService';
+import { buildModelTypeIndexEntries } from '../../src/provision/model-type-index';
 import { getSqliteRuntime } from '../../src/storage/SqliteRuntime';
 import { rowToQuad } from '../../src/storage/quint/serialization';
 import { createTestDir } from '../utils/sqlite';
@@ -36,6 +37,7 @@ describe('LocalPodProvisioningService', () => {
 
     expect(result.podUrl).toBe('https://node-0000.undefineds.co/alice/');
     expect(fs.existsSync(path.join(rootDir, 'data', 'alice', 'profile'))).toBe(true);
+    expect(fs.existsSync(path.join(rootDir, 'data', 'alice', 'settings'))).toBe(true);
 
     const quadsDb = sqliteRuntime.openDatabase(sparqlPath, { readonly: true });
     try {
@@ -51,6 +53,10 @@ describe('LocalPodProvisioningService', () => {
           quad.subject.value === subject &&
           quad.predicate.value === predicate &&
           quad.object.value === object);
+      const objectsFor = (subject: string, predicate: string): string[] =>
+        quads
+          .filter((quad) => quad.subject.value === subject && quad.predicate.value === predicate)
+          .map((quad) => quad.object.value);
 
       expect(hasQuad(
         'https://node-0000.undefineds.co/',
@@ -72,6 +78,55 @@ describe('LocalPodProvisioningService', () => {
         'http://www.w3.org/ns/solid/terms#oidcIssuer',
         'https://id.undefineds.co/',
       )).toBe(true);
+      expect(hasQuad(
+        'https://id.undefineds.co/alice/profile/card#me',
+        'http://www.w3.org/ns/solid/terms#storage',
+        'https://node-0000.undefineds.co/alice/',
+      )).toBe(true);
+      expect(hasQuad(
+        'https://id.undefineds.co/alice/profile/card#me',
+        'http://www.w3.org/ns/solid/terms#privateTypeIndex',
+        'https://node-0000.undefineds.co/alice/settings/privateTypeIndex.ttl',
+      )).toBe(true);
+      expect(hasQuad(
+        'https://node-0000.undefineds.co/alice/settings/privateTypeIndex.ttl',
+        'http://www.w3.org/1999/02/22-rdf-syntax-ns#type',
+        'http://www.w3.org/ns/solid/terms#TypeIndex',
+      )).toBe(true);
+
+      const discoveredTypeIndex = objectsFor(
+        'https://id.undefineds.co/alice/profile/card#me',
+        'http://www.w3.org/ns/solid/terms#privateTypeIndex',
+      )[0];
+      expect(discoveredTypeIndex).toBe('https://node-0000.undefineds.co/alice/settings/privateTypeIndex.ttl');
+
+      const expectedEntries = buildModelTypeIndexEntries(result.podUrl);
+      const registrations = new Map<string, { forClass?: string; instanceContainer?: string }>();
+      for (const quad of quads) {
+        if (
+          quad.predicate.value === 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type' &&
+          quad.object.value === 'http://www.w3.org/ns/solid/terms#TypeRegistration'
+        ) {
+          registrations.set(quad.subject.value, registrations.get(quad.subject.value) ?? {});
+        }
+        if (quad.predicate.value === 'http://www.w3.org/ns/solid/terms#forClass') {
+          registrations.set(quad.subject.value, {
+            ...registrations.get(quad.subject.value),
+            forClass: quad.object.value,
+          });
+        }
+        if (quad.predicate.value === 'http://www.w3.org/ns/solid/terms#instanceContainer') {
+          registrations.set(quad.subject.value, {
+            ...registrations.get(quad.subject.value),
+            instanceContainer: quad.object.value,
+          });
+        }
+      }
+
+      const actualTargets = new Set(Array.from(registrations.values()).map((entry) => `${entry.forClass}\n${entry.instanceContainer}`));
+      const expectedTargets = new Set(expectedEntries.map((entry) => `${entry.rdfClass}\n${entry.instanceContainer}`));
+      expect(registrations.size).toBe(expectedEntries.length);
+      expect(actualTargets).toEqual(expectedTargets);
       expect(hasQuad(
         'https://node-0000.undefineds.co/alice/.acr#root',
         'http://www.w3.org/ns/solid/acp#resource',

@@ -167,6 +167,17 @@
       }
     },
     {
+      "comment": "Force interactive account Pod creation to use the global PodCreator override instead of CSS' inline BasePodCreator.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:CreatePodHandler"
+      },
+      "overrideParameters": {
+        "@type": "CreatePodHandler",
+        "podCreator": { "@id": "urn:solid-server:default:PodCreator" }
+      }
+    },
+    {
       "comment": "Subgraph query engine wrapping default SPARQL engine (DefaultSparqlEngine defined in profile)",
       "@type": "SubgraphQueryEngine",
       "@id": "urn:undefineds:xpod:SubgraphQueryEngine",

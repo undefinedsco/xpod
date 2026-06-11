@@ -6,7 +6,7 @@ import { hideBin } from 'yargs/helpers';
 // Known subcommands
 const KNOWN_COMMANDS = [
   'get', 'put', 'patch', 'delete', 'head', 'list',
-  'rdf', 'obj', 'secret', 'server', 'start', 'stop', 'status', 'logs',
+  'rdf', 'obj', 'schema', 'secret', 'server', 'start', 'stop', 'status', 'logs',
   'auth', 'login', 'import', 'pod',
   'account', 'backup', 'restore', 'doctor',
 ];
@@ -30,6 +30,7 @@ async function createCommandParser() {
     { getCommand, putCommand, patchCommand, deleteCommand, headCommand, listCommand },
     { rdfCommand },
     { objCommand },
+    { schemaCommand },
     { secretCommand },
     { authCommand },
     { loginCommandModule },
@@ -47,6 +48,7 @@ async function createCommandParser() {
     import('./commands/resource'),
     import('./commands/rdf'),
     import('./commands/obj'),
+    import('./commands/schema'),
     import('./commands/secret'),
     import('./commands/auth'),
     import('./commands/login'),
@@ -71,6 +73,7 @@ async function createCommandParser() {
     .command(listCommand)
     .command(rdfCommand)
     .command(objCommand)
+    .command(schemaCommand)
     .command(secretCommand)
     .command(authCommand)
     .command(loginCommandModule)

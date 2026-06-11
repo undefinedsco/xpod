@@ -1,7 +1,9 @@
-import { getAccessToken, authenticatedFetch } from './solid-auth';
+import { getAccessToken, authenticatedFetch, refreshOidcAccessToken } from './solid-auth';
 import {
   getClientCredentials,
+  getOAuthCredentials,
   loadCredentials,
+  isOidcOAuth,
   type StoredCredentials,
 } from './credentials-store';
 import { CliCommandError } from './output';
@@ -68,32 +70,71 @@ export async function requireAuthContext(options: {
   if (!credentials) {
     throw new CliCommandError(
       'auth_required',
-      'No credentials found. Run `xpod auth login` first.',
-      2,
-    );
-  }
-
-  const clientCredentials = getClientCredentials(credentials);
-  if (!clientCredentials) {
-    throw new CliCommandError(
-      'auth_unsupported',
-      'Stored OAuth credentials are not supported for CLI resource operations yet. Run `xpod auth login` to create client credentials.',
+      'No credentials found. Run \`xpod auth login\` first.',
       2,
     );
   }
 
   const baseUrl = normalizeBaseUrl(options.url ?? credentials.url);
-  const tokenResult = await getAccessToken(
-    clientCredentials.clientId,
-    clientCredentials.clientSecret,
-    baseUrl,
-  );
-  if (!tokenResult) {
-    throw new CliCommandError(
-      'auth_failed',
-      'Failed to obtain an access token. Run `xpod auth login` again.',
-      2,
+  let accessToken: string;
+
+  if (isOidcOAuth(credentials.secrets)) {
+    // OIDC OAuth flow — use stored access token, refresh if expired
+    const oauthSecrets = getOAuthCredentials(credentials)!;
+
+    // Check if token is expired (with 5-minute buffer)
+    const expiresAt = new Date(oauthSecrets.oidcExpiresAt);
+    const isExpired = Date.now() >= expiresAt.getTime() - 5 * 60 * 1000;
+
+    if (isExpired) {
+      const clientId = oauthSecrets.oidcClientId;
+      if (!clientId) {
+        throw new CliCommandError(
+          'auth_failed',
+          'OIDC access token is expired and no clientId is available for refresh. Run \`linx auth login\` again.',
+          2,
+        );
+      }
+      const refreshed = await refreshOidcAccessToken(
+        normalizeBaseUrl(credentials.url),
+        oauthSecrets.oidcRefreshToken,
+        clientId,
+      );
+      if (!refreshed) {
+        throw new CliCommandError(
+          'auth_failed',
+          'Failed to refresh OIDC access token. The refresh token may have expired. Run \`linx auth login\` or \`xpod auth login\` again.',
+          2,
+        );
+      }
+      accessToken = refreshed.accessToken;
+    } else {
+      accessToken = oauthSecrets.oidcAccessToken;
+    }
+  } else {
+    // Client credentials flow
+    const clientCredentials = getClientCredentials(credentials);
+    if (!clientCredentials) {
+      throw new CliCommandError(
+        'auth_unsupported',
+        'Unsupported credentials format. Run \`xpod auth login\` to create client credentials.',
+        2,
+      );
+    }
+
+    const tokenResult = await getAccessToken(
+      clientCredentials.clientId,
+      clientCredentials.clientSecret,
+      baseUrl,
     );
+    if (!tokenResult) {
+      throw new CliCommandError(
+        'auth_failed',
+        'Failed to obtain an access token. Run \`xpod auth login\` again.',
+        2,
+      );
+    }
+    accessToken = tokenResult.accessToken;
   }
 
   const podRoot = resolvePodRootFromWebId(credentials.webId);
@@ -102,11 +143,10 @@ export async function requireAuthContext(options: {
     webId: credentials.webId,
     podRoot,
     baseIri: podRoot,
-    accessToken: tokenResult.accessToken,
+    accessToken,
     credentials,
   };
 }
-
 export async function authFetch(
   context: CliAuthContext,
   url: string,

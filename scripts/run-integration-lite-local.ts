@@ -16,6 +16,7 @@ function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Pr
 async function main() {
   const stack = new XpodTestStack();
   let exitCode = 1;
+  const vitestTargets = process.argv.slice(2);
 
   try {
     console.log('Starting xpod stack...');
@@ -31,10 +32,17 @@ async function main() {
 
     exitCode = await runCommand('bun', [ 'run', 'test:setup' ], sharedEnv);
     if (exitCode === 0) {
-      exitCode = await runCommand('bun', [ 'run', 'vitest', '--run',
-          'tests/integration',
-          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
-        ], sharedEnv);
+      const defaultTargets = [
+        'tests/integration',
+        '--exclude',
+        'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
+      ];
+      exitCode = await runCommand('bun', [
+        'run',
+        'vitest',
+        '--run',
+        ...(vitestTargets.length > 0 ? vitestTargets : defaultTargets),
+      ], sharedEnv);
     }
   } finally {
     await stack.stop();

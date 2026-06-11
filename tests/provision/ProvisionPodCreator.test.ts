@@ -102,6 +102,21 @@ describe('ProvisionPodCreator', () => {
       expect(result.podUrl).toBe(`${spUrl}/alice/`);
       expect(result.webId).toBe(`${baseUrl}alice/profile/card#me`);
       expect(result.podId).toBe('pod-id-1');
+      expect((creator as any).createPod).toHaveBeenCalledWith(
+        'account-1',
+        expect.objectContaining({
+          storage: `${spUrl}/alice/`,
+          privateTypeIndex: `${spUrl}/alice/settings/privateTypeIndex.ttl`,
+          xpodTypeIndexEntries: expect.arrayContaining([
+            expect.objectContaining({
+              rdfClass: 'https://vocab.xpod.dev/credential#Credential',
+              instanceContainer: `${spUrl}/alice/settings/`,
+            }),
+          ]),
+        }),
+        false,
+        'webid-link-1',
+      );
     });
 
     it('should use spDomain for podUrl when available', async () => {
@@ -269,6 +284,13 @@ describe('ProvisionPodCreator', () => {
           webId: `${baseUrl}bob/profile/card#me`,
           oidcIssuer: baseUrl,
           storage: `${baseUrl}bob/`,
+          privateTypeIndex: `${baseUrl}bob/settings/privateTypeIndex.ttl`,
+          xpodTypeIndexEntries: expect.arrayContaining([
+            expect.objectContaining({
+              rdfClass: 'https://vocab.xpod.dev/credential#Credential',
+              instanceContainer: `${baseUrl}bob/settings/`,
+            }),
+          ]),
         }),
       );
       expect((creator as any).createPod).toHaveBeenCalledWith(
@@ -278,6 +300,13 @@ describe('ProvisionPodCreator', () => {
           webId: `${baseUrl}bob/profile/card#me`,
           oidcIssuer: baseUrl,
           storage: `${baseUrl}bob/`,
+          privateTypeIndex: `${baseUrl}bob/settings/privateTypeIndex.ttl`,
+          xpodTypeIndexEntries: expect.arrayContaining([
+            expect.objectContaining({
+              rdfClass: 'https://vocab.xpod.dev/credential#Credential',
+              instanceContainer: `${baseUrl}bob/settings/`,
+            }),
+          ]),
         }),
         false,
         'webid-link-1',

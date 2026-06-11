@@ -17,6 +17,7 @@ import {
   ConflictHttpError,
 } from '@solid/community-server';
 import { ProvisionCodeCodec } from './ProvisionCodeCodec';
+import { buildModelTypeIndexTemplateData } from './model-type-index';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 
@@ -114,6 +115,7 @@ export class ProvisionPodCreator extends BasePodCreator {
       webId,
       oidcIssuer: this.baseUrl,
       storage: canonicalStorageUrl,
+      ...buildModelTypeIndexTemplateData(canonicalStorageUrl),
     };
 
     const webIdLink = await this.handleWebId(!input.webId, webId, input.accountId, podSettings);
@@ -142,6 +144,7 @@ export class ProvisionPodCreator extends BasePodCreator {
       webId,
       oidcIssuer,
       storage: baseIdentifier.path,
+      ...buildModelTypeIndexTemplateData(baseIdentifier.path),
     };
 
     const webIdStarted = Date.now();

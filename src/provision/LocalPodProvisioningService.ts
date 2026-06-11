@@ -170,6 +170,7 @@ export class LocalPodProvisioningService {
   private async createPodFiles(podName: string, initialResources?: Record<string, string>): Promise<void> {
     const podPath = path.join(this.rootDir, podName);
     await fs.mkdir(path.join(podPath, 'profile'), { recursive: true });
+    await fs.mkdir(path.join(podPath, 'settings'), { recursive: true });
 
     if (!initialResources) {
       return;
@@ -271,6 +272,7 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(root), namedNode(`${LDP}contains`), namedNode(podUrl), rootGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.rootResourceUrl), podGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(profileUrl), podGraph));
+    out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(settingsUrl), podGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardUrl), profileGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.cardResourceUrl), profileGraph));
 
@@ -286,6 +288,10 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(cardUrl), namedNode(`${FOAF}primaryTopic`), namedNode(webId), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${RDF}type`), namedNode(`${FOAF}Person`), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${SOLID}oidcIssuer`), namedNode(oidcIssuer), cardGraph));
+    out.push(quad(namedNode(webId), namedNode(`${SOLID}storage`), namedNode(podUrl), cardGraph));
+    out.push(quad(namedNode(webId), namedNode(`${SOLID}privateTypeIndex`), namedNode(privateTypeIndexUrl), cardGraph));
+
+    this.addPrivateTypeIndexQuads(out, privateTypeIndexGraph, privateTypeIndexUrl, podUrl);
 
     out.push(...authorizationResources.quads);
 

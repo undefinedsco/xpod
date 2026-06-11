@@ -20,7 +20,7 @@ const composeArgs = [
   'docker-compose.cluster.integration.yml',
 ];
 const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
-const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
+const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@127.0.0.1:5432/xpod';
 const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
@@ -217,10 +217,10 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
   const runtimes: XpodRuntimeHandle[] = [];
   const commonCloudEnv = {
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
-    CSS_REDIS_CLIENT: 'localhost:6379',
+    CSS_REDIS_CLIENT: '127.0.0.1:6379',
     CSS_REDIS_USERNAME: '',
     CSS_REDIS_PASSWORD: '',
-    CSS_MINIO_ENDPOINT: 'http://localhost:9000',
+    CSS_MINIO_ENDPOINT: 'http://127.0.0.1:9000',
     CSS_MINIO_ACCESS_KEY: 'minioadmin',
     CSS_MINIO_SECRET_KEY: 'minioadmin',
     CSS_MINIO_BUCKET_NAME: 'xpod',

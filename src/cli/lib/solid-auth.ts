@@ -107,3 +107,51 @@ export async function authenticatedFetch(
   headers.set('Authorization', `Bearer ${token}`);
   return fetch(url, { ...init, headers });
 }
+
+/**
+ * Refresh an OIDC access token using the refresh_token grant.
+ *
+ * Reads the OIDC issuer's .well-known/openid-configuration to discover
+ * the token endpoint, then exchanges the refresh token for a new access token.
+ *
+ * @returns A new access token and its expiration date, or null on failure.
+ */
+export async function refreshOidcAccessToken(
+  oidcIssuer: string,
+  refreshToken: string,
+  clientId: string,
+): Promise<{ accessToken: string; expiresAt: Date } | null> {
+  try {
+    const base = oidcIssuer.endsWith('/') ? oidcIssuer : `${oidcIssuer}/`;
+    const res = await fetch(`${base}.well-known/openid-configuration`);
+    if (!res.ok) return null;
+    const config = (await res.json()) as { token_endpoint?: string };
+    if (!config.token_endpoint) return null;
+
+    const tokenRes = await fetch(config.token_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+      }).toString(),
+    });
+
+    if (!tokenRes.ok) {
+      const errorText = await tokenRes.text();
+      console.error('Token refresh failed:', errorText);
+      return null;
+    }
+    const data = (await tokenRes.json()) as { access_token?: string; expires_in?: number };
+    if (!data.access_token) return null;
+
+    return {
+      accessToken: data.access_token,
+      expiresAt: new Date(Date.now() + (data.expires_in ?? 3600) * 1000),
+    };
+  } catch (err) {
+    console.error('Token refresh error:', err);
+    return null;
+  }
+}
