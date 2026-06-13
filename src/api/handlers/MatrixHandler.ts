@@ -11,6 +11,14 @@ export interface MatrixHandlerOptions {
 export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOptions): void {
   const { store } = options;
 
+  server.get('/.well-known/matrix/client', async (request, response) => {
+    sendJson(response, 200, {
+      'm.homeserver': {
+        base_url: requestBaseUrl(request),
+      },
+    });
+  }, { public: true });
+
   server.get('/_matrix/client/versions', async (_request, response) => {
     sendJson(response, 200, {
       versions: [
@@ -45,6 +53,19 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
     sendMatrixError(response, 501, 'M_UNRECOGNIZED', 'Matrix-native login is not implemented; use Solid/OIDC API authentication.');
   }, { public: true });
 
+  server.get('/_matrix/client/v3/account/whoami', async (request, response) => {
+    try {
+      const account = await store.getAccount(buildContext(request));
+      sendJson(response, 200, {
+        user_id: account.userId,
+        ...(account.deviceId ? { device_id: account.deviceId } : {}),
+        is_guest: false,
+      });
+    } catch (error) {
+      sendMatrixError(response, 400, 'M_UNKNOWN', formatError(error));
+    }
+  });
+
   server.post('/_matrix/client/v3/createRoom', async (request, response) => {
     try {
       const body = await readJson<MatrixCreateRoomRequest>(request);
@@ -68,6 +89,55 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
       sendJson(response, 200, { event_id: event.eventId });
     } catch (error) {
       sendMatrixError(response, 400, 'M_BAD_JSON', formatError(error));
+    }
+  });
+
+  server.get('/_matrix/client/v3/joined_rooms', async (request, response) => {
+    try {
+      const joinedRooms = await store.listJoinedRooms(buildContext(request));
+      sendJson(response, 200, { joined_rooms: joinedRooms });
+    } catch (error) {
+      sendMatrixError(response, 400, 'M_UNKNOWN', formatError(error));
+    }
+  });
+
+  server.post('/_matrix/client/v3/join/:roomIdOrAlias', async (request, response, params) => {
+    try {
+      const result = await store.joinRoom(decodeURIComponent(params.roomIdOrAlias), buildContext(request));
+      sendJson(response, 200, { room_id: result.roomId });
+    } catch (error) {
+      sendMatrixError(response, 404, 'M_NOT_FOUND', formatError(error));
+    }
+  });
+
+  server.post('/_matrix/client/v3/rooms/:roomId/join', async (request, response, params) => {
+    try {
+      const result = await store.joinRoom(decodeURIComponent(params.roomId), buildContext(request));
+      sendJson(response, 200, { room_id: result.roomId });
+    } catch (error) {
+      sendMatrixError(response, 404, 'M_NOT_FOUND', formatError(error));
+    }
+  });
+
+  server.post('/_matrix/client/v3/rooms/:roomId/invite', async (request, response, params) => {
+    try {
+      const body = await readJson<{ user_id?: unknown }>(request);
+      if (!body || typeof body.user_id !== 'string' || body.user_id.length === 0) {
+        throw new Error('Invite requires user_id');
+      }
+      await store.inviteUser(decodeURIComponent(params.roomId), body.user_id, buildContext(request));
+      sendJson(response, 200, {});
+    } catch (error) {
+      sendMatrixError(response, 400, 'M_BAD_JSON', formatError(error));
+    }
+  });
+
+  server.post('/_matrix/client/v3/rooms/:roomId/leave', async (request, response, params) => {
+    try {
+      await store.leaveRoom(decodeURIComponent(params.roomId), buildContext(request));
+      sendJson(response, 200, {});
+    } catch (error) {
+      sendMatrixError(response, 404, 'M_NOT_FOUND', formatError(error));
     }
   });
 
@@ -98,6 +168,15 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
     }
   });
 
+  server.get('/_matrix/client/v3/rooms/:roomId/members', async (request, response, params) => {
+    try {
+      const members = await store.getMembers(decodeURIComponent(params.roomId), buildContext(request));
+      sendJson(response, 200, { chunk: members });
+    } catch (error) {
+      sendMatrixError(response, 404, 'M_NOT_FOUND', formatError(error));
+    }
+  });
+
   server.get('/_matrix/client/v3/rooms/:roomId/event/:eventId', async (request, response, params) => {
     try {
       const event = await store.getEvent(
@@ -119,6 +198,14 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
     await sendState(request, response, params, decodeURIComponent(params.stateKey ?? ''));
   });
 
+  server.put('/_matrix/client/v3/rooms/:roomId/state/:eventType', async (request, response, params) => {
+    await putState(request, response, params, '');
+  });
+
+  server.put('/_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey', async (request, response, params) => {
+    await putState(request, response, params, decodeURIComponent(params.stateKey ?? ''));
+  });
+
   async function sendState(
     request: AuthenticatedRequest,
     response: ServerResponse,
@@ -135,6 +222,27 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
       sendJson(response, 200, state);
     } catch (error) {
       sendMatrixError(response, 404, 'M_NOT_FOUND', formatError(error));
+    }
+  }
+
+  async function putState(
+    request: AuthenticatedRequest,
+    response: ServerResponse,
+    params: Record<string, string>,
+    stateKey: string,
+  ): Promise<void> {
+    try {
+      const content = await readJson<Record<string, unknown>>(request);
+      const event = await store.setState(
+        decodeURIComponent(params.roomId),
+        decodeURIComponent(params.eventType),
+        stateKey,
+        content ?? {},
+        buildContext(request),
+      );
+      sendJson(response, 200, { event_id: event.eventId });
+    } catch (error) {
+      sendMatrixError(response, 400, 'M_BAD_JSON', formatError(error));
     }
   }
 }
@@ -163,6 +271,18 @@ function parseOptionalNumber(value: string | null): number | undefined {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function requestBaseUrl(request: AuthenticatedRequest): string {
+  const forwardedProto = headerValue(request.headers['x-forwarded-proto']);
+  const forwardedHost = headerValue(request.headers['x-forwarded-host']);
+  const proto = forwardedProto?.split(',')[0]?.trim() || 'http';
+  const host = forwardedHost?.split(',')[0]?.trim() || request.headers.host || 'localhost';
+  return `${proto}://${host}`;
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {

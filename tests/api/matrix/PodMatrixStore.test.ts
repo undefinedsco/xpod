@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PodMatrixStore } from '../../../src/api/matrix';
 
 const { db } = vi.hoisted(() => ({
@@ -61,6 +61,77 @@ function flattenExpressions(condition: any): any[] {
 }
 
 describe('PodMatrixStore query pushdown', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('derives a stable Matrix account from the Solid auth context', async () => {
+    const store = new PodMatrixStore({ serverName: 'example.com' });
+
+    const account = await store.getAccount(solidContext());
+
+    expect(account.userId).toBe('@profile_card_me:example.com');
+    expect(account.deviceId).toMatch(/^XPOD[A-F0-9]{12}$/u);
+    expect(account.displayName).toBe('profile_card_me');
+  });
+
+  it('records invites as Matrix membership events while storing data in chat resources', async () => {
+    const store = new PodMatrixStore({ serverName: 'example.com' });
+
+    await store.createRoom({
+      room_alias_name: 'team',
+      name: 'Team',
+      invite: ['@bob:example.com'],
+    }, solidContext());
+
+    const inserted = db.insert.mock.results
+      .flatMap((result: any) => result.value.values.mock.calls.map((call: any[]) => call[0]));
+    expect(inserted.some((value: any) => String(value.id).startsWith('matrix-') && value.metadata?.protocol === 'matrix')).toBe(true);
+    expect(inserted.every((value: any) => !String(value.id).startsWith('matrix/'))).toBe(true);
+    expect(inserted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          eventType: 'm.room.member',
+          stateKey: '@bob:example.com',
+          content: expect.objectContaining({ membership: 'invite' }),
+        }),
+      }),
+    ]));
+  });
+
+  it('resolves canonical aliases and appends join membership events', async () => {
+    const store = new PodMatrixStore({ serverName: 'example.com' });
+    db.select
+      .mockReturnValueOnce(createSelectQuery([{
+        id: 'matrix-room/index.ttl#this',
+        title: 'Team',
+        author: 'https://alice.example/profile/card#me',
+        createdAt: '1970-01-01T00:00:00.001Z',
+        metadata: {
+          protocol: 'matrix',
+          roomId: '!room:example.com',
+          canonicalAlias: '#team:example.com',
+        },
+      }]))
+      .mockReturnValueOnce(createSelectQuery([]))
+      .mockReturnValueOnce(createSelectQuery([]));
+
+    const result = await store.joinRoom('#team:example.com', solidContext());
+
+    expect(result).toEqual({ roomId: '!room:example.com' });
+    const inserted = db.insert.mock.results
+      .flatMap((callResult: any) => callResult.value.values.mock.calls.map((call: any[]) => call[0]));
+    expect(inserted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          eventType: 'm.room.member',
+          stateKey: '@profile_card_me:example.com',
+          content: expect.objectContaining({ membership: 'join' }),
+        }),
+      }),
+    ]));
+  });
+
   it('pushes Matrix message pagination direction into drizzle-solid predicates', async () => {
     const store = new PodMatrixStore({});
 

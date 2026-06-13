@@ -33,11 +33,18 @@ function createMockServer(): { server: ApiServer; routes: Record<string, Capture
 
 function createStore(overrides: Partial<MatrixStore> = {}): MatrixStore {
   return {
+    getAccount: vi.fn(async () => ({
+      userId: '@alice:example.com',
+      deviceId: 'XPODDEVICE',
+    })),
     createRoom: vi.fn(async () => ({
       roomId: '!room:example.com',
       creator: '@alice:example.com',
       createdAt: 100,
     })),
+    joinRoom: vi.fn(async () => ({ roomId: '!room:example.com' })),
+    inviteUser: vi.fn(async () => undefined),
+    leaveRoom: vi.fn(async () => undefined),
     sendEvent: vi.fn(async () => ({
       eventId: '$event:example.com',
       roomId: '!room:example.com',
@@ -46,10 +53,21 @@ function createStore(overrides: Partial<MatrixStore> = {}): MatrixStore {
       originServerTs: 100,
       content: { body: 'hello' },
     })),
+    setState: vi.fn(async () => ({
+      eventId: '$state:example.com',
+      roomId: '!room:example.com',
+      type: 'm.room.name',
+      sender: '@alice:example.com',
+      originServerTs: 100,
+      stateKey: '',
+      content: { name: 'Matrix Room' },
+    })),
     sync: vi.fn(async () => ({
       next_batch: 's100',
       rooms: { join: {} },
     })),
+    listJoinedRooms: vi.fn(async () => ['!room:example.com']),
+    getMembers: vi.fn(async () => []),
     listMessages: vi.fn(async () => ({
       chunk: [],
       end: 's100',
@@ -110,6 +128,7 @@ describe('MatrixHandler', () => {
     const { server, routes } = createMockServer();
     registerMatrixRoutes(server, { store: createStore() });
 
+    expect(routes['GET /.well-known/matrix/client'].options).toEqual({ public: true });
     expect(routes['GET /_matrix/client/versions'].options).toEqual({ public: true });
     expect(routes['GET /_matrix/client/v3/login'].options).toEqual({ public: true });
     expect(routes['POST /_matrix/client/v3/login'].options).toEqual({ public: true });
@@ -123,6 +142,34 @@ describe('MatrixHandler', () => {
         'co.undefineds.matrix.pod_storage': true,
       },
     });
+  });
+
+  it('exposes Matrix account and joined room metadata', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+
+    const whoami = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(
+      createRequest('/_matrix/client/v3/account/whoami'),
+      whoami.response,
+      {},
+    );
+    expect(whoami.response.statusCode).toBe(200);
+    expect(whoami.body()).toEqual({
+      user_id: '@alice:example.com',
+      device_id: 'XPODDEVICE',
+      is_guest: false,
+    });
+
+    const joined = createResponse();
+    await routes['GET /_matrix/client/v3/joined_rooms'].handler(
+      createRequest('/_matrix/client/v3/joined_rooms'),
+      joined.response,
+      {},
+    );
+    expect(joined.response.statusCode).toBe(200);
+    expect(joined.body()).toEqual({ joined_rooms: ['!room:example.com'] });
   });
 
   it('creates rooms through the Pod-backed Matrix store', async () => {
@@ -171,6 +218,39 @@ describe('MatrixHandler', () => {
       { msgtype: 'm.text', body: 'hello' },
       expect.objectContaining({ userId: 'https://alice.example/profile/card#me' }),
     );
+  });
+
+  it('supports Matrix membership routes', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+
+    const roomId = encodeURIComponent('!room:example.com');
+    const alias = encodeURIComponent('#room:example.com');
+
+    const joined = createResponse();
+    await routes['POST /_matrix/client/v3/join/:roomIdOrAlias'].handler(
+      createRequest(`/_matrix/client/v3/join/${alias}`, {}),
+      joined.response,
+      { roomIdOrAlias: alias },
+    );
+    expect(joined.response.statusCode).toBe(200);
+    expect(joined.body()).toEqual({ room_id: '!room:example.com' });
+    expect(store.joinRoom).toHaveBeenCalledWith('#room:example.com', expect.any(Object));
+
+    await routes['POST /_matrix/client/v3/rooms/:roomId/invite'].handler(
+      createRequest(`/_matrix/client/v3/rooms/${roomId}/invite`, { user_id: '@bob:example.com' }),
+      createResponse().response,
+      { roomId },
+    );
+    expect(store.inviteUser).toHaveBeenCalledWith('!room:example.com', '@bob:example.com', expect.any(Object));
+
+    await routes['POST /_matrix/client/v3/rooms/:roomId/leave'].handler(
+      createRequest(`/_matrix/client/v3/rooms/${roomId}/leave`, {}),
+      createResponse().response,
+      { roomId },
+    );
+    expect(store.leaveRoom).toHaveBeenCalledWith('!room:example.com', expect.any(Object));
   });
 
   it('passes sync and messages query params to the store', async () => {
@@ -231,5 +311,37 @@ describe('MatrixHandler', () => {
       '@alice:example.com',
       expect.any(Object),
     );
+  });
+
+  it('supports setting state and listing members', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+
+    const state = createResponse();
+    await routes['PUT /_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey'].handler(
+      createRequest('/_matrix/client/v3/rooms/!room%3Aexample.com/state/m.room.name/', { name: 'Renamed' }),
+      state.response,
+      { roomId: '!room%3Aexample.com', eventType: 'm.room.name', stateKey: '' },
+    );
+    expect(state.response.statusCode).toBe(200);
+    expect(state.body()).toEqual({ event_id: '$state:example.com' });
+    expect(store.setState).toHaveBeenCalledWith(
+      '!room:example.com',
+      'm.room.name',
+      '',
+      { name: 'Renamed' },
+      expect.any(Object),
+    );
+
+    const members = createResponse();
+    await routes['GET /_matrix/client/v3/rooms/:roomId/members'].handler(
+      createRequest('/_matrix/client/v3/rooms/!room%3Aexample.com/members'),
+      members.response,
+      { roomId: '!room%3Aexample.com' },
+    );
+    expect(members.response.statusCode).toBe(200);
+    expect(members.body()).toEqual({ chunk: [] });
+    expect(store.getMembers).toHaveBeenCalledWith('!room:example.com', expect.any(Object));
   });
 });

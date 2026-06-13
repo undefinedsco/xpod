@@ -9,6 +9,7 @@ import {
 } from '@undefineds.co/models';
 import { getWebId, isSolidAuth, type AuthContext } from '../auth/AuthContext';
 import type {
+  MatrixAccountInfo,
   MatrixClientEvent,
   MatrixCreateRoomRequest,
   MatrixEventRecord,
@@ -53,6 +54,15 @@ export class PodMatrixStore {
 
   public constructor(options: PodMatrixStoreOptions) {
     this.serverName = options.serverName;
+  }
+
+  public async getAccount(context: MatrixStoreContext): Promise<MatrixAccountInfo> {
+    const matrixUserId = this.getMatrixUserId(context);
+    return {
+      userId: matrixUserId,
+      deviceId: this.deviceIdFromUserId(context.userId),
+      displayName: this.displayNameFromUserId(matrixUserId),
+    };
   }
 
   public async createRoom(input: MatrixCreateRoomRequest, context: MatrixStoreContext): Promise<MatrixRoomRecord> {
@@ -153,14 +163,44 @@ export class PodMatrixStore {
         content: state.content ?? {},
       }, context);
     }
+    for (const invitee of input.invite ?? []) {
+      await this.appendMembershipEvent(db, roomId, invitee, 'invite', context, { sender });
+    }
 
     return {
       roomId,
+      canonicalAlias: input.room_alias_name ? `#${input.room_alias_name}:${this.getServerName(context)}` : undefined,
       name: input.name,
       topic: input.topic,
       creator: sender,
       createdAt: now,
     };
+  }
+
+  public async joinRoom(roomIdOrAlias: string, context: MatrixStoreContext): Promise<{ roomId: string }> {
+    const db = await this.getDb(context);
+    const roomId = await this.resolveRoomId(db, roomIdOrAlias);
+    await this.ensureRoomExists(db, roomId);
+
+    const sender = this.getMatrixUserId(context);
+    const existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', sender, context);
+    if (existing?.content.membership !== 'join') {
+      await this.appendMembershipEvent(db, roomId, sender, 'join', context);
+    }
+
+    return { roomId };
+  }
+
+  public async inviteUser(roomId: string, userId: string, context: MatrixStoreContext): Promise<void> {
+    const db = await this.getDb(context);
+    await this.ensureRoomExists(db, roomId);
+    await this.appendMembershipEvent(db, roomId, userId, 'invite', context);
+  }
+
+  public async leaveRoom(roomId: string, context: MatrixStoreContext): Promise<void> {
+    const db = await this.getDb(context);
+    await this.ensureRoomExists(db, roomId);
+    await this.appendMembershipEvent(db, roomId, this.getMatrixUserId(context), 'leave', context);
   }
 
   public async sendEvent(
@@ -191,9 +231,28 @@ export class PodMatrixStore {
     return event;
   }
 
+  public async setState(
+    roomId: string,
+    eventType: string,
+    stateKey: string,
+    content: Record<string, unknown>,
+    context: MatrixStoreContext,
+  ): Promise<MatrixEventRecord> {
+    const db = await this.getDb(context);
+    await this.ensureRoomExists(db, roomId);
+    return this.appendEvent(db, {
+      roomId,
+      type: eventType,
+      sender: this.getMatrixUserId(context),
+      stateKey,
+      originServerTs: Date.now(),
+      content,
+    }, context);
+  }
+
   public async sync(context: MatrixStoreContext, options: { since?: string; limit?: number } = {}): Promise<MatrixSyncResponse> {
     const db = await this.getDb(context);
-    const rooms = await this.listRooms(db);
+    const rooms = await this.listJoinedRoomRecords(db, context);
     const sinceTs = this.parseSyncToken(options.since);
     const limit = options.limit && options.limit > 0 ? options.limit : 50;
     const join: MatrixSyncResponse['rooms']['join'] = {};
@@ -218,6 +277,27 @@ export class PodMatrixStore {
       next_batch: this.encodeSyncToken(Date.now()),
       rooms: { join },
     };
+  }
+
+  public async listJoinedRooms(context: MatrixStoreContext): Promise<string[]> {
+    const db = await this.getDb(context);
+    return (await this.listJoinedRoomRecords(db, context)).map((room) => room.roomId);
+  }
+
+  public async getMembers(roomId: string, context: MatrixStoreContext): Promise<MatrixClientEvent[]> {
+    const db = await this.getDb(context);
+    await this.ensureRoomExists(db, roomId);
+    const events = await this.listEvents(db, roomId, context, { newestFirst: true });
+    const latestByStateKey = new Map<string, MatrixEventRecord>();
+    for (const event of events) {
+      if (event.type !== 'm.room.member' || event.stateKey === undefined || latestByStateKey.has(event.stateKey)) {
+        continue;
+      }
+      latestByStateKey.set(event.stateKey, event);
+    }
+    return Array.from(latestByStateKey.values())
+      .sort((left, right) => (left.originServerTs - right.originServerTs) || ((left.depth ?? 0) - (right.depth ?? 0)))
+      .map((event) => this.toClientEvent(event));
   }
 
   public async listMessages(
@@ -368,11 +448,58 @@ export class PodMatrixStore {
     return record;
   }
 
+  private async appendMembershipEvent(
+    db: Db,
+    roomId: string,
+    memberUserId: string,
+    membership: 'invite' | 'join' | 'leave' | 'ban',
+    context: MatrixStoreContext,
+    options: { sender?: string } = {},
+  ): Promise<MatrixEventRecord> {
+    const sender = options.sender ?? this.getMatrixUserId(context);
+    return this.appendEvent(db, {
+      roomId,
+      type: 'm.room.member',
+      sender,
+      originServerTs: Date.now(),
+      stateKey: memberUserId,
+      content: {
+        membership,
+        displayname: this.displayNameFromUserId(memberUserId),
+      },
+    }, context);
+  }
+
   private async listRooms(db: Db): Promise<MatrixRoomRecord[]> {
     const rooms = await db.select().from(chatResource) as MatrixRoomSource[];
     return rooms
       .map((room) => this.chatSourceToRoomRecord(room))
       .filter((room): room is MatrixRoomRecord => room !== undefined);
+  }
+
+  private async listJoinedRoomRecords(db: Db, context: MatrixStoreContext): Promise<MatrixRoomRecord[]> {
+    const rooms = await this.listRooms(db);
+    const matrixUserId = this.getMatrixUserId(context);
+    const joined: MatrixRoomRecord[] = [];
+    for (const room of rooms) {
+      const membership = await this.findLatestStateEvent(db, room.roomId, 'm.room.member', matrixUserId, context);
+      if (!membership || membership.content.membership === 'join' || membership.content.membership === 'invite') {
+        joined.push(room);
+      }
+    }
+    return joined;
+  }
+
+  private async resolveRoomId(db: Db, roomIdOrAlias: string): Promise<string> {
+    if (!roomIdOrAlias.startsWith('#')) {
+      return roomIdOrAlias;
+    }
+    const rooms = await this.listRooms(db);
+    const room = rooms.find((candidate) => candidate.canonicalAlias === roomIdOrAlias);
+    if (!room) {
+      throw new Error(`Matrix room alias not found: ${roomIdOrAlias}`);
+    }
+    return room.roomId;
   }
 
   private async listEvents(
@@ -462,6 +589,7 @@ export class PodMatrixStore {
     }
     return {
       roomId,
+      canonicalAlias: this.stringValue(metadata.canonicalAlias),
       name: source.title ?? undefined,
       topic: source.description ?? undefined,
       creator: source.author ?? '',
@@ -557,6 +685,10 @@ export class PodMatrixStore {
 
   private generateEventId(context: MatrixStoreContext): string {
     return `$${this.randomId(24)}:${this.getServerName(context)}`;
+  }
+
+  private deviceIdFromUserId(userId: string): string {
+    return `XPOD${createHash('sha256').update(userId).digest('hex').slice(0, 12).toUpperCase()}`;
   }
 
   private randomId(size: number): string {

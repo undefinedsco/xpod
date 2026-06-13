@@ -7,6 +7,7 @@ export interface MatrixStoreContext {
 
 export interface MatrixRoomRecord {
   roomId: string;
+  canonicalAlias?: string;
   name?: string;
   topic?: string;
   creator: string;
@@ -74,8 +75,19 @@ export interface MatrixClientEvent {
   unsigned?: Record<string, unknown>;
 }
 
+export interface MatrixAccountInfo {
+  userId: string;
+  deviceId?: string;
+  displayName?: string;
+  avatarUrl?: string;
+}
+
 export interface MatrixStore {
+  getAccount(context: MatrixStoreContext): Promise<MatrixAccountInfo>;
   createRoom(input: MatrixCreateRoomRequest, context: MatrixStoreContext): Promise<MatrixRoomRecord>;
+  joinRoom(roomIdOrAlias: string, context: MatrixStoreContext): Promise<{ roomId: string }>;
+  inviteUser(roomId: string, userId: string, context: MatrixStoreContext): Promise<void>;
+  leaveRoom(roomId: string, context: MatrixStoreContext): Promise<void>;
   sendEvent(
     roomId: string,
     eventType: string,
@@ -83,7 +95,16 @@ export interface MatrixStore {
     content: MatrixSendEventRequest,
     context: MatrixStoreContext,
   ): Promise<MatrixEventRecord>;
+  setState(
+    roomId: string,
+    eventType: string,
+    stateKey: string,
+    content: Record<string, unknown>,
+    context: MatrixStoreContext,
+  ): Promise<MatrixEventRecord>;
   sync(context: MatrixStoreContext, options?: { since?: string; limit?: number }): Promise<MatrixSyncResponse>;
+  listJoinedRooms(context: MatrixStoreContext): Promise<string[]>;
+  getMembers(roomId: string, context: MatrixStoreContext): Promise<MatrixClientEvent[]>;
   listMessages(
     roomId: string,
     context: MatrixStoreContext,
