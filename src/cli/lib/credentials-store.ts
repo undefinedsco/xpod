@@ -1,8 +1,7 @@
 /**
- * CLI credential storage split into two files:
+ * Shared credential storage for all Solid tools (xpod, LinX, etc.).
  *
- *   ~/.xpod/config.json   — base config (url, webId), chmod 644
- *   ~/.xpod/secrets.json  — secrets (clientId, clientSecret), chmod 600
+ * Single Solid auth source: $SOLID_HOME/auth/credentials.json (default: ~/.solid/auth/credentials.json)
  */
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, chmodSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -25,6 +24,7 @@ export interface OidcOAuthSecrets {
   oidcRefreshToken: string;
   oidcAccessToken: string;
   oidcExpiresAt: string;
+  oidcClientId?: string;
 }
 
 export type StoredSecrets = ClientCredentialsSecrets | OidcOAuthSecrets;
@@ -33,33 +33,26 @@ export interface StoredCredentials extends StoredConfig {
   secrets: StoredSecrets;
 }
 
-function xpodDir(): string {
-  return join(homedir(), '.xpod');
+export function getSolidHomeDir(): string {
+  const override = process.env.SOLID_HOME?.trim();
+  return override ? override : join(homedir(), '.solid');
 }
 
-export function getConfigPath(): string {
-  return join(xpodDir(), 'config.json');
+export function getSolidAuthDir(): string {
+  return join(getSolidHomeDir(), 'auth');
 }
 
-export function getSecretsPath(): string {
-  return join(xpodDir(), 'secrets.json');
+export function getSolidCredentialsPath(): string {
+  return join(getSolidAuthDir(), 'credentials.json');
 }
 
 export function saveCredentials(creds: StoredCredentials): void {
-  const dir = xpodDir();
+  const dir = getSolidAuthDir();
   mkdirSync(dir, { recursive: true });
 
-  const configPath = getConfigPath();
-  writeFileSync(
-    configPath,
-    JSON.stringify({ url: creds.url, webId: creds.webId, authType: creds.authType }, null, 2) + '\n',
-    'utf-8'
-  );
-  chmodSync(configPath, 0o644);
-
-  const secretsPath = getSecretsPath();
-  writeFileSync(secretsPath, JSON.stringify(creds.secrets, null, 2) + '\n', 'utf-8');
-  chmodSync(secretsPath, 0o600);
+  const filePath = getSolidCredentialsPath();
+  writeFileSync(filePath, `${JSON.stringify(creds, null, 2)}\n`, 'utf-8');
+  chmodSync(filePath, 0o600);
 }
 
 function readJson<T>(filePath: string): T | null {
@@ -70,51 +63,73 @@ function readJson<T>(filePath: string): T | null {
   }
 }
 
-export function loadConfig(): StoredConfig | null {
-  const data = readJson<Record<string, unknown>>(getConfigPath());
-  if (data && typeof data.url === 'string' && typeof data.webId === 'string') {
-    const authType = (data.authType as AuthType) || 'client_credentials';
-    return { url: data.url, webId: data.webId, authType };
+/**
+ * Load credentials from the shared Solid auth store.
+ *
+ * This is the only credential source for Solid apps (LinX, xpod, etc.).
+ *
+ * Format:
+ *   {
+ *     url: "https://id.undefineds.co/",
+ *     webId: "https://id.undefineds.co/user/profile/card#me",
+ *     authType: "oidc_oauth",
+ *     secrets: {
+ *       oidcRefreshToken: "...",
+ *       oidcAccessToken: "...",
+ *       oidcExpiresAt: "2026-06-06T17:10:49.000Z",
+ *       oidcClientId: "..."
+ *     }
+ *   }
+ */
+export function loadCredentials(): StoredCredentials | null {
+  const data = readJson<Record<string, unknown>>(getSolidCredentialsPath());
+  if (!data || typeof data.url !== 'string' || typeof data.webId !== 'string') {
+    return null;
   }
-  return null;
-}
 
-export function loadSecrets(): StoredSecrets | null {
-  const data = readJson<Record<string, unknown>>(getSecretsPath());
-  if (!data) return null;
-
-  // Try Client Credentials format
-  if (typeof data.clientId === 'string' && typeof data.clientSecret === 'string') {
-    return { clientId: data.clientId, clientSecret: data.clientSecret };
+  const authType = data.authType === 'oidc_oauth' ? 'oidc_oauth' : 'client_credentials';
+  const rawSecrets = data.secrets;
+  if (!rawSecrets || typeof rawSecrets !== 'object') {
+    return null;
   }
 
-  // Try OIDC OAuth format
+  const secrets = rawSecrets as Record<string, unknown>;
+  if (typeof secrets.clientId === 'string' && typeof secrets.clientSecret === 'string') {
+    return {
+      url: data.url,
+      webId: data.webId,
+      authType,
+      secrets: {
+        clientId: secrets.clientId,
+        clientSecret: secrets.clientSecret,
+      },
+    };
+  }
+
   if (
-    typeof data.oidcRefreshToken === 'string' &&
-    typeof data.oidcAccessToken === 'string' &&
-    typeof data.oidcExpiresAt === 'string'
+    typeof secrets.oidcRefreshToken === 'string' &&
+    typeof secrets.oidcAccessToken === 'string' &&
+    typeof secrets.oidcExpiresAt === 'string'
   ) {
     return {
-      oidcRefreshToken: data.oidcRefreshToken,
-      oidcAccessToken: data.oidcAccessToken,
-      oidcExpiresAt: data.oidcExpiresAt,
+      url: data.url,
+      webId: data.webId,
+      authType,
+      secrets: {
+        oidcRefreshToken: secrets.oidcRefreshToken,
+        oidcAccessToken: secrets.oidcAccessToken,
+        oidcExpiresAt: secrets.oidcExpiresAt,
+        oidcClientId: typeof secrets.oidcClientId === 'string' ? secrets.oidcClientId : undefined,
+      },
     };
   }
 
   return null;
 }
 
-export function loadCredentials(): StoredCredentials | null {
-  const config = loadConfig();
-  const secrets = loadSecrets();
-  if (!config || !secrets) return null;
-  return { ...config, secrets };
-}
-
 export function clearCredentials(): void {
-  for (const p of [getConfigPath(), getSecretsPath()]) {
-    if (existsSync(p)) unlinkSync(p);
-  }
+  const p = getSolidCredentialsPath();
+  if (existsSync(p)) unlinkSync(p);
 }
 
 // ============================================================================

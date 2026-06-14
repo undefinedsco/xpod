@@ -4,10 +4,10 @@
  * 将 ChatKit 数据存储到 Solid Pod。
  *
  * 存储结构:
- * /.data/{chat|task}/{surfaceId}/
+ * /.data/{chat|task}/{parent-derived-id}/
  *   index.ttl
- *     #this                           # Chat (meeting:LongChat)
- *     #{threadId}                     # Thread (sioc:Thread)
+ *     #this                           # Chat parent (meeting:LongChat)
+ *     #{threadId}                     # Thread (sioc:Thread, sioc:has_parent)
  *   {yyyy}/{MM}/{dd}/messages.ttl     # Messages (meeting:Message)
  */
 import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
@@ -33,7 +33,6 @@ import {
   MessageRole,
   MessageStatus,
   type ThreadRecord,
-  type MessageRecord,
 } from './schema';
 import {
   Run,
@@ -60,6 +59,7 @@ import {
 } from '../tasks/schema';
 import {
   buildTaskResourceId,
+  resolveTaskResource as expandTaskResource,
   type TaskListOptions,
   type TaskRecordData,
   type TaskStore,
@@ -75,7 +75,12 @@ import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
-import { normalizeAIConfigProviderId, normalizeAIConfigResourceId } from '@undefineds.co/models';
+import {
+  messageRepository,
+  normalizeAIConfigProviderId,
+  normalizeAIConfigResourceId,
+  threadRepository,
+} from '@undefineds.co/models';
 
 const schema = {
   chat: Chat,
@@ -137,6 +142,7 @@ type JsonObjectSource = string | Record<string, unknown> | null | undefined;
 
 type ThreadMetadataSource = {
   id: string;
+  parent?: string | null;
   commandKind?: string | null;
   surfaceId?: string | null;
   chat?: string | null;
@@ -153,6 +159,15 @@ type ResolvedThreadRef = {
   commandKind: 'chat' | 'task';
   surfaceId: string;
   thread: string;
+};
+
+type CommandSurface = {
+  commandKind: 'chat' | 'task';
+  surfaceId: string;
+};
+
+type ThreadParentResolution = CommandSurface & {
+  parent: string;
 };
 
 type RunRecordSource = {
@@ -220,7 +235,8 @@ type RunStepRecordSource = {
  * - ChatKit thread item = Message (meeting:Message)
  * - ChatKit 协议里的 chat_id 在内部映射为 surfaceId
  *
- * 每个 Thread 属于一个 Chat 容器。默认使用 'default' Chat。
+ * 每个 Thread 通过 thread.parent 归属到一个命令面：Chat 或 Task。
+ * ChatKit 边界保留 chat_id/surface_id 作为协议投影，不作为持久 schema 字段。
  */
 export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<StoreContext>, TaskStore<StoreContext>, TaskAuthBindingRepository<StoreContext> {
   private readonly logger = getLoggerFor(this);
@@ -578,6 +594,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return PodChatKitStore.DEFAULT_CHAT_ID;
   }
 
+  private readMetadataString(
+    metadata: Record<string, unknown> | undefined,
+    key: string,
+  ): string | undefined {
+    const value = metadata?.[key];
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
   private isBaseRelativeChatResourceId(value: string | null | undefined): boolean {
     return typeof value === 'string'
       && !/^https?:\/\//.test(value)
@@ -616,6 +640,162 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return this.chatSurfaceIdFromResourceId(chat);
   }
 
+  private commandSurfaceFromResourceRef(resource: string | null | undefined): {
+    commandKind: 'chat' | 'task';
+    surfaceId: string;
+  } | undefined {
+    if (!resource) {
+      return undefined;
+    }
+
+    const parseRef = (ref: string, hash?: string): CommandSurface | undefined => {
+      const normalizedHash = hash?.startsWith('#') ? hash.slice(1) : hash;
+      const trimmed = ref.replace(/^\/+/, '');
+      const dataIndex = trimmed.indexOf('.data/');
+      const dataRef = dataIndex >= 0 ? trimmed.slice(dataIndex + '.data/'.length) : trimmed;
+      const [pathPart, fragmentPart] = dataRef.split('#', 2);
+      const fragment = decodeURIComponent(normalizedHash || fragmentPart || '');
+
+      let match = pathPart.match(/^chat\/([^/]+)\/index\.ttl$/);
+      if (match && (!fragment || fragment === 'this')) {
+        return {
+          commandKind: 'chat',
+          surfaceId: decodeURIComponent(match[1]),
+        };
+      }
+
+      match = pathPart.match(/^task\/index\.ttl$/);
+      if (match && fragment) {
+        return {
+          commandKind: 'task',
+          surfaceId: fragment,
+        };
+      }
+
+      match = pathPart.match(/^(chat|task)\/([^/]+)(?:\/|$)/);
+      if (match) {
+        return {
+          commandKind: match[1] === 'task' ? 'task' : 'chat',
+          surfaceId: decodeURIComponent(match[2]),
+        };
+      }
+
+      return undefined;
+    };
+
+    try {
+      const url = new URL(resource);
+      return parseRef(url.pathname, url.hash);
+    } catch {
+      return parseRef(resource);
+    }
+  }
+
+  private resolveTaskParentResource(
+    taskRef: string,
+    context: StoreContext,
+  ): string {
+    if (/^https?:\/\//.test(taskRef)) {
+      return taskRef;
+    }
+    if (taskRef.startsWith('task/')) {
+      return this.resolveDataResource(taskRef, context);
+    }
+    const podBaseUrl = this.ensurePodBaseUrlCache(context);
+    if (!podBaseUrl) {
+      throw new Error(`Cannot resolve Pod base URL for task parent: ${taskRef}`);
+    }
+    return expandTaskResource(podBaseUrl, buildTaskResourceId(taskRef));
+  }
+
+  private resolveExplicitThreadParentResource(
+    parentRef: string,
+    commandKind: 'chat' | 'task',
+    context: StoreContext,
+  ): string {
+    if (/^https?:\/\//.test(parentRef)) {
+      return parentRef;
+    }
+    if (parentRef.startsWith('chat/') || parentRef.startsWith('task/')) {
+      return this.resolveDataResource(parentRef, context);
+    }
+    if (commandKind === 'task') {
+      return this.resolveTaskParentResource(parentRef, context);
+    }
+    return this.resolveDataResource(`chat/${parentRef}/index.ttl#this`, context);
+  }
+
+  private resolveThreadParent(
+    metadata: Record<string, unknown> | undefined,
+    context: StoreContext,
+  ): ThreadParentResolution {
+    const requestedCommandKind = this.getCommandKindFromMetadata(metadata);
+    const requestedSurfaceId = this.getSurfaceIdFromMetadata(metadata);
+    const explicitParent = this.readMetadataString(metadata, 'parent');
+    const taskRef = requestedCommandKind === 'task'
+      ? this.readMetadataString(metadata, 'task') ?? this.readMetadataString(metadata, 'taskId')
+      : undefined;
+
+    if (explicitParent) {
+      const parent = this.resolveExplicitThreadParentResource(explicitParent, requestedCommandKind, context);
+      const surface = this.commandSurfaceFromResourceRef(parent);
+      if (surface) {
+        return { ...surface, parent };
+      }
+      return {
+        commandKind: requestedCommandKind,
+        surfaceId: requestedSurfaceId,
+        parent,
+      };
+    }
+
+    if (requestedCommandKind === 'task') {
+      const parent = taskRef
+        ? this.resolveTaskParentResource(taskRef, context)
+        : this.resolveTaskParentResource(`index.ttl#${requestedSurfaceId}`, context);
+      const surface = this.commandSurfaceFromResourceRef(parent);
+      return {
+        commandKind: 'task',
+        surfaceId: surface?.surfaceId ?? requestedSurfaceId,
+        parent,
+      };
+    }
+
+    const parent = this.resolveDataResource(`chat/${requestedSurfaceId}/index.ttl#this`, context);
+    return {
+      commandKind: 'chat',
+      surfaceId: requestedSurfaceId,
+      parent,
+    };
+  }
+
+  private threadApiMetadata(
+    metadata: Record<string, unknown> | undefined,
+    parent: ThreadParentResolution,
+  ): Record<string, unknown> {
+    return {
+      ...(metadata ?? {}),
+      parent: parent.parent,
+      chat_id: parent.surfaceId,
+      commandKind: parent.commandKind,
+      surface_id: parent.surfaceId,
+    };
+  }
+
+  private threadStoredMetadata(
+    metadata: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    if (!metadata) {
+      return undefined;
+    }
+    const stored = { ...metadata };
+    delete stored.parent;
+    delete stored.chat_id;
+    delete stored.commandKind;
+    delete stored.surface_id;
+    return Object.keys(stored).length > 0 ? stored : undefined;
+  }
+
   /**
    * 确保 Chat 容器存在，如果不存在则创建
    */
@@ -651,13 +831,19 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
    * 将 ThreadRecord 转为 ThreadMetadata
    * ChatKit 边界继续暴露 metadata.chat_id；内部同一值叫 surface_id。
    */
-  private threadRecordToMetadata(record: ThreadMetadataSource, chatResourceMap: Map<string, string>): ThreadMetadata {
+  private threadRecordToMetadata(record: ThreadMetadataSource): ThreadMetadata {
     const extra = this.parseJsonObject(record.metadata);
-    const commandKind = record.commandKind === 'task' || extra?.commandKind === 'task' ? 'task' : 'chat';
-    const surfaceId = record.surfaceId
+    const parentSurface = this.commandSurfaceFromResourceRef(record.parent);
+    const commandKind = parentSurface?.commandKind
+      ?? (record.commandKind === 'task' || extra?.commandKind === 'task' ? 'task' : 'chat');
+    const surfaceId = parentSurface?.surfaceId
+      || record.surfaceId
       || (typeof extra?.surface_id === 'string' ? extra.surface_id : undefined)
       || (typeof extra?.chat_id === 'string' ? extra.chat_id : undefined)
-      || this.resolveChatSurfaceFromResource(record.chat, chatResourceMap, PodChatKitStore.DEFAULT_CHAT_ID);
+      || this.chatSurfaceIdFromResource(record.chat)
+      || PodChatKitStore.DEFAULT_CHAT_ID;
+    const parent = record.parent
+      ?? (commandKind === 'chat' ? `chat/${surfaceId}/index.ttl#this` : `task/index.ttl#${surfaceId}`);
 
     return {
       id: record.id,
@@ -666,12 +852,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       workspace: record.workspace || undefined,
       created_at: record.createdAt ? Math.floor(new Date(record.createdAt).getTime() / 1000) : nowTimestamp(),
       updated_at: record.updatedAt ? Math.floor(new Date(record.updatedAt).getTime() / 1000) : nowTimestamp(),
-      metadata: {
-        ...(extra ?? {}),
-        chat_id: surfaceId,
-        commandKind,
-        surface_id: surfaceId,
-      },
+      metadata: this.threadApiMetadata(extra, { commandKind, surfaceId, parent }),
     };
   }
 
@@ -914,13 +1095,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   private runRecordToData(record: RunRecordSource): RunRecordData {
     const metadata = this.parseJsonObject(record.metadata);
     const xpod = this.getXpodMetadata(metadata);
+    const surface = this.commandSurfaceFromResourceRef(record.id);
     return {
       id: record.id || '',
-      surfaceId: record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
+      surfaceId: surface?.surfaceId || record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
       task: record.task || undefined,
       thread: record.thread || '',
       workspace: record.workspace || '',
-      commandKind: record.commandKind === 'task' || xpod?.commandKind === 'task' ? 'task' : 'chat',
+      commandKind: surface?.commandKind ?? (record.commandKind === 'task' || xpod?.commandKind === 'task' ? 'task' : 'chat'),
       status: (record.status || 'queued') as RunRecordData['status'],
       runner: record.runner || '',
       prompt: record.prompt || undefined,
@@ -938,14 +1120,18 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     };
   }
 
-  private runStepRecordToData(record: RunStepRecordSource): RunStepRecordData {
+  private runStepRecordToData(record: RunStepRecordSource, context: StoreContext): RunStepRecordData {
     const payload = this.parseJsonObject(record.payload) ?? this.parseJsonObject(record.data);
     const xpod = this.getXpodMetadata(payload);
+    const runId = record.runId
+      || (record.run ? this.baseRelativeIdFromResource(record.run, context) : '')
+      || (typeof xpod?.runId === 'string' ? xpod.runId : '');
+    const surface = this.commandSurfaceFromResourceRef(runId);
     return {
       id: record.id || '',
-      commandKind: record.commandKind === 'task' || xpod?.commandKind === 'task' ? 'task' : 'chat',
-      surfaceId: record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
-      runId: record.runId || (typeof xpod?.runId === 'string' ? xpod.runId : ''),
+      commandKind: surface?.commandKind ?? (record.commandKind === 'task' || xpod?.commandKind === 'task' ? 'task' : 'chat'),
+      surfaceId: surface?.surfaceId || record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
+      runId,
       run: record.run || '',
       type: record.type || record.stepType || 'runtime.event',
       message: record.message || undefined,
@@ -1024,49 +1210,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         created_at: createdAt,
       } as AssistantMessageItem;
     }
-  }
-
-  /**
-   * 获取或构建 Chat resource -> surface id 的映射缓存。
-   * drizzle-solid 的 link(Chat) 字段返回完整资源引用，通过 Chat 的 @id 比对还原路径槽位。
-   */
-  private async getChatResourceMap(context: StoreContext): Promise<Map<string, string>> {
-    if ((context as any)._chatResourceMap) {
-      return (context as any)._chatResourceMap;
-    }
-    const db = await this.getDb(context);
-    const map = new Map<string, string>();
-    if (db) {
-      try {
-        const chats = await db.select().from(Chat);
-        for (const c of chats) {
-          const uri = (c as any)['@id'] as string | undefined;
-          const surfaceId = this.chatSurfaceIdFromResourceId(c.id) ?? c.id;
-          if (uri) map.set(uri, surfaceId);
-        }
-      } catch {
-        // ignore
-      }
-    }
-    (context as any)._chatResourceMap = map;
-    return map;
-  }
-
-  /**
-   * 从 Chat resource 还原 surface id。
-   * 优先通过 @id 映射；若调用方本来给的是裸 ID，则原样使用。
-   */
-  private resolveChatSurfaceFromResource(
-    chat: string | null | undefined,
-    chatResourceMap: Map<string, string>,
-    defaultSurfaceId: string,
-  ): string {
-    if (!chat) return defaultSurfaceId;
-    const bare = chatResourceMap.get(chat);
-    if (bare) return bare;
-    const parsed = this.chatSurfaceIdFromResource(chat);
-    if (parsed) return parsed;
-    return chat.includes('/') ? defaultSurfaceId : chat;
   }
 
   private isAbsoluteHttpResource(value: string): boolean {
@@ -1216,75 +1359,42 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     thread: ThreadRef,
     context: StoreContext,
   ): Promise<QueriedMessageRecord[]> {
-    await this.getDb(context);
-
-    const cachedFetch = this.getCachedFetch(context);
-    const podBaseUrl = this.getCachedPodBaseUrl(context);
-    if (!cachedFetch || !podBaseUrl) {
+    const db = await this.getDb(context);
+    if (!db) {
       return [];
     }
 
     const resolvedThread = await this.resolveThreadRef(thread, context);
-    const endpoint = `${podBaseUrl}/.data/chat/-/sparql`;
-    const query = `
-      PREFIX meeting: <http://www.w3.org/ns/pim/meeting#>
-      PREFIX sioc: <http://rdfs.org/sioc/ns#>
-      PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-      PREFIX dcterms: <http://purl.org/dc/terms/>
-      PREFIX udfs: <https://undefineds.co/ns#>
-      SELECT ?msg ?maker ?messageType ?legacyRole ?content ?messageStatus ?legacyStatus ?createdAt ?legacyCreatedAt ?toolName ?toolCallId ?metadata
-      WHERE {
-        <${resolvedThread.thread}> sioc:has_member ?msg .
-        ?msg a meeting:Message .
-        OPTIONAL { ?msg foaf:maker ?maker . }
-        OPTIONAL { ?msg udfs:messageType ?messageType . }
-        OPTIONAL { ?msg udfs:role ?legacyRole . }
-        OPTIONAL { ?msg sioc:content ?content . }
-        OPTIONAL { ?msg udfs:messageStatus ?messageStatus . }
-        OPTIONAL { ?msg udfs:status ?legacyStatus . }
-        OPTIONAL { ?msg dcterms:created ?createdAt . }
-        OPTIONAL { ?msg udfs:createdAt ?legacyCreatedAt . }
-        OPTIONAL { ?msg udfs:toolName ?toolName . }
-        OPTIONAL { ?msg udfs:toolCallId ?toolCallId . }
-        OPTIONAL { ?msg udfs:metadata ?metadata . }
-      }
-      ORDER BY ?createdAt
-    `.trim();
 
-    const response = await cachedFetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/sparql-query',
-        Accept: 'application/sparql-results+json',
-      },
-      body: query,
-    });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`Failed to query thread messages: ${response.status} ${response.statusText} - ${text}`);
-    }
-
-    const json = await response.json() as {
-      results?: {
-        bindings?: Array<Record<string, { value?: string }>>;
-      };
-    };
-
-    const bindings = json.results?.bindings ?? [];
-    return bindings.map((binding) => ({
-      id: this.baseRelativeIdFromResource(this.parseSparqlBindingValue(binding, 'msg') ?? '', context),
-      chat: null,
+    const records = await messageRepository.list(db, {
       thread: resolvedThread.thread,
-      maker: this.parseSparqlBindingValue(binding, 'maker'),
-      role: this.parseSparqlBindingValue(binding, 'messageType') ?? this.parseSparqlBindingValue(binding, 'legacyRole'),
-      content: this.parseSparqlBindingValue(binding, 'content'),
-      status: this.parseSparqlBindingValue(binding, 'messageStatus') ?? this.parseSparqlBindingValue(binding, 'legacyStatus'),
-      createdAt: this.parseSparqlBindingValue(binding, 'createdAt') ?? this.parseSparqlBindingValue(binding, 'legacyCreatedAt'),
-      toolName: this.parseSparqlBindingValue(binding, 'toolName'),
-      toolCallId: this.parseSparqlBindingValue(binding, 'toolCallId'),
-      metadata: this.parseSparqlBindingValue(binding, 'metadata'),
-      resource: this.parseSparqlBindingValue(binding, 'msg'),
+    }) as Array<{
+      id?: string | null;
+      chat?: string | null;
+      thread?: string | null;
+      maker?: string | null;
+      role?: string | null;
+      content?: string | null;
+      status?: string | null;
+      createdAt?: string | Date | null;
+      toolName?: string | null;
+      toolCallId?: string | null;
+      metadata?: JsonObjectSource;
+    }>;
+
+    return records.map((record) => ({
+      id: record.id || '',
+      chat: record.chat || null,
+      thread: record.thread || resolvedThread.thread,
+      maker: record.maker || null,
+      role: record.role || null,
+      content: record.content || null,
+      status: record.status || null,
+      createdAt: record.createdAt || null,
+      toolName: record.toolName || null,
+      toolCallId: record.toolCallId || null,
+      metadata: record.metadata || null,
+      resource: record.id ? this.resolveDataResource(record.id, context) : null,
     }));
   }
 
@@ -1343,11 +1453,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error(`Thread not found: ${resolvedThread.threadId}`);
     }
 
-    const chatResourceMap = await this.getChatResourceMap(context);
-    const metadata = this.threadRecordToMetadata(threadRecord, chatResourceMap);
+    const metadata = this.threadRecordToMetadata(threadRecord);
     // 缓存结果
     this.cacheThreadMetadata(context, metadata);
-    this.cacheThreadSurfaceId(context, metadata.id, resolvedThread.surfaceId);
+    this.cacheThreadSurfaceId(context, metadata.id, this.getSurfaceIdFromMetadata(metadata.metadata));
     return metadata;
   }
 
@@ -1359,15 +1468,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     const now = new Date().toISOString();
 
-    const commandKind = this.getCommandKindFromMetadata(thread.metadata);
-    const surfaceId = this.getSurfaceIdFromMetadata(thread.metadata);
-    thread.metadata = {
-      ...(thread.metadata ?? {}),
-      commandKind,
-      surface_id: surfaceId,
-      chat_id: surfaceId,
-    };
-    const metadataObject = this.jsonObjectOrNull(thread.metadata);
+    const parent = this.resolveThreadParent(thread.metadata, context);
+    const commandKind = parent.commandKind;
+    const surfaceId = parent.surfaceId;
+    const apiMetadata = this.threadApiMetadata(thread.metadata, parent);
+    thread.metadata = apiMetadata;
+    const metadataObject = this.jsonObjectOrNull(this.threadStoredMetadata(apiMetadata));
 
     if (commandKind === 'chat') {
       await this.ensureChat(surfaceId, context);
@@ -1388,8 +1494,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     if (existing) {
       // Update
       await db.updateByIri(Thread, threadResource, {
-        chat: commandKind === 'chat' ? this.buildChatResourceId(surfaceId) : null,
-        task: commandKind === 'task' ? buildTaskResourceId(`index.ttl#${surfaceId}`) : null,
+        parent: parent.parent,
         title: thread.title || null,
         status: this.statusToString(thread.status),
         workspace: thread.workspace || null,
@@ -1400,8 +1505,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       // Insert
       await db.insert(Thread).values({
         id: threadResourceId,
-        chat: commandKind === 'chat' ? this.buildChatResourceId(surfaceId) : null,
-        task: commandKind === 'task' ? buildTaskResourceId(`index.ttl#${surfaceId}`) : null,
+        parent: parent.parent,
         title: thread.title || null,
         status: this.statusToString(thread.status),
         workspace: thread.workspace || null,
@@ -1414,12 +1518,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     // 缓存完整的 Thread metadata，确保 ChatKit metadata.chat_id 包含正确的 surface。
     const threadMetadata: ThreadMetadata = {
       ...thread,
-      metadata: {
-        ...(thread.metadata ?? {}),
-        commandKind,
-        surface_id: surfaceId,
-        chat_id: surfaceId,
-      },
+      metadata: apiMetadata,
     };
     this.cacheThreadMetadata(context, threadMetadata);
   }
@@ -1436,11 +1535,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     }
 
     try {
-      const threads = await db.select().from(Thread) as ThreadRecord[];
-      const chatResourceMap = await this.getChatResourceMap(context);
+      const threads = await threadRepository.list(db) as ThreadRecord[];
       const metadataById = new Map<string, ThreadMetadata>();
       for (const thread of threads) {
-        const metadata = this.threadRecordToMetadata(thread, chatResourceMap);
+        const metadata = this.threadRecordToMetadata(thread);
         metadataById.set(metadata.id, metadata);
       }
       for (const cached of this.getCachedThreadMetadataList(context)) {
@@ -1577,7 +1675,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const webId = this.getWebId(context);
     let content = '';
     let role: string = MessageRole.USER;
-    let status: string | null = null;
+    let status: string = MessageStatus.COMPLETED;
     let toolName: string | null = null;
     let toolCallId: string | null = null;
     let metadata: Record<string, unknown> | null = null;
@@ -1589,6 +1687,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         .map((c) => (c as any).text)
         .join('\n');
       role = MessageRole.USER;
+      status = MessageStatus.SENT;
     } else if (item.type === 'assistant_message') {
       const assistantItem = item as AssistantMessageItem;
       content = assistantItem.content
@@ -1613,6 +1712,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       // 其他类型暂时存储为 JSON
       content = JSON.stringify(item);
       role = MessageRole.SYSTEM;
+      status = MessageStatus.COMPLETED;
     }
 
     const messageRecord = {
@@ -1877,10 +1977,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
     run.id = buildRunResourceId(run);
     const existing = await db.findById(Run, run.id) as RunRecord | null;
-    const metadata = this.withXpodMetadata(run.metadata, {
-      commandKind: run.commandKind,
-      surfaceId: run.surfaceId,
-    });
     const values = {
       task: run.task || null,
       thread: run.thread,
@@ -1894,7 +1990,7 @@ WHERE { ${deletePatterns.join(' ')} }
       heartbeatAt: this.timestampToIso(run.heartbeatAt),
       cancelRequestedAt: this.timestampToIso(run.cancelRequestedAt),
       error: run.error || null,
-      metadata: this.jsonObjectOrNull(metadata),
+      metadata: this.jsonObjectOrNull(run.metadata),
       createdAt: this.timestampToIso(run.createdAt) ?? new Date().toISOString(),
       startedAt: this.timestampToIso(run.startedAt),
       completedAt: this.timestampToIso(run.completedAt),
@@ -1969,17 +2065,14 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error(`RunStep runId must be a complete Run resource id: ${event.runId}`);
     }
     event.id = buildRunStepResourceId(event);
+    const runResource = event.run || this.resolveDataResource(event.runId, context);
 
     await db.insert(RunStep).values({
       id: event.id,
-      run: event.run,
       stepType: event.type,
+      run: runResource,
       message: event.message || null,
-      payload: this.jsonObjectOrNull(this.withXpodMetadata(event.data, {
-        commandKind: event.commandKind,
-        surfaceId: event.surfaceId,
-        runId: event.runId,
-      })),
+      payload: this.jsonObjectOrNull(event.data),
       createdAt: this.timestampToIso(event.createdAt) ?? new Date().toISOString(),
     });
   }
@@ -1994,9 +2087,10 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error(`loadRunSteps requires a base-relative Run id: ${runId}`);
     }
 
-    const records = await db.select().from(RunStep).where(eq(RunStep.run, this.resolveDataResource(runId, context))) as RunStepRecord[];
+    const resolvedRun = this.resolveDataResource(runId, context);
+    const records = await db.select().from(RunStep).where(eq(RunStep.run, resolvedRun)) as RunStepRecord[];
     return records
-      .map((record) => this.runStepRecordToData(record))
+      .map((record) => this.runStepRecordToData(record, context))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
 
@@ -2382,21 +2476,24 @@ WHERE { ${deletePatterns.join(' ')} }
 
     const endpoint = `${podBaseUrl.replace(/\/$/, '')}/settings/-/sparql`;
     const query = `
+      PREFIX cred: <https://vocab.xpod.dev/credential#>
+      PREFIX ai: <https://vocab.xpod.dev/ai#>
       PREFIX udfs: <https://undefineds.co/ns#>
-      SELECT ?cred ?provider ?apiKey ?isDefault ?lastUsedAt ?failCount ?baseUrl ?proxyUrl ?defaultModel ?hasModel
+      SELECT ?cred ?provider ?apiKey ?isDefault ?lastUsedAt ?failCount ?providerBaseUrl ?credentialBaseUrl ?providerProxyUrl ?credentialProxyUrl ?defaultModel ?hasModel
       WHERE {
-        ?cred a udfs:Credential ;
-              udfs:service "ai" ;
-              udfs:status "active" ;
-              udfs:apiKey ?apiKey .
-        OPTIONAL { ?cred udfs:provider ?provider . }
-        OPTIONAL { ?cred udfs:isDefault ?isDefault . }
-        OPTIONAL { ?cred udfs:lastUsedAt ?lastUsedAt . }
-        OPTIONAL { ?cred udfs:failCount ?failCount . }
-        OPTIONAL { ?provider udfs:baseUrl ?baseUrl . }
-        OPTIONAL { ?provider udfs:proxyUrl ?proxyUrl . }
-        OPTIONAL { ?provider udfs:defaultModel ?defaultModel . }
-        OPTIONAL { ?provider udfs:hasModel ?hasModel . }
+        ?cred (cred:service|udfs:service) "ai" ;
+              (cred:status|udfs:status) "active" ;
+              (cred:apiKey|udfs:apiKey) ?apiKey .
+        OPTIONAL { ?cred (cred:provider|udfs:provider) ?provider . }
+        OPTIONAL { ?cred (cred:isDefault|udfs:isDefault) ?isDefault . }
+        OPTIONAL { ?cred (cred:lastUsedAt|udfs:lastUsedAt) ?lastUsedAt . }
+        OPTIONAL { ?cred (cred:failCount|udfs:failCount) ?failCount . }
+        OPTIONAL { ?cred (cred:baseUrl|udfs:baseUrl) ?credentialBaseUrl . }
+        OPTIONAL { ?cred (cred:proxyUrl|udfs:proxyUrl) ?credentialProxyUrl . }
+        OPTIONAL { ?provider (ai:baseUrl|udfs:baseUrl) ?providerBaseUrl . }
+        OPTIONAL { ?provider (ai:proxyUrl|udfs:proxyUrl) ?providerProxyUrl . }
+        OPTIONAL { ?provider (ai:defaultModel|udfs:defaultModel) ?defaultModel . }
+        OPTIONAL { ?provider (ai:hasModel|udfs:hasModel) ?hasModel . }
       }
     `.trim();
 
@@ -2431,8 +2528,10 @@ WHERE { ${deletePatterns.join(' ')} }
         isDefault: this.parseSparqlBindingValue(binding, 'isDefault'),
         lastUsedAt: this.parseSparqlBindingValue(binding, 'lastUsedAt'),
         failCount: this.parseIntegerValue(this.parseSparqlBindingValue(binding, 'failCount')),
-        baseUrl: this.parseSparqlBindingValue(binding, 'baseUrl'),
-        proxyUrl: this.parseSparqlBindingValue(binding, 'proxyUrl'),
+        baseUrl: this.parseSparqlBindingValue(binding, 'providerBaseUrl')
+          ?? this.parseSparqlBindingValue(binding, 'credentialBaseUrl'),
+        proxyUrl: this.parseSparqlBindingValue(binding, 'providerProxyUrl')
+          ?? this.parseSparqlBindingValue(binding, 'credentialProxyUrl'),
         defaultModel: this.parseSparqlBindingValue(binding, 'defaultModel')
           ?? this.parseSparqlBindingValue(binding, 'hasModel'),
       };
@@ -2477,9 +2576,13 @@ WHERE { ${deletePatterns.join(' ')} }
     this.ensurePodBaseUrlCache(context, db);
 
     try {
-      const sparqlConfig = await this.queryAiConfigFromSettingsSparql(context);
-      if (sparqlConfig !== null) {
-        return sparqlConfig ?? undefined;
+      try {
+        const sparqlConfig = await this.queryAiConfigFromSettingsSparql(context);
+        if (sparqlConfig !== null) {
+          return sparqlConfig ?? undefined;
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to read AI config via settings SPARQL, falling back to model tables: ${error}`);
       }
 
       // 查询活跃的 AI 凭据
@@ -2594,7 +2697,7 @@ WHERE { ${deletePatterns.join(' ')} }
       this.logger.warn(`Failed to load Pod models for ${config.providerId}: ${error}`);
     }
 
-    if (config.defaultModel) {
+    if (models.length === 0 && config.defaultModel) {
       this.pushAvailableModel(models, seenModelIds, {
         id: config.defaultModel,
         name: config.defaultModel,

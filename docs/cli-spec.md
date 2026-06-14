@@ -162,7 +162,12 @@ Batch commands should include per-item status:
 ## Auth
 
 xpod must make the acting identity explicit and must not surprise
-non-interactive callers with a browser login flow.
+non-interactive callers with a browser login flow. All Solid-facing apps share
+one local Solid auth source: `$SOLID_HOME/auth/credentials.json` with
+`SOLID_HOME` defaulting to `~/.solid`. App-local files such as
+`~/.xpod/config.json` and `~/.xpod/secrets.json` are not Solid auth sources;
+when those old xpod-local files are the only files present, xpod is
+unauthenticated.
 
 Required commands:
 

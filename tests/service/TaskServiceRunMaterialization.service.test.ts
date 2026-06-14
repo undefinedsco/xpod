@@ -60,7 +60,8 @@ describe('Task service Run materialization', () => {
       authBinding,
     }, context);
 
-    expect(result.run?.id).toMatch(/^task\/default\/\d{4}\/\d{2}\/\d{2}\/runs\.ttl#run_/);
+    const taskParentKey = extractResourceLocalId(result.task.id);
+    expect(result.run?.id).toMatch(new RegExp(`^task/${taskParentKey}/\\d{4}/\\d{2}/\\d{2}/runs\\.ttl#run_`));
     expect(result.task).toMatchObject({
       surfaceId: 'default',
       status: TaskStatus.COMPLETED,
@@ -70,7 +71,7 @@ describe('Task service Run materialization', () => {
     });
     expect(result.run).toMatchObject({
       commandKind: 'task',
-      surfaceId: 'default',
+      surfaceId: taskParentKey,
       task: resolveTaskResource('http://localhost/alice', result.task.id),
       thread: result.task.thread,
       workspace: workspaceRef,
@@ -108,12 +109,12 @@ describe('Task service Run materialization', () => {
       RunStepType.TEXT_DELTA,
       RunStepType.COMPLETED,
     ]);
-    expect(events.every((event) => event.commandKind === 'task' && event.surfaceId === result.task.surfaceId)).toBe(true);
+    expect(events.every((event) => event.commandKind === 'task' && event.surfaceId === result.run!.surfaceId)).toBe(true);
     expect(events.every((event) => event.runId === result.run!.id)).toBe(true);
     expect(events.every((event) => extractResourceLocalId(event.id).startsWith('run-step_'))).toBe(true);
   });
 
-  it('uses explicit surfaceId as the task command surface', async () => {
+  it('keeps explicit surfaceId as a task label while runtime storage derives from parent Task', async () => {
     const store = new InMemoryStore<StoreContext>();
     const backend = new RecordingRunBackend();
     const service = new TaskService({
@@ -142,11 +143,12 @@ describe('Task service Run materialization', () => {
       authBinding,
     }, context);
 
+    const taskParentKey = extractResourceLocalId(result.task.id);
     expect(result.task.surfaceId).toBe('secretary');
-    expect(result.run?.id).toMatch(/^task\/secretary\/\d{4}\/\d{2}\/\d{2}\/runs\.ttl#run_/);
+    expect(result.run?.id).toMatch(new RegExp(`^task/${taskParentKey}/\\d{4}/\\d{2}/\\d{2}/runs\\.ttl#run_`));
     expect(result.run).toMatchObject({
       commandKind: 'task',
-      surfaceId: 'secretary',
+      surfaceId: taskParentKey,
       runner: 'pi:codex',
     });
   });

@@ -6,7 +6,7 @@ import {
   createClientCredentials,
   getAccountData,
 } from '../lib/css-account';
-import { saveCredentials, getConfigPath } from '../lib/credentials-store';
+import { saveCredentials, getSolidCredentialsPath } from '../lib/credentials-store';
 import { promptPassword, promptText } from '../lib/prompt';
 import { CliCommandError, handleCliError } from '../lib/output';
 
@@ -118,7 +118,7 @@ export const loginCommandModule: CommandModule<object, LoginArgs> = {
           clientSecret: credential.secret ?? '',
         },
       });
-      console.log(`\nSaved to ${getConfigPath().replace('/config.json', '/')}`);
+      console.log(`\nSaved to ${getSolidCredentialsPath()}`);
     } else {
       console.log('Credentials created.');
     }

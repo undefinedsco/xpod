@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DataFactory } from 'n3';
-import type { Quad } from '@rdfjs/types';
+import type { NamedNode, Quad } from '@rdfjs/types';
 import { getLoggerFor } from 'global-logger-factory';
 import { quadToRow } from '../storage/quint/serialization';
 import { getSqliteRuntime, type SqliteDatabase } from '../storage/SqliteRuntime';
@@ -217,6 +217,9 @@ export class LocalPodProvisioningService {
     const root = this.baseUrl;
     const profileUrl = iri(podUrl, 'profile/');
     const cardUrl = iri(podUrl, 'profile/card');
+    const settingsUrl = iri(podUrl, 'settings/');
+    const privateTypeIndexUrl = iri(podUrl, '.settings/privateTypeIndex.ttl');
+    const privateTypeIndexGraph = namedNode(privateTypeIndexUrl);
     const authorizationResources = buildPodAuthorizationResources({
       authMode: this.authMode,
       podUrl,
@@ -260,6 +263,7 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(root), namedNode(`${LDP}contains`), namedNode(podUrl), rootGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.rootResourceUrl), podGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(profileUrl), podGraph));
+    out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(settingsUrl), podGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.profileResourceUrl), profileGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardUrl), profileGraph));
     out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.cardResourceUrl), profileGraph));
@@ -278,6 +282,9 @@ export class LocalPodProvisioningService {
     out.push(quad(namedNode(webId), namedNode(`${RDF}type`), namedNode(`${FOAF}Person`), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${SOLID}oidcIssuer`), namedNode(oidcIssuer), cardGraph));
     out.push(quad(namedNode(webId), namedNode(`${SOLID}storage`), namedNode(podUrl), cardGraph));
+    out.push(quad(namedNode(webId), namedNode(`${SOLID}privateTypeIndex`), namedNode(privateTypeIndexUrl), cardGraph));
+
+    this.addPrivateTypeIndexQuads(out, privateTypeIndexGraph, privateTypeIndexUrl);
 
     out.push(...authorizationResources.quads);
 
@@ -344,5 +351,9 @@ export class LocalPodProvisioningService {
     } finally {
       db.close();
     }
+  }
+
+  private addPrivateTypeIndexQuads(out: Quad[], graph: NamedNode, typeIndexUrl: string): void {
+    out.push(quad(namedNode(typeIndexUrl), namedNode(`${RDF}type`), namedNode(`${SOLID}TypeIndex`), graph));
   }
 }

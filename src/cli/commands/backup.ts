@@ -25,7 +25,7 @@ function resolveUrl(url?: string, credUrl?: string): string {
 }
 
 /**
- * Resolve auth: prefer client credentials from ~/.xpod/, fall back to email/password.
+ * Resolve auth: prefer client credentials from $SOLID_HOME/auth/, fall back to email/password.
  * Returns { authHeader, podUrl }.
  */
 async function resolveBackupAuth(

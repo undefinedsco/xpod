@@ -45,16 +45,19 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/test/
 
 ## 申请 Client Credentials
 
-服务启动后，通过 CSS Account API 申请凭据：
+服务启动后，通过 xpod auth 命令申请并保存 Solid client credentials：
 
 ```bash
-node scripts/setup_creds.js
+bun src/cli/index.ts auth login --url http://localhost:3000 --email test@dev.local --password test123456
 ```
 
-该脚本执行：
+该命令执行：
 1. 用 seed 账号登录获取 account token
 2. 创建 client credentials（绑定 webId）
-3. 保存到 `~/.xpod/config.json` + `~/.xpod/secrets.json`
+3. 保存到 `$SOLID_HOME/auth/credentials.json`（默认 `~/.solid/auth/credentials.json`）
+
+`~/.xpod/config.json` 和 `~/.xpod/secrets.json` 是旧 app-local 文件，不是
+Solid auth source；只有这些旧文件时 CLI 应视为未登录。
 
 手动申请（如脚本不可用）：
 

@@ -27,7 +27,7 @@ function resolveUrl(url?: string, credUrl?: string): string {
 
 /**
  * Try to login via email/password (CSS Account Token) or fall back to
- * client credentials from ~/.xpod/credentials.json.
+ * client credentials from $SOLID_HOME/auth/credentials.json.
  *
  * Returns { token, mode } where mode indicates which auth was used.
  */

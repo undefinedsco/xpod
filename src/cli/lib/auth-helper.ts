@@ -1,7 +1,9 @@
 /**
  * CLI Authentication Helper
  *
- * 统一的认证入口，优先使用保存的 client credentials。
+ * 统一的认证入口。所有 Solid app 只从 `$SOLID_HOME/auth/credentials.json`
+ * 这一套 shared Solid auth source 恢复权限；`~/.xpod/config.json` /
+ * `~/.xpod/secrets.json` 不是 Solid auth source。
  */
 
 import { authenticate, type PodAuth } from './solid-auth';
@@ -10,8 +12,8 @@ import { loadCredentials, isClientCredentials } from './credentials-store';
 /**
  * 获取认证信息
  *
- * 优先级：
- * 1. 使用保存的 client credentials (~/.xpod/secrets.json)
+ * 规则：
+ * 1. 只读取 shared Solid auth source：$SOLID_HOME/auth/credentials.json
  * 2. 如果没有，提示用户先运行 `xpod auth create-credentials`
  *
  * @returns PodAuth 或 null（如果没有保存的 credentials）

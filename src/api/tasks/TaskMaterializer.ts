@@ -214,6 +214,7 @@ export class TaskMaterializer<TContext = StoreContext> {
       return await this.store.loadThread(threadRef, context);
     } catch {
       const now = nowTimestamp();
+      const surfaceId = this.resolveTaskThreadSurfaceId(task);
       const metadata: ThreadMetadata = {
         id: this.extractThreadId(task.thread),
         title: task.title,
@@ -223,8 +224,8 @@ export class TaskMaterializer<TContext = StoreContext> {
         updated_at: now,
         metadata: {
           commandKind: 'task',
-          surface_id: task.surfaceId,
-          chat_id: task.surfaceId,
+          surface_id: surfaceId,
+          chat_id: surfaceId,
           task: this.resolveTaskResource(task, context),
           runtime: {
             workspace: task.workspace,
@@ -250,18 +251,19 @@ export class TaskMaterializer<TContext = StoreContext> {
     },
   ): Promise<RunRecordData> {
     const now = nowTimestamp();
+    const surfaceId = this.resolveTaskThreadSurfaceId(task);
     const run: RunRecordData = {
       id: generateRunResourceId({
         key: generateId('run'),
         commandKind: 'task',
-        surfaceId: task.surfaceId,
+        surfaceId,
         createdAt: now,
       }),
       task: this.resolveTaskResource(task, context),
       thread: task.thread,
       workspace: task.workspace,
       commandKind: 'task',
-      surfaceId: task.surfaceId,
+      surfaceId,
       status: RunStatus.QUEUED,
       runner: task.runner,
       prompt,
@@ -504,8 +506,14 @@ export class TaskMaterializer<TContext = StoreContext> {
     }
     return toThreadRef({
       thread_id: this.extractThreadId(task.thread),
-      chat_id: task.surfaceId,
+      chat_id: this.resolveTaskThreadSurfaceId(task),
     });
+  }
+
+  private resolveTaskThreadSurfaceId(task: TaskRecordData): string {
+    const threadId = this.extractThreadId(task.thread);
+    const match = threadId.match(/^task\/([^/]+)\//);
+    return match ? decodeURIComponent(match[1]) : task.surfaceId;
   }
 
   private parseThreadResource(thread: string): ThreadRef | undefined {

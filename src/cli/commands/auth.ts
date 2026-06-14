@@ -8,13 +8,13 @@ import {
   listClientCredentials,
   revokeClientCredential,
 } from '../lib/css-account';
-import { saveCredentials, clearCredentials, getConfigPath } from '../lib/credentials-store';
+import { saveCredentials, clearCredentials, getSolidCredentialsPath } from '../lib/credentials-store';
 import { promptPassword, promptText } from '../lib/prompt';
 import { getStoredAuthStatus } from '../lib/auth-context';
 import { CliCommandError, handleCliError, writeJsonResult } from '../lib/output';
 
 interface AuthArgs {
-  url: string;
+  url?: string;
   json?: boolean;
 }
 
@@ -44,7 +44,7 @@ interface RevokeArgs extends AuthArgs {
   'client-id': string;
 }
 
-function resolveUrl(url: string): string {
+function resolveUrl(url?: string): string {
   const raw = url || process.env.CSS_BASE_URL || 'http://localhost:3000';
   return raw.endsWith('/') ? raw : `${raw}/`;
 }
@@ -143,14 +143,14 @@ const loginCommand: CommandModule<AuthArgs, LoginArgs> = {
       },
     });
 
-    const data = { baseUrl, webId, configPath: getConfigPath() };
+    const data = { baseUrl, webId, credentialsPath: getSolidCredentialsPath() };
     if (argv.json) {
       writeJsonResult(data);
       return;
     }
     console.log('Login successful. Credentials saved.');
     console.log(`  webId: ${webId}`);
-    console.log(`  config: ${getConfigPath().replace('/config.json', '/')}`);
+    console.log(`  credentials: ${getSolidCredentialsPath()}`);
   },
 };
 
@@ -231,7 +231,7 @@ const createCredentialsCommand: CommandModule<AuthArgs, CreateCredentialsArgs> =
           clientSecret: cred.secret ?? '',
         },
       });
-      console.log(`\nSaved to ${getConfigPath().replace('/config.json', '/')}`);
+      console.log(`\nSaved to ${getSolidCredentialsPath()}`);
       console.log('\n✓ Setup complete! You can now use xpod commands without entering password.');
       console.log('  Example: xpod backup export');
     } else {
@@ -351,7 +351,7 @@ const revokeCommand: CommandModule<AuthArgs, RevokeArgs> = {
 
 const logoutCommand: CommandModule<AuthArgs, AuthArgs> = {
   command: 'logout',
-  describe: 'Remove stored credentials from ~/.xpod/',
+  describe: 'Remove stored credentials from the shared Solid auth store',
   builder: (yargs) => yargs.option('json', { type: 'boolean', default: false, description: 'Output JSON envelope' }),
   handler: async (argv) => {
     clearCredentials();
@@ -414,7 +414,6 @@ export const authCommand: CommandModule<object, AuthArgs> = {
         alias: 'u',
         type: 'string',
         description: 'Server base URL',
-        default: process.env.CSS_BASE_URL || 'http://localhost:3000',
       })
       .command(statusCommand)
       .command(loginCommand)

@@ -6,7 +6,7 @@ import {
   nowTimestamp,
 } from '../chatkit/types';
 import type { RunExecutionBackend } from '../runs/RunExecutionBackend';
-import { resolveDataResource, type RunStore } from '../runs/store';
+import { extractResourceLocalId, resolveDataResource, type RunStore } from '../runs/store';
 import { isWorkspaceRef, type WorkspaceRef } from '../workspace/types';
 import { TaskMaterializer, type MaterializedTaskRun } from './TaskMaterializer';
 import { TaskStatus, TaskTriggerKind, type TaskTriggerKindType } from './schema';
@@ -193,8 +193,9 @@ export class TaskService<TContext = StoreContext> {
     context: TContext;
   }): Promise<ThreadMetadata> {
     const now = nowTimestamp();
+    const taskParentKey = extractResourceLocalId(input.taskId);
     const thread: ThreadMetadata = {
-      id: `task/${input.surfaceId}/index.ttl#${generateId('thread')}`,
+      id: `task/${taskParentKey}/index.ttl#${generateId('thread')}`,
       title: input.title,
       status: { type: 'active' },
       workspace: input.workspace,
@@ -203,8 +204,8 @@ export class TaskService<TContext = StoreContext> {
       metadata: {
         ...(input.metadata ?? {}),
         commandKind: 'task',
-        surface_id: input.surfaceId,
-        chat_id: input.surfaceId,
+        surface_id: taskParentKey,
+        chat_id: taskParentKey,
         taskId: input.taskId,
         runtime: {
           workspace: input.workspace,
