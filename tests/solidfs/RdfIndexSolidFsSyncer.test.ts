@@ -490,6 +490,53 @@ describe('RdfIndexSolidFsSyncer', () => {
     }
   });
 
+  it('rewrites RDF terms for moved changes without reparsing unchanged content', async () => {
+    const rewriteTerms = vi.fn().mockResolvedValue({
+      matchedTerms: 2,
+      rewrittenTerms: 2,
+      remappedTerms: 0,
+      skippedTerms: [],
+      affectedQuads: 0,
+    });
+    const syncLocalRdfDocument = vi.fn().mockResolvedValue(undefined);
+    const deleteLocalRdfIndex = vi.fn().mockResolvedValue(undefined);
+    const syncer = new RdfIndexSolidFsSyncer({
+      index: {
+        syncLocalRdfDocument,
+        deleteLocalRdfIndex,
+        rewriteTerms,
+      },
+    });
+    const manifest: SolidFsManifest = {
+      workspace: 'https://pod.example/alice/projects/demo/',
+      cwd: '/tmp/workspace',
+      projection: 'direct',
+      entries: [],
+    };
+    const change: SolidFsChange = {
+      type: 'moved',
+      previousPath: 'old/data.ttl',
+      previousResource: 'https://pod.example/alice/projects/demo/old/data.ttl',
+      path: 'new/data.ttl',
+      resource: 'https://pod.example/alice/projects/demo/new/data.ttl',
+      source: 'filesystem',
+      sourcePath: '/tmp/workspace/new/data.ttl',
+      contentType: 'text/turtle',
+      projection: 'direct',
+    };
+
+    await syncer.sync(change, manifest);
+
+    expect(rewriteTerms).toHaveBeenCalledWith({
+      oldPrefix: 'https://pod.example/alice/projects/demo/old/data.ttl',
+      newPrefix: 'https://pod.example/alice/projects/demo/new/data.ttl',
+      scope: 'safe_projection',
+      mode: 'safe',
+    });
+    expect(syncLocalRdfDocument).not.toHaveBeenCalled();
+    expect(deleteLocalRdfIndex).not.toHaveBeenCalled();
+  });
+
   it('indexes direct workspace Markdown changes into the derived vector index', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-vector-sync-'));
     const source = path.join(root, 'workspace');

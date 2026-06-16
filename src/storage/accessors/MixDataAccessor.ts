@@ -51,6 +51,8 @@ import type {
   RdfSourceInput,
   RdfTextChunkInput,
   RdfTextSourceInput,
+  RdfTermRewriteInput,
+  RdfTermRewriteResult,
   RdfVectorChunkInput,
   RdfVectorSourceInput,
   RdfValuesBindingSource,
@@ -75,6 +77,7 @@ export interface LocalRdfIndexAccessor {
     options?: LocalRdfSyncOptions,
   ): Promise<void>;
   deleteLocalRdfIndex(identifier: ResourceIdentifier): Promise<void>;
+  rewriteTerms?(input: RdfTermRewriteInput): Promise<RdfTermRewriteResult> | RdfTermRewriteResult;
 }
 
 export interface LocalRdfSyncOptions {

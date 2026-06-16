@@ -5,6 +5,8 @@ import { guardStream, type ResourceIdentifier } from '@solid/community-server';
 
 import type { LocalRdfIndexAccessor } from '../storage/accessors/MixDataAccessor';
 import type {
+  RdfTermRewriteInput,
+  RdfTermRewriteResult,
   RdfTextIndexLike,
   RdfTextSourceInput,
   RdfVectorChunkInput,
@@ -65,6 +67,11 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
       return;
     }
 
+    if (change.type === 'moved') {
+      await this.syncMoved(change, workspace);
+      return;
+    }
+
     const identifier = this.resolveIdentifier(change, workspace);
     if (!identifier && isRdfChange(change) && !this.textIndex && !this.vectorIndex) {
       return;
@@ -106,6 +113,39 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     }
   }
 
+  private async syncMoved(change: SolidFsChange, workspace: SolidFsManifest): Promise<void> {
+    const previousResource = change.previousResource
+      ?? sourceFromWorkspace({ ...change, path: change.previousPath ?? change.path }, workspace);
+    const nextResource = change.resource ?? sourceFromWorkspace(change, workspace);
+    const rewriteCapable: RdfTermRewriteCapable = this.index;
+    if (rewriteCapable.rewriteTerms && previousResource !== nextResource) {
+      await rewriteCapable.rewriteTerms({
+        oldPrefix: previousResource,
+        newPrefix: nextResource,
+        scope: 'safe_projection',
+        mode: 'safe',
+      });
+    }
+
+    if (!isTextIndexableChange(change)) {
+      return;
+    }
+
+    let text: string | undefined;
+    const nextSource = this.sourceInput(change, workspace);
+    if (this.textIndex) {
+      await this.textIndex.deleteSource(previousResource);
+      text ??= await readFile(change.sourcePath, 'utf8');
+      await this.textIndex.indexText(nextSource, text);
+    }
+    if (this.vectorIndex && this.vectorizeText) {
+      await this.vectorIndex.deleteSource(previousResource);
+      text ??= await readFile(change.sourcePath, 'utf8');
+      const chunks = await this.vectorizeText({ ...nextSource, text });
+      await this.vectorIndex.indexVector(nextSource, chunks);
+    }
+  }
+
   private sourceInput(change: SolidFsChange, workspace: SolidFsManifest): RdfTextSourceInput & RdfVectorSourceInput {
     return {
       source: change.resource ?? sourceFromWorkspace(change, workspace),
@@ -116,6 +156,10 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     };
   }
 }
+
+type RdfTermRewriteCapable = {
+  rewriteTerms?(input: RdfTermRewriteInput): MaybePromise<RdfTermRewriteResult>;
+};
 
 export function defaultResolveIdentifier(
   change: SolidFsChange,
