@@ -221,5 +221,10 @@ export type {
   RdfTermKind,
   RdfTermLookup,
   RdfTermRow,
+  RdfTermRewriteInput,
+  RdfTermRewriteMode,
+  RdfTermRewriteResult,
+  RdfTermRewriteScope,
+  RdfTermRewriteSkippedTerm,
   RdfTermSelection,
 } from './types';

@@ -1172,6 +1172,34 @@ export interface RdfQueryResult {
   metrics: RdfQueryMetrics;
 }
 
+export type RdfTermRewriteScope = 'graph' | 'source' | 'system' | 'safe_projection';
+export type RdfTermRewriteMode = 'direct' | 'remap_existing' | 'safe';
+
+export interface RdfTermRewriteInput {
+  oldPrefix: string;
+  newPrefix: string;
+  /** Conservative scope. P0 callers should use graph/source/system only. */
+  scope?: RdfTermRewriteScope;
+  /** safe = direct when possible, remap when needed, skip unsafe mixed terms. */
+  mode?: RdfTermRewriteMode;
+  /** Optional exact source URI boundaries for system projection moves. */
+  sources?: string[];
+}
+
+export interface RdfTermRewriteSkippedTerm {
+  id: number;
+  value: string;
+  reason: 'not_named_node' | 'outside_scope' | 'mixed_usage' | 'collision_conflict';
+}
+
+export interface RdfTermRewriteResult {
+  matchedTerms: number;
+  rewrittenTerms: number;
+  remappedTerms: number;
+  skippedTerms: RdfTermRewriteSkippedTerm[];
+  affectedQuads: number;
+}
+
 export interface RdfEngineLike {
   open(): void | Promise<void>;
   close(): void | Promise<void>;
@@ -1190,6 +1218,7 @@ export interface RdfEngineLike {
   ): { deletedRows: number; insertedRows: number } | Promise<{ deletedRows: number; insertedRows: number }>;
   scan(query: RdfPatternQuery): RdfQuadIndexScanResult | Promise<RdfQuadIndexScanResult>;
   query(query: RdfQuery): RdfQueryResult | Promise<RdfQueryResult>;
+  rewriteTerms?(input: RdfTermRewriteInput): RdfTermRewriteResult | Promise<RdfTermRewriteResult>;
   invalidateQueryResultCache?(scope?: RdfQueryCacheScope): number | Promise<number>;
   refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): RdfDerivedIndexRefreshResult | Promise<RdfDerivedIndexRefreshResult>;
   storageStats(options?: RdfStorageStatsOptions): RdfEngineStorageStats | Promise<RdfEngineStorageStats>;
