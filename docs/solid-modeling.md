@@ -17,8 +17,8 @@
 不要把日期分桶泄漏成调用方参数。例如 `Run` 可以按天写入：
 
 ```text
-/.data/chat/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
-/.data/task/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
+/.data/chat/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
+/.data/task/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
 ```
 
 因此 `loadRun(id)` 接受完整的 base-relative resource id，例如 `chat/default/2026/05/18/runs.ttl#run_x`。如果 UI 只有 `run_x` 这种局部 id，必须先通过 repository/index 解析成完整资源 id；不要把 fragment 当作业务 id 传递。
@@ -31,11 +31,11 @@
 - `Thread.parent` 是 Thread 归属关系的权威字段（`sioc:has_parent`），指向 Chat 或 Task command surface；不要用 `metadata.chat_id`、`metadata.surface_id` 或 `metadata.commandKind` 表达归属。
 - `RunStep.runId` 是本地查询字段，值仍是 Run 的 base-relative resource id，用于快速列出某次 Run 的 steps；语义关系仍然是 `RunStep.run`。
 - `Thread.id`、`Message.id`、`Task.id`、`Run.id`、`RunStep.id` 都遵循同一规则：进入 store/ORM 的值就是完整 base-relative resource id。业务 schema 不显式写 `subjectTemplate`；省略模板就是 exact-id subject 模式。
-- 路径里的 `{surfaceId}` 是从 `Thread.parent` / 资源 id 派生的归档槽位，不是独立持久字段。ChatKit/API 的 `chat_id`、`surface_id`、`commandKind` 只属于边界投影，不能写入 Pod metadata 作为业务语义，也不作为旧数据兼容入口。它不是下发者、不是执行者、不是 runner，也不是 Task assignee。路径上 Chat 和 Task 共用这个槽位：
+- 路径里的 `{parentKey}` 是从 `Thread.parent` / 资源 id 派生的归档槽位，不是独立持久字段。ChatKit 的 `chat_id`、`surface_id` 以及 Run API 的 `commandKind` / `surfaceId` 只属于边界投影，不能写入 Pod metadata 或 Run/RunStep/Task 存储 DTO 作为业务语义，也不作为旧数据兼容入口。它不是下发者、不是执行者、不是 runner，也不是 Task assignee。路径上 Chat 和 Task 共用这个槽位：
 
 ```text
-/.data/chat/{surfaceId}/...
-/.data/task/{surfaceId}/...
+/.data/chat/{parentKey}/...
+/.data/task/{parentKey}/...
 ```
 
 `runner` 只是技术适配器，例如 `pi:codex` 或 `acp:codex`；“谁来干”应由 agent/runtime 配置表达，不塞进路径槽位。
@@ -63,17 +63,17 @@ id: id('id')
 Chat 和 Task 是并列的命令形态：
 
 ```text
-/.data/chat/{surfaceId}/index.ttl#this
-/.data/chat/{surfaceId}/index.ttl#{threadId}
-/.data/chat/{surfaceId}/{yyyy}/{MM}/{dd}/messages.ttl#{messageId}
-/.data/chat/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
-/.data/chat/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runStepId}
+/.data/chat/{parentKey}/index.ttl#this
+/.data/chat/{parentKey}/index.ttl#{threadId}
+/.data/chat/{parentKey}/{yyyy}/{MM}/{dd}/messages.ttl#{messageId}
+/.data/chat/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
+/.data/chat/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runStepId}
 
 /.data/task/index.ttl#{taskId}
-/.data/task/{surfaceId}/index.ttl#{threadId}
-/.data/task/{surfaceId}/{yyyy}/{MM}/{dd}/messages.ttl#{messageId}
-/.data/task/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
-/.data/task/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runStepId}
+/.data/task/{parentKey}/index.ttl#{threadId}
+/.data/task/{parentKey}/{yyyy}/{MM}/{dd}/messages.ttl#{messageId}
+/.data/task/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
+/.data/task/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runStepId}
 ```
 
 `Task` 定义集中放在 `/.data/task/index.ttl`；Task 产生的 thread/message/run/step 目录从 `Thread.parent = task/index.ttl#{taskId}` 派生，当前路径形状仍使用 `task/{taskKey}` 与 Chat 的目录结构对齐。

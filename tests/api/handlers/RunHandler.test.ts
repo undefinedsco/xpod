@@ -65,7 +65,6 @@ describe('RunHandler', () => {
         id: runId,
         thread: 'http://localhost/alice/.data/chat/default/index.ttl#thread_1',
         workspace: 'file://localhost/tmp/xpod',
-        commandKind: 'task',
         status: RunStatus.COMPLETED,
         runner: 'pi:pi',
         createdAt: 100,
@@ -73,6 +72,8 @@ describe('RunHandler', () => {
       }]),
       loadRun: vi.fn(),
       loadRunSteps: vi.fn(),
+      saveRun: vi.fn(async () => {}),
+      appendRunStep: vi.fn(async () => {}),
     };
     registerRunRoutes(server, { runStore });
 
@@ -88,9 +89,8 @@ describe('RunHandler', () => {
       task: undefined,
       thread: undefined,
       workspace: 'file://localhost/tmp/xpod',
-      commandKind: 'task',
       status: RunStatus.COMPLETED,
-      limit: 5,
+      limit: undefined,
     }, expect.objectContaining({
       userId: 'http://localhost/alice/profile/card#me',
     }));
@@ -100,6 +100,7 @@ describe('RunHandler', () => {
         thread: 'http://localhost/alice/.data/chat/default/index.ttl#thread_1',
         workspace: 'file://localhost/tmp/xpod',
         commandKind: 'task',
+        surfaceId: 'default',
         status: RunStatus.COMPLETED,
         runner: 'pi:pi',
         createdAt: 100,
@@ -117,14 +118,14 @@ describe('RunHandler', () => {
       loadRun: vi.fn(),
       loadRunSteps: vi.fn(async () => [{
         id: stepId,
-        commandKind: 'chat',
-        surfaceId: 'default',
         runId,
         run: 'http://localhost/alice/.data/chat/default/2026/05/18/runs.ttl#run_1',
         type: RunStepType.STARTED,
         message: 'Run started',
         createdAt: 100,
       }]),
+      saveRun: vi.fn(async () => {}),
+      appendRunStep: vi.fn(async () => {}),
     };
     registerRunRoutes(server, { runStore });
 
@@ -162,8 +163,6 @@ describe('RunHandler', () => {
       listRuns: vi.fn(),
       loadRun: vi.fn(async () => ({
         id: runId,
-        commandKind: 'chat',
-        surfaceId: 'default',
         thread: 'http://localhost/alice/.data/chat/default/index.ttl#thread_1',
         workspace: 'file://localhost/tmp/xpod',
         status: RunStatus.QUEUED,
@@ -172,8 +171,12 @@ describe('RunHandler', () => {
         updatedAt: 101,
       })),
       loadRunSteps: vi.fn(),
-      saveRun: vi.fn(async (run) => savedRuns.push(run)),
-      appendRunStep: vi.fn(async (step) => savedSteps.push(step)),
+      saveRun: vi.fn(async (run) => {
+        savedRuns.push(run);
+      }),
+      appendRunStep: vi.fn(async (step) => {
+        savedSteps.push(step);
+      }),
     };
     registerRunRoutes(server, { runStore });
 
@@ -192,8 +195,6 @@ describe('RunHandler', () => {
       completedAt: expect.any(Number),
     });
     expect(savedSteps[0]).toMatchObject({
-      commandKind: 'chat',
-      surfaceId: 'default',
       runId,
       type: RunStepType.CANCEL_REQUESTED,
       message: 'Run cancellation requested',

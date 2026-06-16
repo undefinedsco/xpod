@@ -1063,14 +1063,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   private runRecordToData(record: RunRecordSource): RunRecordData {
     const metadata = this.parseJsonObject(record.metadata);
-    const surface = this.commandSurfaceFromResourceRef(record.id);
     return {
       id: record.id || '',
-      surfaceId: surface?.surfaceId ?? 'default',
       task: record.task || undefined,
       thread: record.thread || '',
       workspace: record.workspace || '',
-      commandKind: surface?.commandKind ?? 'chat',
       status: (record.status || 'queued') as RunRecordData['status'],
       runner: record.runner || '',
       prompt: record.prompt || undefined,
@@ -1092,11 +1089,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const payload = this.parseJsonObject(record.payload) ?? this.parseJsonObject(record.data);
     const runId = record.runId
       || (record.run ? this.baseRelativeIdFromResource(record.run, context) : '');
-    const surface = this.commandSurfaceFromResourceRef(runId);
     return {
       id: record.id || '',
-      commandKind: surface?.commandKind ?? 'chat',
-      surfaceId: surface?.surfaceId ?? 'default',
       runId,
       run: record.run || '',
       type: record.type || record.stepType || 'runtime.event',
@@ -1109,10 +1103,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   private taskRecordToData(record: TaskRecordSource): TaskRecordData {
     const metadata = this.parseJsonObject(record.metadata);
     const xpod = this.getXpodMetadata(metadata);
-    const taskKey = extractResourceLocalId(record.id || 'index.ttl#default');
     return {
       id: record.id || '',
-      surfaceId: taskKey,
       title: record.title || undefined,
       prompt: record.prompt || '',
       thread: record.thread || '',
@@ -1994,10 +1986,7 @@ WHERE { ${deletePatterns.join(' ')} }
       ? await query.where(and(...conditions)) as RunRecord[]
       : await query as RunRecord[];
 
-    let runs = records.map((record) => this.runRecordToData(record));
-    if (options.commandKind) {
-      runs = runs.filter((run) => run.commandKind === options.commandKind);
-    }
+    const runs = records.map((record) => this.runRecordToData(record));
 
     return runs
       .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))

@@ -5,7 +5,6 @@ import type { TaskStatusType, TaskTriggerKindType } from './schema';
 export interface TaskRecordData {
   /** Base-relative Solid resource id, e.g. `index.ttl#task_x`. */
   id: string;
-  surfaceId: string;
   title?: string;
   prompt: string;
   thread: string;
@@ -52,7 +51,6 @@ export function buildTaskResourceId(id: string): string {
 
 export function generateTaskResourceId(input: string | {
   key: string;
-  surfaceId: string;
   createdAt?: number;
 }): string {
   const key = typeof input === 'string' ? input : input.key;

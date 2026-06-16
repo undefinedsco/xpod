@@ -13,7 +13,6 @@ import type { TaskAuthBindingSnapshot } from './TaskAuthBinding';
 import { generateTaskResourceId, type TaskRecordData, type TaskStore } from './store';
 
 export interface CreateTaskInput {
-  surfaceId?: string;
   title?: string;
   prompt: string;
   workspace: WorkspaceRef;
@@ -63,16 +62,13 @@ export class TaskService<TContext = StoreContext> {
     this.validateTrigger(input, triggerKind);
     const authBinding = this.normalizeAuthBinding(input.authBinding);
 
-    const surfaceId = this.normalizeSurfaceId(input.surfaceId ?? 'default');
     const now = nowTimestamp();
     const taskId = generateTaskResourceId({
       key: generateId('task'),
-      surfaceId,
       createdAt: now,
     });
     const thread = await this.createTaskThread({
       taskId,
-      surfaceId,
       title: input.title,
       workspace: input.workspace,
       runner: input.runner ?? 'pi:pi',
@@ -82,7 +78,6 @@ export class TaskService<TContext = StoreContext> {
 
     const task: TaskRecordData = {
       id: taskId,
-      surfaceId,
       title: input.title,
       prompt: input.prompt,
       thread: this.resolveThreadResource(thread, context),
@@ -184,7 +179,6 @@ export class TaskService<TContext = StoreContext> {
 
   private async createTaskThread(input: {
     taskId: string;
-    surfaceId: string;
     title?: string;
     workspace: WorkspaceRef;
     runner: string;
@@ -260,10 +254,6 @@ export class TaskService<TContext = StoreContext> {
     };
   }
 
-  private normalizeSurfaceId(value: string): string {
-    return value.trim().replace(/[^A-Za-z0-9._~-]+/g, '-').replace(/^-+|-+$/g, '') || 'default';
-  }
-
   private resolveThreadResource(thread: ThreadMetadata, context: TContext): string {
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl) {
@@ -272,8 +262,8 @@ export class TaskService<TContext = StoreContext> {
       }
       return resolveDataResource(podBaseUrl, `task/${extractResourceLocalId(thread.parent ?? thread.id)}/index.ttl#${thread.id}`);
     }
-    const surfaceId = extractResourceLocalId(thread.parent ?? thread.id);
-    return `urn:xpod:thread:task:${encodeURIComponent(surfaceId)}:${encodeURIComponent(thread.id)}`;
+    const parentKey = extractResourceLocalId(thread.parent ?? thread.id);
+    return `urn:xpod:thread:task:${encodeURIComponent(parentKey)}:${encodeURIComponent(thread.id)}`;
   }
 
   private resolvePodBaseUrl(context: TContext): string | undefined {

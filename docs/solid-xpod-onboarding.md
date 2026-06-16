@@ -195,15 +195,15 @@ RunStep  # Run 的 append-only 执行事实
 典型路径:
 
 ```text
-/.data/chat/{surfaceId}/index.ttl#this
-/.data/chat/{surfaceId}/index.ttl#{threadId}
-/.data/chat/{surfaceId}/{yyyy}/{MM}/{dd}/messages.ttl#{messageId}
-/.data/chat/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
+/.data/chat/{parentKey}/index.ttl#this
+/.data/chat/{parentKey}/index.ttl#{threadId}
+/.data/chat/{parentKey}/{yyyy}/{MM}/{dd}/messages.ttl#{messageId}
+/.data/chat/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
 
 /.data/task/index.ttl#{taskId}
-/.data/task/{surfaceId}/index.ttl#{threadId}
-/.data/task/{surfaceId}/{yyyy}/{MM}/{dd}/messages.ttl#{messageId}
-/.data/task/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
+/.data/task/{parentKey}/index.ttl#{threadId}
+/.data/task/{parentKey}/{yyyy}/{MM}/{dd}/messages.ttl#{messageId}
+/.data/task/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
 ```
 
 详细设计见:

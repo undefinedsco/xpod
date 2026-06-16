@@ -63,15 +63,13 @@ describe('Task service Run materialization', () => {
     const taskParentKey = extractResourceLocalId(result.task.id);
     expect(result.run?.id).toMatch(new RegExp(`^task/${taskParentKey}/\\d{4}/\\d{2}/\\d{2}/runs\\.ttl#run_`));
     expect(result.task).toMatchObject({
-      surfaceId: 'default',
       status: TaskStatus.COMPLETED,
       triggerKind: TaskTriggerKind.ONCE,
       workspace: workspaceRef,
       runner: 'pi:codex',
     });
+    expect('surfaceId' in result.task).toBe(false);
     expect(result.run).toMatchObject({
-      commandKind: 'task',
-      surfaceId: taskParentKey,
       task: resolveTaskResource('http://localhost/alice', result.task.id),
       thread: result.task.thread,
       workspace: workspaceRef,
@@ -103,18 +101,20 @@ describe('Task service Run materialization', () => {
     expect(serializedTask).not.toContain('task-client-secret');
     expect(serializedRun).not.toContain('task-client-secret');
     expect(run.status).toBe(RunStatus.COMPLETED);
+    expect('commandKind' in run).toBe(false);
+    expect('surfaceId' in run).toBe(false);
     expect(events.map((event) => event.type)).toEqual([
       RunStepType.CREATED,
       RunStepType.STARTED,
       RunStepType.TEXT_DELTA,
       RunStepType.COMPLETED,
     ]);
-    expect(events.every((event) => event.commandKind === 'task' && event.surfaceId === result.run!.surfaceId)).toBe(true);
+    expect(events.every((event) => !('commandKind' in event) && !('surfaceId' in event))).toBe(true);
     expect(events.every((event) => event.runId === result.run!.id)).toBe(true);
     expect(events.every((event) => extractResourceLocalId(event.id).startsWith('run-step_'))).toBe(true);
   });
 
-  it('keeps explicit surfaceId as a task label while runtime storage derives from parent Task', async () => {
+  it('does not expose a Task surface label while runtime storage derives from parent Task', async () => {
     const store = new InMemoryStore<StoreContext>();
     const backend = new RecordingRunBackend();
     const service = new TaskService({
@@ -134,7 +134,6 @@ describe('Task service Run materialization', () => {
     const authBinding = await createTaskAuthBinding(store, context);
 
     const result = await service.createTask({
-      surfaceId: 'secretary',
       title: 'Secretary task',
       prompt: 'review the workspace',
       workspace: workspaceRef,
@@ -144,13 +143,13 @@ describe('Task service Run materialization', () => {
     }, context);
 
     const taskParentKey = extractResourceLocalId(result.task.id);
-    expect(result.task.surfaceId).toBe('secretary');
+    expect('surfaceId' in result.task).toBe(false);
     expect(result.run?.id).toMatch(new RegExp(`^task/${taskParentKey}/\\d{4}/\\d{2}/\\d{2}/runs\\.ttl#run_`));
     expect(result.run).toMatchObject({
-      commandKind: 'task',
-      surfaceId: taskParentKey,
       runner: 'pi:codex',
     });
+    expect('commandKind' in result.run!).toBe(false);
+    expect('surfaceId' in result.run!).toBe(false);
   });
 
   it('materializes due interval Tasks and advances nextRunAt', async () => {
@@ -190,10 +189,11 @@ describe('Task service Run materialization', () => {
 
     expect(materialized).toHaveLength(1);
     expect(materialized[0].run).toMatchObject({
-      commandKind: 'task',
       task: resolveTaskResource('http://localhost/alice', created.task.id),
       status: RunStatus.COMPLETED,
     });
+    expect('commandKind' in materialized[0].run).toBe(false);
+    expect('surfaceId' in materialized[0].run).toBe(false);
     const after = await store.loadTask(created.task.id, context);
     expect(after.status).toBe(TaskStatus.ACTIVE);
     expect(after.lastRunAt).toBe(100);

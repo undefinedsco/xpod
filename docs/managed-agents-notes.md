@@ -66,8 +66,8 @@ Agent Runtime 的目标边界:
 ```text
 POST /api/agent-runs
   input:
-    commandKind: chat | task
     thread: Thread URI
+    parent: derived from Thread.parent
     prompt/message: string
     runner: pi adapter by default; ACP runner id when the selected runner speaks ACP
     workspace/context refs
@@ -233,12 +233,12 @@ PiAgentRuntimeDriver.start(input)
 
 `Run` 现在是一等 Pod 资源，而不是代码内临时概念:
 
-- `Run`: `/.data/{chat|task}/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}`
-- `RunStep`: `/.data/{chat|task}/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{stepId}`
+- `Run`: `/.data/{chat|task}/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}`
+- `RunStep`: `/.data/{chat|task}/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{stepId}`
 - `Run.thread`、`Run.workspace`、`Run.task` 都是 RDF 边关系。
 - `Run.id` 回填为 `chat/default/2026/05/18/runs.ttl#run_x` 这种 base-relative resource id；`run_x` 只是在生成完整 id 时使用的局部 key。
 - `RunStep.run` 是指向 Run 的 RDF URI；`RunStep.runId` 是本地查询字段，值同样使用 Run 的 base-relative resource id。
-- 路径归档槽位从 `Thread.parent` / 资源 id 派生；`surfaceId` 只是 API/运行时 DTO 的派生投影。ChatKit 外部协议里的 `chat_id` 不写入 Pod metadata，内部 durable model 不再使用 `chatId` / `targetId` 表达这个含义。
+- 路径归档槽位从 `Thread.parent` / 资源 id 派生；`commandKind` / `surfaceId` 只属于 Run API 兼容投影，存储 DTO 和 durable model 不保留。ChatKit 外部协议里的 `chat_id` 不写入 Pod metadata，内部 durable model 不再使用 `chatId` / `targetId` 表达这个含义。
 - 默认 id 生成应是字段级能力，例如 `id.default((key) => ...)`。`key` 是 ORM 生成的随机局部 key；最终 `id` 仍是完整 base-relative resource id。业务 schema 不显式写 `subjectTemplate`；省略模板就是 exact-id subject 模式，完整 `id` 不再被模板反解析。不要把 `key`、`fid`、`rng` 或日期 locator 暴露成业务接口概念。
 
 这意味着功能是否完成不能只看 ChatKit 是否能 stream。每次 Chat 或 Task 调用 Agent Runtime，都必须先有 `Run`，并且执行中/执行后要 append `RunStep`。UI 观察、steer、cancel、审计和后续 Symphony 编排都以 `Run` 为执行事实中心。
@@ -504,7 +504,6 @@ Message
   role/content/status/richContent
 
 Run
-  commandKind: chat | task
   task?: URI -> Task
   thread: URI -> Thread
   workspace: URI -> Container

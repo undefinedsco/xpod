@@ -105,11 +105,11 @@ Pod 位置:
 Pod 位置:
 
 ```text
-/.data/{chat|task}/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
-/.data/{chat|task}/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{stepId}
+/.data/{chat|task}/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{runId}
+/.data/{chat|task}/{parentKey}/{yyyy}/{MM}/{dd}/runs.ttl#{stepId}
 ```
 
-Run/Message 的路径归档槽位从 `Thread.parent` / 资源 id 派生；`surfaceId` 只是 API/运行时 DTO 中的派生投影，不是 Thread 的持久归属字段。ChatKit 协议参数 `chat_id` 不写入 Pod metadata。它不表示谁下发任务、谁执行任务，也不表示 runner。
+Run/Message 的路径归档槽位从 `Thread.parent` / 资源 id 派生；这里的 `{parentKey}` 只是路径归档键，不是 Run/RunStep/Task 的持久字段。`commandKind` / `surfaceId` 只允许出现在 Run API 响应和查询参数的兼容投影中，并从 `Run.id` 派生；存储 DTO 不保留它们。ChatKit 协议参数 `chat_id` 不写入 Pod metadata。它不表示谁下发任务、谁执行任务，也不表示 runner。
 
 `Run.id` 是相对 `/.data/` base 的资源 id，例如 `chat/default/2026/05/18/runs.ttl#run_x`，不是 `run_x` 这个 fragment/local id。`Run.task`、`Run.thread`、`Run.workspace` 都是边关系。`RunStep.runId` 是本地查询/定位字段，值仍是 Run 的 base-relative resource id；语义关系使用 `RunStep.run`。
 

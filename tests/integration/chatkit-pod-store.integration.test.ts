@@ -494,25 +494,21 @@ suite('ChatKit PodStore Integration', () => {
       const dd = String(createdDate.getUTCDate()).padStart(2, '0');
       const runResourceId = generateRunResourceId({
         key: runId,
-        commandKind: 'chat',
-        surfaceId: chatId,
+        parentKind: 'chat',
+        parentKey: chatId,
         createdAt,
       });
       const stepResourceId = generateRunStepResourceId({
         key: stepId,
         runId: runResourceId,
-        commandKind: 'chat',
-        surfaceId: chatId,
         createdAt: createdAt + 1,
       });
       const runResource = `${podUrl}.data/chat/${chatId}/${yyyy}/${MM}/${dd}/runs.ttl#${runId}`;
 
       await store.saveRun({
         id: runResourceId,
-        surfaceId: chatId,
         thread: threadResource,
         workspace: workspaceRef,
-        commandKind: 'chat',
         status: RunStatus.RUNNING,
         runner: 'pi:codex',
         prompt: 'persist run in pod',
@@ -524,8 +520,6 @@ suite('ChatKit PodStore Integration', () => {
 
       await store.appendRunStep({
         id: stepResourceId,
-        commandKind: 'chat',
-        surfaceId: chatId,
         runId: runResourceId,
         run: runResource,
         type: RunStepType.STARTED,
@@ -541,7 +535,6 @@ suite('ChatKit PodStore Integration', () => {
         id: runResourceId,
         thread: threadResource,
         workspace: workspaceRef,
-        commandKind: 'chat',
         status: RunStatus.RUNNING,
         runner: 'pi:codex',
         prompt: 'persist run in pod',
@@ -550,8 +543,6 @@ suite('ChatKit PodStore Integration', () => {
       expect(loadedEvents).toHaveLength(1);
       expect(loadedEvents[0]).toMatchObject({
         id: stepResourceId,
-        commandKind: 'chat',
-        surfaceId: chatId,
         runId: runResourceId,
         run: runResource,
         type: RunStepType.STARTED,
@@ -574,25 +565,21 @@ suite('ChatKit PodStore Integration', () => {
       const dd = String(createdDate.getUTCDate()).padStart(2, '0');
       const runResourceId = generateRunResourceId({
         key: runId,
-        commandKind: 'task',
-        surfaceId,
+        parentKind: 'task',
+        parentKey: surfaceId,
         createdAt,
       });
       const stepResourceId = generateRunStepResourceId({
         key: stepId,
         runId: runResourceId,
-        commandKind: 'task',
-        surfaceId,
         createdAt: createdAt + 1,
       });
       const runResource = `${podUrl}.data/task/${surfaceId}/${yyyy}/${MM}/${dd}/runs.ttl#${runId}`;
 
       await store.saveRun({
         id: runResourceId,
-        surfaceId,
         thread: threadResource,
         workspace: workspaceRef,
-        commandKind: 'task',
         status: RunStatus.RUNNING,
         runner: 'pi:codex',
         prompt: 'persist task run in pod',
@@ -604,8 +591,6 @@ suite('ChatKit PodStore Integration', () => {
 
       await store.appendRunStep({
         id: stepResourceId,
-        commandKind: 'task',
-        surfaceId,
         runId: runResourceId,
         run: runResource,
         type: RunStepType.STARTED,
@@ -619,8 +604,6 @@ suite('ChatKit PodStore Integration', () => {
       expect(loadedEvents).toHaveLength(1);
       expect(loadedEvents[0]).toMatchObject({
         id: stepResourceId,
-        commandKind: 'task',
-        surfaceId,
         runId: runResourceId,
         run: runResource,
         type: RunStepType.STARTED,

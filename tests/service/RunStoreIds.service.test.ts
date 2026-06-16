@@ -25,8 +25,8 @@ describe('Run and Task resource ids', () => {
     const createdAt = Date.UTC(2026, 4, 18, 1, 2, 3) / 1000;
     const runId = generateRunResourceId({
       key: 'run_1',
-      commandKind: 'task',
-      surfaceId: 'secretary',
+      parentKind: 'task',
+      parentKey: 'secretary',
       createdAt,
     });
 
@@ -34,8 +34,6 @@ describe('Run and Task resource ids', () => {
     expect(generateRunStepResourceId({
       key: 'step_1',
       runId,
-      commandKind: 'task',
-      surfaceId: 'secretary',
       createdAt,
     })).toBe('task/secretary/2026/05/18/runs.ttl#step_1');
   });
@@ -43,32 +41,26 @@ describe('Run and Task resource ids', () => {
   it('keeps build helpers exact and rejects non-complete resource ids', () => {
     expect(buildRunResourceId({
       id: 'task/secretary/2026/05/18/runs.ttl#run_1',
-      commandKind: 'task',
-      surfaceId: 'secretary',
     })).toBe('task/secretary/2026/05/18/runs.ttl#run_1');
 
     expect(() => buildRunResourceId({
       id: '#run_1',
-      commandKind: 'task',
-      surfaceId: 'secretary',
     })).toThrow('Run id must be a complete Run resource id');
 
     expect(() => generateRunResourceId({
       key: 'task/secretary/2026/05/18/messages.ttl#run_1',
-      commandKind: 'task',
-      surfaceId: 'secretary',
+      parentKind: 'task',
+      parentKey: 'secretary',
     })).toThrow('Run id generator requires a local key');
 
     expect(() => generateRunResourceId({
       key: '#run_1',
-      commandKind: 'task',
-      surfaceId: 'secretary',
+      parentKind: 'task',
+      parentKey: 'secretary',
     })).toThrow('Run id generator requires a local key');
 
     expect(() => buildRunStepResourceId({
       id: '#step_1',
-      commandKind: 'task',
-      surfaceId: 'secretary',
     })).toThrow('RunStep id must be a complete RunStep resource id');
   });
 

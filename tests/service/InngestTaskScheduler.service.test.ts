@@ -97,9 +97,9 @@ describe('Inngest Task scheduler', () => {
     expect(materialized).toHaveLength(1);
     expect(materialized[0].task.id).toBe(created.task.id);
     expect(materialized[0].run).toMatchObject({
-      commandKind: 'task',
       status: RunStatus.COMPLETED,
     });
+    expect('commandKind' in materialized[0].run).toBe(false);
     expect(inngestClient.sent).toHaveLength(1);
     expect(inngestClient.sent[0]).toMatchObject({
       name: XPOD_TASK_MATERIALIZE_DUE_EVENT,

@@ -276,7 +276,7 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
   }
 
   async saveRun(run: RunRecordData, context: TContext): Promise<void> {
-    run.id = buildRunResourceId(run);
+    run.id = buildRunResourceId(run.id);
     this.runs.set(this.getRunKey(run.id, context), { ...run });
   }
 
@@ -304,9 +304,6 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     if (options.workspace) {
       runs = runs.filter((run) => run.workspace === options.workspace);
     }
-    if (options.commandKind) {
-      runs = runs.filter((run) => run.commandKind === options.commandKind);
-    }
     if (options.status) {
       runs = runs.filter((run) => run.status === options.status);
     }
@@ -319,7 +316,7 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     if (!isRunResourceId(event.runId)) {
       throw new Error(`RunStep runId must be a complete Run resource id: ${event.runId}`);
     }
-    event.id = buildRunStepResourceId(event);
+    event.id = buildRunStepResourceId(event.id);
     const key = this.getRunKey(event.runId, context);
     const events = this.runSteps.get(key) ?? [];
     events.push({ ...event });

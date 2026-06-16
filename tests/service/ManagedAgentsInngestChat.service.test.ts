@@ -436,7 +436,6 @@ describe('Managed Agents Inngest Chat backend', () => {
 
     expect(run).toMatchObject({
       id: runId,
-      commandKind: 'chat',
       status: RunStatus.COMPLETED,
       workspace: workspaceRef,
       runner: 'pi:codex',
@@ -678,14 +677,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     }, context);
     const runId = generateRunResourceId({
       key: generateId('run'),
-      commandKind: 'chat',
-      surfaceId: 'default',
+      parentKind: 'chat',
+      parentKey: 'default',
       createdAt: now,
     });
     await store.saveRun({
       id: runId,
-      commandKind: 'chat',
-      surfaceId: 'default',
       thread: thread.id,
       workspace: workspaceRef,
       status: RunStatus.QUEUED,
@@ -717,7 +714,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
 
     const payload = inngestClient.sent[0] as any;
-    expect(payload.data.webId).toBe(context.auth.webId);
+    expect(payload.data.webId).toBe((context.auth as any).webId);
     expect(JSON.stringify(payload)).not.toContain('client-secret');
     expect(JSON.stringify(payload)).not.toContain('access-token');
 
@@ -780,7 +777,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       created_at: now,
       updated_at: now,
       metadata: {
-        commandKind: 'task',
         runtime: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
@@ -798,14 +794,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     }, context);
     const runId = generateRunResourceId({
       key: generateId('run'),
-      commandKind: 'task',
-      surfaceId: 'secretary',
+      parentKind: 'task',
+      parentKey: 'secretary',
       createdAt: now,
     });
     await store.saveRun({
       id: runId,
-      commandKind: 'task',
-      surfaceId: 'secretary',
       thread: thread.id,
       workspace: workspaceRef,
       status: RunStatus.QUEUED,
@@ -904,14 +898,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     await store.addThreadItem(threadRef, userMessage, context);
     const runId = generateRunResourceId({
       key: generateId('run'),
-      commandKind: 'chat',
-      surfaceId: 'default',
+      parentKind: 'chat',
+      parentKey: 'default',
       createdAt: now,
     });
     await store.saveRun({
       id: runId,
-      commandKind: 'chat',
-      surfaceId: 'default',
       thread: thread.id,
       workspace: workspaceRef,
       status: RunStatus.QUEUED,
@@ -932,12 +924,10 @@ describe('Managed Agents Inngest Chat backend', () => {
       id: generateRunStepResourceId({
         key: 'run-step_created',
         runId,
-        commandKind: 'chat',
-        surfaceId: 'default',
+        parentKind: 'chat',
+        parentKey: 'default',
         createdAt: now,
       }),
-      commandKind: 'chat',
-      surfaceId: 'default',
       runId,
       run: resolveRunUrn(runId),
       type: RunStepType.CREATED,
@@ -1029,14 +1019,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     }, context);
     const runId = generateRunResourceId({
       key: generateId('run'),
-      commandKind: 'chat',
-      surfaceId: 'default',
+      parentKind: 'chat',
+      parentKey: 'default',
       createdAt: now,
     });
     await store.saveRun({
       id: runId,
-      commandKind: 'chat',
-      surfaceId: 'default',
       thread: thread.id,
       workspace: workspaceRef,
       status: RunStatus.QUEUED,
@@ -1108,14 +1096,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     }, context);
     const runId = generateRunResourceId({
       key: generateId('run'),
-      commandKind: 'chat',
-      surfaceId: 'default',
+      parentKind: 'chat',
+      parentKey: 'default',
       createdAt: now,
     });
     await store.saveRun({
       id: runId,
-      commandKind: 'chat',
-      surfaceId: 'default',
       thread: thread.id,
       workspace: workspaceRef,
       status: RunStatus.RUNNING,
@@ -1187,14 +1173,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     }, context);
     const runId = generateRunResourceId({
       key: generateId('run'),
-      commandKind: 'chat',
-      surfaceId: 'default',
+      parentKind: 'chat',
+      parentKey: 'default',
       createdAt: now,
     });
     await store.saveRun({
       id: runId,
-      commandKind: 'chat',
-      surfaceId: 'default',
       thread: thread.id,
       workspace: workspaceRef,
       status: RunStatus.RUNNING,
@@ -1267,14 +1251,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     }, context);
     const runId = generateRunResourceId({
       key: generateId('run'),
-      commandKind: 'chat',
-      surfaceId: 'default',
+      parentKind: 'chat',
+      parentKey: 'default',
       createdAt: now,
     });
     await store.saveRun({
       id: runId,
-      commandKind: 'chat',
-      surfaceId: 'default',
       thread: thread.id,
       workspace: workspaceRef,
       status: RunStatus.QUEUED,

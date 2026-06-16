@@ -4,8 +4,6 @@ import type { RunStatusType, RunStepTypeValue } from './schema';
 export interface RunRecordData {
   /** Base-relative Solid resource id, e.g. `chat/default/2026/05/18/runs.ttl#run_x`. */
   id: string;
-  commandKind: 'chat' | 'task';
-  surfaceId: string;
   task?: string;
   thread: string;
   workspace: WorkspaceRef;
@@ -28,8 +26,6 @@ export interface RunRecordData {
 export interface RunStepRecordData {
   /** Base-relative Solid resource id, e.g. `chat/default/2026/05/18/runs.ttl#step_x`. */
   id: string;
-  commandKind: 'chat' | 'task';
-  surfaceId: string;
   /** Denormalized Run resource id for lookup; semantic relation is `run`. */
   runId: string;
   run: string;
@@ -43,9 +39,15 @@ export interface RunListOptions {
   task?: string;
   thread?: string;
   workspace?: WorkspaceRef;
-  commandKind?: 'chat' | 'task';
   status?: RunStatusType;
   limit?: number;
+}
+
+export type RunCommandKind = 'chat' | 'task';
+
+export interface RunCommandProjection {
+  commandKind: RunCommandKind;
+  surfaceId: string;
 }
 
 export interface RunStore<TContext> {
@@ -98,6 +100,17 @@ export function isRunResourceId(value: string | null | undefined): value is stri
     && /^(chat|task)\/[^/]+\/\d{4}\/\d{2}\/\d{2}\/runs\.ttl#[^#/]+$/.test(value);
 }
 
+export function deriveRunCommandProjection(runId: string | null | undefined): RunCommandProjection | undefined {
+  const match = runId?.match(/^(chat|task)\/([^/]+)\/\d{4}\/\d{2}\/\d{2}\/runs\.ttl#[^#/]+$/);
+  if (!match) {
+    return undefined;
+  }
+  return {
+    commandKind: match[1] as RunCommandKind,
+    surfaceId: decodeURIComponent(match[2]),
+  };
+}
+
 function assertLocalKey(value: string, label: string): void {
   if (value.includes('/') || value.includes('#') || /\.(ttl|jsonld|json)(?:#|$)/i.test(value)) {
     throw new Error(`${label} requires a local key: ${value}`);
@@ -130,8 +143,8 @@ export function datePathFromTimestamp(timestamp: number | undefined): { yyyy: st
 
 export function generateRunResourceId(input: {
   key: string;
-  commandKind: 'chat' | 'task';
-  surfaceId: string;
+  parentKind: RunCommandKind;
+  parentKey: string;
   createdAt?: number;
 }): string {
   if (isBaseRelativeResourceId(input.key)) {
@@ -139,14 +152,14 @@ export function generateRunResourceId(input: {
   }
   assertLocalKey(input.key, 'Run id generator');
   const { yyyy, MM, dd } = datePathFromTimestamp(input.createdAt);
-  return `${input.commandKind}/${input.surfaceId}/${yyyy}/${MM}/${dd}/runs.ttl#${input.key}`;
+  return `${input.parentKind}/${input.parentKey}/${yyyy}/${MM}/${dd}/runs.ttl#${input.key}`;
 }
 
 export function generateRunStepResourceId(input: {
   key: string;
   runId?: string;
-  commandKind: 'chat' | 'task';
-  surfaceId: string;
+  parentKind?: RunCommandKind;
+  parentKey?: string;
   createdAt?: number;
 }): string {
   if (isBaseRelativeResourceId(input.key)) {
@@ -159,40 +172,35 @@ export function generateRunStepResourceId(input: {
     return `${runDoc}#${input.key}`;
   }
 
+  if (!input.parentKind || !input.parentKey) {
+    throw new Error('RunStep id generator requires runId or parentKind/parentKey');
+  }
+
   const { yyyy, MM, dd } = datePathFromTimestamp(input.createdAt);
-  return `${input.commandKind}/${input.surfaceId}/${yyyy}/${MM}/${dd}/runs.ttl#${input.key}`;
+  return `${input.parentKind}/${input.parentKey}/${yyyy}/${MM}/${dd}/runs.ttl#${input.key}`;
 }
 
-export function buildRunResourceId(input: {
+export function buildRunResourceId(input: string | {
   id: string;
-  commandKind: 'chat' | 'task';
-  surfaceId: string;
   createdAt?: number;
 }): string {
-  void input.commandKind;
-  void input.surfaceId;
-  void input.createdAt;
-  if (!isRunResourceId(input.id)) {
-    throw new Error(`Run id must be a complete Run resource id: ${input.id}`);
+  const id = typeof input === 'string' ? input : input.id;
+  if (!isRunResourceId(id)) {
+    throw new Error(`Run id must be a complete Run resource id: ${id}`);
   }
-  return input.id;
+  return id;
 }
 
-export function buildRunStepResourceId(input: {
+export function buildRunStepResourceId(input: string | {
   id: string;
   runId?: string;
-  commandKind: 'chat' | 'task';
-  surfaceId: string;
   createdAt?: number;
 }): string {
-  void input.runId;
-  void input.commandKind;
-  void input.surfaceId;
-  void input.createdAt;
-  if (!isRunResourceId(input.id)) {
-    throw new Error(`RunStep id must be a complete RunStep resource id: ${input.id}`);
+  const id = typeof input === 'string' ? input : input.id;
+  if (!isRunResourceId(id)) {
+    throw new Error(`RunStep id must be a complete RunStep resource id: ${id}`);
   }
-  return input.id;
+  return id;
 }
 
 export function resolveRunUrn(runId: string): string {

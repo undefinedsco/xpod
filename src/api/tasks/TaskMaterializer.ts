@@ -15,6 +15,7 @@ import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import type { RunExecutionBackend } from '../runs/RunExecutionBackend';
 import { RunStatus, XpodRunStepType as RunStepType } from '../runs/schema';
 import {
+  extractResourceLocalId,
   generateRunResourceId,
   generateRunStepResourceId,
   resolveDataResource,
@@ -214,10 +215,10 @@ export class TaskMaterializer<TContext = StoreContext> {
       return await this.store.loadThread(threadRef, context);
     } catch {
       const now = nowTimestamp();
-      const surfaceId = this.resolveTaskThreadSurfaceId(task);
+      const taskParentKey = this.resolveTaskThreadParentKey(task);
       const metadata: ThreadMetadata = {
         id: this.extractThreadId(task.thread),
-        parent: `task/index.ttl#${surfaceId}`,
+        parent: `task/index.ttl#${taskParentKey}`,
         title: task.title,
         status: { type: 'active' },
         workspace: task.workspace,
@@ -249,19 +250,17 @@ export class TaskMaterializer<TContext = StoreContext> {
     },
   ): Promise<RunRecordData> {
     const now = nowTimestamp();
-    const surfaceId = this.resolveTaskThreadSurfaceId(task);
+    const taskParentKey = this.resolveTaskThreadParentKey(task);
     const run: RunRecordData = {
       id: generateRunResourceId({
         key: generateId('run'),
-        commandKind: 'task',
-        surfaceId,
+        parentKind: 'task',
+        parentKey: taskParentKey,
         createdAt: now,
       }),
       task: this.resolveTaskResource(task, context),
       thread: task.thread,
       workspace: task.workspace,
-      commandKind: 'task',
-      surfaceId,
       status: RunStatus.QUEUED,
       runner: task.runner,
       prompt,
@@ -281,7 +280,6 @@ export class TaskMaterializer<TContext = StoreContext> {
     await this.appendRunStep(run, RunStepType.CREATED, context, {
       message: 'Task run created',
       data: {
-        commandKind: run.commandKind,
         task: run.task,
         thread: run.thread,
         workspace: run.workspace,
@@ -361,12 +359,8 @@ export class TaskMaterializer<TContext = StoreContext> {
       id: generateRunStepResourceId({
         key: generateId('run-step'),
         runId: run.id,
-        commandKind: run.commandKind,
-        surfaceId: run.surfaceId,
         createdAt,
       }),
-      commandKind: run.commandKind,
-      surfaceId: run.surfaceId,
       runId: run.id,
       run: this.resolveRunResource(run, context),
       type,
@@ -507,10 +501,10 @@ export class TaskMaterializer<TContext = StoreContext> {
     });
   }
 
-  private resolveTaskThreadSurfaceId(task: TaskRecordData): string {
+  private resolveTaskThreadParentKey(task: TaskRecordData): string {
     const threadId = this.extractThreadId(task.thread);
     const match = threadId.match(/^task\/([^/]+)\//);
-    return match ? decodeURIComponent(match[1]) : task.surfaceId;
+    return match ? decodeURIComponent(match[1]) : extractResourceLocalId(task.id);
   }
 
   private parseThreadResource(thread: string): ThreadRef | undefined {

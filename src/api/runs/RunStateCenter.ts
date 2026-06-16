@@ -352,20 +352,16 @@ export class RunStateCenter<TContext = StoreContext> {
   }): Promise<RunRecordData> {
     const { thread, userMessage, prompt, runtimeConfig, context } = input;
     const now = nowTimestamp();
-    const surface = this.resolveThreadSurface(thread);
-    const commandKind = surface.commandKind;
-    const surfaceId = surface.surfaceId;
+    const parent = this.resolveThreadStorageParent(thread);
     const run: RunRecordData = {
       id: generateRunResourceId({
         key: generateId('run'),
-        commandKind,
-        surfaceId,
+        parentKind: parent.parentKind,
+        parentKey: parent.parentKey,
         createdAt: now,
       }),
       thread: this.resolveThreadResource(thread, context),
       workspace: runtimeConfig.workspace,
-      commandKind,
-      surfaceId,
       status: RunStatus.QUEUED,
       runner: `${runtimeConfig.runner.protocol ?? 'pi'}:${runtimeConfig.runner.type}`,
       prompt,
@@ -373,7 +369,6 @@ export class RunStateCenter<TContext = StoreContext> {
         threadId: thread.id,
         userMessageId: userMessage.id,
         runtimeConfig,
-        surfaceId,
       },
       createdAt: now,
       updatedAt: now,
@@ -382,7 +377,6 @@ export class RunStateCenter<TContext = StoreContext> {
     await this.appendRunStep(run, RunStepType.CREATED, context, {
       message: 'Run created',
       data: {
-        commandKind: run.commandKind,
         thread: run.thread,
         workspace: run.workspace,
         runner: run.runner,
@@ -607,12 +601,8 @@ export class RunStateCenter<TContext = StoreContext> {
       id: generateRunStepResourceId({
         key: generateId('run-step'),
         runId: run.id,
-        commandKind: run.commandKind,
-        surfaceId: run.surfaceId,
         createdAt,
       }),
-      commandKind: run.commandKind,
-      surfaceId: run.surfaceId,
       runId: run.id,
       run: this.resolveRunResource(run, context),
       type,
@@ -628,15 +618,15 @@ export class RunStateCenter<TContext = StoreContext> {
       return threadId;
     }
 
-    const surface = this.resolveThreadSurface(thread);
+    const parent = this.resolveThreadStorageParent(thread);
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl) {
       if (threadId.includes('#') && !threadId.startsWith('#')) {
         return resolveDataResource(podBaseUrl, threadId);
       }
-      return `${podBaseUrl}/.data/${surface.commandKind}/${surface.surfaceId}/index.ttl#${threadId}`;
+      return `${podBaseUrl}/.data/${parent.parentKind}/${parent.parentKey}/index.ttl#${threadId}`;
     }
-    return `urn:xpod:thread:${surface.commandKind}:${encodeURIComponent(surface.surfaceId)}:${encodeURIComponent(threadId)}`;
+    return `urn:xpod:thread:${parent.parentKind}:${encodeURIComponent(parent.parentKey)}:${encodeURIComponent(threadId)}`;
   }
 
   private resolveRunResource(run: RunRecordData, context: TContext): string {
@@ -751,11 +741,11 @@ export class RunStateCenter<TContext = StoreContext> {
     return value === 'pi' || value === 'codex' || value === 'claude' || value === 'codebuddy';
   }
 
-  private resolveThreadSurface(thread: ThreadMetadata): { commandKind: 'chat' | 'task'; surfaceId: string } {
+  private resolveThreadStorageParent(thread: ThreadMetadata): { parentKind: 'chat' | 'task'; parentKey: string } {
     const parent = getThreadParent(thread);
     return {
-      commandKind: parent?.kind ?? 'chat',
-      surfaceId: parent?.key ?? 'default',
+      parentKind: parent?.kind ?? 'chat',
+      parentKey: parent?.key ?? 'default',
     };
   }
 

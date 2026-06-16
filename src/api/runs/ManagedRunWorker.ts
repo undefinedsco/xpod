@@ -454,12 +454,8 @@ export class ManagedRunWorker<TContext = StoreContext> {
       id: generateRunStepResourceId({
         key: generateId('run-step'),
         runId: run.id,
-        commandKind: run.commandKind,
-        surfaceId: run.surfaceId,
         createdAt,
       }),
-      commandKind: run.commandKind,
-      surfaceId: run.surfaceId,
       runId: run.id,
       run: this.resolveRunResource(run, context),
       type,
