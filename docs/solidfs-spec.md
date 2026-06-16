@@ -169,6 +169,25 @@ journal 不做全局单日志，也不做每文件一个日志：
 - 多文件 SPARQL UPDATE、批量 commit 或目录级操作用 `tx_id` 把多个资源 entry 绑定在一起。
 - 物理表可以按 `pod_id` 分区或带 `pod_id` 字段，但 replay、reconcile 和权限判断都必须以单个 Pod 为边界。
 
+### Move projection entries
+
+文件或文件夹移动复用现有 SolidFS SyncJournal，不引入第二套 move log。P0 写入者把目录移动
+展开成多条 `moved` entry，每条记录旧定位和新定位：
+
+- `previousPath` / `previousResource`：移动前的本地相对路径和 Solid resource URI。
+- `path` / `resource`：移动后的本地相对路径和 Solid resource URI。
+- 同一次目录移动或批量 commit 的 entry 共享一个 `tx_id`，replay、reconcile 和运维视图按
+  同一个恢复单元处理。
+
+P1 可以增加 `moved_prefix` 作为超大目录移动的压缩表示，但它也必须走同一个 journal 生命周期；
+不能绕开 `intent -> local_committed -> indexed -> synced -> done` 阶段。
+
+Move replay 的顺序是：先更新文件/对象定位，再让 projection syncer 更新派生状态。RDF URI
+projection 优先调用 RDF engine 的 `rewriteTerms(...)` 能力，在安全时只改 term dictionary 中
+受控的 URI term；不要把未改内容当成普通 update 重新解析，也不要为每条受影响 quad 重写事实行。
+text/vector source 这类按 source URI 建索引的派生数据可以按旧 source 删除、按新 source 重建；
+它们仍然是可重建 cache，不是文件移动的权威事实。
+
 最小字段形态：
 
 ```text

@@ -699,6 +699,32 @@ RDF-3X 派生的 stat 表继续使用 `WITHOUT ROWID`，旧 rowid / materialized
 - 关键词检索不要扫 `rdf_quads`，只查 term/text index，再回 join quads。
 - 对可从路径稳定推导的 graph/source，不重复存长字符串到每一行。
 
+### Term dictionary rewrite for SolidFS move
+
+`rdf_quads` 的 graph、subject、predicate、object 都存 term id，所以 SolidFS move projection
+不需要默认重写所有 quad fact rows。只要移动影响的是 Xpod 生成或可证明安全的 URI projection
+term，RDF engine 应优先通过 `rewriteTerms(...)` 更新 distinct term dictionary rows：
+
+```text
+oldPrefix = previousResource / previous graph URI prefix
+newPrefix = moved resource / moved graph URI prefix
+scope     = safe_projection
+mode      = safe
+```
+
+实现要求：
+
+- 只匹配 IRI/named-node term；literal、blank node、datatype/language identity 不参与路径 move rewrite。
+- 重新计算 term identity 字段（例如 hash、value_head、normalized_text），不能只改 `value`。
+- 如果新 identity 已被其他 term 占用，必须 skip 并记录 `collision_conflict`，不能把两个 term 合并成同一个 id。
+- 成功 rewrite 后必须清理 term/cache/cardinality 等派生缓存，并推进 facts `data_version`，让 result cache、
+  materialized view 和 RDF-3X stats 通过版本机制自然失效或重建。
+- API 返回 `matchedTerms`、`rewrittenTerms`、`remappedTerms`、`skippedTerms`、`affectedQuads`，便于 journal
+  replay、运维和后续 fallback/reconcile 判断。
+
+这个能力只优化路径投影变更的写放大；它不改变标准 URI 语义，也不把 GSPO 改成相对路径存储。
+无法证明安全的用户手写绝对 IRI，应跳过并交给更高层 reconcile 或内容重写策略处理。
+
 ## 默认图语义
 
 默认图不是应用侧随手传不同值的问题，应由 RDF engine 在协议边界按请求目标统一归一化。
