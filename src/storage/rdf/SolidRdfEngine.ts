@@ -30,6 +30,8 @@ import type {
   RdfTextSearchOptions,
   RdfTextSearchResult,
   RdfTextSourceInput,
+  RdfTermRewriteInput,
+  RdfTermRewriteResult,
   RdfVectorChunkInput,
   RdfVectorIndexOptions,
   RdfVectorIndexSyncLike,
@@ -183,6 +185,10 @@ export class SolidRdfEngine implements RdfEngineLike {
 
   public applyDelta(deletes: QuintPattern[], inserts: Quad[], options?: RdfIndexPutOptions): { deletedRows: number; insertedRows: number } {
     return this.index.applyDelta(deletes, inserts, options);
+  }
+
+  public rewriteTerms(input: RdfTermRewriteInput): RdfTermRewriteResult {
+    return this.index.rewriteTerms(input);
   }
 
   public scan(query: RdfPatternQuery): RdfQuadIndexScanResult {

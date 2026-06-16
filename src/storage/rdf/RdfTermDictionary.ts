@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { DataFactory } from 'n3';
 import type { Term } from '@rdfjs/types';
 import type { SqliteDatabase } from '../SqliteRuntime';
-import type { RdfTermKind, RdfTermRow } from './types';
+import type { RdfTermKind, RdfTermRewriteInput, RdfTermRewriteResult, RdfTermRow } from './types';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 
 interface RdfTermIdentity {
@@ -228,6 +228,80 @@ export class RdfTermDictionary {
   public count(): number {
     const row = this.db.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_terms').get();
     return row?.count ?? 0;
+  }
+
+  public rewriteNamedNodePrefix(input: RdfTermRewriteInput): RdfTermRewriteResult {
+    if (!input.oldPrefix || input.oldPrefix === input.newPrefix) {
+      return emptyRewriteResult();
+    }
+
+    const rows = this.db
+      .prepare<Pick<RdfTermRow, 'id' | 'value'>>(`
+        SELECT id, value
+        FROM rdf_terms
+        WHERE kind = 'iri'
+          AND value LIKE ? ESCAPE '\\'
+        ORDER BY id
+      `)
+      .all(`${escapeLikePattern(input.oldPrefix)}%`)
+      .filter((row) => row.value.startsWith(input.oldPrefix));
+
+    const skippedTerms: RdfTermRewriteResult['skippedTerms'] = [];
+    let rewrittenTerms = 0;
+
+    const update = this.db.prepare(`
+      UPDATE rdf_terms
+      SET value = ?,
+          value_head = ?,
+          hash = ?,
+          normalized_text = ?
+      WHERE id = ?
+    `);
+    const hashConflict = this.db.prepare<RdfTermRow>('SELECT * FROM rdf_terms WHERE hash = ? AND id <> ?');
+
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const nextValue = `${input.newPrefix}${row.value.slice(input.oldPrefix.length)}`;
+        const identity = this.identity('iri', nextValue, null, null, nextValue, null);
+        const targetId = this.findId(identity);
+        if (targetId !== undefined && targetId !== row.id) {
+          skippedTerms.push({
+            id: row.id,
+            value: row.value,
+            reason: 'collision_conflict',
+          });
+          continue;
+        }
+        if (hashConflict.get(identity.hash, row.id)) {
+          skippedTerms.push({
+            id: row.id,
+            value: row.value,
+            reason: 'collision_conflict',
+          });
+          continue;
+        }
+
+        update.run(
+          identity.value,
+          identity.valueHead,
+          identity.hash,
+          identity.normalizedText,
+          row.id,
+        );
+        rewrittenTerms++;
+      }
+    })();
+
+    this.termCache.clear();
+    this.idCache.clear();
+
+    return {
+      matchedTerms: rows.length,
+      rewrittenTerms,
+      remappedTerms: 0,
+      skippedTerms,
+      affectedQuads: 0,
+    };
   }
 
   private findId(identity: RdfTermIdentity): number | undefined {
@@ -489,4 +563,14 @@ function normalizeSearchText(value: string): string {
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+function emptyRewriteResult(): RdfTermRewriteResult {
+  return {
+    matchedTerms: 0,
+    rewrittenTerms: 0,
+    remappedTerms: 0,
+    skippedTerms: [],
+    affectedQuads: 0,
+  };
 }

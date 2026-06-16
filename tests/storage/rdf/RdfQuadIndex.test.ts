@@ -61,6 +61,41 @@ describe('RdfQuadIndex', () => {
     expect(index.stats().termCount).toBeGreaterThan(4);
   });
 
+  it('rewrites safe named-node URI terms without rewriting quad rows', () => {
+    const index = new RdfQuadIndex({ path: ':memory:' });
+    index.open();
+    index.replaceSource([
+      quad(
+        namedNode('https://pod.example/old/data.ttl#this'),
+        namedNode('https://schema.org/name'),
+        literal('Demo'),
+        namedNode('https://pod.example/old/data.ttl'),
+      ),
+    ], {
+      source: 'https://pod.example/old/data.ttl',
+      workspace: 'https://pod.example/',
+      localPath: 'old/data.ttl',
+      contentType: 'text/turtle',
+    });
+
+    const before = index.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl') } });
+    expect(before.quads).toHaveLength(1);
+
+    const result = index.rewriteTerms({
+      oldPrefix: 'https://pod.example/old/',
+      newPrefix: 'https://pod.example/new/',
+      scope: 'safe_projection',
+      mode: 'safe',
+    });
+
+    expect(result).toMatchObject({ matchedTerms: 2, rewrittenTerms: 2, remappedTerms: 0, affectedQuads: 0 });
+    expect(index.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl') } }).quads).toHaveLength(0);
+    const after = index.scan({ pattern: { graph: namedNode('https://pod.example/new/data.ttl') } });
+    expect(after.quads).toHaveLength(1);
+    expect(after.quads[0].subject.value).toBe('https://pod.example/new/data.ttl#this');
+    index.close();
+  });
+
   it('applies mixed RDF deltas in one facts data version step', () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const content = namedNode('http://rdfs.org/sioc/ns#content');

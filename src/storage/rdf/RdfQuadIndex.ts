@@ -30,10 +30,13 @@ import type {
   RdfQuadIndexScanResult,
   RdfQuadScanOptions,
   RdfQuadRow,
+  RdfPatternQuery,
   RdfQueryAggregate,
   RdfSourceInput,
   RdfSourceRow,
   RdfTermKind,
+  RdfTermRewriteInput,
+  RdfTermRewriteResult,
 } from './types';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 
@@ -240,6 +243,15 @@ export class RdfQuadIndex {
     };
   }
 
+  public rewriteTerms(input: RdfTermRewriteInput): RdfTermRewriteResult {
+    const result = this.requireDictionary().rewriteNamedNodePrefix(input);
+    if (result.rewrittenTerms > 0 || result.remappedTerms > 0) {
+      this.cardinalityCache.clear();
+      this.bumpDataVersion();
+    }
+    return result;
+  }
+
   private deleteInternal(pattern: QuintPattern): number {
     const db = this.requireDb();
     const { joins, whereClause, params } = this.buildWhereClause(pattern, false);
@@ -263,7 +275,10 @@ export class RdfQuadIndex {
     return Number(row?.value ?? 0) || 0;
   }
 
-  public scan(pattern: QuintPattern, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
+  public scan(pattern: QuintPattern | RdfPatternQuery, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
+    if (isRdfPatternQueryInput(pattern)) {
+      return this.scanInternal(pattern.pattern, options ?? pattern.options as RdfQuadScanOptions | undefined);
+    }
     return this.scanInternal(pattern, options);
   }
 
@@ -2350,6 +2365,12 @@ export class RdfQuadIndex {
     }
     return this.dictionary;
   }
+}
+
+function isRdfPatternQueryInput(input: QuintPattern | RdfPatternQuery): input is RdfPatternQuery {
+  return input !== null
+    && typeof input === 'object'
+    && 'pattern' in input;
 }
 
 function sumSpaceObjects(objects: RdfIndexSpaceObject[], kind: RdfIndexSpaceObject['kind']): number {
