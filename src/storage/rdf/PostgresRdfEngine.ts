@@ -99,6 +99,9 @@ import type {
   Rdf3xTermTypePatternValue,
   RdfBulkLoadStats,
   RdfQueryPlannerHistogramHint,
+  RdfTermRewriteInput,
+  RdfTermRewriteResult,
+  RdfTermRewriteSkippedTerm,
   RdfTermKind,
 } from './types';
 import type { QueryOptions, QuintPattern, TermMatch, TermName, TermOperators } from '../quint/types';
@@ -1034,6 +1037,11 @@ class PostgresRdfTermDictionary {
 
   public constructor(private readonly executor: AsyncSqlExecutor) {}
 
+  public clearCaches(): void {
+    this.termCache.clear();
+    this.idCache.clear();
+  }
+
   public async initialize(): Promise<void> {
     await this.executor.exec(`
       CREATE TABLE IF NOT EXISTS rdf_terms (
@@ -1393,6 +1401,10 @@ class PostgresRdfTermDictionary {
       result.set(row.id, term);
     }
     return result;
+  }
+
+  public async identityForNamedNodeValue(value: string): Promise<RdfTermIdentity> {
+    return this.identity('iri', value, null, null, value, null);
   }
 
   public async rowsByNormalizedTextRegex(kinds: RdfTermKind[], pattern: string): Promise<number[]> {
@@ -1992,6 +2004,66 @@ export class PostgresRdfEngine implements RdfEngineLike {
     } catch (error) {
       throw error;
     }
+  }
+
+  public async rewriteTerms(input: RdfTermRewriteInput): Promise<RdfTermRewriteResult> {
+    await this.ensureReady();
+    const executor = this.requireExecutor();
+    const dictionary = this.requireDictionary();
+    const oldPrefix = input.oldPrefix;
+    const newPrefix = input.newPrefix;
+    if (!oldPrefix || oldPrefix === newPrefix) {
+      return { matchedTerms: 0, rewrittenTerms: 0, remappedTerms: 0, skippedTerms: [], affectedQuads: 0 };
+    }
+
+    const rows = await executor.query<PostgresRdfTermRow>(`
+      SELECT *
+      FROM rdf_terms
+      WHERE kind = 'iri'
+        AND value LIKE $1
+      ORDER BY id ASC
+    `, [`${oldPrefix}%`]);
+
+    let rewrittenTerms = 0;
+    const skippedTerms: RdfTermRewriteSkippedTerm[] = [];
+
+    await executor.transaction(async (tx) => {
+      const scopedDictionary = new PostgresRdfTermDictionary(tx);
+      for (const row of rows) {
+        const nextValue = `${newPrefix}${row.value.slice(oldPrefix.length)}`;
+        const nextIdentity = await scopedDictionary.identityForNamedNodeValue(nextValue);
+        const existing = await tx.query<{ id: number }>('SELECT id FROM rdf_terms WHERE hash = $1', [nextIdentity.hash]);
+        const existingId = existing[0]?.id;
+        if (existingId !== undefined && existingId !== row.id) {
+          skippedTerms.push({ id: row.id, value: row.value, reason: 'collision_conflict' });
+          continue;
+        }
+        await tx.exec(`
+          UPDATE rdf_terms
+          SET value = $1,
+              value_head = $2,
+              hash = $3,
+              normalized_text = $4
+          WHERE id = $5
+        `, [nextValue, nextIdentity.valueHead, nextIdentity.hash, nextIdentity.normalizedText, row.id]);
+        rewrittenTerms += 1;
+      }
+      if (rewrittenTerms > 0) {
+        await this.bumpFactsDataVersion(tx);
+      }
+    });
+
+    if (rewrittenTerms > 0) {
+      dictionary.clearCaches();
+    }
+
+    return {
+      matchedTerms: rows.length,
+      rewrittenTerms,
+      remappedTerms: 0,
+      skippedTerms,
+      affectedQuads: 0,
+    };
   }
 
   public async scan(query: RdfPatternQuery): Promise<RdfQuadIndexScanResult> {
