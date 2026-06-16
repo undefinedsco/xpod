@@ -156,7 +156,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     }
 
     if (this.index.moveLocalRdfIndex && previousSource) {
-      await this.index.moveLocalRdfIndex(
+      const moved = await this.index.moveLocalRdfIndex(
         { path: previousSource },
         nextIdentifier,
         {
@@ -164,16 +164,18 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
           ...nextSource,
         },
       );
-      const rewriteCapable: RdfTermRewriteCapable = this.index;
-      if (rewriteCapable.rewriteTerms && previousSource !== nextSource.source) {
-        await rewriteCapable.rewriteTerms({
-          oldPrefix: previousSource,
-          newPrefix: nextSource.source,
-          scope: 'safe_projection',
-          mode: 'safe',
-        });
+      if (moved > 0) {
+        const rewriteCapable: RdfTermRewriteCapable = this.index;
+        if (rewriteCapable.rewriteTerms && previousSource !== nextSource.source) {
+          await rewriteCapable.rewriteTerms({
+            oldPrefix: previousSource,
+            newPrefix: nextSource.source,
+            scope: 'safe_projection',
+            mode: 'safe',
+          });
+        }
+        return;
       }
-      return;
     }
 
     await this.index.syncLocalRdfDocument(
