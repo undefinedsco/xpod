@@ -23,8 +23,25 @@ describe('workspace prompt helpers', () => {
       tools: ['stat', 'read_meta', 'hydrate'],
     });
 
-    expect(prompt).toContain('Root: /workspace/demo');
+    expect(prompt).toContain('Root: "/workspace/demo"');
     expect(prompt).toContain('Remote placeholders: 10');
-    expect(prompt).toContain('hydrate');
+    expect(prompt).toContain('"hydrate"');
+  });
+
+  it('quotes dynamic root and tools so newlines cannot inject prompt lines', () => {
+    const prompt = buildWorkspaceSummaryPrompt({
+      root: '/workspace/demo\nInjected: yes',
+      authority: 'local-filesystem',
+      files: 3,
+      bylineLocalFiles: 2,
+      remotePlaceholders: 1,
+      hydratedRemoteObjects: 0,
+      tools: ['stat\n- injected', 'hydrate'],
+    });
+
+    expect(prompt).toContain('Root: "/workspace/demo\\nInjected: yes"');
+    expect(prompt).toContain('Available tools: "stat\\n- injected", "hydrate"');
+    expect(prompt.split('\n')).not.toContain('Injected: yes');
+    expect(prompt.split('\n')).not.toContain('- injected');
   });
 });

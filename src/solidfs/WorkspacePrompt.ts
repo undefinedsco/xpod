@@ -30,7 +30,7 @@ export function buildWorkspaceSummaryPrompt(input: WorkspaceSummaryPromptInput):
   return [
     '## Current Workspace',
     '',
-    `Root: ${input.root}`,
+    `Root: ${promptValue(input.root)}`,
     `Authority: ${input.authority}`,
     `Files: ${input.files}`,
     `Text/by-line local files: ${input.bylineLocalFiles}`,
@@ -38,7 +38,11 @@ export function buildWorkspaceSummaryPrompt(input: WorkspaceSummaryPromptInput):
     `Hydrated remote objects: ${input.hydratedRemoteObjects}`,
     input.freeLocalCacheBytes === undefined ? undefined : `Free local cache bytes: ${input.freeLocalCacheBytes}`,
     input.maxHydrateBytesWithoutConfirmation === undefined ? undefined : `Max hydrate bytes without confirmation: ${input.maxHydrateBytesWithoutConfirmation}`,
-    `Available tools: ${input.tools.join(', ')}`,
+    `Available tools: ${input.tools.map(promptValue).join(', ')}`,
     '',
   ].filter((line): line is string => line !== undefined).join('\n');
+}
+
+function promptValue(value: string): string {
+  return JSON.stringify(value) ?? '""';
 }

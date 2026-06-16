@@ -25,6 +25,8 @@ export interface ParserCoverageNoteInput {
 }
 
 const PREFIXES = '@prefix dct: <http://purl.org/dc/terms/> .\n@prefix sioc: <http://rdfs.org/sioc/ns#> .\n@prefix udfs: <https://vocab.undefineds.co/udfs#> .\n\n';
+const BLANK_NODE_LABEL = /^_:[A-Za-z][A-Za-z0-9_-]*$/;
+const IRIREF_UNSAFE_CHARS = /[<>"{}|^`\\]/g;
 
 export function buildFileMetadataNote(input: FileMetadataNoteInput): string {
   const lines = [
@@ -38,7 +40,7 @@ export function buildFileMetadataNote(input: FileMetadataNoteInput): string {
     lines.push(`  udfs:mediaType ${literal(input.mediaType)} ;`);
   }
   if (input.byteSize !== undefined) {
-    lines.push(`  udfs:byteSize ${input.byteSize} ;`);
+    lines.push(`  udfs:byteSize ${nonNegativeIntegerLiteral('byteSize', input.byteSize)} ;`);
   }
   if (input.contentHash) {
     lines.push(`  udfs:contentHash ${literal(input.contentHash)} ;`);
@@ -58,19 +60,66 @@ export function buildParserCoverageNote(input: ParserCoverageNoteInput): string 
     `  udfs:parserVersion ${literal(input.parserVersion)} ;`,
     `  udfs:coverageUnit ${literal(input.coverageUnit)} ;`,
     `  udfs:coveredRange ${literal(input.coveredRange)} ;`,
-    `  udfs:parsedUnits ${input.parsedUnits} ;`,
+    `  udfs:parsedUnits ${nonNegativeIntegerLiteral('parsedUnits', input.parsedUnits)} ;`,
   ];
   if (input.totalUnits !== undefined) {
-    lines.push(`  udfs:totalUnits ${input.totalUnits} ;`);
+    lines.push(`  udfs:totalUnits ${nonNegativeIntegerLiteral('totalUnits', input.totalUnits)} ;`);
   }
   lines.push(`  udfs:status ${literal(input.status)} .`);
   return `${PREFIXES}${lines.join('\n')}\n`;
 }
 
 function term(value: string): string {
-  return value.startsWith('<') || value.startsWith('_:') ? value : `<${value}>`;
+  if (value.startsWith('<')) {
+    if (!value.endsWith('>')) {
+      throw new Error(`Invalid Turtle IRI term: ${value}`);
+    }
+    const innerValue = value.slice(1, -1);
+    if (innerValue.includes('>')) {
+      throw new Error(`Invalid Turtle IRI term: ${value}`);
+    }
+    return term(innerValue);
+  }
+
+  if (value.startsWith('_:')) {
+    if (!BLANK_NODE_LABEL.test(value)) {
+      throw new Error(`Invalid Turtle blank node label: ${value}`);
+    }
+    return value;
+  }
+
+  return `<${encodeIriRef(value)}>`;
 }
 
 function literal(value: string): string {
   return JSON.stringify(value) ?? '""';
+}
+
+function nonNegativeIntegerLiteral(field: string, value: number): string {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${field} must be a non-negative safe integer`);
+  }
+  return String(value);
+}
+
+function encodeIriRef(value: string): string {
+  if (value.includes('>')) {
+    throw new Error(`Invalid Turtle IRI term: ${value}`);
+  }
+
+  let encoded: string;
+  try {
+    encoded = encodeURI(value).replace(IRIREF_UNSAFE_CHARS, encodeAsciiChar);
+  } catch {
+    throw new Error(`Invalid Turtle IRI term: ${value}`);
+  }
+
+  if (encoded.includes('>')) {
+    throw new Error(`Invalid Turtle IRI term: ${value}`);
+  }
+  return encoded;
+}
+
+function encodeAsciiChar(char: string): string {
+  return `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`;
 }
