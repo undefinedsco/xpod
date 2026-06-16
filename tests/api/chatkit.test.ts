@@ -7,7 +7,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   ChatKitService,
-  DEFAULT_THREAD_CHAT_ID,
   InMemoryStore,
   type AiProvider,
   type StoreContext,
@@ -50,7 +49,6 @@ describe('ChatKit Service', () => {
 
   const threadParams = (threadId: string) => ({
     thread_id: threadId,
-    chat_id: DEFAULT_THREAD_CHAT_ID,
   });
 
   describe('Thread Operations', () => {
@@ -85,6 +83,10 @@ describe('ChatKit Service', () => {
         expect(createdEvent).toBeDefined();
         expect(createdEvent.thread.id).toBeDefined();
         expect(createdEvent.thread.status.type).toBe('active');
+        expect(createdEvent.thread.parent).toBe('chat/default/index.ttl#this');
+        expect(createdEvent.thread.metadata?.chat_id).toBeUndefined();
+        expect(createdEvent.thread.metadata?.surface_id).toBeUndefined();
+        expect(createdEvent.thread.metadata?.commandKind).toBeUndefined();
 
         threadId = createdEvent.thread.id;
       }
@@ -413,19 +415,19 @@ describe('ChatKit Service', () => {
     it('should handle non-existent thread', async () => {
       const request = JSON.stringify({
         type: 'threads.get_by_id',
-        params: threadParams('non-existent-thread'),
+        params: threadParams('chat/default/index.ttl#non-existent-thread'),
       });
 
       await expect(service.process(request, context)).rejects.toThrow('Thread not found');
     });
 
-    it('should reject bare thread_id without chat_id', async () => {
+    it('should reject incomplete thread_id', async () => {
       const request = JSON.stringify({
         type: 'threads.get_by_id',
         params: { thread_id: 'thread-without-chat' },
       });
 
-      await expect(service.process(request, context)).rejects.toThrow('chat_id is required');
+      await expect(service.process(request, context)).rejects.toThrow('complete thread resource id is required');
     });
   });
 });

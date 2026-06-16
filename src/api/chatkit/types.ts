@@ -40,6 +40,12 @@ export type ThreadStatus = ActiveStatus | LockedStatus | ClosedStatus;
 
 export interface ThreadMetadata {
   id: string;
+  /**
+   * RDF Thread owner relation (`sioc:has_parent`).
+   * Chat parent: `chat/{chatKey}/index.ttl#this`.
+   * Task parent: `task/index.ttl#{taskKey}`.
+   */
+  parent?: string;
   title?: string;
   status: ThreadStatus;
   /**
@@ -56,21 +62,17 @@ export interface Thread extends ThreadMetadata {
   items: Page<ThreadItem>;
 }
 
-export const DEFAULT_THREAD_CHAT_ID = 'default';
-
 export type HttpResource = `http://${string}` | `https://${string}`;
 
-export interface ThreadSurfaceRef {
+export interface ThreadRef {
   thread_id: string;
-  chat_id: string;
 }
 
-export interface ThreadResourceRef {
-  thread_id: HttpResource;
-  chat_id?: never;
+export interface ThreadParentRef {
+  kind: 'chat' | 'task';
+  key: string;
+  parent: string;
 }
-
-export type ThreadRef = ThreadSurfaceRef | ThreadResourceRef;
 
 export function isHttpResource(value: string): value is HttpResource {
   return value.startsWith('http://') || value.startsWith('https://');
@@ -80,21 +82,18 @@ export function isBaseRelativeThreadResourceId(value: string): boolean {
   return /^(chat|task)\/[^/]+\/index\.ttl#[^#]+$/.test(value);
 }
 
-export function toThreadRef(params: { thread_id: string; chat_id?: string }): ThreadRef {
+export function toThreadRef(params: { thread_id: string }): ThreadRef {
   if (isHttpResource(params.thread_id)) {
     return { thread_id: params.thread_id };
   }
   if (isBaseRelativeThreadResourceId(params.thread_id)) {
-    return { thread_id: params.thread_id, chat_id: params.chat_id ?? DEFAULT_THREAD_CHAT_ID };
+    return { thread_id: params.thread_id };
   }
-  if (params.chat_id) {
-    return { thread_id: params.thread_id, chat_id: params.chat_id };
-  }
-  throw new Error(`chat_id is required when thread_id "${params.thread_id}" is not a full thread resource id`);
+  throw new Error(`complete thread resource id is required, got "${params.thread_id}"`);
 }
 
 export function getThreadIdFromRef(thread: ThreadRef): string {
-  if ('chat_id' in thread || isBaseRelativeThreadResourceId(thread.thread_id)) {
+  if (isBaseRelativeThreadResourceId(thread.thread_id)) {
     return thread.thread_id;
   }
   try {
@@ -109,11 +108,106 @@ export function getThreadIdFromRef(thread: ThreadRef): string {
   }
 }
 
-export function getChatIdFromThreadMetadata(thread: ThreadMetadata): string {
-  const chatId = thread.metadata?.chat_id;
-  return typeof chatId === 'string' && chatId.length > 0
-    ? chatId
-    : DEFAULT_THREAD_CHAT_ID;
+export function threadParentFromThreadId(threadId: string): ThreadParentRef | undefined {
+  const parseRelative = (relative: string): ThreadParentRef | undefined => {
+    const withoutLeadingSlash = relative.replace(/^\/+/, '');
+    const dataIndex = withoutLeadingSlash.indexOf('.data/');
+    const dataRelative = dataIndex >= 0
+      ? withoutLeadingSlash.slice(dataIndex + '.data/'.length)
+      : withoutLeadingSlash;
+    const pathOnly = dataRelative.split('#', 1)[0];
+
+    let match = pathOnly.match(/^chat\/([^/]+)\/index\.ttl$/);
+    if (match) {
+      const key = decodeURIComponent(match[1]);
+      return {
+        kind: 'chat',
+        key,
+        parent: `chat/${key}/index.ttl#this`,
+      };
+    }
+
+    match = pathOnly.match(/^task\/([^/]+)\/index\.ttl$/);
+    if (match) {
+      const key = decodeURIComponent(match[1]);
+      return {
+        kind: 'task',
+        key,
+        parent: `task/index.ttl#${key}`,
+      };
+    }
+
+    return undefined;
+  };
+
+  if (isHttpResource(threadId)) {
+    try {
+      const url = new URL(threadId);
+      const marker = '/.data/';
+      const markerIndex = url.pathname.indexOf(marker);
+      const relative = markerIndex >= 0 ? url.pathname.slice(markerIndex + marker.length) : url.pathname;
+      const parsed = parseRelative(relative);
+      if (!parsed) {
+        return undefined;
+      }
+      if (parsed.kind === 'chat') {
+        url.pathname = url.pathname.replace(/\/\.data\/chat\/[^/]+\/index\.ttl$/, `/.data/chat/${encodeURIComponent(parsed.key)}/index.ttl`);
+        url.hash = '#this';
+      } else {
+        url.pathname = url.pathname.replace(/\/\.data\/task\/[^/]+\/index\.ttl$/, '/.data/task/index.ttl');
+        url.hash = `#${encodeURIComponent(parsed.key)}`;
+      }
+      url.search = '';
+      return { ...parsed, parent: url.toString() };
+    } catch {
+      return undefined;
+    }
+  }
+
+  return parseRelative(threadId);
+}
+
+export function threadParentFromParentRef(parent: string | undefined): ThreadParentRef | undefined {
+  if (!parent) {
+    return undefined;
+  }
+  const parseRelative = (relative: string, hash?: string): ThreadParentRef | undefined => {
+    const withoutLeadingSlash = relative.replace(/^\/+/, '');
+    const dataIndex = withoutLeadingSlash.indexOf('.data/');
+    const dataRelative = dataIndex >= 0
+      ? withoutLeadingSlash.slice(dataIndex + '.data/'.length)
+      : withoutLeadingSlash;
+    const [pathPart, fragmentPart] = dataRelative.split('#', 2);
+    const fragment = decodeURIComponent((hash?.startsWith('#') ? hash.slice(1) : hash) || fragmentPart || '');
+
+    let match = pathPart.match(/^chat\/([^/]+)\/index\.ttl$/);
+    if (match && (!fragment || fragment === 'this')) {
+      const key = decodeURIComponent(match[1]);
+      return { kind: 'chat', key, parent };
+    }
+
+    match = pathPart.match(/^task\/index\.ttl$/);
+    if (match && fragment) {
+      return { kind: 'task', key: fragment, parent };
+    }
+
+    return undefined;
+  };
+
+  if (isHttpResource(parent)) {
+    try {
+      const url = new URL(parent);
+      return parseRelative(url.pathname, url.hash);
+    } catch {
+      return undefined;
+    }
+  }
+
+  return parseRelative(parent);
+}
+
+export function getThreadParent(thread: Pick<ThreadMetadata, 'id' | 'parent'>): ThreadParentRef | undefined {
+  return threadParentFromParentRef(thread.parent) ?? threadParentFromThreadId(thread.id);
 }
 
 // ============================================================================
@@ -368,7 +462,6 @@ export interface ThreadsGetByIdReq extends BaseReq {
 }
 
 export interface ThreadCreateParams {
-  chat_id?: string;
   workspace?: WorkspaceRef;
   input?: UserMessageInput;
 }

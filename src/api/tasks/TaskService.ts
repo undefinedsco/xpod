@@ -1,7 +1,6 @@
 import type { ChatKitStore, StoreContext } from '../chatkit/store';
 import type { ThreadMetadata } from '../chatkit/types';
 import {
-  DEFAULT_THREAD_CHAT_ID,
   generateId,
   nowTimestamp,
 } from '../chatkit/types';
@@ -196,6 +195,7 @@ export class TaskService<TContext = StoreContext> {
     const taskParentKey = extractResourceLocalId(input.taskId);
     const thread: ThreadMetadata = {
       id: `task/${taskParentKey}/index.ttl#${generateId('thread')}`,
+      parent: `task/index.ttl#${taskParentKey}`,
       title: input.title,
       status: { type: 'active' },
       workspace: input.workspace,
@@ -203,9 +203,6 @@ export class TaskService<TContext = StoreContext> {
       updated_at: now,
       metadata: {
         ...(input.metadata ?? {}),
-        commandKind: 'task',
-        surface_id: taskParentKey,
-        chat_id: taskParentKey,
         taskId: input.taskId,
         runtime: {
           workspace: input.workspace,
@@ -269,15 +266,13 @@ export class TaskService<TContext = StoreContext> {
 
   private resolveThreadResource(thread: ThreadMetadata, context: TContext): string {
     const podBaseUrl = this.resolvePodBaseUrl(context);
-    const surfaceId = typeof thread.metadata?.surface_id === 'string'
-      ? thread.metadata.surface_id
-      : (typeof thread.metadata?.chat_id === 'string' ? thread.metadata.chat_id : DEFAULT_THREAD_CHAT_ID);
     if (podBaseUrl) {
       if (thread.id.includes('#') && !thread.id.startsWith('#')) {
         return resolveDataResource(podBaseUrl, thread.id);
       }
-      return `${podBaseUrl}/.data/task/${surfaceId}/index.ttl#${thread.id}`;
+      return resolveDataResource(podBaseUrl, `task/${extractResourceLocalId(thread.parent ?? thread.id)}/index.ttl#${thread.id}`);
     }
+    const surfaceId = extractResourceLocalId(thread.parent ?? thread.id);
     return `urn:xpod:thread:task:${encodeURIComponent(surfaceId)}:${encodeURIComponent(thread.id)}`;
   }
 

@@ -88,8 +88,8 @@ describe('ChatKitService + ACP tool call', () => {
     const threadCreated = createEvents.find((e) => e.type === 'thread.created');
     expect(threadCreated).toBeTruthy();
     const threadId = threadCreated.thread.id as string;
-    const chatId = threadCreated.thread.metadata?.chat_id as string | undefined;
-    expect(chatId).toBeTruthy();
+    expect(threadCreated.thread.parent).toBe('chat/default/index.ttl#this');
+    expect(threadCreated.thread.metadata?.chat_id).toBeUndefined();
 
     const toolEvent = createEvents.find((e) => e.type === 'thread.item.added' && e.item?.type === 'client_tool_call');
     expect(toolEvent).toBeTruthy();
@@ -104,7 +104,6 @@ describe('ChatKitService + ACP tool call', () => {
       type: 'threads.add_client_tool_output',
       params: {
         thread_id: threadId,
-        chat_id: chatId,
         item_id: toolItemId,
         output: JSON.stringify({ ok: true }),
       },
@@ -187,7 +186,6 @@ describe('ChatKitService + ACP tool call', () => {
       type: 'threads.add_client_tool_output',
       params: {
         thread_id: thread.id,
-        chat_id: thread.metadata.chat_id,
         item_id: toolEvent.item.id,
         output,
       },

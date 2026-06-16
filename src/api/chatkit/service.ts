@@ -36,8 +36,7 @@ import type {
   UserMessageContent,
 } from './types';
 import {
-  DEFAULT_THREAD_CHAT_ID,
-  getChatIdFromThreadMetadata,
+  getThreadParent,
   getThreadIdFromRef,
   isStreamingReq,
   generateId,
@@ -247,11 +246,12 @@ export class ChatKitService<TContext = StoreContext> {
     
     const thread: ThreadMetadata = {
       id: threadId,
+      parent: getThreadParent({ id: threadId })?.parent,
       status: { type: 'active' },
       workspace: this.resolveThreadWorkspace(params.workspace),
       created_at: now,
       updated_at: now,
-      metadata: this.normalizeThreadMetadata(metadata, params.chat_id),
+      metadata: this.normalizeThreadMetadata(metadata),
     };
 
     await this.store.saveThread(thread, context);
@@ -736,16 +736,11 @@ export class ChatKitService<TContext = StoreContext> {
 
   private normalizeThreadMetadata(
     metadata: Record<string, unknown> | undefined,
-    chatId?: string,
   ): Record<string, unknown> | undefined {
     const normalized = { ...(metadata ?? {}) };
-    normalized.chat_id = chatId
-      ?? (typeof normalized.chat_id === 'string' && normalized.chat_id.length > 0
-        ? normalized.chat_id
-        : DEFAULT_THREAD_CHAT_ID);
-    normalized.surface_id = typeof normalized.surface_id === 'string' && normalized.surface_id.length > 0
-      ? normalized.surface_id
-      : normalized.chat_id;
+    delete normalized.chat_id;
+    delete normalized.surface_id;
+    delete normalized.commandKind;
     return Object.keys(normalized).length > 0 ? normalized : undefined;
   }
 
@@ -753,14 +748,13 @@ export class ChatKitService<TContext = StoreContext> {
     return isWorkspaceRef(workspace) ? workspace : undefined;
   }
 
-  private threadRefFromParams(params: { thread_id: string; chat_id?: string }): ThreadRef {
+  private threadRefFromParams(params: { thread_id: string }): ThreadRef {
     return toThreadRef(params);
   }
 
   private threadRefFromThread(thread: ThreadMetadata): ThreadRef {
     return {
       thread_id: thread.id,
-      chat_id: getChatIdFromThreadMetadata(thread),
     };
   }
 }

@@ -13,7 +13,7 @@ import type {
   Page,
   StoreItemType,
 } from './types';
-import { generateId, getThreadIdFromRef, nowTimestamp } from './types';
+import { generateId, getThreadIdFromRef, getThreadParent, nowTimestamp } from './types';
 import {
   buildRunResourceId,
   buildRunStepResourceId,
@@ -92,21 +92,32 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     return getThreadIdFromRef(thread);
   }
 
+  private stripThreadProtocolMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+    if (!metadata) {
+      return undefined;
+    }
+    const stripped = { ...metadata };
+    delete stripped.chat_id;
+    delete stripped.surface_id;
+    delete stripped.commandKind;
+    delete stripped.parent;
+    return Object.keys(stripped).length > 0 ? stripped : undefined;
+  }
+
   // ID Generation
   generateThreadId(_context: TContext): string {
     return `chat/default/index.ttl#${generateId('thread')}`;
   }
 
   generateItemId(itemType: StoreItemType, thread: ThreadMetadata, _context: TContext): string {
-    const commandKind = thread.metadata?.commandKind === 'task' ? 'task' : 'chat';
-    const surfaceId = typeof thread.metadata?.surface_id === 'string'
-      ? thread.metadata.surface_id
-      : (typeof thread.metadata?.chat_id === 'string' ? thread.metadata.chat_id : 'default');
+    const parent = getThreadParent(thread);
+    const storageKind = parent?.kind ?? 'chat';
+    const storageKey = parent?.key ?? 'default';
     const date = new Date();
     const yyyy = String(date.getUTCFullYear());
     const MM = String(date.getUTCMonth() + 1).padStart(2, '0');
     const dd = String(date.getUTCDate()).padStart(2, '0');
-    return `${commandKind}/${surfaceId}/${yyyy}/${MM}/${dd}/messages.ttl#${generateId(itemType)}`;
+    return `${storageKind}/${storageKey}/${yyyy}/${MM}/${dd}/messages.ttl#${generateId(itemType)}`;
   }
 
   // Thread operations
@@ -122,7 +133,12 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
 
   async saveThread(thread: ThreadMetadata, context: TContext): Promise<void> {
     const key = this.getThreadKey(thread.id, context);
-    this.threads.set(key, { ...thread, updated_at: nowTimestamp() });
+    this.threads.set(key, {
+      ...thread,
+      parent: thread.parent ?? getThreadParent(thread)?.parent,
+      metadata: this.stripThreadProtocolMetadata(thread.metadata),
+      updated_at: nowTimestamp(),
+    });
   }
 
   async loadThreads(limit: number, after: string | undefined, order: string, context: TContext): Promise<Page<ThreadMetadata>> {

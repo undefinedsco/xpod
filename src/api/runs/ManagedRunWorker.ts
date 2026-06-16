@@ -519,7 +519,6 @@ export class ManagedRunWorker<TContext = StoreContext> {
     }
     return toThreadRef({
       thread_id: this.extractThreadId(run.thread),
-      chat_id: run.surfaceId,
     });
   }
 

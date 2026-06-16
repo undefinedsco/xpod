@@ -28,17 +28,17 @@
 ## 关系字段和 id 字段
 
 - `Run.thread`、`Run.task`、`Run.workspace`、`RunStep.run` 是边关系，值可以是资源引用，但字段名表达关系本身。
-- `Thread.chat` 是指向 Chat 的边关系；ChatKit 协议里的 `chat_id` 只在 adapter metadata/API 参数里出现，不作为 RDF 字段名。
+- `Thread.parent` 是 Thread 归属关系的权威字段（`sioc:has_parent`），指向 Chat 或 Task command surface；不要用 `metadata.chat_id`、`metadata.surface_id` 或 `metadata.commandKind` 表达归属。
 - `RunStep.runId` 是本地查询字段，值仍是 Run 的 base-relative resource id，用于快速列出某次 Run 的 steps；语义关系仍然是 `RunStep.run`。
 - `Thread.id`、`Message.id`、`Task.id`、`Run.id`、`RunStep.id` 都遵循同一规则：进入 store/ORM 的值就是完整 base-relative resource id。业务 schema 不显式写 `subjectTemplate`；省略模板就是 exact-id subject 模式。
-- `surfaceId` 表示命令从哪个 command surface/channel 产生并归档。ChatKit 边界仍叫 `chat_id`，进入 Xpod durable model 后映射为 `surfaceId`。它不是下发者、不是执行者、不是 runner，也不是 Task assignee。路径上 Chat 和 Task 共用这个槽位：
+- 路径里的 `{surfaceId}` 是从 `Thread.parent` / 资源 id 派生的归档槽位，不是独立持久字段。ChatKit/API 的 `chat_id`、`surface_id`、`commandKind` 只属于边界投影，不能写入 Pod metadata 作为业务语义，也不作为旧数据兼容入口。它不是下发者、不是执行者、不是 runner，也不是 Task assignee。路径上 Chat 和 Task 共用这个槽位：
 
 ```text
 /.data/chat/{surfaceId}/...
 /.data/task/{surfaceId}/...
 ```
 
-`runner` 只是技术适配器，例如 `pi:codex` 或 `acp:codex`；“谁来干”应由 agent/runtime 配置表达，不塞进 `surfaceId`。
+`runner` 只是技术适配器，例如 `pi:codex` 或 `acp:codex`；“谁来干”应由 agent/runtime 配置表达，不塞进路径槽位。
 
 ## id 默认生成规则
 
@@ -76,7 +76,7 @@ Chat 和 Task 是并列的命令形态：
 /.data/task/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{runStepId}
 ```
 
-`Task` 定义集中放在 `/.data/task/index.ttl`；Task 产生的 thread/message/run/step 按 `task/{surfaceId}` 与 Chat 的目录结构对齐。
+`Task` 定义集中放在 `/.data/task/index.ttl`；Task 产生的 thread/message/run/step 目录从 `Thread.parent = task/index.ttl#{taskId}` 派生，当前路径形状仍使用 `task/{taskKey}` 与 Chat 的目录结构对齐。
 
 ## 共享资源 id 总表
 

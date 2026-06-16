@@ -125,11 +125,10 @@ function getThreadRefFromRequest(
   response: any,
   rawThreadId: string,
 ): ThreadRef | null {
-  const url = new URL(request.url ?? '', `http://${request.headers.host}`);
+  void request;
   try {
     return toThreadRef({
       thread_id: decodeURIComponent(rawThreadId),
-      chat_id: url.searchParams.get('chat_id') ?? undefined,
     });
   } catch (error) {
     sendJson(response, 400, {

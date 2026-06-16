@@ -3,7 +3,6 @@ import { createServer } from 'node:net';
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatKitV1Routes } from '../../src/api/handlers/ChatKitV1Handler';
-import { DEFAULT_THREAD_CHAT_ID } from '../../src/api/chatkit/types';
 import { InMemoryStore } from '../../src/api/chatkit/store';
 import type { StoreContext } from '../../src/api/chatkit/store';
 import type { ThreadMetadata, UserMessageItem } from '../../src/api/chatkit/types';
@@ -40,6 +39,9 @@ async function getFreePort(): Promise<number> {
   });
 }
 
+const TEST_THREAD_ID = 'chat/default/index.ttl#thread_test_1';
+const TEST_THREAD_SEGMENT = encodeURIComponent(TEST_THREAD_ID);
+
 describe('ChatKitV1Handler Integration', () => {
   let server: ApiServer;
   let baseUrl: string;
@@ -57,7 +59,7 @@ describe('ChatKitV1Handler Integration', () => {
     const ctx: StoreContext = { userId: 'https://example.com/user#me', auth: { type: 'solid' } as any };
     const now = Math.floor(Date.now() / 1000);
     const thread: ThreadMetadata = {
-      id: 'thread_test_1',
+      id: TEST_THREAD_ID,
       title: 't1',
       status: { type: 'active' },
       created_at: now,
@@ -71,7 +73,7 @@ describe('ChatKitV1Handler Integration', () => {
       created_at: now,
       content: [{ type: 'input_text', text: 'hello' }],
     };
-    await store.addThreadItem({ thread_id: thread.id, chat_id: DEFAULT_THREAD_CHAT_ID }, item, ctx);
+    await store.addThreadItem({ thread_id: thread.id }, item, ctx);
   });
 
   afterAll(async () => {
@@ -91,19 +93,19 @@ describe('ChatKitV1Handler Integration', () => {
   });
 
   it('retrieves thread at /v1/chatkit/threads/:id', async () => {
-    const res = await fetch(`${baseUrl}/v1/chatkit/threads/thread_test_1?chat_id=${DEFAULT_THREAD_CHAT_ID}`, {
+    const res = await fetch(`${baseUrl}/v1/chatkit/threads/${TEST_THREAD_SEGMENT}`, {
       headers: { Authorization: 'Bearer test-token' },
     });
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.id).toBe('thread_test_1');
+    expect(json.id).toBe(TEST_THREAD_ID);
     expect(json.object).toBe('chatkit.thread');
     expect(json.items.object).toBe('list');
     expect(json.items.data[0].object).toBe('chatkit.thread_item');
   });
 
   it('lists items at /v1/chatkit/threads/:id/items', async () => {
-    const res = await fetch(`${baseUrl}/v1/chatkit/threads/thread_test_1/items?chat_id=${DEFAULT_THREAD_CHAT_ID}&limit=50`, {
+    const res = await fetch(`${baseUrl}/v1/chatkit/threads/${TEST_THREAD_SEGMENT}/items?limit=50`, {
       headers: { Authorization: 'Bearer test-token' },
     });
     expect(res.status).toBe(200);
@@ -113,12 +115,12 @@ describe('ChatKitV1Handler Integration', () => {
     expect(json.data[0].object).toBe('chatkit.thread_item');
   });
 
-  it('returns 400 when bare thread id misses chat_id', async () => {
+  it('returns 400 for incomplete thread id', async () => {
     const res = await fetch(baseUrl + '/v1/chatkit/threads/thread_test_1', {
       headers: { Authorization: 'Bearer test-token' },
     });
     expect(res.status).toBe(400);
     const json = await res.json();
-    expect(json.error).toContain('chat_id is required');
+    expect(json.error).toContain('complete thread resource id is required');
   });
 });

@@ -661,15 +661,13 @@ describe('Managed Agents Inngest Chat backend', () => {
       created_at: now,
       updated_at: now,
       metadata: {
-        chat_id: 'default',
-        surface_id: 'default',
         runtime: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
     };
-    const threadRef = toThreadRef({ thread_id: thread.id, chat_id: 'default' });
+    const threadRef = toThreadRef({ thread_id: thread.id });
     await store.saveThread(thread, context);
     await store.addThreadItem(threadRef, {
       id: 'user_msg_registry_restore',
@@ -783,15 +781,13 @@ describe('Managed Agents Inngest Chat backend', () => {
       updated_at: now,
       metadata: {
         commandKind: 'task',
-        chat_id: 'secretary',
-        surface_id: 'secretary',
         runtime: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
     };
-    const threadRef = toThreadRef({ thread_id: thread.id, chat_id: 'secretary' });
+    const threadRef = toThreadRef({ thread_id: thread.id });
     await store.saveThread(thread, context);
     await store.addThreadItem(threadRef, {
       id: 'user_msg_auth_restore',
@@ -890,15 +886,13 @@ describe('Managed Agents Inngest Chat backend', () => {
       created_at: now,
       updated_at: now,
       metadata: {
-        chat_id: 'default',
-        surface_id: 'default',
         runtime: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
     };
-    const threadRef = toThreadRef({ thread_id: thread.id, chat_id: 'default' });
+    const threadRef = toThreadRef({ thread_id: thread.id });
     await store.saveThread(thread, context);
     const userMessage = {
       id: 'user_msg_store_restore',
@@ -1018,15 +1012,13 @@ describe('Managed Agents Inngest Chat backend', () => {
       created_at: now,
       updated_at: now,
       metadata: {
-        chat_id: 'default',
-        surface_id: 'default',
         runtime: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
     };
-    const threadRef = toThreadRef({ thread_id: thread.id, chat_id: 'default' });
+    const threadRef = toThreadRef({ thread_id: thread.id });
     await store.saveThread(thread, context);
     await store.addThreadItem(threadRef, {
       id: 'user_msg_claim',
@@ -1099,15 +1091,13 @@ describe('Managed Agents Inngest Chat backend', () => {
       created_at: now,
       updated_at: now,
       metadata: {
-        chat_id: 'default',
-        surface_id: 'default',
         runtime: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
     };
-    const threadRef = toThreadRef({ thread_id: thread.id, chat_id: 'default' });
+    const threadRef = toThreadRef({ thread_id: thread.id });
     await store.saveThread(thread, context);
     await store.addThreadItem(threadRef, {
       id: 'user_msg_running_recover',
@@ -1180,15 +1170,13 @@ describe('Managed Agents Inngest Chat backend', () => {
       created_at: now,
       updated_at: now,
       metadata: {
-        chat_id: 'default',
-        surface_id: 'default',
         runtime: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
     };
-    const threadRef = toThreadRef({ thread_id: thread.id, chat_id: 'default' });
+    const threadRef = toThreadRef({ thread_id: thread.id });
     await store.saveThread(thread, context);
     await store.addThreadItem(threadRef, {
       id: 'user_msg_running_leased',
@@ -1262,15 +1250,13 @@ describe('Managed Agents Inngest Chat backend', () => {
       created_at: now,
       updated_at: now,
       metadata: {
-        chat_id: 'default',
-        surface_id: 'default',
         runtime: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
         },
       },
     };
-    const threadRef = toThreadRef({ thread_id: thread.id, chat_id: 'default' });
+    const threadRef = toThreadRef({ thread_id: thread.id });
     await store.saveThread(thread, context);
     await store.addThreadItem(threadRef, {
       id: 'user_msg_cancel',
@@ -1480,7 +1466,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       type: 'threads.add_client_tool_output',
       params: {
         thread_id: thread.id,
-        chat_id: thread.metadata.chat_id,
         item_id: toolItem.id,
         output: 'selected README.md',
       },
@@ -1551,7 +1536,6 @@ describe('Managed Agents Inngest Chat backend', () => {
       type: 'threads.add_user_message',
       params: {
         thread_id: thread.id,
-        chat_id: thread.metadata.chat_id,
         input: {
           content: [{ type: 'input_text', text: 'second' }],
         },

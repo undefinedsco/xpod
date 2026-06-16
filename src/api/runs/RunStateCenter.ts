@@ -9,10 +9,10 @@ import type {
   UserMessageItem,
 } from '../chatkit/types';
 import {
-  DEFAULT_THREAD_CHAT_ID,
   extractAssistantMessageText,
   extractUserMessageText,
   generateId,
+  getThreadParent,
   toThreadRef,
   nowTimestamp,
 } from '../chatkit/types';
@@ -352,8 +352,9 @@ export class RunStateCenter<TContext = StoreContext> {
   }): Promise<RunRecordData> {
     const { thread, userMessage, prompt, runtimeConfig, context } = input;
     const now = nowTimestamp();
-    const commandKind = thread.metadata?.commandKind === 'task' ? 'task' : 'chat';
-    const surfaceId = this.resolveSurfaceId(thread);
+    const surface = this.resolveThreadSurface(thread);
+    const commandKind = surface.commandKind;
+    const surfaceId = surface.surfaceId;
     const run: RunRecordData = {
       id: generateRunResourceId({
         key: generateId('run'),
@@ -627,16 +628,15 @@ export class RunStateCenter<TContext = StoreContext> {
       return threadId;
     }
 
-    const commandKind = thread.metadata?.commandKind === 'task' ? 'task' : 'chat';
-    const surfaceId = this.resolveSurfaceId(thread);
+    const surface = this.resolveThreadSurface(thread);
     const podBaseUrl = this.resolvePodBaseUrl(context);
     if (podBaseUrl) {
       if (threadId.includes('#') && !threadId.startsWith('#')) {
         return resolveDataResource(podBaseUrl, threadId);
       }
-      return `${podBaseUrl}/.data/${commandKind}/${surfaceId}/index.ttl#${threadId}`;
+      return `${podBaseUrl}/.data/${surface.commandKind}/${surface.surfaceId}/index.ttl#${threadId}`;
     }
-    return `urn:xpod:thread:${commandKind}:${encodeURIComponent(surfaceId)}:${encodeURIComponent(threadId)}`;
+    return `urn:xpod:thread:${surface.commandKind}:${encodeURIComponent(surface.surfaceId)}:${encodeURIComponent(threadId)}`;
   }
 
   private resolveRunResource(run: RunRecordData, context: TContext): string {
@@ -683,9 +683,6 @@ export class RunStateCenter<TContext = StoreContext> {
   }
 
   private extractThreadIdFromRef(threadRef: ThreadRef): string {
-    if ('chat_id' in threadRef) {
-      return threadRef.thread_id;
-    }
     return threadRef.thread_id;
   }
 
@@ -754,14 +751,12 @@ export class RunStateCenter<TContext = StoreContext> {
     return value === 'pi' || value === 'codex' || value === 'claude' || value === 'codebuddy';
   }
 
-  private resolveSurfaceId(thread: ThreadMetadata): string {
-    if (typeof thread.metadata?.surface_id === 'string') {
-      return thread.metadata.surface_id;
-    }
-    if (typeof thread.metadata?.chat_id === 'string') {
-      return thread.metadata.chat_id;
-    }
-    return DEFAULT_THREAD_CHAT_ID;
+  private resolveThreadSurface(thread: ThreadMetadata): { commandKind: 'chat' | 'task'; surfaceId: string } {
+    const parent = getThreadParent(thread);
+    return {
+      commandKind: parent?.kind ?? 'chat',
+      surfaceId: parent?.key ?? 'default',
+    };
   }
 
   private resolvePodBaseUrl(context: TContext): string | undefined {
@@ -815,7 +810,6 @@ export class RunStateCenter<TContext = StoreContext> {
   private threadRefFromThread(thread: ThreadMetadata): ThreadRef {
     return toThreadRef({
       thread_id: thread.id,
-      chat_id: typeof thread.metadata?.chat_id === 'string' ? thread.metadata.chat_id : DEFAULT_THREAD_CHAT_ID,
     });
   }
 

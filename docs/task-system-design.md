@@ -109,7 +109,7 @@ Pod 位置:
 /.data/{chat|task}/{surfaceId}/{yyyy}/{MM}/{dd}/runs.ttl#{stepId}
 ```
 
-`surfaceId` 是命令来源/归档的 command surface。ChatKit 协议参数仍叫 `chat_id`，但内部持久模型统一叫 `surfaceId`。它不表示谁下发任务、谁执行任务，也不表示 runner。
+Run/Message 的路径归档槽位从 `Thread.parent` / 资源 id 派生；`surfaceId` 只是 API/运行时 DTO 中的派生投影，不是 Thread 的持久归属字段。ChatKit 协议参数 `chat_id` 不写入 Pod metadata。它不表示谁下发任务、谁执行任务，也不表示 runner。
 
 `Run.id` 是相对 `/.data/` base 的资源 id，例如 `chat/default/2026/05/18/runs.ttl#run_x`，不是 `run_x` 这个 fragment/local id。`Run.task`、`Run.thread`、`Run.workspace` 都是边关系。`RunStep.runId` 是本地查询/定位字段，值仍是 Run 的 base-relative resource id；语义关系使用 `RunStep.run`。
 

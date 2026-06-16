@@ -217,15 +217,13 @@ export class TaskMaterializer<TContext = StoreContext> {
       const surfaceId = this.resolveTaskThreadSurfaceId(task);
       const metadata: ThreadMetadata = {
         id: this.extractThreadId(task.thread),
+        parent: `task/index.ttl#${surfaceId}`,
         title: task.title,
         status: { type: 'active' },
         workspace: task.workspace,
         created_at: now,
         updated_at: now,
         metadata: {
-          commandKind: 'task',
-          surface_id: surfaceId,
-          chat_id: surfaceId,
           task: this.resolveTaskResource(task, context),
           runtime: {
             workspace: task.workspace,
@@ -506,7 +504,6 @@ export class TaskMaterializer<TContext = StoreContext> {
     }
     return toThreadRef({
       thread_id: this.extractThreadId(task.thread),
-      chat_id: this.resolveTaskThreadSurfaceId(task),
     });
   }
 

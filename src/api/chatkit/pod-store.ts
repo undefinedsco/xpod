@@ -25,7 +25,7 @@ import type {
   ClientToolCallItem,
   ThreadStatus,
 } from './types';
-import { generateId, getThreadIdFromRef, nowTimestamp } from './types';
+import { generateId, getThreadIdFromRef, getThreadParent, nowTimestamp } from './types';
 import {
   Chat,
   Thread,
@@ -143,8 +143,6 @@ type JsonObjectSource = string | Record<string, unknown> | null | undefined;
 type ThreadMetadataSource = {
   id: string;
   parent?: string | null;
-  commandKind?: string | null;
-  surfaceId?: string | null;
   chat?: string | null;
   title?: string | null;
   status?: string | null;
@@ -172,11 +170,9 @@ type ThreadParentResolution = CommandSurface & {
 
 type RunRecordSource = {
   id: string;
-  surfaceId?: string | null;
   task?: string | null;
   thread?: string | null;
   workspace?: string | null;
-  commandKind?: string | null;
   status?: string | null;
   runner?: string | null;
   prompt?: string | null;
@@ -195,7 +191,6 @@ type RunRecordSource = {
 
 type TaskRecordSource = {
   id: string;
-  surfaceId?: string | null;
   title?: string | null;
   prompt?: string | null;
   thread?: string | null;
@@ -215,8 +210,6 @@ type TaskRecordSource = {
 
 type RunStepRecordSource = {
   id: string;
-  commandKind?: string | null;
-  surfaceId?: string | null;
   runId?: string | null;
   run?: string | null;
   type?: string | null;
@@ -233,10 +226,8 @@ type RunStepRecordSource = {
  * 数据模型映射：
  * - ChatKit thread = Thread (sioc:Thread)
  * - ChatKit thread item = Message (meeting:Message)
- * - ChatKit 协议里的 chat_id 在内部映射为 surfaceId
- *
- * 每个 Thread 通过 thread.parent 归属到一个命令面：Chat 或 Task。
- * ChatKit 边界保留 chat_id/surface_id 作为协议投影，不作为持久 schema 字段。
+ * - Thread 通过 sioc:has_parent 归属到 Chat 或 Task command surface。
+ * - ChatKit/API 的 opaque 字段不进入 Pod 持久 metadata；内部存储路径从 parent/id 派生。
  */
 export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<StoreContext>, TaskStore<StoreContext>, TaskAuthBindingRepository<StoreContext> {
   private readonly logger = getLoggerFor(this);
@@ -580,20 +571,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     }
   }
 
-  private getCommandKindFromMetadata(metadata?: Record<string, unknown>): 'chat' | 'task' {
-    return metadata?.commandKind === 'task' ? 'task' : 'chat';
-  }
-
-  private getSurfaceIdFromMetadata(metadata?: Record<string, unknown>): string {
-    if (metadata && typeof metadata.surface_id === 'string') {
-      return metadata.surface_id;
-    }
-    if (metadata && typeof metadata.chat_id === 'string') {
-      return metadata.chat_id;
-    }
-    return PodChatKitStore.DEFAULT_CHAT_ID;
-  }
-
   private readMetadataString(
     metadata: Record<string, unknown> | undefined,
     key: string,
@@ -726,59 +703,56 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   private resolveThreadParent(
-    metadata: Record<string, unknown> | undefined,
+    thread: ThreadMetadata,
     context: StoreContext,
   ): ThreadParentResolution {
-    const requestedCommandKind = this.getCommandKindFromMetadata(metadata);
-    const requestedSurfaceId = this.getSurfaceIdFromMetadata(metadata);
-    const explicitParent = this.readMetadataString(metadata, 'parent');
-    const taskRef = requestedCommandKind === 'task'
-      ? this.readMetadataString(metadata, 'task') ?? this.readMetadataString(metadata, 'taskId')
-      : undefined;
+    const metadata = thread.metadata;
+    const explicitParent = thread.parent ?? this.readMetadataString(metadata, 'parent');
+    const taskRef = this.readMetadataString(metadata, 'task') ?? this.readMetadataString(metadata, 'taskId');
 
     if (explicitParent) {
+      const derived = getThreadParent({ id: thread.id, parent: explicitParent });
+      const requestedCommandKind = derived?.kind ?? (taskRef ? 'task' : 'chat');
       const parent = this.resolveExplicitThreadParentResource(explicitParent, requestedCommandKind, context);
-      const surface = this.commandSurfaceFromResourceRef(parent);
+      const surface = this.commandSurfaceFromResourceRef(parent) ?? (derived
+        ? { commandKind: derived.kind, surfaceId: derived.key }
+        : undefined);
       if (surface) {
         return { ...surface, parent };
       }
       return {
         commandKind: requestedCommandKind,
-        surfaceId: requestedSurfaceId,
+        surfaceId: PodChatKitStore.DEFAULT_CHAT_ID,
         parent,
       };
     }
 
-    if (requestedCommandKind === 'task') {
-      const parent = taskRef
-        ? this.resolveTaskParentResource(taskRef, context)
-        : this.resolveTaskParentResource(`index.ttl#${requestedSurfaceId}`, context);
+    if (taskRef) {
+      const parent = this.resolveTaskParentResource(taskRef, context);
       const surface = this.commandSurfaceFromResourceRef(parent);
       return {
         commandKind: 'task',
-        surfaceId: surface?.surfaceId ?? requestedSurfaceId,
+        surfaceId: surface?.surfaceId ?? extractResourceLocalId(taskRef),
         parent,
       };
     }
 
-    const parent = this.resolveDataResource(`chat/${requestedSurfaceId}/index.ttl#this`, context);
+    const derived = getThreadParent(thread);
+    if (derived) {
+      const parent = this.resolveExplicitThreadParentResource(derived.parent, derived.kind, context);
+      const surface = this.commandSurfaceFromResourceRef(parent);
+      return {
+        commandKind: surface?.commandKind ?? derived.kind,
+        surfaceId: surface?.surfaceId ?? derived.key,
+        parent,
+      };
+    }
+
+    const parent = this.resolveDataResource(`chat/${PodChatKitStore.DEFAULT_CHAT_ID}/index.ttl#this`, context);
     return {
       commandKind: 'chat',
-      surfaceId: requestedSurfaceId,
+      surfaceId: PodChatKitStore.DEFAULT_CHAT_ID,
       parent,
-    };
-  }
-
-  private threadApiMetadata(
-    metadata: Record<string, unknown> | undefined,
-    parent: ThreadParentResolution,
-  ): Record<string, unknown> {
-    return {
-      ...(metadata ?? {}),
-      parent: parent.parent,
-      chat_id: parent.surfaceId,
-      commandKind: parent.commandKind,
-      surface_id: parent.surfaceId,
     };
   }
 
@@ -828,31 +802,26 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   /**
-   * 将 ThreadRecord 转为 ThreadMetadata
-   * ChatKit 边界继续暴露 metadata.chat_id；内部同一值叫 surface_id。
+   * 将 ThreadRecord 转为 ThreadMetadata。
+   * Pod 中以 thread.parent 作为权威归属关系，metadata 只返回业务扩展字段。
    */
   private threadRecordToMetadata(record: ThreadMetadataSource): ThreadMetadata {
-    const extra = this.parseJsonObject(record.metadata);
-    const parentSurface = this.commandSurfaceFromResourceRef(record.parent);
-    const commandKind = parentSurface?.commandKind
-      ?? (record.commandKind === 'task' || extra?.commandKind === 'task' ? 'task' : 'chat');
-    const surfaceId = parentSurface?.surfaceId
-      || record.surfaceId
-      || (typeof extra?.surface_id === 'string' ? extra.surface_id : undefined)
-      || (typeof extra?.chat_id === 'string' ? extra.chat_id : undefined)
-      || this.chatSurfaceIdFromResource(record.chat)
-      || PodChatKitStore.DEFAULT_CHAT_ID;
+    const extra = this.threadStoredMetadata(this.parseJsonObject(record.metadata));
     const parent = record.parent
-      ?? (commandKind === 'chat' ? `chat/${surfaceId}/index.ttl#this` : `task/index.ttl#${surfaceId}`);
+      ?? getThreadParent({ id: record.id })?.parent
+      ?? (this.chatSurfaceIdFromResource(record.chat)
+        ? `chat/${this.chatSurfaceIdFromResource(record.chat)}/index.ttl#this`
+        : undefined);
 
     return {
       id: record.id,
+      parent,
       title: record.title || undefined,
       status: this.stringToStatus(record.status),
       workspace: record.workspace || undefined,
       created_at: record.createdAt ? Math.floor(new Date(record.createdAt).getTime() / 1000) : nowTimestamp(),
       updated_at: record.updatedAt ? Math.floor(new Date(record.updatedAt).getTime() / 1000) : nowTimestamp(),
-      metadata: this.threadApiMetadata(extra, { commandKind, surfaceId, parent }),
+      metadata: extra,
     };
   }
 
@@ -1094,15 +1063,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   private runRecordToData(record: RunRecordSource): RunRecordData {
     const metadata = this.parseJsonObject(record.metadata);
-    const xpod = this.getXpodMetadata(metadata);
     const surface = this.commandSurfaceFromResourceRef(record.id);
     return {
       id: record.id || '',
-      surfaceId: surface?.surfaceId || record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
+      surfaceId: surface?.surfaceId ?? 'default',
       task: record.task || undefined,
       thread: record.thread || '',
       workspace: record.workspace || '',
-      commandKind: surface?.commandKind ?? (record.commandKind === 'task' || xpod?.commandKind === 'task' ? 'task' : 'chat'),
+      commandKind: surface?.commandKind ?? 'chat',
       status: (record.status || 'queued') as RunRecordData['status'],
       runner: record.runner || '',
       prompt: record.prompt || undefined,
@@ -1122,15 +1090,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   private runStepRecordToData(record: RunStepRecordSource, context: StoreContext): RunStepRecordData {
     const payload = this.parseJsonObject(record.payload) ?? this.parseJsonObject(record.data);
-    const xpod = this.getXpodMetadata(payload);
     const runId = record.runId
-      || (record.run ? this.baseRelativeIdFromResource(record.run, context) : '')
-      || (typeof xpod?.runId === 'string' ? xpod.runId : '');
+      || (record.run ? this.baseRelativeIdFromResource(record.run, context) : '');
     const surface = this.commandSurfaceFromResourceRef(runId);
     return {
       id: record.id || '',
-      commandKind: surface?.commandKind ?? (record.commandKind === 'task' || xpod?.commandKind === 'task' ? 'task' : 'chat'),
-      surfaceId: surface?.surfaceId || record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
+      commandKind: surface?.commandKind ?? 'chat',
+      surfaceId: surface?.surfaceId ?? 'default',
       runId,
       run: record.run || '',
       type: record.type || record.stepType || 'runtime.event',
@@ -1143,9 +1109,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   private taskRecordToData(record: TaskRecordSource): TaskRecordData {
     const metadata = this.parseJsonObject(record.metadata);
     const xpod = this.getXpodMetadata(metadata);
+    const taskKey = extractResourceLocalId(record.id || 'index.ttl#default');
     return {
       id: record.id || '',
-      surfaceId: record.surfaceId || (typeof xpod?.surfaceId === 'string' ? xpod.surfaceId : 'default'),
+      surfaceId: taskKey,
       title: record.title || undefined,
       prompt: record.prompt || '',
       thread: record.thread || '',
@@ -1284,26 +1251,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       };
     }
 
-    if (!('chat_id' in thread) || !thread.chat_id) {
-      throw new Error(`chat_id is required when thread_id "${threadRef}" is not a full thread resource id`);
-    }
-
-    const surfaceId = thread.chat_id;
-    const commandKind = 'chat';
-    const threadId = this.generateThreadResourceId({
-      key: threadRef,
-      commandKind,
-      surfaceId,
-    });
-
-    const threadResource = this.resolveDataResource(threadId, context);
-    this.cacheThreadSurfaceId(context, threadId, surfaceId);
-    return {
-      threadId,
-      commandKind,
-      surfaceId,
-      thread: threadResource,
-    };
+    throw new Error(`complete thread resource id is required, got "${threadRef}"`);
   }
 
   /**
@@ -1420,12 +1368,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   generateItemId(itemType: StoreItemType, thread: ThreadMetadata, _context: StoreContext): string {
-    const commandKind = thread.metadata?.commandKind === 'task' ? 'task' : 'chat';
-    const surfaceId = this.getSurfaceIdFromMetadata(thread.metadata);
+    const surface = this.commandSurfaceFromResourceRef(thread.parent)
+      ?? this.commandSurfaceFromResourceRef(thread.id)
+      ?? { commandKind: 'chat' as const, surfaceId: PodChatKitStore.DEFAULT_CHAT_ID };
     return this.generateMessageResourceId({
       key: generateId(itemType.replace('_', '-')),
-      commandKind,
-      surfaceId,
+      commandKind: surface.commandKind,
+      surfaceId: surface.surfaceId,
     });
   }
 
@@ -1456,7 +1405,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const metadata = this.threadRecordToMetadata(threadRecord);
     // 缓存结果
     this.cacheThreadMetadata(context, metadata);
-    this.cacheThreadSurfaceId(context, metadata.id, this.getSurfaceIdFromMetadata(metadata.metadata));
+    const surface = this.commandSurfaceFromResourceRef(metadata.parent) ?? this.commandSurfaceFromResourceRef(metadata.id);
+    if (surface) {
+      this.cacheThreadSurfaceId(context, metadata.id, surface.surfaceId);
+    }
     return metadata;
   }
 
@@ -1468,12 +1420,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     const now = new Date().toISOString();
 
-    const parent = this.resolveThreadParent(thread.metadata, context);
+    const parent = this.resolveThreadParent(thread, context);
     const commandKind = parent.commandKind;
     const surfaceId = parent.surfaceId;
-    const apiMetadata = this.threadApiMetadata(thread.metadata, parent);
-    thread.metadata = apiMetadata;
-    const metadataObject = this.jsonObjectOrNull(this.threadStoredMetadata(apiMetadata));
+    const storedMetadata = this.threadStoredMetadata(thread.metadata);
+    thread.parent = parent.parent;
+    thread.metadata = storedMetadata;
+    const metadataObject = this.jsonObjectOrNull(storedMetadata);
 
     if (commandKind === 'chat') {
       await this.ensureChat(surfaceId, context);
@@ -1515,10 +1468,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       });
     }
 
-    // 缓存完整的 Thread metadata，确保 ChatKit metadata.chat_id 包含正确的 surface。
+    // 缓存完整的 Thread metadata；metadata 不包含协议兼容字段。
     const threadMetadata: ThreadMetadata = {
       ...thread,
-      metadata: apiMetadata,
+      parent: parent.parent,
+      metadata: storedMetadata,
     };
     this.cacheThreadMetadata(context, threadMetadata);
   }
@@ -1725,12 +1679,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       status,
       toolName,
       toolCallId,
-      metadata: this.jsonObjectOrNull({
-        ...(metadata ?? {}),
-        commandKind: resolvedThread.commandKind,
-        surface_id: resolvedThread.surfaceId,
-        chat_id: resolvedThread.surfaceId,
-      }),
+      metadata: this.jsonObjectOrNull(metadata ?? undefined),
       createdAt: new Date(item.created_at * 1000).toISOString(),
     };
 
@@ -2129,7 +2078,6 @@ WHERE { ${deletePatterns.join(' ')} }
     const metadata = this.withXpodMetadata(
       this.withTaskAuthBindingMetadata(task.metadata, task.authBinding),
       {
-        surfaceId: task.surfaceId,
         runner: task.runner,
         triggerKind: task.triggerKind,
         cron: task.cron ?? null,
