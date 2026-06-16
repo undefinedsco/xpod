@@ -559,6 +559,46 @@ describe('PostgresRdfEngine', () => {
     await engine.close();
   });
 
+  it('returns zero result when Postgres RDF term rewrite new prefix is empty', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-rewrite-empty-new-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(
+          namedNode('https://pod.example/old/data.ttl#this'),
+          namedNode('https://schema.org/name'),
+          literal('Demo'),
+          namedNode('https://pod.example/old/data.ttl'),
+        ),
+      ], {
+        source: 'https://pod.example/old/data.ttl',
+        workspace: 'https://pod.example/',
+        localPath: 'old/data.ttl',
+        contentType: 'text/turtle',
+      });
+
+      const result = await engine.rewriteTerms({
+        oldPrefix: 'https://pod.example/old/',
+        newPrefix: '',
+        scope: 'safe_projection',
+        mode: 'safe',
+      });
+
+      expect(result).toEqual({ matchedTerms: 0, rewrittenTerms: 0, remappedTerms: 0, skippedTerms: [], affectedQuads: 0 });
+      const oldScan = await engine.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl') } });
+      expect(oldScan.quads).toHaveLength(1);
+      expect(oldScan.quads[0].subject.value).toBe('https://pod.example/old/data.ttl#this');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses PostgreSQL RDF-3X stats and BGP join without building a fallback cache', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf3x-'));
     const engine = new PostgresRdfEngine({

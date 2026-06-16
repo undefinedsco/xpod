@@ -2012,7 +2012,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const dictionary = this.requireDictionary();
     const oldPrefix = input.oldPrefix;
     const newPrefix = input.newPrefix;
-    if (!oldPrefix || oldPrefix === newPrefix) {
+    if (!oldPrefix || !newPrefix || oldPrefix === newPrefix) {
       return { matchedTerms: 0, rewrittenTerms: 0, remappedTerms: 0, skippedTerms: [], affectedQuads: 0 };
     }
 
