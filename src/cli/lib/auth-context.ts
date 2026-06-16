@@ -1,9 +1,11 @@
 import { getAccessToken, authenticatedFetch } from './solid-auth';
 import {
   getClientCredentials,
+  getOAuthCredentials,
   loadCredentials,
   type StoredCredentials,
 } from './credentials-store';
+import { getOidcAccessToken } from './oidc-auth';
 import { CliCommandError } from './output';
 
 export interface CliAuthContext {
@@ -73,22 +75,20 @@ export async function requireAuthContext(options: {
     );
   }
 
-  const clientCredentials = getClientCredentials(credentials);
-  if (!clientCredentials) {
-    throw new CliCommandError(
-      'auth_unsupported',
-      'Stored OAuth credentials are not supported for CLI resource operations yet. Run `xpod auth login` to create client credentials.',
-      2,
-    );
-  }
-
   const baseUrl = normalizeBaseUrl(options.url ?? credentials.url);
-  const tokenResult = await getAccessToken(
-    clientCredentials.clientId,
-    clientCredentials.clientSecret,
-    baseUrl,
-  );
-  if (!tokenResult) {
+  const clientCredentials = getClientCredentials(credentials);
+  const oauthCredentials = getOAuthCredentials(credentials);
+  const accessToken = clientCredentials
+    ? (await getAccessToken(
+      clientCredentials.clientId,
+      clientCredentials.clientSecret,
+      baseUrl,
+    ))?.accessToken
+    : oauthCredentials
+      ? await getOidcAccessToken(credentials)
+      : null;
+
+  if (!accessToken) {
     throw new CliCommandError(
       'auth_failed',
       'Failed to obtain an access token. Run `xpod auth login` again.',
@@ -102,7 +102,7 @@ export async function requireAuthContext(options: {
     webId: credentials.webId,
     podRoot,
     baseIri: podRoot,
-    accessToken: tokenResult.accessToken,
+    accessToken,
     credentials,
   };
 }

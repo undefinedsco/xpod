@@ -1,20 +1,22 @@
 /**
- * CLI Authentication Helper
+ * Legacy client-credentials authentication helper.
  *
- * 统一的认证入口。所有 Solid app 只从 `$SOLID_HOME/auth/credentials.json`
- * 这一套 shared Solid auth source 恢复权限；`~/.xpod/config.json` /
- * `~/.xpod/secrets.json` 不是 Solid auth source。
+ * Descriptor/resource/rdf/secret CLI commands use `auth-context.ts`, which
+ * supports both shared Solid OAuth sessions and client credentials. Keep this
+ * helper only for legacy callers that explicitly need a Solid Node Session from
+ * client credentials.
  */
 
 import { authenticate, type PodAuth } from './solid-auth';
 import { loadCredentials, isClientCredentials } from './credentials-store';
 
 /**
- * 获取认证信息
+ * 获取 client-credentials 认证信息。
  *
  * 规则：
  * 1. 只读取 shared Solid auth source：$SOLID_HOME/auth/credentials.json
- * 2. 如果没有，提示用户先运行 `xpod auth create-credentials`
+ * 2. OAuth credentials intentionally return null here; use auth-context for
+ *    resource operations.
  *
  * @returns PodAuth 或 null（如果没有保存的 credentials）
  */
