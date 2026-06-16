@@ -48,6 +48,11 @@ import { RunStateCenter, type RunStateEvent } from '../runs/RunStateCenter';
 import type { RunExecutionBackend } from '../runs/RunExecutionBackend';
 import { isWorkspaceRef } from '../workspace/types';
 import type { WorkspaceRef } from '../workspace/types';
+import {
+  normalizeReconcilerOwner,
+  reconcilerCoordinationMetadata,
+  withReconcilerCoordinationMetadata,
+} from '../reconciler';
 
 /**
  * AI Provider interface for direct text generation in tests/dev harnesses.
@@ -243,15 +248,20 @@ export class ChatKitService<TContext = StoreContext> {
     // Create new thread
     const threadId = this.store.generateThreadId(context);
     const now = nowTimestamp();
+    const normalizedMetadata = this.normalizeThreadMetadata(metadata);
+    const coordination = reconcilerCoordinationMetadata(
+      normalizeReconcilerOwner(normalizedMetadata?.reconcilerOwner, 'client'),
+    );
     
     const thread: ThreadMetadata = {
       id: threadId,
       parent: getThreadParent({ id: threadId })?.parent,
       status: { type: 'active' },
       workspace: this.resolveThreadWorkspace(params.workspace),
+      ...coordination,
       created_at: now,
       updated_at: now,
-      metadata: this.normalizeThreadMetadata(metadata),
+      metadata: withReconcilerCoordinationMetadata(normalizedMetadata, coordination.reconcilerOwner),
     };
 
     await this.store.saveThread(thread, context);
@@ -741,7 +751,12 @@ export class ChatKitService<TContext = StoreContext> {
     delete normalized.chat_id;
     delete normalized.surface_id;
     delete normalized.commandKind;
-    return Object.keys(normalized).length > 0 ? normalized : undefined;
+    delete normalized.conversationKind;
+    const reconcilerOwner = normalizeReconcilerOwner(normalized.reconcilerOwner, 'client');
+    return withReconcilerCoordinationMetadata(
+      Object.keys(normalized).length > 0 ? normalized : undefined,
+      reconcilerOwner,
+    );
   }
 
   private resolveThreadWorkspace(workspace: WorkspaceRef | undefined): WorkspaceRef | undefined {

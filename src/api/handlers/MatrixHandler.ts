@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
-import { getAccountId, getWebId } from '../auth/AuthContext';
+import { getWebId } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { MatrixCreateRoomRequest, MatrixStore, MatrixStoreContext } from '../matrix/types';
 
@@ -8,6 +8,17 @@ export interface MatrixHandlerOptions {
   store: MatrixStore;
 }
 
+/**
+ * Register the Matrix Client-Server compatibility adapter.
+ *
+ * Keep these externally visible routes Matrix-shaped:
+ * - `/.well-known/matrix/client` is public discovery.
+ * - `/_matrix/client/...` is Matrix's protocol namespace.
+ *
+ * Do not mount this adapter under `/api` or `/matrix`; first-party Xpod
+ * clients should use Xpod-owned chat/message APIs, while Matrix clients need
+ * the standard route shape to interoperate with existing SDKs.
+ */
 export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOptions): void {
   const { store } = options;
 
@@ -249,8 +260,11 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
 
 function buildContext(request: AuthenticatedRequest): MatrixStoreContext {
   const auth = request.auth;
-  const userId = auth ? getWebId(auth) ?? getAccountId(auth) ?? 'anonymous' : 'anonymous';
-  return { userId, auth };
+  const webId = auth ? getWebId(auth) : undefined;
+  if (!webId) {
+    throw new Error('Matrix API requires Solid WebID authentication');
+  }
+  return { webId, auth };
 }
 
 async function readJson<T>(request: AuthenticatedRequest): Promise<T | undefined> {

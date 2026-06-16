@@ -12,3 +12,4 @@ export * from './MatrixHandler';
 export * from './RunHandler';
 export * from './ProvisionHandler';
 export * from './PodManagementHandler';
+export * from './CoordinationHandler';

@@ -129,7 +129,7 @@ const messages = await db
 
 ## Pod 建模规则
 
-Xpod 的建模规则以 [solid-modeling.md](./solid-modeling.md) 为准。这里列新人最容易踩的几条。
+共享建模规则以 `@undefineds.co/models` 仓库为准；Xpod 只实现 adapter，不在本仓库维护共享建模规则副本。这里列新人最容易踩的几条，遇到冲突以 models 为准。
 
 ### 1. Pod 是图，不是外键表
 
@@ -284,7 +284,7 @@ RunStep  # Run 的 append-only 执行事实
 
 建议按这个顺序做:
 
-1. 读 `docs/solid-modeling.md`，理解 `id`、边关系字段、ById/ByIri。
+1. 先读 `/Users/ganlu/develop/models/README.md` 和 `/Users/ganlu/develop/models/skills/solid-modeling/SKILL.md`。
 2. 找 `src/api/chatkit/schema.ts`，确认 Xpod 如何从 `@undefineds.co/models` 复用 Chat/Thread/Message。
 3. 找 `src/api/tasks/schema.ts` 和 `src/api/runs/schema.ts`，理解 Task/Run 的模型边界。
 4. 找 `src/api/chatkit/pod-store.ts` 里一处 `db.select()` 或 `db.insert()`，看 ORM 如何落到 Pod。

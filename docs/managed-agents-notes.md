@@ -23,6 +23,36 @@
 2. Agent Runtime 应该是无状态的: 接收 command + context refs，执行，事件和结果写回 Pod。
 3. Symphony 以后可以消费 xpod 的 Chat/Task/Run/Message，但不应该决定 xpod 第一阶段的数据模型。
 
+## Reconciler / Wake / Runtime 边界
+
+群聊里的 AI 响应不应由 ChatKit、Matrix 或其它协议适配器直接决定。协议层只负责把输入写成共享 `Message` 事实；是否需要 Agent 回应由独立的 `ReconcilerService` 判断。详细边界见 [Reconciler / Wake / Agent Runtime Boundary](reconciler-wake-runtime.md)。
+
+最终产品口径按会话类型区分：
+
+| 会话类型 | Reconciler | 说明 |
+| --- | --- | --- |
+| 单人授权的 client-owned thread | client 端 | CLI、desktop、native app、前台 web 多端共享；同一时刻只有一个 client 实际协调。 |
+| CLI automode / Symphony | CLI 本地 | 仍是单人控制面，不是多人群聊。 |
+| 多人群聊 / group room | homeserver/server | client 只同步、配置参与策略，或执行已经被 server wake 的用户侧 Agent Runtime。 |
+
+当前口径：
+
+- `ReconcilerService` 只决定是否唤醒、唤醒哪个 `agent`、原因是什么。
+- `Wake` 只是最小路由信号：`thread`、`triggerMessage`、`agent`、`reason`、`status`。
+- `Wake` 不携带 `agentRole`、模型、Provider、API Key、workspace、工具目标或 prompt hint。
+- Agent Runtime 拿到 Wake 后再解析 Agent 配置、上下文、LLM 执行位置和工具执行位置，并写回 `Run` / `RunStep` / assistant `Message`。
+- 每个 `(thread, agent)` 有独立 `steer_queue`；同一 Agent 串行处理，同一消息可以并发唤醒多个 Agent。
+
+CLI/Symphony 里的“多参与方”不是多人群聊，而是一个人类用户拥有的多 Agent 控制面。Secretary、worker、reviewer、runtime、tool 等可以是参与方，但它们都在同一个 human authority 下运行；因此 CLI 可以本地协调 automode/Symphony，不代表它要成为多人房间的 Reconciler coordinator。
+
+Web 端不自己猜私聊/群聊，也不从协议路径推断协调方式。thread/chat projection 只下发 `reconcilerOwner: client | server`：`client` 由一个活跃客户端持有 lease 并运行 Reconciler，`server` 由 homeserver 运行 Reconciler。Web 端可以在前台短时间承担 client coordinator；后台/休眠 tab 不可靠，停止心跳后工作等待 CLI、desktop、native app 或新的前台 web 接手。多人房间始终默认由 homeserver 协调。
+
+同一个私聊多端同时打开时，Agent Profile 在 Pod 里，Reconciler 只由一个 client 持 lease 运行，Agent Runtime 由具备 agent/workspace/tool 能力的 client 消费 wake，Workspace 不跟随聊天移动而是由 `workspace` 关系指向具体资源/位置。CLI/desktop 通常优先承担工具和本地 workspace；Web 只适合前台、浏览器安全的工作。
+
+多个 client 都可以内置同一套 ReconcilerCore，但 client-owned thread 的激活权由 Pod center/homeserver 通过轻量 lease 自动协调：同一时刻只激活一个 client 做 Reconciler，其它 client 只同步、展示，或按能力消费已经生成的 wake。这个 lease/heartbeat/fencing 是运行态状态，不是 durable 会话模型；没有活跃 client 时，除非显式开启 server fallback，否则相关 auto 工作等待。
+
+xpod 当前只把这件事暴露为最小运行态协调面：`POST /v1/clients/heartbeat`、`POST /v1/threads/coordination/lease`、`POST /v1/threads/coordination/lease/release`。不要把它扩展成 Reconciler 决策 API；消息提交和同步仍走协议形状，Reconciler 决策仍是运行时内部逻辑。
+
 ## Chat 和 Task 的关系
 
 `Chat` 与 `Task` 的区别不是“是否持久化”，而是命令交互模式不同:

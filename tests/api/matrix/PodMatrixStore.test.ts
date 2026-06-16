@@ -40,7 +40,7 @@ function createSelectQuery(result: unknown[]): any {
 
 function solidContext() {
   return {
-    userId: 'https://alice.example/profile/card#me',
+    webId: 'https://alice.example/profile/card#me',
     auth: {
       type: 'solid',
       webId: 'https://alice.example/profile/card#me',
@@ -88,15 +88,87 @@ describe('PodMatrixStore query pushdown', () => {
       .flatMap((result: any) => result.value.values.mock.calls.map((call: any[]) => call[0]));
     expect(inserted.some((value: any) => String(value.id).startsWith('matrix-') && value.metadata?.protocol === 'matrix')).toBe(true);
     expect(inserted.every((value: any) => !String(value.id).startsWith('matrix/'))).toBe(true);
+    const matrixMetadata = inserted
+      .map((value: any) => value.metadata)
+      .find((metadata: any) => metadata?.protocol === 'matrix' && metadata.protocols?.matrix?.roomId);
+    expect(matrixMetadata.roomId).toBeUndefined();
+    expect(matrixMetadata.protocols.matrix.roomId).toMatch(/^!/);
     expect(inserted).toEqual(expect.arrayContaining([
       expect.objectContaining({
         metadata: expect.objectContaining({
-          eventType: 'm.room.member',
-          stateKey: '@bob:example.com',
-          content: expect.objectContaining({ membership: 'invite' }),
+          protocol: 'matrix',
+          reconcilerOwner: 'server',
         }),
       }),
     ]));
+    const membershipMetadata = inserted
+      .map((value: any) => value.metadata)
+      .find((metadata: any) => metadata?.protocols?.matrix?.eventType === 'm.room.member' && metadata.protocols.matrix.stateKey === '@bob:example.com');
+    expect(membershipMetadata.eventType).toBeUndefined();
+    expect(membershipMetadata.stateKey).toBeUndefined();
+    expect(inserted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          protocols: expect.objectContaining({
+            matrix: expect.objectContaining({
+              eventType: 'm.room.member',
+              stateKey: '@bob:example.com',
+              content: expect.objectContaining({ membership: 'invite' }),
+            }),
+          }),
+        }),
+      }),
+    ]));
+  });
+
+  it('ignores Matrix is_direct hints instead of storing Xpod topology', async () => {
+    const store = new PodMatrixStore({ serverName: 'example.com' });
+
+    const room = await store.createRoom({
+      is_direct: true,
+      invite: ['@bob:example.com'],
+    } as any, solidContext());
+
+    expect(room.reconcilerOwner).toBe('server');
+    const inserted = db.insert.mock.results
+      .flatMap((result: any) => result.value.values.mock.calls.map((call: any[]) => call[0]));
+    expect(inserted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          protocol: 'matrix',
+          reconcilerOwner: 'server',
+        }),
+      }),
+    ]));
+    expect(inserted.some((value: any) => value.metadata?.protocols?.matrix?.is_direct !== undefined)).toBe(false);
+  });
+
+  it('projects owner-only coordination metadata through Matrix sync', async () => {
+    const store = new PodMatrixStore({ serverName: 'example.com' });
+    db.select
+      .mockReturnValueOnce(createSelectQuery([{
+        id: 'matrix-room/index.ttl#this',
+        title: 'DM',
+        author: 'https://alice.example/profile/card#me',
+        createdAt: '1970-01-01T00:00:00.001Z',
+        metadata: {
+          protocol: 'matrix',
+          reconcilerOwner: 'server',
+          protocols: {
+            matrix: {
+              roomId: '!dm:example.com',
+            },
+          },
+        },
+      }]))
+      .mockReturnValueOnce(createSelectQuery([]))
+      .mockReturnValueOnce(createSelectQuery([]));
+
+    const sync = await store.sync(solidContext());
+
+    expect(sync.rooms.join['!dm:example.com']['co.undefineds.coordination']).toEqual({
+      reconcilerOwner: 'server',
+    });
   });
 
   it('resolves canonical aliases and appends join membership events', async () => {
@@ -109,8 +181,12 @@ describe('PodMatrixStore query pushdown', () => {
         createdAt: '1970-01-01T00:00:00.001Z',
         metadata: {
           protocol: 'matrix',
-          roomId: '!room:example.com',
-          canonicalAlias: '#team:example.com',
+          protocols: {
+            matrix: {
+              roomId: '!room:example.com',
+              canonicalAlias: '#team:example.com',
+            },
+          },
         },
       }]))
       .mockReturnValueOnce(createSelectQuery([]))
@@ -124,9 +200,13 @@ describe('PodMatrixStore query pushdown', () => {
     expect(inserted).toEqual(expect.arrayContaining([
       expect.objectContaining({
         metadata: expect.objectContaining({
-          eventType: 'm.room.member',
-          stateKey: '@profile_card_me:example.com',
-          content: expect.objectContaining({ membership: 'join' }),
+          protocols: expect.objectContaining({
+            matrix: expect.objectContaining({
+              eventType: 'm.room.member',
+              stateKey: '@profile_card_me:example.com',
+              content: expect.objectContaining({ membership: 'join' }),
+            }),
+          }),
         }),
       }),
     ]));
@@ -205,6 +285,42 @@ describe('PodMatrixStore query pushdown', () => {
     ]));
     expect(depthQuery.orderBy.mock.calls[0][0].name).toBe('createdAt');
     expect(db.insert).toHaveBeenCalled();
+  });
+
+  it('enqueues group Reconciler wake after Matrix user messages', async () => {
+    const serverGroupReconcilerService = {
+      reconcileThreadMessage: vi.fn(async () => ({ wakeJobs: [], inserted: 0 })),
+    };
+    const store = new PodMatrixStore({
+      serverName: 'example.com',
+      serverGroupReconcilerService: serverGroupReconcilerService as any,
+    });
+    db.findById.mockResolvedValue({
+      id: 'rooms/~21room~3Aexample.com/index.ttl#this',
+      metadata: {
+        protocol: 'matrix',
+        roomId: '!room:example.com',
+        reconcilerOwner: 'server',
+      },
+    });
+    db.select.mockReturnValue(createSelectQuery([]));
+
+    await store.sendEvent('!room:example.com', 'm.room.message', 'txn-wake', {
+      msgtype: 'm.text',
+      body: '@secretary please summarize',
+      mentions: ['https://alice.example/.data/agents/secretary.ttl#this'],
+    }, solidContext());
+
+    expect(serverGroupReconcilerService.reconcileThreadMessage).toHaveBeenCalledWith(expect.objectContaining({
+      thread: threadResourceUri('!room:example.com'),
+      actor: 'https://alice.example/profile/card#me',
+      role: 'user',
+      content: '@secretary please summarize',
+      reconcilerOwner: 'server',
+      mentions: ['https://alice.example/.data/agents/secretary.ttl#this'],
+    }));
+    expect(serverGroupReconcilerService.reconcileThreadMessage.mock.calls[0][0].triggerMessage)
+      .toContain(`/.data/chat/${surfaceId('!room:example.com')}/`);
   });
 });
 

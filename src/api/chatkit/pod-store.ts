@@ -81,6 +81,15 @@ import {
   normalizeAIConfigResourceId,
   threadRepository,
 } from '@undefineds.co/models';
+import {
+  normalizeAgentUris,
+  normalizeReconcilerOwner,
+  reconcilerCoordinationMetadata,
+  withReconcilerCoordinationMetadata,
+  type ReconcilerOwner,
+  type ServerGroupReconcilerService,
+} from '../reconciler';
+import { withProtocolMetadata, withoutProtocolProjectionKeys } from '../protocol-metadata';
 
 const schema = {
   chat: Chat,
@@ -96,6 +105,7 @@ const schema = {
 
 export interface PodChatKitStoreOptions {
   tokenEndpoint: string;
+  serverGroupReconcilerService?: ServerGroupReconcilerService;
 }
 
 type QueriedMessageRecord = {
@@ -232,12 +242,14 @@ type RunStepRecordSource = {
 export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<StoreContext>, TaskStore<StoreContext>, TaskAuthBindingRepository<StoreContext> {
   private readonly logger = getLoggerFor(this);
   private readonly tokenEndpoint: string;
+  private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
 
   /** 默认 Chat 容器 ID */
   private static readonly DEFAULT_CHAT_ID = 'default';
 
   public constructor(options: PodChatKitStoreOptions) {
     this.tokenEndpoint = options.tokenEndpoint;
+    this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
   // =========================================================================
@@ -774,7 +786,16 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     delete stored.chat_id;
     delete stored.commandKind;
     delete stored.surface_id;
+    delete stored.conversationKind;
     return Object.keys(stored).length > 0 ? stored : undefined;
+  }
+
+  private mentionsFromUserMessageContent(content: UserMessageItem['content']): string[] {
+    return normalizeAgentUris(
+      content
+        .filter((entry): entry is { type: 'input_tag'; tag: string; label?: string } => entry.type === 'input_tag')
+        .map((entry) => entry.tag),
+    );
   }
 
   /**
@@ -801,6 +822,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         title: surfaceId === PodChatKitStore.DEFAULT_CHAT_ID ? 'Default Chat' : surfaceId,
         author: webId || null,
         status: 'active',
+        metadata: reconcilerCoordinationMetadata('client'),
         createdAt: now,
         updatedAt: now,
       });
@@ -819,6 +841,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       ?? (this.chatSurfaceIdFromResource(record.chat)
         ? `chat/${this.chatSurfaceIdFromResource(record.chat)}/index.ttl#this`
         : undefined);
+    const reconcilerOwner = normalizeReconcilerOwner(extra?.reconcilerOwner, 'client');
+    const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
 
     return {
       id: record.id,
@@ -826,6 +850,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       title: record.title || undefined,
       status: this.stringToStatus(record.status),
       workspace: record.workspace || undefined,
+      ...coordination,
       created_at: record.createdAt ? Math.floor(new Date(record.createdAt).getTime() / 1000) : nowTimestamp(),
       updated_at: record.updatedAt ? Math.floor(new Date(record.updatedAt).getTime() / 1000) : nowTimestamp(),
       metadata: extra,
@@ -1422,8 +1447,17 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const parent = this.resolveThreadParent(thread, context);
     const commandKind = parent.commandKind;
     const surfaceId = parent.surfaceId;
-    const storedMetadata = this.threadStoredMetadata(thread.metadata);
+    const reconcilerOwner = normalizeReconcilerOwner(
+      thread.metadata?.reconcilerOwner ?? thread.reconcilerOwner,
+      'client',
+    );
+    const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
+    const storedMetadata = withReconcilerCoordinationMetadata(
+      this.threadStoredMetadata(thread.metadata),
+      reconcilerOwner,
+    );
     thread.parent = parent.parent;
+    thread.reconcilerOwner = coordination.reconcilerOwner;
     thread.metadata = storedMetadata;
     const metadataObject = this.jsonObjectOrNull(storedMetadata);
 
@@ -1471,6 +1505,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const threadMetadata: ThreadMetadata = {
       ...thread,
       parent: parent.parent,
+      ...coordination,
       metadata: storedMetadata,
     };
     this.cacheThreadMetadata(context, threadMetadata);
@@ -1632,6 +1667,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     let toolName: string | null = null;
     let toolCallId: string | null = null;
     let metadata: Record<string, unknown> | null = null;
+    let mentions: string[] = [];
+    const threadMetadata = await this.loadThread({ thread_id: resolvedThread.threadId }, context).catch(() => undefined);
+    const reconcilerOwner = normalizeReconcilerOwner(
+      threadMetadata?.metadata?.reconcilerOwner ?? threadMetadata?.reconcilerOwner,
+      'client',
+    );
 
     if (item.type === 'user_message') {
       const userItem = item as UserMessageItem;
@@ -1639,6 +1680,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         .filter((c) => c.type === 'input_text')
         .map((c) => (c as any).text)
         .join('\n');
+      mentions = this.mentionsFromUserMessageContent(userItem.content);
       role = MessageRole.USER;
       status = MessageStatus.SENT;
     } else if (item.type === 'assistant_message') {
@@ -1668,6 +1710,26 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       status = MessageStatus.COMPLETED;
     }
 
+    const durableMessageMetadata = withProtocolMetadata(
+      withReconcilerCoordinationMetadata(
+        withoutProtocolProjectionKeys(metadata ?? undefined, [
+          'chat_id',
+          'thread_id',
+          'item_id',
+          'commandKind',
+          'surface_id',
+          'conversationKind',
+        ]),
+        reconcilerOwner,
+      ),
+      'chatkit',
+      {
+        chat_id: resolvedThread.surfaceId,
+        thread_id: resolvedThread.threadId,
+        item_id: itemResourceId,
+      },
+    );
+
     const messageRecord = {
       id: itemResourceId,
       parent: this.resolveDataResource(this.buildMessageParentResourceId(resolvedThread), context),
@@ -1679,14 +1741,51 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       status,
       toolName,
       toolCallId,
-      metadata: this.jsonObjectOrNull(metadata ?? undefined),
+      metadata: this.jsonObjectOrNull(durableMessageMetadata),
       createdAt: new Date(item.created_at * 1000).toISOString(),
     };
 
     await db.insert(Message).values(messageRecord);
 
+    await this.reconcileGroupUserMessage({
+      thread: resolvedThread.thread,
+      triggerMessage: this.resolveDataResource(itemResourceId, context),
+      actor: String(webId ?? context.userId),
+      role,
+      content,
+      reconcilerOwner,
+      mentions,
+    });
+
     // Track this ID to avoid cache timing issues in saveItem
     this.recentlyCreatedIds.add(item.id);
+  }
+
+  private async reconcileGroupUserMessage(input: {
+    thread: string;
+    triggerMessage: string;
+    actor: string;
+    role: string;
+    content: string;
+    reconcilerOwner: ReconcilerOwner;
+    mentions?: string[];
+  }): Promise<void> {
+    if (!this.serverGroupReconcilerService || input.role !== MessageRole.USER) {
+      return;
+    }
+    try {
+      await this.serverGroupReconcilerService.reconcileThreadMessage({
+        thread: input.thread,
+        triggerMessage: input.triggerMessage,
+        actor: input.actor,
+        role: 'user',
+        content: input.content,
+        reconcilerOwner: input.reconcilerOwner,
+        mentions: input.mentions,
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to enqueue ChatKit group Reconciler wake: ${error}`);
+    }
   }
 
   // Track recently created message IDs to avoid SELECT cache timing issues

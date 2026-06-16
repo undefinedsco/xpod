@@ -5,6 +5,7 @@
  * Based on https://github.com/openai/chatkit-python
  */
 
+import type { ReconcilerOwner } from '../reconciler';
 import type { WorkspaceRef } from '../workspace/types';
 
 // ============================================================================
@@ -53,6 +54,8 @@ export interface ThreadMetadata {
    * The Solid schema stores this as the `workspace` RDF relation.
    */
   workspace?: WorkspaceRef;
+  /** Runtime coordination owner for this Thread; not a durable conversation topology field. */
+  reconcilerOwner?: ReconcilerOwner;
   created_at: number;
   updated_at: number;
   metadata?: Record<string, unknown>;

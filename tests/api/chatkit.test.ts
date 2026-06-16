@@ -84,9 +84,12 @@ describe('ChatKit Service', () => {
         expect(createdEvent.thread.id).toBeDefined();
         expect(createdEvent.thread.status.type).toBe('active');
         expect(createdEvent.thread.parent).toBe('chat/default/index.ttl#this');
+        expect(createdEvent.thread.reconcilerOwner).toBe('client');
         expect(createdEvent.thread.metadata?.chat_id).toBeUndefined();
         expect(createdEvent.thread.metadata?.surface_id).toBeUndefined();
         expect(createdEvent.thread.metadata?.commandKind).toBeUndefined();
+        expect(createdEvent.thread.metadata?.conversationKind).toBeUndefined();
+        expect(createdEvent.thread.metadata?.reconcilerOwner).toBe('client');
 
         threadId = createdEvent.thread.id;
       }

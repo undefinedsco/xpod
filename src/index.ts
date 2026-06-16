@@ -113,6 +113,8 @@ import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 
+export * from './api/reconciler';
+
 export type {
   DnsProvider,
   ListDnsRecordsInput,

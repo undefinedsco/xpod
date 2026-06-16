@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { getLoggerFor } from 'global-logger-factory';
 import { and, desc, drizzle, eq, gt, lte } from '@undefineds.co/drizzle-solid';
 import {
   chatResource,
@@ -7,7 +8,15 @@ import {
   MessageStatus,
   threadResource,
 } from '@undefineds.co/models';
-import { getWebId, isSolidAuth, type AuthContext } from '../auth/AuthContext';
+import {
+  normalizeAgentUris,
+  normalizeReconcilerOwner,
+  reconcilerCoordinationMetadata,
+  type ReconcilerOwner,
+  type ServerGroupReconcilerService,
+} from '../reconciler';
+import { getProtocolMetadata, withProtocolMetadata } from '../protocol-metadata';
+import { isSolidAuth, type AuthContext } from '../auth/AuthContext';
 import type {
   MatrixAccountInfo,
   MatrixClientEvent,
@@ -27,6 +36,7 @@ const schema = {
 
 export interface PodMatrixStoreOptions {
   serverName?: string;
+  serverGroupReconcilerService?: ServerGroupReconcilerService;
 }
 
 type Db = any;
@@ -37,6 +47,7 @@ interface MatrixRoomSource {
   title?: string | null;
   description?: string | null;
   author?: string | null;
+  participants?: string[] | null;
   createdAt?: string | Date | null;
   metadata?: JsonObjectSource;
 }
@@ -45,22 +56,32 @@ interface MatrixEventSource {
   id: string;
   maker?: string | null;
   content?: JsonObjectSource;
+  mentions?: string[] | null;
+  routeTargetAgent?: string | null;
   createdAt?: string | Date | null;
   metadata?: JsonObjectSource;
 }
 
+interface MatrixRoomContext {
+  metadata?: Record<string, unknown>;
+  participants: string[];
+}
+
 export class PodMatrixStore {
+  private readonly logger = getLoggerFor(this);
   private readonly serverName?: string;
+  private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
 
   public constructor(options: PodMatrixStoreOptions) {
     this.serverName = options.serverName;
+    this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
   public async getAccount(context: MatrixStoreContext): Promise<MatrixAccountInfo> {
     const matrixUserId = this.getMatrixUserId(context);
     return {
       userId: matrixUserId,
-      deviceId: this.deviceIdFromUserId(context.userId),
+      deviceId: this.deviceIdFromUserId(context.webId),
       displayName: this.displayNameFromUserId(matrixUserId),
     };
   }
@@ -72,45 +93,50 @@ export class PodMatrixStore {
     const roomId = this.generateRoomId(context);
     const chatId = this.chatResourceIdFromRoomId(roomId);
     const threadId = this.threadResourceIdFromRoomId(roomId);
+    const reconcilerOwner = 'server' as const;
+    const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
 
     await db.insert(chatResource).values({
       id: chatId,
       title: input.name ?? roomId,
       description: input.topic ?? null,
-      author: context.userId,
+      author: context.webId,
       status: 'active',
-      participants: [context.userId],
-      metadata: {
+      participants: [context.webId],
+      metadata: withProtocolMetadata({
         protocol: 'matrix',
+        ...coordination,
+      }, 'matrix', {
         roomId,
         canonicalAlias: input.room_alias_name ? `#${input.room_alias_name}:${this.getServerName(context)}` : null,
         visibility: input.visibility === 'public' ? 'public' : 'private',
         roomVersion: String(input.creation_content?.room_version ?? '11'),
         federate: input.creation_content?.['m.federate'] === true,
-        members: [context.userId],
+        members: [context.webId],
         preset: input.preset,
-        is_direct: input.is_direct,
         invite: input.invite ?? [],
-      },
+      }),
       createdAt: new Date(now).toISOString(),
       updatedAt: new Date(now).toISOString(),
     });
     await db.insert(threadResource).values({
       id: threadId,
-      chat: chatId,
-      parent: `chat/${this.surfaceIdFromRoomId(roomId)}/index.ttl#this`,
+      parent: this.chatParentRefFromRoomId(roomId),
       title: input.name ?? roomId,
       status: 'active',
-      metadata: {
+      metadata: withProtocolMetadata({
         protocol: 'matrix',
-        roomId,
-      },
+        commandKind: 'chat',
+        surface_id: this.surfaceIdFromRoomId(roomId),
+        ...coordination,
+      }, 'matrix', { roomId }),
       createdAt: new Date(now).toISOString(),
       updatedAt: new Date(now).toISOString(),
     });
 
     await this.appendEvent(db, {
       roomId,
+      reconcilerOwner,
       type: 'm.room.create',
       sender,
       originServerTs: now,
@@ -124,6 +150,7 @@ export class PodMatrixStore {
     }, context);
     await this.appendEvent(db, {
       roomId,
+      reconcilerOwner,
       type: 'm.room.member',
       sender,
       originServerTs: now + 1,
@@ -136,6 +163,7 @@ export class PodMatrixStore {
     if (input.name) {
       await this.appendEvent(db, {
         roomId,
+        reconcilerOwner,
         type: 'm.room.name',
         sender,
         originServerTs: now + 2,
@@ -146,6 +174,7 @@ export class PodMatrixStore {
     if (input.topic) {
       await this.appendEvent(db, {
         roomId,
+        reconcilerOwner,
         type: 'm.room.topic',
         sender,
         originServerTs: now + 3,
@@ -156,6 +185,7 @@ export class PodMatrixStore {
     for (const state of input.initial_state ?? []) {
       await this.appendEvent(db, {
         roomId,
+        reconcilerOwner,
         type: state.type,
         sender,
         originServerTs: Date.now(),
@@ -164,7 +194,7 @@ export class PodMatrixStore {
       }, context);
     }
     for (const invitee of input.invite ?? []) {
-      await this.appendMembershipEvent(db, roomId, invitee, 'invite', context, { sender });
+      await this.appendMembershipEvent(db, roomId, invitee, 'invite', context, { sender, reconcilerOwner });
     }
 
     return {
@@ -173,6 +203,7 @@ export class PodMatrixStore {
       name: input.name,
       topic: input.topic,
       creator: sender,
+      reconcilerOwner: coordination.reconcilerOwner,
       createdAt: now,
     };
   }
@@ -269,6 +300,9 @@ export class PodMatrixStore {
         timeline: {
           events: events.map((event) => this.toClientEvent(event)),
           limited: false,
+        },
+        'co.undefineds.coordination': {
+          reconcilerOwner: room.reconcilerOwner,
         },
       };
     }
@@ -401,18 +435,30 @@ export class PodMatrixStore {
       content: Record<string, unknown>;
       stateKey?: string;
       txnId?: string;
+      reconcilerOwner?: ReconcilerOwner;
     },
     context: MatrixStoreContext,
   ): Promise<MatrixEventRecord> {
     const eventId = this.generateEventId(context);
     const depth = await this.nextEventDepth(db, input.roomId, context);
     const originIso = new Date(input.originServerTs).toISOString();
+    const needsRoomMetadata = input.reconcilerOwner === undefined
+      || (input.type === 'm.room.message' && this.serverGroupReconcilerService !== undefined);
+    const roomContext = needsRoomMetadata ? await this.getRoomContext(db, input.roomId) : undefined;
+    const roomMetadata = roomContext?.metadata;
+    const reconcilerOwner = input.reconcilerOwner ?? this.reconcilerOwnerFromRoomMetadata(roomMetadata);
+    const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
+    const messageResourceId = this.messageResourceIdFromEvent(input.roomId, eventId, input.originServerTs);
+    const thread = this.resolveDataResourceUriFromId(this.threadResourceIdFromRoomId(input.roomId), context);
+    const contentText = this.messageContentFromMatrixEvent(input.type, input.content);
+    const mentions = this.mentionsFromMatrixContent(input.content);
+    const routeTargetAgent = this.routeTargetAgentFromMatrixContent(input.content);
     const record = {
       eventId,
       roomId: input.roomId,
       type: input.type,
       sender: input.sender,
-      senderWebId: context.userId,
+      senderWebId: context.webId,
       originServerTs: input.originServerTs,
       depth,
       txnId: input.txnId ?? undefined,
@@ -421,30 +467,49 @@ export class PodMatrixStore {
       createdAt: originIso,
     };
     await db.insert(messageResource).values({
-      id: this.messageResourceIdFromEvent(input.roomId, eventId, input.originServerTs),
+      id: messageResourceId,
       parent: this.resolveDataResourceUriFromId(this.messageParentResourceIdFromRoomId(input.roomId), context),
       chat: this.chatResourceIdFromRoomId(input.roomId),
-      thread: this.resolveDataResourceUriFromId(this.threadResourceIdFromRoomId(input.roomId), context),
-      maker: context.userId,
+      thread,
+      maker: context.webId,
       role: input.type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM,
-      content: this.messageContentFromMatrixEvent(input.type, input.content),
+      content: contentText,
       status: MessageStatus.SENT,
-      metadata: {
+      mentions,
+      routeTargetAgent: routeTargetAgent ?? null,
+      metadata: withProtocolMetadata({
         protocol: 'matrix',
+        commandKind: 'chat',
+        surface_id: this.surfaceIdFromRoomId(input.roomId),
+        ...coordination,
+      }, 'matrix', {
         eventId,
         roomId: input.roomId,
         eventType: input.type,
         sender: input.sender,
-        senderWebId: context.userId,
+        senderWebId: context.webId,
         originServerTs: input.originServerTs,
         depth,
         txnId: input.txnId ?? null,
         stateKey: input.stateKey ?? null,
         content: input.content,
-      },
+      }),
       createdAt: originIso,
       updatedAt: originIso,
     });
+
+    await this.reconcileGroupUserMessage({
+      thread,
+      triggerMessage: this.resolveDataResourceUriFromId(messageResourceId, context),
+      actor: context.webId,
+      role: input.type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM,
+      content: contentText,
+      reconcilerOwner,
+      mentions,
+      routeTargetAgent,
+      participants: roomContext?.participants,
+    });
+
     return record;
   }
 
@@ -454,11 +519,12 @@ export class PodMatrixStore {
     memberUserId: string,
     membership: 'invite' | 'join' | 'leave' | 'ban',
     context: MatrixStoreContext,
-    options: { sender?: string } = {},
+    options: { sender?: string; reconcilerOwner?: ReconcilerOwner } = {},
   ): Promise<MatrixEventRecord> {
     const sender = options.sender ?? this.getMatrixUserId(context);
     return this.appendEvent(db, {
       roomId,
+      reconcilerOwner: options.reconcilerOwner,
       type: 'm.room.member',
       sender,
       originServerTs: Date.now(),
@@ -557,20 +623,23 @@ export class PodMatrixStore {
 
   private eventSourceToRecord(source: MatrixEventSource): MatrixEventRecord {
     const metadata = this.parseJsonObject(source.metadata) ?? {};
-    const content = this.parseJsonObject(metadata.content as JsonObjectSource)
+    const matrix = getProtocolMetadata(metadata, 'matrix') ?? {};
+    const content = this.parseJsonObject(matrix.content as JsonObjectSource)
+      ?? this.parseJsonObject(metadata.content as JsonObjectSource)
       ?? this.parseJsonObject(source.content)
       ?? {};
-    const unsigned = this.parseJsonObject(metadata.unsigned as JsonObjectSource);
-    const stateKey = this.stringValue(metadata.stateKey);
-    const txnId = this.stringValue(metadata.txnId);
+    const unsigned = this.parseJsonObject(matrix.unsigned as JsonObjectSource)
+      ?? this.parseJsonObject(metadata.unsigned as JsonObjectSource);
+    const stateKey = this.stringValue(matrix.stateKey ?? matrix.state_key ?? metadata.stateKey);
+    const txnId = this.stringValue(matrix.txnId ?? matrix.txn_id ?? metadata.txnId);
     return {
-      eventId: this.stringValue(metadata.eventId) ?? source.id,
-      roomId: this.stringValue(metadata.roomId) ?? '',
-      type: this.stringValue(metadata.eventType) ?? 'm.room.message',
-      sender: this.stringValue(metadata.sender) ?? '',
-      senderWebId: this.stringValue(metadata.senderWebId) ?? source.maker ?? undefined,
-      originServerTs: this.numberValue(metadata.originServerTs) ?? this.isoToMillis(source.createdAt) ?? Date.now(),
-      depth: this.numberValue(metadata.depth),
+      eventId: this.stringValue(matrix.eventId ?? matrix.event_id ?? metadata.eventId) ?? source.id,
+      roomId: this.stringValue(matrix.roomId ?? matrix.room_id ?? metadata.roomId) ?? '',
+      type: this.stringValue(matrix.eventType ?? matrix.event_type ?? metadata.eventType) ?? 'm.room.message',
+      sender: this.stringValue(matrix.sender ?? metadata.sender) ?? '',
+      senderWebId: this.stringValue(matrix.senderWebId ?? matrix.sender_web_id ?? metadata.senderWebId) ?? source.maker ?? undefined,
+      originServerTs: this.numberValue(matrix.originServerTs ?? matrix.origin_server_ts ?? metadata.originServerTs) ?? this.isoToMillis(source.createdAt) ?? Date.now(),
+      depth: this.numberValue(matrix.depth ?? metadata.depth),
       txnId: txnId ?? undefined,
       content,
       stateKey: stateKey ?? undefined,
@@ -583,16 +652,20 @@ export class PodMatrixStore {
     if (metadata.protocol !== 'matrix') {
       return undefined;
     }
-    const roomId = this.stringValue(metadata.roomId);
+    const matrix = getProtocolMetadata(metadata, 'matrix') ?? {};
+    const roomId = this.stringValue(matrix.roomId ?? matrix.room_id ?? metadata.roomId);
     if (!roomId) {
       return undefined;
     }
+    const reconcilerOwner = normalizeReconcilerOwner(metadata.reconcilerOwner, 'server');
+    const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
     return {
       roomId,
-      canonicalAlias: this.stringValue(metadata.canonicalAlias),
+      canonicalAlias: this.stringValue(matrix.canonicalAlias ?? matrix.canonical_alias ?? metadata.canonicalAlias),
       name: source.title ?? undefined,
       topic: source.description ?? undefined,
       creator: source.author ?? '',
+      reconcilerOwner: coordination.reconcilerOwner,
       createdAt: this.isoToMillis(source.createdAt) ?? 0,
     };
   }
@@ -641,6 +714,49 @@ export class PodMatrixStore {
     return Number.isFinite(value) ? value : undefined;
   }
 
+  private async getRoomContext(db: Db, roomId: string): Promise<MatrixRoomContext> {
+    const room = await db.findById(chatResource, this.chatResourceIdFromRoomId(roomId)) as MatrixRoomSource | null;
+    return {
+      metadata: this.parseJsonObject(room?.metadata),
+      participants: normalizeAgentUris(room?.participants),
+    };
+  }
+
+  private reconcilerOwnerFromRoomMetadata(metadata: Record<string, unknown> | undefined): ReconcilerOwner {
+    return normalizeReconcilerOwner(metadata?.reconcilerOwner, 'server');
+  }
+
+  private async reconcileGroupUserMessage(input: {
+    thread: string;
+    triggerMessage: string;
+    actor: string;
+    role: string;
+    content: string;
+    reconcilerOwner: ReconcilerOwner;
+    mentions?: string[];
+    routeTargetAgent?: string;
+    participants?: string[];
+  }): Promise<void> {
+    if (!this.serverGroupReconcilerService || input.role !== MessageRole.USER) {
+      return;
+    }
+    try {
+      await this.serverGroupReconcilerService.reconcileThreadMessage({
+        thread: input.thread,
+        triggerMessage: input.triggerMessage,
+        actor: input.actor,
+        role: 'user',
+        content: input.content,
+        reconcilerOwner: input.reconcilerOwner,
+        mentions: input.mentions,
+        routeTargetAgent: input.routeTargetAgent,
+        participants: input.participants,
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to enqueue Matrix group Reconciler wake: ${error}`);
+    }
+  }
+
   private messageContentFromMatrixEvent(eventType: string, content: Record<string, unknown>): string {
     if (eventType === 'm.room.message' && typeof content.body === 'string') {
       return content.body;
@@ -648,9 +764,24 @@ export class PodMatrixStore {
     return JSON.stringify(content);
   }
 
+  private mentionsFromMatrixContent(content: Record<string, unknown>): string[] {
+    const matrixMentions = this.parseJsonObject(content['m.mentions'] as JsonObjectSource);
+    return normalizeAgentUris([
+      ...normalizeAgentUris(content.mentions),
+      ...normalizeAgentUris(content['co.undefineds.mentions']),
+      ...normalizeAgentUris(matrixMentions?.agents),
+    ]);
+  }
+
+  private routeTargetAgentFromMatrixContent(content: Record<string, unknown>): string | undefined {
+    return this.stringValue(content.routeTargetAgent)
+      ?? this.stringValue(content['co.undefineds.routeTargetAgent'])
+      ?? this.stringValue(content['co.undefineds.route_target_agent']);
+  }
+
   private getMatrixUserId(context: MatrixStoreContext): string {
     const serverName = this.getServerName(context);
-    const localpart = this.localpartFromUserId(context.userId);
+    const localpart = this.localpartFromUserId(context.webId);
     return `@${localpart}:${serverName}`;
   }
 
@@ -659,7 +790,7 @@ export class PodMatrixStore {
       return this.serverName;
     }
     try {
-      return new URL(context.userId).host || 'localhost';
+      return new URL(context.webId).host || 'localhost';
     } catch {
       return 'localhost';
     }
@@ -715,13 +846,17 @@ export class PodMatrixStore {
     return `chat/${this.surfaceIdFromRoomId(roomId)}/index.ttl#thread`;
   }
 
+  private chatParentRefFromRoomId(roomId: string): string {
+    return `/.data/chat/${this.chatResourceIdFromRoomId(roomId)}`;
+  }
+
   private messageResourceIdFromEvent(roomId: string, eventId: string, ts: number): string {
     const { yyyy, MM, dd } = this.dateParts(ts);
     return `chat/${this.surfaceIdFromRoomId(roomId)}/${yyyy}/${MM}/${dd}/messages.ttl#${this.slug(eventId)}`;
   }
 
   private resolveDataResourceUriFromId(resourceId: string, context: MatrixStoreContext): string {
-    const podBaseUrl = this.derivePodBaseUrl(getWebId(context.auth as AuthContext) ?? context.userId);
+    const podBaseUrl = this.derivePodBaseUrl(context.webId);
     if (!podBaseUrl) {
       return resourceId;
     }

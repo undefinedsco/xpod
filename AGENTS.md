@@ -9,7 +9,7 @@ Pod 内数据的读写**第一优先级使用 drizzle-solid** 进行操作：
 2. **绕过前先报告**：如遇 drizzle-solid 无法解决的问题，**第一时间整理 issue 报告**，记录问题场景、复现步骤和根因分析
 3. **持续改进**：通过 issue 驱动 drizzle-solid 的迭代，持续提高其易用性和健壮性
 4. **临时绕过**：仅在 issue 已记录且确实阻塞开发时，才考虑使用原生 SPARQL 或其他方式绕过
-5. **建模规则**：Pod/RDF schema、URI 字段、日期分桶和 exact id 操作必须遵守 [`docs/solid-modeling.md`](docs/solid-modeling.md)。
+5. **建模规则**：Pod/RDF schema、URI 字段、日期分桶和 exact id 操作以 `@undefineds.co/models` 仓库为权威；Xpod 只实现 adapter，不在本仓库维护共享建模规则副本。
 
 ## Project Structure & Module Organization
 Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/` with two main entry points: `local.json` for development and `cloud.json` for production. Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` handle storage smoke tests such as `node scripts/testInsert.js`.

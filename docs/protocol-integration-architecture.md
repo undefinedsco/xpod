@@ -76,6 +76,7 @@ Xpod 不应重写外部生态的调度器、队列、重试器和执行内核；
 设计要求：
 
 - 优先使用该协议原生的路径约定或 `well-known` 机制
+- 若协议规范定义了固定 namespace，则直接暴露规范路径，不要再套一层 `/api` 或 `/{protocol}`
 - 在 Pod 边界直接暴露兼容 API
 - 外部系统可以把 Xpod 当作该协议的一个后端
 
@@ -83,7 +84,7 @@ Xpod 不应重写外部生态的调度器、队列、重试器和执行内核；
 
 - 某类自动化生态约定的 webhook / task / run API
 - 某类 AI 生态约定的兼容接口
-- 某类协作协议的标准发现入口
+- Matrix 这类协作协议的 `/.well-known/matrix/client` 与 `/_matrix/client/...`
 
 ### 二级：协议插件
 
@@ -98,10 +99,10 @@ Xpod 不应重写外部生态的调度器、队列、重试器和执行内核；
 - 通过前缀路径挂载，如 `/{protocol}/...`
 - 插件对外提供协议兼容入口
 - 插件内部再映射到 Pod 数据和运行时状态
+- 不适用于已经规定固定根路径的标准协议；这类协议应作为一级兼容 API 按规范路径暴露
 
 例子：
 
-- `/matrix/...`
 - `/calendar/...`
 - `/inbox/...`
 
@@ -115,6 +116,7 @@ Xpod 不应重写外部生态的调度器、队列、重试器和执行内核；
 /.well-known/{protocol}
 /v1/{native-api}
 /{native-resource-shape}
+/_matrix/client/...        # Matrix 这类协议已经规定下划线 namespace 时，按规范保留
 ```
 
 ### 二级协议插件
@@ -128,7 +130,6 @@ Xpod 不应重写外部生态的调度器、队列、重试器和执行内核；
 示例：
 
 ```text
-/matrix/_matrix/client/v3/...
 /automation/webhook/{provider}
 /openai/v1/responses
 ```
@@ -186,6 +187,12 @@ export interface PodProtocolStore {
 /.data/protocols/{protocol}/...        # 协议资产 / 产物 / 缓存
 ```
 
+例外：如果某个协议只是人类事务模型的 API 形状，例如 Matrix / ChatKit /
+Responses 映射到 Chat / Thread / Message / Run，就不要为该协议创建
+`/.data/{protocol}` 或 `/.data/protocols/{protocol}` 的 durable data
+目录。协议 id、txn id、cursor 等只作为 namespaced metadata 或运行时状态存在，
+持久事实仍归属于人的事务模型。
+
 ### `ProtocolRuntimeStore`
 
 保存不需要进入 Pod 的运行时状态。
@@ -204,6 +211,20 @@ export interface ProtocolRuntimeStore {
 
 - local: SQLite / Postgres
 - cloud: Postgres，必要时辅以 Redis
+
+## 协议适配器与 Agent 调度边界
+
+Matrix、ChatKit、Responses 等协议入口只是 API 形状。它们可以映射到共享 `Chat` / `Thread` / `Message` / `Run` 模型，但不应拥有 Agent 调度策略。
+
+协议适配器写入用户消息后，如果该写入路径被授权触发 AI，则调用统一的 `ReconcilerService`。`ReconcilerService` 只产出最小 `WakeAgentJob`，真正的 LLM 调用位置、工具调用位置、模型/Provider/凭证选择都由 Agent Runtime 在消费 Wake 时决定。
+
+协调权按运行时 owner 收敛：单人授权的 client-owned thread 由 client 端 Reconciler 处理，CLI、desktop app、native app 和前台 web 可以共享同一个线程；多人授权或显式开放群聊默认由 homeserver/server 做 Reconciler。Web 后台 tab 不可靠，不能作为长期 coordinator。
+
+Web 不需要也不应该从路径形状推断协调方式。协议适配器/后端在 thread/chat projection 中可以下发运行时 `reconcilerOwner: client | server`，但它不能替代产品事实：privacy/visibility 是访问与策略事实，group 是 Contact/Chat.participants 表达的人类事务事实。具体是私聊、群聊、Symphony 还是 review/control thread 由 Chat/Thread 参与者、Contact 和产品策略表达，不写成 `conversationKind` 这类第二个 durable 类型枚举。Matrix/ChatKit/Responses 的路径形状不能作为判断依据。
+
+当前 xpod 只暴露最小运行态协调面：`POST /v1/clients/heartbeat` 上报 client capability/presence，`POST /v1/threads/coordination/lease` 获取 client-owned thread coordinator lease，`POST /v1/threads/coordination/lease/release` 主动释放。不要再扩展成 `/reconciler/run`、`/reconciler/decision` 之类业务接口；Reconciler 决策仍在运行时内部，持久事实仍是 Chat/Thread/Message/Run/RunStep。
+
+直接 Pod 写入默认不等于允许触发 AI 执行；除非房间/线程策略显式允许，否则只作为可观察的候选事件处理。
 
 ## 数据边界
 
@@ -297,12 +318,14 @@ Xpod 做：
 
 这保证 local / self-host / cloud 是同一产品抽象，只是底层 trigger backend 不同。
 
-## 协议插件示例：`/matrix/`
+## 协议兼容示例：Matrix
 
-如果未来要支持 Matrix，不应先重写 Matrix homeserver，而应先提供一个路径前缀插件：
+Matrix 不应先重写成完整 homeserver，也不应挂成 `/matrix/...` 前缀插件。
+它的 Client-Server 兼容入口按 Matrix 规范暴露：
 
 ```text
-/matrix/...
+/.well-known/matrix/client
+/_matrix/client/v3/...
 ```
 
 它的职责是：
@@ -317,7 +340,8 @@ Xpod 做：
 - 不污染 Pod 主路径
 - 保持后续可拆卸、可升级
 
-如果未来 Matrix 变成一等能力，再考虑提升为更原生的协议入口。
+第一方 Xpod 客户端仍应走 Xpod 自己的 `/api` / `/v1` 产品 API；`/_matrix`
+只是 Matrix client / SDK 兼容 adapter。
 
 ## 代码落点建议
 
@@ -377,7 +401,7 @@ src/runtime/protocol/
 
 ### Phase 3：协议插件机制
 
-- 支持 `/matrix/` 这类前缀协议
+- 支持 `/calendar/`、`/inbox/` 这类非固定根路径的前缀协议
 - 支持协议配置发现
 - 支持协议级能力开关
 

@@ -19,6 +19,7 @@ import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
 import { registerInngestRoutes } from '../handlers/InngestHandler';
 import { registerRunRoutes } from '../handlers/RunHandler';
 import { registerMatrixRoutes } from '../handlers/MatrixHandler';
+import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
@@ -89,6 +90,7 @@ function registerSharedRoutes(
   const chatKitStore = container.resolve('chatKitStore');
   const runExecutionBackend = container.resolve('runExecutionBackend');
   const matrixStore = container.resolve('matrixStore');
+  const clientReconcilerCoordinator = container.resolve('clientReconcilerCoordinator');
   const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const config = container.resolve('config') as ApiContainerConfig;
@@ -104,6 +106,7 @@ function registerSharedRoutes(
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
   registerMatrixRoutes(server, { store: matrixStore });
+  registerCoordinationRoutes(server, { clientReconcilerCoordinator });
   registerInngestRoutes(server, {
     backend: runExecutionBackend,
     taskScheduler: inngestTaskScheduler,

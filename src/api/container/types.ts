@@ -28,6 +28,7 @@ import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestServic
 import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import type { TaskAuthBindingService, TaskService, InngestTaskScheduler } from '../tasks';
 import type { PodMatrixStore } from '../matrix';
+import type { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import type { AuthMode } from '../../authorization/AuthMode';
 
 /**
@@ -152,6 +153,8 @@ export interface ApiContainerCradle {
   inngestTaskScheduler: InngestTaskScheduler<StoreContext>;
   chatKitService: ChatKitService<StoreContext>;
   matrixStore: PodMatrixStore;
+  clientReconcilerCoordinator: ClientReconcilerCoordinator;
+  serverGroupReconcilerService: ServerGroupReconcilerService;
   providerRegistry: ProviderRegistry;
   embeddingService: EmbeddingService;
   vectorService: VectorService;

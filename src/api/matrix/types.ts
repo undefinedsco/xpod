@@ -1,7 +1,9 @@
 import type { AuthContext } from '../auth/AuthContext';
+import type { ReconcilerOwner } from '../reconciler';
 
 export interface MatrixStoreContext {
-  userId: string;
+  /** Authenticated Solid WebID used as the Pod actor/resource owner. */
+  webId: string;
   auth?: AuthContext;
 }
 
@@ -11,6 +13,7 @@ export interface MatrixRoomRecord {
   name?: string;
   topic?: string;
   creator: string;
+  reconcilerOwner: ReconcilerOwner;
   createdAt: number;
 }
 
@@ -41,7 +44,6 @@ export interface MatrixCreateRoomRequest {
     content?: Record<string, unknown>;
   }>;
   preset?: string;
-  is_direct?: boolean;
 }
 
 export interface MatrixSendEventRequest {
@@ -59,6 +61,9 @@ export interface MatrixSyncResponse {
         events: MatrixClientEvent[];
         limited: boolean;
         prev_batch?: string;
+      };
+      'co.undefineds.coordination'?: {
+        reconcilerOwner: ReconcilerOwner;
       };
     }>;
   };

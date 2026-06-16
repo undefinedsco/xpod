@@ -22,6 +22,7 @@ import { VectorService } from '../service/VectorService';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
+import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
 import { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
@@ -101,15 +102,30 @@ export function registerCommonServices(
       return new AuthMiddleware({ authenticator });
     }).singleton(),
 
-    // ChatKit 存储与服务
-    chatKitStore: asFunction(({ config }: ApiContainerCradle) => {
-      return new PodChatKitStore({
-        tokenEndpoint: config.cssTokenEndpoint,
+    // Reconciler / Wake 运行态协调
+    serverGroupReconcilerService: asFunction(({ config }: ApiContainerCradle) => {
+      return new ServerGroupReconcilerService({
+        redisUrl: config.redisUrl,
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ config }: ApiContainerCradle) => {
+    // ChatKit 存储与服务
+    chatKitStore: asFunction(({ config, serverGroupReconcilerService }: ApiContainerCradle) => {
+      return new PodChatKitStore({
+        tokenEndpoint: config.cssTokenEndpoint,
+        serverGroupReconcilerService,
+      });
+    }).singleton(),
+
+    clientReconcilerCoordinator: asFunction(({ config }: ApiContainerCradle) => {
+      return new ClientReconcilerCoordinator({
+        redisUrl: config.redisUrl,
+      });
+    }).singleton(),
+
+    matrixStore: asFunction(({ config, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodMatrixStore({
+        serverGroupReconcilerService,
         serverName: (() => {
           try {
             return new URL(process.env.CSS_BASE_URL ?? '').host || undefined;

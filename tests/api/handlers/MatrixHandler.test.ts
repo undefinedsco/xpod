@@ -40,6 +40,7 @@ function createStore(overrides: Partial<MatrixStore> = {}): MatrixStore {
     createRoom: vi.fn(async () => ({
       roomId: '!room:example.com',
       creator: '@alice:example.com',
+      reconcilerOwner: 'server',
       createdAt: 100,
     })),
     joinRoom: vi.fn(async () => ({ roomId: '!room:example.com' })),
@@ -85,15 +86,20 @@ function createStore(overrides: Partial<MatrixStore> = {}): MatrixStore {
   };
 }
 
-function createRequest(url: string, body?: unknown): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
-  req.url = url;
-  req.headers = { host: 'localhost' };
-  req.auth = {
+function createRequest(
+  url: string,
+  body?: unknown,
+  headers: Record<string, string> = { host: 'localhost' },
+  auth: unknown = {
     type: 'solid',
     webId: 'https://alice.example/profile/card#me',
     accountId: 'alice',
-  } as any;
+  },
+): AuthenticatedRequest {
+  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  req.url = url;
+  req.headers = headers;
+  req.auth = auth as any;
   if (body !== undefined) {
     req.end(JSON.stringify(body));
   } else {
@@ -132,6 +138,28 @@ describe('MatrixHandler', () => {
     expect(routes['GET /_matrix/client/versions'].options).toEqual({ public: true });
     expect(routes['GET /_matrix/client/v3/login'].options).toEqual({ public: true });
     expect(routes['POST /_matrix/client/v3/login'].options).toEqual({ public: true });
+    for (const route of Object.values(routes)) {
+      if (route.path.includes('_matrix')) {
+        expect(route.path.startsWith('/_matrix/')).toBe(true);
+      }
+    }
+
+    const discovery = createResponse();
+    await routes['GET /.well-known/matrix/client'].handler(
+      createRequest('/.well-known/matrix/client', undefined, {
+        host: 'internal.local',
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'chat.example.com',
+      }),
+      discovery.response,
+      {},
+    );
+    expect(discovery.response.statusCode).toBe(200);
+    expect(discovery.body()).toEqual({
+      'm.homeserver': {
+        base_url: 'https://chat.example.com',
+      },
+    });
 
     const { response, body } = createResponse();
     await routes['GET /_matrix/client/versions'].handler(createRequest('/_matrix/client/versions'), response, {});
@@ -172,6 +200,31 @@ describe('MatrixHandler', () => {
     expect(joined.body()).toEqual({ joined_rooms: ['!room:example.com'] });
   });
 
+  it('requires a Solid WebID and does not fall back to accountId', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+
+    const whoami = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(
+      createRequest(
+        '/_matrix/client/v3/account/whoami',
+        undefined,
+        { host: 'localhost' },
+        { type: 'node', accountId: 'alice' },
+      ),
+      whoami.response,
+      {},
+    );
+
+    expect(whoami.response.statusCode).toBe(400);
+    expect(whoami.body()).toEqual({
+      errcode: 'M_UNKNOWN',
+      error: 'Matrix API requires Solid WebID authentication',
+    });
+    expect(store.getAccount).not.toHaveBeenCalled();
+  });
+
   it('creates rooms through the Pod-backed Matrix store', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
@@ -187,7 +240,7 @@ describe('MatrixHandler', () => {
     expect(response.statusCode).toBe(200);
     expect(body()).toEqual({ room_id: '!room:example.com' });
     expect(store.createRoom).toHaveBeenCalledWith({ name: 'Room' }, expect.objectContaining({
-      userId: 'https://alice.example/profile/card#me',
+      webId: 'https://alice.example/profile/card#me',
     }));
   });
 
@@ -216,7 +269,7 @@ describe('MatrixHandler', () => {
       'm.room.message',
       'txn/1',
       { msgtype: 'm.text', body: 'hello' },
-      expect.objectContaining({ userId: 'https://alice.example/profile/card#me' }),
+      expect.objectContaining({ webId: 'https://alice.example/profile/card#me' }),
     );
   });
 
@@ -264,7 +317,7 @@ describe('MatrixHandler', () => {
       {},
     );
     expect(store.sync).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 'https://alice.example/profile/card#me',
+      webId: 'https://alice.example/profile/card#me',
     }), { since: 's10', limit: 25 });
 
     await routes['GET /_matrix/client/v3/rooms/:roomId/messages'].handler(
@@ -274,7 +327,7 @@ describe('MatrixHandler', () => {
     );
     expect(store.listMessages).toHaveBeenCalledWith(
       '!room:example.com',
-      expect.objectContaining({ userId: 'https://alice.example/profile/card#me' }),
+      expect.objectContaining({ webId: 'https://alice.example/profile/card#me' }),
       { from: 's20', dir: 'f', limit: 10 },
     );
   });
