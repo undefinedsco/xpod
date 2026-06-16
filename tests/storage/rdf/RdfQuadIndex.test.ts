@@ -88,12 +88,57 @@ describe('RdfQuadIndex', () => {
       mode: 'safe',
     });
 
-    expect(result).toMatchObject({ matchedTerms: 2, rewrittenTerms: 2, remappedTerms: 0, affectedQuads: 0 });
+    expect(result).toMatchObject({ matchedTerms: 2, rewrittenTerms: 2, remappedTerms: 0, affectedQuads: 1 });
     expect(index.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl') } }).quads).toHaveLength(0);
     const after = index.scan({ pattern: { graph: namedNode('https://pod.example/new/data.ttl') } });
     expect(after.quads).toHaveLength(1);
     expect(after.quads[0].subject.value).toBe('https://pod.example/new/data.ttl#this');
     index.close();
+  });
+
+  it('rewrites safe named-node URI terms without contaminating shared terms outside the moving graph', () => {
+    index.multiPut([
+      quad(
+        namedNode('https://pod.example/old/data.ttl#this'),
+        namedNode('https://schema.org/name'),
+        literal('Demo'),
+        namedNode('https://pod.example/old/data.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/notes/other.ttl#note'),
+        namedNode('https://schema.org/about'),
+        namedNode('https://pod.example/old/data.ttl#this'),
+        namedNode('https://pod.example/notes/other.ttl'),
+      ),
+    ]);
+
+    const result = index.rewriteTerms({
+      oldPrefix: 'https://pod.example/old/',
+      newPrefix: 'https://pod.example/new/',
+      scope: 'safe_projection',
+      mode: 'safe',
+    });
+
+    expect(result).toMatchObject({
+      matchedTerms: 2,
+      rewrittenTerms: 1,
+      remappedTerms: 0,
+      affectedQuads: 1,
+    });
+    expect(result.skippedTerms).toEqual([
+      expect.objectContaining({
+        value: 'https://pod.example/old/data.ttl#this',
+        reason: expect.stringMatching(/^(mixed_usage|outside_scope)$/),
+      }),
+    ]);
+
+    const movingGraph = index.scan({ pattern: { graph: namedNode('https://pod.example/new/data.ttl') } });
+    expect(movingGraph.quads).toHaveLength(1);
+    expect(movingGraph.quads[0].subject.value).toBe('https://pod.example/old/data.ttl#this');
+
+    const unrelatedGraph = index.scan({ pattern: { graph: namedNode('https://pod.example/notes/other.ttl') } });
+    expect(unrelatedGraph.quads).toHaveLength(1);
+    expect(unrelatedGraph.quads[0].object.value).toBe('https://pod.example/old/data.ttl#this');
   });
 
   it('applies mixed RDF deltas in one facts data version step', () => {

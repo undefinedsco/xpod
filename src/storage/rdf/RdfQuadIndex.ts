@@ -80,6 +80,17 @@ const TERM_COLUMN: Record<PatternKey, IndexedColumn> = {
 
 const TERM_KEYS: PatternKey[] = ['graph', 'subject', 'predicate', 'object'];
 const TERM_IN_JOIN_THRESHOLD = 64;
+
+function emptyTermRewriteResult(): RdfTermRewriteResult {
+  return {
+    matchedTerms: 0,
+    rewrittenTerms: 0,
+    remappedTerms: 0,
+    skippedTerms: [],
+    affectedQuads: 0,
+  };
+}
+
 export class RdfQuadIndex {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
@@ -244,10 +255,17 @@ export class RdfQuadIndex {
   }
 
   public rewriteTerms(input: RdfTermRewriteInput): RdfTermRewriteResult {
-    const result = this.requireDictionary().rewriteNamedNodePrefix(input);
+    const db = this.requireDb();
+    const dictionary = this.requireDictionary();
+    let result = emptyTermRewriteResult();
+    db.transaction(() => {
+      result = dictionary.rewriteNamedNodePrefix(input, { useTransaction: false });
+      if (result.rewrittenTerms > 0 || result.remappedTerms > 0) {
+        this.bumpDataVersion();
+      }
+    })();
     if (result.rewrittenTerms > 0 || result.remappedTerms > 0) {
       this.cardinalityCache.clear();
-      this.bumpDataVersion();
     }
     return result;
   }
