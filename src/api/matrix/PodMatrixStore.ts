@@ -342,6 +342,7 @@ export class PodMatrixStore {
     };
     await db.insert(messageResource).values({
       id: this.messageResourceIdFromEvent(input.roomId, eventId, input.originServerTs),
+      parent: this.resolveDataResourceUriFromId(this.messageParentResourceIdFromRoomId(input.roomId), context),
       chat: this.chatResourceIdFromRoomId(input.roomId),
       thread: this.resolveDataResourceUriFromId(this.threadResourceIdFromRoomId(input.roomId), context),
       maker: context.userId,
@@ -572,6 +573,10 @@ export class PodMatrixStore {
 
   private chatResourceIdFromRoomId(roomId: string): string {
     return `${this.surfaceIdFromRoomId(roomId)}/index.ttl#this`;
+  }
+
+  private messageParentResourceIdFromRoomId(roomId: string): string {
+    return `chat/${this.surfaceIdFromRoomId(roomId)}/index.ttl#this`;
   }
 
   private threadResourceIdFromRoomId(roomId: string): string {

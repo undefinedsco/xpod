@@ -593,6 +593,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return `${chatId.replace(/^#/, '')}/index.ttl#this`;
   }
 
+  private buildMessageParentResourceId(surface: CommandSurface): string {
+    if (surface.commandKind === 'task') {
+      return `task/index.ttl#${surface.surfaceId}`;
+    }
+    return `chat/${surface.surfaceId}/index.ttl#this`;
+  }
+
   private chatSurfaceIdFromResourceId(chatId: string | null | undefined): string | undefined {
     if (!chatId) {
       return undefined;
@@ -1663,6 +1670,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     const messageRecord = {
       id: itemResourceId,
+      parent: this.resolveDataResource(this.buildMessageParentResourceId(resolvedThread), context),
       chat: resolvedThread.commandKind === 'chat' ? this.buildChatResourceId(resolvedThread.surfaceId) : null,
       thread: resolvedThread.thread,
       maker: role === MessageRole.USER ? webId : null,
