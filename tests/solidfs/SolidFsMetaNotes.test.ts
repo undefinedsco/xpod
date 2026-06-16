@@ -62,6 +62,21 @@ describe('SolidFS .meta notes', () => {
     expect(ttl).toContain('sioc:about <./reports/final%20report.pdf>');
   });
 
+  it('preserves already-encoded IRI terms without double-encoding percent escapes', () => {
+    const ttl = buildFileMetadataNote({
+      subject: '<https://pod.example/files/final%20report.pdf#meta>',
+      about: 'https://pod.example/files/final%20report.pdf',
+      title: 'File metadata',
+      description: 'IRI already contains percent-encoded spaces.',
+      materializationClass: 'placeholder-r2',
+    });
+
+    parseTurtle(ttl);
+    expect(ttl).toContain('<https://pod.example/files/final%20report.pdf#meta> a udfs:Note');
+    expect(ttl).toContain('sioc:about <https://pod.example/files/final%20report.pdf>');
+    expect(ttl).not.toContain('%2520');
+  });
+
   it('rejects IRI terms containing close-angle injection characters', () => {
     expect(() => buildFileMetadataNote({
       subject: '#file> ; udfs:noteKind "injected"',

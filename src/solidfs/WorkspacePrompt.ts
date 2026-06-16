@@ -44,5 +44,9 @@ export function buildWorkspaceSummaryPrompt(input: WorkspaceSummaryPromptInput):
 }
 
 function promptValue(value: string): string {
-  return JSON.stringify(value) ?? '""';
+  return (JSON.stringify(value) ?? '""').replace(/[\u0085\u2028\u2029]/g, escapeLogicalLineSeparator);
+}
+
+function escapeLogicalLineSeparator(char: string): string {
+  return `\\u${char.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
 }

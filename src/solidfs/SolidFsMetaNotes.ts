@@ -26,7 +26,10 @@ export interface ParserCoverageNoteInput {
 
 const PREFIXES = '@prefix dct: <http://purl.org/dc/terms/> .\n@prefix sioc: <http://rdfs.org/sioc/ns#> .\n@prefix udfs: <https://vocab.undefineds.co/udfs#> .\n\n';
 const BLANK_NODE_LABEL = /^_:[A-Za-z][A-Za-z0-9_-]*$/;
+const ABSOLUTE_IRI = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+const IRIREF_REQUIRES_ENCODING = /[\u0000-\u0020<>"{}|^`\\]/;
 const IRIREF_UNSAFE_CHARS = /[<>"{}|^`\\]/g;
+const INVALID_PERCENT_ESCAPE = /%(?![0-9A-Fa-f]{2})/;
 
 export function buildFileMetadataNote(input: FileMetadataNoteInput): string {
   const lines = [
@@ -75,10 +78,10 @@ function term(value: string): string {
       throw new Error(`Invalid Turtle IRI term: ${value}`);
     }
     const innerValue = value.slice(1, -1);
-    if (innerValue.includes('>')) {
+    if (!isLegalIriRef(innerValue)) {
       throw new Error(`Invalid Turtle IRI term: ${value}`);
     }
-    return term(innerValue);
+    return `<${innerValue}>`;
   }
 
   if (value.startsWith('_:')) {
@@ -86,6 +89,10 @@ function term(value: string): string {
       throw new Error(`Invalid Turtle blank node label: ${value}`);
     }
     return value;
+  }
+
+  if (ABSOLUTE_IRI.test(value) && isLegalIriRef(value)) {
+    return `<${value}>`;
   }
 
   return `<${encodeIriRef(value)}>`;
@@ -118,6 +125,10 @@ function encodeIriRef(value: string): string {
     throw new Error(`Invalid Turtle IRI term: ${value}`);
   }
   return encoded;
+}
+
+function isLegalIriRef(value: string): boolean {
+  return !IRIREF_REQUIRES_ENCODING.test(value) && !INVALID_PERCENT_ESCAPE.test(value);
 }
 
 function encodeAsciiChar(char: string): string {
