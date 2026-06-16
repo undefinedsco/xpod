@@ -88,7 +88,7 @@ Xpod 不应该重新定义核心 durable model。如果 Chat、Task、Run、AI p
 `@undefineds.co/models` 是共享 durable model 包。它负责:
 
 - 核心资源 schema: `chatResource`、`threadResource`、`messageResource`、`taskResource`、`runResource`、`runStepResource`、`aiProviderResource` 等。
-- 共享 vocab 和 namespace: `UDFS`、`XPOD_AI`、`XPOD_CREDENTIAL` 等。
+- 共享 vocab 和 namespace: `UDFS`（项目自有 durable 语义统一放在 `https://undefineds.co/ns#`）。
 - repository/helper: `chatRepository`、`messageRepository`、`threadRepository` 等。
 - resource id helper: `messageResourceId`、`runResourceId`、`parentDir` 等。
 - 可复用的类型、枚举、序列化工具。

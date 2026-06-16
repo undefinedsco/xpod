@@ -283,17 +283,17 @@ describe('SparqlUpdateResourceStore', () => {
       const patch = createPatch(`
         DELETE {
           GRAPH <${identifier.path}> {
-            <${subject}> <https://vocab.xpod.dev/credential#status> ?oldStatus .
+            <${subject}> <https://undefineds.co/ns#status> ?oldStatus .
           }
         }
         WHERE {
           GRAPH <${identifier.path}> {
-            <${subject}> <https://vocab.xpod.dev/credential#status> ?oldStatus .
+            <${subject}> <https://undefineds.co/ns#status> ?oldStatus .
           }
         };
         INSERT DATA {
           GRAPH <${identifier.path}> {
-            <${subject}> <https://vocab.xpod.dev/credential#status> "active" .
+            <${subject}> <https://undefineds.co/ns#status> "active" .
           }
         }
       `);

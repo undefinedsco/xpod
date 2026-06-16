@@ -40,61 +40,61 @@ pod:/
 使用 `@undefineds.co/models` 中的 `credentialResource`：
 
 ```turtle
-@prefix cred: <https://vocab.xpod.dev/credential#> .
+@prefix udfs: <https://undefineds.co/ns#> .
 
 # /settings/credentials.ttl
 
 <#cred-gemini>
-  a cred:Credential ;
-  cred:provider </settings/providers/google.ttl> ;
-  cred:service "ai" ;
-  cred:status "active" ;
-  cred:apiKey "AIzaSy..." ;
-  cred:label "我的 Gemini Key" .
+  a udfs:Credential ;
+  udfs:provider </settings/providers/google.ttl> ;
+  udfs:service "ai" ;
+  udfs:status "active" ;
+  udfs:apiKey "AIzaSy..." ;
+  udfs:label "我的 Gemini Key" .
 
 <#cred-openai>
-  a cred:Credential ;
-  cred:provider </settings/providers/openai.ttl> ;
-  cred:service "ai" ;
-  cred:status "active" ;
-  cred:apiKey "sk-..." ;
-  cred:organizationId "org-..." .
+  a udfs:Credential ;
+  udfs:provider </settings/providers/openai.ttl> ;
+  udfs:service "ai" ;
+  udfs:status "active" ;
+  udfs:apiKey "sk-..." ;
+  udfs:organizationId "org-..." .
 
 <#cred-anthropic>
-  a cred:Credential ;
-  cred:provider </settings/providers/anthropic.ttl> ;
-  cred:service "ai" ;
-  cred:status "active" ;
-  cred:apiKey "sk-ant-..." .
+  a udfs:Credential ;
+  udfs:provider </settings/providers/anthropic.ttl> ;
+  udfs:service "ai" ;
+  udfs:status "active" ;
+  udfs:apiKey "sk-ant-..." .
 
 <#cred-codebuddy>
-  a cred:Credential ;
-  cred:provider </settings/providers/codebuddy.ttl> ;
-  cred:service "ai" ;
-  cred:status "active" ;
-  cred:apiKey "cb-..." .
+  a udfs:Credential ;
+  udfs:provider </settings/providers/codebuddy.ttl> ;
+  udfs:service "ai" ;
+  udfs:status "active" ;
+  udfs:apiKey "cb-..." .
 ```
 
 ### 供应商配置
 
 ```turtle
-@prefix ai: <https://vocab.xpod.dev/ai#> .
+@prefix udfs: <https://undefineds.co/ns#> .
 
 # /settings/providers/openai.ttl
 
 </settings/providers/openai.ttl>
-  a ai:Provider ;
-  ai:displayName "OpenAI" ;
-  ai:baseUrl "https://api.openai.com/v1" ;
-  ai:defaultModel </settings/providers/openai.ttl#gpt-4o> ;
-  ai:hasModel </settings/providers/openai.ttl#gpt-4o> .
+  a udfs:Provider ;
+  udfs:displayName "OpenAI" ;
+  udfs:baseUrl "https://api.openai.com/v1" ;
+  udfs:defaultModel </settings/providers/openai.ttl#gpt-4o> ;
+  udfs:hasModel </settings/providers/openai.ttl#gpt-4o> .
 
 </settings/providers/openai.ttl#gpt-4o>
-  a ai:Model ;
-  ai:displayName "gpt-4o" ;
-  ai:modelType "chat" ;
-  ai:isProvidedBy </settings/providers/openai.ttl> ;
-  ai:status "active" .
+  a udfs:Model ;
+  udfs:displayName "gpt-4o" ;
+  udfs:modelType "chat" ;
+  udfs:isProvidedBy </settings/providers/openai.ttl> ;
+  udfs:status "active" .
 ```
 
 ### 现有实现
