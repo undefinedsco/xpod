@@ -143,6 +143,91 @@ describe('SolidFS sync journal', () => {
     journal.close();
   });
 
+  it('persists and replays moved entries with previous path and shared transaction id', async () => {
+    await mkdir(path.join(workspaceRoot, 'new'), { recursive: true });
+    await writeFile(path.join(workspaceRoot, 'new', 'data.ttl'), '<#me> <https://schema.org/name> "Moved" .\n', 'utf8');
+
+    const journal = openJournal();
+    const change: SolidFsChange = {
+      type: 'moved',
+      previousPath: 'old/data.ttl',
+      previousResource: 'https://pod.example/alice/projects/demo/old/data.ttl',
+      path: 'new/data.ttl',
+      resource: 'https://pod.example/alice/projects/demo/new/data.ttl',
+      source: 'filesystem',
+      sourcePath: path.join(workspaceRoot, 'new', 'data.ttl'),
+      contentType: 'text/turtle',
+      projection: 'direct',
+      sourceVersion: 'etag-new',
+    };
+    const manifest: SolidFsManifest = {
+      workspace: 'https://pod.example/alice/projects/demo/',
+      cwd: workspaceRoot,
+      projection: 'direct',
+      entries: [],
+    };
+
+    await journal.recordLocalCommitted(change, manifest, 'solidfs_tx_move');
+
+    const replayed: SolidFsChange[] = [];
+    const result = await journal.replayPending({
+      async sync(next): Promise<void> {
+        replayed.push(next);
+      },
+    });
+
+    expect(result).toEqual({ attempted: 1, completed: 1, failed: 0, reconcileRequired: 0 });
+    expect(replayed).toEqual([
+      expect.objectContaining({
+        type: 'moved',
+        previousPath: 'old/data.ttl',
+        previousResource: 'https://pod.example/alice/projects/demo/old/data.ttl',
+        path: 'new/data.ttl',
+        resource: 'https://pod.example/alice/projects/demo/new/data.ttl',
+      }),
+    ]);
+    expect(journal.listOperations()[0]).toMatchObject({
+      txId: 'solidfs_tx_move',
+      stage: 'done',
+    });
+    journal.close();
+  });
+
+  it('keeps moved entries with different previous paths as distinct operations', async () => {
+    await mkdir(path.join(workspaceRoot, 'new'), { recursive: true });
+    await writeFile(path.join(workspaceRoot, 'new', 'data.ttl'), '<#me> <https://schema.org/name> "Moved" .\n', 'utf8');
+
+    const journal = openJournal();
+    const manifest: SolidFsManifest = {
+      workspace: 'https://pod.example/alice/projects/demo/',
+      cwd: workspaceRoot,
+      projection: 'direct',
+      entries: [],
+    };
+    const change: SolidFsChange = {
+      type: 'moved',
+      previousPath: 'old-one/data.ttl',
+      previousResource: 'https://pod.example/alice/projects/demo/old-one/data.ttl',
+      path: 'new/data.ttl',
+      resource: 'https://pod.example/alice/projects/demo/new/data.ttl',
+      source: 'filesystem',
+      sourcePath: path.join(workspaceRoot, 'new', 'data.ttl'),
+      contentType: 'text/turtle',
+      projection: 'direct',
+      sourceVersion: 'etag-new',
+    };
+
+    await journal.recordLocalCommitted(change, manifest, 'solidfs_tx_move_one');
+    await journal.recordLocalCommitted({
+      ...change,
+      previousPath: 'old-two/data.ttl',
+      previousResource: 'https://pod.example/alice/projects/demo/old-two/data.ttl',
+    }, manifest, 'solidfs_tx_move_two');
+
+    expect(journal.listOperations()).toHaveLength(2);
+    journal.close();
+  });
+
   it('bootstraps existing workspace files into replayable journal work without duplicating checkpointed files', async () => {
     await mkdir(path.join(workspaceRoot, 'notes'), { recursive: true });
     await writeFile(path.join(workspaceRoot, 'data.ttl'), '<#me> <https://schema.org/name> "Alice" .\n', 'utf8');

@@ -725,6 +725,7 @@ function normalizeChange(change: SolidFsChange): SolidFsChange {
   return {
     ...change,
     path: change.path.split(/[\\/]+/u).join(path.sep),
+    previousPath: change.previousPath?.split(/[\\/]+/u).join(path.sep),
   };
 }
 
@@ -733,8 +734,12 @@ function operationId(workspace: string, change: SolidFsChange, afterHash?: strin
     .update(JSON.stringify({
       workspace,
       path: change.path,
+      previousPath: change.previousPath,
+      prefix: change.prefix,
+      previousPrefix: change.previousPrefix,
       type: change.type,
       resource: change.resource,
+      previousResource: change.previousResource,
       source: change.source,
       sourcePath: change.sourcePath,
       projection: change.projection,
