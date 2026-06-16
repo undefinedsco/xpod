@@ -208,6 +208,14 @@ export class SolidRdfDataAccessor implements DataAccessor {
     return await this.rdfEngine.deleteTextSource(source);
   }
 
+  public async moveRdfSourceDocument(oldSource: string, next: RdfSourceInput): Promise<number> {
+    await this.initialize();
+    if (!this.rdfEngine.moveSource) {
+      return 0;
+    }
+    return await this.rdfEngine.moveSource(oldSource, next);
+  }
+
   public async indexVectorSource(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void> {
     await this.initialize();
     if (!this.rdfEngine.indexVectorSource) {

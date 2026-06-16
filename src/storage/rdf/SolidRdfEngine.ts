@@ -179,6 +179,10 @@ export class SolidRdfEngine implements RdfEngineLike {
     return this.index.deleteSource(source);
   }
 
+  public moveSource(oldSource: string, next: RdfSourceInput): number {
+    return this.index.moveSource(oldSource, next);
+  }
+
   public delete(pattern: QuintPattern): number {
     return this.index.delete(pattern);
   }

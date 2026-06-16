@@ -248,7 +248,7 @@ export class RdfTermDictionary {
   }
 
   public rewriteNamedNodePrefix(input: RdfTermRewriteInput, options?: RdfTermRewriteOptions): RdfTermRewriteResult {
-    if (!input.oldPrefix || input.oldPrefix === input.newPrefix) {
+    if (!input.oldPrefix || !input.newPrefix || input.oldPrefix === input.newPrefix) {
       return emptyRewriteResult();
     }
 
@@ -261,7 +261,7 @@ export class RdfTermDictionary {
         ORDER BY id
       `)
       .all(`${escapeLikePattern(input.oldPrefix)}%`)
-      .filter((row) => row.value.startsWith(input.oldPrefix));
+      .filter((row) => matchesRewriteBoundary(row.value, input.oldPrefix));
 
     const skippedTerms: RdfTermRewriteResult['skippedTerms'] = [];
     let rewrittenTerms = 0;
@@ -321,7 +321,7 @@ export class RdfTermDictionary {
           });
           continue;
         }
-        if (usages.some((usage) => !usage.graph_value.startsWith(input.oldPrefix))) {
+        if (usages.some((usage) => !matchesRewriteBoundary(usage.graph_value, input.oldPrefix))) {
           skippedTerms.push({
             id: row.id,
             value: row.value,
@@ -633,6 +633,15 @@ export class RdfTermDictionary {
 
 export function rdfTermValueHead(value: string): string {
   return value.slice(0, RDF_TERM_VALUE_HEAD_LENGTH);
+}
+
+export function matchesRewriteBoundary(value: string, oldPrefix: string): boolean {
+  if (!oldPrefix) {
+    return false;
+  }
+  return value === oldPrefix
+    || value.startsWith(`${oldPrefix}#`)
+    || (oldPrefix.endsWith('/') && value.startsWith(oldPrefix));
 }
 
 function normalizeSearchText(value: string): string {

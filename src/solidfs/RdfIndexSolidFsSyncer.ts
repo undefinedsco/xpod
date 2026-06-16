@@ -63,15 +63,19 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
   }
 
   public async sync(change: SolidFsChange, workspace: SolidFsManifest): Promise<void> {
-    if (!isTrackedChange(change)) {
-      return;
-    }
-
     if (change.type === 'moved') {
       await this.syncMoved(change, workspace);
       return;
     }
 
+    if (!isTrackedChange(change)) {
+      return;
+    }
+
+    await this.syncTrackedChange(change, workspace);
+  }
+
+  private async syncTrackedChange(change: SolidFsChange, workspace: SolidFsManifest): Promise<void> {
     const identifier = this.resolveIdentifier(change, workspace);
     if (!identifier && isRdfChange(change) && !this.textIndex && !this.vectorIndex) {
       return;
@@ -114,32 +118,104 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
   }
 
   private async syncMoved(change: SolidFsChange, workspace: SolidFsManifest): Promise<void> {
-    const previousResource = change.previousResource
-      ?? sourceFromWorkspace({ ...change, path: change.previousPath ?? change.path }, workspace);
-    const nextResource = change.resource ?? sourceFromWorkspace(change, workspace);
-    const rewriteCapable: RdfTermRewriteCapable = this.index;
-    if (rewriteCapable.rewriteTerms && previousResource !== nextResource) {
-      await rewriteCapable.rewriteTerms({
-        oldPrefix: previousResource,
-        newPrefix: nextResource,
-        scope: 'safe_projection',
-        mode: 'safe',
-      });
+    const nextSource = this.sourceInput(change, workspace);
+    const previousSource = previousSourceFromChange(change, workspace);
+    const previousRdf = isPreviousRdfChange(change);
+    const nextRdf = isRdfChange(change);
+    const previousTextIndexable = isPreviousTextIndexableChange(change);
+    const nextTextIndexable = isTextIndexableChange(change);
+
+    if (!previousRdf && !nextRdf && !previousTextIndexable && !nextTextIndexable) {
+      return;
     }
 
-    if (!isTextIndexableChange(change)) {
+    if (previousRdf && nextRdf) {
+      await this.syncMovedRdf(change, workspace, previousSource, nextSource);
+    } else if (previousRdf && !nextRdf) {
+      if (previousSource) {
+        await this.index.deleteLocalRdfIndex({ path: previousSource });
+      }
+    } else if (!previousRdf && nextRdf) {
+      await this.syncMovedSearchIndexes(change, previousSource, nextSource, previousTextIndexable, false);
+      await this.syncTrackedChange({ ...change, type: 'updated' }, workspace);
+      return;
+    }
+
+    await this.syncMovedSearchIndexes(change, previousSource, nextSource, previousTextIndexable, nextTextIndexable);
+  }
+
+  private async syncMovedRdf(
+    change: SolidFsChange,
+    workspace: SolidFsManifest,
+    previousSource: string | undefined,
+    nextSource: RdfTextSourceInput & RdfVectorSourceInput,
+  ): Promise<void> {
+    const nextIdentifier = this.resolveIdentifier(change, workspace);
+    if (!nextIdentifier) {
+      return;
+    }
+
+    if (this.index.moveLocalRdfIndex && previousSource) {
+      await this.index.moveLocalRdfIndex(
+        { path: previousSource },
+        nextIdentifier,
+        {
+          previousSource,
+          ...nextSource,
+        },
+      );
+      const rewriteCapable: RdfTermRewriteCapable = this.index;
+      if (rewriteCapable.rewriteTerms && previousSource !== nextSource.source) {
+        await rewriteCapable.rewriteTerms({
+          oldPrefix: previousSource,
+          newPrefix: nextSource.source,
+          scope: 'safe_projection',
+          mode: 'safe',
+        });
+      }
+      return;
+    }
+
+    await this.index.syncLocalRdfDocument(
+      nextIdentifier,
+      guardStream(createReadStream(change.sourcePath)),
+      change.contentType,
+      nextSource,
+    );
+    if (previousSource) {
+      await this.index.deleteLocalRdfIndex({ path: previousSource });
+    }
+  }
+
+  private async syncMovedSearchIndexes(
+    change: SolidFsChange,
+    previousSource: string | undefined,
+    nextSource: RdfTextSourceInput & RdfVectorSourceInput,
+    previousTextIndexable: boolean,
+    nextTextIndexable: boolean,
+  ): Promise<void> {
+    if (!this.textIndex && !this.vectorIndex) {
       return;
     }
 
     let text: string | undefined;
-    const nextSource = this.sourceInput(change, workspace);
+    if (previousTextIndexable && previousSource) {
+      if (this.textIndex) {
+        await this.textIndex.deleteSource(previousSource);
+      }
+      if (this.vectorIndex) {
+        await this.vectorIndex.deleteSource(previousSource);
+      }
+    }
+    if (!nextTextIndexable) {
+      return;
+    }
+
     if (this.textIndex) {
-      await this.textIndex.deleteSource(previousResource);
       text ??= await readFile(change.sourcePath, 'utf8');
       await this.textIndex.indexText(nextSource, text);
     }
     if (this.vectorIndex && this.vectorizeText) {
-      await this.vectorIndex.deleteSource(previousResource);
       text ??= await readFile(change.sourcePath, 'utf8');
       const chunks = await this.vectorizeText({ ...nextSource, text });
       await this.vectorIndex.indexVector(nextSource, chunks);
@@ -148,7 +224,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
 
   private sourceInput(change: SolidFsChange, workspace: SolidFsManifest): RdfTextSourceInput & RdfVectorSourceInput {
     return {
-      source: change.resource ?? sourceFromWorkspace(change, workspace),
+      source: change.resource ?? sourceFromWorkspace(change, workspace) ?? change.sourcePath,
       workspace: workspace.workspace,
       localPath: change.path.split(path.sep).join('/'),
       contentType: change.contentType,
@@ -209,6 +285,34 @@ function isTrackedChange(change: SolidFsChange): boolean {
   return isRdfChange(change) || isTextChange(change);
 }
 
+function isPreviousRdfChange(change: SolidFsChange): boolean {
+  const previousPath = change.previousPath ?? change.previousResource;
+  if (previousPath) {
+    return isRdfDocument(undefined, previousPath);
+  }
+  return isRdfChange(change);
+}
+
+function isPreviousLineAddressableRdfChange(change: SolidFsChange): boolean {
+  const previousPath = change.previousPath ?? change.previousResource;
+  if (previousPath) {
+    return isLineAddressableRdf(undefined, previousPath);
+  }
+  return isLineAddressableRdfChange(change);
+}
+
+function isPreviousTextChange(change: SolidFsChange): boolean {
+  const previousPath = change.previousPath ?? change.previousResource;
+  if (previousPath) {
+    return isTextPath(previousPath);
+  }
+  return isTextChange(change);
+}
+
+function isPreviousTextIndexableChange(change: SolidFsChange): boolean {
+  return isPreviousLineAddressableRdfChange(change) || isPreviousTextChange(change);
+}
+
 function isRdfPath(filePath: string): boolean {
   return isRdfDocumentPath(filePath);
 }
@@ -229,11 +333,36 @@ function isTextContentType(contentType: string | undefined): boolean {
     || normalized === 'text/x-markdown';
 }
 
-function sourceFromWorkspace(change: SolidFsChange, workspace: SolidFsManifest): string {
+function previousSourceFromChange(change: SolidFsChange, workspace: SolidFsManifest): string | undefined {
+  if (change.previousResource) {
+    return change.previousResource;
+  }
+  if (!change.previousPath) {
+    return undefined;
+  }
+  return sourceFromWorkspace({ ...change, path: change.previousPath }, workspace, false)
+    ?? sourceFromWorkspaceCwd(change.previousPath, workspace);
+}
+
+function sourceFromWorkspace(
+  change: SolidFsChange,
+  workspace: SolidFsManifest,
+  fallbackToSourcePath = true,
+): string | undefined {
   try {
     const base = new URL(workspace.workspace.endsWith('/') ? workspace.workspace : `${workspace.workspace}/`);
     return new URL(change.path.split(path.sep).join('/'), base).href;
   } catch {
-    return change.sourcePath;
+    return fallbackToSourcePath ? change.sourcePath : undefined;
   }
+}
+
+function sourceFromWorkspaceCwd(relativePath: string, workspace: SolidFsManifest): string | undefined {
+  if (!relativePath) {
+    return undefined;
+  }
+  if (path.isAbsolute(relativePath)) {
+    return relativePath;
+  }
+  return path.join(workspace.cwd, relativePath);
 }

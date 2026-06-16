@@ -77,6 +77,11 @@ export interface LocalRdfIndexAccessor {
     options?: LocalRdfSyncOptions,
   ): Promise<void>;
   deleteLocalRdfIndex(identifier: ResourceIdentifier): Promise<void>;
+  moveLocalRdfIndex?(
+    previousIdentifier: ResourceIdentifier,
+    nextIdentifier: ResourceIdentifier,
+    options?: LocalRdfMoveOptions,
+  ): Promise<number>;
   rewriteTerms?(input: RdfTermRewriteInput): Promise<RdfTermRewriteResult> | RdfTermRewriteResult;
 }
 
@@ -87,6 +92,10 @@ export interface LocalRdfSyncOptions {
   sourceVersion?: string;
 }
 
+export interface LocalRdfMoveOptions extends LocalRdfSyncOptions {
+  previousSource?: string;
+}
+
 export interface SourceScopedStructuredRdfAccessor {
   writeRdfSourceDocument(
     identifier: ResourceIdentifier,
@@ -95,6 +104,7 @@ export interface SourceScopedStructuredRdfAccessor {
     source: RdfSourceInput,
   ): Promise<void>;
   deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void>;
+  moveRdfSourceDocument?(oldSource: string, next: RdfSourceInput): Promise<number>;
   indexTextSource?(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): Promise<void>;
   deleteTextSource?(source: string): Promise<number>;
   indexVectorSource?(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void>;
@@ -1081,6 +1091,27 @@ export class MixDataAccessor implements DataAccessor {
         throw error;
       }
     }
+  }
+
+  public async moveLocalRdfIndex(
+    previousIdentifier: ResourceIdentifier,
+    nextIdentifier: ResourceIdentifier,
+    options: LocalRdfMoveOptions = {},
+  ): Promise<number> {
+    const sourceScopedAccessor = this.sourceScopedStructuredAccessor();
+    if (!sourceScopedAccessor?.moveRdfSourceDocument) {
+      return 0;
+    }
+
+    const moved = await sourceScopedAccessor.moveRdfSourceDocument(
+      options.previousSource ?? previousIdentifier.path,
+      this.rdfSourceInput(nextIdentifier, options),
+    );
+    if (moved > 0) {
+      this.invalidateMetadataCache(previousIdentifier);
+      this.invalidateMetadataCache(nextIdentifier);
+    }
+    return moved;
   }
 
   private async writeRdfDocument(

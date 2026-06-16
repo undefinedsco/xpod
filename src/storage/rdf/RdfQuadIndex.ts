@@ -158,6 +158,45 @@ export class RdfQuadIndex {
     return result;
   }
 
+  public moveSource(oldSource: string, next: RdfSourceInput): number {
+    const db = this.requireDb();
+    let affectedRows = 0;
+    db.transaction(() => {
+      const oldRow = db
+        .prepare<RdfSourceRow>('SELECT * FROM rdf_sources WHERE source = ?')
+        .get(oldSource);
+      if (!oldRow) {
+        return;
+      }
+
+      const sourceQuadCount = db
+        .prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads WHERE source_file_id = ?')
+        .get(oldRow.id)?.count ?? 0;
+      const targetRow = db
+        .prepare<RdfSourceRow>('SELECT * FROM rdf_sources WHERE source = ?')
+        .get(next.source);
+
+      if (!targetRow || targetRow.id === oldRow.id) {
+        this.updateSourceRow(oldRow.id, next);
+        affectedRows = Math.max(sourceQuadCount, 1);
+        return;
+      }
+
+      const movedQuads = db
+        .prepare('UPDATE rdf_quads SET source_file_id = ? WHERE source_file_id = ?')
+        .run(targetRow.id, oldRow.id).changes;
+      this.updateSourceRow(targetRow.id, next);
+      db.prepare('DELETE FROM rdf_sources WHERE id = ?').run(oldRow.id);
+      affectedRows = Math.max(movedQuads, sourceQuadCount, 1);
+    })();
+
+    if (affectedRows > 0) {
+      this.cardinalityCache.clear();
+      this.bumpDataVersion();
+    }
+    return affectedRows;
+  }
+
   private deleteSourceInternal(source: string): number {
     const db = this.requireDb();
     const row = db
@@ -1452,6 +1491,26 @@ export class RdfQuadIndex {
       throw new Error(`Failed to upsert RDF source: ${source.source}`);
     }
     return row.id;
+  }
+
+  private updateSourceRow(id: number, source: RdfSourceInput): void {
+    this.requireDb().prepare(`
+      UPDATE rdf_sources
+      SET source = ?,
+          workspace = ?,
+          local_path = ?,
+          content_type = ?,
+          last_indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          source_version = ?
+      WHERE id = ?
+    `).run(
+      source.source,
+      source.workspace,
+      source.localPath ?? null,
+      source.contentType ?? null,
+      source.sourceVersion ?? null,
+      id,
+    );
   }
 
   private buildWhereClause(
