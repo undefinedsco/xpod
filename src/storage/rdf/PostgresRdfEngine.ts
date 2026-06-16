@@ -1930,6 +1930,63 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
   }
 
+  public async moveSource(oldSource: string, next: RdfSourceInput): Promise<number> {
+    await this.ensureReady();
+    const executor = this.requireExecutor();
+    return await executor.transaction(async (tx) => {
+      const sourceRows = await tx.query<PostgresRdfSourceRow>('SELECT * FROM rdf_sources WHERE source = $1', [oldSource]);
+      const sourceRow = sourceRows[0];
+      if (!sourceRow) {
+        return 0;
+      }
+      const affectedRows = await tx.query<{ count: number | string }>('SELECT COUNT(*) AS count FROM rdf_quads WHERE source_file_id = $1', [sourceRow.id]);
+      const affectedQuads = Number(affectedRows[0]?.count ?? 0);
+      const targetRows = await tx.query<PostgresRdfSourceRow>('SELECT * FROM rdf_sources WHERE source = $1', [next.source]);
+      const targetRow = targetRows[0];
+      if (targetRow && targetRow.id !== sourceRow.id) {
+        await tx.exec('UPDATE rdf_quads SET source_file_id = $1 WHERE source_file_id = $2', [targetRow.id, sourceRow.id]);
+        await tx.exec('DELETE FROM rdf_sources WHERE id = $1', [sourceRow.id]);
+        await tx.exec(`
+          UPDATE rdf_sources
+          SET source = $2,
+              workspace = $3,
+              local_path = $4,
+              content_type = $5,
+              source_version = $6,
+              last_indexed_at = NOW()
+          WHERE id = $1
+        `, [
+          targetRow.id,
+          next.source,
+          next.workspace,
+          next.localPath ?? null,
+          next.contentType ?? null,
+          next.sourceVersion ?? null,
+        ]);
+      } else {
+        await tx.exec(`
+          UPDATE rdf_sources
+          SET source = $2,
+              workspace = $3,
+              local_path = $4,
+              content_type = $5,
+              source_version = $6,
+              last_indexed_at = NOW()
+          WHERE id = $1
+        `, [
+          sourceRow.id,
+          next.source,
+          next.workspace,
+          next.localPath ?? null,
+          next.contentType ?? null,
+          next.sourceVersion ?? null,
+        ]);
+      }
+      await this.bumpFactsDataVersion(tx);
+      return Math.max(1, affectedQuads);
+    });
+  }
+
   public async delete(pattern: QuintPattern): Promise<number> {
     await this.ensureReady();
     const scan = await this.scan({ pattern });
@@ -2016,19 +2073,26 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return { matchedTerms: 0, rewrittenTerms: 0, remappedTerms: 0, skippedTerms: [], affectedQuads: 0 };
     }
 
-    const rows = await executor.query<PostgresRdfTermRow>(`
-      SELECT *
-      FROM rdf_terms
-      WHERE kind = 'iri'
-        AND value LIKE $1
-      ORDER BY id ASC
-    `, [`${oldPrefix}%`]);
-
+    let matchedTerms = 0;
     let rewrittenTerms = 0;
+    let affectedQuads = 0;
     const skippedTerms: RdfTermRewriteSkippedTerm[] = [];
 
     await executor.transaction(async (tx) => {
       const scopedDictionary = new PostgresRdfTermDictionary(tx);
+      const rows = await tx.query<PostgresRdfTermRow>(`
+        SELECT *
+        FROM rdf_terms
+        WHERE kind = 'iri'
+          AND LEFT(value, $1) = $2
+        ORDER BY id ASC
+      `, [oldPrefix.length, oldPrefix]);
+      matchedTerms = rows.length;
+      const termsToRewrite: Array<{
+        row: PostgresRdfTermRow;
+        nextValue: string;
+        nextIdentity: RdfTermIdentity;
+      }> = [];
       for (const row of rows) {
         const nextValue = `${newPrefix}${row.value.slice(oldPrefix.length)}`;
         const nextIdentity = await scopedDictionary.identityForNamedNodeValue(nextValue);
@@ -2038,6 +2102,37 @@ export class PostgresRdfEngine implements RdfEngineLike {
           skippedTerms.push({ id: row.id, value: row.value, reason: 'collision_conflict' });
           continue;
         }
+        const outsideScopeRows = await tx.query<{ count: number | string }>(`
+          SELECT COUNT(*) AS count
+          FROM rdf_quads quad
+          JOIN rdf_terms graph ON graph.id = quad.graph_id
+          WHERE (
+            quad.graph_id = $1
+            OR quad.subject_id = $1
+            OR quad.predicate_id = $1
+            OR quad.object_id = $1
+          )
+            AND LEFT(graph.value, $2) <> $3
+        `, [row.id, oldPrefix.length, oldPrefix]);
+        if (Number(outsideScopeRows[0]?.count ?? 0) > 0) {
+          skippedTerms.push({ id: row.id, value: row.value, reason: 'mixed_usage' });
+          continue;
+        }
+        termsToRewrite.push({ row, nextValue, nextIdentity });
+      }
+      const rewrittenTermIds = termsToRewrite.map(({ row }) => row.id);
+      if (rewrittenTermIds.length > 0) {
+        const affectedRows = await tx.query<{ count: number | string }>(`
+          SELECT COUNT(*) AS count
+          FROM rdf_quads
+          WHERE graph_id = ANY($1::bigint[])
+             OR subject_id = ANY($1::bigint[])
+             OR predicate_id = ANY($1::bigint[])
+             OR object_id = ANY($1::bigint[])
+        `, [rewrittenTermIds]);
+        affectedQuads = Number(affectedRows[0]?.count ?? 0);
+      }
+      for (const { row, nextValue, nextIdentity } of termsToRewrite) {
         await tx.exec(`
           UPDATE rdf_terms
           SET value = $1,
@@ -2048,7 +2143,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         `, [nextValue, nextIdentity.valueHead, nextIdentity.hash, nextIdentity.normalizedText, row.id]);
         rewrittenTerms += 1;
       }
-      if (rewrittenTerms > 0) {
+      if (rewrittenTermIds.length > 0) {
         await this.bumpFactsDataVersion(tx);
       }
     });
@@ -2058,11 +2153,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     return {
-      matchedTerms: rows.length,
+      matchedTerms,
       rewrittenTerms,
       remappedTerms: 0,
       skippedTerms,
-      affectedQuads: 0,
+      affectedQuads,
     };
   }
 

@@ -550,13 +550,122 @@ describe('PostgresRdfEngine', () => {
       mode: 'safe',
     });
 
-    expect(result).toMatchObject({ matchedTerms: 2, rewrittenTerms: 2, remappedTerms: 0, affectedQuads: 0 });
+    expect(result).toMatchObject({ matchedTerms: 2, rewrittenTerms: 2, remappedTerms: 0, affectedQuads: 1 });
     const oldScan = await engine.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl') } });
     expect(oldScan.quads).toHaveLength(0);
     const newScan = await engine.scan({ pattern: { graph: namedNode('https://pod.example/new/data.ttl') } });
     expect(newScan.quads).toHaveLength(1);
     expect(newScan.quads[0].subject.value).toBe('https://pod.example/new/data.ttl#this');
     await engine.close();
+  });
+
+  it('skips mixed Postgres RDF term rewrite usage outside the moved graph scope', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-rewrite-mixed-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const movingGraph = namedNode('https://pod.example/old/data.ttl');
+    const newGraph = namedNode('https://pod.example/new/data.ttl');
+    const sharedTerm = namedNode('https://pod.example/old/data.ttl#this');
+    const unrelatedGraph = namedNode('https://pod.example/notes/other.ttl');
+    const unrelatedSubject = namedNode('https://pod.example/notes/other.ttl#note');
+    const name = namedNode('https://schema.org/name');
+    const about = namedNode('https://schema.org/about');
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(sharedTerm, name, literal('Demo'), movingGraph),
+      ], {
+        source: movingGraph.value,
+        workspace: 'https://pod.example/',
+        localPath: 'old/data.ttl',
+        contentType: 'text/turtle',
+      });
+      await engine.replaceSource([
+        quad(unrelatedSubject, about, sharedTerm, unrelatedGraph),
+      ], {
+        source: unrelatedGraph.value,
+        workspace: 'https://pod.example/',
+        localPath: 'notes/other.ttl',
+        contentType: 'text/turtle',
+      });
+
+      const result = await engine.rewriteTerms({
+        oldPrefix: 'https://pod.example/old/',
+        newPrefix: 'https://pod.example/new/',
+        scope: 'safe_projection',
+        mode: 'safe',
+      });
+
+      expect(result).toMatchObject({
+        matchedTerms: 2,
+        rewrittenTerms: 1,
+        remappedTerms: 0,
+        affectedQuads: 1,
+      });
+      expect(result.skippedTerms).toEqual([
+        expect.objectContaining({
+          value: sharedTerm.value,
+          reason: expect.stringMatching(/^(mixed_usage|outside_scope)$/),
+        }),
+      ]);
+
+      const oldGraphScan = await engine.scan({ pattern: { graph: movingGraph } });
+      expect(oldGraphScan.quads).toHaveLength(0);
+
+      const newGraphScan = await engine.scan({ pattern: { graph: newGraph } });
+      expect(newGraphScan.quads).toHaveLength(1);
+      expect(newGraphScan.quads[0].subject.value).toBe(sharedTerm.value);
+
+      const unrelatedScan = await engine.scan({ pattern: { graph: unrelatedGraph } });
+      expect(unrelatedScan.quads).toHaveLength(1);
+      expect(unrelatedScan.quads[0].object.value).toBe(sharedTerm.value);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('moves Postgres RDF source metadata so deleting the new source removes moved quads', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-source-move-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const oldGraph = namedNode('https://pod.example/old/data.ttl');
+    const newSource = 'https://pod.example/new/data.ttl';
+    const subject = namedNode('https://pod.example/old/data.ttl#this');
+    const name = namedNode('https://schema.org/name');
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(subject, name, literal('Demo'), oldGraph),
+      ], {
+        source: oldGraph.value,
+        workspace: 'https://pod.example/',
+        localPath: 'old/data.ttl',
+        contentType: 'text/turtle',
+      });
+
+      await expect(engine.moveSource(oldGraph.value, {
+        source: newSource,
+        workspace: 'https://pod.example/',
+        localPath: 'new/data.ttl',
+        contentType: 'text/turtle',
+        sourceVersion: 'moved-v1',
+      })).resolves.toBeGreaterThanOrEqual(1);
+
+      await expect(engine.deleteSource(oldGraph.value)).resolves.toBe(0);
+      await expect(engine.deleteSource(newSource)).resolves.toBe(1);
+      const remaining = await engine.scan({ pattern: { graph: oldGraph } });
+      expect(remaining.quads).toHaveLength(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it('returns zero result when Postgres RDF term rewrite new prefix is empty', async () => {
