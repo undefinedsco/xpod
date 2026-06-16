@@ -2642,7 +2642,7 @@ WHERE { ${deletePatterns.join(' ')} }
       this.logger.warn(`Failed to load Pod models for ${config.providerId}: ${error}`);
     }
 
-    if (models.length === 0 && config.defaultModel) {
+    if (config.defaultModel && !seenModelIds.has(config.defaultModel)) {
       this.pushAvailableModel(models, seenModelIds, {
         id: config.defaultModel,
         name: config.defaultModel,

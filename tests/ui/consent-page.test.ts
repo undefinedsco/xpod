@@ -1,4 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('lucide-react', () => {
+  const Icon = () => null;
+  return {
+    AlertCircle: Icon,
+    Loader2: Icon,
+    Shield: Icon,
+  };
+});
 import {
   fetchOidcCancelRedirectLocation,
   resolveConsentDisplayWebIds,

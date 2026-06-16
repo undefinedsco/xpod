@@ -118,18 +118,26 @@ describe('AI config data interop side effects', () => {
     expect(tableConfig(Provider)).toMatchObject({
       resourcePath: '/settings/providers/',
       containerPath: '/settings/providers/',
-      subjectTemplate: '{id}.ttl',
+      subjectTemplate: undefined,
     });
+    expect((Provider as any).buildId({ id: 'openai' })).toBe('openai.ttl');
+
     expect(tableConfig(Model)).toMatchObject({
       resourcePath: '/settings/providers/',
       containerPath: '/settings/providers/',
-      subjectTemplate: '{isProvidedBy|id}.ttl#{id}',
+      subjectTemplate: undefined,
     });
+    expect((Model as any).buildId({
+      id: 'gpt-4o-mini',
+      isProvidedBy: '/settings/providers/openai.ttl',
+    })).toBe('openai.ttl#gpt-4o-mini');
+
     expect(tableConfig(Credential)).toMatchObject({
-      resourcePath: '/settings/credentials.ttl',
+      resourcePath: '/settings/',
       containerPath: '/settings/',
-      subjectTemplate: '#{id}',
+      subjectTemplate: undefined,
     });
+    expect((Credential as any).buildId({ id: 'openai-key' })).toBe('credentials.ttl#openai-key');
 
     const secretaryMeta = AgentMetaSchema.table('AgentMeta', {
       base: '/agents/secretary/.meta',
