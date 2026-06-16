@@ -2072,6 +2072,21 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!oldPrefix || !newPrefix || oldPrefix === newPrefix) {
       return { matchedTerms: 0, rewrittenTerms: 0, remappedTerms: 0, skippedTerms: [], affectedQuads: 0 };
     }
+    const escapedOldPrefix = escapeLikePattern(oldPrefix);
+    const oldPrefixFragmentPattern = `${escapedOldPrefix}#%`;
+    const oldPrefixDirectoryPattern = `${escapedOldPrefix}%`;
+    const oldPrefixAllowsDirectory = oldPrefix.endsWith('/');
+    const exactResourceBoundary = (
+      column: string,
+      exactParam: string,
+      fragmentParam: string,
+      directoryAllowedParam: string,
+      directoryParam: string,
+    ): string => `(
+      ${column} = ${exactParam}
+      OR ${column} LIKE ${fragmentParam} ESCAPE '\\'
+      OR (${directoryAllowedParam}::boolean AND ${column} LIKE ${directoryParam} ESCAPE '\\')
+    )`;
 
     let matchedTerms = 0;
     let rewrittenTerms = 0;
@@ -2084,9 +2099,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         SELECT *
         FROM rdf_terms
         WHERE kind = 'iri'
-          AND LEFT(value, $1) = $2
+          AND ${exactResourceBoundary('value', '$1', '$2', '$3', '$4')}
         ORDER BY id ASC
-      `, [oldPrefix.length, oldPrefix]);
+      `, [oldPrefix, oldPrefixFragmentPattern, oldPrefixAllowsDirectory, oldPrefixDirectoryPattern]);
       matchedTerms = rows.length;
       const termsToRewrite: Array<{
         row: PostgresRdfTermRow;
@@ -2112,8 +2127,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
             OR quad.predicate_id = $1
             OR quad.object_id = $1
           )
-            AND LEFT(graph.value, $2) <> $3
-        `, [row.id, oldPrefix.length, oldPrefix]);
+            AND NOT ${exactResourceBoundary('graph.value', '$2', '$3', '$4', '$5')}
+        `, [row.id, oldPrefix, oldPrefixFragmentPattern, oldPrefixAllowsDirectory, oldPrefixDirectoryPattern]);
         if (Number(outsideScopeRows[0]?.count ?? 0) > 0) {
           skippedTerms.push({ id: row.id, value: row.value, reason: 'mixed_usage' });
           continue;

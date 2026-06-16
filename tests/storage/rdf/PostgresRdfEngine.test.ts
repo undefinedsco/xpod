@@ -559,6 +559,129 @@ describe('PostgresRdfEngine', () => {
     await engine.close();
   });
 
+  it('keeps sibling Postgres RDF graph URIs outside exact rewrite boundaries', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-rewrite-sibling-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const oldGraph = namedNode('https://pod.example/old/data.ttl');
+    const newGraph = namedNode('https://pod.example/new/data.ttl');
+    const siblingGraph = namedNode('https://pod.example/old/data.ttl.bak');
+    const oldSubject = namedNode('https://pod.example/old/data.ttl#this');
+    const siblingSubject = namedNode('https://pod.example/old/data.ttl.bak#this');
+    const name = namedNode('https://schema.org/name');
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(oldSubject, name, literal('Moving'), oldGraph),
+      ], {
+        source: oldGraph.value,
+        workspace: 'https://pod.example/',
+        localPath: 'old/data.ttl',
+        contentType: 'text/turtle',
+      });
+      await engine.replaceSource([
+        quad(siblingSubject, name, literal('Sibling'), siblingGraph),
+      ], {
+        source: siblingGraph.value,
+        workspace: 'https://pod.example/',
+        localPath: 'old/data.ttl.bak',
+        contentType: 'text/turtle',
+      });
+
+      const result = await engine.rewriteTerms({
+        oldPrefix: oldGraph.value,
+        newPrefix: newGraph.value,
+        scope: 'safe_projection',
+        mode: 'safe',
+      });
+
+      expect(result).toMatchObject({ matchedTerms: 2, rewrittenTerms: 2, remappedTerms: 0, affectedQuads: 1 });
+      expect(result.skippedTerms).toEqual([]);
+
+      const oldScan = await engine.scan({ pattern: { graph: oldGraph } });
+      expect(oldScan.quads).toHaveLength(0);
+
+      const newScan = await engine.scan({ pattern: { graph: newGraph } });
+      expect(newScan.quads).toHaveLength(1);
+      expect(newScan.quads[0].subject.value).toBe('https://pod.example/new/data.ttl#this');
+
+      const siblingScan = await engine.scan({ pattern: { graph: siblingGraph } });
+      expect(siblingScan.quads).toHaveLength(1);
+      expect(siblingScan.quads[0].subject.value).toBe(siblingSubject.value);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips mixed Postgres RDF term rewrite usage in sibling graph exact boundary scope', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-rewrite-sibling-mixed-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const oldGraph = namedNode('https://pod.example/old/data.ttl');
+    const newGraph = namedNode('https://pod.example/new/data.ttl');
+    const siblingGraph = namedNode('https://pod.example/old/data.ttl.bak');
+    const sharedTerm = namedNode('https://pod.example/old/data.ttl#this');
+    const siblingSubject = namedNode('https://pod.example/old/data.ttl.bak#this');
+    const name = namedNode('https://schema.org/name');
+    const about = namedNode('https://schema.org/about');
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(sharedTerm, name, literal('Moving'), oldGraph),
+      ], {
+        source: oldGraph.value,
+        workspace: 'https://pod.example/',
+        localPath: 'old/data.ttl',
+        contentType: 'text/turtle',
+      });
+      await engine.replaceSource([
+        quad(siblingSubject, about, sharedTerm, siblingGraph),
+      ], {
+        source: siblingGraph.value,
+        workspace: 'https://pod.example/',
+        localPath: 'old/data.ttl.bak',
+        contentType: 'text/turtle',
+      });
+
+      const result = await engine.rewriteTerms({
+        oldPrefix: oldGraph.value,
+        newPrefix: newGraph.value,
+        scope: 'safe_projection',
+        mode: 'safe',
+      });
+
+      expect(result).toMatchObject({ matchedTerms: 2, rewrittenTerms: 1, remappedTerms: 0, affectedQuads: 1 });
+      expect(result.skippedTerms).toEqual([
+        expect.objectContaining({
+          value: sharedTerm.value,
+          reason: 'mixed_usage',
+        }),
+      ]);
+
+      const oldScan = await engine.scan({ pattern: { graph: oldGraph } });
+      expect(oldScan.quads).toHaveLength(0);
+
+      const newScan = await engine.scan({ pattern: { graph: newGraph } });
+      expect(newScan.quads).toHaveLength(1);
+      expect(newScan.quads[0].subject.value).toBe(sharedTerm.value);
+
+      const siblingScan = await engine.scan({ pattern: { graph: siblingGraph } });
+      expect(siblingScan.quads).toHaveLength(1);
+      expect(siblingScan.quads[0].subject.value).toBe(siblingSubject.value);
+      expect(siblingScan.quads[0].object.value).toBe(sharedTerm.value);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('skips mixed Postgres RDF term rewrite usage outside the moved graph scope', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-rewrite-mixed-'));
     const engine = new PostgresRdfEngine({
