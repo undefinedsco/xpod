@@ -9,3 +9,7 @@ export * from './Chunker';
 // 实现
 export * from './JinaDocumentParser';
 export * from './HeadingChunker';
+export * from './ParserPolicy';
+export * from './ParserAiConfig';
+export * from './L0SourceSummary';
+export * from './PaddleOCRDocumentParser';

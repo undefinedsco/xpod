@@ -77,6 +77,7 @@ import { AIConfig } from '../../ai/schema/config';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import { normalizeAIConfigModelId, normalizeAIConfigProviderId, normalizeAIConfigResourceId } from '@undefineds.co/models';
+import { selectParserAiConfig, type ParserAiConfig } from '../../document/ParserAiConfig';
 
 const schema = {
   chat: Chat,
@@ -2189,6 +2190,34 @@ WHERE { ${deletePatterns.join(' ')} }
       return undefined;
     } catch (error) {
       this.logger.warn(`Failed to read AI config from Pod: ${error}`);
+      return undefined;
+    }
+  }
+
+  async getParserConfig(context: StoreContext, preferredProviderId = 'paddleocr'): Promise<ParserAiConfig | undefined> {
+    const db = await this.getDb(context);
+    if (!db) {
+      return undefined;
+    }
+
+    try {
+      const [providers, models, credentials] = await Promise.all([
+        db.select().from(Provider),
+        db.select().from(Model),
+        db.select().from(Credential).where(and(
+          eq(Credential.service, ServiceType.AI),
+          eq(Credential.status, CredentialStatus.ACTIVE),
+        )),
+      ]);
+
+      return selectParserAiConfig({
+        providers,
+        models,
+        credentials,
+        preferredProviderId,
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to read parser AI config from Pod: ${error}`);
       return undefined;
     }
   }

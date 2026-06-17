@@ -23,6 +23,14 @@ export interface ParsedDocument {
     contentType?: string;
     /** 字数统计 */
     wordCount?: number;
+    /** parser provider，例如 paddleocr */
+    parserProvider?: string;
+    /** parser model，例如 pp-ocrv6 */
+    parserModel?: string;
+    /** 已解析页段 */
+    pageRange?: string;
+    /** 已解析页数 */
+    pageCount?: number;
   };
 
   /** 原始 URL */
@@ -61,4 +69,8 @@ export interface ParseOptions {
   includeImages?: boolean;
   /** 是否包含链接 */
   includeLinks?: boolean;
+  /** 页码范围，例如 1-20 或 1,3,5-8 */
+  pageRange?: string;
+  /** Agent/系统解析目的，用于 provider adapter 记录与调度 */
+  expectedUse?: string;
 }

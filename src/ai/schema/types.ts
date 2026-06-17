@@ -9,6 +9,7 @@ export enum ModelType {
   EMBEDDING = 'embedding',
   CHAT = 'chat',
   COMPLETION = 'completion',
+  PARSER = 'parser',
 }
 
 /**
