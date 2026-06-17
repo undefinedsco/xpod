@@ -482,7 +482,7 @@ L0 source 可以来自：
 - 旧 parser cache 摘要或旧 L0 摘要；
 - Agent 决定读取的轻量本地 preview，例如文本头部、PDF 首 1 页、Office 元数据/摘要页。
 
-L0 必须记录生成方式，不能把上下文推测伪装成正文解析，也不能把轻量 preview 伪装成完整 parser-confirmed content：
+L0 必须记录实际生成方式。`mode` 不是用户配置项，也不是预设策略；它是系统在生成 L0 后写入的结果记录，用来告诉 Agent 这条摘要到底来自上下文推测、轻量预览还是旧缓存。不能把上下文推测伪装成正文解析，也不能把轻量 preview 伪装成完整 parser-confirmed content：
 
 ```ts
 interface L0SourceSummary {
@@ -500,14 +500,60 @@ interface L0SourceSummary {
 }
 ```
 
-Agent 选择 L0 方式的建议：
+Agent 选择 L0 生成方式的建议如下。这里的 `mode` 是生成后的审计字段，不要求用户手动配置：
 
-| Condition | L0 mode |
+| Situation observed at runtime | L0 generation result |
 | --- | --- |
-| 文件名/路径/上下文已经足够明确 | `context-inferred` |
-| 用户问题依赖文档主题但不需要结构细节 | `lightweight-preview` |
-| 文件曾解析过且 hash 未变或可降级复用 | `old-cache` |
+| 文件名/路径/上下文已经足够明确 | `mode = context-inferred` |
+| 用户问题依赖文档主题但不需要结构细节 | `mode = lightweight-preview` |
+| 文件曾解析过且 hash 未变或可降级复用 | `mode = old-cache` |
 | 用户需要表格/公式/版面/页级证据 | 不停留在 L0，进入 parser L1+ |
+
+### Source usage context for Agent decisions
+
+为了让 Agent 判断 L0 是否足够、是否需要读取 preview 或启动 parser，系统必须提供文件在产品上下文里的使用痕迹。这个上下文不是 parser 结果，而是 source usage graph / activity index。
+
+推荐结构：
+
+```ts
+interface SourceUsageContext {
+  source: string;
+  mentions: Array<{
+    surface: 'chat' | 'task' | 'run' | 'message' | 'tool-call' | 'upload' | 'ui-open';
+    resource: string;            // chat/thread/message/run/tool call IRI or id
+    title?: string;
+    excerpt?: string;            // short context around mention, not full transcript
+    mentionedAs?: string;        // filename, pasted path, attachment label, etc.
+    actor?: string;
+    timestamp: string;
+    confidence: 'low' | 'medium' | 'high';
+  }>;
+  recentActions: Array<{
+    action: 'uploaded' | 'opened' | 'edited' | 'moved' | 'renamed' | 'attached' | 'referenced' | 'generated';
+    resource: string;
+    timestamp: string;
+    actor?: string;
+  }>;
+  relatedSources?: Array<{
+    source: string;
+    relation: 'same-folder' | 'linked-from-message' | 'generated-from' | 'attached-together' | 'referenced-by-same-run';
+  }>;
+}
+```
+
+Agent 决策时应看到：
+
+```text
+source L0 summary + source usage context + current user question + parser coverage + budget
+```
+
+例如：
+
+- 文件在某个 chat 里作为附件上传，并且用户说“这是合同初稿”；Agent 可以先用上下文生成 L0。
+- 文件路径叫 `scan001.pdf`，上下文缺失；Agent 应读取 lightweight preview 或请求 parser。
+- 文件在某个 run 的工具调用里被生成，且 run 说明是“导出的财务表”；Agent 可以把该 run context 作为 L0 evidence。
+
+系统应限制 context excerpt 长度，只提供判断 L0/解析策略所需的短上下文，避免把整段聊天重复塞入 retrieval。
 
 L0 回答：
 
