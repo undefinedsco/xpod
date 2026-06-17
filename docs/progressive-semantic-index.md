@@ -89,8 +89,8 @@ source + contentHash + parser + parserVersion + parserOptionsHash
 ### Free-quota-first parser provider policy
 
 外部 parser 的默认选择必须按“可持续免费量”而不是单纯能力排序。Xpod 不应默认消耗平台公共额度；
-用户级 parser API key 应存入用户 Pod 的 provider 配置，和 AI provider 一样由用户自己管理。系统只负责
-路由、缓存、失败降级和 coverage 报告。
+parser 的 provider、model、credential 必须复用用户 Pod 里的标准 AI config（Provider / Model / Credential），
+和 chat / embedding 模型走同一套配置、密钥、代理和默认模型语义。系统只负责路由、缓存、失败降级和 coverage 报告。
 
 免费额度策略分四类：
 
@@ -107,16 +107,16 @@ source + contentHash + parser + parserVersion + parserOptionsHash
 | --- | --- | --- | --- |
 | Jina Reader | 单网页 / URL -> Markdown | rate-limited：无 key 约 20 RPM；免费 key 约 500 RPM | `web.singlePage.primary` |
 | Firecrawl | crawl / sitemap / 多页站点抓取 | monthly-recurring：免费计划约 1,000 credits/月 | `web.crawl.primary` |
-| MinerU precise API | PDF、Office、图片、中文论文、表格、公式、复杂版式 | daily-recurring：账号每天约 1,000 页最高优先级；单文件约 200MB/200页 | `document.primary` |
-| MinerU Agent light API | 小文件快速 Markdown | rate-limited：免 token，IP 限频；约 10MB/20页限制 | `document.quick` |
-| LlamaParse | MinerU 失败后的 SaaS 兜底 | monthly-recurring：Free plan 约 10K credits/月；复杂模式消耗更快 | `document.fallback` |
+| PaddleOCR official API | 文档解析、OCR、MCP/Skills 场景 | daily-recurring：官方文档称免费 API 最高支持约 20,000 pages/day | `document.primary` |
+| PaddleOCR local plugin | 本地/自托管 OCR 与文档解析 | self-hosted/local：无外部额度，但依赖和模型较重 | `localPlugin` |
+| MinerU precise API | PDF、Office、图片、中文论文、表格、公式、复杂版式 | daily-recurring：账号每天约 1,000 页最高优先级；单文件约 200MB/200页 | `document.qualityFallback` |
+| MinerU Agent light API | 小文件快速 Markdown | rate-limited：免 token，IP 限频；约 10MB/20页限制 | `document.quickFallback` |
+| LlamaParse | MinerU/PaddleOCR 失败后的 SaaS 兜底 | monthly-recurring：Free plan 约 10K credits/月；复杂模式消耗更快 | `document.fallback` |
 | OCR.space | 小图片 OCR / 小扫描件 | daily/monthly-recurring：免费约 500 requests/day/IP、25,000 requests/month；文件约 1MB、PDF 约 3页 | `imageOcr.fallback` |
 | Unstructured API | onboarding/benchmark | one-time-trial：约 15,000 free pages，无过期 | `benchmarkOnly` |
 | Reducto | 高质量复杂文档对照 | one-time-trial：first 15K credits | `benchmarkOnly` |
 | Azure Document Intelligence | 企业已有 Azure 时 | monthly-recurring but small：约 500 pages/month | `enterpriseOptional` |
 | AWS Textract | 企业 AWS 试用/已有账户 | short trial：新账号约 3 个月免费层 | `enterpriseOptional` |
-| PaddleOCR official API | 文档解析、OCR、MCP/Skills 场景 | daily-recurring：官方文档称免费 API 最高支持约 20,000 pages/day | `document.primaryOrFallback` |
-| PaddleOCR local plugin | 本地/自托管 OCR 与文档解析 | self-hosted/local：无外部额度，但依赖和模型较重 | `localPlugin` |
 
 默认路由：
 
@@ -130,16 +130,20 @@ parserRouter:
 
   document:
     quick:
-      primary: mineru-agent-light
-      fallback: local-lib
-    pdfOrOffice:
-      primary: mineru-precise
+      primary: paddleocr-api
       fallback:
+        - mineru-agent-light
+        - local-lib
+    pdfOrOffice:
+      primary: paddleocr-api
+      fallback:
+        - mineru-precise
         - llamaparse
         - local-lib
     imageOcr:
-      primary: ocrspace
+      primary: paddleocr-api
       fallback:
+        - ocrspace
         - mineru-precise
         - local-lib
 
@@ -147,6 +151,46 @@ parserRouter:
     - unstructured
     - reducto
 ```
+
+### Canonical AI config storage for parser models
+
+Parser provider 不是一套新资源。PaddleOCR、MinerU、LlamaParse 这类 parser 都应建模为普通 `ai:Provider`；
+可调用的解析模型建模为 `ai:Model`，并用 `ai:modelType "parser"` 区分 chat / embedding / parser。
+密钥仍放 `cred:Credential`，`cred:service "ai"`，通过 `cred:provider` 指向同一个 provider。
+
+```turtle
+@prefix ai: <https://vocab.xpod.dev/ai#> .
+@prefix cred: <https://vocab.xpod.dev/credential#> .
+
+# /settings/providers/paddleocr.ttl
+</settings/providers/paddleocr.ttl>
+  a ai:Provider ;
+  ai:displayName "PaddleOCR" ;
+  ai:hasModel </settings/providers/paddleocr.ttl#pp-ocrv6> ;
+  ai:defaultModel </settings/providers/paddleocr.ttl#pp-ocrv6> .
+
+</settings/providers/paddleocr.ttl#pp-ocrv6>
+  a ai:Model ;
+  ai:displayName "PP-OCRv6" ;
+  ai:modelType "parser" ;
+  ai:isProvidedBy </settings/providers/paddleocr.ttl> ;
+  ai:status "active" .
+
+# /settings/credentials.ttl
+<#paddleocr-default>
+  a cred:Credential ;
+  cred:service "ai" ;
+  cred:provider </settings/providers/paddleocr.ttl> ;
+  cred:status "active" ;
+  cred:apiKey "paddle-access-token" .
+```
+
+规则：
+
+- 不新增 `ParserProvider` / `ParserCredential` / `ParserModel` 资源；parser 是 AI provider 的一种 model type。
+- API token、access token、key 在存储层统一叫 `apiKey`；adapter 内部再映射成 `PADDLEOCR_ACCESS_TOKEN` 或 `Authorization: Bearer`。
+- parser router 只能引用 provider/model 的 id 或 IRI，不能直接保存密钥。
+- shared `@undefineds.co/models` 需要让 AI config mutation/read 保留 `modelType: "parser"`，避免写入时退化成 `chat`。
 
 当外部免费额度到期、限频、不可达或用户未配置 key 时，必须退回 `local-lib`，而不是静默失败：
 
