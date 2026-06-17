@@ -254,11 +254,11 @@ interface ParserProviderUsage {
 cache key = fileDigest + parserProvider + parserVersion + parserOptionsHash + pageRange
 ```
 
-命中缓存时不调用外部 API。对页数型 provider，按 page range 渐进解析；默认策略可以激进，但不能上传即全文解析。
+命中缓存时不调用外部 API。对页数型 provider，按 page range 渐进解析；系统给出激进的预算和默认建议，但具体页段由 Agent 决定，且不能上传即全文解析。
 
-### Aggressive default page-window policy
+### Agent-decided page-window policy
 
-PaddleOCR official API 的免费页数足够大时，默认使用激进解析策略以换取“文档马上可用”的体验。上传/同步文件时仍只建 L0，不自动全文解析；只有 Agent、用户或检索流程实际需要读文档内容时才消耗外部 parser 额度。
+PaddleOCR official API 的免费页数足够大时，系统不应该硬编码“每次固定解析多少页”。系统负责提供预算、provider 状态、文件元信息、已有 coverage 和安全上限；Agent 根据当前任务决定是否解析、解析哪几页、一次解析多少页。上传/同步文件时仍只建 L0，不自动全文解析；只有 Agent、用户或检索流程实际需要读文档内容时才消耗外部 parser 额度。
 
 ```yaml
 parserPolicy:
@@ -272,14 +272,15 @@ parserPolicy:
     localPreviewPages: 0
     localPreviewBytes: 0
 
-  l1:
-    initialPages: 20
-    maxInitialPages: 50
-
-  expand:
-    pageWindow: 50
-    maxPageWindow: 100
-    preferSectionRange: true
+  decision:
+    owner: agent
+    defaultSuggestion:
+      initialPages: 20
+      structureProbeMaxPages: 50
+      pageWindow: 50
+      maxPageWindow: 100
+    allowAgentOverride: true
+    requireReason: true
 
   hardLimits:
     maxPagesPerRun: 500
@@ -290,12 +291,30 @@ parserPolicy:
 行为：
 
 1. 文件入库只生成 L0 推测摘要，不调用 PaddleOCR，也不默认读取/解析正文。
-2. Agent 第一次需要该文档时，默认解析前 20 页。
-3. 如果结构判断不足，自动扩展到前 50 页。
-4. 后续按 50 页窗口推进；大文档单窗口最多 100 页。
+2. Agent 看到 L0、用户问题、文件页数、剩余额度、已解析 coverage 后，决定是否调用 parser。
+3. 系统给默认建议：首次可解析 20 页，结构探测可到 50 页，后续窗口建议 50 页，单窗口不超过 100 页。
+4. Agent 可以选择更小窗口、更大窗口、指定页段或跳过解析，但必须给出 reason，并受 hard limits 约束。
 5. 自动解析单 Run 最多 500 页，单文件每天最多 1000 页。
 6. 自动任务默认最多使用 provider 当日可用预算的 80%。以 20,000 pages/day 估算，自动预算约 16,000 页/天。
 7. 用户显式触发“全文解析/继续解析”可以突破单 Run 限制，但仍应受 daily provider budget 和账号级限额保护。
+
+Agent 发起 parser run 时必须显式记录决策：
+
+```ts
+interface ParserDecision {
+  source: string;
+  provider: 'paddleocr';
+  model: 'pp-ocrv6';
+  pageRange: string;
+  reason: string;
+  expectedUse: 'structure-probe' | 'answer-evidence' | 'table-extraction' | 'ocr' | 'full-import';
+  budgetBefore: {
+    runRemainingPages: number;
+    fileRemainingPagesToday: number;
+    providerRemainingPagesToday?: number;
+  };
+}
+```
 
 每次 parser run 必须记录实际页段和 coverage，例如：
 
@@ -305,6 +324,8 @@ parserPolicy:
   model: 'pp-ocrv6',
   pageRange: '1-20',
   coverage: 'partial',
+  decisionOwner: 'agent',
+  reason: 'Need a structure probe before answering questions about this PDF.',
   nextAction: 'expand pageRange 21-50 if answer evidence is insufficient',
 }
 ```
