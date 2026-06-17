@@ -17,7 +17,7 @@ L0 文件级摘要全量存在
 
 其中：
 
-- `L0` 是文件级 retrieval point，不要求 parser。
+- `L0` 是文件级 retrieval point，不要求 parser，也不要求读取/解析正文；可由文件名、路径、MIME、大小、mtime、消息上下文、工具调用历史和用户描述推测生成。
 - `L1..Ln` 是 parser 输出的语义树层级，层数随文件结构自然展开。
 - Markdown 可映射为 `#` 到 `######`；代码、TTL、JSON/YAML、日志等由 parser 映射成等价的语义树。
 - 原文文件仍是权威；长期索引默认存摘要、结构、行范围和关系，不默认持久化全部原文 chunk。
@@ -267,8 +267,10 @@ parserPolicy:
 
   l0:
     parseExternal: false
-    localPreviewPages: 1
-    localPreviewBytes: 65536
+    parseLocalBody: false
+    inferFromContext: true
+    localPreviewPages: 0
+    localPreviewBytes: 0
 
   l1:
     initialPages: 20
@@ -287,7 +289,7 @@ parserPolicy:
 
 行为：
 
-1. 文件入库只生成 L0，不调用 PaddleOCR 全文解析。
+1. 文件入库只生成 L0 推测摘要，不调用 PaddleOCR，也不默认读取/解析正文。
 2. Agent 第一次需要该文档时，默认解析前 20 页。
 3. 如果结构判断不足，自动扩展到前 50 页。
 4. 后续按 50 页窗口推进；大文档单窗口最多 100 页。
@@ -402,14 +404,29 @@ not-indexed -> building -> ready -> stale -> rebuilding -> ready
 
 ### L0：Source-level semantic summary
 
-L0 每个文件至少一条，要求全量覆盖。L0 不要求 parser，可从上下文生成：
+L0 每个文件至少一条，要求全量覆盖。L0 不要求 parser，也不默认读取/解析正文。它是 source-level guess / catalog entry，可从上下文推测生成：
 
 - path / filename / extension / content type；
 - size / mtime / git status；
 - message、run、thread、task 中对该文件的提及；
 - 工具调用历史、最近打开/修改；
+- 用户上传、拖拽、重命名、移动时给出的描述；
+- 相邻文件、README、目录名、同仓库约定；
 - 已知 tags/entities；
-- 可选的文件头部片段、README 上下文、旧 parser cache 摘要。
+- 旧 parser cache 摘要或旧 L0 摘要。
+
+L0 可以带 `confidence` 和 `evidence`，但必须标记为 inferred，不能伪装成 parser-confirmed content：
+
+```ts
+interface L0SourceSummary {
+  source: string;
+  summary?: string;
+  inferred: true;
+  confidence: 'low' | 'medium' | 'high';
+  evidence: Array<'path' | 'mime' | 'message-context' | 'tool-history' | 'user-description' | 'neighbor-files' | 'old-cache'>;
+  parserConfirmed: false;
+}
+```
 
 L0 回答：
 
