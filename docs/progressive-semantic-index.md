@@ -254,7 +254,58 @@ interface ParserProviderUsage {
 cache key = fileDigest + parserProvider + parserVersion + parserOptionsHash + pageRange
 ```
 
-命中缓存时不调用外部 API。对页数型 provider，按 page range 渐进解析，不要为了 L1/L2 需求一次解析整本书。
+命中缓存时不调用外部 API。对页数型 provider，按 page range 渐进解析；默认策略可以激进，但不能上传即全文解析。
+
+### Aggressive default page-window policy
+
+PaddleOCR official API 的免费页数足够大时，默认使用激进解析策略以换取“文档马上可用”的体验。上传/同步文件时仍只建 L0，不自动全文解析；只有 Agent、用户或检索流程实际需要读文档内容时才消耗外部 parser 额度。
+
+```yaml
+parserPolicy:
+  provider: paddleocr
+  model: pp-ocrv6
+
+  l0:
+    parseExternal: false
+    localPreviewPages: 1
+    localPreviewBytes: 65536
+
+  l1:
+    initialPages: 20
+    maxInitialPages: 50
+
+  expand:
+    pageWindow: 50
+    maxPageWindow: 100
+    preferSectionRange: true
+
+  hardLimits:
+    maxPagesPerRun: 500
+    maxPagesPerFilePerDay: 1000
+    maxDailyProviderBudgetRatio: 0.8
+```
+
+行为：
+
+1. 文件入库只生成 L0，不调用 PaddleOCR 全文解析。
+2. Agent 第一次需要该文档时，默认解析前 20 页。
+3. 如果结构判断不足，自动扩展到前 50 页。
+4. 后续按 50 页窗口推进；大文档单窗口最多 100 页。
+5. 自动解析单 Run 最多 500 页，单文件每天最多 1000 页。
+6. 自动任务默认最多使用 provider 当日可用预算的 80%。以 20,000 pages/day 估算，自动预算约 16,000 页/天。
+7. 用户显式触发“全文解析/继续解析”可以突破单 Run 限制，但仍应受 daily provider budget 和账号级限额保护。
+
+每次 parser run 必须记录实际页段和 coverage，例如：
+
+```ts
+{
+  provider: 'paddleocr',
+  model: 'pp-ocrv6',
+  pageRange: '1-20',
+  coverage: 'partial',
+  nextAction: 'expand pageRange 21-50 if answer evidence is insufficient',
+}
+```
 
 Sources to re-check before implementation:
 
