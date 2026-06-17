@@ -115,6 +115,8 @@ source + contentHash + parser + parserVersion + parserOptionsHash
 | Reducto | 高质量复杂文档对照 | one-time-trial：first 15K credits | `benchmarkOnly` |
 | Azure Document Intelligence | 企业已有 Azure 时 | monthly-recurring but small：约 500 pages/month | `enterpriseOptional` |
 | AWS Textract | 企业 AWS 试用/已有账户 | short trial：新账号约 3 个月免费层 | `enterpriseOptional` |
+| PaddleOCR official API | 文档解析、OCR、MCP/Skills 场景 | daily-recurring：官方文档称免费 API 最高支持约 20,000 pages/day | `document.primaryOrFallback` |
+| PaddleOCR local plugin | 本地/自托管 OCR 与文档解析 | self-hosted/local：无外部额度，但依赖和模型较重 | `localPlugin` |
 
 默认路由：
 
@@ -156,7 +158,29 @@ external parser unavailable
   -> tell Agent which parser was used and what fidelity was lost
 ```
 
-`local-lib` 是一组本地/自托管 parser adapter，而不是单个库：
+`local-lib` 是一组本地/自托管 parser adapter，而不是单个库。重型本地 parser 不进入 xpod 主发布包，必须通过插件安装：
+
+```text
+xpod core
+  -> ParserProvider interface
+  -> lightweight built-in parsers
+  -> optional parser plugins
+      - xpod-parser-paddleocr
+      - xpod-parser-docling
+      - xpod-parser-tesseract
+```
+
+PaddleOCR 应作为插件优先集成，而不是主包依赖。原因：PaddleOCR 3.x 的能力很强，但 Python、PaddlePaddle/Transformers、模型文件、OpenVINO/GPU/Apple Silicon 等运行时差异会显著增加安装体积和兼容性风险。插件可以按需安装、单独升级、单独做健康检查，并允许 local/cloud 使用不同后端。
+
+PaddleOCR 插件边界：
+
+| Mode | Use | Packaging |
+| --- | --- | --- |
+| `paddleocr-api` | 调 PaddleOCR 官方 API，利用每日免费页数 | 轻量 TypeScript adapter，可进普通插件 |
+| `paddleocr-local` | 本地 OCR/PP-Structure/PaddleOCR-VL 推理 | Python sidecar/plugin，不进入 xpod core |
+| `paddleocr-container` | Cloud/self-hosted GPU/CPU 服务 | 独立镜像，通过 parser provider endpoint 接入 |
+
+插件失败时仍退回普通 `local-lib`，并在 coverage 中标记 `fallback-used`。
 
 | File class | Local fallback expectation |
 | --- | --- |
@@ -199,6 +223,9 @@ Sources to re-check before implementation:
 - Reducto pricing: <https://reducto.ai/pricing>
 - Azure AI Document Intelligence pricing: <https://azure.microsoft.com/en-us/pricing/details/ai-document-intelligence/>
 - AWS Textract pricing: <https://aws.amazon.com/textract/pricing/>
+- PaddleOCR releases: <https://github.com/PaddlePaddle/PaddleOCR/releases>
+- PaddleOCR docs: <https://www.paddleocr.ai/main/en/index.html>
+- PaddleOCR installation / optional dependency groups: <https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/installation.en.md>
 
 ### Retrieval-point lifecycle
 
