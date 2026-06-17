@@ -17,7 +17,7 @@ L0 文件级摘要全量存在
 
 其中：
 
-- `L0` 是文件级 retrieval point，不要求 parser，也不要求读取/解析正文；可由文件名、路径、MIME、大小、mtime、消息上下文、工具调用历史和用户描述推测生成。
+- `L0` 是文件级 retrieval point，不要求完整 parser；它可以由上下文推测，也可以由 Agent 选择读取轻量摘要/预览来生成。
 - `L1..Ln` 是 parser 输出的语义树层级，层数随文件结构自然展开。
 - Markdown 可映射为 `#` 到 `######`；代码、TTL、JSON/YAML、日志等由 parser 映射成等价的语义树。
 - 原文文件仍是权威；长期索引默认存摘要、结构、行范围和关系，不默认持久化全部原文 chunk。
@@ -258,7 +258,7 @@ cache key = fileDigest + parserProvider + parserVersion + parserOptionsHash + pa
 
 ### Agent-decided page-window policy
 
-PaddleOCR official API 的免费页数足够大时，系统不应该硬编码“每次固定解析多少页”。系统负责提供预算、provider 状态、文件元信息、已有 coverage 和安全上限；Agent 根据当前任务决定是否解析、解析哪几页、一次解析多少页。上传/同步文件时仍只建 L0，不自动全文解析；只有 Agent、用户或检索流程实际需要读文档内容时才消耗外部 parser 额度。
+PaddleOCR official API 的免费页数足够大时，系统不应该硬编码“每次固定解析多少页”。系统负责管理 provider/model/token、缓存、coverage 和硬性安全边界，并把当前预算、provider 状态、文件元信息、已有 coverage 暴露给 Agent；Agent 根据当前任务决定是否解析、解析哪几页、一次解析多少页。预算不是纯硬错误：Agent 预计超预算时应向用户说明收益和成本，并请求确认或降级。上传/同步文件时仍只建 L0，不自动全文解析；只有 Agent、用户或检索流程实际需要读文档内容时才消耗外部 parser 额度。
 
 ```yaml
 parserPolicy:
@@ -267,10 +267,12 @@ parserPolicy:
 
   l0:
     parseExternal: false
-    parseLocalBody: false
-    inferFromContext: true
-    localPreviewPages: 0
-    localPreviewBytes: 0
+    decisionOwner: agent
+    allowContextInference: true
+    allowLightweightPreview: true
+    suggestion:
+      localPreviewPages: 1
+      localPreviewBytes: 65536
 
   decision:
     owner: agent
@@ -281,6 +283,18 @@ parserPolicy:
       maxPageWindow: 100
     allowAgentOverride: true
     requireReason: true
+    exposeBudgetToAgent: true
+    overBudgetBehavior: ask-user-or-degrade
+
+  systemPrefetch:
+    owner: system
+    triggers:
+      - user-open-detail
+      - user-scroll-near-unparsed-page
+      - user-search-within-document
+    lookAheadPages: 10
+    maxLookAheadPages: 30
+    respectHardLimits: true
 
   hardLimits:
     maxPagesPerRun: 500
@@ -290,13 +304,42 @@ parserPolicy:
 
 行为：
 
-1. 文件入库只生成 L0 推测摘要，不调用 PaddleOCR，也不默认读取/解析正文。
+1. 文件入库只创建 L0 候选；Agent 可选择仅用上下文推测，也可读取轻量预览/摘要生成 L0，但不调用 PaddleOCR 做完整解析。
 2. Agent 看到 L0、用户问题、文件页数、剩余额度、已解析 coverage 后，决定是否调用 parser。
 3. 系统给默认建议：首次可解析 20 页，结构探测可到 50 页，后续窗口建议 50 页，单窗口不超过 100 页。
 4. Agent 可以选择更小窗口、更大窗口、指定页段或跳过解析，但必须给出 reason，并受 hard limits 约束。
-5. 自动解析单 Run 最多 500 页，单文件每天最多 1000 页。
-6. 自动任务默认最多使用 provider 当日可用预算的 80%。以 20,000 pages/day 估算，自动预算约 16,000 页/天。
-7. 用户显式触发“全文解析/继续解析”可以突破单 Run 限制，但仍应受 daily provider budget 和账号级限额保护。
+5. Agent 判断会超出建议预算但仍值得解析时，应向用户说明预计页数、收益、额度影响，并请求确认；用户拒绝或无响应时降级到已有 coverage / local preview / metadata-only。
+6. 用户打开文档详情并向下翻页、接近未解析页段或在文档内搜索时，由系统做提前解析/预取，不需要 Agent 决策；系统预取只为交互体验服务，仍记录 coverage 并遵守 hard limits。
+7. 自动解析单 Run 最多 500 页，单文件每天最多 1000 页。
+8. 自动任务默认最多使用 provider 当日可用预算的 80%。以 20,000 pages/day 估算，自动预算约 16,000 页/天。
+9. 用户显式触发“全文解析/继续解析”可以突破单 Run 限制，但仍应受 daily provider budget 和账号级限额保护。
+
+### System-driven prefetch
+
+不是所有解析都由 Agent 决策。用户正在 UI 中打开文档详情、翻页、滚动接近未解析页段、或在文档内搜索时，系统可以主动预取解析结果。这类解析属于交互式缓存预热，不需要 Agent 写 reason，但必须记录触发来源和 coverage。
+
+```ts
+interface SystemParserPrefetch {
+  source: string;
+  provider: 'paddleocr';
+  model: 'pp-ocrv6';
+  pageRange: string;
+  trigger: 'user-open-detail' | 'user-scroll-near-unparsed-page' | 'user-search-within-document';
+  visiblePage?: number;
+  lookAheadPages: number;
+  budgetBefore: {
+    fileRemainingPagesToday: number;
+    providerRemainingPagesToday?: number;
+  };
+}
+```
+
+预取策略建议：
+
+- 打开详情页：确保当前页和后续 10 页 ready；
+- 滚动接近未解析区域：提前 10 页，网络/额度充足时最多 30 页；
+- 文档内搜索：优先解析目录/已命中附近页段；
+- 预取不得突破 hard limits；达到软预算时停止并提示“继续解析需要确认”。
 
 Agent 发起 parser run 时必须显式记录决策：
 
@@ -425,7 +468,9 @@ not-indexed -> building -> ready -> stale -> rebuilding -> ready
 
 ### L0：Source-level semantic summary
 
-L0 每个文件至少一条，要求全量覆盖。L0 不要求 parser，也不默认读取/解析正文。它是 source-level guess / catalog entry，可从上下文推测生成：
+L0 每个文件至少一条，要求全量覆盖。L0 不要求完整 parser，但 L0 的生成方式由 Agent 决定：有些文件可以只从上下文推测；有些文件需要读取轻量摘要、首屏、第一页或已有 preview 后再生成。
+
+L0 source 可以来自：
 
 - path / filename / extension / content type；
 - size / mtime / git status；
@@ -434,20 +479,35 @@ L0 每个文件至少一条，要求全量覆盖。L0 不要求 parser，也不�
 - 用户上传、拖拽、重命名、移动时给出的描述；
 - 相邻文件、README、目录名、同仓库约定；
 - 已知 tags/entities；
-- 旧 parser cache 摘要或旧 L0 摘要。
+- 旧 parser cache 摘要或旧 L0 摘要；
+- Agent 决定读取的轻量本地 preview，例如文本头部、PDF 首 1 页、Office 元数据/摘要页。
 
-L0 可以带 `confidence` 和 `evidence`，但必须标记为 inferred，不能伪装成 parser-confirmed content：
+L0 必须记录生成方式，不能把上下文推测伪装成正文解析，也不能把轻量 preview 伪装成完整 parser-confirmed content：
 
 ```ts
 interface L0SourceSummary {
   source: string;
   summary?: string;
-  inferred: true;
+  mode: 'context-inferred' | 'lightweight-preview' | 'old-cache';
   confidence: 'low' | 'medium' | 'high';
-  evidence: Array<'path' | 'mime' | 'message-context' | 'tool-history' | 'user-description' | 'neighbor-files' | 'old-cache'>;
+  evidence: Array<'path' | 'mime' | 'message-context' | 'tool-history' | 'user-description' | 'neighbor-files' | 'old-cache' | 'local-preview'>;
+  previewRange?: {
+    pages?: string;
+    bytes?: number;
+    lines?: string;
+  };
   parserConfirmed: false;
 }
 ```
+
+Agent 选择 L0 方式的建议：
+
+| Condition | L0 mode |
+| --- | --- |
+| 文件名/路径/上下文已经足够明确 | `context-inferred` |
+| 用户问题依赖文档主题但不需要结构细节 | `lightweight-preview` |
+| 文件曾解析过且 hash 未变或可降级复用 | `old-cache` |
+| 用户需要表格/公式/版面/页级证据 | 不停留在 L0，进入 parser L1+ |
 
 L0 回答：
 
