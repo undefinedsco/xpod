@@ -17,7 +17,7 @@
         "@inrupt/solid-client-authn-node": "^3.1.0",
         "@mariozechner/pi-coding-agent": "^0.55.1",
         "@solid/community-server": "8.0.0-alpha.1",
-        "@undefineds.co/drizzle-solid": "0.3.16",
+        "@undefineds.co/drizzle-solid": "0.3.17",
         "@undefineds.co/models": "0.2.45",
         "abstract-level": "^1.0.4",
         "acme-client": "^5.1.3",
@@ -113,6 +113,7 @@
     "@comunica/types": "^4.5.0",
     "@inrupt/solid-client-authn-browser": "^3.1.1",
     "@inrupt/solid-client-authn-core": "^3.1.1",
+    "@undefineds.co/drizzle-solid": "0.3.17",
     "componentsjs": "^6.4.0",
     "oidc-provider": "9.5.1",
   },
@@ -1525,7 +1526,7 @@
 
     "@typescript-eslint/visitor-keys": ["@typescript-eslint/visitor-keys@7.18.0", "", { "dependencies": { "@typescript-eslint/types": "7.18.0", "eslint-visitor-keys": "^3.4.3" } }, "sha512-cDF0/Gf81QpY3xYyJKDV14Zwdmid5+uuENhjH2EqFaF0ni+yAyq/LzMaIJdhNJXZI7uLzwIlA+V7oWoyn6Curg=="],
 
-    "@undefineds.co/drizzle-solid": ["@undefineds.co/drizzle-solid@0.3.16", "", { "dependencies": { "@inrupt/solid-client": "^3.0.0", "@inrupt/solid-client-authn-node": "^3.1.1", "@inrupt/universal-fetch": "^1.0.3", "@inrupt/vocab-common-rdf": "^1.0.5", "dotenv": "^17.2.2", "drizzle-orm": "^0.28.0", "n3": "^1.26.0", "node-fetch": "^3.3.2", "sparqljs": "^3.7.3", "zod": "^4.1.8" }, "peerDependencies": { "@comunica/query-sparql-solid": "^4.0.2" }, "optionalPeers": ["@comunica/query-sparql-solid"] }, "sha512-TFZHi/lgNVHIuzCluhn4aEhv9ACIBbuYWjB3dqjS8KYN4yVfeDTiqUoknMBag/p5ro/wKZKnVaY59Q9g7ocDWg=="],
+    "@undefineds.co/drizzle-solid": ["@undefineds.co/drizzle-solid@0.3.17", "", { "dependencies": { "@inrupt/solid-client": "^3.0.0", "@inrupt/solid-client-authn-node": "^3.1.1", "@inrupt/universal-fetch": "^1.0.3", "@inrupt/vocab-common-rdf": "^1.0.5", "dotenv": "^17.2.2", "drizzle-orm": "^0.28.0", "n3": "^1.26.0", "node-fetch": "^3.3.2", "sparqljs": "^3.7.3", "zod": "^4.1.8" }, "peerDependencies": { "@comunica/query-sparql-solid": "^4.0.2" }, "optionalPeers": ["@comunica/query-sparql-solid"] }, "sha512-30PVchtjIJ0SVbGLbGDw9yuXCCljYYap1o7QjNUK24NNAb+dnDOuDK6FefvxSjtNx5GLKY2kgVIpVMZiKz/E9g=="],
 
     "@undefineds.co/models": ["@undefineds.co/models@0.2.45", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.14", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-2f2qgXZSqWIMH7X0566gIGCZ7CRM4Lf9Hp62GhhYm+Obd/UkuuZHuMga9dSmaUfIP2uIkAE6BYpfPACVVKLnmA=="],
 

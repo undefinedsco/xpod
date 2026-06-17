@@ -200,6 +200,36 @@ describe('MatrixHandler', () => {
     expect(joined.body()).toEqual({ joined_rooms: ['!room:example.com'] });
   });
 
+  it('binds Matrix Pod storage to the current SP instead of the WebID issuer', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(
+      createRequest(
+        '/_matrix/client/v3/account/whoami',
+        undefined,
+        {
+          host: 'localhost:5737',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'node-0000.undefineds.co',
+        },
+        {
+          type: 'solid',
+          webId: 'https://id.undefineds.co/gcloud/profile/card#me',
+          accountId: 'gcloud',
+        },
+      ),
+      createResponse().response,
+      {},
+    );
+
+    expect(store.getAccount).toHaveBeenCalledWith(expect.objectContaining({
+      webId: 'https://id.undefineds.co/gcloud/profile/card#me',
+      podUrl: 'https://node-0000.undefineds.co/gcloud/',
+    }));
+  });
+
   it('requires a Solid WebID and does not fall back to accountId', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();

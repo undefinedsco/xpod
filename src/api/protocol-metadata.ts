@@ -21,12 +21,23 @@ export function getProtocolMetadata(
   }
 
   const protocols = metadata[PROTOCOL_METADATA_KEY];
-  if (!isRecord(protocols)) {
-    return undefined;
+  if (Array.isArray(protocols)) {
+    const merged = protocols.reduce<ProtocolMetadata>((acc, entry) => {
+      if (!isRecord(entry)) {
+        return acc;
+      }
+      const namespaced = entry[namespace];
+      return isRecord(namespaced) ? { ...acc, ...namespaced } : acc;
+    }, {});
+    return Object.keys(merged).length > 0 ? merged : undefined;
   }
 
-  const namespaced = protocols[namespace];
-  return isRecord(namespaced) ? namespaced : undefined;
+  if (isRecord(protocols)) {
+    const namespaced = protocols[namespace];
+    return isRecord(namespaced) ? namespaced : undefined;
+  }
+
+  return undefined;
 }
 
 export function withProtocolMetadata(

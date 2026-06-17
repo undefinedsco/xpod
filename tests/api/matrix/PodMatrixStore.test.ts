@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { drizzle } from '@undefineds.co/drizzle-solid';
 import { PodMatrixStore } from '../../../src/api/matrix';
 
 const { db } = vi.hoisted(() => ({
@@ -73,6 +74,27 @@ describe('PodMatrixStore query pushdown', () => {
     expect(account.userId).toBe('@profile_card_me:example.com');
     expect(account.deviceId).toMatch(/^XPOD[A-F0-9]{12}$/u);
     expect(account.displayName).toBe('profile_card_me');
+  });
+
+  it('opens drizzle-solid against the current SP Pod URL when provided', async () => {
+    const store = new PodMatrixStore({ serverName: 'example.com' });
+
+    await store.createRoom({ name: 'Local room' }, {
+      ...solidContext(),
+      podUrl: 'https://node-0000.undefineds.co/alice/',
+    });
+
+    expect(drizzle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        info: expect.objectContaining({
+          webId: 'https://alice.example/profile/card#me',
+          podUrl: 'https://node-0000.undefineds.co/alice/',
+        }),
+      }),
+      expect.objectContaining({
+        podUrl: 'https://node-0000.undefineds.co/alice/',
+      }),
+    );
   });
 
   it('records invites as Matrix membership events while storing data in chat resources', async () => {
@@ -171,6 +193,35 @@ describe('PodMatrixStore query pushdown', () => {
     });
   });
 
+  it('keeps RDF-hydrated array protocol metadata visible to joined room listing', async () => {
+    const store = new PodMatrixStore({ serverName: 'example.com' });
+    db.select
+      .mockReturnValueOnce(createSelectQuery([{
+        id: 'matrix-room/index.ttl#this',
+        title: 'Array Room',
+        author: 'https://alice.example/profile/card#me',
+        createdAt: '1970-01-01T00:00:00.001Z',
+        metadata: {
+          protocol: 'matrix',
+          protocols: [
+            {
+              matrix: {
+                roomId: '!array:example.com',
+              },
+            },
+            {
+              matrix: {
+                visibility: 'private',
+              },
+            },
+          ],
+        },
+      }]))
+      .mockReturnValueOnce(createSelectQuery([]));
+
+    await expect(store.listJoinedRooms(solidContext())).resolves.toEqual(['!array:example.com']);
+  });
+
   it('resolves canonical aliases and appends join membership events', async () => {
     const store = new PodMatrixStore({ serverName: 'example.com' });
     db.select
@@ -250,7 +301,10 @@ describe('PodMatrixStore query pushdown', () => {
     expect(forwardConditions).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ operator: '<=', right: '1970-01-01T00:00:00.200Z' }),
     ]));
-    expect(forwardQuery.orderBy.mock.calls[0][0].name).toBe('createdAt');
+    expect(forwardQuery.orderBy.mock.calls[0][0]).toMatchObject({
+      column: expect.objectContaining({ name: 'createdAt' }),
+      direction: 'asc',
+    });
     expect(forwardQuery.limit).toHaveBeenCalledWith(10);
   });
 
@@ -283,7 +337,10 @@ describe('PodMatrixStore query pushdown', () => {
     expect(flattenExpressions(depthQuery.where.mock.calls[0][0])).toEqual(expect.arrayContaining([
       expect.objectContaining({ operator: '=', right: threadResourceUri('!room:example.com') }),
     ]));
-    expect(depthQuery.orderBy.mock.calls[0][0].name).toBe('createdAt');
+    expect(depthQuery.orderBy.mock.calls[0][0]).toMatchObject({
+      column: expect.objectContaining({ name: 'createdAt' }),
+      direction: 'asc',
+    });
     expect(db.insert).toHaveBeenCalled();
   });
 

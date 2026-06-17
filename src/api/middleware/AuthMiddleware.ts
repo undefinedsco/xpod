@@ -54,7 +54,11 @@ export class AuthMiddleware {
     // Attempt authentication
     const result = await this.authenticator.authenticate(request);
 
-    console.log(`[AuthMiddleware] ${request.method} ${request.url} - success: ${result.success}, error: ${result.error}, context: ${JSON.stringify(result.context)}`);
+    this.logger.debug(
+      `Auth ${request.method} ${request.url} success=${result.success}` +
+      (result.error ? ` error=${result.error}` : '') +
+      (result.context ? ` context=${JSON.stringify(this.safeContextForLog(result.context))}` : ''),
+    );
 
     if (!result.success) {
       this.sendUnauthorized(response, result.error ?? 'Authentication failed');
@@ -71,5 +75,16 @@ export class AuthMiddleware {
     response.setHeader('Content-Type', 'application/json');
     response.setHeader('WWW-Authenticate', 'Bearer, DPoP');
     response.end(JSON.stringify({ error: 'Unauthorized', message }));
+  }
+
+  private safeContextForLog(context: AuthContext): Record<string, unknown> {
+    return {
+      type: (context as any).type,
+      webId: (context as any).webId,
+      accountId: (context as any).accountId,
+      clientId: (context as any).clientId,
+      tokenType: (context as any).tokenType,
+      viaApiKey: (context as any).viaApiKey,
+    };
   }
 }

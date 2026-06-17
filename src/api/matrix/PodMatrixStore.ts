@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
-import { and, desc, drizzle, eq, gt, lte } from '@undefineds.co/drizzle-solid';
+import { and, asc, desc, drizzle, eq, gt, lte } from '@undefineds.co/drizzle-solid';
 import {
   chatResource,
   messageResource,
@@ -394,9 +394,16 @@ export class PodMatrixStore {
     const db: Db = drizzle(
       {
         fetch: this.createAccessTokenFetch(auth.accessToken, auth.tokenType),
-        info: { webId: auth.webId, isLoggedIn: true },
+        info: {
+          webId: auth.webId,
+          isLoggedIn: true,
+          podUrl: context.podUrl,
+        },
       } as any,
-      { schema },
+      {
+        schema,
+        podUrl: context.podUrl,
+      },
     );
     await db.init(
       chatResource,
@@ -587,7 +594,7 @@ export class PodMatrixStore {
     let query = db.select().from(messageResource).where(and(...conditions));
     query = options.newestFirst
       ? query.orderBy(desc(messageResource.createdAt as any))
-      : query.orderBy(messageResource.createdAt as any);
+      : query.orderBy(asc(messageResource.createdAt as any));
     if (options.limit && options.limit > 0) {
       query = query.limit(options.limit);
     }
@@ -856,7 +863,7 @@ export class PodMatrixStore {
   }
 
   private resolveDataResourceUriFromId(resourceId: string, context: MatrixStoreContext): string {
-    const podBaseUrl = this.derivePodBaseUrl(context.webId);
+    const podBaseUrl = context.podUrl ?? this.derivePodBaseUrl(context.webId);
     if (!podBaseUrl) {
       return resourceId;
     }

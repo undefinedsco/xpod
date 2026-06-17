@@ -4,6 +4,8 @@ import type { ReconcilerOwner } from '../reconciler';
 export interface MatrixStoreContext {
   /** Authenticated Solid WebID used as the Pod actor/resource owner. */
   webId: string;
+  /** Storage Pod selected by the current SP/gateway, not necessarily the WebID issuer origin. */
+  podUrl?: string;
   auth?: AuthContext;
 }
 

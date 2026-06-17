@@ -164,7 +164,7 @@
     "@inrupt/solid-client-authn-node": "^3.1.0",
     "@mariozechner/pi-coding-agent": "^0.55.1",
     "@solid/community-server": "8.0.0-alpha.1",
-    "@undefineds.co/drizzle-solid": "0.3.16",
+    "@undefineds.co/drizzle-solid": "0.3.17",
     "@undefineds.co/models": "0.2.45",
     "abstract-level": "^1.0.4",
     "acme-client": "^5.1.3",
@@ -242,7 +242,8 @@
     "@comunica/mediator-combine-union": "^4.5.0",
     "@comunica/mediator-combine-pipeline": "^4.5.0",
     "componentsjs": "^6.4.0",
-    "oidc-provider": "9.5.1"
+    "oidc-provider": "9.5.1",
+    "@undefineds.co/drizzle-solid": "0.3.17"
   },
   "packageManager": "bun@1.3.8"
 }

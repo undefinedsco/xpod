@@ -22,10 +22,10 @@ export class MultiAuthenticator implements Authenticator {
   }
 
   public async authenticate(request: IncomingMessage): Promise<AuthResult> {
-    console.log(`[MultiAuthenticator] Starting authentication with ${this.authenticators.length} authenticators`);
+    this.logger.debug(`Starting authentication with ${this.authenticators.length} authenticators`);
     for (const authenticator of this.authenticators) {
       const canAuth = authenticator.canAuthenticate(request);
-      console.log(`[MultiAuthenticator] ${authenticator.constructor.name}.canAuthenticate: ${canAuth}`);
+      this.logger.debug(`${authenticator.constructor.name}.canAuthenticate: ${canAuth}`);
       if (canAuth) {
         const result = await authenticator.authenticate(request);
         if (result.success) {

@@ -264,7 +264,11 @@ function buildContext(request: AuthenticatedRequest): MatrixStoreContext {
   if (!webId) {
     throw new Error('Matrix API requires Solid WebID authentication');
   }
-  return { webId, auth };
+  return {
+    webId,
+    podUrl: deriveRequestPodUrl(request, webId),
+    auth,
+  };
 }
 
 async function readJson<T>(request: AuthenticatedRequest): Promise<T | undefined> {
@@ -293,6 +297,27 @@ function requestBaseUrl(request: AuthenticatedRequest): string {
   const proto = forwardedProto?.split(',')[0]?.trim() || 'http';
   const host = forwardedHost?.split(',')[0]?.trim() || request.headers.host || 'localhost';
   return `${proto}://${host}`;
+}
+
+function deriveRequestPodUrl(request: AuthenticatedRequest, webId: string): string | undefined {
+  try {
+    const baseUrl = `${requestBaseUrl(request).replace(/\/$/, '')}/`;
+    const webIdUrl = new URL(webId);
+    const normalizedPath = webIdUrl.pathname.replace(/\/+$/, '');
+    let podPath = '';
+
+    if (normalizedPath.endsWith('/profile/card')) {
+      podPath = normalizedPath.slice(0, -'/profile/card'.length);
+    } else {
+      const firstSegment = normalizedPath.split('/').filter(Boolean)[0];
+      podPath = firstSegment ? `/${firstSegment}` : '';
+    }
+
+    const relativePodPath = podPath.replace(/^\/+/, '');
+    return new URL(relativePodPath ? `${relativePodPath}/` : './', baseUrl).toString();
+  } catch {
+    return undefined;
+  }
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {

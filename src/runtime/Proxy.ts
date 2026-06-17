@@ -178,7 +178,7 @@ export class GatewayProxy {
       return;
     }
 
-    if ((url.startsWith('/v1/') || url.startsWith('/api/') || url.startsWith('/provision/')) && this.targets.api) {
+    if (this.shouldRouteToApi(url) && this.targets.api) {
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;
     }
@@ -200,6 +200,14 @@ export class GatewayProxy {
       res.writeHead(503);
       res.end('CSS Service Not Available');
     }
+  }
+
+  private shouldRouteToApi(url: string): boolean {
+    return url.startsWith('/v1/')
+      || url.startsWith('/api/')
+      || url.startsWith('/provision/')
+      || url === '/.well-known/matrix/client'
+      || url.startsWith('/_matrix/');
   }
 
   private shouldInspectRootMutation(req: http.IncomingMessage): boolean {
