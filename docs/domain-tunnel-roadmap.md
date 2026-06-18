@@ -1,13 +1,84 @@
 # 域名与隧道方案
 
-> 本文档描述 xpod 边缘节点的域名分配和隧道穿透方案。
+> 本文档描述 xpod 边缘节点的域名分配和隧道穿透方案。Local Pod 的 route / signaling 规范以 [`local-reachability-signaling-spec.md`](./local-reachability-signaling-spec.md) 为准。
 
 ## 目标
 
 为 Edge 用户提供：
-1. **免费二级域名** - 如 `mynode.pods.undefieds.co`
-2. **公网访问** - 有公网 IP 直连，没公网走隧道
-3. **自动 HTTPS** - 证书由 Cloudflare 处理
+1. **稳定二级域名** - 如 `mynode.pods.undefieds.co`，用于 WebID、Pod Root、OIDC audience 等 canonical URL
+2. **多 route 可达性** - same-device、LAN、公网 IPv4/IPv6 直连、P2P、用户自管 tunnel 按优先级选择
+3. **自动 HTTPS / 证书协作** - 通过 DNS-01 等方式让节点持有可用于 canonical 域名的证书
+4. **受控兜底** - Xpod Cloud relay 只能作为显式、限额、临时或诊断路径，不作为默认数据面
+
+---
+
+## 可达性方案评估框架
+
+不要只按 Cloudflare Tunnel、Tailscale、FRP 这类产品名分类。对 Xpod 来说，
+每一种穿透/访问方案首先要回答三个问题：
+
+1. **是否需要客户端**：边缘节点上是否必须运行 `cloudflared`、`frpc`、
+   `tailscaled`、Xpod Agent 等本地进程。
+2. **是否需要域名**：浏览器、Solid WebID、OAuth 回调和 HTTPS 是否需要稳定
+   URL；域名由 Xpod 托管、用户自带，还是第三方服务分配。
+3. **是否需要服务器/中转**：流量是否需要经过 Xpod Cloud、自建 `frps`、
+   Cloudflare、Tailscale Funnel、SakuraFRP 等公网中转。
+
+这三个条件决定了用户配置复杂度、TLS 终止点、隐私边界、性能和我们能否自动化。
+
+| 方案 | 需要客户端 | 需要域名 | 需要服务器/中转 | 公网浏览器可访问 | TLS 终止点 | Xpod 定位 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 公网 IPv4/IPv6 直连 | 不需要专用 tunnel client；可需要 Xpod Agent 做心跳/证书 | 是：Xpod 子域名或用户自有域名 | 否 | 是 | 边缘节点 | 首选路径 |
+| Cloudflare Tunnel / `cloudflared` | 是 | 是：Cloudflare 托管域名或用户域名 | 是：Cloudflare | 是 | 通常在 Cloudflare；也可配置到源站 HTTPS | 零公网 IP 备选 |
+| Tailscale Serve | 是：`tailscaled` | 不一定需要公网域名 | 是：Tailscale 控制面 + tailnet peer 连接 | 否，默认只在 tailnet 内 | 本机或 tailnet 内服务 | 私有访问/管理面 |
+| Tailscale Funnel | 是：`tailscaled` | 使用 Tailscale 分配/管理的公网入口 | 是：Tailscale Funnel | 是 | Tailscale Funnel / 本机配置相关 | 公网备选，域名控制弱 |
+| ScaleTail | 是：Tailscale sidecar | 取决于 Serve/Funnel | 取决于 Serve/Funnel | 取决于 Serve/Funnel | 取决于 Serve/Funnel | Tailscale 部署形态，不是独立 provider |
+| 自建 FRP | 是：`frpc` | 是：Xpod 子域名或用户域名 | 是：我们或用户维护 `frps` | 是 | Xpod Cloud / frps 前置网关 / 边缘节点，取决于部署 | 可控但运维成本高 |
+| Xpod Cloud Relay | 是：Xpod Agent 或本地网关 | 是：Xpod 子域名 | 是：Xpod Cloud | 是 | 优先节点端到端；若 L7 relay 终止 TLS 必须明示 | 显式、限额、临时/诊断兜底，非默认路径 |
+| SakuraFRP / 公共 FRP | 是：`frpc` | 通常由第三方或用户配置 | 是：第三方 FRP 平台 | 是 | 第三方平台或源站，取决于配置 | 个人用户备选 |
+| TCP/UDP 打洞 / NATMap 类 | 是：打洞守护进程或路由器插件 | 可选；稳定访问通常仍需要 DDNS / SRV / IP4P 之类发现机制 | 理论上可无中转；常见实现仍需要 STUN/探测/信令或公共探测目标 | 条件性可用 | 边缘节点或目标服务 | 实验/高级用户路径，不作为默认生产入口 |
+| ngrok / localtunnel 类 | 是 | 通常第三方分配临时域名 | 是：第三方平台 | 是 | 第三方平台 | 开发调试，不作为生产默认 |
+
+### TCP/UDP 打洞类方案
+
+TCP/UDP 打洞和 NATMap 这类方案需要单独看待：它们的目标不是把流量经由固定
+中转服务器转发，而是利用 NAT 映射让外部访问尽量直连到边缘节点。网上也有
+“无服务器打洞”的变体讨论，例如《其实最优雅的TCP打洞算法，连一台服务器都不需要》
+提到的 Aul Ma `tcp_punch.py` 思路：用时间 bucket 作为双方无需通信即可共享的
+参数，再由 bucket 派生端口候选列表，双方并行发起 TCP SYN，并用简单的 winner
+selection 选出成功连接。
+
+这类方案很有启发，但对 NAT 类型、运营商 CGNAT、端口保持、路由器能力、
+系统权限和发现机制都更敏感。上述文章也明确把可用性取舍放在核心位置：牺牲
+一部分路由器覆盖率，换取零 STUN / 零 NTP / 零信令信道 / 零固定服务器的极简实现。
+
+参考：
+
+- https://zhuanlan.zhihu.com/p/2049858541763220757
+- https://robertsdotpm.github.io/_downloads/3ff8af7dd7b8df02dc52551b4bbaa7d1/tcp_punch.py
+
+对 Xpod 的判断：
+
+- 它通常**仍需要客户端/守护进程**，例如在边缘节点或路由器上运行打洞程序。
+- 如果要给浏览器、WebID 或 OAuth 回调使用，**稳定域名问题仍然存在**；即使
+  打洞本身不需要域名，也需要 DDNS、SRV、IP4P 或 Xpod 控制面把动态公网
+  地址/端口分发给访问方。
+- 它可以减少或消除固定流量中转服务器，但通常仍需要 STUN/探测目标/信令
+  之类的协调或发现能力；“完全无服务器”不应作为默认可用性假设。
+- 适合高级用户、路由器插件、P2P 私有访问或性能优化路径；不适合作为普通
+  用户的默认公网 Pod 入口。
+
+### 产品判断
+
+- Xpod 的默认优先级应是：**same-device / LAN > 公网 IPv4/IPv6 直连 > 信令协助的 P2P > 用户自管 tunnel > 显式限额的 Xpod Cloud relay**。
+- 只要要给普通浏览器、Solid WebID、OAuth/OIDC 回调使用，最终都需要稳定
+  HTTPS URL；“不需要域名”的方案通常只适合作为私有管理通道。
+- “需要客户端”不是坏事。Local / Edge 场景本来就有 Xpod Agent，可以由 Agent
+  管理 `cloudflared`、`frpc` 或 `tailscaled` 的生命周期；关键是要明确进程由谁
+  安装、启动、升级和回收。
+- “需要服务器/中转”决定信任边界和成本。流量经过 Cloudflare、Tailscale、第三方 FRP
+  或 Xpod Cloud 时，需要在文档和 UI 中明确 TLS 终止点、可见明文范围、带宽限额和性能预期。
+- Xpod Cloud 已经解决域名分配问题，但域名分配不等于默认 Cloud 数据转发；Web 远程访问 Local Pod 不是当前主推路径，Desktop / CLI / Native client 才是 Local Pod 的主力访问端。
 
 ---
 

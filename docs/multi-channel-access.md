@@ -1,5 +1,7 @@
 # 多渠道访问设计
 
+> Local Pod route / signaling 的开发入口以 [`local-reachability-signaling-spec.md`](./local-reachability-signaling-spec.md) 为准；本文说明 canonical URL 与 access route 的产品语义。
+
 ## 目标
 
 用户无论在**本机**、**局域网**还是**外网**访问同一个 Xpod SP，都应尽量看到同一个 SP 地址和同一个 WebID。网络条件变化优先切换访问渠道，不改变 Solid 语义身份。
@@ -7,11 +9,12 @@
 核心约束：
 
 - **SP canonical URI 不变**：WebID、Pod Root、ACL、OIDC resource audience 都以 canonical URL 为准。
-- **访问渠道可变**：本机、局域网、公网直连、隧道只是不同 access route。
+- **访问渠道可变**：本机、局域网、公网直连、P2P、用户隧道、显式 relay 只是不同 access route。
 - **不要求用户改路由器 DNS**：桌面 App / CLI 可自动选择 route；普通浏览器能力降级。
 - **不分叉身份和权限**：不能为本机、局域网、外网生成三套 WebID 或权限。
 - **Local 首次启动不依赖公网**：没有可达公网 route 时，本机和局域网仍可完成验证和使用。
 - **Cloud-managed Local 域名由 Cloud 分配**：LinX 不让用户手填平台域名；Cloud 首次注册时可返回随机节点域名，也可返回已预配的测试节点域名，注册后与设备 nodeId 绑定并稳定复用。
+- **Cloud-managed 域名不等于 Cloud 数据转发**：Cloud 默认负责控制面和信令，Local Pod 数据优先走本机、局域网、公网直连、P2P 或用户自管 tunnel；Xpod Cloud relay 只做显式、限额、临时兜底。
 
 关键限制：
 
@@ -32,7 +35,9 @@ Solid 层看到的资源地址:
   │ same-device  -> http://127.0.0.1:5737        │
   │ lan          -> http://192.168.1.100:5737    │
   │ public       -> https://pod.example.com      │
+  │ p2p          -> managed client direct path    │
   │ tunnel       -> https://pod.example.com      │
+  │ relay        -> temporary Cloud relay route   │
   └──────────────────────────────────────────────┘
 ```
 
@@ -47,7 +52,7 @@ Solid 层看到的资源地址:
 | 形态 | IDP | SP | canonical URL | access route | 用户感知 |
 |------|-----|----|---------------|--------------|----------|
 | Cloud 全套 | Cloud | Cloud | Cloud SP 域名 | 公网 | 自动生成 Cloud SP 域名 |
-| Cloud IDP + Local SP，Cloud-managed 域名 | Cloud | Local | Cloud 分配的节点域名 | tunnel、本机、局域网 | 默认 Local 路径，用户不填平台域名 |
+| Cloud IDP + Local SP，Cloud-managed 域名 | Cloud | Local | Cloud 分配的节点域名 | 本机、局域网、公网直连、P2P、用户 tunnel、显式 relay | 默认 Local 路径，用户不填平台域名，但不承诺 Cloud 默认转发数据 |
 | Cloud IDP + Local SP，user-managed 域名 | Cloud | Local | 用户提供的公网 URL | 公网直连/tunnel、本机、局域网 | 用户自备域名、DNS、HTTPS/反代 |
 | Standalone 全本地 | Local | Local | 本地 canonical URL | 本机、局域网 | 不承诺公网身份 |
 
@@ -62,7 +67,7 @@ Solid 层看到的资源地址:
 
 ## Route 表
 
-客户端维护 route 表，而不是改 Solid URI。
+客户端维护 route 表，而不是改 Solid URI。完整 `RouteSet` DTO 以 [`local-reachability-signaling-spec.md`](./local-reachability-signaling-spec.md) 为准。
 
 ```json
 {
@@ -86,8 +91,15 @@ Solid 层看到的资源地址:
       "id": "public",
       "scope": "public",
       "targetUrl": "https://pod.example.com",
-      "priority": 50,
+      "priority": 30,
       "requiresManagedClient": false
+    },
+    {
+      "id": "p2p",
+      "scope": "p2p",
+      "targetUrl": "xpod-p2p://session/p2p_123",
+      "priority": 40,
+      "requiresManagedClient": true
     }
   ]
 }
@@ -112,26 +124,27 @@ Local 首次启动不能依赖公网 discovery，因此 route 来源分层处理
 |------|------|----------|
 | 本地配置 | `nodeId`、`canonicalUrl`、loopback route、LAN route、tunnel token | Local SP 启动时写入 |
 | Local 服务 API | 当前监听端口、LAN IP、健康状态 | Desktop / CLI 同机发现 |
-| Cloud 控制面 | Cloud-managed `spDomain`、用户提供的 `publicUrl`、provision code、Local SP 注册状态 | Cloud IDP + Local SP |
+| Cloud 控制面 | Cloud-managed `spDomain`、用户提供的 `publicUrl`、provision code、Local SP 注册状态、route registry、信令会话 | Cloud IDP + Local SP |
 | Public discovery | 仅发布 public route | 已有公网或隧道时 |
 
 不建议把 `127.0.0.1` 和 LAN IP 无条件写进 public `/.well-known/solid`。这些地址对远端客户端没有意义，还可能造成误连。若需要发布 route 信息，应使用 Xpod 自有 discovery，例如 `/.well-known/xpod-routes`，并按客户端位置、认证状态和 node proof 过滤。
 
 ---
 
-## Local 隧道职责
+## Local 可达性职责
 
-`cloudflared` 属于 Local SP 运行时进程，由 xpod local 在启动时根据本地配置拉起，不由 LinX Web 或 Cloud IDP 启动。Cloud-managed 路径中，Cloud 分配 canonical `spDomain`；用户需要在 Cloudflare tunnel 后台把该 host 指到本机 tunnel。当前没有 Cloud 自动创建 CNAME/route 时，测试仍使用已配置好的 `node-0000.undefineds.co`。
+Local Pod 的可达性由 Cloud 控制面、xpod local runtime、tunnel provider 和 managed client 分层协作。Cloud-managed 路径中，Cloud 分配 canonical `spDomain` 并维护节点注册、证书协作、route registry 和信令；它不因此自动承担所有 Local Pod 数据转发。
 
 职责边界：
 
-- xpod local runtime：读取 `CLOUDFLARE_TUNNEL_TOKEN` / 其他 provider token，启动和停止本机隧道客户端。
-- tunnel provider：只负责本机隧道进程，例如 `cloudflared tunnel run --token ... --url http://localhost:5737`。
-- LocalNetworkManager：只做公网直连检测和 DNS/DDNS 同步；没有公网时保持本机/局域网 route 可用，不隐式启停隧道。
-- DdnsManager / Cloud 控制面：记录用户提供的 Local SP `publicUrl` 和 provision 状态；不为当前 LinX Local 产品路径承诺平台域名转发。
-- LinX Desktop / CLI：收集用户配置、触发 Local 启动、读取 route 表、选择 access route，不直接管理 `cloudflared` 进程。
+- xpod local runtime：启动本地 CSS / API，维护 loopback / LAN route，读取用户配置的 `CLOUDFLARE_TUNNEL_TOKEN`、`frpc`、Tailscale 等 provider token，并在配置存在时确定性启动对应本机客户端。
+- tunnel provider：只负责本机隧道进程，例如 `cloudflared tunnel run --token ... --url http://localhost:5737` 或 `frpc`；provider 的公网入口是否终止 TLS 必须在 UI / 文档中明确。
+- LocalNetworkManager：做公网 IPv4/IPv6 检测和 DNS/DDNS 同步；没有公网时保持本机/局域网 route 可用，不隐式启停隧道。
+- Cloud 控制面：维护 Cloud-managed `spDomain`、节点心跳、route registry、P2P signaling、显式 relay session；不把 Cloud relay 当默认公网可达承诺。
+- LinX Desktop / CLI / Native：收集用户配置、触发 Local 启动、读取 route 表、选择 access route、维持 canonical fetch 语义。
+- LinX Web / 普通浏览器：只使用 public HTTPS route；没有 public route 时展示状态和配置指引，不直接使用 loopback / LAN / P2P route。
 
-因此，有 tunnel token 时，xpod local 应在启动阶段确定性拉起隧道。没有 tunnel token 时，Local 仍必须能通过 same-device / LAN route 登录和读写；只是 Cloud IDP + Local SP 远程路径不可用。
+因此，有 tunnel token 时，xpod local 应在启动阶段确定性拉起用户配置的隧道。没有 tunnel token 或公网直连时，Local 仍必须能通过 same-device / LAN route 登录和读写；只是普通浏览器远程访问不可用。Xpod Cloud relay 只能在用户显式开启且有 TTL / 带宽限制 / 审计时作为临时兜底。
 
 ---
 
@@ -142,7 +155,7 @@ Local 首次启动不能依赖公网 discovery，因此 route 来源分层处理
 ```ts
 type AccessRoute = {
   id: string;
-  scope: 'same-device' | 'lan' | 'public';
+  scope: 'same-device' | 'lan' | 'public' | 'p2p' | 'user-tunnel' | 'xpod-relay';
   targetUrl: string;
   priority: number;
   requiresManagedClient: boolean;
@@ -218,24 +231,26 @@ Local SP 启动
   │
   ├─ 判断模式
   │    ├─ Local 基础 / Standalone: 不要求 publicUrl
-  │    └─ Cloud IDP + Local SP: 要求用户提供 publicUrl
+  │    └─ Cloud IDP + Local SP: 注册或复用 Cloud-managed 节点域名；也可使用用户自有 HTTPS origin
   │
   ├─ 读取/创建 canonicalUrl
   │    ├─ Local 基础 / Standalone: 本地 canonical URL
-  │    └─ Cloud IDP + Local SP: 用户提供的 publicUrl
+  │    ├─ Cloud-managed Local: Cloud 返回并绑定到 nodeId 的 spDomain
+  │    └─ User-managed Local: 用户提供的 publicUrl
   │
   ├─ 启动本地服务
   │    ├─ loopback route: http://127.0.0.1:5737
   │    └─ lan route: http://192.168.x.x:5737
   │
-  ├─ 写入本地 route 表
+  ├─ 写入本地 route 表并向 Cloud 心跳上报 route candidates
   │
-  ├─ Desktop / CLI 立即可用
+  ├─ Desktop / CLI 立即可用，按 loopback/LAN/public/P2P/tunnel/relay 优先级选路
   │
-  └─ 如果配置了 publicUrl
-       ├─ 公网可直连: public route 可用
-       ├─ 不可直连且有 tunnel token: xpod local 拉起隧道，public route 可用
-       └─ 不可直连且无隧道: 保持本机/局域网可用，提示用户配置隧道文档
+  └─ 对普通浏览器
+       ├─ 公网直连可用: public-direct route 可用
+       ├─ 用户 tunnel 可用: user-tunnel route 可用
+       ├─ 显式开启 Xpod relay: 临时 public route 可用，并展示 TTL/限额/审计
+       └─ 无 public route: 只展示状态和配置指引，不假装 Local Pod 远程可用
 ```
 
 ---
@@ -244,12 +259,14 @@ Local SP 启动
 
 - Cloud 全套创建 Pod 后，WebID 和 Pod Root 使用 Cloud SP 域名，不启动 Local SP。
 - Local 基础 / Standalone 不要求 `publicUrl`，必须能启动本地 xpod 并通过本机登录、读写。
-- Cloud IDP + Local SP 必须使用用户提供的 `publicUrl` 作为 Pod URL；Local SP 缺少 `publicUrl` 时不能假装完成 Cloud remote 路径。
-- Cloud IDP + Local SP 在公网直连或隧道可用时，登录后数据写入 Local SP，Pod URL 以用户 `publicUrl` 开头。
+- Cloud IDP + Local SP 使用 Cloud 分配并绑定 `nodeId` 的 `spDomain`，或使用用户明确提供的自有 HTTPS origin；不能把 localhost/LAN 当 remote canonical URL。
+- Cloud-managed Local 即使没有 public route，也必须保留同一个 canonical URL，并允许 Desktop / CLI 通过 managed route 使用。
+- Cloud IDP + Local SP 在公网直连、用户 tunnel 或显式 relay 可用时，登录后数据写入 Local SP，Pod URL 以 canonical URL 开头。
 - 局域网 IP 只出现在 route 表中，不成为 Cloud remote 路径的 WebID 或 Pod Root。
-- 已经以用户 `publicUrl` 为 canonical 的 Local SP，加入隧道后只新增/启用 public route，不迁移 Pod 数据。
-- 已经以 localhost/LAN 为 canonical 的 Local 基础 / Standalone，后续补 `publicUrl` 时必须明确这是 remote 能力升级，不承诺旧绝对 IRI 自动保持不变。
-- 普通浏览器只承诺访问 public route；无 public route 时显示明确的隧道/域名配置指引。
+- 已经以 canonical URL 创建的 Local SP，加入隧道、P2P 或 relay 后只新增/启用 access route，不迁移 Pod 数据。
+- 已经以 localhost/LAN 为 canonical 的 Local 基础 / Standalone，后续补 Cloud-managed domain 或 `publicUrl` 时必须明确这是 remote 能力升级，不承诺旧绝对 IRI 自动保持不变。
+- 普通浏览器只承诺访问 public HTTPS route；无 public route 时显示明确的 managed client / 隧道 / 临时 relay 配置指引。
+- Xpod Cloud relay 使用前必须展示 TTL、限额和流量经过 Cloud 的事实。
 
 ---
 
@@ -259,7 +276,7 @@ Local SP 启动
 |--------|------|
 | 把 HTTPS canonical URL 直接 DNS 到 HTTP Local 服务 | 违反 TLS/SNI/证书模型 |
 | 把 LAN IP 当 canonical URL | IP 不稳定，后续外网化需要迁移 WebID |
-| 为当前 LinX Local 产品路径自动分配 `node-*.undefineds.co` | 用户需要自己提供 Local SP 公网 URL 或隧道域名 |
+| 把 Cloud 分配的 `node-*.undefineds.co` 等同于默认 Cloud relay 公网可达 | 域名是 canonical identity；数据面默认不走 Cloud relay |
 | 在 public discovery 中无条件暴露 `127.0.0.1` | 远端无意义且有误连风险 |
 | 内嵌 DNS 服务器 | 53 端口权限、杀软误报和跨平台成本过高 |
 | 普通浏览器局域网透明加速 | 浏览器无法安全劫持 fetch/DNS/TLS |

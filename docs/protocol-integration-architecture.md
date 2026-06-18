@@ -424,3 +424,5 @@ src/runtime/protocol/
 - 用可替换的后端承接运行时复杂度
 
 这样既不会失去数据主权，也不会把 Xpod 做成一个封闭孤岛。
+
+相关外部项目与持续关注点记录在 [`ecosystem-watchlist.md`](./ecosystem-watchlist.md)。

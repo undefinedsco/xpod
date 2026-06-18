@@ -1,10 +1,12 @@
 # Xpod 边缘节点控制面与数据面架构
 
+> Local Pod route / signaling 的当前规范以 [`local-reachability-signaling-spec.md`](./local-reachability-signaling-spec.md) 为准；本文保留边缘节点控制面、DNS、证书和心跳实现细节。
+
 ## 目标与约束
 
 - **Solid 语义稳定**：Pod WebID、资源 URL 始终使用 `https://<pod>.<域名>/`，无论路由走向如何都保持一致。
 - **控制面/数据面解耦**：cluster 负责域名、证书、服务发现与健康检查；节点负责数据存储与最终的 ACL/ACP 鉴权。
-- **优先直连**：默认通过公网直连把数据流量送到节点；仅在直连失败时才回落到“盲转发”隧道，cluster 不解密实际内容。
+- **低成本数据面优先**：默认通过本机、局域网、公网直连或信令协助的 P2P 把数据流量送到节点；Xpod Cloud relay / proxy 只能作为显式、限额、临时或诊断兜底。
 - **节点自助**：用户可登录 cluster 控制台自助创建节点，获得二级域名与节点凭证；节点上线后自动完成证书与路由编排。
 
 ## 核心流程
@@ -25,10 +27,10 @@
   - **探测**：节点主动探测 UPnP/NAT-PMP，Cluster 多地域探测 443 端口连通性。
   - **DNS 调度**：当 Cluster 确认节点直连可达（Direct Reachable）时，会将子域名 DNS A/AAAA 记录直接指向节点 IP。
   - 这是 Xpod 的首选模式，性能最好，隐私最高。
-- **代理模式 (Proxy Mode)**：
-  - 当直连不可用（如无公网 IP、防火墙阻断）时，自动回落到此模式。
-  - **隧道**：节点向 Cluster 申请反向隧道（FRP），建立长连接。
-  - **转发**：Cluster 将子域名解析到自身的入口 IP，收到请求后通过隧道透明转发至节点（SNI 透传，Cluster 不解密）。
+- **受控代理 / 中继兜底 (Proxy / Relay Mode)**：
+  - 当直连和 P2P 都不可用时，只有在用户或策略显式授权后才启用。
+  - **隧道**：节点可向 Cluster 申请反向隧道（FRP）或其它 relay session，建立短 TTL 连接。
+  - **转发**：Cluster 将子域名解析到自身入口或返回临时 relay route；必须记录 TTL、带宽限额和审计信息。优先保持节点端到端 TLS，若 L7 relay 终止 TLS 必须明示。
 - **模式切换**：
   - `EdgeNodeModeDetector` 持续监控节点可达性。
   - 一旦检测到直连恢复，自动更新 DNS 切换回 Direct Mode。
@@ -43,9 +45,10 @@
 ### 4. 请求处理路径
 
 1. 客户端访问 `https://alice.xpod.example/resource`。
-2. cluster 根据 DNS 与注册表判断：
+2. 客户端或 managed route selector 根据 route registry 判断：
    - **直连可达**：客户端直接与节点握手，节点验证 token/DPoP，并按 ACL/ACP 返回资源。
-   - **使用隧道**：cluster 入口仅做 SNI 透传，节点终止 TLS 并完成所有鉴权逻辑。
+   - **P2P 可达**：Cloud 只完成候选交换，客户端与节点直连传输数据。
+   - **显式 relay / 隧道**：cluster 入口按授权策略转发；优先 SNI 透传，节点终止 TLS 并完成所有鉴权逻辑。
 3. 若 DNS 尚未生效或隧道资源不可用，cluster 会返回明确的错误（例如 503 + 故障排查指引），而不会尝试做 HTTP 重定向。
 4. cluster 在控制平面记录连接元数据（字节数、耗时、错误码），不解密 HTTP 载荷。
 
