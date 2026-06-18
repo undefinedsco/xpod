@@ -17,10 +17,10 @@
 ```
                         ┌─────────────────────────────────────┐
                         │           Nginx / Caddy              │
-                        │  ┌───────────┐    ┌───────────────┐ │
-                        │  │ /*        │    │ /api/*        │ │
-                        │  │ → :3000   │    │ → :3001       │ │
-                        │  └───────────┘    └───────────────┘ │
+                        │  ┌────────────┐   ┌───────────────┐ │
+                        │  │ id.*/pods.*│   │ api.*         │ │
+                        │  │ → CSS/GW   │   │ → API/GW      │ │
+                        │  └────────────┘   └───────────────┘ │
                         └─────────┬──────────────────┬────────┘
                                   │                  │
                                   ▼                  ▼
@@ -88,7 +88,31 @@
 
 ## 3. API 路由设计
 
+### 3.0 公网 API 入口原则
+
+公网 API 的 “api 前缀” 指 **DNS host / 二级域名前缀**，不是在 IdP 或 Pod 域名后面再加 `/api` path。
+
+正确入口示例：
+
+- `https://api.undefineds.co/v1/chat/completions`
+- `https://api.undefineds.co/_matrix/client/versions`
+- `https://api.undefineds.co/.well-known/matrix/client`
+
+错误入口示例：
+
+- `https://id.undefineds.co/api/_matrix/client/versions`
+- `https://pods.undefineds.co/api/v1/chat/completions`
+
+路由原则：
+
+1. `id.*` / `pods.*` 等身份、Pod、Solid 数据域名优先服务 CSS / Solid / OIDC。
+2. `api.*` 域名是对外 API 入口，API 路径在该 host 下保持自己的协议形状；Matrix 这类协议兼容路径仍是 `/_matrix/*`，不额外套 `/api/_matrix/*`。
+3. 内部 API 不受公网 API host 约束，可以使用 `/service/*`、`/provision/*`、loopback 端口或集群内 service 地址，但必须有明确鉴权和调用边界。
+4. 新增对外 API 时，先确认它是暴露在 `api.*` host 下，避免误把 API 挂到 `id.*` 或 `pods.*` 后再靠 path 区分。
+
 ### 3.1 路由总览
+
+下表中的路径均表示 `api.*` host 后面的 path；有些历史 API 仍自带 `/api/` path，这是 endpoint 设计，不是公网入口前缀。
 
 | 路径 | 方法 | 说明 | 鉴权 |
 |------|------|------|------|

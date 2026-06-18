@@ -97,12 +97,14 @@ describe('GatewayProxy Matrix routing', () => {
     cssUpstream = http.createServer((req, res) => {
       seenByCss.push(`${req.method} ${req.url}`);
       res.statusCode = 200;
+      res.setHeader('x-seen-forwarded-host', String(req.headers['x-forwarded-host'] ?? ''));
       res.end(`css:${req.url}`);
     });
 
     apiUpstream = http.createServer((req, res) => {
       seenByApi.push(`${req.method} ${req.url}`);
       res.statusCode = 200;
+      res.setHeader('x-seen-forwarded-host', String(req.headers['x-forwarded-host'] ?? ''));
       res.end(`api:${req.url}`);
     });
 
@@ -172,5 +174,24 @@ describe('GatewayProxy Matrix routing', () => {
       'GET /_matrix/client/versions',
     ]));
     expect(seenByCss).toEqual(expect.arrayContaining(['GET /profile/card']));
+  });
+
+  it('routes API subdomain traffic to the API server independent of path shape', async () => {
+    const apiHostResponse = await fetch(`http://127.0.0.1:${proxyPort}/custom-protocol/status`, {
+      headers: { 'x-forwarded-host': 'api.example.com' },
+    });
+    const idHostResponse = await fetch(`http://127.0.0.1:${proxyPort}/custom-protocol/status`, {
+      headers: { 'x-forwarded-host': 'id.example.com' },
+    });
+
+    expect(await apiHostResponse.text()).toBe('api:/custom-protocol/status');
+    expect(await idHostResponse.text()).toBe('css:/custom-protocol/status');
+    expect(apiHostResponse.headers.get('x-seen-forwarded-host')).toBe('api.example.com');
+    expect(seenByApi).toEqual(expect.arrayContaining([
+      'GET /custom-protocol/status',
+    ]));
+    expect(seenByCss).toEqual(expect.arrayContaining([
+      'GET /custom-protocol/status',
+    ]));
   });
 });

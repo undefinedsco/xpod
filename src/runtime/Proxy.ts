@@ -129,8 +129,11 @@ export class GatewayProxy {
     const url = req.url ?? '/';
     const origin = req.headers.origin;
 
-    // Store original host for x-forwarded-host before any rewrites
-    const originalHost = req.headers.host;
+    // Store public host for routing before any CSS canonical-host rewrites.
+    // External gateways pass the original domain through X-Forwarded-Host;
+    // direct/local requests use Host.
+    const originalHost = this.firstHeaderValue(req.headers['x-forwarded-host']) ?? req.headers.host;
+    const apiHost = this.isApiHost(originalHost);
 
     // Set x-forwarded-proto based on CSS_BASE_URL
     const baseUrl = this.baseUrl ?? process.env.CSS_BASE_URL ?? '';
@@ -138,8 +141,15 @@ export class GatewayProxy {
       req.headers['x-forwarded-proto'] = 'https';
     }
 
-    // Rewrite Host header to match CSS_BASE_URL for proper routing
-    if (baseUrl) {
+    // API subdomains are the public API boundary. Preserve the API host for API
+    // handlers (for example Matrix discovery) instead of rewriting it to the
+    // canonical CSS/WebID host.
+    if (apiHost) {
+      if (originalHost) {
+        req.headers.host = originalHost;
+        req.headers['x-forwarded-host'] = originalHost;
+      }
+    } else if (baseUrl) {
       try {
         const parsedBaseUrl = new URL(baseUrl);
         req.headers.host = parsedBaseUrl.host;
@@ -170,7 +180,10 @@ export class GatewayProxy {
       return;
     }
 
-    // 2. API Server Routing (/v1 or /api)
+    // 2. API Server Routing.
+    // Public API is selected by host (`api.<domain>`), not by adding an `/api`
+    // path prefix to the IdP/Pod host. Path-based routing remains for local/dev
+    // single-origin clients and existing legacy endpoints.
 
     // 2a. Dashboard UI is served by API server under /dashboard/*
     if ((url === '/dashboard' || url.startsWith('/dashboard/')) && this.targets.api) {
@@ -178,7 +191,7 @@ export class GatewayProxy {
       return;
     }
 
-    if (this.shouldRouteToApi(url) && this.targets.api) {
+    if ((apiHost || this.shouldRouteToApi(url)) && this.targets.api) {
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;
     }
@@ -208,6 +221,43 @@ export class GatewayProxy {
       || url.startsWith('/provision/')
       || url === '/.well-known/matrix/client'
       || url.startsWith('/_matrix/');
+  }
+
+  private isApiHost(hostHeader: string | undefined): boolean {
+    const host = this.normalizeHost(hostHeader);
+    if (!host) {
+      return false;
+    }
+    if (host.startsWith('api.')) {
+      return true;
+    }
+
+    const configuredHost = this.hostFromUrl(process.env.XPOD_CLOUD_API_ENDPOINT)
+      ?? this.hostFromUrl(process.env.XPOD_PUBLIC_API_URL);
+    return Boolean(configuredHost && host === configuredHost);
+  }
+
+  private hostFromUrl(value: string | undefined): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+    try {
+      return new URL(value).hostname.toLowerCase();
+    } catch {
+      return undefined;
+    }
+  }
+
+  private normalizeHost(hostHeader: string | undefined): string | undefined {
+    const host = this.firstHeaderValue(hostHeader)?.split(',')[0]?.trim();
+    if (!host) {
+      return undefined;
+    }
+    return host.replace(/:\d+$/, '').toLowerCase();
+  }
+
+  private firstHeaderValue(value: string | string[] | undefined): string | undefined {
+    return Array.isArray(value) ? value[0] : value;
   }
 
   private shouldInspectRootMutation(req: http.IncomingMessage): boolean {
