@@ -237,6 +237,53 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config!.embeddingModel).toBe('text-embedding-3-small');
     });
 
+    it('should use DashScope text-embedding-v4 as the default embedding model when no AIConfig is stored', async () => {
+      const credentials = [{
+        ...mockCredentials[0],
+        id: 'cred-dashscope',
+        provider: 'http://localhost:3000/test/settings/providers/dashscope.ttl',
+        apiKey: 'dashscope-key',
+      }];
+      const providers = [{
+        id: 'dashscope',
+        displayName: 'DashScope',
+        baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+        proxyUrl: null,
+        '@id': 'http://localhost:3000/test/settings/providers/dashscope.ttl',
+      }];
+
+      let selectCallIndex = 0;
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => {
+          selectCallIndex++;
+          if (selectCallIndex === 1) {
+            return {
+              where: vi.fn().mockResolvedValue(credentials),
+            };
+          }
+          return Promise.resolve(providers);
+        }),
+      }));
+      mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providers.find((provider) => iri === provider['@id'] || iri.endsWith('/settings/providers/dashscope.ttl')));
+        }
+        return Promise.resolve(undefined);
+      });
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === AIConfig && id === 'config') return Promise.resolve(undefined);
+        if (table === Provider) return Promise.resolve(providers.find((provider) => id === provider.id || id.endsWith('/settings/providers/dashscope.ttl')));
+        return Promise.resolve(credentials.find((cred) => cred.id === id));
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toBeDefined();
+      expect(config!.providerId).toBe('dashscope');
+      expect(config!.embeddingModel).toBe('text-embedding-v4');
+      expect(config!.baseUrl).toBe('https://dashscope-intl.aliyuncs.com/compatible-mode/v1');
+    });
+
     it('should select the default credential before storage order', async () => {
       const credentials = [
         {

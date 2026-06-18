@@ -23,6 +23,27 @@ L0 文件级摘要全量存在
 - 原文文件仍是权威；长期索引默认存摘要、结构、行范围和关系，不默认持久化全部原文 chunk。
 - AI 必须知道当前检索覆盖范围和展开深度，不能把局部/摘要检索误认为全局全文检索。
 
+## 默认 Embedding Profile
+
+默认文本 embedding 使用用户 Pod 里的 DashScope / 千问配置：
+
+```text
+provider: dashscope
+model: text-embedding-v4
+baseUrl: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+dimension: 1024
+maxBatchSize: 10
+maxTokensPerInput: 8192
+```
+
+规则：
+
+- provider、model、credential 仍复用标准 AI config，不新增 embedding 专用密钥资源。
+- `qwen` / `alibaba` 作为 `dashscope` 的输入别名；持久化时优先写 canonical provider `dashscope`。
+- 没有显式 `AIConfig.embeddingModel`、但当前 credential/provider 是 DashScope/Qwen/Alibaba 时，运行时使用 `text-embedding-v4` 作为轻量默认 embedding model。
+- 请求层使用现有 AI SDK / OpenAI-compatible 抽象；核心只维护 `EmbeddingService.embed/embedBatch`，不引入 LangChain/LlamaIndex 依赖。
+- `text-embedding-v4` 单请求条数限制按 10 条切 batch；不同 embedding profile 仍分开索引和比较。
+
 ## 三条独立生命周期
 
 架构分成三类对象，每类有独立生命周期。

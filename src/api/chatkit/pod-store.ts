@@ -74,6 +74,7 @@ import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
 import { AIConfig } from '../../ai/schema/config';
+import { defaultBaseUrlForProvider, defaultEmbeddingModelForProvider } from '../../ai/service/defaultEmbeddingProfile';
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import { normalizeAIConfigModelId, normalizeAIConfigProviderId, normalizeAIConfigResourceId } from '@undefineds.co/models';
@@ -2164,7 +2165,8 @@ WHERE { ${deletePatterns.join(' ')} }
         const provider = await this.findProviderForCredential(db, context, cred.provider);
         if (!provider) continue;
 
-        const baseUrl = provider.baseUrl;
+        const providerId = this.extractProviderId(provider.id || cred.provider);
+        const baseUrl = provider.baseUrl || defaultBaseUrlForProvider(providerId);
         if (!baseUrl) continue;
 
         const defaultModelRef = provider.defaultModel ?? provider.hasModel;
@@ -2172,8 +2174,8 @@ WHERE { ${deletePatterns.join(' ')} }
           ? (await db.findByIri(Model, defaultModelRef))?.id ?? undefined
           : undefined;
 
-        const providerId = this.extractProviderId(provider.id || cred.provider);
-        const embeddingModel = await this.findConfiguredEmbeddingModel(db, providerId);
+        const embeddingModel = await this.findConfiguredEmbeddingModel(db, providerId)
+          ?? defaultEmbeddingModelForProvider(providerId);
         this.logger.debug(`Using credential ${cred.id} with provider ${providerId}`);
 
         return {

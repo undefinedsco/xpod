@@ -22,8 +22,20 @@ export class EmbeddingServiceImpl extends EmbeddingService {
     if (texts.length === 0) return [];
 
     const model = await this.createEmbeddingModel(credential, modelId);
-    const result = await embedMany({ model, values: texts });
-    return result.embeddings;
+    const modelInfo = await this.providerRegistry.getEmbeddingModel(credential.provider, modelId);
+    const maxBatchSize = modelInfo?.maxBatchSize;
+    if (!maxBatchSize || texts.length <= maxBatchSize) {
+      const result = await embedMany({ model, values: texts });
+      return result.embeddings;
+    }
+
+    const embeddings: number[][] = [];
+    for (let offset = 0; offset < texts.length; offset += maxBatchSize) {
+      const batch = texts.slice(offset, offset + maxBatchSize);
+      const result = await embedMany({ model, values: batch });
+      embeddings.push(...result.embeddings);
+    }
+    return embeddings;
   }
 
   private async createEmbeddingModel(credential: AiCredential, modelName: string) {
