@@ -348,8 +348,11 @@ export class GatewayProxy {
       return;
     }
 
-    if (hasTransferEncoding && headers['content-length'] !== undefined) {
-      delete headers['content-length'];
+    if (hasTransferEncoding) {
+      delete headers['transfer-encoding'];
+      if (headers['content-length'] !== undefined) {
+        delete headers['content-length'];
+      }
     }
   }
 

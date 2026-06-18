@@ -24,6 +24,14 @@ describe('GatewayProxy response headers', () => {
         return;
       }
 
+      if (req.url === '/unauthorized') {
+        res.statusCode = 401;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Transfer-Encoding', 'chunked');
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+
       res.statusCode = 200;
       res.end('ok');
     });
@@ -79,7 +87,35 @@ describe('GatewayProxy response headers', () => {
     });
     expect(seenByUpstream).toHaveLength(beforeCount);
   });
+
+  it('does not duplicate transfer-encoding on proxied chunked responses', async () => {
+    const { headers, body } = await requestRaw(`http://127.0.0.1:${proxyPort}/unauthorized`);
+
+    const transferEncodingCount = headers
+      .filter((header) => header.toLowerCase() === 'transfer-encoding')
+      .length;
+
+    expect(transferEncodingCount).toBeLessThanOrEqual(1);
+    expect(body).toBe(JSON.stringify({ error: 'unauthorized' }));
+  });
 });
+
+function requestRaw(url: string): Promise<{ headers: string[]; body: string }> {
+  return new Promise((resolve, reject) => {
+    http.get(url, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      res.on('end', () => {
+        resolve({
+          headers: res.rawHeaders.filter((_, index) => index % 2 === 0),
+          body: Buffer.concat(chunks).toString('utf8'),
+        });
+      });
+    }).on('error', reject);
+  });
+}
 
 describe('GatewayProxy Matrix routing', () => {
   let cssUpstream: http.Server;
