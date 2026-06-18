@@ -107,7 +107,7 @@ Chat 和 Task 是并列的命令形态：
 | `settingsResource` | `/settings/` | legacy `subjectTemplate: {key}.ttl` | `/settings/ui.theme.ttl` | 用户设置仍以 `key` 作为 subject/storage key；新共享模型不要照搬这套写法。 |
 | `aiProviderResource` | `/settings/providers/` | `{key}.ttl` | `/settings/providers/anthropic.ttl` | AI provider 配置，如 baseUrl/proxy/defaultModel。 |
 | `aiModelResource` | `/settings/providers/` | `{providerDocument}#{key}` | `/settings/providers/anthropic.ttl#claude-sonnet-4` | Model 归属 Provider 文档；由 `isProvidedBy` 推导 providerDocument。 |
-| `credentialResource` | `/settings/` | `credentials.ttl#{key}` | `/settings/credentials.ttl#anthropic-default` | 密钥/令牌资源，和 Task/Run 分开；Task 只引用或绑定，不复制 secret。 |
+| `credentialResource` | `/settings/` | `credentials.ttl#{key}` | `/settings/credentials.ttl#cred_8f3k2x` | 密钥/令牌资源，id 使用随机 `cred_*`；label/isDefault/provider 承载语义，Task/Run 只引用或绑定，不复制 secret。 |
 | `aiConfigResource` | `/settings/ai/` | `config.ttl#{key}` | `/settings/ai/config.ttl#embedding` | AI 运行配置。 |
 | `vectorStoreResource` | `/settings/ai/` | `vector-stores.ttl#{key}` | `/settings/ai/vector-stores.ttl#main` | 向量库配置。 |
 | `indexedFileResource` | `/settings/ai/` | `indexed-files/{key}.ttl` | `/settings/ai/indexed-files/file_1.ttl` | 被索引文件元数据。 |

@@ -177,17 +177,20 @@ Parser provider 不是一套新资源。PaddleOCR、MinerU、LlamaParse 这类 p
   ai:status "active" .
 
 # /settings/credentials.ttl
-<#paddleocr-default>
+<#cred_8f3k2x>
   a cred:Credential ;
   cred:service "ai" ;
   cred:provider </settings/providers/paddleocr.ttl> ;
   cred:status "active" ;
+  cred:label "默认" ;
+  cred:isDefault true ;
   cred:apiKey "paddle-access-token" .
 ```
 
 规则：
 
 - 不新增 `ParserProvider` / `ParserCredential` / `ParserModel` 资源；parser 是 AI provider 的一种 model type。
+- Credential 资源 id 使用随机 `cred_*`，不要编码 `paddleocr-default` 这类 provider/default 语义；展示名和默认选择分别用 `cred:label`、`cred:isDefault`。
 - API token、access token、key 在存储层统一叫 `apiKey`；adapter 内部再映射成 `PADDLEOCR_ACCESS_TOKEN` 或 `Authorization: Bearer`。
 - parser router 只能引用 provider/model 的 id 或 IRI，不能直接保存密钥。
 - shared `@undefineds.co/models` 需要让 AI config mutation/read 保留 `modelType: "parser"`，避免写入时退化成 `chat`。
