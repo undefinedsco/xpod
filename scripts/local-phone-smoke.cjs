@@ -14,6 +14,7 @@ function parseArgs(argv) {
     config: 'config/local.json',
     ip: process.env.XPOD_PHONE_SMOKE_IP || '',
     path: process.env.XPOD_PHONE_SMOKE_PATH || '/alice/a.txt',
+    nodeId: process.env.XPOD_PHONE_SMOKE_NODE_ID || '',
     print: false,
     help: false,
   };
@@ -29,6 +30,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--ip=')) options.ip = arg.slice('--ip='.length);
     else if (arg === '--path') options.path = next();
     else if (arg.startsWith('--path=')) options.path = arg.slice('--path='.length);
+    else if (arg === '--node-id') options.nodeId = next();
+    else if (arg.startsWith('--node-id=')) options.nodeId = arg.slice('--node-id='.length);
     else if (arg === '--env' || arg === '-e') options.env = next();
     else if (arg.startsWith('--env=')) options.env = arg.slice('--env='.length);
     else if (arg === '--config' || arg === '-c') options.config = next();
@@ -40,7 +43,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  console.log(`Usage: node scripts/local-phone-smoke.cjs [options]\n\nStarts xpod local so a phone on the same Wi-Fi can verify local reachability.\n\nOptions:\n  --ip <address>      LAN IPv4 address to advertise. Auto-detected by default.\n  --port, -p <port>   Gateway port. Default: 3000.\n  --path <path>       Resource path prefilled in the browser verifier. Default: /alice/a.txt.\n  --env, -e <file>    Env file passed to xpod. Default: .env.local.\n  --config, -c <file> Config file passed to xpod. Default: config/local.json.\n  --print             Print command and URLs without starting xpod.\n  --help, -h          Show this help.\n`);
+  console.log(`Usage: node scripts/local-phone-smoke.cjs [options]\n\nStarts xpod local so a phone on the same Wi-Fi can verify local reachability.\n\nOptions:\n  --ip <address>      LAN IPv4 address to advertise. Auto-detected by default.\n  --port, -p <port>   Gateway port. Default: 3000.\n  --path <path>       Resource path prefilled in the browser verifier. Default: /alice/a.txt.\n  --node-id <id>      Node ID prefilled in the signaling verifier.\n  --env, -e <file>    Env file passed to xpod. Default: .env.local.\n  --config, -c <file> Config file passed to xpod. Default: config/local.json.\n  --print             Print command and URLs without starting xpod.\n  --help, -h          Show this help.\n`);
 }
 
 function detectLanIp() {
@@ -93,6 +96,11 @@ function main() {
   const verifierUrl = new URL('/app/reachability.html', `${baseUrl}/`);
   verifierUrl.searchParams.set('path', resourcePath);
   const resourceUrl = new URL(resourcePath, `${baseUrl}/`).toString();
+  const signalVerifierUrl = new URL('/app/signal-pod.html', `${baseUrl}/`);
+  signalVerifierUrl.searchParams.set('path', resourcePath);
+  if (options.nodeId.trim()) {
+    signalVerifierUrl.searchParams.set('nodeId', options.nodeId.trim());
+  }
   const healthUrl = `${baseUrl}/.well-known/openid-configuration`;
   const args = [
     'src/main.ts',
@@ -106,6 +114,7 @@ function main() {
   console.log(`  LAN IP:       ${ip}`);
   console.log(`  Phone URL:    ${phoneUrl}`);
   console.log(`  Verifier URL: ${verifierUrl.toString()}`);
+  console.log(`  Signal URL:   ${signalVerifierUrl.toString()}`);
   console.log(`  Resource URL: ${resourceUrl}`);
   console.log(`  Health URL:   ${healthUrl}`);
   console.log(`  Base URL:     ${baseUrl}`);

@@ -14,10 +14,12 @@ describe('local phone smoke script', () => {
       '--ip', '192.0.2.10',
       '--port', '3456',
       '--path', '/alice/a.txt',
+      '--node-id', 'node-0000',
     ], { cwd: root });
 
     expect(stdout).toContain('Phone URL:    http://192.0.2.10:3456/');
     expect(stdout).toContain('Verifier URL: http://192.0.2.10:3456/app/reachability.html?path=%2Falice%2Fa.txt');
+    expect(stdout).toContain('Signal URL:   http://192.0.2.10:3456/app/signal-pod.html?path=%2Falice%2Fa.txt&nodeId=node-0000');
     expect(stdout).toContain('Resource URL: http://192.0.2.10:3456/alice/a.txt');
   });
 });

@@ -50,7 +50,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
       }
       sendJson(response, 500, { error: 'Failed to load routes' });
     }
-  });
+  }, { optionalAuth: true });
 
   server.post('/v1/signal/nodes/:nodeId/p2p-sessions', async (request, response, params) => {
     const access = resolveSessionAccess(request, params.nodeId);

@@ -23,6 +23,8 @@ export interface Route {
   handler: RouteHandler;
   /** If true, skip authentication */
   public?: boolean;
+  /** If true, authenticate when credentials are present, otherwise continue unauthenticated */
+  optionalAuth?: boolean;
   /** If true, match all methods instead of one method. */
   allMethods?: boolean;
 }
@@ -70,6 +72,8 @@ export class ApiServer {
     options?: {
       /** If true, skip authentication for this route */
       public?: boolean;
+      /** If true, authenticate when credentials are present, otherwise continue unauthenticated */
+      optionalAuth?: boolean;
       /** If true, match all methods instead of one method */
       allMethods?: boolean;
     },
@@ -81,35 +85,36 @@ export class ApiServer {
       paramNames,
       handler,
       public: options?.public,
+      optionalAuth: options?.optionalAuth,
       allMethods: options?.allMethods,
     });
-    this.logger.debug(`Registered route: ${method.toUpperCase()} ${path}${options?.public ? ' (public)' : ''}`);
+    this.logger.debug(`Registered route: ${method.toUpperCase()} ${path}${options?.public ? ' (public)' : ''}${options?.optionalAuth ? ' (optional auth)' : ''}`);
   }
 
   /**
    * Convenience methods for common HTTP methods
    */
-  public get(path: string, handler: RouteHandler, options?: { public?: boolean }): void {
+  public get(path: string, handler: RouteHandler, options?: { public?: boolean; optionalAuth?: boolean }): void {
     this.route('GET', path, handler, options);
   }
 
-  public post(path: string, handler: RouteHandler, options?: { public?: boolean }): void {
+  public post(path: string, handler: RouteHandler, options?: { public?: boolean; optionalAuth?: boolean }): void {
     this.route('POST', path, handler, options);
   }
 
-  public put(path: string, handler: RouteHandler, options?: { public?: boolean }): void {
+  public put(path: string, handler: RouteHandler, options?: { public?: boolean; optionalAuth?: boolean }): void {
     this.route('PUT', path, handler, options);
   }
 
-  public delete(path: string, handler: RouteHandler, options?: { public?: boolean }): void {
+  public delete(path: string, handler: RouteHandler, options?: { public?: boolean; optionalAuth?: boolean }): void {
     this.route('DELETE', path, handler, options);
   }
 
-  public patch(path: string, handler: RouteHandler, options?: { public?: boolean }): void {
+  public patch(path: string, handler: RouteHandler, options?: { public?: boolean; optionalAuth?: boolean }): void {
     this.route('PATCH', path, handler, options);
   }
 
-  public all(path: string, handler: RouteHandler, options?: { public?: boolean }): void {
+  public all(path: string, handler: RouteHandler, options?: { public?: boolean; optionalAuth?: boolean }): void {
     this.route('ALL', path, handler, { ...options, allMethods: true });
   }
 
@@ -188,8 +193,14 @@ export class ApiServer {
     const { route, params } = match;
     const authRequest = request as AuthenticatedRequest;
 
-    // Run auth middleware unless route is public
-    if (!route.public) {
+    // Run auth middleware unless route is public. Optional-auth routes accept
+    // anonymous callers but still hydrate request.auth when credentials exist.
+    if (route.optionalAuth && request.headers.authorization) {
+      const authOk = await this.authMiddleware.process(authRequest, response);
+      if (!authOk) {
+        return;
+      }
+    } else if (!route.public && !route.optionalAuth) {
       const authOk = await this.authMiddleware.process(authRequest, response);
       if (!authOk) {
         return;

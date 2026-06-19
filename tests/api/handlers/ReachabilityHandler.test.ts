@@ -124,7 +124,11 @@ describe('ReachabilityHandler', () => {
 
   it('registers route and session endpoints', () => {
     register();
-    expect(mockServer.server.get).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/routes', expect.any(Function));
+    expect(mockServer.server.get).toHaveBeenCalledWith(
+      '/v1/signal/nodes/:nodeId/routes',
+      expect.any(Function),
+      { optionalAuth: true },
+    );
     expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/p2p-sessions', expect.any(Function));
     expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/relay-sessions', expect.any(Function));
     expect(mockServer.server.all).not.toHaveBeenCalled();

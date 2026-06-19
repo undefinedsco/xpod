@@ -174,7 +174,7 @@ payload 继续承载：
 
 ```http
 GET /v1/signal/nodes/{nodeId}/routes
-Authorization: Bearer <clientToken>
+Authorization: Bearer <clientToken> # optional; absent callers receive public-filtered routes
 ```
 
 返回：
@@ -262,6 +262,18 @@ GET http://node-0000.undefineds.co/app/reachability.html?path=%2Falice%2Fa.txt
 ```
 
 验证页由 Local SP 的 `/app/` 静态资源提供；它只从当前 origin fetch `/alice/a.txt`，用于证明普通浏览器数据面可达。它不验证 P2P 打洞或 managed-client 私有 route。
+
+如果验收目标是“通过信令服务验证基本 Pod 功能”，使用信令验证页：
+
+```http
+GET http://node-0000.undefineds.co/app/signal-pod.html?nodeId=node-0000&path=%2Falice%2Fa.txt
+```
+
+该页面先调用 `GET /v1/signal/nodes/{nodeId}/routes`，可选调用
+`POST /v1/signal/nodes/{nodeId}/p2p-sessions`，再从返回的
+`nodeCandidates` / route 中选择数据入口去 `GET` Pod resource。它验证的是
+当前信令控制面、route/candidate 返回和 Pod HTTP 读取链路；在 worker/client
+实现完整 candidate exchange 和连接建立前，不把它解释为完整 P2P 打洞成功。
 
 当前实现边界：
 

@@ -14,7 +14,8 @@ node scripts/local-phone-smoke.cjs
 
 The script detects the Mac LAN IPv4 address, sets `CSS_BASE_URL` to that LAN URL,
 binds the gateway to `0.0.0.0`, and prints the phone URL plus a browser verifier
-URL.
+URL. It also prints a signaling-driven verifier URL when you want the phone
+browser to enter through `/v1/signal` first.
 
 To preview without starting the server:
 
@@ -32,6 +33,12 @@ To prefill a different resource in the verifier:
 
 ```bash
 node scripts/local-phone-smoke.cjs --path /alice/a.txt
+```
+
+To prefill a node id in the signaling verifier:
+
+```bash
+node scripts/local-phone-smoke.cjs --node-id node-0000 --path /alice/a.txt
 ```
 
 ## Verify from the phone
@@ -56,6 +63,31 @@ node scripts/local-phone-smoke.cjs --path /alice/a.txt
 
 If the phone can open the URL, Local Pod LAN reachability is verified at the
 transport level.
+
+## Verify basic Pod access through signaling
+
+Use the printed `Signal URL` when the goal is to validate the Xpod signaling
+service, not just a direct browser fetch:
+
+```text
+http://192.168.3.161:3000/app/signal-pod.html?path=%2Falice%2Fa.txt&nodeId=node-0000
+```
+
+The page performs the smoke flow in this order:
+
+1. `GET /v1/signal/nodes/:nodeId/routes`
+2. Optional `POST /v1/signal/nodes/:nodeId/p2p-sessions`
+3. Select a returned `nodeCandidates` / route entry
+4. `GET` the configured Pod resource through that returned route
+
+If the node requires authentication for `p2p-sessions`, fill the node token in
+the page. Without a token, the page can still verify public route discovery and
+public resource fetch when those routes are exposed.
+
+Current boundary: this validates signaling telemetry, session creation,
+candidate return, route selection, and Pod resource HTTP access. It does not by
+itself prove a full P2P data tunnel until the worker/client side implements
+candidate exchange and connection establishment.
 
 For external SP-domain validation, use the same verifier path on the SP domain:
 

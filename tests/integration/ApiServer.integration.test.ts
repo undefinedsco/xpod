@@ -56,6 +56,12 @@ describe('ApiServer Integration', () => {
       res.end(JSON.stringify({ message: 'Welcome!', user: (req.auth as any)?.webId }));
     });
 
+    server.get('/optional-auth', async (req, res) => {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ user: (req.auth as any)?.webId ?? null }));
+    }, { optionalAuth: true });
+
     server.post('/data/:id', async (_req, res, params) => {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
@@ -91,6 +97,18 @@ describe('ApiServer Integration', () => {
     const data = await response.json();
     expect(data.message).toBe('Welcome!');
     expect(data.user).toBe('https://example.com/user#me');
+  });
+
+  it('should allow optional auth routes with or without a token', async () => {
+    const publicResponse = await fetch(`${baseUrl}/optional-auth`);
+    expect(publicResponse.status).toBe(200);
+    await expect(publicResponse.json()).resolves.toEqual({ user: null });
+
+    const authenticatedResponse = await fetch(`${baseUrl}/optional-auth`, {
+      headers: { 'Authorization': 'Bearer valid-token' },
+    });
+    expect(authenticatedResponse.status).toBe(200);
+    await expect(authenticatedResponse.json()).resolves.toEqual({ user: 'https://example.com/user#me' });
   });
 
   it('should parse path parameters correctly', async () => {
