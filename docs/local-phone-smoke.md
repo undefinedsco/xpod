@@ -4,9 +4,10 @@ This document covers two phone-side smoke paths:
 
 1. **LAN direct mode** — phone and Mac are on the same Wi-Fi, useful for proving
    the local gateway is reachable.
-2. **Public Cloud-ingress registration mode** — phone opens the public SP domain,
-   registers/logs in, and then verifies Pod access. This is the path to use when
-   validating access after registration from cellular or an external network.
+2. **Public Cloud-ingress registration mode** — phone opens Cloud for identity,
+   discovers the user's `solid:storage`, and then verifies Pod access on the
+   public SP domain. This is the path to use when validating access after
+   registration from cellular or an external network.
 
 A Harmony/iOS app is not required for either path. The native shells in this repo
 are only WebView wrappers around the same browser pages.
@@ -83,7 +84,8 @@ access, user tunnel, or explicit Cloud ingress/relay.
 ```bash
 node scripts/local-phone-smoke.cjs \
   --sp-base-url https://node-0000.undefineds.co/ \
-  --idp-base-url https://id.undefineds.co/
+  --idp-base-url https://id.undefineds.co/ \
+  --storage-path .data/inrupt-smoke/probe.ttl#this
 ```
 
 `--public-base-url` is still accepted as an alias for `--sp-base-url`.
@@ -96,7 +98,8 @@ Cloud IdP URL: https://id.undefineds.co/
 Register URL:  https://id.undefineds.co/.account/login/password/register/
 Login URL:     https://id.undefineds.co/.account/login/password/
 Account URL:   https://id.undefineds.co/.account/
-Inrupt URL:    https://node-0000.undefineds.co/app/inrupt-smoke.html?issuer=https%3A%2F%2Fid.undefineds.co%2F&sp=...
+Inrupt URL:    https://id.undefineds.co/app/inrupt-smoke.html?issuer=https%3A%2F%2Fid.undefineds.co%2F&storagePath=.data%2Finrupt-smoke%2Fprobe.ttl%23this
+Storage Path:  .data/inrupt-smoke/probe.ttl#this
 ```
 
 Validation flow:
@@ -104,13 +107,17 @@ Validation flow:
 1. On the phone, disconnect Wi-Fi if you want to prove external reachability.
 2. Open the printed `Register URL` on the **Cloud IdP** origin.
 3. Register the account and complete the Cloud account flow.
-4. Open the printed `Inrupt URL`. The page is served from the SP origin, but its
-   `issuer` parameter points at the Cloud IdP.
+4. Open the printed `Inrupt URL`. The page is served from the **Cloud IdP**
+   origin so the browser login and redirect stay under `https://id.undefineds.co/`.
 5. Log in through Cloud.
-6. Set `SP Resource URL` to an actual Local SP Pod resource, for example
-   `https://node-0000.undefineds.co/alice/profile/card` or another resource
-   created/provisioned for that SP.
-7. Run `session.fetch` from the page.
+6. Tap `Discover Storage Home`. The page reads the WebID profile, extracts
+   `solid:storage`, and fills `Pod Home / Storage URL` with the Local SP storage
+   root, for example `https://node-0000.undefineds.co/alice/`.
+7. Tap `Drizzle Read/Write/Delete`. The page creates a drizzle-solid db with
+   `podUrl` set to that storage home and writes, reads, then deletes the RDF
+   smoke record at the storage-relative path shown by `Storage Path`.
+8. Optional: tap `session.fetch SP Resource` to fetch the derived concrete SP
+   resource URL directly with the same Inrupt session.
 
 For this mode, local xpod's `CSS_BASE_URL` must be the **public SP** origin, not
 the LAN address, and `oidcIssuer` must be the **Cloud IdP** origin. Otherwise the
@@ -134,10 +141,14 @@ http://192.168.3.161:3000/app/inrupt-smoke.html?issuer=http%3A%2F%2F192.168.3.16
 ```
 
 That page runs `@inrupt/solid-client-authn-browser`, logs into the configured
-OIDC issuer, then uses `session.fetch` to access the configured SP resource. For
-public Cloud IdP + Local SP validation, use the public `Inrupt URL` printed by
-`--sp-base-url ... --idp-base-url ...` so `issuer` uses Cloud and `sp` uses the
-SP resource origin.
+OIDC issuer, discovers `solid:storage` from the WebID profile, then uses that
+storage as the Pod home. The direct `session.fetch` button can fetch the derived
+SP resource URL, and the drizzle button loads `@undefineds.co/drizzle-solid` on
+demand, sets `podUrl` to the discovered storage home, and verifies
+insert/find/delete against a storage-relative RDF resource. For public Cloud IdP
++ Local SP validation, use the `Inrupt URL` printed by
+`--sp-base-url ... --idp-base-url ...`; in that mode the URL is on the Cloud IdP
+origin and does not hardcode an SP resource URL.
 
 ## Verify basic Pod access through signaling
 
@@ -201,6 +212,7 @@ PWA shortcut.
 For standard Solid SDK validation, use `/app/inrupt-smoke.html` directly or load
 it inside the minimal Harmony/iOS WebView shells under `harmony/minimal/` and
 `ios/InruptSmoke/`. These shells do not implement Solid themselves; the verifier
-page runs the Inrupt browser SDK. A deeper native app is only needed when
-validating managed-client capabilities such as P2P candidate exchange or OS-level
-local network behavior.
+page runs the Inrupt browser SDK, discovers storage, and uses drizzle-solid for
+the write/read/delete smoke. A deeper native app is only needed when validating
+managed-client capabilities such as P2P candidate exchange or OS-level local
+network behavior.

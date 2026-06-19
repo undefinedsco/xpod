@@ -68,7 +68,9 @@ describe('local phone smoke script', () => {
     expect(stdout).toContain('Register URL:  https://id.undefineds.co/.account/login/password/register/');
     expect(stdout).toContain('Login URL:     https://id.undefineds.co/.account/login/password/');
     expect(stdout).toContain('Account URL:   https://id.undefineds.co/.account/');
-    expect(stdout).toContain('Inrupt URL:   https://node-0000.undefineds.co/app/inrupt-smoke.html?issuer=https%3A%2F%2Fid.undefineds.co%2F&sp=https%3A%2F%2Fnode-0000.undefineds.co%2F.well-known%2Fopenid-configuration');
+    expect(stdout).toContain('Storage Path: .data/inrupt-smoke/probe.ttl#this');
+    expect(stdout).toContain('Inrupt URL:   https://id.undefineds.co/app/inrupt-smoke.html?issuer=https%3A%2F%2Fid.undefineds.co%2F&storagePath=.data%2Finrupt-smoke%2Fprobe.ttl%23this');
+    expect(stdout).not.toContain('Inrupt URL:   https://node-0000.undefineds.co/app/inrupt-smoke.html');
     expect(stdout).toContain('Resource URL: https://node-0000.undefineds.co/.well-known/openid-configuration');
     expect(stdout).toContain('Command: CSS_BASE_URL=https://node-0000.undefineds.co/ oidcIssuer=https://id.undefineds.co/ bun');
   });

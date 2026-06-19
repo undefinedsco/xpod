@@ -14,7 +14,9 @@ That page runs the Inrupt browser SDK (`@inrupt/solid-client-authn-browser`) and
 
 1. Login against the Cloud OIDC issuer.
 2. Complete the OIDC redirect in the same WebView.
-3. Use `session.fetch` to access an SP resource.
+3. Discover `solid:storage` from the WebID profile and set it as Pod home.
+4. Use `session.fetch` to access an SP resource.
+5. Use drizzle-solid with `podUrl` set to that Pod home to write, read, and delete one RDF smoke record.
 
 Typical verifier URL:
 
@@ -22,7 +24,7 @@ Typical verifier URL:
 http://192.168.3.15:3000/app/inrupt-smoke.html?issuer=http%3A%2F%2F192.168.3.15%3A3000%2F&sp=http%3A%2F%2F192.168.3.15%3A3000%2Falice%2Fa.txt
 ```
 
-For a Cloud/SP deployment, set `issuer` to the Cloud issuer and `sp` to the SP resource URL.
+For a Cloud/SP deployment, open the verifier on the Cloud IdP origin, set `issuer` to the Cloud issuer, and let the page derive the SP from WebID `solid:storage`. `sp` remains an optional direct-resource override.
 
 ## Build
 

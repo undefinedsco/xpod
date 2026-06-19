@@ -14,6 +14,7 @@ function parseArgs(argv) {
     config: 'config/local.json',
     ip: process.env.XPOD_PHONE_SMOKE_IP || '',
     path: process.env.XPOD_PHONE_SMOKE_PATH || '/.well-known/openid-configuration',
+    storagePath: process.env.XPOD_PHONE_SMOKE_STORAGE_PATH || '.data/inrupt-smoke/probe.ttl#this',
     nodeId: process.env.XPOD_PHONE_SMOKE_NODE_ID || '',
     spBaseUrl: process.env.XPOD_PHONE_SMOKE_SP_BASE_URL || process.env.XPOD_PHONE_SMOKE_PUBLIC_BASE_URL || '',
     idpBaseUrl: process.env.XPOD_PHONE_SMOKE_IDP_BASE_URL || '',
@@ -32,6 +33,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--ip=')) options.ip = arg.slice('--ip='.length);
     else if (arg === '--path') options.path = next();
     else if (arg.startsWith('--path=')) options.path = arg.slice('--path='.length);
+    else if (arg === '--storage-path') options.storagePath = next();
+    else if (arg.startsWith('--storage-path=')) options.storagePath = arg.slice('--storage-path='.length);
     else if (arg === '--node-id') options.nodeId = next();
     else if (arg.startsWith('--node-id=')) options.nodeId = arg.slice('--node-id='.length);
     else if (arg === '--sp-base-url' || arg === '--public-base-url') options.spBaseUrl = next();
@@ -50,7 +53,28 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  console.log(`Usage: node scripts/local-phone-smoke.cjs [options]\n\nStarts xpod local so a phone on the same Wi-Fi can verify local reachability.\n\nOptions:\n  --ip <address>      LAN IPv4 address to advertise. Auto-detected by default.\n  --port, -p <port>   Gateway port. Default: 3000.\n  --path <path>       Resource path prefilled in the browser verifier. Default: /.well-known/openid-configuration.\n  --node-id <id>      Node ID prefilled in the signaling verifier.\n  --sp-base-url <url>\n                     Public HTTP(S) SP origin routed to this local node.\n  --idp-base-url <url>\n                     Cloud IdP origin for registration/login/OIDC issuer.\n  --public-base-url <url>\n                     Alias for --sp-base-url.\n  --env, -e <file>    Env file passed to xpod. Default: .env.local.\n  --config, -c <file> Config file passed to xpod. Default: config/local.json.\n  --print             Print command and URLs without starting xpod.\n  --help, -h          Show this help.\n`);
+  console.log(`Usage: node scripts/local-phone-smoke.cjs [options]
+
+Starts xpod local so a phone on the same Wi-Fi can verify local reachability.
+
+Options:
+  --ip <address>      LAN IPv4 address to advertise. Auto-detected by default.
+  --port, -p <port>   Gateway port. Default: 3000.
+  --path <path>       Resource path prefilled in the browser verifier. Default: /.well-known/openid-configuration.
+  --storage-path <path>
+                     Storage-relative RDF resource for drizzle-solid smoke writes. Default: .data/inrupt-smoke/probe.ttl#this.
+  --node-id <id>      Node ID prefilled in the signaling verifier.
+  --sp-base-url <url>
+                     Public HTTP(S) SP origin routed to this local node.
+  --idp-base-url <url>
+                     Cloud IdP origin for registration/login/OIDC issuer.
+  --public-base-url <url>
+                     Alias for --sp-base-url.
+  --env, -e <file>    Env file passed to xpod. Default: .env.local.
+  --config, -c <file> Config file passed to xpod. Default: config/local.json.
+  --print             Print command and URLs without starting xpod.
+  --help, -h          Show this help.
+`);
 }
 
 function detectLanIp() {
@@ -108,6 +132,7 @@ function main() {
   const loginUrl = new URL('/.account/login/password/', identityBaseUrl).toString();
   const accountUrl = new URL('/.account/', identityBaseUrl).toString();
   const resourcePath = normalizeResourcePath(options.path);
+  const storagePath = normalizeStoragePath(options.storagePath);
   const verifierUrl = new URL('/app/reachability.html', accessBaseUrl);
   verifierUrl.searchParams.set('path', resourcePath);
   const resourceUrl = new URL(resourcePath, accessBaseUrl).toString();
@@ -116,9 +141,15 @@ function main() {
   if (options.nodeId.trim()) {
     signalVerifierUrl.searchParams.set('nodeId', options.nodeId.trim());
   }
-  const inruptVerifierUrl = new URL('/app/inrupt-smoke.html', accessBaseUrl);
+  const inruptVerifierBaseUrl = spBaseUrl && idpBaseUrl ? identityBaseUrl : accessBaseUrl;
+  const inruptVerifierUrl = new URL('/app/inrupt-smoke.html', inruptVerifierBaseUrl);
   inruptVerifierUrl.searchParams.set('issuer', identityBaseUrl);
-  inruptVerifierUrl.searchParams.set('sp', resourceUrl);
+  if (spBaseUrl && idpBaseUrl) {
+    inruptVerifierUrl.searchParams.set('storagePath', storagePath);
+  } else {
+    inruptVerifierUrl.searchParams.set('sp', resourceUrl);
+    inruptVerifierUrl.searchParams.set('storagePath', storagePath);
+  }
   const healthUrl = new URL('/.well-known/openid-configuration', accessBaseUrl).toString();
   const args = [
     'src/main.ts',
@@ -149,6 +180,7 @@ function main() {
   console.log(`  Verifier URL: ${verifierUrl.toString()}`);
   console.log(`  Signal URL:   ${signalVerifierUrl.toString()}`);
   console.log(`  Inrupt URL:   ${inruptVerifierUrl.toString()}`);
+  console.log(`  Storage Path: ${storagePath}`);
   console.log(`  Resource URL: ${resourceUrl}`);
   console.log(`  Health URL:   ${healthUrl}`);
   console.log(`  Base URL:     ${runtimeBaseUrl}`);
@@ -214,6 +246,16 @@ function normalizeResourcePath(value) {
   const trimmed = String(value || '').trim();
   if (!trimmed) return '/.well-known/openid-configuration';
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function normalizeStoragePath(value) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '.data/inrupt-smoke/probe.ttl#this';
+  if (/^https?:\/\//iu.test(trimmed)) {
+    const parsed = new URL(trimmed);
+    return `${parsed.pathname.replace(/^\/+/, '')}${parsed.hash}` || '.data/inrupt-smoke/probe.ttl#this';
+  }
+  return trimmed.replace(/^\/+/, '') || '.data/inrupt-smoke/probe.ttl#this';
 }
 
 try {
