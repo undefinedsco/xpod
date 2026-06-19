@@ -15,7 +15,8 @@ node scripts/local-phone-smoke.cjs
 The script detects the Mac LAN IPv4 address, sets `CSS_BASE_URL` to that LAN URL,
 binds the gateway to `0.0.0.0`, and prints the phone URL plus a browser verifier
 URL. It also prints a signaling-driven verifier URL when you want the phone
-browser to enter through `/v1/signal` first.
+browser to enter through `/v1/signal` first, and an Inrupt SDK verifier URL for
+Cloud-login/SP-resource smoke tests.
 
 To preview without starting the server:
 
@@ -64,6 +65,20 @@ node scripts/local-phone-smoke.cjs --node-id node-0000 --path /alice/a.txt
 If the phone can open the URL, Local Pod LAN reachability is verified at the
 transport level.
 
+## Verify with Inrupt browser SDK
+
+Use the printed `Inrupt URL` when the goal is to validate a standard Solid client flow:
+
+```text
+http://192.168.3.161:3000/app/inrupt-smoke.html?issuer=http%3A%2F%2F192.168.3.161%3A3000%2F&sp=http%3A%2F%2F192.168.3.161%3A3000%2Falice%2Fa.txt
+```
+
+That page runs `@inrupt/solid-client-authn-browser`, logs into the configured
+Cloud OIDC issuer, then uses `session.fetch` to access the configured SP
+resource. For a real Cloud/SP deployment, set `issuer` to the Cloud issuer and
+`sp` to the SP Pod resource URL. Harmony and iOS smoke apps are only WebView
+shells around this same page.
+
 ## Verify basic Pod access through signaling
 
 Use the printed `Signal URL` when the goal is to validate the Xpod signaling
@@ -110,10 +125,15 @@ gateway/ingress -> node tunnel entrypoint -> local resource.
   localhost/LAN route selection behind a canonical URL; those still require a
   managed client such as Desktop / CLI / Native app.
 
-## Relation to Harmony package
+## Relation to mobile packages
 
-For this minimal verification, no native app installation is required. The
-browser page under `/app/reachability.html` can be added to the phone home screen
-as a lightweight PWA shortcut. A real native app is only needed when validating
-managed-client capabilities such as P2P candidate exchange or OS-level local
-network behavior.
+For basic CSS reachability, no native app installation is required. The browser
+page under `/app/reachability.html` can be added to the phone home screen as a
+lightweight PWA shortcut.
+
+For standard Solid SDK validation, use `/app/inrupt-smoke.html` directly or load
+it inside the minimal Harmony/iOS WebView shells under `harmony/minimal/` and
+`ios/InruptSmoke/`. These shells do not implement Solid themselves; the verifier
+page runs the Inrupt browser SDK. A deeper native app is only needed when
+validating managed-client capabilities such as P2P candidate exchange or
+OS-level local network behavior.

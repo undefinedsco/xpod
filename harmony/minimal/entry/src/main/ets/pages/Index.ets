@@ -1,99 +1,52 @@
-import http from '@ohos.net.http';
-
-type HeaderMap = Record<string, string>;
-
-type RequestBody = Record<string, string | number | string[] | object[]>;
+import { webview } from '@kit.ArkWeb';
 
 @Entry
 @Component
 struct Index {
-  @State apiBase: string = 'https://api.example/v1';
-  @State nodeId: string = '';
-  @State nodeToken: string = '';
-  @State output: string = 'Enter API Base, Node ID and Node Token, then run a smoke request.';
-
-  private headers(): HeaderMap {
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${this.nodeToken}`,
-      'X-Node-Id': this.nodeId,
-    };
-  }
-
-  private endpoint(path: string): string {
-    const trimmed = this.apiBase.endsWith('/') ? this.apiBase.substring(0, this.apiBase.length - 1) : this.apiBase;
-    return `${trimmed}${path}`;
-  }
-
-  private async request(method: http.RequestMethod, path: string, body?: RequestBody): Promise<void> {
-    const client = http.createHttp();
-    try {
-      const response = await client.request(this.endpoint(path), {
-        method,
-        header: this.headers(),
-        extraData: body === undefined ? undefined : JSON.stringify(body),
-        connectTimeout: 10000,
-        readTimeout: 10000,
-      });
-      this.output = `HTTP ${response.responseCode}\n${String(response.result)}`;
-    } catch (error) {
-      this.output = `ERROR\n${JSON.stringify(error)}`;
-    } finally {
-      client.destroy();
-    }
-  }
+  private controller: webview.WebviewController = new webview.WebviewController();
+  @State verifierUrl: string = 'http://192.168.3.15:3000/app/inrupt-smoke.html';
+  @State currentUrl: string = 'http://192.168.3.15:3000/app/inrupt-smoke.html';
 
   build() {
-    Scroll() {
-      Column({ space: 12 }) {
-        Text('Xpod Reachability Smoke')
-          .fontSize(22)
-          .fontWeight(FontWeight.Bold)
+    Column({ space: 10 }) {
+      Text('Xpod Inrupt Smoke')
+        .fontSize(20)
+        .fontWeight(FontWeight.Bold)
+        .width('100%')
 
-        TextInput({ placeholder: 'https://api.example/v1', text: this.apiBase })
-          .onChange((value: string) => { this.apiBase = value; })
+      Text('WebView shell for the shared Inrupt browser SDK verifier. Login Cloud, then session.fetch the SP resource from the loaded page.')
+        .fontSize(12)
+        .fontColor('#64748B')
+        .width('100%')
 
-        TextInput({ placeholder: 'node id', text: this.nodeId })
-          .onChange((value: string) => { this.nodeId = value; })
+      TextInput({ placeholder: 'http://host:3000/app/inrupt-smoke.html?issuer=...&sp=...', text: this.verifierUrl })
+        .onChange((value: string) => { this.verifierUrl = value; })
+        .width('100%')
 
-        TextInput({ placeholder: 'node token', text: this.nodeToken })
-          .type(InputType.Password)
-          .onChange((value: string) => { this.nodeToken = value; })
-
-        Button('GET routes')
-          .width('100%')
+      Row({ space: 8 }) {
+        Button('Open verifier')
+          .layoutWeight(1)
           .onClick(() => {
-            void this.request(http.RequestMethod.GET, `/nodes/${this.nodeId}/routes`);
+            this.currentUrl = this.verifierUrl;
+            this.controller.loadUrl(this.currentUrl);
           })
 
-        Button('POST p2p session')
-          .width('100%')
+        Button('Reload')
+          .layoutWeight(1)
           .onClick(() => {
-            void this.request(http.RequestMethod.POST, `/nodes/${this.nodeId}/p2p-sessions`, {
-              clientId: 'harmony-smoke',
-              capabilities: ['tcp-punch'],
-              candidates: [],
-            });
+            this.controller.refresh();
           })
-
-        Button('POST relay session')
-          .width('100%')
-          .onClick(() => {
-            void this.request(http.RequestMethod.POST, `/nodes/${this.nodeId}/relay-sessions`, {
-              reason: 'harmony smoke verification',
-              ttlSeconds: 300,
-              bandwidthLimitBytes: 1048576,
-            });
-          })
-
-        Text(this.output)
-          .fontSize(13)
-          .width('100%')
-          .padding(12)
-          .backgroundColor('#F4F6F8')
       }
-      .padding(16)
       .width('100%')
+
+      Web({ src: this.currentUrl, controller: this.controller })
+        .javaScriptAccess(true)
+        .domStorageAccess(true)
+        .width('100%')
+        .layoutWeight(1)
     }
+    .padding(12)
+    .width('100%')
+    .height('100%')
   }
 }

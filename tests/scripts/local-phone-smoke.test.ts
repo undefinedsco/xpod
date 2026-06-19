@@ -20,6 +20,7 @@ describe('local phone smoke script', () => {
     expect(stdout).toContain('Phone URL:    http://192.0.2.10:3456/');
     expect(stdout).toContain('Verifier URL: http://192.0.2.10:3456/app/reachability.html?path=%2Falice%2Fa.txt');
     expect(stdout).toContain('Signal URL:   http://192.0.2.10:3456/app/signal-pod.html?path=%2Falice%2Fa.txt&nodeId=node-0000');
+    expect(stdout).toContain('Inrupt URL:   http://192.0.2.10:3456/app/inrupt-smoke.html?issuer=http%3A%2F%2F192.0.2.10%3A3456%2F&sp=http%3A%2F%2F192.0.2.10%3A3456%2Falice%2Fa.txt');
     expect(stdout).toContain('Resource URL: http://192.0.2.10:3456/alice/a.txt');
   });
 });

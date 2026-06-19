@@ -101,6 +101,9 @@ function main() {
   if (options.nodeId.trim()) {
     signalVerifierUrl.searchParams.set('nodeId', options.nodeId.trim());
   }
+  const inruptVerifierUrl = new URL('/app/inrupt-smoke.html', `${baseUrl}/`);
+  inruptVerifierUrl.searchParams.set('issuer', `${baseUrl}/`);
+  inruptVerifierUrl.searchParams.set('sp', resourceUrl);
   const healthUrl = `${baseUrl}/.well-known/openid-configuration`;
   const args = [
     'src/main.ts',
@@ -115,6 +118,7 @@ function main() {
   console.log(`  Phone URL:    ${phoneUrl}`);
   console.log(`  Verifier URL: ${verifierUrl.toString()}`);
   console.log(`  Signal URL:   ${signalVerifierUrl.toString()}`);
+  console.log(`  Inrupt URL:   ${inruptVerifierUrl.toString()}`);
   console.log(`  Resource URL: ${resourceUrl}`);
   console.log(`  Health URL:   ${healthUrl}`);
   console.log(`  Base URL:     ${baseUrl}`);

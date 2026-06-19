@@ -1,6 +1,21 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+
+function stripTrailingWhitespacePlugin(): Plugin {
+  return {
+    name: 'strip-trailing-whitespace',
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (output.type === 'chunk') {
+          output.code = output.code.replace(/[ \t]+$/gm, '');
+        } else if (typeof output.source === 'string') {
+          output.source = output.source.replace(/[ \t]+$/gm, '');
+        }
+      }
+    },
+  };
+}
 
 // https://vitejs.dev/config/
 export default defineConfig(() => {
@@ -11,7 +26,10 @@ export default defineConfig(() => {
     app: {
       base: '/app/',
       outDir: '../static/app',
-      input: 'index.html',
+      input: {
+        main: 'index.html',
+        'inrupt-smoke': 'inrupt-smoke.html',
+      },
     },
     dashboard: {
       base: '/dashboard/',
@@ -24,7 +42,7 @@ export default defineConfig(() => {
 
   return {
     base: config.base,
-    plugins: [react()],
+    plugins: [react(), stripTrailingWhitespacePlugin()],
     resolve: {
       preserveSymlinks: true,
       alias: {
@@ -43,10 +61,12 @@ export default defineConfig(() => {
       outDir: config.outDir,
       emptyOutDir: true,
       rollupOptions: {
-        input: path.resolve(__dirname, config.input),
+        input: typeof config.input === 'string'
+          ? path.resolve(__dirname, config.input)
+          : Object.fromEntries(Object.entries(config.input).map(([name, input]) => [name, path.resolve(__dirname, input)])),
         output: {
           // app 使用固定文件名（auth.html 模板需要），dashboard 使用 hash
-          entryFileNames: buildTarget === 'app' ? 'assets/main.js' : 'assets/[name]-[hash].js',
+          entryFileNames: buildTarget === 'app' ? 'assets/[name].js' : 'assets/[name]-[hash].js',
           chunkFileNames: 'assets/[name]-[hash].js',
           assetFileNames: buildTarget === 'app' ? 'assets/[name].[ext]' : 'assets/[name]-[hash].[ext]'
         }

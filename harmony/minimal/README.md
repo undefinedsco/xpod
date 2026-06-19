@@ -1,27 +1,28 @@
-# Xpod Reachability Smoke - Harmony Minimal
+# Xpod Inrupt Smoke - Harmony Minimal
 
-This is a minimal Harmony/OpenHarmony verification project for the Xpod Local Reachability Signaling API.
+This is a minimal Harmony/OpenHarmony WebView shell for the shared Xpod Inrupt verifier page.
 
 ## What it verifies
 
-The single page lets a tester enter:
-
-- API Base URL, for example `https://api.example/v1`
-- Node ID
-- Node Token
-
-Then it can call:
-
-- `GET /nodes/{nodeId}/routes`
-- `POST /nodes/{nodeId}/p2p-sessions`
-- `POST /nodes/{nodeId}/relay-sessions`
-
-The app sends node authentication headers:
+The Harmony app itself does not reimplement Solid, OIDC, signaling, or P2P. It loads:
 
 ```text
-Authorization: Bearer <nodeToken>
-X-Node-Id: <nodeId>
+/app/inrupt-smoke.html
 ```
+
+That page runs the Inrupt browser SDK (`@inrupt/solid-client-authn-browser`) and verifies:
+
+1. Login against the Cloud OIDC issuer.
+2. Complete the OIDC redirect in the same WebView.
+3. Use `session.fetch` to access an SP resource.
+
+Typical verifier URL:
+
+```text
+http://192.168.3.15:3000/app/inrupt-smoke.html?issuer=http%3A%2F%2F192.168.3.15%3A3000%2F&sp=http%3A%2F%2F192.168.3.15%3A3000%2Falice%2Fa.txt
+```
+
+For a Cloud/SP deployment, set `issuer` to the Cloud issuer and `sp` to the SP resource URL.
 
 ## Build
 
@@ -49,7 +50,4 @@ The script runs `assembleHap --mode module -p module=entry@default` and copies t
 
 ## Current local packaging status
 
-This repository machine can run a registry-provided Hvigor CLI, but it does not
-have a valid HarmonyOS SDK (`DEVECO_SDK_HOME`) or usable JDK installed. Therefore
-the local artifact is an importable source verifier package, not a signed or
-installable `.hap`.
+This repository machine does not currently expose `DEVECO_SDK_HOME`, Hvigor, or a usable JDK. Therefore local packaging may only produce an importable source verifier package, not a signed or installable `.hap`.
