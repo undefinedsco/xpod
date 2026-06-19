@@ -35,4 +35,21 @@ describe('local phone smoke script', () => {
     expect(stdout).toContain('Verifier URL: http://192.0.2.10:3456/app/reachability.html?path=%2F.well-known%2Fopenid-configuration');
     expect(stdout).toContain('Resource URL: http://192.0.2.10:3456/.well-known/openid-configuration');
   });
+
+  it('prints public registration URLs and uses the public base URL for CSS when provided', async () => {
+    const { stdout } = await execFileAsync(process.execPath, [
+      'scripts/local-phone-smoke.cjs',
+      '--print',
+      '--ip', '192.0.2.10',
+      '--port', '3456',
+      '--public-base-url', 'https://node-0000.undefineds.co/',
+    ], { cwd: root });
+
+    expect(stdout).toContain('Public URL:   https://node-0000.undefineds.co/');
+    expect(stdout).toContain('Register URL: https://node-0000.undefineds.co/.account/login/password/register/');
+    expect(stdout).toContain('Login URL:    https://node-0000.undefineds.co/.account/login/password/');
+    expect(stdout).toContain('Account URL:  https://node-0000.undefineds.co/.account/');
+    expect(stdout).toContain('Inrupt URL:   https://node-0000.undefineds.co/app/inrupt-smoke.html?issuer=https%3A%2F%2Fnode-0000.undefineds.co%2F&sp=https%3A%2F%2Fnode-0000.undefineds.co%2F.well-known%2Fopenid-configuration');
+    expect(stdout).toContain('Command: CSS_BASE_URL=https://node-0000.undefineds.co/ bun');
+  });
 });

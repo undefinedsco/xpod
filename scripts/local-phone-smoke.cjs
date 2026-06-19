@@ -15,6 +15,7 @@ function parseArgs(argv) {
     ip: process.env.XPOD_PHONE_SMOKE_IP || '',
     path: process.env.XPOD_PHONE_SMOKE_PATH || '/.well-known/openid-configuration',
     nodeId: process.env.XPOD_PHONE_SMOKE_NODE_ID || '',
+    publicBaseUrl: process.env.XPOD_PHONE_SMOKE_PUBLIC_BASE_URL || '',
     print: false,
     help: false,
   };
@@ -32,6 +33,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--path=')) options.path = arg.slice('--path='.length);
     else if (arg === '--node-id') options.nodeId = next();
     else if (arg.startsWith('--node-id=')) options.nodeId = arg.slice('--node-id='.length);
+    else if (arg === '--public-base-url') options.publicBaseUrl = next();
+    else if (arg.startsWith('--public-base-url=')) options.publicBaseUrl = arg.slice('--public-base-url='.length);
     else if (arg === '--env' || arg === '-e') options.env = next();
     else if (arg.startsWith('--env=')) options.env = arg.slice('--env='.length);
     else if (arg === '--config' || arg === '-c') options.config = next();
@@ -43,7 +46,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  console.log(`Usage: node scripts/local-phone-smoke.cjs [options]\n\nStarts xpod local so a phone on the same Wi-Fi can verify local reachability.\n\nOptions:\n  --ip <address>      LAN IPv4 address to advertise. Auto-detected by default.\n  --port, -p <port>   Gateway port. Default: 3000.\n  --path <path>       Resource path prefilled in the browser verifier. Default: /.well-known/openid-configuration.\n  --node-id <id>      Node ID prefilled in the signaling verifier.\n  --env, -e <file>    Env file passed to xpod. Default: .env.local.\n  --config, -c <file> Config file passed to xpod. Default: config/local.json.\n  --print             Print command and URLs without starting xpod.\n  --help, -h          Show this help.\n`);
+  console.log(`Usage: node scripts/local-phone-smoke.cjs [options]\n\nStarts xpod local so a phone on the same Wi-Fi can verify local reachability.\n\nOptions:\n  --ip <address>      LAN IPv4 address to advertise. Auto-detected by default.\n  --port, -p <port>   Gateway port. Default: 3000.\n  --path <path>       Resource path prefilled in the browser verifier. Default: /.well-known/openid-configuration.\n  --node-id <id>      Node ID prefilled in the signaling verifier.\n  --public-base-url <url>\n                     Public HTTP(S) origin routed to this local node for registration smoke tests.\n  --env, -e <file>    Env file passed to xpod. Default: .env.local.\n  --config, -c <file> Config file passed to xpod. Default: config/local.json.\n  --print             Print command and URLs without starting xpod.\n  --help, -h          Show this help.\n`);
 }
 
 function detectLanIp() {
@@ -90,21 +93,27 @@ function main() {
 
   const envPath = resolvePath(options.env);
   const configPath = resolvePath(options.config);
-  const baseUrl = `http://${ip}:${port}`;
-  const phoneUrl = `${baseUrl}/`;
+  const localBaseUrl = `http://${ip}:${port}`;
+  const publicBaseUrl = normalizePublicBaseUrl(options.publicBaseUrl);
+  const accessBaseUrl = publicBaseUrl || `${localBaseUrl}/`;
+  const runtimeBaseUrl = publicBaseUrl || localBaseUrl;
+  const phoneUrl = accessBaseUrl;
+  const registerUrl = new URL('/.account/login/password/register/', accessBaseUrl).toString();
+  const loginUrl = new URL('/.account/login/password/', accessBaseUrl).toString();
+  const accountUrl = new URL('/.account/', accessBaseUrl).toString();
   const resourcePath = normalizeResourcePath(options.path);
-  const verifierUrl = new URL('/app/reachability.html', `${baseUrl}/`);
+  const verifierUrl = new URL('/app/reachability.html', accessBaseUrl);
   verifierUrl.searchParams.set('path', resourcePath);
-  const resourceUrl = new URL(resourcePath, `${baseUrl}/`).toString();
-  const signalVerifierUrl = new URL('/app/signal-pod.html', `${baseUrl}/`);
+  const resourceUrl = new URL(resourcePath, accessBaseUrl).toString();
+  const signalVerifierUrl = new URL('/app/signal-pod.html', accessBaseUrl);
   signalVerifierUrl.searchParams.set('path', resourcePath);
   if (options.nodeId.trim()) {
     signalVerifierUrl.searchParams.set('nodeId', options.nodeId.trim());
   }
-  const inruptVerifierUrl = new URL('/app/inrupt-smoke.html', `${baseUrl}/`);
-  inruptVerifierUrl.searchParams.set('issuer', `${baseUrl}/`);
+  const inruptVerifierUrl = new URL('/app/inrupt-smoke.html', accessBaseUrl);
+  inruptVerifierUrl.searchParams.set('issuer', accessBaseUrl);
   inruptVerifierUrl.searchParams.set('sp', resourceUrl);
-  const healthUrl = `${baseUrl}/.well-known/openid-configuration`;
+  const healthUrl = new URL('/.well-known/openid-configuration', accessBaseUrl).toString();
   const args = [
     'src/main.ts',
     '--env', envPath,
@@ -115,20 +124,31 @@ function main() {
 
   console.log('Xpod local phone smoke');
   console.log(`  LAN IP:       ${ip}`);
+  console.log(`  Local URL:    ${localBaseUrl}/`);
+  if (publicBaseUrl) console.log(`  Public URL:   ${publicBaseUrl}`);
   console.log(`  Phone URL:    ${phoneUrl}`);
+  if (publicBaseUrl) {
+    console.log(`  Register URL: ${registerUrl}`);
+    console.log(`  Login URL:    ${loginUrl}`);
+    console.log(`  Account URL:  ${accountUrl}`);
+  }
   console.log(`  Verifier URL: ${verifierUrl.toString()}`);
   console.log(`  Signal URL:   ${signalVerifierUrl.toString()}`);
   console.log(`  Inrupt URL:   ${inruptVerifierUrl.toString()}`);
   console.log(`  Resource URL: ${resourceUrl}`);
   console.log(`  Health URL:   ${healthUrl}`);
-  console.log(`  Base URL:     ${baseUrl}`);
+  console.log(`  Base URL:     ${runtimeBaseUrl}`);
   console.log(`  Bind host:    0.0.0.0`);
   console.log(`  Env file:     ${envPath}`);
   console.log(`  Config file:  ${configPath}`);
   console.log('');
-  console.log('Phone must be on the same Wi-Fi. If it cannot open the URL, check macOS firewall and router client isolation.');
+  if (publicBaseUrl) {
+    console.log('Phone can use the public URL from cellular/external networks when Cloud ingress routes to this local node.');
+  } else {
+    console.log('Phone must be on the same Wi-Fi. If it cannot open the URL, check macOS firewall and router client isolation.');
+  }
   console.log('');
-  console.log(`Command: CSS_BASE_URL=${baseUrl} bun ${args.map((arg) => JSON.stringify(arg)).join(' ')}`);
+  console.log(`Command: CSS_BASE_URL=${runtimeBaseUrl} bun ${args.map((arg) => JSON.stringify(arg)).join(' ')}`);
 
   if (options.print) return;
 
@@ -137,7 +157,7 @@ function main() {
     stdio: 'inherit',
     env: {
       ...process.env,
-      CSS_BASE_URL: baseUrl,
+      CSS_BASE_URL: runtimeBaseUrl,
     },
   });
 
@@ -151,6 +171,22 @@ function main() {
     if (signal) process.kill(process.pid, signal);
     process.exit(code ?? 0);
   });
+}
+
+
+function normalizePublicBaseUrl(value) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+
+  const parsed = new URL(trimmed);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Invalid --public-base-url protocol: ${parsed.protocol}`);
+  }
+  if ((parsed.pathname && parsed.pathname !== '/') || parsed.search || parsed.hash) {
+    throw new Error('--public-base-url must be an origin, for example https://node-0000.undefineds.co/');
+  }
+  parsed.pathname = '/';
+  return parsed.toString();
 }
 
 function normalizeResourcePath(value) {
