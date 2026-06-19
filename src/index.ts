@@ -114,6 +114,7 @@ import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 
 export * from './api/reconciler';
+export * from './edge/reachability';
 
 export type {
   DnsProvider,

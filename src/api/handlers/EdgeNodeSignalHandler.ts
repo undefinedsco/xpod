@@ -25,8 +25,8 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
   const repo = options.repository;
   const { dnsCoordinator, healthProbeService } = options;
 
-  // POST /v1/signal - authenticated via nodeToken, API key, or Solid token
-  server.post('/v1/signal', async (request, response, _params) => {
+  // POST /v1/signal and /v1/signal/heartbeat - authenticated via nodeToken.
+  const handleSignal = async (request: AuthenticatedRequest, response: ServerResponse, _params: Record<string, string>) => {
     const auth = request.auth;
     if (!auth) {
       sendJson(response, 401, { error: 'Authentication required' });
@@ -116,7 +116,10 @@ export function registerEdgeNodeSignalRoutes(server: ApiServer, options: EdgeNod
       }
       sendJson(response, 500, { error: 'Failed to process signal' });
     }
-  });
+  };
+
+  server.post('/v1/signal', handleSignal);
+  server.post('/v1/signal/heartbeat', handleSignal);
 }
 
 function mergeMetadata(
@@ -126,6 +129,11 @@ function mergeMetadata(
 ): Record<string, unknown> {
   const next: Record<string, unknown> = { ...previous };
   next.lastHeartbeatAt = now.toISOString();
+
+  const nestedMetadata = isRecord(payload.metadata) ? payload.metadata : undefined;
+  if (nestedMetadata) {
+    Object.assign(next, nestedMetadata);
+  }
 
   const copyIfPresent = (key: string) => {
     if (payload[key] !== undefined) {
@@ -140,12 +148,31 @@ function mergeMetadata(
   copyIfPresent('version');
   copyIfPresent('status');
   copyIfPresent('capabilities');
+  copyIfPresent('reachability');
   copyIfPresent('directCandidates');
   copyIfPresent('tunnel');
   copyIfPresent('certificate');
   copyIfPresent('metrics');
 
+  const payloadRoutes = normalizeRouteArray(payload.routes);
+  const nestedRoutes = normalizeRouteArray(nestedMetadata?.routes);
+  const routes = [...payloadRoutes, ...nestedRoutes];
+  if (routes.length > 0) {
+    next.routes = routes;
+  }
+
   return next;
+}
+
+function normalizeRouteArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isRecord);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function readJsonBody(request: AuthenticatedRequest): Promise<unknown> {

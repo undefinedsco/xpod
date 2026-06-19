@@ -9,6 +9,7 @@ import type { ApiContainerCradle, ApiContainerConfig } from './types';
 import type { ApiServer } from '../ApiServer';
 
 import { registerEdgeNodeSignalRoutes } from '../handlers/EdgeNodeSignalHandler';
+import { registerReachabilityRoutes } from '../handlers/ReachabilityHandler';
 import { registerNodeRoutes } from '../handlers/NodeHandler';
 import { registerChatRoutes } from '../handlers/ChatHandler';
 import { registerSubdomainRoutes } from '../handlers/SubdomainHandler';
@@ -99,6 +100,11 @@ function registerSharedRoutes(
     repository: nodeRepo,
     dnsCoordinator: container.resolve('dnsCoordinator', { allowUnregistered: true }) as any,
     healthProbeService: container.resolve('healthProbeService', { allowUnregistered: true }) as any,
+  });
+  registerReachabilityRoutes(server, {
+    repository: nodeRepo,
+    baseStorageDomain: config.subdomain?.baseStorageDomain,
+    apiBaseUrl: config.cloudApiEndpoint ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL,
   });
   registerNodeRoutes(server, { repository: nodeRepo });
   registerChatRoutes(server, { chatService });

@@ -58,6 +58,8 @@ const RDF_LANG_STRING = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString';
 const POSTGRES_RDF_SCHEMA_VERSION = 1;
 const POSTGRES_RDF3X_SCHEMA_VERSION = 1;
 const PG_STRING_ESCAPE = '\u001f';
+const POSTGRES_RDF_WRITE_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
+const RETRYABLE_POSTGRES_WRITE_ERROR_CODES = new Set(['40P01', '40001']);
 
 type PgPatternKey = 'graph' | 'subject' | 'predicate' | 'object';
 type PgTermKey = 'subject' | 'predicate' | 'object';
@@ -308,6 +310,22 @@ function normalizePgValue(value: unknown): unknown {
   return value;
 }
 
+function isRetryablePostgresWriteError(error: unknown): boolean {
+  const candidate = error as { code?: unknown; message?: unknown } | undefined;
+  const code = typeof candidate?.code === 'string' ? candidate.code : undefined;
+  if (code && RETRYABLE_POSTGRES_WRITE_ERROR_CODES.has(code)) {
+    return true;
+  }
+
+  const message = typeof candidate?.message === 'string' ? candidate.message.toLowerCase() : '';
+  return message.includes('deadlock detected')
+    || message.includes('could not serialize access due to concurrent update');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 class PgliteExecutor implements AsyncSqlExecutor {
   public constructor(private readonly db: PGlite) {}
 
@@ -458,8 +476,7 @@ class PostgresRdfTermDictionary {
         numeric_value
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      ON CONFLICT (hash) DO UPDATE
-      SET hash = EXCLUDED.hash
+      ON CONFLICT (hash) DO NOTHING
       RETURNING id
     `, [
       identity.kind,
@@ -471,7 +488,11 @@ class PostgresRdfTermDictionary {
       identity.normalizedText,
       identity.numericValue,
     ]);
-    const id = row[0]?.id;
+    let id: number | undefined = row[0]?.id;
+    if (id === undefined) {
+      const existing = await this.executor.query<PostgresRdfTermRow>('SELECT * FROM rdf_terms WHERE hash = $1', [identity.hash]);
+      id = existing.find((entry) => this.rowMatchesIdentity(entry, identity))?.id;
+    }
     if (id === undefined) {
       throw new Error('Failed to insert RDF term');
     }
@@ -734,40 +755,34 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.ensureReady();
     const quadList = Array.isArray(quads) ? quads : [quads];
     const executor = this.requireExecutor();
-    try {
+    await this.withRetryableWrite(async () => {
       await executor.transaction(async (tx) => {
         const scopedDictionary = new PostgresRdfTermDictionary(tx);
-        await scopedDictionary.initialize();
         const sourceId = options?.source ? await this.upsertSource(options.source, tx) : null;
         await this.insertQuads(tx, scopedDictionary, quadList, sourceId, options?.sourceLineNo ?? null);
         await this.bumpFactsDataVersion(tx);
       });
-    } catch (error) {
-      throw error;
-    }
+    });
   }
 
   public async replaceSource(quads: Quad[], source: RdfSourceInput): Promise<void> {
     await this.ensureReady();
     const executor = this.requireExecutor();
-    try {
+    await this.withRetryableWrite(async () => {
       await executor.transaction(async (tx) => {
         const scopedDictionary = new PostgresRdfTermDictionary(tx);
-        await scopedDictionary.initialize();
         const sourceId = await this.upsertSource(source, tx);
         await tx.exec('DELETE FROM rdf_quads WHERE source_file_id = $1', [sourceId]);
         await this.insertQuads(tx, scopedDictionary, quads, sourceId, null);
         await this.bumpFactsDataVersion(tx);
       });
-    } catch (error) {
-      throw error;
-    }
+    });
   }
 
   public async deleteSource(source: string): Promise<number> {
     await this.ensureReady();
     const executor = this.requireExecutor();
-    try {
+    return this.withRetryableWrite(async () => {
       const sourceRow = await this.findSourceRow(source, executor);
       if (!sourceRow) {
         return 0;
@@ -779,9 +794,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         return deleteResult.length;
       });
       return result;
-    } catch (error) {
-      throw error;
-    }
+    });
   }
 
   public async delete(pattern: QuintPattern): Promise<number> {
@@ -791,19 +804,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
       return 0;
     }
     const executor = this.requireExecutor();
-    try {
+    await this.withRetryableWrite(async () => {
       await executor.transaction(async (tx) => {
         const scopedDictionary = new PostgresRdfTermDictionary(tx);
-        await scopedDictionary.initialize();
         for (const value of scan.quads) {
           await this.deleteExactQuad(tx, scopedDictionary, value);
         }
         await this.bumpFactsDataVersion(tx);
       });
-      return scan.quads.length;
-    } catch (error) {
-      throw error;
-    }
+    });
+    return scan.quads.length;
   }
 
   public async applyDelta(deletes: QuintPattern[], inserts: Quad[], options?: RdfIndexPutOptions): Promise<{ deletedRows: number; insertedRows: number }> {
@@ -819,10 +829,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const uniqueDeleteQuads = uniqueQuads(deleteQuads);
     const executor = this.requireExecutor();
     let deletedRows = 0;
-    try {
+    deletedRows = await this.withRetryableWrite(async () => {
       deletedRows = await executor.transaction(async (tx) => {
         const scopedDictionary = new PostgresRdfTermDictionary(tx);
-        await scopedDictionary.initialize();
         let deletedRows = 0;
         for (const value of uniqueDeleteQuads) {
           const deleted = await this.deleteExactQuad(tx, scopedDictionary, value);
@@ -835,13 +844,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
         }
         return deletedRows;
       });
-      return {
-        deletedRows,
-        insertedRows: inserts.length,
-      };
-    } catch (error) {
-      throw error;
-    }
+      return deletedRows;
+    });
+    return {
+      deletedRows,
+      insertedRows: inserts.length,
+    };
   }
 
   public async scan(query: RdfPatternQuery): Promise<RdfQuadIndexScanResult> {
@@ -2805,6 +2813,22 @@ export class PostgresRdfEngine implements RdfEngineLike {
           source_file_id = EXCLUDED.source_file_id,
           source_line_no = EXCLUDED.source_line_no
       `, [graphId, subjectId, predicateId, objectId, sourceId, sourceLineNo]);
+    }
+  }
+
+  private async withRetryableWrite<T>(operation: () => Promise<T>): Promise<T> {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await operation();
+      } catch (error) {
+        const delayMs = POSTGRES_RDF_WRITE_RETRY_DELAYS_MS[attempt];
+        if (delayMs === undefined || !isRetryablePostgresWriteError(error)) {
+          throw error;
+        }
+        attempt += 1;
+        await sleep(delayMs);
+      }
     }
   }
 

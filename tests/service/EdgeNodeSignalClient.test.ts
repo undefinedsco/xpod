@@ -31,6 +31,11 @@ afterEach(() => {
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 100 });
 
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({
+      authorization: 'Bearer top-secret',
+      'x-node-id': 'node-1',
+      'content-type': 'application/json',
+    });
     const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(payload.nodeId).toBe('node-1');
     expect(payload.directCandidates).toEqual([ 'https://edge.example/' ]);

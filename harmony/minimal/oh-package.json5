@@ -1,0 +1,13 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "xpod-reachability-smoke",
+  "version": "1.0.0",
+  "description": "Minimal Harmony/OpenHarmony verifier for Xpod reachability signaling APIs",
+  "main": "",
+  "author": "undefineds",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hvigor-ohos-plugin": "5.0.0"
+  }
+}

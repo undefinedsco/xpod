@@ -126,7 +126,11 @@ export class EdgeNodeSignalClient {
     try {
       const response = await fetch(this.endpoint, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.baseToken}`,
+          'x-node-id': this.baseNodeId,
+        },
         body: JSON.stringify(payload),
       });
       if (!response.ok) {

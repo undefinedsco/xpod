@@ -488,6 +488,62 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('retries transient PostgreSQL deadlocks during writes', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-deadlock-retry-'));
+    const pool = new InstrumentedPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      driver: 'pg',
+      pool,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/deadlock/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+
+    try {
+      await engine.open();
+      pool.failNextQuadInsertWithDeadlock();
+
+      await engine.put(quad(message, namedNode(CONTENT), literal('retry me'), graph));
+
+      const scan = await engine.scan({
+        pattern: {
+          graph,
+          subject: message,
+          predicate: namedNode(CONTENT),
+          object: literal('retry me'),
+        },
+      });
+      expect(scan.quads).toHaveLength(1);
+      expect(pool.deadlockFailuresInjected).toBe(1);
+      expect(pool.transactionBeginsAfterReset).toBe(2);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not run RDF term schema DDL inside write transactions', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-no-tx-ddl-'));
+    const pool = new InstrumentedPgPool(dataDir);
+    const engine = new PostgresRdfEngine({
+      driver: 'pg',
+      pool,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/no-ddl/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+
+    try {
+      await engine.open();
+      pool.resetInstrumentation();
+
+      await engine.put(quad(message, namedNode(CONTENT), literal('no ddl'), graph));
+
+      expect(pool.transactionQueriesAfterReset.some((sql) => /^CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\b/i.test(sql))).toBe(false);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('wires cloud RDF storage to the PostgreSQL RDF engine', async () => {
     const cloudConfig = JSON.parse(await readFile(path.join(process.cwd(), 'config/cloud.json'), 'utf8'));
     const engine = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:SolidRdfEngine');
@@ -540,6 +596,70 @@ class StringIntegerPgClient {
   }
 
   public release(): void {}
+}
+
+class InstrumentedPgPool extends StringIntegerPgPool {
+  private shouldFailNextQuadInsert = false;
+  public deadlockFailuresInjected = 0;
+  public transactionBeginsAfterReset = 0;
+  public transactionQueriesAfterReset: string[] = [];
+
+  public failNextQuadInsertWithDeadlock(): void {
+    this.shouldFailNextQuadInsert = true;
+  }
+
+  public resetInstrumentation(): void {
+    this.deadlockFailuresInjected = 0;
+    this.transactionBeginsAfterReset = 0;
+    this.transactionQueriesAfterReset = [];
+  }
+
+  public override async connect(): Promise<InstrumentedPgClient> {
+    const client = await super.connect();
+    return new InstrumentedPgClient(client, this);
+  }
+
+  public consumeQuadInsertDeadlock(): boolean {
+    if (!this.shouldFailNextQuadInsert) {
+      return false;
+    }
+    this.shouldFailNextQuadInsert = false;
+    this.deadlockFailuresInjected += 1;
+    return true;
+  }
+}
+
+class InstrumentedPgClient {
+  private inTransaction = false;
+
+  public constructor(
+    private readonly delegate: StringIntegerPgClient,
+    private readonly pool: InstrumentedPgPool,
+  ) {}
+
+  public async query(sql: string, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
+    const normalized = sql.trim();
+    if (/^BEGIN\b/i.test(normalized)) {
+      this.inTransaction = true;
+      this.pool.transactionBeginsAfterReset += 1;
+    } else if (/^(?:COMMIT|ROLLBACK)\b/i.test(normalized)) {
+      this.inTransaction = false;
+    } else if (this.inTransaction) {
+      this.pool.transactionQueriesAfterReset.push(normalized);
+    }
+
+    if (/INSERT\s+INTO\s+rdf_quads\b/i.test(normalized) && this.pool.consumeQuadInsertDeadlock()) {
+      const error = new Error('deadlock detected') as Error & { code: string };
+      error.code = '40P01';
+      throw error;
+    }
+
+    return this.delegate.query(sql, params);
+  }
+
+  public release(): void {
+    this.delegate.release();
+  }
 }
 
 function stringIntegerRow(row: Record<string, unknown>): Record<string, unknown> {

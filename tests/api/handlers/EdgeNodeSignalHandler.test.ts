@@ -71,9 +71,10 @@ describe('EdgeNodeSignalHandler', () => {
     return mockServer.routes['POST /v1/signal'];
   }
 
-  it('注册 POST /v1/signal 路由', () => {
+  it('注册 POST /v1/signal 和 /v1/signal/heartbeat 路由', () => {
     register();
     expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal', expect.any(Function));
+    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/heartbeat', expect.any(Function));
   });
 
   // ── 认证 ──
@@ -235,6 +236,55 @@ describe('EdgeNodeSignalHandler', () => {
         entrypoint: 'https://tunnel.example/',
       });
     });
+    it('心跳写入 reachability、routes 和 metadata.routes 作为 route registry 输入', async () => {
+      const handler = register();
+      const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+      const req = createMockRequest({
+        reachability: {
+          status: 'direct',
+          lastProbeAt: '2026-06-19T00:00:00.000Z',
+        },
+        routes: [
+          {
+            id: 'loopback-main',
+            kind: 'loopback',
+            targetUrl: 'http://127.0.0.1:5737/',
+            priority: 10,
+            requiresManagedClient: true,
+            visibility: 'local-only',
+            health: 'healthy',
+          },
+        ],
+        metadata: {
+          routes: [
+            {
+              id: 'lan-main',
+              kind: 'lan',
+              targetUrl: 'http://192.168.1.20:5737/',
+              priority: 20,
+              requiresManagedClient: true,
+              visibility: 'authorized-client',
+              health: 'healthy',
+            },
+          ],
+        },
+      }, auth);
+      const res = createMockResponse();
+      await handler(req, res, {});
+
+      expect(res.statusCode).toBe(200);
+      const metadata = repo.updateNodeHeartbeat.mock.calls[0][1];
+      expect(metadata.reachability).toEqual({
+        status: 'direct',
+        lastProbeAt: '2026-06-19T00:00:00.000Z',
+      });
+      expect(metadata.routes).toEqual([
+        expect.objectContaining({ id: 'loopback-main', kind: 'loopback' }),
+        expect.objectContaining({ id: 'lan-main', kind: 'lan' }),
+      ]);
+      expect(res._body().metadata.routes).toHaveLength(2);
+    });
+
   });
 
   // ── pods 更新 ──

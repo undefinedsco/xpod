@@ -130,9 +130,14 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();
+    expect(routes['POST /v1/signal']).toBeTypeOf('function');
+    expect(routes['POST /v1/signal/heartbeat']).toBeTypeOf('function');
     expect(routes['POST /v1/clients/heartbeat']).toBeTypeOf('function');
     expect(routes['POST /v1/threads/coordination/lease']).toBeTypeOf('function');
     expect(routes['POST /_matrix/client/v3/createRoom']).toBeTypeOf('function');
+    expect(routes['GET /v1/nodes/:nodeId/routes']).toBeTypeOf('function');
+    expect(routes['POST /v1/nodes/:nodeId/p2p-sessions']).toBeTypeOf('function');
+    expect(routes['POST /v1/nodes/:nodeId/relay-sessions']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest/*path']).toBeTypeOf('function');
     expect(serve).toHaveBeenCalledWith(expect.objectContaining({
@@ -156,6 +161,9 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();
     expect(routes['POST /v1/clients/heartbeat']).toBeTypeOf('function');
     expect(routes['POST /v1/threads/coordination/lease']).toBeTypeOf('function');
+    expect(routes['GET /v1/nodes/:nodeId/routes']).toBeTypeOf('function');
+    expect(routes['POST /v1/nodes/:nodeId/p2p-sessions']).toBeTypeOf('function');
+    expect(routes['POST /v1/nodes/:nodeId/relay-sessions']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['POST /provision/pods']).toBeUndefined();
   });
