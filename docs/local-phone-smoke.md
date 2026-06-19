@@ -71,47 +71,58 @@ node scripts/local-phone-smoke.cjs --node-id node-0000 --path /alice/a.txt
 path. A private Pod resource such as `/alice/a.txt` may correctly return `401`
 until the user logs in.
 
-## Verify public access, registration, and Pod access
+## Verify public access, Cloud registration, and Local SP Pod access
 
-Use this mode when the phone should access the local node through the public SP
-domain and then register/login. The public domain must already route to this
-local node through Cloud ingress/tunnel.
+Use this mode for the Cloud IdP + Local SP path. The phone registers/logs in on
+Cloud because Cloud is the identity provider. Pod resource reads/writes then go
+to the public SP domain that routes to this local node.
+
+The public SP domain must already route to this local node through public direct
+access, user tunnel, or explicit Cloud ingress/relay.
 
 ```bash
 node scripts/local-phone-smoke.cjs \
-  --public-base-url https://node-0000.undefineds.co/
+  --sp-base-url https://node-0000.undefineds.co/ \
+  --idp-base-url https://id.undefineds.co/
 ```
+
+`--public-base-url` is still accepted as an alias for `--sp-base-url`.
 
 The script prints these important URLs:
 
 ```text
-Public URL:   https://node-0000.undefineds.co/
-Register URL: https://node-0000.undefineds.co/.account/login/password/register/
-Login URL:    https://node-0000.undefineds.co/.account/login/password/
-Account URL:  https://node-0000.undefineds.co/.account/
-Inrupt URL:   https://node-0000.undefineds.co/app/inrupt-smoke.html?...
+Public SP URL: https://node-0000.undefineds.co/
+Cloud IdP URL: https://id.undefineds.co/
+Register URL:  https://id.undefineds.co/.account/login/password/register/
+Login URL:     https://id.undefineds.co/.account/login/password/
+Account URL:   https://id.undefineds.co/.account/
+Inrupt URL:    https://node-0000.undefineds.co/app/inrupt-smoke.html?issuer=https%3A%2F%2Fid.undefineds.co%2F&sp=...
 ```
 
 Validation flow:
 
 1. On the phone, disconnect Wi-Fi if you want to prove external reachability.
-2. Open the printed `Register URL`.
-3. Register the account and create/open the Pod through the normal CSS account
-   flow.
-4. Open the printed `Inrupt URL`.
-5. Log in with the same public issuer.
-6. Set `SP Resource URL` to an actual Pod resource on the same public origin,
-   for example `https://node-0000.undefineds.co/alice/profile/card` or another
-   resource created during registration.
+2. Open the printed `Register URL` on the **Cloud IdP** origin.
+3. Register the account and complete the Cloud account flow.
+4. Open the printed `Inrupt URL`. The page is served from the SP origin, but its
+   `issuer` parameter points at the Cloud IdP.
+5. Log in through Cloud.
+6. Set `SP Resource URL` to an actual Local SP Pod resource, for example
+   `https://node-0000.undefineds.co/alice/profile/card` or another resource
+   created/provisioned for that SP.
 7. Run `session.fetch` from the page.
 
-For this mode, `CSS_BASE_URL` must be the **public** origin, not the LAN address.
-Otherwise CSS/OIDC may generate issuer, redirect, WebID, or Pod URLs containing
-`192.168.x.x`, which will fail from cellular/external networks.
+For this mode, local xpod's `CSS_BASE_URL` must be the **public SP** origin, not
+the LAN address, and `oidcIssuer` must be the **Cloud IdP** origin. Otherwise the
+flow may generate `192.168.x.x` resource IRIs or use the wrong account authority
+from cellular/external networks.
 
-This mode is ordinary browser HTTP(S) through Cloud ingress. It does not require
-P2P hole punching. P2P remains a managed-client optimization for avoiding Cloud
-as the data path after discovery/coordination.
+This mode is ordinary browser HTTP(S) to a public SP route plus Cloud IdP login.
+It does not require P2P hole punching. P2P remains a managed-client optimization
+for avoiding Cloud as the data path after discovery/coordination.
+
+If you omit `--idp-base-url`, the script assumes single-origin standalone mode:
+registration/login and Pod resources are on the same origin.
 
 ## Verify with Inrupt browser SDK
 
@@ -124,8 +135,9 @@ http://192.168.3.161:3000/app/inrupt-smoke.html?issuer=http%3A%2F%2F192.168.3.16
 
 That page runs `@inrupt/solid-client-authn-browser`, logs into the configured
 OIDC issuer, then uses `session.fetch` to access the configured SP resource. For
-public registration validation, use the public `Inrupt URL` printed by
-`--public-base-url` so both `issuer` and `sp` use the external SP origin.
+public Cloud IdP + Local SP validation, use the public `Inrupt URL` printed by
+`--sp-base-url ... --idp-base-url ...` so `issuer` uses Cloud and `sp` uses the
+SP resource origin.
 
 ## Verify basic Pod access through signaling
 
@@ -165,14 +177,15 @@ gateway/ingress -> node tunnel entrypoint -> local resource.
 
 - Do not use `localhost` on the phone. It points to the phone itself.
 - LAN mode requires the phone and Mac to be on the same Wi-Fi.
-- Public registration mode requires the public SP domain to route to this local
-  node before opening the registration URL.
+- Cloud registration mode requires the Cloud IdP URL to be reachable and the public
+  SP domain to route to this local node before fetching SP resources.
 - If Mac can open the LAN URL but the phone cannot, check macOS firewall and
   router/AP client-isolation settings.
 - If the script cannot detect the LAN IP, pass `--ip <address>` explicitly.
 - If port `3000` is occupied, pass `--port <port>` and use the printed URL.
-- If registration/login redirects back to `192.168.x.x`, restart with
-  `--public-base-url https://<sp-domain>/` so `CSS_BASE_URL` is public.
+- If registration/login redirects back to `192.168.x.x`, open the Cloud IdP
+  `Register URL`; if SP resource URLs contain `192.168.x.x`, restart with
+  `--sp-base-url https://<sp-domain>/ --idp-base-url https://<cloud-idp>/`.
 - Browser verification works for normal HTTP(S) routes, including SP-domain
   tunnel/proxy routes. It does not prove P2P hole punching or private
   localhost/LAN route selection behind a canonical URL; those still require a
@@ -180,9 +193,10 @@ gateway/ingress -> node tunnel entrypoint -> local resource.
 
 ## Relation to mobile packages
 
-For basic CSS reachability and public registration, no native app installation is
-required. The browser page under `/app/reachability.html` can be added to the
-phone home screen as a lightweight PWA shortcut.
+For basic CSS reachability, Cloud registration, and SP resource smoke checks, no
+native app installation is required. The browser page under
+`/app/reachability.html` can be added to the phone home screen as a lightweight
+PWA shortcut.
 
 For standard Solid SDK validation, use `/app/inrupt-smoke.html` directly or load
 it inside the minimal Harmony/iOS WebView shells under `harmony/minimal/` and

@@ -52,4 +52,25 @@ describe('local phone smoke script', () => {
     expect(stdout).toContain('Inrupt URL:   https://node-0000.undefineds.co/app/inrupt-smoke.html?issuer=https%3A%2F%2Fnode-0000.undefineds.co%2F&sp=https%3A%2F%2Fnode-0000.undefineds.co%2F.well-known%2Fopenid-configuration');
     expect(stdout).toContain('Command: CSS_BASE_URL=https://node-0000.undefineds.co/ bun');
   });
+
+  it('separates Cloud IdP registration from public SP resource origin', async () => {
+    const { stdout } = await execFileAsync(process.execPath, [
+      'scripts/local-phone-smoke.cjs',
+      '--print',
+      '--ip', '192.0.2.10',
+      '--port', '3456',
+      '--sp-base-url', 'https://node-0000.undefineds.co/',
+      '--idp-base-url', 'https://id.undefineds.co/',
+    ], { cwd: root });
+
+    expect(stdout).toContain('Public SP URL: https://node-0000.undefineds.co/');
+    expect(stdout).toContain('Cloud IdP URL: https://id.undefineds.co/');
+    expect(stdout).toContain('Register URL:  https://id.undefineds.co/.account/login/password/register/');
+    expect(stdout).toContain('Login URL:     https://id.undefineds.co/.account/login/password/');
+    expect(stdout).toContain('Account URL:   https://id.undefineds.co/.account/');
+    expect(stdout).toContain('Inrupt URL:   https://node-0000.undefineds.co/app/inrupt-smoke.html?issuer=https%3A%2F%2Fid.undefineds.co%2F&sp=https%3A%2F%2Fnode-0000.undefineds.co%2F.well-known%2Fopenid-configuration');
+    expect(stdout).toContain('Resource URL: https://node-0000.undefineds.co/.well-known/openid-configuration');
+    expect(stdout).toContain('Command: CSS_BASE_URL=https://node-0000.undefineds.co/ oidcIssuer=https://id.undefineds.co/ bun');
+  });
+
 });
