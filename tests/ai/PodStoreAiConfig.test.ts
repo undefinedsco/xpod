@@ -247,7 +247,7 @@ describe('PodChatKitStore AI Config Operations', () => {
       const providers = [{
         id: 'dashscope',
         displayName: 'DashScope',
-        baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
         proxyUrl: null,
         '@id': 'http://localhost:3000/test/settings/providers/dashscope.ttl',
       }];
@@ -281,7 +281,7 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config).toBeDefined();
       expect(config!.providerId).toBe('dashscope');
       expect(config!.embeddingModel).toBe('text-embedding-v4');
-      expect(config!.baseUrl).toBe('https://dashscope-intl.aliyuncs.com/compatible-mode/v1');
+      expect(config!.baseUrl).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
     });
 
     it('should select the default credential before storage order', async () => {

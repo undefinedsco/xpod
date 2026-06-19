@@ -16,7 +16,7 @@ const DEFAULT_PROVIDERS: ProviderInfo[] = [
     id: DEFAULT_EMBEDDING_PROVIDER_ID,
     name: 'DashScope',
     baseUrl: DEFAULT_EMBEDDING_BASE_URL,
-    aliases: ['qwen', 'alibaba'],
+    aliases: ['qwen', 'alibaba', 'dashscope-cn'],
     defaultEmbeddingModel: DEFAULT_EMBEDDING_MODEL_ID,
     embeddingModels: [
       { id: DEFAULT_EMBEDDING_MODEL_ID, dimension: 1024, maxTokens: 8192, maxBatchSize: 10 },

@@ -61,7 +61,7 @@ describe('ProviderRegistryImpl', () => {
       const provider = await registry.getProvider('dashscope');
 
       expect(provider).not.toBeNull();
-      expect(provider!.baseUrl).toBe('https://dashscope-intl.aliyuncs.com/compatible-mode/v1');
+      expect(provider!.baseUrl).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
       expect(provider!.embeddingModels).toContainEqual(expect.objectContaining({
         id: 'text-embedding-v4',
         dimension: 1024,

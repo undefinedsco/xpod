@@ -30,7 +30,7 @@ L0 文件级摘要全量存在
 ```text
 provider: dashscope
 model: text-embedding-v4
-baseUrl: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
 dimension: 1024
 maxBatchSize: 10
 maxTokensPerInput: 8192
