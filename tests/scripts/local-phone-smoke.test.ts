@@ -23,4 +23,16 @@ describe('local phone smoke script', () => {
     expect(stdout).toContain('Inrupt URL:   http://192.0.2.10:3456/app/inrupt-smoke.html?issuer=http%3A%2F%2F192.0.2.10%3A3456%2F&sp=http%3A%2F%2F192.0.2.10%3A3456%2Falice%2Fa.txt');
     expect(stdout).toContain('Resource URL: http://192.0.2.10:3456/alice/a.txt');
   });
+
+  it('defaults phone reachability checks to a public CSS discovery endpoint', async () => {
+    const { stdout } = await execFileAsync(process.execPath, [
+      'scripts/local-phone-smoke.cjs',
+      '--print',
+      '--ip', '192.0.2.10',
+      '--port', '3456',
+    ], { cwd: root });
+
+    expect(stdout).toContain('Verifier URL: http://192.0.2.10:3456/app/reachability.html?path=%2F.well-known%2Fopenid-configuration');
+    expect(stdout).toContain('Resource URL: http://192.0.2.10:3456/.well-known/openid-configuration');
+  });
 });

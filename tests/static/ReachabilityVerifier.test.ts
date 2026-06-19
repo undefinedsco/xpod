@@ -14,9 +14,10 @@ describe('browser reachability verifier asset', () => {
 
     expect(html).toContain('Xpod Reachability Verifier');
     expect(html).toContain('id="resourcePath"');
-    expect(html).toContain('/alice/a.txt');
+    expect(html).toContain('/.well-known/openid-configuration');
     expect(html).toContain('fetch(targetUrl.href');
     expect(html).toContain('window.location.origin');
+    expect(html).toContain('CSS 可达，但目标资源需要登录');
     expect(html).not.toContain('/v1/relay/');
   });
 

@@ -13,7 +13,7 @@ function parseArgs(argv) {
     env: '.env.local',
     config: 'config/local.json',
     ip: process.env.XPOD_PHONE_SMOKE_IP || '',
-    path: process.env.XPOD_PHONE_SMOKE_PATH || '/alice/a.txt',
+    path: process.env.XPOD_PHONE_SMOKE_PATH || '/.well-known/openid-configuration',
     nodeId: process.env.XPOD_PHONE_SMOKE_NODE_ID || '',
     print: false,
     help: false,
@@ -43,7 +43,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  console.log(`Usage: node scripts/local-phone-smoke.cjs [options]\n\nStarts xpod local so a phone on the same Wi-Fi can verify local reachability.\n\nOptions:\n  --ip <address>      LAN IPv4 address to advertise. Auto-detected by default.\n  --port, -p <port>   Gateway port. Default: 3000.\n  --path <path>       Resource path prefilled in the browser verifier. Default: /alice/a.txt.\n  --node-id <id>      Node ID prefilled in the signaling verifier.\n  --env, -e <file>    Env file passed to xpod. Default: .env.local.\n  --config, -c <file> Config file passed to xpod. Default: config/local.json.\n  --print             Print command and URLs without starting xpod.\n  --help, -h          Show this help.\n`);
+  console.log(`Usage: node scripts/local-phone-smoke.cjs [options]\n\nStarts xpod local so a phone on the same Wi-Fi can verify local reachability.\n\nOptions:\n  --ip <address>      LAN IPv4 address to advertise. Auto-detected by default.\n  --port, -p <port>   Gateway port. Default: 3000.\n  --path <path>       Resource path prefilled in the browser verifier. Default: /.well-known/openid-configuration.\n  --node-id <id>      Node ID prefilled in the signaling verifier.\n  --env, -e <file>    Env file passed to xpod. Default: .env.local.\n  --config, -c <file> Config file passed to xpod. Default: config/local.json.\n  --print             Print command and URLs without starting xpod.\n  --help, -h          Show this help.\n`);
 }
 
 function detectLanIp() {
@@ -155,7 +155,7 @@ function main() {
 
 function normalizeResourcePath(value) {
   const trimmed = String(value || '').trim();
-  if (!trimmed) return '/alice/a.txt';
+  if (!trimmed) return '/.well-known/openid-configuration';
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 

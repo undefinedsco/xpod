@@ -78,6 +78,7 @@
     }
     .ok { color: #86efac; }
     .fail { color: #fca5a5; }
+    .warn { color: #fde68a; }
     .hint { font-size: 14px; color: #94a3b8; }
   </style>
 </head>
@@ -85,8 +86,8 @@
   <main>
     <h1>Xpod Reachability Verifier</h1>
     <p>
-      这个页面用于手机或浏览器最小验证：从当前 SP 域名发起同源请求，确认
-      <code>http(s)://当前域名/alice/a.txt</code> 这类资源能否经 tunnel / proxy 取回。
+      这个页面用于手机或浏览器最小验证：从当前 SP 域名发起同源请求，默认读取
+      <code>/.well-known/openid-configuration</code> 这个公开 CSS discovery endpoint。
       它不使用 Cloud API relay 分享链接。
     </p>
     <p class="hint">
@@ -94,7 +95,7 @@
     </p>
 
     <label for="resourcePath">资源路径或同源 URL</label>
-    <input id="resourcePath" autocomplete="off" inputmode="url" value="/alice/a.txt">
+    <input id="resourcePath" autocomplete="off" inputmode="url" value="/.well-known/openid-configuration">
 
     <div class="actions">
       <button id="fetchButton" type="button">Fetch 验证</button>
@@ -114,7 +115,7 @@
   </main>
 
   <script>
-    const DEFAULT_PATH = '/alice/a.txt';
+    const DEFAULT_PATH = '/.well-known/openid-configuration';
     const resourcePath = document.getElementById('resourcePath');
     const originText = document.getElementById('origin');
     const targetText = document.getElementById('target');
@@ -124,7 +125,7 @@
 
     function setStatus(message, ok) {
       statusText.textContent = message;
-      statusText.className = ok === true ? 'ok' : ok === false ? 'fail' : '';
+      statusText.className = ok === true ? 'ok' : ok === false ? 'fail' : ok === 'warn' ? 'warn' : '';
     }
 
     function resolveTargetUrl() {
@@ -161,10 +162,16 @@
         const response = await fetch(targetUrl.href, { method: 'GET', cache: 'no-store', credentials: 'include' });
         const elapsed = Math.round(performance.now() - startedAt);
         const text = await response.text();
+        const needsLogin = response.status === 401 || response.status === 403;
         const headers = Array.from(response.headers.entries())
           .map(([name, value]) => `${name}: ${value}`)
           .join('\n');
-        setStatus(`${response.status} ${response.statusText || ''}`.trim(), response.ok);
+        setStatus(
+          needsLogin
+            ? `${response.status} ${response.statusText || ''}（CSS 可达，但目标资源需要登录）`.trim()
+            : `${response.status} ${response.statusText || ''}`.trim(),
+          needsLogin ? 'warn' : response.ok,
+        );
         durationText.textContent = `${elapsed} ms`;
         output.textContent = [
           `URL: ${targetUrl.href}`,
