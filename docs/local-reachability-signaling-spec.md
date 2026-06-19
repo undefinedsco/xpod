@@ -173,7 +173,7 @@ payload 继续承载：
 ### Route 获取：新增
 
 ```http
-GET /v1/nodes/{nodeId}/routes
+GET /v1/signal/nodes/{nodeId}/routes
 Authorization: Bearer <clientToken>
 ```
 
@@ -197,7 +197,7 @@ Authorization: Bearer <clientToken>
 ### P2P 会话：新增
 
 ```http
-POST /v1/nodes/{nodeId}/p2p-sessions
+POST /v1/signal/nodes/{nodeId}/p2p-sessions
 Authorization: Bearer <clientToken>
 Content-Type: application/json
 
@@ -215,7 +215,7 @@ Content-Type: application/json
   "sessionId": "p2p_...",
   "expiresAt": "2026-06-19T00:05:00Z",
   "nodeCandidates": [],
-  "signalingUrl": "https://api.example.com/v1/p2p-sessions/p2p_..."
+  "signalingUrl": "https://api.example.com/v1/signal/nodes/node-abc/p2p-sessions/p2p_..."
 }
 ```
 
@@ -225,10 +225,10 @@ Content-Type: application/json
 - 会话必须短 TTL，可撤销，可审计。
 - 失败后回落到下一候选 route，不阻塞本地可用性。
 
-### Relay 会话：新增但默认关闭
+### Relay / Tunnel 会话：新增但默认关闭
 
 ```http
-POST /v1/nodes/{nodeId}/relay-sessions
+POST /v1/signal/nodes/{nodeId}/relay-sessions
 Authorization: Bearer <clientToken>
 ```
 
@@ -244,6 +244,24 @@ Authorization: Bearer <clientToken>
 - `bandwidthLimitBytes` 或 `bandwidthLimitBps`
 - `reason`
 - `auditId`
+- `route.targetUrl`：canonical SP URL，例如 `https://node-abc.pods.example.com/`。
+
+这里的 session 是控制面授权和审计记录，不产生 Cloud API 分享链接。外部验收访问仍使用 SP 域名本身：
+
+```http
+GET http://node-0000.undefineds.co/alice/a.txt
+Host: node-0000.undefineds.co
+```
+
+数据面由普通 SP 域名入口承载：DNS / ingress 根据 `Host` 命中 Cloud gateway，`EdgeNodeProxyHttpHandler` 通过 `cluster_node.subdomain` 找到节点；当节点是 `access_mode=proxy` 且 metadata 里存在 `tunnel.entrypoint` 或 `managedTunnel.endpoint` 时，gateway 将原始资源路径转发到该 tunnel entrypoint。也就是说，浏览器看到和分享的始终是 SP 域名，不是 `/v1/relay/...` API URL。
+
+当前实现边界：
+
+- `/v1/signal/...` 只负责 route、session、候选和审计等控制面，不承载浏览器资源 URL。
+- 数据面入口是 `http(s)://{node-subdomain}/{pod-resource-path}`，不是 `/v1/relay/...`。
+- Cloud gateway 不把 loopback、LAN、managed-only route 暴露给普通浏览器；它只使用节点显式上报并已启用的 tunnel/proxy entrypoint。
+- 会话过期、限额和撤销应影响该节点的 tunnel/proxy 可用状态，而不是生成另一套资源 URL。
+- 这不是 NAT 打洞本身；打洞仍由 signaling 协调。外部浏览器验收依赖 SP 域名入口和可用 tunnel/proxy entrypoint。
 
 ## Solid 兼容规则
 
@@ -284,7 +302,7 @@ Authorization: Bearer <clientToken>
 缺口：
 
 1. 统一 `RouteSet` DTO 和持久化位置。
-2. `GET /v1/nodes/{nodeId}/routes` 查询与权限过滤。
+2. `GET /v1/signal/nodes/{nodeId}/routes` 查询与权限过滤。
 3. Desktop / CLI route selector 和 canonical fetch adapter。
 4. P2P signaling session API 与 native client 实现。
 5. `xpod-relay` 的显式授权、限额、TTL 和审计。

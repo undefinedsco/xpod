@@ -336,7 +336,7 @@ export class EdgeNodeRepository {
       nodeId: String(row.id),
       accessMode: row.access_mode ? String(row.access_mode) : undefined,
       publicUrl: row.public_url ? String(row.public_url) : undefined,
-      metadata: row.metadata ?? null,
+      metadata: parseJsonRecord(row.metadata),
       subdomain: row.subdomain ? String(row.subdomain) : undefined,
     };
   }

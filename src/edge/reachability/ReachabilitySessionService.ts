@@ -52,7 +52,7 @@ export class ReachabilitySessionService {
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       nodeCandidates: routeSet.routes,
-      signalingUrl: new URL(`/v1/p2p-sessions/${sessionId}`, this.options.apiBaseUrl).toString(),
+      signalingUrl: new URL(`/v1/signal/nodes/${encodeURIComponent(nodeId)}/p2p-sessions/${sessionId}`, this.options.apiBaseUrl).toString(),
       capabilities: normalizeStringArray(request.capabilities),
       candidates: Array.isArray(request.candidates) ? request.candidates : [],
     };
@@ -82,7 +82,7 @@ export class ReachabilitySessionService {
       nodeId,
       canonicalUrl,
       kind: 'xpod-relay',
-      targetUrl: new URL(`/v1/relay-sessions/${sessionId}/proxy/`, this.options.apiBaseUrl).toString(),
+      targetUrl: canonicalUrl,
       priority: 90,
       requiresManagedClient: false,
       visibility: 'public',

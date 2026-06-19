@@ -28,7 +28,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     randomId: options.randomId,
   });
 
-  server.get('/v1/nodes/:nodeId/routes', async (request, response, params) => {
+  server.get('/v1/signal/nodes/:nodeId/routes', async (request, response, params) => {
     const access = resolveAccess(request, params.nodeId);
     if (!access.allowed) {
       sendJson(response, access.status, { error: access.error });
@@ -52,7 +52,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     }
   });
 
-  server.post('/v1/nodes/:nodeId/p2p-sessions', async (request, response, params) => {
+  server.post('/v1/signal/nodes/:nodeId/p2p-sessions', async (request, response, params) => {
     const access = resolveSessionAccess(request, params.nodeId);
     if (!access.allowed) {
       sendJson(response, access.status, { error: access.error });
@@ -81,7 +81,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     }
   });
 
-  server.post('/v1/nodes/:nodeId/relay-sessions', async (request, response, params) => {
+  server.post('/v1/signal/nodes/:nodeId/relay-sessions', async (request, response, params) => {
     const access = resolveSessionAccess(request, params.nodeId);
     if (!access.allowed) {
       sendJson(response, access.status, { error: access.error });

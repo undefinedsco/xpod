@@ -22,7 +22,7 @@ interface EdgeNodeProxyHttpHandlerOptions {
 
 interface ProxyNode {
   nodeId: string;
-  metadata?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | string | null;
 }
 
 export class EdgeNodeProxyHttpHandler extends HttpHandler {
@@ -74,7 +74,7 @@ export class EdgeNodeProxyHttpHandler extends HttpHandler {
   }
 
   private async forwardRequest(node: ProxyNode, request: IncomingMessage, response: HttpResponse): Promise<void> {
-    const metadata = node.metadata ?? undefined;
+    const metadata = this.normalizeMetadata(node.metadata);
     const upstream = this.resolveUpstream(metadata);
     if (!upstream) {
       throw new InternalServerError('Edge node tunnel is not ready.');
@@ -137,6 +137,25 @@ export class EdgeNodeProxyHttpHandler extends HttpHandler {
       }
     }
     return undefined;
+  }
+
+  private normalizeMetadata(value: unknown): Record<string, unknown> | undefined {
+    if (!value) {
+      return undefined;
+    }
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        return this.isRecord(parsed) ? parsed : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return this.isRecord(value) ? value : undefined;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
   }
 
   private buildHeaders(request: IncomingMessage, original: URL, upstream: URL): Headers {

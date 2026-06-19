@@ -10,14 +10,25 @@ function createMockServer(): { server: ApiServer; routes: Record<string, Functio
   const server = {
     get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
     post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+    all: vi.fn((path: string, handler: Function) => { routes[`ALL ${path}`] = handler; }),
   } as unknown as ApiServer;
   return { server, routes };
 }
 
-function createMockRequest(body: object | undefined, auth?: any): AuthenticatedRequest {
+function createMockRequest(
+  body: object | undefined,
+  auth?: any,
+  options: {
+    method?: string;
+    url?: string;
+    headers?: Record<string, string>;
+  } = {},
+): AuthenticatedRequest {
   return {
     auth,
-    headers: {},
+    method: options.method ?? 'GET',
+    url: options.url ?? '/',
+    headers: options.headers ?? {},
     setEncoding: vi.fn(),
     on: vi.fn((event: string, cb: Function) => {
       if (event === 'data' && body !== undefined) cb(JSON.stringify(body));
@@ -26,16 +37,29 @@ function createMockRequest(body: object | undefined, auth?: any): AuthenticatedR
   } as unknown as AuthenticatedRequest;
 }
 
-function createMockResponse(): ServerResponse & { _body: () => any } {
+function createMockResponse(): ServerResponse & { _body: () => any; _text: () => string; _header: (name: string) => unknown } {
+  const headers = new Map<string, unknown>();
   const res = {
     statusCode: 0,
-    setHeader: vi.fn(),
+    setHeader: vi.fn((name: string, value: unknown) => {
+      headers.set(name.toLowerCase(), value);
+    }),
     end: vi.fn(),
     _body() {
       const raw = (res.end as any).mock.calls[0]?.[0];
       return raw ? JSON.parse(raw) : undefined;
     },
-  } as unknown as ServerResponse & { _body: () => any };
+    _text() {
+      const raw = (res.end as any).mock.calls[0]?.[0];
+      if (Buffer.isBuffer(raw)) {
+        return raw.toString('utf8');
+      }
+      return raw ? String(raw) : '';
+    },
+    _header(name: string) {
+      return headers.get(name.toLowerCase());
+    },
+  } as unknown as ServerResponse & { _body: () => any; _text: () => string; _header: (name: string) => unknown };
   return res;
 }
 
@@ -100,9 +124,10 @@ describe('ReachabilityHandler', () => {
 
   it('registers route and session endpoints', () => {
     register();
-    expect(mockServer.server.get).toHaveBeenCalledWith('/v1/nodes/:nodeId/routes', expect.any(Function));
-    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/nodes/:nodeId/p2p-sessions', expect.any(Function));
-    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/nodes/:nodeId/relay-sessions', expect.any(Function));
+    expect(mockServer.server.get).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/routes', expect.any(Function));
+    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/p2p-sessions', expect.any(Function));
+    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/relay-sessions', expect.any(Function));
+    expect(mockServer.server.all).not.toHaveBeenCalled();
   });
 
   it('node auth can read its own managed route set including loopback', async () => {
@@ -111,7 +136,7 @@ describe('ReachabilityHandler', () => {
     const req = createMockRequest(undefined, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['GET /v1/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(200);
     expect(res._body().routes.map((route: any) => route.kind)).toEqual(['loopback', 'public-direct']);
@@ -123,7 +148,7 @@ describe('ReachabilityHandler', () => {
     const req = createMockRequest(undefined, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['GET /v1/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(200);
     expect(res._body().routes.map((route: any) => route.kind)).toEqual(['public-direct']);
@@ -134,7 +159,7 @@ describe('ReachabilityHandler', () => {
     const req = createMockRequest(undefined);
     const res = createMockResponse();
 
-    await mockServer.routes['GET /v1/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(200);
     expect(res._body().routes.map((route: any) => route.kind)).toEqual(['public-direct']);
@@ -146,7 +171,7 @@ describe('ReachabilityHandler', () => {
     const req = createMockRequest(undefined, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['GET /v1/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/routes'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(403);
   });
@@ -161,13 +186,13 @@ describe('ReachabilityHandler', () => {
     }, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['POST /v1/nodes/:nodeId/p2p-sessions'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/p2p-sessions'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(201);
     expect(res._body()).toMatchObject({
       sessionId: 'p2p_fixed-id',
       expiresAt: '2026-06-19T00:05:00.000Z',
-      signalingUrl: 'https://api.example/v1/p2p-sessions/p2p_fixed-id',
+      signalingUrl: 'https://api.example/v1/signal/nodes/node-1/p2p-sessions/p2p_fixed-id',
       capabilities: ['tcp-punch'],
       candidates: [{ host: '198.51.100.10', port: 12345 }],
     });
@@ -185,7 +210,7 @@ describe('ReachabilityHandler', () => {
     const req = createMockRequest({}, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['POST /v1/nodes/:nodeId/relay-sessions'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/relay-sessions'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(400);
     expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
@@ -201,7 +226,7 @@ describe('ReachabilityHandler', () => {
     }, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['POST /v1/nodes/:nodeId/relay-sessions'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/relay-sessions'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(201);
     expect(res._body()).toMatchObject({
@@ -213,6 +238,7 @@ describe('ReachabilityHandler', () => {
       route: expect.objectContaining({
         kind: 'xpod-relay',
         requiresManagedClient: false,
+        targetUrl: 'https://node-1.pods.example/',
         visibility: 'public',
       }),
     });

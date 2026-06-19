@@ -18,7 +18,7 @@
 - Create `src/edge/reachability/ManagedRouteSelector.ts`: chooses candidate routes by priority and probe result.
 - Create `src/edge/reachability/CanonicalFetch.ts`: creates a fetch wrapper that sends transport requests to `targetUrl` while preserving canonical headers.
 - Create `src/edge/reachability/index.ts`: exports the reachability API surface.
-- Create `src/api/handlers/ReachabilityHandler.ts`: exposes `GET /v1/nodes/:nodeId/routes`, `POST /v1/nodes/:nodeId/p2p-sessions`, and `POST /v1/nodes/:nodeId/relay-sessions`.
+- Create `src/api/handlers/ReachabilityHandler.ts`: exposes `GET /v1/signal/nodes/:nodeId/routes`, `POST /v1/signal/nodes/:nodeId/p2p-sessions`, and `POST /v1/signal/nodes/:nodeId/relay-sessions`.
 - Modify `src/api/handlers/EdgeNodeSignalHandler.ts`: persist `reachability` and normalized `routes`/route candidates from heartbeats.
 - Modify `src/api/container/routes.ts`: register reachability routes in shared API routes.
 - Modify `src/index.ts`: export reachability utilities.
@@ -91,7 +91,7 @@ Expected: PASS.
 - [x] **Step 1: Write failing API tests**
 
 Tests should capture registered handlers and assert:
-- `GET /v1/nodes/:nodeId/routes` returns public-filtered route set for unauthenticated/public route if marked public, or authorized route set for authenticated caller.
+- `GET /v1/signal/nodes/:nodeId/routes` returns public-filtered route set for unauthenticated/public route if marked public, or authorized route set for authenticated caller.
 - Node auth can get its own managed route set but not another node.
 - P2P session returns `sessionId`, `expiresAt`, `nodeCandidates`, `signalingUrl`, and persists metadata under `reachabilitySessions.p2p`.
 - Relay session without `reason` or explicit authorization returns 400; valid relay returns TTL/limit/audit fields and persists metadata under `reachabilitySessions.relay`.
@@ -102,9 +102,9 @@ Expected: FAIL because handler/service are missing.
 - [x] **Step 2: Implement API handler and session service**
 
 Register:
-- `GET /v1/nodes/:nodeId/routes`
-- `POST /v1/nodes/:nodeId/p2p-sessions`
-- `POST /v1/nodes/:nodeId/relay-sessions`
+- `GET /v1/signal/nodes/:nodeId/routes`
+- `POST /v1/signal/nodes/:nodeId/p2p-sessions`
+- `POST /v1/signal/nodes/:nodeId/relay-sessions`
 
 Use node auth self-access for managed routes. Use Solid/service auth as same-account/authorized for now; do not expose private routes to unauthenticated calls. Session TTL defaults: P2P 5 minutes, relay 15 minutes. Relay requires `reason` and sets conservative default `bandwidthLimitBytes`.
 
@@ -186,7 +186,7 @@ Completed on 2026-06-19.
 Implemented:
 - Reachability route model, route derivation, managed route selector, and canonical fetch adapter.
 - Signal heartbeat metadata ingestion for `reachability` and normalized route candidates.
-- Shared API routes for `GET /v1/nodes/:nodeId/routes`, `POST /v1/nodes/:nodeId/p2p-sessions`, and `POST /v1/nodes/:nodeId/relay-sessions`.
+- Shared API routes for `GET /v1/signal/nodes/:nodeId/routes`, `POST /v1/signal/nodes/:nodeId/p2p-sessions`, and `POST /v1/signal/nodes/:nodeId/relay-sessions`.
 - Short-lived P2P/relay control-plane session persistence in `cluster_node.metadata.reachabilitySessions`.
 - Minimal Harmony/OpenHarmony verifier source package under `harmony/minimal/`.
 - PostgreSQL RDF write deadlock hardening discovered during integration verification: no transaction-local term DDL, no-op term conflict updates removed, and retry added for `40P01`/`40001` write failures.

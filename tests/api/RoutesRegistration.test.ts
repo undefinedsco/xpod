@@ -135,9 +135,14 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['POST /v1/clients/heartbeat']).toBeTypeOf('function');
     expect(routes['POST /v1/threads/coordination/lease']).toBeTypeOf('function');
     expect(routes['POST /_matrix/client/v3/createRoom']).toBeTypeOf('function');
-    expect(routes['GET /v1/nodes/:nodeId/routes']).toBeTypeOf('function');
-    expect(routes['POST /v1/nodes/:nodeId/p2p-sessions']).toBeTypeOf('function');
-    expect(routes['POST /v1/nodes/:nodeId/relay-sessions']).toBeTypeOf('function');
+    expect(routes['GET /v1/signal/nodes/:nodeId/routes']).toBeTypeOf('function');
+    expect(routes['POST /v1/signal/nodes/:nodeId/p2p-sessions']).toBeTypeOf('function');
+    expect(routes['POST /v1/signal/nodes/:nodeId/relay-sessions']).toBeTypeOf('function');
+    expect(routes['ALL /v1/relay/nodes/:nodeId/sessions/:sessionId/proxy']).toBeUndefined();
+    expect(routes['ALL /v1/relay/nodes/:nodeId/sessions/:sessionId/proxy/*path']).toBeUndefined();
+    expect(routes['GET /v1/nodes/:nodeId/routes']).toBeUndefined();
+    expect(routes['POST /v1/nodes/:nodeId/p2p-sessions']).toBeUndefined();
+    expect(routes['POST /v1/nodes/:nodeId/relay-sessions']).toBeUndefined();
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['ALL /api/inngest/*path']).toBeTypeOf('function');
     expect(serve).toHaveBeenCalledWith(expect.objectContaining({
@@ -161,9 +166,14 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();
     expect(routes['POST /v1/clients/heartbeat']).toBeTypeOf('function');
     expect(routes['POST /v1/threads/coordination/lease']).toBeTypeOf('function');
-    expect(routes['GET /v1/nodes/:nodeId/routes']).toBeTypeOf('function');
-    expect(routes['POST /v1/nodes/:nodeId/p2p-sessions']).toBeTypeOf('function');
-    expect(routes['POST /v1/nodes/:nodeId/relay-sessions']).toBeTypeOf('function');
+    expect(routes['GET /v1/signal/nodes/:nodeId/routes']).toBeTypeOf('function');
+    expect(routes['POST /v1/signal/nodes/:nodeId/p2p-sessions']).toBeTypeOf('function');
+    expect(routes['POST /v1/signal/nodes/:nodeId/relay-sessions']).toBeTypeOf('function');
+    expect(routes['ALL /v1/relay/nodes/:nodeId/sessions/:sessionId/proxy']).toBeUndefined();
+    expect(routes['ALL /v1/relay/nodes/:nodeId/sessions/:sessionId/proxy/*path']).toBeUndefined();
+    expect(routes['GET /v1/nodes/:nodeId/routes']).toBeUndefined();
+    expect(routes['POST /v1/nodes/:nodeId/p2p-sessions']).toBeUndefined();
+    expect(routes['POST /v1/nodes/:nodeId/relay-sessions']).toBeUndefined();
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['POST /provision/pods']).toBeUndefined();
   });

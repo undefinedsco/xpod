@@ -91,6 +91,39 @@ describe('EdgeNodeRepository', () => {
     });
   });
 
+  it('findNodeBySubdomain parses JSON text metadata for tunnel routing', async () => {
+    const { repo, execute } = createRepo();
+    execute.mockResolvedValueOnce({
+      rows: [ {
+        id: 'node-0000',
+        access_mode: 'proxy',
+        public_url: null,
+        subdomain: 'node-0000.undefineds.co',
+        metadata: JSON.stringify({
+          tunnel: {
+            status: 'active',
+            entrypoint: 'https://proxy-internal.example/node-0000/',
+          },
+        }),
+      } ],
+    });
+
+    const record = await repo.findNodeBySubdomain('node-0000.undefineds.co');
+
+    expect(record).toEqual({
+      nodeId: 'node-0000',
+      accessMode: 'proxy',
+      publicUrl: undefined,
+      subdomain: 'node-0000.undefineds.co',
+      metadata: {
+        tunnel: {
+          status: 'active',
+          entrypoint: 'https://proxy-internal.example/node-0000/',
+        },
+      },
+    });
+  });
+
   it('matchesToken 校验哈希是否匹配', () => {
     const { repo } = createRepo();
     const token = 'secret';

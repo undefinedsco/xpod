@@ -86,4 +86,37 @@ describe('EdgeNodeProxyHttpHandler', () => {
     );
     expect(response.getBody()).toBe('ok');
   });
+
+  it('routes external SP domain resource requests through the node tunnel when metadata is stored as JSON text', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(new Response('file-body', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = buildHandler(true, fetchSpy as any);
+    findNodeBySubdomainMock.mockResolvedValueOnce({
+      nodeId: 'node-0000',
+      accessMode: 'proxy',
+      metadata: JSON.stringify({
+        tunnel: {
+          status: 'active',
+          entrypoint: 'https://proxy-internal.example/node-0000/',
+        },
+      }),
+    });
+    const request = createRequest('GET', 'node-0000.undefineds.co', '/alice/a.txt?download=1');
+    const response = new MockResponse();
+    const finished = new Promise((resolve) => response.on('finish', resolve));
+
+    await handler.handle({ request, response: response as unknown as HttpResponse });
+    await finished;
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://proxy-internal.example/alice/a.txt?download=1',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    const [, init] = fetchSpy.mock.calls[0];
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-forwarded-host')).toBe('node-0000.undefineds.co');
+    expect(response.getBody()).toBe('file-body');
+  });
 });
