@@ -25,17 +25,31 @@ X-Node-Id: <nodeId>
 
 ## Build
 
-This repository machine does not include `hvigor` / DevEco Studio, so the committed project is source-only.
+This project is a minimal DevEco/Hvigor project using model version `26.0.0`.
 
-To build a real `.hap`:
+To build a real `.hap`, the machine must have:
 
-1. Open this `harmony/minimal` directory in DevEco Studio.
-2. Let DevEco sync the Harmony SDK and hvigor dependencies.
-3. Build the `entry` module.
-4. Install the generated HAP on a Harmony/OpenHarmony device.
+- DevEco Studio or HarmonyOS command line tools with Hvigor.
+- `DEVECO_SDK_HOME` pointing to the HarmonyOS SDK directory.
+- A usable JDK on `PATH`.
 
-If `hvigorw` is available after DevEco sync, you can also run from this directory:
+From the repository root:
 
 ```bash
-./hvigorw assembleHap --mode module -p module=entry@default
+node scripts/build-harmony-minimal.cjs
 ```
+
+If Hvigor is not on `PATH`, set:
+
+```bash
+XPOD_HVIGOR_CLI=/path/to/hvigor node scripts/build-harmony-minimal.cjs
+```
+
+The script runs `assembleHap --mode module -p module=entry@default` and copies the generated `.hap` into `.artifacts/harmony-minimal/`.
+
+## Current local packaging status
+
+This repository machine can run a registry-provided Hvigor CLI, but it does not
+have a valid HarmonyOS SDK (`DEVECO_SDK_HOME`) or usable JDK installed. Therefore
+the local artifact is an importable source verifier package, not a signed or
+installable `.hap`.
