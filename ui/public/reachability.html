@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="manifest" href="/app/reachability.webmanifest">
+  <link rel="icon" href="/app/reachability.svg" type="image/svg+xml">
+  <title>Xpod Reachability Verifier</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 24px;
+      background: radial-gradient(circle at top, #1e3a8a 0, #0f172a 42%, #020617 100%);
+    }
+    main {
+      width: min(720px, 100%);
+      margin: 0 auto;
+      padding: 24px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 20px;
+      background: rgba(15, 23, 42, 0.84);
+      box-shadow: 0 24px 80px rgba(2, 6, 23, 0.42);
+    }
+    h1 { margin: 0 0 8px; font-size: clamp(26px, 6vw, 40px); }
+    p { line-height: 1.65; color: #cbd5e1; }
+    label { display: block; margin: 20px 0 8px; font-weight: 700; }
+    input {
+      width: 100%;
+      min-height: 48px;
+      padding: 12px 14px;
+      border: 1px solid #475569;
+      border-radius: 12px;
+      background: #020617;
+      color: #f8fafc;
+      font: inherit;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0 22px; }
+    button, a.button {
+      min-height: 44px;
+      padding: 10px 16px;
+      border: 0;
+      border-radius: 999px;
+      background: #38bdf8;
+      color: #082f49;
+      font-weight: 800;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    button.secondary, a.secondary { background: #334155; color: #e2e8f0; }
+    dl {
+      display: grid;
+      grid-template-columns: minmax(96px, auto) 1fr;
+      gap: 8px 14px;
+      padding: 14px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.78);
+    }
+    dt { color: #94a3b8; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    pre {
+      min-height: 140px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      padding: 14px;
+      border-radius: 14px;
+      background: #020617;
+      color: #e2e8f0;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+    }
+    .ok { color: #86efac; }
+    .fail { color: #fca5a5; }
+    .hint { font-size: 14px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Xpod Reachability Verifier</h1>
+    <p>
+      这个页面用于手机或浏览器最小验证：从当前 SP 域名发起同源请求，确认
+      <code>http(s)://当前域名/alice/a.txt</code> 这类资源能否经 tunnel / proxy 取回。
+      它不使用 Cloud API relay 分享链接。
+    </p>
+    <p class="hint">
+      浏览器可以验证普通 HTTP(S) 数据面；P2P 打洞、localhost/LAN 私有路由仍需要 Desktop / CLI / Native managed client。
+    </p>
+
+    <label for="resourcePath">资源路径或同源 URL</label>
+    <input id="resourcePath" autocomplete="off" inputmode="url" value="/alice/a.txt">
+
+    <div class="actions">
+      <button id="fetchButton" type="button">Fetch 验证</button>
+      <button id="openButton" class="secondary" type="button">直接打开资源</button>
+      <button id="copyButton" class="secondary" type="button">复制资源 URL</button>
+    </div>
+
+    <dl>
+      <dt>当前 Origin</dt><dd id="origin"></dd>
+      <dt>目标 URL</dt><dd id="target"></dd>
+      <dt>结果</dt><dd id="status">未验证</dd>
+      <dt>耗时</dt><dd id="duration">-</dd>
+    </dl>
+
+    <h2>响应预览</h2>
+    <pre id="output">点击 “Fetch 验证” 后显示状态、响应头和前 8 KiB 内容。</pre>
+  </main>
+
+  <script>
+    const DEFAULT_PATH = '/alice/a.txt';
+    const resourcePath = document.getElementById('resourcePath');
+    const originText = document.getElementById('origin');
+    const targetText = document.getElementById('target');
+    const statusText = document.getElementById('status');
+    const durationText = document.getElementById('duration');
+    const output = document.getElementById('output');
+
+    function setStatus(message, ok) {
+      statusText.textContent = message;
+      statusText.className = ok === true ? 'ok' : ok === false ? 'fail' : '';
+    }
+
+    function resolveTargetUrl() {
+      const raw = resourcePath.value.trim() || DEFAULT_PATH;
+      const targetUrl = new URL(raw, `${window.location.origin}/`);
+      if (targetUrl.origin !== window.location.origin) {
+        throw new Error('浏览器 fetch 验证只支持同源 URL；跨域测试请点击“直接打开资源”。');
+      }
+      return targetUrl;
+    }
+
+    function syncTarget() {
+      try {
+        const targetUrl = resolveTargetUrl();
+        targetText.textContent = targetUrl.href;
+        return targetUrl;
+      } catch (error) {
+        targetText.textContent = error.message;
+        return null;
+      }
+    }
+
+    async function verifyFetch() {
+      const targetUrl = syncTarget();
+      if (!targetUrl) {
+        setStatus('URL 无效', false);
+        return;
+      }
+      const startedAt = performance.now();
+      setStatus('请求中...', null);
+      durationText.textContent = '-';
+      output.textContent = '';
+      try {
+        const response = await fetch(targetUrl.href, { method: 'GET', cache: 'no-store', credentials: 'include' });
+        const elapsed = Math.round(performance.now() - startedAt);
+        const text = await response.text();
+        const headers = Array.from(response.headers.entries())
+          .map(([name, value]) => `${name}: ${value}`)
+          .join('\n');
+        setStatus(`${response.status} ${response.statusText || ''}`.trim(), response.ok);
+        durationText.textContent = `${elapsed} ms`;
+        output.textContent = [
+          `URL: ${targetUrl.href}`,
+          `Status: ${response.status} ${response.statusText}`,
+          '',
+          'Headers:',
+          headers || '(none)',
+          '',
+          'Body preview:',
+          text.slice(0, 8192) || '(empty body)',
+        ].join('\n');
+      } catch (error) {
+        const elapsed = Math.round(performance.now() - startedAt);
+        setStatus('网络错误', false);
+        durationText.textContent = `${elapsed} ms`;
+        output.textContent = [
+          String(error && error.message ? error.message : error),
+          '',
+          '排查：确认手机能解析并访问当前 SP 域名；确认 gateway 已按 Host 路由到 node tunnel entrypoint；确认资源公开或当前浏览器已有登录态。',
+        ].join('\n');
+      }
+    }
+
+    function openDirect() {
+      const targetUrl = syncTarget();
+      if (targetUrl) window.location.assign(targetUrl.href);
+    }
+
+    async function copyUrl() {
+      const targetUrl = syncTarget();
+      if (!targetUrl) return;
+      await navigator.clipboard.writeText(targetUrl.href);
+      setStatus('已复制 URL', true);
+    }
+
+    const requestedPath = new URLSearchParams(window.location.search).get('path');
+    if (requestedPath) resourcePath.value = requestedPath;
+    originText.textContent = window.location.origin;
+    syncTarget();
+
+    resourcePath.addEventListener('input', syncTarget);
+    document.getElementById('fetchButton').addEventListener('click', verifyFetch);
+    document.getElementById('openButton').addEventListener('click', openDirect);
+    document.getElementById('copyButton').addEventListener('click', copyUrl);
+  </script>
+</body>
+</html>

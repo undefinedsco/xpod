@@ -255,6 +255,14 @@ Host: node-0000.undefineds.co
 
 数据面由普通 SP 域名入口承载：DNS / ingress 根据 `Host` 命中 Cloud gateway，`EdgeNodeProxyHttpHandler` 通过 `cluster_node.subdomain` 找到节点；当节点是 `access_mode=proxy` 且 metadata 里存在 `tunnel.entrypoint` 或 `managedTunnel.endpoint` 时，gateway 将原始资源路径转发到该 tunnel entrypoint。也就是说，浏览器看到和分享的始终是 SP 域名，不是 `/v1/relay/...` API URL。
 
+最小外部验收可以直接打开资源 URL，也可以打开同源浏览器验证页：
+
+```http
+GET http://node-0000.undefineds.co/app/reachability.html?path=%2Falice%2Fa.txt
+```
+
+验证页由 Local SP 的 `/app/` 静态资源提供；它只从当前 origin fetch `/alice/a.txt`，用于证明普通浏览器数据面可达。它不验证 P2P 打洞或 managed-client 私有 route。
+
 当前实现边界：
 
 - `/v1/signal/...` 只负责 route、session、候选和审计等控制面，不承载浏览器资源 URL。
