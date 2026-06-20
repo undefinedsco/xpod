@@ -61,4 +61,53 @@ describe('UDP P2P data plane transport', () => {
       await server.close();
     }
   });
+
+  it('fragments and reassembles Solid HTTP frames that exceed the UDP datagram limit', async () => {
+    const requestBody = 'request-fragment-'.repeat(500);
+    const responseBody = 'response-fragment-'.repeat(600);
+    const localFetch = vi.fn(async (url, init) => {
+      await expect(new Response(init?.body).text()).resolves.toBe(requestBody);
+      return new Response(responseBody, {
+        status: 207,
+        statusText: 'Multi-Status',
+        headers: { 'content-type': 'text/plain' },
+      });
+    });
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const server = createUdpP2PDataPlaneServer({
+      handler,
+      host: '127.0.0.1',
+      maxDatagramBytes: 700,
+    });
+    await server.listen(0);
+    const address = server.address();
+    const transport = createUdpP2PDataPlaneTransport({
+      remoteHost: address.address,
+      remotePort: address.port,
+      timeoutMs: 1_000,
+      maxDatagramBytes: 700,
+      randomId: () => 'fragmented',
+    });
+
+    try {
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: p2pRoute, transport });
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/large.txt', {
+        method: 'PUT',
+        headers: { 'content-type': 'text/plain' },
+        body: requestBody,
+      });
+
+      expect(response.status).toBe(207);
+      expect(response.statusText).toBe('Multi-Status');
+      await expect(response.text()).resolves.toBe(responseBody);
+      expect(localFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      transport.close();
+      await server.close();
+    }
+  });
+
 });

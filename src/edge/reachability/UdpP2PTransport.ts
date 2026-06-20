@@ -10,13 +10,23 @@ import type {
 const REQUEST_ENVELOPE = 'xpod-p2p-http-request' as const;
 const RESPONSE_ENVELOPE = 'xpod-p2p-http-response' as const;
 const ERROR_ENVELOPE = 'xpod-p2p-http-error' as const;
+const FRAGMENT_ENVELOPE = 'xpod-p2p-http-fragment' as const;
 const DEFAULT_MAX_DATAGRAM_BYTES = 60_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
+const FRAGMENT_TTL_MS = 30_000;
 
 type UdpP2PEnvelope =
   | { type: typeof REQUEST_ENVELOPE; requestId: string; frame: P2PHttpRequestFrame }
   | { type: typeof RESPONSE_ENVELOPE; requestId: string; frame: P2PHttpResponseFrame }
   | { type: typeof ERROR_ENVELOPE; requestId: string; error: string };
+
+type UdpP2PFragmentEnvelope = {
+  type: typeof FRAGMENT_ENVELOPE;
+  messageId: string;
+  sequence: number;
+  total: number;
+  payloadBase64: string;
+};
 
 export interface UdpP2PDataPlaneTransportOptions {
   remoteHost: string;
@@ -63,6 +73,7 @@ class UdpP2PTransport implements UdpP2PDataPlaneTransport {
   private bindPromise?: Promise<void>;
   private readonly messageHandler = (message: Buffer): void => this.handleMessage(message);
   private readonly errorHandler = (error: Error): void => this.handleError(error);
+  private readonly reassembler = new UdpP2PEnvelopeReassembler();
   private readonly pending = new Map<string, {
     resolve: (frame: P2PHttpResponseFrame) => void;
     reject: (error: Error) => void;
@@ -146,7 +157,7 @@ class UdpP2PTransport implements UdpP2PDataPlaneTransport {
   }
 
   private handleMessage(message: Buffer): void {
-    const envelope = parseEnvelope(message);
+    const envelope = this.reassembler.accept(message);
     if (!envelope || (envelope.type !== RESPONSE_ENVELOPE && envelope.type !== ERROR_ENVELOPE)) {
       return;
     }
@@ -180,6 +191,7 @@ class UdpP2PServer implements UdpP2PDataPlaneServer {
   private readonly messageHandler = (message: Buffer, remote: RemoteInfo): void => {
     void this.handleMessage(message, remote);
   };
+  private readonly reassembler = new UdpP2PEnvelopeReassembler();
   private isListening = false;
 
   public constructor(private readonly options: UdpP2PDataPlaneServerOptions) {
@@ -234,7 +246,7 @@ class UdpP2PServer implements UdpP2PDataPlaneServer {
   }
 
   private async handleMessage(message: Buffer, remote: RemoteInfo): Promise<void> {
-    const envelope = parseEnvelope(message);
+    const envelope = this.reassembler.accept(message);
     if (!envelope || envelope.type !== REQUEST_ENVELOPE) {
       return;
     }
@@ -264,9 +276,37 @@ async function sendEnvelope(
   maxDatagramBytes: number,
 ): Promise<void> {
   const payload = Buffer.from(JSON.stringify(envelope), 'utf8');
-  if (payload.byteLength > maxDatagramBytes) {
-    throw new Error(`UDP P2P datagram is ${payload.byteLength} bytes; max is ${maxDatagramBytes}`);
+  if (payload.byteLength <= maxDatagramBytes) {
+    await sendDatagram(socket, payload, port, host);
+    return;
   }
+
+  const messageId = `${envelope.type}:${envelope.requestId}`;
+  const fragmentPayloadBytes = getMaxFragmentPayloadBytes(maxDatagramBytes, messageId);
+  const total = Math.ceil(payload.byteLength / fragmentPayloadBytes);
+  for (let sequence = 0; sequence < total; sequence += 1) {
+    const offset = sequence * fragmentPayloadBytes;
+    const chunk = payload.subarray(offset, offset + fragmentPayloadBytes);
+    const fragment = encodeFragment({
+      type: FRAGMENT_ENVELOPE,
+      messageId,
+      sequence,
+      total,
+      payloadBase64: chunk.toString('base64'),
+    });
+    if (fragment.byteLength > maxDatagramBytes) {
+      throw new Error(`UDP P2P fragment is ${fragment.byteLength} bytes; max is ${maxDatagramBytes}`);
+    }
+    await sendDatagram(socket, fragment, port, host);
+  }
+}
+
+async function sendDatagram(
+  socket: Socket,
+  payload: Buffer,
+  port: number,
+  host: string,
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     socket.send(payload, port, host, (error) => {
       if (error) {
@@ -276,6 +316,81 @@ async function sendEnvelope(
       resolve();
     });
   });
+}
+
+function getMaxFragmentPayloadBytes(maxDatagramBytes: number, messageId: string): number {
+  const overheadBytes = encodeFragment({
+    type: FRAGMENT_ENVELOPE,
+    messageId,
+    sequence: 999_999,
+    total: 999_999,
+    payloadBase64: '',
+  }).byteLength;
+  const availableBase64Bytes = maxDatagramBytes - overheadBytes;
+  const payloadBytes = Math.floor(availableBase64Bytes / 4) * 3;
+  if (payloadBytes <= 0) {
+    throw new Error(`UDP P2P maxDatagramBytes ${maxDatagramBytes} is too small for fragment envelopes`);
+  }
+  return payloadBytes;
+}
+
+function encodeFragment(fragment: UdpP2PFragmentEnvelope): Buffer {
+  return Buffer.from(JSON.stringify(fragment), 'utf8');
+}
+
+class UdpP2PEnvelopeReassembler {
+  private readonly pending = new Map<string, {
+    createdAt: number;
+    total: number;
+    chunks: Map<number, Buffer>;
+  }>();
+
+  public accept(message: Buffer): UdpP2PEnvelope | undefined {
+    const envelope = parseEnvelope(message);
+    if (envelope) {
+      return envelope;
+    }
+
+    const fragment = parseFragment(message);
+    if (!fragment) {
+      return undefined;
+    }
+    this.dropExpired();
+    if (fragment.sequence < 0 || fragment.sequence >= fragment.total || fragment.total <= 0) {
+      return undefined;
+    }
+
+    let pending = this.pending.get(fragment.messageId);
+    if (pending && pending.total !== fragment.total) {
+      this.pending.delete(fragment.messageId);
+      pending = undefined;
+    }
+    if (!pending) {
+      pending = {
+        createdAt: Date.now(),
+        total: fragment.total,
+        chunks: new Map(),
+      };
+      this.pending.set(fragment.messageId, pending);
+    }
+    pending.chunks.set(fragment.sequence, Buffer.from(fragment.payloadBase64, 'base64'));
+    if (pending.chunks.size < pending.total) {
+      return undefined;
+    }
+
+    const payload = Buffer.concat(Array.from({ length: pending.total }, (_unused, sequence) => pending.chunks.get(sequence) ?? Buffer.alloc(0)));
+    this.pending.delete(fragment.messageId);
+    return parseEnvelope(payload);
+  }
+
+  private dropExpired(): void {
+    const now = Date.now();
+    for (const [messageId, pending] of this.pending) {
+      if (now - pending.createdAt > FRAGMENT_TTL_MS) {
+        this.pending.delete(messageId);
+      }
+    }
+  }
 }
 
 function parseEnvelope(message: Buffer): UdpP2PEnvelope | undefined {
@@ -292,6 +407,24 @@ function parseEnvelope(message: Buffer): UdpP2PEnvelope | undefined {
     }
     if (parsed.type === ERROR_ENVELOPE && typeof parsed.error === 'string') {
       return parsed as UdpP2PEnvelope;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function parseFragment(message: Buffer): UdpP2PFragmentEnvelope | undefined {
+  try {
+    const parsed = JSON.parse(message.toString('utf8')) as Partial<UdpP2PFragmentEnvelope>;
+    if (
+      parsed.type === FRAGMENT_ENVELOPE &&
+      typeof parsed.messageId === 'string' &&
+      Number.isInteger(parsed.sequence) &&
+      Number.isInteger(parsed.total) &&
+      typeof parsed.payloadBase64 === 'string'
+    ) {
+      return parsed as UdpP2PFragmentEnvelope;
     }
   } catch {
     return undefined;

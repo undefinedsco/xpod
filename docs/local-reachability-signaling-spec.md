@@ -137,7 +137,9 @@ Solid SDK / app
   CSS HTTP endpoint，再把 HTTP response 编码回 frame。
 - `UdpP2PTransport` 是开发/直连验证 provider：它用 Node 原生 UDP socket 在两个
   非浏览器进程之间传递 `xpod-p2p-http/1` frame，用于证明数据面已经跨真实 socket，
-  不再只是内存函数调用。
+  不再只是内存函数调用。它支持把超过单个 UDP datagram 限制的 HTTP frame 拆成
+  `xpod-p2p-http-fragment` 多包并在接收端重组，因此可验证较大的 Solid 请求体和响应体
+  能穿过当前 P2P 数据面。
 - `UdpP2PRendezvous` 是当前 UDP provider 的最小打洞前置能力：双方先绑定各自 UDP
   socket，把本地 UDP candidate 通过 signaling session 交换，然后用同一个 socket
   对候选地址发送 `hello/ack`，握手成功后继续用该 socket 承载 `xpod-p2p-http/1`。
@@ -150,9 +152,9 @@ Solid SDK / app
   STUN server 发送 Binding Request，解析 `XOR-MAPPED-ADDRESS` 生成
   `candidateType=server-reflexive` candidate，并通过 signaling 与 direct candidate
   一起发布。这是跨 NAT 的前置能力，但还不是完整 ICE。
-- `UdpP2PTransport` 不是最终公网 P2P 协议：当前没有分片、拥塞控制、可靠流、
-  加密握手、ICE candidate pair nomination、TURN 或生产级 NAT hole punching。
-  大 body、跨 NAT、CGNAT 和移动端网络切换应由后续 QUIC/ICE 或其他 provider 负责。
+- `UdpP2PTransport` 不是最终公网 P2P 协议：当前有 frame 分片/重组，但没有丢包重传、
+  拥塞控制、可靠流、加密握手、ICE candidate pair nomination、TURN 或生产级 NAT hole punching。
+  丢包网络、跨 NAT、CGNAT 和移动端网络切换应由后续 QUIC/ICE 或其他 provider 负责。
 
 设计约束：
 
