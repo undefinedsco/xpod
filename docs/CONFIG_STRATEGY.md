@@ -137,6 +137,7 @@ urn:solid-server:default:variable:xxx
 | frpServerHost | XPOD_FRP_SERVER_HOST | FRP服务器地址 | 可选 | - |
 | frpToken | XPOD_FRP_TOKEN | FRP认证Token | 可选 | - |
 | p2pIceServers | XPOD_P2P_ICE_SERVERS | 非浏览器 P2P STUN/TURN ICE servers（JSON 数组） | 可选 | - |
+| p2pIceTransportPolicy | XPOD_P2P_ICE_TRANSPORT_POLICY | P2P smoke ICE 策略；`relay` 可强制验证 TURN 路径 | 可选 | `all` |
 | p2pTurnUrls | XPOD_P2P_TURN_URLS | 非浏览器 P2P TURN REST credential 的 TURN URL（JSON 数组或逗号分隔） | 可选 | - |
 | p2pTurnStaticAuthSecret | XPOD_P2P_TURN_STATIC_AUTH_SECRET | TURN REST shared secret，用于按 session 签发短期 credential | 可选 | - |
 | p2pTurnUsernamePrefix | XPOD_P2P_TURN_USERNAME_PREFIX | TURN 临时用户名前缀 | 可选 | `xpod` |
@@ -304,6 +305,8 @@ XPOD_DNS_ROOT_DOMAIN=cluster.example.com
 # XPOD_P2P_TURN_STATIC_AUTH_SECRET=xxx
 # XPOD_P2P_TURN_USERNAME_PREFIX=xpod
 # XPOD_P2P_TURN_TTL_SECONDS=300
+# 可选：smoke 客户端强制只走 relay，用于验证 TURN fallback，而不是 direct ICE。
+# XPOD_P2P_ICE_TRANSPORT_POLICY=relay
 XPOD_ACME_EMAIL=admin@example.com
 XPOD_TENCENT_DNS_TOKEN_ID=xxx
 XPOD_TENCENT_DNS_TOKEN=xxx
@@ -381,6 +384,7 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | frpToken | XPOD_FRP_TOKEN | EnvExtractor | - | - |
 | frpProtocol | XPOD_FRP_PROTOCOL | EnvExtractor | "tcp" | - |
 | p2pIceServers | XPOD_P2P_ICE_SERVERS | API env JSON | - | - |
+| p2pIceTransportPolicy | XPOD_P2P_ICE_TRANSPORT_POLICY | smoke CLI env | "all" | - |
 | p2pTurnUrls | XPOD_P2P_TURN_URLS | API env JSON/CSV | - | - |
 | p2pTurnStaticAuthSecret | XPOD_P2P_TURN_STATIC_AUTH_SECRET | API env | - | - |
 | p2pTurnUsernamePrefix | XPOD_P2P_TURN_USERNAME_PREFIX | API env | "xpod" | - |

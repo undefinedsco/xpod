@@ -210,6 +210,18 @@ If direct ICE is unreliable across networks, configure Cloud with
 `XPOD_P2P_TURN_URLS` and `XPOD_P2P_TURN_STATIC_AUTH_SECRET`. Cloud will inject
 short-lived TURN REST credentials into the P2P route metadata for each signaling
 session; the canonical Solid URL and Pod resource identity do not change.
+To prove the TURN fallback path specifically, force the smoke client to relay-only
+ICE:
+
+```bash
+XPOD_P2P_TOKEN=<managed-client-token> bun scripts/werift-p2p-smoke.ts \
+  --api-base-url https://id.undefineds.co/ \
+  --node-id node-0000 \
+  --source-id desktop-ganlu \
+  --url https://node-0000.undefineds.co/.well-known/openid-configuration \
+  --ice-transport-policy relay \
+  --expect-status 200
+```
 
 For private Pod resources, prefer Solid client credentials so the smoke uses the
 standard Inrupt Node SDK to generate `Authorization` and `DPoP` headers while the

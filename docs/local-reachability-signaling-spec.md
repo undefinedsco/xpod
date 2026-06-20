@@ -197,6 +197,9 @@ Solid SDK / app
   签发短期 TURN credential。签发出的 `username` 绑定 session、node 和 client，并且过期时间
   不超过 P2P session TTL；这些 ICE server 只注入到 `kind="p2p"` route 的 provider metadata，
   不进入 Pod RDF 或 canonical route identity。
+  `werift-p2p-smoke` 支持 `--ice-transport-policy relay` /
+  `XPOD_P2P_ICE_TRANSPORT_POLICY=relay`，用于实网验收时强制只走 TURN relay，从而把
+  “direct ICE 成功”和“TURN fallback 成功”拆开验证。
 - 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
   拥塞控制或加密握手；werift provider 已具备 ICE/DTLS/SCTP 和 signaling offer/answer
   建链能力、trickle ICE 增量同步和 STUN/TURN ICE server metadata 下发/消费能力，但还没有实现

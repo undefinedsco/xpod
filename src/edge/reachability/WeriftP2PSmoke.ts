@@ -84,7 +84,12 @@ export function parseWeriftP2PSmokeArgs(
   if (env.XPOD_P2P_TIMEOUT_MS) parsed.timeoutMs = parsePositiveInteger(env.XPOD_P2P_TIMEOUT_MS, 'XPOD_P2P_TIMEOUT_MS');
   if (env.XPOD_P2P_POLL_INTERVAL_MS) parsed.pollIntervalMs = parsePositiveInteger(env.XPOD_P2P_POLL_INTERVAL_MS, 'XPOD_P2P_POLL_INTERVAL_MS');
   if (env.XPOD_P2P_TRANSPORT_TIMEOUT_MS) parsed.transportTimeoutMs = parsePositiveInteger(env.XPOD_P2P_TRANSPORT_TIMEOUT_MS, 'XPOD_P2P_TRANSPORT_TIMEOUT_MS');
-  if (env.XPOD_P2P_ICE_SERVERS) parsed.peerConfig = { iceServers: parseIceServers(env.XPOD_P2P_ICE_SERVERS, 'XPOD_P2P_ICE_SERVERS') };
+  if (env.XPOD_P2P_ICE_SERVERS) parsed.peerConfig = mergePeerConfig(parsed.peerConfig, { iceServers: parseIceServers(env.XPOD_P2P_ICE_SERVERS, 'XPOD_P2P_ICE_SERVERS') });
+  if (env.XPOD_P2P_ICE_TRANSPORT_POLICY) {
+    parsed.peerConfig = mergePeerConfig(parsed.peerConfig, {
+      iceTransportPolicy: parseIceTransportPolicy(env.XPOD_P2P_ICE_TRANSPORT_POLICY, 'XPOD_P2P_ICE_TRANSPORT_POLICY'),
+    });
+  }
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -127,8 +132,10 @@ export function parseWeriftP2PSmokeArgs(
     else if (arg.startsWith('--solid-client-secret=')) parsed.solidAuth = { ...parsed.solidAuth, clientSecret: arg.slice('--solid-client-secret='.length) } as WeriftP2PSmokeSolidAuthOptions;
     else if (arg === '--solid-token-type') parsed.solidAuth = { ...parsed.solidAuth, tokenType: parseTokenType(next(), arg) } as WeriftP2PSmokeSolidAuthOptions;
     else if (arg.startsWith('--solid-token-type=')) parsed.solidAuth = { ...parsed.solidAuth, tokenType: parseTokenType(arg.slice('--solid-token-type='.length), '--solid-token-type') } as WeriftP2PSmokeSolidAuthOptions;
-    else if (arg === '--ice-servers') parsed.peerConfig = { iceServers: parseIceServers(next(), arg) };
-    else if (arg.startsWith('--ice-servers=')) parsed.peerConfig = { iceServers: parseIceServers(arg.slice('--ice-servers='.length), '--ice-servers') };
+    else if (arg === '--ice-servers') parsed.peerConfig = mergePeerConfig(parsed.peerConfig, { iceServers: parseIceServers(next(), arg) });
+    else if (arg.startsWith('--ice-servers=')) parsed.peerConfig = mergePeerConfig(parsed.peerConfig, { iceServers: parseIceServers(arg.slice('--ice-servers='.length), '--ice-servers') });
+    else if (arg === '--ice-transport-policy') parsed.peerConfig = mergePeerConfig(parsed.peerConfig, { iceTransportPolicy: parseIceTransportPolicy(next(), arg) });
+    else if (arg.startsWith('--ice-transport-policy=')) parsed.peerConfig = mergePeerConfig(parsed.peerConfig, { iceTransportPolicy: parseIceTransportPolicy(arg.slice('--ice-transport-policy='.length), '--ice-transport-policy') });
     else throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -258,6 +265,7 @@ Options:
   --poll-interval-ms <ms>     Signaling polling interval. Default: ${DEFAULT_POLL_INTERVAL_MS}
   --transport-timeout-ms <ms> P2P HTTP frame timeout. Default: ${DEFAULT_TRANSPORT_TIMEOUT_MS}
   --ice-servers <json>        PeerConfig iceServers JSON array, also XPOD_P2P_ICE_SERVERS
+  --ice-transport-policy <p>   ICE policy all|relay, also XPOD_P2P_ICE_TRANSPORT_POLICY
   --help, -h                  Show this help
 
 Example:
@@ -392,6 +400,23 @@ function parseIceServers(value: string, optionName: string): PeerConfig['iceServ
   const parsed = JSON.parse(value) as unknown;
   if (!Array.isArray(parsed)) throw new Error(`${optionName} must be a JSON array`);
   return parsed as PeerConfig['iceServers'];
+}
+
+function parseIceTransportPolicy(value: string, optionName: string): PeerConfig['iceTransportPolicy'] {
+  if (value !== 'all' && value !== 'relay') {
+    throw new Error(`${optionName} must be all or relay`);
+  }
+  return value;
+}
+
+function mergePeerConfig(
+  current: Partial<PeerConfig> | undefined,
+  next: Partial<PeerConfig>,
+): Partial<PeerConfig> {
+  return {
+    ...current,
+    ...next,
+  };
 }
 
 function headersToList(headers: Headers): [string, string][] {

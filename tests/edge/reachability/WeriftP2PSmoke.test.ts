@@ -65,6 +65,27 @@ describe('werift P2P smoke CLI helpers', () => {
     });
   });
 
+  it('parses relay-only ICE transport policy for TURN fallback verification', () => {
+    const fromEnv = parseWeriftP2PSmokeArgs([], {
+      XPOD_P2P_API_BASE_URL: 'https://id.undefineds.co/',
+      XPOD_P2P_NODE_ID: 'node-0000',
+      XPOD_P2P_SOURCE_ID: 'desktop-1',
+      XPOD_P2P_URL: 'https://node-0000.undefineds.co/alice/private.txt',
+      XPOD_P2P_ICE_TRANSPORT_POLICY: 'relay',
+    });
+    const fromFlag = parseWeriftP2PSmokeArgs([
+      '--ice-transport-policy', 'relay',
+    ], {
+      XPOD_P2P_API_BASE_URL: 'https://id.undefineds.co/',
+      XPOD_P2P_NODE_ID: 'node-0000',
+      XPOD_P2P_SOURCE_ID: 'desktop-1',
+      XPOD_P2P_URL: 'https://node-0000.undefineds.co/alice/private.txt',
+    });
+
+    expect(fromEnv.peerConfig?.iceTransportPolicy).toBe('relay');
+    expect(fromFlag.peerConfig?.iceTransportPolicy).toBe('relay');
+  });
+
   it('creates a non-browser werift P2P client and fetches the canonical Solid URL as HTTP', async () => {
     const close = vi.fn(async () => undefined);
     const p2pFetch = vi.fn(async () => new Response('created through p2p', {
