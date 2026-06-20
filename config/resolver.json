@@ -42,7 +42,6 @@
             "defaultValue": "false"
           }
         },
-
         {
           "comment": "=== Data Layer ===",
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:identityDbUrl",
@@ -153,7 +152,6 @@
             "key": "emailConfigAuthPass"
           }
         },
-
         {
           "comment": "=== Business Features ===",
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:clusterIngressDomain",
@@ -259,7 +257,6 @@
             "defaultValue": "tcp"
           }
         },
-
         {
           "comment": "=== Multi-Node Cluster Parameters ===",
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodeId",
@@ -278,6 +275,86 @@
           }
         },
         {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:edgeNodeAgentEnabled",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "edgeNodeAgentEnabled",
+            "defaultValue": "false"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:signalEndpoint",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "signalEndpoint",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:nodeToken",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "nodeToken",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pEnabled",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "p2pEnabled",
+            "defaultValue": "false"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pTargetBaseUrl",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "p2pTargetBaseUrl",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pApiBaseUrl",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "p2pApiBaseUrl",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pPollIntervalMs",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "p2pPollIntervalMs",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pSignalingPollIntervalMs",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "p2pSignalingPollIntervalMs",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pTimeoutMs",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "p2pTimeoutMs",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pLabel",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "p2pLabel",
+            "defaultValue": ""
+          }
+        },
+        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:podRoutingEnabled",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",
@@ -285,7 +362,6 @@
             "defaultValue": "false"
           }
         },
-
         {
           "comment": "=== IdP/SP Separation Parameters ===",
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:baseStorageDomain",

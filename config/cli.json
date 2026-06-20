@@ -283,6 +283,86 @@
           }
         },
         {
+          "@type": "YargsParameter",
+          "name": "edgeNodeAgentEnabled",
+          "options": {
+            "type": "boolean",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "signalEndpoint",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "nodeToken",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "p2pEnabled",
+          "options": {
+            "type": "boolean",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "p2pTargetBaseUrl",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "p2pApiBaseUrl",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "p2pPollIntervalMs",
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "p2pSignalingPollIntervalMs",
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "p2pTimeoutMs",
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "p2pLabel",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
           "comment": "=== Hidden: Multi-Node Center Deployment ===",
           "@type": "YargsParameter",
           "name": "podRoutingEnabled",

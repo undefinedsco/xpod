@@ -137,6 +137,14 @@ urn:solid-server:default:variable:xxx
 | frpServerHost | XPOD_FRP_SERVER_HOST | FRP服务器地址 | 可选 | - |
 | frpToken | XPOD_FRP_TOKEN | FRP认证Token | 可选 | - |
 | p2pIceServers | XPOD_P2P_ICE_SERVERS | 非浏览器 P2P STUN/TURN ICE servers（JSON 数组） | 可选 | - |
+| edgeNodeAgentEnabled | XPOD_EDGE_NODE_AGENT_ENABLED | Local EdgeNodeAgent 自动启动开关 | local | - |
+| p2pEnabled | XPOD_P2P_ENABLED | Local Agent werift P2P answer loop 开关 | local | - |
+| p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | P2P data-plane 转发到的本地 CSS/SP base URL | local:p2p | ✅ CSS_BASE_URL |
+| p2pApiBaseUrl | XPOD_P2P_API_BASE_URL | P2P signaling API 根地址；缺省从 signalEndpoint 派生 | 可选 | - |
+| p2pPollIntervalMs | XPOD_P2P_POLL_INTERVAL_MS | Agent 轮询 active P2P sessions 的间隔 | 可选 | - |
+| p2pSignalingPollIntervalMs | XPOD_P2P_SIGNALING_POLL_INTERVAL_MS | werift session 内部信令轮询间隔 | 可选 | - |
+| p2pTimeoutMs | XPOD_P2P_TIMEOUT_MS | werift DataChannel 建连超时 | 可选 | - |
+| p2pLabel | XPOD_P2P_LABEL | werift DataChannel label | 可选 | - |
 | acmeEmail | XPOD_ACME_EMAIL | ACME账户邮箱 | 可选 | - |
 | nodeId | XPOD_NODE_ID | 节点ID | cluster:local | - |
 | nodeToken | XPOD_NODE_TOKEN | 节点认证Token | cluster:local | - |
@@ -364,6 +372,14 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | frpToken | XPOD_FRP_TOKEN | EnvExtractor | - | - |
 | frpProtocol | XPOD_FRP_PROTOCOL | EnvExtractor | "tcp" | - |
 | p2pIceServers | XPOD_P2P_ICE_SERVERS | API env JSON | - | - |
+| edgeNodeAgentEnabled | XPOD_EDGE_NODE_AGENT_ENABLED | Runtime shorthand / KeyExtractor | "false" | - |
+| p2pEnabled | XPOD_P2P_ENABLED | Runtime shorthand / KeyExtractor | "false" | - |
+| p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | Runtime shorthand / KeyExtractor | "" | ✅ CSS_BASE_URL |
+| p2pApiBaseUrl | XPOD_P2P_API_BASE_URL | Runtime shorthand / KeyExtractor | "" | - |
+| p2pPollIntervalMs | XPOD_P2P_POLL_INTERVAL_MS | Runtime shorthand / KeyExtractor | "" | - |
+| p2pSignalingPollIntervalMs | XPOD_P2P_SIGNALING_POLL_INTERVAL_MS | Runtime shorthand / KeyExtractor | "" | - |
+| p2pTimeoutMs | XPOD_P2P_TIMEOUT_MS | Runtime shorthand / KeyExtractor | "" | - |
+| p2pLabel | XPOD_P2P_LABEL | Runtime shorthand / KeyExtractor | "" | - |
 | acmeEmail | XPOD_ACME_EMAIL | EnvExtractor | - | - |
 | nodeId | XPOD_NODE_ID | EnvExtractor | - | - |
 | nodeToken | XPOD_NODE_TOKEN | EnvExtractor | - | - |

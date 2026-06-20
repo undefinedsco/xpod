@@ -68,6 +68,15 @@ describe('runtime bootstrap helpers', () => {
       centerRegistrationEnabled: true,
     }, {
       XPOD_NODE_ID: 'node-1',
+      XPOD_NODE_TOKEN: 'node-token',
+      XPOD_SIGNAL_ENDPOINT: 'https://cluster.example/api/signal',
+      XPOD_P2P_ENABLED: 'true',
+      XPOD_P2P_TARGET_BASE_URL: 'http://127.0.0.1:3000/',
+      XPOD_P2P_API_BASE_URL: 'https://cluster.example/',
+      XPOD_P2P_POLL_INTERVAL_MS: '1000',
+      XPOD_P2P_SIGNALING_POLL_INTERVAL_MS: '50',
+      XPOD_P2P_TIMEOUT_MS: '3000',
+      XPOD_P2P_LABEL: 'xpod-p2p-http',
     });
 
     const shorthand = buildRuntimeShorthand(runtimeEnv, {
@@ -80,6 +89,15 @@ describe('runtime bootstrap helpers', () => {
     expect(runtimeEnv.API_PORT).toBe('5712');
     expect(shorthand.edition).toBe('server');
     expect(shorthand.nodeId).toBe('node-1');
+    expect(shorthand.nodeToken).toBe('node-token');
+    expect(shorthand.signalEndpoint).toBe('https://cluster.example/api/signal');
+    expect(shorthand.p2pEnabled).toBe('true');
+    expect(shorthand.p2pTargetBaseUrl).toBe('http://127.0.0.1:3000/');
+    expect(shorthand.p2pApiBaseUrl).toBe('https://cluster.example/');
+    expect(shorthand.p2pPollIntervalMs).toBe('1000');
+    expect(shorthand.p2pSignalingPollIntervalMs).toBe('50');
+    expect(shorthand.p2pTimeoutMs).toBe('3000');
+    expect(shorthand.p2pLabel).toBe('xpod-p2p-http');
     expect(shorthand.edgeNodesEnabled).toBe(true);
     expect(shorthand.centerRegistrationEnabled).toBe(true);
     expect(shorthand.emailConfigHost).toBe('');

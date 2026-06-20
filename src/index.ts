@@ -64,6 +64,7 @@ import { FrpTunnelManager } from './edge/FrpTunnelManager';
 import { AcmeCertificateManager } from './edge/acme/AcmeCertificateManager';
 import { EdgeNodeHealthProbeService } from './edge/EdgeNodeHealthProbeService';
 import { EdgeNodeAgent } from './edge/EdgeNodeAgent';
+import { EdgeNodeAgentInitializer } from './edge/EdgeNodeAgentInitializer';
 import { EdgeNodeCertificateService } from './service/EdgeNodeCertificateService';
 import { createBandwidthThrottleTransform } from './util/stream/BandwidthThrottleTransform';
 import { UsageTrackingStore } from './storage/quota/UsageTrackingStore';
@@ -186,6 +187,7 @@ export {
   FrpTunnelManager,
   EdgeNodeHealthProbeService,
   EdgeNodeAgent,
+  EdgeNodeAgentInitializer,
   EdgeNodeCertificateService,
   AcmeCertificateManager,
   EdgeNodeModeDetector,

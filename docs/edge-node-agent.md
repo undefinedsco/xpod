@@ -88,6 +88,14 @@ await agent.start({
 
 - 建议与进程守护工具（systemd、supervisord、PM2 等）结合，确保节点重启时自动恢复心跳。
 - Heartbeat 默认 30 秒发送一次，可通过 `intervalMs` 调整频率。
+- 通过本仓库 CSS local 配置自动启动 Agent 时，需显式设置：
+  - `XPOD_EDGE_NODE_AGENT_ENABLED=true`
+  - `XPOD_SIGNAL_ENDPOINT=https://cluster.example/api/signal`
+  - `XPOD_NODE_ID=<NODE_ID>`
+  - `XPOD_NODE_TOKEN=<NODE_TOKEN>`
+  - `XPOD_P2P_ENABLED=true`
+  - `XPOD_P2P_TARGET_BASE_URL=http://127.0.0.1:3000/`
+  - 可选：`XPOD_P2P_API_BASE_URL`、`XPOD_P2P_POLL_INTERVAL_MS`、`XPOD_P2P_SIGNALING_POLL_INTERVAL_MS`、`XPOD_P2P_TIMEOUT_MS`、`XPOD_P2P_LABEL`。
 - 若节点拥有多个 Pod，`pods` 数组可列出多个 baseUrl；缺失时仍可通过控制面 API 感知 Pod 实际列表。
 - `metadata.dns` 与 `metadata.certificate.dns01` 字段可以在心跳期间动态更新，以便控制面及时刷新 DNS/TXT 记录（当 `acme.mode=local` 时仍旧适用）。
 - 启用控制面自动化需在 cluster 端设置 `CSS_EDGE_NODES_ENABLED=true`，并按需提供 `CSS_TENCENT_DNS_TOKEN_ID`/`CSS_TENCENT_DNS_TOKEN` 等变量（详见《edge-node-control-plane》）；DNS 根域名自动复用 CSS `baseUrl`。

@@ -5,18 +5,91 @@
   ],
   "@graph": [
     {
+      "comment": "Local edge node heartbeat and optional P2P answer-loop agent. Disabled unless edgeNodeAgentEnabled is true.",
+      "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer",
+      "@type": "EdgeNodeAgentInitializer",
+      "enabled": {
+        "@id": "urn:solid-server:default:variable:edgeNodeAgentEnabled",
+        "@type": "Variable"
+      },
+      "signalEndpoint": {
+        "@id": "urn:solid-server:default:variable:signalEndpoint",
+        "@type": "Variable"
+      },
+      "nodeId": {
+        "@id": "urn:solid-server:default:variable:nodeId",
+        "@type": "Variable"
+      },
+      "nodeToken": {
+        "@id": "urn:solid-server:default:variable:nodeToken",
+        "@type": "Variable"
+      },
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl",
+        "@type": "Variable"
+      },
+      "intervalMs": {
+        "@id": "urn:solid-server:default:variable:nodeHeartbeatInterval",
+        "@type": "Variable"
+      },
+      "p2pEnabled": {
+        "@id": "urn:solid-server:default:variable:p2pEnabled",
+        "@type": "Variable"
+      },
+      "p2pTargetBaseUrl": {
+        "@id": "urn:solid-server:default:variable:p2pTargetBaseUrl",
+        "@type": "Variable"
+      },
+      "p2pApiBaseUrl": {
+        "@id": "urn:solid-server:default:variable:p2pApiBaseUrl",
+        "@type": "Variable"
+      },
+      "p2pPollIntervalMs": {
+        "@id": "urn:solid-server:default:variable:p2pPollIntervalMs",
+        "@type": "Variable"
+      },
+      "p2pSignalingPollIntervalMs": {
+        "@id": "urn:solid-server:default:variable:p2pSignalingPollIntervalMs",
+        "@type": "Variable"
+      },
+      "p2pTimeoutMs": {
+        "@id": "urn:solid-server:default:variable:p2pTimeoutMs",
+        "@type": "Variable"
+      },
+      "p2pLabel": {
+        "@id": "urn:solid-server:default:variable:p2pLabel",
+        "@type": "Variable"
+      }
+    },
+    {
       "comment": "Redefine PrimarySequenceInitializer to include EdgeNodeAgentInitializer",
       "@id": "urn:solid-server:default:PrimarySequenceInitializer",
       "@type": "SequenceHandler",
       "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/SequenceHandler.jsonld#SequenceHandler_handlers": [
-        { "@id": "urn:solid-server:default:CleanupInitializer" },
-        { "@id": "urn:solid-server:default:MigrationInitializer" },
-        { "@id": "urn:solid-server:default:BaseUrlVerifier" },
-        { "@id": "urn:solid-server:default:PrimaryParallelInitializer" },
-        { "@id": "urn:solid-server:default:ModuleVersionVerifier" },
-        { "@id": "urn:solid-server:default:WorkerManager" },
-        { "@id": "urn:solid-server:default:SeededAccountInitializer" },
-        { "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer" }
+        {
+          "@id": "urn:solid-server:default:CleanupInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:MigrationInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:BaseUrlVerifier"
+        },
+        {
+          "@id": "urn:solid-server:default:PrimaryParallelInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:ModuleVersionVerifier"
+        },
+        {
+          "@id": "urn:solid-server:default:WorkerManager"
+        },
+        {
+          "@id": "urn:solid-server:default:SeededAccountInitializer"
+        },
+        {
+          "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer"
+        }
       ]
     }
   ]

@@ -5,8 +5,25 @@ import { EdgeNodeAgent, type EdgeNodeAgentOptions } from './EdgeNodeAgent';
 /**
  * 所有配置项设为可选，以便在 disabled 状态下即使缺少 CLI 变量也能成功实例化。
  */
-export interface EdgeNodeAgentInitializerOptions extends Partial<EdgeNodeAgentOptions> {
+export interface EdgeNodeAgentInitializerOptions {
   enabled?: boolean | string;
+  signalEndpoint?: string;
+  nodeId?: string;
+  nodeToken?: string;
+  baseUrl?: string;
+  directCandidates?: string | string[];
+  pods?: string[];
+  includeSystemMetrics?: boolean;
+  enableNetworkDetection?: boolean;
+  metadata?: Record<string, unknown>;
+  intervalMs?: number | string;
+  p2pEnabled?: boolean | string;
+  p2pTargetBaseUrl?: string;
+  p2pApiBaseUrl?: string;
+  p2pPollIntervalMs?: number | string;
+  p2pSignalingPollIntervalMs?: number | string;
+  p2pTimeoutMs?: number | string;
+  p2pLabel?: string;
 }
 
 /**
@@ -38,8 +55,7 @@ export class EdgeNodeAgentInitializer extends Initializer {
     this.validateOptions(this.options);
 
     try {
-      // 此时已确认 options 符合 EdgeNodeAgentOptions (去除 Partial)
-      await this.agent.start(this.options as EdgeNodeAgentOptions);
+      await this.agent.start(this.buildAgentOptions(this.options));
       this.logger.info(`EdgeNodeAgent started (Node: ${this.options.nodeId})`);
     } catch (error: unknown) {
       this.logger.error(`Failed to start EdgeNodeAgent: ${(error as Error).message}`);
@@ -50,16 +66,46 @@ export class EdgeNodeAgentInitializer extends Initializer {
   /**
    * 确保启用时必需参数存在
    */
-  private validateOptions(options: EdgeNodeAgentInitializerOptions): asserts options is EdgeNodeAgentOptions {
+  private validateOptions(options: EdgeNodeAgentInitializerOptions): void {
     const missing: string[] = [];
     
     if (!options.signalEndpoint) missing.push('signalEndpoint');
     if (!options.nodeId) missing.push('nodeId');
     if (!options.nodeToken) missing.push('nodeToken');
+    if (this.normalizeBoolean(options.p2pEnabled) && !options.p2pTargetBaseUrl) {
+      missing.push('p2pTargetBaseUrl');
+    }
 
     if (missing.length > 0) {
       throw new Error(`EdgeNodeAgent enabled but missing required configuration: ${missing.join(', ')}`);
     }
+  }
+
+  private buildAgentOptions(options: EdgeNodeAgentInitializerOptions): EdgeNodeAgentOptions {
+    const p2pEnabled = this.normalizeBoolean(options.p2pEnabled);
+    return {
+      signalEndpoint: options.signalEndpoint!,
+      nodeId: options.nodeId!,
+      nodeToken: options.nodeToken!,
+      baseUrl: options.baseUrl,
+      directCandidates: options.directCandidates,
+      pods: options.pods,
+      includeSystemMetrics: options.includeSystemMetrics,
+      enableNetworkDetection: options.enableNetworkDetection,
+      metadata: options.metadata,
+      intervalMs: this.normalizePositiveInteger(options.intervalMs),
+      ...(p2pEnabled ? {
+        p2p: {
+          enabled: true,
+          targetBaseUrl: options.p2pTargetBaseUrl!,
+          apiBaseUrl: options.p2pApiBaseUrl,
+          pollIntervalMs: this.normalizePositiveInteger(options.p2pPollIntervalMs),
+          signalingPollIntervalMs: this.normalizePositiveInteger(options.p2pSignalingPollIntervalMs),
+          timeoutMs: this.normalizePositiveInteger(options.p2pTimeoutMs),
+          label: options.p2pLabel,
+        },
+      } : {}),
+    };
   }
 
   private normalizeBoolean(value: string | boolean | undefined): boolean {
@@ -71,5 +117,18 @@ export class EdgeNodeAgentInitializer extends Initializer {
       return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
     }
     return false;
+  }
+
+  private normalizePositiveInteger(value: number | string | undefined): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return undefined;
   }
 }
