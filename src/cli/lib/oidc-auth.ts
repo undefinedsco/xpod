@@ -49,11 +49,17 @@ async function refreshStoredOidcSession(
   if (!session) return null;
 
   let refreshedTokenSet: SessionTokenSet | null = null;
-  session.events.on(EVENTS.NEW_TOKENS, (tokenSet) => {
+  const onNewTokens = (tokenSet: SessionTokenSet): void => {
     refreshedTokenSet = tokenSet;
-  });
+  };
+  session.events.on(EVENTS.NEW_TOKENS, onNewTokens);
 
-  await refreshSession(session, { storage });
+  try {
+    await refreshSession(session, { storage });
+  } finally {
+    removeSessionListener(session, EVENTS.NEW_TOKENS, onNewTokens);
+    disposeOneShotRefreshTimer(session);
+  }
 
   const nextTokenSet = refreshedTokenSet as SessionTokenSet | null;
   if (!nextTokenSet?.accessToken) return null;
@@ -73,6 +79,33 @@ async function refreshStoredOidcSession(
   });
 
   return nextTokenSet.accessToken;
+}
+
+function removeSessionListener(
+  session: Awaited<ReturnType<typeof getSessionFromStorage>>,
+  eventName: string,
+  listener: (tokenSet: SessionTokenSet) => void,
+): void {
+  const events = session?.events as {
+    off?: (eventName: string, listener: (tokenSet: SessionTokenSet) => void) => void;
+    removeListener?: (eventName: string, listener: (tokenSet: SessionTokenSet) => void) => void;
+  } | undefined;
+
+  if (typeof events?.off === 'function') {
+    events.off(eventName, listener);
+    return;
+  }
+  if (typeof events?.removeListener === 'function') {
+    events.removeListener(eventName, listener);
+  }
+}
+
+function disposeOneShotRefreshTimer(session: Awaited<ReturnType<typeof getSessionFromStorage>>): void {
+  const timeoutHandle = (session as { lastTimeoutHandle?: ReturnType<typeof setTimeout> | number } | null | undefined)
+    ?.lastTimeoutHandle;
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle as ReturnType<typeof setTimeout>);
+  }
 }
 
 async function resolveStoredOidcSessionId(
