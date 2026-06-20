@@ -129,8 +129,9 @@ describe('ReachabilityHandler', () => {
       expect.any(Function),
       { optionalAuth: true },
     );
-    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/p2p-sessions', expect.any(Function));
-    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/relay-sessions', expect.any(Function));
+    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/sessions', expect.any(Function));
+    expect(mockServer.routes['POST /v1/signal/nodes/:nodeId/p2p-sessions']).toBeUndefined();
+    expect(mockServer.routes['POST /v1/signal/nodes/:nodeId/relay-sessions']).toBeUndefined();
     expect(mockServer.server.all).not.toHaveBeenCalled();
   });
 
@@ -184,19 +185,21 @@ describe('ReachabilityHandler', () => {
     register();
     const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
     const req = createMockRequest({
+      kind: 'p2p',
       clientId: 'device-1',
       capabilities: ['tcp-punch'],
       candidates: [{ host: '198.51.100.10', port: 12345 }],
     }, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['POST /v1/signal/nodes/:nodeId/p2p-sessions'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(201);
     expect(res._body()).toMatchObject({
       sessionId: 'p2p_fixed-id',
+      kind: 'p2p',
       expiresAt: '2026-06-19T00:05:00.000Z',
-      signalingUrl: 'https://api.example/v1/signal/nodes/node-1/p2p-sessions/p2p_fixed-id',
+      signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_fixed-id',
       capabilities: ['tcp-punch'],
       candidates: [{ host: '198.51.100.10', port: 12345 }],
     });
@@ -211,12 +214,25 @@ describe('ReachabilityHandler', () => {
   it('rejects relay sessions without explicit reason', async () => {
     register();
     const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
-    const req = createMockRequest({}, auth);
+    const req = createMockRequest({ kind: 'relay' }, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['POST /v1/signal/nodes/:nodeId/relay-sessions'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(400);
+    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+  });
+
+  it('rejects generic sessions without a supported kind', async () => {
+    register();
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({ clientId: 'device-1' }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res._body()).toEqual({ error: 'kind must be p2p or relay' });
     expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
   });
 
@@ -224,17 +240,19 @@ describe('ReachabilityHandler', () => {
     register();
     const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
     const req = createMockRequest({
+      kind: 'relay',
       reason: 'temporary remote verification',
       ttlSeconds: 60,
       bandwidthLimitBytes: 1024,
     }, auth);
     const res = createMockResponse();
 
-    await mockServer.routes['POST /v1/signal/nodes/:nodeId/relay-sessions'](req, res, { nodeId: 'node-1' });
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(201);
     expect(res._body()).toMatchObject({
       sessionId: 'relay_fixed-id',
+      kind: 'relay',
       auditId: 'audit_fixed-id',
       expiresAt: '2026-06-19T00:01:00.000Z',
       bandwidthLimitBytes: 1024,

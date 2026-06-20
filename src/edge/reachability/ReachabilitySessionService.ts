@@ -47,12 +47,13 @@ export class ReachabilitySessionService {
     });
     const session: P2PSession = {
       sessionId,
+      kind: 'p2p',
       nodeId,
       clientId: request.clientId,
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       nodeCandidates: routeSet.routes,
-      signalingUrl: new URL(`/v1/signal/nodes/${encodeURIComponent(nodeId)}/p2p-sessions/${sessionId}`, this.options.apiBaseUrl).toString(),
+      signalingUrl: new URL(`/v1/signal/nodes/${encodeURIComponent(nodeId)}/sessions/${sessionId}`, this.options.apiBaseUrl).toString(),
       capabilities: normalizeStringArray(request.capabilities),
       candidates: Array.isArray(request.candidates) ? request.candidates : [],
     };
@@ -92,6 +93,7 @@ export class ReachabilitySessionService {
     };
     const session: RelaySession = {
       sessionId,
+      kind: 'relay',
       auditId,
       nodeId,
       createdAt: createdAt.toISOString(),

@@ -54,6 +54,7 @@ export interface BuildRouteSetOptions {
 }
 
 export interface P2PSessionRequest {
+  kind?: 'p2p';
   clientId: string;
   capabilities?: string[];
   candidates?: unknown[];
@@ -61,6 +62,7 @@ export interface P2PSessionRequest {
 
 export interface P2PSession {
   sessionId: string;
+  kind: 'p2p';
   nodeId: string;
   clientId: string;
   createdAt: string;
@@ -72,6 +74,7 @@ export interface P2PSession {
 }
 
 export interface RelaySessionRequest {
+  kind?: 'relay';
   reason: string;
   ttlSeconds?: number;
   bandwidthLimitBytes?: number;
@@ -80,6 +83,7 @@ export interface RelaySessionRequest {
 
 export interface RelaySession {
   sessionId: string;
+  kind: 'relay';
   auditId: string;
   nodeId: string;
   createdAt: string;

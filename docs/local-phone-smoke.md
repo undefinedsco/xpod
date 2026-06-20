@@ -162,11 +162,11 @@ http://192.168.3.161:3000/app/signal-pod.html?path=%2Falice%2Fa.txt&nodeId=node-
 The page performs the smoke flow in this order:
 
 1. `GET /v1/signal/nodes/:nodeId/routes`
-2. Optional `POST /v1/signal/nodes/:nodeId/p2p-sessions`
+2. Optional `POST /v1/signal/nodes/:nodeId/sessions`
 3. Select a returned `nodeCandidates` / route entry
 4. `GET` the configured Pod resource through that returned route
 
-If the node requires authentication for `p2p-sessions`, fill the node token in
+If the node requires authentication for `sessions`, fill the node token in
 the page. Without a token, the page can still verify public route discovery and
 public resource fetch when those routes are exposed.
 

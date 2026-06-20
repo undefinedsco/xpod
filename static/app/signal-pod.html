@@ -35,7 +35,7 @@
     <h1>Xpod Signal Pod Verifier</h1>
     <p>
       这个页面用我们的 <code>/v1/signal</code> 做入口验证基本 Pod 能力：先读取 route set，按需创建
-      <code>p2p-sessions</code>，再用 signaling 返回的 route 去请求 Pod 资源。
+      <code>sessions</code>，再用 signaling 返回的 route 去请求 Pod 资源。
     </p>
     <p class="small">这不是手动 WebRTC demo；它遥测的是 Xpod signaling API 本身。P2P session 当前验证到“session 创建、候选返回和落库”，真正候选交换/连接需要后续 worker 端实现。</p>
   </header>
@@ -52,7 +52,7 @@
         <input id="nodeId" autocomplete="off" placeholder="node-0000">
       </div>
       <div>
-        <label for="nodeToken">Node Token（可选；创建 P2P session 需要）</label>
+        <label for="nodeToken">Node Token（可选；创建 session 需要）</label>
         <input id="nodeToken" autocomplete="off" placeholder="node token">
       </div>
       <div>
@@ -76,7 +76,7 @@
       </div>
     </div>
     <button id="routesButton" type="button">1. 读取 Routes</button>
-    <button id="sessionButton" type="button">2. 创建 P2P Session</button>
+    <button id="sessionButton" type="button">2. 创建 Session</button>
     <button id="verifyButton" type="button">3. 按返回 Route 验 Pod</button>
     <button class="secondary" id="copyButton" type="button">复制报告</button>
     <dl>
@@ -165,13 +165,14 @@
   async function createSession() {
     try {
       setStatus('创建 p2p session...', 'warn');
-      const url = signalUrl('/p2p-sessions');
+      const url = signalUrl('/sessions');
       $('signalUrl').textContent = url.href;
       const candidates = [{ type: 'browser', origin: window.location.origin, userAgent: navigator.userAgent }];
       const result = await fetchJson(url, {
         method: 'POST',
         headers: authHeaders(true),
         body: JSON.stringify({
+          kind: 'p2p',
           clientId: $('clientId').value.trim() || initialClientId(),
           capabilities: ['browser-signal-pod-smoke'],
           candidates,

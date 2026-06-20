@@ -15,7 +15,10 @@ describe('signaling-driven pod verifier asset', () => {
     expect(html).toContain('Xpod Signal Pod Verifier');
     expect(html).toContain('/v1/signal/nodes/');
     expect(html).toContain('/routes');
-    expect(html).toContain('/p2p-sessions');
+    expect(html).toContain('/sessions');
+    expect(html).toContain("kind: 'p2p'");
+    expect(html).not.toContain('/p2p-sessions');
+    expect(html).not.toContain('/relay-sessions');
     expect(html).toContain('nodeCandidates');
     expect(html).toContain('fetch(signalUrl.href');
     expect(html).toContain('fetch(resourceUrl.href');

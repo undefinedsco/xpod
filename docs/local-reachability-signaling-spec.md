@@ -197,11 +197,12 @@ Authorization: Bearer <clientToken> # optional; absent callers receive public-fi
 ### P2P 会话：新增
 
 ```http
-POST /v1/signal/nodes/{nodeId}/p2p-sessions
+POST /v1/signal/nodes/{nodeId}/sessions
 Authorization: Bearer <clientToken>
 Content-Type: application/json
 
 {
+  "kind": "p2p",
   "clientId": "device_123",
   "capabilities": ["tcp-punch", "udp-hole-punch"],
   "candidates": []
@@ -213,9 +214,10 @@ Content-Type: application/json
 ```json
 {
   "sessionId": "p2p_...",
+  "kind": "p2p",
   "expiresAt": "2026-06-19T00:05:00Z",
   "nodeCandidates": [],
-  "signalingUrl": "https://api.example.com/v1/signal/nodes/node-abc/p2p-sessions/p2p_..."
+  "signalingUrl": "https://api.example.com/v1/signal/nodes/node-abc/sessions/p2p_..."
 }
 ```
 
@@ -228,8 +230,15 @@ Content-Type: application/json
 ### Relay / Tunnel 会话：新增但默认关闭
 
 ```http
-POST /v1/signal/nodes/{nodeId}/relay-sessions
+POST /v1/signal/nodes/{nodeId}/sessions
 Authorization: Bearer <clientToken>
+Content-Type: application/json
+
+{
+  "kind": "relay",
+  "reason": "temporary remote verification",
+  "ttlSeconds": 900
+}
 ```
 
 必须满足至少一个条件：
@@ -270,7 +279,7 @@ GET http://node-0000.undefineds.co/app/signal-pod.html?nodeId=node-0000&path=%2F
 ```
 
 该页面先调用 `GET /v1/signal/nodes/{nodeId}/routes`，可选调用
-`POST /v1/signal/nodes/{nodeId}/p2p-sessions`，再从返回的
+`POST /v1/signal/nodes/{nodeId}/sessions`，再从返回的
 `nodeCandidates` / route 中选择数据入口去 `GET` Pod resource。它验证的是
 当前信令控制面、route/candidate 返回和 Pod HTTP 读取链路；在 worker/client
 实现完整 candidate exchange 和连接建立前，不把它解释为完整 P2P 打洞成功。

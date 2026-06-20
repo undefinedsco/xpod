@@ -52,7 +52,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     }
   }, { optionalAuth: true });
 
-  server.post('/v1/signal/nodes/:nodeId/p2p-sessions', async (request, response, params) => {
+  server.post('/v1/signal/nodes/:nodeId/sessions', async (request, response, params) => {
     const access = resolveSessionAccess(request, params.nodeId);
     if (!access.allowed) {
       sendJson(response, access.status, { error: access.error });
@@ -60,59 +60,63 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     }
 
     const body = await readJsonBody(request);
-    if (!isRecord(body) || typeof body.clientId !== 'string' || body.clientId.trim().length === 0) {
-      sendJson(response, 400, { error: 'clientId is required' });
+    if (!isRecord(body)) {
+      sendJson(response, 400, { error: 'kind must be p2p or relay' });
       return;
     }
 
-    try {
-      const session = await service.createP2PSession(params.nodeId, {
-        clientId: body.clientId.trim(),
-        capabilities: Array.isArray(body.capabilities) ? body.capabilities.filter((entry): entry is string => typeof entry === 'string') : [],
-        candidates: Array.isArray(body.candidates) ? body.candidates : [],
-      });
-      sendJson(response, 201, session);
-    } catch (error) {
-      if (error instanceof NodeRouteSourceNotFoundError) {
-        sendJson(response, 404, { error: 'Node not found' });
+    if (body.kind === 'p2p') {
+      if (typeof body.clientId !== 'string' || body.clientId.trim().length === 0) {
+        sendJson(response, 400, { error: 'clientId is required' });
         return;
       }
-      sendJson(response, 500, { error: 'Failed to create P2P session' });
-    }
-  });
-
-  server.post('/v1/signal/nodes/:nodeId/relay-sessions', async (request, response, params) => {
-    const access = resolveSessionAccess(request, params.nodeId);
-    if (!access.allowed) {
-      sendJson(response, access.status, { error: access.error });
+      try {
+        const session = await service.createP2PSession(params.nodeId, {
+          kind: 'p2p',
+          clientId: body.clientId.trim(),
+          capabilities: Array.isArray(body.capabilities) ? body.capabilities.filter((entry): entry is string => typeof entry === 'string') : [],
+          candidates: Array.isArray(body.candidates) ? body.candidates : [],
+        });
+        sendJson(response, 201, session);
+      } catch (error) {
+        if (error instanceof NodeRouteSourceNotFoundError) {
+          sendJson(response, 404, { error: 'Node not found' });
+          return;
+        }
+        sendJson(response, 500, { error: 'Failed to create p2p session' });
+      }
       return;
     }
 
-    const body = await readJsonBody(request);
-    if (!isRecord(body) || typeof body.reason !== 'string' || body.reason.trim().length === 0) {
-      sendJson(response, 400, { error: 'reason is required for relay sessions' });
+    if (body.kind === 'relay') {
+      if (typeof body.reason !== 'string' || body.reason.trim().length === 0) {
+        sendJson(response, 400, { error: 'reason is required for relay sessions' });
+        return;
+      }
+      try {
+        const session = await service.createRelaySession(params.nodeId, {
+          kind: 'relay',
+          reason: body.reason,
+          ttlSeconds: typeof body.ttlSeconds === 'number' ? body.ttlSeconds : undefined,
+          bandwidthLimitBytes: typeof body.bandwidthLimitBytes === 'number' ? body.bandwidthLimitBytes : undefined,
+          bandwidthLimitBps: typeof body.bandwidthLimitBps === 'number' ? body.bandwidthLimitBps : undefined,
+        });
+        sendJson(response, 201, session);
+      } catch (error) {
+        if (error instanceof InvalidRelaySessionRequestError) {
+          sendJson(response, 400, { error: error.message });
+          return;
+        }
+        if (error instanceof NodeRouteSourceNotFoundError) {
+          sendJson(response, 404, { error: 'Node not found' });
+          return;
+        }
+        sendJson(response, 500, { error: 'Failed to create relay session' });
+      }
       return;
     }
 
-    try {
-      const session = await service.createRelaySession(params.nodeId, {
-        reason: body.reason,
-        ttlSeconds: typeof body.ttlSeconds === 'number' ? body.ttlSeconds : undefined,
-        bandwidthLimitBytes: typeof body.bandwidthLimitBytes === 'number' ? body.bandwidthLimitBytes : undefined,
-        bandwidthLimitBps: typeof body.bandwidthLimitBps === 'number' ? body.bandwidthLimitBps : undefined,
-      });
-      sendJson(response, 201, session);
-    } catch (error) {
-      if (error instanceof InvalidRelaySessionRequestError) {
-        sendJson(response, 400, { error: error.message });
-        return;
-      }
-      if (error instanceof NodeRouteSourceNotFoundError) {
-        sendJson(response, 404, { error: 'Node not found' });
-        return;
-      }
-      sendJson(response, 500, { error: 'Failed to create relay session' });
-    }
+    sendJson(response, 400, { error: 'kind must be p2p or relay' });
   });
 }
 
