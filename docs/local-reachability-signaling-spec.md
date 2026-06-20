@@ -163,9 +163,14 @@ Solid SDK / app
   放入创建请求的 `candidates`，再等待 node answer。连接建立后，双方会继续通过同一个
   signaling session 增量发布 `ice-candidate` / `ice-complete` signal candidate，并轮询远端
   candidate 后调用 werift `addIceCandidate`，从而支持非浏览器 DataChannel 的 trickle ICE。
+  werift provider 还会在建 peer 前读取 signaling session 的 route metadata，将
+  `metadata.protocols["werift-datachannel"].iceServers`、`metadata.protocols.webrtc.iceServers`
+  或兼容的 `metadata.iceServers` 归一化为 werift `PeerConfig.iceServers`；显式传入的
+  `peerConfig.iceServers` 优先级更高。
 - 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
   拥塞控制或加密握手；werift provider 已具备 ICE/DTLS/SCTP 和 signaling offer/answer
-  建链能力和 trickle ICE 增量同步，但还没有实现 TURN 策略、移动端网络切换和真实跨 NAT 验证。
+  建链能力、trickle ICE 增量同步和 STUN/TURN ICE server metadata 消费能力，但还没有实现
+  TURN 凭据签发/轮换/限额策略、移动端网络切换和真实跨 NAT 验证。
 
 设计约束：
 

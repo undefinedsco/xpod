@@ -8,6 +8,7 @@ import {
   createP2PDataPlaneHandler,
   createWeriftDataChannelP2PServer,
   createWeriftDataChannelP2PTransport,
+  resolveWeriftPeerConfig,
 } from '../../../src/edge/reachability';
 
 const p2pRoute: AccessRoute = {
@@ -23,6 +24,53 @@ const p2pRoute: AccessRoute = {
 };
 
 describe('signaled werift DataChannel P2P data plane', () => {
+  it('derives werift ICE servers from route provider metadata without overriding explicit peer config', () => {
+    const session = new InMemoryP2PSignalingClient('p2p_ice_metadata').session;
+    session.nodeCandidates = [{
+      ...p2pRoute,
+      metadata: {
+        protocols: {
+          'werift-datachannel': {
+            iceServers: [
+              { urls: 'stun:stun.example.invalid:3478' },
+              {
+                urls: [
+                  'turn:turn.example.invalid:3478?transport=udp',
+                  'turns:turn.example.invalid:5349?transport=tcp',
+                ],
+                username: 'device-user',
+                credential: 'device-secret',
+              },
+            ],
+          },
+        },
+      },
+    }];
+
+    const resolved = resolveWeriftPeerConfig({
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+    }, session);
+    const explicit = resolveWeriftPeerConfig({
+      iceServers: [{ urls: 'stun:explicit.example.invalid:3478' }],
+    }, session);
+
+    expect(resolved.iceAdditionalHostAddresses).toEqual(['127.0.0.1']);
+    expect(resolved.iceServers).toEqual([
+      { urls: 'stun:stun.example.invalid:3478' },
+      {
+        urls: 'turn:turn.example.invalid:3478?transport=udp',
+        username: 'device-user',
+        credential: 'device-secret',
+      },
+      {
+        urls: 'turns:turn.example.invalid:5349?transport=tcp',
+        username: 'device-user',
+        credential: 'device-secret',
+      },
+    ]);
+    expect(explicit.iceServers).toEqual([{ urls: 'stun:explicit.example.invalid:3478' }]);
+  });
+
   it('exchanges offer and answer through signaling before carrying canonical Solid HTTP frames', async () => {
     const signaling = new InMemoryP2PSignalingClient('p2p_1');
     const peerConfig = {

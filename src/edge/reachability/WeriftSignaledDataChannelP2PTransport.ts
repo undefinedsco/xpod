@@ -5,7 +5,7 @@ import {
   type RTCIceCandidate,
   type RTCIceCandidateInit,
 } from 'werift';
-import type { P2PCandidateRole, P2PTransportCandidate } from './types';
+import type { P2PCandidateRole, P2PSession, P2PTransportCandidate } from './types';
 import type { P2PSignalingClient } from './P2PSignalingClient';
 
 const WERIFT_PROVIDER = 'werift-datachannel' as const;
@@ -52,6 +52,7 @@ export interface CreatedWeriftDataChannelSessionConnection extends SignaledWerif
 
 type WeriftSignalType = 'offer' | 'answer';
 type WeriftIceSignalType = 'ice-candidate' | 'ice-complete';
+type WeriftIceServer = PeerConfig['iceServers'][number];
 
 export async function connectWeriftDataChannelThroughSignaling(
   options: ConnectWeriftDataChannelThroughSignalingOptions,
@@ -66,7 +67,7 @@ export async function createWeriftDataChannelSessionThroughSignaling(
 ): Promise<CreatedWeriftDataChannelSessionConnection> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const label = options.label ?? DEFAULT_LABEL;
-  const peer = new RTCPeerConnection(options.peerConfig);
+  const peer = new RTCPeerConnection(resolveWeriftPeerConfig(options.peerConfig));
   const channel = peer.createDataChannel(label, { ordered: true });
   let stopTrickleIceSync: (() => void) | undefined;
 
@@ -122,7 +123,8 @@ async function connectClient(
 ): Promise<SignaledWeriftDataChannelConnection> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const label = options.label ?? DEFAULT_LABEL;
-  const peer = new RTCPeerConnection(options.peerConfig);
+  const initialSession = await options.signaling.getP2PSession(options.sessionId);
+  const peer = new RTCPeerConnection(resolveWeriftPeerConfig(options.peerConfig, initialSession));
   const channel = peer.createDataChannel(label, { ordered: true });
   let stopTrickleIceSync: (() => void) | undefined;
 
@@ -159,12 +161,12 @@ async function connectNode(
 ): Promise<SignaledWeriftDataChannelConnection> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const label = options.label ?? DEFAULT_LABEL;
-  const peer = new RTCPeerConnection(options.peerConfig);
+  const initialSession = await options.signaling.getP2PSession(options.sessionId);
+  const peer = new RTCPeerConnection(resolveWeriftPeerConfig(options.peerConfig, initialSession));
   const nodeChannelPromise = waitForNodeDataChannel(peer, timeoutMs);
   let stopTrickleIceSync: (() => void) | undefined;
 
   try {
-    const initialSession = await options.signaling.getP2PSession(options.sessionId);
     const remoteSignal = await waitForSignal({
       ...options,
       signalType: 'offer',
@@ -193,6 +195,23 @@ async function connectNode(
   }
 }
 
+export function resolveWeriftPeerConfig(
+  peerConfig?: Partial<PeerConfig>,
+  session?: Pick<P2PSession, 'nodeCandidates'>,
+): Partial<PeerConfig> {
+  if (peerConfig && Object.prototype.hasOwnProperty.call(peerConfig, 'iceServers')) {
+    return { ...peerConfig };
+  }
+  const iceServers = extractWeriftIceServers(session);
+  if (iceServers.length === 0) {
+    return peerConfig ? { ...peerConfig } : {};
+  }
+  return {
+    ...peerConfig,
+    iceServers,
+  };
+}
+
 function buildConnection(
   peer: RTCPeerConnection,
   channel: RTCDataChannel,
@@ -211,6 +230,67 @@ function buildConnection(
       await peer.close();
     },
   };
+}
+
+function extractWeriftIceServers(session?: Pick<P2PSession, 'nodeCandidates'>): WeriftIceServer[] {
+  if (!session) {
+    return [];
+  }
+  const iceServers: WeriftIceServer[] = [];
+  const seen = new Set<string>();
+  for (const route of session.nodeCandidates) {
+    const metadata = route.metadata;
+    for (const value of [
+      metadata?.iceServers,
+      readNested(metadata, ['protocols', WERIFT_PROVIDER, 'iceServers']),
+      readNested(metadata, ['protocols', 'webrtc', 'iceServers']),
+    ]) {
+      for (const iceServer of normalizeIceServers(value)) {
+        const key = `${iceServer.urls}\u0000${iceServer.username ?? ''}\u0000${iceServer.credential ?? ''}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        iceServers.push(iceServer);
+      }
+    }
+  }
+  return iceServers;
+}
+
+function normalizeIceServers(value: unknown): WeriftIceServer[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const iceServers: WeriftIceServer[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const urls = Array.isArray(item.urls) ? item.urls : [item.urls];
+    for (const url of urls) {
+      if (typeof url !== 'string' || url.length === 0) {
+        continue;
+      }
+      iceServers.push({
+        urls: url,
+        ...(typeof item.username === 'string' ? { username: item.username } : {}),
+        ...(typeof item.credential === 'string' ? { credential: item.credential } : {}),
+      });
+    }
+  }
+  return iceServers;
+}
+
+function readNested(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
 }
 
 function buildSignalCandidate(
