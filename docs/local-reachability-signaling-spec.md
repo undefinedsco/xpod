@@ -196,11 +196,16 @@ Solid SDK / app
   session、等待 node raw TCP candidates、执行 candidate race，并返回可直接交给
   `createP2PDataPlaneFetch` 使用的 transport。runtime 调用方不需要手工拼接 create/wait/connect
   三段流程。
+- `acceptSignaledRawTcpP2PConnectionOnce` 已提供 node 侧一次性编排入口：local node 轮询
+  pending raw TCP session、按 client bucket 追加 node candidates、执行 candidate race，
+  并把成功 socket 直接挂到 `P2PDataPlaneHandler`。runtime 调用方不需要手工拼接
+  list/answer/connect/attach 四段流程。
 - `attachTcpP2PDataPlaneSocket` 已能把 raw TCP 打洞成功后拿到的 pre-connected socket
   直接挂到 node-side `P2PDataPlaneHandler`，因此执行器不必伪装成 listener accept
   流程；成功 socket 可立即转发 canonical HTTP frame 到本地 CSS/SP。
-- 旧浏览器 P2P heavy provider、relay credential 注入、provider metadata 和对应 smoke
-  已从 active implementation 移除；这些能力不再作为 Xpod P2P 数据面的默认方向。
+- 已从 active implementation 移除的是 raw TCP 方向之外、此前用于普通浏览器
+  P2P / relay-heavy 的实验入口，例如 relay credential 注入和对应 smoke；这不包括
+  已有 public tunnel 能力。
 - 已实现的 Cloudflare Tunnel、FRP/SakuraFRP 能力必须保留：它们不是要被 raw TCP
   替代或删除的“重 P2P 方案”，而是独立的 `user-tunnel` / public fallback route，
   供用户或策略显式启用。

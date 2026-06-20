@@ -7,6 +7,7 @@ import type {
   RawTcpP2PConnectAttempt,
 } from '../../../src/edge/reachability';
 import {
+  acceptSignaledRawTcpP2PConnectionOnce,
   answerPendingRawTcpP2PSessionsOnce,
   attachTcpP2PDataPlaneSocket,
   connectRawTcpP2PTransport,
@@ -16,6 +17,7 @@ import {
   createSignaledRawTcpP2PSession,
   createRawTcpHolePunchCandidates,
   createTcpP2PDataPlaneServer,
+  createTcpP2PDataPlaneTransport,
   RAW_TCP_HOLE_PUNCH_TRANSPORT,
   waitForRawTcpRemoteCandidates,
 } from '../../../src/edge/reachability';
@@ -361,6 +363,94 @@ describe('signaled raw TCP P2P sessions', () => {
       result.transport.close();
     } finally {
       socketHandle.close();
+      await close();
+    }
+  });
+
+  it('answers a pending raw TCP session and attaches the node data-plane handler', async () => {
+    const localFetch = vi.fn(async () => new Response('node accepted response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const localPort = await reserveTcpPort();
+    const plan = {
+      bucket: 104,
+      boundary: 222,
+      rendezvousTimeSeconds: 0,
+      ports: [localPort],
+    };
+    const clientCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-1',
+      host: '127.0.0.1',
+      plan,
+    });
+    let updatedSession: P2PSession | undefined;
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(),
+      listP2PSessions: vi.fn(async () => [{ ...baseSession, candidates: clientCandidates }]),
+      getP2PSession: vi.fn(),
+      addP2PCandidates: vi.fn(async (sessionIdOrUrl, request) => {
+        expect(sessionIdOrUrl).toBe(baseSession.signalingUrl);
+        updatedSession = {
+          ...baseSession,
+          candidates: [...clientCandidates, ...(request.candidates as P2PTransportCandidate[])],
+        };
+        return updatedSession;
+      }),
+    };
+    const attempts: RawTcpP2PConnectAttempt[] = [];
+    let accepted: Awaited<ReturnType<typeof acceptSignaledRawTcpP2PConnectionOnce>> | undefined;
+    let clientTransport: ReturnType<typeof createTcpP2PDataPlaneTransport> | undefined;
+
+    try {
+      accepted = await acceptSignaledRawTcpP2PConnectionOnce({
+        signaling,
+        sourceId: 'node-1',
+        host: '127.0.0.1',
+        handler,
+        connectTimeoutMs: 1_000,
+        connectSocket: async (attempt) => {
+          attempts.push(attempt);
+          return serverSocket;
+        },
+      });
+      expect(accepted).toBeDefined();
+      clientTransport = createTcpP2PDataPlaneTransport({
+        remoteHost: '127.0.0.1',
+        remotePort: localPort,
+        socket: clientSocket,
+        timeoutMs: 2_000,
+      });
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: baseSession.nodeCandidates[0], transport: clientTransport });
+
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/node-accepted.txt');
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('node accepted response');
+      expect(localFetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:5737/alice/node-accepted.txt',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(accepted?.session).toEqual(updatedSession);
+      expect(accepted?.localCandidates).toEqual(updatedSession?.candidates.filter((candidate) => candidate.role === 'node'));
+      expect(accepted?.remoteCandidates).toEqual(clientCandidates);
+      expect(signaling.listP2PSessions).toHaveBeenCalledTimes(1);
+      expect(signaling.addP2PCandidates).toHaveBeenCalledTimes(1);
+      expect(attempts).toEqual([
+        expect.objectContaining({
+          local: expect.objectContaining({ sourceId: 'node-1', port: localPort }),
+          remote: expect.objectContaining({ sourceId: 'device-1', port: localPort }),
+        }),
+      ]);
+    } finally {
+      accepted?.socketHandle.close();
+      clientTransport?.close();
       await close();
     }
   });

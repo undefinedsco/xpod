@@ -1,9 +1,12 @@
 import { createConnection, type Socket } from 'node:net';
 import type { AccessRoute, P2PCandidateRole, P2PSession, P2PTransportCandidate } from './types';
 import type { CreateP2PSessionInput, P2PSignalingClient } from './P2PSignalingClient';
+import type { P2PDataPlaneHandler } from './P2PDataPlane';
 import {
+  attachTcpP2PDataPlaneSocket,
   computeTcpHolePunchPlan,
   createTcpP2PDataPlaneTransport,
+  type TcpP2PDataPlaneSocketHandle,
   type TcpP2PDataPlaneTransport,
   type TcpHolePunchPlan,
   type TcpHolePunchPlanOptions,
@@ -107,6 +110,23 @@ export interface ConnectedSignaledRawTcpP2PTransport extends SignaledRawTcpP2PSe
   transport: TcpP2PDataPlaneTransport;
 }
 
+export interface AcceptSignaledRawTcpP2PConnectionOnceOptions extends AnswerPendingRawTcpP2PSessionsOnceOptions {
+  handler: P2PDataPlaneHandler;
+  connectTimeoutMs?: number;
+  localAddress?: string;
+  nowMs?: () => number;
+  sleepMs?: RawTcpP2PSleep;
+  connectSocket?: RawTcpP2PConnectSocket;
+}
+
+export interface AcceptedSignaledRawTcpP2PConnection {
+  session: P2PSession;
+  plan: TcpHolePunchPlan;
+  localCandidates: P2PTransportCandidate[];
+  remoteCandidates: P2PTransportCandidate[];
+  socketHandle: TcpP2PDataPlaneSocketHandle;
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
@@ -206,6 +226,64 @@ export async function answerPendingRawTcpP2PSessionsOnce(
   return answered;
 }
 
+export async function acceptSignaledRawTcpP2PConnectionOnce(
+  options: AcceptSignaledRawTcpP2PConnectionOnceOptions,
+): Promise<AcceptedSignaledRawTcpP2PConnection | undefined> {
+  const sessions = await options.signaling.listP2PSessions();
+  for (const session of sessions) {
+    if (!selectRawTcpP2PRoute(session.nodeCandidates)) {
+      continue;
+    }
+    const plan = planFromRemoteCandidates(session.candidates, 'client');
+    if (!plan) {
+      continue;
+    }
+    const localCandidates = createRawTcpHolePunchCandidates({
+      role: 'node',
+      sourceId: options.sourceId,
+      host: options.host,
+      address: options.address,
+      createdAt: options.createdAt,
+      priority: options.priority,
+      plan,
+      candidateIdPrefix: options.candidateIdPrefix,
+    });
+    const answeredSession = hasRawTcpCandidate(session.candidates, 'node', options.sourceId, plan.bucket)
+      ? session
+      : await options.signaling.addP2PCandidates(session.signalingUrl || session.sessionId, {
+        role: 'node',
+        sourceId: options.sourceId,
+        candidates: localCandidates,
+      });
+    const remoteCandidates = filterRawTcpRemoteCandidates(
+      answeredSession.candidates,
+      'node',
+      options.sourceId,
+      plan.bucket,
+    );
+    if (remoteCandidates.length === 0) {
+      continue;
+    }
+    const socket = await connectRawTcpP2PSocket({
+      localCandidates,
+      remoteCandidates,
+      connectTimeoutMs: options.connectTimeoutMs,
+      localAddress: options.localAddress,
+      nowMs: options.nowMs,
+      sleepMs: options.sleepMs,
+      connectSocket: options.connectSocket,
+    });
+    return {
+      session: answeredSession,
+      plan,
+      localCandidates,
+      remoteCandidates,
+      socketHandle: attachTcpP2PDataPlaneSocket({ socket, handler: options.handler }),
+    };
+  }
+  return undefined;
+}
+
 export async function waitForRawTcpRemoteCandidates(
   options: WaitForRawTcpRemoteCandidatesOptions,
 ): Promise<P2PTransportCandidate[]> {
@@ -263,6 +341,25 @@ export async function connectSignaledRawTcpP2PTransport(
 export async function connectRawTcpP2PTransport(
   options: ConnectRawTcpP2PTransportOptions,
 ): Promise<TcpP2PDataPlaneTransport> {
+  const { attempt, socket } = await connectRawTcpP2PSocketAttempt(options);
+  return createTcpP2PDataPlaneTransport({
+    remoteHost: attempt.remoteHost,
+    remotePort: attempt.remotePort,
+    socket,
+    timeoutMs: options.timeoutMs,
+  });
+}
+
+async function connectRawTcpP2PSocket(
+  options: ConnectRawTcpP2PTransportOptions,
+): Promise<Socket> {
+  const { socket } = await connectRawTcpP2PSocketAttempt(options);
+  return socket;
+}
+
+async function connectRawTcpP2PSocketAttempt(
+  options: ConnectRawTcpP2PTransportOptions,
+): Promise<{ attempt: RawTcpP2PConnectAttempt; socket: Socket }> {
   const pairs = candidatePairs(options.localCandidates, options.remoteCandidates);
   if (pairs.length === 0) {
     throw new Error('No compatible raw TCP P2P candidate pairs');
@@ -282,12 +379,7 @@ export async function connectRawTcpP2PTransport(
       sleepMs,
       connectSocket,
     });
-    return createTcpP2PDataPlaneTransport({
-      remoteHost: attempt.remoteHost,
-      remotePort: attempt.remotePort,
-      socket,
-      timeoutMs: options.timeoutMs,
-    });
+    return { attempt, socket };
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
