@@ -70,6 +70,14 @@ await agent.start({
     configPath: './frpc.ini',
     workingDirectory: process.cwd(),
   },
+  p2p: {
+    enabled: true,
+    targetBaseUrl: process.env.CSS_BASE_URL ?? 'http://127.0.0.1:3000/',
+    // 可选；默认会从 XPOD_SIGNAL_ENDPOINT 的 /api/signal 派生到 API 根地址。
+    apiBaseUrl: process.env.XPOD_API_BASE_URL,
+    // 轮询 active P2P signaling sessions，发现 client-created werift offer 后 answer。
+    pollIntervalMs: 1000,
+  },
 });
 ```
 
@@ -86,6 +94,11 @@ await agent.start({
 - FRP 隧道信息会在心跳响应的 `metadata.tunnel.config` 中返回（包含 `serverHost`、`serverPort`、`token`、`proxyName`、`remotePort`）。若在 Agent 中启用 `frp` 配置，将自动生成 `frpc.ini` 并守护 `frpc` 进程；未配置时可自行处理或保持直连。
 - Agent 会在心跳的 `tunnel.client` 字段中汇报 frpc 运行状态（`running/inactive/error`、进程 PID、最近更新及故障信息），Cluster 侧可据此监控隧道健康。
 - TODO：后续将在该字段补充更细的带宽/延迟指标，方便观察隧道性能。
+- 若启用 `p2p`，Agent 会独立于 heartbeat 启动 werift DataChannel answer loop：
+  - 定期调用 `/v1/signal/nodes/{nodeId}/sessions` 列出 active P2P sessions；
+  - 只对 client-created werift offer 且本 node 尚未 answer 的 session 启动 node-side DataChannel server；
+  - DataChannel 内承载 `xpod-p2p-http/1` HTTP frame，并转发到 `targetBaseUrl` 指向的本地 CSS/SP；
+  - `agent.stop()` 会停止轮询并关闭已启动的 P2P answer handles。
 - 若提供 `acme` 配置，Agent 会自动申请/续签证书：
 - `mode=cluster`（默认推荐）：节点本地仅负责生成私钥与 CSR，调用 `/api/signal/certificate` 让 cluster 完成 ACME DNS-01、证书签发与分发。Cluster 会在心跳响应的 `metadata.certificate` 中回传有效期、域名等信息，Agent 根据这些指令调度下一次续签。
 - `mode=local`：兼容旧实现，由节点本地直接调用 ACME CA，cluster 只负责写入 TXT 记录。仅在需要完全离线或自定义 CA 时使用。

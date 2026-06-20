@@ -7,6 +7,15 @@ import { FrpcProcessManager, type FrpcRuntimeStatus } from './frp/FrpcProcessMan
 import { AcmeCertificateManager } from './acme/AcmeCertificateManager';
 import { ClusterCertificateManager } from './acme/ClusterCertificateManager';
 import { EdgeNodeCapabilityDetector, type NetworkAddressInfo } from './EdgeNodeCapabilityDetector';
+import {
+  answerPendingWeriftP2PSessionsOnce,
+  createP2PSignalingClient,
+  type AnswerPendingWeriftP2PSessionsOnceOptions,
+  type P2PSignalingClient,
+  type WeriftSignaledP2PDataPlaneNode,
+} from './reachability';
+
+type EdgeNodeP2PAnswerHandle = Pick<WeriftSignaledP2PDataPlaneNode, 'close'>;
 
 export interface EdgeNodeAgentOptions {
   signalEndpoint: string;
@@ -40,6 +49,22 @@ export interface EdgeNodeAgentOptions {
     logPrefix?: string;
     autoRestart?: boolean;
   };
+  p2p?: {
+    enabled?: boolean | string;
+    targetBaseUrl: string | URL;
+    apiBaseUrl?: string;
+    signaling?: P2PSignalingClient;
+    fetchImpl?: typeof fetch;
+    signalingFetchImpl?: typeof fetch;
+    pollIntervalMs?: number;
+    signalingPollIntervalMs?: number;
+    timeoutMs?: number;
+    label?: string;
+    peerConfig?: AnswerPendingWeriftP2PSessionsOnceOptions['peerConfig'];
+    answerPendingSessionsOnce?: (
+      options: AnswerPendingWeriftP2PSessionsOnceOptions<EdgeNodeP2PAnswerHandle>,
+    ) => Promise<EdgeNodeP2PAnswerHandle[]>;
+  };
 }
 
 export class EdgeNodeAgent {
@@ -51,6 +76,10 @@ export class EdgeNodeAgent {
   private cachedNetworkInfo?: NetworkAddressInfo;
   private lastNetworkDetection = 0;
   private readonly networkDetectionIntervalMs = 60_000; // 每分钟重新检测一次
+  private p2pAnswerTimer?: NodeJS.Timeout;
+  private p2pAnswerRunning = false;
+  private p2pAnswerStopped = false;
+  private readonly p2pAnswerHandles = new Set<EdgeNodeP2PAnswerHandle>();
 
   public async start(options: EdgeNodeAgentOptions): Promise<void> {
     if (options.acme) {
@@ -114,6 +143,7 @@ export class EdgeNodeAgent {
     }
 
     this.heartbeat = new EdgeNodeSignalClient(heartbeatOptions);
+    this.startP2PAnswerLoop(options);
   }
 
   public stop(): void {
@@ -123,6 +153,7 @@ export class EdgeNodeAgent {
     this.heartbeat = undefined;
     void this.frpManager?.stop();
     this.clusterCertificate?.stop();
+    this.stopP2PAnswerLoop();
   }
 
   private stringifyIfContent(data: Record<string, unknown>): string | undefined {
@@ -244,6 +275,101 @@ export class EdgeNodeAgent {
       return undefined;
     }
     return { client: status };
+  }
+
+  private startP2PAnswerLoop(options: EdgeNodeAgentOptions): void {
+    const p2p = options.p2p;
+    if (!p2p || this.normalizeBoolean(p2p.enabled) === false) {
+      return;
+    }
+
+    const signaling = p2p.signaling ?? createP2PSignalingClient({
+      apiBaseUrl: p2p.apiBaseUrl ?? this.deriveP2PApiBaseUrl(options.signalEndpoint),
+      nodeId: options.nodeId,
+      token: options.nodeToken,
+      fetchImpl: p2p.signalingFetchImpl,
+    });
+    const answerPendingSessionsOnce = p2p.answerPendingSessionsOnce ?? answerPendingWeriftP2PSessionsOnce;
+    const answerOptions: AnswerPendingWeriftP2PSessionsOnceOptions<EdgeNodeP2PAnswerHandle> = {
+      signaling,
+      sourceId: options.nodeId,
+      targetBaseUrl: p2p.targetBaseUrl,
+      fetchImpl: p2p.fetchImpl,
+      label: p2p.label,
+      timeoutMs: p2p.timeoutMs,
+      pollIntervalMs: p2p.signalingPollIntervalMs,
+      peerConfig: p2p.peerConfig,
+    };
+    const pollIntervalMs = this.normalizeP2PAnswerPollInterval(p2p.pollIntervalMs);
+
+    this.p2pAnswerStopped = false;
+    const poll = async (): Promise<void> => {
+      if (this.p2pAnswerStopped || this.p2pAnswerRunning) {
+        return;
+      }
+      this.p2pAnswerRunning = true;
+      try {
+        const handles = await answerPendingSessionsOnce(answerOptions);
+        if (this.p2pAnswerStopped) {
+          this.closeP2PAnswerHandles(handles);
+          return;
+        }
+        for (const handle of handles) {
+          this.p2pAnswerHandles.add(handle);
+        }
+      } catch (error: unknown) {
+        this.logger.warn(`P2P answer loop failed: ${(error as Error).message}`);
+      } finally {
+        this.p2pAnswerRunning = false;
+      }
+    };
+
+    void poll();
+    this.p2pAnswerTimer = setInterval(() => {
+      void poll();
+    }, pollIntervalMs);
+  }
+
+  private stopP2PAnswerLoop(): void {
+    this.p2pAnswerStopped = true;
+    if (this.p2pAnswerTimer) {
+      clearInterval(this.p2pAnswerTimer);
+      this.p2pAnswerTimer = undefined;
+    }
+    const handles = Array.from(this.p2pAnswerHandles);
+    this.p2pAnswerHandles.clear();
+    this.closeP2PAnswerHandles(handles);
+  }
+
+  private closeP2PAnswerHandles(handles: EdgeNodeP2PAnswerHandle[]): void {
+    for (const handle of handles) {
+      void handle.close().catch((error: unknown) => {
+        this.logger.warn(`Closing P2P answer handle failed: ${(error as Error).message}`);
+      });
+    }
+  }
+
+  private normalizeBoolean(value: boolean | string | undefined): boolean {
+    if (value === undefined) {
+      return true;
+    }
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+  }
+
+  private normalizeP2PAnswerPollInterval(value: number | undefined): number {
+    return Number.isFinite(value) && value !== undefined && value > 0 ? value : 1_000;
+  }
+
+  private deriveP2PApiBaseUrl(signalEndpoint: string): string {
+    const url = new URL(signalEndpoint);
+    url.pathname = url.pathname.replace(/\/api\/signal\/?$/u, '/');
+    url.search = '';
+    url.hash = '';
+    return url.toString();
   }
 
   /**

@@ -169,6 +169,9 @@ Solid SDK / app
   local node agent 可用 `answerPendingWeriftP2PSessionsOnce` 轮询 active session 列表，
   只对含 client werift offer 且本 node 尚未 answer 的 session 启动 node-side DataChannel
   server，避免重复 answer。
+  `EdgeNodeAgent.p2p` 已把该 one-shot helper 接入节点生命周期：启动时立即轮询一次，
+  之后按 `pollIntervalMs` 周期发现 pending sessions，停止 Agent 时关闭已启动的
+  node-side answer handles。
   werift provider 还会在建 peer 前读取 signaling session 的 route metadata，将
   `metadata.protocols["werift-datachannel"].iceServers`、`metadata.protocols.webrtc.iceServers`
   或兼容的 `metadata.iceServers` 归一化为 werift `PeerConfig.iceServers`；显式传入的
