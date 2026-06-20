@@ -83,17 +83,24 @@ export interface P2PCandidateUpdateRequest {
   candidates: unknown[];
 }
 
+export interface P2PSessionLimits {
+  maxCandidatesPerUpdate: number;
+  maxCandidatesTotal: number;
+}
+
 export interface P2PSession {
   sessionId: string;
   kind: 'p2p';
   nodeId: string;
   clientId: string;
+  auditId?: string;
   createdAt: string;
   expiresAt: string;
   nodeCandidates: AccessRoute[];
   signalingUrl: string;
   capabilities: string[];
   candidates: P2PTransportCandidate[];
+  limits?: P2PSessionLimits;
 }
 
 export interface P2PSessionList {

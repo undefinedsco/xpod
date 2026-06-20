@@ -202,6 +202,10 @@ Solid SDK / app
   `werift-p2p-smoke` 支持 `--ice-transport-policy relay` /
   `XPOD_P2P_ICE_TRANSPORT_POLICY=relay`，用于实网验收时强制只走 TURN relay，从而把
   “direct ICE 成功”和“TURN fallback 成功”拆开验证。
+  Cloud signaling 控制面还会为每个 P2P session 生成 `auditId`，并通过
+  `XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE`、`XPOD_P2P_MAX_CANDIDATES_PER_UPDATE`、
+  `XPOD_P2P_MAX_CANDIDATES_PER_SESSION` 限制 active session 数、单次 candidate 更新数和
+  单 session 累计 candidate 数；超限返回 `429`，避免未连接成功前控制面状态无界增长。
 - 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
   拥塞控制或加密握手；werift provider 已具备 ICE/DTLS/SCTP 和 signaling offer/answer
   建链能力、trickle ICE 增量同步和 STUN/TURN ICE server metadata 下发/消费能力，但还没有实现
@@ -331,16 +335,22 @@ Content-Type: application/json
 {
   "sessionId": "p2p_...",
   "kind": "p2p",
+  "auditId": "audit_...",
   "expiresAt": "2026-06-19T00:05:00Z",
   "nodeCandidates": [],
-  "signalingUrl": "https://api.example.com/v1/signal/nodes/node-abc/sessions/p2p_..."
+  "signalingUrl": "https://api.example.com/v1/signal/nodes/node-abc/sessions/p2p_...",
+  "limits": {
+    "maxCandidatesPerUpdate": 32,
+    "maxCandidatesTotal": 256
+  }
 }
 ```
 
 要求：
 
 - Cloud 只做候选交换和会话鉴权，不承载 Pod HTTP body。
-- 会话必须短 TTL，可撤销，可审计。
+- 会话必须短 TTL，可撤销，可审计；`auditId` 用于把 session、TURN credential 和后续诊断日志关联起来。
+- Cloud 必须限制 active session 数和 candidate 数；创建 session 或追加 candidate 超限时返回 `429`。
 - 失败后回落到下一候选 route，不阻塞本地可用性。
 
 会话创建后，`signalingUrl` 是该短 TTL 会话的控制面入口：
@@ -397,8 +407,8 @@ Content-Type: application/json
 
 节点使用 node token 追加候选时，Cloud 从认证上下文强制推导 `role=node`、
 `sourceId=nodeId`，不信任 body 里的伪造身份。service token 可代表 managed client
-提交 `role=client` 候选。会话过期后候选更新返回 `410`，客户端必须创建新 session
-或回落到下一 route。
+提交 `role=client` 候选。会话过期后候选更新返回 `410`；单次更新或累计候选超限返回
+`429`；客户端必须创建新 session 或回落到下一 route。
 
 当前 UDP provider 的非浏览器握手流程：
 

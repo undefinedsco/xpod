@@ -6,6 +6,7 @@ import type {
   BuildRouteSetSource,
   P2PCandidateUpdateRequest,
   P2PSession,
+  P2PSessionLimits,
   P2PSessionList,
   P2PSessionRequest,
   P2PTransportCandidate,
@@ -24,6 +25,9 @@ export interface ReachabilitySessionServiceOptions {
   defaultP2PTtlSeconds?: number;
   defaultRelayTtlSeconds?: number;
   defaultRelayBandwidthLimitBytes?: number;
+  maxActiveP2PSessionsPerNode?: number;
+  maxP2PCandidatesPerUpdate?: number;
+  maxP2PCandidatesPerSession?: number;
 }
 
 export interface P2PIceServerMetadata {
@@ -45,6 +49,9 @@ export class ReachabilitySessionService {
   private readonly defaultP2PTtlSeconds: number;
   private readonly defaultRelayTtlSeconds: number;
   private readonly defaultRelayBandwidthLimitBytes: number;
+  private readonly maxActiveP2PSessionsPerNode: number;
+  private readonly maxP2PCandidatesPerUpdate: number;
+  private readonly maxP2PCandidatesPerSession: number;
 
   public constructor(private readonly options: ReachabilitySessionServiceOptions) {
     this.now = options.now ?? (() => new Date());
@@ -52,13 +59,34 @@ export class ReachabilitySessionService {
     this.defaultP2PTtlSeconds = options.defaultP2PTtlSeconds ?? 5 * 60;
     this.defaultRelayTtlSeconds = options.defaultRelayTtlSeconds ?? 15 * 60;
     this.defaultRelayBandwidthLimitBytes = options.defaultRelayBandwidthLimitBytes ?? 64 * 1024 * 1024;
+    this.maxActiveP2PSessionsPerNode = options.maxActiveP2PSessionsPerNode ?? 16;
+    this.maxP2PCandidatesPerUpdate = options.maxP2PCandidatesPerUpdate ?? 32;
+    this.maxP2PCandidatesPerSession = options.maxP2PCandidatesPerSession ?? 256;
   }
 
   public async createP2PSession(nodeId: string, request: P2PSessionRequest): Promise<P2PSession> {
     const source = await this.loadNodeRouteSource(nodeId);
+    const activeSessions = this.readActiveP2PSessions(source.metadata);
+    if (activeSessions.length >= this.maxActiveP2PSessionsPerNode) {
+      throw new P2PActiveSessionLimitExceededError(`Node ${nodeId} reached active P2P session limit`);
+    }
     const createdAt = this.now();
     const expiresAt = addSeconds(createdAt, this.defaultP2PTtlSeconds);
-    const sessionId = `p2p_${this.randomId()}`;
+    const suffix = this.randomId();
+    const sessionId = `p2p_${suffix}`;
+    const auditId = `audit_${suffix}`;
+    const limits = this.p2pSessionLimits();
+    if (Array.isArray(request.candidates) && request.candidates.length > limits.maxCandidatesPerUpdate) {
+      throw new P2PCandidateUpdateLimitExceededError('P2P candidate update limit exceeded');
+    }
+    const candidates = this.normalizeP2PCandidates(request.candidates, {
+      role: 'client',
+      sourceId: request.clientId,
+      createdAt,
+    });
+    if (candidates.length > limits.maxCandidatesTotal) {
+      throw new P2PCandidateSessionLimitExceededError('P2P candidate session limit exceeded');
+    }
     const routeSet = buildRouteSet(source, {
       audience: 'managed',
       baseStorageDomain: this.options.baseStorageDomain,
@@ -69,6 +97,7 @@ export class ReachabilitySessionService {
       kind: 'p2p',
       nodeId,
       clientId: request.clientId,
+      auditId,
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       nodeCandidates: this.injectP2PIceServerMetadata(routeSet.routes, {
@@ -80,11 +109,8 @@ export class ReachabilitySessionService {
       }),
       signalingUrl: new URL(`/v1/signal/nodes/${encodeURIComponent(nodeId)}/sessions/${sessionId}`, this.options.apiBaseUrl).toString(),
       capabilities: normalizeStringArray(request.capabilities),
-      candidates: this.normalizeP2PCandidates(request.candidates, {
-        role: 'client',
-        sourceId: request.clientId,
-        createdAt,
-      }),
+      candidates,
+      limits,
     };
     await this.appendSession(nodeId, 'p2p', session);
     return session;
@@ -120,14 +146,22 @@ export class ReachabilitySessionService {
     const { reachabilitySessions, p2pSessions, sessionIndex, session } = await this.loadP2PSession(nodeId, sessionId);
     this.assertP2PSessionActive(session);
 
+    const limits = this.resolveP2PSessionLimits(session);
+    if (request.candidates.length > limits.maxCandidatesPerUpdate) {
+      throw new P2PCandidateUpdateLimitExceededError('P2P candidate update limit exceeded');
+    }
+    const normalizedCandidates = this.normalizeP2PCandidates(request.candidates, {
+      role: request.role,
+      sourceId: request.sourceId,
+      createdAt: this.now(),
+    });
     const nextCandidates = [
       ...session.candidates,
-      ...this.normalizeP2PCandidates(request.candidates, {
-        role: request.role,
-        sourceId: request.sourceId,
-        createdAt: this.now(),
-      }),
+      ...normalizedCandidates,
     ];
+    if (nextCandidates.length > limits.maxCandidatesTotal) {
+      throw new P2PCandidateSessionLimitExceededError('P2P candidate session limit exceeded');
+    }
     const nextSession: P2PSession = {
       ...session,
       candidates: nextCandidates,
@@ -214,6 +248,27 @@ export class ReachabilitySessionService {
       connectivityStatus: connectivity?.connectivityStatus,
       metadata,
     };
+  }
+
+  private readActiveP2PSessions(metadata: Record<string, unknown> | null | undefined): P2PSession[] {
+    const reachabilitySessions = isRecord(metadata?.reachabilitySessions) ? metadata.reachabilitySessions : {};
+    return Array.isArray(reachabilitySessions.p2p)
+      ? reachabilitySessions.p2p
+        .map(toP2PSession)
+        .filter((session): session is P2PSession => Boolean(session))
+        .filter((session) => this.isP2PSessionActive(session))
+      : [];
+  }
+
+  private p2pSessionLimits(): P2PSessionLimits {
+    return {
+      maxCandidatesPerUpdate: this.maxP2PCandidatesPerUpdate,
+      maxCandidatesTotal: this.maxP2PCandidatesPerSession,
+    };
+  }
+
+  private resolveP2PSessionLimits(session: P2PSession): P2PSessionLimits {
+    return normalizeP2PSessionLimits(session.limits) ?? this.p2pSessionLimits();
   }
 
   private async appendSession(nodeId: string, key: 'p2p' | 'relay', session: P2PSession | RelaySession): Promise<void> {
@@ -391,6 +446,9 @@ export class ReachabilitySessionService {
 
 export class InvalidRelaySessionRequestError extends Error {}
 export class NodeRouteSourceNotFoundError extends Error {}
+export class P2PActiveSessionLimitExceededError extends Error {}
+export class P2PCandidateUpdateLimitExceededError extends Error {}
+export class P2PCandidateSessionLimitExceededError extends Error {}
 export class P2PSessionExpiredError extends Error {}
 export class P2PSessionNotFoundError extends Error {}
 
@@ -411,6 +469,18 @@ function normalizePositiveInteger(value: unknown): number | undefined {
     return undefined;
   }
   return Math.floor(value);
+}
+
+function normalizeP2PSessionLimits(value: unknown): P2PSessionLimits | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const maxCandidatesPerUpdate = normalizePositiveInteger(value.maxCandidatesPerUpdate);
+  const maxCandidatesTotal = normalizePositiveInteger(value.maxCandidatesTotal);
+  if (!maxCandidatesPerUpdate || !maxCandidatesTotal) {
+    return undefined;
+  }
+  return { maxCandidatesPerUpdate, maxCandidatesTotal };
 }
 
 function normalizePort(value: unknown): number | undefined {
@@ -539,9 +609,11 @@ function toP2PSession(value: unknown): P2PSession | undefined {
   const sessionId = getString(value.sessionId);
   const nodeId = getString(value.nodeId);
   const clientId = getString(value.clientId);
+  const auditId = getString(value.auditId);
   const createdAt = getString(value.createdAt);
   const expiresAt = getString(value.expiresAt);
   const signalingUrl = getString(value.signalingUrl);
+  const limits = normalizeP2PSessionLimits(value.limits);
   if (!sessionId || !nodeId || !clientId || !createdAt || !expiresAt || !signalingUrl) {
     return undefined;
   }
@@ -550,6 +622,7 @@ function toP2PSession(value: unknown): P2PSession | undefined {
     kind: 'p2p',
     nodeId,
     clientId,
+    ...(auditId ? { auditId } : {}),
     createdAt,
     expiresAt,
     nodeCandidates: Array.isArray(value.nodeCandidates) ? value.nodeCandidates as AccessRoute[] : [],
@@ -558,6 +631,7 @@ function toP2PSession(value: unknown): P2PSession | undefined {
     candidates: Array.isArray(value.candidates)
       ? value.candidates.map(toP2PTransportCandidate).filter((candidate): candidate is P2PTransportCandidate => Boolean(candidate))
       : [],
+    ...(limits ? { limits } : {}),
   };
 }
 

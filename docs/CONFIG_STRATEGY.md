@@ -142,6 +142,9 @@ urn:solid-server:default:variable:xxx
 | p2pTurnStaticAuthSecret | XPOD_P2P_TURN_STATIC_AUTH_SECRET | TURN REST shared secret，用于按 session 签发短期 credential | 可选 | - |
 | p2pTurnUsernamePrefix | XPOD_P2P_TURN_USERNAME_PREFIX | TURN 临时用户名前缀 | 可选 | `xpod` |
 | p2pTurnTtlSeconds | XPOD_P2P_TURN_TTL_SECONDS | TURN 临时 credential TTL，上限为 P2P session TTL | 可选 | session TTL |
+| p2pMaxActiveSessionsPerNode | XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE | 单节点 active P2P signaling session 上限 | 可选 | 16 |
+| p2pMaxCandidatesPerUpdate | XPOD_P2P_MAX_CANDIDATES_PER_UPDATE | 单次 P2P candidate 更新数组长度上限 | 可选 | 32 |
+| p2pMaxCandidatesPerSession | XPOD_P2P_MAX_CANDIDATES_PER_SESSION | 单个 P2P session 累计 candidate 上限 | 可选 | 256 |
 | edgeNodeAgentEnabled | XPOD_EDGE_NODE_AGENT_ENABLED | Local EdgeNodeAgent 自动启动开关 | local | - |
 | p2pEnabled | XPOD_P2P_ENABLED | Local Agent werift P2P answer loop 开关 | local | - |
 | p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | P2P data-plane 转发到的本地 CSS/SP base URL | local:p2p | ✅ CSS_BASE_URL |
@@ -305,6 +308,10 @@ XPOD_DNS_ROOT_DOMAIN=cluster.example.com
 # XPOD_P2P_TURN_STATIC_AUTH_SECRET=xxx
 # XPOD_P2P_TURN_USERNAME_PREFIX=xpod
 # XPOD_P2P_TURN_TTL_SECONDS=300
+# 可选：限制 Cloud signaling 控制面状态增长；不影响 Solid HTTP 数据面。
+# XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE=16
+# XPOD_P2P_MAX_CANDIDATES_PER_UPDATE=32
+# XPOD_P2P_MAX_CANDIDATES_PER_SESSION=256
 # 可选：smoke 客户端强制只走 relay，用于验证 TURN fallback，而不是 direct ICE。
 # XPOD_P2P_ICE_TRANSPORT_POLICY=relay
 XPOD_ACME_EMAIL=admin@example.com
@@ -389,6 +396,9 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | p2pTurnStaticAuthSecret | XPOD_P2P_TURN_STATIC_AUTH_SECRET | API env | - | - |
 | p2pTurnUsernamePrefix | XPOD_P2P_TURN_USERNAME_PREFIX | API env | "xpod" | - |
 | p2pTurnTtlSeconds | XPOD_P2P_TURN_TTL_SECONDS | API env | session TTL | - |
+| p2pMaxActiveSessionsPerNode | XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE | API env | 16 | - |
+| p2pMaxCandidatesPerUpdate | XPOD_P2P_MAX_CANDIDATES_PER_UPDATE | API env | 32 | - |
+| p2pMaxCandidatesPerSession | XPOD_P2P_MAX_CANDIDATES_PER_SESSION | API env | 256 | - |
 | edgeNodeAgentEnabled | XPOD_EDGE_NODE_AGENT_ENABLED | Runtime shorthand / KeyExtractor | "false" | - |
 | p2pEnabled | XPOD_P2P_ENABLED | Runtime shorthand / KeyExtractor | "false" | - |
 | p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | Runtime shorthand / KeyExtractor | "" | ✅ CSS_BASE_URL |

@@ -7,6 +7,9 @@ import { buildRouteSet } from '../../edge/reachability/RouteSetBuilder';
 import {
   InvalidRelaySessionRequestError,
   NodeRouteSourceNotFoundError,
+  P2PActiveSessionLimitExceededError,
+  P2PCandidateSessionLimitExceededError,
+  P2PCandidateUpdateLimitExceededError,
   P2PSessionExpiredError,
   P2PSessionNotFoundError,
   type P2PIceServerMetadata,
@@ -23,6 +26,9 @@ export interface ReachabilityHandlerOptions {
   p2pTurnCredentials?: P2PTurnCredentialOptions;
   now?: () => Date;
   randomId?: () => string;
+  maxActiveP2PSessionsPerNode?: number;
+  maxP2PCandidatesPerUpdate?: number;
+  maxP2PCandidatesPerSession?: number;
 }
 
 export function registerReachabilityRoutes(server: ApiServer, options: ReachabilityHandlerOptions): void {
@@ -34,6 +40,12 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     p2pTurnCredentials: options.p2pTurnCredentials ?? parseP2PTurnCredentialsFromEnv(process.env),
     now: options.now,
     randomId: options.randomId,
+    maxActiveP2PSessionsPerNode: options.maxActiveP2PSessionsPerNode
+      ?? parsePositiveInteger(process.env.XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE),
+    maxP2PCandidatesPerUpdate: options.maxP2PCandidatesPerUpdate
+      ?? parsePositiveInteger(process.env.XPOD_P2P_MAX_CANDIDATES_PER_UPDATE),
+    maxP2PCandidatesPerSession: options.maxP2PCandidatesPerSession
+      ?? parsePositiveInteger(process.env.XPOD_P2P_MAX_CANDIDATES_PER_SESSION),
   });
 
   server.get('/v1/signal/nodes/:nodeId/routes', async (request, response, params) => {
@@ -89,6 +101,18 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
       } catch (error) {
         if (error instanceof NodeRouteSourceNotFoundError) {
           sendJson(response, 404, { error: 'Node not found' });
+          return;
+        }
+        if (error instanceof P2PActiveSessionLimitExceededError) {
+          sendJson(response, 429, { error: 'P2P active session limit exceeded' });
+          return;
+        }
+        if (error instanceof P2PCandidateUpdateLimitExceededError) {
+          sendJson(response, 429, { error: 'P2P candidate update limit exceeded' });
+          return;
+        }
+        if (error instanceof P2PCandidateSessionLimitExceededError) {
+          sendJson(response, 429, { error: 'P2P candidate session limit exceeded' });
           return;
         }
         sendJson(response, 500, { error: 'Failed to create p2p session' });
@@ -304,6 +328,14 @@ function sendP2PSessionError(response: ServerResponse, error: unknown): void {
   }
   if (error instanceof P2PSessionNotFoundError) {
     sendJson(response, 404, { error: 'P2P session not found' });
+    return;
+  }
+  if (error instanceof P2PCandidateUpdateLimitExceededError) {
+    sendJson(response, 429, { error: 'P2P candidate update limit exceeded' });
+    return;
+  }
+  if (error instanceof P2PCandidateSessionLimitExceededError) {
+    sendJson(response, 429, { error: 'P2P candidate session limit exceeded' });
     return;
   }
   if (error instanceof NodeRouteSourceNotFoundError) {

@@ -102,6 +102,14 @@ function createRepo(overrides: Record<string, any> = {}) {
   } as any;
 }
 
+function restoreEnv(key: string, previous: string | undefined): void {
+  if (previous === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = previous;
+}
+
 describe('ReachabilityHandler', () => {
   let mockServer: ReturnType<typeof createMockServer>;
   let repo: ReturnType<typeof createRepo>;
@@ -213,6 +221,94 @@ describe('ReachabilityHandler', () => {
         p2p: [expect.objectContaining({ sessionId: 'p2p_fixed-id' })],
       }),
     }));
+  });
+
+  it('creates p2p sessions with audit id and signaling limits', async () => {
+    register({
+      maxActiveP2PSessionsPerNode: 2,
+      maxP2PCandidatesPerUpdate: 3,
+      maxP2PCandidatesPerSession: 8,
+    });
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({
+      kind: 'p2p',
+      clientId: 'device-1',
+      capabilities: ['webrtc-datachannel'],
+      candidates: [{ protocol: 'webrtc', url: 'webrtc://offer' }],
+    }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(201);
+    expect(res._body()).toMatchObject({
+      sessionId: 'p2p_fixed-id',
+      auditId: 'audit_fixed-id',
+      limits: {
+        maxCandidatesPerUpdate: 3,
+        maxCandidatesTotal: 8,
+      },
+    });
+    expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+      reachabilitySessions: expect.objectContaining({
+        p2p: [expect.objectContaining({
+          sessionId: 'p2p_fixed-id',
+          auditId: 'audit_fixed-id',
+          limits: {
+            maxCandidatesPerUpdate: 3,
+            maxCandidatesTotal: 8,
+          },
+        })],
+      }),
+    }));
+  });
+
+  it('rejects new p2p sessions when active session limit is reached', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_active_1',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-1',
+                createdAt: '2026-06-18T23:59:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_active_1',
+                capabilities: [],
+                candidates: [],
+              },
+              {
+                sessionId: 'p2p_expired',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-2',
+                createdAt: '2026-06-18T23:40:00.000Z',
+                expiresAt: '2026-06-18T23:45:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_expired',
+                capabilities: [],
+                candidates: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register({ maxActiveP2PSessionsPerNode: 1 });
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({ kind: 'p2p', clientId: 'device-3' }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(429);
+    expect(res._body()).toEqual({ error: 'P2P active session limit exceeded' });
+    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
   });
 
   it('injects configured werift ICE servers into p2p node candidate metadata', async () => {
@@ -381,6 +477,34 @@ describe('ReachabilityHandler', () => {
       } else {
         process.env.XPOD_P2P_ICE_SERVERS = previous;
       }
+    }
+  });
+
+  it('reads p2p signaling limits from env when registering reachability routes', async () => {
+    const previousActive = process.env.XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE;
+    const previousPerUpdate = process.env.XPOD_P2P_MAX_CANDIDATES_PER_UPDATE;
+    const previousPerSession = process.env.XPOD_P2P_MAX_CANDIDATES_PER_SESSION;
+    process.env.XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE = '2';
+    process.env.XPOD_P2P_MAX_CANDIDATES_PER_UPDATE = '3';
+    process.env.XPOD_P2P_MAX_CANDIDATES_PER_SESSION = '8';
+
+    try {
+      register();
+      const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+      const req = createMockRequest({ kind: 'p2p', clientId: 'device-1' }, auth);
+      const res = createMockResponse();
+
+      await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+      expect(res.statusCode).toBe(201);
+      expect(res._body().limits).toEqual({
+        maxCandidatesPerUpdate: 3,
+        maxCandidatesTotal: 8,
+      });
+    } finally {
+      restoreEnv('XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE', previousActive);
+      restoreEnv('XPOD_P2P_MAX_CANDIDATES_PER_UPDATE', previousPerUpdate);
+      restoreEnv('XPOD_P2P_MAX_CANDIDATES_PER_SESSION', previousPerSession);
     }
   });
 
@@ -597,6 +721,94 @@ describe('ReachabilityHandler', () => {
         ],
       }),
     }));
+  });
+
+  it('rejects p2p candidate updates over per-update limit', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_existing',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-1',
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
+                capabilities: ['webrtc-datachannel'],
+                candidates: [],
+                limits: { maxCandidatesPerUpdate: 1, maxCandidatesTotal: 4 },
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register({ maxP2PCandidatesPerUpdate: 1, maxP2PCandidatesPerSession: 4 });
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({
+      candidates: [
+        { protocol: 'webrtc', url: 'webrtc://candidate-1' },
+        { protocol: 'webrtc', url: 'webrtc://candidate-2' },
+      ],
+    }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](req, res, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_existing',
+    });
+
+    expect(res.statusCode).toBe(429);
+    expect(res._body()).toEqual({ error: 'P2P candidate update limit exceeded' });
+    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+  });
+
+  it('rejects p2p candidate updates over total session limit', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_existing',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-1',
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
+                capabilities: ['webrtc-datachannel'],
+                candidates: [
+                  { id: 'candidate-1', role: 'client', sourceId: 'device-1', createdAt: '2026-06-19T00:00:00.000Z', url: 'webrtc://candidate-1' },
+                  { id: 'candidate-2', role: 'client', sourceId: 'device-1', createdAt: '2026-06-19T00:00:00.000Z', url: 'webrtc://candidate-2' },
+                ],
+                limits: { maxCandidatesPerUpdate: 2, maxCandidatesTotal: 2 },
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register({ maxP2PCandidatesPerUpdate: 2, maxP2PCandidatesPerSession: 2 });
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({ candidates: [{ protocol: 'webrtc', url: 'webrtc://candidate-3' }] }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](req, res, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_existing',
+    });
+
+    expect(res.statusCode).toBe(429);
+    expect(res._body()).toEqual({ error: 'P2P candidate session limit exceeded' });
+    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
   });
 
   it('rejects p2p candidate updates after session expiry', async () => {
