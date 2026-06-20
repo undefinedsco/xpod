@@ -146,8 +146,12 @@ Solid SDK / app
   串起来：managed client / node 可以通过 `/v1/signal/nodes/{nodeId}/sessions`
   创建或读取会话、追加本地 candidate、轮询远端 candidate，然后复用 rendezvous socket
   建立 `UdpP2PDataPlaneTransport`。
+- `UdpStunCandidate` 已支持最小 STUN Binding：在同一个 rendezvous UDP socket 上向
+  STUN server 发送 Binding Request，解析 `XOR-MAPPED-ADDRESS` 生成
+  `candidateType=server-reflexive` candidate，并通过 signaling 与 direct candidate
+  一起发布。这是跨 NAT 的前置能力，但还不是完整 ICE。
 - `UdpP2PTransport` 不是最终公网 P2P 协议：当前没有分片、拥塞控制、可靠流、
-  加密握手、ICE candidate pair nomination、STUN/TURN 或生产级 NAT hole punching。
+  加密握手、ICE candidate pair nomination、TURN 或生产级 NAT hole punching。
   大 body、跨 NAT、CGNAT 和移动端网络切换应由后续 QUIC/ICE 或其他 provider 负责。
 
 设计约束：
@@ -332,11 +336,13 @@ Content-Type: application/json
 1. node 和 managed client 各自创建 `UdpP2PRendezvousPeer`，绑定 UDP socket。
 2. 双方调用 `candidate()` 得到 `protocol=udp`、`host`、`port`、`role`、`sourceId`
    的本地候选，并通过 `P2PSignalingClient.addP2PCandidates()` 写入同一个 P2P session。
-3. 双方通过 `P2PSignalingClient.getP2PSession()` 轮询 session candidates，拿到远端
+3. 如配置 STUN，双方在同一个 rendezvous socket 上执行 Binding Request，得到
+   server-reflexive candidate；STUN 失败只降级为 direct candidate，不阻断连接尝试。
+4. 双方通过 `P2PSignalingClient.getP2PSession()` 轮询 session candidates，拿到远端
    candidate 后调用 `connect()`，对远端候选重复发送 `xpod-p2p-udp-rendezvous-hello`。
-4. 收到同 session、对端 role/source 的 hello 后返回
+5. 收到同 session、对端 role/source 的 hello 后返回
    `xpod-p2p-udp-rendezvous-ack`，并记录实际来源地址/端口作为数据面 remote endpoint。
-5. `connectUdpP2PThroughSignaling()` 在握手成功后为调用方创建
+6. `connectUdpP2PThroughSignaling()` 在握手成功后为调用方创建
    `UdpP2PDataPlaneTransport`，node 侧用 `UdpP2PDataPlaneServer` 监听同一个 socket；
    二者都复用 rendezvous socket，避免 NAT 映射因为换 socket 而失效。
 

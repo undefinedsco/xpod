@@ -1,5 +1,9 @@
 import type { P2PCandidateRole, P2PTransportCandidate } from './types';
 import type { P2PSignalingClient } from './P2PSignalingClient';
+import {
+  discoverUdpServerReflexiveCandidate,
+  type UdpStunServer,
+} from './UdpStunCandidate';
 import type {
   UdpP2PDataPlaneTransport,
   UdpP2PDataPlaneTransportOptions,
@@ -24,6 +28,8 @@ export interface ConnectUdpP2PThroughSignalingOptions {
   peer: UdpP2PRendezvousPeer;
   timeoutMs?: number;
   pollIntervalMs?: number;
+  stunServers?: UdpStunServer[];
+  stunTimeoutMs?: number;
   rendezvous?: UdpP2PRendezvousConnectOptions;
   transport?: Omit<UdpP2PDataPlaneTransportOptions, 'remoteHost' | 'remotePort' | 'socket'>;
 }
@@ -40,10 +46,14 @@ export async function connectUdpP2PThroughSignaling(
 ): Promise<SignaledUdpP2PConnection> {
   await options.peer.listen();
   const localCandidate = options.peer.candidate();
+  const localCandidates = [
+    localCandidate,
+    ...await discoverServerReflexiveCandidates(options, localCandidate),
+  ];
   const session = await options.signaling.addP2PCandidates(options.sessionId, {
     role: options.role,
     sourceId: options.sourceId,
-    candidates: [localCandidate],
+    candidates: localCandidates,
   });
   const remoteCandidates = await waitForRemoteCandidates({
     signaling: options.signaling,
@@ -71,6 +81,33 @@ export async function connectUdpP2PThroughSignaling(
       transport.close();
     },
   };
+}
+
+async function discoverServerReflexiveCandidates(
+  options: ConnectUdpP2PThroughSignalingOptions,
+  localCandidate: P2PTransportCandidate,
+): Promise<P2PTransportCandidate[]> {
+  if (!options.stunServers || options.stunServers.length === 0) {
+    return [];
+  }
+  const discovered = await Promise.allSettled(options.stunServers.map((stunServer) => discoverUdpServerReflexiveCandidate({
+    socket: options.peer.socket(),
+    stunServer,
+    sessionId: options.sessionId,
+    role: options.role,
+    sourceId: options.sourceId,
+    timeoutMs: options.stunTimeoutMs,
+  })));
+  return discovered
+    .filter((result): result is PromiseFulfilledResult<P2PTransportCandidate> => result.status === 'fulfilled')
+    .map((result) => ({
+      ...result.value,
+      priority: result.value.priority ?? localCandidate.priority,
+      metadata: {
+        ...result.value.metadata,
+        baseCandidateId: localCandidate.id,
+      },
+    }));
 }
 
 async function waitForRemoteCandidates(options: {
