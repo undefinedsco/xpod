@@ -136,6 +136,7 @@ urn:solid-server:default:variable:xxx
 | tencentDnsToken | XPOD_TENCENT_DNS_TOKEN | 腾讯DNS Token | 可选 | - |
 | frpServerHost | XPOD_FRP_SERVER_HOST | FRP服务器地址 | 可选 | - |
 | frpToken | XPOD_FRP_TOKEN | FRP认证Token | 可选 | - |
+| p2pIceServers | XPOD_P2P_ICE_SERVERS | 非浏览器 P2P STUN/TURN ICE servers（JSON 数组） | 可选 | - |
 | acmeEmail | XPOD_ACME_EMAIL | ACME账户邮箱 | 可选 | - |
 | nodeId | XPOD_NODE_ID | 节点ID | cluster:local | - |
 | nodeToken | XPOD_NODE_TOKEN | 节点认证Token | cluster:local | - |
@@ -283,6 +284,9 @@ CSS_REDIS_CLIENT=xxx
 # XPOD_SIGNAL_ENDPOINT=         # 可选，默认从baseUrl推导
 # XPOD_CLUSTER_INGRESS_DOMAIN=  # 可选，默认从baseUrl推导
 XPOD_DNS_ROOT_DOMAIN=cluster.example.com
+# 可选：非浏览器 P2P DataChannel 的 STUN/TURN 配置，JSON 数组；
+# 仅下发到 signaling session 的 p2p route metadata，不写入 Pod RDF。
+# XPOD_P2P_ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"},{"urls":["turn:turn.example.com:3478?transport=udp","turns:turn.example.com:5349?transport=tcp"],"username":"user","credential":"secret"}]'
 XPOD_ACME_EMAIL=admin@example.com
 XPOD_TENCENT_DNS_TOKEN_ID=xxx
 XPOD_TENCENT_DNS_TOKEN=xxx
@@ -359,6 +363,7 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | frpServerPort | XPOD_FRP_SERVER_PORT | EnvExtractor | "7000" | - |
 | frpToken | XPOD_FRP_TOKEN | EnvExtractor | - | - |
 | frpProtocol | XPOD_FRP_PROTOCOL | EnvExtractor | "tcp" | - |
+| p2pIceServers | XPOD_P2P_ICE_SERVERS | API env JSON | - | - |
 | acmeEmail | XPOD_ACME_EMAIL | EnvExtractor | - | - |
 | nodeId | XPOD_NODE_ID | EnvExtractor | - | - |
 | nodeToken | XPOD_NODE_TOKEN | EnvExtractor | - | - |

@@ -166,10 +166,12 @@ Solid SDK / app
   werift provider 还会在建 peer 前读取 signaling session 的 route metadata，将
   `metadata.protocols["werift-datachannel"].iceServers`、`metadata.protocols.webrtc.iceServers`
   或兼容的 `metadata.iceServers` 归一化为 werift `PeerConfig.iceServers`；显式传入的
-  `peerConfig.iceServers` 优先级更高。
+  `peerConfig.iceServers` 优先级更高。Cloud 控制面可通过 `XPOD_P2P_ICE_SERVERS` JSON
+  数组配置 STUN/TURN server，创建 P2P signaling session 时只注入到 `kind="p2p"` route 的
+  provider metadata，不进入 Pod RDF 或 canonical route identity。
 - 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
   拥塞控制或加密握手；werift provider 已具备 ICE/DTLS/SCTP 和 signaling offer/answer
-  建链能力、trickle ICE 增量同步和 STUN/TURN ICE server metadata 消费能力，但还没有实现
+  建链能力、trickle ICE 增量同步和 STUN/TURN ICE server metadata 下发/消费能力，但还没有实现
   TURN 凭据签发/轮换/限额策略、移动端网络切换和真实跨 NAT 验证。
 
 设计约束：

@@ -9,6 +9,7 @@ import {
   NodeRouteSourceNotFoundError,
   P2PSessionExpiredError,
   P2PSessionNotFoundError,
+  type P2PIceServerMetadata,
   ReachabilitySessionService,
 } from '../../edge/reachability/ReachabilitySessionService';
 import type { BuildRouteSetSource, P2PCandidateRole, RouteAudience } from '../../edge/reachability/types';
@@ -17,6 +18,7 @@ export interface ReachabilityHandlerOptions {
   repository: EdgeNodeRepository;
   baseStorageDomain?: string;
   apiBaseUrl?: string;
+  p2pIceServers?: P2PIceServerMetadata[];
   now?: () => Date;
   randomId?: () => string;
 }
@@ -26,6 +28,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     repository: options.repository,
     baseStorageDomain: options.baseStorageDomain,
     apiBaseUrl: options.apiBaseUrl ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL ?? 'http://localhost/',
+    p2pIceServers: options.p2pIceServers ?? parseP2PIceServersFromEnv(process.env.XPOD_P2P_ICE_SERVERS),
     now: options.now,
     randomId: options.randomId,
   });
@@ -290,6 +293,41 @@ function sendP2PSessionError(response: ServerResponse, error: unknown): void {
 
 function getString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function parseP2PIceServersFromEnv(value: string | undefined): P2PIceServerMetadata[] | undefined {
+  if (!value || value.trim().length === 0) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+    return parsed
+      .map((entry): P2PIceServerMetadata | undefined => {
+        if (!isRecord(entry)) {
+          return undefined;
+        }
+        const urls = Array.isArray(entry.urls)
+          ? entry.urls.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+          : getString(entry.urls);
+        if (Array.isArray(urls) && urls.length === 0) {
+          return undefined;
+        }
+        if (!Array.isArray(urls) && !urls) {
+          return undefined;
+        }
+        return {
+          urls,
+          ...(typeof entry.username === 'string' && entry.username.length > 0 ? { username: entry.username } : {}),
+          ...(typeof entry.credential === 'string' && entry.credential.length > 0 ? { credential: entry.credential } : {}),
+        };
+      })
+      .filter((entry): entry is P2PIceServerMetadata => Boolean(entry));
+  } catch {
+    return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

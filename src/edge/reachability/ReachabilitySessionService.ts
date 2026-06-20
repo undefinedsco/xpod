@@ -15,11 +15,18 @@ export interface ReachabilitySessionServiceOptions {
   repository: EdgeNodeRepository;
   baseStorageDomain?: string;
   apiBaseUrl: string;
+  p2pIceServers?: P2PIceServerMetadata[];
   now?: () => Date;
   randomId?: () => string;
   defaultP2PTtlSeconds?: number;
   defaultRelayTtlSeconds?: number;
   defaultRelayBandwidthLimitBytes?: number;
+}
+
+export interface P2PIceServerMetadata {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
 }
 
 export class ReachabilitySessionService {
@@ -54,7 +61,7 @@ export class ReachabilitySessionService {
       clientId: request.clientId,
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
-      nodeCandidates: routeSet.routes,
+      nodeCandidates: this.injectP2PIceServerMetadata(routeSet.routes),
       signalingUrl: new URL(`/v1/signal/nodes/${encodeURIComponent(nodeId)}/sessions/${sessionId}`, this.options.apiBaseUrl).toString(),
       capabilities: normalizeStringArray(request.capabilities),
       candidates: this.normalizeP2PCandidates(request.candidates, {
@@ -190,6 +197,39 @@ export class ReachabilitySessionService {
     });
   }
 
+  private injectP2PIceServerMetadata(routes: AccessRoute[]): AccessRoute[] {
+    const iceServers = normalizeIceServerMetadata(this.options.p2pIceServers);
+    if (iceServers.length === 0) {
+      return routes;
+    }
+    return routes.map((route) => {
+      if (route.kind !== 'p2p') {
+        return route;
+      }
+      const metadata = isRecord(route.metadata) ? route.metadata : {};
+      const protocols = isRecord(metadata.protocols) ? metadata.protocols : {};
+      const werift = isRecord(protocols['werift-datachannel']) ? protocols['werift-datachannel'] : {};
+      const webrtc = isRecord(protocols.webrtc) ? protocols.webrtc : {};
+      return {
+        ...route,
+        metadata: {
+          ...metadata,
+          protocols: {
+            ...protocols,
+            'werift-datachannel': {
+              ...werift,
+              iceServers: cloneIceServers(iceServers),
+            },
+            webrtc: {
+              ...webrtc,
+              iceServers: cloneIceServers(iceServers),
+            },
+          },
+        },
+      };
+    });
+  }
+
   private async loadP2PSession(nodeId: string, sessionId: string): Promise<{
     reachabilitySessions: Record<string, unknown>;
     p2pSessions: P2PSession[];
@@ -313,6 +353,40 @@ function normalizeStringArray(value: unknown): string[] {
     return [];
   }
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+}
+
+function normalizeIceServerMetadata(value: unknown): P2PIceServerMetadata[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry): P2PIceServerMetadata | undefined => {
+      if (!isRecord(entry)) {
+        return undefined;
+      }
+      const urls = Array.isArray(entry.urls)
+        ? entry.urls.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+        : getString(entry.urls);
+      if (Array.isArray(urls) && urls.length === 0) {
+        return undefined;
+      }
+      if (!Array.isArray(urls) && !urls) {
+        return undefined;
+      }
+      return {
+        urls,
+        ...(typeof entry.username === 'string' && entry.username.length > 0 ? { username: entry.username } : {}),
+        ...(typeof entry.credential === 'string' && entry.credential.length > 0 ? { credential: entry.credential } : {}),
+      };
+    })
+    .filter((entry): entry is P2PIceServerMetadata => Boolean(entry));
+}
+
+function cloneIceServers(value: P2PIceServerMetadata[]): P2PIceServerMetadata[] {
+  return value.map((entry) => ({
+    ...entry,
+    urls: Array.isArray(entry.urls) ? [...entry.urls] : entry.urls,
+  }));
 }
 
 function getString(value: unknown): string | undefined {

@@ -213,6 +213,125 @@ describe('ReachabilityHandler', () => {
     }));
   });
 
+  it('injects configured werift ICE servers into p2p node candidate metadata', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          routes: [
+            {
+              id: 'p2p-main',
+              kind: 'p2p',
+              targetUrl: 'webrtc://signaling/node-1',
+              priority: 40,
+              requiresManagedClient: true,
+              visibility: 'authorized-client',
+              health: 'healthy',
+              metadata: {
+                protocols: {
+                  'udp-direct': { enabled: true },
+                },
+              },
+            },
+          ],
+        },
+      }),
+      getNodeConnectivityInfo: vi.fn().mockResolvedValue(undefined),
+    });
+    register({
+      p2pIceServers: [
+        { urls: 'stun:stun.example.invalid:3478' },
+        {
+          urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
+          username: 'turn-user',
+          credential: 'turn-secret',
+        },
+      ],
+    });
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({
+      kind: 'p2p',
+      clientId: 'device-1',
+      capabilities: ['webrtc-datachannel'],
+    }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(201);
+    expect(res._body().nodeCandidates).toEqual([
+      expect.objectContaining({
+        id: 'p2p-main',
+        kind: 'p2p',
+        metadata: {
+          protocols: {
+            'udp-direct': { enabled: true },
+            'werift-datachannel': {
+              iceServers: [
+                { urls: 'stun:stun.example.invalid:3478' },
+                {
+                  urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
+                  username: 'turn-user',
+                  credential: 'turn-secret',
+                },
+              ],
+            },
+            webrtc: {
+              iceServers: [
+                { urls: 'stun:stun.example.invalid:3478' },
+                {
+                  urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
+                  username: 'turn-user',
+                  credential: 'turn-secret',
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ]);
+  });
+
+  it('reads p2p ICE servers from XPOD_P2P_ICE_SERVERS when registering reachability routes', async () => {
+    const previous = process.env.XPOD_P2P_ICE_SERVERS;
+    process.env.XPOD_P2P_ICE_SERVERS = JSON.stringify([{ urls: 'stun:env.example.invalid:3478' }]);
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          routes: [{
+            id: 'p2p-main',
+            kind: 'p2p',
+            targetUrl: 'webrtc://signaling/node-1',
+            requiresManagedClient: true,
+            visibility: 'authorized-client',
+          }],
+        },
+      }),
+      getNodeConnectivityInfo: vi.fn().mockResolvedValue(undefined),
+    });
+
+    try {
+      register();
+      const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+      const req = createMockRequest({ kind: 'p2p', clientId: 'device-1' }, auth);
+      const res = createMockResponse();
+
+      await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+      expect(res.statusCode).toBe(201);
+      expect(res._body().nodeCandidates[0].metadata.protocols['werift-datachannel'].iceServers).toEqual([
+        { urls: 'stun:env.example.invalid:3478' },
+      ]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.XPOD_P2P_ICE_SERVERS;
+      } else {
+        process.env.XPOD_P2P_ICE_SERVERS = previous;
+      }
+    }
+  });
+
   it('reads a p2p signaling session by session url', async () => {
     repo = createRepo({
       getNodeMetadata: vi.fn().mockResolvedValue({
