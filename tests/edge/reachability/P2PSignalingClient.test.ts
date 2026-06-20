@@ -110,6 +110,7 @@ describe('P2P signaling client', () => {
     for (const [, init] of fetchImpl.mock.calls) {
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer service-token');
       expect(new Headers(init?.headers).get('content-type')).toBe('application/json');
+      expect(new Headers(init?.headers).get('x-node-id')).toBe('node-1');
     }
   });
 });

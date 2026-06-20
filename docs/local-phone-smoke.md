@@ -197,6 +197,7 @@ Current non-browser data-plane verification is local-runtime only:
 
 ```bash
 ./scripts/run-vitest-safe.sh --run \
+  tests/edge/reachability/ManagedClientP2PLocalE2E.test.ts \
   tests/edge/reachability/ManagedClientP2PSmoke.test.ts \
   tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts \
   tests/edge/reachability/TcpP2PSignalingSession.test.ts \
@@ -204,14 +205,21 @@ Current non-browser data-plane verification is local-runtime only:
   tests/edge/EdgeNodeAgent.test.ts
 ```
 
-These tests cover the local TCP frame transport, signaled client/node candidate
-exchange, the managed-client fetch adapters, and the `EdgeNodeAgent` accept loop
-that attaches an accepted socket to `XPOD_P2P_TARGET_BASE_URL`. The high-level
-adapter also fetches `/v1/signal/nodes/:nodeId/routes` before creating the P2P
-session, so native/CLI/mobile clients do not need to duplicate route-set lookup.
-They send canonical Solid HTTP requests as `xpod-p2p-http/1` frames over the TCP
-stream and verify the local node handler forwards the request to the configured
-CSS/SP base URL while preserving canonical URL headers.
+These tests cover the repository-backed local signal API, node heartbeat route
+advertisement, signaled client/node candidate exchange, the local TCP frame
+transport, the managed-client fetch adapters, and the `EdgeNodeAgent` accept
+loop that attaches an accepted socket to `XPOD_P2P_TARGET_BASE_URL`. The local
+E2E smoke starts an in-process signal API, a target HTTP server standing in for
+CSS/SP, a real `EdgeNodeAgent`, and a managed client. It uses deterministic
+socket injection at the raw socket boundary so CI and developer laptops can
+reproduce the orchestration path without depending on a particular NAT.
+
+The high-level adapter also fetches `/v1/signal/nodes/:nodeId/routes` before
+creating the P2P session, so native/CLI/mobile clients do not need to duplicate
+route-set lookup. They send canonical Solid HTTP requests as `xpod-p2p-http/1`
+frames over the TCP stream and verify the local node handler forwards the
+request to the configured CSS/SP base URL while preserving canonical URL
+headers.
 The default Node connector is also covered for delayed peer availability: it
 keeps retrying within `connectTimeoutMs` from the same candidate local TCP port
 instead of failing after one refused connection.

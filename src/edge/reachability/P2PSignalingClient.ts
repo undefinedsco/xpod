@@ -93,10 +93,7 @@ class HttpP2PSignalingClient implements P2PSignalingClient {
     method: 'GET' | 'POST';
     body?: unknown;
   }): Promise<P2PSession> {
-    const headers = new Headers({ accept: 'application/json', 'content-type': 'application/json' });
-    if (this.options.token) {
-      headers.set('authorization', `Bearer ${this.options.token}`);
-    }
+    const headers = this.requestHeaders();
     const response = await this.fetchImpl(url, {
       method: request.method,
       headers,
@@ -117,10 +114,7 @@ class HttpP2PSignalingClient implements P2PSignalingClient {
   private async requestSessionList(url: string, request: {
     method: 'GET';
   }): Promise<P2PSessionList> {
-    const headers = new Headers({ accept: 'application/json', 'content-type': 'application/json' });
-    if (this.options.token) {
-      headers.set('authorization', `Bearer ${this.options.token}`);
-    }
+    const headers = this.requestHeaders();
     const response = await this.fetchImpl(url, {
       method: request.method,
       headers,
@@ -135,6 +129,18 @@ class HttpP2PSignalingClient implements P2PSignalingClient {
     }
     const body = await response.json() as unknown;
     return assertP2PSessionList(body);
+  }
+
+  private requestHeaders(): Headers {
+    const headers = new Headers({
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'x-node-id': this.options.nodeId,
+    });
+    if (this.options.token) {
+      headers.set('authorization', `Bearer ${this.options.token}`);
+    }
+    return headers;
   }
 }
 

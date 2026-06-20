@@ -215,6 +215,12 @@ Solid SDK / app
   `--allow-fallback` 时才把 public/user-tunnel fallback 当成 smoke 成功。这用于 native/CLI
   运行时验证，不提供普通浏览器 raw TCP 能力。CLI 暴露 `--winner-selection-window-ms`，用于
   实网 smoke 时验证多 socket 成功后的确定性 winner selection。
+- `ManagedClientP2PLocalE2E.test.ts` 已提供 repository-backed 本机端到端 smoke：同一测试内
+  启动真实 signal API、真实 `EdgeNodeAgent`、本地 CSS/SP HTTP stand-in 和 managed
+  client，验证 route discovery、P2P session 创建、node accept loop、raw TCP transport
+  注入点、`xpod-p2p-http/1` frame 和 canonical header 转发能串起来。该 smoke 为稳定
+  CI 覆盖，在 raw socket 边界使用 deterministic socket injection；它证明本机 orchestration
+  路径，不等于跨 NAT true simultaneous-open 实网证明。
 - `acceptSignaledRawTcpP2PConnectionOnce` 已提供 node 侧一次性编排入口：local node 轮询
   pending raw TCP session、按 client bucket 追加 node candidates、执行 candidate race，
   并把成功 socket 直接挂到 `P2PDataPlaneHandler`。runtime 调用方不需要手工拼接
@@ -563,7 +569,7 @@ GET http://node-0000.undefineds.co/app/signal-pod.html?nodeId=node-0000&path=%2F
 1. 统一 `RouteSet` DTO 和持久化位置。
 2. `GET /v1/signal/nodes/{nodeId}/routes` 查询与权限过滤。
 3. Desktop / CLI route selector 和 canonical fetch adapter。
-4. P2P signaling session API 与 native client 实现：控制面、client/node 编排和 node-side accept loop 已有；仍缺平台级 true simultaneous-open connector 与实网 smoke。
+4. P2P signaling session API 与 native client 实现：控制面、client/node 编排、node-side accept loop 和本机 repository-backed E2E smoke 已有；仍缺平台级 true simultaneous-open connector 与实网 smoke。
 5. `xpod-relay` 的显式授权、限额、TTL 和审计。
 6. UI 状态页：区分 canonical domain、public route、managed-client route、relay fallback。
 
