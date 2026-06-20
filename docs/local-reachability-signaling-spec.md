@@ -199,6 +199,11 @@ Solid SDK / app
 - `createManagedClientFetch` 已把 route selection、P2P signaling、canonical fetch 串成
   CLI/desktop/mobile 可复用入口：优先尝试 managed `p2p` route，连接失败时继续回落到
   public/user-tunnel/relay 等后续 canonical route；它不改 Solid URL，也不接管浏览器 fetch。
+- `createSignaledManagedClientFetch` 已提供更高层的 native/CLI/mobile bootstrap 入口：
+  runtime 只需要传入 `apiBaseUrl`、`nodeId`、token、`clientId` 和平台 TCP connector；
+  该入口先调用 `GET /v1/signal/nodes/{nodeId}/routes` 获取 route set，再复用同一套
+  signal API 创建 P2P session，最后委托 `createManagedClientFetch` 选择 `p2p` 或后续
+  canonical fallback route。
 - `acceptSignaledRawTcpP2PConnectionOnce` 已提供 node 侧一次性编排入口：local node 轮询
   pending raw TCP session、按 client bucket 追加 node candidates、执行 candidate race，
   并把成功 socket 直接挂到 `P2PDataPlaneHandler`。runtime 调用方不需要手工拼接
@@ -215,7 +220,8 @@ Solid SDK / app
   已有 public tunnel 能力。
 - 已实现的 Cloudflare Tunnel、FRP/SakuraFRP 能力必须保留：它们不是要被 raw TCP
   替代或删除的“重 P2P 方案”，而是独立的 `user-tunnel` / public fallback route，
-  供用户或策略显式启用。
+  供用户或策略显式启用。P2P 代码只能在 route selection 中优先尝试 direct stream，
+  失败后必须继续允许落到这些已实现 tunnel provider。
 
 设计约束：
 

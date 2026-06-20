@@ -204,11 +204,17 @@ Current non-browser data-plane verification is local-runtime only:
 ```
 
 These tests cover the local TCP frame transport, signaled client/node candidate
-exchange, the managed-client fetch adapter, and the `EdgeNodeAgent` accept loop
-that attaches an accepted socket to `XPOD_P2P_TARGET_BASE_URL`. They send
-canonical Solid HTTP requests as `xpod-p2p-http/1` frames over the TCP stream and
-verify the local node handler forwards the request to the configured CSS/SP base
-URL while preserving canonical URL headers.
+exchange, the managed-client fetch adapters, and the `EdgeNodeAgent` accept loop
+that attaches an accepted socket to `XPOD_P2P_TARGET_BASE_URL`. The high-level
+adapter also fetches `/v1/signal/nodes/:nodeId/routes` before creating the P2P
+session, so native/CLI/mobile clients do not need to duplicate route-set lookup.
+They send canonical Solid HTTP requests as `xpod-p2p-http/1` frames over the TCP
+stream and verify the local node handler forwards the request to the configured
+CSS/SP base URL while preserving canonical URL headers.
+
+This native P2P path is additive. Existing Cloudflare Tunnel and FRP/SakuraFRP
+paths remain the browser/public `user-tunnel` fallback and are not replaced by
+raw TCP P2P.
 
 Raw TCP cross-NAT acceptance still needs a packaged native/CLI/mobile runtime
 that can:

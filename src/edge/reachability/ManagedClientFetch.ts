@@ -1,24 +1,75 @@
 import { createCanonicalFetch, type CanonicalFetch } from './CanonicalFetch';
 import { createP2PDataPlaneFetch } from './P2PDataPlane';
-import type { AccessRoute, RouteSet } from './types';
+import { createP2PSignalingClient } from './P2PSignalingClient';
 import {
   connectSignaledRawTcpP2PTransport,
   type ConnectSignaledRawTcpP2PTransportOptions,
 } from './TcpP2PSignalingSession';
 import type { TcpP2PDataPlaneTransport } from './TcpP2PDataPlaneTransport';
+import type { AccessRoute, RouteSet } from './types';
+
+type ManagedClientP2POptions =
+  Omit<ConnectSignaledRawTcpP2PTransportOptions, 'signaling' | 'clientId'>
+  & Pick<ConnectSignaledRawTcpP2PTransportOptions, 'signaling' | 'clientId'>;
+
+type SignaledManagedClientP2POptions = Omit<ManagedClientP2POptions, 'signaling' | 'clientId'>;
 
 export interface ManagedClientFetchOptions {
   routeSet: RouteSet;
   fetchImpl?: typeof fetch;
   probe?: (route: AccessRoute, signal: AbortSignal) => Promise<boolean> | boolean;
   probeTimeoutMs?: number;
-  p2p?: Omit<ConnectSignaledRawTcpP2PTransportOptions, 'signaling' | 'clientId'> & Pick<ConnectSignaledRawTcpP2PTransportOptions, 'signaling' | 'clientId'>;
+  p2p?: ManagedClientP2POptions;
 }
 
 export interface ManagedClientFetch {
   route: AccessRoute;
   fetch: CanonicalFetch;
   close(): void;
+}
+
+export interface SignaledManagedClientFetchOptions
+  extends Omit<ManagedClientFetchOptions, 'routeSet' | 'p2p'>, SignaledManagedClientP2POptions {
+  apiBaseUrl: string;
+  nodeId: string;
+  token?: string;
+  clientId: string;
+}
+
+export async function createSignaledManagedClientFetch(options: SignaledManagedClientFetchOptions): Promise<ManagedClientFetch> {
+  const {
+    apiBaseUrl,
+    nodeId,
+    token,
+    clientId,
+    fetchImpl,
+    probe,
+    probeTimeoutMs,
+    ...p2pOptions
+  } = options;
+  const routeSet = await fetchManagedRouteSet({
+    apiBaseUrl,
+    nodeId,
+    token,
+    fetchImpl,
+  });
+  const signaling = createP2PSignalingClient({
+    apiBaseUrl,
+    nodeId,
+    token,
+    fetchImpl,
+  });
+  return createManagedClientFetch({
+    routeSet,
+    fetchImpl,
+    probe,
+    probeTimeoutMs,
+    p2p: {
+      ...p2pOptions,
+      signaling,
+      clientId,
+    },
+  });
 }
 
 export async function createManagedClientFetch(options: ManagedClientFetchOptions): Promise<ManagedClientFetch> {
@@ -97,4 +148,63 @@ function managedResult(
       transport?.close();
     },
   };
+}
+
+async function fetchManagedRouteSet(options: {
+  apiBaseUrl: string;
+  nodeId: string;
+  token?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<RouteSet> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const headers = new Headers({ accept: 'application/json' });
+  if (options.token) {
+    headers.set('authorization', `Bearer ${options.token}`);
+  }
+  const response = await fetchImpl(new URL(`/v1/signal/nodes/${encodeURIComponent(options.nodeId)}/routes`, options.apiBaseUrl).toString(), {
+    method: 'GET',
+    headers,
+  });
+  if (!response.ok) {
+    throw new Error(`Route set request failed with ${response.status}: ${await safeReadText(response)}`);
+  }
+  const body = await response.json() as unknown;
+  if (!isRouteSet(body)) {
+    throw new Error('Route set response is not a valid route set');
+  }
+  return body;
+}
+
+async function safeReadText(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    return '';
+  }
+}
+
+function isRouteSet(value: unknown): value is RouteSet {
+  return isRecord(value)
+    && typeof value.nodeId === 'string'
+    && typeof value.canonicalUrl === 'string'
+    && typeof value.generatedAt === 'string'
+    && Array.isArray(value.routes)
+    && value.routes.every(isAccessRoute);
+}
+
+function isAccessRoute(value: unknown): value is AccessRoute {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.nodeId === 'string'
+    && typeof value.canonicalUrl === 'string'
+    && typeof value.kind === 'string'
+    && typeof value.targetUrl === 'string'
+    && typeof value.priority === 'number'
+    && typeof value.requiresManagedClient === 'boolean'
+    && typeof value.visibility === 'string'
+    && typeof value.health === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

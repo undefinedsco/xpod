@@ -6,6 +6,7 @@ import {
   createManagedClientFetch,
   createP2PDataPlaneHandler,
   createRawTcpHolePunchCandidates,
+  createSignaledManagedClientFetch,
 } from '../../../src/edge/reachability';
 
 const p2pRoute: AccessRoute = {
@@ -143,6 +144,99 @@ describe('createManagedClientFetch', () => {
     }
   });
 
+  it('fetches the managed route set from signaling API before opening a P2P canonical fetch', async () => {
+    const localFetch = vi.fn(async () => new Response('signaled managed fetch response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const clientPort = await reserveTcpPort();
+    const nodePort = await reserveTcpPort();
+    const plan = {
+      bucket: 503,
+      boundary: 333,
+      rendezvousTimeSeconds: 0,
+      ports: [clientPort],
+    };
+    const nodeCandidates = createRawTcpHolePunchCandidates({
+      role: 'node',
+      sourceId: 'node-1',
+      host: '127.0.0.1',
+      plan: { ...plan, ports: [nodePort] },
+    });
+    const createdCandidates: P2PTransportCandidate[][] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url === 'https://api.example/v1/signal/nodes/node-1/routes') {
+        expect(init?.method).toBe('GET');
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer service-token');
+        return jsonResponse(routeSet([p2pRoute, publicRoute]));
+      }
+      if (url === 'https://api.example/v1/signal/nodes/node-1/sessions' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        createdCandidates.push(body.candidates ?? []);
+        return jsonResponse(p2pSession(body.candidates ?? []), 201);
+      }
+      if (url === 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_managed_fetch' && init?.method === 'GET') {
+        return jsonResponse(p2pSession([...createdCandidates[0], ...nodeCandidates]));
+      }
+      return new Response(`unexpected ${String(init?.method)} ${url}`, { status: 500 });
+    });
+    const attempts: RawTcpP2PConnectAttempt[] = [];
+
+    try {
+      const managed = await createSignaledManagedClientFetch({
+        apiBaseUrl: 'https://api.example/',
+        nodeId: 'node-1',
+        token: 'service-token',
+        clientId: 'device-1',
+        host: '127.0.0.1',
+        plan,
+        fetchImpl: fetchImpl as typeof fetch,
+        pollIntervalMs: 1,
+        waitTimeoutMs: 100,
+        connectTimeoutMs: 1_000,
+        connectSocket: async (attempt) => {
+          attempts.push(attempt);
+          return clientSocket;
+        },
+      });
+
+      const response = await managed.fetch('https://node-1.pods.example/alice/signaled-managed.txt');
+
+      expect(managed.route.kind).toBe('p2p');
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('signaled managed fetch response');
+      expect(fetchImpl).toHaveBeenCalledWith(
+        'https://api.example/v1/signal/nodes/node-1/routes',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(fetchImpl).toHaveBeenCalledWith(
+        'https://api.example/v1/signal/nodes/node-1/sessions',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(attempts).toEqual([
+        expect.objectContaining({
+          local: expect.objectContaining({ sourceId: 'device-1', port: clientPort }),
+          remote: expect.objectContaining({ sourceId: 'node-1', port: nodePort }),
+        }),
+      ]);
+      expect(localFetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:5737/alice/signaled-managed.txt',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      managed.close();
+    } finally {
+      socketHandle.close();
+      await close();
+    }
+  });
+
   it('falls back to the next canonical route when a higher-priority P2P route cannot connect', async () => {
     const clientPort = await reserveTcpPort();
     const nodePort = await reserveTcpPort();
@@ -249,4 +343,11 @@ async function createSocketPair(): Promise<{
       });
     },
   };
+}
+
+function jsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 }
