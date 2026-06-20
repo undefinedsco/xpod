@@ -63,7 +63,7 @@
     "prepack": "node scripts/prepare-package-manifest.cjs pack",
     "postpack": "node scripts/prepare-package-manifest.cjs restore",
     "build:ts": "tsc",
-    "build:components": "componentsjs-generator -s src -c dist/components -r undefineds",
+    "build:components": "componentsjs-generator -s src -c dist/components -r undefineds -i config/components-ignore.json",
     "build:ui": "cd ui && bun install --frozen-lockfile && bun run build",
     "prepare.": "bun run build",
     "release": "node scripts/publish-release.cjs",

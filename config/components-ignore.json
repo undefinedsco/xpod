@@ -1,0 +1,20 @@
+[
+  "Error",
+  "ClaudeAuthenticationError",
+  "CliCommandError",
+  "CodeBuddyAuthError",
+  "DisabledSparqlFeatureError",
+  "InvalidRelaySessionRequestError",
+  "InvalidTunnelTokenError",
+  "NodeRouteSourceNotFoundError",
+  "P2PSessionExpiredError",
+  "P2PSessionNotFoundError",
+  "P2PSignalingRequestError",
+  "SearchApiError",
+  "SolidFsConflictError",
+  "SolidFsNotFoundError",
+  "SubdomainClientError",
+  "UnsupportedSparqlQueryError",
+  "VectorApiError",
+  "WaitingRunnerError"
+]
