@@ -161,6 +161,7 @@
     "@comunica/types": "^4.5.0",
     "@comunica/utils-metadata": "^4.5.0",
     "@electric-sql/pglite": "^0.3.14",
+    "@inrupt/solid-client-authn-core": "^3.1.0",
     "@inrupt/solid-client-authn-node": "^3.1.0",
     "@mariozechner/pi-coding-agent": "^0.55.1",
     "@solid/community-server": "8.0.0-alpha.1",

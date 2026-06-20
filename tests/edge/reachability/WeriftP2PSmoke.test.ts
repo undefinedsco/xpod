@@ -45,6 +45,26 @@ describe('werift P2P smoke CLI helpers', () => {
     expect(options.peerConfig?.iceServers).toEqual([{ urls: 'stun:stun.example:3478' }]);
   });
 
+  it('parses optional Solid client credentials for private Pod smoke requests', () => {
+    const options = parseWeriftP2PSmokeArgs([], {
+      XPOD_P2P_API_BASE_URL: 'https://id.undefineds.co/',
+      XPOD_P2P_NODE_ID: 'node-0000',
+      XPOD_P2P_SOURCE_ID: 'desktop-1',
+      XPOD_P2P_URL: 'https://node-0000.undefineds.co/alice/private.txt',
+      XPOD_P2P_SOLID_OIDC_ISSUER: 'https://id.undefineds.co/',
+      XPOD_P2P_SOLID_CLIENT_ID: 'solid-client-id',
+      XPOD_P2P_SOLID_CLIENT_SECRET: 'solid-client-secret',
+      XPOD_P2P_SOLID_TOKEN_TYPE: 'DPoP',
+    });
+
+    expect(options.solidAuth).toEqual({
+      oidcIssuer: 'https://id.undefineds.co/',
+      clientId: 'solid-client-id',
+      clientSecret: 'solid-client-secret',
+      tokenType: 'DPoP',
+    });
+  });
+
   it('creates a non-browser werift P2P client and fetches the canonical Solid URL as HTTP', async () => {
     const close = vi.fn(async () => undefined);
     const p2pFetch = vi.fn(async () => new Response('created through p2p', {
@@ -107,6 +127,71 @@ describe('werift P2P smoke CLI helpers', () => {
       status: 201,
       statusText: 'Created',
       bodyText: 'created through p2p',
+    });
+  });
+
+  it('wraps the P2P fetch with Solid client-credentials authentication when configured', async () => {
+    const closeClient = vi.fn(async () => undefined);
+    const closeAuth = vi.fn(async () => undefined);
+    const p2pFetch = vi.fn(async () => new Response('raw p2p should be auth-wrapped', { status: 599 }));
+    const authenticatedFetch = vi.fn(async () => new Response('private over authenticated p2p', { status: 200 }));
+    const createAuthenticatedFetch = vi.fn(async () => ({
+      fetch: authenticatedFetch as typeof fetch,
+      webId: 'https://id.undefineds.co/alice/profile/card#me',
+      close: closeAuth,
+    }));
+    const createClient = vi.fn<WeriftP2PSmokeCreateClient>(async () => ({
+      session: { sessionId: 'p2p_private' } as any,
+      route: {
+        id: 'p2p-werift-datachannel',
+        nodeId: 'node-0000',
+        canonicalUrl: 'https://node-0000.undefineds.co/',
+        kind: 'p2p',
+        targetUrl: 'webrtc://signaling/node-0000',
+        priority: 10,
+        requiresManagedClient: true,
+        visibility: 'authorized-client',
+        health: 'unknown',
+      },
+      fetch: p2pFetch,
+      close: closeClient,
+    }));
+
+    const result = await runWeriftP2PSmoke({
+      apiBaseUrl: 'https://id.undefineds.co/',
+      nodeId: 'node-0000',
+      sourceId: 'desktop-1',
+      url: 'https://node-0000.undefineds.co/alice/private.txt',
+      method: 'GET',
+      solidAuth: {
+        oidcIssuer: 'https://id.undefineds.co/',
+        clientId: 'solid-client-id',
+        clientSecret: 'solid-client-secret',
+        tokenType: 'DPoP',
+      },
+      expectStatus: 200,
+    }, { createClient, createAuthenticatedFetch });
+
+    expect(createAuthenticatedFetch).toHaveBeenCalledWith({
+      oidcIssuer: 'https://id.undefineds.co/',
+      clientId: 'solid-client-id',
+      clientSecret: 'solid-client-secret',
+      tokenType: 'DPoP',
+      fetchImpl: p2pFetch,
+    });
+    expect(authenticatedFetch).toHaveBeenCalledWith('https://node-0000.undefineds.co/alice/private.txt', {
+      method: 'GET',
+      headers: [],
+      body: undefined,
+    });
+    expect(p2pFetch).not.toHaveBeenCalled();
+    expect(closeAuth).toHaveBeenCalledTimes(1);
+    expect(closeClient).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      sessionId: 'p2p_private',
+      authWebId: 'https://id.undefineds.co/alice/profile/card#me',
+      status: 200,
+      bodyText: 'private over authenticated p2p',
     });
   });
 

@@ -184,8 +184,10 @@ Solid SDK / app
   `/v1/signal/nodes/{nodeId}/sessions` 创建 werift session，等待 local node agent
   answer，然后把传入的 canonical Solid URL 作为普通 HTTP request 编码成
   `xpod-p2p-http/1` frame 经 DataChannel 发送。这个 smoke 不需要浏览器；如果访问
-  私有资源，需要调用方显式传入可由本地 CSS 校验的 HTTP `Authorization`/`DPoP`
-  等 header。
+  私有资源，推荐传入 `--solid-oidc-issuer`、`--solid-client-id` 和
+  `--solid-client-secret`，由 Inrupt Node SDK 生成 `Authorization`/`DPoP`
+  header，再把底层 HTTP fetch 下沉到 P2P DataChannel；手工 `--header` 仍可用于
+  调试已经签发的 token。
   werift provider 还会在建 peer 前读取 signaling session 的 route metadata，将
   `metadata.protocols["werift-datachannel"].iceServers`、`metadata.protocols.webrtc.iceServers`
   或兼容的 `metadata.iceServers` 归一化为 werift `PeerConfig.iceServers`；显式传入的

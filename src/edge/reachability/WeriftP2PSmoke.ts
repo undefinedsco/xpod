@@ -1,3 +1,5 @@
+import { buildAuthenticatedFetch, EVENTS, type ILoginInputOptions, type SessionTokenSet } from '@inrupt/solid-client-authn-core';
+import { Session } from '@inrupt/solid-client-authn-node';
 import type { PeerConfig } from 'werift';
 import {
   createWeriftSignaledP2PDataPlaneClientFromApi,
@@ -7,6 +9,13 @@ import {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_TRANSPORT_TIMEOUT_MS = 10_000;
+
+export interface WeriftP2PSmokeSolidAuthOptions {
+  oidcIssuer: string;
+  clientId: string;
+  clientSecret: string;
+  tokenType?: ILoginInputOptions['tokenType'];
+}
 
 export interface WeriftP2PSmokeOptions {
   apiBaseUrl: string;
@@ -22,6 +31,7 @@ export interface WeriftP2PSmokeOptions {
   pollIntervalMs?: number;
   transportTimeoutMs?: number;
   peerConfig?: Partial<PeerConfig>;
+  solidAuth?: WeriftP2PSmokeSolidAuthOptions;
 }
 
 export interface WeriftP2PSmokeResult {
@@ -32,14 +42,26 @@ export interface WeriftP2PSmokeResult {
   statusText: string;
   headers: [string, string][];
   bodyText: string;
+  authWebId?: string;
 }
 
 export type WeriftP2PSmokeCreateClient = (
   options: Parameters<typeof createWeriftSignaledP2PDataPlaneClientFromApi>[0],
 ) => Promise<WeriftSignaledP2PDataPlaneClient>;
 
+export interface WeriftP2PSmokeAuthenticatedFetch {
+  fetch: typeof fetch;
+  webId?: string;
+  close?: () => Promise<void>;
+}
+
+export type WeriftP2PSmokeCreateAuthenticatedFetch = (
+  options: WeriftP2PSmokeSolidAuthOptions & { fetchImpl: typeof fetch },
+) => Promise<WeriftP2PSmokeAuthenticatedFetch>;
+
 export interface WeriftP2PSmokeDeps {
   createClient?: WeriftP2PSmokeCreateClient;
+  createAuthenticatedFetch?: WeriftP2PSmokeCreateAuthenticatedFetch;
 }
 
 export function parseWeriftP2PSmokeArgs(
@@ -55,6 +77,7 @@ export function parseWeriftP2PSmokeArgs(
     method: env.XPOD_P2P_METHOD,
     body: env.XPOD_P2P_BODY,
     headers: [],
+    solidAuth: parseSolidAuthFromEnv(env),
   };
 
   if (env.XPOD_P2P_EXPECT_STATUS) parsed.expectStatus = parseStatus(env.XPOD_P2P_EXPECT_STATUS, 'XPOD_P2P_EXPECT_STATUS');
@@ -96,6 +119,14 @@ export function parseWeriftP2PSmokeArgs(
     else if (arg.startsWith('--poll-interval-ms=')) parsed.pollIntervalMs = parsePositiveInteger(arg.slice('--poll-interval-ms='.length), '--poll-interval-ms');
     else if (arg === '--transport-timeout-ms') parsed.transportTimeoutMs = parsePositiveInteger(next(), arg);
     else if (arg.startsWith('--transport-timeout-ms=')) parsed.transportTimeoutMs = parsePositiveInteger(arg.slice('--transport-timeout-ms='.length), '--transport-timeout-ms');
+    else if (arg === '--solid-oidc-issuer') parsed.solidAuth = { ...parsed.solidAuth, oidcIssuer: requireHttpOrigin(next(), arg) } as WeriftP2PSmokeSolidAuthOptions;
+    else if (arg.startsWith('--solid-oidc-issuer=')) parsed.solidAuth = { ...parsed.solidAuth, oidcIssuer: requireHttpOrigin(arg.slice('--solid-oidc-issuer='.length), '--solid-oidc-issuer') } as WeriftP2PSmokeSolidAuthOptions;
+    else if (arg === '--solid-client-id') parsed.solidAuth = { ...parsed.solidAuth, clientId: next() } as WeriftP2PSmokeSolidAuthOptions;
+    else if (arg.startsWith('--solid-client-id=')) parsed.solidAuth = { ...parsed.solidAuth, clientId: arg.slice('--solid-client-id='.length) } as WeriftP2PSmokeSolidAuthOptions;
+    else if (arg === '--solid-client-secret') parsed.solidAuth = { ...parsed.solidAuth, clientSecret: next() } as WeriftP2PSmokeSolidAuthOptions;
+    else if (arg.startsWith('--solid-client-secret=')) parsed.solidAuth = { ...parsed.solidAuth, clientSecret: arg.slice('--solid-client-secret='.length) } as WeriftP2PSmokeSolidAuthOptions;
+    else if (arg === '--solid-token-type') parsed.solidAuth = { ...parsed.solidAuth, tokenType: parseTokenType(next(), arg) } as WeriftP2PSmokeSolidAuthOptions;
+    else if (arg.startsWith('--solid-token-type=')) parsed.solidAuth = { ...parsed.solidAuth, tokenType: parseTokenType(arg.slice('--solid-token-type='.length), '--solid-token-type') } as WeriftP2PSmokeSolidAuthOptions;
     else if (arg === '--ice-servers') parsed.peerConfig = { iceServers: parseIceServers(next(), arg) };
     else if (arg.startsWith('--ice-servers=')) parsed.peerConfig = { iceServers: parseIceServers(arg.slice('--ice-servers='.length), '--ice-servers') };
     else throw new Error(`Unknown argument: ${arg}`);
@@ -110,6 +141,7 @@ export async function runWeriftP2PSmoke(
 ): Promise<WeriftP2PSmokeResult> {
   const normalized = normalizeOptions(options);
   const createClient = deps.createClient ?? createWeriftSignaledP2PDataPlaneClientFromApi;
+  const createAuthenticatedFetch = deps.createAuthenticatedFetch ?? createSolidClientCredentialsP2PFetch;
   const client = await createClient({
     apiBaseUrl: normalized.apiBaseUrl,
     nodeId: normalized.nodeId,
@@ -122,8 +154,16 @@ export async function runWeriftP2PSmoke(
     peerConfig: normalized.peerConfig,
   });
 
+  let authenticated: WeriftP2PSmokeAuthenticatedFetch | undefined;
+
   try {
-    const response = await client.fetch(normalized.url, {
+    const resourceFetch = normalized.solidAuth
+      ? (authenticated = await createAuthenticatedFetch({
+          ...normalized.solidAuth,
+          fetchImpl: client.fetch,
+        })).fetch
+      : client.fetch;
+    const response = await resourceFetch(normalized.url, {
       method: normalized.method,
       headers: normalized.headers,
       body: normalized.body,
@@ -137,14 +177,47 @@ export async function runWeriftP2PSmoke(
       statusText: response.statusText,
       headers: headersToList(response.headers),
       bodyText,
+      authWebId: authenticated?.webId,
     };
     if (normalized.expectStatus !== undefined && response.status !== normalized.expectStatus) {
       throw new Error(`Expected P2P HTTP status ${normalized.expectStatus}, got ${response.status}`);
     }
     return result;
   } finally {
+    await authenticated?.close?.();
     await client.close();
   }
+}
+
+export async function createSolidClientCredentialsP2PFetch(
+  options: WeriftP2PSmokeSolidAuthOptions & { fetchImpl: typeof fetch },
+): Promise<WeriftP2PSmokeAuthenticatedFetch> {
+  const session = new Session({ keepAlive: false });
+  let tokenSet: SessionTokenSet | undefined;
+  session.events.on(EVENTS.NEW_TOKENS, (nextTokenSet) => {
+    tokenSet = nextTokenSet;
+  });
+  await session.login({
+    oidcIssuer: options.oidcIssuer,
+    clientId: options.clientId,
+    clientSecret: options.clientSecret,
+    tokenType: options.tokenType ?? 'DPoP',
+  });
+  if (!tokenSet?.accessToken) {
+    await session.logout({ logoutType: 'app' });
+    throw new Error('Solid client credentials login did not return an access token');
+  }
+
+  return {
+    fetch: buildAuthenticatedFetch(tokenSet.accessToken, {
+      dpopKey: tokenSet.dpopKey,
+      fetch: options.fetchImpl,
+    }),
+    webId: tokenSet.webId ?? session.info.webId,
+    close: async () => {
+      await session.logout({ logoutType: 'app' });
+    },
+  };
 }
 
 export function formatWeriftP2PSmokeResult(result: WeriftP2PSmokeResult): string {
@@ -175,6 +248,10 @@ Options:
   --token <token>             API bearer token, or XPOD_P2P_TOKEN
   --method, -X <method>       HTTP method. Default: GET
   --header, -H <k: v>         HTTP header forwarded inside the P2P frame
+  --solid-oidc-issuer <url>   Optional Solid issuer for automatic DPoP auth
+  --solid-client-id <id>      Optional Solid client credentials id
+  --solid-client-secret <sec> Optional Solid client credentials secret
+  --solid-token-type <type>   Optional Solid token type. Default: DPoP
   --body, -d <text>           HTTP request body
   --expect-status <code>      Fail if response status differs
   --timeout-ms <ms>           Signaling/ICE timeout. Default: ${DEFAULT_TIMEOUT_MS}
@@ -221,7 +298,43 @@ function normalizeOptions(options: Partial<WeriftP2PSmokeOptions>): WeriftP2PSmo
     pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     transportTimeoutMs: options.transportTimeoutMs ?? DEFAULT_TRANSPORT_TIMEOUT_MS,
     peerConfig: options.peerConfig,
+    solidAuth: normalizeSolidAuth(options.solidAuth),
   };
+}
+
+function parseSolidAuthFromEnv(env: Record<string, string | undefined>): WeriftP2PSmokeSolidAuthOptions | undefined {
+  const oidcIssuer = trimOptional(env.XPOD_P2P_SOLID_OIDC_ISSUER);
+  const clientId = trimOptional(env.XPOD_P2P_SOLID_CLIENT_ID);
+  const clientSecret = trimOptional(env.XPOD_P2P_SOLID_CLIENT_SECRET);
+  const tokenType = trimOptional(env.XPOD_P2P_SOLID_TOKEN_TYPE);
+  if (!oidcIssuer && !clientId && !clientSecret && !tokenType) {
+    return undefined;
+  }
+  return normalizeSolidAuth({
+    oidcIssuer,
+    clientId,
+    clientSecret,
+    tokenType: tokenType ? parseTokenType(tokenType, 'XPOD_P2P_SOLID_TOKEN_TYPE') : undefined,
+  });
+}
+
+function normalizeSolidAuth(options?: Partial<WeriftP2PSmokeSolidAuthOptions>): WeriftP2PSmokeSolidAuthOptions | undefined {
+  if (!options) {
+    return undefined;
+  }
+  return {
+    oidcIssuer: requireHttpOrigin(options.oidcIssuer, 'solidAuth.oidcIssuer'),
+    clientId: requireNonEmpty(options.clientId, 'solidAuth.clientId'),
+    clientSecret: requireNonEmpty(options.clientSecret, 'solidAuth.clientSecret'),
+    tokenType: options.tokenType ?? 'DPoP',
+  };
+}
+
+function parseTokenType(value: string, optionName: string): ILoginInputOptions['tokenType'] {
+  if (value !== 'DPoP' && value !== 'Bearer') {
+    throw new Error(`${optionName} must be DPoP or Bearer`);
+  }
+  return value;
 }
 
 function requireNonEmpty(value: string | undefined, name: string): string {

@@ -206,8 +206,9 @@ encodes that HTTP request into `xpod-p2p-http/1` frames over a WebRTC DataChanne
 The local node decodes the frame and forwards it to its local CSS/SP HTTP
 endpoint.
 
-For private Pod resources, add the exact Solid auth headers you want preserved
-through the P2P frame, for example:
+For private Pod resources, prefer Solid client credentials so the smoke uses the
+standard Inrupt Node SDK to generate `Authorization` and `DPoP` headers while the
+underlying HTTP transport is still P2P:
 
 ```bash
 bun scripts/werift-p2p-smoke.ts \
@@ -215,11 +216,15 @@ bun scripts/werift-p2p-smoke.ts \
   --node-id node-0000 \
   --source-id desktop-ganlu \
   --token <managed-client-token> \
+  --solid-oidc-issuer https://id.undefineds.co/ \
+  --solid-client-id <solid-client-id> \
+  --solid-client-secret <solid-client-secret> \
   --url https://node-0000.undefineds.co/alice/a.txt \
-  --header 'authorization: DPoP <access-token>' \
-  --header 'dpop: <proof-jwt>' \
   --expect-status 200
 ```
+
+Manual `--header` values are still supported when debugging already-minted tokens
+or non-standard auth flows.
 
 Current boundary: this is the managed-client HTTP-over-P2P smoke path. It can
 prove non-browser signaling and DataChannel data frames in a real runtime, but a
