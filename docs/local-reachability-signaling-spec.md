@@ -152,9 +152,14 @@ Solid SDK / app
   STUN server 发送 Binding Request，解析 `XOR-MAPPED-ADDRESS` 生成
   `candidateType=server-reflexive` candidate，并通过 signaling 与 direct candidate
   一起发布。这是跨 NAT 的前置能力，但还不是完整 ICE。
-- `UdpP2PTransport` 不是最终公网 P2P 协议：当前有 frame 分片/重组，但没有丢包重传、
-  拥塞控制、可靠流、加密握手、ICE candidate pair nomination、TURN 或生产级 NAT hole punching。
-  丢包网络、跨 NAT、CGNAT 和移动端网络切换应由后续 QUIC/ICE 或其他 provider 负责。
+- `WeriftDataChannelP2PTransport` 已支持 Node / native 非浏览器 DataChannel provider：
+  通过仓库现有 `werift` 依赖建立 RTCPeerConnection，使用 ICE + DTLS + SCTP DataChannel
+  承载同一套 `xpod-p2p-http/1` frame。它证明 HTTP frame 可以跑在可靠有序的非浏览器
+  P2P stream 上，不需要普通浏览器参与。
+- 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
+  拥塞控制或加密握手；werift provider 具备 ICE/DTLS/SCTP 能力，但尚未接入 Cloud
+  signaling session 的 offer/answer/candidate 交换，也没有完成 TURN 策略、移动端网络切换
+  和真实跨 NAT 验证。
 
 设计约束：
 

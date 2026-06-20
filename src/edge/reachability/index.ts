@@ -9,3 +9,4 @@ export * from './UdpStunCandidate';
 export * from './UdpP2PTransport';
 export * from './UdpP2PRendezvous';
 export * from './UdpP2PSignaledDataPlane';
+export * from './WeriftDataChannelP2PTransport';
