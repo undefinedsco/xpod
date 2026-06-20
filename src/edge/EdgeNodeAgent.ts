@@ -7,9 +7,20 @@ import { FrpcProcessManager, type FrpcRuntimeStatus } from './frp/FrpcProcessMan
 import { AcmeCertificateManager } from './acme/AcmeCertificateManager';
 import { ClusterCertificateManager } from './acme/ClusterCertificateManager';
 import { EdgeNodeCapabilityDetector, type NetworkAddressInfo } from './EdgeNodeCapabilityDetector';
-import { type AccessRoute } from './reachability';
+import {
+  acceptSignaledRawTcpP2PConnectionOnce,
+  createP2PDataPlaneHandler,
+  createP2PSignalingClient,
+  type AccessRoute,
+  type P2PSignalingClient,
+  type RawTcpP2PConnectSocket,
+  type RawTcpP2PSleep,
+  type TcpP2PDataPlaneSocketHandle,
+} from './reachability';
 
 type EdgeNodeP2PHeartbeatRoute = Omit<AccessRoute, 'canonicalUrl'> & { canonicalUrl?: string };
+
+const DEFAULT_P2P_ACCEPT_INTERVAL_MS = 1_000;
 
 export interface EdgeNodeAgentOptions {
   signalEndpoint: string;
@@ -47,6 +58,14 @@ export interface EdgeNodeAgentOptions {
     enabled?: boolean | string;
     targetBaseUrl: string | URL;
     label?: string;
+    host?: string;
+    address?: string;
+    signaling?: P2PSignalingClient;
+    acceptIntervalMs?: number | string;
+    connectTimeoutMs?: number | string;
+    localAddress?: string;
+    sleepMs?: RawTcpP2PSleep;
+    connectSocket?: RawTcpP2PConnectSocket;
   };
 }
 
@@ -58,6 +77,9 @@ export class EdgeNodeAgent {
   private networkDetector?: EdgeNodeCapabilityDetector;
   private cachedNetworkInfo?: NetworkAddressInfo;
   private lastNetworkDetection = 0;
+  private p2pAcceptInterval?: NodeJS.Timeout;
+  private p2pAcceptRunning = false;
+  private readonly p2pSocketHandles = new Set<TcpP2PDataPlaneSocketHandle>();
   private readonly networkDetectionIntervalMs = 60_000; // 每分钟重新检测一次
 
   public async start(options: EdgeNodeAgentOptions): Promise<void> {
@@ -122,6 +144,7 @@ export class EdgeNodeAgent {
     }
 
     this.heartbeat = new EdgeNodeSignalClient(heartbeatOptions);
+    this.startP2PAcceptLoop(options);
   }
 
   public stop(): void {
@@ -129,8 +152,76 @@ export class EdgeNodeAgent {
       (this.heartbeat as any).dispose();
     }
     this.heartbeat = undefined;
+    if (this.p2pAcceptInterval) {
+      clearInterval(this.p2pAcceptInterval);
+      this.p2pAcceptInterval = undefined;
+    }
+    for (const handle of this.p2pSocketHandles) {
+      handle.close();
+    }
+    this.p2pSocketHandles.clear();
+    this.p2pAcceptRunning = false;
     void this.frpManager?.stop();
     this.clusterCertificate?.stop();
+  }
+
+  private startP2PAcceptLoop(options: EdgeNodeAgentOptions): void {
+    const p2p = options.p2p;
+    if (!p2p || this.normalizeBoolean(p2p.enabled) === false) {
+      return;
+    }
+    const signaling = p2p.signaling ?? createP2PSignalingClient({
+      apiBaseUrl: this.resolveP2PApiBaseUrl(options.signalEndpoint),
+      nodeId: options.nodeId,
+      token: options.nodeToken,
+    });
+    const handler = createP2PDataPlaneHandler({ targetBaseUrl: p2p.targetBaseUrl });
+    const intervalMs = this.normalizePositiveInteger(p2p.acceptIntervalMs) ?? DEFAULT_P2P_ACCEPT_INTERVAL_MS;
+    const run = (): void => {
+      void this.acceptP2PConnectionOnce({
+        signaling,
+        sourceId: options.nodeId,
+        host: p2p.host,
+        address: p2p.address,
+        handler,
+        connectTimeoutMs: this.normalizePositiveInteger(p2p.connectTimeoutMs),
+        localAddress: p2p.localAddress,
+        sleepMs: p2p.sleepMs,
+        connectSocket: p2p.connectSocket,
+      });
+    };
+    run();
+    this.p2pAcceptInterval = setInterval(run, intervalMs);
+  }
+
+  private async acceptP2PConnectionOnce(options: Parameters<typeof acceptSignaledRawTcpP2PConnectionOnce>[0]): Promise<void> {
+    if (this.p2pAcceptRunning) {
+      return;
+    }
+    this.p2pAcceptRunning = true;
+    try {
+      const networkInfo = await this.getNetworkInfo();
+      const accepted = await acceptSignaledRawTcpP2PConnectionOnce({
+        ...options,
+        host: options.host ?? networkInfo.ipv4 ?? networkInfo.ipv6,
+      });
+      if (accepted) {
+        this.p2pSocketHandles.add(accepted.socketHandle);
+        this.logger.info(`Accepted raw TCP P2P session ${accepted.session.sessionId}.`);
+      }
+    } catch (error: unknown) {
+      this.logger.debug(`Raw TCP P2P accept attempt failed: ${(error as Error).message}`);
+    } finally {
+      this.p2pAcceptRunning = false;
+    }
+  }
+
+  private resolveP2PApiBaseUrl(signalEndpoint: string): string {
+    try {
+      return new URL(signalEndpoint).origin;
+    } catch {
+      return signalEndpoint;
+    }
   }
 
   private stringifyIfContent(data: Record<string, unknown>): string | undefined {
@@ -201,6 +292,19 @@ export class EdgeNodeAgent {
       : [];
     const withoutGeneratedRoute = routes.filter((route) => route.id !== p2pRoute.id);
     return [...withoutGeneratedRoute, p2pRoute];
+  }
+
+  private normalizePositiveInteger(value: number | string | undefined): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.floor(parsed);
+      }
+    }
+    return undefined;
   }
 
   private normalizeBoolean(value: boolean | string | undefined): boolean {

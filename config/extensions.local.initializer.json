@@ -43,6 +43,14 @@
       "p2pLabel": {
         "@id": "urn:solid-server:default:variable:p2pLabel",
         "@type": "Variable"
+      },
+      "p2pAcceptIntervalMs": {
+        "@id": "urn:solid-server:default:variable:p2pAcceptIntervalMs",
+        "@type": "Variable"
+      },
+      "p2pConnectTimeoutMs": {
+        "@id": "urn:solid-server:default:variable:p2pConnectTimeoutMs",
+        "@type": "Variable"
       }
     },
     {

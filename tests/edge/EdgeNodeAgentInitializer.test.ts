@@ -29,6 +29,8 @@ describe('EdgeNodeAgentInitializer', () => {
       p2pEnabled: 'true',
       p2pTargetBaseUrl: 'http://127.0.0.1:3000/',
       p2pLabel: 'xpod-p2p-http',
+      p2pAcceptIntervalMs: '1500',
+      p2pConnectTimeoutMs: '7000',
     });
 
     await initializer.handle();
@@ -42,6 +44,8 @@ describe('EdgeNodeAgentInitializer', () => {
         enabled: true,
         targetBaseUrl: 'http://127.0.0.1:3000/',
         label: 'xpod-p2p-http',
+        acceptIntervalMs: 1_500,
+        connectTimeoutMs: 7_000,
       }),
     }));
   });

@@ -331,6 +331,22 @@
           }
         },
         {
+          "@type": "YargsParameter",
+          "name": "p2pAcceptIntervalMs",
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "p2pConnectTimeoutMs",
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
+        },
+        {
           "comment": "=== Hidden: Multi-Node Center Deployment ===",
           "@type": "YargsParameter",
           "name": "podRoutingEnabled",

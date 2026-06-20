@@ -200,6 +200,10 @@ Solid SDK / app
   pending raw TCP session、按 client bucket 追加 node candidates、执行 candidate race，
   并把成功 socket 直接挂到 `P2PDataPlaneHandler`。runtime 调用方不需要手工拼接
   list/answer/connect/attach 四段流程。
+- `EdgeNodeAgent` 在 `XPOD_P2P_ENABLED=true` 时已启动 node-side raw TCP accept loop：
+  心跳继续上报 managed-only `p2p` route，同时后台轮询 signaling sessions，成功后把
+  socket 接到 `XPOD_P2P_TARGET_BASE_URL` 指向的本地 CSS/SP。该 loop 不处理
+  Cloudflare Tunnel 或 FRP/SakuraFRP，它们仍是独立 `user-tunnel` fallback。
 - `attachTcpP2PDataPlaneSocket` 已能把 raw TCP 打洞成功后拿到的 pre-connected socket
   直接挂到 node-side `P2PDataPlaneHandler`，因此执行器不必伪装成 listener accept
   流程；成功 socket 可立即转发 canonical HTTP frame 到本地 CSS/SP。
@@ -530,14 +534,14 @@ GET http://node-0000.undefineds.co/app/signal-pod.html?nodeId=node-0000&path=%2F
 - `EdgeNodeSignalHandler`：接收心跳、鉴权、落库 metadata，并触发健康探测 / DNS 协调。
 - `LocalNetworkManager`：处理公网 IP 检测与 DNS 更新；没有公网时保持本机/LAN route 可用。
 - `EdgeNodeCapabilityDetector`：探测本地 IPv4/IPv6、公网 IPv4/IPv6 和 IPv6 可达性。
-- `EdgeNodeAgent`：周期性上报节点状态，可消费心跳响应中的 tunnel 配置。
+- `EdgeNodeAgent`：周期性上报节点状态，可消费心跳响应中的 tunnel 配置；启用 raw TCP P2P 时启动 node-side accept loop。
 
 缺口：
 
 1. 统一 `RouteSet` DTO 和持久化位置。
 2. `GET /v1/signal/nodes/{nodeId}/routes` 查询与权限过滤。
 3. Desktop / CLI route selector 和 canonical fetch adapter。
-4. P2P signaling session API 与 native client 实现。
+4. P2P signaling session API 与 native client 实现：控制面、client/node 编排和 node-side accept loop 已有；仍缺平台级 true simultaneous-open connector 与实网 smoke。
 5. `xpod-relay` 的显式授权、限额、TTL 和审计。
 6. UI 状态页：区分 canonical domain、public route、managed-client route、relay fallback。
 
@@ -566,6 +570,7 @@ GET http://node-0000.undefineds.co/app/signal-pod.html?nodeId=node-0000&path=%2F
 
 - 新增 P2P session API。
 - Node 可列出 active P2P sessions，发现 client-created raw TCP plan/candidate。
+- Local `EdgeNodeAgent` 可自动 answer session 并把成功 socket 接入本地 CSS/SP。
 - Native client 和节点交换 raw TCP candidates，并按共同 rendezvous 时间执行 simultaneous open。
 - 成功后作为 `p2p` route 加入 route set，失败则回落。
 

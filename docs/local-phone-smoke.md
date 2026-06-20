@@ -196,23 +196,29 @@ current acceptance target.
 Current non-browser data-plane verification is local-runtime only:
 
 ```bash
-./scripts/run-vitest-safe.sh --run tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts
+./scripts/run-vitest-safe.sh --run \
+  tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts \
+  tests/edge/reachability/TcpP2PSignalingSession.test.ts \
+  tests/edge/EdgeNodeAgent.test.ts
 ```
 
-That test starts a real local TCP server and client, sends canonical Solid HTTP
-requests as `xpod-p2p-http/1` frames over the TCP stream, and verifies the local
-node handler forwards the request to the configured CSS/SP base URL while
-preserving canonical URL headers.
+These tests cover the local TCP frame transport, signaled client/node candidate
+exchange, and the `EdgeNodeAgent` accept loop that attaches an accepted socket to
+`XPOD_P2P_TARGET_BASE_URL`. They send canonical Solid HTTP requests as
+`xpod-p2p-http/1` frames over the TCP stream and verify the local node handler
+forwards the request to the configured CSS/SP base URL while preserving canonical
+URL headers.
 
 Raw TCP cross-NAT acceptance still needs a packaged native/CLI/mobile runtime
 that can:
 
-1. read `/v1/signal/nodes/:nodeId/sessions`;
-2. compute the shared hole-punch bucket, rendezvous time, and candidate ports;
-3. bind candidate local TCP ports with the required socket options;
-4. run TCP simultaneous open against the peer-observed public address;
-5. select one winning socket and upgrade it to `TcpP2PDataPlaneTransport`;
-6. run the same canonical Solid HTTP request over that socket.
+1. provide a platform connector that can bind candidate local TCP ports with the
+   required socket options;
+2. run true TCP simultaneous open against the peer-observed public address;
+3. select one winning socket consistently on both sides;
+4. inject that socket through the existing `connectSocket` hook;
+5. run the same canonical Solid HTTP request over that socket on real external
+   networks.
 
 Until that runtime smoke exists, public-network phone validation should use the
 SP-domain browser flow above. That validates product-visible Solid behavior, but

@@ -20,6 +20,8 @@ export interface EdgeNodeAgentInitializerOptions {
   p2pEnabled?: boolean | string;
   p2pTargetBaseUrl?: string;
   p2pLabel?: string;
+  p2pAcceptIntervalMs?: number | string;
+  p2pConnectTimeoutMs?: number | string;
 }
 
 /**
@@ -95,6 +97,8 @@ export class EdgeNodeAgentInitializer extends Initializer {
           enabled: true,
           targetBaseUrl: options.p2pTargetBaseUrl!,
           label: options.p2pLabel,
+          acceptIntervalMs: this.normalizePositiveInteger(options.p2pAcceptIntervalMs),
+          connectTimeoutMs: this.normalizePositiveInteger(options.p2pConnectTimeoutMs),
         },
       } : {}),
     };

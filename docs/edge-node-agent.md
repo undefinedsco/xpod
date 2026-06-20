@@ -93,6 +93,8 @@ await agent.start({
   - `XPOD_P2P_ENABLED=true`
   - `XPOD_P2P_TARGET_BASE_URL=http://127.0.0.1:3000/`
   - 可选：`XPOD_P2P_LABEL`。
+  - 可选：`XPOD_P2P_ACCEPT_INTERVAL_MS=1000`。
+  - 可选：`XPOD_P2P_CONNECT_TIMEOUT_MS=5000`。
 - 启用 `XPOD_P2P_ENABLED=true` 后，Agent 会在心跳 `metadata.routes` 中自动追加
   `id=p2p-raw-tcp`、`kind=p2p`、`targetUrl=tcp-punch://node/<nodeId>` 的 managed-only route。
   Cloud 创建 P2P session 时会把该 route 放入 `nodeCandidates`，managed/native client
@@ -104,10 +106,12 @@ await agent.start({
 - FRP 隧道信息会在心跳响应的 `metadata.tunnel.config` 中返回（包含 `serverHost`、`serverPort`、`token`、`proxyName`、`remotePort`）。若在 Agent 中启用 `frp` 配置，将自动生成 `frpc.ini` 并守护 `frpc` 进程；未配置时可自行处理或保持直连。
 - Agent 会在心跳的 `tunnel.client` 字段中汇报 frpc 运行状态（`running/inactive/error`、进程 PID、最近更新及故障信息），Cluster 侧可据此监控隧道健康。
 - TODO：后续将在该字段补充更细的带宽/延迟指标，方便观察隧道性能。
-- 当前 `p2p` 只负责在 heartbeat 中声明 raw TCP P2P route；Agent 不再内置旧的重型
-  provider answer loop。raw TCP 打洞执行器由后续 native/CLI/desktop/mobile runtime 按
-  signaling session 中的候选和 `tcp-punch` 参数启动，成功后在 TCP stream 上承载
-  `xpod-p2p-http/1` HTTP frame，并转发到 `targetBaseUrl` 指向的本地 CSS/SP。
+- Cloudflare Tunnel、FRP/SakuraFRP 是已实现的公网 `user-tunnel` 能力，必须保留；raw TCP P2P 只是 managed/native client 的数据面优化，不替代、不删除这些 fallback。
+- 当前 `p2p` 负责两件事：在 heartbeat 中声明 raw TCP P2P route，并启动 node-side
+  accept loop 轮询 `/v1/signal/nodes/:nodeId/sessions`。发现 client-created raw TCP
+  session 后，Agent 会追加 node candidates，执行候选连接，并把成功 socket 接入
+  `targetBaseUrl` 指向的本地 CSS/SP。真实跨 NAT TCP simultaneous-open 仍依赖后续
+  native/CLI/desktop/mobile connector 通过 `connectSocket` 提供平台级 socket 能力。
 - 普通浏览器不支持 raw TCP socket、同号端口 bind 或 simultaneous open；手机浏览器页面只能验证
   Cloud IdP、SP route 和 signaling 控制面。Chrome Isolated Web App 的 Direct Sockets
   只能作为安装式 runtime 自定义 TCP transport 的后续研究项；它不是普通浏览器能力，
