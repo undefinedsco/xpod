@@ -664,6 +664,103 @@ describe('signaled raw TCP P2P sessions', () => {
     }
   });
 
+  it('keeps the deterministic winning socket when multiple raw TCP candidates connect in the settle window', async () => {
+    const wrongFetch = vi.fn(async () => new Response('wrong socket response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const winnerFetch = vi.fn(async () => new Response('deterministic winner response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const wrongHandler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: wrongFetch as typeof fetch,
+    });
+    const winnerHandler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: winnerFetch as typeof fetch,
+    });
+    const wrongPair = await createSocketPair();
+    const winnerPair = await createSocketPair();
+    const wrongHandle = attachTcpP2PDataPlaneSocket({ socket: wrongPair.serverSocket, handler: wrongHandler });
+    const winnerHandle = attachTcpP2PDataPlaneSocket({ socket: winnerPair.serverSocket, handler: winnerHandler });
+    const basePlan = {
+      bucket: 105,
+      boundary: 741,
+      rendezvousTimeSeconds: 0,
+      ports: [41_000],
+    };
+    const localCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-1',
+      host: '127.0.0.1',
+      plan: basePlan,
+    });
+    const wrongRemotePort = 45_000;
+    const winningRemotePort = 44_000;
+    const remoteCandidates = [
+      ...createRawTcpHolePunchCandidates({
+        role: 'node',
+        sourceId: 'node-1',
+        host: '127.0.0.1',
+        priority: 100,
+        plan: {
+          ...basePlan,
+          ports: [wrongRemotePort],
+        },
+      }),
+      ...createRawTcpHolePunchCandidates({
+        role: 'node',
+        sourceId: 'node-1',
+        host: '127.0.0.1',
+        priority: 90,
+        plan: {
+          ...basePlan,
+          ports: [winningRemotePort],
+        },
+      }),
+    ];
+    const attempts: RawTcpP2PConnectAttempt[] = [];
+    let transport: Awaited<ReturnType<typeof connectRawTcpP2PTransport>> | undefined;
+
+    try {
+      transport = await connectRawTcpP2PTransport({
+        localCandidates,
+        remoteCandidates,
+        timeoutMs: 2_000,
+        connectTimeoutMs: 1_000,
+        winnerSelectionWindowMs: 20,
+        connectSocket: async (attempt) => {
+          attempts.push(attempt);
+          if (attempt.remotePort === wrongRemotePort) {
+            return wrongPair.clientSocket;
+          }
+          await sleepTest(5);
+          return winnerPair.clientSocket;
+        },
+      });
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: baseSession.nodeCandidates[0], transport });
+
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/deterministic-winner.txt');
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('deterministic winner response');
+      expect(attempts.map((attempt) => attempt.remotePort)).toEqual([wrongRemotePort, winningRemotePort]);
+      expect(winnerFetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:5737/alice/deterministic-winner.txt',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(wrongFetch).not.toHaveBeenCalled();
+    } finally {
+      transport?.close();
+      wrongHandle.close();
+      winnerHandle.close();
+      await wrongPair.close();
+      await winnerPair.close();
+    }
+  });
+
   it('aborts pending rendezvous timers after another raw TCP candidate wins', async () => {
     const localFetch = vi.fn(async () => new Response('timer cleanup response', {
       status: 200,

@@ -51,6 +51,10 @@
       "p2pConnectTimeoutMs": {
         "@id": "urn:solid-server:default:variable:p2pConnectTimeoutMs",
         "@type": "Variable"
+      },
+      "p2pWinnerSelectionWindowMs": {
+        "@id": "urn:solid-server:default:variable:p2pWinnerSelectionWindowMs",
+        "@type": "Variable"
       }
     },
     {

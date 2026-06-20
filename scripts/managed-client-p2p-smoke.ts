@@ -18,6 +18,7 @@ interface CliOptions {
   body?: string;
   headers: string[];
   connectTimeoutMs?: number;
+  winnerSelectionWindowMs?: number;
   waitTimeoutMs?: number;
   pollIntervalMs?: number;
   requestTimeoutMs?: number;
@@ -45,6 +46,7 @@ function parseArgs(argv: string[]): CliOptions {
     body: process.env.XPOD_P2P_SMOKE_BODY,
     headers: parseEnvList(process.env.XPOD_P2P_SMOKE_HEADERS),
     connectTimeoutMs: parseOptionalInteger(process.env.XPOD_P2P_SMOKE_CONNECT_TIMEOUT_MS, 'XPOD_P2P_SMOKE_CONNECT_TIMEOUT_MS'),
+    winnerSelectionWindowMs: parseOptionalInteger(process.env.XPOD_P2P_SMOKE_WINNER_SELECTION_WINDOW_MS, 'XPOD_P2P_SMOKE_WINNER_SELECTION_WINDOW_MS'),
     waitTimeoutMs: parseOptionalInteger(process.env.XPOD_P2P_SMOKE_WAIT_TIMEOUT_MS, 'XPOD_P2P_SMOKE_WAIT_TIMEOUT_MS'),
     pollIntervalMs: parseOptionalInteger(process.env.XPOD_P2P_SMOKE_POLL_INTERVAL_MS, 'XPOD_P2P_SMOKE_POLL_INTERVAL_MS'),
     requestTimeoutMs: parseOptionalInteger(process.env.XPOD_P2P_SMOKE_REQUEST_TIMEOUT_MS, 'XPOD_P2P_SMOKE_REQUEST_TIMEOUT_MS'),
@@ -116,6 +118,10 @@ function parseArgs(argv: string[]): CliOptions {
       options.connectTimeoutMs = parsePositiveInteger(readValue(), arg);
     } else if (inlineValue('--connect-timeout-ms') !== undefined) {
       options.connectTimeoutMs = parsePositiveInteger(inlineValue('--connect-timeout-ms') ?? '', arg);
+    } else if (arg === '--winner-selection-window-ms') {
+      options.winnerSelectionWindowMs = parsePositiveInteger(readValue(), arg);
+    } else if (inlineValue('--winner-selection-window-ms') !== undefined) {
+      options.winnerSelectionWindowMs = parsePositiveInteger(inlineValue('--winner-selection-window-ms') ?? '', arg);
     } else if (arg === '--wait-timeout-ms') {
       options.waitTimeoutMs = parsePositiveInteger(readValue(), arg);
     } else if (inlineValue('--wait-timeout-ms') !== undefined) {
@@ -191,6 +197,8 @@ Optional:
   --header, -H <k:v>          Request header. Repeatable.
   --body <text>               Request body. Not allowed for GET/HEAD.
   --connect-timeout-ms <ms>   Raw TCP connect timeout window.
+  --winner-selection-window-ms <ms>
+                              Collect successful raw TCP sockets briefly and keep a deterministic winner.
   --wait-timeout-ms <ms>      Candidate polling timeout.
   --poll-interval-ms <ms>     Candidate polling interval.
   --request-timeout-ms <ms>   P2P HTTP frame request timeout.
@@ -208,6 +216,7 @@ Environment aliases:
   XPOD_P2P_SMOKE_NODE_ID, XPOD_P2P_SMOKE_TOKEN, XPOD_P2P_SMOKE_CLIENT_ID
   XPOD_P2P_SMOKE_HOST, XPOD_P2P_SMOKE_ADDRESS, XPOD_P2P_SMOKE_LOCAL_ADDRESS
   XPOD_P2P_SMOKE_RESOURCE_URL
+  XPOD_P2P_SMOKE_WINNER_SELECTION_WINDOW_MS
 `);
 }
 
@@ -229,6 +238,7 @@ async function main(): Promise<void> {
     ...(options.address ? { address: options.address } : {}),
     ...(options.localAddress ? { localAddress: options.localAddress } : {}),
     ...(options.connectTimeoutMs ? { connectTimeoutMs: options.connectTimeoutMs } : {}),
+    ...(options.winnerSelectionWindowMs ? { winnerSelectionWindowMs: options.winnerSelectionWindowMs } : {}),
     ...(options.waitTimeoutMs ? { waitTimeoutMs: options.waitTimeoutMs } : {}),
     ...(options.pollIntervalMs ? { pollIntervalMs: options.pollIntervalMs } : {}),
     ...(options.requestTimeoutMs ? { timeoutMs: options.requestTimeoutMs } : {}),

@@ -226,6 +226,7 @@ bun run smoke:p2p:managed -- \
   --token "$XPOD_SERVICE_TOKEN" \
   --client-id "cli-$(hostname)" \
   --host "$PUBLIC_CLIENT_IP" \
+  --winner-selection-window-ms 50 \
   --resource-url https://node-0000.undefineds.co/.well-known/openid-configuration
 ```
 
@@ -235,6 +236,11 @@ through the selected managed-client fetch route. It prints a JSON result with
 `route`, HTTP status, headers, and body. By default it exits non-zero unless the
 selected route is `p2p`; pass `--allow-fallback` only when you intentionally want
 to validate public/user-tunnel fallback behavior instead of raw TCP P2P.
+When multiple candidate sockets connect almost together, `--winner-selection-window-ms`
+lets the managed client collect a short success set and keep the deterministic
+candidate-pair winner instead of racing on first completion. Set
+`XPOD_P2P_WINNER_SELECTION_WINDOW_MS=50` on the local node agent as well when the
+smoke is meant to prove both peers use the same deterministic winner policy.
 
 This native P2P path is additive. Existing Cloudflare Tunnel and FRP/SakuraFRP
 paths remain the browser/public `user-tunnel` fallback and are not replaced by

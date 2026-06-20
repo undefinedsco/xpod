@@ -95,6 +95,7 @@ await agent.start({
   - 可选：`XPOD_P2P_LABEL`。
   - 可选：`XPOD_P2P_ACCEPT_INTERVAL_MS=1000`。
   - 可选：`XPOD_P2P_CONNECT_TIMEOUT_MS=5000`。
+  - 可选：`XPOD_P2P_WINNER_SELECTION_WINDOW_MS=50`，让 node-side accept loop 在多个 raw TCP socket 几乎同时成功时短暂收集并选择确定性 winner。
 - 启用 `XPOD_P2P_ENABLED=true` 后，Agent 会在心跳 `metadata.routes` 中自动追加
   `id=p2p-raw-tcp`、`kind=p2p`、`targetUrl=tcp-punch://node/<nodeId>` 的 managed-only route。
   Cloud 创建 P2P session 时会把该 route 放入 `nodeCandidates`，managed/native client

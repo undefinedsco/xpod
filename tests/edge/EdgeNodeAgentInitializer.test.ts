@@ -31,6 +31,7 @@ describe('EdgeNodeAgentInitializer', () => {
       p2pLabel: 'xpod-p2p-http',
       p2pAcceptIntervalMs: '1500',
       p2pConnectTimeoutMs: '7000',
+      p2pWinnerSelectionWindowMs: '50',
     });
 
     await initializer.handle();
@@ -46,6 +47,7 @@ describe('EdgeNodeAgentInitializer', () => {
         label: 'xpod-p2p-http',
         acceptIntervalMs: 1_500,
         connectTimeoutMs: 7_000,
+        winnerSelectionWindowMs: 50,
       }),
     }));
   });

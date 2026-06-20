@@ -22,6 +22,7 @@ export interface EdgeNodeAgentInitializerOptions {
   p2pLabel?: string;
   p2pAcceptIntervalMs?: number | string;
   p2pConnectTimeoutMs?: number | string;
+  p2pWinnerSelectionWindowMs?: number | string;
 }
 
 /**
@@ -99,6 +100,7 @@ export class EdgeNodeAgentInitializer extends Initializer {
           label: options.p2pLabel,
           acceptIntervalMs: this.normalizePositiveInteger(options.p2pAcceptIntervalMs),
           connectTimeoutMs: this.normalizePositiveInteger(options.p2pConnectTimeoutMs),
+          winnerSelectionWindowMs: this.normalizeNonNegativeInteger(options.p2pWinnerSelectionWindowMs),
         },
       } : {}),
     };
@@ -123,6 +125,19 @@ export class EdgeNodeAgentInitializer extends Initializer {
       const parsed = Number(value);
       if (Number.isFinite(parsed) && parsed > 0) {
         return parsed;
+      }
+    }
+    return undefined;
+  }
+
+  private normalizeNonNegativeInteger(value: number | string | undefined): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value);
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.floor(parsed);
       }
     }
     return undefined;

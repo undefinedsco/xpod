@@ -75,6 +75,7 @@ describe('runtime bootstrap helpers', () => {
       XPOD_P2P_LABEL: 'xpod-p2p-http',
       XPOD_P2P_ACCEPT_INTERVAL_MS: '1500',
       XPOD_P2P_CONNECT_TIMEOUT_MS: '7000',
+      XPOD_P2P_WINNER_SELECTION_WINDOW_MS: '50',
     });
 
     const shorthand = buildRuntimeShorthand(runtimeEnv, {
@@ -94,6 +95,7 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.p2pLabel).toBe('xpod-p2p-http');
     expect(shorthand.p2pAcceptIntervalMs).toBe('1500');
     expect(shorthand.p2pConnectTimeoutMs).toBe('7000');
+    expect(shorthand.p2pWinnerSelectionWindowMs).toBe('50');
     expect(shorthand.edgeNodesEnabled).toBe(true);
     expect(shorthand.centerRegistrationEnabled).toBe(true);
     expect(shorthand.emailConfigHost).toBe('');

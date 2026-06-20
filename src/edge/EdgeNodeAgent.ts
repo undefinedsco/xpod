@@ -63,6 +63,7 @@ export interface EdgeNodeAgentOptions {
     signaling?: P2PSignalingClient;
     acceptIntervalMs?: number | string;
     connectTimeoutMs?: number | string;
+    winnerSelectionWindowMs?: number | string;
     localAddress?: string;
     sleepMs?: RawTcpP2PSleep;
     connectSocket?: RawTcpP2PConnectSocket;
@@ -185,6 +186,7 @@ export class EdgeNodeAgent {
         address: p2p.address,
         handler,
         connectTimeoutMs: this.normalizePositiveInteger(p2p.connectTimeoutMs),
+        winnerSelectionWindowMs: this.normalizeNonNegativeInteger(p2p.winnerSelectionWindowMs),
         localAddress: p2p.localAddress,
         sleepMs: p2p.sleepMs,
         connectSocket: p2p.connectSocket,
@@ -301,6 +303,19 @@ export class EdgeNodeAgent {
     if (typeof value === 'string') {
       const parsed = Number(value);
       if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.floor(parsed);
+      }
+    }
+    return undefined;
+  }
+
+  private normalizeNonNegativeInteger(value: number | string | undefined): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value);
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) {
         return Math.floor(parsed);
       }
     }

@@ -339,6 +339,14 @@
           }
         },
         {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pWinnerSelectionWindowMs",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "p2pWinnerSelectionWindowMs",
+            "defaultValue": ""
+          }
+        },
+        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:podRoutingEnabled",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",

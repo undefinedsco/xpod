@@ -72,6 +72,7 @@ export interface ConnectRawTcpP2PTransportOptions {
   remoteCandidates: P2PTransportCandidate[];
   connectTimeoutMs?: number;
   timeoutMs?: number;
+  winnerSelectionWindowMs?: number;
   localAddress?: string;
   nowMs?: () => number;
   sleepMs?: RawTcpP2PSleep;
@@ -97,6 +98,7 @@ export type RawTcpP2PSleep = (ms: number, signal?: AbortSignal) => Promise<void>
 export interface ConnectSignaledRawTcpP2PTransportOptions extends SignaledRawTcpP2PSessionOptions {
   connectTimeoutMs?: number;
   timeoutMs?: number;
+  winnerSelectionWindowMs?: number;
   localAddress?: string;
   nowMs?: () => number;
   sleepMs?: RawTcpP2PSleep;
@@ -113,6 +115,7 @@ export interface ConnectedSignaledRawTcpP2PTransport extends SignaledRawTcpP2PSe
 export interface AcceptSignaledRawTcpP2PConnectionOnceOptions extends AnswerPendingRawTcpP2PSessionsOnceOptions {
   handler: P2PDataPlaneHandler;
   connectTimeoutMs?: number;
+  winnerSelectionWindowMs?: number;
   localAddress?: string;
   nowMs?: () => number;
   sleepMs?: RawTcpP2PSleep;
@@ -269,6 +272,7 @@ export async function acceptSignaledRawTcpP2PConnectionOnce(
       localCandidates,
       remoteCandidates,
       connectTimeoutMs: options.connectTimeoutMs,
+      winnerSelectionWindowMs: options.winnerSelectionWindowMs,
       localAddress: options.localAddress,
       nowMs: options.nowMs,
       sleepMs: options.sleepMs,
@@ -327,6 +331,7 @@ export async function connectSignaledRawTcpP2PTransport(
     remoteCandidates,
     connectTimeoutMs: options.connectTimeoutMs,
     timeoutMs: options.timeoutMs,
+    winnerSelectionWindowMs: options.winnerSelectionWindowMs,
     localAddress: options.localAddress,
     nowMs: options.nowMs,
     sleepMs: options.sleepMs,
@@ -379,6 +384,7 @@ async function connectRawTcpP2PSocketAttempt(
       nowMs,
       sleepMs,
       connectSocket,
+      winnerSelectionWindowMs: nonNegativeInteger(options.winnerSelectionWindowMs, 0),
     });
     return { attempt, socket };
   } catch (error) {
@@ -482,13 +488,61 @@ async function connectFirstRawTcpAttempt(
     nowMs: () => number;
     sleepMs: RawTcpP2PSleep;
     connectSocket: RawTcpP2PConnectSocket;
+    winnerSelectionWindowMs: number;
   },
 ): Promise<{ attempt: RawTcpP2PConnectAttempt; socket: Socket }> {
   return new Promise((resolve, reject) => {
     const controllers = attempts.map(() => new AbortController());
     const errors: string[] = [];
+    const successes: Array<{ attempt: RawTcpP2PConnectAttempt; socket: Socket; index: number }> = [];
     let pending = attempts.length;
     let settled = false;
+    let settleTimer: NodeJS.Timeout | undefined;
+
+    const clearSettleTimer = (): void => {
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+        settleTimer = undefined;
+      }
+    };
+    const finishReject = (error: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearSettleTimer();
+      reject(error);
+    };
+    const finishWithWinner = (): void => {
+      if (settled) {
+        return;
+      }
+      if (successes.length === 0) {
+        finishReject(new Error(errors.join('; ')));
+        return;
+      }
+      settled = true;
+      clearSettleTimer();
+      const winner = selectRawTcpWinner(successes);
+      controllers.forEach((controller, index) => {
+        if (index !== winner.index) {
+          controller.abort();
+        }
+      });
+      for (const success of successes) {
+        if (success !== winner) {
+          success.socket.destroy();
+        }
+      }
+      resolve({ attempt: winner.attempt, socket: winner.socket });
+    };
+    const scheduleWinner = (): void => {
+      if (options.winnerSelectionWindowMs <= 0 || pending === 0) {
+        finishWithWinner();
+        return;
+      }
+      settleTimer ??= setTimeout(finishWithWinner, options.winnerSelectionWindowMs);
+    };
 
     attempts.forEach((baseAttempt, index) => {
       const controller = controllers[index];
@@ -502,13 +556,9 @@ async function connectFirstRawTcpAttempt(
             socket.destroy();
             return;
           }
-          settled = true;
-          controllers.forEach((other, otherIndex) => {
-            if (otherIndex !== index) {
-              other.abort();
-            }
-          });
-          resolve({ attempt, socket });
+          successes.push({ attempt, socket, index });
+          pending -= 1;
+          scheduleWinner();
         })
         .catch((error) => {
           if (settled) {
@@ -517,12 +567,41 @@ async function connectFirstRawTcpAttempt(
           errors.push(error instanceof Error ? error.message : String(error));
           pending -= 1;
           if (pending === 0) {
-            settled = true;
-            reject(new Error(errors.join('; ')));
+            if (successes.length > 0) {
+              finishWithWinner();
+            } else {
+              finishReject(new Error(errors.join('; ')));
+            }
           }
         });
     });
   });
+}
+
+function selectRawTcpWinner(
+  successes: Array<{ attempt: RawTcpP2PConnectAttempt; socket: Socket; index: number }>,
+): { attempt: RawTcpP2PConnectAttempt; socket: Socket; index: number } {
+  return successes.slice().sort((left, right) => {
+    const keyCompare = rawTcpAttemptPairKey(left.attempt).localeCompare(rawTcpAttemptPairKey(right.attempt));
+    return keyCompare === 0 ? left.index - right.index : keyCompare;
+  })[0];
+}
+
+function rawTcpAttemptPairKey(attempt: RawTcpP2PConnectAttempt): string {
+  const endpoints = [
+    rawTcpEndpointKey(attempt.local),
+    rawTcpEndpointKey(attempt.remote),
+  ].sort();
+  return endpoints.join('<->');
+}
+
+function rawTcpEndpointKey(candidate: P2PTransportCandidate): string {
+  return [
+    candidate.sourceId,
+    candidateHost(candidate),
+    String(candidate.port ?? ''),
+    candidate.id,
+  ].join('|');
 }
 
 async function runRawTcpConnectAttempt(
@@ -745,6 +824,10 @@ function uniqueStrings(values: string[]): string[] {
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return Number.isInteger(value) && value !== undefined && value > 0 ? value : fallback;
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+  return Number.isInteger(value) && value !== undefined && value >= 0 ? value : fallback;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

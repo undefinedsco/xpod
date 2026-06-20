@@ -297,6 +297,7 @@ export function buildRuntimeShorthand(
       ['p2pLabel', envValue('XPOD_P2P_LABEL')],
       ['p2pAcceptIntervalMs', envValue('XPOD_P2P_ACCEPT_INTERVAL_MS')],
       ['p2pConnectTimeoutMs', envValue('XPOD_P2P_CONNECT_TIMEOUT_MS')],
+      ['p2pWinnerSelectionWindowMs', envValue('XPOD_P2P_WINNER_SELECTION_WINDOW_MS')],
       ['serviceToken', envValue('XPOD_SERVICE_TOKEN')],
     ]),
     baseUrl: state.baseUrl,

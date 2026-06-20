@@ -191,9 +191,12 @@ Solid SDK / app
   `connectTimeoutMs` 窗口内持续用同一个 candidate `localPort` 重试，避免 peer endpoint
   稍晚出现时立即失败。native/移动端 runtime 可通过 `connectSocket` 注入真正的
   simultaneous-open 成功 socket。多个同 bucket candidate pair 会在 rendezvous 后并发竞争，
-  取第一个成功 socket，并中止其余尝试。当前本地测试覆盖可直连 TCP candidate、peer delayed
-  connect retry、候选并发竞争和注入 pre-connected socket；跨 NAT 的 true simultaneous open
-  仍需要 native/移动端实网 smoke 验证。
+  默认仍取第一个成功 socket；当配置 `winnerSelectionWindowMs` 时，会在短窗口内收集多个
+  成功 socket，并按双方一致的 candidate endpoint-pair key 选择同一个 winner，关闭其余
+  socket，降低两端在多端口 simultaneous-open 场景里选到不同连接的风险。当前本地测试覆盖
+  可直连 TCP candidate、peer delayed connect retry、候选并发竞争、确定性 winner selection
+  和注入 pre-connected socket；跨 NAT 的 true simultaneous open 仍需要 native/移动端实网
+  smoke 验证。
 - `connectSignaledRawTcpP2PTransport` 已提供客户端侧编排入口：managed client 创建 P2P
   session、等待 node raw TCP candidates、执行 candidate race，并返回可直接交给
   `createP2PDataPlaneFetch` 使用的 transport。runtime 调用方不需要手工拼接 create/wait/connect
@@ -210,15 +213,18 @@ Solid SDK / app
   它复用 signaled managed-client fetch，读取指定 canonical Solid resource，并输出
   route、HTTP status、headers 和 body。CLI 默认要求最终 route 是 `p2p`；只有显式传入
   `--allow-fallback` 时才把 public/user-tunnel fallback 当成 smoke 成功。这用于 native/CLI
-  运行时验证，不提供普通浏览器 raw TCP 能力。
+  运行时验证，不提供普通浏览器 raw TCP 能力。CLI 暴露 `--winner-selection-window-ms`，用于
+  实网 smoke 时验证多 socket 成功后的确定性 winner selection。
 - `acceptSignaledRawTcpP2PConnectionOnce` 已提供 node 侧一次性编排入口：local node 轮询
   pending raw TCP session、按 client bucket 追加 node candidates、执行 candidate race，
   并把成功 socket 直接挂到 `P2PDataPlaneHandler`。runtime 调用方不需要手工拼接
   list/answer/connect/attach 四段流程。
 - `EdgeNodeAgent` 在 `XPOD_P2P_ENABLED=true` 时已启动 node-side raw TCP accept loop：
   心跳继续上报 managed-only `p2p` route，同时后台轮询 signaling sessions，成功后把
-  socket 接到 `XPOD_P2P_TARGET_BASE_URL` 指向的本地 CSS/SP。该 loop 不处理
-  Cloudflare Tunnel 或 FRP/SakuraFRP，它们仍是独立 `user-tunnel` fallback。
+  socket 接到 `XPOD_P2P_TARGET_BASE_URL` 指向的本地 CSS/SP。`XPOD_P2P_WINNER_SELECTION_WINDOW_MS`
+  可让 node 端在多个 raw TCP socket 近乎同时成功时短暂收集并选择同一确定性
+  candidate-pair winner；默认仍保持 first-success。该 loop 不处理 Cloudflare Tunnel
+  或 FRP/SakuraFRP，它们仍是独立 `user-tunnel` fallback。
 - `attachTcpP2PDataPlaneSocket` 已能把 raw TCP 打洞成功后拿到的 pre-connected socket
   直接挂到 node-side `P2PDataPlaneHandler`，因此执行器不必伪装成 listener accept
   流程；成功 socket 可立即转发 canonical HTTP frame 到本地 CSS/SP。

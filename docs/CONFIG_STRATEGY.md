@@ -145,6 +145,7 @@ urn:solid-server:default:variable:xxx
 | p2pLabel | XPOD_P2P_LABEL | raw TCP P2P route label | 可选 | - |
 | p2pAcceptIntervalMs | XPOD_P2P_ACCEPT_INTERVAL_MS | Local Agent raw TCP P2P accept loop 轮询间隔 | 可选 | 1000 |
 | p2pConnectTimeoutMs | XPOD_P2P_CONNECT_TIMEOUT_MS | raw TCP candidate 连接超时 | 可选 | 5000 |
+| p2pWinnerSelectionWindowMs | XPOD_P2P_WINNER_SELECTION_WINDOW_MS | 多 raw TCP socket 成功时 node 端确定性 winner 收集窗口 | 可选 | 0 |
 | acmeEmail | XPOD_ACME_EMAIL | ACME账户邮箱 | 可选 | - |
 | nodeId | XPOD_NODE_ID | 节点ID | cluster:local | - |
 | nodeToken | XPOD_NODE_TOKEN | 节点认证Token | cluster:local | - |
@@ -298,6 +299,7 @@ XPOD_DNS_ROOT_DOMAIN=cluster.example.com
 # XPOD_P2P_MAX_CANDIDATES_PER_SESSION=256
 # XPOD_P2P_ACCEPT_INTERVAL_MS=1000
 # XPOD_P2P_CONNECT_TIMEOUT_MS=5000
+# XPOD_P2P_WINNER_SELECTION_WINDOW_MS=50
 XPOD_ACME_EMAIL=admin@example.com
 XPOD_TENCENT_DNS_TOKEN_ID=xxx
 XPOD_TENCENT_DNS_TOKEN=xxx
@@ -383,6 +385,7 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | p2pLabel | XPOD_P2P_LABEL | Runtime shorthand / KeyExtractor | "" | - |
 | p2pAcceptIntervalMs | XPOD_P2P_ACCEPT_INTERVAL_MS | Runtime shorthand / KeyExtractor | "" | - |
 | p2pConnectTimeoutMs | XPOD_P2P_CONNECT_TIMEOUT_MS | Runtime shorthand / KeyExtractor | "" | - |
+| p2pWinnerSelectionWindowMs | XPOD_P2P_WINNER_SELECTION_WINDOW_MS | Runtime shorthand / KeyExtractor | "" | - |
 | acmeEmail | XPOD_ACME_EMAIL | EnvExtractor | - | - |
 | nodeId | XPOD_NODE_ID | EnvExtractor | - | - |
 | nodeToken | XPOD_NODE_TOKEN | EnvExtractor | - | - |
