@@ -144,8 +144,9 @@ describe('signaled werift DataChannel P2P data plane', () => {
     }
   });
 
-  it('lets the client create the signaling session with an initial werift offer before the node answers', async () => {
+  it('creates the signaling session before publishing the werift offer', async () => {
     const signaling = new InMemoryP2PSignalingClient('p2p_created');
+    signaling.session.nodeCandidates = [p2pRoute];
     const peerConfig = {
       iceServers: [],
       iceAdditionalHostAddresses: ['127.0.0.1'],
@@ -163,11 +164,13 @@ describe('signaled werift DataChannel P2P data plane', () => {
     });
     await vi.waitFor(() => {
       expect(signaling.createdSessions).toHaveLength(1);
-      expect(signaling.session.candidates.map((candidate) => candidate.metadata?.signalType)).toEqual(['offer']);
+      expect(signaling.addedCandidates.flatMap((entry) => entry.candidates).map((candidate) => (candidate as P2PTransportCandidate).metadata?.signalType)).toEqual(['offer']);
     });
-    const createdOffer = signaling.createdSessions[0] as { candidates: P2PTransportCandidate[] };
-    expect(createdOffer.candidates[0].metadata?.sessionId).toBeUndefined();
-    expect(createdOffer.candidates[0].url).toBe('webrtc://offer');
+    const createdRequest = signaling.createdSessions[0] as { candidates?: P2PTransportCandidate[] };
+    expect(createdRequest.candidates).toEqual([]);
+    const [createdOffer] = signaling.addedCandidates.flatMap((entry) => entry.candidates) as P2PTransportCandidate[];
+    expect(createdOffer.metadata?.sessionId).toBe('p2p_created');
+    expect(createdOffer.url).toBe('webrtc://p2p_created/offer');
     const nodeConnectionPromise = connectWeriftDataChannelThroughSignaling({
       signaling,
       sessionId: signaling.session.sessionId,
@@ -197,7 +200,7 @@ describe('signaled werift DataChannel P2P data plane', () => {
         clientId: 'device-1',
         capabilities: ['webrtc-datachannel'],
       });
-      expect(signaling.addedCandidates.map((entry) => entry.role)).toEqual(['node']);
+      expect(signaling.addedCandidates.map((entry) => entry.role)).toEqual(['client', 'node']);
       const fetchViaP2P = createP2PDataPlaneFetch({ route: p2pRoute, transport });
       const response = await fetchViaP2P('https://node-1.pods.example/alice/created-session.txt');
 

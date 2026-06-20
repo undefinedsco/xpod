@@ -159,8 +159,10 @@ Solid SDK / app
 - `connectWeriftDataChannelThroughSignaling` 已把 werift provider 接入现有 P2P signaling
   session：client 发布 `offer` signal candidate，node 轮询后发布 `answer` signal candidate，
   双方再打开 DataChannel 承载 `xpod-p2p-http/1`。client 侧也可用
-  `createWeriftDataChannelSessionThroughSignaling` 直接创建 `/sessions`，把 initial offer
-  放入创建请求的 `candidates`，再等待 node answer。连接建立后，双方会继续通过同一个
+  `createWeriftDataChannelSessionThroughSignaling` 直接创建 `/sessions`，先拿到
+  `nodeCandidates` 里的 route/provider metadata（包括 Cloud 下发的 STUN/TURN ICE
+  servers），再把 werift offer 通过 `/candidates` 追加到同一 session，最后等待 node
+  answer。连接建立后，双方会继续通过同一个
   signaling session 增量发布 `ice-candidate` / `ice-complete` signal candidate，并轮询远端
   candidate 后调用 werift `addIceCandidate`，从而支持非浏览器 DataChannel 的 trickle ICE。
   managed/native 调用方可进一步用 `createWeriftSignaledP2PDataPlaneClient` 和
@@ -550,7 +552,7 @@ GET http://node-0000.undefineds.co/app/signal-pod.html?nodeId=node-0000&path=%2F
 ### P3：P2P signaling
 
 - 新增 P2P session API。
-- Node 可列出 active P2P sessions，发现 client-created initial offer 并返回 answer。
+- Node 可列出 active P2P sessions，发现 client-created offer 并返回 answer。
 - Native client 和节点交换 candidates。
 - 成功后作为 `p2p` route 加入 route set，失败则回落。
 

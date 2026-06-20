@@ -113,35 +113,35 @@ export async function createWeriftDataChannelSessionThroughSignaling(
 ): Promise<CreatedWeriftDataChannelSessionConnection> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const label = options.label ?? DEFAULT_LABEL;
-  const peer = new RTCPeerConnection(resolveWeriftPeerConfig(options.peerConfig));
+  const session = await options.signaling.createP2PSession({
+    clientId: options.sourceId,
+    capabilities: options.capabilities ?? ['webrtc-datachannel'],
+    candidates: [],
+  });
+  const peer = new RTCPeerConnection(resolveWeriftPeerConfig(options.peerConfig, session));
   const channel = peer.createDataChannel(label, { ordered: true });
   let stopTrickleIceSync: (() => void) | undefined;
 
   try {
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
-    const provisionalOptions: ConnectWeriftDataChannelThroughSignalingOptions = {
+    const connectOptions: ConnectWeriftDataChannelThroughSignalingOptions = {
       ...options,
-      sessionId: 'pending',
+      sessionId: session.sessionId,
       role: 'client',
     };
-    const localSignal = buildSignalCandidate(provisionalOptions, 'offer', peer.localDescription!.sdp, label);
-    const session = await options.signaling.createP2PSession({
-      clientId: options.sourceId,
-      capabilities: options.capabilities ?? ['webrtc-datachannel'],
+    const localSignal = buildSignalCandidate(connectOptions, 'offer', peer.localDescription!.sdp, label);
+    const sessionWithOffer = await options.signaling.addP2PCandidates(session.sessionId, {
+      role: 'client',
+      sourceId: options.sourceId,
       candidates: [localSignal],
     });
-    localSignal.url = `webrtc://${session.sessionId}/offer`;
-    localSignal.metadata = {
-      ...localSignal.metadata,
-      sessionId: session.sessionId,
-    };
     const remoteSignal = await waitForSignal({
       ...options,
       sessionId: session.sessionId,
       role: 'client',
       signalType: 'answer',
-      initialCandidates: session.candidates,
+      initialCandidates: sessionWithOffer.candidates,
     });
     await peer.setRemoteDescription({
       type: 'answer',
@@ -155,7 +155,7 @@ export async function createWeriftDataChannelSessionThroughSignaling(
     await waitForChannelOpen(channel, timeoutMs);
     return {
       ...buildConnection(peer, channel, localSignal, remoteSignal, stopTrickleIceSync),
-      session,
+      session: sessionWithOffer,
     };
   } catch (error) {
     stopTrickleIceSync?.();
