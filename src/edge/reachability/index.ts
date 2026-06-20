@@ -4,5 +4,7 @@ export * from './ReachabilitySessionService';
 export * from './ManagedRouteSelector';
 export * from './CanonicalFetch';
 export * from './P2PDataPlane';
+export * from './P2PSignalingClient';
 export * from './UdpP2PTransport';
 export * from './UdpP2PRendezvous';
+export * from './UdpP2PSignaledDataPlane';

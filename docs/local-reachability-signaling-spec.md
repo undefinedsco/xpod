@@ -142,6 +142,10 @@ Solid SDK / app
   socket，把本地 UDP candidate 通过 signaling session 交换，然后用同一个 socket
   对候选地址发送 `hello/ack`，握手成功后继续用该 socket 承载 `xpod-p2p-http/1`。
   这样能验证“候选交换 → socket rendezvous → Solid HTTP 数据面”的完整本地链路。
+- `P2PSignalingClient` 和 `connectUdpP2PThroughSignaling` 已把控制面和当前 UDP provider
+  串起来：managed client / node 可以通过 `/v1/signal/nodes/{nodeId}/sessions`
+  创建或读取会话、追加本地 candidate、轮询远端 candidate，然后复用 rendezvous socket
+  建立 `UdpP2PDataPlaneTransport`。
 - `UdpP2PTransport` 不是最终公网 P2P 协议：当前没有分片、拥塞控制、可靠流、
   加密握手、ICE candidate pair nomination、STUN/TURN 或生产级 NAT hole punching。
   大 body、跨 NAT、CGNAT 和移动端网络切换应由后续 QUIC/ICE 或其他 provider 负责。
@@ -327,14 +331,14 @@ Content-Type: application/json
 
 1. node 和 managed client 各自创建 `UdpP2PRendezvousPeer`，绑定 UDP socket。
 2. 双方调用 `candidate()` 得到 `protocol=udp`、`host`、`port`、`role`、`sourceId`
-   的本地候选，并通过 `/candidates` 写入同一个 P2P session。
-3. 双方读取 session candidates 后调用 `connect()`，对远端候选重复发送
-   `xpod-p2p-udp-rendezvous-hello`。
+   的本地候选，并通过 `P2PSignalingClient.addP2PCandidates()` 写入同一个 P2P session。
+3. 双方通过 `P2PSignalingClient.getP2PSession()` 轮询 session candidates，拿到远端
+   candidate 后调用 `connect()`，对远端候选重复发送 `xpod-p2p-udp-rendezvous-hello`。
 4. 收到同 session、对端 role/source 的 hello 后返回
    `xpod-p2p-udp-rendezvous-ack`，并记录实际来源地址/端口作为数据面 remote endpoint。
-5. 握手成功后，client 创建 `UdpP2PDataPlaneTransport`，node 创建
-   `UdpP2PDataPlaneServer`，二者都复用 rendezvous 的同一个 UDP socket，避免 NAT
-   映射因为换 socket 而失效。
+5. `connectUdpP2PThroughSignaling()` 在握手成功后为调用方创建
+   `UdpP2PDataPlaneTransport`，node 侧用 `UdpP2PDataPlaneServer` 监听同一个 socket；
+   二者都复用 rendezvous socket，避免 NAT 映射因为换 socket 而失效。
 
 这个流程仍然只是 provider 层能力，不改变 Solid HTTP 语义，不新增 Pod RDF 模型，
 也不把 UDP endpoint 暴露给普通浏览器。
