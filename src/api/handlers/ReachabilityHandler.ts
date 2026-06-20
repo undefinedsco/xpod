@@ -7,9 +7,11 @@ import { buildRouteSet } from '../../edge/reachability/RouteSetBuilder';
 import {
   InvalidRelaySessionRequestError,
   NodeRouteSourceNotFoundError,
+  P2PSessionExpiredError,
+  P2PSessionNotFoundError,
   ReachabilitySessionService,
 } from '../../edge/reachability/ReachabilitySessionService';
-import type { BuildRouteSetSource, RouteAudience } from '../../edge/reachability/types';
+import type { BuildRouteSetSource, P2PCandidateRole, RouteAudience } from '../../edge/reachability/types';
 
 export interface ReachabilityHandlerOptions {
   repository: EdgeNodeRepository;
@@ -118,6 +120,47 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
 
     sendJson(response, 400, { error: 'kind must be p2p or relay' });
   });
+
+  server.get('/v1/signal/nodes/:nodeId/sessions/:sessionId', async (request, response, params) => {
+    const access = resolveSessionAccess(request, params.nodeId);
+    if (!access.allowed) {
+      sendJson(response, access.status, { error: access.error });
+      return;
+    }
+
+    try {
+      const session = await service.getP2PSession(params.nodeId, params.sessionId);
+      sendJson(response, 200, session);
+    } catch (error) {
+      sendP2PSessionError(response, error);
+    }
+  });
+
+  server.post('/v1/signal/nodes/:nodeId/sessions/:sessionId/candidates', async (request, response, params) => {
+    const access = resolveSessionAccess(request, params.nodeId);
+    if (!access.allowed) {
+      sendJson(response, access.status, { error: access.error });
+      return;
+    }
+
+    const body = await readJsonBody(request);
+    if (!isRecord(body) || !Array.isArray(body.candidates)) {
+      sendJson(response, 400, { error: 'candidates array is required' });
+      return;
+    }
+
+    const source = resolveCandidateSource(request, params.nodeId, body);
+    try {
+      const session = await service.addP2PCandidates(params.nodeId, params.sessionId, {
+        role: source.role,
+        sourceId: source.sourceId,
+        candidates: body.candidates,
+      });
+      sendJson(response, 200, session);
+    } catch (error) {
+      sendP2PSessionError(response, error);
+    }
+  });
 }
 
 async function loadRouteSource(
@@ -184,6 +227,23 @@ function resolveSessionAccess(request: AuthenticatedRequest, nodeId: string):
   return { allowed: false, status: 403, error: 'Only node or service credentials can create reachability sessions' };
 }
 
+function resolveCandidateSource(
+  request: AuthenticatedRequest,
+  nodeId: string,
+  body: Record<string, unknown>,
+): { role: P2PCandidateRole; sourceId: string } {
+  const auth = request.auth;
+  if (auth && isNodeAuth(auth)) {
+    return { role: 'node', sourceId: nodeId };
+  }
+
+  const role: P2PCandidateRole = body.role === 'node' ? 'node' : 'client';
+  const sourceId = getString(body.sourceId)
+    ?? getString(body.clientId)
+    ?? (role === 'node' ? nodeId : 'service-client');
+  return { role, sourceId };
+}
+
 async function readJsonBody(request: AuthenticatedRequest): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -210,6 +270,22 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.statusCode = status;
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(data));
+}
+
+function sendP2PSessionError(response: ServerResponse, error: unknown): void {
+  if (error instanceof P2PSessionExpiredError) {
+    sendJson(response, 410, { error: 'P2P session expired' });
+    return;
+  }
+  if (error instanceof P2PSessionNotFoundError) {
+    sendJson(response, 404, { error: 'P2P session not found' });
+    return;
+  }
+  if (error instanceof NodeRouteSourceNotFoundError) {
+    sendJson(response, 404, { error: 'Node not found' });
+    return;
+  }
+  sendJson(response, 500, { error: 'Failed to update p2p session' });
 }
 
 function getString(value: unknown): string | undefined {

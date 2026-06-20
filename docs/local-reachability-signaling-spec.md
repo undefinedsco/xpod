@@ -278,6 +278,47 @@ Content-Type: application/json
 - 会话必须短 TTL，可撤销，可审计。
 - 失败后回落到下一候选 route，不阻塞本地可用性。
 
+会话创建后，`signalingUrl` 是该短 TTL 会话的控制面入口：
+
+```http
+GET /v1/signal/nodes/{nodeId}/sessions/{sessionId}
+Authorization: Bearer <nodeToken|serviceToken>
+```
+
+返回当前 P2P session，包括双方已上报的 transport candidates。候选是 provider-neutral
+结构：公共字段只保留 `role`、`sourceId`、`protocol`、`transport`、`host`、`address`、
+`port`、`url`、`priority`、`metadata`。QUIC、UDP punch、WebRTC、libp2p 等 provider
+自己的细节放入 `metadata`，不进入 Solid URL、Pod RDF 或 route kind。
+
+双方用同一个 session 追加候选：
+
+```http
+POST /v1/signal/nodes/{nodeId}/sessions/{sessionId}/candidates
+Authorization: Bearer <nodeToken|serviceToken>
+Content-Type: application/json
+
+{
+  "role": "client",
+  "sourceId": "device_123",
+  "candidates": [
+    {
+      "protocol": "udp",
+      "host": "198.51.100.10",
+      "port": 43122,
+      "priority": 100,
+      "metadata": {
+        "provider": "quic-ice"
+      }
+    }
+  ]
+}
+```
+
+节点使用 node token 追加候选时，Cloud 从认证上下文强制推导 `role=node`、
+`sourceId=nodeId`，不信任 body 里的伪造身份。service token 可代表 managed client
+提交 `role=client` 候选。会话过期后候选更新返回 `410`，客户端必须创建新 session
+或回落到下一 route。
+
 ### Relay / Tunnel 会话：新增但默认关闭
 
 ```http

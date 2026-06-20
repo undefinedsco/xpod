@@ -60,6 +60,29 @@ export interface P2PSessionRequest {
   candidates?: unknown[];
 }
 
+export type P2PCandidateRole = 'client' | 'node';
+
+export interface P2PTransportCandidate {
+  id: string;
+  role: P2PCandidateRole;
+  sourceId: string;
+  createdAt: string;
+  protocol?: string;
+  transport?: string;
+  host?: string;
+  address?: string;
+  port?: number;
+  url?: string;
+  priority?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface P2PCandidateUpdateRequest {
+  role: P2PCandidateRole;
+  sourceId: string;
+  candidates: unknown[];
+}
+
 export interface P2PSession {
   sessionId: string;
   kind: 'p2p';
@@ -70,7 +93,7 @@ export interface P2PSession {
   nodeCandidates: AccessRoute[];
   signalingUrl: string;
   capabilities: string[];
-  candidates: unknown[];
+  candidates: P2PTransportCandidate[];
 }
 
 export interface RelaySessionRequest {

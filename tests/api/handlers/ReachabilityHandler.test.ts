@@ -130,6 +130,8 @@ describe('ReachabilityHandler', () => {
       { optionalAuth: true },
     );
     expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/sessions', expect.any(Function));
+    expect(mockServer.server.get).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/sessions/:sessionId', expect.any(Function));
+    expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/sessions/:sessionId/candidates', expect.any(Function));
     expect(mockServer.routes['POST /v1/signal/nodes/:nodeId/p2p-sessions']).toBeUndefined();
     expect(mockServer.routes['POST /v1/signal/nodes/:nodeId/relay-sessions']).toBeUndefined();
     expect(mockServer.server.all).not.toHaveBeenCalled();
@@ -209,6 +211,194 @@ describe('ReachabilityHandler', () => {
         p2p: [expect.objectContaining({ sessionId: 'p2p_fixed-id' })],
       }),
     }));
+  });
+
+  it('reads a p2p signaling session by session url', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_existing',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-1',
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
+                capabilities: ['udp-hole-punch'],
+                candidates: [
+                  {
+                    id: 'client-candidate-1',
+                    role: 'client',
+                    sourceId: 'device-1',
+                    protocol: 'udp',
+                    host: '198.51.100.10',
+                    port: 12345,
+                    createdAt: '2026-06-19T00:00:00.000Z',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register();
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest(undefined, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/sessions/:sessionId'](req, res, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_existing',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res._body()).toMatchObject({
+      sessionId: 'p2p_existing',
+      kind: 'p2p',
+      candidates: [
+        expect.objectContaining({
+          role: 'client',
+          sourceId: 'device-1',
+          protocol: 'udp',
+          host: '198.51.100.10',
+          port: 12345,
+        }),
+      ],
+    });
+  });
+
+  it('appends node p2p candidates to an existing signaling session', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_existing',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-1',
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
+                capabilities: ['udp-hole-punch'],
+                candidates: [
+                  {
+                    id: 'client-candidate-1',
+                    role: 'client',
+                    sourceId: 'device-1',
+                    protocol: 'udp',
+                    host: '198.51.100.10',
+                    port: 12345,
+                    createdAt: '2026-06-19T00:00:00.000Z',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register();
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({
+      candidates: [
+        {
+          protocol: 'udp',
+          host: '203.0.113.20',
+          port: 4567,
+          priority: 100,
+          metadata: { provider: 'udp-direct' },
+        },
+      ],
+    }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](req, res, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_existing',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res._body().candidates).toEqual([
+      expect.objectContaining({
+        role: 'client',
+        sourceId: 'device-1',
+        host: '198.51.100.10',
+        port: 12345,
+      }),
+      expect.objectContaining({
+        id: 'candidate_fixed-id',
+        role: 'node',
+        sourceId: 'node-1',
+        protocol: 'udp',
+        host: '203.0.113.20',
+        port: 4567,
+        priority: 100,
+        createdAt: '2026-06-19T00:00:00.000Z',
+        metadata: { provider: 'udp-direct' },
+      }),
+    ]);
+    expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+      reachabilitySessions: expect.objectContaining({
+        p2p: [
+          expect.objectContaining({
+            sessionId: 'p2p_existing',
+            candidates: [
+              expect.objectContaining({ role: 'client' }),
+              expect.objectContaining({ role: 'node', sourceId: 'node-1' }),
+            ],
+          }),
+        ],
+      }),
+    }));
+  });
+
+  it('rejects p2p candidate updates after session expiry', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_expired',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-1',
+                createdAt: '2026-06-18T23:50:00.000Z',
+                expiresAt: '2026-06-18T23:55:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_expired',
+                capabilities: [],
+                candidates: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register();
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({ candidates: [{ protocol: 'udp', host: '203.0.113.20', port: 4567 }] }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](req, res, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_expired',
+    });
+
+    expect(res.statusCode).toBe(410);
+    expect(res._body()).toEqual({ error: 'P2P session expired' });
+    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
   });
 
   it('rejects relay sessions without explicit reason', async () => {
