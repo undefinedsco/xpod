@@ -30,7 +30,7 @@ export function createCanonicalFetch(options: CanonicalFetchOptions): CanonicalF
 
     const nextInit: RequestInit = {
       ...init,
-      method: init?.method ?? request?.method,
+      method: init?.method ?? request?.method ?? 'GET',
       headers,
       body: init?.body ?? requestBody(request),
       signal: init?.signal ?? request?.signal,

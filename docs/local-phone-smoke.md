@@ -199,15 +199,16 @@ Current non-browser data-plane verification is local-runtime only:
 ./scripts/run-vitest-safe.sh --run \
   tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts \
   tests/edge/reachability/TcpP2PSignalingSession.test.ts \
+  tests/edge/reachability/ManagedClientFetch.test.ts \
   tests/edge/EdgeNodeAgent.test.ts
 ```
 
 These tests cover the local TCP frame transport, signaled client/node candidate
-exchange, and the `EdgeNodeAgent` accept loop that attaches an accepted socket to
-`XPOD_P2P_TARGET_BASE_URL`. They send canonical Solid HTTP requests as
-`xpod-p2p-http/1` frames over the TCP stream and verify the local node handler
-forwards the request to the configured CSS/SP base URL while preserving canonical
-URL headers.
+exchange, the managed-client fetch adapter, and the `EdgeNodeAgent` accept loop
+that attaches an accepted socket to `XPOD_P2P_TARGET_BASE_URL`. They send
+canonical Solid HTTP requests as `xpod-p2p-http/1` frames over the TCP stream and
+verify the local node handler forwards the request to the configured CSS/SP base
+URL while preserving canonical URL headers.
 
 Raw TCP cross-NAT acceptance still needs a packaged native/CLI/mobile runtime
 that can:

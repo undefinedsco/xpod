@@ -7,3 +7,4 @@ export * from './P2PDataPlane';
 export * from './P2PSignalingClient';
 export * from './TcpP2PDataPlaneTransport';
 export * from './TcpP2PSignalingSession';
+export * from './ManagedClientFetch';
