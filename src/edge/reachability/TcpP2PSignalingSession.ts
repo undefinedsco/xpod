@@ -70,7 +70,26 @@ export interface ConnectRawTcpP2PTransportOptions {
   connectTimeoutMs?: number;
   timeoutMs?: number;
   localAddress?: string;
+  nowMs?: () => number;
+  sleepMs?: RawTcpP2PSleep;
+  connectSocket?: RawTcpP2PConnectSocket;
 }
+
+export interface RawTcpP2PConnectAttempt {
+  local: P2PTransportCandidate;
+  remote: P2PTransportCandidate;
+  remoteHost: string;
+  remotePort: number;
+  localAddress?: string;
+  localPort?: number;
+  rendezvousTimeMs: number;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}
+
+export type RawTcpP2PConnectSocket = (attempt: RawTcpP2PConnectAttempt) => Promise<Socket>;
+
+export type RawTcpP2PSleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
@@ -204,21 +223,27 @@ export async function connectRawTcpP2PTransport(
   }
 
   const errors: string[] = [];
-  for (const { local, remote } of pairs) {
-    try {
-      const socket = await connectCandidatePair(local, remote, {
-        timeoutMs: positiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS),
-        localAddress: options.localAddress,
-      });
-      return createTcpP2PDataPlaneTransport({
-        remoteHost: candidateHost(remote),
-        remotePort: remote.port!,
-        socket,
-        timeoutMs: options.timeoutMs,
-      });
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
-    }
+  const nowMs = options.nowMs ?? Date.now;
+  const sleepMs = options.sleepMs ?? sleep;
+  const connectSocket = options.connectSocket ?? connectRawTcpSocket;
+  const attempts = pairs.map(({ local, remote }) => createRawTcpConnectAttempt(local, remote, {
+    timeoutMs: positiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS),
+    localAddress: options.localAddress,
+  }));
+  try {
+    const { attempt, socket } = await connectFirstRawTcpAttempt(attempts, {
+      nowMs,
+      sleepMs,
+      connectSocket,
+    });
+    return createTcpP2PDataPlaneTransport({
+      remoteHost: attempt.remoteHost,
+      remotePort: attempt.remotePort,
+      socket,
+      timeoutMs: options.timeoutMs,
+    });
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
   }
   throw new Error(`Failed to connect raw TCP P2P candidates: ${errors.join('; ')}`);
 }
@@ -288,33 +313,170 @@ function candidatePairs(
   return result;
 }
 
-async function connectCandidatePair(
+function createRawTcpConnectAttempt(
   local: P2PTransportCandidate,
   remote: P2PTransportCandidate,
   options: { timeoutMs: number; localAddress?: string },
-): Promise<Socket> {
+): RawTcpP2PConnectAttempt {
   const remoteHost = candidateHost(remote);
   const remotePort = remote.port;
   if (!remoteHost || !remotePort) {
     throw new Error(`Remote raw TCP candidate ${remote.id} is missing host or port`);
   }
+  const localRendezvousTimeSeconds = getNumericMetadata(local, 'rendezvousTimeSeconds') ?? 0;
+  const remoteRendezvousTimeSeconds = getNumericMetadata(remote, 'rendezvousTimeSeconds') ?? 0;
+  return {
+    local,
+    remote,
+    remoteHost,
+    remotePort,
+    localAddress: options.localAddress,
+    ...(local.port ? { localPort: local.port } : {}),
+    rendezvousTimeMs: Math.max(localRendezvousTimeSeconds, remoteRendezvousTimeSeconds) * 1_000,
+    timeoutMs: options.timeoutMs,
+  };
+}
+
+async function connectFirstRawTcpAttempt(
+  attempts: RawTcpP2PConnectAttempt[],
+  options: {
+    nowMs: () => number;
+    sleepMs: RawTcpP2PSleep;
+    connectSocket: RawTcpP2PConnectSocket;
+  },
+): Promise<{ attempt: RawTcpP2PConnectAttempt; socket: Socket }> {
+  return new Promise((resolve, reject) => {
+    const controllers = attempts.map(() => new AbortController());
+    const errors: string[] = [];
+    let pending = attempts.length;
+    let settled = false;
+
+    attempts.forEach((baseAttempt, index) => {
+      const controller = controllers[index];
+      const attempt: RawTcpP2PConnectAttempt = {
+        ...baseAttempt,
+        signal: controller.signal,
+      };
+      void runRawTcpConnectAttempt(attempt, options)
+        .then((socket) => {
+          if (settled) {
+            socket.destroy();
+            return;
+          }
+          settled = true;
+          controllers.forEach((other, otherIndex) => {
+            if (otherIndex !== index) {
+              other.abort();
+            }
+          });
+          resolve({ attempt, socket });
+        })
+        .catch((error) => {
+          if (settled) {
+            return;
+          }
+          errors.push(error instanceof Error ? error.message : String(error));
+          pending -= 1;
+          if (pending === 0) {
+            settled = true;
+            reject(new Error(errors.join('; ')));
+          }
+        });
+    });
+  });
+}
+
+async function runRawTcpConnectAttempt(
+  attempt: RawTcpP2PConnectAttempt,
+  options: {
+    nowMs: () => number;
+    sleepMs: RawTcpP2PSleep;
+    connectSocket: RawTcpP2PConnectSocket;
+  },
+): Promise<Socket> {
+  await waitForRendezvous(attempt.rendezvousTimeMs, options.nowMs, options.sleepMs, attempt.signal);
+  return connectSocketWithTimeout(attempt, options.connectSocket);
+}
+
+async function waitForRendezvous(
+  rendezvousTimeMs: number,
+  nowMs: () => number,
+  sleepMs: RawTcpP2PSleep,
+  signal?: AbortSignal,
+): Promise<void> {
+  const delayMs = rendezvousTimeMs - nowMs();
+  if (delayMs > 0) {
+    await abortableSleep(delayMs, sleepMs, signal);
+  }
+  if (signal?.aborted) {
+    throw new Error('Raw TCP candidate connect aborted');
+  }
+}
+
+async function connectSocketWithTimeout(
+  attempt: RawTcpP2PConnectAttempt,
+  connectSocket: RawTcpP2PConnectSocket,
+): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const timeout = setTimeout(() => {
+      finishReject(new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms`));
+    }, attempt.timeoutMs);
+    const onAbort = (): void => {
+      finishReject(new Error('Raw TCP candidate connect aborted'));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      attempt.signal?.removeEventListener('abort', onAbort);
+    };
+    const finishReject = (error: Error): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cleanup();
+      reject(error);
+    };
+    attempt.signal?.addEventListener('abort', onAbort, { once: true });
+    if (attempt.signal?.aborted) {
+      finishReject(new Error('Raw TCP candidate connect aborted'));
+      return;
+    }
+    void connectSocket(attempt)
+      .then((socket) => {
+        if (finished) {
+          socket.destroy();
+          return;
+        }
+        finished = true;
+        cleanup();
+        resolve(socket);
+      })
+      .catch((error) => {
+        finishReject(error instanceof Error ? error : new Error(String(error)));
+      });
+  });
+}
+
+async function connectRawTcpSocket(attempt: RawTcpP2PConnectAttempt): Promise<Socket> {
   return new Promise((resolve, reject) => {
     const connectOptions = {
-      host: remoteHost,
-      port: remotePort,
-      localAddress: options.localAddress,
-      ...(local.port ? { localPort: local.port } : {}),
+      host: attempt.remoteHost,
+      port: attempt.remotePort,
+      localAddress: attempt.localAddress,
+      ...(attempt.localPort ? { localPort: attempt.localPort } : {}),
     };
     const socket = createConnection(connectOptions);
     const timeout = setTimeout(() => {
       cleanup();
       socket.destroy();
-      reject(new Error(`Raw TCP candidate connect timed out after ${options.timeoutMs}ms`));
-    }, options.timeoutMs);
+      reject(new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms`));
+    }, attempt.timeoutMs);
     const cleanup = (): void => {
       clearTimeout(timeout);
       socket.off('connect', onConnect);
       socket.off('error', onError);
+      attempt.signal?.removeEventListener('abort', onAbort);
     };
     const onConnect = (): void => {
       cleanup();
@@ -325,6 +487,16 @@ async function connectCandidatePair(
       socket.destroy();
       reject(error);
     };
+    const onAbort = (): void => {
+      cleanup();
+      socket.destroy();
+      reject(new Error('Raw TCP candidate connect aborted'));
+    };
+    attempt.signal?.addEventListener('abort', onAbort, { once: true });
+    if (attempt.signal?.aborted) {
+      onAbort();
+      return;
+    }
     socket.once('connect', onConnect);
     socket.once('error', onError);
   });
@@ -406,8 +578,52 @@ function positiveInteger(value: number | undefined, fallback: number): number {
   return Number.isInteger(value) && value !== undefined && value > 0 ? value : fallback;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      cleanup();
+      reject(new Error('Raw TCP candidate connect aborted'));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+    }
+  });
+}
+
+async function abortableSleep(
+  ms: number,
+  sleepMs: RawTcpP2PSleep,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!signal) {
+    await sleepMs(ms);
+    return;
+  }
+  if (signal.aborted) {
+    throw new Error('Raw TCP candidate connect aborted');
+  }
+  let removeAbortListener: (() => void) | undefined;
+  try {
+    await Promise.race([
+      sleepMs(ms, signal),
+      new Promise<never>((_resolve, reject) => {
+        const onAbort = (): void => reject(new Error('Raw TCP candidate connect aborted'));
+        signal.addEventListener('abort', onAbort, { once: true });
+        removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+      }),
+    ]);
+  } finally {
+    removeAbortListener?.();
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

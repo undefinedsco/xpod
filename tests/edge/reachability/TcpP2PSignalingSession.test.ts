@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { P2PSession, P2PSignalingClient, P2PTransportCandidate } from '../../../src/edge/reachability';
+import { createConnection, createServer, type AddressInfo, type Socket } from 'node:net';
+import type {
+  P2PSession,
+  P2PSignalingClient,
+  P2PTransportCandidate,
+  RawTcpP2PConnectAttempt,
+} from '../../../src/edge/reachability';
 import {
   answerPendingRawTcpP2PSessionsOnce,
+  attachTcpP2PDataPlaneSocket,
   connectRawTcpP2PTransport,
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
@@ -270,10 +277,249 @@ describe('signaled raw TCP P2P sessions', () => {
       await server.close();
     }
   });
+
+  it('waits for rendezvous and attaches a native simultaneous-open socket through an injected connector', async () => {
+    const localFetch = vi.fn(async () => new Response('simultaneous-open response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const unusedRemotePort = await reserveTcpPort();
+    const localPort = await reserveTcpPort();
+    const plan = {
+      bucket: 100,
+      boundary: 321,
+      rendezvousTimeSeconds: 20,
+      ports: [localPort],
+    };
+    const localCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-1',
+      host: '127.0.0.1',
+      plan,
+    });
+    const remoteCandidates = createRawTcpHolePunchCandidates({
+      role: 'node',
+      sourceId: 'node-1',
+      host: '127.0.0.1',
+      plan: {
+        ...plan,
+        ports: [unusedRemotePort],
+      },
+    });
+    const sleeps: number[] = [];
+    const attempts: unknown[] = [];
+
+    try {
+      const transport = await connectRawTcpP2PTransport({
+        localCandidates,
+        remoteCandidates,
+        timeoutMs: 2_000,
+        connectTimeoutMs: 1_000,
+        nowMs: () => 19_500,
+        sleepMs: async (ms: number) => {
+          sleeps.push(ms);
+        },
+        connectSocket: async (attempt: unknown) => {
+          attempts.push(attempt);
+          return clientSocket;
+        },
+      });
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: baseSession.nodeCandidates[0], transport });
+
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/simultaneous-open.txt');
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('simultaneous-open response');
+      expect(sleeps).toEqual([500]);
+      expect(attempts).toEqual([
+        expect.objectContaining({
+          local: expect.objectContaining({ sourceId: 'device-1', port: localPort }),
+          remote: expect.objectContaining({ sourceId: 'node-1', port: unusedRemotePort }),
+          remoteHost: '127.0.0.1',
+          remotePort: unusedRemotePort,
+          localPort,
+          rendezvousTimeMs: 20_000,
+          timeoutMs: 1_000,
+        }),
+      ]);
+      transport.close();
+    } finally {
+      socketHandle.close();
+      await close();
+    }
+  });
+
+  it('races compatible raw TCP candidate pairs instead of blocking on the first port', async () => {
+    const localFetch = vi.fn(async () => new Response('raced socket response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const blockedRemotePort = await reserveTcpPort();
+    const workingRemotePort = await reserveTcpPort();
+    const localPort = await reserveTcpPort();
+    const basePlan = {
+      bucket: 101,
+      boundary: 654,
+      rendezvousTimeSeconds: 0,
+      ports: [localPort],
+    };
+    const localCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-1',
+      host: '127.0.0.1',
+      plan: basePlan,
+    });
+    const remoteCandidates = createRawTcpHolePunchCandidates({
+      role: 'node',
+      sourceId: 'node-1',
+      host: '127.0.0.1',
+      plan: {
+        ...basePlan,
+        ports: [blockedRemotePort, workingRemotePort],
+      },
+    });
+    const attempts: RawTcpP2PConnectAttempt[] = [];
+
+    try {
+      const transport = await withTimeout(connectRawTcpP2PTransport({
+        localCandidates,
+        remoteCandidates,
+        timeoutMs: 2_000,
+        connectTimeoutMs: 1_000,
+        connectSocket: async (attempt) => {
+          attempts.push(attempt);
+          if (attempt.remotePort === blockedRemotePort) {
+            return new Promise<Socket>(() => undefined);
+          }
+          return clientSocket;
+        },
+      }), 100);
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: baseSession.nodeCandidates[0], transport });
+
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/raced.txt');
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('raced socket response');
+      expect(attempts.map((attempt) => attempt.remotePort)).toEqual([blockedRemotePort, workingRemotePort]);
+      transport.close();
+    } finally {
+      socketHandle.close();
+      await close();
+    }
+  });
+
+  it('aborts pending rendezvous timers after another raw TCP candidate wins', async () => {
+    const localFetch = vi.fn(async () => new Response('timer cleanup response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const futureRemotePort = await reserveTcpPort();
+    const immediateRemotePort = await reserveTcpPort();
+    const localPort = await reserveTcpPort();
+    const nowMs = 10_000;
+    const localCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-1',
+      host: '127.0.0.1',
+      plan: {
+        bucket: 102,
+        boundary: 987,
+        rendezvousTimeSeconds: 10,
+        ports: [localPort],
+      },
+    });
+    const remoteCandidates = [
+      ...createRawTcpHolePunchCandidates({
+        role: 'node',
+        sourceId: 'node-1',
+        host: '127.0.0.1',
+        priority: 100,
+        plan: {
+          bucket: 102,
+          boundary: 987,
+          rendezvousTimeSeconds: 20,
+          ports: [futureRemotePort],
+        },
+      }),
+      ...createRawTcpHolePunchCandidates({
+        role: 'node',
+        sourceId: 'node-1',
+        host: '127.0.0.1',
+        priority: 90,
+        plan: {
+          bucket: 102,
+          boundary: 987,
+          rendezvousTimeSeconds: 10,
+          ports: [immediateRemotePort],
+        },
+      }),
+    ];
+    const scheduledTimers = new Set<NodeJS.Timeout>();
+
+    vi.useFakeTimers();
+    try {
+      const transport = await connectRawTcpP2PTransport({
+        localCandidates,
+        remoteCandidates,
+        timeoutMs: 2_000,
+        connectTimeoutMs: 1_000,
+        nowMs: () => nowMs,
+        sleepMs: async (ms, signal) => new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            scheduledTimers.delete(timer);
+            resolve();
+          }, ms);
+          const onAbort = (): void => {
+            clearTimeout(timer);
+            scheduledTimers.delete(timer);
+            reject(new Error('sleep aborted'));
+          };
+          scheduledTimers.add(timer);
+          signal?.addEventListener('abort', onAbort, { once: true });
+        }),
+        connectSocket: async (attempt) => {
+          if (attempt.remotePort === futureRemotePort) {
+            throw new Error('future candidate should wait');
+          }
+          return clientSocket;
+        },
+      });
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: baseSession.nodeCandidates[0], transport });
+
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/timer-cleanup.txt');
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('timer cleanup response');
+      expect(scheduledTimers.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      transport.close();
+    } finally {
+      vi.useRealTimers();
+      socketHandle.close();
+      await close();
+    }
+  });
 });
 
 async function reserveTcpPort(): Promise<number> {
-  const { createServer } = await import('node:net');
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -287,4 +533,53 @@ async function reserveTcpPort(): Promise<number> {
     server.close((error) => error ? reject(error) : resolve());
   });
   return address.port;
+}
+
+async function createSocketPair(): Promise<{
+  clientSocket: Socket;
+  serverSocket: Socket;
+  close: () => Promise<void>;
+}> {
+  const server = createServer();
+  const serverSocketPromise = new Promise<Socket>((resolve) => {
+    server.once('connection', resolve);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address() as AddressInfo;
+  const clientSocket = await new Promise<Socket>((resolve, reject) => {
+    const socket = createConnection({ host: '127.0.0.1', port: address.port });
+    socket.once('connect', () => resolve(socket));
+    socket.once('error', reject);
+  });
+  const serverSocket = await serverSocketPromise;
+  return {
+    clientSocket,
+    serverSocket,
+    async close(): Promise<void> {
+      clientSocket.destroy();
+      serverSocket.destroy();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    },
+  };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
