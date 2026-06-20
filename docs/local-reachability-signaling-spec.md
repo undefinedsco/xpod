@@ -130,6 +130,18 @@ Solid SDK / app
      TCP punch、WebRTC DataChannel 或 libp2p。provider 不进入 URL 形状和 Pod 模型。
    - WebRTC 只能是 provider 之一，不能成为 Xpod P2P 数据面的产品协议。
 
+当前实现阶段：
+
+- `P2PDataPlane` 已实现 `xpod-p2p-http/1` 帧层和本地 node handler：managed
+  client 把 canonical HTTP request 编码成 frame，local node 解码后转发给本地
+  CSS HTTP endpoint，再把 HTTP response 编码回 frame。
+- `UdpP2PTransport` 是开发/直连验证 provider：它用 Node 原生 UDP socket 在两个
+  非浏览器进程之间传递 `xpod-p2p-http/1` frame，用于证明数据面已经跨真实 socket，
+  不再只是内存函数调用。
+- `UdpP2PTransport` 不是最终公网 P2P 协议：当前没有分片、拥塞控制、可靠流、
+  加密握手、ICE candidate exchange 或 NAT hole punching。大 body、跨 NAT 和移动端
+  网络切换应由后续 QUIC/ICE 或其他 provider 负责。
+
 设计约束：
 
 - `p2p` route 的 `targetUrl` 是 managed client 的 transport endpoint，不给普通浏览器打开。
