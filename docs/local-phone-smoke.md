@@ -184,6 +184,48 @@ https://node-0000.undefineds.co/app/reachability.html?path=%2F.well-known%2Fopen
 That validates the browser data plane: `node-0000.undefineds.co` -> Cloud
 gateway/ingress -> node tunnel entrypoint -> local resource.
 
+## Verify non-browser P2P data plane
+
+Browser pages can validate Cloud IdP, SP routes, and signaling metadata, but they
+do not prove the managed-client P2P data plane. For that, run the Node/Bun smoke
+client from a non-browser environment after the local node agent is online with
+P2P enabled and has advertised `kind=p2p` in heartbeat metadata:
+
+```bash
+XPOD_P2P_TOKEN=<managed-client-token> bun scripts/werift-p2p-smoke.ts \
+  --api-base-url https://id.undefineds.co/ \
+  --node-id node-0000 \
+  --source-id desktop-ganlu \
+  --url https://node-0000.undefineds.co/.well-known/openid-configuration \
+  --expect-status 200
+```
+
+The request URL is still the canonical Solid HTTP URL. The smoke client creates a
+werift signaling session through Cloud, waits for the local node to answer, then
+encodes that HTTP request into `xpod-p2p-http/1` frames over a WebRTC DataChannel.
+The local node decodes the frame and forwards it to its local CSS/SP HTTP
+endpoint.
+
+For private Pod resources, add the exact Solid auth headers you want preserved
+through the P2P frame, for example:
+
+```bash
+bun scripts/werift-p2p-smoke.ts \
+  --api-base-url https://id.undefineds.co/ \
+  --node-id node-0000 \
+  --source-id desktop-ganlu \
+  --token <managed-client-token> \
+  --url https://node-0000.undefineds.co/alice/a.txt \
+  --header 'authorization: DPoP <access-token>' \
+  --header 'dpop: <proof-jwt>' \
+  --expect-status 200
+```
+
+Current boundary: this is the managed-client HTTP-over-P2P smoke path. It can
+prove non-browser signaling and DataChannel data frames in a real runtime, but a
+complete public-network acceptance still needs live Cloud credentials, a local
+node behind the target NAT, and TURN/cross-NAT verification when direct ICE fails.
+
 ## Troubleshooting
 
 - Do not use `localhost` on the phone. It points to the phone itself.

@@ -180,6 +180,12 @@ Solid SDK / app
   route；Cloud 创建 P2P session 时会把它归入 `nodeCandidates`，供 managed/native
   client 选择 werift DataChannel 数据面。该 route 是 accessRoute，不是 Solid canonical
   identity；WebID、Pod Root 和资源 IRI 仍使用 canonical HTTPS URL。
+  非浏览器真实环境 smoke 可直接运行 `bun scripts/werift-p2p-smoke.ts ...`：CLI 使用 Cloud/API 的
+  `/v1/signal/nodes/{nodeId}/sessions` 创建 werift session，等待 local node agent
+  answer，然后把传入的 canonical Solid URL 作为普通 HTTP request 编码成
+  `xpod-p2p-http/1` frame 经 DataChannel 发送。这个 smoke 不需要浏览器；如果访问
+  私有资源，需要调用方显式传入可由本地 CSS 校验的 HTTP `Authorization`/`DPoP`
+  等 header。
   werift provider 还会在建 peer 前读取 signaling session 的 route metadata，将
   `metadata.protocols["werift-datachannel"].iceServers`、`metadata.protocols.webrtc.iceServers`
   或兼容的 `metadata.iceServers` 归一化为 werift `PeerConfig.iceServers`；显式传入的

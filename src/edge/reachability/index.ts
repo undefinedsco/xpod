@@ -11,3 +11,4 @@ export * from './UdpP2PRendezvous';
 export * from './UdpP2PSignaledDataPlane';
 export * from './WeriftDataChannelP2PTransport';
 export * from './WeriftSignaledDataChannelP2PTransport';
+export * from './WeriftP2PSmoke';
