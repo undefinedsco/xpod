@@ -171,7 +171,11 @@ Solid SDK / app
   server，避免重复 answer。
   `EdgeNodeAgent.p2p` 已把该 one-shot helper 接入节点生命周期：启动时立即轮询一次，
   之后按 `pollIntervalMs` 周期发现 pending sessions，停止 Agent 时关闭已启动的
-  node-side answer handles。
+  node-side answer handles。开启该 loop 的 local Agent 还会在心跳 `metadata.routes` 中
+  自动追加 `kind="p2p"`、`targetUrl="webrtc://signaling/<nodeId>"` 的 managed-only
+  route；Cloud 创建 P2P session 时会把它归入 `nodeCandidates`，供 managed/native
+  client 选择 werift DataChannel 数据面。该 route 是 accessRoute，不是 Solid canonical
+  identity；WebID、Pod Root 和资源 IRI 仍使用 canonical HTTPS URL。
   werift provider 还会在建 peer 前读取 signaling session 的 route metadata，将
   `metadata.protocols["werift-datachannel"].iceServers`、`metadata.protocols.webrtc.iceServers`
   或兼容的 `metadata.iceServers` 归一化为 werift `PeerConfig.iceServers`；显式传入的

@@ -8,6 +8,7 @@ import { AcmeCertificateManager } from './acme/AcmeCertificateManager';
 import { ClusterCertificateManager } from './acme/ClusterCertificateManager';
 import { EdgeNodeCapabilityDetector, type NetworkAddressInfo } from './EdgeNodeCapabilityDetector';
 import {
+  type AccessRoute,
   answerPendingWeriftP2PSessionsOnce,
   createP2PSignalingClient,
   type AnswerPendingWeriftP2PSessionsOnceOptions,
@@ -16,6 +17,7 @@ import {
 } from './reachability';
 
 type EdgeNodeP2PAnswerHandle = Pick<WeriftSignaledP2PDataPlaneNode, 'close'>;
+type EdgeNodeP2PHeartbeatRoute = Omit<AccessRoute, 'canonicalUrl'> & { canonicalUrl?: string };
 
 export interface EdgeNodeAgentOptions {
   signalEndpoint: string;
@@ -115,7 +117,7 @@ export class EdgeNodeAgent {
     
     const systemMetrics = options.includeSystemMetrics ? this.collectSystemMetrics() : undefined;
     const metadataPayload = {
-      ...(options.metadata ?? {}),
+      ...this.buildHeartbeatMetadata(options),
       system: systemMetrics,
     } as Record<string, unknown>;
 
@@ -180,6 +182,53 @@ export class EdgeNodeAgent {
       totalMem: os.totalmem(),
       freeMem: os.freemem(),
     };
+  }
+
+  private buildHeartbeatMetadata(options: EdgeNodeAgentOptions): Record<string, unknown> {
+    const metadata = { ...(options.metadata ?? {}) } as Record<string, unknown>;
+    const p2pRoute = this.buildP2PHeartbeatRoute(options);
+    if (p2pRoute) {
+      metadata.routes = this.mergeHeartbeatRoutes(metadata.routes, p2pRoute);
+    }
+    return metadata;
+  }
+
+  private buildP2PHeartbeatRoute(options: EdgeNodeAgentOptions): EdgeNodeP2PHeartbeatRoute | undefined {
+    const p2p = options.p2p;
+    if (!p2p || this.normalizeBoolean(p2p.enabled) === false) {
+      return undefined;
+    }
+    const label = typeof p2p.label === 'string' && p2p.label.length > 0 ? p2p.label : undefined;
+    return {
+      id: 'p2p-werift-datachannel',
+      nodeId: options.nodeId,
+      ...(options.baseUrl ? { canonicalUrl: options.baseUrl } : {}),
+      kind: 'p2p',
+      targetUrl: `webrtc://signaling/${encodeURIComponent(options.nodeId)}`,
+      priority: 40,
+      requiresManagedClient: true,
+      visibility: 'authorized-client',
+      health: 'healthy',
+      metadata: {
+        protocols: {
+          'werift-datachannel': {
+            enabled: true,
+            ...(label ? { label } : {}),
+          },
+          webrtc: {
+            enabled: true,
+          },
+        },
+      },
+    };
+  }
+
+  private mergeHeartbeatRoutes(existing: unknown, p2pRoute: EdgeNodeP2PHeartbeatRoute): EdgeNodeP2PHeartbeatRoute[] {
+    const routes = Array.isArray(existing)
+      ? existing.filter((entry): entry is EdgeNodeP2PHeartbeatRoute => Boolean(entry) && typeof entry === 'object')
+      : [];
+    const withoutGeneratedRoute = routes.filter((route) => route.id !== p2pRoute.id);
+    return [...withoutGeneratedRoute, p2pRoute];
   }
 
   private handleHeartbeatResponse(data: unknown): void {

@@ -96,6 +96,11 @@ await agent.start({
   - `XPOD_P2P_ENABLED=true`
   - `XPOD_P2P_TARGET_BASE_URL=http://127.0.0.1:3000/`
   - 可选：`XPOD_P2P_API_BASE_URL`、`XPOD_P2P_POLL_INTERVAL_MS`、`XPOD_P2P_SIGNALING_POLL_INTERVAL_MS`、`XPOD_P2P_TIMEOUT_MS`、`XPOD_P2P_LABEL`。
+- 启用 `XPOD_P2P_ENABLED=true` 后，Agent 会在心跳 `metadata.routes` 中自动追加
+  `id=p2p-werift-datachannel`、`kind=p2p`、`targetUrl=webrtc://signaling/<nodeId>` 的
+  managed-only route。Cloud 创建 P2P session 时会把该 route 放入 `nodeCandidates`，
+  managed/native client 才能在 session 返回值中选择 P2P 数据面。不要把这个
+  `webrtc://...` 写成 Pod Root 或 WebID；Solid canonical URL 仍来自 `baseUrl` / route registry。
 - 若节点拥有多个 Pod，`pods` 数组可列出多个 baseUrl；缺失时仍可通过控制面 API 感知 Pod 实际列表。
 - `metadata.dns` 与 `metadata.certificate.dns01` 字段可以在心跳期间动态更新，以便控制面及时刷新 DNS/TXT 记录（当 `acme.mode=local` 时仍旧适用）。
 - 启用控制面自动化需在 cluster 端设置 `CSS_EDGE_NODES_ENABLED=true`，并按需提供 `CSS_TENCENT_DNS_TOKEN_ID`/`CSS_TENCENT_DNS_TOKEN` 等变量（详见《edge-node-control-plane》）；DNS 根域名自动复用 CSS `baseUrl`。

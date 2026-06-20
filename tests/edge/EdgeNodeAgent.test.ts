@@ -107,4 +107,67 @@ describe('EdgeNodeAgent P2P answer loop', () => {
     });
   });
 
+
+  it('advertises a managed werift p2p route in heartbeat metadata when the answer loop is enabled', async () => {
+    const signaling = {} as P2PSignalingClient;
+    const answerPendingSessionsOnce = vi.fn().mockResolvedValue([]);
+
+    agent = new EdgeNodeAgent();
+    await agent.start({
+      signalEndpoint: 'https://cluster.example/api/signal',
+      nodeId: 'node-1',
+      nodeToken: 'node-token',
+      baseUrl: 'https://node-1.pods.example/',
+      enableNetworkDetection: false,
+      metadata: {
+        routes: [{
+          id: 'user-tunnel',
+          kind: 'user-tunnel',
+          targetUrl: 'https://tunnel.example/',
+          priority: 50,
+          requiresManagedClient: false,
+          visibility: 'public',
+          health: 'healthy',
+        }],
+      },
+      p2p: {
+        enabled: true,
+        signaling,
+        targetBaseUrl: 'http://127.0.0.1:3000/',
+        label: 'xpod-p2p-http',
+        answerPendingSessionsOnce,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+    const [, init] = (fetch as any).mock.calls[0];
+    const payload = JSON.parse(init.body);
+
+    expect(payload.metadata.routes).toEqual([
+      expect.objectContaining({ id: 'user-tunnel', kind: 'user-tunnel' }),
+      expect.objectContaining({
+        id: 'p2p-werift-datachannel',
+        kind: 'p2p',
+        targetUrl: 'webrtc://signaling/node-1',
+        priority: 40,
+        requiresManagedClient: true,
+        visibility: 'authorized-client',
+        health: 'healthy',
+        metadata: {
+          protocols: {
+            'werift-datachannel': {
+              enabled: true,
+              label: 'xpod-p2p-http',
+            },
+            webrtc: {
+              enabled: true,
+            },
+          },
+        },
+      }),
+    ]);
+  });
+
 });
