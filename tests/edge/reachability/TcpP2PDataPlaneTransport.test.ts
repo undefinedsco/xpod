@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createConnection, createServer, type AddressInfo, type Socket } from 'node:net';
 import type { AccessRoute } from '../../../src/edge/reachability';
 import {
+  attachTcpP2PDataPlaneSocket,
   computeTcpHolePunchPlan,
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
@@ -73,6 +75,51 @@ describe('TCP P2P data plane transport', () => {
     }
   });
 
+  it('attaches a pre-connected socket to the node-side P2P HTTP handler', async () => {
+    const localFetch = vi.fn(async () => new Response('attached socket response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+
+    try {
+      const transport = createTcpP2PDataPlaneTransport({
+        remoteHost: '127.0.0.1',
+        remotePort: 1,
+        socket: clientSocket,
+        timeoutMs: 2_000,
+        randomId: () => 'attached-request',
+      });
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: p2pRoute, transport });
+
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/attached.txt', {
+        headers: { authorization: 'DPoP attached' },
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('attached socket response');
+      expect(localFetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:5737/alice/attached.txt',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.any(Headers),
+        }),
+      );
+      const headers = new Headers(localFetch.mock.calls[0][1].headers);
+      expect(headers.get('authorization')).toBe('DPoP attached');
+      expect(headers.get('x-xpod-canonical-url')).toBe('https://node-1.pods.example/alice/attached.txt');
+      transport.close();
+    } finally {
+      socketHandle.close();
+      await close();
+    }
+  });
+
   it('computes deterministic raw TCP hole-punch buckets, rendezvous time, and candidate ports', () => {
     const plan = computeTcpHolePunchPlan({
       nowSeconds: 1_000,
@@ -117,3 +164,36 @@ describe('TCP P2P data plane transport', () => {
     expect(nearBoundary.bucket).toBe(Math.floor((1_065 - 20) / 42) + 1);
   });
 });
+
+async function createSocketPair(): Promise<{
+  clientSocket: Socket;
+  serverSocket: Socket;
+  close: () => Promise<void>;
+}> {
+  const server = createServer();
+  const serverSocketPromise = new Promise<Socket>((resolve) => {
+    server.once('connection', resolve);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address() as AddressInfo;
+  const clientSocket = await new Promise<Socket>((resolve, reject) => {
+    const socket = createConnection({ host: '127.0.0.1', port: address.port });
+    socket.once('connect', () => resolve(socket));
+    socket.once('error', reject);
+  });
+  const serverSocket = await serverSocketPromise;
+  return {
+    clientSocket,
+    serverSocket,
+    async close(): Promise<void> {
+      clientSocket.destroy();
+      serverSocket.destroy();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    },
+  };
+}

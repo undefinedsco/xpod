@@ -189,8 +189,13 @@ Solid SDK / app
   native TCP socket，并交给 `TcpP2PDataPlaneTransport` 承载 `xpod-p2p-http/1`。当前本地
   测试覆盖的是可直连 TCP candidate；跨 NAT 的 true simultaneous open 仍需要 native/移动端
   实网 smoke 验证。
+- `attachTcpP2PDataPlaneSocket` 已能把 raw TCP 打洞成功后拿到的 pre-connected socket
+  直接挂到 node-side `P2PDataPlaneHandler`，因此执行器不必伪装成 listener accept
+  流程；成功 socket 可立即转发 canonical HTTP frame 到本地 CSS/SP。
 - 旧浏览器 P2P heavy provider、relay credential 注入、provider metadata 和对应 smoke
   已从 active implementation 移除；这些能力不再作为 Xpod P2P 数据面的默认方向。
+- 已实现的 Cloudflare Tunnel、FRP/SakuraFRP 能力保留：它们不是 native P2P 数据面，
+  而是 `user-tunnel` / public fallback route，供用户或策略显式启用。
 
 设计约束：
 

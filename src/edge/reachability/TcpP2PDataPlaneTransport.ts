@@ -47,6 +47,15 @@ export interface TcpP2PDataPlaneServer {
   close(): Promise<void>;
 }
 
+export interface TcpP2PDataPlaneSocketOptions {
+  socket: Socket;
+  handler: P2PDataPlaneHandler;
+}
+
+export interface TcpP2PDataPlaneSocketHandle {
+  close(): void;
+}
+
 export interface TcpHolePunchPlanOptions {
   nowSeconds?: number;
   windowSeconds?: number;
@@ -70,6 +79,10 @@ export function createTcpP2PDataPlaneTransport(options: TcpP2PDataPlaneTransport
 
 export function createTcpP2PDataPlaneServer(options: TcpP2PDataPlaneServerOptions): TcpP2PDataPlaneServer {
   return new TcpP2PServer(options);
+}
+
+export function attachTcpP2PDataPlaneSocket(options: TcpP2PDataPlaneSocketOptions): TcpP2PDataPlaneSocketHandle {
+  return attachTcpP2PDataPlaneSocketInternal(options.socket, options.handler);
 }
 
 export function computeTcpHolePunchPlan(options: TcpHolePunchPlanOptions = {}): TcpHolePunchPlan {
@@ -204,7 +217,7 @@ class TcpP2PTransport implements TcpP2PDataPlaneTransport {
 class TcpP2PServer implements TcpP2PDataPlaneServer {
   private readonly host: string;
   private server?: Server;
-  private sockets = new Set<Socket>();
+  private sockets = new Set<TcpP2PDataPlaneSocketHandle>();
 
   public constructor(private readonly options: TcpP2PDataPlaneServerOptions) {
     this.host = options.host ?? '0.0.0.0';
@@ -233,7 +246,7 @@ class TcpP2PServer implements TcpP2PDataPlaneServer {
 
   public async close(): Promise<void> {
     for (const socket of this.sockets) {
-      socket.destroy();
+      socket.close();
     }
     this.sockets.clear();
     const server = this.server;
@@ -247,34 +260,56 @@ class TcpP2PServer implements TcpP2PDataPlaneServer {
   }
 
   private handleSocket(socket: Socket): void {
-    this.sockets.add(socket);
-    let readBuffer = '';
-    socket.on('data', (chunk) => {
-      readBuffer += chunk.toString('utf8');
-      const split = splitLines(readBuffer);
-      readBuffer = split.remainder;
-      for (const line of split.lines) {
-        void this.handleLine(socket, line);
-      }
+    const handle = attachTcpP2PDataPlaneSocketInternal(socket, this.options.handler, () => {
+      this.sockets.delete(handle);
     });
-    socket.on('close', () => this.sockets.delete(socket));
+    this.sockets.add(handle);
   }
+}
 
-  private async handleLine(socket: Socket, line: string): Promise<void> {
-    const envelope = parseEnvelope(line);
-    if (!envelope || envelope.type !== REQUEST_ENVELOPE) {
-      return;
+function attachTcpP2PDataPlaneSocketInternal(
+  socket: Socket,
+  handler: P2PDataPlaneHandler,
+  onClose?: () => void,
+): TcpP2PDataPlaneSocketHandle {
+  let readBuffer = '';
+  const onData = (chunk: Buffer): void => {
+    readBuffer += chunk.toString('utf8');
+    const split = splitLines(readBuffer);
+    readBuffer = split.remainder;
+    for (const line of split.lines) {
+      void handleRequestLine(socket, handler, line);
     }
-    try {
-      const response = await this.options.handler.handleRequest(envelope.frame);
-      writeEnvelope(socket, { type: RESPONSE_ENVELOPE, requestId: envelope.requestId, frame: response });
-    } catch (error) {
-      writeEnvelope(socket, {
-        type: ERROR_ENVELOPE,
-        requestId: envelope.requestId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  };
+  const onSocketClose = (): void => {
+    onClose?.();
+  };
+  socket.on('data', onData);
+  socket.on('close', onSocketClose);
+  return {
+    close(): void {
+      socket.off('data', onData);
+      socket.off('close', onSocketClose);
+      socket.destroy();
+      onClose?.();
+    },
+  };
+}
+
+async function handleRequestLine(socket: Socket, handler: P2PDataPlaneHandler, line: string): Promise<void> {
+  const envelope = parseEnvelope(line);
+  if (!envelope || envelope.type !== REQUEST_ENVELOPE) {
+    return;
+  }
+  try {
+    const response = await handler.handleRequest(envelope.frame);
+    writeEnvelope(socket, { type: RESPONSE_ENVELOPE, requestId: envelope.requestId, frame: response });
+  } catch (error) {
+    writeEnvelope(socket, {
+      type: ERROR_ENVELOPE,
+      requestId: envelope.requestId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
