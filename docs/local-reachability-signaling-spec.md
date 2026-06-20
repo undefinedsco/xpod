@@ -100,6 +100,45 @@ Public browser:
 - `xpod-relay` 不自动兜底；必须有用户或策略显式授权，且带配额/TTL。
 - route 变化不触发 WebID、Pod Root、ACL 或 RDF IRI 迁移。
 
+## 非浏览器 P2P 数据面协议
+
+P2P 数据面的目标不是把 Solid 改成另一套协议。Solid client、Inrupt SDK、
+drizzle-solid、CSS handler 看到的仍然是 HTTP(S) request/response：
+
+```text
+Solid SDK / app
+  -> fetch("https://node-abc.pods.example.com/alice/a.txt")
+  -> canonical HTTP request frame
+  -> P2P transport stream
+  -> Local node forwards to local CSS HTTP endpoint
+  -> canonical HTTP response frame
+```
+
+因此协议分两层：
+
+1. **语义层：HTTP**
+   - 请求方法、URL、headers、body、status、response headers、response body
+     必须完整保留。
+   - WebID、Pod root、ACL/ACP、DPoP/OIDC audience 仍按 canonical HTTPS URL 判断。
+   - 当前内部帧版本命名为 `xpod-p2p-http/1`，用于把 HTTP request/response
+     编码到任意 P2P stream 上；它不是新的 Solid 协议。
+
+2. **传输层：可插拔 P2P provider**
+   - 推荐最终以 QUIC stream 承载 HTTP frame：QUIC 原生支持加密、多路复用和流控，
+     和 HTTP/3 的语义边界一致。
+   - NAT 穿透/候选交换由 signaling 协调，具体 provider 可以是 QUIC+ICE、
+     TCP punch、WebRTC DataChannel 或 libp2p。provider 不进入 URL 形状和 Pod 模型。
+   - WebRTC 只能是 provider 之一，不能成为 Xpod P2P 数据面的产品协议。
+
+设计约束：
+
+- `p2p` route 的 `targetUrl` 是 managed client 的 transport endpoint，不给普通浏览器打开。
+- Cloud signaling 只交换 session、candidate、credential 和状态；默认不承载 Pod HTTP body。
+- Local node 必须把收到的 P2P HTTP frame 转为本机 CSS HTTP 请求，并注入
+  `x-xpod-canonical-url` / `x-xpod-canonical-origin` / `x-xpod-canonical-host`
+  供本地网关和审计保留 canonical 语义。
+- 连接失败时回落到下一个 route；不能把 P2P 成功作为 Solid resource identity 的前提。
+
 ## Route 数据结构
 
 Cloud route registry 和本地 route 表使用同一抽象：
