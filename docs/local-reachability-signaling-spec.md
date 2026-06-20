@@ -160,11 +160,12 @@ Solid SDK / app
   session：client 发布 `offer` signal candidate，node 轮询后发布 `answer` signal candidate，
   双方再打开 DataChannel 承载 `xpod-p2p-http/1`。client 侧也可用
   `createWeriftDataChannelSessionThroughSignaling` 直接创建 `/sessions`，把 initial offer
-  放入创建请求的 `candidates`，再等待 node answer。
+  放入创建请求的 `candidates`，再等待 node answer。连接建立后，双方会继续通过同一个
+  signaling session 增量发布 `ice-candidate` / `ice-complete` signal candidate，并轮询远端
+  candidate 后调用 werift `addIceCandidate`，从而支持非浏览器 DataChannel 的 trickle ICE。
 - 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
   拥塞控制或加密握手；werift provider 已具备 ICE/DTLS/SCTP 和 signaling offer/answer
-  建链能力，但还没有实现 trickle ICE candidate 增量同步、TURN 策略、移动端网络切换
-  和真实跨 NAT 验证。
+  建链能力和 trickle ICE 增量同步，但还没有实现 TURN 策略、移动端网络切换和真实跨 NAT 验证。
 
 设计约束：
 

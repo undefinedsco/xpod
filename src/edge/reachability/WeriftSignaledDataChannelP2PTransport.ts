@@ -2,6 +2,8 @@ import {
   RTCPeerConnection,
   type PeerConfig,
   type RTCDataChannel,
+  type RTCIceCandidate,
+  type RTCIceCandidateInit,
 } from 'werift';
 import type { P2PCandidateRole, P2PTransportCandidate } from './types';
 import type { P2PSignalingClient } from './P2PSignalingClient';
@@ -49,6 +51,7 @@ export interface CreatedWeriftDataChannelSessionConnection extends SignaledWerif
 }
 
 type WeriftSignalType = 'offer' | 'answer';
+type WeriftIceSignalType = 'ice-candidate' | 'ice-complete';
 
 export async function connectWeriftDataChannelThroughSignaling(
   options: ConnectWeriftDataChannelThroughSignalingOptions,
@@ -65,6 +68,7 @@ export async function createWeriftDataChannelSessionThroughSignaling(
   const label = options.label ?? DEFAULT_LABEL;
   const peer = new RTCPeerConnection(options.peerConfig);
   const channel = peer.createDataChannel(label, { ordered: true });
+  let stopTrickleIceSync: (() => void) | undefined;
 
   try {
     const offer = await peer.createOffer();
@@ -96,12 +100,18 @@ export async function createWeriftDataChannelSessionThroughSignaling(
       type: 'answer',
       sdp: readSignalSdp(remoteSignal),
     });
+    stopTrickleIceSync = startTrickleIceSync(peer, {
+      ...options,
+      sessionId: session.sessionId,
+      role: 'client',
+    }).stop;
     await waitForChannelOpen(channel, timeoutMs);
     return {
-      ...buildConnection(peer, channel, localSignal, remoteSignal),
+      ...buildConnection(peer, channel, localSignal, remoteSignal, stopTrickleIceSync),
       session,
     };
   } catch (error) {
+    stopTrickleIceSync?.();
     await peer.close();
     throw error;
   }
@@ -114,6 +124,7 @@ async function connectClient(
   const label = options.label ?? DEFAULT_LABEL;
   const peer = new RTCPeerConnection(options.peerConfig);
   const channel = peer.createDataChannel(label, { ordered: true });
+  let stopTrickleIceSync: (() => void) | undefined;
 
   try {
     const offer = await peer.createOffer();
@@ -133,9 +144,11 @@ async function connectClient(
       type: 'answer',
       sdp: readSignalSdp(remoteSignal),
     });
+    stopTrickleIceSync = startTrickleIceSync(peer, options).stop;
     await waitForChannelOpen(channel, timeoutMs);
-    return buildConnection(peer, channel, localSignal, remoteSignal);
+    return buildConnection(peer, channel, localSignal, remoteSignal, stopTrickleIceSync);
   } catch (error) {
+    stopTrickleIceSync?.();
     await peer.close();
     throw error;
   }
@@ -148,6 +161,7 @@ async function connectNode(
   const label = options.label ?? DEFAULT_LABEL;
   const peer = new RTCPeerConnection(options.peerConfig);
   const nodeChannelPromise = waitForNodeDataChannel(peer, timeoutMs);
+  let stopTrickleIceSync: (() => void) | undefined;
 
   try {
     const initialSession = await options.signaling.getP2PSession(options.sessionId);
@@ -168,10 +182,12 @@ async function connectNode(
       sourceId: options.sourceId,
       candidates: [localSignal],
     });
+    stopTrickleIceSync = startTrickleIceSync(peer, options).stop;
     const channel = await nodeChannelPromise;
     await waitForChannelOpen(channel, timeoutMs);
-    return buildConnection(peer, channel, localSignal, remoteSignal);
+    return buildConnection(peer, channel, localSignal, remoteSignal, stopTrickleIceSync);
   } catch (error) {
+    stopTrickleIceSync?.();
     await peer.close();
     throw error;
   }
@@ -182,6 +198,7 @@ function buildConnection(
   channel: RTCDataChannel,
   localSignal: P2PTransportCandidate,
   remoteSignal: P2PTransportCandidate,
+  stopTrickleIceSync?: () => void,
 ): SignaledWeriftDataChannelConnection {
   return {
     peer,
@@ -189,6 +206,7 @@ function buildConnection(
     localSignal,
     remoteSignal,
     close: async () => {
+      stopTrickleIceSync?.();
       channel.close();
       await peer.close();
     },
@@ -223,6 +241,88 @@ function buildSignalCandidate(
   };
 }
 
+function startTrickleIceSync(
+  peer: RTCPeerConnection,
+  options: ConnectWeriftDataChannelThroughSignalingOptions,
+): { stop(): void } {
+  let stopped = false;
+  const appliedRemoteIceSignals = new Set<string>();
+  const subscription = peer.onIceCandidate.subscribe((candidate) => {
+    if (stopped) {
+      return;
+    }
+    void options.signaling.addP2PCandidates(options.sessionId, {
+      role: options.role,
+      sourceId: options.sourceId,
+      candidates: [buildIceSignalCandidate(options, candidate)],
+    }).catch(() => undefined);
+  });
+
+  void pollRemoteIceSignals(peer, options, appliedRemoteIceSignals, () => stopped);
+
+  return {
+    stop: () => {
+      stopped = true;
+      subscription.unSubscribe();
+    },
+  };
+}
+
+async function pollRemoteIceSignals(
+  peer: RTCPeerConnection,
+  options: ConnectWeriftDataChannelThroughSignalingOptions,
+  appliedRemoteIceSignals: Set<string>,
+  isStopped: () => boolean,
+): Promise<void> {
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  while (!isStopped()) {
+    await sleep(pollIntervalMs);
+    if (isStopped()) {
+      return;
+    }
+    try {
+      const session = await options.signaling.getP2PSession(options.sessionId);
+      const remoteIceSignals = findRemoteIceSignals(session.candidates, options.role, options.sourceId);
+      for (const signal of remoteIceSignals) {
+        if (appliedRemoteIceSignals.has(signal.id)) {
+          continue;
+        }
+        if (signal.metadata?.signalType === 'ice-candidate') {
+          await peer.addIceCandidate(readIceCandidate(signal));
+        }
+        appliedRemoteIceSignals.add(signal.id);
+      }
+    } catch {
+      // Signaling polling is opportunistic. The connection may already be closing or the
+      // remote candidate may not be applicable yet; retry on the next poll while active.
+    }
+  }
+}
+
+function buildIceSignalCandidate(
+  options: ConnectWeriftDataChannelThroughSignalingOptions,
+  candidate: RTCIceCandidate | undefined,
+): P2PTransportCandidate {
+  const signalType: WeriftIceSignalType = candidate ? 'ice-candidate' : 'ice-complete';
+  const randomId = options.randomId ?? (() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+  const now = options.now ?? (() => new Date());
+  return {
+    id: `werift_${signalType}_${options.role}_${options.sourceId}_${randomId()}`,
+    role: options.role,
+    sourceId: options.sourceId,
+    createdAt: now().toISOString(),
+    protocol: 'webrtc',
+    transport: 'datachannel',
+    url: `webrtc://${options.sessionId}/${signalType}`,
+    metadata: {
+      provider: WERIFT_PROVIDER,
+      signalType,
+      sessionId: options.sessionId,
+      ...(candidate ? { candidate } : {}),
+    },
+  };
+}
+
 async function waitForSignal(options: ConnectWeriftDataChannelThroughSignalingOptions & {
   signalType: WeriftSignalType;
   initialCandidates: P2PTransportCandidate[];
@@ -241,6 +341,32 @@ async function waitForSignal(options: ConnectWeriftDataChannelThroughSignalingOp
     signal = findRemoteSignal(session.candidates, options.role, options.sourceId, options.signalType);
   }
   return signal;
+}
+
+function findRemoteIceSignals(
+  candidates: P2PTransportCandidate[],
+  role: P2PCandidateRole,
+  sourceId: string,
+): P2PTransportCandidate[] {
+  return candidates.filter((candidate) => candidate.role !== role &&
+    candidate.sourceId !== sourceId &&
+    candidate.transport === 'datachannel' &&
+    candidate.protocol === 'webrtc' &&
+    candidate.metadata?.provider === WERIFT_PROVIDER &&
+    (candidate.metadata.signalType === 'ice-candidate' || candidate.metadata.signalType === 'ice-complete'));
+}
+
+function readIceCandidate(candidate: P2PTransportCandidate): RTCIceCandidateInit {
+  const value = candidate.metadata?.candidate;
+  if (!isRecord(value) || typeof value.candidate !== 'string') {
+    throw new Error(`werift signal ${candidate.id} is missing ICE candidate data`);
+  }
+  return {
+    candidate: value.candidate,
+    sdpMid: typeof value.sdpMid === 'string' ? value.sdpMid : undefined,
+    sdpMLineIndex: typeof value.sdpMLineIndex === 'number' ? value.sdpMLineIndex : undefined,
+    usernameFragment: typeof value.usernameFragment === 'string' ? value.usernameFragment : undefined,
+  };
 }
 
 function findRemoteSignal(
@@ -285,4 +411,8 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

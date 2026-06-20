@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { RTCIceCandidateInit } from 'werift';
 import type { AccessRoute, P2PCandidateUpdateRequest, P2PSession, P2PSignalingClient, P2PTransportCandidate } from '../../../src/edge/reachability';
 import {
   connectWeriftDataChannelThroughSignaling,
@@ -154,6 +155,70 @@ describe('signaled werift DataChannel P2P data plane', () => {
     } finally {
       transport.close();
       server.close();
+      await Promise.allSettled([clientConnection.close(), nodeConnection.close()]);
+    }
+  });
+
+  it('trickles local ICE candidates through signaling after the DataChannel is open', async () => {
+    const signaling = new InMemoryP2PSignalingClient('p2p_trickle');
+    const peerConfig = {
+      iceServers: [],
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+    };
+
+    const [clientConnection, nodeConnection] = await Promise.all([
+      connectWeriftDataChannelThroughSignaling({
+        signaling,
+        sessionId: 'p2p_trickle',
+        role: 'client',
+        sourceId: 'device-1',
+        timeoutMs: 3_000,
+        pollIntervalMs: 10,
+        peerConfig,
+      }),
+      connectWeriftDataChannelThroughSignaling({
+        signaling,
+        sessionId: 'p2p_trickle',
+        role: 'node',
+        sourceId: 'node-1',
+        timeoutMs: 3_000,
+        pollIntervalMs: 10,
+        peerConfig,
+      }),
+    ]);
+    const addIceCandidate = vi.spyOn(nodeConnection.peer, 'addIceCandidate').mockResolvedValue(undefined);
+    const trickledCandidate: RTCIceCandidateInit = {
+      candidate: 'candidate:842163049 1 udp 1677729535 203.0.113.10 54321 typ srflx raddr 10.0.0.2 rport 5000',
+      sdpMid: '0',
+      sdpMLineIndex: 0,
+      usernameFragment: 'client-ufrag',
+    };
+
+    try {
+      clientConnection.peer.onIceCandidate.execute(trickledCandidate);
+
+      await vi.waitFor(() => {
+        const trickledSignals = signaling.addedCandidates
+          .flatMap((entry) => entry.candidates as P2PTransportCandidate[])
+          .filter((candidate) => candidate.metadata?.signalType === 'ice-candidate');
+        expect(trickledSignals).toHaveLength(1);
+        expect(trickledSignals[0]).toMatchObject({
+          role: 'client',
+          sourceId: 'device-1',
+          protocol: 'webrtc',
+          transport: 'datachannel',
+          metadata: {
+            provider: 'werift-datachannel',
+            sessionId: 'p2p_trickle',
+            candidate: trickledCandidate,
+          },
+        });
+      });
+      await vi.waitFor(() => {
+        expect(addIceCandidate).toHaveBeenCalledWith(trickledCandidate);
+      });
+    } finally {
+      addIceCandidate.mockRestore();
       await Promise.allSettled([clientConnection.close(), nodeConnection.close()]);
     }
   });
