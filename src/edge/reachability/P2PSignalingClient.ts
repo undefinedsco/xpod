@@ -1,6 +1,7 @@
 import type {
   P2PCandidateUpdateRequest,
   P2PSession,
+  P2PSessionList,
   P2PSessionRequest,
   P2PTransportCandidate,
 } from './types';
@@ -20,6 +21,7 @@ export interface CreateP2PSessionInput {
 
 export interface P2PSignalingClient {
   createP2PSession(request: CreateP2PSessionInput): Promise<P2PSession>;
+  listP2PSessions(): Promise<P2PSession[]>;
   getP2PSession(sessionIdOrUrl: string): Promise<P2PSession>;
   addP2PCandidates(sessionIdOrUrl: string, request: P2PCandidateUpdateRequest): Promise<P2PSession>;
 }
@@ -59,6 +61,11 @@ class HttpP2PSignalingClient implements P2PSignalingClient {
 
   public async getP2PSession(sessionIdOrUrl: string): Promise<P2PSession> {
     return this.requestSession(this.sessionUrl(sessionIdOrUrl), { method: 'GET' });
+  }
+
+  public async listP2PSessions(): Promise<P2PSession[]> {
+    const list = await this.requestSessionList(this.sessionsUrl(), { method: 'GET' });
+    return list.sessions;
   }
 
   public async addP2PCandidates(
@@ -106,6 +113,29 @@ class HttpP2PSignalingClient implements P2PSignalingClient {
     const body = await response.json() as unknown;
     return assertP2PSession(body);
   }
+
+  private async requestSessionList(url: string, request: {
+    method: 'GET';
+  }): Promise<P2PSessionList> {
+    const headers = new Headers({ accept: 'application/json', 'content-type': 'application/json' });
+    if (this.options.token) {
+      headers.set('authorization', `Bearer ${this.options.token}`);
+    }
+    const response = await this.fetchImpl(url, {
+      method: request.method,
+      headers,
+    });
+    if (!response.ok) {
+      const responseText = await safeReadText(response);
+      throw new P2PSignalingRequestError(
+        `P2P signaling request ${request.method} ${url} failed with ${response.status}`,
+        response.status,
+        responseText,
+      );
+    }
+    const body = await response.json() as unknown;
+    return assertP2PSessionList(body);
+  }
 }
 
 function assertP2PSession(value: unknown): P2PSession {
@@ -113,6 +143,20 @@ function assertP2PSession(value: unknown): P2PSession {
     throw new Error('P2P signaling response is not a p2p session');
   }
   return value;
+}
+
+function assertP2PSessionList(value: unknown): P2PSessionList {
+  if (!isP2PSessionList(value)) {
+    throw new Error('P2P signaling response is not a p2p session list');
+  }
+  return value;
+}
+
+function isP2PSessionList(value: unknown): value is P2PSessionList {
+  return isRecord(value)
+    && value.kind === 'p2p'
+    && Array.isArray(value.sessions)
+    && value.sessions.every(isP2PSession);
 }
 
 function isP2PSession(value: unknown): value is P2PSession {

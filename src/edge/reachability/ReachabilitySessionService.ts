@@ -5,6 +5,7 @@ import type {
   BuildRouteSetSource,
   P2PCandidateUpdateRequest,
   P2PSession,
+  P2PSessionList,
   P2PSessionRequest,
   P2PTransportCandidate,
   RelaySession,
@@ -78,6 +79,22 @@ export class ReachabilitySessionService {
     const { session } = await this.loadP2PSession(nodeId, sessionId);
     this.assertP2PSessionActive(session);
     return session;
+  }
+
+  public async listP2PSessions(nodeId: string): Promise<P2PSessionList> {
+    const current = await this.options.repository.getNodeMetadata(nodeId);
+    if (!current) {
+      throw new NodeRouteSourceNotFoundError(`Node ${nodeId} not found`);
+    }
+    const metadata = current.metadata ?? {};
+    const reachabilitySessions = isRecord(metadata.reachabilitySessions) ? metadata.reachabilitySessions : {};
+    const sessions = Array.isArray(reachabilitySessions.p2p)
+      ? reachabilitySessions.p2p
+        .map(toP2PSession)
+        .filter((session): session is P2PSession => Boolean(session))
+        .filter((session) => this.isP2PSessionActive(session))
+      : [];
+    return { kind: 'p2p', sessions };
   }
 
   public async addP2PCandidates(
@@ -258,10 +275,14 @@ export class ReachabilitySessionService {
   }
 
   private assertP2PSessionActive(session: P2PSession): void {
-    const expiresAt = Date.parse(session.expiresAt);
-    if (Number.isFinite(expiresAt) && expiresAt <= this.now().getTime()) {
+    if (!this.isP2PSessionActive(session)) {
       throw new P2PSessionExpiredError(`P2P session ${session.sessionId} expired`);
     }
+  }
+
+  private isP2PSessionActive(session: P2PSession): boolean {
+    const expiresAt = Date.parse(session.expiresAt);
+    return !Number.isFinite(expiresAt) || expiresAt > this.now().getTime();
   }
 
   private normalizeP2PCandidates(

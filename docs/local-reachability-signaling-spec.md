@@ -316,6 +316,22 @@ Content-Type: application/json
 会话创建后，`signalingUrl` 是该短 TTL 会话的控制面入口：
 
 ```http
+GET /v1/signal/nodes/{nodeId}/sessions
+Authorization: Bearer <nodeToken|serviceToken>
+```
+
+返回当前节点仍 active 的 P2P sessions，供 local node / native agent 轮询发现
+client 已创建、等待 node answer 的 session。过期 session 不返回；node token 只能读取
+自己的 nodeId。
+
+```json
+{
+  "kind": "p2p",
+  "sessions": []
+}
+```
+
+```http
 GET /v1/signal/nodes/{nodeId}/sessions/{sessionId}
 Authorization: Bearer <nodeToken|serviceToken>
 ```
@@ -506,6 +522,7 @@ GET http://node-0000.undefineds.co/app/signal-pod.html?nodeId=node-0000&path=%2F
 ### P3：P2P signaling
 
 - 新增 P2P session API。
+- Node 可列出 active P2P sessions，发现 client-created initial offer 并返回 answer。
 - Native client 和节点交换 candidates。
 - 成功后作为 `p2p` route 加入 route set，失败则回落。
 

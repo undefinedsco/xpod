@@ -96,6 +96,11 @@ export interface P2PSession {
   candidates: P2PTransportCandidate[];
 }
 
+export interface P2PSessionList {
+  kind: 'p2p';
+  sessions: P2PSession[];
+}
+
 export interface RelaySessionRequest {
   kind?: 'relay';
   reason: string;

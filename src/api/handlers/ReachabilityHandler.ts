@@ -124,6 +124,25 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     sendJson(response, 400, { error: 'kind must be p2p or relay' });
   });
 
+  server.get('/v1/signal/nodes/:nodeId/sessions', async (request, response, params) => {
+    const access = resolveSessionAccess(request, params.nodeId);
+    if (!access.allowed) {
+      sendJson(response, access.status, { error: access.error });
+      return;
+    }
+
+    try {
+      const sessions = await service.listP2PSessions(params.nodeId);
+      sendJson(response, 200, sessions);
+    } catch (error) {
+      if (error instanceof NodeRouteSourceNotFoundError) {
+        sendJson(response, 404, { error: 'Node not found' });
+        return;
+      }
+      sendJson(response, 500, { error: 'Failed to list p2p sessions' });
+    }
+  });
+
   server.get('/v1/signal/nodes/:nodeId/sessions/:sessionId', async (request, response, params) => {
     const access = resolveSessionAccess(request, params.nodeId);
     if (!access.allowed) {

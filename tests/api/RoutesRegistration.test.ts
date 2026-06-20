@@ -137,6 +137,7 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['POST /_matrix/client/v3/createRoom']).toBeTypeOf('function');
     expect(routes['GET /v1/signal/nodes/:nodeId/routes']).toBeTypeOf('function');
     expect(routes['POST /v1/signal/nodes/:nodeId/sessions']).toBeTypeOf('function');
+    expect(routes['GET /v1/signal/nodes/:nodeId/sessions']).toBeTypeOf('function');
     expect(routes['ALL /v1/relay/nodes/:nodeId/sessions/:sessionId/proxy']).toBeUndefined();
     expect(routes['ALL /v1/relay/nodes/:nodeId/sessions/:sessionId/proxy/*path']).toBeUndefined();
     expect(routes['GET /v1/nodes/:nodeId/routes']).toBeUndefined();
@@ -169,6 +170,7 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['POST /v1/threads/coordination/lease']).toBeTypeOf('function');
     expect(routes['GET /v1/signal/nodes/:nodeId/routes']).toBeTypeOf('function');
     expect(routes['POST /v1/signal/nodes/:nodeId/sessions']).toBeTypeOf('function');
+    expect(routes['GET /v1/signal/nodes/:nodeId/sessions']).toBeTypeOf('function');
     expect(routes['ALL /v1/relay/nodes/:nodeId/sessions/:sessionId/proxy']).toBeUndefined();
     expect(routes['ALL /v1/relay/nodes/:nodeId/sessions/:sessionId/proxy/*path']).toBeUndefined();
     expect(routes['GET /v1/nodes/:nodeId/routes']).toBeUndefined();

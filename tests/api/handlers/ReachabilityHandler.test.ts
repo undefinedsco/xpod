@@ -130,6 +130,7 @@ describe('ReachabilityHandler', () => {
       { optionalAuth: true },
     );
     expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/sessions', expect.any(Function));
+    expect(mockServer.server.get).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/sessions', expect.any(Function));
     expect(mockServer.server.get).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/sessions/:sessionId', expect.any(Function));
     expect(mockServer.server.post).toHaveBeenCalledWith('/v1/signal/nodes/:nodeId/sessions/:sessionId/candidates', expect.any(Function));
     expect(mockServer.routes['POST /v1/signal/nodes/:nodeId/p2p-sessions']).toBeUndefined();
@@ -330,6 +331,72 @@ describe('ReachabilityHandler', () => {
         process.env.XPOD_P2P_ICE_SERVERS = previous;
       }
     }
+  });
+
+  it('lets a node list active p2p sessions so it can answer client-created offers', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_active',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-1',
+                createdAt: '2026-06-18T23:59:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_active',
+                capabilities: ['webrtc-datachannel'],
+                candidates: [
+                  {
+                    id: 'offer-1',
+                    role: 'client',
+                    sourceId: 'device-1',
+                    createdAt: '2026-06-19T00:00:00.000Z',
+                    protocol: 'webrtc',
+                    transport: 'datachannel',
+                    url: 'webrtc://offer',
+                    metadata: { provider: 'werift-datachannel', signalType: 'offer' },
+                  },
+                ],
+              },
+              {
+                sessionId: 'p2p_expired',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-2',
+                createdAt: '2026-06-18T23:40:00.000Z',
+                expiresAt: '2026-06-18T23:45:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_expired',
+                capabilities: ['webrtc-datachannel'],
+                candidates: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register();
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest(undefined, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res._body()).toEqual({
+      kind: 'p2p',
+      sessions: [
+        expect.objectContaining({
+          sessionId: 'p2p_active',
+          candidates: [expect.objectContaining({ id: 'offer-1', role: 'client' })],
+        }),
+      ],
+    });
   });
 
   it('reads a p2p signaling session by session url', async () => {
