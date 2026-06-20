@@ -6,6 +6,8 @@ import {
   createWeriftDataChannelSessionThroughSignaling,
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
+  createWeriftSignaledP2PDataPlaneClient,
+  createWeriftSignaledP2PDataPlaneNode,
   createWeriftDataChannelP2PServer,
   createWeriftDataChannelP2PTransport,
   resolveWeriftPeerConfig,
@@ -204,6 +206,63 @@ describe('signaled werift DataChannel P2P data plane', () => {
       transport.close();
       server.close();
       await Promise.allSettled([clientConnection.close(), nodeConnection.close()]);
+    }
+  });
+
+  it('provides one-call client and node helpers for canonical Solid HTTP over a signaled werift session', async () => {
+    const signaling = new InMemoryP2PSignalingClient('p2p_one_call');
+    signaling.session.nodeCandidates = [p2pRoute];
+    const peerConfig = {
+      iceServers: [],
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+    };
+    const localFetch = vi.fn(async () => new Response('one-call helper response', { status: 211 }));
+
+    const clientPromise = createWeriftSignaledP2PDataPlaneClient({
+      signaling,
+      sourceId: 'device-1',
+      label: 'xpod-p2p-http',
+      timeoutMs: 3_000,
+      pollIntervalMs: 10,
+      peerConfig,
+      capabilities: ['webrtc-datachannel'],
+      transportTimeoutMs: 2_000,
+    });
+    await vi.waitFor(() => {
+      expect(signaling.createdSessions).toHaveLength(1);
+    });
+    const nodePromise = createWeriftSignaledP2PDataPlaneNode({
+      signaling,
+      sessionId: signaling.session.sessionId,
+      sourceId: 'node-1',
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      label: 'xpod-p2p-http',
+      timeoutMs: 3_000,
+      pollIntervalMs: 10,
+      peerConfig,
+      fetchImpl: localFetch as typeof fetch,
+    });
+
+    const [client, node] = await Promise.all([clientPromise, nodePromise]);
+    try {
+      const response = await client.fetch('https://node-1.pods.example/alice/one-call.txt', {
+        method: 'PATCH',
+        headers: { authorization: 'DPoP token', 'content-type': 'application/sparql-update' },
+        body: 'INSERT DATA {}',
+      });
+
+      expect(client.session.sessionId).toBe('p2p_one_call');
+      expect(client.route).toEqual(p2pRoute);
+      expect(response.status).toBe(211);
+      await expect(response.text()).resolves.toBe('one-call helper response');
+      expect(localFetch).toHaveBeenCalledTimes(1);
+      const [targetUrl, init] = localFetch.mock.calls[0];
+      expect(targetUrl).toBe('http://127.0.0.1:5737/alice/one-call.txt');
+      const headers = new Headers(init.headers);
+      expect(headers.get('authorization')).toBe('DPoP token');
+      expect(headers.get('x-xpod-canonical-url')).toBe('https://node-1.pods.example/alice/one-call.txt');
+    } finally {
+      await Promise.allSettled([client.close(), node.close()]);
     }
   });
 

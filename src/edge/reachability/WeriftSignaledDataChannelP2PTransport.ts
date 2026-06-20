@@ -5,8 +5,19 @@ import {
   type RTCIceCandidate,
   type RTCIceCandidateInit,
 } from 'werift';
-import type { P2PCandidateRole, P2PSession, P2PTransportCandidate } from './types';
+import type { AccessRoute, P2PCandidateRole, P2PSession, P2PTransportCandidate } from './types';
 import type { P2PSignalingClient } from './P2PSignalingClient';
+import {
+  createP2PDataPlaneFetch,
+  createP2PDataPlaneHandler,
+  type P2PDataPlaneFetch,
+} from './P2PDataPlane';
+import {
+  createWeriftDataChannelP2PServer,
+  createWeriftDataChannelP2PTransport,
+  type WeriftDataChannelP2PServer,
+  type WeriftDataChannelP2PTransport,
+} from './WeriftDataChannelP2PTransport';
 
 const WERIFT_PROVIDER = 'werift-datachannel' as const;
 const DEFAULT_LABEL = 'xpod-p2p-http';
@@ -48,6 +59,28 @@ export interface SignaledWeriftDataChannelConnection {
 
 export interface CreatedWeriftDataChannelSessionConnection extends SignaledWeriftDataChannelConnection {
   session: Awaited<ReturnType<P2PSignalingClient['createP2PSession']>>;
+}
+
+export interface CreateWeriftSignaledP2PDataPlaneClientOptions extends CreateWeriftDataChannelSessionThroughSignalingOptions {
+  route?: AccessRoute;
+  transportTimeoutMs?: number;
+}
+
+export interface WeriftSignaledP2PDataPlaneClient {
+  session: P2PSession;
+  route: AccessRoute;
+  fetch: P2PDataPlaneFetch;
+  close(): Promise<void>;
+}
+
+export interface CreateWeriftSignaledP2PDataPlaneNodeOptions extends Omit<ConnectWeriftDataChannelThroughSignalingOptions, 'role'> {
+  targetBaseUrl: string | URL;
+  fetchImpl?: typeof fetch;
+}
+
+export interface WeriftSignaledP2PDataPlaneNode {
+  connection: SignaledWeriftDataChannelConnection;
+  close(): Promise<void>;
 }
 
 type WeriftSignalType = 'offer' | 'answer';
@@ -114,6 +147,63 @@ export async function createWeriftDataChannelSessionThroughSignaling(
   } catch (error) {
     stopTrickleIceSync?.();
     await peer.close();
+    throw error;
+  }
+}
+
+export async function createWeriftSignaledP2PDataPlaneClient(
+  options: CreateWeriftSignaledP2PDataPlaneClientOptions,
+): Promise<WeriftSignaledP2PDataPlaneClient> {
+  const connection = await createWeriftDataChannelSessionThroughSignaling(options);
+  let transport: WeriftDataChannelP2PTransport | undefined;
+  try {
+    const route = options.route ?? selectP2PRoute(connection.session);
+    transport = createWeriftDataChannelP2PTransport({
+      channel: connection.channel,
+      timeoutMs: options.transportTimeoutMs,
+      randomId: options.randomId,
+    });
+    const fetchViaP2P = createP2PDataPlaneFetch({ route, transport });
+    return {
+      session: connection.session,
+      route,
+      fetch: fetchViaP2P,
+      close: async () => {
+        transport?.close();
+        await connection.close();
+      },
+    };
+  } catch (error) {
+    transport?.close();
+    await connection.close();
+    throw error;
+  }
+}
+
+export async function createWeriftSignaledP2PDataPlaneNode(
+  options: CreateWeriftSignaledP2PDataPlaneNodeOptions,
+): Promise<WeriftSignaledP2PDataPlaneNode> {
+  const { targetBaseUrl, fetchImpl, ...connectOptions } = options;
+  const connection = await connectWeriftDataChannelThroughSignaling({
+    ...connectOptions,
+    role: 'node',
+  });
+  let server: WeriftDataChannelP2PServer | undefined;
+  try {
+    server = createWeriftDataChannelP2PServer({
+      channel: connection.channel,
+      handler: createP2PDataPlaneHandler({ targetBaseUrl, fetchImpl }),
+    });
+    return {
+      connection,
+      close: async () => {
+        server?.close();
+        await connection.close();
+      },
+    };
+  } catch (error) {
+    server?.close();
+    await connection.close();
     throw error;
   }
 }
@@ -256,6 +346,14 @@ function extractWeriftIceServers(session?: Pick<P2PSession, 'nodeCandidates'>): 
     }
   }
   return iceServers;
+}
+
+function selectP2PRoute(session: P2PSession): AccessRoute {
+  const route = session.nodeCandidates.find((candidate) => candidate.kind === 'p2p');
+  if (!route) {
+    throw new Error(`P2P session ${session.sessionId} does not contain a p2p route candidate`);
+  }
+  return route;
 }
 
 function normalizeIceServers(value: unknown): WeriftIceServer[] {
