@@ -24,12 +24,28 @@ export interface ConnectWeriftDataChannelThroughSignalingOptions {
   now?: () => Date;
 }
 
+export interface CreateWeriftDataChannelSessionThroughSignalingOptions {
+  signaling: P2PSignalingClient;
+  sourceId: string;
+  label?: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  peerConfig?: Partial<PeerConfig>;
+  capabilities?: string[];
+  randomId?: () => string;
+  now?: () => Date;
+}
+
 export interface SignaledWeriftDataChannelConnection {
   peer: RTCPeerConnection;
   channel: RTCDataChannel;
   localSignal: P2PTransportCandidate;
   remoteSignal: P2PTransportCandidate;
   close(): Promise<void>;
+}
+
+export interface CreatedWeriftDataChannelSessionConnection extends SignaledWeriftDataChannelConnection {
+  session: Awaited<ReturnType<P2PSignalingClient['createP2PSession']>>;
 }
 
 type WeriftSignalType = 'offer' | 'answer';
@@ -40,6 +56,55 @@ export async function connectWeriftDataChannelThroughSignaling(
   return options.role === 'client'
     ? connectClient(options)
     : connectNode(options);
+}
+
+export async function createWeriftDataChannelSessionThroughSignaling(
+  options: CreateWeriftDataChannelSessionThroughSignalingOptions,
+): Promise<CreatedWeriftDataChannelSessionConnection> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const label = options.label ?? DEFAULT_LABEL;
+  const peer = new RTCPeerConnection(options.peerConfig);
+  const channel = peer.createDataChannel(label, { ordered: true });
+
+  try {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    const provisionalOptions: ConnectWeriftDataChannelThroughSignalingOptions = {
+      ...options,
+      sessionId: 'pending',
+      role: 'client',
+    };
+    const localSignal = buildSignalCandidate(provisionalOptions, 'offer', peer.localDescription!.sdp, label);
+    const session = await options.signaling.createP2PSession({
+      clientId: options.sourceId,
+      capabilities: options.capabilities ?? ['webrtc-datachannel'],
+      candidates: [localSignal],
+    });
+    localSignal.url = `webrtc://${session.sessionId}/offer`;
+    localSignal.metadata = {
+      ...localSignal.metadata,
+      sessionId: session.sessionId,
+    };
+    const remoteSignal = await waitForSignal({
+      ...options,
+      sessionId: session.sessionId,
+      role: 'client',
+      signalType: 'answer',
+      initialCandidates: session.candidates,
+    });
+    await peer.setRemoteDescription({
+      type: 'answer',
+      sdp: readSignalSdp(remoteSignal),
+    });
+    await waitForChannelOpen(channel, timeoutMs);
+    return {
+      ...buildConnection(peer, channel, localSignal, remoteSignal),
+      session,
+    };
+  } catch (error) {
+    await peer.close();
+    throw error;
+  }
 }
 
 async function connectClient(
@@ -138,6 +203,7 @@ function buildSignalCandidate(
 ): P2PTransportCandidate {
   const randomId = options.randomId ?? (() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
   const now = options.now ?? (() => new Date());
+  const hasSessionId = options.sessionId !== 'pending';
   return {
     id: `werift_${signalType}_${options.role}_${options.sourceId}_${randomId()}`,
     role: options.role,
@@ -145,14 +211,14 @@ function buildSignalCandidate(
     createdAt: now().toISOString(),
     protocol: 'webrtc',
     transport: 'datachannel',
-    url: `webrtc://${options.sessionId}/${signalType}`,
+    url: hasSessionId ? `webrtc://${options.sessionId}/${signalType}` : `webrtc://${signalType}`,
     metadata: {
       provider: WERIFT_PROVIDER,
       signalType,
       sdpType: signalType,
       sdp,
       label,
-      sessionId: options.sessionId,
+      ...(hasSessionId ? { sessionId: options.sessionId } : {}),
     },
   };
 }
