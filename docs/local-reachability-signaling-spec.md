@@ -192,12 +192,15 @@ Solid SDK / app
   `metadata.protocols["werift-datachannel"].iceServers`、`metadata.protocols.webrtc.iceServers`
   或兼容的 `metadata.iceServers` 归一化为 werift `PeerConfig.iceServers`；显式传入的
   `peerConfig.iceServers` 优先级更高。Cloud 控制面可通过 `XPOD_P2P_ICE_SERVERS` JSON
-  数组配置 STUN/TURN server，创建 P2P signaling session 时只注入到 `kind="p2p"` route 的
-  provider metadata，不进入 Pod RDF 或 canonical route identity。
+  数组配置静态 STUN/TURN server；也可通过 `XPOD_P2P_TURN_URLS` +
+  `XPOD_P2P_TURN_STATIC_AUTH_SECRET` 按 TURN REST shared-secret 机制为每个 P2P session
+  签发短期 TURN credential。签发出的 `username` 绑定 session、node 和 client，并且过期时间
+  不超过 P2P session TTL；这些 ICE server 只注入到 `kind="p2p"` route 的 provider metadata，
+  不进入 Pod RDF 或 canonical route identity。
 - 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
   拥塞控制或加密握手；werift provider 已具备 ICE/DTLS/SCTP 和 signaling offer/answer
   建链能力、trickle ICE 增量同步和 STUN/TURN ICE server metadata 下发/消费能力，但还没有实现
-  TURN 凭据签发/轮换/限额策略、移动端网络切换和真实跨 NAT 验证。
+  TURN shared secret 轮换编排、TURN 服务侧限额/审计策略、移动端网络切换和真实跨 NAT 验证。
 
 设计约束：
 

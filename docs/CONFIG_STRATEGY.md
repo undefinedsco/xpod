@@ -137,6 +137,10 @@ urn:solid-server:default:variable:xxx
 | frpServerHost | XPOD_FRP_SERVER_HOST | FRP服务器地址 | 可选 | - |
 | frpToken | XPOD_FRP_TOKEN | FRP认证Token | 可选 | - |
 | p2pIceServers | XPOD_P2P_ICE_SERVERS | 非浏览器 P2P STUN/TURN ICE servers（JSON 数组） | 可选 | - |
+| p2pTurnUrls | XPOD_P2P_TURN_URLS | 非浏览器 P2P TURN REST credential 的 TURN URL（JSON 数组或逗号分隔） | 可选 | - |
+| p2pTurnStaticAuthSecret | XPOD_P2P_TURN_STATIC_AUTH_SECRET | TURN REST shared secret，用于按 session 签发短期 credential | 可选 | - |
+| p2pTurnUsernamePrefix | XPOD_P2P_TURN_USERNAME_PREFIX | TURN 临时用户名前缀 | 可选 | `xpod` |
+| p2pTurnTtlSeconds | XPOD_P2P_TURN_TTL_SECONDS | TURN 临时 credential TTL，上限为 P2P session TTL | 可选 | session TTL |
 | edgeNodeAgentEnabled | XPOD_EDGE_NODE_AGENT_ENABLED | Local EdgeNodeAgent 自动启动开关 | local | - |
 | p2pEnabled | XPOD_P2P_ENABLED | Local Agent werift P2P answer loop 开关 | local | - |
 | p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | P2P data-plane 转发到的本地 CSS/SP base URL | local:p2p | ✅ CSS_BASE_URL |
@@ -295,6 +299,11 @@ XPOD_DNS_ROOT_DOMAIN=cluster.example.com
 # 可选：非浏览器 P2P DataChannel 的 STUN/TURN 配置，JSON 数组；
 # 仅下发到 signaling session 的 p2p route metadata，不写入 Pod RDF。
 # XPOD_P2P_ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"},{"urls":["turn:turn.example.com:3478?transport=udp","turns:turn.example.com:5349?transport=tcp"],"username":"user","credential":"secret"}]'
+# 可选：使用 TURN REST shared-secret 机制按 P2P session 签发短期 TURN credential。
+# XPOD_P2P_TURN_URLS='["turn:turn.example.com:3478?transport=udp","turns:turn.example.com:5349?transport=tcp"]'
+# XPOD_P2P_TURN_STATIC_AUTH_SECRET=xxx
+# XPOD_P2P_TURN_USERNAME_PREFIX=xpod
+# XPOD_P2P_TURN_TTL_SECONDS=300
 XPOD_ACME_EMAIL=admin@example.com
 XPOD_TENCENT_DNS_TOKEN_ID=xxx
 XPOD_TENCENT_DNS_TOKEN=xxx
@@ -372,6 +381,10 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | frpToken | XPOD_FRP_TOKEN | EnvExtractor | - | - |
 | frpProtocol | XPOD_FRP_PROTOCOL | EnvExtractor | "tcp" | - |
 | p2pIceServers | XPOD_P2P_ICE_SERVERS | API env JSON | - | - |
+| p2pTurnUrls | XPOD_P2P_TURN_URLS | API env JSON/CSV | - | - |
+| p2pTurnStaticAuthSecret | XPOD_P2P_TURN_STATIC_AUTH_SECRET | API env | - | - |
+| p2pTurnUsernamePrefix | XPOD_P2P_TURN_USERNAME_PREFIX | API env | "xpod" | - |
+| p2pTurnTtlSeconds | XPOD_P2P_TURN_TTL_SECONDS | API env | session TTL | - |
 | edgeNodeAgentEnabled | XPOD_EDGE_NODE_AGENT_ENABLED | Runtime shorthand / KeyExtractor | "false" | - |
 | p2pEnabled | XPOD_P2P_ENABLED | Runtime shorthand / KeyExtractor | "false" | - |
 | p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | Runtime shorthand / KeyExtractor | "" | ✅ CSS_BASE_URL |

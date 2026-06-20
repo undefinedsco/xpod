@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { buildRouteSet } from './RouteSetBuilder';
 import type {
@@ -17,6 +18,7 @@ export interface ReachabilitySessionServiceOptions {
   baseStorageDomain?: string;
   apiBaseUrl: string;
   p2pIceServers?: P2PIceServerMetadata[];
+  p2pTurnCredentials?: P2PTurnCredentialOptions;
   now?: () => Date;
   randomId?: () => string;
   defaultP2PTtlSeconds?: number;
@@ -28,6 +30,13 @@ export interface P2PIceServerMetadata {
   urls: string | string[];
   username?: string;
   credential?: string;
+}
+
+export interface P2PTurnCredentialOptions {
+  urls: string | string[];
+  staticAuthSecret: string;
+  usernamePrefix?: string;
+  ttlSeconds?: number;
 }
 
 export class ReachabilitySessionService {
@@ -62,7 +71,13 @@ export class ReachabilitySessionService {
       clientId: request.clientId,
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
-      nodeCandidates: this.injectP2PIceServerMetadata(routeSet.routes),
+      nodeCandidates: this.injectP2PIceServerMetadata(routeSet.routes, {
+        nodeId,
+        sessionId,
+        clientId: request.clientId,
+        createdAt,
+        expiresAt,
+      }),
       signalingUrl: new URL(`/v1/signal/nodes/${encodeURIComponent(nodeId)}/sessions/${sessionId}`, this.options.apiBaseUrl).toString(),
       capabilities: normalizeStringArray(request.capabilities),
       candidates: this.normalizeP2PCandidates(request.candidates, {
@@ -214,8 +229,20 @@ export class ReachabilitySessionService {
     });
   }
 
-  private injectP2PIceServerMetadata(routes: AccessRoute[]): AccessRoute[] {
-    const iceServers = normalizeIceServerMetadata(this.options.p2pIceServers);
+  private injectP2PIceServerMetadata(
+    routes: AccessRoute[],
+    context: {
+      nodeId: string;
+      sessionId: string;
+      clientId: string;
+      createdAt: Date;
+      expiresAt: Date;
+    },
+  ): AccessRoute[] {
+    const iceServers = [
+      ...normalizeIceServerMetadata(this.options.p2pIceServers),
+      ...this.buildTurnCredentialIceServers(context),
+    ];
     if (iceServers.length === 0) {
       return routes;
     }
@@ -245,6 +272,38 @@ export class ReachabilitySessionService {
         },
       };
     });
+  }
+
+  private buildTurnCredentialIceServers(context: {
+    nodeId: string;
+    sessionId: string;
+    clientId: string;
+    createdAt: Date;
+    expiresAt: Date;
+  }): P2PIceServerMetadata[] {
+    const options = normalizeTurnCredentialOptions(this.options.p2pTurnCredentials);
+    if (!options) {
+      return [];
+    }
+    const expiresAt = resolveTurnCredentialExpiresAt(options, context.createdAt, context.expiresAt);
+    const expiresAtUnix = Math.floor(expiresAt.getTime() / 1000);
+    const prefix = options.usernamePrefix ?? 'xpod';
+    const username = [
+      String(expiresAtUnix),
+      prefix,
+      context.nodeId,
+      context.sessionId,
+      context.clientId,
+    ].join(':');
+    const credential = createHmac('sha1', options.staticAuthSecret)
+      .update(username)
+      .digest('base64');
+
+    return [{
+      urls: Array.isArray(options.urls) ? [...options.urls] : options.urls,
+      username,
+      credential,
+    }];
   }
 
   private async loadP2PSession(nodeId: string, sessionId: string): Promise<{
@@ -401,6 +460,46 @@ function normalizeIceServerMetadata(value: unknown): P2PIceServerMetadata[] {
       };
     })
     .filter((entry): entry is P2PIceServerMetadata => Boolean(entry));
+}
+
+function normalizeTurnCredentialOptions(value: unknown): P2PTurnCredentialOptions | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const urls = Array.isArray(value.urls)
+    ? value.urls.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+    : getString(value.urls);
+  if (Array.isArray(urls) && urls.length === 0) {
+    return undefined;
+  }
+  if (!Array.isArray(urls) && !urls) {
+    return undefined;
+  }
+  const staticAuthSecret = getString(value.staticAuthSecret);
+  if (!staticAuthSecret) {
+    return undefined;
+  }
+  const ttlSeconds = normalizePositiveInteger(value.ttlSeconds);
+  const usernamePrefix = getString(value.usernamePrefix);
+  return {
+    urls,
+    staticAuthSecret,
+    ...(usernamePrefix ? { usernamePrefix } : {}),
+    ...(ttlSeconds ? { ttlSeconds } : {}),
+  };
+}
+
+function resolveTurnCredentialExpiresAt(
+  options: P2PTurnCredentialOptions,
+  createdAt: Date,
+  sessionExpiresAt: Date,
+): Date {
+  const ttlSeconds = normalizePositiveInteger(options.ttlSeconds);
+  if (!ttlSeconds) {
+    return sessionExpiresAt;
+  }
+  const ttlExpiresAt = addSeconds(createdAt, ttlSeconds);
+  return ttlExpiresAt.getTime() < sessionExpiresAt.getTime() ? ttlExpiresAt : sessionExpiresAt;
 }
 
 function cloneIceServers(value: P2PIceServerMetadata[]): P2PIceServerMetadata[] {

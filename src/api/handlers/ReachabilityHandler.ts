@@ -10,6 +10,7 @@ import {
   P2PSessionExpiredError,
   P2PSessionNotFoundError,
   type P2PIceServerMetadata,
+  type P2PTurnCredentialOptions,
   ReachabilitySessionService,
 } from '../../edge/reachability/ReachabilitySessionService';
 import type { BuildRouteSetSource, P2PCandidateRole, RouteAudience } from '../../edge/reachability/types';
@@ -19,6 +20,7 @@ export interface ReachabilityHandlerOptions {
   baseStorageDomain?: string;
   apiBaseUrl?: string;
   p2pIceServers?: P2PIceServerMetadata[];
+  p2pTurnCredentials?: P2PTurnCredentialOptions;
   now?: () => Date;
   randomId?: () => string;
 }
@@ -29,6 +31,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     baseStorageDomain: options.baseStorageDomain,
     apiBaseUrl: options.apiBaseUrl ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL ?? 'http://localhost/',
     p2pIceServers: options.p2pIceServers ?? parseP2PIceServersFromEnv(process.env.XPOD_P2P_ICE_SERVERS),
+    p2pTurnCredentials: options.p2pTurnCredentials ?? parseP2PTurnCredentialsFromEnv(process.env),
     now: options.now,
     randomId: options.randomId,
   });
@@ -347,6 +350,52 @@ function parseP2PIceServersFromEnv(value: string | undefined): P2PIceServerMetad
   } catch {
     return undefined;
   }
+}
+
+function parseP2PTurnCredentialsFromEnv(env: NodeJS.ProcessEnv): P2PTurnCredentialOptions | undefined {
+  const urls = parseTurnUrls(env.XPOD_P2P_TURN_URLS);
+  const staticAuthSecret = getString(env.XPOD_P2P_TURN_STATIC_AUTH_SECRET);
+  if (!urls || !staticAuthSecret) {
+    return undefined;
+  }
+  const ttlSeconds = parsePositiveInteger(env.XPOD_P2P_TURN_TTL_SECONDS);
+  const usernamePrefix = getString(env.XPOD_P2P_TURN_USERNAME_PREFIX);
+  return {
+    urls,
+    staticAuthSecret,
+    ...(usernamePrefix ? { usernamePrefix } : {}),
+    ...(ttlSeconds ? { ttlSeconds } : {}),
+  };
+}
+
+function parseTurnUrls(value: string | undefined): string | string[] | undefined {
+  const trimmed = getString(value);
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      const urls = parsed.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+      return urls.length > 0 ? urls : undefined;
+    }
+    if (typeof parsed === 'string' && parsed.trim().length > 0) {
+      return parsed.trim();
+    }
+  } catch {
+    // Fall through to comma-separated parsing.
+  }
+  const urls = trimmed.split(',').map((entry) => entry.trim()).filter(Boolean);
+  return urls.length > 1 ? urls : urls[0];
+}
+
+function parsePositiveInteger(value: string | undefined): number | undefined {
+  const trimmed = getString(value);
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

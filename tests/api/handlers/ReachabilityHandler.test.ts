@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHmac } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
@@ -291,6 +292,56 @@ describe('ReachabilityHandler', () => {
         },
       }),
     ]);
+  });
+
+  it('issues short-lived TURN REST credentials for p2p sessions', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          routes: [{
+            id: 'p2p-main',
+            kind: 'p2p',
+            targetUrl: 'webrtc://signaling/node-1',
+            requiresManagedClient: true,
+            visibility: 'authorized-client',
+          }],
+        },
+      }),
+      getNodeConnectivityInfo: vi.fn().mockResolvedValue(undefined),
+    });
+    register({
+      p2pTurnCredentials: {
+        urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
+        staticAuthSecret: 'turn-shared-secret',
+        usernamePrefix: 'xpod',
+      },
+    });
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({
+      kind: 'p2p',
+      clientId: 'device-1',
+      capabilities: ['webrtc-datachannel'],
+    }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    const expiresAtUnix = Math.floor(new Date('2026-06-19T00:05:00.000Z').getTime() / 1000);
+    const username = `${expiresAtUnix}:xpod:node-1:p2p_fixed-id:device-1`;
+    const credential = createHmac('sha1', 'turn-shared-secret').update(username).digest('base64');
+    expect(res.statusCode).toBe(201);
+    expect(res._body().nodeCandidates[0].metadata.protocols['werift-datachannel'].iceServers).toEqual([
+      {
+        urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
+        username,
+        credential,
+      },
+    ]);
+    expect(res._body().nodeCandidates[0].metadata.protocols.webrtc.iceServers[0]).toMatchObject({
+      username,
+      credential,
+    });
   });
 
   it('reads p2p ICE servers from XPOD_P2P_ICE_SERVERS when registering reachability routes', async () => {

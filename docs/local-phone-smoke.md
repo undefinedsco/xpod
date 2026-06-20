@@ -206,6 +206,11 @@ encodes that HTTP request into `xpod-p2p-http/1` frames over a WebRTC DataChanne
 The local node decodes the frame and forwards it to its local CSS/SP HTTP
 endpoint.
 
+If direct ICE is unreliable across networks, configure Cloud with
+`XPOD_P2P_TURN_URLS` and `XPOD_P2P_TURN_STATIC_AUTH_SECRET`. Cloud will inject
+short-lived TURN REST credentials into the P2P route metadata for each signaling
+session; the canonical Solid URL and Pod resource identity do not change.
+
 For private Pod resources, prefer Solid client credentials so the smoke uses the
 standard Inrupt Node SDK to generate `Authorization` and `DPoP` headers while the
 underlying HTTP transport is still P2P:
@@ -229,7 +234,8 @@ or non-standard auth flows.
 Current boundary: this is the managed-client HTTP-over-P2P smoke path. It can
 prove non-browser signaling and DataChannel data frames in a real runtime, but a
 complete public-network acceptance still needs live Cloud credentials, a local
-node behind the target NAT, and TURN/cross-NAT verification when direct ICE fails.
+node behind the target NAT, TURN service-side limits/audit, and cross-NAT
+verification when direct ICE fails.
 
 ## Troubleshooting
 
