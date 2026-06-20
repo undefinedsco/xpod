@@ -21,6 +21,7 @@ type UdpP2PEnvelope =
 export interface UdpP2PDataPlaneTransportOptions {
   remoteHost: string;
   remotePort: number;
+  socket?: Socket;
   localHost?: string;
   localPort?: number;
   timeoutMs?: number;
@@ -34,6 +35,7 @@ export interface UdpP2PDataPlaneTransport extends P2PDataPlaneTransport {
 
 export interface UdpP2PDataPlaneServerOptions {
   handler: P2PDataPlaneHandler;
+  socket?: Socket;
   host?: string;
   maxDatagramBytes?: number;
 }
@@ -56,8 +58,11 @@ class UdpP2PTransport implements UdpP2PDataPlaneTransport {
   private readonly timeoutMs: number;
   private readonly maxDatagramBytes: number;
   private readonly randomId: () => string;
+  private readonly ownsSocket: boolean;
   private socket?: Socket;
   private bindPromise?: Promise<void>;
+  private readonly messageHandler = (message: Buffer): void => this.handleMessage(message);
+  private readonly errorHandler = (error: Error): void => this.handleError(error);
   private readonly pending = new Map<string, {
     resolve: (frame: P2PHttpResponseFrame) => void;
     reject: (error: Error) => void;
@@ -68,6 +73,12 @@ class UdpP2PTransport implements UdpP2PDataPlaneTransport {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxDatagramBytes = options.maxDatagramBytes ?? DEFAULT_MAX_DATAGRAM_BYTES;
     this.randomId = options.randomId ?? (() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+    this.ownsSocket = !options.socket;
+    if (options.socket) {
+      this.socket = options.socket;
+      options.socket.on('message', this.messageHandler);
+      options.socket.on('error', this.errorHandler);
+    }
   }
 
   public async request(frame: P2PHttpRequestFrame): Promise<P2PHttpResponseFrame> {
@@ -108,7 +119,11 @@ class UdpP2PTransport implements UdpP2PDataPlaneTransport {
       pending.reject(new Error(`UDP P2P transport closed before response for ${requestId}`));
     }
     this.pending.clear();
-    this.socket?.close();
+    this.socket?.off('message', this.messageHandler);
+    this.socket?.off('error', this.errorHandler);
+    if (this.ownsSocket) {
+      this.socket?.close();
+    }
     this.socket = undefined;
     this.bindPromise = undefined;
   }
@@ -118,14 +133,8 @@ class UdpP2PTransport implements UdpP2PDataPlaneTransport {
       return this.socket;
     }
     const socket = createSocket('udp4');
-    socket.on('message', (message) => this.handleMessage(message));
-    socket.on('error', (error) => {
-      for (const [requestId, pending] of this.pending) {
-        clearTimeout(pending.timeout);
-        pending.reject(error);
-        this.pending.delete(requestId);
-      }
-    });
+    socket.on('message', this.messageHandler);
+    socket.on('error', this.errorHandler);
     this.socket = socket;
     this.bindPromise = new Promise((resolve, reject) => {
       socket.once('listening', resolve);
@@ -153,25 +162,40 @@ class UdpP2PTransport implements UdpP2PDataPlaneTransport {
     }
     pending.resolve(envelope.frame);
   }
+
+  private handleError(error: Error): void {
+    for (const [requestId, pending] of this.pending) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+      this.pending.delete(requestId);
+    }
+  }
 }
 
 class UdpP2PServer implements UdpP2PDataPlaneServer {
   private readonly socket: Socket;
   private readonly host: string;
   private readonly maxDatagramBytes: number;
+  private readonly ownsSocket: boolean;
+  private readonly messageHandler = (message: Buffer, remote: RemoteInfo): void => {
+    void this.handleMessage(message, remote);
+  };
   private isListening = false;
 
   public constructor(private readonly options: UdpP2PDataPlaneServerOptions) {
     this.host = options.host ?? '0.0.0.0';
     this.maxDatagramBytes = options.maxDatagramBytes ?? DEFAULT_MAX_DATAGRAM_BYTES;
-    this.socket = createSocket('udp4');
-    this.socket.on('message', (message, remote) => {
-      void this.handleMessage(message, remote);
-    });
+    this.socket = options.socket ?? createSocket('udp4');
+    this.ownsSocket = !options.socket;
+    this.socket.on('message', this.messageHandler);
   }
 
   public async listen(port = 0): Promise<void> {
     if (this.isListening) {
+      return;
+    }
+    if (!this.ownsSocket) {
+      this.isListening = true;
       return;
     }
     await new Promise<void>((resolve, reject) => {
@@ -194,6 +218,11 @@ class UdpP2PServer implements UdpP2PDataPlaneServer {
 
   public async close(): Promise<void> {
     if (!this.isListening) {
+      return;
+    }
+    this.socket.off('message', this.messageHandler);
+    if (!this.ownsSocket) {
+      this.isListening = false;
       return;
     }
     await new Promise<void>((resolve) => {
