@@ -83,6 +83,11 @@ export interface WeriftSignaledP2PDataPlaneNode {
   close(): Promise<void>;
 }
 
+export interface AnswerPendingWeriftP2PSessionsOnceOptions<TNode = WeriftSignaledP2PDataPlaneNode>
+  extends Omit<CreateWeriftSignaledP2PDataPlaneNodeOptions, 'sessionId'> {
+  createNode?: (options: CreateWeriftSignaledP2PDataPlaneNodeOptions) => Promise<TNode>;
+}
+
 type WeriftSignalType = 'offer' | 'answer';
 type WeriftIceSignalType = 'ice-candidate' | 'ice-complete';
 type WeriftIceServer = PeerConfig['iceServers'][number];
@@ -206,6 +211,29 @@ export async function createWeriftSignaledP2PDataPlaneNode(
     await connection.close();
     throw error;
   }
+}
+
+export async function answerPendingWeriftP2PSessionsOnce<TNode = WeriftSignaledP2PDataPlaneNode>(
+  options: AnswerPendingWeriftP2PSessionsOnceOptions<TNode>,
+): Promise<TNode[]> {
+  const { createNode: createNodeOverride, ...baseNodeOptions } = options;
+  const createNode = createNodeOverride ?? (createWeriftSignaledP2PDataPlaneNode as (
+    nodeOptions: CreateWeriftSignaledP2PDataPlaneNodeOptions,
+  ) => Promise<TNode>);
+  const sessions = await baseNodeOptions.signaling.listP2PSessions();
+  const answered: TNode[] = [];
+
+  for (const session of sessions) {
+    if (!hasRemoteWeriftOffer(session, baseNodeOptions.sourceId) || hasLocalWeriftAnswer(session, baseNodeOptions.sourceId)) {
+      continue;
+    }
+    answered.push(await createNode({
+      ...baseNodeOptions,
+      sessionId: session.sessionId,
+    }));
+  }
+
+  return answered;
 }
 
 async function connectClient(
@@ -346,6 +374,24 @@ function extractWeriftIceServers(session?: Pick<P2PSession, 'nodeCandidates'>): 
     }
   }
   return iceServers;
+}
+
+function hasRemoteWeriftOffer(session: P2PSession, sourceId: string): boolean {
+  return session.candidates.some((candidate) => candidate.sourceId !== sourceId &&
+    candidate.transport === 'datachannel' &&
+    candidate.protocol === 'webrtc' &&
+    candidate.metadata?.provider === WERIFT_PROVIDER &&
+    candidate.metadata.signalType === 'offer' &&
+    typeof candidate.metadata.sdp === 'string');
+}
+
+function hasLocalWeriftAnswer(session: P2PSession, sourceId: string): boolean {
+  return session.candidates.some((candidate) => candidate.role === 'node' &&
+    candidate.sourceId === sourceId &&
+    candidate.transport === 'datachannel' &&
+    candidate.protocol === 'webrtc' &&
+    candidate.metadata?.provider === WERIFT_PROVIDER &&
+    candidate.metadata.signalType === 'answer');
 }
 
 function selectP2PRoute(session: P2PSession): AccessRoute {

@@ -4,6 +4,7 @@ import type { AccessRoute, P2PCandidateUpdateRequest, P2PSession, P2PSignalingCl
 import {
   connectWeriftDataChannelThroughSignaling,
   createWeriftDataChannelSessionThroughSignaling,
+  answerPendingWeriftP2PSessionsOnce,
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
   createWeriftSignaledP2PDataPlaneClient,
@@ -266,6 +267,79 @@ describe('signaled werift DataChannel P2P data plane', () => {
     }
   });
 
+  it('lets node agents answer only pending werift offers discovered from the signaling session list', async () => {
+    const pending = new InMemoryP2PSignalingClient('p2p_pending');
+    pending.session.candidates.push({
+      id: 'offer-1',
+      role: 'client',
+      sourceId: 'device-1',
+      createdAt: '2026-06-20T00:00:00.000Z',
+      protocol: 'webrtc',
+      transport: 'datachannel',
+      url: 'webrtc://offer',
+      metadata: { provider: 'werift-datachannel', signalType: 'offer', sdp: 'offer-sdp' },
+    });
+    const alreadyAnswered = new InMemoryP2PSignalingClient('p2p_answered').session;
+    alreadyAnswered.candidates.push(
+      {
+        id: 'offer-2',
+        role: 'client',
+        sourceId: 'device-1',
+        createdAt: '2026-06-20T00:00:00.000Z',
+        protocol: 'webrtc',
+        transport: 'datachannel',
+        url: 'webrtc://offer',
+        metadata: { provider: 'werift-datachannel', signalType: 'offer', sdp: 'offer-sdp' },
+      },
+      {
+        id: 'answer-2',
+        role: 'node',
+        sourceId: 'node-1',
+        createdAt: '2026-06-20T00:00:01.000Z',
+        protocol: 'webrtc',
+        transport: 'datachannel',
+        url: 'webrtc://answer',
+        metadata: { provider: 'werift-datachannel', signalType: 'answer', sdp: 'answer-sdp' },
+      },
+    );
+    const unrelated = new InMemoryP2PSignalingClient('p2p_unrelated').session;
+    unrelated.candidates.push({
+      id: 'udp-1',
+      role: 'client',
+      sourceId: 'device-1',
+      createdAt: '2026-06-20T00:00:00.000Z',
+      protocol: 'udp',
+      transport: 'udp',
+      host: '127.0.0.1',
+      port: 41000,
+    });
+    const signaling = new MultiSessionP2PSignalingClient([
+      pending.session,
+      alreadyAnswered,
+      unrelated,
+    ]);
+    const createNode = vi.fn(async (options: any) => ({
+      sessionId: options.sessionId,
+      close: vi.fn(async () => undefined),
+    }));
+
+    const nodes = await answerPendingWeriftP2PSessionsOnce({
+      signaling,
+      sourceId: 'node-1',
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      createNode,
+    });
+
+    expect(nodes).toEqual([expect.objectContaining({ sessionId: 'p2p_pending' })]);
+    expect(createNode).toHaveBeenCalledTimes(1);
+    expect(createNode).toHaveBeenCalledWith(expect.objectContaining({
+      signaling,
+      sessionId: 'p2p_pending',
+      sourceId: 'node-1',
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+    }));
+  });
+
   it('trickles local ICE candidates through signaling after the DataChannel is open', async () => {
     const signaling = new InMemoryP2PSignalingClient('p2p_trickle');
     const peerConfig = {
@@ -389,6 +463,29 @@ class InMemoryP2PSignalingClient implements P2PSignalingClient {
   }
 }
 
+class MultiSessionP2PSignalingClient implements P2PSignalingClient {
+  public constructor(private readonly sessions: P2PSession[]) {}
+
+  public async createP2PSession(): Promise<P2PSession> {
+    throw new Error('not used');
+  }
+
+  public async listP2PSessions(): Promise<P2PSession[]> {
+    return this.sessions.map((session) => cloneJson(session));
+  }
+
+  public async getP2PSession(sessionId: string): Promise<P2PSession> {
+    const session = this.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (!session) {
+      throw new Error(`missing session ${sessionId}`);
+    }
+    return cloneJson(session);
+  }
+
+  public async addP2PCandidates(): Promise<P2PSession> {
+    throw new Error('not used');
+  }
+}
 
 function cloneJson<T>(value: T): T {
   return value === undefined ? value : JSON.parse(JSON.stringify(value));
