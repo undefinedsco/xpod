@@ -181,6 +181,14 @@ Solid SDK / app
 - `computeTcpHolePunchPlan` 已实现 raw TCP 打洞的确定性计划函数：基于时间 bucket、最大
   时钟误差、最小准备窗口、候选端口数量和端口范围生成 rendezvous 时间与候选端口。后续
   native runtime 必须复用这个计划执行 simultaneous open。
+- `TcpP2PSignalingSession` 已把计划函数、P2P signaling session 和 raw TCP candidates 串起来：
+  managed client 创建 session 时写入本端 raw TCP candidates；local node 可轮询 pending
+  session，按 client 的 bucket/端口计划追加 node candidates；client 可轮询等待远端
+  candidates。
+- `connectRawTcpP2PTransport` 已能把同 bucket 的 local/remote raw TCP candidates 转成
+  native TCP socket，并交给 `TcpP2PDataPlaneTransport` 承载 `xpod-p2p-http/1`。当前本地
+  测试覆盖的是可直连 TCP candidate；跨 NAT 的 true simultaneous open 仍需要 native/移动端
+  实网 smoke 验证。
 - 旧浏览器 P2P heavy provider、relay credential 注入、provider metadata 和对应 smoke
   已从 active implementation 移除；这些能力不再作为 Xpod P2P 数据面的默认方向。
 
