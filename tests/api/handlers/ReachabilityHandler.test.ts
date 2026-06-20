@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createHmac } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
@@ -233,8 +232,8 @@ describe('ReachabilityHandler', () => {
     const req = createMockRequest({
       kind: 'p2p',
       clientId: 'device-1',
-      capabilities: ['webrtc-datachannel'],
-      candidates: [{ protocol: 'webrtc', url: 'webrtc://offer' }],
+      capabilities: ['tcp-punch'],
+      candidates: [{ protocol: 'tcp', url: 'tcp-punch://candidate/offer-1' }],
     }, auth);
     const res = createMockResponse();
 
@@ -311,175 +310,6 @@ describe('ReachabilityHandler', () => {
     expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
   });
 
-  it('injects configured werift ICE servers into p2p node candidate metadata', async () => {
-    repo = createRepo({
-      getNodeMetadata: vi.fn().mockResolvedValue({
-        nodeId: 'node-1',
-        metadata: {
-          routes: [
-            {
-              id: 'p2p-main',
-              kind: 'p2p',
-              targetUrl: 'webrtc://signaling/node-1',
-              priority: 40,
-              requiresManagedClient: true,
-              visibility: 'authorized-client',
-              health: 'healthy',
-              metadata: {
-                protocols: {
-                  'udp-direct': { enabled: true },
-                },
-              },
-            },
-          ],
-        },
-      }),
-      getNodeConnectivityInfo: vi.fn().mockResolvedValue(undefined),
-    });
-    register({
-      p2pIceServers: [
-        { urls: 'stun:stun.example.invalid:3478' },
-        {
-          urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
-          username: 'turn-user',
-          credential: 'turn-secret',
-        },
-      ],
-    });
-    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
-    const req = createMockRequest({
-      kind: 'p2p',
-      clientId: 'device-1',
-      capabilities: ['webrtc-datachannel'],
-    }, auth);
-    const res = createMockResponse();
-
-    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
-
-    expect(res.statusCode).toBe(201);
-    expect(res._body().nodeCandidates).toEqual([
-      expect.objectContaining({
-        id: 'p2p-main',
-        kind: 'p2p',
-        metadata: {
-          protocols: {
-            'udp-direct': { enabled: true },
-            'werift-datachannel': {
-              iceServers: [
-                { urls: 'stun:stun.example.invalid:3478' },
-                {
-                  urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
-                  username: 'turn-user',
-                  credential: 'turn-secret',
-                },
-              ],
-            },
-            webrtc: {
-              iceServers: [
-                { urls: 'stun:stun.example.invalid:3478' },
-                {
-                  urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
-                  username: 'turn-user',
-                  credential: 'turn-secret',
-                },
-              ],
-            },
-          },
-        },
-      }),
-    ]);
-  });
-
-  it('issues short-lived TURN REST credentials for p2p sessions', async () => {
-    repo = createRepo({
-      getNodeMetadata: vi.fn().mockResolvedValue({
-        nodeId: 'node-1',
-        metadata: {
-          routes: [{
-            id: 'p2p-main',
-            kind: 'p2p',
-            targetUrl: 'webrtc://signaling/node-1',
-            requiresManagedClient: true,
-            visibility: 'authorized-client',
-          }],
-        },
-      }),
-      getNodeConnectivityInfo: vi.fn().mockResolvedValue(undefined),
-    });
-    register({
-      p2pTurnCredentials: {
-        urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
-        staticAuthSecret: 'turn-shared-secret',
-        usernamePrefix: 'xpod',
-      },
-    });
-    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
-    const req = createMockRequest({
-      kind: 'p2p',
-      clientId: 'device-1',
-      capabilities: ['webrtc-datachannel'],
-    }, auth);
-    const res = createMockResponse();
-
-    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
-
-    const expiresAtUnix = Math.floor(new Date('2026-06-19T00:05:00.000Z').getTime() / 1000);
-    const username = `${expiresAtUnix}:xpod:node-1:p2p_fixed-id:device-1`;
-    const credential = createHmac('sha1', 'turn-shared-secret').update(username).digest('base64');
-    expect(res.statusCode).toBe(201);
-    expect(res._body().nodeCandidates[0].metadata.protocols['werift-datachannel'].iceServers).toEqual([
-      {
-        urls: ['turn:turn.example.invalid:3478?transport=udp', 'turns:turn.example.invalid:5349?transport=tcp'],
-        username,
-        credential,
-      },
-    ]);
-    expect(res._body().nodeCandidates[0].metadata.protocols.webrtc.iceServers[0]).toMatchObject({
-      username,
-      credential,
-    });
-  });
-
-  it('reads p2p ICE servers from XPOD_P2P_ICE_SERVERS when registering reachability routes', async () => {
-    const previous = process.env.XPOD_P2P_ICE_SERVERS;
-    process.env.XPOD_P2P_ICE_SERVERS = JSON.stringify([{ urls: 'stun:env.example.invalid:3478' }]);
-    repo = createRepo({
-      getNodeMetadata: vi.fn().mockResolvedValue({
-        nodeId: 'node-1',
-        metadata: {
-          routes: [{
-            id: 'p2p-main',
-            kind: 'p2p',
-            targetUrl: 'webrtc://signaling/node-1',
-            requiresManagedClient: true,
-            visibility: 'authorized-client',
-          }],
-        },
-      }),
-      getNodeConnectivityInfo: vi.fn().mockResolvedValue(undefined),
-    });
-
-    try {
-      register();
-      const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
-      const req = createMockRequest({ kind: 'p2p', clientId: 'device-1' }, auth);
-      const res = createMockResponse();
-
-      await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
-
-      expect(res.statusCode).toBe(201);
-      expect(res._body().nodeCandidates[0].metadata.protocols['werift-datachannel'].iceServers).toEqual([
-        { urls: 'stun:env.example.invalid:3478' },
-      ]);
-    } finally {
-      if (previous === undefined) {
-        delete process.env.XPOD_P2P_ICE_SERVERS;
-      } else {
-        process.env.XPOD_P2P_ICE_SERVERS = previous;
-      }
-    }
-  });
-
   it('reads p2p signaling limits from env when registering reachability routes', async () => {
     const previousActive = process.env.XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE;
     const previousPerUpdate = process.env.XPOD_P2P_MAX_CANDIDATES_PER_UPDATE;
@@ -508,7 +338,7 @@ describe('ReachabilityHandler', () => {
     }
   });
 
-  it('lets a node list active p2p sessions so it can answer client-created offers', async () => {
+  it('lets a node list active p2p sessions so it can process client-created raw TCP candidates', async () => {
     repo = createRepo({
       getNodeMetadata: vi.fn().mockResolvedValue({
         nodeId: 'node-1',
@@ -524,17 +354,17 @@ describe('ReachabilityHandler', () => {
                 expiresAt: '2026-06-19T00:05:00.000Z',
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_active',
-                capabilities: ['webrtc-datachannel'],
+                capabilities: ['tcp-punch'],
                 candidates: [
                   {
                     id: 'offer-1',
                     role: 'client',
                     sourceId: 'device-1',
                     createdAt: '2026-06-19T00:00:00.000Z',
-                    protocol: 'webrtc',
-                    transport: 'datachannel',
-                    url: 'webrtc://offer',
-                    metadata: { provider: 'werift-datachannel', signalType: 'offer' },
+                    protocol: 'tcp',
+                    transport: 'raw-tcp-hole-punch',
+                    url: 'tcp-punch://candidate/offer-1',
+                    metadata: { provider: 'raw-tcp-hole-punch', signalType: 'candidate' },
                   },
                 ],
               },
@@ -547,7 +377,7 @@ describe('ReachabilityHandler', () => {
                 expiresAt: '2026-06-18T23:45:00.000Z',
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_expired',
-                capabilities: ['webrtc-datachannel'],
+                capabilities: ['tcp-punch'],
                 candidates: [],
               },
             ],
@@ -590,13 +420,13 @@ describe('ReachabilityHandler', () => {
                 expiresAt: '2026-06-19T00:05:00.000Z',
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
-                capabilities: ['udp-hole-punch'],
+                capabilities: ['tcp-punch'],
                 candidates: [
                   {
                     id: 'client-candidate-1',
                     role: 'client',
                     sourceId: 'device-1',
-                    protocol: 'udp',
+                    protocol: 'tcp',
                     host: '198.51.100.10',
                     port: 12345,
                     createdAt: '2026-06-19T00:00:00.000Z',
@@ -626,7 +456,7 @@ describe('ReachabilityHandler', () => {
         expect.objectContaining({
           role: 'client',
           sourceId: 'device-1',
-          protocol: 'udp',
+          protocol: 'tcp',
           host: '198.51.100.10',
           port: 12345,
         }),
@@ -650,13 +480,13 @@ describe('ReachabilityHandler', () => {
                 expiresAt: '2026-06-19T00:05:00.000Z',
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
-                capabilities: ['udp-hole-punch'],
+                capabilities: ['tcp-punch'],
                 candidates: [
                   {
                     id: 'client-candidate-1',
                     role: 'client',
                     sourceId: 'device-1',
-                    protocol: 'udp',
+                    protocol: 'tcp',
                     host: '198.51.100.10',
                     port: 12345,
                     createdAt: '2026-06-19T00:00:00.000Z',
@@ -673,11 +503,11 @@ describe('ReachabilityHandler', () => {
     const req = createMockRequest({
       candidates: [
         {
-          protocol: 'udp',
+          protocol: 'tcp',
           host: '203.0.113.20',
           port: 4567,
           priority: 100,
-          metadata: { provider: 'udp-direct' },
+          metadata: { provider: 'raw-tcp-hole-punch' },
         },
       ],
     }, auth);
@@ -700,12 +530,12 @@ describe('ReachabilityHandler', () => {
         id: 'candidate_fixed-id',
         role: 'node',
         sourceId: 'node-1',
-        protocol: 'udp',
+        protocol: 'tcp',
         host: '203.0.113.20',
         port: 4567,
         priority: 100,
         createdAt: '2026-06-19T00:00:00.000Z',
-        metadata: { provider: 'udp-direct' },
+        metadata: { provider: 'raw-tcp-hole-punch' },
       }),
     ]);
     expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
@@ -739,7 +569,7 @@ describe('ReachabilityHandler', () => {
                 expiresAt: '2026-06-19T00:05:00.000Z',
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
-                capabilities: ['webrtc-datachannel'],
+                capabilities: ['tcp-punch'],
                 candidates: [],
                 limits: { maxCandidatesPerUpdate: 1, maxCandidatesTotal: 4 },
               },
@@ -752,8 +582,8 @@ describe('ReachabilityHandler', () => {
     const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
     const req = createMockRequest({
       candidates: [
-        { protocol: 'webrtc', url: 'webrtc://candidate-1' },
-        { protocol: 'webrtc', url: 'webrtc://candidate-2' },
+        { protocol: 'tcp', url: 'tcp-punch://candidate-1' },
+        { protocol: 'tcp', url: 'tcp-punch://candidate-2' },
       ],
     }, auth);
     const res = createMockResponse();
@@ -784,10 +614,10 @@ describe('ReachabilityHandler', () => {
                 expiresAt: '2026-06-19T00:05:00.000Z',
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
-                capabilities: ['webrtc-datachannel'],
+                capabilities: ['tcp-punch'],
                 candidates: [
-                  { id: 'candidate-1', role: 'client', sourceId: 'device-1', createdAt: '2026-06-19T00:00:00.000Z', url: 'webrtc://candidate-1' },
-                  { id: 'candidate-2', role: 'client', sourceId: 'device-1', createdAt: '2026-06-19T00:00:00.000Z', url: 'webrtc://candidate-2' },
+                  { id: 'candidate-1', role: 'client', sourceId: 'device-1', createdAt: '2026-06-19T00:00:00.000Z', url: 'tcp-punch://candidate-1' },
+                  { id: 'candidate-2', role: 'client', sourceId: 'device-1', createdAt: '2026-06-19T00:00:00.000Z', url: 'tcp-punch://candidate-2' },
                 ],
                 limits: { maxCandidatesPerUpdate: 2, maxCandidatesTotal: 2 },
               },
@@ -798,7 +628,7 @@ describe('ReachabilityHandler', () => {
     });
     register({ maxP2PCandidatesPerUpdate: 2, maxP2PCandidatesPerSession: 2 });
     const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
-    const req = createMockRequest({ candidates: [{ protocol: 'webrtc', url: 'webrtc://candidate-3' }] }, auth);
+    const req = createMockRequest({ candidates: [{ protocol: 'tcp', url: 'tcp-punch://candidate-3' }] }, auth);
     const res = createMockResponse();
 
     await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](req, res, {
@@ -837,7 +667,7 @@ describe('ReachabilityHandler', () => {
     });
     register();
     const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
-    const req = createMockRequest({ candidates: [{ protocol: 'udp', host: '203.0.113.20', port: 4567 }] }, auth);
+    const req = createMockRequest({ candidates: [{ protocol: 'tcp', host: '203.0.113.20', port: 4567 }] }, auth);
     const res = createMockResponse();
 
     await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](req, res, {

@@ -315,38 +315,6 @@
           }
         },
         {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pApiBaseUrl",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "p2pApiBaseUrl",
-            "defaultValue": ""
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pPollIntervalMs",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "p2pPollIntervalMs",
-            "defaultValue": ""
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pSignalingPollIntervalMs",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "p2pSignalingPollIntervalMs",
-            "defaultValue": ""
-          }
-        },
-        {
-          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pTimeoutMs",
-          "CombinedShorthandResolver:_resolvers_value": {
-            "@type": "KeyExtractor",
-            "key": "p2pTimeoutMs",
-            "defaultValue": ""
-          }
-        },
-        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pLabel",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",

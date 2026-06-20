@@ -193,7 +193,6 @@
     "react-router-dom": "^6.22.3",
     "sqlite-vec": "^0.1.7-alpha.2",
     "tree-kill": "^1.2.2",
-    "werift": "^0.22.2",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0",
     "yaml": "^2.8.2",

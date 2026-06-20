@@ -19,10 +19,6 @@ export interface EdgeNodeAgentInitializerOptions {
   intervalMs?: number | string;
   p2pEnabled?: boolean | string;
   p2pTargetBaseUrl?: string;
-  p2pApiBaseUrl?: string;
-  p2pPollIntervalMs?: number | string;
-  p2pSignalingPollIntervalMs?: number | string;
-  p2pTimeoutMs?: number | string;
   p2pLabel?: string;
 }
 
@@ -98,10 +94,6 @@ export class EdgeNodeAgentInitializer extends Initializer {
         p2p: {
           enabled: true,
           targetBaseUrl: options.p2pTargetBaseUrl!,
-          apiBaseUrl: options.p2pApiBaseUrl,
-          pollIntervalMs: this.normalizePositiveInteger(options.p2pPollIntervalMs),
-          signalingPollIntervalMs: this.normalizePositiveInteger(options.p2pSignalingPollIntervalMs),
-          timeoutMs: this.normalizePositiveInteger(options.p2pTimeoutMs),
           label: options.p2pLabel,
         },
       } : {}),

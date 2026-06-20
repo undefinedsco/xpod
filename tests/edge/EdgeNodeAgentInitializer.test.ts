@@ -28,10 +28,7 @@ describe('EdgeNodeAgentInitializer', () => {
       intervalMs: '5000',
       p2pEnabled: 'true',
       p2pTargetBaseUrl: 'http://127.0.0.1:3000/',
-      p2pApiBaseUrl: 'https://cluster.example/',
-      p2pPollIntervalMs: '1000',
-      p2pSignalingPollIntervalMs: '50',
-      p2pTimeoutMs: '3000',
+      p2pLabel: 'xpod-p2p-http',
     });
 
     await initializer.handle();
@@ -44,10 +41,7 @@ describe('EdgeNodeAgentInitializer', () => {
       p2p: expect.objectContaining({
         enabled: true,
         targetBaseUrl: 'http://127.0.0.1:3000/',
-        apiBaseUrl: 'https://cluster.example/',
-        pollIntervalMs: 1_000,
-        signalingPollIntervalMs: 50,
-        timeoutMs: 3_000,
+        label: 'xpod-p2p-http',
       }),
     }));
   });

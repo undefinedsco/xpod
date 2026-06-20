@@ -186,68 +186,37 @@ gateway/ingress -> node tunnel entrypoint -> local resource.
 
 ## Verify non-browser P2P data plane
 
-Browser pages can validate Cloud IdP, SP routes, and signaling metadata, but they
-do not prove the managed-client P2P data plane. For that, run the Node/Bun smoke
-client from a non-browser environment after the local node agent is online with
-P2P enabled and has advertised `kind=p2p` in heartbeat metadata:
+Browser pages can validate Cloud IdP, SP routes, signaling metadata, session
+creation, and ordinary HTTP(S) access to Pod resources. They do not prove the
+managed-client raw TCP P2P data plane. Ordinary browsers do not expose raw TCP
+sockets, local same-port bind, or TCP simultaneous open. Chrome Isolated Web Apps expose Direct Sockets, but that is an installed-app runtime
+research path for custom TCP transport, not ordinary browser support and not the
+current acceptance target.
+
+Current non-browser data-plane verification is local-runtime only:
 
 ```bash
-XPOD_P2P_TOKEN=<managed-client-token> bun scripts/werift-p2p-smoke.ts \
-  --api-base-url https://id.undefineds.co/ \
-  --node-id node-0000 \
-  --source-id desktop-ganlu \
-  --url https://node-0000.undefineds.co/.well-known/openid-configuration \
-  --expect-status 200
+./scripts/run-vitest-safe.sh --run tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts
 ```
 
-The request URL is still the canonical Solid HTTP URL. The smoke client creates a
-werift signaling session through Cloud, waits for the local node to answer, then
-encodes that HTTP request into `xpod-p2p-http/1` frames over a WebRTC DataChannel.
-The local node decodes the frame and forwards it to its local CSS/SP HTTP
-endpoint.
+That test starts a real local TCP server and client, sends canonical Solid HTTP
+requests as `xpod-p2p-http/1` frames over the TCP stream, and verifies the local
+node handler forwards the request to the configured CSS/SP base URL while
+preserving canonical URL headers.
 
-If direct ICE is unreliable across networks, configure Cloud with
-`XPOD_P2P_TURN_URLS` and `XPOD_P2P_TURN_STATIC_AUTH_SECRET`. Cloud will inject
-short-lived TURN REST credentials into the P2P route metadata for each signaling
-session; the canonical Solid URL and Pod resource identity do not change.
-To prove the TURN fallback path specifically, force the smoke client to relay-only
-ICE:
+Raw TCP cross-NAT acceptance still needs a packaged native/CLI/mobile runtime
+that can:
 
-```bash
-XPOD_P2P_TOKEN=<managed-client-token> bun scripts/werift-p2p-smoke.ts \
-  --api-base-url https://id.undefineds.co/ \
-  --node-id node-0000 \
-  --source-id desktop-ganlu \
-  --url https://node-0000.undefineds.co/.well-known/openid-configuration \
-  --ice-transport-policy relay \
-  --expect-status 200
-```
+1. read `/v1/signal/nodes/:nodeId/sessions`;
+2. compute the shared hole-punch bucket, rendezvous time, and candidate ports;
+3. bind candidate local TCP ports with the required socket options;
+4. run TCP simultaneous open against the peer-observed public address;
+5. select one winning socket and upgrade it to `TcpP2PDataPlaneTransport`;
+6. run the same canonical Solid HTTP request over that socket.
 
-For private Pod resources, prefer Solid client credentials so the smoke uses the
-standard Inrupt Node SDK to generate `Authorization` and `DPoP` headers while the
-underlying HTTP transport is still P2P:
-
-```bash
-bun scripts/werift-p2p-smoke.ts \
-  --api-base-url https://id.undefineds.co/ \
-  --node-id node-0000 \
-  --source-id desktop-ganlu \
-  --token <managed-client-token> \
-  --solid-oidc-issuer https://id.undefineds.co/ \
-  --solid-client-id <solid-client-id> \
-  --solid-client-secret <solid-client-secret> \
-  --url https://node-0000.undefineds.co/alice/a.txt \
-  --expect-status 200
-```
-
-Manual `--header` values are still supported when debugging already-minted tokens
-or non-standard auth flows.
-
-Current boundary: this is the managed-client HTTP-over-P2P smoke path. It can
-prove non-browser signaling and DataChannel data frames in a real runtime, but a
-complete public-network acceptance still needs live Cloud credentials, a local
-node behind the target NAT, TURN service-side limits/audit, and cross-NAT
-verification when direct ICE fails.
+Until that runtime smoke exists, public-network phone validation should use the
+SP-domain browser flow above. That validates product-visible Solid behavior, but
+it is not proof of raw TCP P2P data-plane success.
 
 ## Troubleshooting
 

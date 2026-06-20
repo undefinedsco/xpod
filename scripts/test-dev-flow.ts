@@ -106,7 +106,7 @@ async function main(): Promise<void> {
     if (signalingResult.success) {
       console.log('✅ 信令连接成功');
       console.log(`   认证时间: ${signalingResult.authTime}ms`);
-      console.log(`   收到 ICE Servers: ${signalingResult.iceServersCount} 个\n`);
+      console.log(`   信令能力: ${signalingResult.capabilities?.join(', ') || '未上报'}\n`);
     } else {
       throw new Error(`Signaling failed: ${signalingResult.error}`);
     }
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
 interface SignalingResult {
   success: boolean;
   authTime?: number;
-  iceServersCount?: number;
+  capabilities?: string[];
   error?: string;
 }
 
@@ -215,7 +215,7 @@ async function testSignalingConnection(
           resolve({
             success: true,
             authTime,
-            iceServersCount: msg.iceServers?.length ?? 0,
+            capabilities: Array.isArray(msg.capabilities) ? msg.capabilities : ['signal'],
           });
         } else if (msg.type === 'error') {
           clearTimeout(timeout);
@@ -283,7 +283,7 @@ async function testHeartbeat(
             status: 'online',
             ipv4: '192.168.1.100',
             ipv6: '::1',
-            capabilities: ['solid:0.11', 'webrtc:1.0'],
+            capabilities: ['solid:0.11', 'tcp-punch:1.0'],
           }));
 
           // 服务端不会响应心跳，所以等待一小段时间后认为成功

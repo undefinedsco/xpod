@@ -170,7 +170,7 @@ Storage:  https://pod.alice.com/
 
 ### 5.1 Local 节点网络方案
 
-不提供 STUN/TURN 穿透服务，用户需自行解决公网访问：
+不提供浏览器 P2P/ICE/relay 作为默认穿透服务；公网访问与非浏览器 P2P 数据面分开处理：
 
 | 优先级 | 方案 | 说明 | 配置难度 |
 |--------|------|------|----------|
@@ -180,13 +180,13 @@ Storage:  https://pod.alice.com/
 | **Level 4** | Cloudflare Tunnel | 零配置，保底方案 | 一键启用 |
 | **Level 5** | 第三方穿透 | SakuraFRP 等 | 用户自行配置 |
 
-### 5.2 为什么不提供 STUN/TURN？
+### 5.2 为什么不把浏览器 P2P/ICE/relay 作为默认数据面？
 
 **政策风险**:
 - 用户可通过平台基础设施对外提供服务而不进行 ICP 备案
 - 平台可能被认定为协助用户规避监管
 
-**决策**: 仅支持用户自行解决公网访问的方案
+**决策**: 普通浏览器走稳定 HTTPS/SP route；非浏览器数据面优先 raw TCP P2P，失败后才进入用户自管 tunnel 或显式 relay。
 
 ---
 
@@ -415,38 +415,37 @@ function detectNetworkAccess() {
 
 ## 10. 实现计划
 
-### 10.1 Phase 1: 清理 WebRTC 代码 ✅
+### 10.1 Phase 1: 清理旧浏览器 P2P 重方案 ✅
 
-删除不再需要的 STUN/TURN/WebRTC 相关代码：
+删除不再需要的浏览器 P2P / ICE / relay 相关代码：
 
 ```
 # 已删除目录
-src/webrtc/
-src/ice/
-src/signaling/
-src/sdk/
+src/legacy-browser-p2p/
+src/legacy-ice/
+src/legacy-signaling/
+src/legacy-sdk/
 
 # 已删除测试文件
-scripts/test-webrtc-*.ts
-scripts/test-turn-*.ts
+scripts/test-legacy-browser-p2p-*.ts
+scripts/test-legacy-relay-*.ts
 scripts/test-signaling-*.ts
-scripts/test-werift-*.ts
 scripts/test-scenarios.ts
 
 # 已删除 Docker 配置
-docker-compose.webrtc-*.yml
+docker-compose.legacy-browser-p2p-*.yml
 
 # 已删除测试目录
-tests/webrtc/
+tests/legacy-browser-p2p/
 tests/signaling/
-tests/ice/
+tests/legacy-ice/
 tests/sdk/
 ```
 
-已清理配置文件中的 WebRTC 相关配置：
+已清理配置文件中的旧 P2P relay 相关配置：
 - `XPOD_SIGNALING_*`
-- `XPOD_STUN_*`
-- `XPOD_TURN_*`
+- `XPOD_LEGACY_P2P_PROBE_*`
+- `XPOD_LEGACY_P2P_RELAY_*`
 
 ### 10.2 Phase 2: 配置重构 ✅
 
@@ -505,4 +504,4 @@ tests/sdk/
 - **选择自由**: 用户可选择托管或自托管
 - **WebID 稳定**: 无论存储在哪，WebID 永不变化
 - **合规清晰**: 托管模式走正规流程，自托管模式责任在用户
-- **不做穿透**: 不提供 STUN/TURN，避免政策风险
+- **不做默认中转穿透**: 不把平台 relay 作为默认数据面，避免成本和合规风险

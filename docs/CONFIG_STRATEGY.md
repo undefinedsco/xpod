@@ -136,23 +136,13 @@ urn:solid-server:default:variable:xxx
 | tencentDnsToken | XPOD_TENCENT_DNS_TOKEN | 腾讯DNS Token | 可选 | - |
 | frpServerHost | XPOD_FRP_SERVER_HOST | FRP服务器地址 | 可选 | - |
 | frpToken | XPOD_FRP_TOKEN | FRP认证Token | 可选 | - |
-| p2pIceServers | XPOD_P2P_ICE_SERVERS | 非浏览器 P2P STUN/TURN ICE servers（JSON 数组） | 可选 | - |
-| p2pIceTransportPolicy | XPOD_P2P_ICE_TRANSPORT_POLICY | P2P smoke ICE 策略；`relay` 可强制验证 TURN 路径 | 可选 | `all` |
-| p2pTurnUrls | XPOD_P2P_TURN_URLS | 非浏览器 P2P TURN REST credential 的 TURN URL（JSON 数组或逗号分隔） | 可选 | - |
-| p2pTurnStaticAuthSecret | XPOD_P2P_TURN_STATIC_AUTH_SECRET | TURN REST shared secret，用于按 session 签发短期 credential | 可选 | - |
-| p2pTurnUsernamePrefix | XPOD_P2P_TURN_USERNAME_PREFIX | TURN 临时用户名前缀 | 可选 | `xpod` |
-| p2pTurnTtlSeconds | XPOD_P2P_TURN_TTL_SECONDS | TURN 临时 credential TTL，上限为 P2P session TTL | 可选 | session TTL |
 | p2pMaxActiveSessionsPerNode | XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE | 单节点 active P2P signaling session 上限 | 可选 | 16 |
 | p2pMaxCandidatesPerUpdate | XPOD_P2P_MAX_CANDIDATES_PER_UPDATE | 单次 P2P candidate 更新数组长度上限 | 可选 | 32 |
 | p2pMaxCandidatesPerSession | XPOD_P2P_MAX_CANDIDATES_PER_SESSION | 单个 P2P session 累计 candidate 上限 | 可选 | 256 |
 | edgeNodeAgentEnabled | XPOD_EDGE_NODE_AGENT_ENABLED | Local EdgeNodeAgent 自动启动开关 | local | - |
-| p2pEnabled | XPOD_P2P_ENABLED | Local Agent werift P2P answer loop 开关 | local | - |
-| p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | P2P data-plane 转发到的本地 CSS/SP base URL | local:p2p | ✅ CSS_BASE_URL |
-| p2pApiBaseUrl | XPOD_P2P_API_BASE_URL | P2P signaling API 根地址；缺省从 signalEndpoint 派生 | 可选 | - |
-| p2pPollIntervalMs | XPOD_P2P_POLL_INTERVAL_MS | Agent 轮询 active P2P sessions 的间隔 | 可选 | - |
-| p2pSignalingPollIntervalMs | XPOD_P2P_SIGNALING_POLL_INTERVAL_MS | werift session 内部信令轮询间隔 | 可选 | - |
-| p2pTimeoutMs | XPOD_P2P_TIMEOUT_MS | werift DataChannel 建连超时 | 可选 | - |
-| p2pLabel | XPOD_P2P_LABEL | werift DataChannel label | 可选 | - |
+| p2pEnabled | XPOD_P2P_ENABLED | Local Agent raw TCP P2P route 上报开关 | local | - |
+| p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | raw TCP P2P HTTP frame 转发到的本地 CSS/SP base URL | local:p2p | ✅ CSS_BASE_URL |
+| p2pLabel | XPOD_P2P_LABEL | raw TCP P2P route label | 可选 | - |
 | acmeEmail | XPOD_ACME_EMAIL | ACME账户邮箱 | 可选 | - |
 | nodeId | XPOD_NODE_ID | 节点ID | cluster:local | - |
 | nodeToken | XPOD_NODE_TOKEN | 节点认证Token | cluster:local | - |
@@ -300,20 +290,10 @@ CSS_REDIS_CLIENT=xxx
 # XPOD_SIGNAL_ENDPOINT=         # 可选，默认从baseUrl推导
 # XPOD_CLUSTER_INGRESS_DOMAIN=  # 可选，默认从baseUrl推导
 XPOD_DNS_ROOT_DOMAIN=cluster.example.com
-# 可选：非浏览器 P2P DataChannel 的 STUN/TURN 配置，JSON 数组；
-# 仅下发到 signaling session 的 p2p route metadata，不写入 Pod RDF。
-# XPOD_P2P_ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"},{"urls":["turn:turn.example.com:3478?transport=udp","turns:turn.example.com:5349?transport=tcp"],"username":"user","credential":"secret"}]'
-# 可选：使用 TURN REST shared-secret 机制按 P2P session 签发短期 TURN credential。
-# XPOD_P2P_TURN_URLS='["turn:turn.example.com:3478?transport=udp","turns:turn.example.com:5349?transport=tcp"]'
-# XPOD_P2P_TURN_STATIC_AUTH_SECRET=xxx
-# XPOD_P2P_TURN_USERNAME_PREFIX=xpod
-# XPOD_P2P_TURN_TTL_SECONDS=300
 # 可选：限制 Cloud signaling 控制面状态增长；不影响 Solid HTTP 数据面。
 # XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE=16
 # XPOD_P2P_MAX_CANDIDATES_PER_UPDATE=32
 # XPOD_P2P_MAX_CANDIDATES_PER_SESSION=256
-# 可选：smoke 客户端强制只走 relay，用于验证 TURN fallback，而不是 direct ICE。
-# XPOD_P2P_ICE_TRANSPORT_POLICY=relay
 XPOD_ACME_EMAIL=admin@example.com
 XPOD_TENCENT_DNS_TOKEN_ID=xxx
 XPOD_TENCENT_DNS_TOKEN=xxx
@@ -390,22 +370,12 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | frpServerPort | XPOD_FRP_SERVER_PORT | EnvExtractor | "7000" | - |
 | frpToken | XPOD_FRP_TOKEN | EnvExtractor | - | - |
 | frpProtocol | XPOD_FRP_PROTOCOL | EnvExtractor | "tcp" | - |
-| p2pIceServers | XPOD_P2P_ICE_SERVERS | API env JSON | - | - |
-| p2pIceTransportPolicy | XPOD_P2P_ICE_TRANSPORT_POLICY | smoke CLI env | "all" | - |
-| p2pTurnUrls | XPOD_P2P_TURN_URLS | API env JSON/CSV | - | - |
-| p2pTurnStaticAuthSecret | XPOD_P2P_TURN_STATIC_AUTH_SECRET | API env | - | - |
-| p2pTurnUsernamePrefix | XPOD_P2P_TURN_USERNAME_PREFIX | API env | "xpod" | - |
-| p2pTurnTtlSeconds | XPOD_P2P_TURN_TTL_SECONDS | API env | session TTL | - |
 | p2pMaxActiveSessionsPerNode | XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE | API env | 16 | - |
 | p2pMaxCandidatesPerUpdate | XPOD_P2P_MAX_CANDIDATES_PER_UPDATE | API env | 32 | - |
 | p2pMaxCandidatesPerSession | XPOD_P2P_MAX_CANDIDATES_PER_SESSION | API env | 256 | - |
 | edgeNodeAgentEnabled | XPOD_EDGE_NODE_AGENT_ENABLED | Runtime shorthand / KeyExtractor | "false" | - |
 | p2pEnabled | XPOD_P2P_ENABLED | Runtime shorthand / KeyExtractor | "false" | - |
 | p2pTargetBaseUrl | XPOD_P2P_TARGET_BASE_URL | Runtime shorthand / KeyExtractor | "" | ✅ CSS_BASE_URL |
-| p2pApiBaseUrl | XPOD_P2P_API_BASE_URL | Runtime shorthand / KeyExtractor | "" | - |
-| p2pPollIntervalMs | XPOD_P2P_POLL_INTERVAL_MS | Runtime shorthand / KeyExtractor | "" | - |
-| p2pSignalingPollIntervalMs | XPOD_P2P_SIGNALING_POLL_INTERVAL_MS | Runtime shorthand / KeyExtractor | "" | - |
-| p2pTimeoutMs | XPOD_P2P_TIMEOUT_MS | Runtime shorthand / KeyExtractor | "" | - |
 | p2pLabel | XPOD_P2P_LABEL | Runtime shorthand / KeyExtractor | "" | - |
 | acmeEmail | XPOD_ACME_EMAIL | EnvExtractor | - | - |
 | nodeId | XPOD_NODE_ID | EnvExtractor | - | - |

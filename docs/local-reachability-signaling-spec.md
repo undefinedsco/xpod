@@ -122,99 +122,72 @@ Solid SDK / app
    - WebID、Pod root、ACL/ACP、DPoP/OIDC audience 仍按 canonical HTTPS URL 判断。
    - 当前内部帧版本命名为 `xpod-p2p-http/1`，用于把 HTTP request/response
      编码到任意 P2P stream 上；它不是新的 Solid 协议。
+- 浏览器 `fetch` 仍只能走浏览器自己的 HTTP(S) 网络栈；即使应用语义是 HTTP，普通网页也不能把 HTTP request 下沉到 Xpod 自定义 raw TCP 打洞 socket。
 
-2. **传输层：可插拔 P2P provider**
-   - 推荐最终以 QUIC stream 承载 HTTP frame：QUIC 原生支持加密、多路复用和流控，
-     和 HTTP/3 的语义边界一致。
-   - NAT 穿透/候选交换由 signaling 协调，具体 provider 可以是 QUIC+ICE、
-     TCP punch、WebRTC DataChannel 或 libp2p。provider 不进入 URL 形状和 Pod 模型。
-   - WebRTC 只能是 provider 之一，不能成为 Xpod P2P 数据面的产品协议。
+2. **传输层：非浏览器 raw TCP hole punching provider**
+   - 主路径是 native/CLI/desktop/mobile 可控运行时里的 raw TCP simultaneous open。
+   - TCP 打洞成功后得到一条普通 TCP stream；`xpod-p2p-http/1` frame 直接跑在这条
+     stream 上，Local node 再转发到本机 CSS HTTP endpoint。
+   - 主路径不依赖浏览器 P2P/ICE/relay 生态，也不要求 Cloud 承载数据面。
+   - Cloud 可以提供 node registry、域名、在线状态、策略和可观测性；但 raw TCP 打洞
+     的核心参数应尽量由双方本地可推导得到，避免把信令服务变成必需数据路径。
 
-当前实现阶段：
+### Raw TCP 打洞算法
+
+参考文档：
+
+- 《其实最优雅的TCP打洞算法，连一台服务器都不需要》：`https://zhuanlan.zhihu.com/p/2049858541763220757`
+- 原始脚本：`https://robertsdotpm.github.io/_downloads/3ff8af7dd7b8df02dc52551b4bbaa7d1/tcp_punch.py`
+
+本方案采纳其核心思想，但把成功后的 socket 用作 HTTP tunnel，而不是应用自定义消息协议：
+
+1. 双方在约定窗口内启动。默认假设本机时钟误差在可配置上限内。
+2. 双方用当前时间计算同一个 `bucket`：
+   `bucket = floor((unixTime - maxClockErrorSeconds) / windowSeconds)`。
+3. 如果下一个 rendezvous 边界距离当前时间小于最小准备窗口，双方共同跳到下一个 bucket。
+4. 双方用 `bucket * 2654435761 mod 0xffffffff` 作为稳定 seed，生成同一批候选 TCP 端口。
+5. 每个候选端口创建一个非阻塞 TCP socket，开启 `SO_REUSEADDR`，平台支持时开启
+   `SO_REUSEPORT`，并 bind 到本地同号端口。
+6. 到 rendezvous 时间后，双方同时对对方公网 IP 的同号端口反复 `connect` / `connect_ex`，
+   形成 TCP simultaneous open。
+7. 可能同时有多条连接成功。双方用确定性 winner selection 选择同一条连接：例如公网 IP
+   字节序更大的一方为 leader，leader 在所有成功连接写入单字节 `$`，follower 保留最先
+   收到 `$` 的 socket，其余关闭。
+8. 选出的 socket 升级为 `TcpP2PDataPlaneTransport`，在其上发送 newline-delimited JSON
+   envelope，承载 `xpod-p2p-http/1` request/response frame。
+
+实现约束：
+
+- raw TCP provider 必须是 native-only 能力，不暴露给普通浏览器。
+- 普通浏览器没有 raw TCP socket、同号端口 bind 或 TCP simultaneous open 能力；Chrome Isolated
+  Web App 的 Direct Sockets API 可作为后续实验目标，但不进入当前浏览器/手机 Web 验收口径。
+- 成功后的数据面是 direct TCP，不经过 Cloud relay。
+- 打洞阶段不要把失败 socket 的清理做成积极 RST 风暴；实现要保留可调参数，避免在真实 NAT
+  下破坏对端映射。
+- 端口范围、候选数量、时间窗口、最大时钟误差、连接超时都必须可配置。
+- 如果双方无法提前知道对方公网 IP，Cloud registry 可以提供“最近一次观测到的 remote address”
+  或用户显式配置的地址；这属于发现辅助，不是数据面中转。
+- 不承诺 100% NAT 覆盖。对称 NAT、运营商 CGNAT、企业防火墙可能失败；失败后只能进入用户自备
+  tunnel 或显式 relay 兜底。
+
+### 当前实现阶段
 
 - `P2PDataPlane` 已实现 `xpod-p2p-http/1` 帧层和本地 node handler：managed
   client 把 canonical HTTP request 编码成 frame，local node 解码后转发给本地
   CSS HTTP endpoint，再把 HTTP response 编码回 frame。
-- `UdpP2PTransport` 是开发/直连验证 provider：它用 Node 原生 UDP socket 在两个
-  非浏览器进程之间传递 `xpod-p2p-http/1` frame，用于证明数据面已经跨真实 socket，
-  不再只是内存函数调用。它支持把超过单个 UDP datagram 限制的 HTTP frame 拆成
-  `xpod-p2p-http-fragment` 多包并在接收端重组，因此可验证较大的 Solid 请求体和响应体
-  能穿过当前 P2P 数据面。
-- `UdpP2PRendezvous` 是当前 UDP provider 的最小打洞前置能力：双方先绑定各自 UDP
-  socket，把本地 UDP candidate 通过 signaling session 交换，然后用同一个 socket
-  对候选地址发送 `hello/ack`，握手成功后继续用该 socket 承载 `xpod-p2p-http/1`。
-  这样能验证“候选交换 → socket rendezvous → Solid HTTP 数据面”的完整本地链路。
-- `P2PSignalingClient` 和 `connectUdpP2PThroughSignaling` 已把控制面和当前 UDP provider
-  串起来：managed client / node 可以通过 `/v1/signal/nodes/{nodeId}/sessions`
-  创建或读取会话、追加本地 candidate、轮询远端 candidate，然后复用 rendezvous socket
-  建立 `UdpP2PDataPlaneTransport`。
-- `UdpStunCandidate` 已支持最小 STUN Binding：在同一个 rendezvous UDP socket 上向
-  STUN server 发送 Binding Request，解析 `XOR-MAPPED-ADDRESS` 生成
-  `candidateType=server-reflexive` candidate，并通过 signaling 与 direct candidate
-  一起发布。这是跨 NAT 的前置能力，但还不是完整 ICE。
-- `WeriftDataChannelP2PTransport` 已支持 Node / native 非浏览器 DataChannel provider：
-  通过仓库现有 `werift` 依赖建立 RTCPeerConnection，使用 ICE + DTLS + SCTP DataChannel
-  承载同一套 `xpod-p2p-http/1` frame。它证明 HTTP frame 可以跑在可靠有序的非浏览器
-  P2P stream 上，不需要普通浏览器参与。
-- `connectWeriftDataChannelThroughSignaling` 已把 werift provider 接入现有 P2P signaling
-  session：client 发布 `offer` signal candidate，node 轮询后发布 `answer` signal candidate，
-  双方再打开 DataChannel 承载 `xpod-p2p-http/1`。client 侧也可用
-  `createWeriftDataChannelSessionThroughSignaling` 直接创建 `/sessions`，先拿到
-  `nodeCandidates` 里的 route/provider metadata（包括 Cloud 下发的 STUN/TURN ICE
-  servers），再把 werift offer 通过 `/candidates` 追加到同一 session，最后等待 node
-  answer。连接建立后，双方会继续通过同一个
-  signaling session 增量发布 `ice-candidate` / `ice-complete` signal candidate，并轮询远端
-  candidate 后调用 werift `addIceCandidate`，从而支持非浏览器 DataChannel 的 trickle ICE。
-  managed/native 调用方可进一步用 `createWeriftSignaledP2PDataPlaneClient` 和
-  `createWeriftSignaledP2PDataPlaneNode` 一次性封装 session 创建、DataChannel transport、
-  node-side local CSS 转发和 canonical `fetch`，业务层仍只看到 HTTP/Solid URL。
-  CLI / desktop / mobile native 这类调用方如果只持有 Cloud API base、nodeId、token 和
-  device/client id，可直接使用 `createWeriftSignaledP2PDataPlaneClientFromApi`；该 helper
-  会内部创建 `P2PSignalingClient`、POST `/v1/signal/nodes/{nodeId}/sessions`、等待 node
-  answer，并返回可直接访问 canonical Solid URL 的 `fetch`。
-  local node agent 可用 `answerPendingWeriftP2PSessionsOnce` 轮询 active session 列表，
-  只对含 client werift offer 且本 node 尚未 answer 的 session 启动 node-side DataChannel
-  server，避免重复 answer。
-  `EdgeNodeAgent.p2p` 已把该 one-shot helper 接入节点生命周期：启动时立即轮询一次，
-  之后按 `pollIntervalMs` 周期发现 pending sessions，停止 Agent 时关闭已启动的
-  node-side answer handles。开启该 loop 的 local Agent 还会在心跳 `metadata.routes` 中
-  自动追加 `kind="p2p"`、`targetUrl="webrtc://signaling/<nodeId>"` 的 managed-only
-  route；Cloud 创建 P2P session 时会把它归入 `nodeCandidates`，供 managed/native
-  client 选择 werift DataChannel 数据面。该 route 是 accessRoute，不是 Solid canonical
-  identity；WebID、Pod Root 和资源 IRI 仍使用 canonical HTTPS URL。
-  非浏览器真实环境 smoke 可直接运行 `bun scripts/werift-p2p-smoke.ts ...`：CLI 使用 Cloud/API 的
-  `/v1/signal/nodes/{nodeId}/sessions` 创建 werift session，等待 local node agent
-  answer，然后把传入的 canonical Solid URL 作为普通 HTTP request 编码成
-  `xpod-p2p-http/1` frame 经 DataChannel 发送。这个 smoke 不需要浏览器；如果访问
-  私有资源，推荐传入 `--solid-oidc-issuer`、`--solid-client-id` 和
-  `--solid-client-secret`，由 Inrupt Node SDK 生成 `Authorization`/`DPoP`
-  header，再把底层 HTTP fetch 下沉到 P2P DataChannel；手工 `--header` 仍可用于
-  调试已经签发的 token。
-  werift provider 还会在建 peer 前读取 signaling session 的 route metadata，将
-  `metadata.protocols["werift-datachannel"].iceServers`、`metadata.protocols.webrtc.iceServers`
-  或兼容的 `metadata.iceServers` 归一化为 werift `PeerConfig.iceServers`；显式传入的
-  `peerConfig.iceServers` 优先级更高。Cloud 控制面可通过 `XPOD_P2P_ICE_SERVERS` JSON
-  数组配置静态 STUN/TURN server；也可通过 `XPOD_P2P_TURN_URLS` +
-  `XPOD_P2P_TURN_STATIC_AUTH_SECRET` 按 TURN REST shared-secret 机制为每个 P2P session
-  签发短期 TURN credential。签发出的 `username` 绑定 session、node 和 client，并且过期时间
-  不超过 P2P session TTL；这些 ICE server 只注入到 `kind="p2p"` route 的 provider metadata，
-  不进入 Pod RDF 或 canonical route identity。
-  `werift-p2p-smoke` 支持 `--ice-transport-policy relay` /
-  `XPOD_P2P_ICE_TRANSPORT_POLICY=relay`，用于实网验收时强制只走 TURN relay，从而把
-  “direct ICE 成功”和“TURN fallback 成功”拆开验证。
-  Cloud signaling 控制面还会为每个 P2P session 生成 `auditId`，并通过
-  `XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE`、`XPOD_P2P_MAX_CANDIDATES_PER_UPDATE`、
-  `XPOD_P2P_MAX_CANDIDATES_PER_SESSION` 限制 active session 数、单次 candidate 更新数和
-  单 session 累计 candidate 数；超限返回 `429`，避免未连接成功前控制面状态无界增长。
-- 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
-  拥塞控制或加密握手；werift provider 已具备 ICE/DTLS/SCTP 和 signaling offer/answer
-  建链能力、trickle ICE 增量同步和 STUN/TURN ICE server metadata 下发/消费能力，但还没有实现
-  TURN shared secret 轮换编排、TURN 服务侧限额/审计策略、移动端网络切换和真实跨 NAT 验证。
+- `TcpP2PDataPlaneTransport` 已实现本地真实 TCP stream 上的 HTTP frame round-trip：
+  一个进程内启动 TCP server/client，managed client 发送 canonical Solid HTTP frame，node
+  handler 转发到本地 CSS/SP base URL 并返回 response frame。
+- `computeTcpHolePunchPlan` 已实现 raw TCP 打洞的确定性计划函数：基于时间 bucket、最大
+  时钟误差、最小准备窗口、候选端口数量和端口范围生成 rendezvous 时间与候选端口。后续
+  native runtime 必须复用这个计划执行 simultaneous open。
+- 旧浏览器 P2P heavy provider、relay credential 注入、provider metadata 和对应 smoke
+  已从 active implementation 移除；这些能力不再作为 Xpod P2P 数据面的默认方向。
 
 设计约束：
 
 - `p2p` route 的 `targetUrl` 是 managed client 的 transport endpoint，不给普通浏览器打开。
-- Cloud signaling 只交换 session、candidate、credential 和状态；默认不承载 Pod HTTP body。
+- Cloud 默认只交换节点状态、route、策略和必要发现信息；默认不承载 Pod HTTP body。
 - Local node 必须把收到的 P2P HTTP frame 转为本机 CSS HTTP 请求，并注入
   `x-xpod-canonical-url` / `x-xpod-canonical-origin` / `x-xpod-canonical-host`
   供本地网关和审计保留 canonical 语义。
@@ -349,7 +322,7 @@ Content-Type: application/json
 要求：
 
 - Cloud 只做候选交换和会话鉴权，不承载 Pod HTTP body。
-- 会话必须短 TTL，可撤销，可审计；`auditId` 用于把 session、TURN credential 和后续诊断日志关联起来。
+- 会话必须短 TTL，可撤销，可审计；`auditId` 用于把 session、raw TCP 打洞尝试和后续诊断日志关联起来。
 - Cloud 必须限制 active session 数和 candidate 数；创建 session 或追加 candidate 超限时返回 `429`。
 - 失败后回落到下一候选 route，不阻塞本地可用性。
 
@@ -376,10 +349,12 @@ GET /v1/signal/nodes/{nodeId}/sessions/{sessionId}
 Authorization: Bearer <nodeToken|serviceToken>
 ```
 
-返回当前 P2P session，包括双方已上报的 transport candidates。候选是 provider-neutral
-结构：公共字段只保留 `role`、`sourceId`、`protocol`、`transport`、`host`、`address`、
-`port`、`url`、`priority`、`metadata`。QUIC、UDP punch、WebRTC、libp2p 等 provider
-自己的细节放入 `metadata`，不进入 Solid URL、Pod RDF 或 route kind。
+返回当前 P2P session，包括双方已上报的 transport candidates。候选结构保持
+provider-neutral，但本阶段只实现 raw TCP：公共字段只保留 `role`、`sourceId`、
+`protocol`、`transport`、`host`、`address`、`port`、`url`、`priority`、`metadata`。
+raw TCP 打洞的 bucket、rendezvous 时间、候选端口、观测到的公网地址等细节放入
+`metadata.protocols.raw-tcp-hole-punch` 或 candidate `metadata`，不进入 Solid URL、
+Pod RDF 或 route kind。
 
 双方用同一个 session 追加候选：
 
@@ -393,12 +368,15 @@ Content-Type: application/json
   "sourceId": "device_123",
   "candidates": [
     {
-      "protocol": "udp",
+      "protocol": "tcp",
+      "transport": "raw-tcp-hole-punch",
       "host": "198.51.100.10",
       "port": 43122,
       "priority": 100,
       "metadata": {
-        "provider": "quic-ice"
+        "provider": "raw-tcp-hole-punch",
+        "bucket": 424242,
+        "rendezvousTimeSeconds": 1782000000
       }
     }
   ]
@@ -410,23 +388,22 @@ Content-Type: application/json
 提交 `role=client` 候选。会话过期后候选更新返回 `410`；单次更新或累计候选超限返回
 `429`；客户端必须创建新 session 或回落到下一 route。
 
-当前 UDP provider 的非浏览器握手流程：
+当前 raw TCP provider 的非浏览器握手流程：
 
-1. node 和 managed client 各自创建 `UdpP2PRendezvousPeer`，绑定 UDP socket。
-2. 双方调用 `candidate()` 得到 `protocol=udp`、`host`、`port`、`role`、`sourceId`
-   的本地候选，并通过 `P2PSignalingClient.addP2PCandidates()` 写入同一个 P2P session。
-3. 如配置 STUN，双方在同一个 rendezvous socket 上执行 Binding Request，得到
-   server-reflexive candidate；STUN 失败只降级为 direct candidate，不阻断连接尝试。
-4. 双方通过 `P2PSignalingClient.getP2PSession()` 轮询 session candidates，拿到远端
-   candidate 后调用 `connect()`，对远端候选重复发送 `xpod-p2p-udp-rendezvous-hello`。
-5. 收到同 session、对端 role/source 的 hello 后返回
-   `xpod-p2p-udp-rendezvous-ack`，并记录实际来源地址/端口作为数据面 remote endpoint。
-6. `connectUdpP2PThroughSignaling()` 在握手成功后为调用方创建
-   `UdpP2PDataPlaneTransport`，node 侧用 `UdpP2PDataPlaneServer` 监听同一个 socket；
-   二者都复用 rendezvous socket，避免 NAT 映射因为换 socket 而失效。
+1. node 和 managed client 使用同一组公开参数计算 `TcpHolePunchPlan`：
+   `bucket`、`rendezvousTimeSeconds`、候选端口集合。
+2. 双方把自己观测到的公网地址、计划 bucket、rendezvous 时间和候选端口通过
+   `P2PSignalingClient.addP2PCandidates()` 写入同一个 P2P session；Cloud 只保存和转发
+   这些控制面候选，不承载 Pod HTTP body。
+3. 到 rendezvous 时间后，双方在 native runtime 内对同号候选端口执行 TCP simultaneous
+   open；成功后用确定性 winner selection 保留同一条 TCP stream。
+4. 选出的 stream 交给 `TcpP2PDataPlaneTransport`，在其上承载 `xpod-p2p-http/1`
+   HTTP request/response frame。
+5. Local node 把 frame 转发给 `targetBaseUrl` 指向的本地 CSS/SP HTTP endpoint；Solid
+   SDK 和 Pod durable 数据仍只看到 canonical HTTPS URL。
 
-这个流程仍然只是 provider 层能力，不改变 Solid HTTP 语义，不新增 Pod RDF 模型，
-也不把 UDP endpoint 暴露给普通浏览器。
+这个流程只是 provider 层能力，不改变 Solid HTTP 语义，不新增 Pod RDF 模型，
+也不把 raw TCP endpoint 暴露给普通浏览器。
 
 ### Relay / Tunnel 会话：新增但默认关闭
 
@@ -559,11 +536,11 @@ GET http://node-0000.undefineds.co/app/signal-pod.html?nodeId=node-0000&path=%2F
 - 并发探测 loopback/LAN/public-direct/user-tunnel。
 - 对 Solid SDK 暴露 canonical fetch。
 
-### P3：P2P signaling
+### P3：P2P signaling 与 raw TCP provider
 
 - 新增 P2P session API。
-- Node 可列出 active P2P sessions，发现 client-created offer 并返回 answer。
-- Native client 和节点交换 candidates。
+- Node 可列出 active P2P sessions，发现 client-created raw TCP plan/candidate。
+- Native client 和节点交换 raw TCP candidates，并按共同 rendezvous 时间执行 simultaneous open。
 - 成功后作为 `p2p` route 加入 route set，失败则回落。
 
 ### P4：受控 relay fallback

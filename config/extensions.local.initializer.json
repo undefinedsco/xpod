@@ -40,22 +40,6 @@
         "@id": "urn:solid-server:default:variable:p2pTargetBaseUrl",
         "@type": "Variable"
       },
-      "p2pApiBaseUrl": {
-        "@id": "urn:solid-server:default:variable:p2pApiBaseUrl",
-        "@type": "Variable"
-      },
-      "p2pPollIntervalMs": {
-        "@id": "urn:solid-server:default:variable:p2pPollIntervalMs",
-        "@type": "Variable"
-      },
-      "p2pSignalingPollIntervalMs": {
-        "@id": "urn:solid-server:default:variable:p2pSignalingPollIntervalMs",
-        "@type": "Variable"
-      },
-      "p2pTimeoutMs": {
-        "@id": "urn:solid-server:default:variable:p2pTimeoutMs",
-        "@type": "Variable"
-      },
       "p2pLabel": {
         "@id": "urn:solid-server:default:variable:p2pLabel",
         "@type": "Variable"

@@ -78,7 +78,7 @@
 1. **P0**：完成自助节点注册、心跳扩展、直连/隧道切换、DNS 编排与证书自动化。
 2. **P1**：多地域健康检查仪表板、Alt-Svc/HTTP3 动态广告、流量命中率统计。
 3. **P2**：为原生客户端接入 WireGuard/Tailscale overlay，实现更高可用的直连路径。
-4. **P3**：研究 WebRTC 浏览器直连能力，进一步降低 cluster 数据面参与度。
+4. **P3**：完善 raw TCP native runtime；Chrome IWA Direct Sockets 仅作为安装式 runtime 研究项评估。
 
 ## 与现有实现的映射
 

@@ -12,8 +12,6 @@ import {
   P2PCandidateUpdateLimitExceededError,
   P2PSessionExpiredError,
   P2PSessionNotFoundError,
-  type P2PIceServerMetadata,
-  type P2PTurnCredentialOptions,
   ReachabilitySessionService,
 } from '../../edge/reachability/ReachabilitySessionService';
 import type { BuildRouteSetSource, P2PCandidateRole, RouteAudience } from '../../edge/reachability/types';
@@ -22,8 +20,6 @@ export interface ReachabilityHandlerOptions {
   repository: EdgeNodeRepository;
   baseStorageDomain?: string;
   apiBaseUrl?: string;
-  p2pIceServers?: P2PIceServerMetadata[];
-  p2pTurnCredentials?: P2PTurnCredentialOptions;
   now?: () => Date;
   randomId?: () => string;
   maxActiveP2PSessionsPerNode?: number;
@@ -36,8 +32,6 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
     repository: options.repository,
     baseStorageDomain: options.baseStorageDomain,
     apiBaseUrl: options.apiBaseUrl ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL ?? 'http://localhost/',
-    p2pIceServers: options.p2pIceServers ?? parseP2PIceServersFromEnv(process.env.XPOD_P2P_ICE_SERVERS),
-    p2pTurnCredentials: options.p2pTurnCredentials ?? parseP2PTurnCredentialsFromEnv(process.env),
     now: options.now,
     randomId: options.randomId,
     maxActiveP2PSessionsPerNode: options.maxActiveP2PSessionsPerNode
@@ -347,78 +341,6 @@ function sendP2PSessionError(response: ServerResponse, error: unknown): void {
 
 function getString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function parseP2PIceServersFromEnv(value: string | undefined): P2PIceServerMetadata[] | undefined {
-  if (!value || value.trim().length === 0) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) {
-      return undefined;
-    }
-    return parsed
-      .map((entry): P2PIceServerMetadata | undefined => {
-        if (!isRecord(entry)) {
-          return undefined;
-        }
-        const urls = Array.isArray(entry.urls)
-          ? entry.urls.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
-          : getString(entry.urls);
-        if (Array.isArray(urls) && urls.length === 0) {
-          return undefined;
-        }
-        if (!Array.isArray(urls) && !urls) {
-          return undefined;
-        }
-        return {
-          urls,
-          ...(typeof entry.username === 'string' && entry.username.length > 0 ? { username: entry.username } : {}),
-          ...(typeof entry.credential === 'string' && entry.credential.length > 0 ? { credential: entry.credential } : {}),
-        };
-      })
-      .filter((entry): entry is P2PIceServerMetadata => Boolean(entry));
-  } catch {
-    return undefined;
-  }
-}
-
-function parseP2PTurnCredentialsFromEnv(env: NodeJS.ProcessEnv): P2PTurnCredentialOptions | undefined {
-  const urls = parseTurnUrls(env.XPOD_P2P_TURN_URLS);
-  const staticAuthSecret = getString(env.XPOD_P2P_TURN_STATIC_AUTH_SECRET);
-  if (!urls || !staticAuthSecret) {
-    return undefined;
-  }
-  const ttlSeconds = parsePositiveInteger(env.XPOD_P2P_TURN_TTL_SECONDS);
-  const usernamePrefix = getString(env.XPOD_P2P_TURN_USERNAME_PREFIX);
-  return {
-    urls,
-    staticAuthSecret,
-    ...(usernamePrefix ? { usernamePrefix } : {}),
-    ...(ttlSeconds ? { ttlSeconds } : {}),
-  };
-}
-
-function parseTurnUrls(value: string | undefined): string | string[] | undefined {
-  const trimmed = getString(value);
-  if (!trimmed) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) {
-      const urls = parsed.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
-      return urls.length > 0 ? urls : undefined;
-    }
-    if (typeof parsed === 'string' && parsed.trim().length > 0) {
-      return parsed.trim();
-    }
-  } catch {
-    // Fall through to comma-separated parsing.
-  }
-  const urls = trimmed.split(',').map((entry) => entry.trim()).filter(Boolean);
-  return urls.length > 1 ? urls : urls[0];
 }
 
 function parsePositiveInteger(value: string | undefined): number | undefined {

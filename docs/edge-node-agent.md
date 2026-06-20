@@ -73,10 +73,7 @@ await agent.start({
   p2p: {
     enabled: true,
     targetBaseUrl: process.env.CSS_BASE_URL ?? 'http://127.0.0.1:3000/',
-    // 可选；默认会从 XPOD_SIGNAL_ENDPOINT 的 /api/signal 派生到 API 根地址。
-    apiBaseUrl: process.env.XPOD_API_BASE_URL,
-    // 轮询 active P2P signaling sessions，发现 client-created werift offer 后 answer。
-    pollIntervalMs: 1000,
+    label: 'xpod-p2p-http',
   },
 });
 ```
@@ -95,23 +92,26 @@ await agent.start({
   - `XPOD_NODE_TOKEN=<NODE_TOKEN>`
   - `XPOD_P2P_ENABLED=true`
   - `XPOD_P2P_TARGET_BASE_URL=http://127.0.0.1:3000/`
-  - 可选：`XPOD_P2P_API_BASE_URL`、`XPOD_P2P_POLL_INTERVAL_MS`、`XPOD_P2P_SIGNALING_POLL_INTERVAL_MS`、`XPOD_P2P_TIMEOUT_MS`、`XPOD_P2P_LABEL`。
+  - 可选：`XPOD_P2P_LABEL`。
 - 启用 `XPOD_P2P_ENABLED=true` 后，Agent 会在心跳 `metadata.routes` 中自动追加
-  `id=p2p-werift-datachannel`、`kind=p2p`、`targetUrl=webrtc://signaling/<nodeId>` 的
-  managed-only route。Cloud 创建 P2P session 时会把该 route 放入 `nodeCandidates`，
-  managed/native client 才能在 session 返回值中选择 P2P 数据面。不要把这个
-  `webrtc://...` 写成 Pod Root 或 WebID；Solid canonical URL 仍来自 `baseUrl` / route registry。
+  `id=p2p-raw-tcp`、`kind=p2p`、`targetUrl=tcp-punch://node/<nodeId>` 的 managed-only route。
+  Cloud 创建 P2P session 时会把该 route 放入 `nodeCandidates`，managed/native client
+  才能在 session 返回值中选择 raw TCP P2P 数据面。不要把这个 `tcp-punch://...`
+  写成 Pod Root 或 WebID；Solid canonical URL 仍来自 `baseUrl` / route registry。
 - 若节点拥有多个 Pod，`pods` 数组可列出多个 baseUrl；缺失时仍可通过控制面 API 感知 Pod 实际列表。
 - `metadata.dns` 与 `metadata.certificate.dns01` 字段可以在心跳期间动态更新，以便控制面及时刷新 DNS/TXT 记录（当 `acme.mode=local` 时仍旧适用）。
 - 启用控制面自动化需在 cluster 端设置 `CSS_EDGE_NODES_ENABLED=true`，并按需提供 `CSS_TENCENT_DNS_TOKEN_ID`/`CSS_TENCENT_DNS_TOKEN` 等变量（详见《edge-node-control-plane》）；DNS 根域名自动复用 CSS `baseUrl`。
 - FRP 隧道信息会在心跳响应的 `metadata.tunnel.config` 中返回（包含 `serverHost`、`serverPort`、`token`、`proxyName`、`remotePort`）。若在 Agent 中启用 `frp` 配置，将自动生成 `frpc.ini` 并守护 `frpc` 进程；未配置时可自行处理或保持直连。
 - Agent 会在心跳的 `tunnel.client` 字段中汇报 frpc 运行状态（`running/inactive/error`、进程 PID、最近更新及故障信息），Cluster 侧可据此监控隧道健康。
 - TODO：后续将在该字段补充更细的带宽/延迟指标，方便观察隧道性能。
-- 若启用 `p2p`，Agent 会独立于 heartbeat 启动 werift DataChannel answer loop：
-  - 定期调用 `/v1/signal/nodes/{nodeId}/sessions` 列出 active P2P sessions；
-  - 只对 client-created werift offer 且本 node 尚未 answer 的 session 启动 node-side DataChannel server；
-  - DataChannel 内承载 `xpod-p2p-http/1` HTTP frame，并转发到 `targetBaseUrl` 指向的本地 CSS/SP；
-  - `agent.stop()` 会停止轮询并关闭已启动的 P2P answer handles。
+- 当前 `p2p` 只负责在 heartbeat 中声明 raw TCP P2P route；Agent 不再内置旧的重型
+  provider answer loop。raw TCP 打洞执行器由后续 native/CLI/desktop/mobile runtime 按
+  signaling session 中的候选和 `tcp-punch` 参数启动，成功后在 TCP stream 上承载
+  `xpod-p2p-http/1` HTTP frame，并转发到 `targetBaseUrl` 指向的本地 CSS/SP。
+- 普通浏览器不支持 raw TCP socket、同号端口 bind 或 simultaneous open；手机浏览器页面只能验证
+  Cloud IdP、SP route 和 signaling 控制面。Chrome Isolated Web App 的 Direct Sockets
+  只能作为安装式 runtime 自定义 TCP transport 的后续研究项；它不是普通浏览器能力，
+  也不作为当前浏览器数据面承诺。
 - 若提供 `acme` 配置，Agent 会自动申请/续签证书：
 - `mode=cluster`（默认推荐）：节点本地仅负责生成私钥与 CSR，调用 `/api/signal/certificate` 让 cluster 完成 ACME DNS-01、证书签发与分发。Cluster 会在心跳响应的 `metadata.certificate` 中回传有效期、域名等信息，Agent 根据这些指令调度下一次续签。
 - `mode=local`：兼容旧实现，由节点本地直接调用 ACME CA，cluster 只负责写入 TXT 记录。仅在需要完全离线或自定义 CA 时使用。
