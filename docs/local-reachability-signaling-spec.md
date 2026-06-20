@@ -156,9 +156,12 @@ Solid SDK / app
   通过仓库现有 `werift` 依赖建立 RTCPeerConnection，使用 ICE + DTLS + SCTP DataChannel
   承载同一套 `xpod-p2p-http/1` frame。它证明 HTTP frame 可以跑在可靠有序的非浏览器
   P2P stream 上，不需要普通浏览器参与。
+- `connectWeriftDataChannelThroughSignaling` 已把 werift provider 接入现有 P2P signaling
+  session：client 发布 `offer` signal candidate，node 轮询后发布 `answer` signal candidate，
+  双方再打开 DataChannel 承载 `xpod-p2p-http/1`。
 - 当前仍未完成生产级公网 P2P：UDP provider 有 frame 分片/重组，但没有丢包重传、
-  拥塞控制或加密握手；werift provider 具备 ICE/DTLS/SCTP 能力，但尚未接入 Cloud
-  signaling session 的 offer/answer/candidate 交换，也没有完成 TURN 策略、移动端网络切换
+  拥塞控制或加密握手；werift provider 已具备 ICE/DTLS/SCTP 和 signaling offer/answer
+  建链能力，但还没有实现 trickle ICE candidate 增量同步、TURN 策略、移动端网络切换
   和真实跨 NAT 验证。
 
 设计约束：
