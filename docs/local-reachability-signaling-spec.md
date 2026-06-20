@@ -206,6 +206,11 @@ Solid SDK / app
   该入口先调用 `GET /v1/signal/nodes/{nodeId}/routes` 获取 route set，再复用同一套
   signal API 创建 P2P session，最后委托 `createManagedClientFetch` 选择 `p2p` 或后续
   canonical fallback route。
+- `runManagedClientP2PSmoke` 和 `bun run smoke:p2p:managed` 已提供非浏览器 smoke 入口：
+  它复用 signaled managed-client fetch，读取指定 canonical Solid resource，并输出
+  route、HTTP status、headers 和 body。CLI 默认要求最终 route 是 `p2p`；只有显式传入
+  `--allow-fallback` 时才把 public/user-tunnel fallback 当成 smoke 成功。这用于 native/CLI
+  运行时验证，不提供普通浏览器 raw TCP 能力。
 - `acceptSignaledRawTcpP2PConnectionOnce` 已提供 node 侧一次性编排入口：local node 轮询
   pending raw TCP session、按 client bucket 追加 node candidates、执行 candidate race，
   并把成功 socket 直接挂到 `P2PDataPlaneHandler`。runtime 调用方不需要手工拼接

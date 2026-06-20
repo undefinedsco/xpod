@@ -197,6 +197,7 @@ Current non-browser data-plane verification is local-runtime only:
 
 ```bash
 ./scripts/run-vitest-safe.sh --run \
+  tests/edge/reachability/ManagedClientP2PSmoke.test.ts \
   tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts \
   tests/edge/reachability/TcpP2PSignalingSession.test.ts \
   tests/edge/reachability/ManagedClientFetch.test.ts \
@@ -214,6 +215,26 @@ CSS/SP base URL while preserving canonical URL headers.
 The default Node connector is also covered for delayed peer availability: it
 keeps retrying within `connectTimeoutMs` from the same candidate local TCP port
 instead of failing after one refused connection.
+
+For a CLI/native-style smoke against a running signal API and a node with
+`XPOD_P2P_ENABLED=true`, use:
+
+```bash
+bun run smoke:p2p:managed -- \
+  --api-base-url https://id.undefineds.co/ \
+  --node-id node-0000 \
+  --token "$XPOD_SERVICE_TOKEN" \
+  --client-id "cli-$(hostname)" \
+  --host "$PUBLIC_CLIENT_IP" \
+  --resource-url https://node-0000.undefineds.co/.well-known/openid-configuration
+```
+
+The command performs route discovery, creates a P2P session through signaling,
+waits for node raw TCP candidates, then sends the canonical Solid HTTP request
+through the selected managed-client fetch route. It prints a JSON result with
+`route`, HTTP status, headers, and body. By default it exits non-zero unless the
+selected route is `p2p`; pass `--allow-fallback` only when you intentionally want
+to validate public/user-tunnel fallback behavior instead of raw TCP P2P.
 
 This native P2P path is additive. Existing Cloudflare Tunnel and FRP/SakuraFRP
 paths remain the browser/public `user-tunnel` fallback and are not replaced by

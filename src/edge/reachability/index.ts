@@ -8,3 +8,4 @@ export * from './P2PSignalingClient';
 export * from './TcpP2PDataPlaneTransport';
 export * from './TcpP2PSignalingSession';
 export * from './ManagedClientFetch';
+export * from './ManagedClientP2PSmoke';
