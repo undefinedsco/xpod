@@ -130,6 +130,7 @@ export interface AcceptedSignaledRawTcpP2PConnection {
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
+const DEFAULT_RAW_TCP_RETRY_INTERVAL_MS = 25;
 
 export function createRawTcpHolePunchCandidates(
   options: CreateRawTcpHolePunchCandidatesOptions,
@@ -597,6 +598,36 @@ async function connectSocketWithTimeout(
 }
 
 async function connectRawTcpSocket(attempt: RawTcpP2PConnectAttempt): Promise<Socket> {
+  const startedAt = Date.now();
+  let lastError: Error | undefined;
+  for (;;) {
+    if (attempt.signal?.aborted) {
+      throw new Error('Raw TCP candidate connect aborted');
+    }
+    const remainingMs = attempt.timeoutMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) {
+      throw new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms${lastError ? `: ${lastError.message}` : ''}`);
+    }
+    try {
+      return await connectRawTcpSocketOnce(attempt, remainingMs);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt.signal?.aborted) {
+        throw new Error('Raw TCP candidate connect aborted');
+      }
+      const retryDelayMs = Math.min(
+        DEFAULT_RAW_TCP_RETRY_INTERVAL_MS,
+        Math.max(0, attempt.timeoutMs - (Date.now() - startedAt)),
+      );
+      if (retryDelayMs <= 0) {
+        throw new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms: ${lastError.message}`);
+      }
+      await sleep(retryDelayMs, attempt.signal);
+    }
+  }
+}
+
+async function connectRawTcpSocketOnce(attempt: RawTcpP2PConnectAttempt, timeoutMs: number): Promise<Socket> {
   return new Promise((resolve, reject) => {
     const connectOptions = {
       host: attempt.remoteHost,
@@ -608,8 +639,8 @@ async function connectRawTcpSocket(attempt: RawTcpP2PConnectAttempt): Promise<So
     const timeout = setTimeout(() => {
       cleanup();
       socket.destroy();
-      reject(new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms`));
-    }, attempt.timeoutMs);
+      reject(new Error(`Raw TCP candidate connect attempt timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     const cleanup = (): void => {
       clearTimeout(timeout);
       socket.off('connect', onConnect);

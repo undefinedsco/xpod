@@ -187,11 +187,13 @@ Solid SDK / app
   candidates。
 - `connectRawTcpP2PTransport` 已能把同 bucket 的 local/remote raw TCP candidates 转成
   native TCP socket，并交给 `TcpP2PDataPlaneTransport` 承载 `xpod-p2p-http/1`。执行层会按
-  candidate 里的 rendezvous 时间等待后发起连接；默认实现使用 Node TCP socket，native/移动端
-  runtime 可通过 `connectSocket` 注入真正的 simultaneous-open 成功 socket。多个同 bucket
-  candidate pair 会在 rendezvous 后并发竞争，取第一个成功 socket，并中止其余尝试。当前本地测试
-  覆盖可直连 TCP candidate、候选并发竞争和注入 pre-connected socket；跨 NAT 的 true
-  simultaneous open 仍需要 native/移动端实网 smoke 验证。
+  candidate 里的 rendezvous 时间等待后发起连接；默认实现使用 Node TCP socket，并在
+  `connectTimeoutMs` 窗口内持续用同一个 candidate `localPort` 重试，避免 peer endpoint
+  稍晚出现时立即失败。native/移动端 runtime 可通过 `connectSocket` 注入真正的
+  simultaneous-open 成功 socket。多个同 bucket candidate pair 会在 rendezvous 后并发竞争，
+  取第一个成功 socket，并中止其余尝试。当前本地测试覆盖可直连 TCP candidate、peer delayed
+  connect retry、候选并发竞争和注入 pre-connected socket；跨 NAT 的 true simultaneous open
+  仍需要 native/移动端实网 smoke 验证。
 - `connectSignaledRawTcpP2PTransport` 已提供客户端侧编排入口：managed client 创建 P2P
   session、等待 node raw TCP candidates、执行 candidate race，并返回可直接交给
   `createP2PDataPlaneFetch` 使用的 transport。runtime 调用方不需要手工拼接 create/wait/connect

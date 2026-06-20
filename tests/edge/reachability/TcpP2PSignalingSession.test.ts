@@ -281,6 +281,73 @@ describe('signaled raw TCP P2P sessions', () => {
     }
   });
 
+  it('retries a raw TCP candidate from the same local port until the peer endpoint appears', async () => {
+    const localFetch = vi.fn(async () => new Response('delayed peer response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const remotePort = await reserveTcpPort();
+    const localPort = await reserveTcpPort();
+    const plan = {
+      bucket: 98,
+      boundary: 122,
+      rendezvousTimeSeconds: 0,
+      ports: [localPort],
+    };
+    const localCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-1',
+      host: '127.0.0.1',
+      plan,
+    });
+    const remoteCandidates = createRawTcpHolePunchCandidates({
+      role: 'node',
+      sourceId: 'node-1',
+      host: '127.0.0.1',
+      plan: {
+        ...plan,
+        ports: [remotePort],
+      },
+    });
+    let observedClientPort: number | undefined;
+    let server: ReturnType<typeof createServer> | undefined;
+    let socketHandle: ReturnType<typeof attachTcpP2PDataPlaneSocket> | undefined;
+    const delayedPeer = sleepTest(40).then(async () => {
+      server = createServer((socket) => {
+        observedClientPort = socket.remotePort;
+        socketHandle = attachTcpP2PDataPlaneSocket({ socket, handler });
+      });
+      await listenOn(server, remotePort);
+    });
+
+    let transport: Awaited<ReturnType<typeof connectRawTcpP2PTransport>> | undefined;
+    try {
+      transport = await connectRawTcpP2PTransport({
+        localCandidates,
+        remoteCandidates,
+        timeoutMs: 2_000,
+        connectTimeoutMs: 1_000,
+      });
+      await delayedPeer;
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: baseSession.nodeCandidates[0], transport });
+
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/delayed-peer.txt');
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('delayed peer response');
+      expect(observedClientPort).toBe(localPort);
+    } finally {
+      transport?.close();
+      socketHandle?.close();
+      await delayedPeer.catch(() => undefined);
+      await closeServer(server);
+    }
+  });
+
   it('creates a signaled raw TCP session, waits for node candidates, and connects the data plane', async () => {
     const localFetch = vi.fn(async () => new Response('client flow response', {
       status: 200,
@@ -710,6 +777,26 @@ async function reserveTcpPort(): Promise<number> {
     server.close((error) => error ? reject(error) : resolve());
   });
   return address.port;
+}
+
+async function listenOn(server: ReturnType<typeof createServer>, port: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+}
+
+async function closeServer(server?: ReturnType<typeof createServer>): Promise<void> {
+  if (!server?.listening) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
+
+function sleepTest(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function createSocketPair(): Promise<{

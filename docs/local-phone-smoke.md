@@ -211,6 +211,9 @@ session, so native/CLI/mobile clients do not need to duplicate route-set lookup.
 They send canonical Solid HTTP requests as `xpod-p2p-http/1` frames over the TCP
 stream and verify the local node handler forwards the request to the configured
 CSS/SP base URL while preserving canonical URL headers.
+The default Node connector is also covered for delayed peer availability: it
+keeps retrying within `connectTimeoutMs` from the same candidate local TCP port
+instead of failing after one refused connection.
 
 This native P2P path is additive. Existing Cloudflare Tunnel and FRP/SakuraFRP
 paths remain the browser/public `user-tunnel` fallback and are not replaced by
