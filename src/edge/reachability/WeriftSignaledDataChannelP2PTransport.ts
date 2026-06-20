@@ -6,7 +6,7 @@ import {
   type RTCIceCandidateInit,
 } from 'werift';
 import type { AccessRoute, P2PCandidateRole, P2PSession, P2PTransportCandidate } from './types';
-import type { P2PSignalingClient } from './P2PSignalingClient';
+import { createP2PSignalingClient, type P2PSignalingClient } from './P2PSignalingClient';
 import {
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
@@ -64,6 +64,14 @@ export interface CreatedWeriftDataChannelSessionConnection extends SignaledWerif
 export interface CreateWeriftSignaledP2PDataPlaneClientOptions extends CreateWeriftDataChannelSessionThroughSignalingOptions {
   route?: AccessRoute;
   transportTimeoutMs?: number;
+}
+
+export interface CreateWeriftSignaledP2PDataPlaneClientFromApiOptions
+  extends Omit<CreateWeriftSignaledP2PDataPlaneClientOptions, 'signaling'> {
+  apiBaseUrl: string;
+  nodeId: string;
+  token?: string;
+  signalingFetchImpl?: typeof fetch;
 }
 
 export interface WeriftSignaledP2PDataPlaneClient {
@@ -183,6 +191,27 @@ export async function createWeriftSignaledP2PDataPlaneClient(
     await connection.close();
     throw error;
   }
+}
+
+export async function createWeriftSignaledP2PDataPlaneClientFromApi(
+  options: CreateWeriftSignaledP2PDataPlaneClientFromApiOptions,
+): Promise<WeriftSignaledP2PDataPlaneClient> {
+  const {
+    apiBaseUrl,
+    nodeId,
+    token,
+    signalingFetchImpl,
+    ...clientOptions
+  } = options;
+  return createWeriftSignaledP2PDataPlaneClient({
+    ...clientOptions,
+    signaling: createP2PSignalingClient({
+      apiBaseUrl,
+      nodeId,
+      token,
+      fetchImpl: signalingFetchImpl,
+    }),
+  });
 }
 
 export async function createWeriftSignaledP2PDataPlaneNode(

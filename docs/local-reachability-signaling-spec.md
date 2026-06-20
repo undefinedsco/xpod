@@ -166,6 +166,10 @@ Solid SDK / app
   managed/native 调用方可进一步用 `createWeriftSignaledP2PDataPlaneClient` 和
   `createWeriftSignaledP2PDataPlaneNode` 一次性封装 session 创建、DataChannel transport、
   node-side local CSS 转发和 canonical `fetch`，业务层仍只看到 HTTP/Solid URL。
+  CLI / desktop / mobile native 这类调用方如果只持有 Cloud API base、nodeId、token 和
+  device/client id，可直接使用 `createWeriftSignaledP2PDataPlaneClientFromApi`；该 helper
+  会内部创建 `P2PSignalingClient`、POST `/v1/signal/nodes/{nodeId}/sessions`、等待 node
+  answer，并返回可直接访问 canonical Solid URL 的 `fetch`。
   local node agent 可用 `answerPendingWeriftP2PSessionsOnce` 轮询 active session 列表，
   只对含 client werift offer 且本 node 尚未 answer 的 session 启动 node-side DataChannel
   server，避免重复 answer。

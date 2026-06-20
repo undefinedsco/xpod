@@ -8,6 +8,7 @@ import {
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
   createWeriftSignaledP2PDataPlaneClient,
+  createWeriftSignaledP2PDataPlaneClientFromApi,
   createWeriftSignaledP2PDataPlaneNode,
   createWeriftDataChannelP2PServer,
   createWeriftDataChannelP2PTransport,
@@ -262,6 +263,87 @@ describe('signaled werift DataChannel P2P data plane', () => {
       const headers = new Headers(init.headers);
       expect(headers.get('authorization')).toBe('DPoP token');
       expect(headers.get('x-xpod-canonical-url')).toBe('https://node-1.pods.example/alice/one-call.txt');
+    } finally {
+      await Promise.allSettled([client.close(), node.close()]);
+    }
+  });
+
+
+  it('creates a one-call client from signaling API options for native callers', async () => {
+    const signaling = new InMemoryP2PSignalingClient('p2p_api_helper');
+    signaling.session.nodeCandidates = [p2pRoute];
+    const peerConfig = {
+      iceServers: [],
+      iceAdditionalHostAddresses: ['127.0.0.1'],
+    };
+    const signalingFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString());
+      const body = typeof init?.body === 'string' && init.body.length > 0
+        ? JSON.parse(init.body)
+        : undefined;
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer managed-client-token');
+      if (url.pathname === '/v1/signal/nodes/node-1/sessions' && init?.method === 'POST') {
+        const session = await signaling.createP2PSession(body);
+        return new Response(JSON.stringify(session), { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.pathname === '/v1/signal/nodes/node-1/sessions/p2p_api_helper') {
+        const session = await signaling.getP2PSession('p2p_api_helper');
+        return new Response(JSON.stringify(session), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.pathname === '/v1/signal/nodes/node-1/sessions/p2p_api_helper/candidates' && init?.method === 'POST') {
+        const session = await signaling.addP2PCandidates('p2p_api_helper', body);
+        return new Response(JSON.stringify(session), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('not found', { status: 404 });
+    });
+    const localFetch = vi.fn(async () => new Response('api-helper response', { status: 212 }));
+
+    const clientPromise = createWeriftSignaledP2PDataPlaneClientFromApi({
+      apiBaseUrl: 'https://api.example/',
+      nodeId: 'node-1',
+      token: 'managed-client-token',
+      signalingFetchImpl: signalingFetch as typeof fetch,
+      sourceId: 'device-1',
+      label: 'xpod-p2p-http',
+      timeoutMs: 3_000,
+      pollIntervalMs: 10,
+      peerConfig,
+      capabilities: ['webrtc-datachannel'],
+      transportTimeoutMs: 2_000,
+    });
+    await vi.waitFor(() => {
+      expect(signaling.createdSessions).toHaveLength(1);
+    });
+    const nodePromise = createWeriftSignaledP2PDataPlaneNode({
+      signaling,
+      sessionId: signaling.session.sessionId,
+      sourceId: 'node-1',
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      label: 'xpod-p2p-http',
+      timeoutMs: 3_000,
+      pollIntervalMs: 10,
+      peerConfig,
+      fetchImpl: localFetch as typeof fetch,
+    });
+
+    const [client, node] = await Promise.all([clientPromise, nodePromise]);
+    try {
+      const response = await client.fetch('https://node-1.pods.example/alice/api-helper.txt');
+
+      expect(client.session.sessionId).toBe('p2p_api_helper');
+      expect(client.route).toEqual(p2pRoute);
+      expect(response.status).toBe(212);
+      await expect(response.text()).resolves.toBe('api-helper response');
+      expect(signalingFetch).toHaveBeenCalledWith(
+        'https://api.example/v1/signal/nodes/node-1/sessions',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(signaling.createdSessions[0]).toMatchObject({
+        clientId: 'device-1',
+        capabilities: ['webrtc-datachannel'],
+      });
+      expect(localFetch).toHaveBeenCalledTimes(1);
     } finally {
       await Promise.allSettled([client.close(), node.close()]);
     }
