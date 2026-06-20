@@ -91,6 +91,22 @@ export type RawTcpP2PConnectSocket = (attempt: RawTcpP2PConnectAttempt) => Promi
 
 export type RawTcpP2PSleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
+export interface ConnectSignaledRawTcpP2PTransportOptions extends SignaledRawTcpP2PSessionOptions {
+  connectTimeoutMs?: number;
+  timeoutMs?: number;
+  localAddress?: string;
+  nowMs?: () => number;
+  sleepMs?: RawTcpP2PSleep;
+  connectSocket?: RawTcpP2PConnectSocket;
+  pollIntervalMs?: number;
+  waitTimeoutMs?: number;
+}
+
+export interface ConnectedSignaledRawTcpP2PTransport extends SignaledRawTcpP2PSession {
+  remoteCandidates: P2PTransportCandidate[];
+  transport: TcpP2PDataPlaneTransport;
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
@@ -212,6 +228,36 @@ export async function waitForRawTcpRemoteCandidates(
     }
     await sleep(Math.min(pollIntervalMs, Math.max(1, timeoutMs - (Date.now() - startedAt))));
   }
+}
+
+export async function connectSignaledRawTcpP2PTransport(
+  options: ConnectSignaledRawTcpP2PTransportOptions,
+): Promise<ConnectedSignaledRawTcpP2PTransport> {
+  const signaled = await createSignaledRawTcpP2PSession(options);
+  const remoteCandidates = await waitForRawTcpRemoteCandidates({
+    signaling: options.signaling,
+    sessionIdOrUrl: signaled.session.signalingUrl || signaled.session.sessionId,
+    localRole: 'client',
+    localSourceId: options.clientId,
+    bucket: signaled.plan.bucket,
+    pollIntervalMs: options.pollIntervalMs,
+    timeoutMs: options.waitTimeoutMs,
+  });
+  const transport = await connectRawTcpP2PTransport({
+    localCandidates: signaled.localCandidates,
+    remoteCandidates,
+    connectTimeoutMs: options.connectTimeoutMs,
+    timeoutMs: options.timeoutMs,
+    localAddress: options.localAddress,
+    nowMs: options.nowMs,
+    sleepMs: options.sleepMs,
+    connectSocket: options.connectSocket,
+  });
+  return {
+    ...signaled,
+    remoteCandidates,
+    transport,
+  };
 }
 
 export async function connectRawTcpP2PTransport(

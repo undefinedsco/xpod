@@ -10,6 +10,7 @@ import {
   answerPendingRawTcpP2PSessionsOnce,
   attachTcpP2PDataPlaneSocket,
   connectRawTcpP2PTransport,
+  connectSignaledRawTcpP2PTransport,
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
   createSignaledRawTcpP2PSession,
@@ -275,6 +276,92 @@ describe('signaled raw TCP P2P sessions', () => {
       transport.close();
     } finally {
       await server.close();
+    }
+  });
+
+  it('creates a signaled raw TCP session, waits for node candidates, and connects the data plane', async () => {
+    const localFetch = vi.fn(async () => new Response('client flow response', {
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const remotePort = await reserveTcpPort();
+    const localPort = await reserveTcpPort();
+    const plan = {
+      bucket: 103,
+      boundary: 111,
+      rendezvousTimeSeconds: 0,
+      ports: [localPort],
+    };
+    const nodeCandidates = createRawTcpHolePunchCandidates({
+      role: 'node',
+      sourceId: 'node-1',
+      host: '127.0.0.1',
+      plan: {
+        ...plan,
+        ports: [remotePort],
+      },
+    });
+    const createdSessions: P2PTransportCandidate[][] = [];
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(async (request) => {
+        createdSessions.push(request.candidates ?? []);
+        return {
+          ...baseSession,
+          candidates: request.candidates ?? [],
+        };
+      }),
+      listP2PSessions: vi.fn(),
+      getP2PSession: vi.fn(async () => ({
+        ...baseSession,
+        candidates: [...createdSessions[0], ...nodeCandidates],
+      })),
+      addP2PCandidates: vi.fn(),
+    };
+    const attempts: RawTcpP2PConnectAttempt[] = [];
+
+    try {
+      const result = await connectSignaledRawTcpP2PTransport({
+        signaling,
+        clientId: 'device-1',
+        host: '127.0.0.1',
+        plan,
+        timeoutMs: 2_000,
+        connectTimeoutMs: 1_000,
+        pollIntervalMs: 1,
+        waitTimeoutMs: 100,
+        connectSocket: async (attempt) => {
+          attempts.push(attempt);
+          return clientSocket;
+        },
+      });
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: baseSession.nodeCandidates[0], transport: result.transport });
+
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/client-flow.txt');
+
+      expect(result.session.sessionId).toBe(baseSession.sessionId);
+      expect(result.plan).toEqual(plan);
+      expect(result.localCandidates).toEqual(createdSessions[0]);
+      expect(result.remoteCandidates).toEqual(nodeCandidates);
+      expect(signaling.createP2PSession).toHaveBeenCalledTimes(1);
+      expect(signaling.getP2PSession).toHaveBeenCalledWith(baseSession.signalingUrl);
+      expect(attempts).toEqual([
+        expect.objectContaining({
+          local: expect.objectContaining({ sourceId: 'device-1', port: localPort }),
+          remote: expect.objectContaining({ sourceId: 'node-1', port: remotePort }),
+        }),
+      ]);
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('client flow response');
+      result.transport.close();
+    } finally {
+      socketHandle.close();
+      await close();
     }
   });
 
