@@ -64,6 +64,10 @@ describe('managed-client P2P local E2E smoke', () => {
 
     expect(result.smokeOk).toBe(true);
     expect(result.evidence.dataPlane).toBe('real-local-tcp-listener');
+    expect(result.connectorEvents.client.map((event) => event.type)).toEqual(
+      expect.arrayContaining(['attempt', 'success']),
+    );
+    expect(result.connectorEvents.node).toEqual([]);
     expect(result.p2pAttempts.client).toEqual([
       expect.objectContaining({
         local: expect.objectContaining({

@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 
 import {
+  createNodeRawTcpP2PConnectSocket,
   runManagedClientP2PSmoke,
   type ManagedClientP2PSmokeOptions,
+  type NodeRawTcpP2PConnectSocketEvent,
 } from '../src/edge/reachability';
 
 interface CliOptions {
@@ -30,6 +32,13 @@ interface CliOptions {
   portRange?: number;
   requireP2P: boolean;
   help: boolean;
+}
+
+interface ManagedClientP2PConnectorEvent {
+  type: NodeRawTcpP2PConnectSocketEvent['type'];
+  localPort?: number;
+  remotePort: number;
+  message?: string;
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -228,6 +237,10 @@ async function main(): Promise<void> {
   }
   validateOptions(options);
 
+  const connectorEvents: ManagedClientP2PConnectorEvent[] = [];
+  const connectSocket = createNodeRawTcpP2PConnectSocket({
+    onEvent: (event) => connectorEvents.push(summarizeConnectorEvent(event)),
+  });
   const smokeOptions: ManagedClientP2PSmokeOptions = {
     apiBaseUrl: options.apiBaseUrl,
     nodeId: options.nodeId,
@@ -244,6 +257,7 @@ async function main(): Promise<void> {
     ...(options.requestTimeoutMs ? { timeoutMs: options.requestTimeoutMs } : {}),
     ...planOptions(options),
     requestInit: requestInit(options),
+    connectSocket,
   };
 
   const result = await runManagedClientP2PSmoke(smokeOptions);
@@ -252,10 +266,20 @@ async function main(): Promise<void> {
     ...result,
     smokeOk,
     requireP2P: options.requireP2P,
+    connectorEvents,
   }, null, 2));
   if (!smokeOk) {
     process.exitCode = 1;
   }
+}
+
+function summarizeConnectorEvent(event: NodeRawTcpP2PConnectSocketEvent): ManagedClientP2PConnectorEvent {
+  return {
+    type: event.type,
+    ...(event.attempt.localPort ? { localPort: event.attempt.localPort } : {}),
+    remotePort: event.attempt.remotePort,
+    ...(event.error ? { message: event.error.message } : {}),
+  };
 }
 
 function validateOptions(options: CliOptions): void {

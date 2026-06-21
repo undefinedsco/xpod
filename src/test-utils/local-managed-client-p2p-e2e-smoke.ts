@@ -9,6 +9,7 @@ import { registerReachabilityRoutes } from '../api/handlers/ReachabilityHandler'
 import { AuthMiddleware } from '../api/middleware/AuthMiddleware';
 import { EdgeNodeAgent } from '../edge/EdgeNodeAgent';
 import {
+  createNodeRawTcpP2PConnectSocket,
   createP2PDataPlaneHandler,
   createP2PSignalingClient,
   createRawTcpHolePunchCandidates,
@@ -16,6 +17,7 @@ import {
   runManagedClientP2PSmoke,
   type AccessRoute,
   type ManagedClientP2PSmokeResult,
+  type NodeRawTcpP2PConnectSocketEvent,
   type RawTcpP2PConnectAttempt,
 } from '../edge/reachability';
 import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
@@ -60,6 +62,10 @@ export interface LocalManagedClientP2PE2ESmokeResult {
     client: RawTcpP2PConnectAttempt[];
     node: RawTcpP2PConnectAttempt[];
   };
+  connectorEvents: {
+    client: LocalManagedClientP2PConnectorEvent[];
+    node: LocalManagedClientP2PConnectorEvent[];
+  };
   targetRequests: Array<{
     method: string;
     url: string;
@@ -72,6 +78,13 @@ export interface LocalManagedClientP2PE2ESmokeResult {
     canonicalFetch: 'xpod-p2p-http/1';
   };
   caveats: string[];
+}
+
+export interface LocalManagedClientP2PConnectorEvent {
+  type: NodeRawTcpP2PConnectSocketEvent['type'];
+  localPort?: number;
+  remotePort: number;
+  message?: string;
 }
 
 export async function runLocalManagedClientP2PE2ESmoke(
@@ -109,6 +122,7 @@ export async function runLocalManagedClientP2PE2ESmoke(
     const target = await startTargetServer({ resourcePath, targetBody });
     cleanupStack.push(() => target.close());
     const p2pAttempts: LocalManagedClientP2PE2ESmokeResult['p2pAttempts'] = { client: [], node: [] };
+    const connectorEvents: LocalManagedClientP2PE2ESmokeResult['connectorEvents'] = { client: [], node: [] };
     const clientPort = await reserveTcpPort();
     const plan: LocalManagedClientP2PPlan = {
       bucket: 9_001,
@@ -144,9 +158,12 @@ export async function runLocalManagedClientP2PE2ESmoke(
         nodePlan,
       });
       cleanupStack.push(() => responder.stop());
+      const nodeConnector = createNodeRawTcpP2PConnectSocket({
+        onEvent: (event) => connectorEvents.client.push(summarizeConnectorEvent(event)),
+      });
       clientConnectSocket = async (attempt) => {
         p2pAttempts.client.push(attempt);
-        return connectRealTcpSocket(attempt);
+        return nodeConnector(attempt);
       };
     } else {
       const socketPair = await createSocketPair();
@@ -213,6 +230,7 @@ export async function runLocalManagedClientP2PE2ESmoke(
       nodePlan,
       smoke,
       p2pAttempts,
+      connectorEvents,
       targetRequests: target.requests,
       evidence: {
         routeDiscovery: 'p2p-route-published',
@@ -234,6 +252,15 @@ export async function runLocalManagedClientP2PE2ESmoke(
     }
     await closeAllIdentityConnections();
   }
+}
+
+function summarizeConnectorEvent(event: NodeRawTcpP2PConnectSocketEvent): LocalManagedClientP2PConnectorEvent {
+  return {
+    type: event.type,
+    ...(event.attempt.localPort ? { localPort: event.attempt.localPort } : {}),
+    remotePort: event.attempt.remotePort,
+    ...(event.error ? { message: event.error.message } : {}),
+  };
 }
 
 
@@ -317,49 +344,6 @@ function startRealTcpNodeCandidateResponder(options: {
       stopped = true;
     },
   };
-}
-
-async function connectRealTcpSocket(attempt: RawTcpP2PConnectAttempt): Promise<Socket> {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection({
-      host: attempt.remoteHost,
-      port: attempt.remotePort,
-      localAddress: attempt.localAddress,
-      ...(attempt.localPort ? { localPort: attempt.localPort } : {}),
-    });
-    const timeout = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(new Error(`Real TCP candidate connect timed out after ${attempt.timeoutMs}ms`));
-    }, attempt.timeoutMs);
-    const cleanup = (): void => {
-      clearTimeout(timeout);
-      socket.off('connect', onConnect);
-      socket.off('error', onError);
-      attempt.signal?.removeEventListener('abort', onAbort);
-    };
-    const onConnect = (): void => {
-      cleanup();
-      resolve(socket);
-    };
-    const onError = (error: Error): void => {
-      cleanup();
-      socket.destroy();
-      reject(error);
-    };
-    const onAbort = (): void => {
-      cleanup();
-      socket.destroy();
-      reject(new Error('Real TCP candidate connect aborted'));
-    };
-    attempt.signal?.addEventListener('abort', onAbort, { once: true });
-    if (attempt.signal?.aborted) {
-      onAbort();
-      return;
-    }
-    socket.once('connect', onConnect);
-    socket.once('error', onError);
-  });
 }
 
 async function startSignalApi(options: {
