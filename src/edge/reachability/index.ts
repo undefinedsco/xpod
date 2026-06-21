@@ -9,3 +9,4 @@ export * from './TcpP2PDataPlaneTransport';
 export * from './TcpP2PSignalingSession';
 export * from './ManagedClientFetch';
 export * from './ManagedClientP2PSmoke';
+export * from './P2PRealnetAcceptance';

@@ -249,6 +249,16 @@ Solid SDK / app
   stream 读取 canonical Solid resource，node runner 输出同一 session 的 accepted
   证据。该测试使用本机 socket bridge 避免依赖真实 NAT，但保留脚本边界，因此可防止
   未来只验证库函数而遗漏 CLI/runner 契约。
+- `createP2PRealnetAcceptancePlan` / `bun run smoke:p2p:realnet -- plan` 已提供实网双端
+  验收指令生成器：根据同一组 signal API、node、client 和 candidate 参数输出 node 侧
+  `smoke:p2p:node-accept --require-accept` 与 client 侧
+  `smoke:p2p:managed --require-p2p` 命令，避免两端手工参数分叉。它只生成命令和验收标准，
+  不启动新的数据面，也不修改 route selection。
+- `verifyP2PRealnetAcceptance` / `bun run smoke:p2p:realnet -- verify` 已提供双端 JSON
+  验收汇总：要求 node runner 对同一 `clientId` 有 accepted 证据、client runner 选择
+  `route.kind=p2p`、connector events 包含 `success`，并且 node JSON 明确声明
+  Cloudflare Tunnel 与 FRP/SakuraFRP 仍被保留。该 helper 让实网验收结果可重复检查，
+  但本身不证明浏览器 P2P，也不能替代真实跨 NAT/native/mobile 运行。
 - `attachTcpP2PDataPlaneSocket` 已能把 raw TCP 打洞成功后拿到的 pre-connected socket
   直接挂到 node-side `P2PDataPlaneHandler`，因此执行器不必伪装成 listener accept
   流程；成功 socket 可立即转发 canonical HTTP frame 到本地 CSS/SP。

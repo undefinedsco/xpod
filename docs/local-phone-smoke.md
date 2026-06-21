@@ -309,6 +309,41 @@ This native P2P path is additive. Existing Cloudflare Tunnel and FRP/SakuraFRP
 paths remain the browser/public `user-tunnel` fallback and are not replaced by
 raw TCP P2P.
 
+To avoid hand-copying mismatched node/client arguments during external
+validation, generate the paired commands first:
+
+```bash
+bun run smoke:p2p:realnet -- plan \
+  --api-base-url https://id.undefineds.co/ \
+  --node-id node-0000 \
+  --node-token "$XPOD_NODE_TOKEN" \
+  --base-url https://node-0000.undefineds.co/ \
+  --target-base-url http://127.0.0.1:3000/ \
+  --node-host "$NODE_PUBLIC_IP_OR_DDNS" \
+  --client-host "$CLIENT_PUBLIC_IP_OR_DDNS" \
+  --client-id "phone-$(date +%s)" \
+  --token "$XPOD_SERVICE_TOKEN" \
+  --resource-url https://node-0000.undefineds.co/.well-known/openid-configuration \
+  --winner-selection-window-ms 50
+```
+
+Run the printed node command on the local/SP machine and the printed client
+command from another non-browser runtime/network. Save both JSON outputs, then
+combine them into one acceptance verdict:
+
+```bash
+bun run smoke:p2p:realnet -- verify \
+  --client-id "$CLIENT_ID" \
+  --node-result "$(<node-result.json)" \
+  --client-result "$(<client-result.json)" \
+  --expected-status 200
+```
+
+The verifier requires node-side accept evidence, a client-selected `p2p` route,
+a raw TCP connector success event, and explicit evidence that Cloudflare Tunnel
+and FRP/SakuraFRP remain preserved fallback routes. It still cannot manufacture
+cross-NAT success; it only makes the external evidence check repeatable.
+
 Raw TCP cross-NAT acceptance still needs a packaged native/CLI/mobile runtime
 that can:
 

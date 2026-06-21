@@ -128,6 +128,10 @@ await agent.start({
   signal API 交换 session/candidates，并把 canonical Solid HTTP 请求转发到本地
   CSS/SP stand-in。它仍是本机 socket bridge 验证，不等价于跨 NAT 实网证明，但可以
   防止只验证库函数而脚本协作路径退化。
+- `bun run smoke:p2p:realnet -- plan` 用同一组输入生成 node/client 两端实网验收命令；
+  `bun run smoke:p2p:realnet -- verify` 汇总两端 JSON 输出，要求 node accepted、client
+  选择 `p2p` route、raw TCP connector `success`，并确认 Cloudflare Tunnel 与
+  FRP/SakuraFRP fallback 仍被声明保留。它是验收编排工具，不启动额外数据面。
 - 普通浏览器不支持 raw TCP socket、同号端口 bind 或 simultaneous open；手机浏览器页面只能验证
   Cloud IdP、SP route 和 signaling 控制面。Chrome Isolated Web App 的 Direct Sockets
   只能作为安装式 runtime 自定义 TCP transport 的后续研究项；它不是普通浏览器能力，
