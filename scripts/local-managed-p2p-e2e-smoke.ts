@@ -1,6 +1,10 @@
 #!/usr/bin/env bun
 
-import { runLocalManagedClientP2PE2ESmoke, type LocalManagedClientP2PE2ESmokeOptions } from '../src/test-utils/local-managed-client-p2p-e2e-smoke';
+import {
+  runLocalManagedClientP2PE2ESmoke,
+  type LocalManagedClientP2PE2ESmokeOptions,
+  type LocalManagedClientP2PSocketMode,
+} from '../src/test-utils/local-managed-client-p2p-e2e-smoke';
 
 interface CliOptions extends LocalManagedClientP2PE2ESmokeOptions {
   help: boolean;
@@ -19,6 +23,7 @@ function parseArgs(argv: string[]): CliOptions {
     pollIntervalMs: parseOptionalInteger(process.env.XPOD_LOCAL_P2P_SMOKE_POLL_INTERVAL_MS, 'XPOD_LOCAL_P2P_SMOKE_POLL_INTERVAL_MS'),
     connectTimeoutMs: parseOptionalInteger(process.env.XPOD_LOCAL_P2P_SMOKE_CONNECT_TIMEOUT_MS, 'XPOD_LOCAL_P2P_SMOKE_CONNECT_TIMEOUT_MS'),
     requestTimeoutMs: parseOptionalInteger(process.env.XPOD_LOCAL_P2P_SMOKE_REQUEST_TIMEOUT_MS, 'XPOD_LOCAL_P2P_SMOKE_REQUEST_TIMEOUT_MS'),
+    socketMode: parseOptionalSocketMode(process.env.XPOD_LOCAL_P2P_SMOKE_SOCKET_MODE, 'XPOD_LOCAL_P2P_SMOKE_SOCKET_MODE'),
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -75,6 +80,10 @@ function parseArgs(argv: string[]): CliOptions {
       options.requestTimeoutMs = parsePositiveInteger(readValue(), arg);
     } else if (inlineValue('--request-timeout-ms') !== undefined) {
       options.requestTimeoutMs = parsePositiveInteger(inlineValue('--request-timeout-ms') ?? '', arg);
+    } else if (arg === '--socket-mode') {
+      options.socketMode = parseSocketMode(readValue(), arg);
+    } else if (inlineValue('--socket-mode') !== undefined) {
+      options.socketMode = parseSocketMode(inlineValue('--socket-mode') ?? '', arg);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -87,8 +96,8 @@ function usage(): void {
   console.log(`Usage: bun run smoke:p2p:local-e2e [options]
 
 Starts an in-process signal API, repository-backed node registry, local target HTTP
-server, EdgeNodeAgent P2P accept loop, and managed client. The data-plane socket
-is injected deterministically so this is reproducible on one machine.
+server, and managed client. The default mode also starts EdgeNodeAgent and injects
+the raw data-plane socket deterministically so this is reproducible on one machine.
 
 Options:
   --node-name <name>             Edge node display name. Default: local-p2p-node.
@@ -101,10 +110,15 @@ Options:
   --poll-interval-ms <ms>        Candidate polling interval.
   --connect-timeout-ms <ms>      Raw TCP connect timeout.
   --request-timeout-ms <ms>      P2P HTTP frame request timeout.
+  --socket-mode <mode>           deterministic-injection (default) or real-tcp-listener.
 
 This proves local orchestration only. It does not prove real cross-NAT TCP
 simultaneous open. Cloudflare Tunnel and FRP/SakuraFRP remain independent
-user-tunnel fallback routes.`);
+user-tunnel fallback routes.
+
+Use --socket-mode real-tcp-listener to replace socket injection with a real
+loopback TCP listener. That exercises real local TCP sockets, but still does not
+prove cross-NAT simultaneous open.`);
 }
 
 async function main(): Promise<void> {
@@ -135,6 +149,17 @@ function parsePositiveInteger(value: string, name: string): number {
 
 function parseOptionalInteger(value: string | undefined, name: string): number | undefined {
   return value === undefined || value.trim().length === 0 ? undefined : parsePositiveInteger(value, name);
+}
+
+function parseOptionalSocketMode(value: string | undefined, name: string): LocalManagedClientP2PSocketMode | undefined {
+  return value === undefined || value.trim().length === 0 ? undefined : parseSocketMode(value, name);
+}
+
+function parseSocketMode(value: string, name: string): LocalManagedClientP2PSocketMode {
+  if (value === 'deterministic-injection' || value === 'real-tcp-listener') {
+    return value;
+  }
+  throw new Error(`${name} must be deterministic-injection or real-tcp-listener`);
 }
 
 main().catch((error) => {

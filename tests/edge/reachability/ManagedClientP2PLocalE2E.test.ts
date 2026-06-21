@@ -46,4 +46,44 @@ describe('managed-client P2P local E2E smoke', () => {
       }),
     ]);
   });
+
+  it('can run through real local TCP sockets without socket injection', async () => {
+    const result = await runLocalManagedClientP2PE2ESmoke({
+      nodeName: 'local-p2p-node-real-tcp',
+      clientId: 'managed-client-real-tcp',
+      baseStorageDomain: 'pods.example',
+      resourcePath: '/alice/local-p2p-real-tcp.txt?version=1',
+      targetBody: 'local real tcp p2p response',
+      p2pHost: '127.0.0.1',
+      socketMode: 'real-tcp-listener',
+      routeWaitTimeoutMs: 2_000,
+      pollIntervalMs: 10,
+      connectTimeoutMs: 1_000,
+      requestTimeoutMs: 2_000,
+    });
+
+    expect(result.smokeOk).toBe(true);
+    expect(result.evidence.dataPlane).toBe('real-local-tcp-listener');
+    expect(result.p2pAttempts.client).toEqual([
+      expect.objectContaining({
+        local: expect.objectContaining({
+          sourceId: 'managed-client-real-tcp',
+          port: result.clientPlan.ports[0],
+        }),
+        remote: expect.objectContaining({
+          sourceId: result.nodeId,
+          port: result.nodePlan.ports[0],
+        }),
+      }),
+    ]);
+    expect(result.clientPlan.ports[0]).not.toBe(result.nodePlan.ports[0]);
+    expect(result.p2pAttempts.node).toEqual([]);
+    expect(result.targetRequests).toEqual([
+      expect.objectContaining({
+        url: '/alice/local-p2p-real-tcp.txt?version=1',
+      }),
+    ]);
+    expect(result.smoke.body).toBe('local real tcp p2p response');
+  });
+
 });

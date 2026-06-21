@@ -222,11 +222,22 @@ request to the configured CSS/SP base URL while preserving canonical URL
 headers.
 The default Node connector is also covered for delayed peer availability: it
 keeps retrying within `connectTimeoutMs` from the same candidate local TCP port
-instead of failing after one refused connection.
+instead of failing after one refused connection. The local E2E suite now has two
+modes:
+
+- `deterministic-injection` (default): starts `EdgeNodeAgent` and injects a
+  pre-connected socket pair at the raw TCP boundary. This is stable for CI and
+  proves route discovery, signaling, node accept orchestration, and canonical
+  HTTP frame forwarding.
+- `real-tcp-listener`: publishes the same P2P route through the repository-backed
+  signal API, answers client candidates, starts a real loopback TCP listener, and
+  lets the managed client connect through actual Node TCP sockets. It uses
+  different client/node local ports on the same bucket because one host cannot
+  bind the client local port to the same port already used by the listener. This
+  proves local TCP data-plane wiring, but not cross-NAT simultaneous open.
 
 For a one-command local orchestration smoke that starts the signal API, node
-registry, target CSS/SP stand-in, `EdgeNodeAgent`, and managed client in one
-process, use:
+registry, target CSS/SP stand-in, and managed client in one process, use:
 
 ```bash
 bun run smoke:p2p:local-e2e
@@ -238,6 +249,16 @@ It is deterministic and useful for development/regression work, but it injects
 the already-connected socket pair at the raw socket boundary. It proves the
 control-plane and managed-client data-plane wiring, not real cross-NAT TCP
 simultaneous open.
+
+To exercise real local TCP sockets instead of the injected socket pair:
+
+```bash
+bun run smoke:p2p:local-e2e -- --socket-mode real-tcp-listener
+```
+
+This mode returns `evidence.dataPlane = real-local-tcp-listener` and reports both
+`clientPlan` and `nodePlan`. It still runs on loopback and is not a substitute
+for packaged native/mobile cross-network validation.
 
 For a CLI/native-style smoke against a running signal API and a node with
 `XPOD_P2P_ENABLED=true`, use:

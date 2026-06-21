@@ -9,6 +9,10 @@ import { registerReachabilityRoutes } from '../api/handlers/ReachabilityHandler'
 import { AuthMiddleware } from '../api/middleware/AuthMiddleware';
 import { EdgeNodeAgent } from '../edge/EdgeNodeAgent';
 import {
+  createP2PDataPlaneHandler,
+  createP2PSignalingClient,
+  createRawTcpHolePunchCandidates,
+  createTcpP2PDataPlaneServer,
   runManagedClientP2PSmoke,
   type AccessRoute,
   type ManagedClientP2PSmokeResult,
@@ -18,6 +22,15 @@ import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
 import { closeAllIdentityConnections, getIdentityDatabase } from '../identity/drizzle/db';
 import { ServiceTokenRepository } from '../identity/drizzle/ServiceTokenRepository';
 import { getFreePort } from '../runtime/port-finder';
+
+export type LocalManagedClientP2PSocketMode = 'deterministic-injection' | 'real-tcp-listener';
+
+export interface LocalManagedClientP2PPlan {
+  bucket: number;
+  boundary: number;
+  rendezvousTimeSeconds: number;
+  ports: number[];
+}
 
 export interface LocalManagedClientP2PE2ESmokeOptions {
   nodeName?: string;
@@ -30,6 +43,7 @@ export interface LocalManagedClientP2PE2ESmokeOptions {
   pollIntervalMs?: number;
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
+  socketMode?: LocalManagedClientP2PSocketMode;
 }
 
 export interface LocalManagedClientP2PE2ESmokeResult {
@@ -38,12 +52,9 @@ export interface LocalManagedClientP2PE2ESmokeResult {
   apiBaseUrl: string;
   targetBaseUrl: string;
   resourceUrl: string;
-  plan: {
-    bucket: number;
-    boundary: number;
-    rendezvousTimeSeconds: number;
-    ports: number[];
-  };
+  plan: LocalManagedClientP2PPlan;
+  clientPlan: LocalManagedClientP2PPlan;
+  nodePlan: LocalManagedClientP2PPlan;
   smoke: ManagedClientP2PSmokeResult;
   p2pAttempts: {
     client: RawTcpP2PConnectAttempt[];
@@ -57,7 +68,7 @@ export interface LocalManagedClientP2PE2ESmokeResult {
   evidence: {
     routeDiscovery: 'p2p-route-published';
     signaling: 'repository-backed-api';
-    dataPlane: 'deterministic-socket-injection';
+    dataPlane: 'deterministic-socket-injection' | 'real-local-tcp-listener';
     canonicalFetch: 'xpod-p2p-http/1';
   };
   caveats: string[];
@@ -77,6 +88,7 @@ export async function runLocalManagedClientP2PE2ESmoke(
   const pollIntervalMs = options.pollIntervalMs ?? 10;
   const connectTimeoutMs = options.connectTimeoutMs ?? 1_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 2_000;
+  const socketMode = options.socketMode ?? 'deterministic-injection';
 
   try {
     const db = getIdentityDatabase(`sqlite::memory:p2p-local-e2e-${Date.now()}-${Math.random()}`);
@@ -96,38 +108,75 @@ export async function runLocalManagedClientP2PE2ESmoke(
     cleanupStack.push(() => signalApi.close());
     const target = await startTargetServer({ resourcePath, targetBody });
     cleanupStack.push(() => target.close());
-    const socketPair = await createSocketPair();
-    cleanupStack.push(() => socketPair.close());
-    const agent = new EdgeNodeAgent();
-    cleanupStack.push(() => agent.stop());
     const p2pAttempts: LocalManagedClientP2PE2ESmokeResult['p2pAttempts'] = { client: [], node: [] };
-    const candidatePort = await reserveTcpPort();
-    const plan = {
+    const clientPort = await reserveTcpPort();
+    const plan: LocalManagedClientP2PPlan = {
       bucket: 9_001,
       boundary: 9_001,
       rendezvousTimeSeconds: 0,
-      ports: [candidatePort],
+      ports: [clientPort],
     };
+    let nodePlan = plan;
+    let clientConnectSocket: Parameters<typeof runManagedClientP2PSmoke>[0]['connectSocket'];
 
-    await agent.start({
-      signalEndpoint: `${signalApi.baseUrl}/v1/signal`,
-      nodeId,
-      nodeToken,
-      baseUrl: `https://${nodeId}.${baseStorageDomain}/`,
-      enableNetworkDetection: false,
-      p2p: {
-        enabled: true,
-        targetBaseUrl: target.baseUrl,
+    if (socketMode === 'real-tcp-listener') {
+      await publishP2PRoute({
+        repository: nodeRepo,
+        nodeId,
+        baseUrl: `https://${nodeId}.${baseStorageDomain}/`,
+      });
+      const dataPlaneServer = createTcpP2PDataPlaneServer({
+        handler: createP2PDataPlaneHandler({ targetBaseUrl: target.baseUrl }),
         host: p2pHost,
-        acceptIntervalMs: 20,
-        connectTimeoutMs,
-        winnerSelectionWindowMs: 0,
-        connectSocket: async (attempt) => {
-          p2pAttempts.node.push(attempt);
-          return socketPair.serverSocket;
+      });
+      await dataPlaneServer.listen(0);
+      nodePlan = {
+        ...plan,
+        ports: [dataPlaneServer.address().port],
+      };
+      cleanupStack.push(() => dataPlaneServer.close());
+      const responder = startRealTcpNodeCandidateResponder({
+        apiBaseUrl: signalApi.baseUrl,
+        nodeId,
+        nodeToken,
+        host: p2pHost,
+        clientPlan: plan,
+        nodePlan,
+      });
+      cleanupStack.push(() => responder.stop());
+      clientConnectSocket = async (attempt) => {
+        p2pAttempts.client.push(attempt);
+        return connectRealTcpSocket(attempt);
+      };
+    } else {
+      const socketPair = await createSocketPair();
+      cleanupStack.push(() => socketPair.close());
+      const agent = new EdgeNodeAgent();
+      cleanupStack.push(() => agent.stop());
+      await agent.start({
+        signalEndpoint: `${signalApi.baseUrl}/v1/signal`,
+        nodeId,
+        nodeToken,
+        baseUrl: `https://${nodeId}.${baseStorageDomain}/`,
+        enableNetworkDetection: false,
+        p2p: {
+          enabled: true,
+          targetBaseUrl: target.baseUrl,
+          host: p2pHost,
+          acceptIntervalMs: 20,
+          connectTimeoutMs,
+          winnerSelectionWindowMs: 0,
+          connectSocket: async (attempt) => {
+            p2pAttempts.node.push(attempt);
+            return socketPair.serverSocket;
+          },
         },
-      },
-    });
+      });
+      clientConnectSocket = async (attempt) => {
+        p2pAttempts.client.push(attempt);
+        return socketPair.clientSocket;
+      };
+    }
 
     await waitForRoute({
       apiBaseUrl: signalApi.baseUrl,
@@ -150,10 +199,7 @@ export async function runLocalManagedClientP2PE2ESmoke(
       waitTimeoutMs: routeWaitTimeoutMs,
       connectTimeoutMs,
       timeoutMs: requestTimeoutMs,
-      connectSocket: async (attempt) => {
-        p2pAttempts.client.push(attempt);
-        return socketPair.clientSocket;
-      },
+      ...(clientConnectSocket ? { connectSocket: clientConnectSocket } : {}),
     });
 
     return {
@@ -163,17 +209,21 @@ export async function runLocalManagedClientP2PE2ESmoke(
       targetBaseUrl: target.baseUrl,
       resourceUrl,
       plan,
+      clientPlan: plan,
+      nodePlan,
       smoke,
       p2pAttempts,
       targetRequests: target.requests,
       evidence: {
         routeDiscovery: 'p2p-route-published',
         signaling: 'repository-backed-api',
-        dataPlane: 'deterministic-socket-injection',
+        dataPlane: socketMode === 'real-tcp-listener' ? 'real-local-tcp-listener' : 'deterministic-socket-injection',
         canonicalFetch: 'xpod-p2p-http/1',
       },
       caveats: [
-        'This local smoke does not prove real cross-NAT TCP simultaneous open.',
+        socketMode === 'real-tcp-listener'
+          ? 'This local smoke uses a real loopback TCP listener, but still does not prove cross-NAT TCP simultaneous open.'
+          : 'This local smoke does not prove real cross-NAT TCP simultaneous open.',
         'Cloudflare Tunnel and FRP/SakuraFRP remain independent user-tunnel fallback routes.',
       ],
     };
@@ -184,6 +234,132 @@ export async function runLocalManagedClientP2PE2ESmoke(
     }
     await closeAllIdentityConnections();
   }
+}
+
+
+async function publishP2PRoute(options: {
+  repository: EdgeNodeRepository;
+  nodeId: string;
+  baseUrl: string;
+}): Promise<void> {
+  await options.repository.updateNodeHeartbeat(options.nodeId, {
+    baseUrl: options.baseUrl,
+    routes: [
+      {
+        id: 'p2p-raw-tcp',
+        nodeId: options.nodeId,
+        canonicalUrl: options.baseUrl,
+        kind: 'p2p',
+        targetUrl: `tcp-punch://node/${encodeURIComponent(options.nodeId)}`,
+        priority: 40,
+        requiresManagedClient: true,
+        visibility: 'authorized-client',
+        health: 'healthy',
+        metadata: {
+          protocols: {
+            'raw-tcp-hole-punch': { enabled: true },
+          },
+        },
+      },
+    ],
+  }, new Date());
+}
+
+function startRealTcpNodeCandidateResponder(options: {
+  apiBaseUrl: string;
+  nodeId: string;
+  nodeToken: string;
+  host: string;
+  clientPlan: LocalManagedClientP2PPlan;
+  nodePlan: LocalManagedClientP2PPlan;
+}): { stop: () => void } {
+  const signaling = createP2PSignalingClient({
+    apiBaseUrl: options.apiBaseUrl,
+    nodeId: options.nodeId,
+    token: options.nodeToken,
+  });
+  let stopped = false;
+  const run = async (): Promise<void> => {
+    while (!stopped) {
+      try {
+        const sessions = await signaling.listP2PSessions();
+        for (const session of sessions) {
+          const hasClientCandidate = session.candidates.some((candidate) => candidate.role === 'client'
+            && candidate.metadata?.bucket === options.clientPlan.bucket);
+          const hasNodeCandidate = session.candidates.some((candidate) => candidate.role === 'node'
+            && candidate.sourceId === options.nodeId
+            && candidate.metadata?.bucket === options.nodePlan.bucket);
+          if (!hasClientCandidate || hasNodeCandidate) {
+            continue;
+          }
+          const candidates = createRawTcpHolePunchCandidates({
+            role: 'node',
+            sourceId: options.nodeId,
+            host: options.host,
+            plan: options.nodePlan,
+          });
+          await signaling.addP2PCandidates(session.signalingUrl || session.sessionId, {
+            role: 'node',
+            sourceId: options.nodeId,
+            candidates,
+          });
+        }
+      } catch {
+        // The local smoke is best served by polling until the session exists;
+        // failures are surfaced by the managed client timeout if no candidate is added.
+      }
+      await sleep(10);
+    }
+  };
+  void run();
+  return {
+    stop(): void {
+      stopped = true;
+    },
+  };
+}
+
+async function connectRealTcpSocket(attempt: RawTcpP2PConnectAttempt): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({
+      host: attempt.remoteHost,
+      port: attempt.remotePort,
+      localAddress: attempt.localAddress,
+      ...(attempt.localPort ? { localPort: attempt.localPort } : {}),
+    });
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error(`Real TCP candidate connect timed out after ${attempt.timeoutMs}ms`));
+    }, attempt.timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      socket.off('connect', onConnect);
+      socket.off('error', onError);
+      attempt.signal?.removeEventListener('abort', onAbort);
+    };
+    const onConnect = (): void => {
+      cleanup();
+      resolve(socket);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      socket.destroy();
+      reject(error);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      socket.destroy();
+      reject(new Error('Real TCP candidate connect aborted'));
+    };
+    attempt.signal?.addEventListener('abort', onAbort, { once: true });
+    if (attempt.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    socket.once('connect', onConnect);
+    socket.once('error', onError);
+  });
 }
 
 async function startSignalApi(options: {
