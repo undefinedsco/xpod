@@ -1,5 +1,5 @@
 /**
- * JinaDocumentParser - 基于 JINA Reader API 的文档解析器
+ * JinaReader - 基于 JINA Reader API 的文档解析器
  *
  * 使用 JINA Reader API (https://r.jina.ai/) 将各种格式的文档转换为 Markdown
  * 支持：PDF, Office 文档, HTML, 图片等
@@ -8,9 +8,9 @@
  */
 
 import { getLoggerFor } from 'global-logger-factory';
-import type { DocumentParser, ParsedDocument, ParseOptions } from './DocumentParser';
+import type { DocumentReader, ReadDocument, ReadOptions } from './DocumentReader';
 
-export interface JinaDocumentParserOptions {
+export interface JinaReaderOptions {
   /** JINA API Key */
   apiKey: string;
   /** 自定义 API 端点（默认 https://r.jina.ai） */
@@ -22,26 +22,26 @@ export interface JinaDocumentParserOptions {
 /**
  * JINA Reader API 文档解析器
  */
-export class JinaDocumentParser implements DocumentParser {
+export class JinaReader implements DocumentReader {
   protected readonly logger = getLoggerFor(this);
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly defaultTimeout: number;
 
-  public constructor(options: JinaDocumentParserOptions) {
+  public constructor(options: JinaReaderOptions) {
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl ?? 'https://r.jina.ai';
     this.defaultTimeout = options.defaultTimeout ?? 30000;
   }
 
   /**
-   * 解析文档为 Markdown
+   * 读取文档为 Markdown
    */
-  public async parse(url: string, options?: ParseOptions): Promise<ParsedDocument> {
+  public async read(url: string, options?: ReadOptions): Promise<ReadDocument> {
     const timeout = options?.timeout ?? this.defaultTimeout;
 
-    this.logger.debug(`Parsing document: ${url}`);
+    this.logger.debug(`Reading document: ${url}`);
 
     try {
       // 构建 JINA Reader URL
@@ -77,7 +77,7 @@ export class JinaDocumentParser implements DocumentParser {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`JINA parse failed: ${response.status} ${errorText}`);
+        throw new Error(`JINA read failed: ${response.status} ${errorText}`);
       }
 
       const markdown = await response.text();
@@ -85,7 +85,7 @@ export class JinaDocumentParser implements DocumentParser {
       // 提取元数据（从 Markdown 头部）
       const metadata = this.extractMetadata(markdown, url);
 
-      this.logger.info(`Parsed document: ${url}, ${markdown.length} chars`);
+      this.logger.info(`Read document: ${url}, ${markdown.length} chars`);
 
       return {
         markdown,
@@ -94,9 +94,9 @@ export class JinaDocumentParser implements DocumentParser {
       };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Document parsing timed out after ${timeout}ms: ${url}`);
+        throw new Error(`Document reading timed out after ${timeout}ms: ${url}`);
       }
-      this.logger.error(`Failed to parse document ${url}: ${error}`);
+      this.logger.error(`Failed to read document ${url}: ${error}`);
       throw error;
     }
   }
@@ -121,8 +121,8 @@ export class JinaDocumentParser implements DocumentParser {
   private extractMetadata(
     markdown: string,
     url: string,
-  ): ParsedDocument['metadata'] {
-    const metadata: ParsedDocument['metadata'] = {
+  ): ReadDocument['metadata'] {
+    const metadata: ReadDocument['metadata'] = {
       url,
     };
 

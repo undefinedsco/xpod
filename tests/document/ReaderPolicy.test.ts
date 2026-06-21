@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_DOCUMENT_PARSER_POLICY,
-  evaluateParserRequest,
+  DEFAULT_DOCUMENT_READER_POLICY,
+  evaluateReaderRequest,
   planSystemPrefetch,
-} from '../../src/document/ParserPolicy';
+} from '../../src/document/ReaderPolicy';
 
-describe('ParserPolicy', () => {
-  it('allows an agent parser decision within hard and soft budgets', () => {
-    const result = evaluateParserRequest(DEFAULT_DOCUMENT_PARSER_POLICY, {
+describe('ReaderPolicy', () => {
+  it('allows an agent reader decision within hard and soft budgets', () => {
+    const result = evaluateReaderRequest(DEFAULT_DOCUMENT_READER_POLICY, {
       owner: 'agent',
       source: 'https://pod.example/alice/docs/report.pdf',
       pageRange: '1-20',
@@ -27,7 +27,7 @@ describe('ParserPolicy', () => {
   });
 
   it('requires user confirmation when the agent exceeds the exposed soft daily budget', () => {
-    const result = evaluateParserRequest(DEFAULT_DOCUMENT_PARSER_POLICY, {
+    const result = evaluateReaderRequest(DEFAULT_DOCUMENT_READER_POLICY, {
       owner: 'agent',
       source: 'https://pod.example/alice/docs/report.pdf',
       pageRange: '101-200',
@@ -44,8 +44,8 @@ describe('ParserPolicy', () => {
     expect(result.reasons).toContain('provider_soft_budget_exceeded');
   });
 
-  it('denies missing reason for agent-owned parsing', () => {
-    const result = evaluateParserRequest(DEFAULT_DOCUMENT_PARSER_POLICY, {
+  it('denies missing reason for agent-owned reading', () => {
+    const result = evaluateReaderRequest(DEFAULT_DOCUMENT_READER_POLICY, {
       owner: 'agent',
       source: 'https://pod.example/alice/docs/report.pdf',
       pageRange: '1-20',
@@ -62,19 +62,19 @@ describe('ParserPolicy', () => {
   });
 
   it('plans system prefetch for detail scrolling without an agent reason', () => {
-    const prefetch = planSystemPrefetch(DEFAULT_DOCUMENT_PARSER_POLICY, {
+    const prefetch = planSystemPrefetch(DEFAULT_DOCUMENT_READER_POLICY, {
       source: 'https://pod.example/alice/docs/report.pdf',
-      trigger: 'user-scroll-near-unparsed-page',
+      trigger: 'user-scroll-near-unread-page',
       visiblePage: 25,
       totalPages: 100,
-      parsedRanges: ['1-25'],
+      readRanges: ['1-25'],
     });
 
     expect(prefetch).toMatchObject({
       owner: 'system-prefetch',
       source: 'https://pod.example/alice/docs/report.pdf',
       pageRange: '26-35',
-      trigger: 'user-scroll-near-unparsed-page',
+      trigger: 'user-scroll-near-unread-page',
       lookAheadPages: 10,
     });
   });

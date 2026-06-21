@@ -1,5 +1,5 @@
-import { DEFAULT_DOCUMENT_PARSER_POLICY } from './ParserPolicy';
-import type { ParserExpectedUse } from './ParserPolicy';
+import { DEFAULT_DOCUMENT_READER_POLICY } from './ReaderPolicy';
+import type { ReaderExpectedUse } from './ReaderPolicy';
 
 export type SourceUsageSurface = 'chat' | 'task' | 'run' | 'message' | 'tool-call' | 'upload' | 'ui-open';
 export type SourceUsageConfidence = 'low' | 'medium' | 'high';
@@ -66,7 +66,7 @@ export interface SourceUsageContext {
   relatedSources?: RelatedSource[];
 }
 
-export type L0GenerationAction = 'create-l0' | 'parser-required' | 'skip';
+export type L0GenerationAction = 'create-l0' | 'reader-required' | 'skip';
 
 export interface L0SourceSummaryPlan {
   action: L0GenerationAction;
@@ -84,7 +84,7 @@ export interface L0SourceSummaryPlan {
 export interface L0SourceSummaryInput {
   source: string;
   sourceUsageContext: SourceUsageContext;
-  requestedEvidence?: ParserExpectedUse;
+  requestedEvidence?: ReaderExpectedUse;
   oldCacheFresh?: boolean;
   lightweightPreviewAvailable?: boolean;
   pathHint?: string;
@@ -101,7 +101,7 @@ export interface L0SourceSummary {
     bytes?: number;
     lines?: string;
   };
-  parserConfirmed: false;
+  readerConfirmed: false;
   sourceUsageContext?: SourceUsageContext;
 }
 
@@ -120,15 +120,15 @@ export interface CreateL0SourceSummaryInput {
   maxExcerptLength?: number;
 }
 
-const PARSER_REQUIRED_USES = new Set<ParserExpectedUse>(['table-extraction', 'ocr', 'full-import']);
+const READER_REQUIRED_USES = new Set<ReaderExpectedUse>(['table-extraction', 'ocr', 'full-import']);
 
 export function chooseL0SourceSummaryPlan(input: L0SourceSummaryInput): L0SourceSummaryPlan {
-  if (input.requestedEvidence && PARSER_REQUIRED_USES.has(input.requestedEvidence)) {
+  if (input.requestedEvidence && READER_REQUIRED_USES.has(input.requestedEvidence)) {
     return {
-      action: 'parser-required',
+      action: 'reader-required',
       evidence: [],
       confidence: 'low',
-      reason: `Requested evidence ${input.requestedEvidence} needs parser output beyond L0.`,
+      reason: `Requested evidence ${input.requestedEvidence} needs reader output beyond L0.`,
     };
   }
 
@@ -164,8 +164,8 @@ export function chooseL0SourceSummaryPlan(input: L0SourceSummaryInput): L0Source
       evidence: ['local-preview'],
       confidence: 'medium',
       previewSuggestion: {
-        pages: String(DEFAULT_DOCUMENT_PARSER_POLICY.l0.suggestion.localPreviewPages),
-        bytes: DEFAULT_DOCUMENT_PARSER_POLICY.l0.suggestion.localPreviewBytes,
+        pages: String(DEFAULT_DOCUMENT_READER_POLICY.l0.suggestion.localPreviewPages),
+        bytes: DEFAULT_DOCUMENT_READER_POLICY.l0.suggestion.localPreviewBytes,
       },
       reason: 'Context is weak; read lightweight preview before writing L0.',
     };
@@ -187,7 +187,7 @@ export function createL0SourceSummary(input: CreateL0SourceSummaryInput): L0Sour
     confidence: input.confidence,
     evidence: [...new Set(input.evidence)],
     previewRange: input.previewRange,
-    parserConfirmed: false,
+    readerConfirmed: false,
     sourceUsageContext: input.sourceUsageContext
       ? boundSourceUsageContext(input.sourceUsageContext, input.maxExcerptLength ?? 240)
       : undefined,

@@ -78,7 +78,7 @@ import { defaultBaseUrlForProvider, defaultEmbeddingModelForProvider } from '../
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import { normalizeAIConfigModelId, normalizeAIConfigProviderId, normalizeAIConfigResourceId } from '@undefineds.co/models';
-import { selectParserAiConfig, type ParserAiConfig } from '../../document/ParserAiConfig';
+import { selectReaderAiConfig, type ReaderAiConfig } from '../../document/ReaderAiConfig';
 
 const schema = {
   chat: Chat,
@@ -2196,7 +2196,7 @@ WHERE { ${deletePatterns.join(' ')} }
     }
   }
 
-  async getParserConfig(context: StoreContext, preferredProviderId = 'paddleocr'): Promise<ParserAiConfig | undefined> {
+  async getReaderConfig(context: StoreContext, preferredProviderId = 'paddleocr'): Promise<ReaderAiConfig | undefined> {
     const db = await this.getDb(context);
     if (!db) {
       return undefined;
@@ -2212,14 +2212,14 @@ WHERE { ${deletePatterns.join(' ')} }
         )),
       ]);
 
-      return selectParserAiConfig({
+      return selectReaderAiConfig({
         providers,
         models,
         credentials,
         preferredProviderId,
       });
     } catch (error) {
-      this.logger.warn(`Failed to read parser AI config from Pod: ${error}`);
+      this.logger.warn(`Failed to read reader AI config from Pod: ${error}`);
       return undefined;
     }
   }

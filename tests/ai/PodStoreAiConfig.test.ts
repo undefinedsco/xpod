@@ -416,6 +416,68 @@ describe('PodChatKitStore AI Config Operations', () => {
     });
   });
 
+  describe('getReaderConfig', () => {
+    it('should select reader model and credential from Pod provider settings', async () => {
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === Provider) {
+            return Promise.resolve([
+              {
+                id: 'paddleocr',
+                displayName: 'PaddleOCR',
+                baseUrl: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
+                defaultModel: 'http://localhost:3000/test/settings/providers/paddleocr.ttl#pp-ocrv6',
+              },
+            ]);
+          }
+          if (table === Model) {
+            return Promise.resolve([
+              {
+                id: 'paddleocr.ttl#pp-ocrv6',
+                displayName: 'PP-OCRv6',
+                modelType: 'reader',
+                isProvidedBy: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+                status: 'active',
+              },
+              {
+                id: 'paddleocr.ttl#chat-model',
+                displayName: 'Chat-looking model',
+                modelType: 'chat',
+                isProvidedBy: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+                status: 'active',
+              },
+            ]);
+          }
+          return {
+            where: vi.fn().mockResolvedValue([
+              {
+                id: 'cred_reader',
+                provider: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+                service: ServiceType.AI,
+                status: CredentialStatus.ACTIVE,
+                apiKey: 'paddle-token',
+                isDefault: true,
+              },
+            ]),
+          };
+        }),
+      }));
+
+      const config = await store.getReaderConfig(mockContext, 'paddleocr');
+
+      expect(config).toEqual({
+        providerId: 'paddleocr',
+        providerDisplayName: 'PaddleOCR',
+        baseUrl: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
+        proxyUrl: undefined,
+        model: 'pp-ocrv6',
+        modelDisplayName: 'PP-OCRv6',
+        modelType: 'reader',
+        credentialId: 'cred_reader',
+      });
+    });
+  });
+
   describe('updateCredentialStatus', () => {
     it('should not throw when db is not available', async () => {
       vi.spyOn(store as any, 'getDb').mockResolvedValue(null);

@@ -1,13 +1,13 @@
 /**
- * DocumentParser - 文档解析接口
+ * DocumentReader - 文档读取接口
  *
  * 将各种格式的文档（PDF, Office, HTML 等）转换为 Markdown
  */
 
 /**
- * 解析后的文档
+ * 读取后的文档
  */
-export interface ParsedDocument {
+export interface ReadDocument {
   /** Markdown 格式的内容 */
   markdown: string;
 
@@ -23,13 +23,13 @@ export interface ParsedDocument {
     contentType?: string;
     /** 字数统计 */
     wordCount?: number;
-    /** parser provider，例如 paddleocr */
-    parserProvider?: string;
-    /** parser model，例如 pp-ocrv6 */
-    parserModel?: string;
-    /** 已解析页段 */
+    /** reader provider，例如 paddleocr */
+    readerProvider?: string;
+    /** reader model，例如 pp-ocrv6 */
+    readerModel?: string;
+    /** 已读取页段 */
     pageRange?: string;
-    /** 已解析页数 */
+    /** 已读取页数 */
     pageCount?: number;
   };
 
@@ -38,16 +38,16 @@ export interface ParsedDocument {
 }
 
 /**
- * 文档解析器接口
+ * 文档读取器接口
  */
-export interface DocumentParser {
+export interface DocumentReader {
   /**
-   * 解析文档为 Markdown
+   * 读取文档为 Markdown
    * @param url 文档 URL
-   * @param options 解析选项
-   * @returns 解析后的文档
+   * @param options 读取选项
+   * @returns 读取后的文档
    */
-  parse(url: string, options?: ParseOptions): Promise<ParsedDocument>;
+  read(url: string, options?: ReadOptions): Promise<ReadDocument>;
 
   /**
    * 检查是否支持该 URL
@@ -58,9 +58,9 @@ export interface DocumentParser {
 }
 
 /**
- * 解析选项
+ * 读取选项
  */
-export interface ParseOptions {
+export interface ReadOptions {
   /** 访问令牌（用于需要认证的资源） */
   accessToken?: string;
   /** 超时时间（毫秒） */
@@ -71,6 +71,6 @@ export interface ParseOptions {
   includeLinks?: boolean;
   /** 页码范围，例如 1-20 或 1,3,5-8 */
   pageRange?: string;
-  /** Agent/系统解析目的，用于 provider adapter 记录与调度 */
+  /** Agent/系统读取目的，用于 provider adapter 记录与调度 */
   expectedUse?: string;
 }

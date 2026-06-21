@@ -1,6 +1,6 @@
-export type ParserDecisionOwner = 'agent' | 'system-prefetch' | 'user';
+export type ReaderDecisionOwner = 'agent' | 'system-prefetch' | 'user';
 
-export type ParserExpectedUse =
+export type ReaderExpectedUse =
   | 'structure-probe'
   | 'answer-evidence'
   | 'table-extraction'
@@ -9,14 +9,14 @@ export type ParserExpectedUse =
 
 export type SystemPrefetchTrigger =
   | 'user-open-detail'
-  | 'user-scroll-near-unparsed-page'
+  | 'user-scroll-near-unread-page'
   | 'user-search-within-document';
 
-export interface DocumentParserPolicy {
+export interface DocumentReaderPolicy {
   provider: string;
   model: string;
   l0: {
-    parseExternal: false;
+    readExternal: false;
     decisionOwner: 'agent';
     allowContextInference: boolean;
     allowLightweightPreview: boolean;
@@ -52,14 +52,14 @@ export interface DocumentParserPolicy {
   };
 }
 
-export interface ParserUsageSnapshot {
+export interface ReaderUsageSnapshot {
   runUsedPages: number;
   fileUsedPagesToday: number;
   providerUsedPagesToday: number;
   providerDailyPages?: number;
 }
 
-export interface ParserBudgetSnapshot {
+export interface ReaderBudgetSnapshot {
   runRemainingPages: number;
   fileRemainingPagesToday: number;
   providerRemainingPagesToday?: number;
@@ -67,21 +67,21 @@ export interface ParserBudgetSnapshot {
   providerSoftRemainingPagesToday?: number;
 }
 
-export interface ParserRequest {
-  owner: ParserDecisionOwner;
+export interface ReaderRequest {
+  owner: ReaderDecisionOwner;
   source: string;
   pageRange: string;
   reason?: string;
-  expectedUse?: ParserExpectedUse;
+  expectedUse?: ReaderExpectedUse;
   userConfirmed?: boolean;
   trigger?: SystemPrefetchTrigger;
   lookAheadPages?: number;
 }
 
-export interface ParserRequestEvaluation {
+export interface ReaderRequestEvaluation {
   status: 'allow' | 'needs_user_confirmation' | 'deny';
   pageCount: number;
-  budget: ParserBudgetSnapshot;
+  budget: ReaderBudgetSnapshot;
   reasons: string[];
 }
 
@@ -90,21 +90,21 @@ export interface SystemPrefetchInput {
   trigger: SystemPrefetchTrigger;
   visiblePage: number;
   totalPages?: number;
-  parsedRanges?: string[];
+  readRanges?: string[];
 }
 
-export interface SystemPrefetchRequest extends ParserRequest {
+export interface SystemPrefetchRequest extends ReaderRequest {
   owner: 'system-prefetch';
   trigger: SystemPrefetchTrigger;
   visiblePage: number;
   lookAheadPages: number;
 }
 
-export const DEFAULT_DOCUMENT_PARSER_POLICY: DocumentParserPolicy = {
+export const DEFAULT_DOCUMENT_READER_POLICY: DocumentReaderPolicy = {
   provider: 'paddleocr',
   model: 'pp-ocrv6',
   l0: {
-    parseExternal: false,
+    readExternal: false,
     decisionOwner: 'agent',
     allowContextInference: true,
     allowLightweightPreview: true,
@@ -128,7 +128,7 @@ export const DEFAULT_DOCUMENT_PARSER_POLICY: DocumentParserPolicy = {
   },
   systemPrefetch: {
     owner: 'system',
-    triggers: ['user-open-detail', 'user-scroll-near-unparsed-page', 'user-search-within-document'],
+    triggers: ['user-open-detail', 'user-scroll-near-unread-page', 'user-search-within-document'],
     lookAheadPages: 10,
     maxLookAheadPages: 30,
     respectHardLimits: true,
@@ -162,7 +162,7 @@ export function countPagesInRange(pageRange: string): number {
   return total;
 }
 
-export function computeParserBudget(policy: DocumentParserPolicy, usage: ParserUsageSnapshot): ParserBudgetSnapshot {
+export function computeReaderBudget(policy: DocumentReaderPolicy, usage: ReaderUsageSnapshot): ReaderBudgetSnapshot {
   const providerRemainingPagesToday = usage.providerDailyPages === undefined
     ? undefined
     : Math.max(0, usage.providerDailyPages - usage.providerUsedPagesToday);
@@ -182,13 +182,13 @@ export function computeParserBudget(policy: DocumentParserPolicy, usage: ParserU
   };
 }
 
-export function evaluateParserRequest(
-  policy: DocumentParserPolicy,
-  request: ParserRequest,
-  usage: ParserUsageSnapshot,
-): ParserRequestEvaluation {
+export function evaluateReaderRequest(
+  policy: DocumentReaderPolicy,
+  request: ReaderRequest,
+  usage: ReaderUsageSnapshot,
+): ReaderRequestEvaluation {
   const pageCount = countPagesInRange(request.pageRange);
-  const budget = computeParserBudget(policy, usage);
+  const budget = computeReaderBudget(policy, usage);
   const reasons: string[] = [];
 
   if (pageCount <= 0) reasons.push('invalid_page_range');
@@ -224,7 +224,7 @@ export function evaluateParserRequest(
 }
 
 export function planSystemPrefetch(
-  policy: DocumentParserPolicy,
+  policy: DocumentReaderPolicy,
   input: SystemPrefetchInput,
 ): SystemPrefetchRequest | undefined {
   if (!policy.systemPrefetch.triggers.includes(input.trigger)) return undefined;
@@ -235,14 +235,14 @@ export function planSystemPrefetch(
     ? visiblePage + lookAheadPages
     : Math.min(input.totalPages, visiblePage + lookAheadPages);
 
-  const firstUnparsed = firstUnparsedPage(visiblePage, maxEnd, input.parsedRanges ?? []);
-  if (firstUnparsed === undefined) return undefined;
+  const firstUnread = firstUnreadPage(visiblePage, maxEnd, input.readRanges ?? []);
+  if (firstUnread === undefined) return undefined;
 
-  const end = Math.min(maxEnd, firstUnparsed + lookAheadPages - 1);
+  const end = Math.min(maxEnd, firstUnread + lookAheadPages - 1);
   return {
     owner: 'system-prefetch',
     source: input.source,
-    pageRange: `${firstUnparsed}-${end}`,
+    pageRange: `${firstUnread}-${end}`,
     trigger: input.trigger,
     visiblePage,
     lookAheadPages,
@@ -250,15 +250,15 @@ export function planSystemPrefetch(
   };
 }
 
-function firstUnparsedPage(start: number, end: number, parsedRanges: string[]): number | undefined {
+function firstUnreadPage(start: number, end: number, readRanges: string[]): number | undefined {
   for (let page = start; page <= end; page += 1) {
-    if (!isPageCovered(page, parsedRanges)) return page;
+    if (!isPageCovered(page, readRanges)) return page;
   }
   return undefined;
 }
 
-function isPageCovered(page: number, parsedRanges: string[]): boolean {
-  return parsedRanges.some((range) => {
+function isPageCovered(page: number, readRanges: string[]): boolean {
+  return readRanges.some((range) => {
     const match = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(range.trim());
     if (!match) return false;
     const start = Number(match[1]);

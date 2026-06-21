@@ -1,8 +1,8 @@
 import { getLoggerFor } from 'global-logger-factory';
-import type { DocumentParser, ParsedDocument, ParseOptions } from './DocumentParser';
-import { countPagesInRange } from './ParserPolicy';
+import type { DocumentReader, ReadDocument, ReadOptions } from './DocumentReader';
+import { countPagesInRange } from './ReaderPolicy';
 
-export interface PaddleOCRClientParseInput {
+export interface PaddleOcrClientReadInput {
   fileUrl?: string;
   filePath?: string;
   token: string;
@@ -12,7 +12,7 @@ export interface PaddleOCRClientParseInput {
   timeout?: number;
 }
 
-export interface PaddleOCRClientParseResult {
+export interface PaddleOcrClientReadResult {
   markdown?: string;
   content?: string;
   text?: string;
@@ -20,39 +20,39 @@ export interface PaddleOCRClientParseResult {
   pages?: unknown[];
 }
 
-export interface PaddleOCRClientLike {
-  parseDocument(input: PaddleOCRClientParseInput): Promise<PaddleOCRClientParseResult>;
+export interface PaddleOcrClientLike {
+  readDocument(input: PaddleOcrClientReadInput): Promise<PaddleOcrClientReadResult>;
 }
 
-export interface PaddleOCRDocumentParserOptions {
+export interface PaddleOcrReaderOptions {
   token: string;
   model: string;
-  client: PaddleOCRClientLike;
+  client: PaddleOcrClientLike;
   defaultTimeout?: number;
 }
 
-export interface PaddleOCRParseOptions extends ParseOptions {
+export interface PaddleOcrReadOptions extends ReadOptions {
   pageRange?: string;
   expectedUse?: string;
 }
 
-export class PaddleOCRDocumentParser implements DocumentParser {
+export class PaddleOcrReader implements DocumentReader {
   protected readonly logger = getLoggerFor(this);
 
   private readonly token: string;
   private readonly model: string;
-  private readonly client: PaddleOCRClientLike;
+  private readonly client: PaddleOcrClientLike;
   private readonly defaultTimeout: number;
 
-  public constructor(options: PaddleOCRDocumentParserOptions) {
+  public constructor(options: PaddleOcrReaderOptions) {
     this.token = options.token;
     this.model = options.model;
     this.client = options.client;
     this.defaultTimeout = options.defaultTimeout ?? 60_000;
   }
 
-  public async parse(url: string, options?: PaddleOCRParseOptions): Promise<ParsedDocument> {
-    const response = await this.client.parseDocument({
+  public async read(url: string, options?: PaddleOcrReadOptions): Promise<ReadDocument> {
+    const response = await this.client.readDocument({
       fileUrl: url,
       token: this.token,
       model: this.model,
@@ -74,11 +74,11 @@ export class PaddleOCRDocumentParser implements DocumentParser {
         contentType: 'text/markdown',
         wordCount: markdown.trim() ? markdown.trim().split(/\s+/u).length : 0,
         ...(response.metadata ?? {}),
-        parserProvider: 'paddleocr',
-        parserModel: this.model,
+        readerProvider: 'paddleocr',
+        readerModel: this.model,
         pageRange: options?.pageRange,
         pageCount,
-      } as ParsedDocument['metadata'] & Record<string, unknown>,
+      } as ReadDocument['metadata'] & Record<string, unknown>,
     };
   }
 

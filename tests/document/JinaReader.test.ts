@@ -1,19 +1,19 @@
 /**
- * JinaDocumentParser 单元测试
+ * JinaReader 单元测试
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { JinaDocumentParser } from '../../src/document/JinaDocumentParser';
+import { JinaReader } from '../../src/document/JinaReader';
 
 // Mock global fetch
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
-describe('JinaDocumentParser', () => {
-  let parser: JinaDocumentParser;
+describe('JinaReader', () => {
+  let reader: JinaReader;
 
   beforeEach(() => {
-    parser = new JinaDocumentParser({ apiKey: 'test-api-key' });
+    reader = new JinaReader({ apiKey: 'test-api-key' });
     mockFetch.mockReset();
   });
 
@@ -21,15 +21,15 @@ describe('JinaDocumentParser', () => {
     vi.clearAllMocks();
   });
 
-  describe('parse()', () => {
-    it('should parse URL and return markdown', async () => {
+  describe('read()', () => {
+    it('should read URL and return markdown', async () => {
       const mockMarkdown = '# Test Document\n\nThis is test content.';
       mockFetch.mockResolvedValueOnce({
         ok: true,
         text: async () => mockMarkdown,
       });
 
-      const result = await parser.parse('https://example.com/doc.html');
+      const result = await reader.read('https://example.com/doc.html');
 
       expect(result.markdown).toBe(mockMarkdown);
       expect(result.rawUrl).toBe('https://example.com/doc.html');
@@ -49,7 +49,7 @@ describe('JinaDocumentParser', () => {
         text: async () => '# Content',
       });
 
-      await parser.parse('https://example.com/path?query=value&foo=bar');
+      await reader.read('https://example.com/path?query=value&foo=bar');
 
       const calledUrl = mockFetch.mock.calls[0][0] as string;
       expect(calledUrl).toContain('r.jina.ai');
@@ -63,8 +63,8 @@ describe('JinaDocumentParser', () => {
         text: async () => 'Internal Server Error',
       });
 
-      await expect(parser.parse('https://example.com/doc.html'))
-        .rejects.toThrow('JINA parse failed');
+      await expect(reader.read('https://example.com/doc.html'))
+        .rejects.toThrow('JINA read failed');
     });
 
     it('should extract metadata from markdown', async () => {
@@ -80,13 +80,13 @@ Content here.`;
         text: async () => markdown,
       });
 
-      const result = await parser.parse('https://example.com/doc.html');
+      const result = await reader.read('https://example.com/doc.html');
 
       expect(result.metadata?.title).toBe('My Document');
     });
 
     it('should use custom base URL if provided', async () => {
-      parser = new JinaDocumentParser({
+      reader = new JinaReader({
         apiKey: 'test-key',
         baseUrl: 'https://custom.jina.ai/reader',
       });
@@ -96,7 +96,7 @@ Content here.`;
         text: async () => '# Content',
       });
 
-      await parser.parse('https://example.com/doc.html');
+      await reader.read('https://example.com/doc.html');
 
       const calledUrl = mockFetch.mock.calls[0][0] as string;
       expect(calledUrl).toContain('custom.jina.ai');
@@ -105,25 +105,25 @@ Content here.`;
 
   describe('supports()', () => {
     it('should support http URLs', () => {
-      expect(parser.supports('http://example.com/page.html')).toBe(true);
+      expect(reader.supports('http://example.com/page.html')).toBe(true);
     });
 
     it('should support https URLs', () => {
-      expect(parser.supports('https://example.com/page.html')).toBe(true);
+      expect(reader.supports('https://example.com/page.html')).toBe(true);
     });
 
     it('should not support file URLs', () => {
-      expect(parser.supports('file:///path/to/file.txt')).toBe(false);
+      expect(reader.supports('file:///path/to/file.txt')).toBe(false);
     });
 
     it('should not support relative paths', () => {
-      expect(parser.supports('/path/to/file.txt')).toBe(false);
+      expect(reader.supports('/path/to/file.txt')).toBe(false);
     });
 
     it('should support various document types', () => {
-      expect(parser.supports('https://example.com/doc.pdf')).toBe(true);
-      expect(parser.supports('https://example.com/doc.html')).toBe(true);
-      expect(parser.supports('https://example.com/page')).toBe(true);
+      expect(reader.supports('https://example.com/doc.pdf')).toBe(true);
+      expect(reader.supports('https://example.com/doc.html')).toBe(true);
+      expect(reader.supports('https://example.com/page')).toBe(true);
     });
   });
 
@@ -131,7 +131,7 @@ Content here.`;
     it('should handle network errors', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Network error'));
 
-      await expect(parser.parse('https://example.com/doc.html'))
+      await expect(reader.read('https://example.com/doc.html'))
         .rejects.toThrow('Network error');
     });
 
@@ -142,8 +142,8 @@ Content here.`;
         text: async () => 'Too Many Requests',
       });
 
-      await expect(parser.parse('https://example.com/doc.html'))
-        .rejects.toThrow('JINA parse failed');
+      await expect(reader.read('https://example.com/doc.html'))
+        .rejects.toThrow('JINA read failed');
     });
 
     it('should handle empty response', async () => {
@@ -152,7 +152,7 @@ Content here.`;
         text: async () => '',
       });
 
-      const result = await parser.parse('https://example.com/doc.html');
+      const result = await reader.read('https://example.com/doc.html');
       expect(result.markdown).toBe('');
     });
   });

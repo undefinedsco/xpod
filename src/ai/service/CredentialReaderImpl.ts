@@ -20,6 +20,7 @@ export class CredentialReaderImpl extends CredentialReader {
     providerId: string,
     authenticatedFetch: typeof fetch,
     webId?: string,
+    options: { credentialId?: string } = {},
   ): Promise<AiCredential | null> {
     try {
       const session = {
@@ -35,7 +36,10 @@ export class CredentialReaderImpl extends CredentialReader {
         ),
       });
       const providers = await db.query.provider.findMany();
-      const selection = selectAIConfigCredential(providerId, credentials, providers);
+      const credentialRows = options.credentialId
+        ? credentials.filter((credential: any) => matchesCredentialId(credential, options.credentialId))
+        : credentials;
+      const selection = selectAIConfigCredential(providerId, credentialRows, providers);
 
       if (!selection) {
         this.logger.debug(`No active credential found for provider: ${providerId}`);
@@ -45,6 +49,7 @@ export class CredentialReaderImpl extends CredentialReader {
       return {
         provider: selection.providerId,
         apiKey: selection.apiKey,
+        credentialId: selection.credentialId,
         baseUrl: selection.baseUrl,
         proxyUrl: selection.proxyUrl,
       };
@@ -53,4 +58,20 @@ export class CredentialReaderImpl extends CredentialReader {
       return null;
     }
   }
+}
+
+function matchesCredentialId(credential: any, requestedId?: string): boolean {
+  if (!requestedId) return true;
+  const normalizedRequested = normalizeCredentialId(requestedId);
+  return normalizeCredentialId(credential?.id) === normalizedRequested
+    || normalizeCredentialId(credential?.['@id']) === normalizedRequested;
+}
+
+function normalizeCredentialId(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.includes('#')) return trimmed.split('#').pop() || trimmed;
+  const clean = trimmed.replace(/\/$/u, '');
+  return clean.split('/').filter(Boolean).pop() ?? clean;
 }

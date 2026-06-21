@@ -1,4 +1,4 @@
-export interface ParserProviderRow {
+export interface ReaderProviderRow {
   id?: string | null;
   '@id'?: string | null;
   displayName?: string | null;
@@ -8,7 +8,7 @@ export interface ParserProviderRow {
   hasModel?: string | null;
 }
 
-export interface ParserModelRow {
+export interface ReaderModelRow {
   id?: string | null;
   '@id'?: string | null;
   displayName?: string | null;
@@ -17,7 +17,7 @@ export interface ParserModelRow {
   status?: string | null;
 }
 
-export interface ParserCredentialRow {
+export interface ReaderCredentialRow {
   id?: string | null;
   '@id'?: string | null;
   provider?: string | null;
@@ -31,26 +31,25 @@ export interface ParserCredentialRow {
   proxyUrl?: string | null;
 }
 
-export interface SelectParserAiConfigInput {
-  providers: ParserProviderRow[];
-  models: ParserModelRow[];
-  credentials: ParserCredentialRow[];
+export interface SelectReaderAiConfigInput {
+  providers: ReaderProviderRow[];
+  models: ReaderModelRow[];
+  credentials: ReaderCredentialRow[];
   preferredProviderId?: string;
 }
 
-export interface ParserAiConfig {
+export interface ReaderAiConfig {
   providerId: string;
   providerDisplayName?: string;
   baseUrl?: string;
   proxyUrl?: string;
   model: string;
   modelDisplayName?: string;
-  modelType: 'parser';
-  apiKey: string;
+  modelType: 'reader';
   credentialId: string;
 }
 
-export function selectParserAiConfig(input: SelectParserAiConfigInput): ParserAiConfig | undefined {
+export function selectReaderAiConfig(input: SelectReaderAiConfigInput): ReaderAiConfig | undefined {
   const preferredProviderId = normalizeProviderId(input.preferredProviderId ?? 'paddleocr');
   const provider = input.providers.find((row) => normalizeProviderId(row.id ?? row['@id']) === preferredProviderId);
   if (!provider) return undefined;
@@ -59,22 +58,21 @@ export function selectParserAiConfig(input: SelectParserAiConfigInput): ParserAi
     .find((row) => {
       if ((row.service ?? 'ai') !== 'ai') return false;
       if ((row.status ?? 'active') !== 'active') return false;
-      if (!row.apiKey?.trim()) return false;
       return normalizeProviderId(row.provider ?? row.id ?? row['@id']) === preferredProviderId;
     });
-  if (!credential?.apiKey) return undefined;
+  if (!credential) return undefined;
 
-  const parserModels = input.models.filter((row) => {
+  const readerModels = input.models.filter((row) => {
     if ((row.status ?? 'active') === 'inactive') return false;
-    if ((row.modelType ?? 'chat').toLowerCase() !== 'parser') return false;
+    if ((row.modelType ?? 'chat').toLowerCase() !== 'reader') return false;
     return normalizeProviderId(row.isProvidedBy) === preferredProviderId;
   });
-  if (parserModels.length === 0) return undefined;
+  if (readerModels.length === 0) return undefined;
 
   const selectedModelRef = provider.defaultModel ?? provider.hasModel;
   const selectedModelId = normalizeModelId(selectedModelRef, preferredProviderId);
-  const model = parserModels.find((row) => normalizeModelId(row.id ?? row['@id'], preferredProviderId) === selectedModelId)
-    ?? parserModels[0];
+  const model = readerModels.find((row) => normalizeModelId(row.id ?? row['@id'], preferredProviderId) === selectedModelId)
+    ?? readerModels[0];
   const modelId = normalizeModelId(model.id ?? model['@id'], preferredProviderId);
   if (!modelId) return undefined;
 
@@ -85,8 +83,7 @@ export function selectParserAiConfig(input: SelectParserAiConfigInput): ParserAi
     proxyUrl: trim(credential.proxyUrl) ?? trim(provider.proxyUrl),
     model: modelId,
     modelDisplayName: trim(model.displayName),
-    modelType: 'parser',
-    apiKey: credential.apiKey,
+    modelType: 'reader',
     credentialId: normalizeResourceId(credential.id ?? credential['@id']) || `${preferredProviderId}-default`,
   };
 }
@@ -118,7 +115,7 @@ export function normalizeResourceId(value?: string | null): string {
   return tail.endsWith('.ttl') ? tail.slice(0, -4) : tail;
 }
 
-function sortCredentialCandidates(credentials: ParserCredentialRow[]): ParserCredentialRow[] {
+function sortCredentialCandidates(credentials: ReaderCredentialRow[]): ReaderCredentialRow[] {
   return [...credentials].sort((left, right) => {
     const defaultDelta = Number(isTruthy(right.isDefault)) - Number(isTruthy(left.isDefault));
     if (defaultDelta !== 0) return defaultDelta;

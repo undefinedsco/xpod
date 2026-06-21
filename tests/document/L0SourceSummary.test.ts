@@ -47,7 +47,7 @@ describe('L0SourceSummary', () => {
     expect(plan.previewSuggestion).toEqual({ pages: '1', bytes: 65536 });
   });
 
-  it('escalates to parser when the user needs layout evidence', () => {
+  it('escalates to reader when the user needs layout evidence', () => {
     const plan = chooseL0SourceSummaryPlan({
       source: 'https://pod.example/alice/files/table.pdf',
       sourceUsageContext: {
@@ -59,7 +59,7 @@ describe('L0SourceSummary', () => {
       lightweightPreviewAvailable: true,
     });
 
-    expect(plan.action).toBe('parser-required');
+    expect(plan.action).toBe('reader-required');
   });
 
   it('creates an auditable L0 summary with bounded source context excerpts', () => {
@@ -84,7 +84,7 @@ describe('L0SourceSummary', () => {
       },
     });
 
-    expect(summary.parserConfirmed).toBe(false);
+    expect(summary.readerConfirmed).toBe(false);
     expect(summary.mode).toBe('context-inferred');
     expect(summary.sourceUsageContext?.mentions[0].excerpt?.length).toBeLessThanOrEqual(240);
   });
