@@ -215,12 +215,13 @@ Solid SDK / app
   `--allow-fallback` 时才把 public/user-tunnel fallback 当成 smoke 成功。这用于 native/CLI
   运行时验证，不提供普通浏览器 raw TCP 能力。CLI 暴露 `--winner-selection-window-ms`，用于
   实网 smoke 时验证多 socket 成功后的确定性 winner selection。
-- `ManagedClientP2PLocalE2E.test.ts` 已提供 repository-backed 本机端到端 smoke：同一测试内
+- `runLocalManagedClientP2PE2ESmoke`、`ManagedClientP2PLocalE2E.test.ts` 和
+  `bun run smoke:p2p:local-e2e` 已提供 repository-backed 本机端到端 smoke：同一流程内
   启动真实 signal API、真实 `EdgeNodeAgent`、本地 CSS/SP HTTP stand-in 和 managed
   client，验证 route discovery、P2P session 创建、node accept loop、raw TCP transport
   注入点、`xpod-p2p-http/1` frame 和 canonical header 转发能串起来。该 smoke 为稳定
-  CI 覆盖，在 raw socket 边界使用 deterministic socket injection；它证明本机 orchestration
-  路径，不等于跨 NAT true simultaneous-open 实网证明。
+  CI/本机手工复现覆盖，在 raw socket 边界使用 deterministic socket injection；它证明
+  本机 orchestration 路径，不等于跨 NAT true simultaneous-open 实网证明。
 - `acceptSignaledRawTcpP2PConnectionOnce` 已提供 node 侧一次性编排入口：local node 轮询
   pending raw TCP session、按 client bucket 追加 node candidates、执行 candidate race，
   并把成功 socket 直接挂到 `P2PDataPlaneHandler`。runtime 调用方不需要手工拼接

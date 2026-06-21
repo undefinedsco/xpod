@@ -224,6 +224,21 @@ The default Node connector is also covered for delayed peer availability: it
 keeps retrying within `connectTimeoutMs` from the same candidate local TCP port
 instead of failing after one refused connection.
 
+For a one-command local orchestration smoke that starts the signal API, node
+registry, target CSS/SP stand-in, `EdgeNodeAgent`, and managed client in one
+process, use:
+
+```bash
+bun run smoke:p2p:local-e2e
+```
+
+This prints JSON evidence including `smoke.route`, selected raw TCP candidate
+plan, client/node connect attempts, target HTTP requests, and explicit caveats.
+It is deterministic and useful for development/regression work, but it injects
+the already-connected socket pair at the raw socket boundary. It proves the
+control-plane and managed-client data-plane wiring, not real cross-NAT TCP
+simultaneous open.
+
 For a CLI/native-style smoke against a running signal API and a node with
 `XPOD_P2P_ENABLED=true`, use:
 

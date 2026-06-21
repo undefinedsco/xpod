@@ -116,6 +116,7 @@
     "build:single:bun:package": "node scripts/build-platform-package.cjs --current",
     "build:single:standalone": "bun run build && node scripts/build-single-file.js",
     "smoke:p2p:managed": "bun scripts/managed-client-p2p-smoke.ts",
+    "smoke:p2p:local-e2e": "bun scripts/local-managed-p2p-e2e-smoke.ts",
     "check:abi": "node scripts/check-native-abi.cjs",
     "check:platform-package-version": "node scripts/check-platform-package-version.cjs",
     "sync:platform-package-version": "node scripts/sync-platform-package-version.cjs",
