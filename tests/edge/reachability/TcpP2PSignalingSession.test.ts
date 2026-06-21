@@ -12,6 +12,7 @@ import {
   attachTcpP2PDataPlaneSocket,
   connectRawTcpP2PTransport,
   connectSignaledRawTcpP2PTransport,
+  createNodeRawTcpP2PConnectSocket,
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
   createSignaledRawTcpP2PSession,
@@ -278,6 +279,83 @@ describe('signaled raw TCP P2P sessions', () => {
       transport.close();
     } finally {
       await server.close();
+    }
+  });
+
+  it('exposes a reusable Node raw TCP connector with retry observability', async () => {
+    const remotePort = await reserveTcpPort();
+    const localPort = await reserveTcpPort();
+    const events: Array<{ type: string; message?: string; remotePort?: number }> = [];
+    const connector = createNodeRawTcpP2PConnectSocket({
+      retryIntervalMs: 10,
+      onEvent: (event) => {
+        events.push({
+          type: event.type,
+          message: event.error?.message,
+          remotePort: event.attempt.remotePort,
+        });
+      },
+    });
+    let observedClientPort: number | undefined;
+    let server: ReturnType<typeof createServer> | undefined;
+    let acceptedConnection: Promise<void> = Promise.resolve();
+    const delayedPeer = sleepTest(30).then(async () => {
+      acceptedConnection = new Promise<void>((resolve) => {
+        server = createServer((socket) => {
+          socket.on('error', () => undefined);
+          observedClientPort = socket.remotePort;
+          socket.end('ready');
+          resolve();
+        });
+      });
+      await listenOn(server, remotePort);
+    });
+
+    let socket: Socket | undefined;
+    try {
+      socket = await connector({
+        local: {
+          id: 'local',
+          role: 'client',
+          sourceId: 'device-1',
+          createdAt: '2026-06-21T00:00:00.000Z',
+          protocol: 'tcp',
+          transport: RAW_TCP_HOLE_PUNCH_TRANSPORT,
+          host: '127.0.0.1',
+          port: localPort,
+          metadata: { bucket: 1, rendezvousTimeSeconds: 0 },
+        },
+        remote: {
+          id: 'remote',
+          role: 'node',
+          sourceId: 'node-1',
+          createdAt: '2026-06-21T00:00:00.000Z',
+          protocol: 'tcp',
+          transport: RAW_TCP_HOLE_PUNCH_TRANSPORT,
+          host: '127.0.0.1',
+          port: remotePort,
+          metadata: { bucket: 1, rendezvousTimeSeconds: 0 },
+        },
+        remoteHost: '127.0.0.1',
+        remotePort,
+        localPort,
+        rendezvousTimeMs: 0,
+        timeoutMs: 1_000,
+      });
+      socket.on('error', () => undefined);
+      await delayedPeer;
+      await acceptedConnection;
+
+      expect(socket.remotePort).toBe(remotePort);
+      expect(observedClientPort).toBe(localPort);
+      expect(events.map((event) => event.type)).toContain('retry');
+      expect(events.at(-1)).toEqual({ type: 'success', remotePort });
+    } finally {
+      socket?.destroy();
+      await delayedPeer.catch(() => undefined);
+      if (server) {
+        await closeServer(server);
+      }
     }
   });
 

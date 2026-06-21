@@ -95,6 +95,31 @@ export type RawTcpP2PConnectSocket = (attempt: RawTcpP2PConnectAttempt) => Promi
 
 export type RawTcpP2PSleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
+export interface NodeRawTcpP2PConnectSocketEventBase {
+  attempt: RawTcpP2PConnectAttempt;
+  error?: Error;
+  remainingMs?: number;
+  retryDelayMs?: number;
+  socket?: Socket;
+}
+
+export type NodeRawTcpP2PConnectSocketEvent =
+  | (NodeRawTcpP2PConnectSocketEventBase & { type: 'attempt'; remainingMs: number })
+  | (NodeRawTcpP2PConnectSocketEventBase & {
+    type: 'retry';
+    error: Error;
+    remainingMs: number;
+    retryDelayMs: number;
+  })
+  | (NodeRawTcpP2PConnectSocketEventBase & { type: 'success'; socket: Socket })
+  | (NodeRawTcpP2PConnectSocketEventBase & { type: 'timeout'; error: Error })
+  | (NodeRawTcpP2PConnectSocketEventBase & { type: 'aborted'; error?: Error });
+
+export interface CreateNodeRawTcpP2PConnectSocketOptions {
+  retryIntervalMs?: number;
+  onEvent?: (event: NodeRawTcpP2PConnectSocketEvent) => void;
+}
+
 export interface ConnectSignaledRawTcpP2PTransportOptions extends SignaledRawTcpP2PSessionOptions {
   connectTimeoutMs?: number;
   timeoutMs?: number;
@@ -134,6 +159,14 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_RAW_TCP_RETRY_INTERVAL_MS = 25;
+
+export function createNodeRawTcpP2PConnectSocket(
+  options: CreateNodeRawTcpP2PConnectSocketOptions = {},
+): RawTcpP2PConnectSocket {
+  return (attempt) => connectNodeRawTcpSocket(attempt, options);
+}
+
+const defaultNodeRawTcpP2PConnectSocket = createNodeRawTcpP2PConnectSocket();
 
 export function createRawTcpHolePunchCandidates(
   options: CreateRawTcpHolePunchCandidatesOptions,
@@ -374,7 +407,7 @@ async function connectRawTcpP2PSocketAttempt(
   const errors: string[] = [];
   const nowMs = options.nowMs ?? Date.now;
   const sleepMs = options.sleepMs ?? sleep;
-  const connectSocket = options.connectSocket ?? connectRawTcpSocket;
+  const connectSocket = options.connectSocket ?? defaultNodeRawTcpP2PConnectSocket;
   const attempts = pairs.map(({ local, remote }) => createRawTcpConnectAttempt(local, remote, {
     timeoutMs: positiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS),
     localAddress: options.localAddress,
@@ -676,32 +709,64 @@ async function connectSocketWithTimeout(
   });
 }
 
-async function connectRawTcpSocket(attempt: RawTcpP2PConnectAttempt): Promise<Socket> {
+async function connectNodeRawTcpSocket(
+  attempt: RawTcpP2PConnectAttempt,
+  options: CreateNodeRawTcpP2PConnectSocketOptions,
+): Promise<Socket> {
   const startedAt = Date.now();
+  const retryIntervalMs = positiveInteger(options.retryIntervalMs, DEFAULT_RAW_TCP_RETRY_INTERVAL_MS);
   let lastError: Error | undefined;
   for (;;) {
     if (attempt.signal?.aborted) {
+      options.onEvent?.({ type: 'aborted', attempt });
       throw new Error('Raw TCP candidate connect aborted');
     }
     const remainingMs = attempt.timeoutMs - (Date.now() - startedAt);
     if (remainingMs <= 0) {
-      throw new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms${lastError ? `: ${lastError.message}` : ''}`);
+      const error = new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms${lastError ? `: ${lastError.message}` : ''}`);
+      options.onEvent?.({ type: 'timeout', attempt, error });
+      throw error;
     }
+    options.onEvent?.({ type: 'attempt', attempt, remainingMs });
     try {
-      return await connectRawTcpSocketOnce(attempt, remainingMs);
+      const socket = await connectRawTcpSocketOnce(attempt, remainingMs);
+      options.onEvent?.({ type: 'success', attempt, socket });
+      return socket;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (attempt.signal?.aborted) {
+        options.onEvent?.({ type: 'aborted', attempt, error: lastError });
         throw new Error('Raw TCP candidate connect aborted');
       }
+      const remainingAfterFailureMs = attempt.timeoutMs - (Date.now() - startedAt);
       const retryDelayMs = Math.min(
-        DEFAULT_RAW_TCP_RETRY_INTERVAL_MS,
-        Math.max(0, attempt.timeoutMs - (Date.now() - startedAt)),
+        retryIntervalMs,
+        Math.max(0, remainingAfterFailureMs),
       );
       if (retryDelayMs <= 0) {
-        throw new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms: ${lastError.message}`);
+        const timeoutError = new Error(`Raw TCP candidate connect timed out after ${attempt.timeoutMs}ms: ${lastError.message}`);
+        options.onEvent?.({ type: 'timeout', attempt, error: timeoutError });
+        throw timeoutError;
       }
-      await sleep(retryDelayMs, attempt.signal);
+      options.onEvent?.({
+        type: 'retry',
+        attempt,
+        error: lastError,
+        remainingMs: remainingAfterFailureMs,
+        retryDelayMs,
+      });
+      try {
+        await sleep(retryDelayMs, attempt.signal);
+      } catch (sleepError) {
+        if (attempt.signal?.aborted) {
+          options.onEvent?.({
+            type: 'aborted',
+            attempt,
+            error: sleepError instanceof Error ? sleepError : new Error(String(sleepError)),
+          });
+        }
+        throw sleepError;
+      }
     }
   }
 }
