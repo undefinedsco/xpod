@@ -120,8 +120,14 @@ await agent.start({
   等待 accept loop 轮询 signaling session，并输出 JSON 形式的 `accepted` 证据。
   默认 `--require-accept`，实网双端验证时应和另一台机器上的
   `bun run smoke:p2p:managed` 配合；仅验证 agent 轮询/心跳时可显式传入
-  `--allow-no-accept`。该 smoke 只覆盖 raw TCP P2P node-side 路径，不会创建、删除
+  `--allow-no-accept`。脚本 stdout 只输出最终 JSON，运行日志走 stderr，方便测试和
+  CI 直接解析验收结果。该 smoke 只覆盖 raw TCP P2P node-side 路径，不会创建、删除
   或替换 Cloudflare Tunnel、FRP/SakuraFRP。
+- `tests/scripts/p2p-dual-smoke.test.ts` 用两个真实 smoke 子进程验证脚本边界：
+  一个运行 node-side accept runner，一个运行 managed-client runner，二者通过同一个
+  signal API 交换 session/candidates，并把 canonical Solid HTTP 请求转发到本地
+  CSS/SP stand-in。它仍是本机 socket bridge 验证，不等价于跨 NAT 实网证明，但可以
+  防止只验证库函数而脚本协作路径退化。
 - 普通浏览器不支持 raw TCP socket、同号端口 bind 或 simultaneous open；手机浏览器页面只能验证
   Cloud IdP、SP route 和 signaling 控制面。Chrome Isolated Web App 的 Direct Sockets
   只能作为安装式 runtime 自定义 TCP transport 的后续研究项；它不是普通浏览器能力，

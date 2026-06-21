@@ -202,13 +202,17 @@ Current non-browser data-plane verification is local-runtime only:
   tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts \
   tests/edge/reachability/TcpP2PSignalingSession.test.ts \
   tests/edge/reachability/ManagedClientFetch.test.ts \
-  tests/edge/EdgeNodeAgent.test.ts
+  tests/edge/EdgeNodeAgent.test.ts \
+  tests/scripts/p2p-dual-smoke.test.ts
 ```
 
 These tests cover the repository-backed local signal API, node heartbeat route
 advertisement, signaled client/node candidate exchange, the local TCP frame
 transport, the managed-client fetch adapters, and the `EdgeNodeAgent` accept
-loop that attaches an accepted socket to `XPOD_P2P_TARGET_BASE_URL`. The local
+loop that attaches an accepted socket to `XPOD_P2P_TARGET_BASE_URL`. The
+dual-script smoke additionally runs the node accept runner and managed-client
+runner as two subprocesses against the same signal API, proving the CLI/script
+contract remains compatible instead of only exercising library functions. The local
 E2E smoke starts an in-process signal API, a target HTTP server standing in for
 CSS/SP, a real `EdgeNodeAgent`, and a managed client. It uses deterministic
 socket injection at the raw socket boundary so CI and developer laptops can
@@ -259,6 +263,21 @@ bun run smoke:p2p:local-e2e -- --socket-mode real-tcp-listener
 This mode returns `evidence.dataPlane = real-local-tcp-listener` and reports both
 `clientPlan` and `nodePlan`. It still runs on loopback and is not a substitute
 for packaged native/mobile cross-network validation.
+
+For a two-runner local smoke that keeps the production script boundary, run:
+
+```bash
+./scripts/run-vitest-safe.sh --run tests/scripts/p2p-dual-smoke.test.ts
+```
+
+That test launches `scripts/edge-node-p2p-accept-smoke.ts` and
+`scripts/managed-client-p2p-smoke.ts` as separate processes, then checks:
+
+1. the managed client selected `route.kind = p2p`;
+2. the canonical Solid resource body came back through `xpod-p2p-http/1`;
+3. the node runner emitted an `accepted` event for the same session/client;
+4. the node runner's JSON result still declares Cloudflare Tunnel and
+   FRP/SakuraFRP as preserved fallback routes.
 
 For a CLI/native-style smoke against a running signal API and a node with
 `XPOD_P2P_ENABLED=true`, use:

@@ -241,7 +241,14 @@ Solid SDK / app
   node 机器运行 `smoke:p2p:node-accept --require-accept`，另一网络/设备运行
   `smoke:p2p:managed --require-p2p` 读取 canonical Solid resource。若只检查 agent 是否
   能心跳并轮询 `/v1/signal/nodes/:nodeId/sessions`，可用 `--allow-no-accept`。该 runner
-  的 caveats 明确声明 Cloudflare Tunnel 与 FRP/SakuraFRP 保留为 fallback。
+  的 stdout 只输出最终 JSON 结果，运行日志应走 stderr；caveats 明确声明 Cloudflare
+  Tunnel 与 FRP/SakuraFRP 保留为 fallback。
+- `tests/scripts/p2p-dual-smoke.test.ts` 已覆盖 node/client 两个脚本的协作路径：
+  测试内启动同一个 fake signal API、本地 CSS/SP stand-in、`smoke:p2p:node-accept`
+  子进程和 `smoke:p2p:managed` 子进程，验证 managed client 通过 signaled raw TCP
+  stream 读取 canonical Solid resource，node runner 输出同一 session 的 accepted
+  证据。该测试使用本机 socket bridge 避免依赖真实 NAT，但保留脚本边界，因此可防止
+  未来只验证库函数而遗漏 CLI/runner 契约。
 - `attachTcpP2PDataPlaneSocket` 已能把 raw TCP 打洞成功后拿到的 pre-connected socket
   直接挂到 node-side `P2PDataPlaneHandler`，因此执行器不必伪装成 listener accept
   流程；成功 socket 可立即转发 canonical HTTP frame 到本地 CSS/SP。

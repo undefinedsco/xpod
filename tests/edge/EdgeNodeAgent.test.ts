@@ -383,6 +383,94 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
     }
   });
 
+  it('does not accept the same raw TCP P2P session more than once while it remains listed', async () => {
+    vi.useRealTimers();
+    const socketPairs: Array<Awaited<ReturnType<typeof createSocketPair>>> = [];
+    const localPort = await reserveTcpPort();
+    const plan = {
+      bucket: 208,
+      boundary: 777,
+      rendezvousTimeSeconds: 0,
+      ports: [localPort],
+    };
+    const clientCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-1',
+      host: '127.0.0.1',
+      plan,
+    });
+    const session: P2PSession = {
+      sessionId: 'p2p_agent_duplicate',
+      kind: 'p2p',
+      nodeId: 'node-1',
+      clientId: 'device-1',
+      createdAt: new Date(0).toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      auditId: 'audit-agent-duplicate',
+      nodeCandidates: [p2pRoute],
+      signalingUrl: 'https://cluster.example/v1/signal/nodes/node-1/sessions/p2p_agent_duplicate',
+      capabilities: ['tcp-punch'],
+      candidates: clientCandidates,
+    };
+    let updatedSession: P2PSession | undefined;
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(),
+      listP2PSessions: vi.fn(async () => [updatedSession ?? session]),
+      getP2PSession: vi.fn(),
+      addP2PCandidates: vi.fn(async (_sessionIdOrUrl, request) => {
+        updatedSession = {
+          ...session,
+          candidates: [...clientCandidates, ...(request.candidates as P2PTransportCandidate[])],
+        };
+        return updatedSession;
+      }),
+    };
+    const acceptedEvents: string[] = [];
+    const attempts: RawTcpP2PConnectAttempt[] = [];
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+    agent = new EdgeNodeAgent();
+
+    try {
+      await agent.start({
+        signalEndpoint: 'https://cluster.example/api/signal',
+        nodeId: 'node-1',
+        nodeToken: 'node-token',
+        baseUrl: 'https://node-1.pods.example/',
+        enableNetworkDetection: false,
+        p2p: {
+          enabled: true,
+          targetBaseUrl: 'http://127.0.0.1:3000/',
+          host: '127.0.0.1',
+          signaling,
+          acceptIntervalMs: 20,
+          connectSocket: async (attempt) => {
+            attempts.push(attempt);
+            const pair = await createSocketPair();
+            socketPairs.push(pair);
+            return pair.serverSocket;
+          },
+          onP2PAccept: (event) => acceptedEvents.push(event.sessionId),
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(acceptedEvents).toEqual(['p2p_agent_duplicate']);
+      });
+      await sleepTest(80);
+
+      expect(acceptedEvents).toEqual(['p2p_agent_duplicate']);
+      expect(attempts).toHaveLength(1);
+      expect(signaling.addP2PCandidates).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const pair of socketPairs) {
+        await pair.close();
+      }
+    }
+  });
+
   it('applies the configured raw TCP winner selection window on the node-side accept loop', async () => {
     vi.useRealTimers();
     const wrongPair = await createSocketPair();

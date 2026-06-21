@@ -170,12 +170,14 @@ export async function runLocalManagedClientP2PE2ESmoke(
       cleanupStack.push(() => socketPair.close());
       const agent = new EdgeNodeAgent();
       cleanupStack.push(() => agent.stop());
+      const initialHeartbeat = createDeferred<void>();
       await agent.start({
         signalEndpoint: `${signalApi.baseUrl}/v1/signal`,
         nodeId,
         nodeToken,
         baseUrl: `https://${nodeId}.${baseStorageDomain}/`,
         enableNetworkDetection: false,
+        onHeartbeatResponse: () => initialHeartbeat.resolve(),
         p2p: {
           enabled: true,
           targetBaseUrl: target.baseUrl,
@@ -193,6 +195,7 @@ export async function runLocalManagedClientP2PE2ESmoke(
         p2pAttempts.client.push(attempt);
         return socketPair.clientSocket;
       };
+      await initialHeartbeat.wait(routeWaitTimeoutMs, 'initial P2P heartbeat was not acknowledged before route discovery');
     }
 
     await waitForRoute({
@@ -517,4 +520,46 @@ function closeTcpServer(server: ReturnType<typeof createTcpServer>): Promise<voi
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createDeferred<T>(): {
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+  wait: (timeoutMs: number, timeoutMessage: string) => Promise<T>;
+} {
+  let settled = false;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = (value) => {
+      settled = true;
+      promiseResolve(value);
+    };
+    reject = (reason) => {
+      settled = true;
+      promiseReject(reason);
+    };
+  });
+  return {
+    resolve,
+    reject,
+    wait: async (timeoutMs, timeoutMessage) => {
+      if (settled) {
+        return promise;
+      }
+      let timeout: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<T>((_, timeoutReject) => {
+            timeout = setTimeout(() => timeoutReject(new Error(timeoutMessage)), timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+      }
+    },
+  };
 }

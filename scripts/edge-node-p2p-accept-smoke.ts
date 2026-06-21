@@ -24,6 +24,20 @@ const fallbackCaveats = [
   'This runner validates node-side accept-loop behavior; real cross-NAT success still requires running managed-client smoke from another network/native runtime.',
 ];
 
+function withJsonStdoutOnly<T>(run: () => Promise<T>): Promise<T> {
+  const originalConsoleLog = console.log;
+  console.log = (...args: unknown[]): void => {
+    console.error(...args);
+  };
+  return run().finally(() => {
+    console.log = originalConsoleLog;
+  });
+}
+
+function writeJsonResult(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     signalEndpoint: process.env.XPOD_P2P_ACCEPT_SMOKE_SIGNAL_ENDPOINT ?? process.env.XPOD_SIGNAL_ENDPOINT ?? '',
@@ -163,50 +177,52 @@ async function main(): Promise<void> {
   }
   validateOptions(options);
 
-  const accepted: EdgeNodeP2PAcceptEvent[] = [];
-  const agent = new EdgeNodeAgent();
-  try {
-    await agent.start({
-      signalEndpoint: options.signalEndpoint,
-      nodeId: options.nodeId,
-      nodeToken: options.nodeToken,
-      baseUrl: options.baseUrl,
-      enableNetworkDetection: false,
-      p2p: {
-        enabled: true,
-        targetBaseUrl: options.targetBaseUrl,
-        host: options.host,
-        address: options.address,
-        localAddress: options.localAddress,
-        acceptIntervalMs: options.acceptIntervalMs,
-        connectTimeoutMs: options.connectTimeoutMs,
-        winnerSelectionWindowMs: options.winnerSelectionWindowMs,
-        onP2PAccept: (event) => accepted.push(event),
-      },
-    });
+  await withJsonStdoutOnly(async () => {
+    const accepted: EdgeNodeP2PAcceptEvent[] = [];
+    const agent = new EdgeNodeAgent();
+    try {
+      await agent.start({
+        signalEndpoint: options.signalEndpoint,
+        nodeId: options.nodeId,
+        nodeToken: options.nodeToken,
+        baseUrl: options.baseUrl,
+        enableNetworkDetection: false,
+        p2p: {
+          enabled: true,
+          targetBaseUrl: options.targetBaseUrl,
+          host: options.host,
+          address: options.address,
+          localAddress: options.localAddress,
+          acceptIntervalMs: options.acceptIntervalMs,
+          connectTimeoutMs: options.connectTimeoutMs,
+          winnerSelectionWindowMs: options.winnerSelectionWindowMs,
+          onP2PAccept: (event) => accepted.push(event),
+        },
+      });
 
-    await sleep(options.runTimeoutMs);
-    const smokeOk = !options.requireAccept || accepted.length > 0;
-    console.log(JSON.stringify({
-      smokeOk,
-      ...(smokeOk ? {} : { error: 'No raw TCP P2P session was accepted before run timeout.' }),
-      requireAccept: options.requireAccept,
-      accepted,
-      runTimeoutMs: options.runTimeoutMs,
-      caveats: fallbackCaveats,
-      routeFallbacksPreserved: [
-        'Cloudflare Tunnel',
-        'FRP/SakuraFRP',
-      ],
-      signalEndpoint: options.signalEndpoint,
-      nodeId: options.nodeId,
-    }, null, 2));
-    if (!smokeOk) {
-      process.exitCode = 1;
+      await sleep(options.runTimeoutMs);
+      const smokeOk = !options.requireAccept || accepted.length > 0;
+      writeJsonResult({
+        smokeOk,
+        ...(smokeOk ? {} : { error: 'No raw TCP P2P session was accepted before run timeout.' }),
+        requireAccept: options.requireAccept,
+        accepted,
+        runTimeoutMs: options.runTimeoutMs,
+        caveats: fallbackCaveats,
+        routeFallbacksPreserved: [
+          'Cloudflare Tunnel',
+          'FRP/SakuraFRP',
+        ],
+        signalEndpoint: options.signalEndpoint,
+        nodeId: options.nodeId,
+      });
+      if (!smokeOk) {
+        process.exitCode = 1;
+      }
+    } finally {
+      agent.stop();
     }
-  } finally {
-    agent.stop();
-  }
+  });
 }
 
 function validateOptions(options: CliOptions): void {
@@ -269,10 +285,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 main().catch((error) => {
-  console.log(JSON.stringify({
+  writeJsonResult({
     smokeOk: false,
     error: error instanceof Error ? error.message : String(error),
     caveats: fallbackCaveats,
-  }, null, 2));
+  });
   process.exit(1);
 });

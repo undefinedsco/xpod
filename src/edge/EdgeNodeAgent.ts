@@ -90,6 +90,7 @@ export class EdgeNodeAgent {
   private lastNetworkDetection = 0;
   private p2pAcceptInterval?: NodeJS.Timeout;
   private p2pAcceptRunning = false;
+  private readonly p2pAcceptedSessionIds = new Set<string>();
   private readonly p2pSocketHandles = new Set<TcpP2PDataPlaneSocketHandle>();
   private readonly networkDetectionIntervalMs = 60_000; // 每分钟重新检测一次
 
@@ -171,6 +172,7 @@ export class EdgeNodeAgent {
       handle.close();
     }
     this.p2pSocketHandles.clear();
+    this.p2pAcceptedSessionIds.clear();
     this.p2pAcceptRunning = false;
     void this.frpManager?.stop();
     this.clusterCertificate?.stop();
@@ -219,9 +221,11 @@ export class EdgeNodeAgent {
       const networkInfo = await this.getNetworkInfo();
       const accepted = await acceptSignaledRawTcpP2PConnectionOnce({
         ...acceptOptions,
+        signaling: this.skipAcceptedP2PSessions(acceptOptions.signaling),
         host: acceptOptions.host ?? networkInfo.ipv4 ?? networkInfo.ipv6,
       });
       if (accepted) {
+        this.p2pAcceptedSessionIds.add(accepted.session.sessionId);
         this.p2pSocketHandles.add(accepted.socketHandle);
         onP2PAccept?.({
           sessionId: accepted.session.sessionId,
@@ -238,6 +242,18 @@ export class EdgeNodeAgent {
     } finally {
       this.p2pAcceptRunning = false;
     }
+  }
+
+  private skipAcceptedP2PSessions(signaling: P2PSignalingClient): P2PSignalingClient {
+    return {
+      createP2PSession: (request) => signaling.createP2PSession(request),
+      getP2PSession: (sessionIdOrUrl) => signaling.getP2PSession(sessionIdOrUrl),
+      addP2PCandidates: (sessionIdOrUrl, request) => signaling.addP2PCandidates(sessionIdOrUrl, request),
+      listP2PSessions: async () => {
+        const sessions = await signaling.listP2PSessions();
+        return sessions.filter((session) => !this.p2pAcceptedSessionIds.has(session.sessionId));
+      },
+    };
   }
 
   private resolveP2PApiBaseUrl(signalEndpoint: string): string {
