@@ -268,6 +268,121 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
     }
   });
 
+
+  it('reports accepted raw TCP P2P sessions through the node-side accept callback', async () => {
+    vi.useRealTimers();
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const localPort = await reserveTcpPort();
+    const plan = {
+      bucket: 207,
+      boundary: 777,
+      rendezvousTimeSeconds: 0,
+      ports: [localPort],
+    };
+    const clientCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-1',
+      host: '127.0.0.1',
+      plan,
+    });
+    const session: P2PSession = {
+      sessionId: 'p2p_agent_callback',
+      kind: 'p2p',
+      nodeId: 'node-1',
+      clientId: 'device-1',
+      createdAt: new Date(0).toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      auditId: 'audit-agent-callback',
+      nodeCandidates: [p2pRoute],
+      signalingUrl: 'https://cluster.example/v1/signal/nodes/node-1/sessions/p2p_agent_callback',
+      capabilities: ['tcp-punch'],
+      candidates: clientCandidates,
+    };
+    let listed = false;
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(),
+      listP2PSessions: vi.fn(async () => {
+        if (listed) {
+          return [];
+        }
+        listed = true;
+        return [session];
+      }),
+      getP2PSession: vi.fn(),
+      addP2PCandidates: vi.fn(async (_sessionIdOrUrl, request) => ({
+        ...session,
+        candidates: [...clientCandidates, ...(request.candidates as P2PTransportCandidate[])],
+      })),
+    };
+    const acceptedEvents: Array<{
+      sessionId: string;
+      nodeId: string;
+      clientId: string;
+      localCandidateCount: number;
+      remoteCandidateCount: number;
+      acceptedAt: string;
+    }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url === 'https://cluster.example/api/signal') {
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === 'http://127.0.0.1:3000/alice/agent-callback.txt') {
+        return new Response('agent callback response', { status: 200, headers: { 'content-type': 'text/plain' } });
+      }
+      return new Response(`unexpected fetch ${url}`, { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    agent = new EdgeNodeAgent();
+
+    try {
+      await agent.start({
+        signalEndpoint: 'https://cluster.example/api/signal',
+        nodeId: 'node-1',
+        nodeToken: 'node-token',
+        baseUrl: 'https://node-1.pods.example/',
+        enableNetworkDetection: false,
+        p2p: {
+          enabled: true,
+          targetBaseUrl: 'http://127.0.0.1:3000/',
+          host: '127.0.0.1',
+          signaling,
+          acceptIntervalMs: 1_000,
+          connectSocket: async () => serverSocket,
+          onP2PAccept: (event) => acceptedEvents.push(event),
+        },
+      });
+      await vi.waitFor(() => {
+        expect(acceptedEvents).toHaveLength(1);
+      });
+      const clientTransport = createTcpP2PDataPlaneTransport({
+        remoteHost: '127.0.0.1',
+        remotePort: localPort,
+        socket: clientSocket,
+        timeoutMs: 2_000,
+      });
+      const fetchViaP2P = createP2PDataPlaneFetch({ route: p2pRoute, transport: clientTransport });
+      const response = await fetchViaP2P('https://node-1.pods.example/alice/agent-callback.txt');
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('agent callback response');
+      expect(acceptedEvents).toEqual([
+        {
+          sessionId: 'p2p_agent_callback',
+          nodeId: 'node-1',
+          clientId: 'device-1',
+          localCandidateCount: 1,
+          remoteCandidateCount: 1,
+          acceptedAt: expect.any(String),
+        },
+      ]);
+      expect(Date.parse(acceptedEvents[0].acceptedAt)).not.toBeNaN();
+      clientTransport.close();
+    } finally {
+      await close();
+    }
+  });
+
   it('applies the configured raw TCP winner selection window on the node-side accept loop', async () => {
     vi.useRealTimers();
     const wrongPair = await createSocketPair();

@@ -233,8 +233,15 @@ Solid SDK / app
   心跳继续上报 managed-only `p2p` route，同时后台轮询 signaling sessions，成功后把
   socket 接到 `XPOD_P2P_TARGET_BASE_URL` 指向的本地 CSS/SP。`XPOD_P2P_WINNER_SELECTION_WINDOW_MS`
   可让 node 端在多个 raw TCP socket 近乎同时成功时短暂收集并选择同一确定性
-  candidate-pair winner；默认仍保持 first-success。该 loop 不处理 Cloudflare Tunnel
-  或 FRP/SakuraFRP，它们仍是独立 `user-tunnel` fallback。
+  candidate-pair winner；默认仍保持 first-success。`onP2PAccept` 会输出不含 raw socket
+  的 accept 摘要，供 runtime、脚本和实网验收记录 node-side 证据。该 loop 不处理
+  Cloudflare Tunnel 或 FRP/SakuraFRP，它们仍是独立 `user-tunnel` fallback。
+- `bun run smoke:p2p:node-accept` 已提供 node 侧 smoke runner：它启动 `EdgeNodeAgent`
+  并在指定 `--run-timeout-ms` 内收集 `accepted` 事件。实网验证推荐两端配合：
+  node 机器运行 `smoke:p2p:node-accept --require-accept`，另一网络/设备运行
+  `smoke:p2p:managed --require-p2p` 读取 canonical Solid resource。若只检查 agent 是否
+  能心跳并轮询 `/v1/signal/nodes/:nodeId/sessions`，可用 `--allow-no-accept`。该 runner
+  的 caveats 明确声明 Cloudflare Tunnel 与 FRP/SakuraFRP 保留为 fallback。
 - `attachTcpP2PDataPlaneSocket` 已能把 raw TCP 打洞成功后拿到的 pre-connected socket
   直接挂到 node-side `P2PDataPlaneHandler`，因此执行器不必伪装成 listener accept
   流程；成功 socket 可立即转发 canonical HTTP frame 到本地 CSS/SP。

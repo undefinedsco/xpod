@@ -111,8 +111,17 @@ await agent.start({
 - 当前 `p2p` 负责两件事：在 heartbeat 中声明 raw TCP P2P route，并启动 node-side
   accept loop 轮询 `/v1/signal/nodes/:nodeId/sessions`。发现 client-created raw TCP
   session 后，Agent 会追加 node candidates，执行候选连接，并把成功 socket 接入
-  `targetBaseUrl` 指向的本地 CSS/SP。真实跨 NAT TCP simultaneous-open 仍依赖后续
-  native/CLI/desktop/mobile connector 通过 `connectSocket` 提供平台级 socket 能力。
+  `targetBaseUrl` 指向的本地 CSS/SP。`p2p.onP2PAccept` 会在接入成功后给 runtime
+  回报 `sessionId`、`nodeId`、`clientId`、local/remote candidate 数量和 `acceptedAt`，
+  方便外部 smoke、日志和移动/桌面打包验证收集 node-side accept 证据。真实跨 NAT
+  TCP simultaneous-open 仍依赖 native/CLI/desktop/mobile connector 通过 `connectSocket`
+  提供平台级 socket 能力。
+- `bun run smoke:p2p:node-accept` 是 node 侧验收入口：它启动 `EdgeNodeAgent`、
+  等待 accept loop 轮询 signaling session，并输出 JSON 形式的 `accepted` 证据。
+  默认 `--require-accept`，实网双端验证时应和另一台机器上的
+  `bun run smoke:p2p:managed` 配合；仅验证 agent 轮询/心跳时可显式传入
+  `--allow-no-accept`。该 smoke 只覆盖 raw TCP P2P node-side 路径，不会创建、删除
+  或替换 Cloudflare Tunnel、FRP/SakuraFRP。
 - 普通浏览器不支持 raw TCP socket、同号端口 bind 或 simultaneous open；手机浏览器页面只能验证
   Cloud IdP、SP route 和 signaling 控制面。Chrome Isolated Web App 的 Direct Sockets
   只能作为安装式 runtime 自定义 TCP transport 的后续研究项；它不是普通浏览器能力，

@@ -126,6 +126,7 @@ export type {
   UpsertDnsRecordInput,
 } from './dns/DnsProvider';
 export type { EdgeNodeCertificateProvisioner } from './edge/EdgeNodeCertificateProvisioner';
+export type { EdgeNodeAgentOptions, EdgeNodeP2PAcceptEvent } from './edge/EdgeNodeAgent';
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService, AccountQuota } from './quota/QuotaService';
 export type { EntitlementProvider, AccountEntitlement } from './quota/EntitlementProvider';

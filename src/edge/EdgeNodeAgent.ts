@@ -20,6 +20,15 @@ import {
 
 type EdgeNodeP2PHeartbeatRoute = Omit<AccessRoute, 'canonicalUrl'> & { canonicalUrl?: string };
 
+export interface EdgeNodeP2PAcceptEvent {
+  sessionId: string;
+  nodeId: string;
+  clientId: string;
+  localCandidateCount: number;
+  remoteCandidateCount: number;
+  acceptedAt: string;
+}
+
 const DEFAULT_P2P_ACCEPT_INTERVAL_MS = 1_000;
 
 export interface EdgeNodeAgentOptions {
@@ -67,6 +76,7 @@ export interface EdgeNodeAgentOptions {
     localAddress?: string;
     sleepMs?: RawTcpP2PSleep;
     connectSocket?: RawTcpP2PConnectSocket;
+    onP2PAccept?: (event: EdgeNodeP2PAcceptEvent) => void;
   };
 }
 
@@ -190,25 +200,37 @@ export class EdgeNodeAgent {
         localAddress: p2p.localAddress,
         sleepMs: p2p.sleepMs,
         connectSocket: p2p.connectSocket,
+        onP2PAccept: p2p.onP2PAccept,
       });
     };
     run();
     this.p2pAcceptInterval = setInterval(run, intervalMs);
   }
 
-  private async acceptP2PConnectionOnce(options: Parameters<typeof acceptSignaledRawTcpP2PConnectionOnce>[0]): Promise<void> {
+  private async acceptP2PConnectionOnce(options: Parameters<typeof acceptSignaledRawTcpP2PConnectionOnce>[0] & {
+    onP2PAccept?: (event: EdgeNodeP2PAcceptEvent) => void;
+  }): Promise<void> {
     if (this.p2pAcceptRunning) {
       return;
     }
     this.p2pAcceptRunning = true;
     try {
+      const { onP2PAccept, ...acceptOptions } = options;
       const networkInfo = await this.getNetworkInfo();
       const accepted = await acceptSignaledRawTcpP2PConnectionOnce({
-        ...options,
-        host: options.host ?? networkInfo.ipv4 ?? networkInfo.ipv6,
+        ...acceptOptions,
+        host: acceptOptions.host ?? networkInfo.ipv4 ?? networkInfo.ipv6,
       });
       if (accepted) {
         this.p2pSocketHandles.add(accepted.socketHandle);
+        onP2PAccept?.({
+          sessionId: accepted.session.sessionId,
+          nodeId: accepted.session.nodeId,
+          clientId: accepted.session.clientId,
+          localCandidateCount: accepted.localCandidates.length,
+          remoteCandidateCount: accepted.remoteCandidates.length,
+          acceptedAt: new Date().toISOString(),
+        });
         this.logger.info(`Accepted raw TCP P2P session ${accepted.session.sessionId}.`);
       }
     } catch (error: unknown) {
