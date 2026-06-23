@@ -19,6 +19,8 @@ function parseArgs(argv: string[]): CliOptions {
     resourcePath: process.env.XPOD_LOCAL_P2P_SMOKE_RESOURCE_PATH,
     targetBody: process.env.XPOD_LOCAL_P2P_SMOKE_TARGET_BODY,
     p2pHost: process.env.XPOD_LOCAL_P2P_SMOKE_HOST,
+    advertiseClientHost: parseOptionalBoolean(process.env.XPOD_LOCAL_P2P_SMOKE_ADVERTISE_CLIENT_HOST, 'XPOD_LOCAL_P2P_SMOKE_ADVERTISE_CLIENT_HOST'),
+    advertiseNodeHost: parseOptionalBoolean(process.env.XPOD_LOCAL_P2P_SMOKE_ADVERTISE_NODE_HOST, 'XPOD_LOCAL_P2P_SMOKE_ADVERTISE_NODE_HOST'),
     routeWaitTimeoutMs: parseOptionalInteger(process.env.XPOD_LOCAL_P2P_SMOKE_ROUTE_WAIT_TIMEOUT_MS, 'XPOD_LOCAL_P2P_SMOKE_ROUTE_WAIT_TIMEOUT_MS'),
     pollIntervalMs: parseOptionalInteger(process.env.XPOD_LOCAL_P2P_SMOKE_POLL_INTERVAL_MS, 'XPOD_LOCAL_P2P_SMOKE_POLL_INTERVAL_MS'),
     connectTimeoutMs: parseOptionalInteger(process.env.XPOD_LOCAL_P2P_SMOKE_CONNECT_TIMEOUT_MS, 'XPOD_LOCAL_P2P_SMOKE_CONNECT_TIMEOUT_MS'),
@@ -64,6 +66,18 @@ function parseArgs(argv: string[]): CliOptions {
       options.p2pHost = readValue();
     } else if (inlineValue('--host') !== undefined) {
       options.p2pHost = inlineValue('--host');
+    } else if (arg === '--port-only-client') {
+      options.advertiseClientHost = false;
+    } else if (arg === '--port-only-node') {
+      options.advertiseNodeHost = false;
+    } else if (arg === '--advertise-client-host') {
+      options.advertiseClientHost = parseBoolean(readValue(), arg);
+    } else if (inlineValue('--advertise-client-host') !== undefined) {
+      options.advertiseClientHost = parseBoolean(inlineValue('--advertise-client-host') ?? '', arg);
+    } else if (arg === '--advertise-node-host') {
+      options.advertiseNodeHost = parseBoolean(readValue(), arg);
+    } else if (inlineValue('--advertise-node-host') !== undefined) {
+      options.advertiseNodeHost = parseBoolean(inlineValue('--advertise-node-host') ?? '', arg);
     } else if (arg === '--route-wait-timeout-ms') {
       options.routeWaitTimeoutMs = parsePositiveInteger(readValue(), arg);
     } else if (inlineValue('--route-wait-timeout-ms') !== undefined) {
@@ -106,6 +120,10 @@ Options:
   --resource-path <path>         Canonical resource path. Default: /alice/local-p2p-e2e.txt?version=1.
   --target-body <text>           Target HTTP response body.
   --host <host>                  P2P candidate host. Default: 127.0.0.1.
+  --port-only-client             Do not advertise client host/address; let signal inject observed address.
+  --port-only-node               Do not advertise node host/address; let signal inject observed address.
+  --advertise-client-host <bool> Explicitly enable/disable client host advertisement.
+  --advertise-node-host <bool>   Explicitly enable/disable node host advertisement.
   --route-wait-timeout-ms <ms>   Timeout for P2P route/session polling.
   --poll-interval-ms <ms>        Candidate polling interval.
   --connect-timeout-ms <ms>      Raw TCP connect timeout.
@@ -115,6 +133,12 @@ Options:
 This proves local orchestration only. It does not prove real cross-NAT TCP
 simultaneous open. Cloudflare Tunnel and FRP/SakuraFRP remain independent
 user-tunnel fallback routes.
+
+Use --port-only-client to exercise the managed/native client contract used by
+mobile: the client sends only candidate ports and the signal API fills the
+observed address from the request.
+Use --port-only-node as well to verify both peers can publish port-only
+candidates through signal-observed address enrichment.
 
 Use --socket-mode real-tcp-listener to replace socket injection with a real
 loopback TCP listener. That exercises real local TCP sockets, but still does not
@@ -149,6 +173,20 @@ function parsePositiveInteger(value: string, name: string): number {
 
 function parseOptionalInteger(value: string | undefined, name: string): number | undefined {
   return value === undefined || value.trim().length === 0 ? undefined : parsePositiveInteger(value, name);
+}
+
+function parseOptionalBoolean(value: string | undefined, name: string): boolean | undefined {
+  return value === undefined || value.trim().length === 0 ? undefined : parseBoolean(value, name);
+}
+
+function parseBoolean(value: string, name: string): boolean {
+  if (value === 'true' || value === '1' || value === 'yes') {
+    return true;
+  }
+  if (value === 'false' || value === '0' || value === 'no') {
+    return false;
+  }
+  throw new Error(`${name} must be true or false`);
 }
 
 function parseOptionalSocketMode(value: string | undefined, name: string): LocalManagedClientP2PSocketMode | undefined {

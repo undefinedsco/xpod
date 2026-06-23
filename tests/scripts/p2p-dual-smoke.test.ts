@@ -152,7 +152,7 @@ describe('dual-script P2P smoke', () => {
       '--api-base-url', apiBaseUrl,
       '--node-id', 'node-1',
       '--client-id', 'script-device',
-      '--host', '127.0.0.3',
+      '--address', '127.0.0.3',
       '--local-address', '127.0.0.3',
       '--resource-url', 'https://node-1.pods.example/alice/dual-script.txt?via=p2p',
       '--num-ports', '1',

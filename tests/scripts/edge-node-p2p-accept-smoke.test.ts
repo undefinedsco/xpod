@@ -43,9 +43,9 @@ describe('edge node P2P accept smoke script', () => {
       '--node-token', 'node-token',
       '--base-url', 'https://node-1.pods.example/',
       '--target-base-url', 'http://127.0.0.1:3000/',
-      '--host', '127.0.0.1',
       '--accept-interval-ms', '25',
       '--connect-timeout-ms', '100',
+      '--settle-after-accept-ms', '10',
       '--run-timeout-ms', '100',
       '--allow-no-accept',
     ], { cwd: root, timeout: 8_000 });
@@ -55,10 +55,12 @@ describe('edge node P2P accept smoke script', () => {
       requireAccept: boolean;
       accepted: unknown[];
       caveats: string[];
+      settleAfterAcceptMs?: number;
     };
     expect(result.smokeOk).toBe(true);
     expect(result.requireAccept).toBe(false);
     expect(result.accepted).toEqual([]);
+    expect(result.settleAfterAcceptMs).toBe(10);
     expect(result.caveats.join('\n')).toContain('Cloudflare Tunnel');
     expect(result.caveats.join('\n')).toContain('FRP/SakuraFRP');
     expect(sessionPollCount).toBeGreaterThan(0);
@@ -89,7 +91,6 @@ describe('edge node P2P accept smoke script', () => {
       '--node-token', 'node-token',
       '--base-url', 'https://node-1.pods.example/',
       '--target-base-url', 'http://127.0.0.1:3000/',
-      '--host', '127.0.0.1',
       '--accept-interval-ms', '25',
       '--connect-timeout-ms', '100',
       '--run-timeout-ms', '100',

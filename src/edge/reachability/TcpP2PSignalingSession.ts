@@ -220,10 +220,17 @@ export async function createSignaledRawTcpP2PSession(
     candidates: localCandidates,
   };
   const session = await options.signaling.createP2PSession(request);
+  const effectiveLocalCandidates = localRawTcpCandidatesFromSessionOrFallback(
+    session,
+    localCandidates,
+    'client',
+    options.clientId,
+    plan.bucket,
+  );
   return {
     session,
     plan,
-    localCandidates,
+    localCandidates: effectiveLocalCandidates,
     rawTcpRoute: selectRawTcpP2PRoute(session.nodeCandidates),
   };
 }
@@ -301,8 +308,15 @@ export async function acceptSignaledRawTcpP2PConnectionOnce(
     if (remoteCandidates.length === 0) {
       continue;
     }
-    const socket = await connectRawTcpP2PSocket({
+    const effectiveLocalCandidates = localRawTcpCandidatesFromSessionOrFallback(
+      answeredSession,
       localCandidates,
+      'node',
+      options.sourceId,
+      plan.bucket,
+    );
+    const socket = await connectRawTcpP2PSocket({
+      localCandidates: effectiveLocalCandidates,
       remoteCandidates,
       connectTimeoutMs: options.connectTimeoutMs,
       winnerSelectionWindowMs: options.winnerSelectionWindowMs,
@@ -314,7 +328,7 @@ export async function acceptSignaledRawTcpP2PConnectionOnce(
     return {
       session: answeredSession,
       plan,
-      localCandidates,
+      localCandidates: effectiveLocalCandidates,
       remoteCandidates,
       socketHandle: attachTcpP2PDataPlaneSocket({ socket, handler: options.handler }),
     };
@@ -468,6 +482,20 @@ export function isRawTcpHolePunchCandidate(candidate: P2PTransportCandidate): bo
     && getNumericMetadata(candidate, 'bucket') !== undefined
     && getNumericMetadata(candidate, 'rendezvousTimeSeconds') !== undefined
     && typeof candidate.port === 'number';
+}
+
+function localRawTcpCandidatesFromSessionOrFallback(
+  session: P2PSession,
+  fallback: P2PTransportCandidate[],
+  role: P2PCandidateRole,
+  sourceId: string,
+  bucket: number,
+): P2PTransportCandidate[] {
+  const signaledCandidates = session.candidates.filter((candidate) => candidate.role === role
+    && candidate.sourceId === sourceId
+    && isRawTcpHolePunchCandidate(candidate)
+    && getNumericMetadata(candidate, 'bucket') === bucket);
+  return signaledCandidates.length > 0 ? signaledCandidates : fallback;
 }
 
 function candidatePairs(

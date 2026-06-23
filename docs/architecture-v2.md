@@ -355,7 +355,7 @@ CLOUDFLARE_ACCOUNT_ID=xxx
 ```bash
 # === XPOD 配置 ===
 XPOD_EDITION=local
-XPOD_NODE_TOKEN=xxx              # 包含用户信息，有此项则自动连接 Cloud
+XPOD_NODE_TOKEN=xxx              # 不透明节点凭据，有此项则自动连接 Cloud
 
 # === CSS 配置 ===
 CSS_PORT=5737

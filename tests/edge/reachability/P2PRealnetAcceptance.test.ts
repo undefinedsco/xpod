@@ -12,8 +12,6 @@ describe('P2P real-network acceptance helper', () => {
       nodeToken: 'node-token',
       baseUrl: 'https://node-1.undefineds.co/',
       targetBaseUrl: 'http://127.0.0.1:3000/',
-      nodeHost: '198.51.100.10',
-      clientHost: '203.0.113.20',
       clientId: 'phone-1',
       token: 'service-token',
       resourceUrl: 'https://node-1.undefineds.co/alice/a.txt',
@@ -42,8 +40,6 @@ describe('P2P real-network acceptance helper', () => {
       'https://node-1.undefineds.co/',
       '--target-base-url',
       'http://127.0.0.1:3000/',
-      '--host',
-      '198.51.100.10',
       '--connect-timeout-ms',
       '4000',
       '--winner-selection-window-ms',
@@ -64,8 +60,6 @@ describe('P2P real-network acceptance helper', () => {
       'phone-1',
       '--token',
       'service-token',
-      '--host',
-      '203.0.113.20',
       '--resource-url',
       'https://node-1.undefineds.co/alice/a.txt',
       '--connect-timeout-ms',
@@ -84,12 +78,41 @@ describe('P2P real-network acceptance helper', () => {
       '20',
       '--require-p2p',
     ]);
+    expect(plan.mobile).toEqual({
+      appLabel: 'LinX P2P Smoke',
+      packageName: 'com.linxmobile.p2psmoke',
+      fields: {
+        idpUrl: 'https://id.undefineds.co/',
+        storageUrl: 'https://node-1.undefineds.co/',
+        clientId: 'phone-1',
+        resourcePath: '/alice/a.txt',
+      },
+      description: expect.stringContaining('same clientId'),
+    });
+    expect(plan.mobile.fields).not.toHaveProperty('signalToken');
     expect(plan.routeFallbacksPreserved).toEqual([
       'Cloudflare Tunnel',
       'FRP/SakuraFRP',
     ]);
     expect(plan.successCriteria).toContain('node accepted at least one raw TCP P2P session for client phone-1');
     expect(plan.caveats.join('\n')).toContain('not prove browser P2P');
+    expect(plan.caveats.join('\n')).toContain('signal injects the observed address');
+    expect(plan.caveats.join('\n')).toContain('Mobile smoke evidence must still be verified with the same realnet verifier');
+  });
+
+  it('keeps mobile IDP separate when the signal API is on the api subdomain', () => {
+    const plan = createP2PRealnetAcceptancePlan({
+      apiBaseUrl: 'https://api.undefineds.co/',
+      nodeId: 'node-1',
+      nodeToken: 'node-token',
+      baseUrl: 'https://node-1.undefineds.co/',
+      targetBaseUrl: 'http://127.0.0.1:3000/',
+      clientId: 'phone-1',
+      resourceUrl: 'https://node-1.undefineds.co/alice/a.txt',
+    });
+
+    expect(plan.client.command).toContain('https://api.undefineds.co/');
+    expect(plan.mobile.fields.idpUrl).toBe('https://id.undefineds.co/');
   });
 
   it('verifies matching node/client smoke JSON and requires preserved tunnel fallback evidence', () => {
@@ -104,6 +127,7 @@ describe('P2P real-network acceptance helper', () => {
             clientId: 'phone-1',
             localCandidateCount: 1,
             remoteCandidateCount: 1,
+            nodeAddress: 'signal-observed',
           },
         ],
         routeFallbacksPreserved: ['Cloudflare Tunnel', 'FRP/SakuraFRP'],
@@ -113,6 +137,7 @@ describe('P2P real-network acceptance helper', () => {
         smokeOk: true,
         route: { kind: 'p2p', id: 'p2p-raw-tcp' },
         status: 200,
+        clientAddress: 'signal-observed',
         connectorEvents: [
           { type: 'attempt', localPort: 44000, remotePort: 44000 },
           { type: 'success', localPort: 44000, remotePort: 44000 },
@@ -125,8 +150,68 @@ describe('P2P real-network acceptance helper', () => {
       expect.objectContaining({ name: 'node accepted client', ok: true }),
       expect.objectContaining({ name: 'client selected p2p route', ok: true }),
       expect.objectContaining({ name: 'raw tcp connector succeeded', ok: true }),
+      expect.objectContaining({ name: 'client address came from signal', ok: true }),
+      expect.objectContaining({ name: 'node address came from signal', ok: true }),
       expect.objectContaining({ name: 'tunnel fallbacks preserved', ok: true }),
     ]));
+  });
+
+  it('fails verification when either peer used explicit address overrides instead of signal-observed enrichment', () => {
+    const verified = verifyP2PRealnetAcceptance({
+      clientId: 'phone-1',
+      expectedStatus: 200,
+      nodeResult: {
+        smokeOk: true,
+        accepted: [{ sessionId: 'p2p_realnet', clientId: 'phone-1', nodeAddress: 'explicit-host' }],
+        routeFallbacksPreserved: ['Cloudflare Tunnel', 'FRP/SakuraFRP'],
+      },
+      clientResult: {
+        smokeOk: true,
+        route: { kind: 'p2p', id: 'p2p-raw-tcp' },
+        status: 200,
+        clientAddress: 'explicit-host',
+        connectorEvents: [{ type: 'success', localPort: 44000, remotePort: 44000 }],
+      },
+    });
+
+    expect(verified.smokeOk).toBe(false);
+    expect(verified.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'client address came from signal',
+        ok: false,
+      }),
+      expect.objectContaining({
+        name: 'node address came from signal',
+        ok: false,
+      }),
+    ]));
+  });
+
+  it('fails verification when mobile write status is missing or mismatched', () => {
+    const verified = verifyP2PRealnetAcceptance({
+      clientId: 'phone-1',
+      expectedStatus: 200,
+      requirePutStatus2xx: true,
+      nodeResult: {
+        smokeOk: true,
+        accepted: [{ sessionId: 'p2p_realnet', clientId: 'phone-1', nodeAddress: 'signal-observed' }],
+        routeFallbacksPreserved: ['Cloudflare Tunnel', 'FRP/SakuraFRP'],
+      },
+      clientResult: {
+        smokeOk: true,
+        route: { kind: 'p2p', id: 'p2p-raw-tcp' },
+        putStatus: 403,
+        status: 200,
+        clientAddress: 'signal-observed',
+        connectorEvents: [{ type: 'success', localPort: 44000, remotePort: 44000 }],
+      },
+    });
+
+    expect(verified.smokeOk).toBe(false);
+    expect(verified.checks).toContainEqual(expect.objectContaining({
+      name: 'write http status is 2xx',
+      ok: false,
+    }));
   });
 
   it('fails verification when the client fell back to a non-P2P route', () => {
@@ -134,13 +219,14 @@ describe('P2P real-network acceptance helper', () => {
       clientId: 'phone-1',
       nodeResult: {
         smokeOk: true,
-        accepted: [{ sessionId: 'p2p_realnet', clientId: 'phone-1' }],
+        accepted: [{ sessionId: 'p2p_realnet', clientId: 'phone-1', nodeAddress: 'signal-observed' }],
         routeFallbacksPreserved: ['Cloudflare Tunnel', 'FRP/SakuraFRP'],
       },
       clientResult: {
         smokeOk: true,
         route: { kind: 'user-tunnel', id: 'cloudflare' },
         status: 200,
+        clientAddress: 'signal-observed',
         connectorEvents: [],
       },
     });

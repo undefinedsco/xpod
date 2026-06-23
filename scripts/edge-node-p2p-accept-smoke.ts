@@ -14,6 +14,7 @@ interface CliOptions {
   acceptIntervalMs?: number;
   connectTimeoutMs?: number;
   winnerSelectionWindowMs?: number;
+  settleAfterAcceptMs?: number;
   runTimeoutMs: number;
   requireAccept: boolean;
   help: boolean;
@@ -21,6 +22,7 @@ interface CliOptions {
 
 const fallbackCaveats = [
   'Cloudflare Tunnel and FRP/SakuraFRP remain independent user-tunnel fallback routes and are not replaced by raw TCP P2P.',
+  'When --host/--address is omitted, the node advertises port-only raw TCP candidates and the signal API injects the observed node address.',
   'This runner validates node-side accept-loop behavior; real cross-NAT success still requires running managed-client smoke from another network/native runtime.',
 ];
 
@@ -51,6 +53,7 @@ function parseArgs(argv: string[]): CliOptions {
     acceptIntervalMs: parseOptionalInteger(process.env.XPOD_P2P_ACCEPT_SMOKE_ACCEPT_INTERVAL_MS, 'XPOD_P2P_ACCEPT_SMOKE_ACCEPT_INTERVAL_MS'),
     connectTimeoutMs: parseOptionalInteger(process.env.XPOD_P2P_ACCEPT_SMOKE_CONNECT_TIMEOUT_MS, 'XPOD_P2P_ACCEPT_SMOKE_CONNECT_TIMEOUT_MS'),
     winnerSelectionWindowMs: parseOptionalNonNegativeInteger(process.env.XPOD_P2P_ACCEPT_SMOKE_WINNER_SELECTION_WINDOW_MS, 'XPOD_P2P_ACCEPT_SMOKE_WINNER_SELECTION_WINDOW_MS'),
+    settleAfterAcceptMs: parseOptionalNonNegativeInteger(process.env.XPOD_P2P_ACCEPT_SMOKE_SETTLE_AFTER_ACCEPT_MS, 'XPOD_P2P_ACCEPT_SMOKE_SETTLE_AFTER_ACCEPT_MS'),
     runTimeoutMs: parseOptionalInteger(process.env.XPOD_P2P_ACCEPT_SMOKE_RUN_TIMEOUT_MS, 'XPOD_P2P_ACCEPT_SMOKE_RUN_TIMEOUT_MS') ?? 30_000,
     requireAccept: process.env.XPOD_P2P_ACCEPT_SMOKE_ALLOW_NO_ACCEPT !== 'true',
     help: false,
@@ -114,6 +117,10 @@ function parseArgs(argv: string[]): CliOptions {
       options.winnerSelectionWindowMs = parseNonNegativeInteger(readValue(), arg);
     } else if (inlineValue('--winner-selection-window-ms') !== undefined) {
       options.winnerSelectionWindowMs = parseNonNegativeInteger(inlineValue('--winner-selection-window-ms') ?? '', arg);
+    } else if (arg === '--settle-after-accept-ms') {
+      options.settleAfterAcceptMs = parseNonNegativeInteger(readValue(), arg);
+    } else if (inlineValue('--settle-after-accept-ms') !== undefined) {
+      options.settleAfterAcceptMs = parseNonNegativeInteger(inlineValue('--settle-after-accept-ms') ?? '', arg);
     } else if (arg === '--run-timeout-ms') {
       options.runTimeoutMs = parsePositiveInteger(readValue(), arg);
     } else if (inlineValue('--run-timeout-ms') !== undefined) {
@@ -131,7 +138,7 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 function usage(): void {
-  console.log(`Usage: bun scripts/edge-node-p2p-accept-smoke.ts --signal-endpoint <url> --node-id <id> --node-token <token> --base-url <url> --target-base-url <url> --host <host> [options]
+  console.log(`Usage: bun scripts/edge-node-p2p-accept-smoke.ts --signal-endpoint <url> --node-id <id> --node-token <token> --target-base-url <url> [options]
 
 Runs the node-side non-browser raw TCP P2P accept smoke:
   1. starts EdgeNodeAgent with p2p enabled
@@ -144,15 +151,17 @@ Required:
   --node-id <id>                Edge node id.
   --node-token <token>          Edge node token.
   --target-base-url <url>       Local CSS/SP base URL to attach accepted sockets to.
-  --host <host> or --address <addr>
-                                Candidate address advertised to peers.
 
 Optional:
   --base-url <url>              Canonical node/Pod URL advertised in heartbeat route.
+  --host <host>                 Optional advertised host debug override. By default signal injects the observed node address.
+  --address <addr>              Optional advertised address debug override. By default signal injects the observed node address.
   --local-address <address>     Local address used by Node's TCP connector.
   --accept-interval-ms <ms>     Agent accept-loop interval.
   --connect-timeout-ms <ms>     Raw TCP connect timeout.
   --winner-selection-window-ms <ms>
+  --settle-after-accept-ms <ms>
+                                  After first accept, wait this long then print JSON early.
   --run-timeout-ms <ms>         How long to run before printing JSON. Default: 30000.
   --allow-no-accept             Exit zero even if no P2P session is accepted.
   --require-accept              Require at least one accepted session (default).
@@ -200,7 +209,11 @@ async function main(): Promise<void> {
         },
       });
 
-      await sleep(options.runTimeoutMs);
+      await waitForRunWindow({
+        accepted,
+        runTimeoutMs: options.runTimeoutMs,
+        settleAfterAcceptMs: options.settleAfterAcceptMs,
+      });
       const smokeOk = !options.requireAccept || accepted.length > 0;
       writeJsonResult({
         smokeOk,
@@ -208,6 +221,7 @@ async function main(): Promise<void> {
         requireAccept: options.requireAccept,
         accepted,
         runTimeoutMs: options.runTimeoutMs,
+        ...(options.settleAfterAcceptMs === undefined ? {} : { settleAfterAcceptMs: options.settleAfterAcceptMs }),
         caveats: fallbackCaveats,
         routeFallbacksPreserved: [
           'Cloudflare Tunnel',
@@ -233,9 +247,6 @@ function validateOptions(options: CliOptions): void {
   }
   requireNonEmpty(options.nodeId, '--node-id');
   requireNonEmpty(options.nodeToken, '--node-token');
-  if (!options.host && !options.address) {
-    throw new Error('Raw TCP P2P accept smoke requires --host or --address so peers can connect to node candidates.');
-  }
 }
 
 function requireAbsoluteUrl(value: string, name: string): void {
@@ -247,6 +258,29 @@ function requireAbsoluteUrl(value: string, name: string): void {
     }
   } catch {
     throw new Error(`${name} must be an absolute http(s) URL`);
+  }
+}
+
+async function waitForRunWindow({
+  accepted,
+  runTimeoutMs,
+  settleAfterAcceptMs,
+}: {
+  accepted: EdgeNodeP2PAcceptEvent[];
+  runTimeoutMs: number;
+  settleAfterAcceptMs?: number;
+}): Promise<void> {
+  if (settleAfterAcceptMs === undefined) {
+    await sleep(runTimeoutMs);
+    return;
+  }
+  const deadline = Date.now() + runTimeoutMs;
+  while (Date.now() < deadline) {
+    if (accepted.length > 0) {
+      await sleep(settleAfterAcceptMs);
+      return;
+    }
+    await sleep(Math.min(50, Math.max(1, deadline - Date.now())));
   }
 }
 

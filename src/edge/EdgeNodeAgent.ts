@@ -26,8 +26,17 @@ export interface EdgeNodeP2PAcceptEvent {
   clientId: string;
   localCandidateCount: number;
   remoteCandidateCount: number;
+  nodeAddress: CandidateAddressEvidence;
+  clientAddress: CandidateAddressEvidence;
   acceptedAt: string;
 }
+
+type CandidateAddressEvidence =
+  | 'explicit-host'
+  | 'explicit-address'
+  | 'signal-observed'
+  | 'candidate-url'
+  | 'port-only';
 
 const DEFAULT_P2P_ACCEPT_INTERVAL_MS = 1_000;
 
@@ -90,6 +99,7 @@ export class EdgeNodeAgent {
   private lastNetworkDetection = 0;
   private p2pAcceptInterval?: NodeJS.Timeout;
   private p2pAcceptRunning = false;
+  private p2pAcceptGeneration = 0;
   private readonly p2pAcceptedSessionIds = new Set<string>();
   private readonly p2pSocketHandles = new Set<TcpP2PDataPlaneSocketHandle>();
   private readonly networkDetectionIntervalMs = 60_000; // 每分钟重新检测一次
@@ -168,6 +178,7 @@ export class EdgeNodeAgent {
       clearInterval(this.p2pAcceptInterval);
       this.p2pAcceptInterval = undefined;
     }
+    this.p2pAcceptGeneration += 1;
     for (const handle of this.p2pSocketHandles) {
       handle.close();
     }
@@ -190,8 +201,11 @@ export class EdgeNodeAgent {
     });
     const handler = createP2PDataPlaneHandler({ targetBaseUrl: p2p.targetBaseUrl });
     const intervalMs = this.normalizePositiveInteger(p2p.acceptIntervalMs) ?? DEFAULT_P2P_ACCEPT_INTERVAL_MS;
+    this.p2pAcceptGeneration += 1;
+    const generation = this.p2pAcceptGeneration;
     const run = (): void => {
       void this.acceptP2PConnectionOnce({
+        generation,
         signaling,
         sourceId: options.nodeId,
         host: p2p.host,
@@ -210,6 +224,7 @@ export class EdgeNodeAgent {
   }
 
   private async acceptP2PConnectionOnce(options: Parameters<typeof acceptSignaledRawTcpP2PConnectionOnce>[0] & {
+    generation: number;
     onP2PAccept?: (event: EdgeNodeP2PAcceptEvent) => void;
   }): Promise<void> {
     if (this.p2pAcceptRunning) {
@@ -217,14 +232,17 @@ export class EdgeNodeAgent {
     }
     this.p2pAcceptRunning = true;
     try {
-      const { onP2PAccept, ...acceptOptions } = options;
-      const networkInfo = await this.getNetworkInfo();
+      const { generation, onP2PAccept, ...acceptOptions } = options;
       const accepted = await acceptSignaledRawTcpP2PConnectionOnce({
         ...acceptOptions,
         signaling: this.skipAcceptedP2PSessions(acceptOptions.signaling),
-        host: acceptOptions.host ?? networkInfo.ipv4 ?? networkInfo.ipv6,
+        host: acceptOptions.host,
       });
       if (accepted) {
+        if (generation !== this.p2pAcceptGeneration) {
+          accepted.socketHandle.close();
+          return;
+        }
         this.p2pAcceptedSessionIds.add(accepted.session.sessionId);
         this.p2pSocketHandles.add(accepted.socketHandle);
         onP2PAccept?.({
@@ -233,6 +251,8 @@ export class EdgeNodeAgent {
           clientId: accepted.session.clientId,
           localCandidateCount: accepted.localCandidates.length,
           remoteCandidateCount: accepted.remoteCandidates.length,
+          nodeAddress: addressEvidenceFromCandidates(accepted.localCandidates),
+          clientAddress: addressEvidenceFromCandidates(accepted.remoteCandidates),
           acceptedAt: new Date().toISOString(),
         });
         this.logger.info(`Accepted raw TCP P2P session ${accepted.session.sessionId}.`);
@@ -490,4 +510,29 @@ export class EdgeNodeAgent {
       ipv6: this.cachedNetworkInfo?.ipv6Public ?? this.cachedNetworkInfo?.ipv6,
     };
   }
+}
+
+function addressEvidenceFromCandidates(candidates: Array<{ host?: string; address?: string; url?: string }>): CandidateAddressEvidence {
+  const evidence = candidates.map(candidateAddressEvidence);
+  return evidence.find((entry) => entry === 'explicit-host')
+    ?? evidence.find((entry) => entry === 'explicit-address')
+    ?? evidence.find((entry) => entry === 'signal-observed')
+    ?? evidence.find((entry) => entry === 'candidate-url')
+    ?? 'port-only';
+}
+
+function candidateAddressEvidence(candidate: { host?: string; address?: string; url?: string }): CandidateAddressEvidence {
+  if (candidate.host) {
+    return 'explicit-host';
+  }
+  if (candidate.address && candidate.url) {
+    return 'explicit-address';
+  }
+  if (candidate.address) {
+    return 'signal-observed';
+  }
+  if (candidate.url) {
+    return 'candidate-url';
+  }
+  return 'port-only';
 }

@@ -1,4 +1,5 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { getLoggerFor } from 'global-logger-factory';
 import type { AuthMiddleware, AuthenticatedRequest } from './middleware/AuthMiddleware';
 import { nodeRuntimeHost } from '../runtime/host/node/NodeRuntimeHost';
@@ -163,6 +164,10 @@ export class ApiServer {
    */
   public getHttpServer(): Server | undefined {
     return this.server;
+  }
+
+  public address(): AddressInfo | string | null {
+    return this.server?.address() ?? null;
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {

@@ -120,6 +120,71 @@ describe('TCP P2P data plane transport', () => {
     }
   });
 
+  it('handles multiple sequential mobile-style request envelopes on one attached socket', async () => {
+    const localFetch = vi.fn(async (url: string, init?: RequestInit) => new Response(
+      init?.method === 'PUT' ? 'stored' : `read ${url}`,
+      {
+        status: init?.method === 'PUT' ? 201 : 200,
+        headers: { 'content-type': 'text/plain' },
+      },
+    ));
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: localFetch as typeof fetch,
+    });
+    const { clientSocket, serverSocket, close } = await createSocketPair();
+    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+
+    try {
+      clientSocket.write(`${JSON.stringify({
+        type: 'xpod-p2p-http-request',
+        requestId: 'mobile-put',
+        frame: {
+          protocol: 'xpod-p2p-http/1',
+          requestId: 'mobile-put',
+          method: 'PUT',
+          url: 'https://node-1.pods.example/alice/mobile-smoke.txt',
+          headers: [['content-type', 'text/plain']],
+          bodyBase64: Buffer.from('mobile smoke').toString('base64'),
+        },
+      })}\n`);
+      clientSocket.write(`${JSON.stringify({
+        type: 'xpod-p2p-http-request',
+        requestId: 'mobile-get',
+        frame: {
+          protocol: 'xpod-p2p-http/1',
+          requestId: 'mobile-get',
+          method: 'GET',
+          url: 'https://node-1.pods.example/alice/mobile-smoke.txt',
+          headers: [['accept', 'text/plain']],
+        },
+      })}\n`);
+
+      const envelopes = await readResponseEnvelopes(clientSocket, 2);
+
+      expect(envelopes).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: 'xpod-p2p-http-response',
+          requestId: 'mobile-put',
+          frame: expect.objectContaining({ status: 201 }),
+        }),
+        expect.objectContaining({
+          type: 'xpod-p2p-http-response',
+          requestId: 'mobile-get',
+          frame: expect.objectContaining({ status: 200 }),
+        }),
+      ]));
+      expect(localFetch).toHaveBeenCalledTimes(2);
+      expect(localFetch.mock.calls.map(([url, init]) => [url, init.method])).toEqual([
+        ['http://127.0.0.1:5737/alice/mobile-smoke.txt', 'PUT'],
+        ['http://127.0.0.1:5737/alice/mobile-smoke.txt', 'GET'],
+      ]);
+    } finally {
+      socketHandle.close();
+      await close();
+    }
+  });
+
   it('computes deterministic raw TCP hole-punch buckets, rendezvous time, and candidate ports', () => {
     const plan = computeTcpHolePunchPlan({
       nowSeconds: 1_000,
@@ -196,4 +261,41 @@ async function createSocketPair(): Promise<{
       });
     },
   };
+}
+
+async function readResponseEnvelopes(socket: Socket, count: number): Promise<Array<Record<string, unknown>>> {
+  let buffer = '';
+  const envelopes: Array<Record<string, unknown>> = [];
+  return await new Promise<Array<Record<string, unknown>>>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for ${count} response envelopes`));
+    }, 2_000);
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      socket.off('data', onData);
+      socket.off('error', onError);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk: Buffer): void => {
+      buffer += chunk.toString('utf8');
+      const parts = buffer.split('\n');
+      buffer = parts.pop() ?? '';
+      for (const line of parts) {
+        if (!line) {
+          continue;
+        }
+        envelopes.push(JSON.parse(line) as Record<string, unknown>);
+      }
+      if (envelopes.length >= count) {
+        cleanup();
+        resolve(envelopes);
+      }
+    };
+    socket.on('data', onData);
+    socket.on('error', onError);
+  });
 }

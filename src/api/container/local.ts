@@ -153,13 +153,10 @@ export function registerLocalServices(
     return;
   }
 
-  // 托管式：有 Node Token，连接 Cloud
-  // Cloud API endpoint 可以从 Token 解析或使用默认值
+  // 托管式：有 Node Token，连接 Cloud。Node token 是不透明凭据，不能承载用户名/子域名语义。
   const effectiveCloudApiEndpoint = cloudApiEndpoint || 'https://pods.undefineds.co';
   const effectiveLocalPort = parseInt(process.env.XPOD_MAIN_PORT || process.env.CSS_PORT || '3000', 10);
-
-  // 从 Node Token 解析用户名作为子域名 (格式: username:secret)
-  const subdomain = parseSubdomainFromToken(nodeToken);
+  const managedSubdomain = nodeId || 'auto';
   const tunnelProviderHint: 'cloudflare' | 'sakura_frp' | 'none' = cloudflareTunnelToken
     ? 'cloudflare'
     : sakuraTunnelToken
@@ -170,7 +167,7 @@ export function registerLocalServices(
     subdomainClient: asFunction(() => {
       return new SubdomainClient({
         cloudApiEndpoint: effectiveCloudApiEndpoint,
-        nodeId: nodeId || 'auto', // 可以从 Token 解析
+        nodeId: nodeId || 'auto',
         nodeToken: nodeToken!,
       });
     }).singleton(),
@@ -187,7 +184,7 @@ export function registerLocalServices(
         return new DdnsManager({
           client: subdomainClient!,
           detector: capabilityDetector!,
-          subdomain: subdomain || nodeId || 'auto',
+          subdomain: managedSubdomain,
           localPort: effectiveLocalPort,
           autoAllocate: true,
           tunnelProvider: tunnelProviderHint,
@@ -197,9 +194,7 @@ export function registerLocalServices(
 
   console.log('[Local] Managed mode, SubdomainClient and DdnsManager registered');
   console.log(`[Local] Cloud API endpoint: ${effectiveCloudApiEndpoint}`);
-  if (subdomain) {
-    console.log(`[Local] DDNS subdomain: ${subdomain}`);
-  }
+  console.log(`[Local] DDNS subdomain: ${managedSubdomain}`);
   if (config.oidcIssuer) {
     console.log(`[Local] Using Cloud IdP: ${config.oidcIssuer}`);
   }
@@ -207,33 +202,4 @@ export function registerLocalServices(
   if (!cloudflareTunnelToken && !sakuraTunnelToken) {
     console.log('[Local] Note: No tunnel token configured, assuming direct network access');
   }
-}
-
-/**
- * 从 Node Token 解析子域名/用户名
- * Token 格式: username:secret 或 base64 编码
- */
-function parseSubdomainFromToken(token: string): string | undefined {
-  // 尝试直接解析 username:secret 格式
-  if (token.includes(':')) {
-    const [username] = token.split(':');
-    if (username && /^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/.test(username)) {
-      return username;
-    }
-  }
-
-  // 尝试 base64 解码
-  try {
-    const decoded = Buffer.from(token, 'base64').toString('utf8');
-    if (decoded.includes(':')) {
-      const [username] = decoded.split(':');
-      if (username && /^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/.test(username)) {
-        return username;
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  return undefined;
 }

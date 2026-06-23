@@ -119,6 +119,8 @@
     "smoke:p2p:node-accept": "bun scripts/edge-node-p2p-accept-smoke.ts",
     "smoke:p2p:local-e2e": "bun scripts/local-managed-p2p-e2e-smoke.ts",
     "smoke:p2p:realnet": "bun scripts/p2p-realnet-acceptance.ts",
+    "smoke:p2p:android-realnet": "bun scripts/p2p-android-realnet-smoke.ts",
+    "smoke:p2p:docker-e2e": "bun scripts/docker-managed-p2p-e2e-smoke.ts",
     "check:abi": "node scripts/check-native-abi.cjs",
     "check:platform-package-version": "node scripts/check-platform-package-version.cjs",
     "sync:platform-package-version": "node scripts/sync-platform-package-version.cjs",
@@ -128,7 +130,8 @@
     "publish:release": "node scripts/publish-release.cjs",
     "publish:release:dry": "node scripts/publish-release.cjs --dry-run",
     "test:setup": "dotenv -e .env.local -- bun scripts/setup-test-credentials.ts",
-    "version": "node scripts/sync-platform-package-version.cjs --stage"
+    "version": "node scripts/sync-platform-package-version.cjs --stage",
+    "build:harmony:p2p-smoke": "node scripts/build-harmony-p2p-smoke.cjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

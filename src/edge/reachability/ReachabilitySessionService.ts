@@ -7,6 +7,7 @@ import type {
   P2PSession,
   P2PSessionLimits,
   P2PSessionList,
+  P2PSessionOwner,
   P2PSessionRequest,
   P2PTransportCandidate,
   RelaySession,
@@ -16,7 +17,7 @@ import type {
 export interface ReachabilitySessionServiceOptions {
   repository: EdgeNodeRepository;
   baseStorageDomain?: string;
-  apiBaseUrl: string;
+  apiBaseUrl: string | (() => string);
   now?: () => Date;
   randomId?: () => string;
   defaultP2PTtlSeconds?: number;
@@ -81,11 +82,15 @@ export class ReachabilitySessionService {
       kind: 'p2p',
       nodeId,
       clientId: request.clientId,
+      ...(request.owner ? { owner: request.owner } : {}),
       auditId,
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       nodeCandidates: routeSet.routes,
-      signalingUrl: new URL(`/v1/signal/nodes/${encodeURIComponent(nodeId)}/sessions/${sessionId}`, this.options.apiBaseUrl).toString(),
+      signalingUrl: new URL(
+        `/v1/signal/nodes/${encodeURIComponent(nodeId)}/sessions/${sessionId}`,
+        resolveApiBaseUrl(this.options.apiBaseUrl),
+      ).toString(),
       capabilities: normalizeStringArray(request.capabilities),
       candidates,
       limits,
@@ -437,6 +442,7 @@ function toP2PSession(value: unknown): P2PSession | undefined {
   const nodeId = getString(value.nodeId);
   const clientId = getString(value.clientId);
   const auditId = getString(value.auditId);
+  const owner = normalizeP2PSessionOwner(value.owner);
   const createdAt = getString(value.createdAt);
   const expiresAt = getString(value.expiresAt);
   const signalingUrl = getString(value.signalingUrl);
@@ -449,6 +455,7 @@ function toP2PSession(value: unknown): P2PSession | undefined {
     kind: 'p2p',
     nodeId,
     clientId,
+    ...(owner ? { owner } : {}),
     ...(auditId ? { auditId } : {}),
     createdAt,
     expiresAt,
@@ -460,6 +467,14 @@ function toP2PSession(value: unknown): P2PSession | undefined {
       : [],
     ...(limits ? { limits } : {}),
   };
+}
+
+function normalizeP2PSessionOwner(value: unknown): P2PSessionOwner | undefined {
+  if (!isRecord(value) || value.type !== 'solid') {
+    return undefined;
+  }
+  const webId = getString(value.webId);
+  return webId ? { type: 'solid', webId } : undefined;
 }
 
 function toP2PTransportCandidate(value: unknown): P2PTransportCandidate | undefined {
@@ -495,4 +510,8 @@ function toP2PTransportCandidate(value: unknown): P2PTransportCandidate | undefi
 
 function randomString(): string {
   return Math.random().toString(36).slice(2, 12);
+}
+
+function resolveApiBaseUrl(value: string | (() => string)): string {
+  return typeof value === 'function' ? value() : value;
 }

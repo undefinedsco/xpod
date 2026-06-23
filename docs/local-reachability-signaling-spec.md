@@ -215,6 +215,13 @@ Solid SDK / app
   `--allow-fallback` 时才把 public/user-tunnel fallback 当成 smoke 成功。这用于 native/CLI
   运行时验证，不提供普通浏览器 raw TCP 能力。CLI 暴露 `--winner-selection-window-ms`，用于
   实网 smoke 时验证多 socket 成功后的确定性 winner selection。
+- `bun run smoke:p2p:docker-e2e` 已提供 Docker bridge 级别的集成 smoke：同一个
+  Docker network 内启动 signal fixture、node-side TCP data-plane listener 和
+  managed-client runner。node/client 都只发布 port-only raw TCP candidates；signal API
+  必须从 Docker bridge 请求源补齐 `address`，最终 client 通过 `route.kind=p2p` 的
+  raw TCP stream 读取 canonical Solid resource。该 smoke 比 loopback 更接近真实部署，
+  能证明非浏览器数据面不是同进程假通路，但仍不是真实跨 NAT simultaneous-open 验收。
+
 - `runLocalManagedClientP2PE2ESmoke`、`ManagedClientP2PLocalE2E.test.ts` 和
   `bun run smoke:p2p:local-e2e` 已提供 repository-backed 本机端到端 smoke：同一流程内
   启动真实 signal API、本地 CSS/SP HTTP stand-in 和 managed client，验证 route discovery、
@@ -256,9 +263,13 @@ Solid SDK / app
   不启动新的数据面，也不修改 route selection。
 - `verifyP2PRealnetAcceptance` / `bun run smoke:p2p:realnet -- verify` 已提供双端 JSON
   验收汇总：要求 node runner 对同一 `clientId` 有 accepted 证据、client runner 选择
-  `route.kind=p2p`、connector events 包含 `success`，并且 node JSON 明确声明
-  Cloudflare Tunnel 与 FRP/SakuraFRP 仍被保留。该 helper 让实网验收结果可重复检查，
-  但本身不证明浏览器 P2P，也不能替代真实跨 NAT/native/mobile 运行。
+  `route.kind=p2p`、connector events 包含 `success`，并且 client 输出
+  `clientAddress=signal-observed`、node accepted 输出 `nodeAddress=signal-observed`。
+  这保证默认验收覆盖“双方只上报 port，signal 观测并补 address”的路径；显式
+  `--host` / `--address` override 只能算 debug 证据，不能通过默认 realnet gate。
+  node JSON 还必须明确声明 Cloudflare Tunnel 与 FRP/SakuraFRP 仍被保留。该 helper
+  让实网验收结果可重复检查，但本身不证明浏览器 P2P，也不能替代真实跨
+  NAT/native/mobile 运行。
 - `attachTcpP2PDataPlaneSocket` 已能把 raw TCP 打洞成功后拿到的 pre-connected socket
   直接挂到 node-side `P2PDataPlaneHandler`，因此执行器不必伪装成 listener accept
   流程；成功 socket 可立即转发 canonical HTTP frame 到本地 CSS/SP。
@@ -457,7 +468,6 @@ Content-Type: application/json
     {
       "protocol": "tcp",
       "transport": "raw-tcp-hole-punch",
-      "host": "198.51.100.10",
       "port": 43122,
       "priority": 100,
       "metadata": {
@@ -470,6 +480,12 @@ Content-Type: application/json
 }
 ```
 
+候选可以只上报端口。Cloud signal API 在创建 session 或追加 candidates 时，如果 candidate
+有合法 `port` 但没有 `host`、`address`、`url`，会从请求观测值自动补 `address`：
+优先 `X-Forwarded-For` 第一段，其次 `X-Real-IP`，最后 socket remote address，并规范化
+IPv4-mapped IPv6。移动端/native client 因此不需要让用户手填公网地址；`host` / `address`
+只作为调试或显式覆盖字段。
+
 节点使用 node token 追加候选时，Cloud 从认证上下文强制推导 `role=node`、
 `sourceId=nodeId`，不信任 body 里的伪造身份。service token 可代表 managed client
 提交 `role=client` 候选。会话过期后候选更新返回 `410`；单次更新或累计候选超限返回
@@ -479,9 +495,9 @@ Content-Type: application/json
 
 1. node 和 managed client 使用同一组公开参数计算 `TcpHolePunchPlan`：
    `bucket`、`rendezvousTimeSeconds`、候选端口集合。
-2. 双方把自己观测到的公网地址、计划 bucket、rendezvous 时间和候选端口通过
-   `P2PSignalingClient.addP2PCandidates()` 写入同一个 P2P session；Cloud 只保存和转发
-   这些控制面候选，不承载 Pod HTTP body。
+2. 双方把计划 bucket、rendezvous 时间和候选端口通过
+   `P2PSignalingClient.addP2PCandidates()` 写入同一个 P2P session；Cloud signal
+   从请求中补 peer-observed 地址，只保存和转发这些控制面候选，不承载 Pod HTTP body。
 3. 到 rendezvous 时间后，双方在 native runtime 内对同号候选端口执行 TCP simultaneous
    open；成功后用确定性 winner selection 保留同一条 TCP stream。
 4. 选出的 stream 交给 `TcpP2PDataPlaneTransport`，在其上承载 `xpod-p2p-http/1`

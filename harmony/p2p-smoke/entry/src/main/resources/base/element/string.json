@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "Xpod native P2P smoke module" },
+    { "name": "EntryAbility_desc", "value": "Xpod native P2P smoke verifier" },
+    { "name": "EntryAbility_label", "value": "Xpod P2P" }
+  ]
+}

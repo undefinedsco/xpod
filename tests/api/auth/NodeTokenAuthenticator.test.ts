@@ -41,7 +41,7 @@ describe('NodeTokenAuthenticator', () => {
     expect(repository.matchesToken).toHaveBeenCalledWith('hash', 'raw-node-token');
   });
 
-  it('still supports legacy bearer username:secret tokens', async () => {
+  it('treats bearer node tokens as opaque credentials', async () => {
     repository.getNodeSecret.mockResolvedValue({
       tokenHash: 'hash',
       accountId: 'account-1',
@@ -51,13 +51,15 @@ describe('NodeTokenAuthenticator', () => {
     const authenticator = new NodeTokenAuthenticator({ repository: repository as any });
     const request = {
       headers: {
-        authorization: 'Bearer alice:legacy-secret',
+        // This raw node token happens to decode into bytes containing a colon;
+        // node auth must still verify the original opaque token string.
+        authorization: 'Bearer bm90LXRoZS1ub2RlOmFjY2lkZW50YWwtc2VjcmV0',
         'x-node-id': 'node-1',
       },
     } as unknown as IncomingMessage;
 
     const result = await authenticator.authenticate(request);
     expect(result.success).toBe(true);
-    expect(repository.matchesToken).toHaveBeenCalledWith('hash', 'legacy-secret');
+    expect(repository.matchesToken).toHaveBeenCalledWith('hash', 'bm90LXRoZS1ub2RlOmFjY2lkZW50YWwtc2VjcmV0');
   });
 });

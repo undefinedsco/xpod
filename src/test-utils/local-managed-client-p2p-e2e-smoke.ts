@@ -23,7 +23,6 @@ import {
 import { EdgeNodeRepository } from '../identity/drizzle/EdgeNodeRepository';
 import { closeAllIdentityConnections, getIdentityDatabase } from '../identity/drizzle/db';
 import { ServiceTokenRepository } from '../identity/drizzle/ServiceTokenRepository';
-import { getFreePort } from '../runtime/port-finder';
 
 export type LocalManagedClientP2PSocketMode = 'deterministic-injection' | 'real-tcp-listener';
 
@@ -41,6 +40,8 @@ export interface LocalManagedClientP2PE2ESmokeOptions {
   resourcePath?: string;
   targetBody?: string;
   p2pHost?: string;
+  advertiseClientHost?: boolean;
+  advertiseNodeHost?: boolean;
   routeWaitTimeoutMs?: number;
   pollIntervalMs?: number;
   connectTimeoutMs?: number;
@@ -76,6 +77,8 @@ export interface LocalManagedClientP2PE2ESmokeResult {
     signaling: 'repository-backed-api';
     dataPlane: 'deterministic-socket-injection' | 'real-local-tcp-listener';
     canonicalFetch: 'xpod-p2p-http/1';
+    clientAddress: 'explicit-host' | 'signal-observed';
+    nodeAddress: 'explicit-host' | 'signal-observed';
   };
   caveats: string[];
 }
@@ -97,6 +100,8 @@ export async function runLocalManagedClientP2PE2ESmoke(
   const resourcePath = normalizeResourcePath(options.resourcePath ?? '/alice/local-p2p-e2e.txt?version=1');
   const targetBody = options.targetBody ?? 'local p2p e2e response';
   const p2pHost = options.p2pHost ?? '127.0.0.1';
+  const advertiseClientHost = options.advertiseClientHost ?? true;
+  const advertiseNodeHost = options.advertiseNodeHost ?? true;
   const routeWaitTimeoutMs = options.routeWaitTimeoutMs ?? 2_000;
   const pollIntervalMs = options.pollIntervalMs ?? 10;
   const connectTimeoutMs = options.connectTimeoutMs ?? 1_000;
@@ -132,6 +137,7 @@ export async function runLocalManagedClientP2PE2ESmoke(
     };
     let nodePlan = plan;
     let clientConnectSocket: Parameters<typeof runManagedClientP2PSmoke>[0]['connectSocket'];
+    let responderDebug: (() => unknown) | undefined;
 
     if (socketMode === 'real-tcp-listener') {
       await publishP2PRoute({
@@ -153,10 +159,11 @@ export async function runLocalManagedClientP2PE2ESmoke(
         apiBaseUrl: signalApi.baseUrl,
         nodeId,
         nodeToken,
-        host: p2pHost,
+        host: advertiseNodeHost ? p2pHost : undefined,
         clientPlan: plan,
         nodePlan,
       });
+      responderDebug = responder.diagnostics;
       cleanupStack.push(() => responder.stop());
       const nodeConnector = createNodeRawTcpP2PConnectSocket({
         onEvent: (event) => connectorEvents.client.push(summarizeConnectorEvent(event)),
@@ -171,17 +178,21 @@ export async function runLocalManagedClientP2PE2ESmoke(
       const agent = new EdgeNodeAgent();
       cleanupStack.push(() => agent.stop());
       const initialHeartbeat = createDeferred<void>();
+      let heartbeatResponseSeen = false;
       await agent.start({
         signalEndpoint: `${signalApi.baseUrl}/v1/signal`,
         nodeId,
         nodeToken,
         baseUrl: `https://${nodeId}.${baseStorageDomain}/`,
         enableNetworkDetection: false,
-        onHeartbeatResponse: () => initialHeartbeat.resolve(),
+        onHeartbeatResponse: () => {
+          heartbeatResponseSeen = true;
+          initialHeartbeat.resolve();
+        },
         p2p: {
           enabled: true,
           targetBaseUrl: target.baseUrl,
-          host: p2pHost,
+          ...(advertiseNodeHost ? { host: p2pHost } : {}),
           acceptIntervalMs: 20,
           connectTimeoutMs,
           winnerSelectionWindowMs: 0,
@@ -195,7 +206,12 @@ export async function runLocalManagedClientP2PE2ESmoke(
         p2pAttempts.client.push(attempt);
         return socketPair.clientSocket;
       };
-      await initialHeartbeat.wait(routeWaitTimeoutMs, 'initial P2P heartbeat was not acknowledged before route discovery');
+      try {
+        await initialHeartbeat.wait(routeWaitTimeoutMs, 'initial P2P heartbeat was not acknowledged before route discovery');
+      } catch (error) {
+        const metadata = await nodeRepo.getNodeMetadata(nodeId);
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; heartbeatResponseSeen=${heartbeatResponseSeen}; signalApi=${signalApi.baseUrl}; nodeMetadata=${JSON.stringify(metadata?.metadata ?? null)}`);
+      }
     }
 
     await waitForRoute({
@@ -207,20 +223,26 @@ export async function runLocalManagedClientP2PE2ESmoke(
     });
 
     const resourceUrl = `https://${nodeId}.${baseStorageDomain}${resourcePath}`;
-    const smoke = await runManagedClientP2PSmoke({
-      apiBaseUrl: signalApi.baseUrl,
-      nodeId,
-      token: serviceToken,
-      clientId,
-      host: p2pHost,
-      resourceUrl,
-      plan,
-      pollIntervalMs,
-      waitTimeoutMs: routeWaitTimeoutMs,
-      connectTimeoutMs,
-      timeoutMs: requestTimeoutMs,
-      ...(clientConnectSocket ? { connectSocket: clientConnectSocket } : {}),
-    });
+    let smoke: ManagedClientP2PSmokeResult;
+    try {
+      smoke = await runManagedClientP2PSmoke({
+        apiBaseUrl: signalApi.baseUrl,
+        nodeId,
+        token: serviceToken,
+        clientId,
+        resourceUrl,
+        plan,
+        pollIntervalMs,
+        waitTimeoutMs: routeWaitTimeoutMs,
+        connectTimeoutMs,
+        timeoutMs: requestTimeoutMs,
+        ...(advertiseClientHost ? { host: p2pHost } : {}),
+        ...(clientConnectSocket ? { connectSocket: clientConnectSocket } : {}),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message}; responder=${JSON.stringify(responderDebug?.() ?? null)}`);
+    }
 
     return {
       smokeOk: smoke.ok && smoke.route.kind === 'p2p',
@@ -240,6 +262,8 @@ export async function runLocalManagedClientP2PE2ESmoke(
         signaling: 'repository-backed-api',
         dataPlane: socketMode === 'real-tcp-listener' ? 'real-local-tcp-listener' : 'deterministic-socket-injection',
         canonicalFetch: 'xpod-p2p-http/1',
+        clientAddress: advertiseClientHost ? 'explicit-host' : 'signal-observed',
+        nodeAddress: advertiseNodeHost ? 'explicit-host' : 'signal-observed',
       },
       caveats: [
         socketMode === 'real-tcp-listener'
@@ -299,20 +323,24 @@ function startRealTcpNodeCandidateResponder(options: {
   apiBaseUrl: string;
   nodeId: string;
   nodeToken: string;
-  host: string;
+  host?: string;
   clientPlan: LocalManagedClientP2PPlan;
   nodePlan: LocalManagedClientP2PPlan;
-}): { stop: () => void } {
+}): { stop: () => Promise<void>; diagnostics: () => unknown } {
   const signaling = createP2PSignalingClient({
     apiBaseUrl: options.apiBaseUrl,
     nodeId: options.nodeId,
     token: options.nodeToken,
   });
   let stopped = false;
+  const debugState = { listCount: 0, sessionCount: 0, addCount: 0, lastError: '', lastSessions: [] as unknown[] };
   const run = async (): Promise<void> => {
     while (!stopped) {
       try {
         const sessions = await signaling.listP2PSessions();
+        debugState.listCount += 1;
+        debugState.sessionCount = sessions.length;
+        debugState.lastSessions = sessions.map((session) => ({ sessionId: session.sessionId, signalingUrl: session.signalingUrl, candidates: session.candidates.map((candidate) => ({ role: candidate.role, sourceId: candidate.sourceId, port: candidate.port, host: candidate.host, address: candidate.address, url: candidate.url, metadata: candidate.metadata })) }));
         for (const session of sessions) {
           const hasClientCandidate = session.candidates.some((candidate) => candidate.role === 'client'
             && candidate.metadata?.bucket === options.clientPlan.bucket);
@@ -328,24 +356,27 @@ function startRealTcpNodeCandidateResponder(options: {
             host: options.host,
             plan: options.nodePlan,
           });
-          await signaling.addP2PCandidates(session.signalingUrl || session.sessionId, {
+          const answered = await signaling.addP2PCandidates(session.signalingUrl || session.sessionId, {
             role: 'node',
             sourceId: options.nodeId,
             candidates,
           });
+          debugState.addCount += 1;
+          debugState.lastSessions = [{ sessionId: answered.sessionId, signalingUrl: answered.signalingUrl, candidates: answered.candidates.map((candidate) => ({ role: candidate.role, sourceId: candidate.sourceId, port: candidate.port, host: candidate.host, address: candidate.address, url: candidate.url, metadata: candidate.metadata })) }];
         }
-      } catch {
-        // The local smoke is best served by polling until the session exists;
-        // failures are surfaced by the managed client timeout if no candidate is added.
+      } catch (error) {
+        debugState.lastError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       }
       await sleep(10);
     }
   };
-  void run();
+  const done = run();
   return {
-    stop(): void {
+    async stop(): Promise<void> {
       stopped = true;
+      await done;
     },
+    diagnostics: () => ({ ...debugState }),
   };
 }
 
@@ -354,7 +385,6 @@ async function startSignalApi(options: {
   serviceTokenRepo: ServiceTokenRepository;
   baseStorageDomain: string;
 }): Promise<{ baseUrl: string; close: () => Promise<void> }> {
-  const port = await getFreePort(36_000, '127.0.0.1');
   const authenticator = new MultiAuthenticator({
     authenticators: [
       new ServiceTokenAuthenticator({ repository: options.serviceTokenRepo }),
@@ -362,18 +392,24 @@ async function startSignalApi(options: {
     ],
   });
   const server = new ApiServer({
-    port,
+    port: 0,
     host: '127.0.0.1',
     authMiddleware: new AuthMiddleware({ authenticator }),
   });
-  const baseUrl = `http://127.0.0.1:${port}`;
+  let baseUrl = 'http://127.0.0.1:0';
   registerEdgeNodeSignalRoutes(server, { repository: options.nodeRepo });
   registerReachabilityRoutes(server, {
     repository: options.nodeRepo,
     baseStorageDomain: options.baseStorageDomain,
-    apiBaseUrl: baseUrl,
+    apiBaseUrl: () => baseUrl,
   });
   await server.start();
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    await server.stop();
+    throw new Error('Expected signal API TCP address info');
+  }
+  baseUrl = `http://127.0.0.1:${address.port}`;
   return {
     baseUrl,
     close: () => server.stop(),

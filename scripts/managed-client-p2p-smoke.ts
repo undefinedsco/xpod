@@ -37,9 +37,18 @@ interface CliOptions {
 interface ManagedClientP2PConnectorEvent {
   type: NodeRawTcpP2PConnectSocketEvent['type'];
   localPort?: number;
+  localAddress?: CandidateAddressEvidence;
+  remoteAddress?: CandidateAddressEvidence;
   remotePort: number;
   message?: string;
 }
+
+type CandidateAddressEvidence =
+  | 'explicit-host'
+  | 'explicit-address'
+  | 'signal-observed'
+  | 'candidate-url'
+  | 'port-only';
 
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
@@ -183,7 +192,7 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 function usage(): void {
-  console.log(`Usage: bun scripts/managed-client-p2p-smoke.ts --api-base-url <url> --node-id <id> --client-id <id> --host <public-ip-or-host> --resource-url <canonical-url> [options]
+  console.log(`Usage: bun scripts/managed-client-p2p-smoke.ts --api-base-url <url> --node-id <id> --client-id <id> --resource-url <canonical-url> [options]
 
 Runs the non-browser managed-client P2P data-plane smoke:
   1. GET /v1/signal/nodes/:nodeId/routes
@@ -195,12 +204,12 @@ Required:
   --api-base-url <url>        Xpod signal/API base URL.
   --node-id <id>              Target node id.
   --client-id <id>            Managed client id. Defaults to managed-<pid>.
-  --host <host>               Host/IP advertised to the peer for raw TCP candidates.
   --resource-url <url>        Canonical Solid resource URL to fetch.
 
 Optional:
   --token <token>             Bearer token for route/session APIs.
-  --address <address>         Candidate address when different from --host.
+  --host <host>               Optional advertised host debug override. By default signal injects the observed client address.
+  --address <address>         Optional advertised address debug override when different from observed signal address.
   --local-address <address>   Local address used by Node's TCP connector.
   --method <method>           HTTP method for the Solid request. Default: GET.
   --header, -H <k:v>          Request header. Repeatable.
@@ -266,6 +275,7 @@ async function main(): Promise<void> {
     ...result,
     smokeOk,
     requireP2P: options.requireP2P,
+    clientAddress: clientAddressEvidence(connectorEvents),
     connectorEvents,
   }, null, 2));
   if (!smokeOk) {
@@ -277,9 +287,32 @@ function summarizeConnectorEvent(event: NodeRawTcpP2PConnectSocketEvent): Manage
   return {
     type: event.type,
     ...(event.attempt.localPort ? { localPort: event.attempt.localPort } : {}),
+    localAddress: candidateAddressEvidence(event.attempt.local),
+    remoteAddress: candidateAddressEvidence(event.attempt.remote),
     remotePort: event.attempt.remotePort,
     ...(event.error ? { message: event.error.message } : {}),
   };
+}
+
+function clientAddressEvidence(events: ManagedClientP2PConnectorEvent[]): CandidateAddressEvidence | undefined {
+  return events.find((event) => event.type === 'success')?.localAddress
+    ?? events.find((event) => event.localAddress)?.localAddress;
+}
+
+function candidateAddressEvidence(candidate: { host?: string; address?: string; url?: string }): CandidateAddressEvidence {
+  if (candidate.host) {
+    return 'explicit-host';
+  }
+  if (candidate.address && candidate.url) {
+    return 'explicit-address';
+  }
+  if (candidate.address) {
+    return 'signal-observed';
+  }
+  if (candidate.url) {
+    return 'candidate-url';
+  }
+  return 'port-only';
 }
 
 function validateOptions(options: CliOptions): void {
@@ -287,9 +320,6 @@ function validateOptions(options: CliOptions): void {
   requireAbsoluteUrl(options.resourceUrl, '--resource-url');
   requireNonEmpty(options.nodeId, '--node-id');
   requireNonEmpty(options.clientId, '--client-id');
-  if (!options.host && !options.address) {
-    throw new Error('Raw TCP P2P smoke requires --host or --address so the peer can connect back to this client candidate.');
-  }
   if ((options.method === 'GET' || options.method === 'HEAD') && options.body !== undefined) {
     throw new Error(`--body is not allowed for ${options.method}`);
   }

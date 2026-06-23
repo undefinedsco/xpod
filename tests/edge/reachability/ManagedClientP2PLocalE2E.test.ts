@@ -45,7 +45,7 @@ describe('managed-client P2P local E2E smoke', () => {
         }),
       }),
     ]);
-  });
+  }, 15_000);
 
   it('can run through real local TCP sockets without socket injection', async () => {
     const result = await runLocalManagedClientP2PE2ESmoke({
@@ -56,7 +56,7 @@ describe('managed-client P2P local E2E smoke', () => {
       targetBody: 'local real tcp p2p response',
       p2pHost: '127.0.0.1',
       socketMode: 'real-tcp-listener',
-      routeWaitTimeoutMs: 2_000,
+      routeWaitTimeoutMs: 5_000,
       pollIntervalMs: 10,
       connectTimeoutMs: 1_000,
       requestTimeoutMs: 2_000,
@@ -88,6 +88,80 @@ describe('managed-client P2P local E2E smoke', () => {
       }),
     ]);
     expect(result.smoke.body).toBe('local real tcp p2p response');
-  });
+  }, 15_000);
+
+
+  it('uses signal-observed address for port-only managed client candidates', async () => {
+    const result = await runLocalManagedClientP2PE2ESmoke({
+      nodeName: 'local-p2p-node-observed-client',
+      clientId: 'managed-client-observed',
+      baseStorageDomain: 'pods.example',
+      resourcePath: '/alice/local-p2p-observed-client.txt?version=1',
+      targetBody: 'local observed client address response',
+      p2pHost: '127.0.0.1',
+      advertiseClientHost: false,
+      socketMode: 'real-tcp-listener',
+      routeWaitTimeoutMs: 5_000,
+      pollIntervalMs: 10,
+      connectTimeoutMs: 1_000,
+      requestTimeoutMs: 2_000,
+    });
+
+    expect(result.smokeOk).toBe(true);
+    expect(result.evidence.clientAddress).toBe('signal-observed');
+    expect(result.p2pAttempts.client).toEqual([
+      expect.objectContaining({
+        local: expect.objectContaining({
+          sourceId: 'managed-client-observed',
+          address: '127.0.0.1',
+          port: result.clientPlan.ports[0],
+        }),
+      }),
+    ]);
+    expect(result.p2pAttempts.client[0].local.host).toBeUndefined();
+    expect(result.p2pAttempts.client[0].local.url).toBeUndefined();
+    expect(result.smoke.body).toBe('local observed client address response');
+  }, 15_000);
+
+  it('uses signal-observed addresses for both managed client and node candidates', async () => {
+    const result = await runLocalManagedClientP2PE2ESmoke({
+      nodeName: 'local-p2p-node-observed-peers',
+      clientId: 'managed-client-observed-peers',
+      baseStorageDomain: 'pods.example',
+      resourcePath: '/alice/local-p2p-observed-peers.txt?version=1',
+      targetBody: 'local observed peer addresses response',
+      p2pHost: '127.0.0.1',
+      advertiseClientHost: false,
+      advertiseNodeHost: false,
+      socketMode: 'real-tcp-listener',
+      routeWaitTimeoutMs: 5_000,
+      pollIntervalMs: 10,
+      connectTimeoutMs: 1_000,
+      requestTimeoutMs: 2_000,
+    });
+
+    expect(result.smokeOk).toBe(true);
+    expect(result.evidence.clientAddress).toBe('signal-observed');
+    expect(result.evidence.nodeAddress).toBe('signal-observed');
+    expect(result.p2pAttempts.client).toEqual([
+      expect.objectContaining({
+        local: expect.objectContaining({
+          sourceId: 'managed-client-observed-peers',
+          address: '127.0.0.1',
+          port: result.clientPlan.ports[0],
+        }),
+        remote: expect.objectContaining({
+          sourceId: result.nodeId,
+          address: '127.0.0.1',
+          port: result.nodePlan.ports[0],
+        }),
+      }),
+    ]);
+    expect(result.p2pAttempts.client[0].local.host).toBeUndefined();
+    expect(result.p2pAttempts.client[0].local.url).toBeUndefined();
+    expect(result.p2pAttempts.client[0].remote.host).toBeUndefined();
+    expect(result.p2pAttempts.client[0].remote.url).toBeUndefined();
+    expect(result.smoke.body).toBe('local observed peer addresses response');
+  }, 15_000);
 
 });

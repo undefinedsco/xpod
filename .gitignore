@@ -74,6 +74,18 @@ debugging_report.md
 # Components.js generated files (entire directory is build output)
 /components/
 
+# Harmony/OpenHarmony generated outputs
+harmony/**/.hvigor/
+harmony/**/build/
+harmony/**/*.hap
+harmony/**/*.app
+harmony/**/*.p7b
+harmony/**/*.cer
+harmony/**/*.csr
+harmony/**/*.p12
+harmony/**/*.keystore
+harmony/**/*.profile
+
 # Local config and specs
 openspec/
 

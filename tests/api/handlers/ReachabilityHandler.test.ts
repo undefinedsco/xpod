@@ -222,6 +222,328 @@ describe('ReachabilityHandler', () => {
     }));
   });
 
+  it('enriches port-only p2p session candidates with the observed forwarded address', async () => {
+    register();
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({
+      kind: 'p2p',
+      clientId: 'device-1',
+      candidates: [
+        { protocol: 'tcp', transport: 'raw-tcp-hole-punch', port: 34567 },
+      ],
+    }, auth, {
+      headers: {
+        'x-forwarded-for': '203.0.113.44, 10.0.0.10',
+      },
+    });
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(201);
+    expect(res._body().candidates).toEqual([
+      expect.objectContaining({
+        protocol: 'tcp',
+        transport: 'raw-tcp-hole-punch',
+        address: '203.0.113.44',
+        port: 34567,
+      }),
+    ]);
+  });
+
+  it('lets solid auth create an owned client p2p signaling session without a node token', async () => {
+    register();
+    const auth: SolidAuthContext = { type: 'solid', webId: 'https://alice.example/profile/card#me' };
+    const req = createMockRequest({
+      kind: 'p2p',
+      clientId: 'phone-1',
+      capabilities: ['tcp-punch'],
+      candidates: [
+        { protocol: 'tcp', transport: 'raw-tcp-hole-punch', port: 34567 },
+      ],
+    }, auth, {
+      headers: {
+        'x-forwarded-for': '203.0.113.55',
+      },
+    });
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(201);
+    expect(res._body()).toMatchObject({
+      sessionId: 'p2p_fixed-id',
+      kind: 'p2p',
+      clientId: 'phone-1',
+      owner: {
+        type: 'solid',
+        webId: 'https://alice.example/profile/card#me',
+      },
+      candidates: [
+        expect.objectContaining({
+          role: 'client',
+          sourceId: 'phone-1',
+          address: '203.0.113.55',
+          port: 34567,
+        }),
+      ],
+    });
+    expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+      reachabilitySessions: expect.objectContaining({
+        p2p: [
+          expect.objectContaining({
+            sessionId: 'p2p_fixed-id',
+            owner: {
+              type: 'solid',
+              webId: 'https://alice.example/profile/card#me',
+            },
+          }),
+        ],
+      }),
+    }));
+  });
+
+  it('lets solid auth read and append only client candidates for its owned p2p signaling session', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_owned',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'phone-1',
+                owner: {
+                  type: 'solid',
+                  webId: 'https://alice.example/profile/card#me',
+                },
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_owned',
+                capabilities: ['tcp-punch'],
+                candidates: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register();
+    const auth: SolidAuthContext = { type: 'solid', webId: 'https://alice.example/profile/card#me' };
+
+    const getReq = createMockRequest(undefined, auth);
+    const getRes = createMockResponse();
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/sessions/:sessionId'](getReq, getRes, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_owned',
+    });
+
+    expect(getRes.statusCode).toBe(200);
+    expect(getRes._body()).toMatchObject({
+      sessionId: 'p2p_owned',
+      owner: {
+        type: 'solid',
+        webId: 'https://alice.example/profile/card#me',
+      },
+    });
+
+    const updateReq = createMockRequest({
+      role: 'node',
+      sourceId: 'spoofed-node',
+      candidates: [
+        { protocol: 'tcp', transport: 'raw-tcp-hole-punch', port: 45678 },
+      ],
+    }, auth, {
+      headers: {
+        'x-real-ip': '198.51.100.77',
+      },
+    });
+    const updateRes = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](updateReq, updateRes, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_owned',
+    });
+
+    expect(updateRes.statusCode).toBe(200);
+    expect(updateRes._body().candidates).toEqual([
+      expect.objectContaining({
+        role: 'client',
+        sourceId: 'phone-1',
+        address: '198.51.100.77',
+        port: 45678,
+      }),
+    ]);
+  });
+
+  it('rejects solid auth from reading or updating another user p2p signaling session', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_alice',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'phone-1',
+                owner: {
+                  type: 'solid',
+                  webId: 'https://alice.example/profile/card#me',
+                },
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_alice',
+                capabilities: ['tcp-punch'],
+                candidates: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register();
+    const auth: SolidAuthContext = { type: 'solid', webId: 'https://bob.example/profile/card#me' };
+
+    const getReq = createMockRequest(undefined, auth);
+    const getRes = createMockResponse();
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/sessions/:sessionId'](getReq, getRes, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_alice',
+    });
+
+    expect(getRes.statusCode).toBe(403);
+    expect(getRes._body()).toEqual({ error: 'Solid user cannot access another client signaling session' });
+
+    const updateReq = createMockRequest({
+      candidates: [
+        { protocol: 'tcp', transport: 'raw-tcp-hole-punch', port: 45678 },
+      ],
+    }, auth);
+    const updateRes = createMockResponse();
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](updateReq, updateRes, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_alice',
+    });
+
+    expect(updateRes.statusCode).toBe(403);
+    expect(updateRes._body()).toEqual({ error: 'Solid user cannot access another client signaling session' });
+    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+  });
+
+  it('filters p2p signaling session lists to the solid user owner', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_alice',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'alice-phone',
+                owner: {
+                  type: 'solid',
+                  webId: 'https://alice.example/profile/card#me',
+                },
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_alice',
+                capabilities: ['tcp-punch'],
+                candidates: [],
+              },
+              {
+                sessionId: 'p2p_bob',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'bob-phone',
+                owner: {
+                  type: 'solid',
+                  webId: 'https://bob.example/profile/card#me',
+                },
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_bob',
+                capabilities: ['tcp-punch'],
+                candidates: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register();
+    const auth: SolidAuthContext = { type: 'solid', webId: 'https://alice.example/profile/card#me' };
+    const req = createMockRequest(undefined, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['GET /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res._body()).toEqual({
+      kind: 'p2p',
+      sessions: [
+        expect.objectContaining({ sessionId: 'p2p_alice' }),
+      ],
+    });
+  });
+
+  it('enriches port-only p2p candidate updates with the observed socket address', async () => {
+    repo = createRepo({
+      getNodeMetadata: vi.fn().mockResolvedValue({
+        nodeId: 'node-1',
+        metadata: {
+          reachabilitySessions: {
+            p2p: [
+              {
+                sessionId: 'p2p_existing',
+                kind: 'p2p',
+                nodeId: 'node-1',
+                clientId: 'device-1',
+                createdAt: '2026-06-19T00:00:00.000Z',
+                expiresAt: '2026-06-19T00:05:00.000Z',
+                nodeCandidates: [],
+                signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
+                capabilities: ['tcp-punch'],
+                candidates: [],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    register();
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({
+      candidates: [{ protocol: 'tcp', transport: 'raw-tcp-hole-punch', port: 45678 }],
+    }, auth);
+    (req.socket as any) = { remoteAddress: '::ffff:198.51.100.90' };
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions/:sessionId/candidates'](req, res, {
+      nodeId: 'node-1',
+      sessionId: 'p2p_existing',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res._body().candidates).toEqual([
+      expect.objectContaining({
+        protocol: 'tcp',
+        transport: 'raw-tcp-hole-punch',
+        address: '198.51.100.90',
+        port: 45678,
+      }),
+    ]);
+  });
+
   it('creates p2p sessions with audit id and signaling limits', async () => {
     register({
       maxActiveP2PSessionsPerNode: 2,

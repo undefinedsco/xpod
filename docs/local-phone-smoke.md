@@ -254,6 +254,32 @@ the already-connected socket pair at the raw socket boundary. It proves the
 control-plane and managed-client data-plane wiring, not real cross-NAT TCP
 simultaneous open.
 
+For a stronger local integration boundary, run the Docker bridge smoke:
+
+```bash
+bun run smoke:p2p:docker-e2e
+```
+
+This starts three Docker containers on the same Docker bridge network:
+
+1. `signal`: repository-backed signal API plus a target HTTP server standing in
+   for the local CSS/SP.
+2. `node`: node-side non-browser TCP data-plane listener. It publishes only a
+   port-only node candidate; the signal API must enrich it to a
+   `signal-observed` Docker bridge address.
+3. `client`: managed-client smoke. It publishes only port-only client
+   candidates, discovers the node candidate through signal, and fetches the
+   canonical Solid resource through the raw TCP data plane.
+
+The JSON result must show `smokeOk: true`, `route.kind: "p2p"`,
+`clientAddress: "signal-observed"`, node `accepted[].nodeAddress:
+"signal-observed"`, and a target request with the canonical URL headers. This
+proves real non-browser TCP data-plane sockets across Docker bridge containers.
+It still does **not** prove real cross-NAT TCP simultaneous open; phone/cellular
+or another external native runtime remains the final realnet acceptance step.
+Cloudflare Tunnel and FRP/SakuraFRP remain fallback routes and are not replaced
+by this smoke.
+
 To exercise real local TCP sockets instead of the injected socket pair:
 
 ```bash
@@ -284,21 +310,27 @@ For a CLI/native-style smoke against a running signal API and a node with
 
 ```bash
 bun run smoke:p2p:managed -- \
-  --api-base-url https://id.undefineds.co/ \
+  --api-base-url https://api.undefineds.co/ \
   --node-id node-0000 \
   --token "$XPOD_SERVICE_TOKEN" \
   --client-id "cli-$(hostname)" \
-  --host "$PUBLIC_CLIENT_IP" \
   --winner-selection-window-ms 50 \
   --resource-url https://node-0000.undefineds.co/.well-known/openid-configuration
 ```
 
 The command performs route discovery, creates a P2P session through signaling,
 waits for node raw TCP candidates, then sends the canonical Solid HTTP request
-through the selected managed-client fetch route. It prints a JSON result with
-`route`, HTTP status, headers, and body. By default it exits non-zero unless the
-selected route is `p2p`; pass `--allow-fallback` only when you intentionally want
-to validate public/user-tunnel fallback behavior instead of raw TCP P2P.
+through the selected managed-client fetch route. Managed/native clients can omit
+`--host` and `--address`: the signal API injects the observed client address for
+port-only candidates from `X-Forwarded-For`, `X-Real-IP`, or the socket remote
+address. Use `--host` or `--address` only as an explicit debug override. It
+prints a JSON result with `route`, HTTP status, headers, and body. By default it
+exits non-zero unless the selected route is `p2p`; pass `--allow-fallback` only
+when you intentionally want to validate public/user-tunnel fallback behavior
+instead of raw TCP P2P.
+The local node side follows the same rule: when no explicit node host/address is
+configured, node candidates can also be port-only and rely on the signal API to
+inject the observed node address.
 When multiple candidate sockets connect almost together, `--winner-selection-window-ms`
 lets the managed client collect a short success set and keep the deterministic
 candidate-pair winner instead of racing on first completion. Set
@@ -309,18 +341,22 @@ This native P2P path is additive. Existing Cloudflare Tunnel and FRP/SakuraFRP
 paths remain the browser/public `user-tunnel` fallback and are not replaced by
 raw TCP P2P.
 
+当前手机/实网验证进度记录在
+[`docs/p2p-mobile-verification-progress.md`](p2p-mobile-verification-progress.md)。
+其中 Harmony Mate 80 路径已构建并完成 OpenHarmony 本地签名，但商用设备拒绝
+OpenHarmony Root CA，安装阶段被阻塞；Docker、本机 smoke 不能被解释为手机 P2P
+验收完成。
+
 To avoid hand-copying mismatched node/client arguments during external
 validation, generate the paired commands first:
 
 ```bash
 bun run smoke:p2p:realnet -- plan \
-  --api-base-url https://id.undefineds.co/ \
+  --api-base-url https://api.undefineds.co/ \
   --node-id node-0000 \
   --node-token "$XPOD_NODE_TOKEN" \
   --base-url https://node-0000.undefineds.co/ \
   --target-base-url http://127.0.0.1:3000/ \
-  --node-host "$NODE_PUBLIC_IP_OR_DDNS" \
-  --client-host "$CLIENT_PUBLIC_IP_OR_DDNS" \
   --client-id "phone-$(date +%s)" \
   --token "$XPOD_SERVICE_TOKEN" \
   --resource-url https://node-0000.undefineds.co/.well-known/openid-configuration \
@@ -331,33 +367,121 @@ Run the printed node command on the local/SP machine and the printed client
 command from another non-browser runtime/network. Save both JSON outputs, then
 combine them into one acceptance verdict:
 
+By default the generated node and client commands omit host/address. Each peer
+still connects to signal, so the signal API injects the observed address for
+port-only raw TCP candidates. Add `--node-host` / `--node-address` or
+`--client-host` / `--client-address` only when you intentionally need an
+explicit debug override. Observing an address does not prove the advertised port
+is reachable through every NAT type.
+
 ```bash
 bun run smoke:p2p:realnet -- verify \
   --client-id "$CLIENT_ID" \
-  --node-result "$(<node-result.json)" \
-  --client-result "$(<client-result.json)" \
+  --node-result-file node-result.json \
+  --client-result-file client-result.json \
   --expected-status 200
 ```
 
 The verifier requires node-side accept evidence, a client-selected `p2p` route,
-a raw TCP connector success event, and explicit evidence that Cloudflare Tunnel
-and FRP/SakuraFRP remain preserved fallback routes. It still cannot manufacture
-cross-NAT success; it only makes the external evidence check repeatable.
+a raw TCP connector success event, `clientAddress = signal-observed`,
+`accepted[].nodeAddress = signal-observed` for the same `clientId`, and explicit
+evidence that Cloudflare Tunnel and FRP/SakuraFRP remain preserved fallback
+routes. For mobile read/write smoke, pass `--require-put-status-2xx` so the
+verdict also proves the PUT write completed before the GET read. If either peer used `--host` / `--address`, the run can still be useful
+for debugging but does not satisfy the default port-only acceptance gate. The
+verifier still cannot manufacture cross-NAT success; it only makes the external
+evidence check repeatable.
 
-Raw TCP cross-NAT acceptance still needs a packaged native/CLI/mobile runtime
-that can:
+The relevant success evidence should look like this:
 
-1. provide a platform connector that can bind candidate local TCP ports with the
-   required socket options;
-2. run true TCP simultaneous open against the peer-observed public address;
-3. select one winning socket consistently on both sides;
-4. inject that socket through the existing `connectSocket` hook;
-5. run the same canonical Solid HTTP request over that socket on real external
-   networks.
+```json
+{
+  "client": {
+    "smokeOk": true,
+    "route": { "kind": "p2p" },
+    "putStatus": 200,
+    "clientAddress": "signal-observed",
+    "connectorEvents": [{ "type": "success" }]
+  },
+  "node": {
+    "accepted": [
+      {
+        "clientId": "phone-...",
+        "nodeAddress": "signal-observed"
+      }
+    ]
+  }
+}
+```
 
-Until that runtime smoke exists, public-network phone validation should use the
-SP-domain browser flow above. That validates product-visible Solid behavior, but
-it is not proof of raw TCP P2P data-plane success.
+Raw TCP cross-NAT acceptance now has two non-browser runtime paths:
+
+1. CLI/native script smoke: run the generated `smoke:p2p:node-accept` command
+   on the SP machine and the generated `smoke:p2p:managed` command from another
+   non-browser runtime/network.
+2. Mobile smoke: run the `LinX P2P Smoke` Android package or the iOS React
+   Native host with `--p2p-smoke` on a true phone. The app binds candidate local
+   TCP ports, logs in through the configured IDP, creates a signal session with
+   port-only candidates, sends canonical Solid HTTP frames over
+   `xpod-p2p-http/1`, and returns JSON evidence compatible with the same
+   `smoke:p2p:realnet -- verify` gate.
+
+For Android, the companion launcher can prefill the smoke fields and capture
+the verifier JSON from logcat automatically:
+
+```bash
+cd /Users/ganlu/develop/linx-mobile
+npm run p2p:android:launch -- \
+  --adb /opt/homebrew/bin/adb \
+  --adb-server-port 5041 \
+  --idp-url https://id.undefineds.co/ \
+  --storage-url https://node-0000.undefineds.co/ \
+  --client-id phone-1 \
+  --resource-path /alice/.data/linx-mobile-p2p-smoke.txt \
+  --capture-result mobile-result.json \
+  --skip-build
+```
+
+From the Xpod repo, the Android real-network smoke can also be orchestrated as
+one command. It writes `plan.json`, `node-result.json`, and
+`mobile-result.json` under `.test-data/p2p-android-realnet/`, then runs the same
+file-based verifier:
+
+```bash
+cd /Users/ganlu/develop/xpod
+bun run smoke:p2p:android-realnet -- \
+  --linx-mobile-root /Users/ganlu/develop/linx-mobile \
+  --api-base-url https://api.undefineds.co/ \
+  --node-id node-0000 \
+  --node-token "$XPOD_NODE_TOKEN" \
+  --base-url https://node-0000.undefineds.co/ \
+  --target-base-url http://127.0.0.1:3000/ \
+  --client-id phone-1 \
+  --resource-url https://node-0000.undefineds.co/alice/.data/linx-mobile-p2p-smoke.txt \
+  --adb /opt/homebrew/bin/adb \
+  --adb-server-port 5041 \
+  --skip-build
+```
+
+Use `--dry-run` first to inspect the generated node, mobile, and verifier
+commands without requiring an attached phone. During the real run, the phone
+still needs to complete `Login to IDP` and `Run P2P write/read smoke` in the
+`LinX P2P Smoke` app; ADB only installs, launches, prefills fields, and captures
+the `RESULT_JSON` log marker.
+
+The Android native bridge logs `RESULT_JSON <json>` through the
+`XpodP2PSmoke` logcat tag; `--capture-result` writes that payload to
+`mobile-result.json`. For iOS, run the React Native host from Xcode on a true
+iPhone with the `--p2p-smoke` launch argument, then search the Xcode console for
+`RESULT_JSON ` and copy the JSON payload into `mobile-result.json`.
+
+Phone USB, ADB/HDB, and Xcode are only install / launch / log-collection control
+paths. Simulator and browser checks are useful for UI, Solid login, and public
+SP-route validation, but they are not final evidence for raw TCP P2P data-plane
+success. Final acceptance still requires real node/client JSON from separate
+network contexts showing `route.kind = "p2p"`, connector `success`,
+`clientAddress = "signal-observed"`, and node `accepted[].nodeAddress =
+"signal-observed"`.
 
 ## Troubleshooting
 

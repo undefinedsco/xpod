@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { readFileSync } from 'node:fs';
 import {
   createP2PRealnetAcceptancePlan,
   verifyP2PRealnetAcceptance,
@@ -11,8 +12,12 @@ type CommandName = 'plan' | 'verify';
 interface CliOptions extends Partial<P2PRealnetAcceptancePlanOptions> {
   command: CommandName;
   expectedStatus?: number;
+  expectedPutStatus?: number;
+  requirePutStatus2xx?: boolean;
   nodeResult?: string;
+  nodeResultFile?: string;
   clientResult?: string;
+  clientResultFile?: string;
   help: boolean;
 }
 
@@ -50,8 +55,12 @@ function parseArgs(argv: string[]): CliOptions {
     basePort: parseOptionalInteger(process.env.XPOD_P2P_REALNET_BASE_PORT, 'XPOD_P2P_REALNET_BASE_PORT'),
     portRange: parseOptionalInteger(process.env.XPOD_P2P_REALNET_PORT_RANGE, 'XPOD_P2P_REALNET_PORT_RANGE'),
     expectedStatus: parseOptionalInteger(process.env.XPOD_P2P_REALNET_EXPECTED_STATUS, 'XPOD_P2P_REALNET_EXPECTED_STATUS'),
+    expectedPutStatus: parseOptionalInteger(process.env.XPOD_P2P_REALNET_EXPECTED_PUT_STATUS, 'XPOD_P2P_REALNET_EXPECTED_PUT_STATUS'),
+    requirePutStatus2xx: parseBooleanFlag(process.env.XPOD_P2P_REALNET_REQUIRE_PUT_STATUS_2XX),
     nodeResult: process.env.XPOD_P2P_REALNET_NODE_RESULT,
+    nodeResultFile: process.env.XPOD_P2P_REALNET_NODE_RESULT_FILE,
     clientResult: process.env.XPOD_P2P_REALNET_CLIENT_RESULT,
+    clientResultFile: process.env.XPOD_P2P_REALNET_CLIENT_RESULT_FILE,
     help: false,
   };
 
@@ -159,11 +168,23 @@ function parseArgs(argv: string[]): CliOptions {
       case '--expected-status':
         options.expectedStatus = readPositive();
         break;
+      case '--expected-put-status':
+        options.expectedPutStatus = readPositive();
+        break;
+      case '--require-put-status-2xx':
+        options.requirePutStatus2xx = true;
+        break;
       case '--node-result':
         options.nodeResult = readValue();
         break;
+      case '--node-result-file':
+        options.nodeResultFile = readValue();
+        break;
       case '--client-result':
         options.clientResult = readValue();
+        break;
+      case '--client-result-file':
+        options.clientResultFile = readValue();
         break;
       default:
         throw new Error(`Unknown argument: ${arg}`);
@@ -188,8 +209,10 @@ async function main(): Promise<void> {
   const verification = verifyP2PRealnetAcceptance({
     clientId: requireNonEmpty(options.clientId, '--client-id'),
     expectedStatus: options.expectedStatus,
-    nodeResult: parseJsonArg(requireNonEmpty(options.nodeResult, '--node-result'), '--node-result'),
-    clientResult: parseJsonArg(requireNonEmpty(options.clientResult, '--client-result'), '--client-result'),
+    expectedPutStatus: options.expectedPutStatus,
+    requirePutStatus2xx: options.requirePutStatus2xx,
+    nodeResult: parseJsonInput(options.nodeResult, options.nodeResultFile, '--node-result', '--node-result-file'),
+    clientResult: parseJsonInput(options.clientResult, options.clientResultFile, '--client-result', '--client-result-file'),
   });
   writeJson(verification);
   if (!verification.smokeOk) {
@@ -204,10 +227,10 @@ function validatePlanOptions(options: CliOptions): P2PRealnetAcceptancePlanOptio
     nodeToken: requireNonEmpty(options.nodeToken, '--node-token'),
     baseUrl: requireAbsoluteUrl(options.baseUrl, '--base-url'),
     targetBaseUrl: requireAbsoluteUrl(options.targetBaseUrl, '--target-base-url'),
-    nodeHost: requireNonEmpty(options.nodeHost, '--node-host'),
+    nodeHost: options.nodeHost,
     nodeAddress: options.nodeAddress,
     nodeLocalAddress: options.nodeLocalAddress,
-    clientHost: requireNonEmpty(options.clientHost, '--client-host'),
+    clientHost: options.clientHost,
     clientAddress: options.clientAddress,
     clientLocalAddress: options.clientLocalAddress,
     clientId: requireNonEmpty(options.clientId, '--client-id'),
@@ -228,6 +251,28 @@ function validatePlanOptions(options: CliOptions): P2PRealnetAcceptancePlanOptio
   };
 }
 
+function parseJsonInput(
+  value: string | undefined,
+  filePath: string | undefined,
+  valueName: string,
+  fileName: string,
+): unknown {
+  if (value !== undefined && value.trim().length > 0 && filePath !== undefined && filePath.trim().length > 0) {
+    throw new Error(`${valueName} and ${fileName} are mutually exclusive`);
+  }
+  if (filePath !== undefined && filePath.trim().length > 0) {
+    try {
+      return parseJsonArg(readFileSync(filePath, 'utf8'), fileName);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw error;
+      }
+      throw new Error(`${fileName} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return parseJsonArg(requireNonEmpty(value, valueName), valueName);
+}
+
 function parseJsonArg(value: string, name: string): unknown {
   try {
     return JSON.parse(value);
@@ -242,12 +287,19 @@ function writeJson(value: unknown): void {
 
 function usage(): void {
   console.log(`Usage:
-  bun scripts/p2p-realnet-acceptance.ts plan --api-base-url <url> --node-id <id> --node-token <token> --base-url <url> --target-base-url <url> --node-host <host> --client-host <host> --client-id <id> --resource-url <url> [options]
-  bun scripts/p2p-realnet-acceptance.ts verify --client-id <id> --node-result '<json>' --client-result '<json>' [--expected-status 200]
+  bun scripts/p2p-realnet-acceptance.ts plan --api-base-url <url> --node-id <id> --node-token <token> --base-url <url> --target-base-url <url> --client-id <id> --resource-url <url> [options]
+  bun scripts/p2p-realnet-acceptance.ts verify --client-id <id> (--node-result '<json>' | --node-result-file node-result.json) (--client-result '<json>' | --client-result-file mobile-result.json) [--expected-status 200] [--expected-put-status 201] [--require-put-status-2xx]
 
 The plan command prints paired node/client commands for external non-browser
 raw TCP P2P validation. The verify command combines the two smoke JSON outputs
-into one acceptance verdict.
+into one acceptance verdict. Use --node-result-file / --client-result-file when
+the Android launcher captured mobile-result.json or when node output was saved
+to disk. Use --require-put-status-2xx for mobile read/write smoke, where the
+client result includes PUT write evidence before the GET read evidence. Use
+--expected-put-status only when the exact Solid write status is intentionally fixed.
+By default both peers publish port-only raw TCP candidates; the signal API
+injects the observed peer address. Use --node-host/--node-address or
+--client-host/--client-address only as explicit debug overrides.
 
 Cloudflare Tunnel and FRP/SakuraFRP remain independent user-tunnel fallback
 routes; this helper only plans and verifies the raw TCP P2P path.`);
@@ -291,6 +343,13 @@ function parseNonNegativeInteger(value: string, name: string): number {
 
 function parseOptionalInteger(value: string | undefined, name: string): number | undefined {
   return value === undefined || value.trim().length === 0 ? undefined : parsePositiveInteger(value, name);
+}
+
+function parseBooleanFlag(value: string | undefined): boolean | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
 function parseOptionalNonNegativeInteger(value: string | undefined, name: string): number | undefined {

@@ -41,6 +41,26 @@ describe('managed-client P2P smoke script', () => {
     }
   });
 
+
+  it('documents host and address as optional debug overrides', async () => {
+    const { stdout } = await execFileAsync('bun', [
+      'scripts/managed-client-p2p-smoke.ts',
+      '--help',
+    ], { cwd: root, timeout: 5_000 });
+
+    const requiredSection = stdout.slice(
+      stdout.indexOf('Required:'),
+      stdout.indexOf('Optional:'),
+    );
+    const optionalSection = stdout.slice(stdout.indexOf('Optional:'));
+
+    expect(requiredSection).not.toContain('--host');
+    expect(requiredSection).not.toContain('--address');
+    expect(optionalSection).toContain('--host <host>');
+    expect(optionalSection).toContain('--address <address>');
+    expect(optionalSection).toContain('signal injects the observed client address');
+  });
+
   it('prints raw TCP connector events when the real data plane succeeds', async () => {
     const localFetch = vi.fn(async () => new Response('script p2p response', {
       status: 200,
@@ -60,6 +80,7 @@ describe('managed-client P2P smoke script', () => {
 
     let apiBaseUrl = '';
     let createdCandidates: P2PTransportCandidate[] = [];
+    let enrichedClientCandidates: P2PTransportCandidate[] = [];
     const signalApi = await startSignalApi(async (req, res) => {
       const url = new URL(req.url ?? '/', apiBaseUrl);
       if (req.method === 'GET' && url.pathname === '/v1/signal/nodes/node-1/routes') {
@@ -74,13 +95,17 @@ describe('managed-client P2P smoke script', () => {
       if (req.method === 'POST' && url.pathname === '/v1/signal/nodes/node-1/sessions') {
         const body = JSON.parse(await readBody(req)) as { candidates?: P2PTransportCandidate[] };
         createdCandidates = body.candidates ?? [];
-        writeJson(res, p2pSession(apiBaseUrl, createdCandidates));
+        enrichedClientCandidates = createdCandidates.map((candidate) => ({
+          ...candidate,
+          address: '127.0.0.1',
+        }));
+        writeJson(res, p2pSession(apiBaseUrl, enrichedClientCandidates));
         return;
       }
       if (req.method === 'GET' && url.pathname === '/v1/signal/nodes/node-1/sessions/p2p_script') {
         writeJson(res, p2pSession(apiBaseUrl, [
-          ...createdCandidates,
-          ...nodeCandidatesFromClient(createdCandidates, nodePort),
+          ...enrichedClientCandidates,
+          ...nodeCandidatesFromClient(enrichedClientCandidates, nodePort),
         ]));
         return;
       }
@@ -95,7 +120,6 @@ describe('managed-client P2P smoke script', () => {
       '--api-base-url', apiBaseUrl,
       '--node-id', 'node-1',
       '--client-id', 'script-device',
-      '--host', '127.0.0.1',
       '--resource-url', 'https://node-1.pods.example/alice/script.txt',
       '--num-ports', '1',
       '--base-port', String(clientPort),
@@ -113,6 +137,7 @@ describe('managed-client P2P smoke script', () => {
       smokeOk: boolean;
       route: AccessRoute;
       body: string;
+      clientAddress?: string;
       connectorEvents?: Array<{ type: string; localPort?: number; remotePort: number }>;
     };
     expect(result.smokeOk).toBe(true);
@@ -125,7 +150,18 @@ describe('managed-client P2P smoke script', () => {
       type: 'success',
       localPort: clientPort,
       remotePort: nodePort,
+      localAddress: 'signal-observed',
     }));
+    expect(result.clientAddress).toBe('signal-observed');
+    expect(createdCandidates[0]).toMatchObject({
+      protocol: 'tcp',
+      transport: 'raw-tcp-hole-punch',
+      port: clientPort,
+    });
+    expect(createdCandidates[0]?.host).toBeUndefined();
+    expect(createdCandidates[0]?.address).toBeUndefined();
+    expect(createdCandidates[0]?.url).toBeUndefined();
+    expect(enrichedClientCandidates[0]?.address).toBe('127.0.0.1');
     expect(localFetch).toHaveBeenCalledWith(
       'http://127.0.0.1:5737/alice/script.txt',
       expect.objectContaining({ method: 'GET' }),

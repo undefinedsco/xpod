@@ -1,0 +1,13 @@
+{
+  "modelVersion": "26.0.0",
+  "name": "xpod-p2p-smoke",
+  "version": "1.0.0",
+  "description": "Harmony native real-network P2P smoke client for Xpod reachability acceptance",
+  "main": "",
+  "author": "undefineds",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hvigor-ohos-plugin": "6.26.1"
+  }
+}

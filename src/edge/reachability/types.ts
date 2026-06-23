@@ -56,8 +56,14 @@ export interface BuildRouteSetOptions {
 export interface P2PSessionRequest {
   kind?: 'p2p';
   clientId: string;
+  owner?: P2PSessionOwner;
   capabilities?: string[];
   candidates?: unknown[];
+}
+
+export interface P2PSessionOwner {
+  type: 'solid';
+  webId: string;
 }
 
 export type P2PCandidateRole = 'client' | 'node';
@@ -93,6 +99,7 @@ export interface P2PSession {
   kind: 'p2p';
   nodeId: string;
   clientId: string;
+  owner?: P2PSessionOwner;
   auditId?: string;
   createdAt: string;
   expiresAt: string;

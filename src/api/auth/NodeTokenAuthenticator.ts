@@ -17,10 +17,9 @@ export class NodeTokenAuthenticator implements Authenticator {
 
   public canAuthenticate(request: IncomingMessage): boolean {
     const auth = request.headers.authorization;
-    // 支持两种格式:
+    // 支持两种明确格式:
     // 1. XpodNode nodeId:token
     // 2. Bearer <raw-node-token> (带 X-Node-Id 头)
-    // 3. Bearer username:secret / base64(username:secret) (兼容旧格式，带 X-Node-Id 头)
     if (auth?.startsWith('XpodNode ')) {
       return true;
     }
@@ -47,14 +46,11 @@ export class NodeTokenAuthenticator implements Authenticator {
       token = credentials.slice(colonIndex + 1);
     } else {
       // 格式: Bearer <raw-node-token> (带 X-Node-Id 头)
-      // 兼容旧的 username:secret / base64(username:secret) 形式。
       nodeId = request.headers['x-node-id'] as string;
-      const bearerToken = auth.slice(7).trim();
-      if (!bearerToken) {
+      token = auth.slice(7).trim();
+      if (!token) {
         return { success: false, error: 'Empty node token' };
       }
-      const parsed = this.parseNodeToken(bearerToken);
-      token = parsed?.token ?? bearerToken;
     }
 
     try {
@@ -92,44 +88,5 @@ export class NodeTokenAuthenticator implements Authenticator {
     }
   }
 
-  /**
-   * 解析 Node Token (username:secret 或 base64)
-   */
-  private parseNodeToken(token: string): { username: string; token: string } | undefined {
-    if (token.includes(':')) {
-      const [username, ...secretParts] = token.split(':');
-      const secret = secretParts.join(':');
-      if (username && secret) {
-        return { username, token: secret };
-      }
-    }
 
-    // 尝试 base64 解码
-    try {
-      const decoded = Buffer.from(token, 'base64').toString('utf8');
-      if (decoded.includes(':')) {
-        const [username, ...secretParts] = decoded.split(':');
-        const secret = secretParts.join(':');
-        if (username && secret) {
-          return { username, token: secret };
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    return undefined;
-  }
-
-  /**
-   * 检查是否是 base64 编码的 Node Token
-   */
-  private isBase64NodeToken(token: string): boolean {
-    try {
-      const decoded = Buffer.from(token, 'base64').toString('utf8');
-      return decoded.includes(':');
-    } catch {
-      return false;
-    }
-  }
 }
