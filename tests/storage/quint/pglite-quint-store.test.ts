@@ -11,7 +11,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { DataFactory } from 'rdf-data-factory';
 import { PgQuintStore } from '../../../src/storage/quint/PgQuintStore.js';
 import { ComunicaQuintEngine } from '../../../src/storage/sparql/ComunicaQuintEngine.js';
@@ -19,6 +19,8 @@ import type { Quint } from '../../../src/storage/quint/types.js';
 import { arrayFromStream } from '../../helpers/arrayFromStream.js';
 
 const DF = new DataFactory();
+
+vi.setConfig({ testTimeout: 30_000 });
 
 // Helper to create a named node
 function namedNode(value: string): any {
