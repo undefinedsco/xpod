@@ -444,6 +444,11 @@ export class RdfQueryExecutor {
       metrics.plan.push(`Filter(${postRequiredFilters.map(describeFilter).join(',')})`);
     }
 
+    if ((query.postOptionalBinds?.length ?? 0) > 0 && !groupedAggregatePushed) {
+      bindings = this.applyBinds(bindings, query.postOptionalBinds ?? []);
+      metrics.plan.push(`PostOptionalBind(${(query.postOptionalBinds ?? []).map(describeBind).join(',')})`);
+    }
+
     if (groupedAggregatePushed && groupAggregatePushdown) {
       if ((query.having?.length ?? 0) > groupAggregatePushdown.pushedDownHaving) {
         bindings = bindings.filter((binding) => this.matchesFilters(binding, query.having ?? []));

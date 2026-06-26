@@ -1623,13 +1623,14 @@ export class RdfSparqlAdapter {
           variables.includes(alias)
             || visibleVariables.includes(alias)
             || (rdfQuery.binds ?? []).some((bind) => bind.variable === alias)
+            || (rdfQuery.postOptionalBinds ?? []).some((bind) => bind.variable === alias)
         ) {
           throw new UnsupportedSparqlQueryError('SELECT expression alias is already bound locally');
         }
-        state.addBind({
+        this.addSolutionBind(state, {
           variable: alias,
           expression: this.compileSelectProjectionExpression(variable.expression, state.basePath),
-        }, false);
+        });
         variables.push(alias);
         continue;
       }
@@ -1888,15 +1889,26 @@ export class RdfSparqlAdapter {
         };
       }
       const orderVariable = state.nextOrderVariable(index);
-      state.addBind({
+      this.addSolutionBind(state, {
         variable: orderVariable,
         expression: this.compileOrderExpression(entry.expression, state.basePath),
-      }, false);
+      });
       return {
         variable: orderVariable,
         direction: entry.descending ? 'desc' : 'asc',
       };
     });
+  }
+
+  private addSolutionBind(state: CompileState, bind: RdfQueryBind): void {
+    const optionalVariables = new Set(variablesBoundByNestedOptionalGroups(state.query.optional ?? []));
+    const dependsOnOptionalVariable = variablesInBindExpression(bind.expression)
+      .some((variableName) => optionalVariables.has(variableName));
+    if (dependsOnOptionalVariable) {
+      state.addPostOptionalBind(bind);
+      return;
+    }
+    state.addBind(bind, false);
   }
 
   private compileOrderExpression(expression: Expression, basePath: string): RdfBindExpression {
@@ -2743,6 +2755,11 @@ class CompileState {
     this.query.binds.push(bind);
   }
 
+  public addPostOptionalBind(bind: RdfQueryBind): void {
+    this.query.postOptionalBinds ??= [];
+    this.query.postOptionalBinds.push(bind);
+  }
+
   public addOptionalUnion(branches: RdfUnionQueryBranch[]): void {
     this.currentOptionalFrame().unions.push({ branches });
   }
@@ -2849,6 +2866,18 @@ class CompileState {
     }
     for (const rawOptionalGroup of this.query.optional ?? []) {
       assertOptionalBindVariablesSafe(rawOptionalGroup, bound);
+    }
+    const postOptionalBound = new Set(bound);
+    for (const variableName of variablesBoundByNestedOptionalGroups(this.query.optional ?? [])) {
+      postOptionalBound.add(variableName);
+    }
+    for (const bind of this.query.postOptionalBinds ?? []) {
+      for (const dependency of variablesInBindExpression(bind.expression)) {
+        if (!postOptionalBound.has(dependency)) {
+          throw new UnsupportedSparqlQueryError('BIND dependency must be bound before use locally');
+        }
+      }
+      postOptionalBound.add(bind.variable);
     }
   }
 

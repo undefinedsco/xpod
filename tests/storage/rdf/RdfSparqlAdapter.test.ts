@@ -1187,6 +1187,32 @@ describe('RdfSparqlAdapter', () => {
     expect(compiled.query.select).toEqual(['message', 'content']);
   });
 
+  it('allows ORDER BY COALESCE to depend on an OPTIONAL variable', () => {
+    const compiled = adapter.compile(`
+      SELECT ?thread ?createdAt ?updatedAt WHERE {
+        ?thread <http://purl.org/dc/terms/created> ?createdAt .
+        OPTIONAL { ?thread <http://purl.org/dc/terms/modified> ?updatedAt . }
+      }
+      ORDER BY DESC(COALESCE(?updatedAt, ?createdAt))
+    `, BASE);
+
+    expect(compiled.query.postOptionalBinds).toEqual([
+      {
+        variable: expect.stringMatching(/^__rdf_order_0_/),
+        expression: {
+          type: 'coalesce',
+          expressions: [
+            { type: 'variable', variable: 'updatedAt' },
+            { type: 'variable', variable: 'createdAt' },
+          ],
+        },
+      },
+    ]);
+    expect(compiled.query.orderBy).toEqual([
+      { variable: expect.stringMatching(/^__rdf_order_0_/), direction: 'desc' },
+    ]);
+  });
+
   it('compiles reversed variable-term FILTER comparisons', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?createdAt WHERE {

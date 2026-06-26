@@ -594,6 +594,7 @@ export interface RdfQuery {
   exists?: RdfExistsQueryGroup[];
   optional?: Array<RdfQueryPattern[] | RdfOptionalQueryGroup>;
   binds?: RdfQueryBind[];
+  postOptionalBinds?: RdfQueryBind[];
   filters?: RdfQueryFilter[];
   having?: RdfQueryFilter[];
   select?: string[];

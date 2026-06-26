@@ -26,6 +26,7 @@ const MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 const CONTENT = 'http://rdfs.org/sioc/ns#content';
 const HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
+const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 
@@ -570,6 +571,65 @@ describe('SolidRdfSparqlEngine', () => {
     });
     expect(engine.getMetrics().lastPrimary?.plan).toContain('OptionalMinus(graph:op,subject:?message,predicate:http://rdfs.org/sioc/ns#content,object:"archived")');
     expect(engine.getMetrics().lastPrimary?.plan).toContain('OptionalMinus(graph:op,subject:?message,predicate:http://rdfs.org/sioc/ns#content,object:"hello")');
+  });
+
+  it('orders by COALESCE of optional and required variables on the embedded primary path', async () => {
+    const onFallback = vi.fn();
+    const fallbackSpy = vi.spyOn(fallback, 'queryBindings');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/index.ttl');
+    rdfEngine.put([
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
+        namedNode(DCT_CREATED),
+        literal('2026-01-01T00:00:00Z'),
+        graph,
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_1'),
+        namedNode(DCT_MODIFIED),
+        literal('2026-01-03T00:00:00Z'),
+        graph,
+      ),
+      quad(
+        namedNode('https://pod.example/alice/.data/chat/default/index.ttl#thread_2'),
+        namedNode(DCT_CREATED),
+        literal('2026-01-02T00:00:00Z'),
+        graph,
+      ),
+    ]);
+
+    const stream = await engine.queryBindings(`
+      SELECT ?thread ?createdAt ?updatedAt WHERE {
+        ?thread <${DCT_CREATED}> ?createdAt .
+        OPTIONAL { ?thread <${DCT_MODIFIED}> ?updatedAt . }
+      }
+      ORDER BY DESC(COALESCE(?updatedAt, ?createdAt))
+    `, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => ({
+      thread: binding.get('thread')?.value,
+      updatedAt: binding.get('updatedAt')?.value ?? null,
+    }))).toEqual([
+      {
+        thread: 'https://pod.example/alice/.data/chat/default/index.ttl#thread_1',
+        updatedAt: '2026-01-03T00:00:00Z',
+      },
+      {
+        thread: 'https://pod.example/alice/.data/chat/default/index.ttl#thread_2',
+        updatedAt: null,
+      },
+    ]);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('PostOptionalBind(?__rdf_order_0_1:=COALESCE(?updatedAt,?createdAt))');
   });
 
   it('executes SELECT DISTINCT on the embedded primary path', async () => {

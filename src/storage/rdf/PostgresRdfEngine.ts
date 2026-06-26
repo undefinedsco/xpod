@@ -1364,6 +1364,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
       metrics.plan.push(`PostgresFactsFilter(${(query.filters ?? []).map(describeFilter).join(',')})`);
     }
 
+    if ((query.postOptionalBinds?.length ?? 0) > 0) {
+      bindings = this.applyFactsBinds(bindings, query.postOptionalBinds ?? []);
+      metrics.plan.push(`PostgresFactsPostOptionalBind(${(query.postOptionalBinds ?? []).map(describeBind).join(',')})`);
+    }
+
     if (aggregates.length > 0 && (query.groupBy?.length ?? 0) > 0) {
       const joinedRows = bindings.length;
       bindings = groupAggregateBindings(bindings, query.groupBy ?? [], aggregates);
