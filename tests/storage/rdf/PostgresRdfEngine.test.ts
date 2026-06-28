@@ -7870,6 +7870,111 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('uses PostgreSQL variable distinct estimates to price future joined source fanout', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-join-distinct-planner-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const selectedPredicate = namedNode('https://schema.org/selectedForDistinctPlanner');
+    const primaryPredicate = namedNode('https://schema.org/primaryFacet');
+    const secondaryPredicate = namedNode('https://schema.org/secondaryFacet');
+    const anchorPredicate = namedNode('https://schema.org/anchorFacet');
+    const anchorObject = namedNode('https://pod.example/alice/planner/anchor');
+
+    try {
+      await engine.open();
+      const selectedSource = namedNode('https://pod.example/alice/planner/selected.md');
+      const selectedSubject = namedNode(`${selectedSource.value}#selected`);
+      const primaryObjects = Array.from({ length: 40 }, (_value, index) => (
+        namedNode(`https://pod.example/alice/planner/primary-${index}`)
+      ));
+      const secondaryObjects = Array.from({ length: 40 }, (_value, index) => (
+        namedNode(`https://pod.example/alice/planner/secondary-${index}`)
+      ));
+      const primaryFacts = primaryObjects.map((object) => quad(selectedSubject, primaryPredicate, object, selectedSource));
+      const secondaryFacts = secondaryObjects.map((object) => quad(selectedSubject, secondaryPredicate, object, selectedSource));
+      const anchoredPrimaryFacts = primaryObjects.slice(0, 4).flatMap((subject) => (
+        Array.from({ length: 8 }, (_value, index) => (
+          quad(subject, anchorPredicate, namedNode(`${anchorObject.value}/primary-${index}`), selectedSource)
+        ))
+      ));
+      const anchoredSecondaryFacts = secondaryObjects.flatMap((subject) => (
+        Array.from({ length: 8 }, (_value, index) => (
+          quad(subject, anchorPredicate, namedNode(`${anchorObject.value}/secondary-${index}`), selectedSource)
+        ))
+      ));
+      await engine.put([
+        quad(selectedSubject, selectedPredicate, literal('yes'), selectedSource),
+        ...primaryFacts,
+        ...secondaryFacts,
+        ...anchoredPrimaryFacts,
+        ...anchoredSecondaryFacts,
+      ]);
+      await engine.indexTextSource({
+        source: selectedSource.value,
+        workspace: 'https://pod.example/alice/planner/',
+        localPath: 'selected.md',
+        contentType: 'text/markdown',
+      }, '# Selected\n\nDistinct join distribution marker.\n');
+
+      const result = await engine.query({
+        textSearch: [{
+          query: 'distinct join distribution marker',
+          scope: { workspace: 'https://pod.example/alice/planner/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        patterns: [
+          {
+            graph: { variable: 'source' },
+            subject: { variable: 'item' },
+            predicate: selectedPredicate,
+            object: literal('yes'),
+          },
+          {
+            graph: { variable: 'source' },
+            subject: { variable: 'item' },
+            predicate: secondaryPredicate,
+            object: { variable: 'broadFacet' },
+          },
+          {
+            graph: { variable: 'source' },
+            subject: { variable: 'item' },
+            predicate: primaryPredicate,
+            object: { variable: 'facet' },
+          },
+          {
+            graph: { variable: 'source' },
+            subject: { variable: 'facet' },
+            predicate: anchorPredicate,
+            object: { variable: 'anchor' },
+          },
+        ],
+        select: ['item'],
+        distinct: true,
+      });
+
+      expect(result.bindings.map((binding) => binding.item.value)).toEqual([selectedSubject.value]);
+      const scanPlans = result.metrics.plan.filter((entry) => entry.startsWith('PostgresFactsScan('));
+      expect(scanPlans[0]).toContain(`predicate:${selectedPredicate.value}`);
+      expect(scanPlans[1]).toContain(`predicate:${primaryPredicate.value}`);
+      expect(scanPlans[2]).toContain(`predicate:${anchorPredicate.value}`);
+      expect(scanPlans[3]).toContain(`predicate:${secondaryPredicate.value}`);
+      const sourceChoiceMarkers = result.metrics.plan.filter((entry) => entry.startsWith('PostgresPlannerSourceChoice('));
+      expect(sourceChoiceMarkers.some((entry) => (
+        entry.includes('selected:RdfBgpSource#2')
+          && entry.includes('RdfBgpSource#3')
+          && entry.includes('dist:facet=40')
+      ))).toBe(true);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses multi-step PostgreSQL planner cost to avoid cheap disconnected prefixes', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-multistep-planner-'));
     const engine = new PostgresRdfEngine({

@@ -381,10 +381,12 @@ while still failing central-latency or scan/plan regressions.
   disconnected cross-product output estimates, and future fanout cost for
   required-source ordering. `VALUES` sources are now part of the same PostgreSQL
   required-source planner instead of being forced before text/vector/RDF sources.
-  Planner markers now expose row cost plus first-pass CPU and IO cost dimensions
-  for each candidate. It is still not a full native QLever optimizer: full
-  statistics-driven join distribution modeling and calibrated CPU/IO weights are
-  not yet implemented.
+  Planner markers now expose row cost, source base rows, variable-distinct
+  estimates, and first-pass CPU/IO cost dimensions for each candidate. The
+  bounded lookahead now uses source base rows plus variable distinct counts to
+  price future joined-source fanout. It is still not a full native QLever
+  optimizer: calibrated CPU/IO weights, multi-column correlation statistics, and
+  workload-tuned distribution modeling are not yet implemented.
 - Text ranking in the QLever-like product artifact uses PostgreSQL native FTS
   (`PostgresNativeFts(...)`) rather than the postings backend.
 - Vector retrieval is integrated as a PostgreSQL vector candidate source in the
@@ -396,7 +398,7 @@ while still failing central-latency or scan/plan regressions.
 | Gate | Current evidence | Status |
 | --- | --- | --- |
 | Benchmarks show improvement or bounded non-regression over physical-source baselines for broad search + RDF/path/ACL filter + top-k workloads. | Fusion benchmark gate accepts caller-provided baseline rows and p95 duration and fails on baseline regressions. Product-scale PostgreSQL `--productQLeverLikePlannerGate` now passes against a same-shape current-code 20-iteration native FTS/vector baseline report; broad fusion was 1,974 ms p95 vs 1,801 ms baseline with unchanged 1,600 scanned rows and batched broad-candidate join evidence. | Covered for the current synthetic product-scale native-search gate; real workload ranking weights still need product tuning. |
-| Planner metrics identify which sources ran, why a source was chosen, which filters were pushed down, and where top-k was applied. | Fusion benchmark cases assert `TextMatchSource`, `VectorMatchSource`, `RdfBgpSource`, `PathScopeSource`, `AclScopeSource`, `SourceEstimate(...)`, `PostgresPlannerSourceChoice(...)`, `TopKPushdown(...)`, and final `PostgresFactsLimit`/sort evidence. Focused planner tests additionally assert `ValuesSource` participates in cost-based ordering against selective text sources and that planner choices expose `cpu:` / `io:` cost dimensions. | Covered by focused planner/benchmark tests. |
+| Planner metrics identify which sources ran, why a source was chosen, which filters were pushed down, and where top-k was applied. | Fusion benchmark cases assert `TextMatchSource`, `VectorMatchSource`, `RdfBgpSource`, `PathScopeSource`, `AclScopeSource`, `SourceEstimate(...)`, `PostgresPlannerSourceChoice(...)`, `TopKPushdown(...)`, and final `PostgresFactsLimit`/sort evidence. Focused planner tests additionally assert `ValuesSource` participates in cost-based ordering against selective text sources, that planner choices expose `cpu:` / `io:` cost dimensions, and that variable distinct estimates can reorder future joined-source fanout. | Covered by focused planner/benchmark tests. |
 | No planner path bypasses authorization filtering before final ranking. | Local and PostgreSQL tests include unauthorized higher-score candidates and require `FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)` before returning top-k results. Product-scale `--productP3FusionGate` also requires fusion hard-filter evidence together with broad-candidate batching evidence. | Covered by focused query tests and product-scale gate evidence. |
 | Serving-query regressions are caught by benchmark gates. | `servingRegressionGate` summarizes serving cases, supports scanned-row/p95 thresholds, and release-gate checks can require it. `--caseProfile=all` now emits serving and fusion gates in one report, and `--strictP3FusionGate` passes against the combined smoke artifact when a fusion baseline report is supplied. | Covered by benchmark report/gate tests and strict smoke. |
 | Storage overhead and index-build cost are reported with performance results via `performanceCosts`. | Fusion benchmark report tests assert `performanceCosts.storageOverhead` and `performanceCosts.indexBuild` and cross-check them against storage and refresh benchmark fields. | Covered by focused benchmark tests. |

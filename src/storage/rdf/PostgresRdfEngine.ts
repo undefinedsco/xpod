@@ -408,6 +408,8 @@ interface PgRequiredSourceChoice {
   disconnectedPenalty: number;
   inputRows: number;
   estimateRows: number;
+  baseRows: number;
+  variableDistinctRows: Record<string, number>;
   outputRows: number;
   costRows: number;
   cpuCostRows: number;
@@ -4451,6 +4453,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     metrics: RdfQueryMetrics,
   ): Promise<number> {
     const boundVariables = pgBoundVariables(bindings);
+    const boundDistinctRows = pgBoundVariableDistinctRows(bindings);
     const hasBoundVariables = boundVariables.size > 0;
     const inputRows = Math.max(1, bindings.length);
     if (sources.length === 1) {
@@ -4460,6 +4463,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
       const connected = !hasBoundVariables || pgRequiredSourceConnected(source, boundVariables);
       const estimateRows = await this.estimatePgRequiredSourceRows(source, bindings);
+      const baseRows = pgPlannerBindingsAreRoot(bindings)
+        ? estimateRows
+        : await this.estimatePgRequiredSourceRows(source, [{}]);
+      const variableDistinctRows = await this.estimatePgRequiredSourceVariableDistinctRows(source, baseRows);
       const outputRows = connected ? estimateRows : estimateRows * inputRows;
       const immediateCost = estimatePgPlannerImmediateCostRows(source, estimateRows, outputRows, inputRows);
       const choice: PgRequiredSourceChoice = {
@@ -4470,6 +4477,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         priority: pgRequiredSourcePriority(source),
         inputRows,
         estimateRows,
+        baseRows,
+        variableDistinctRows,
         outputRows,
         costRows: immediateCost.costRows,
         cpuCostRows: immediateCost.cpuCostRows,
@@ -4484,6 +4493,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const rankedWithoutFuture = await Promise.all(sources.map(async (source, originalOrder): Promise<PgRequiredSourceChoice> => {
       const connected = !hasBoundVariables || pgRequiredSourceConnected(source, boundVariables);
       const estimateRows = await this.estimatePgRequiredSourceRows(source, bindings);
+      const baseRows = pgPlannerBindingsAreRoot(bindings)
+        ? estimateRows
+        : await this.estimatePgRequiredSourceRows(source, [{}]);
+      const variableDistinctRows = await this.estimatePgRequiredSourceVariableDistinctRows(source, baseRows);
       const outputRows = connected ? estimateRows : estimateRows * inputRows;
       const immediateCost = estimatePgPlannerImmediateCostRows(source, estimateRows, outputRows, inputRows);
       return {
@@ -4494,6 +4507,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         priority: pgRequiredSourcePriority(source),
         inputRows,
         estimateRows,
+        baseRows,
+        variableDistinctRows,
         outputRows,
         costRows: immediateCost.costRows,
         cpuCostRows: immediateCost.cpuCostRows,
@@ -4504,7 +4519,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       };
     }));
     const ranked = rankedWithoutFuture.map((choice): PgRequiredSourceChoice => {
-      const futureCost = estimatePgPlannerFutureCostRows(choice, rankedWithoutFuture, boundVariables);
+      const futureCost = estimatePgPlannerFutureCostRows(choice, rankedWithoutFuture, boundVariables, boundDistinctRows);
       return {
         ...choice,
         futureCostRows: futureCost.costRows,
@@ -4576,6 +4591,46 @@ export class PostgresRdfEngine implements RdfEngineLike {
         return (await this.requireVectorIndex().estimateSearchCardinality(vectorSearchOptions(source.pattern))).rows;
       }
     }
+  }
+
+  private async estimatePgRequiredSourceVariableDistinctRows(
+    source: PgRequiredSource,
+    estimateRows = 0,
+  ): Promise<Record<string, number>> {
+    switch (source.kind) {
+      case 'pattern':
+        return this.estimatePgPatternVariableDistinctRows(source.pattern, estimateRows);
+      case 'values':
+        return estimateValuesSourceVariableDistinctRows(source.source);
+      case 'text':
+      case 'vector':
+        return Object.fromEntries(pgVariablesInRequiredSource(source).map((variableName) => [
+          variableName,
+          Math.max(1, estimateRows),
+        ]));
+    }
+  }
+
+  private async estimatePgPatternVariableDistinctRows(
+    pattern: RdfQueryPattern,
+    fallbackRows: number,
+  ): Promise<Record<string, number>> {
+    const variableKeys = patternVariableKeys(pattern);
+    const estimates = new Map<string, number>();
+    const compiled = compilePatternForBinding(pattern, {});
+    if (!compiled) {
+      return {};
+    }
+    const resolved = await this.resolvePattern(compiled);
+    for (const [variableName, keys] of variableKeys) {
+      const [key] = keys;
+      if (!key) {
+        continue;
+      }
+      const distinctRows = resolved.unresolved ? 0 : await this.estimateResolvedDistinctRows(resolved, key);
+      estimates.set(variableName, Math.max(1, Math.min(Math.max(1, fallbackRows), distinctRows)));
+    }
+    return Object.fromEntries(estimates);
   }
 
   private async estimatePgSearchRowsByBoundSources(
@@ -9572,6 +9627,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return this.scalarCount(compiled.countSql, compiled.countParams);
   }
 
+  private async estimateResolvedDistinctRows(resolved: PgResolvedPattern, key: PgPatternKey): Promise<number> {
+    const compiled = this.compileScanSql(resolved, { limit: 0 });
+    const column = TERM_COLUMN[key];
+    const distinctSql = compiled.countSql.replace(
+      'SELECT COUNT(*) AS count',
+      `SELECT COUNT(DISTINCT q.${column}) AS count`,
+    );
+    return this.scalarCount(distinctSql, compiled.countParams);
+  }
+
   private orderJoinSources(sources: PgJoinSource[]): PgJoinSource[] {
     const remaining = [...sources];
     const selected: PgJoinSource[] = [];
@@ -11794,6 +11859,18 @@ function variablesInPattern(pattern: RdfQueryPattern): string[] {
     .map((value) => value.variable));
 }
 
+function patternVariableKeys(pattern: RdfQueryPattern): Map<string, PgPatternKey[]> {
+  const keys = new Map<string, PgPatternKey[]>();
+  for (const key of PATTERN_KEYS) {
+    const value = pattern[key];
+    if (!isVariable(value)) {
+      continue;
+    }
+    keys.set(value.variable, [...(keys.get(value.variable) ?? []), key]);
+  }
+  return keys;
+}
+
 function normalizeOptionalGroup(group: RdfQueryPattern[] | RdfOptionalQueryGroup): RdfOptionalQueryGroup {
   return Array.isArray(group) ? { patterns: group } : group;
 }
@@ -12374,6 +12451,16 @@ function mergeTupleValuesBinding(binding: RdfBindingRow, variables: string[], ro
   return next;
 }
 
+function estimateValuesSourceVariableDistinctRows(
+  source: RdfValuesBindingSource,
+): Record<string, number> {
+  const output = joinValuesSource([{}], source);
+  return Object.fromEntries(source.variables.map((variableName) => [
+    variableName,
+    Math.max(1, countBindings(output, variableName, true)),
+  ]));
+}
+
 function projectBinding(binding: RdfBindingRow, select: string[]): RdfBindingRow {
   const projected: RdfBindingRow = {};
   for (const variableName of select) {
@@ -12854,6 +12941,19 @@ function pgBoundVariables(bindings: RdfBindingRow[]): Set<string> {
   return names;
 }
 
+function pgBoundVariableDistinctRows(bindings: RdfBindingRow[]): Map<string, number> {
+  const distinctRows = new Map<string, number>();
+  for (const variableName of pgBoundVariables(bindings)) {
+    distinctRows.set(variableName, Math.max(1, countBindings(bindings, variableName, true)));
+  }
+  return distinctRows;
+}
+
+function pgPlannerBindingsAreRoot(bindings: RdfBindingRow[]): boolean {
+  return bindings.length === 0
+    || (bindings.length === 1 && Object.keys(bindings[0] ?? {}).length === 0);
+}
+
 function pgRequiredSourceConnected(source: PgRequiredSource, boundVariables: Set<string>): boolean {
   const sourceVariables = pgVariablesInRequiredSource(source);
   return sourceVariables.length === 0 || sourceVariables.some((name) => boundVariables.has(name));
@@ -12863,6 +12963,7 @@ function estimatePgPlannerFutureCostRows(
   selected: PgRequiredSourceChoice,
   candidates: PgRequiredSourceChoice[],
   boundVariables: Set<string>,
+  boundDistinctRows: Map<string, number>,
 ): { costRows: number; bounded: boolean } {
   const remaining = candidates.filter((candidate) => candidate.originalOrder !== selected.originalOrder);
   if (remaining.length === 0) {
@@ -12872,9 +12973,15 @@ function estimatePgPlannerFutureCostRows(
   for (const variable of pgVariablesInRequiredSource(selected.source)) {
     nextBoundVariables.add(variable);
   }
+  const nextBoundDistinctRows = mergePgPlannerBoundDistinctRows(
+    boundDistinctRows,
+    selected,
+    selected.outputRows,
+  );
   return estimatePgPlannerSuffixCostRows(
     remaining,
     nextBoundVariables,
+    nextBoundDistinctRows,
     Math.max(1, selected.outputRows),
     PG_PLANNER_SUFFIX_LOOKAHEAD_DEPTH,
   );
@@ -12883,6 +12990,7 @@ function estimatePgPlannerFutureCostRows(
 function estimatePgPlannerSuffixCostRows(
   candidates: PgRequiredSourceChoice[],
   boundVariables: Set<string>,
+  boundDistinctRows: Map<string, number>,
   inputRows: number,
   depthRemaining: number,
 ): { costRows: number; bounded: boolean } {
@@ -12891,27 +12999,36 @@ function estimatePgPlannerSuffixCostRows(
   }
   if (depthRemaining <= 0) {
     return {
-      costRows: estimatePgPlannerGreedySuffixCostRows(candidates, boundVariables, inputRows),
+      costRows: estimatePgPlannerGreedySuffixCostRows(candidates, boundVariables, boundDistinctRows, inputRows),
       bounded: true,
     };
   }
 
   let bestCost = Number.POSITIVE_INFINITY;
   let bounded = candidates.length > PG_PLANNER_SUFFIX_LOOKAHEAD_WIDTH;
-  const considered = rankPgPlannerLookaheadCandidates(candidates, boundVariables, inputRows)
+  const considered = rankPgPlannerLookaheadCandidates(candidates, boundVariables, boundDistinctRows, inputRows)
     .slice(0, PG_PLANNER_SUFFIX_LOOKAHEAD_WIDTH);
   for (const candidate of considered) {
     const connected = pgRequiredSourceConnected(candidate.source, boundVariables);
-    const outputRows = estimatePgPlannerAbstractOutputRows(candidate.source, candidate.estimateRows, inputRows, connected);
-    const immediateCost = estimatePgPlannerImmediateCostRows(candidate.source, candidate.estimateRows, outputRows, inputRows);
+    const outputRows = estimatePgPlannerAbstractOutputRows(
+      candidate.source,
+      candidate.baseRows,
+      inputRows,
+      connected,
+      boundDistinctRows,
+      candidate.variableDistinctRows,
+    );
+    const immediateCost = estimatePgPlannerImmediateCostRows(candidate.source, candidate.baseRows, outputRows, inputRows);
     const nextBoundVariables = new Set(boundVariables);
     for (const variable of pgVariablesInRequiredSource(candidate.source)) {
       nextBoundVariables.add(variable);
     }
+    const nextBoundDistinctRows = mergePgPlannerBoundDistinctRows(boundDistinctRows, candidate, outputRows);
     const remaining = candidates.filter((entry) => entry.originalOrder !== candidate.originalOrder);
     const suffixCost = estimatePgPlannerSuffixCostRows(
       remaining,
       nextBoundVariables,
+      nextBoundDistinctRows,
       Math.max(1, outputRows),
       depthRemaining - 1,
     );
@@ -12930,16 +13047,31 @@ function estimatePgPlannerAbstractOutputRows(
   estimateRows: number,
   inputRows: number,
   connected: boolean,
+  boundDistinctRows?: Map<string, number>,
+  sourceVariableDistinctRows?: Record<string, number>,
 ): number {
   const safeEstimateRows = Math.max(0, estimateRows);
   const safeInputRows = Math.max(1, inputRows);
   if (!connected) {
     return safeEstimateRows * safeInputRows;
   }
-  if (pgVariablesInRequiredSource(source).length > 0) {
+  const variables = pgVariablesInRequiredSource(source);
+  if (variables.length === 0) {
+    return safeEstimateRows;
+  }
+  const sharedVariables = boundDistinctRows
+    ? variables.filter((variableName) => boundDistinctRows.has(variableName))
+    : [];
+  if (sharedVariables.length === 0) {
     return Math.max(safeEstimateRows, safeInputRows);
   }
-  return safeEstimateRows;
+  let outputRows = safeInputRows * safeEstimateRows;
+  for (const variableName of sharedVariables) {
+    const inputDistinctRows = Math.max(1, boundDistinctRows?.get(variableName) ?? safeInputRows);
+    const sourceDistinctRows = Math.max(1, sourceVariableDistinctRows?.[variableName] ?? safeEstimateRows);
+    outputRows /= Math.max(inputDistinctRows, sourceDistinctRows);
+  }
+  return Math.max(1, Math.ceil(Math.min(safeInputRows * safeEstimateRows, outputRows)));
 }
 
 function estimatePgPlannerImmediateCostRows(
@@ -12980,27 +13112,68 @@ function estimatePgPlannerImmediateCostRows(
   };
 }
 
+function mergePgPlannerBoundDistinctRows(
+  boundDistinctRows: Map<string, number>,
+  source: PgRequiredSourceChoice,
+  outputRows: number,
+): Map<string, number> {
+  const next = new Map(boundDistinctRows);
+  mergePgPlannerBoundDistinctRowsInPlace(next, source, outputRows);
+  return next;
+}
+
+function mergePgPlannerBoundDistinctRowsInPlace(
+  boundDistinctRows: Map<string, number>,
+  source: PgRequiredSourceChoice,
+  outputRows: number,
+): void {
+  const safeOutputRows = Math.max(1, outputRows);
+  for (const variableName of pgVariablesInRequiredSource(source.source)) {
+    const sourceDistinctRows = Math.max(1, source.variableDistinctRows[variableName] ?? source.estimateRows);
+    const existingDistinctRows = boundDistinctRows.get(variableName);
+    const mergedDistinctRows = existingDistinctRows === undefined
+      ? sourceDistinctRows
+      : Math.min(existingDistinctRows, sourceDistinctRows);
+    boundDistinctRows.set(variableName, Math.max(1, Math.min(safeOutputRows, mergedDistinctRows)));
+  }
+}
+
 function estimatePgPlannerGreedySuffixCostRows(
   candidates: PgRequiredSourceChoice[],
   boundVariables: Set<string>,
+  boundDistinctRows: Map<string, number>,
   inputRows: number,
 ): number {
   let remaining = [...candidates];
   const currentBoundVariables = new Set(boundVariables);
+  const currentBoundDistinctRows = new Map(boundDistinctRows);
   let currentInputRows = inputRows;
   let totalCostRows = 0;
   while (remaining.length > 0) {
-    const [candidate] = rankPgPlannerLookaheadCandidates(remaining, currentBoundVariables, currentInputRows);
+    const [candidate] = rankPgPlannerLookaheadCandidates(
+      remaining,
+      currentBoundVariables,
+      currentBoundDistinctRows,
+      currentInputRows,
+    );
     if (!candidate) {
       break;
     }
     const connected = pgRequiredSourceConnected(candidate.source, currentBoundVariables);
-    const outputRows = estimatePgPlannerAbstractOutputRows(candidate.source, candidate.estimateRows, currentInputRows, connected);
-    totalCostRows += estimatePgPlannerImmediateCostRows(candidate.source, candidate.estimateRows, outputRows, currentInputRows).totalCostRows;
+    const outputRows = estimatePgPlannerAbstractOutputRows(
+      candidate.source,
+      candidate.baseRows,
+      currentInputRows,
+      connected,
+      currentBoundDistinctRows,
+      candidate.variableDistinctRows,
+    );
+    totalCostRows += estimatePgPlannerImmediateCostRows(candidate.source, candidate.baseRows, outputRows, currentInputRows).totalCostRows;
     currentInputRows = Math.max(1, outputRows);
     for (const variable of pgVariablesInRequiredSource(candidate.source)) {
       currentBoundVariables.add(variable);
     }
+    mergePgPlannerBoundDistinctRowsInPlace(currentBoundDistinctRows, candidate, outputRows);
     remaining = remaining.filter((entry) => entry.originalOrder !== candidate.originalOrder);
   }
   return totalCostRows;
@@ -13009,15 +13182,30 @@ function estimatePgPlannerGreedySuffixCostRows(
 function rankPgPlannerLookaheadCandidates(
   candidates: PgRequiredSourceChoice[],
   boundVariables: Set<string>,
+  boundDistinctRows: Map<string, number>,
   inputRows: number,
 ): PgRequiredSourceChoice[] {
   return [...candidates].sort((left, right) => {
     const leftConnected = pgRequiredSourceConnected(left.source, boundVariables);
     const rightConnected = pgRequiredSourceConnected(right.source, boundVariables);
-    const leftOutputRows = estimatePgPlannerAbstractOutputRows(left.source, left.estimateRows, inputRows, leftConnected);
-    const rightOutputRows = estimatePgPlannerAbstractOutputRows(right.source, right.estimateRows, inputRows, rightConnected);
-    const leftCost = estimatePgPlannerImmediateCostRows(left.source, left.estimateRows, leftOutputRows, inputRows);
-    const rightCost = estimatePgPlannerImmediateCostRows(right.source, right.estimateRows, rightOutputRows, inputRows);
+    const leftOutputRows = estimatePgPlannerAbstractOutputRows(
+      left.source,
+      left.baseRows,
+      inputRows,
+      leftConnected,
+      boundDistinctRows,
+      left.variableDistinctRows,
+    );
+    const rightOutputRows = estimatePgPlannerAbstractOutputRows(
+      right.source,
+      right.baseRows,
+      inputRows,
+      rightConnected,
+      boundDistinctRows,
+      right.variableDistinctRows,
+    );
+    const leftCost = estimatePgPlannerImmediateCostRows(left.source, left.baseRows, leftOutputRows, inputRows);
+    const rightCost = estimatePgPlannerImmediateCostRows(right.source, right.baseRows, rightOutputRows, inputRows);
     return left.priority - right.priority
       || Number(!leftConnected) - Number(!rightConnected)
       || leftCost.totalCostRows - rightCost.totalCostRows
@@ -13072,8 +13260,17 @@ function describePgPlannerSourceChoice(
   candidates: PgRequiredSourceChoice[],
 ): string {
   return `PostgresPlannerSourceChoice(selected:${describePgRequiredSourceName(selected.source)} candidates:${candidates.map((candidate) => (
-    `${describePgRequiredSourceName(candidate.source)}[priority:${candidate.priority},connected:${candidate.connected},input:${candidate.inputRows},rows:${Math.max(0, Math.ceil(candidate.estimateRows))},output:${Math.max(0, Math.ceil(candidate.outputRows))},cost:${Math.max(0, Math.ceil(candidate.costRows))},cpu:${Math.max(0, Math.ceil(candidate.cpuCostRows))},io:${Math.max(0, Math.ceil(candidate.ioCostRows))},future:${Math.max(0, Math.ceil(candidate.futureCostRows))},lookahead:${candidate.futureCostBounded ? 'bounded' : 'full'},total:${Math.max(0, Math.ceil(candidate.totalCostRows))},penalty:${candidate.disconnectedPenalty}]`
+    `${describePgRequiredSourceName(candidate.source)}[priority:${candidate.priority},connected:${candidate.connected},input:${candidate.inputRows},rows:${Math.max(0, Math.ceil(candidate.estimateRows))},base:${Math.max(0, Math.ceil(candidate.baseRows))},dist:${describePgPlannerDistinctRows(candidate.variableDistinctRows)},output:${Math.max(0, Math.ceil(candidate.outputRows))},cost:${Math.max(0, Math.ceil(candidate.costRows))},cpu:${Math.max(0, Math.ceil(candidate.cpuCostRows))},io:${Math.max(0, Math.ceil(candidate.ioCostRows))},future:${Math.max(0, Math.ceil(candidate.futureCostRows))},lookahead:${candidate.futureCostBounded ? 'bounded' : 'full'},total:${Math.max(0, Math.ceil(candidate.totalCostRows))},penalty:${candidate.disconnectedPenalty}]`
   )).join(',')})`;
+}
+
+function describePgPlannerDistinctRows(variableDistinctRows: Record<string, number>): string {
+  const entries = Object.entries(variableDistinctRows)
+    .filter(([, rows]) => Number.isFinite(rows) && rows > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return entries.length > 0
+    ? entries.map(([variableName, rows]) => `${variableName}=${Math.max(1, Math.ceil(rows))}`).join('|')
+    : 'none';
 }
 
 function describePgRequiredSourceName(source: PgRequiredSource): string {

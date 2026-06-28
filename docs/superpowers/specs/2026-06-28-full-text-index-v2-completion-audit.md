@@ -34,7 +34,7 @@ Observed results:
 - Product QLever-like native-search gate: matched true. This gate includes the
   product P3 requirements and additionally requires native PostgreSQL FTS/vector
   plan evidence.
-- Current QLever-like focused suite: 7 files passed, 145 tests passed, including planner-visible CPU/IO cost markers.
+- Current QLever-like focused suite: 7 files passed, 146 tests passed, including planner-visible CPU/IO cost markers and variable-distinct join fanout ordering.
 - Integration suite: lite passed 17 files / 87 tests with 1 skipped; full passed 4 files / 40 tests.
 - TypeScript build: passed.
 - Whitespace diff check: passed.
@@ -128,13 +128,14 @@ Remaining boundary: summary lifecycle is currently derived from vector rows; the
 
 Remaining boundary: source ordering is now adaptive and marker-visible across
 RDF, text, vector, and VALUES sources with
-input/output/row-cost/CPU-cost/IO-cost/future-fanout evidence, including a
-bounded multi-step suffix-cost model. The planner now emits `lookahead:full` or
+input/output/base-row/variable-distinct/row-cost/CPU-cost/IO-cost/future-fanout
+evidence, including a bounded multi-step suffix-cost model. The planner now emits `lookahead:full` or
 `lookahead:bounded`; bounded suffixes use a greedy tail estimate instead of
 enumerating every source permutation. It is still not a native QLever engine:
-CPU/IO cost is now represented as a first-pass source-cost dimension, but full
-statistics-driven join distribution modeling and calibrated CPU/IO weights remain
-future work. The stricter native-search gate `--productQLeverLikePlannerGate`
+CPU/IO cost is now represented as a first-pass source-cost dimension, and the
+lookahead can use variable distinct estimates to price future joined-source
+fanout. Calibrated CPU/IO weights, multi-column correlation statistics, and
+workload-tuned distribution modeling remain future work. The stricter native-search gate `--productQLeverLikePlannerGate`
 now passes and requires product P3 evidence plus
 `textSearchBackend=pg-native-fts`, native FTS plan evidence, and native vector
 plan evidence.
