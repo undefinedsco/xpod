@@ -1,7 +1,7 @@
 # Full-text Index V2 Current Completion Audit
 
 > Scope: current implementation evidence for [`2026-06-23-full-text-index-v2-design.md`](./2026-06-23-full-text-index-v2-design.md) and phase specs P0-P3.
-> Date: 2026-06-28.
+> Date: 2026-06-29.
 
 ## Verification evidence
 
@@ -9,7 +9,7 @@ Fresh verification commands run for this audit:
 
 ```bash
 bun scripts/assert-rdf-benchmark-report-gate.ts \
-  --root=.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/hot-20-from-current-baseline \
+  --root=.test-data/rdf-engine/qlever-product-latest-20260629062731/hot-20-from-current-baseline-rerun \
   --productQLeverLikePlannerGate
 
 bun test \
@@ -44,13 +44,13 @@ Observed results:
 Current native-search baseline artifact:
 
 ```text
-.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/baseline-20/models-postgres-2026-06-28T20-45-11-857Z-5169-3fd6c4a3-8788-42cb-a372-6ef675b10d2f.json
+.test-data/rdf-engine/qlever-product-latest-20260629062731/baseline-20/models-postgres-2026-06-28T22-27-31-805Z-54733-33cb5599-a31c-417d-a5ec-96386793399e.json
 ```
 
 QLever-like native-search gate artifact:
 
 ```text
-.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/hot-20-from-current-baseline/models-postgres-2026-06-28T20-54-35-285Z-8244-acaf818a-6b43-4b43-b6ca-4d655c248243.json
+.test-data/rdf-engine/qlever-product-latest-20260629062731/hot-20-from-current-baseline-rerun/models-postgres-2026-06-28T22-47-33-252Z-64451-f6464e5c-a122-4c7b-8c4e-d4f97c2b7fbe.json
 ```
 
 Native-search QLever-like gate shape:
@@ -69,9 +69,9 @@ Native-search QLever-like gate shape:
 - native vector evidence: present.
 - broad candidate rows: 320.
 - broad batched candidate join: true.
-- broad fusion p95: 1,974 ms vs native baseline 1,801 ms.
-- warm steady query p50/p95: 41 / 53 ms.
-- storage total/facts ratio: 1.700.
+- broad fusion p95: 2,410 ms vs native baseline 2,051 ms.
+- warm steady query p50/p95: 34 / 38 ms.
+- storage total/facts ratio: 1.794.
 
 ## P0 audit — safe retrieval foundation
 
@@ -120,7 +120,7 @@ Remaining boundary: summary lifecycle is currently derived from vector rows; the
 
 | Acceptance item | Evidence | Status |
 | --- | --- | --- |
-| Benchmarks show improvement or bounded non-regression over physical-source baseline for broad search + RDF/path/ACL + top-k. | Current native-search QLever-like artifact: broad fusion p95 1,974 ms vs native baseline 1,801 ms, scanned rows unchanged at 1,600, with native FTS/vector evidence. | Covered for the current synthetic product-scale gate. |
+| Benchmarks show improvement or bounded non-regression over physical-source baseline for broad search + RDF/path/ACL + top-k. | Current native-search QLever-like artifact: broad fusion p95 2,410 ms vs native baseline 2,051 ms, scanned rows unchanged at 1,600, with native FTS/vector evidence. | Covered for the current synthetic product-scale gate. |
 | Planner metrics identify sources, source-choice rationale, pushed filters, and top-k. | `TextMatchSource`, `VectorMatchSource`, `RdfBgpSource`, `ValuesSource`, `PathScopeSource`, `AclScopeSource`, `SourceEstimate`, `PostgresPlannerSourceChoice`, `TopKPushdown`, and report gates. | Covered. |
 | No planner path bypasses authorization before final ranking. | Focused unauthorized-higher-score tests plus product gate hard-filter requirement. | Covered. |
 | Serving-query regressions are caught by benchmark gates. | `servingRegressionGate` is required by `--productQLeverLikePlannerGate`; current artifact matched 49 serving cases. | Covered. |

@@ -323,18 +323,18 @@ side index.
 
 Full native-search validation has since passed the product-scale gate. The
 latest current-state rerun was performed after the pgvector ANN candidate
-tie-breaker fix, so the baseline and hot artifacts below are from the same
-current code revision:
+tie-breaker fix and the variable-distinct fanout cost update, so the baseline
+and hot artifacts below are from the same current code revision:
 
 1. Native baseline artifact:
-   `.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/baseline-20/models-postgres-2026-06-28T20-45-11-857Z-5169-3fd6c4a3-8788-42cb-a372-6ef675b10d2f.json`.
+   `.test-data/rdf-engine/qlever-product-latest-20260629062731/baseline-20/models-postgres-2026-06-28T22-27-31-805Z-54733-33cb5599-a31c-417d-a5ec-96386793399e.json`.
 2. QLever-like planner artifact:
-   `.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/hot-20-from-current-baseline/models-postgres-2026-06-28T20-54-35-285Z-8244-acaf818a-6b43-4b43-b6ca-4d655c248243.json`.
+   `.test-data/rdf-engine/qlever-product-latest-20260629062731/hot-20-from-current-baseline-rerun/models-postgres-2026-06-28T22-47-33-252Z-64451-f6464e5c-a122-4c7b-8c4e-d4f97c2b7fbe.json`.
 3. Gate command:
 
    ```bash
    bun scripts/assert-rdf-benchmark-report-gate.ts \
-     --root=.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/hot-20-from-current-baseline \
+     --root=.test-data/rdf-engine/qlever-product-latest-20260629062731/hot-20-from-current-baseline-rerun \
      --productQLeverLikePlannerGate
    ```
 
@@ -348,10 +348,10 @@ current code revision:
    - serving gate: matched, 49 cases.
    - fusion gate: matched, 2 cases.
    - native FTS and native vector plan evidence: present.
-   - broad fusion p95: 1,974 ms vs native baseline 1,801 ms, scanned rows unchanged at 1,600.
+   - broad fusion p95: 2,410 ms vs native baseline 2,051 ms, scanned rows unchanged at 1,600.
    - broad candidate rows: 320 with batched broad-candidate join evidence.
-   - warm steady query p50/p95: 41 / 53 ms.
-   - storage total/facts ratio: 1.700.
+   - warm steady query p50/p95: 34 / 38 ms.
+   - storage total/facts ratio: 1.794.
 
 The vector candidate window is deterministic in the current run: pgvector ANN
 orders equal-distance rows by `(distance, source.id, chunk.ordinal)`. This keeps
